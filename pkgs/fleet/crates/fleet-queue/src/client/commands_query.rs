@@ -376,6 +376,7 @@ pub(super) fn cmd_show(rest: &[String]) -> i32 {
     let mut events = Vec::new();
     for kind in [
         "claimed",
+        "staleness_autocomplete",
         "session_bound",
         "lane_session_bound",
         "model_stamp",
@@ -387,6 +388,8 @@ pub(super) fn cmd_show(rest: &[String]) -> i32 {
         "claim_refused",
         "released",
         "parked",
+        "reprioritized",
+        "reprioritize_sync_pending",
         "failed",
         "cancelled",
     ] {
@@ -935,6 +938,7 @@ pub(super) fn cmd_timeline(verb: &str, rest: &[String]) -> i32 {
     let mut events: Vec<TimelineEvent> = Vec::new();
     for kind in [
         "claimed",
+        "staleness_autocomplete",
         "session_bound",
         "lane_session_bound",
         "model_stamp",
@@ -946,6 +950,8 @@ pub(super) fn cmd_timeline(verb: &str, rest: &[String]) -> i32 {
         "claim_refused",
         "released",
         "parked",
+        "reprioritized",
+        "reprioritize_sync_pending",
         "failed",
         "cancelled",
     ] {

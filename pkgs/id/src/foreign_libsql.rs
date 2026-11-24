@@ -441,6 +441,13 @@ const WRITE_KEYWORDS: [&str; 12] = [
     "PRAGMA", "VACUUM", "TRUNCATE",
 ];
 
+/// Write keywords that also name SQLite scalar functions. A token match on
+/// one of these is a function call — not a write statement — only when the
+/// token is immediately followed (modulo whitespace) by an argument list
+/// opener. Every other shape, e.g. `REPLACE INTO ...`, stays refused
+/// (#13896).
+const FUNCTION_KEYWORDS: [&str; 1] = ["REPLACE"];
+
 fn is_identifier(text: &str) -> bool {
     let mut chars = text.chars();
     match chars.next() {
@@ -453,15 +460,35 @@ fn is_identifier(text: &str) -> bool {
 /// A predicate fragment must be a single boolean expression: no statement
 /// separators, no comment openers, no write keywords, and exactly as many
 /// `?` placeholders as supplied arguments.
+///
+/// The keyword scan is position-aware: a write keyword that also names a
+/// SQLite scalar function (see [`FUNCTION_KEYWORDS`]) is accepted when it
+/// opens a call — `replace(label, '-', '')` — and refused in every other
+/// shape, so `REPLACE INTO ...` stays refused (#13896).
 fn validate_fragment(fragment: &str, arg_count: usize) -> Result<(), AdapterError> {
     if fragment.contains(';') || fragment.contains("--") || fragment.contains("/*") {
         return Err(AdapterError::QueryRefused(
             "predicate fragment is not a single expression".to_owned(),
         ));
     }
-    for word in fragment.split(|c: char| !c.is_ascii_alphanumeric() && c != '_') {
-        if WRITE_KEYWORDS.contains(&word.to_ascii_uppercase().as_str()) {
-            return Err(AdapterError::WriteRefused);
+    let bytes = fragment.as_bytes();
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index].is_ascii_alphanumeric() || bytes[index] == b'_' {
+            let start = index;
+            while index < bytes.len()
+                && (bytes[index].is_ascii_alphanumeric() || bytes[index] == b'_')
+            {
+                index += 1;
+            }
+            let word = &fragment[start..index];
+            if WRITE_KEYWORDS.contains(&word.to_ascii_uppercase().as_str())
+                && !is_function_call(fragment, word, index)
+            {
+                return Err(AdapterError::WriteRefused);
+            }
+        } else {
+            index += 1;
         }
     }
     if fragment.matches('?').count() != arg_count {
@@ -470,6 +497,18 @@ fn validate_fragment(fragment: &str, arg_count: usize) -> Result<(), AdapterErro
         ));
     }
     Ok(())
+}
+
+/// True when the keyword token `word`, ending at byte `end`, opens a scalar
+/// function call: the token names a real SQLite function and the next
+/// non-whitespace character is `(`.
+fn is_function_call(fragment: &str, word: &str, end: usize) -> bool {
+    if !FUNCTION_KEYWORDS.contains(&word.to_ascii_uppercase().as_str()) {
+        return false;
+    }
+    fragment[end..]
+        .trim_start_matches(|c: char| c.is_whitespace())
+        .starts_with('(')
 }
 
 impl GrantedQuery {
@@ -1718,6 +1757,47 @@ mod tests {
         assert!(matches!(
             query.build_statement(MAX_BLOB_BYTES),
             Err(AdapterError::QueryRefused(_))
+        ));
+    }
+
+    /// Oracle: #13896 — a `replace()` call in a read predicate is a
+    /// scalar function call, not a write statement: it is accepted and
+    /// its arguments stay parameterized, while `REPLACE INTO ...`
+    /// (write-shaped, no argument list) is still refused.
+    #[test]
+    fn test_replace_function_call_is_accepted_and_replace_into_is_refused() {
+        let mut query = sample_query();
+        query.filter_sql = Some("replace(label, '-', '') = ?".to_owned());
+        query.filter_args = vec![IdValue::Text("report".to_owned())];
+        let (sql, args) = query.build_statement(MAX_BLOB_BYTES).unwrap();
+        assert_eq!(
+            sql,
+            "SELECT \"id\", \"digest\", \"label\", \"visible\" FROM \"objects\" \
+             WHERE (grantee = ?) AND (replace(label, '-', '') = ?) LIMIT 10"
+        );
+        assert_eq!(
+            args,
+            vec![
+                WireValue::Text("alice".to_owned()),
+                WireValue::Text("report".to_owned()),
+            ]
+        );
+
+        let mut query = sample_query();
+        query.filter_sql = Some("REPLACE INTO objects (label) VALUES ('x')".to_owned());
+        query.filter_args = vec![];
+        assert!(matches!(
+            query.build_statement(MAX_BLOB_BYTES),
+            Err(AdapterError::WriteRefused)
+        ));
+
+        let mut query = sample_query();
+        query.filter_sql = Some("label = replace".to_owned());
+        query.filter_args = vec![];
+        // A bare keyword with no call opener is not a function call.
+        assert!(matches!(
+            query.build_statement(MAX_BLOB_BYTES),
+            Err(AdapterError::WriteRefused)
         ));
     }
 

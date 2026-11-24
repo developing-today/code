@@ -39,6 +39,7 @@ fleet-agent = { workspace = true, optional = true }
 # The cert domain (code#9157): PKI/X.509 roots, issuers, leaves,
 # chains and bundles over the fleet-cert library crate.
 fleet-cert = { workspace = true, optional = true }
+fleet-orgs = { workspace = true, optional = true }
 serde_json = { workspace = true }
 # The OpenCode session liveness probe (session_state.rs) only;
 # optional so the connect variant stays under the D7 size gate.
@@ -63,7 +64,7 @@ ureq = { version = "3", default-features = false, features = [
 ed25519-dalek = { version = "3", optional = true }
 # The gh domain's Metadata store (code#9073): #9074's pm_metadata
 # schema over SQLite. Same pin as fleet-queue.
-rusqlite = { version = "0.42", features = ["bundled"], optional = true }
+rusqlite = { version = "0.43", features = ["bundled"], optional = true }
 # Direct dep for the SIGPIPE disposition reset in main (#5569);
 # already in the workspace lockfile as a transitive dependency.
 [target.'cfg(unix)'.dependencies]
@@ -96,6 +97,7 @@ full = [
   "agent",
   "cert",
   "actions",
+  "orgs",
   "opencode-probe",
 ]
 # The serve variant's set, as one feature for the nix build.
@@ -177,6 +179,7 @@ agent = ["dep:fleet-agent"]
 # The cert domain: a working-seat PKI client surface, so full only —
 # never in serve (no daemon role) or connect (size gate).
 cert = ["dep:fleet-cert"]
+orgs = ["dep:fleet-orgs"]
 
 [dev-dependencies]
 # Property tests for the gh read classifier (AGENTS.md testing

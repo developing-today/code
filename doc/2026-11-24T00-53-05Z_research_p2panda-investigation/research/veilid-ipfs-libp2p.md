@@ -3,7 +3,7 @@
 Lane VEILID-IPFS for the capability-auth + p2p-transport investigation
 (developing-today/code#13779). Companion to the survey entries in
 [capnp-and-survey.md](capnp-and-survey.md) §2.4 (Veilid) and §2.6 (libp2p),
-which scored both as *competing* with iroh for this estate. Drew asked for
+which scored both as _competing_ with iroh for this estate. Drew asked for
 the full treatment, noting Veilid "is supported to some degree" and
 IPFS/libp2p "just in general". Researched 2026-11-23 from primary sources;
 every load-bearing claim is linked.
@@ -68,7 +68,7 @@ and limit below.
   ([The Register](https://www.theregister.com/special-features/2023/08/12/cult-of-the-dead-cow-unveils-veilid-peer-to-peer-project/830646)).
 - The internal RPC wire format is **Cap'n Proto** (`veilid_capnp` appears
   throughout the RPC coders) — a cross-link to the capnp lane: Veilid is a
-  production user of capnp *serialization*, though not of capnp RPC's
+  production user of capnp _serialization_, though not of capnp RPC's
   capability model
   ([veilid-core source, signal_info.rs](https://docs.rs/veilid-core/latest/src/veilid_core/rpc_processor/coders/signal_info.rs.html)).
 
@@ -113,7 +113,7 @@ codebase the word means something specific and much smaller:
   and joining means receiving those secrets out of band
   ([Save DWeb backend privacy overview](https://hackmd.io/@s74XZjUBQDuPPS04AgPvow/HkacodHgyx)).
 
-Verdict on this axis: **Veilid has capability-*shaped* addressing (route
+Verdict on this axis: **Veilid has capability-_shaped_ addressing (route
 blobs) and key-scoped write slots (schemas), but no capability system** in
 the sense the rest of this investigation uses the word — nothing comparable
 to Meadowcap areas, Keyline delegation, UCAN/Biscuit tokens, or capnp
@@ -125,12 +125,12 @@ facets. Auth would be entirely ours to build, same as on raw iroh.
   **no QUIC**
   ([developer book, print edition](https://veilid-developer-book-8b0039.gitlab.io/print.html)).
 - Two routing privacy mechanisms, which are the product's reason to exist:
-  - **Safety routes** protect the *sender*: a routing context flag (on by
+  - **Safety routes** protect the _sender_: a routing context flag (on by
     default) that makes Veilid build a multi-hop route through other nodes
     for outbound operations, with tunable hop count, stability, and
     sequencing preferences
     ([docs.rs RoutingContext](https://docs.rs/veilid-core/latest/veilid_core/struct.RoutingContext.html)).
-  - **Private routes** protect the *receiver*: the app allocates a route,
+  - **Private routes** protect the _receiver_: the app allocates a route,
     receives an opaque **route blob**, publishes the blob somewhere (usually
     a DHT record); a sender imports the blob to obtain a RouteId and can
     then AppMessage/AppCall the route's owner **without learning its NodeId
@@ -143,7 +143,7 @@ facets. Auth would be entirely ours to build, same as on raw iroh.
   Bulk transfer is the app's problem (or, in Save's case, iroh-blobs').
 - NAT traversal is a named subsystem, **VICE** (Veilid Internet
   Connectivity Establishment): STUN-like public-address detection performed
-  *in-network* (no specialised STUN servers), then signalling through each
+  _in-network_ (no specialised STUN servers), then signalling through each
   node's chosen inbound relays to negotiate **reverse connections and UDP
   hole punching**, falling back to TURN-like **inbound relaying** through
   the same peer nodes when direct establishment fails. Nodes classify their
@@ -181,7 +181,7 @@ discoverability layer everything else hangs off
   every subkey value is signed by its writer and carries a sequence number;
   a storage node accepts a write only if its sequence exceeds the one held.
   Two schemas exist: `DFLT` (owner writes all subkeys) and `SMPL` (owner
-  plus named writers, each with an *exclusive* subkey range) — i.e.
+  plus named writers, each with an _exclusive_ subkey range) — i.e.
   multi-writer records are made safe by **partitioning**, never by merging.
   There is no CRDT, no log, no history: a subkey is a single-writer register
   ([developer book, DHT](https://veilid.gitlab.io/developer-book/concepts/dht.html)).
@@ -200,8 +200,8 @@ discoverability layer everything else hangs off
 - **Offline behaviour**: DHT writes may be deferred when the node is
   offline (`AllowOffline`, default true) and flushed later; records are
   "rehydrated" back into the DHT after absence. The store-and-forward
-  pattern is therefore *write it into a DHT record the recipient will read
-  later* — which is precisely how VeilidChat delivers messages to offline
+  pattern is therefore _write it into a DHT record the recipient will read
+  later_ — which is precisely how VeilidChat delivers messages to offline
   contacts. There is no mailbox/queue protocol beyond that
   ([veilid-core API docs](https://docs.rs/veilid-core/latest/veilid_core/),
   [developer book, DHT](https://veilid.gitlab.io/developer-book/concepts/dht.html)).
@@ -212,7 +212,7 @@ discoverability layer everything else hangs off
   KV — **SQLite on native, IndexedDB on WASM** — plus a ProtectedStore over
   OS keychains for secrets
   ([ComfyCon 2025 slides](https://app.yjmbo.net/veilid-comfycon2025/index.html)).
-  Note the shape: Veilid *contains* SQLite, but as its own sealed silo —
+  Note the shape: Veilid _contains_ SQLite, but as its own sealed silo —
   our Turso/libsql stores neither feed it nor read from it.
 
 ## 1.6 Maturity — what "supported to some degree" concretely means
@@ -267,7 +267,7 @@ capability is unimplemented). No sync semantics beyond single-writer
 registers. No groups. No capability delegation/attenuation/revocation. No
 identity beyond key possession. No Cloudflare story at all (a Veilid node
 is a long-lived UDP/TCP peer; nothing runs in Workers — the WASM build is a
-browser *client* of the Veilid network, not an edge component). No
+browser _client_ of the Veilid network, not an edge component). No
 performance story for infrastructure traffic — privacy hops are the point.
 
 ---
@@ -338,7 +338,7 @@ Healthy:
 - **The protocol engineering finally landed.** The provider-record system
   was IPFS's best-documented scaling failure: records expire after 48h,
   Kubo reprovides every 22h, and the legacy provider needed a ~15-second
-  DHT walk *per CID*, so pinsets beyond roughly 5–10k CIDs silently stopped
+  DHT walk _per CID_, so pinsets beyond roughly 5–10k CIDs silently stopped
   being findable while still pinned locally
   ([content routing notes](https://wiki.bitsy.services/wiki/cs/ipfs/content-routing/),
   [Provide Sweep write-up](https://guillaume.michel.id/posts/dht-provide-sweep/)).
@@ -367,7 +367,7 @@ Struggling:
 - **Retrievability and replication are thin.** A 2025 measurement study
   (three years of traffic, 20B+ messages) found only **2.71% of files
   replicated more than 5 times**, and **5% of peers hosting over 80% of
-  content**, with centralisation *growing* over the three years
+  content**, with centralisation _growing_ over the three years
   ([WWW '25, Centralization in the Decentralized Web](http://tddg.github.io/assets/pdf/www25-ipfs-dedup.pdf)).
   Content on IPFS persists because someone specific pins it, not because
   "the network" keeps it.
@@ -405,7 +405,7 @@ of per-principal capability discipline.
 
 ## 2.5 Why iroh left — the primary-source version
 
-iroh *began* as a Rust implementation of IPFS with working interop. The
+iroh _began_ as a Rust implementation of IPFS with working interop. The
 team's own retrospective gives three concrete reasons for the break
 ([The road to iroh 1.0](https://aggr.aymericbeaumet.com/items/lobste-rs/2026-10-16-the-road-to-iroh-1-0/)):
 
@@ -441,7 +441,7 @@ on its public relays in the preceding 30 days
 What libp2p/IPFS would still give this estate that iroh does not:
 
 - **Joinable public networks.** Ethereum, Filecoin, and the IPFS content
-  network exist *now*, with strangers in them. iroh gives you a superb
+  network exist _now_, with strangers in them. iroh gives you a superb
   dial tone and no one to call but your own endpoints.
 - **Content distribution at public scale with integrity built in**: a CID
   published once is fetchable from any provider, deduplicated network-wide,
@@ -455,29 +455,29 @@ What libp2p/IPFS would still give this estate that iroh does not:
 
 What it costs: the assembled NAT stack, the configuration surface, the
 dependency weight, an identity format (PeerId/multiaddr) that would sit
-*beside* our Ed25519/iroh identity rather than being it, and — for the IPFS
+_beside_ our Ed25519/iroh identity rather than being it, and — for the IPFS
 half — adopting infrastructure whose core team was disbanded this year.
 
 ---
 
 # Part 3 — Estate fit, axis by axis
 
-| Axis | Veilid | IPFS / libp2p |
-|---|---|---|
-| Identity & keys | Bare Ed25519 NodeId; versioned cryptosystems (VLD0); no names, no CA bridge | PeerId = key hash (Ed25519 inline); IPNS keys for naming; no CA bridge |
-| Capability model | **None.** FourCC feature flags misnamed "capabilities"; DHT schema writer slots (immutable, key-possession); route blobs as bearer tokens | **None.** Key possession in Noise/TLS; PSK swarm fence; UCAN etc. must be bolted on (Storacha precedent) |
-| Groups | None — apps fake it with shared records + shared secrets | None — swarms/topics only |
-| Encryption | Strong in transit (VLD0 AEAD, signed envelopes) + IP-hiding routes; at-rest local stores encrypted; DHT values app-encrypted, default encryption since 0.5.0; **no PQ yet** | In transit via Noise/TLS; content is plaintext-by-default, encrypt-it-yourself; integrity (hash addressing) is the real guarantee |
-| Transport & NAT | Own stack (UDP/TCP/WS/WSS, **no QUIC**); VICE: in-network STUN-like detection, signalled reverse-connect + hole punch, peer relays; privacy hops add latency | Broadest transport menu incl. browsers; NAT = AutoNAT + Relay v2 + DCUtR, assembled and tuned by the operator |
-| Sync semantics | Per-subkey single-writer LWW registers, ≤1 MiB/record, watches; no log, no CRDT, no merge | Immutable DAG + provider records; IPNS single-pointer register; all mutable sync is app-built |
-| Offline behaviour | DHT store-and-forward is the native pattern; deferred offline writes; record rehydration | Fetch-when-connected; pinning for persistence; nothing is delivered to an offline peer |
-| Storage fit (SQLite/Turso) | Contains its own encrypted SQLite silo (native); Turso neither feeds nor reads it | Kubo uses flatfs + LevelDB/Pebble metadata stores; libp2p itself is storage-agnostic; no Turso story |
-| Rust maturity | veilid-core 0.5.8 (2026-11), steady cadence, **pre-1.0 with breaking minors** | rust-libp2p 0.57.x, ~718k dl/mo, production users; heavyweight, also pre-1.0 by version, stable in practice |
-| Cloudflare fit | None — long-lived p2p node; WASM build is a browser client only | Poor and worsening: Cloudflare exited the gateway business (2024); Workers cannot run Kubo/libp2p natively; R2 already does the useful part (artifact storage) without IPFS |
-| iroh relationship | **Competitor as transport; proven complement as privacy layer** (Save runs Veilid routing + iroh data) | **Competitor libp2p rejected by iroh's own team on record; IPFS is a different category (distribution network, not transport)** |
-| Spec / interop | Single implementation, single network; spec is the code + developer book | The interop champion: multi-language specs, cross-implementation test suites, existing public networks |
-| Project health | Non-profit foundation, donation-funded, small team, steady releases, beta flagship, one real third-party deployment | Split: Kubo/Helia/Boxo/gateways **lost their team Sep 2026**, stewardship transition unproven; libp2p healthy via PL + production client teams |
-| Operational complexity | One embedded library + bootstrap dependence; but a second identity space, second NAT stack, second network to monitor | Kubo is a daemon ecosystem of its own; libp2p is a configuration discipline of its own; both duplicate machinery iroh already runs here |
+| Axis                       | Veilid                                                                                                                                                                      | IPFS / libp2p                                                                                                                                                               |
+| -------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Identity & keys            | Bare Ed25519 NodeId; versioned cryptosystems (VLD0); no names, no CA bridge                                                                                                 | PeerId = key hash (Ed25519 inline); IPNS keys for naming; no CA bridge                                                                                                      |
+| Capability model           | **None.** FourCC feature flags misnamed "capabilities"; DHT schema writer slots (immutable, key-possession); route blobs as bearer tokens                                   | **None.** Key possession in Noise/TLS; PSK swarm fence; UCAN etc. must be bolted on (Storacha precedent)                                                                    |
+| Groups                     | None — apps fake it with shared records + shared secrets                                                                                                                    | None — swarms/topics only                                                                                                                                                   |
+| Encryption                 | Strong in transit (VLD0 AEAD, signed envelopes) + IP-hiding routes; at-rest local stores encrypted; DHT values app-encrypted, default encryption since 0.5.0; **no PQ yet** | In transit via Noise/TLS; content is plaintext-by-default, encrypt-it-yourself; integrity (hash addressing) is the real guarantee                                           |
+| Transport & NAT            | Own stack (UDP/TCP/WS/WSS, **no QUIC**); VICE: in-network STUN-like detection, signalled reverse-connect + hole punch, peer relays; privacy hops add latency                | Broadest transport menu incl. browsers; NAT = AutoNAT + Relay v2 + DCUtR, assembled and tuned by the operator                                                               |
+| Sync semantics             | Per-subkey single-writer LWW registers, ≤1 MiB/record, watches; no log, no CRDT, no merge                                                                                   | Immutable DAG + provider records; IPNS single-pointer register; all mutable sync is app-built                                                                               |
+| Offline behaviour          | DHT store-and-forward is the native pattern; deferred offline writes; record rehydration                                                                                    | Fetch-when-connected; pinning for persistence; nothing is delivered to an offline peer                                                                                      |
+| Storage fit (SQLite/Turso) | Contains its own encrypted SQLite silo (native); Turso neither feeds nor reads it                                                                                           | Kubo uses flatfs + LevelDB/Pebble metadata stores; libp2p itself is storage-agnostic; no Turso story                                                                        |
+| Rust maturity              | veilid-core 0.5.8 (2026-11), steady cadence, **pre-1.0 with breaking minors**                                                                                               | rust-libp2p 0.57.x, ~718k dl/mo, production users; heavyweight, also pre-1.0 by version, stable in practice                                                                 |
+| Cloudflare fit             | None — long-lived p2p node; WASM build is a browser client only                                                                                                             | Poor and worsening: Cloudflare exited the gateway business (2024); Workers cannot run Kubo/libp2p natively; R2 already does the useful part (artifact storage) without IPFS |
+| iroh relationship          | **Competitor as transport; proven complement as privacy layer** (Save runs Veilid routing + iroh data)                                                                      | **Competitor libp2p rejected by iroh's own team on record; IPFS is a different category (distribution network, not transport)**                                             |
+| Spec / interop             | Single implementation, single network; spec is the code + developer book                                                                                                    | The interop champion: multi-language specs, cross-implementation test suites, existing public networks                                                                      |
+| Project health             | Non-profit foundation, donation-funded, small team, steady releases, beta flagship, one real third-party deployment                                                         | Split: Kubo/Helia/Boxo/gateways **lost their team Sep 2026**, stewardship transition unproven; libp2p healthy via PL + production client teams                              |
+| Operational complexity     | One embedded library + bootstrap dependence; but a second identity space, second NAT stack, second network to monitor                                                       | Kubo is a daemon ecosystem of its own; libp2p is a configuration discipline of its own; both duplicate machinery iroh already runs here                                     |
 
 ## 3.1 Could Veilid's DHT be a discovery/rendezvous layer under our protocols?
 
@@ -489,7 +489,7 @@ That is, in fact, exactly the role the DHT plays inside Veilid itself
 ([developer book, Private Routing](https://veilid.gitlab.io/developer-book/concepts/private-routing.html),
 [Save backend overview](https://hackmd.io/@s74XZjUBQDuPPS04AgPvow/HkacodHgyx)).
 
-But priced honestly for *this* estate: it means embedding a second,
+But priced honestly for _this_ estate: it means embedding a second,
 pre-1.0 p2p stack (second identity space, second NAT traversal, second
 network whose bootstrap and relay capacity are donated by strangers) to
 obtain a rendezvous function that the #13752 design already gets from
@@ -500,7 +500,7 @@ peers** — and the estate's stated hard requirements (no secret material in
 logs, capability discipline, self-hosting) never ask for peer-IP anonymity;
 our seats are our own machines, not dissident handsets. If a future
 requirement does ask for metadata-private rendezvous, the Save composition
-is the proven template and Veilid becomes a *sidecar*, adopted for that
+is the proven template and Veilid becomes a _sidecar_, adopted for that
 requirement — not a substrate.
 
 ## 3.2 Could IPFS be just a distribution channel for artefacts?
@@ -509,7 +509,7 @@ Yes, and this is the only IPFS-shaped idea that survives: publish fleet
 release binaries, book sites, or the nix cache as CIDs; anyone (including a
 browser via a gateway) can fetch with integrity verification. But measured
 against what the estate already runs — R2 buckets, GitHub releases, a
-Cloudflare-served nix cache — IPFS adds a *public mirror*, not a missing
+Cloudflare-served nix cache — IPFS adds a _public mirror_, not a missing
 capability, and it adds it at the price of running Kubo, maintaining pin
 discipline (the replication data says unpinned-by-others content is
 effectively single-homed), and depending on gateway infrastructure whose
@@ -519,7 +519,7 @@ would be adopting the family's weakest limb at its weakest moment.
 
 ## 3.3 What adopting either as the base would displace
 
-- **Veilid as base** displaces iroh *and* p2panda-net while providing
+- **Veilid as base** displaces iroh _and_ p2panda-net while providing
   neither QUIC performance nor sync semantics — the estate would rebuild
   logs/CRDTs on 1 MiB LWW registers and rebuild auth from nothing, inside a
   pre-1.0 API, to gain privacy properties it did not ask for.
@@ -537,7 +537,7 @@ would be adopting the family's weakest limb at its weakest moment.
 # Verdicts
 
 **Veilid — complement, narrowly; not an alternate base.**
-Real advantages: the only framework in the investigation whose *product*
+Real advantages: the only framework in the investigation whose _product_
 is metadata privacy (safety/private routes are genuinely well-shaped, and
 route blobs are a clean rendezvous primitive); a conservative, versioned
 cryptosystem; a Kademlia DHT with watches and an elegant one-shot-subkey
@@ -548,14 +548,14 @@ and 1.0 still not landed; no capability system (the name notwithstanding),
 no groups, no sync semantics, 32 KB messages, no QUIC, no Cloudflare
 surface; a small, unpublished-size network and a thin funding/team base;
 documentation still in progress. "Supported to some degree" resolves to:
-*actively maintained by a small foundation, packaged everywhere, one beta
-flagship app, one beta-production third-party deployment* — supported
+_actively maintained by a small foundation, packaged everywhere, one beta
+flagship app, one beta-production third-party deployment_ — supported
 enough to adopt as a sidecar for a privacy requirement, not enough to bet
 the fleet's transport on.
 
 **IPFS — neither as base; optional public mirror only.**
 Its real advantage is unique and should be stated plainly: it is the only
-*existing public content-addressed distribution network* — publish once,
+_existing public content-addressed distribution network_ — publish once,
 fetch from strangers, verify by hash, read from a browser. Nothing else in
 this investigation, iroh included, offers that. Its blockers are equally
 plain: no auth model, no mutable-state model, persistence-by-pinning
@@ -571,7 +571,7 @@ verdict stands, strengthened).**
 It is the healthiest limb of its family: multi-language specs, the largest
 production base in p2p (Ethereum consensus, Filecoin), a mature Rust
 implementation with current releases. It would earn its place the day the
-estate must *join* an existing libp2p network or ship browser-native peers
+estate must _join_ an existing libp2p network or ship browser-native peers
 at scale. Until then it duplicates — at higher configuration and dependency
 cost, per its own alumni's published reasoning — the transport job iroh
 already does here with the identity format the estate has standardized on.

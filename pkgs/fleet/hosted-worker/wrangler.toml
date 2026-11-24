@@ -16,6 +16,15 @@ compatibility_date = "2025-06-01"
 [vars]
 RP_AUDIENCE = "fleet-hosted"
 
+# The message bridge, by service binding (#14373): the bridge door
+# calls it presenting the PM stack's bridge credential
+# (BRIDGE_PM_TOKEN — a secret, set by name at deployment, never in
+# this file). Declared here so the deployed shape carries it; the
+# local-only posture above still applies.
+[[services]]
+binding = "BRIDGE"
+service = "message-bridge"
+
 # The ingestion sweeper's standing scope (#12590): the in-scope
 # repos the scheduled run re-scans (#9060 §16). Set per environment
 # at deployment; empty here (local only) means the scheduled sweep

@@ -195,9 +195,7 @@ class TestVerdicts(unittest.TestCase):
         # binding shape, carried through public_binding.
         s = session("ses_a", updated=NOW - 1 * MIN)
         bound = binding(repo="developing-today/code")
-        record, _ = round_of(
-            [s], active_ids={"ses_a"}, bindings={"ses_a": bound}
-        )
+        record, _ = round_of([s], active_ids={"ses_a"}, bindings={"ses_a": bound})
         v = record["verdicts"]["ses_a"]
         self.assertEqual(v["verdict"], "progressing")
         self.assertEqual(

@@ -241,3 +241,33 @@ implementation tasks against open seams.
   Consumers are why levels exist; naming levels after consumers
   guarantees a new "variant" per consumer and no shared
   conformance story.
+
+## Amendment — 2026-11-24: the level matrix becomes the founding profiles of a feature catalogue (#14056 S1)
+
+Authority: §8 ("Who owns variant drift?") — a profile change is a
+change to this record (amendment PR) plus the §6 conformance checks.
+This section is that amendment; nothing above is rewritten.
+
+The feature-composition plan (doc/2026-11-24T03-36-48Z_design_id-feature-composition/,
+record PR #14055, implementation tracker #14056) succeeds this record
+per its §0.2 reconciliation, as Drew directed 2026-11-23. Kept
+unchanged: variants are compositions, never `cfg` thickets; the
+negative guarantee is a `cargo tree` property enforced in CI per
+published artefact; conformance is the determinism replay fixtures
+run as cross-variant oracles; no "lite server" as a named product;
+upgrade behaviour per #1066 including the client-only degrade
+contract. Changed: the unit of composition drops from the level to
+the catalogued feature; the four levels become the first four named
+profiles in a registry (plain ≈ L1, full ≈ L3, headless ≈ L2 with
+`basement` as its alias per the 2026-11-24 amendment, embedded ≈ L0);
+arbitrary compositions are permitted exactly as hash-registered,
+operator-built manifests — the registry mechanics answer §8's drift
+objection instead of the ban. Root-level profile meta-features are
+admitted as generated mirrors of the composition crates, with CI
+asserting the two agree.
+
+Machine-readable catalogue, manifest schema, and composition-hash
+spec: `pkgs/id/composition/` (S1 of #14056, validated against the
+tree 2026-11-24). Profile graduation and retirement remain record
+amendments here, which caps the supported set at what operators
+deliberately chose.

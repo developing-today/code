@@ -35,9 +35,7 @@ export function authTranscript(
   context: AuthContext,
   bodyHashHex: string,
 ): Uint8Array {
-  return new TextEncoder().encode(
-    `id.bridge-auth.v1\n${bindingId}\n${nonceHex}\n${context}\n${bodyHashHex}`,
-  );
+  return new TextEncoder().encode(`id.bridge-auth.v1\n${bindingId}\n${nonceHex}\n${context}\n${bodyHashHex}`);
 }
 
 export function bodyHashHex(body: Uint8Array): string {
@@ -103,19 +101,11 @@ export async function verifyProof(
  * exchange re-derives the truth either way. */
 export function issueResumeToken(store: BridgeStore, bindingId: string, nowMs: number): string {
   const token = randomHex(32);
-  store.metaSet(
-    `bridge:resume:${token}`,
-    JSON.stringify({ bindingId, expiresAt: nowMs + RESUME_TOKEN_TTL_MS }),
-  );
+  store.metaSet(`bridge:resume:${token}`, JSON.stringify({ bindingId, expiresAt: nowMs + RESUME_TOKEN_TTL_MS }));
   return token;
 }
 
-export function checkResumeToken(
-  store: BridgeStore,
-  token: string,
-  bindingId: string,
-  nowMs: number,
-): boolean {
+export function checkResumeToken(store: BridgeStore, token: string, bindingId: string, nowMs: number): boolean {
   const raw = store.metaGet(`bridge:resume:${token}`);
   if (!raw) return false;
   try {

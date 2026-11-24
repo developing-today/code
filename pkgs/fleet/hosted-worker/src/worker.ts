@@ -13,6 +13,8 @@
 // metadata DB behind the store interfaces and #12583's deploy.
 
 import type { AuthDeps } from "./auth.ts";
+import { FixtureBackfillRunStore } from "./backfill.ts";
+import { BindingBridgeSurface } from "./bridge.ts";
 import { configFromEnv, type HostedConfig, type HostedEnv } from "./config.ts";
 import { AppRotationGitHubWriter, FixtureGitHubWriter } from "./github.ts";
 import { ingestionDepsFrom, runIngestionSweep } from "./ingestion.ts";
@@ -37,6 +39,12 @@ const sessions = new FixtureSessionRegistry();
 // registry — the production home is #9074's metadata DB, behind the
 // MetadataStore interface in src/stamping.ts.
 const metadataStore = new FixtureMetadataStore();
+
+// Backfill run store seam (#14312): the ingestion door's record of
+// backfill runs, behind the BackfillRunStore interface in
+// src/backfill.ts — same fixture posture as the other seams, with
+// #9074's metadata DB as its production home.
+const backfillRuns = new FixtureBackfillRunStore();
 
 // Queue store seam (#12589): the queue door's backend, behind the
 // QueueStore interface in src/queue-store.ts. The production home
@@ -107,6 +115,12 @@ export function buildDeps(env: HostedEnv, opener?: QueueSqlOpener): AuthDeps {
   // implement GitHubItemSource, GitHubCommentSurface,
   // GitHubBodyEditor and GitHubProjectSurface over the same
   // rotation / recorded state.
+  // The bridge door's surface (#14373): the message bridge over its
+  // service binding, presenting the PM credential — the same binding
+  // and credential the console's edge Worker uses, so the PM service
+  // API and the console share one send path. Absent the binding or
+  // the credential, the door fails closed (503) per request.
+  const bridge = config.bridge && env.BRIDGE ? new BindingBridgeSurface(env.BRIDGE, config.bridge.token) : undefined;
   return {
     config,
     sessions,
@@ -118,6 +132,8 @@ export function buildDeps(env: HostedEnv, opener?: QueueSqlOpener): AuthDeps {
     githubComments: githubWriter,
     githubEditor: githubWriter,
     githubProjects: githubWriter,
+    backfillRunStore: backfillRuns,
+    ...(bridge ? { bridge } : {}),
   };
 }
 

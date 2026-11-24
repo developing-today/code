@@ -57,6 +57,16 @@
         color: #9aa4b2;
         font-size: 0.9rem;
       }
+      label {
+        display: block;
+        font-size: 0.9rem;
+        margin-bottom: 0.35rem;
+      }
+      button:focus-visible,
+      input:focus-visible {
+        outline: 2px solid #f6821f;
+        outline-offset: 2px;
+      }
     </style>
   </head>
   <body>
@@ -71,28 +81,31 @@
       <h2>Health</h2>
       <button onclick="go('/api/health', 'health')">Check bindings</button>
       <button onclick="go('/api/budget', 'health')">Budget</button>
-      <pre id="health">…</pre>
+      <pre id="health" aria-live="polite">…</pre>
     </div>
 
     <div class="card">
       <h2>Machines (D1, cached in KV)</h2>
       <button onclick="go('/api/machines', 'machines')">List</button>
-      <pre id="machines">…</pre>
+      <pre id="machines" aria-live="polite">…</pre>
     </div>
 
     <div class="card">
       <h2>Crawl a URL (Container, Worker fallback)</h2>
+      <label for="url">URL to crawl</label>
       <input id="url" value="https://developers.cloudflare.com/containers/" />
       <button onclick="crawl()">Crawl</button>
-      <pre id="crawl">Container starts on demand and sleeps after 2m idle.</pre>
+      <pre id="crawl" aria-live="polite">
+Container starts on demand and sleeps after 2m idle.</pre>
     </div>
 
     <div class="card">
       <h2>Live board (Durable Object + WebSocket)</h2>
       <button onclick="connectLive()">Connect</button>
+      <label for="boardmsg">Status message to broadcast</label>
       <input id="boardmsg" placeholder="status message" />
       <button onclick="sendBoard()">Broadcast</button>
-      <pre id="live">not connected</pre>
+      <pre id="live" aria-live="polite">not connected</pre>
     </div>
 
     <script>

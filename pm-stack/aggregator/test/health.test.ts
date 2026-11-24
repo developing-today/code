@@ -755,4 +755,42 @@ describe("buildHealth version marker (#1150)", () => {
     expect(resolveBuildVersion({ PM_AGG_BUILD_VERSION: "  v1  " })).toBe("v1");
     expect(resolveBuildVersion({ PM_AGG_BUILD_VERSION: "   " })).toBe("unknown");
   });
+
+  test("renderHealth surfaces the deployed commit + age from the same view /api/health serves (#14059b)", async () => {
+    const { fetcher } = fakeFetcher(allUp);
+    const full = "7d3dcebe1e7b3c349db9870aa09ae04f518aa80f";
+    const base = await buildHealth(inputs({ version: full }), {
+      fetcher,
+      cache: createProbeCache(),
+      now: NOW,
+      rfaState: rfaUp,
+    });
+    const bootAt = new Date(NOW - 3 * 3_600_000).toISOString();
+    const view = { ...base, generatedAt: new Date(NOW).toISOString(), bootAt };
+    const html = renderHealth(view, {} as Parameters<typeof renderHealth>[1]);
+    // Short SHA visible, full SHA in title + adjacent code element.
+    expect(html).toContain(full.slice(0, 8));
+    expect(html).toContain(full);
+    expect(html).toContain(`title="${full}"`);
+    // Age comes from the same bootAt the API view carries.
+    expect(html).toContain(bootAt);
+    expect(html).toContain("3.0h old");
+    // Page and API cannot disagree: /api/health serves view.version.
+    const apiVersion: string = view.version;
+    expect(apiVersion).toBe(full);
+    expect(html).toContain(apiVersion);
+  });
+
+  test("renderHealth says unknown when no build version was deployed (#14059b)", async () => {
+    const { fetcher } = fakeFetcher(allUp);
+    const base = await buildHealth(inputs({ version: "unknown" }), {
+      fetcher,
+      cache: createProbeCache(),
+      now: NOW,
+      rfaState: rfaUp,
+    });
+    const html = renderHealth(base, {} as Parameters<typeof renderHealth>[1]);
+    expect(html).toContain("Build <strong>unknown</strong>");
+    expect(html).toContain("PM_AGG_BUILD_VERSION");
+  });
 });

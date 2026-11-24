@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://developing-today/code/doc/2026-11-24_design_id-graph-layer-typed-links-verbs/fixtures/link-object.schema.json",
+  "title": "D3 LinkObject (fixtures use readable ids; object_id is the content hash at implementation)",
+  "type": "object",
+  "required": ["object_id", "author", "created_claim", "verb", "source", "target", "schema_version"],
+  "properties": {
+    "object_id": { "type": "string", "minLength": 1 },
+    "author": { "type": "string", "pattern": "^ed25519:[0-9a-f]{4,}$" },
+    "created_claim": { "type": "string" },
+    "verb": { "type": "string", "enum": ["reply", "mention", "quote", "attach", "supersede", "nest"] },
+    "source": { "type": "string", "minLength": 1 },
+    "target": { "type": "string", "minLength": 1 },
+    "context": {
+      "type": "object",
+      "required": ["root", "previous"],
+      "properties": {
+        "root": { "type": "string", "minLength": 1 },
+        "previous": { "type": "array", "items": { "type": "string", "minLength": 1 } }
+      },
+      "additionalProperties": false
+    },
+    "snapshot": {
+      "type": "object",
+      "required": ["digest"],
+      "properties": { "digest": { "type": "string", "minLength": 1 } },
+      "additionalProperties": false
+    },
+    "schema_version": { "type": "integer", "minimum": 1 }
+  },
+  "additionalProperties": false
+}

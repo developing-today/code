@@ -40,9 +40,10 @@ declaring an issue uncovered (branch `queue/<task>-<issue>-*`, a
 closing keyword, or a trailing `(#n)` title reference). An issue with
 an open fix PR is in-flight: no triage packet. With `--import` it gets
 one merge-watch packet per PR (dedupe
-`repo-health:v1:merge-watch:<repo>:pr:<n>`) — the ~24h recheck that
-re-tests mergibility, refreshes the branch, merges, or closes the PR
-with a salvage note, instead of letting pr_opened work bit-rot.
+`repo-health:v1:pr:<repo>:pr:<n>`) — the ~24h recheck that re-tests
+mergibility, refreshes the branch, merges, or closes the PR with a
+salvage note, instead of letting pr_opened work bit-rot. If several
+open PRs cover one issue, each PR gets its own watch task.
 
 **Ready-PR shepherd fallback (#12280):** the stale-PR warden is the
 merge sweep, but it is one scheduled job — when its live job vanished
@@ -50,13 +51,12 @@ in the November 2026 environment recovery, ready PRs sat unmerged for
 days while the schedule registry still listed the job enabled. The
 reconciliation is the fallback that does not depend on it: the
 `/coverage` call also carries the repo's open PR numbers, and the
-broker answers which of them a **live** task names (either PR key
-class — the warden's `repo-health:v1:pr:<repo>:pr:<n>` or the
-merge-watch key above). With `--import`, any ready (non-draft) PR
-older than 6 hours with no live task naming it gets one `pr_shepherd`
-packet under the warden's own dedupe key, so the warden and this
-fallback dedupe onto a single live task whichever files first. The
-packet's done rule: merged, or closed with a reason recorded. A PR
+broker answers which of them a **live** task names (the canonical
+`repo-health:v1:pr:<repo>:pr:<n>` key shared by the warden and
+merge-watch). With `--import`, any ready (non-draft) PR older than 6
+hours with no live task naming it gets one `pr_shepherd` packet under
+that same key, so the warden and this fallback share one live task per PR.
+The packet's done rule: merged, or closed with a reason recorded. A PR
 already receiving a merge-watch packet in the same run is not
 double-filed.
 

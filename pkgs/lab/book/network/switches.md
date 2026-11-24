@@ -43,52 +43,52 @@ now owns.
 
 ### Core fabric switches
 
-| Device | Qty | Top speed | Ports | Managed | L3 | Multi-chassis | Stacking | Class / era |
-|---|---|---|---|---|---|---|---|---|
-| Celestica DX010 | 4 | 100GbE | 32× QSFP28 | Yes (SONiC) | Yes | MC-LAG (pairs of 2) | No | DC, 2016 |
-| Arista DCS-7050QX-32-F | 1 | 40GbE | 32× QSFP+ | Yes (EOS) | Yes | MLAG | No | DC, 2013 |
-| IBM Mellanox SX6036 | 1 | 56G IB / 40GbE | 36× QSFP | Yes | Limited | No | No | HPC/DC, 2013 |
-| IBM RackSwitch G8316 | 4 | 40GbE | 16× QSFP+ | Yes | Yes | vLAG | Unclear | DC spine, 2012 |
-| IBM RackSwitch G8264 | 3 | 10/40GbE | 48× SFP+ + 4× QSFP+ | Yes | Yes | vLAG | Yes (up to 8) | DC ToR, 2012 |
-| IBM RackSwitch G8264e (G8264T) | 1 | 10/40GbE | 48× 10GBASE-T + 4× QSFP+ | Yes | Yes | vLAG | Likely | DC ToR, 2012 |
+| Device                         | Qty | Top speed      | Ports                    | Managed     | L3      | Multi-chassis       | Stacking      | Class / era    |
+| ------------------------------ | --- | -------------- | ------------------------ | ----------- | ------- | ------------------- | ------------- | -------------- |
+| Celestica DX010                | 4   | 100GbE         | 32× QSFP28               | Yes (SONiC) | Yes     | MC-LAG (pairs of 2) | No            | DC, 2016       |
+| Arista DCS-7050QX-32-F         | 1   | 40GbE          | 32× QSFP+                | Yes (EOS)   | Yes     | MLAG                | No            | DC, 2013       |
+| IBM Mellanox SX6036            | 1   | 56G IB / 40GbE | 36× QSFP                 | Yes         | Limited | No                  | No            | HPC/DC, 2013   |
+| IBM RackSwitch G8316           | 4   | 40GbE          | 16× QSFP+                | Yes         | Yes     | vLAG                | Unclear       | DC spine, 2012 |
+| IBM RackSwitch G8264           | 3   | 10/40GbE       | 48× SFP+ + 4× QSFP+      | Yes         | Yes     | vLAG                | Yes (up to 8) | DC ToR, 2012   |
+| IBM RackSwitch G8264e (G8264T) | 1   | 10/40GbE       | 48× 10GBASE-T + 4× QSFP+ | Yes         | Yes     | vLAG                | Likely        | DC ToR, 2012   |
 
 One of the four DX010 units is missing fans/PSU, noted in the
 inventory heading itself — at most three are deployable as-is.
 
 ### Routers
 
-| Device | Qty | Notes from the record |
-|---|---|---|
-| Mono Gateway Router | 3 | NXP LS1046A, OpenWrt; summary table: 2× SFP+ 10GbE + 1G ports; enrichment digest: 5× 2.5GbE + 1× SFP+, WiFi 6 tri-radio M.2, DPAA hardware offload, about 15–25 W typical |
-| Cisco 2811 | 2 | ISR G1, 2× GbE, HSRP pair candidate |
-| Cisco 1841 | 1 | ISR G1 compact, 2× FastEthernet — "lab/learning device" per the enrichment digest |
-| Cisco 881 | 1 | ISR G1 SOHO, fanless desktop |
+| Device              | Qty | Notes from the record                                                                                                                                                     |
+| ------------------- | --- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Mono Gateway Router | 3   | NXP LS1046A, OpenWrt; summary table: 2× SFP+ 10GbE + 1G ports; enrichment digest: 5× 2.5GbE + 1× SFP+, WiFi 6 tri-radio M.2, DPAA hardware offload, about 15–25 W typical |
+| Cisco 2811          | 2   | ISR G1, 2× GbE, HSRP pair candidate                                                                                                                                       |
+| Cisco 1841          | 1   | ISR G1 compact, 2× FastEthernet — "lab/learning device" per the enrichment digest                                                                                         |
+| Cisco 881           | 1   | ISR G1 SOHO, fanless desktop                                                                                                                                              |
 
 ### Managed switches, 10GbE and above
 
-| Device | Qty | Notes |
-|---|---|---|
-| Netgear ProSafe XS712T-100NES | 1 | 12× 10GBASE-T, smart-managed, no L3 |
-| TRENDnet TEG-30284 | 1 | 24× GbE + 4× SFP+, L2+, fanless |
+| Device                        | Qty | Notes                               |
+| ----------------------------- | --- | ----------------------------------- |
+| Netgear ProSafe XS712T-100NES | 1   | 12× 10GBASE-T, smart-managed, no L3 |
+| TRENDnet TEG-30284            | 1   | 24× GbE + 4× SFP+, L2+, fanless     |
 
 ### Managed switches, 1GbE / 2.5GbE
 
-| Device | Qty | Notes |
-|---|---|---|
-| TP-Link Omada SG3210XHP-M2 | 2 | 8× 2.5G PoE+ + 2× SFP+, 240 W PoE budget, Omada SDN |
-| Dell PowerConnect 5448 | 4 | 48× GbE + 4× SFP combo, stackable up to 12 units (proprietary stacking, single management IP) |
-| Cisco SG300-52 | 1 | 50× GbE, L3-lite |
-| Netgear ProSAFE GS116E | 1 | 16× GbE, "Plus" web-GUI only |
+| Device                     | Qty | Notes                                                                                         |
+| -------------------------- | --- | --------------------------------------------------------------------------------------------- |
+| TP-Link Omada SG3210XHP-M2 | 2   | 8× 2.5G PoE+ + 2× SFP+, 240 W PoE budget, Omada SDN                                           |
+| Dell PowerConnect 5448     | 4   | 48× GbE + 4× SFP combo, stackable up to 12 units (proprietary stacking, single management IP) |
+| Cisco SG300-52             | 1   | 50× GbE, L3-lite                                                                              |
+| Netgear ProSAFE GS116E     | 1   | 16× GbE, "Plus" web-GUI only                                                                  |
 
 ### Cisco Catalyst, specialty and CPE
 
-| Device | Qty | Notes |
-|---|---|---|
-| Cisco Catalyst 3560 | 1 | L3 enterprise; not stackable (the 3750 is the stackable variant) |
-| Cisco Catalyst 2960 | 1 | L2; stacking only on S/X variants (FlexStack) |
-| Cisco ASA 5505 | 1 | Firewall, 8× FE |
-| Cisco 4402 Wireless LAN Controller | 1 | 802.11a/b/g era, up to 50 APs |
-| Calix GP1101X GigaPoint ONT | 1 | ISP CPE — see [The Osseo site](../site/the-osseo-site.md) |
+| Device                             | Qty | Notes                                                            |
+| ---------------------------------- | --- | ---------------------------------------------------------------- |
+| Cisco Catalyst 3560                | 1   | L3 enterprise; not stackable (the 3750 is the stackable variant) |
+| Cisco Catalyst 2960                | 1   | L2; stacking only on S/X variants (FlexStack)                    |
+| Cisco ASA 5505                     | 1   | Firewall, 8× FE                                                  |
+| Cisco 4402 Wireless LAN Controller | 1   | 802.11a/b/g era, up to 50 APs                                    |
+| Calix GP1101X GigaPoint ONT        | 1   | ISP CPE — see [The Osseo site](../site/the-osseo-site.md)        |
 
 ## Conclusions the research supports
 
@@ -121,11 +121,11 @@ inventory heading itself — at most three are deployable as-is.
   single management plane; MC-LAG = independent control planes
   coordinating LAG membership.
 - **The IBM fleet is the 10/40G workhorse tier:** G8264 (48× SFP+
-  + 4× QSFP+, vLAG, stacking) ×3, its copper sibling G8264e ×1
-  (48× 10GBASE-T, about 450–550 W typical — the power-hungriest
-  switch in the inventory), G8316 40G spines ×4. The Mellanox
-  SX6036 is the InfiniBand/RDMA outlier (36× QSFP, FDR 56G IB or
-  40GbE, no MC-LAG, no stacking).
+  - 4× QSFP+, vLAG, stacking) ×3, its copper sibling G8264e ×1
+    (48× 10GBASE-T, about 450–550 W typical — the power-hungriest
+    switch in the inventory), G8316 40G spines ×4. The Mellanox
+    SX6036 is the InfiniBand/RDMA outlier (36× QSFP, FDR 56G IB or
+    40GbE, no MC-LAG, no stacking).
 - **The Dell switches of the build-out tickets are not
   model-identified in any record read.**
   [#6073](https://github.com/developing-today/code/issues/6073),

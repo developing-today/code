@@ -92,6 +92,16 @@ export interface HostedEnv {
   /** The Turso auth token for QUEUE_LIBSQL_URL (a secret binding,
    *  never committed). Unset for unauthenticated local endpoints. */
   QUEUE_LIBSQL_AUTH_TOKEN?: string;
+  /** The message bridge, by service binding (#14373): the bridge
+   * door calls it with the PM credential below. A binding, not a
+   * value: present when the deployed shape carries it (wrangler.toml
+   * declares it; local dev and tests inject their own or none). */
+  BRIDGE?: { fetch(request: Request): Promise<Response> };
+  /** The PM stack's bridge credential (#14373): minted on the bridge
+   * for service:pm-stack, held as a Worker secret. A secret,
+   * referenced by name only; never logged. Absent or short → the
+   * bridge door fails closed (503). */
+  BRIDGE_PM_TOKEN?: string;
 }
 
 /** Stamp signing key material: the parsed key, bytes only. */
@@ -170,6 +180,12 @@ export interface HostedConfig {
   /** The auth token for queueLibsqlUrl (secret, never a [vars]
    *  value); null for unauthenticated endpoints. */
   queueLibsqlAuthToken: string | null;
+  /** The PM bridge credential (#14373), or null when unset or too
+   * short to be one — the bridge door then fails closed (503). The
+   * value is held only to be presented to the bridge; it is never
+   * logged or reported. Independent of auth, like the webhook
+   * secret. */
+  bridge: { token: string } | null;
 }
 
 /** Stamp key ids name a key inside the stamp_sig value, so they may
@@ -287,6 +303,7 @@ export function configFromEnv(env: HostedEnv): HostedConfig {
     queueLibsqlFile: parseQueueLibsqlFile(env.QUEUE_LIBSQL_FILE),
     queueLibsqlUrl: parseQueueLibsqlUrl(env.QUEUE_LIBSQL_URL),
     queueLibsqlAuthToken: parseQueueLibsqlUrl(env.QUEUE_LIBSQL_AUTH_TOKEN),
+    bridge: parseBridgeConfig(env),
   };
 }
 
@@ -305,6 +322,15 @@ function parseQueueLibsqlFile(raw: string | undefined): string | null {
 function parseQueueLibsqlUrl(raw: string | undefined): string | null {
   const trimmed = raw?.trim();
   return trimmed ? trimmed : null;
+}
+
+/** The PM bridge credential (#14373): present only when the secret
+ * is set and long enough to be a bridge credential (the bridge's own
+ * minimum is 32 characters); anything shorter is treated as unset,
+ * so a truncated paste fails closed instead of sending garbage. */
+function parseBridgeConfig(env: HostedEnv): { token: string } | null {
+  const token = env.BRIDGE_PM_TOKEN?.trim();
+  return token && token.length >= 32 ? { token } : null;
 }
 
 /** The sweeper's repo scope: comma-separated owner/name entries.

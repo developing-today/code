@@ -46,10 +46,31 @@ describe("sweep statement builders (#8580 backfill)", () => {
     expect(stmt.sql).toContain("INSERT INTO github_mirror_issues");
     expect(stmt.sql).toContain("NOT EXISTS");
     expect(stmt.sql).toContain("github_mirror_tombstones");
-    // 14 row fields + mirrored_at is among them; 4 guard binds follow.
-    expect(stmt.args).toHaveLength(18);
+    // 15 insert values (14 row fields + parent_number; mirrored_at
+    // is among them), then 4 guard binds, then the 2 parent CASE
+    // binds (#14170 Q7).
+    expect(stmt.args).toHaveLength(21);
     expect(stmt.args?.[0]).toEqual({ type: "text", value: REPO });
     expect(stmt.args?.[1]).toEqual({ type: "integer", value: "8580" });
+  });
+
+  it("issue upsert binds the sub-issue parent only when the object states one (#14170 Q7)", () => {
+    // No parent_issue_url: parent_known bind is 0 and the CASE in
+    // the upsert keeps the stored projection untouched.
+    const silent = issueUpsertStmt(buildIssueRow({ issue: issueObj }, REPO, "deadbeef"));
+    expect(silent.sql).toContain("parent_number = CASE WHEN ? = 1 THEN ?");
+    expect(silent.args?.[19]).toEqual({ type: "integer", value: "0" });
+    // A stated parent (the sweep's API objects carry
+    // parent_issue_url) binds known=1 and the parent number, in
+    // both the insert values (13) and the CASE (20).
+    const withParent = {
+      ...issueObj,
+      parent_issue_url: "https://api.github.com/repos/developing-today/code/issues/20",
+    };
+    const stmt = issueUpsertStmt(buildIssueRow({ issue: withParent }, REPO, "deadbeef"));
+    expect(stmt.args?.[13]).toEqual({ type: "integer", value: "20" });
+    expect(stmt.args?.[19]).toEqual({ type: "integer", value: "1" });
+    expect(stmt.args?.[20]).toEqual({ type: "integer", value: "20" });
   });
 
   it("PR upsert binds merged/head/base and the guard", () => {

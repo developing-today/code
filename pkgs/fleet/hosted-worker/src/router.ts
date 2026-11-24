@@ -18,6 +18,7 @@ import { assertCallerTenancy, authenticate, authorizeRoute, type AuthDeps, type 
 import { buildCapabilitiesDocument } from "./capabilities.ts";
 import { FailClosed } from "./errors.ts";
 import { buildHealthDocument } from "./health.ts";
+import { routes as bridgeRoutes } from "./routes/bridge.ts";
 import { routes as ingestionRoutes } from "./routes/ingestion.ts";
 import { routes as queryRoutes } from "./routes/query.ts";
 import { routes as queueRoutes } from "./routes/queue.ts";
@@ -66,6 +67,7 @@ export const ROUTES: RouteDef[] = [
   ...queueRoutes,
   ...ingestionRoutes,
   ...syncRoutes,
+  ...bridgeRoutes,
 ];
 
 export async function dispatch(req: Request, deps: AuthDeps): Promise<Response> {

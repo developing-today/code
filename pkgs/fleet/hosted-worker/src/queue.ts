@@ -1977,7 +1977,9 @@ async function verbHeartbeat(store: QueueStore, env: QueueEnv, req: Req): Promis
   const worker = str(req["worker"]) ?? "";
   const now = nowIso(env);
   const progress = mergeObj(obj(row.progress), obj(req["progress"]));
-  const leaseUntil = iso(env.nowEpoch() + intOr(req["extend_seconds"], 900));
+  const proposed = iso(env.nowEpoch() + intOr(req["extend_seconds"], 900));
+  const current = row.lease_until;
+  const leaseUntil = current && Date.parse(current) >= Date.parse(proposed) ? current : proposed;
   await store.updateTask(row.id, { lease_until: leaseUntil, progress, updated_at: now });
   await store.upsertLease(
     { task_id: row.id, worker_id: worker, lease_until: leaseUntil, heartbeat_at: now },

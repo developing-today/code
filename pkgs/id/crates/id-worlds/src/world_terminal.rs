@@ -1400,6 +1400,94 @@ mod tests {
         assert!(!out.contains('\x1b'));
     }
 
+    /// F11.9's two coalesced views must use incremental rendering at every
+    /// presentation tier. The full ANSI/text renderers are the byte-level
+    /// oracles; the second identical view must emit nothing.
+    #[test]
+    fn every_tier_renders_coalesced_views_incrementally() {
+        let first = screen(&["abc", "def"]);
+        let second = screen(&["abc", "dXf"]);
+        let profiles = [
+            (
+                "tier one",
+                TerminalProfile {
+                    kitty_graphics: true,
+                    synchronized_output: true,
+                    ..TerminalProfile::default()
+                },
+                PresentationTier::Tier1,
+            ),
+            (
+                "tier two",
+                TerminalProfile {
+                    cursor_position_report: true,
+                    indexed_color: true,
+                    ..TerminalProfile::default()
+                },
+                PresentationTier::Tier2,
+            ),
+            (
+                "tier three",
+                TerminalProfile::default(),
+                PresentationTier::Tier3,
+            ),
+        ];
+
+        for (name, profile, tier) in profiles {
+            let mut presenter = TierPresenter::new(profile);
+            assert_eq!(presenter.tier(), tier, "{name}: selected tier");
+
+            let first_output = presenter.render_screen(&first);
+            let second_output = presenter.render_screen(&second);
+            let unchanged_output = presenter.render_screen(&second);
+
+            match tier {
+                PresentationTier::Tier1 => {
+                    assert_eq!(
+                        first_output,
+                        format!(
+                            "{SYNC_OUTPUT_BEGIN}{}{SYNC_OUTPUT_END}",
+                            first.render_ansi().expect("full ANSI render")
+                        ),
+                        "{name}: first frame uses full-render oracle"
+                    );
+                    assert_eq!(
+                        second_output,
+                        format!(
+                            "{SYNC_OUTPUT_BEGIN}{}{SYNC_OUTPUT_END}",
+                            second.render_ansi_diff(&first).expect("ANSI diff")
+                        ),
+                        "{name}: next frame uses diff oracle inside sync output"
+                    );
+                }
+                PresentationTier::Tier2 => {
+                    assert_eq!(
+                        first_output,
+                        first.render_ansi().expect("full ANSI render"),
+                        "{name}: first frame uses full-render oracle"
+                    );
+                    assert_eq!(
+                        second_output,
+                        second.render_ansi_diff(&first).expect("ANSI diff"),
+                        "{name}: next frame uses diff oracle"
+                    );
+                }
+                PresentationTier::Tier3 => {
+                    assert_eq!(first_output, "abc\r\ndef\r\n", "{name}: full text oracle");
+                    assert_eq!(second_output, "dXf\r\n", "{name}: changed-line oracle");
+                }
+            }
+
+            assert_eq!(unchanged_output, "", "{name}: unchanged view is suppressed");
+            assert_eq!(presenter.counters().frames, 2, "{name}: two emitted frames");
+            assert_eq!(
+                presenter.counters().full_render_frames,
+                1,
+                "{name}: one full frame"
+            );
+        }
+    }
+
     #[test]
     fn graphics_are_gated_on_positive_tier_one_evidence() {
         // No evidence: nothing is emitted.

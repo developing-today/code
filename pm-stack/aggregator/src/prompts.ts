@@ -23,14 +23,24 @@ import { normalizeAttachments, type PromptAttachment } from "./prompt-attachment
 export type { PromptAttachment } from "./prompt-attachments.ts";
 
 export const PROMPT_SCOPES = ["section", "page", "stack", "agent"] as const;
-export const PROMPT_TARGETS = ["claude", "muse", "pool:auto"] as const;
+export const PROMPT_TARGETS = ["claude", "muse", "pool:auto", "decision"] as const;
 export const PROMPT_MODES = ["async", "sync-block", "sync-ws"] as const;
 export const PROMPT_STATUSES = ["queued", "running", "answered", "failed"] as const;
+export const PROMPT_DECISION_CONTEXT_LEVELS = ["low", "medium", "high"] as const;
 
 export type PromptScope = (typeof PROMPT_SCOPES)[number];
 export type PromptTarget = (typeof PROMPT_TARGETS)[number];
 export type PromptMode = (typeof PROMPT_MODES)[number];
 export type PromptStatus = (typeof PROMPT_STATUSES)[number];
+export type PromptDecisionContextLevel = (typeof PROMPT_DECISION_CONTEXT_LEVELS)[number];
+
+/** #10034 S4 (design #9539 §3.4): the `decision` variant's fields. The
+ *  advanced constraints are conditional-clause objects, stored as given. */
+export interface PromptDecisionSpec {
+  contextLevel: PromptDecisionContextLevel;
+  advancedConstraints: Record<string, unknown>[];
+  contextGenerator: string | null;
+}
 
 export interface NewPrompt {
   scope: PromptScope;
@@ -45,6 +55,8 @@ export interface NewPrompt {
   /** S7: storage refs of files already persisted by the upload path
    *  (prompt-attachments.ts); the store only carries the refs. */
   attachments?: PromptAttachment[];
+  /** #10034 S4: present when target is "decision". */
+  decision?: PromptDecisionSpec;
 }
 
 export interface PromptRecord extends NewPrompt {
@@ -84,6 +96,7 @@ function normalizeRecord(raw: Partial<PromptRecord> & Record<string, unknown>): 
     refs,
     notify: raw.notify === true,
     attachments: normalizeAttachments(raw.attachments),
+    ...(raw.decision && typeof raw.decision === "object" ? { decision: raw.decision as PromptDecisionSpec } : {}),
     id: typeof raw.id === "string" ? raw.id : `prompt:${randomUUID()}`,
     threadId:
       typeof raw.threadId === "string" ? raw.threadId : typeof raw.id === "string" ? raw.id : `thread:${randomUUID()}`,
@@ -104,7 +117,7 @@ export function validateNewPrompt(body: unknown): { ok: true; value: NewPrompt }
   if (!PROMPT_SCOPES.includes(b.scope as PromptScope))
     return { ok: false, error: "scope must be section, page, stack or agent" };
   if (!PROMPT_TARGETS.includes(b.target as PromptTarget))
-    return { ok: false, error: "target must be claude, muse or pool:auto" };
+    return { ok: false, error: "target must be claude, muse, pool:auto or decision" };
   if (!PROMPT_MODES.includes(b.mode as PromptMode))
     return { ok: false, error: "mode must be async, sync-block or sync-ws" };
   if (typeof b.page !== "string" || !PAGE_ID.test(b.page)) return { ok: false, error: "page must be a page id" };
@@ -152,7 +165,41 @@ export function validateNewPrompt(body: unknown): { ok: true; value: NewPrompt }
   if (replyTo !== undefined) value.replyTo = replyTo;
   if (refs !== undefined) value.refs = refs;
   if (notify !== undefined) value.notify = notify;
+  if (b.target === "decision") {
+    const decision = validateDecisionSpec(b.decision);
+    if (!decision.ok) return decision;
+    value.decision = decision.value;
+  }
   return { ok: true, value };
+}
+
+function validateDecisionSpec(raw: unknown): { ok: true; value: PromptDecisionSpec } | { ok: false; error: string } {
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
+    return { ok: false, error: "decision must be an object when target is decision" };
+  }
+  const d = raw as Record<string, unknown>;
+  if (!PROMPT_DECISION_CONTEXT_LEVELS.includes(d.contextLevel as PromptDecisionContextLevel))
+    return { ok: false, error: "decision.contextLevel must be low, medium or high" };
+  if (
+    !Array.isArray(d.advancedConstraints) ||
+    !d.advancedConstraints.every((c) => typeof c === "object" && c !== null && !Array.isArray(c))
+  ) {
+    return { ok: false, error: "decision.advancedConstraints must be an array of objects" };
+  }
+  if (
+    d.contextGenerator !== null &&
+    (typeof d.contextGenerator !== "string" || !/^(model|task):.+$/.test(d.contextGenerator))
+  ) {
+    return { ok: false, error: "decision.contextGenerator must be null, model:<id> or task:<queue-id>" };
+  }
+  return {
+    ok: true,
+    value: {
+      contextLevel: d.contextLevel as PromptDecisionContextLevel,
+      advancedConstraints: d.advancedConstraints as Record<string, unknown>[],
+      contextGenerator: d.contextGenerator as string | null,
+    },
+  };
 }
 
 export class PromptsStore {
@@ -202,6 +249,7 @@ export class PromptsStore {
       refs: input.refs ?? [],
       notify: input.notify ?? false,
       attachments: normalizeAttachments(input.attachments),
+      ...(input.decision ? { decision: input.decision } : {}),
       id: `prompt:${randomUUID()}`,
       threadId,
       status: "queued",

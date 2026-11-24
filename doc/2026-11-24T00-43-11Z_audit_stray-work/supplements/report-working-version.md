@@ -11,13 +11,13 @@ All GitHub reads via `fleet gh api` (REST, paginated, `per_page=100`); all issue
 
 ## Census (evidence)
 
-| repo | items in window | issues / PRs | open at census | labels in repo |
-|---|---|---|---|---|
-| developing-today/code | 13,452 | 7,009 / 6,443 | 1,387 (1,325 at the later open-fetch) | 372 |
-| developing-today-forks/opencode | 2,596 | 1,218 / 1,378 | 39 | 165 |
-| developing-today-forks/openchamber | 2,433 | 1,183 / 1,250 | 32 | 147 |
-| dezren39/fleet | 113 | 19 / 94 | 9 | 15 |
-| **total** | **18,594** | | **1,405–1,467** | |
+| repo                               | items in window | issues / PRs  | open at census                        | labels in repo |
+| ---------------------------------- | --------------- | ------------- | ------------------------------------- | -------------- |
+| developing-today/code              | 13,452          | 7,009 / 6,443 | 1,387 (1,325 at the later open-fetch) | 372            |
+| developing-today-forks/opencode    | 2,596           | 1,218 / 1,378 | 39                                    | 165            |
+| developing-today-forks/openchamber | 2,433           | 1,183 / 1,250 | 32                                    | 147            |
+| dezren39/fleet                     | 113             | 19 / 94       | 9                                     | 15             |
+| **total**                          | **18,594**      |               | **1,405–1,467**                       |                |
 
 Code-repo open-issue linkage classification (1,199 open issues at classification time):
 
