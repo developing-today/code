@@ -207,8 +207,11 @@ export function summarizeBatches(
   const baseCounts = new Map<string, number>();
   for (const { label } of kept) baseCounts.set(label, (baseCounts.get(label) ?? 0) + 1);
   const used = new Set(baseCounts.keys());
-  kept.forEach((batch, index) => {
-    if (baseCounts.get(batch.label) === 1) return;
+  // Assign tie-breaker labels by stable batch ID, not query order. Sort a
+  // shallow copy so the ordering and selected/latest identity are unchanged.
+  const collisions = kept.filter((batch) => baseCounts.get(batch.label) !== 1);
+  collisions.sort((a, b) => (a.importBatch < b.importBatch ? -1 : a.importBatch > b.importBatch ? 1 : 0));
+  collisions.forEach((batch, index) => {
     const time = batch.importedAt ? Date.parse(batch.importedAt) : NaN;
     const imported = Number.isFinite(time) ? new Date(time).toISOString() : "unknown import time";
     const counts = Object.entries(batch.insertedCounts ?? {});

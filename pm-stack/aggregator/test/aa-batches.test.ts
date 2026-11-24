@@ -250,6 +250,10 @@ describe("batch summaries", () => {
     expect(out.map((b) => b.importBatch)).toEqual([B1, B2]);
     expect(out.every((b) => b.label.includes("sheet_rows: 12"))).toBe(true);
     expect(new Set(out.map((b) => b.label)).size).toBe(2);
+    const reversed = summarizeBatches([...rows].reverse(), new Map());
+    expect(reversed.map((b) => b.importBatch)).toEqual([B2, B1]);
+    expect(reversed[0].latest).toBe(true);
+    expect(reversed.map((b) => b.label)).toEqual([out[1].label, out[0].label]);
   });
 
   test("cache entries validate measurement scope and fingerprint (#10042)", () => {
