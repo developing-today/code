@@ -428,7 +428,18 @@
           test-shard-2 = mkCheck "test-shard-2" "test-shard-sandbox 2 4";
           test-shard-3 = mkCheck "test-shard-3" "test-shard-sandbox 3 4";
           test-web = mkCheck "test-web" "test-web-sandbox";
-          test-web-unit = mkCheck "test-web-unit" "test-web-unit";
+          # The Nix check source is pkgs/id alone, so its doc -> ../../doc
+          # workspace symlink is dangling in the sandbox. Stage the shared
+          # parity corpus into that package-local path for this test.
+          test-web-unit = mkCheckWith {
+            name = "test-web-unit";
+            justCmd = "test-web-unit";
+            beforeCheck = ''
+              rm -f doc
+              mkdir -p doc
+              cp ${../../doc/kitty-disambiguate-v1-fixtures.json} doc/kitty-disambiguate-v1-fixtures.json
+            '';
+          };
           test-web-typecheck = mkCheck "test-web-typecheck" "test-web-typecheck";
           # Roc library expect() tests (#813): runs the roc-test just
           # recipe with the pinned nightly from nix/roc.nix (already in
