@@ -5,7 +5,7 @@
 //! root: method, target, count, pagination kind, boolean structure,
 //! embeds, relation, fields, operators, values, cursor, limit.
 
-use crate::allowlist::CollectionAllowlist;
+use crate::allowlist::{CollectionAllowlist, is_plain_identifier, is_usable_field_name};
 use crate::query::{
     CountPref, Direction, FilterExpr, FilterLeaf, FilterOp, Method, OrderKey, Pagination, Query,
     SelectItem, Target,
@@ -85,6 +85,9 @@ impl Translator {
         }
         // 7. The relation must be one the owner listed. Unknown and
         // unlisted collapse to the same outcome.
+        if !is_plain_identifier(relation) {
+            return Err(Refusal::not_available());
+        }
         let collection = self
             .collections
             .iter()
@@ -92,15 +95,17 @@ impl Translator {
             .ok_or_else(Refusal::not_available)?;
         // 8. Fields: projection, filter, and order columns must be
         // declared for the use they are put to. An undeclared column
-        // and a withheld column are the same refusal (§6.1).
+        // and a withheld column are the same refusal (§6.1). A filter
+        // column also becomes a query-parameter key, so a reserved
+        // PostgREST parameter name or a non-identifier is refused here.
         let projection = resolve_projection(collection, &query.select)?;
         for leaf in &leaves {
-            if !collection.is_filterable(&leaf.column) {
+            if !collection.is_filterable(&leaf.column) || !is_usable_field_name(&leaf.column) {
                 return Err(Refusal::shape(Feature::FieldUnsupported));
             }
         }
         for key in &query.order {
-            if !collection.is_orderable(&key.column) {
+            if !collection.is_orderable(&key.column) || !is_usable_field_name(&key.column) {
                 return Err(Refusal::shape(Feature::FieldUnsupported));
             }
         }
@@ -415,6 +420,72 @@ mod tests {
         }));
         let request = translator().translate(&query).unwrap();
         assert_eq!(param(&request, "title"), Some("in.(\"a,b\",plain)"));
+    }
+
+    fn leaf_query(column: &str) -> Query {
+        let mut query = Query::read("items");
+        query.filter = Some(FilterExpr::Leaf(FilterLeaf {
+            column: column.to_string(),
+            op: FilterOp::Eq,
+            value: Value::Int(1),
+        }));
+        query
+    }
+
+    fn collection_with_columns(names: &[&str]) -> Translator {
+        let mut collection = collection();
+        collection.columns = names
+            .iter()
+            .map(|name| ColumnDecl {
+                name: name.to_string(),
+                filterable: true,
+                orderable: true,
+            })
+            .collect();
+        Translator::new(vec![collection])
+    }
+
+    #[test]
+    fn filter_on_reserved_parameter_name_is_refused() {
+        let translator = collection_with_columns(&["id", "or", "select"]);
+        for name in ["or", "select"] {
+            let refusal = translator.translate(&leaf_query(name)).unwrap_err();
+            assert_eq!(refusal, Refusal::shape(Feature::FieldUnsupported));
+        }
+    }
+
+    #[test]
+    fn order_on_reserved_parameter_name_is_refused() {
+        let translator = collection_with_columns(&["id", "limit"]);
+        let mut query = Query::read("items");
+        query.order = vec![OrderKey {
+            column: "limit".to_string(),
+            direction: Direction::Asc,
+        }];
+        let refusal = translator.translate(&query).unwrap_err();
+        assert_eq!(refusal, Refusal::shape(Feature::FieldUnsupported));
+    }
+
+    #[test]
+    fn filter_on_non_identifier_column_is_refused() {
+        let translator = collection_with_columns(&["id", "a,b"]);
+        let refusal = translator.translate(&leaf_query("a,b")).unwrap_err();
+        assert_eq!(refusal, Refusal::shape(Feature::FieldUnsupported));
+    }
+
+    #[test]
+    fn unsafe_relation_name_collapses_to_not_available() {
+        let mut collection = collection();
+        collection.relation = "items/x".to_string();
+        let translator = Translator::new(vec![collection]);
+        let refusal = translator.translate(&Query::read("items/x")).unwrap_err();
+        assert_eq!(refusal, Refusal::not_available());
+    }
+
+    #[test]
+    fn plain_filter_column_still_translates() {
+        let request = translator().translate(&leaf_query("title")).unwrap();
+        assert_eq!(param(&request, "title"), Some("eq.1"));
     }
 
     #[test]

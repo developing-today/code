@@ -16,6 +16,39 @@ use serde::{Deserialize, Serialize};
 /// (design §3.1: "default 500 rows").
 pub const DEFAULT_MAX_LIMIT: u32 = 500;
 
+/// Query-parameter names PostgREST reads as directives or logic
+/// operators. A filter or order column with one of these names would be
+/// emitted as a parameter key PostgREST interprets as something else.
+pub const RESERVED_PARAM_NAMES: &[&str] = &[
+    "select",
+    "order",
+    "limit",
+    "offset",
+    "or",
+    "and",
+    "not",
+    "columns",
+    "on_conflict",
+];
+
+/// Whether `name` is a plain ASCII identifier (letters, digits,
+/// underscore, not starting with a digit). Anything else would be
+/// interpolated raw into a path or a query value.
+pub fn is_plain_identifier(name: &str) -> bool {
+    let mut chars = name.chars();
+    match chars.next() {
+        Some(first) if first.is_ascii_alphabetic() || first == '_' => {}
+        _ => return false,
+    }
+    chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+/// Whether `name` may be used as a filter or order column: a plain
+/// identifier that is not a reserved PostgREST parameter name.
+pub fn is_usable_field_name(name: &str) -> bool {
+    is_plain_identifier(name) && !RESERVED_PARAM_NAMES.contains(&name)
+}
+
 /// One declared column of a collection.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ColumnDecl {
