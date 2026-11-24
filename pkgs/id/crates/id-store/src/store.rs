@@ -93,6 +93,12 @@ pub const STORE_PATH: &str = ".iroh-store";
 /// # }
 /// ```
 pub async fn load_or_create_keypair(path: &str) -> Result<SecretKey> {
+    if !cfg!(unix) {
+        anyhow::bail!(
+            "private key custody is not enforced on this platform; refusing to use {path} \
+             without owner-only permissions"
+        );
+    }
     match afs::read(path).await {
         Ok(bytes) => {
             let bytes: [u8; 32] = match bytes.try_into() {
@@ -103,7 +109,7 @@ pub async fn load_or_create_keypair(path: &str) -> Result<SecretKey> {
                     read_key_after_creation_race(path).await?
                 }
             };
-            restrict_key_permissions(path).await;
+            restrict_key_permissions(path).await?;
             Ok(SecretKey::from(bytes))
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
@@ -117,7 +123,7 @@ pub async fn load_or_create_keypair(path: &str) -> Result<SecretKey> {
                         .is_some_and(|e| e.kind() == std::io::ErrorKind::AlreadyExists) =>
                 {
                     let bytes = read_key_after_creation_race(path).await?;
-                    restrict_key_permissions(path).await;
+                    restrict_key_permissions(path).await?;
                     Ok(SecretKey::from(bytes))
                 }
                 Err(e) => Err(e),
@@ -217,8 +223,8 @@ fn write_private_file_sync(
 /// Tighten an existing key file that is group- or world-accessible.
 ///
 /// Keys written by older versions used the process umask (typically `0644`).
-/// Best effort: failure is logged, not fatal.
-async fn restrict_key_permissions(path: &str) {
+/// A key that cannot be made owner-only is refused, never loaded loosely.
+async fn restrict_key_permissions(path: &str) -> Result<()> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt as _;
@@ -226,14 +232,16 @@ async fn restrict_key_permissions(path: &str) {
             && meta.permissions().mode() & 0o077 != 0
         {
             tracing::warn!("tightening permissions on private key file {path} to 0600");
-            if let Err(e) = afs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).await
-            {
-                tracing::warn!("could not tighten permissions on {path}: {e}");
-            }
+            afs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
+                .await
+                .map_err(|e| {
+                    anyhow::anyhow!("refusing private key {path}: could not restrict to 0600: {e}")
+                })?;
         }
     }
     #[cfg(not(unix))]
     let _ = path;
+    Ok(())
 }
 
 /// Wrapper enum for persistent vs ephemeral blob stores.
