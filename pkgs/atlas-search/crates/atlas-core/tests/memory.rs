@@ -187,6 +187,21 @@ fn staged_memory_carries_the_design_provenance_set() {
     assert_eq!(meta["lancedb_id"], "mem-transcript");
 }
 
+/// Oracle: replaying the same source revision is a no-op, reported by
+/// the public export staging seam as zero changed item ids.
+#[test]
+fn replaying_a_memory_export_is_idempotent() {
+    let dir = temp_dir("idempotent");
+    let (_registry, agent_db) = register(&dir);
+    let entries = parse_memory_export(EXPORT).unwrap();
+    let first = stage_memory_export_in_db(&agent_db, AGENT_MEMORY_UNIT, &entries, NOW).unwrap();
+    let second = stage_memory_export_in_db(&agent_db, AGENT_MEMORY_UNIT, &entries, "2026-11-24T00:00:00Z").unwrap();
+
+    assert_eq!(first.len(), 2);
+    assert!(second.is_empty(), "an unchanged source revision stages zero changed items");
+    assert_eq!(list_staged_items_in_db(&agent_db, Some(AGENT_MEMORY_UNIT)).unwrap().len(), 2);
+}
+
 /// Oracle: the slice's acceptance — after promotion through the
 /// aggregator (embed-at-promotion under the mandated model gate),
 /// the production fan-out returns the agent-memory hit for a
