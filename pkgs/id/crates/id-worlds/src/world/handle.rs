@@ -314,6 +314,8 @@ impl WorldHandle {
             presence,
             active_subs: BTreeSet::new(),
             handled_requests: BTreeSet::new(),
+            pending_results: std::collections::VecDeque::new(),
+            fuel_retry_not_before: None,
             pending_forms: BTreeMap::new(),
             denied_subs: BTreeSet::new(),
             ticks: BTreeMap::new(),
