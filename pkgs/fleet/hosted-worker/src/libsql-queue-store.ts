@@ -21,9 +21,9 @@
 // exactly as against the native door. The constructor takes the open
 // connection (house pattern: SqlStorageLike, cf. pkgs/id/
 // hosted-worker); tests inject node:sqlite, local runs a file-backed
-// libSQL DB of the same schema. A remote Turso DB needs an async
-// Hrana opener, which this synchronous interface cannot serve — that
-// opener is a documented follow-up, not a second schema.
+// libSQL DB of the same schema. A remote Turso DB is served by
+// HranaQueueStore (libsql-hrana-queue-store.ts, #14592) over the
+// same schema and codecs — not a second schema.
 //
 // Value encoding mirrors the native arg_str/arg_json convention:
 // scalars as stored, JSON columns (payload, progress, result,
@@ -114,7 +114,7 @@ export const LIBSQL_QUEUE_SCHEMA: string[] = [
 
 // core.rs TASK_COLS / LEDGER_COLS order: the SELECT column order the
 // row readers below rely on.
-const TASK_COLS =
+export const TASK_COLS =
   "id, queue, title, body, payload, dedupe_key, priority, status, " +
   "not_before, worker_id, claimed_at, lease_until, lane_id, platform, attempts, max_attempts, " +
   "claim_provider, claim_model, claim_variant, claim_session_id, " +
@@ -122,14 +122,14 @@ const TASK_COLS =
   "required_budget_minutes, " +
   "last_checked_at, check_outcome, created_at, updated_at, completed_at, " +
   "blocked_deps, dep_next_recheck_at, dep_blocked_until, dep_recheck_seconds";
-const TASK_INSERT_COLS = TASK_COLS.split(", ").filter((c) => c !== "id");
+export const TASK_INSERT_COLS = TASK_COLS.split(", ").filter((c) => c !== "id");
 
-const LEDGER_COLS =
+export const LEDGER_COLS =
   "id, queue, task_id, assigned_lane, executed_lane, executed_lane_id, " +
   "exclusion_reason, opencode_reason, platform_limit, platform_limit_reason, " +
   "assigned_by, session_id, fallback_reason, " +
   "assigned_at, executed_at, updated_at";
-const LEDGER_INSERT_COLS = LEDGER_COLS.split(", ").filter((c) => c !== "id");
+export const LEDGER_INSERT_COLS = LEDGER_COLS.split(", ").filter((c) => c !== "id");
 
 const TASK_JSON_COLS = new Set(["payload", "progress", "result", "ready_condition", "blocked_deps"]);
 const TASK_INT_COLS = new Set([
@@ -141,42 +141,42 @@ const TASK_INT_COLS = new Set([
   "dep_recheck_seconds",
 ]);
 
-function failWhere(what: string): never {
+export function failWhere(what: string): never {
   throw new Error(`libsql-queue-store: ${what}`);
 }
 
-function textOrNull(v: unknown, col: string): string | null {
+export function textOrNull(v: unknown, col: string): string | null {
   if (v === null || v === undefined) return null;
   if (typeof v === "string") return v;
   failWhere(`text column ${col} holds ${typeof v}`);
 }
 
-function intOrNull(v: unknown, col: string): number | null {
+export function intOrNull(v: unknown, col: string): number | null {
   if (v === null || v === undefined) return null;
   if (typeof v === "number" && Number.isFinite(v)) return Math.trunc(v);
   if (typeof v === "bigint") return Number(v);
   failWhere(`integer column ${col} holds ${typeof v}`);
 }
 
-function jsonValue(v: unknown, col: string): Json {
+export function jsonValue(v: unknown, col: string): Json {
   if (v === null || v === undefined) return null;
   if (typeof v !== "string") failWhere(`JSON column ${col} holds ${typeof v}`);
   return JSON.parse(v) as Json;
 }
 
 /** Canonical compact JSON for storage (native arg_json: Value::to_string). */
-function toStoredJson(v: Json): string | null {
+export function toStoredJson(v: Json): string | null {
   if (v === null || v === undefined) return null;
   return JSON.stringify(v);
 }
 
-function encodeTaskValue(col: string, v: unknown): SqlParam {
+export function encodeTaskValue(col: string, v: unknown): SqlParam {
   if (TASK_JSON_COLS.has(col)) return toStoredJson(v as Json);
   if (TASK_INT_COLS.has(col)) return intOrNull(v, col);
   return textOrNull(v, col);
 }
 
-function readTask(r: Record<string, unknown>): TaskRow {
+export function readTask(r: Record<string, unknown>): TaskRow {
   const need = (col: string): unknown => {
     if (!(col in r)) failWhere(`task row lacks column ${col}`);
     return r[col];
@@ -221,7 +221,7 @@ function readTask(r: Record<string, unknown>): TaskRow {
   };
 }
 
-function readLedger(r: Record<string, unknown>): LedgerRow {
+export function readLedger(r: Record<string, unknown>): LedgerRow {
   const text = (col: string): string | null => textOrNull(r[col], col);
   return {
     id: intOrNull(r["id"], "id") ?? failWhere("ledger row has null id"),
@@ -243,7 +243,7 @@ function readLedger(r: Record<string, unknown>): LedgerRow {
   };
 }
 
-function readEvent(r: Record<string, unknown>): EventRow {
+export function readEvent(r: Record<string, unknown>): EventRow {
   return {
     id: intOrNull(r["id"], "id") ?? failWhere("event row has null id"),
     worker_id: textOrNull(r["worker_id"], "worker_id"),
@@ -297,7 +297,7 @@ export class LibSQLQueueStore implements QueueStore {
     return typeof n === "number" ? n : typeof n === "bigint" ? Number(n) : 0;
   }
 
-  insertTask(row: Omit<TaskRow, "id">): TaskRow {
+  async insertTask(row: Omit<TaskRow, "id">): Promise<TaskRow> {
     const rec = row as unknown as Record<string, unknown>;
     const cols = TASK_INSERT_COLS;
     const placeholders = cols.map(() => "?").join(", ");
@@ -312,27 +312,27 @@ export class LibSQLQueueStore implements QueueStore {
     return readTask(got[0] as Record<string, unknown>);
   }
 
-  getTask(id: number): TaskRow | null {
+  async getTask(id: number): Promise<TaskRow | null> {
     const rows = this.db.exec(`SELECT ${TASK_COLS} FROM tasks WHERE id = ?`, id).toArray();
     if (rows.length === 0) return null;
     return readTask(rows[0] as Record<string, unknown>);
   }
 
-  tasksByDedupe(queue: string, dedupeKey: string): TaskRow[] {
+  async tasksByDedupe(queue: string, dedupeKey: string): Promise<TaskRow[]> {
     return this.db
       .exec(`SELECT ${TASK_COLS} FROM tasks WHERE queue = ? AND dedupe_key = ? ORDER BY id ASC`, queue, dedupeKey)
       .toArray()
       .map((r) => readTask(r as Record<string, unknown>));
   }
 
-  allTasks(): TaskRow[] {
+  async allTasks(): Promise<TaskRow[]> {
     return this.db
       .exec(`SELECT ${TASK_COLS} FROM tasks ORDER BY id ASC`)
       .toArray()
       .map((r) => readTask(r as Record<string, unknown>));
   }
 
-  conditionalUpdateTask(id: number, guard: Partial<TaskRow>, set: Partial<TaskRow>): boolean {
+  async conditionalUpdateTask(id: number, guard: Partial<TaskRow>, set: Partial<TaskRow>): Promise<boolean> {
     const grec = guard as Record<string, unknown>;
     const srec = set as Record<string, unknown>;
     const setCols = Object.keys(srec);
@@ -361,7 +361,7 @@ export class LibSQLQueueStore implements QueueStore {
     return this.changes() > 0;
   }
 
-  updateTask(id: number, set: Partial<TaskRow>): void {
+  async updateTask(id: number, set: Partial<TaskRow>): Promise<void> {
     const rec = set as Record<string, unknown>;
     const cols = Object.keys(rec);
     if (cols.length === 0) return;
@@ -373,13 +373,13 @@ export class LibSQLQueueStore implements QueueStore {
     );
   }
 
-  getLedger(taskId: number): LedgerRow | null {
+  async getLedger(taskId: number): Promise<LedgerRow | null> {
     const rows = this.db.exec(`SELECT ${LEDGER_COLS} FROM repo_task_lane_ledger WHERE task_id = ?`, taskId).toArray();
     if (rows.length === 0) return null;
     return readLedger(rows[0] as Record<string, unknown>);
   }
 
-  insertLedger(row: Omit<LedgerRow, "id">): LedgerRow {
+  async insertLedger(row: Omit<LedgerRow, "id">): Promise<LedgerRow> {
     const rec = row as unknown as Record<string, unknown>;
     const placeholders = LEDGER_INSERT_COLS.map(() => "?").join(", ");
     this.db.exec(
@@ -393,7 +393,7 @@ export class LibSQLQueueStore implements QueueStore {
     return readLedger(got[0] as Record<string, unknown>);
   }
 
-  updateLedger(taskId: number, set: Partial<LedgerRow>): void {
+  async updateLedger(taskId: number, set: Partial<LedgerRow>): Promise<void> {
     const rec = set as Record<string, unknown>;
     const cols = Object.keys(rec);
     if (cols.length === 0) return;
@@ -405,7 +405,7 @@ export class LibSQLQueueStore implements QueueStore {
     );
   }
 
-  upsertLease(row: LeaseRow, opts: { keepWorker: boolean }): void {
+  async upsertLease(row: LeaseRow, opts: { keepWorker: boolean }): Promise<void> {
     if (opts.keepWorker) {
       // The heartbeat path (lifecycle.rs): the holder keeps its
       // worker; only the lease times move.
@@ -433,15 +433,15 @@ export class LibSQLQueueStore implements QueueStore {
     }
   }
 
-  deleteLease(taskId: number): void {
+  async deleteLease(taskId: number): Promise<void> {
     this.db.exec("DELETE FROM leases WHERE task_id = ?", taskId);
   }
 
-  deleteExpiredLeases(nowIso: string): void {
+  async deleteExpiredLeases(nowIso: string): Promise<void> {
     this.db.exec("DELETE FROM leases WHERE lease_until < ?", nowIso);
   }
 
-  getLane(laneId: string): LaneRow | null {
+  async getLane(laneId: string): Promise<LaneRow | null> {
     const rows = this.db.exec("SELECT lane_id, worker_id, queue, enabled FROM lanes WHERE lane_id = ?", laneId).toArray();
     if (rows.length === 0) return null;
     const r = rows[0] as Record<string, unknown>;
@@ -453,11 +453,11 @@ export class LibSQLQueueStore implements QueueStore {
     };
   }
 
-  insertLane(row: LaneRow): void {
+  async insertLane(row: LaneRow): Promise<void> {
     this.db.exec("INSERT INTO lanes (lane_id, worker_id, queue, enabled) VALUES (?, ?, ?, ?)", row.lane_id, row.worker_id, row.queue, row.enabled);
   }
 
-  touchWorker(workerId: string, working: boolean, nowIso: string): void {
+  async touchWorker(workerId: string, working: boolean, nowIso: string): Promise<void> {
     // work_identity.rs touch_worker: unknown workers enter with an
     // empty role; the touch moves only status and heartbeat, never
     // role, display_name or created_at.
@@ -474,7 +474,7 @@ export class LibSQLQueueStore implements QueueStore {
     );
   }
 
-  upsertCheckpoint(workerId: string, key: string, value: Json): void {
+  async upsertCheckpoint(workerId: string, key: string, value: Json): Promise<void> {
     this.db.exec(
       `INSERT INTO checkpoints (worker_id, key, value, updated_at)
        VALUES (?, ?, ?, ?)
@@ -487,7 +487,7 @@ export class LibSQLQueueStore implements QueueStore {
     );
   }
 
-  appendEvent(workerId: string | null, taskId: number | null, kind: string, detail: Json, createdAt: string): EventRow {
+  async appendEvent(workerId: string | null, taskId: number | null, kind: string, detail: Json, createdAt: string): Promise<EventRow> {
     this.db.exec(
       "INSERT INTO events (worker_id, task_id, kind, detail, created_at) VALUES (?, ?, ?, ?, ?)",
       workerId,
@@ -503,26 +503,26 @@ export class LibSQLQueueStore implements QueueStore {
     return readEvent(got[0] as Record<string, unknown>);
   }
 
-  allEvents(): EventRow[] {
+  async allEvents(): Promise<EventRow[]> {
     return this.db
       .exec("SELECT id, worker_id, task_id, kind, detail, created_at FROM events ORDER BY id ASC")
       .toArray()
       .map((r) => readEvent(r as Record<string, unknown>));
   }
 
-  eventsForTask(taskId: number): EventRow[] {
+  async eventsForTask(taskId: number): Promise<EventRow[]> {
     return this.db
       .exec("SELECT id, worker_id, task_id, kind, detail, created_at FROM events WHERE task_id = ? ORDER BY id ASC", taskId)
       .toArray()
       .map((r) => readEvent(r as Record<string, unknown>));
   }
 
-  deleteEventsBefore(cutoffIso: string): number {
+  async deleteEventsBefore(cutoffIso: string): Promise<number> {
     this.db.exec("DELETE FROM events WHERE created_at < ?", cutoffIso);
     return this.changes();
   }
 
-  mirrorLabels(repo: string, issueNumber: number): string[] | null {
+  async mirrorLabels(repo: string, issueNumber: number): Promise<string[] | null> {
     // github_mirror_issues is the github-ci Worker's read model, not
     // this store's table: no row → null; a failing read (no table, no
     // database) throws so the caller warns and proceeds unenriched.
@@ -532,7 +532,7 @@ export class LibSQLQueueStore implements QueueStore {
     return Array.isArray(parsed) ? parsed.filter((l): l is string => typeof l === "string") : [];
   }
 
-  describe(): { backend: string; projectSource: string; netloc: string | null } {
+  async describe(): Promise<{ backend: string; projectSource: string; netloc: string | null }> {
     return { backend: "libsql", projectSource: this.projectSource, netloc: this.netloc };
   }
 }

@@ -19,6 +19,7 @@ import { configFromEnv, type HostedConfig, type HostedEnv } from "./config.ts";
 import { AppRotationGitHubWriter, FixtureGitHubWriter } from "./github.ts";
 import { ingestionDepsFrom, runIngestionSweep } from "./ingestion.ts";
 import { LibSQLQueueStore, type SyncSqlDb } from "./libsql-queue-store.ts";
+import { openHranaQueueStore } from "./libsql-hrana-queue-store.ts";
 import { FixtureQueueStore, type QueueStore } from "./queue-store.ts";
 import { StoreQueueRecordSource } from "./queue-records.ts";
 import { dispatch } from "./router.ts";
@@ -57,20 +58,30 @@ const queueStore = new FixtureQueueStore();
 /** The file → connection opener the libSQL queue door needs: it
  *  turns QUEUE_LIBSQL_FILE into the store's SyncSqlDb (tests and
  *  local dev inject node:sqlite here — the Worker bundle itself
- *  never imports it, so it stays runtime-agnostic). A remote
- *  Turso DB needs an async Hrana opener this synchronous
- *  interface cannot serve: documented follow-up, not this slice. */
+ *  never imports it, so it stays runtime-agnostic). */
 export type QueueSqlOpener = (file: string) => SyncSqlDb;
 
-/** Resolve the queue backend for one configuration: the libSQL
+/** The URL → store opener for the remote fleet-queue Turso DB
+ *  (#14592): turns QUEUE_LIBSQL_URL (+ its token) into the Hrana
+ *  queue store. The default is the real fetch transport; tests
+ *  inject a scripted peer the same way the file opener injects. */
+export type QueueHranaOpener = (url: string, authToken: string | null) => QueueStore;
+
+/** Resolve the queue backend for one configuration: the Hrana
+ *  store over the remote Turso DB when QUEUE_LIBSQL_URL is set
+ *  (the production backend — it takes precedence), else the libSQL
  *  store over the opener's connection when QUEUE_LIBSQL_FILE is
  *  set and an opener is injected, else the given fallback (the
  *  module fixture by default — tests/local-dev semantics). */
 export function queueStoreFor(
-  config: Pick<HostedConfig, "queueLibsqlFile">,
+  config: Pick<HostedConfig, "queueLibsqlFile" | "queueLibsqlUrl" | "queueLibsqlAuthToken">,
   opener?: QueueSqlOpener,
   fallback?: QueueStore,
+  hranaOpener: QueueHranaOpener = openHranaQueueStore,
 ): QueueStore {
+  if (config.queueLibsqlUrl) {
+    return hranaOpener(config.queueLibsqlUrl, config.queueLibsqlAuthToken);
+  }
   if (config.queueLibsqlFile && opener) {
     return new LibSQLQueueStore(opener(config.queueLibsqlFile));
   }
