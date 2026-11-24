@@ -14,7 +14,7 @@ The production corpus was built, and is still extended, by scripts that live out
 4. **Publish.** A copy of the hot index — keyword index plus the current-best vectors — is pushed to the hosted Turso database as distribution. The full store stays on the laptop; the hosted copy never holds the only copy of anything.
 5. **Access.** Agents search through the surfaces in [The service and the Worker](service-and-worker.md), not by writing SQL against the corpus.
 
-The operational facts: ingestion is run by hand, or by an agent lane invoking the scripts. There is no ingest schedule; the only Atlas schedule on the laptop is the daily backup timer. Corpus counts are therefore a snapshot — last verified at the 2026-10-31 publish, as [The corpus: provenance and content addressing](corpus-and-provenance.md) records — with no verified recount of later growth. The migration moving these scripts into this repository is issue #5670, still open: the Python search reference and evaluation tooling have landed in-repo; the ingest-side scripts have not. Anything describing Atlas ingest as a running service is describing the design in [Design: automatic ingest of all sources](../design/automatic-ingest.md), not today's system.
+The operational facts: ingestion is run by hand, or by an agent lane invoking the scripts. There is no ingest schedule; the only Atlas schedule on the laptop is the daily backup timer. The latest local census and the separate dated publish-source counts are recorded in [Backup, restore and the census](../operations/backup-and-census.md). The migration moving these scripts into this repository is issue #5670, still open: the Python search reference and evaluation tooling have landed in-repo; the ingest-side scripts have not. Anything describing Atlas ingest as a running service is describing the design in [Design: automatic ingest of all sources](../design/automatic-ingest.md), not today's system.
 
 ## Staging: one small database per unit of work
 
@@ -22,17 +22,17 @@ The in-repo replacement for direct-to-core ingest starts with staging. A staging
 
 The v1 schema is exactly five tables, applied once to an empty database; re-provisioning over an existing set is an error, and a schema check asserts the version row and the exact table set:
 
-| Table | What it holds |
-|---|---|
-| `_schema_version` | One row: the schema version, 1. |
-| `items` | One row per staged item — a message, note, or document fragment — with its unit id, kind, source, text, recorded sensitivity, and an open JSON metadata bag. |
-| `chunks_raw` | The item's raw chunks: item id, position, text, and content hash. Raw and un-embedded, by design. |
-| `notes` | Free working notes against the unit, for the life of the unit. |
-| `kv` | Key/value scratch: cursors, checkpoints, producer bookkeeping. Last write wins. |
+| Table             | What it holds                                                                                                                                                |
+| ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `_schema_version` | One row: the schema version, 1.                                                                                                                              |
+| `items`           | One row per staged item — a message, note, or document fragment — with its unit id, kind, source, text, recorded sensitivity, and an open JSON metadata bag. |
+| `chunks_raw`      | The item's raw chunks: item id, position, text, and content hash. Raw and un-embedded, by design.                                                            |
+| `notes`           | Free working notes against the unit, for the life of the unit.                                                                                               |
+| `kv`              | Key/value scratch: cursors, checkpoints, producer bookkeeping. Last write wins.                                                                              |
 
 Two properties carry the design. First, a staging database never stores vectors. Embedding happens once, at promotion, so staging stays write-cheap and no producer needs the model or the runtime described in [Embeddings: Snowflake Arctic and the parity contract](embeddings.md). Second, writes are unmediated: sensitivity is recorded on each item, not enforced at write time. Enforcement belongs to classification and the promotion gate, below — staging's job is to accept work faithfully, not to judge it.
 
-The staging vocabulary needs one warning. A unit's recorded sensitivity, and an item's default of `internal`, use the physical tier vocabulary — `public`, `internal`, `secret` — not the four-rung search ladder (`shareable`, `personal`, `local-only`, `secret-bearing`) of [Sensitivity tiers and client ceilings](sensitivity.md). The same column name carries disjoint value sets in staging and in the publish. The aggregator translates tier to ladder when it writes a promoted chunk; nothing else declares that mapping in code.
+The staging vocabulary needs one warning. A unit's recorded sensitivity, and an item's default of `internal`, use the physical tier vocabulary — `public`, `internal`, `secret` — not the four-rung search ladder (canonically `public`, `internal`, `private`, `sensitive`; spelled in code `shareable`, `personal`, `local-only`, `secret-bearing`) of [Sensitivity tiers and client ceilings](sensitivity.md). The same column name carries disjoint value sets in staging and in the publish. The aggregator translates tier to ladder when it writes a promoted chunk; nothing else declares that mapping in code.
 
 Staging helpers bound producer shapes: an artifact at or below 32 KiB stages as one whole-file unit; a single raw chunk has a hard ceiling of 64 KiB, split at line boundaries, never mid-line. `atlas-stage ingest` stages one artifact file with repository, path, and commit SHA as its source, plus kind (`prose`, `code`, or `config`) and language.
 

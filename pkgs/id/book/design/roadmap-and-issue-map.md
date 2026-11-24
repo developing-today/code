@@ -2,6 +2,8 @@
 
 This chapter is the programme record for the ID book (tracking issue #13332). It states the roadmap as the design archive records it, maps the epics and trackers the records name, and then gives the full design-record index: all 408 ID design records in the repo-root `doc/` archive, each mapped to exactly one design chapter of this book. The index is the coverage proof for the design-record dimension of the book. Counts in this chapter come from the archive survey for this book, verified in the tree at checkout `1ccb4a19457` on 2026-11-23: the archive holds 570 top-level entries and 2,917 paths in total; 408 entries are ID-programme records; 162 entries belong to other programmes (Atlas, Fleet, the PM stack, the home cluster) or are standing non-record material, and are excluded from the index.
 
+The [Current ID issue map](../research/current-issue-map.md) records open issues, blockers, ownership evidence and the date of its census. The [Integrated implementation plan](../research/implementation-plan.md) connects the research proposals and their acceptance criteria to that work.
+
 ## The roadmap in phases
 
 The archive's own phase records are the roadmap's spine. Twenty records are homed in this chapter: the phase records, the remaining-work record, the platform-completion brief, the programme essay answers, the Phase 12 exit audits, the walking-skeleton record, and the investigation charter that commissioned this book.
@@ -12,7 +14,7 @@ The archive's own phase records are the roadmap's spine. Twenty records are home
 - `2026-10-22T15-25-00Z_handoff_research_workflow_pipeline` (2026-10-22): the research-to-delivery pipeline and platform backlog handoff.
 - Phase 12 (#534): the platform-flexibility phase, items F12.1–F12.17. Its design record is `2026-11-01_design_id534.md`; its research package is `2026-11-03T00-05-09Z_research_phase-12-package-534` (18 files). Children named in the records include #807 (manifest), #835 (roles v2 and moderator wiring), #1061 (provider registry), #1062 (first providers), #1063 (audit log), #1064 (ABI), #1065 (guest SDKs), #1066 (program upgrade), #1067 (fair scheduling and quotas), #1068 (portals) and #1069 (module trust). Exit evidence: `2026-11-22T07-05-00Z_phase_id_phase12_exit_audit` and its re-run `2026-11-22T14-45-14Z_phase_id_phase12_exit_audit_rerun` (both 2026-11-22), plus `2026-11-23T02-02-09Z_reference_authority_boundary_audit` (the authority-boundary audit, Phase 12 exit criterion 9).
 - Phase 13 (F13.x): the shell and client phase. Records named in the survey: #785 (UDP-denied SSH fallback), #786 (presentation tiers), #787 (kitty keyboard), #788 (native reference shell), #789 and #5532 (client capability providers), #790 (topology — closed and implemented per the essay-answers record). Phase 14 is the next-horizons phase that contains the #6278 ecosystem, #6300–#6303 agents, #6304 scale and more-shells topics, under core-topic parent #6280 and plan of record #6312 where the records state them.
-- `2026-11-04_id-program-essay-answers.md` (2026-11-04): answers to Drew's 2026-11-04 ID programme questions — the programme's own statement of where things stand at that date.
+- `2026-11-04_id-program-essay-answers.md` (2026-11-04): answers to the user's 2026-11-04 ID programme questions — the programme's own statement of where things stand at that date.
 - `2026-11-22T16-13-20Z_design_id-walking-skeleton` (2026-11-22): the walking skeleton for #9106 — the path through the 126 rows.
 - `2026-11-23T12-06-42Z_design_id_program_investigation_prompt` (2026-11-23): the charter record of #13240, the full-investigation, design-completion and build-out programme that commissioned this book. It defines ID, in one sentence, as a local-first, federated, capability-based application platform — the definition this book uses.
 
@@ -129,7 +131,7 @@ Grounding for this chapter is the archive itself. The 408 records exist as files
 | 152 | `2026-11-02T00-53-51Z_feature_world_host_view` | 2026-11-02 | Authenticated, read-only world host view |
 | 161 | `2026-11-03T01-31-11Z_design_recurring_cross_world_schedules` | 2026-11-03 | Recurring and cross-world scheduled events |
 | 176 | `2026-11-05T15-08-16Z_research_id5986_agpl_gpl_hosting` | 2026-11-05 | AGPL/GPL hosting: inspectable worlds, uploads, and self-hosting |
-| 199 | `2026-11-08T09-10-00Z_research_worlds_conversation_archaeology` | 2026-11-08 | Conversation archaeology: prior Drew discussions of Second Life and programmable worlds, tied into the worlds program |
+| 199 | `2026-11-08T09-10-00Z_research_worlds_conversation_archaeology` | 2026-11-08 | Conversation archaeology: prior discussions with the user about Second Life and programmable worlds, tied into the worlds program |
 | 368 | `2026-11-16_id_world_dev_authoring.md` | 2026-11-16 | Authoring Roc worlds with `id world dev` |
 
 ### Design: capabilities and providers — 44 records
@@ -415,7 +417,7 @@ Grounding for this chapter is the archive itself. The 408 records exist as files
 | 165 | `2026-11-03T20-36-00Z_design_tigerbeetle_ledger_binding` | 2026-11-03 | Design: TigerBeetle LedgerBackend binding (`tb_ledger`) |
 | 180 | `2026-11-05_design_id5828.md` | 2026-11-05 | Design: conversion & RateAuthorisation across the #5676 currency stages |
 | 186 | `2026-11-07T03-55-49Z_feature_graph_currency_contracts` | 2026-11-07 | Graph-native currency event contracts |
-| 222 | `2026-11-08T14-05-49Z_design_id2043_extension.md` | 2026-11-08 | Design: ID tokens v1 — extension for Drew's 2026-11-08 rulings |
+| 222 | `2026-11-08T14-05-49Z_design_id2043_extension.md` | 2026-11-08 | Design: ID tokens v1 — extension for the user's 2026-11-08 rulings |
 | 241 | `2026-11-08_decision_id5906_kdl_json_contract.md` | 2026-11-08 | Decision: KDL ⇄ JSON canonical conversion and round-trip contract |
 | 253 | `2026-11-08_design_id5829.md` | 2026-11-08 | Design: currency load & correctness verification programme |
 | 273 | `2026-11-09T00-10-25Z_research_id5966_gas_timeouts_multithreading` | 2026-11-09 | Research: per-function gas metering, timeouts, and multithreading for user functions |
@@ -541,7 +543,7 @@ Grounding for this chapter is the archive itself. The 408 records exist as files
 | 63 | `2026-10-22T15-25-00Z_handoff_research_workflow_pipeline` | 2026-10-22 | Handoff: the research-to-delivery pipeline and platform backlog |
 | 136 | `2026-11-01_design_id534.md` | 2026-11-01 | Design: Run Phase 12 deliverables through the research workflow |
 | 160 | `2026-11-03T00-05-09Z_research_phase-12-package-534` | 2026-11-03 | Changes |
-| 173 | `2026-11-04_id-program-essay-answers.md` | — | Answers to Drew's 2026-11-04 ID program questions |
+| 173 | `2026-11-04_id-program-essay-answers.md` | — | Answers to the user's 2026-11-04 ID program questions |
 | 386 | `2026-11-22T07-05-00Z_phase_id_phase12_exit_audit` | 2026-11-22 | Phase 12 exit audit — 2026-11-22 |
 | 387 | `2026-11-22T14-45-14Z_phase_id_phase12_exit_audit_rerun` | 2026-11-22 | Phase 12 exit audit — re-run and reconciliation, 2026-11-22 |
 | 388 | `2026-11-22T16-13-20Z_design_id-walking-skeleton` | 2026-11-22 | Walking skeleton for #9106: the path through the 126 rows |

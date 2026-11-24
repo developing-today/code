@@ -1541,7 +1541,9 @@ def _post_stuck_holder_agent_note(
     return result.returncode == 0
 
 
-def hand_back_step(mode, candidates, exclude_task_ids=None):
+def hand_back_step(
+    mode, candidates, exclude_task_ids=None, already_claimed_task_ids=None
+):
     """Hand-back (#1187 criterion 2): when the cap step finds the
     location saturated with launchable candidates waiting, hand
     the NEXT candidate back within the same fire - claim it, park
@@ -1573,7 +1575,11 @@ def hand_back_step(mode, candidates, exclude_task_ids=None):
     if candidate is None:
         return None
     task_id = candidate["id"]
-    if not _claim_for_handback(candidate):
+    # Sink candidates may already have been atomically collected by
+    # launch_step before the cap ran out. Reuse that claim instead of
+    # attempting a second targeted claim for the same task.
+    already_claimed = set(already_claimed_task_ids or ())
+    if task_id not in already_claimed and not _claim_for_handback(candidate):
         return {
             "task_id": task_id,
             "parked": False,
@@ -1601,6 +1607,7 @@ def launch_step(
     cap_room: int,
     exclude_task_ids=None,
     fire_start_candidates=None,
+    hand_back_out=None,
 ) -> List[Dict]:
     """
     Step 4: Launch - create sessions and bind tasks.
@@ -1721,6 +1728,17 @@ def launch_step(
 
             if cap_room <= 0:
                 skips.append({"task_id": candidate["id"], "reason": "cap_saturated"})
+                # The fire began with room but used it up while walking
+                # candidates. Hand back the next waiting task once, just
+                # like the already-saturated cap path in _fire.
+                if hand_back_out is not None and not hand_back_out:
+                    hand_back_out.append(
+                        hand_back_step(
+                            mode,
+                            [candidate],
+                            already_claimed_task_ids=set(collected),
+                        )
+                    )
                 continue
 
             task_id = candidate["id"]
@@ -2188,11 +2206,13 @@ def _fire(mode: str):
     # Step 4: Launch, from the fire-start snapshot, excluding any
     # task supervision recovered during this same fire.
     print("Running launch step...")
+    midloop_hand_back = []
     launched, skips = launch_step(
         mode,
         cap_room,
         exclude_task_ids=recovered_ids,
         fire_start_candidates=fire_candidates,
+        hand_back_out=midloop_hand_back,
     )
 
     # Step 5: Terminal states (handled by workers)
@@ -2207,6 +2227,7 @@ def _fire(mode: str):
         cap_room,
         skips,
         health=fire_health,
+        hand_back=midloop_hand_back[0] if midloop_hand_back else None,
         provider_wall=_fire_provider_wall,
         supervision=supervision_records,
         babysitter=babysitter_record,

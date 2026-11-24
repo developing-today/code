@@ -13,6 +13,8 @@
 import type { Config } from "./config.ts";
 import { OpError } from "./errors.ts";
 import { plain } from "./plain.ts";
+import { WORKERS_FILE, workersList } from "./platform.ts";
+import { timed, unread } from "./timed.ts";
 
 export interface RunResult {
   code: number;
@@ -23,8 +25,17 @@ export type Run = (argv: string[], opts?: { stdin?: string; timeoutMs?: number }
 export type Fetch = (
   url: string,
   init: { method: string; headers: Record<string, string>; body?: string; signal?: AbortSignal },
-) => Promise<{ ok: boolean; status: number; json(): Promise<unknown> }>;
+) => Promise<{
+  ok: boolean;
+  status: number;
+  json(): Promise<unknown>;
+  /** What the answer says of itself, where the caller reads it (the
+   * edge does, for GitHub's tag on an answer and when to ask again). */
+  headers?: { get(name: string): string | null };
+}>;
 export type Row = Record<string, string | number | null>;
+/** How long the queue store has to answer one asking, body and all. */
+export const QUEUE_ASK_MS = 20_000;
 /** Queue priorities, most urgent first (the queue's design scale). */
 export const PRIORITY_SCALE = [10, 20, 30, 40, 50, 70, 90] as const;
 
@@ -238,38 +249,54 @@ export class Ops {
         { type: "close" },
       ],
     };
-    const ask = async () => {
+    type Answer = {
+      results?: {
+        type?: string;
+        response?: {
+          result?: {
+            cols: { name: string }[];
+            rows: { value?: string | number | null }[][];
+            affected_row_count?: number;
+          };
+        };
+      }[];
+    };
+    /** One asking: the answer and its body, within the time. A queue
+     * store that never answers would otherwise hold the read for as
+     * long as it liked. (The token is fetched before the time starts:
+     * on a machine that is the fleet binary's work, not the store's.) */
+    const ask = async (): Promise<{ status: number; ok: boolean; body: Answer | null }> => {
       if (this.queueToken === null) {
         this.queueToken = (await this.must([this.cfg.fleetBin, "secrets", "get", this.cfg.queueTokenName])).trim();
       }
-      return this.fetchImpl(`${this.cfg.queueDbUrl}/v2/pipeline`, {
-        method: "POST",
-        headers: { Authorization: `Bearer ${this.queueToken}`, "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      });
+      const bearer = this.queueToken;
+      try {
+        return await timed(QUEUE_ASK_MS, async (signal) => {
+          const res = await this.fetchImpl(`${this.cfg.queueDbUrl}/v2/pipeline`, {
+            method: "POST",
+            headers: { Authorization: `Bearer ${bearer}`, "Content-Type": "application/json" },
+            body: JSON.stringify(body),
+            signal,
+          });
+          if (res.ok) return { status: res.status, ok: true, body: (await res.json()) as Answer };
+          unread(res);
+          return { status: res.status, ok: false, body: null };
+        });
+      } catch (error) {
+        if ((error as Error).name === "TimeoutError") {
+          throw new OpError(502, `the queue store did not answer within ${QUEUE_ASK_MS / 1000} seconds`);
+        }
+        throw error;
+      }
     };
-    let res = await ask();
-    if (res.status === 401 || res.status === 403) {
+    let answered = await ask();
+    if (answered.status === 401 || answered.status === 403) {
       // The token was rotated: fetch it again, once.
       this.queueToken = null;
-      res = await ask();
+      answered = await ask();
     }
-    if (!res.ok) throw new OpError(502, `queue store answered http ${res.status}`);
-    const results =
-      (
-        (await res.json()) as {
-          results?: {
-            type?: string;
-            response?: {
-              result?: {
-                cols: { name: string }[];
-                rows: { value?: string | number | null }[][];
-                affected_row_count?: number;
-              };
-            };
-          }[];
-        }
-      ).results ?? [];
+    if (!answered.ok) throw new OpError(502, `queue store answered http ${answered.status}`);
+    const results = answered.body?.results ?? [];
     return statements.map((_, i) => {
       const result = results[i]?.type === "ok" ? results[i].response?.result : undefined;
       if (!result) throw new OpError(502, "queue store refused the query");
@@ -647,7 +674,7 @@ export class Ops {
       html_url: string;
       created_at: string;
       user: { login: string };
-      head: { ref: string };
+      head: { ref: string; sha?: string };
     }[];
     return list.map((p) => ({
       number: p.number,
@@ -657,6 +684,9 @@ export class Ops {
       created: p.created_at.slice(0, 16),
       author: p.user.login,
       branch: p.head.ref,
+      // The commit it stood at when this was read: a merge asked for
+      // from this list is a merge of this, and of nothing pushed since.
+      ...(typeof p.head.sha === "string" ? { head: p.head.sha } : {}),
     }));
   }
 
@@ -681,14 +711,22 @@ export class Ops {
     };
   }
 
-  async mergePr(number: unknown) {
+  /** Merge a pull request. With `head`, the commit the owner was shown,
+   * GitHub merges only if that is still where it stands: a merge asked
+   * for a while ago (kept on a device that was offline) must not take
+   * in what was pushed since. */
+  async mergePr(number: unknown, head?: unknown) {
     const n = id(number, "pull request");
+    if (head !== undefined && head !== null && !(typeof head === "string" && /^[0-9a-f]{40}$/.test(head))) {
+      throw new OpError(400, "head: a commit's full name");
+    }
     const done = (await this.gh([
       "-X",
       "PUT",
       `repos/${this.cfg.repo}/pulls/${n}/merge`,
       "-f",
       "merge_method=merge",
+      ...(typeof head === "string" ? ["-f", `sha=${head}`] : []),
     ])) as { merged: boolean; sha: string };
     return { number: n, merged: done.merged, sha: done.sha };
   }
@@ -698,6 +736,57 @@ export class Ops {
   /** What GitHub's own record says of the site's deploys and the app's
    * builds: the last few runs of each on main, newest first. One that
    * could not be read says so by itself; the other still shows. */
+  /** Every Worker the repository holds, as its own list says
+   * (pm-stack/platform/workers.json, read from the repository so that
+   * a merge is all it takes to change it), and for each one deployed
+   * from Actions the latest run of that deploy on main. A run that
+   * could not be read says so by itself; the list still shows. */
+  async platform() {
+    const got = (await this.gh([`repos/${this.cfg.repo}/contents/${WORKERS_FILE}`])) as { content?: string } | null;
+    if (typeof got?.content !== "string") throw new OpError(502, "the list of Workers could not be read");
+    let parsed: unknown;
+    try {
+      // GitHub wraps the encoded file in lines; decoding passes over them.
+      parsed = JSON.parse(new TextDecoder().decode(Uint8Array.from(atob(got.content), (c) => c.charCodeAt(0))));
+    } catch {
+      throw new OpError(502, "the list of Workers is not valid JSON");
+    }
+    const list = workersList(parsed);
+    const flows = [...new Set(list.workers.map((w) => w.workflow).filter((f): f is string => f !== null))];
+    const last = async (workflow: string) => {
+      const found = (await this.gh([
+        `repos/${this.cfg.repo}/actions/workflows/${workflow}/runs?branch=main&per_page=1`,
+      ])) as {
+        workflow_runs?: {
+          head_sha: string;
+          status: string;
+          conclusion: string | null;
+          created_at: string;
+          html_url: string;
+        }[];
+      } | null;
+      const run = found?.workflow_runs?.[0];
+      return run
+        ? {
+            commit: run.head_sha.slice(0, 12),
+            state: run.status === "completed" ? (run.conclusion ?? "unknown") : run.status,
+            at: run.created_at,
+            url: run.html_url,
+          }
+        : null;
+    };
+    const runs = new Map(
+      await Promise.all(
+        flows.map(async (flow) => [flow, await last(flow).catch((e: Error) => ({ error: e.message }))] as const),
+      ),
+    );
+    return {
+      checked: list.checked,
+      malformed: list.malformed,
+      workers: list.workers.map((w) => ({ ...w, run: w.workflow ? (runs.get(w.workflow) ?? null) : null })),
+    };
+  }
+
   async releases() {
     const runs = async (workflow: string) => {
       const got = (await this.gh([

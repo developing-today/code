@@ -4,17 +4,18 @@ name: mcpx docs
 
 # Build the mcpx book (#1941, Approach C) and publish it to GitHub Pages.
 #
-# Pull requests build .#mcpx-docs and upload the rendered site as an
-# ordinary build artifact — no deploy, no PR previews (reviewers download
-# the artifact). Pushes to main and manual dispatches deploy the same
-# build to Pages via the Actions artifact flow: Pages source for this
-# repository is "GitHub Actions" (build_type=workflow), no generated
-# HTML is ever committed, and no extra repository or secret is needed.
+# Builds run on pushes to main and on manual dispatch — there is no
+# pull-request build (the sibling docs workflows, fleet-docs.yml,
+# atlas-docs.yml and id-docs.yml, are shaped the same way). Pushes and
+# dispatches deploy the build to Pages via the Actions artifact flow:
+# Pages source for this repository is "GitHub Actions"
+# (build_type=workflow), no generated HTML is ever committed, and no
+# extra repository or secret is needed.
 #
 # The build is the flake output .#mcpx-docs (pkgs/mcpx/docs.nix, from
 # #1939 / PR #2629): the same `nix build` locally and in CI. The
 # derivation takes the base URL as its `siteUrl` argument, baked in as
-# mdBook's site-url: PR/local builds use the default "/", the Pages
+# mdBook's site-url: plain builds use the default "/", the Pages
 # deploy overrides it with "/code/" (the project site's path) — builds
 # differ only in that one value (#1941).
 
@@ -65,14 +66,6 @@ jobs:
           test -f site/index.html.md
           grep -q 'rel="alternate" type="text/markdown"' site/index.html
 
-      - name: Upload site artifact (PR builds only)
-        if: github.event_name == 'pull_request'
-        uses: actions/upload-artifact@v7
-        with:
-          name: mcpx-docs-site
-          path: site
-          if-no-files-found: error
-
   deploy:
     name: "stage: build + upload Pages artifact"
     # Deploys only from main: pushes to main and manual dispatches
@@ -99,7 +92,7 @@ jobs:
       # (https://developing-today.github.io/code/), and mdBook needs
       # that path as its site-url: with "/" the generated 404 page
       # points its CSS/JS and navigation at the domain root and breaks.
-      # Same derivation as the PR build, differing only in the siteUrl
+      # Same derivation as the build job, differing only in the siteUrl
       # argument (#1941).
       - name: Nix build (deploy variant, siteUrl /code/)
         run: |
@@ -194,6 +187,83 @@ jobs:
           cp -rL result-id-docs site/id
           test -f site/id/index.html
 
+      # The Code Book (#13905, pkgs/code-book/book) shares this
+      # repository's single Pages site the same way: built with its
+      # own siteUrl and staged under code/ here, in the same deploy
+      # — a separate code-book-only deploy would wipe the mcpx,
+      # fleet, atlas and id books. Its build-only workflow is
+      # code-book-docs.yml; see the book's "Deploying this book"
+      # chapter (pkgs/code-book/book/operations/deploying-this-book.md).
+      - name: Nix build (Code Book, siteUrl /code/code/)
+        run: |
+          # Intentional: the single-quoted string in this block is a Nix expression
+          # evaluated by nix, not the shell -- ${builtins.currentSystem} in it is
+          # Nix's, and letting the shell expand it would break the build.
+          # shellcheck disable=SC2016
+          nix build --impure --print-build-logs --expr \
+            '(builtins.getFlake (toString ./.)).packages.${builtins.currentSystem}.code-docs.override { siteUrl = "/code/code/"; }' \
+            --out-link result-code-docs
+
+      - name: Stage Code Book into site/code
+        run: |
+          rm -rf site/code
+          # site/ is a copy of a Nix store path: its directories are
+          # read-only, so make the root writable before adding code/.
+          chmod u+w site
+          cp -rL result-code-docs site/code
+          test -f site/code/index.html
+
+      # The Lab Book (#13905, pkgs/lab/book) shares this
+      # repository's single Pages site the same way: built with its
+      # own siteUrl and staged under lab/ here, in the same deploy
+      # — a separate lab-only deploy would wipe the mcpx, fleet,
+      # atlas, id and Code books. Its build-only workflow is
+      # lab-docs.yml; see the book's "Deploying this book" chapter
+      # (pkgs/lab/book/operations/deploying-this-book.md).
+      - name: Nix build (Lab Book, siteUrl /code/lab/)
+        run: |
+          # Intentional: the single-quoted string in this block is a Nix expression
+          # evaluated by nix, not the shell -- ${builtins.currentSystem} in it is
+          # Nix's, and letting the shell expand it would break the build.
+          # shellcheck disable=SC2016
+          nix build --impure --print-build-logs --expr \
+            '(builtins.getFlake (toString ./.)).packages.${builtins.currentSystem}.lab-docs.override { siteUrl = "/code/lab/"; }' \
+            --out-link result-lab-docs
+
+      - name: Stage Lab Book into site/lab
+        run: |
+          rm -rf site/lab
+          # site/ is a copy of a Nix store path: its directories are
+          # read-only, so make the root writable before adding lab/.
+          chmod u+w site
+          cp -rL result-lab-docs site/lab
+          test -f site/lab/index.html
+
+      # The Project Management book (#13900, pm-stack/book) shares
+      # this repository's single Pages site the same way: built with
+      # its own siteUrl and staged under pm/ here, in the same deploy
+      # — a separate pm-only deploy would wipe the mcpx, fleet, atlas
+      # and id books. Its build-only workflow is pm-docs.yml; see
+      # the book's "Deploying this book" chapter
+      # (pm-stack/book/operations/deploying-this-book.md).
+      - name: Nix build (PM book, siteUrl /code/pm/)
+        run: |
+          # Intentional: the single-quoted string in this block is a Nix expression
+          # evaluated by nix, not the shell -- ${builtins.currentSystem} in it is
+          # Nix's, and letting the shell expand it would break the build.
+          # shellcheck disable=SC2016
+          nix build --impure --print-build-logs --expr \
+            '(builtins.getFlake (toString ./.)).packages.${builtins.currentSystem}.pm-docs.override { siteUrl = "/code/pm/"; }' \
+            --out-link result-pm-docs
+
+      - name: Stage PM book into site/pm
+        run: |
+          rm -rf site/pm
+          # site/ is a copy of a Nix store path: its directories are
+          # read-only, so make the root writable before adding pm/.
+          chmod u+w site
+          cp -rL result-pm-docs site/pm
+          test -f site/pm/index.html
 
       - uses: actions/configure-pages@v6
 

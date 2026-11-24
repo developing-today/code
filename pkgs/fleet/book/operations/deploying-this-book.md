@@ -61,7 +61,7 @@ Note the local default `siteUrl` is `"/"`. Links inside the book are relative `.
 
 ## The future custom-domain step — not wired yet
 
-Per Drew's steer, the book will eventually be served from a custom domain instead of the `github.io` path. That step is **planned, not wired**: there is no CNAME file anywhere in the repository today, no custom domain is set on the Pages site (`cname: null`), and the `siteUrl` values above still point at `/code/` and `/code/fleet/`. Do not present the custom domain as live, and do not "fix" URLs in anticipation of it.
+Per the owner's steer, the book will eventually be served from a custom domain instead of the `github.io` path. That step is **planned, not wired**: there is no CNAME file anywhere in the repository today, no custom domain is set on the Pages site (`cname: null`), and the `siteUrl` values above still point at `/code/` and `/code/fleet/`. Do not present the custom domain as live, and do not "fix" URLs in anticipation of it.
 
 When the step is taken, it has exactly three parts, done together:
 

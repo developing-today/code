@@ -25,9 +25,6 @@
 //! one term has exactly one encoding and one encoding one term. Unknown
 //! `type_tag` values are preserved opaquely; only an unknown *kind* is
 //! refused.
-//!
-//! Module wiring into `graph/mod.rs` and the crate root belongs to slice
-//! 9110-09; until then the integration test includes this file by path.
 
 use std::fmt;
 

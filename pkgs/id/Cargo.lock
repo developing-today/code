@@ -4867,6 +4867,7 @@ dependencies = [
  "iroh-tickets",
  "libc",
  "n0-mainline",
+ "num-bigint 0.4.8",
  "p2panda-auth",
  "p2panda-core",
  "p2panda-store",
@@ -4957,6 +4958,25 @@ dependencies = [
  "toml",
  "tracing",
  "zeroize",
+]
+
+[[package]]
+name = "id-client"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "ed25519-dalek 3.0.0",
+ "id-caps",
+ "id-config",
+ "id-core",
+ "id-directory",
+ "id-events",
+ "id-groups",
+ "id-store",
+ "id-sync",
+ "rand 0.10.3",
+ "serde",
+ "thiserror 2.0.21",
 ]
 
 [[package]]
@@ -5112,6 +5132,7 @@ name = "id-import-notion"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "blake3",
  "serde",
  "serde_json",
  "tempfile",

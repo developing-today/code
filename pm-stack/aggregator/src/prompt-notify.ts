@@ -31,10 +31,7 @@ export function isTerminalPromptStatus(status: PromptStatus): boolean {
  * in. Anything else — a first patch that only archives, a re-answer
  * of a terminal record, notify off — sends nothing.
  */
-export function promptCompletionTransition(
-  before: PromptRecord | null,
-  after: PromptRecord,
-): boolean {
+export function promptCompletionTransition(before: PromptRecord | null, after: PromptRecord): boolean {
   return (
     before !== null &&
     !isTerminalPromptStatus(before.status) &&

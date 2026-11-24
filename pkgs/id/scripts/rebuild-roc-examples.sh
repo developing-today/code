@@ -21,6 +21,7 @@ examples=(
   examples/roc-chat
   examples/roc-counter
   examples/roc-grid
+  examples/roc-mind-map
   examples/roc-screen
   examples/roc-text-counter
   examples/territory

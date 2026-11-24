@@ -1,4 +1,4 @@
-//! The id command-line application layer: `cli` (argument parsing),
+//! The id command-line application layer and command dispatch: `cli` (argument parsing),
 //! `commands` (subcommand implementations), `repl`, and
 //! `server_config`, plus the support modules they share (`local`,
 //! `protocol`, `meta_client`, `helpers`, `chat_presence`,

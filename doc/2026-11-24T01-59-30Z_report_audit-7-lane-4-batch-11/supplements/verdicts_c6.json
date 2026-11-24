@@ -1,0 +1,173 @@
+[
+ {
+  "evidence": "Refs #9800 (closed; context only). Manual upload/promote workflows, scripts, deploy-contract + release-safety tests (14 files, +1309); validation green.",
+  "gap": null,
+  "issue": 9800,
+  "pr": 12560,
+  "verdict": "audit:complete"
+ },
+ {
+  "evidence": "No issue refs; id-mail publish/promote workflows, scripts + unit tests (12 files, +2672); judged on intent.",
+  "gap": null,
+  "issue": null,
+  "pr": 12562,
+  "verdict": "audit:no-issue"
+ },
+ {
+  "evidence": "Closes #12542 (closed). Removes root git-hooks/pre-commit-hooks inputs; lock renames preserve reference mapping; eval + check pass.",
+  "gap": null,
+  "issue": 12542,
+  "pr": 12564,
+  "verdict": "audit:complete"
+ },
+ {
+  "evidence": "F2b verdict-coverage slice of #12233 (closed). F2a by #12543, F2c remainder completed-later by stacked #12570 (merged).",
+  "gap": null,
+  "issue": 12233,
+  "pr": 12565,
+  "verdict": "audit:completed-later"
+ },
+ {
+  "evidence": "Closes #12233 (closed). Final F2c packet kind; enqueue validation + dedupe + property tests.",
+  "gap": null,
+  "issue": 12233,
+  "pr": 12570,
+  "verdict": "audit:complete"
+ },
+ {
+  "evidence": "block_in_place mechanism + failing-first test for #1067 (open); admission/quota lever remainder completed-later by #12615.",
+  "gap": null,
+  "issue": 1067,
+  "pr": 12571,
+  "verdict": "audit:completed-later"
+ },
+ {
+  "evidence": "Attribution profile slice 1 of #1067 (open), no prod change; the fix it motivated completed-later by #12571/#12615.",
+  "gap": null,
+  "issue": 1067,
+  "pr": 12572,
+  "verdict": "audit:completed-later"
+ },
+ {
+  "evidence": "Final provider (notify) of #1062 F12.5 set; siblings landed, #1062 closed. Registry + delivery + journal-v15 + tests; 7/7 notify tests re-run per #12598.",
+  "gap": null,
+  "issue": 1062,
+  "pr": 12574,
+  "verdict": "audit:complete"
+ },
+ {
+  "evidence": "Closes #12468 (closed). Focusable image NodeViews, Enter/Space activation, focus-visible outline (3 files, +83) + 51-line test file.",
+  "gap": null,
+  "issue": 12468,
+  "pr": 12575,
+  "verdict": "audit:complete"
+ },
+ {
+  "evidence": "Cross-group match counting fixes never-firing overlap half of partition guard + dead print removal; works #1372 (open). Close condition (completed full flake-check verdict) unmet.",
+  "gap": {
+   "title": "#1372 still needs a completed full nightly verdict",
+   "why": "PR body names the close condition as an in-flight run, not a landed one. #1372 open; remainder tracked there."
+  },
+  "issue": 1372,
+  "pr": 12578,
+  "verdict": "audit:partial"
+ },
+ {
+  "evidence": "Refs #12518 (open). Edge direct read/write + held prompt.enqueue; task.unblock/task.cancel, pr.merge, sessions/census/questions/agents/services stay laptop-only per body.",
+  "gap": null,
+  "issue": 12518,
+  "pr": 12579,
+  "verdict": "audit:partial"
+ },
+ {
+  "evidence": "Works #1374 (open) criterion-1 shape but legibility only: named 120s deadlines, logged targets, server-state capture; retry behavior unchanged from #4667.",
+  "gap": null,
+  "issue": 1374,
+  "pr": 12581,
+  "verdict": "audit:partial"
+ },
+ {
+  "evidence": "Refs #1372 (open). Workflow-only legibility (watchdog heartbeat, log artifact, per-check budgets); no VM-test change.",
+  "gap": null,
+  "issue": 1372,
+  "pr": 12582,
+  "verdict": "audit:partial"
+ },
+ {
+  "evidence": "Design record answering #9081 (open) four questions; native implementation deferred to #9073-#9076/#9016, token flows to H #9086.",
+  "gap": null,
+  "issue": 9081,
+  "pr": 12593,
+  "verdict": "audit:partial"
+ },
+ {
+  "evidence": "Step 1 of 2 for #12231 (open), does-not-close. Exit-audit record 5/3/1; A10 tag step remains.",
+  "gap": null,
+  "issue": 12231,
+  "pr": 12594,
+  "verdict": "audit:partial"
+ },
+ {
+  "evidence": "Re-run record for #12231 (open): 6/2/1 with fresh laptop evidence; tag still blocked; spawns tracking #12595/#12596/#12597.",
+  "gap": null,
+  "issue": 12231,
+  "pr": 12598,
+  "verdict": "audit:partial"
+ },
+ {
+  "evidence": "Refs #9571 (open), does-not-close. Real hook failure/recovery cycles run; remains: merge #12226, 14-day production cutover (day 0 not started), gap filed as #12599.",
+  "gap": null,
+  "issue": 9571,
+  "pr": 12600,
+  "verdict": "audit:partial"
+ },
+ {
+  "evidence": "Refs #8581/#12538 (both open). Degraded-mode contract + mode-line only; per-verb routing, drills, #8583/#8584 acceptance outstanding.",
+  "gap": null,
+  "issue": 8581,
+  "pr": 12601,
+  "verdict": "audit:partial"
+ },
+ {
+  "evidence": "Bot flake-input bump (openchamber/opencode pins); flake evaluates incl. package outputs; no test suite on this surface.",
+  "gap": null,
+  "issue": null,
+  "pr": 12606,
+  "verdict": "audit:no-issue"
+ },
+ {
+  "evidence": "Refs #12607 (closed at audit time). Two-line compile repair only; green-CI acceptance owed via #12609, completed-later by #12612.",
+  "gap": null,
+  "issue": 12607,
+  "pr": 12610,
+  "verdict": "audit:completed-later"
+ },
+ {
+  "evidence": "Refs #12607 (closed). Root-causes dash `kill -0 --` group-poll bug + three test-expectation fixes; full fleet workspace suite passes.",
+  "gap": null,
+  "issue": 12607,
+  "pr": 12612,
+  "verdict": "audit:complete"
+ },
+ {
+  "evidence": "Refs #12604 (closes main-broken guard). Pure motion 1118+/1096- across 4 files; guard + placement (41) + portal (13) tests green.",
+  "gap": null,
+  "issue": 12604,
+  "pr": 12614,
+  "verdict": "audit:complete"
+ },
+ {
+  "evidence": "Refs #1067 (open), explicitly does-not-close. Guest-burn budget + fair scheduling with reference verdict; remainder: per-account quotas, hub scheduler, back-pressure, persistent-spinner variant.",
+  "gap": null,
+  "issue": 1067,
+  "pr": 12615,
+  "verdict": "audit:partial"
+ },
+ {
+  "evidence": "Closes #8968 (closed). Step-2 split verified byte-identical (one import line differs, dark_mode identical) + facade re-exports; all 4 CI gates green.",
+  "gap": null,
+  "issue": 8968,
+  "pr": 12617,
+  "verdict": "audit:complete"
+ }
+]

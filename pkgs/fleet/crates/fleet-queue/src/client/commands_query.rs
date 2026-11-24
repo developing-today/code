@@ -1576,19 +1576,21 @@ pub(crate) fn exact_task_status(
                 return (record, 0);
             }
             let total = list_total(&env);
-            let truncated = env.get("truncated").and_then(Value::as_bool).unwrap_or(false);
+            let truncated = env
+                .get("truncated")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
             if rows.is_empty() && total == Some(0) && !truncated {
                 exact_outcome(&mut record, mode, route, "not_found");
                 return (record, 1);
             }
-            let detail =
-                if truncated || total.map(|t| t > rows.len() as i64).unwrap_or(false) {
-                    "truncated_reply"
-                } else if rows.is_empty() && total.is_none() {
-                    "total_unreported"
-                } else {
-                    "unscoped_reply"
-                };
+            let detail = if truncated || total.map(|t| t > rows.len() as i64).unwrap_or(false) {
+                "truncated_reply"
+            } else if rows.is_empty() && total.is_none() {
+                "total_unreported"
+            } else {
+                "unscoped_reply"
+            };
             exact_outcome(&mut record, mode, route, "partial");
             record["detail"] = json!(detail);
             (record, 3)

@@ -2433,4 +2433,109 @@ mod tests {
             _ => panic!("expected NoUrl"),
         }
     }
+
+    // -- #9095 version conformance ------------------------------------
+    //
+    // Oracle: the hand-authored fixture set. The canonical copy lives
+    // under the schema v1 design folder at
+    // doc/2026-11-21T17-56-24Z_design_atlas_metadata_schema_v1/fixtures/
+    // pm-metadata-v1.json; the executable copy this test reads is
+    // vendored at tests/fixtures/pm-metadata-v1.json because the
+    // fleet nix source closure (pkgs/fleet/default.nix fleetSrc,
+    // rooted at pkgs/) does not contain repo-root doc/ — a
+    // CARGO_MANIFEST_DIR-anchored walk to the repo root breaks under
+    // the nix sandbox (code#13617). Where the design copy is present
+    // (normal checkouts) the test asserts both copies are byte-equal
+    // so the vendored copy cannot drift from the oracle; under the
+    // sandbox only the vendored copy is enforced, never skipped.
+    // Each `ok` case must parse and preserve its declared keys
+    // through parse and through the stamp assembly round-trip; each
+    // `reject` case must fail closed. Doctrine-projection
+    // expectations in the fixture are the oracle for design §7 slice
+    // 2 and are not asserted here.
+    #[test]
+    fn pm_metadata_version_conformance_fixtures() {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/pm-metadata-v1.json"
+        );
+        let raw = std::fs::read_to_string(path)
+            .unwrap_or_else(|e| panic!("conformance fixture set unreadable at {path}: {e}"));
+        // Drift guard: the design-folder copy is the canonical
+        // oracle. It is absent from the nix source closure, so only
+        // compare when it exists; the conformance assertions below
+        // always run against the vendored copy.
+        let design_path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../../doc/2026-11-21T17-56-24Z_design_atlas_metadata_schema_v1/fixtures/pm-metadata-v1.json"
+        );
+        if std::path::Path::new(design_path).exists() {
+            let design_raw = std::fs::read_to_string(design_path)
+                .unwrap_or_else(|e| panic!("design oracle unreadable at {design_path}: {e}"));
+            assert_eq!(
+                raw, design_raw,
+                "vendored fixture diverged from the design oracle; sync tests/fixtures/pm-metadata-v1.json from {design_path}"
+            );
+        }
+        let set: Value = serde_json::from_str(&raw).expect("fixture set is valid JSON");
+        let cases = set["cases"].as_array().expect("fixture set carries cases");
+        assert!(!cases.is_empty(), "fixture set must not be empty");
+        for case in cases {
+            let id = case["id"].as_str().expect("case id");
+            let body = case["body"].as_str().expect("case body");
+            let parsed = parse_metadata_block(body);
+            match case["reader_parse"].as_str().expect("reader_parse") {
+                "reject" => {
+                    assert!(parsed.is_err(), "{id}: expected fail-closed rejection");
+                }
+                "ok" => {
+                    let parsed =
+                        parsed.unwrap_or_else(|e| panic!("{id}: expected parse success, got: {e}"));
+                    if case["block"].as_str() == Some("absent") {
+                        assert!(parsed.block.is_none(), "{id}: expected no block");
+                        continue;
+                    }
+                    let block = parsed
+                        .block
+                        .unwrap_or_else(|| panic!("{id}: expected a block"));
+                    let keys = case["preserved_keys"]
+                        .as_array()
+                        .expect("preserved_keys")
+                        .iter()
+                        .map(|k| k.as_str().expect("key"))
+                        .collect::<Vec<_>>();
+                    for key in &keys {
+                        assert!(block.get(key).is_some(), "{id}: key {key} lost at parse");
+                    }
+                    // Stamp round-trip: re-stamping with the block's own
+                    // provenance must preserve every preserved key's
+                    // value exactly.
+                    let provenance = block
+                        .get("provenance")
+                        .cloned()
+                        .unwrap_or_else(|| json!({}));
+                    let assembled = assemble_stamped_block(Some(&block), provenance);
+                    for key in &keys {
+                        // pm_meta is the one key assembly rewrites on
+                        // purpose: it pins the integer current version
+                        // (a float 1.0 input normalizes to 1).
+                        if *key == "pm_meta" {
+                            continue;
+                        }
+                        assert_eq!(
+                            assembled.get(key),
+                            block.get(key),
+                            "{id}: key {key} changed by stamp assembly"
+                        );
+                    }
+                    assert_eq!(
+                        assembled.get("pm_meta"),
+                        Some(&json!(1)),
+                        "{id}: stamp assembly must pin pm_meta to integer 1"
+                    );
+                }
+                other => panic!("{id}: unknown reader_parse expectation {other}"),
+            }
+        }
+    }
 }

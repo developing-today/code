@@ -92,7 +92,7 @@ Stdin is inherited so prompts still behave.
 Default rotation for one invocation (`gh.rs`, `rotation_with`):
 each App leg in App order (fleet → developing.today → backup) with
 that App's owners in list order, then the **personal leg last**
-(Drew, 2026-11-23, code#13310) — Drew's own token is the final
+(the user, 2026-11-23, code#13310) — the user's own token is the final
 fallback, not the first identity tried. Total: 3 + 2 + 1 + 1 =
 **7 sources**.
 

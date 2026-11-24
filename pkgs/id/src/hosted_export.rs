@@ -631,6 +631,15 @@ pub fn verify_import(
         // source `cited_content_hashes` reads): the references
         // must name exactly the carried blobs whose bytes hash to
         // the cited contents — no decoy, no extra, none omitted.
+        let declared_refs: std::collections::HashSet<String> =
+            object.blob_refs.iter().cloned().collect();
+        // A reference naming a blob the export does not carry at
+        // all is the plain missing-blob refusal, checked before
+        // citation binding so a dangling reference is not masked
+        // as a citation mismatch (#13444).
+        if declared_refs.iter().any(|r| !carried_blobs.contains(r)) {
+            return Err(ExportError::MissingBlob);
+        }
         let cited: Vec<String> = match &event.header.extensions.document {
             Some(document) => vec![document.content.to_hex()],
             None => Vec::new(),
@@ -643,8 +652,6 @@ pub fn verify_import(
                 resolved_count += 1;
             }
         }
-        let declared_refs: std::collections::HashSet<String> =
-            object.blob_refs.iter().cloned().collect();
         if declared_refs != resolved_refs {
             return Err(ExportError::BlobCitationMismatch);
         }
@@ -1240,13 +1247,9 @@ mod tests {
 
         // Objects from both sides of the rotation stay verifiable: the
         // binding chain in step 2 admits every key in the history.
-        let blob = ExportBlob::new(b"shared blob".to_vec());
-        let old_object = signed_object(
-            &old_key,
-            b"written before the rebind",
-            vec![blob.hash.clone()],
-        );
-        let new_object = signed_object(&new_key, b"written after", Vec::new());
+        let blob = ExportBlob::new(b"written before the rebind".to_vec());
+        let old_object = document_object(&old_key, &blob, b"written before the rebind");
+        let new_object = message_object(&new_key);
         let export = build_export(
             &svc,
             &binding,
@@ -1273,7 +1276,7 @@ mod tests {
         assert_eq!(binding.history[0].via, "old-key-signature");
         // The fast path is the old key's signature over the transfer,
         // checked at publication: the export carries no backing record.
-        let object = signed_object(&old_key, b"pre-rotation", Vec::new());
+        let object = message_object(&old_key);
         let export = build_export(
             &svc,
             &binding,
@@ -1483,8 +1486,8 @@ mod tests {
     fn export_is_canonical_and_survives_the_wire() {
         let mut svc = service();
         let binding = bind(&mut svc, 21, None);
-        let blob_b = ExportBlob::new(b"second".to_vec());
-        let blob_a = ExportBlob::new(b"first".to_vec());
+        let blob_b = ExportBlob::new(b"bbb".to_vec());
+        let blob_a = ExportBlob::new(b"a".to_vec());
         let obj_b = signed_object(&root_key(21), b"bbb", vec![blob_b.hash.clone()]);
         let obj_a = signed_object(&root_key(21), b"a", vec![blob_a.hash.clone()]);
         // Deliberately scrambled input order.

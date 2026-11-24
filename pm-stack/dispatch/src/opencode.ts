@@ -108,6 +108,37 @@ export class OpenCodeClient {
     return { id: data.id };
   }
 
+  /**
+   * The bare `opencode-go` model rides the active OpenCode Console login.
+   * Read that integration's active-first connection list so dispatch can
+   * guard the same account and pin the created session to its explicit
+   * account provider.
+   */
+  async activeIntegrationCredentialLabel(integrationId: string, directory: string): Promise<string> {
+    const data = (await this.api("GET", `/api/integration?directory=${encodeURIComponent(directory)}`)) as unknown;
+    if (!Array.isArray(data)) throw new OpenCodeError("opencode integration list returned no array");
+    const integration = data.find(
+      (item): item is { id: string; connections?: unknown } =>
+        typeof item === "object" && item !== null && "id" in item && (item as { id?: unknown }).id === integrationId,
+    );
+    if (!integration || !Array.isArray(integration.connections)) {
+      throw new OpenCodeError(`opencode integration ${integrationId} has no connection list`);
+    }
+    // OpenCode guarantees credentials are ordered active-first; environment
+    // connections may follow but are not console accounts for this guard.
+    const active = integration.connections.find(
+      (connection): connection is { type: string; label?: unknown } =>
+        typeof connection === "object" &&
+        connection !== null &&
+        "type" in connection &&
+        (connection as { type?: unknown }).type === "credential",
+    );
+    if (!active || typeof active.label !== "string" || !active.label.trim()) {
+      throw new OpenCodeError(`opencode integration ${integrationId} has no active credential label`);
+    }
+    return active.label.trim();
+  }
+
   async sendPrompt(sessionId: string, text: string): Promise<void> {
     await this.api("POST", `/api/session/${encodeURIComponent(sessionId)}/prompt`, { text });
   }
