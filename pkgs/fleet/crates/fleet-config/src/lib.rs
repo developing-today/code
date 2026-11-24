@@ -102,12 +102,21 @@ pub struct SearchConfig {
     pub url: Option<String>,
 }
 
-/// `[gh]` — the gh domain's credential-cache view (code#10742).
-/// All optional: with no section the client tries the localhost
-/// daemon at the default port, then the laptop daemon (the proxy's
-/// reach target) at the same port. Both are preferences between
-/// working routes, never a disable: an unreachable daemon falls
-/// back to in-process resolution with a visible note.
+/// `[gh]` — the gh domain's credential-cache view (code#10742)
+/// and its token rotation (code#10311 ask (a)).
+///
+/// Cache: all optional. With no section the client tries the
+/// localhost daemon at the default port, then the laptop daemon
+/// (the proxy's reach target) at the same port. Both are
+/// preferences between working routes, never a disable: an
+/// unreachable daemon falls back to in-process resolution with a
+/// visible note.
+///
+/// Rotation: `order` and `owners` persist what used to be env-only,
+/// so the rotation survives shells and machines. The env
+/// variables (`FLEET_GH_ORDER` and `FLEET_GH_<SLUG>_OWNERS`)
+/// stay per-process overrides and beat the file, the same
+/// env-beats-file direction as `[gh] cache_*`.
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct GhConfig {
@@ -120,6 +129,23 @@ pub struct GhConfig {
     /// rule. On the laptop itself localhost IS the laptop, so the
     /// same localhost-then-laptop order serves both machines.
     pub cache_laptop: Option<String>,
+    /// The persistent rotation order: entries in the `FLEET_GH_ORDER`
+    /// grammar (`personal`, `app:<owner>`, `devtoday:<owner>`,
+    /// `backup:<owner>`), given as a TOML array. When set it
+    /// replaces the whole rotation exactly, exactly as the env
+    /// variable does — so enumerating the entries here also
+    /// *selects* the enabled set (an App left out is not tried).
+    /// `FLEET_GH_ORDER` beats it per process. Absent means the
+    /// compiled-in rotation.
+    pub order: Option<Vec<String>>,
+    /// Per-App owner lists, keyed by App slug (`app`, `devtoday`,
+    /// `backup`): `[gh.owners] app = [...]`. An entry replaces
+    /// that App's compiled-in owners; `FLEET_GH_<SLUG>_OWNERS`
+    /// beats it per process. A key naming no known App is a loud
+    /// load error (#5460: a typo'd slug must not silently fall
+    /// back to the compiled-in owners).
+    #[serde(default)]
+    pub owners: BTreeMap<String, Vec<String>>,
 }
 /// `[bridge]` — the message bridge's fleet mailboxes (`fleet
 /// bridge`). Everything is optional: the URL defaults to
@@ -923,6 +949,44 @@ impl Config {
                 });
             }
         }
+        // [gh] rotation (code#10311 ask (a)): an order entry or
+        // an owner entry that is empty or blank is the #6405
+        // misspelling class — a templated config rendering a
+        // variable that came out empty. Reject at load, naming
+        // the field; omitting the field (or the key) keeps the
+        // compiled-in default. An empty owner LIST (`app = []`)
+        // is allowed: it disables that App's legs.
+        if let Some(order) = &self.gh.order {
+            for entry in order {
+                if entry.trim().is_empty() {
+                    return Err(ConfigError::Parse {
+                        path: path.to_path_buf(),
+                        message: "[gh] order must not contain an empty or blank entry; omit the field for the default"
+                            .to_string(),
+                    });
+                }
+            }
+        }
+        for (slug, owners) in &self.gh.owners {
+            if !matches!(slug.as_str(), "app" | "devtoday" | "backup") {
+                return Err(ConfigError::Parse {
+                    path: path.to_path_buf(),
+                    message: format!(
+                        "[gh.owners] {slug:?} is not a known rotation App; known slugs: app, devtoday, backup"
+                    ),
+                });
+            }
+            for owner in owners {
+                if owner.trim().is_empty() {
+                    return Err(ConfigError::Parse {
+                        path: path.to_path_buf(),
+                        message: format!(
+                            "[gh.owners] {slug:?} must not contain an empty or blank owner; use an empty list to disable that App"
+                        ),
+                    });
+                }
+            }
+        }
         // [host] (#6770, design #5687 §1): the manifest's loud
         // rules run at load like every other section's, plus one
         // structural rule of its own — a section that sets
@@ -1585,6 +1649,88 @@ impl Config {
         }
     }
 
+    /// The persistent gh rotation order (code#10311 ask (a)):
+    /// `FLEET_GH_ORDER` beats `[gh] order` beats the compiled-in
+    /// rotation (`None` for the last leg). The file form is a TOML
+    /// array in the same grammar as the env comma list; it is
+    /// joined here so the gh module parses one grammar once. An
+    /// empty env value or an empty/all-blank file list counts as
+    /// unset and falls through, exactly as an empty parsed order
+    /// falls through to the default rotation in `gh.rs`.
+    pub fn gh_rotation_order(&self) -> Option<String> {
+        Self::gh_rotation_order_from(
+            std::env::var("FLEET_GH_ORDER").ok().as_deref(),
+            self.gh.order.as_ref(),
+        )
+    }
+
+    /// `gh_rotation_order`, pure over its two sources so the
+    /// precedence is pinnable in tests without env mutation
+    /// races: a non-blank env value wins outright; otherwise the
+    /// file list (blank entries dropped — the loader already
+    /// rejects them) joins in file order; empty everywhere means
+    /// the compiled-in rotation (`None`).
+    fn gh_rotation_order_from(env: Option<&str>, file: Option<&Vec<String>>) -> Option<String> {
+        if let Some(raw) = env {
+            if !raw.trim().is_empty() {
+                return Some(raw.to_string());
+            }
+        }
+        file.and_then(|order| {
+            let kept: Vec<String> = order
+                .iter()
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect();
+            (!kept.is_empty()).then(|| kept.join(","))
+        })
+    }
+
+    /// The per-App owner override for one rotation App slug
+    /// (code#10311 ask (a)): `FLEET_GH_APP_OWNERS` /
+    /// `FLEET_GH_DEVTODAY_OWNERS` / `FLEET_GH_BACKUP_OWNERS` beat
+    /// `[gh.owners] app` / `devtoday` / `backup` beat the
+    /// compiled-in defaults. `None` means no override (the
+    /// compiled-in owners rule); `Some(vec![])` disables that
+    /// App's legs. Slugs are the gh module's rotation slugs;
+    /// this crate maps only the three documented env names and
+    /// reads the file table by key, so an unknown slug resolves
+    /// from the file alone (the caller decides what it means).
+    pub fn gh_owners_for(&self, slug: &str) -> Option<Vec<String>> {
+        let env_name = match slug {
+            "app" => Some("FLEET_GH_APP_OWNERS"),
+            "devtoday" => Some("FLEET_GH_DEVTODAY_OWNERS"),
+            "backup" => Some("FLEET_GH_BACKUP_OWNERS"),
+            _ => None,
+        };
+        let env = env_name.and_then(|name| std::env::var(name).ok());
+        Self::gh_owners_for_from(env.as_deref(), self.gh.owners.get(slug))
+    }
+
+    /// `gh_owners_for`, pure over its two sources so tests pin the
+    /// precedence without env mutation races: env set wins
+    /// (splitting the comma list, so even an all-blank value is a
+    /// `Some(vec![])` disable, matching the pre-config behavior);
+    /// env unset falls through to the file entry; both absent is
+    /// `None` (the compiled-in owners rule).
+    fn gh_owners_for_from(env: Option<&str>, file: Option<&Vec<String>>) -> Option<Vec<String>> {
+        if let Some(raw) = env {
+            return Some(
+                raw.split(',')
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .collect(),
+            );
+        }
+        file.map(|owners| {
+            owners
+                .iter()
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect()
+        })
+    }
+
     /// The secrets-broker token *file path* (never its contents).
     pub fn secrets_token_file(&self) -> PathBuf {
         match &self.secrets.token_file {
@@ -1778,6 +1924,103 @@ mod tests {
             match Config::load_from(&path) {
                 Err(ConfigError::Parse { message, .. }) => {
                     assert!(message.contains("[gh]"), "{message}");
+                }
+                other => panic!("expected Parse error for {contents:?}, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn gh_rotation_order_parses_and_sets_precedence() {
+        // Oracle: code#10311 ask (a) — `[gh] order` persists the
+        // FLEET_GH_ORDER grammar; env beats the file; empty
+        // everywhere means the compiled-in rotation (None).
+        let (_dir, path) =
+            write_temp("[gh]\norder = [\"app:dezren39\", \"personal\"]\n");
+        let cfg = Config::load_from(&path).unwrap();
+        // Env is empirically unset in this test (no mutation here,
+        // so no race): the file value rules.
+        assert_eq!(
+            Config::gh_rotation_order_from(None, cfg.gh.order.as_ref()).as_deref(),
+            Some("app:dezren39,personal")
+        );
+        // Env wins outright when non-blank.
+        assert_eq!(
+            Config::gh_rotation_order_from(
+                Some("devtoday:developing-today"),
+                cfg.gh.order.as_ref()
+            )
+            .as_deref(),
+            Some("devtoday:developing-today")
+        );
+        // A blank env value falls through to the file.
+        assert_eq!(
+            Config::gh_rotation_order_from(Some("   "), cfg.gh.order.as_ref()).as_deref(),
+            Some("app:dezren39,personal")
+        );
+        // Empty everywhere is the compiled-in rotation.
+        assert_eq!(
+            Config::gh_rotation_order_from(None, None),
+            None
+        );
+        assert_eq!(
+            Config::gh_rotation_order_from(Some(""), Some(&vec![])),
+            None
+        );
+    }
+
+    #[test]
+    fn gh_owners_parses_and_sets_precedence() {
+        // Oracle: code#10311 ask (a) — `[gh.owners]` persists the
+        // per-App owner lists; env set wins (even to an empty
+        // disable); env unset falls through to the file; both
+        // absent is None (compiled-in owners).
+        let (_dir, path) = write_temp(
+            "[gh.owners]\napp = [\"dezren39\"]\ndevtoday = []\n",
+        );
+        let cfg = Config::load_from(&path).unwrap();
+        assert_eq!(
+            Config::gh_owners_for_from(None, cfg.gh.owners.get("app")),
+            Some(vec!["dezren39".to_string()])
+        );
+        // An empty file list disables that App's legs.
+        assert_eq!(
+            Config::gh_owners_for_from(None, cfg.gh.owners.get("devtoday")),
+            Some(vec![])
+        );
+        // No file entry is no override.
+        assert_eq!(
+            Config::gh_owners_for_from(None, cfg.gh.owners.get("backup")),
+            None
+        );
+        // Env set wins, even to an empty disable.
+        assert_eq!(
+            Config::gh_owners_for_from(Some("a,b"), cfg.gh.owners.get("app")),
+            Some(vec!["a".to_string(), "b".to_string()])
+        );
+        assert_eq!(
+            Config::gh_owners_for_from(Some(""), cfg.gh.owners.get("app")),
+            Some(vec![])
+        );
+    }
+
+    #[test]
+    fn gh_rotation_config_rejects_typos_loudly() {
+        // Oracle: the #5460/#6405 loud-error rules — a blank
+        // order entry, a blank owner entry, and an unknown owner
+        // slug are all misspelling-class load errors.
+        for (contents, fragment) in [
+            ("[gh]\norder = [\"\"]\n", "[gh] order"),
+            (
+                "[gh.owners]\napp = [\"dezren39\", \"  \"]\n",
+                "[gh.owners]",
+            ),
+            ("[gh.owners]\nwarp = [\"x\"]\n", "[gh.owners]"),
+        ] {
+            let (_dir, path) = write_temp(contents);
+            match Config::load_from(&path) {
+                Err(ConfigError::Parse { message, .. }) => {
+                    assert!(message.contains(fragment), "{message}");
                 }
                 other => panic!("expected Parse error for {contents:?}, got {other:?}"),
             }

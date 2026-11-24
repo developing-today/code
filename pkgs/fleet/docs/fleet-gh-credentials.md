@@ -102,7 +102,28 @@ Compiled-in owner lists (`gh.rs:104-110`):
 - developing.today App: `developing-today`, `dezren39`
 - Backup App: `developing-today`
 
-Environment overrides (per-process, nothing persists):
+Persistent rotation config (code#10311 ask (a)): the same two
+knobs live in the fleet config file, so the rotation survives
+shells and machines. Env beats the file per process; the file
+beats the compiled-in lists above.
+
+```toml
+[gh]
+# Replaces the whole rotation exactly, same grammar as
+# FLEET_GH_ORDER. Enumerating the entries also selects the
+# enabled set: an App left out is not tried.
+order = ["app:developing-today", "app:dezren39", "personal"]
+
+[gh.owners]
+# Replaces one App's compiled-in owners (empty list disables it).
+app = ["developing-today", "dezren39"]
+```
+
+A blank order/owner entry and an unknown `[gh.owners]` slug are
+loud config-load errors (the #5460/#6405 rules); an empty owner
+list (`app = []`) is allowed and disables that App.
+
+Environment overrides (per-process, beat the file):
 
 | Variable                   | Effect (`gh.rs:74-86`, `gh.rs:352-378`)                                                                                                                                                                                                                             |
 | -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
