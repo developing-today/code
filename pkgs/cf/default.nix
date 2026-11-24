@@ -28,6 +28,11 @@
 #     generated from the published package.json with devDependencies /
 #     scripts stripped and `npm install --package-lock-only`. The same
 #     strip is reapplied in postPatch so the lock matches package.json.
+#     The vendored package.json is copied over the tarball's copy in
+#     postPatch too: a dep bumped ahead of upstream (miniflare /
+#     @cloudflare/runtime-types for the undici security fix, #13860)
+#     would otherwise leave the tarball manifest stale and make npm
+#     re-resolve against the registry in the offline build sandbox.
 #   * Runtime deps are small: miniflare (which pulls the workerd binary),
 #     @cloudflare/config, @cloudflare/runtime-types,
 #     @cloudflare/build-output-utils, blake3-wasm.
@@ -50,6 +55,11 @@ buildNpmPackage {
 
   postPatch = ''
     cp ${./package-lock.json} package-lock.json
+    # The vendored package.json is the manifest the lock was generated
+    # from; the tarball's copy goes stale when a dep is bumped ahead of
+    # upstream (miniflare/runtime-types for the undici fix, #13860), and
+    # npm then re-resolves against the registry and fails offline.
+    cp ${./package.json} package.json
     chmod +w package.json package-lock.json
 
     ${lib.getExe nodejs} -e '
