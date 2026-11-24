@@ -50,6 +50,18 @@ if (process.argv.length > 2) {
 }
 const EDGE = process.env.EDGE ?? "http://localhost:8799";
 const cfg = readConfig({ HOME: "/tmp/pm-edge-smoke", PM_CONSOLE_OWNER_EMAILS: "owner@example.com" });
+/** What the stand-in host tells the Worker in place of main's settings,
+ * as a console on some other checkout would. Every one is marked, so
+ * that anything asked of GitHub or the queue store by one of them is
+ * found out. */
+const TOLD = {
+  repo: "told-by/the-machine",
+  queue: "told-by-the-machine",
+  queueDbUrl: "https://told-by-the-machine.invalid",
+  queueTokenName: "told.by.the.machine",
+  androidPackage: "told.by.the.machine",
+  promptLabel: "told/by-the-machine",
+};
 cfg.issuers = [
   {
     name: "smoke-sign-in",
@@ -112,18 +124,22 @@ const link = new EdgeLink({
   done: memoryStore(),
   docs,
   phones: deps.phones!.devices,
+  // Who may sign in is the host's to tell. The repository's settings it
+  // tells too, and here it tells others than main's for every one the
+  // Worker goes by its own for (a console on some other checkout): the
+  // Worker has to do everything below by its own all the same.
   config: async () => ({
     owners: cfg.owners,
     certNames: [],
     issuers: cfg.issuers,
-    repo: cfg.repo,
-    queue: cfg.queue,
-    androidPackage: cfg.androidPackage,
+    repo: TOLD.repo,
+    queue: TOLD.queue,
+    androidPackage: TOLD.androidPackage,
     androidFingerprints: [],
     androidApp: false,
-    queueDbUrl: cfg.queueDbUrl,
-    queueTokenName: cfg.queueTokenName,
-    promptLabel: cfg.promptLabel,
+    queueDbUrl: TOLD.queueDbUrl,
+    queueTokenName: TOLD.queueTokenName,
+    promptLabel: TOLD.promptLabel,
     needsRepos: cfg.needsRepos,
   }),
   run: heldRunner(deps),
@@ -138,18 +154,51 @@ const outside: {
   path: string;
   auth: string | null;
   agent: string | null;
-  /** The tag a read of GitHub was asked by, and what it was answered. */
+  /** Whether what was asked named anything the host told in place of
+   * main's settings (see TOLD). */
+  told?: boolean;
+  /** The tag a read of GitHub was asked by, what it was answered, and
+   * the tag of what GitHub would say. */
   tag?: string | null;
   status?: number;
+  etag?: string;
+  /** How GitHub was asked: a read, or something written. */
+  method?: string;
 }[] = [];
+/** The one thing in the stand-in that needs the owner's hands, and
+ * whether it still carries the label that says so. */
+const hands = { labelled: true };
 /** GitHub turning every call away as one too many, until this second
  * (as it says it: nothing left of the allowance, and when it is back). */
 const spent = { until: 0 };
+/** The host out of reach while GitHub and the queue store still
+ * answer, and what answers in its place. 530 is what Cloudflare says of
+ * a tunnel with no connection (its error 1033): the host was never
+ * reached. 502 is a gateway that could not get an answer out of it:
+ * that does not say the host never had the request. */
+const hostAway: { on: boolean; status: 530 | 502 } = { on: false, status: 530 };
+/** The list of Workers answered at length, as GitHub answers a list of
+ * open pull requests: well over a million characters, each of two
+ * units (the Worker's store holds about two million bytes a value, so
+ * such an answer is kept in pieces), in two runs so that the end of a
+ * piece falls inside a character in one of them whichever way the
+ * count before it comes out. What the Worker reads the list from comes
+ * after all of it. */
+const long = {
+  on: false,
+  padding: `${"\u{1F600}".repeat(310_000)}x${"\u{1F600}".repeat(310_000)}`,
+};
 /** GitHub's answer to a read: tagged, and "not modified" (with no body)
  * to a read that carries the tag of what it would say. */
-const tagged = (req: Request, entry: { tag?: string | null; status?: number }, body: unknown, status = 200) => {
+const tagged = (
+  req: Request,
+  entry: { tag?: string | null; status?: number; etag?: string },
+  body: unknown,
+  status = 200,
+) => {
   const etag = `W/"${Bun.hash(JSON.stringify(body)).toString(16)}"`;
   entry.tag = req.headers.get("if-none-match");
+  entry.etag = etag;
   if (status === 200 && req.method === "GET" && entry.tag === etag) {
     entry.status = 304;
     return new Response(null, { status: 304, headers: { etag } });
@@ -167,9 +216,11 @@ const server = Bun.serve({
       const path = url.pathname.slice("/github/".length);
       const entry: (typeof outside)[number] = {
         to: "github",
+        told: /told[-./]by/.test(decodeURIComponent(url.pathname + url.search)),
         path,
         auth: req.headers.get("authorization"),
         agent: req.headers.get("user-agent"),
+        method: req.method,
       };
       outside.push(entry);
       if (spent.until > 0) {
@@ -181,11 +232,10 @@ const server = Bun.serve({
       }
       if (path.endsWith("/contents/pm-stack/platform/workers.json")) {
         // The platform read's list, served as GitHub serves a file.
-        return tagged(req, entry, {
-          content: Buffer.from(readFileSync(join(import.meta.dir, "..", "..", "platform", "workers.json"))).toString(
-            "base64",
-          ),
-        });
+        const content = Buffer.from(
+          readFileSync(join(import.meta.dir, "..", "..", "platform", "workers.json")),
+        ).toString("base64");
+        return tagged(req, entry, long.on ? { padding: long.padding, content } : { content });
       }
       if (path.includes("/actions/workflows/")) return tagged(req, entry, { workflow_runs: [] });
       if (path.endsWith("/pulls")) {
@@ -201,13 +251,71 @@ const server = Bun.serve({
           },
         ]);
       }
+      if (req.method === "POST" && /\/issues\/\d+\/comments$/.test(path)) {
+        // A comment is made, as GitHub answers one.
+        entry.status = 201;
+        return Response.json({ html_url: `https://github.com/${path.replace("repos/", "")}#made` }, { status: 201 });
+      }
       if (path === "search/issues") return tagged(req, entry, { total_count: 0, items: [] });
+      if (path === "repos/developing-today/code/issues" && url.searchParams.get("labels") === "user/review") {
+        // What waits on the owner, as a repository's own list has it:
+        // one pull request he was asked to review.
+        return tagged(req, entry, [
+          {
+            number: 31,
+            title: "Smoke review",
+            body: null,
+            state: "open",
+            html_url: "https://github.com/developing-today/code/pull/31",
+            updated_at: "2026-11-23T09:00:00Z",
+            labels: [{ name: "user/review" }],
+            pull_request: { url: "https://api.github.com/repos/developing-today/code/pulls/31" },
+          },
+        ]);
+      }
+      if (path === "repos/developing-today/code/issues" && url.searchParams.get("labels") === "user/escalated") {
+        // Something only the owner's hands can do, for as long as it carries the label.
+        return tagged(
+          req,
+          entry,
+          hands.labelled
+            ? [
+                {
+                  number: 32,
+                  title: "Smoke hands",
+                  body: 'A person is needed.\n<!-- hands:v1 kind=physical action="Plug it in." -->',
+                  state: "open",
+                  html_url: "https://github.com/developing-today/code/issues/32",
+                  updated_at: "2026-11-23T09:30:00Z",
+                  labels: [{ name: "user/escalated" }],
+                },
+              ]
+            : [],
+        );
+      }
+      if (req.method === "DELETE" && path === "repos/developing-today/code/issues/32/labels/user%2Fescalated") {
+        // The label taken off, as GitHub answers it: what is left on the
+        // issue, or that the label was not there.
+        if (!hands.labelled) {
+          entry.status = 404;
+          return Response.json({ message: "Label does not exist", status: "404" }, { status: 404 });
+        }
+        hands.labelled = false;
+        entry.status = 200;
+        return Response.json([]);
+      }
       if (path.endsWith("/issues")) return tagged(req, entry, []);
       return tagged(req, entry, { message: "Not Found" }, 404);
     }
     if (url.pathname === "/queue/v2/pipeline") {
-      outside.push({ to: "queue", path: url.pathname, auth: req.headers.get("authorization"), agent: null });
       const asked = (await req.json()) as { requests: { type: string }[] };
+      outside.push({
+        to: "queue",
+        path: url.pathname,
+        auth: req.headers.get("authorization"),
+        agent: null,
+        told: /told[-./]by/.test(JSON.stringify(asked)),
+      });
       // No rows for anything asked: an empty queue.
       return Response.json({
         results: asked.requests.map((r) =>
@@ -216,6 +324,9 @@ const server = Bun.serve({
             : { type: "ok", response: { type: "close" } },
         ),
       });
+    }
+    if (hostAway.on) {
+      return new Response(hostAway.status === 530 ? "error code: 1033" : "Bad Gateway", { status: hostAway.status });
     }
     seen.push(`${req.method} ${url.pathname}`);
     // Everything that arrives here came through the Worker, as it does
@@ -298,6 +409,17 @@ try {
     after.configured === true && typeof after.hostSeen === "number",
     JSON.stringify(after),
   );
+  // The Worker carries the repository's settings in its own bundle. The
+  // host here told others for the six the Worker goes by its own for,
+  // and main's list of repositories: exactly those six are said, so the
+  // list in the bundle as deployed is the one this console has.
+  check(
+    "the Worker says in which settings the host told it others than main's, by name",
+    before.machineSettingsDiffer === null &&
+      JSON.stringify(after.machineSettingsDiffer) ===
+        JSON.stringify(["repo", "queue", "queueDbUrl", "queueTokenName", "androidPackage", "promptLabel"]),
+    JSON.stringify({ before: before.machineSettingsDiffer, after: after.machineSettingsDiffer }),
+  );
   const second = await link.once();
   check(
     "a second report is accepted and nothing is asked for again",
@@ -309,14 +431,14 @@ try {
   const wanted = process.env.SMOKE_PRIMARY === "1";
   if (wanted || after.directEnabled === true) {
     check(
-      "the Worker says it does the core itself, now that it knows where things are",
+      "the Worker says it does the core itself, now that a machine has said who may sign in",
       after.directEnabled === true && after.primary === true && before.primary === false,
       JSON.stringify({ before: before.primary, after: after.primary, enabled: after.directEnabled }),
     );
     const kinds = (after.selfCheck as { kinds?: Record<string, { ok: boolean; error?: string }> } | null)?.kinds ?? {};
     check(
-      "its own read of the board, the prompts, pull requests and ranked issues each came back good",
-      ["board", "asks", "prs", "priorities"].every((kind) => kinds[kind]?.ok === true),
+      "its own read of the board, the prompts, pull requests, ranked issues and what needs the owner each came back good",
+      ["board", "asks", "prs", "priorities", "census"].every((kind) => kinds[kind]?.ok === true),
       JSON.stringify(kinds),
     );
     const github = outside.filter((o) => o.to === "github");
@@ -330,8 +452,15 @@ try {
       `${github.length} to GitHub (${[...new Set(github.map((o) => o.path))].join(", ")}), ${queue.length} to the queue store`,
     );
     check(
+      "and they were of main's repository, queue and label: nothing the host named in their place was asked for",
+      outside.length > 0 &&
+        outside.every((o) => o.told === false) &&
+        github.some((o) => o.path.startsWith(`repos/${cfg.repo}/`)),
+      `${outside.filter((o) => o.told).length} of ${outside.length} named what the host told`,
+    );
+    check(
       "and it told the host what it reads itself, so the host stops sending it",
-      JSON.stringify(second?.owns) === JSON.stringify(["board", "prs", "priorities", "asks"]),
+      JSON.stringify(second?.owns) === JSON.stringify(["board", "prs", "priorities", "asks", "census"]),
       JSON.stringify(second?.owns),
     );
 
@@ -377,17 +506,19 @@ try {
     // Read again, the list is asked for by the tag GitHub gave it, GitHub
     // says "not modified" with no body, and this runtime's fetch hands
     // that back as it is: the answer is the one kept, whole.
-    const githubSaid = async () =>
-      (
-        (await (await get("/console/health")).json()) as {
-          github?: {
-            answers: number;
-            unchanged: number;
-            kept: number;
-            quiet: { core: number | null; search: number | null };
-          };
-        }
-      ).github;
+    type Said = {
+      /** When the object answering started. */
+      woke?: number;
+      github?: {
+        answers: number;
+        unchanged: number;
+        since: number;
+        kept: number;
+        quiet: { core: number | null; search: number | null };
+      };
+    };
+    const healthSaid = async () => (await (await get("/console/health")).json()) as Said;
+    const githubSaid = async () => (await healthSaid()).github;
     const list = () => outside.filter((call) => call.path.endsWith("/contents/pm-stack/platform/workers.json"));
     const unchangedBefore = (await githubSaid())?.unchanged ?? -1;
     const again = (await (await asOwner("/console/api/platform")).json()) as typeof platform;
@@ -404,40 +535,211 @@ try {
         (said?.kept ?? 0) > 0,
       `asked by ${lastAsk?.tag}, answered ${lastAsk?.status}; health ${JSON.stringify(said)}, before ${unchangedBefore}`,
     );
-    // GitHub turns the account away: nothing left of the hour, back in a
-    // few seconds. The time is kept to in this runtime: until it comes
-    // the Worker asks GitHub for nothing counted by the hour, and then
-    // it asks again.
-    spent.until = Math.ceil(Date.now() / 1000) + 8;
+    // The same list answered at length (see `long`): a full answer, since
+    // it is not the one kept, and from here on the one that is.
+    long.on = true;
+    const atLength = (await (await asOwner("/console/api/platform")).json()) as typeof platform;
+    const longAsk = list().at(-1);
+    check(
+      "an answer too long for one stored value is read as any other",
+      longAsk?.status === 200 && JSON.stringify(atLength.workers) === JSON.stringify(platform.workers),
+      `answered ${longAsk?.status}, ${(atLength.workers ?? []).length} workers`,
+    );
+    // GitHub turns the account away: nothing left of the hour, and none
+    // to come for ten minutes.
+    spent.until = Math.ceil(Date.now() / 1000) + 600;
     const quietTo = spent.until * 1000;
     const turned = await asOwner("/console/api/platform");
     await turned.text();
     spent.until = 0;
-    const until = (await githubSaid())?.quiet.core ?? null;
+    const quietSaid = await healthSaid();
+    const until = quietSaid.github?.quiet.core ?? null;
     // (Searches are counted apart by GitHub, and are not what was spent:
     // only what draws on the hour is looked at.)
     const hourly = () => outside.filter((call) => call.to === "github" && !call.path.startsWith("search/")).length;
     const askedBy = hourly();
+    // The object is put away. Cloudflare takes an idle one out of memory
+    // within seconds, and in service nearly every read is made by one
+    // that has just started with nothing in mind: what the Worker keeps
+    // of GitHub (its answers, the time it said to ask again, the count)
+    // has to be in its storage, and for a day it was not. So nothing is
+    // asked of the Worker here (asking is what keeps an object) until
+    // health says another one answers, and the rest is asked of that.
+    // It goes within a quarter of a minute of its last request, having
+    // left no timer running (src/timed.ts). Looking is itself a request
+    // and starts the count again, so each wait is longer than the last.
+    let idled = 0;
+    let woke = quietSaid.woke;
+    for (const idle of [15_000, 20_000, 30_000]) {
+      await new Promise((resolve) => setTimeout(resolve, idle));
+      idled += idle;
+      woke = (await healthSaid()).woke;
+      if (woke !== quietSaid.woke) break;
+    }
+    check(
+      "left alone, the Worker's object is put away and another answers: what follows is asked of one that was not there before",
+      typeof quietSaid.woke === "number" && typeof woke === "number" && woke > quietSaid.woke,
+      `${idled / 1000} s with nothing asked; the object answering started at ${quietSaid.woke}, then ${woke}`,
+    );
     // GitHub would answer now, and is not asked: not for this read, and
     // not by anything else the Worker does meanwhile.
     const held = await asOwner("/console/api/platform");
     await held.text();
+    const heldSaid = await githubSaid();
     check(
-      "turned away with the hour used up, the Worker keeps to the time GitHub gave and asks it nothing more",
-      until === quietTo && hourly() === askedBy,
-      `quiet until ${until}, GitHub said ${quietTo}; the read answered ${turned.status}, then ${held.status}; ${
-        hourly() - askedBy
-      } calls while quiet`,
+      "turned away with the hour used up, the Worker keeps to the time GitHub gave and asks it nothing more, put away in between though it was",
+      until === quietTo && heldSaid?.quiet.core === quietTo && hourly() === askedBy,
+      `quiet until ${until} then ${heldSaid?.quiet.core}, GitHub said ${quietTo}; the read answered ${turned.status}, then ${
+        held.status
+      }; ${hourly() - askedBy} calls while quiet`,
     );
-    await new Promise((resolve) => setTimeout(resolve, Math.max(0, (until ?? 0) - Date.now()) + 400));
+    // The owner says to try again now, which outweighs GitHub's "not
+    // before". Asked again, the list is asked for by the tag of the long
+    // answer kept before all this: every piece of it is still there, the
+    // store took each (a value of over a million bytes), and what the
+    // Worker reads the list from, which comes after the last of them,
+    // is whole.
+    const retried = await actAsOwner("edge.retry", {});
+    await retried.text();
+    const freed = await githubSaid();
     const back = (await (await asOwner("/console/api/platform")).json()) as typeof platform;
+    const backAsk = list().at(-1);
+    const backSaid = await githubSaid();
     check(
-      "and when the time has come it asks again, and reads the list",
-      (back.workers ?? []).some((w) => w.name === "pm-console-edge") &&
-        hourly() > askedBy &&
-        (await githubSaid())?.quiet.core === null,
-      `${(back.workers ?? []).length} workers; ${hourly() - askedBy} more calls`,
+      "told to try again now, it does: the wait is lifted, and the list is read",
+      retried.status === 200 &&
+        freed?.quiet.core === null &&
+        (back.workers ?? []).some((w) => w.name === "pm-console-edge") &&
+        hourly() > askedBy,
+      `try again answered ${retried.status}; quiet until ${freed?.quiet.core}; ${(back.workers ?? []).length} workers; ${
+        hourly() - askedBy
+      } more calls`,
     );
+    check(
+      'by the tag of the long answer it kept before being put away, which GitHub\'s "not modified" still stands for; and its count goes on from the one before',
+      backAsk?.status === 304 &&
+        backAsk.tag === longAsk?.etag &&
+        JSON.stringify(back.workers) === JSON.stringify(platform.workers) &&
+        (backSaid?.unchanged ?? 0) > (quietSaid.github?.unchanged ?? -1) &&
+        (backSaid?.answers ?? 0) > (quietSaid.github?.answers ?? -1) &&
+        backSaid?.since === said?.since &&
+        (backSaid?.kept ?? 0) >= (quietSaid.github?.kept ?? 1),
+      `asked by ${backAsk?.tag} (the long answer's is ${longAsk?.etag}), answered ${backAsk?.status}; health ${JSON.stringify(
+        backSaid,
+      )}, before ${JSON.stringify(quietSaid.github)}`,
+    );
+    long.on = false;
+    // And a wait that runs out by itself: turned away again, back in a
+    // few seconds. Until the time comes nothing counted by the hour is
+    // asked, and then it is.
+    spent.until = Math.ceil(Date.now() / 1000) + 4;
+    const shortTo = spent.until * 1000;
+    await (await asOwner("/console/api/platform")).text();
+    spent.until = 0;
+    const shortSaid = (await githubSaid())?.quiet.core ?? null;
+    const askedThen = hourly();
+    await (await asOwner("/console/api/platform")).text();
+    const heldThen = hourly();
+    await new Promise((resolve) => setTimeout(resolve, Math.max(0, shortTo - Date.now()) + 400));
+    const ranOut = (await (await asOwner("/console/api/platform")).json()) as typeof platform;
+    check(
+      "and a wait left to run out is kept to until the time GitHub gave, and no longer",
+      shortSaid === shortTo &&
+        heldThen === askedThen &&
+        hourly() > askedThen &&
+        JSON.stringify(ranOut.workers) === JSON.stringify(platform.workers) &&
+        (await githubSaid())?.quiet.core === null,
+      `quiet until ${shortSaid}, GitHub said ${shortTo}; ${heldThen - askedThen} calls while quiet, ${hourly() - askedThen} after`,
+    );
+    // What is held that Cloudflare can do itself, it does, with no
+    // machine. The host is out of reach and GitHub turns the account
+    // away, so a comment the owner makes is held. Then GitHub answers
+    // again and the owner says to try again now: the Worker asks to be
+    // woken, the runtime wakes it, and it makes the comment itself, once.
+    {
+      const commentId = "55555555-5555-4555-8555-555555555555";
+      const commentsOn = (issue: number, status: number) =>
+        outside.filter(
+          (o) =>
+            o.to === "github" &&
+            o.method === "POST" &&
+            o.path.endsWith(`/issues/${issue}/comments`) &&
+            o.status === status,
+        ).length;
+      const comments = (status: number) => commentsOn(7, status);
+      type Waiting = { held?: { id: string; waits?: string }[] };
+      hostAway.on = true;
+      hostAway.status = 530;
+      spent.until = Math.ceil(Date.now() / 1000) + 600;
+      const heldComment = (await (
+        await actAsOwner(
+          "issue.comment",
+          { issue: 7, text: "held by the smoke run, then done by the Worker" },
+          commentId,
+        )
+      ).json()) as { ok?: boolean; held?: boolean; waits?: string };
+      spent.until = 0;
+      check(
+        "turned away by GitHub with the tunnel down, a comment is held as either side's, and nothing was written",
+        heldComment.held === true && heldComment.waits === "either" && comments(403) === 1 && comments(201) === 0,
+        `${JSON.stringify(heldComment)}; ${comments(403)} turned away, ${comments(201)} made`,
+      );
+      const tryAgain = await actAsOwner("edge.retry", {});
+      await tryAgain.text();
+      for (let waited = 0; waited < 20_000 && comments(201) === 0; waited += 500) {
+        await new Promise((resolve) => setTimeout(resolve, 500));
+      }
+      // (Time for it to be done a second time, if it were going to be.)
+      await new Promise((resolve) => setTimeout(resolve, 4000));
+      const waiting = (await (await asOwner("/console/api/machines")).json()) as Waiting;
+      check(
+        "and when GitHub answers and the owner says to try again, the Worker wakes itself and makes the comment: once, with no machine",
+        tryAgain.status === 200 && comments(201) === 1 && !(waiting.held ?? []).some((h) => h.id === commentId),
+        `try again ${tryAgain.status}; ${comments(201)} made; still waiting ${JSON.stringify(waiting.held)}`,
+      );
+      // The other way of being out of reach. What answers in the host's
+      // place does not say the host never had the request (a gateway
+      // that got no answer out of it): the host may have made the
+      // comment, so the Worker holds it for the host and never makes it
+      // itself, however able it is. This is the Worker's own reading of
+      // what came back, which only this run exercises.
+      const maybeId = "66666666-6666-4666-8666-666666666666";
+      hostAway.status = 502;
+      spent.until = Math.ceil(Date.now() / 1000) + 600;
+      const heldMaybe = (await (
+        await actAsOwner("issue.comment", { issue: 9, text: "held by the smoke run for the host alone" }, maybeId)
+      ).json()) as { held?: boolean; waits?: string };
+      spent.until = 0;
+      const againMaybe = await actAsOwner("edge.retry", {});
+      await againMaybe.text();
+      // (As long as the other took to be made, and more.)
+      await new Promise((resolve) => setTimeout(resolve, 8000));
+      const waitingMaybe = (await (await asOwner("/console/api/machines")).json()) as Waiting;
+      const countsMaybe = ((await (await get("/console/health")).json()) as { held?: Record<string, number> }).held;
+      check(
+        "out of reach with nothing to say the host never had it, a comment is held for the host alone: the Worker does not make it",
+        heldMaybe.held === true &&
+          heldMaybe.waits === "asked" &&
+          againMaybe.status === 200 &&
+          commentsOn(9, 403) === 1 &&
+          commentsOn(9, 201) === 0 &&
+          (waitingMaybe.held ?? []).some((h) => h.id === maybeId && h.waits === "asked") &&
+          countsMaybe?.asked === 1 &&
+          countsMaybe?.either === 0,
+        `${JSON.stringify(heldMaybe)}; ${commentsOn(9, 403)} turned away, ${commentsOn(9, 201)} made; waiting ${JSON.stringify(waitingMaybe.held)}; health ${JSON.stringify(countsMaybe)}`,
+      );
+      // Taken back, so that nothing of this is left waiting for the rest of the run.
+      const takenBack = await actAsOwner("held.drop", { id: maybeId });
+      await takenBack.text();
+      const left = (await (await asOwner("/console/api/machines")).json()) as Waiting;
+      check(
+        "and the owner can take it back",
+        takenBack.status === 200 && (left.held ?? []).length === 0,
+        `${takenBack.status}; waiting ${JSON.stringify(left.held)}`,
+      );
+      hostAway.on = false;
+      hostAway.status = 530;
+    }
     // Someone to tell: a device takes notifications (its service is a
     // known one and its key a real point; nothing is sent to it in
     // this run unless the clock's news is worth sending).
@@ -465,12 +767,116 @@ try {
       )
     ).json()) as { result?: { devices?: number } };
     check("a device takes notifications", subscribed.result?.devices === 1, JSON.stringify(subscribed));
+    // With someone to tell, the object wakes itself, and health says so
+    // to anyone: that the clock is wanted, and when it has next asked
+    // to be woken (a time this runtime holds, not the object).
+    const clockSaid = (
+      (await (await get("/console/health")).json()) as { clock?: { wanted: boolean; next: number | null } }
+    ).clock;
+    check(
+      "and health says the object's own clock is wanted, and when it next wakes",
+      clockSaid?.wanted === true && typeof clockSaid.next === "number" && clockSaid.next > Date.now() - 60_000,
+      JSON.stringify(clockSaid),
+    );
     // The clock starts itself when a document is read. Its interval
     // is the run's shortened one, and the board goes stale half a
     // minute in: an alarm that fires and does its work reads the
     // board from GitHub again, here, with nobody asking.
     const board = await asOwner("/console/api/doc/core");
     check("the state is read signed in", board.status === 200, String(board.status));
+    // What needs the owner is read by the Worker from each repository's
+    // own list of each label (never the search, and with no machine):
+    // the stand-in's one review is there, and the lists were asked for.
+    const needs = (
+      (await board.json()) as { census?: { complete?: boolean; reviews?: { ref: string; pr: boolean }[] } }
+    ).census;
+    const needsAsked = outside.filter(
+      (o) => o.to === "github" && o.method === "GET" && /^repos\/[^/]+\/[^/]+\/issues$/.test(o.path),
+    );
+    check(
+      "what needs the owner is read by the Worker itself from the repositories' lists",
+      needs?.complete === true &&
+        JSON.stringify(needs.reviews?.map((i) => [i.ref, i.pr])) ===
+          JSON.stringify([["developing-today/code#31", true]]) &&
+        needsAsked.length >= 8,
+      `${JSON.stringify(needs)}; ${needsAsked.length} list reads`,
+    );
+    // The app connected to be told of changes: a real WebSocket, held by
+    // this runtime's own object. Only the platform can make one, so
+    // only here is it known to work. A stranger is not connected.
+    const liveAt = `${EDGE.replace(/^http/, "ws")}/console/api/events`;
+    const liveSaid: string[] = [];
+    const stranger = await fetch(`${EDGE}/console/api/events`, {
+      headers: { upgrade: "websocket" },
+      redirect: "manual",
+    });
+    await stranger.body?.cancel();
+    const liveWs = new WebSocket(liveAt, { headers: { "cf-access-jwt-assertion": await ownerToken() } } as never);
+    const liveOpened = await new Promise<boolean>((resolve) => {
+      liveWs.onopen = () => resolve(true);
+      liveWs.onerror = () => resolve(false);
+      setTimeout(() => resolve(false), 8000);
+    });
+    liveWs.onmessage = (event) => liveSaid.push(String(event.data));
+    if (liveOpened) liveWs.send("ping");
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    const listening = ((await (await get("/console/health")).json()) as { listening?: number }).listening;
+    check(
+      "the owner's app is connected to be told of changes, a stranger is not, and the platform answers its ping",
+      liveOpened && stranger.status !== 101 && listening === 1 && liveSaid.includes("pong"),
+      `opened ${liveOpened}, a stranger got ${stranger.status}, listening ${listening}, said ${JSON.stringify(liveSaid)}`,
+    );
+    liveSaid.length = 0;
+    // "Done" on what needed his hands, by the Worker itself: the label
+    // taken off, then the fleet told, and the list read again so the
+    // item is gone from the next look.
+    const handsBefore = (
+      (await (await asOwner("/console/api/doc/core")).json()) as { census?: { hands?: { ref: string }[] } }
+    ).census?.hands?.map((i) => i.ref);
+    const wroteFrom = outside.length;
+    const askedHostFrom = seen.length;
+    const handsDone = (await (
+      await actAsOwner("hands.done", { ref: "developing-today/code#32", note: "smoke" })
+    ).json()) as {
+      ok?: boolean;
+      result?: { done?: boolean };
+    };
+    const handsWrote = outside
+      .slice(wroteFrom)
+      .filter((o) => o.to === "github" && o.method !== "GET")
+      .map((o) => `${o.method} ${o.path} ${o.status} ${o.auth === "Bearer smoke-github"}`);
+    const handsAfter = (
+      (await (await asOwner("/console/api/doc/core")).json()) as { census?: { hands?: { ref: string }[] } }
+    ).census?.hands?.map((i) => i.ref);
+    check(
+      "done on what needed the owner's hands is done by the Worker: the label off, then the fleet told, and it leaves the list",
+      JSON.stringify(handsBefore) === JSON.stringify(["developing-today/code#32"]) &&
+        handsDone.ok === true &&
+        handsDone.result?.done === true &&
+        JSON.stringify(handsWrote) ===
+          JSON.stringify([
+            "DELETE repos/developing-today/code/issues/32/labels/user%2Fescalated 200 true",
+            "POST repos/developing-today/code/issues/32/comments 201 true",
+          ]) &&
+        JSON.stringify(handsAfter) === JSON.stringify([]) &&
+        !seen.slice(askedHostFrom).some((s) => s.includes("/console/api/act")),
+      `before ${JSON.stringify(handsBefore)}, did ${JSON.stringify(handsDone)}, wrote ${JSON.stringify(handsWrote)}, after ${JSON.stringify(handsAfter)}`,
+    );
+    // What he did changed what the app shows: the connected app was
+    // told so, by name of the document, without asking.
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    const toldOf = liveSaid
+      .filter((text) => text.startsWith("{"))
+      .map((text) => JSON.parse(text) as { t: string; docs: string[] });
+    check(
+      "and the connected app was told that the core document changed",
+      toldOf.length >= 1 && toldOf.every((m) => m.t === "changed") && toldOf.some((m) => m.docs.includes("core")),
+      JSON.stringify(liveSaid),
+    );
+    liveWs.close();
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    const stillListening = ((await (await get("/console/health")).json()) as { listening?: number }).listening;
+    check("and once the app goes away nobody is connected", stillListening === 0, String(stillListening));
     await new Promise((resolve) => setTimeout(resolve, 3000));
     const readsBefore = outside.filter((o) => o.to === "github").length;
     let readsAfter = readsBefore;

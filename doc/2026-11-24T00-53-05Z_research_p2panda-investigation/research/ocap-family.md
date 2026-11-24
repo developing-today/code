@@ -6,7 +6,7 @@ project specs, docs, repos, and release notes; every factual claim is linked.
 Secondary summaries are flagged where used.
 
 **One-sentence verdict:** this family is the most completely realised design
-for *live, delegated authority between mutually suspicious programs* that
+for _live, delegated authority between mutually suspicious programs_ that
 exists anywhere — and it is a **distributed-objects** system, not a data
 replication system. It has no answer to "how do two offline nodes converge on
 shared state," because that is not the problem it solves. For this estate
@@ -25,7 +25,7 @@ them as competitors.
 
 CapTP, the Capability Transport Protocol, is an abstract protocol for
 message passing between objects on different machines in which **holding a
-reference *is* the authority to invoke**: "an object can use another object
+reference _is_ the authority to invoke**: "an object can use another object
 (capability) if and only if it possesses a reference to it — if you don't
 have it, you can't use it"
 ([OCapN CapTP draft specification](https://github.com/ocapn/ocapn/blob/main/draft-specifications/CapTP%20Specification.md)).
@@ -35,7 +35,7 @@ Its defining features, per the same draft:
   exported/imported by position; a message can carry references as arguments,
   so the reference graph and the access graph are the same graph.
 - **Promises and promise pipelining.** A message send creates a promise for
-  the result; further messages can be sent *to the promise* before it
+  the result; further messages can be sent _to the promise_ before it
   resolves and are delivered to its eventual resolution, collapsing what
   would be N round trips into one message flight (the draft's car-factory
   example: 6 sequential steps become 4 messages sent without waiting)
@@ -51,7 +51,7 @@ Its defining features, per the same draft:
   ([ocapn/ocapn README](https://github.com/ocapn/ocapn)).
 - **Third-party handoffs.** When a message in session A↔B carries a reference
   to an object that lives in session A↔C, a handoff protocol (roles: Gifter,
-  Receiver, Exporter) lets B connect *directly* to C with the same authority,
+  Receiver, Exporter) lets B connect _directly_ to C with the same authority,
   "in a secure fashion, even if the messages are viewed by a malicious actor"
   — i.e. introductions without proxying and without trusting the introducer
   with the traffic afterwards
@@ -77,7 +77,7 @@ boundary ([CapTP draft, Additional Documents](https://github.com/ocapn/ocapn/blo
 
 - **Status, in its own words: "OCapN is still pre-specification."** The plan
   is to first get Agoric's and Spritely's implementations interoperable,
-  *then* consider Cap'n Proto, "before beginning any discussion of
+  _then_ consider Cap'n Proto, "before beginning any discussion of
   standardization" (i.e. no IETF/W3C submission yet)
   ([ocapn/ocapn README](https://github.com/ocapn/ocapn)). The CapTP draft
   itself warns it is "likely to undergo significant change" and is based on
@@ -93,7 +93,7 @@ boundary ([CapTP draft, Additional Documents](https://github.com/ocapn/ocapn/blo
   ([Netlayers draft, via DeepWiki](https://deepwiki.com/ocapn/ocapn/6.1-netlayers-specification) — secondary summary of the draft).
 - **Locators** define the `ocapn://` URI structure for machines and objects:
   a peer designator (netlayer-specific, self-authenticating), a transport
-  name, routing hints, and for objects a *swiss number* — an unguessable
+  name, routing hints, and for objects a _swiss number_ — an unguessable
   random nonce assigned at registration, which is itself the capability
   ([Goblins manual, Using the CapTP API](https://files.spritely.institute/docs/guile-goblins/latest/Using-the-CapTP-API.html);
   locator components as described in
@@ -105,7 +105,7 @@ boundary ([CapTP draft, Additional Documents](https://github.com/ocapn/ocapn/blo
 ### 1.3 Endo — the JavaScript ocap platform (the runtime layer)
 
 Endo (by Agoric, Apache-2.0) is a framework for ocap programming in
-JavaScript: "tools for *confinement*, *communication*, and *concurrency*"
+JavaScript: "tools for _confinement_, _communication_, and _concurrency_"
 ([Endo getting started](https://endojs.org/getting-started/)). Its parts:
 
 - **SES / Hardened JavaScript** — a shim that locks down JS intrinsics and
@@ -118,15 +118,15 @@ JavaScript: "tools for *confinement*, *communication*, and *concurrency*"
 - **Eventual send (`E()`)** — the programming surface that stretches async
   method invocation over processes and networks via handled promises
   ([Endo docs, Distributed Programming](https://docs.endojs.org/documents/get-started.html)).
-- **`@endo/captp`** — Agoric's *production* CapTP, deliberately "a minimal
+- **`@endo/captp`** — Agoric's _production_ CapTP, deliberately "a minimal
   CapTP implementation": JSON-able messages over a connection object you
   supply yourself; it is transport-agnostic because it doesn't do transport
   at all ([@endo/captp README](https://raw.githubusercontent.com/endojs/endo/master/packages/captp/README.md)).
   Historically it lacked the full OCapN feature set — the 2020 interop
   discussion lists distributed GC emission and handoff tables as things
-  *both* sides still needed to build
+  _both_ sides still needed to build
   ([Agoric/agoric-sdk#1827](https://github.com/Agoric/agoric-sdk/issues/1827)).
-- **`@endo/ocapn`** — the *new* package implementing OCapN CapTP proper
+- **`@endo/ocapn`** — the _new_ package implementing OCapN CapTP proper
   (Syrup encoding, GC operations, swiss numbers), with netlayers for
   WebSocket and a TCP testing netlayer; released at 1.1.0 and synced against
   the OCapN test suite
@@ -144,7 +144,7 @@ JavaScript: "tools for *confinement*, *communication*, and *concurrency*"
   [DCF, Containing AI Agents: The Endo Familiar Demo](https://dcfoundation.io/containing-ai-agents-the-endo-familiar-demo/)).
   Revocation is mechanical, not advisory: a daemon "Reaper" change makes
   deleting every petname that retains a value collect its underlying
-  *formula*, cancel the live value, and sever the CapTP connections and
+  _formula_, cancel the live value, and sever the CapTP connections and
   workers still holding it
   ([endojs/endo PR #3087](https://github.com/endojs/endo/pull/3087)).
   Endo is actively pitching this daemon as the containment layer for
@@ -205,7 +205,7 @@ What Goblins adds on top of CapTP:
 Agoric is a Cosmos-SDK blockchain whose smart contracts are Hardened
 JavaScript objects, built on **SwingSet**, a vat kernel: a vat is "a unit of
 synchrony," vats communicate only asynchronously, vat state is orthogonally
-persistent, and a special *comms vat* speaks CapTP to the outside world —
+persistent, and a special _comms vat_ speaks CapTP to the outside world —
 to other SwingSets, to solo machines (ag-solo), and over **IBC** to other
 chains, so that a blockchain can be treated as "an ordinary machine
 supporting distributed objects on the network"
@@ -213,7 +213,7 @@ supporting distributed objects on the network"
 [ocapn/ocapn README](https://github.com/ocapn/ocapn);
 [Agoric/agoric-sdk#1827](https://github.com/Agoric/agoric-sdk/issues/1827)).
 On top sit **ERTP** (transferable rights as objects) and **Zoe** (offer
-safety for contracts) — the family's worked example of ocap *economics*.
+safety for contracts) — the family's worked example of ocap _economics_.
 
 For a non-chain user, Agoric-the-chain is mostly irrelevant; what transfers
 is (a) Endo/SES, which Agoric maintains and which runs in production at
@@ -231,35 +231,36 @@ historically" ([ocapn/ocapn README](https://github.com/ocapn/ocapn)).
 This is the contrast the whole investigation turns on, so it is worth being
 precise.
 
-**The ocap model answers:** *"Program A holds authority over a live service
+**The ocap model answers:** _"Program A holds authority over a live service
 run by program B. How does A invoke it, delegate part of that authority to
 C, attenuate it, or take it back — with the guarantees enforced by the
-reference graph itself rather than by an ACL checked at a boundary?"*
+reference graph itself rather than by an ACL checked at a boundary?"_
 State lives **in exactly one place**: inside the object, on its home
-machine, behind its methods. Other parties hold *presences* (remote
+machine, behind its methods. Other parties hold _presences_ (remote
 references), never copies. Consistency is therefore trivial — there is one
 object, one turn order, one truth — and "conflict resolution" is a category
-that does not exist. What exists instead is *liveness*: if the home machine
+that does not exist. What exists instead is _liveness_: if the home machine
 is offline or the session breaks, every promise to it breaks, and the
 authority is simply unavailable until a sturdyref is re-enlivened over a new
 session.
 
 **The log/CRDT model (p2panda, Willow, Hypercore, …) answers the opposite
-question:** *"Many nodes each hold a copy of shared data and edit it while
-disconnected. How do the copies converge, and who was allowed to write?"*
-Authority there is about *past writes* (signed operations, capability
+question:** _"Many nodes each hold a copy of shared data and edit it while
+disconnected. How do the copies converge, and who was allowed to write?"_
+Authority there is about _past writes_ (signed operations, capability
 tokens checked at ingest), and the system's centre of gravity is durable,
 replicated, mergeable state.
 
 Consequences, stated as wins and losses for the ocap side:
 
 **Where live references win:**
+
 - **Real-time authority and immediate revocation.** Revoking in CapTP is a
   local act with immediate effect: interpose a forwarding "caretaker" object
   and flip it, or (Endo daemon) delete the petname and the formula
   collection cancels the value and severs the connection
   ([endojs/endo PR #3087](https://github.com/endojs/endo/pull/3087)).
-  No revocation list has to propagate; there is nothing to propagate *to* —
+  No revocation list has to propagate; there is nothing to propagate _to_ —
   every call goes to the live object. Compare any token/log system, where a
   revoked credential remains valid everywhere until expiry or until a CRL /
   epoch update reaches every verifier.
@@ -267,7 +268,7 @@ Consequences, stated as wins and losses for the ocap side:
   object that forwards a subset of methods (read-only directory, spend-limit
   payment source). It cannot be bypassed, because there is no other path to
   the underlying object — authority only exists as references. Token systems
-  (UCAN/Biscuit/macaroons) attenuate *claims*; ocap attenuates *behaviour*,
+  (UCAN/Biscuit/macaroons) attenuate _claims_; ocap attenuates _behaviour_,
   including stateful, rate-limiting, revocable behaviour.
 - **Delegation without identity infrastructure.** A third-party handoff
   introduces two peers directly, with certificates that keep the handoff
@@ -279,27 +280,28 @@ Consequences, stated as wins and losses for the ocap side:
   calls, which is the dominant cost in chatty distributed-object workloads
   ([CapTP draft, Promises](https://github.com/ocapn/ocapn/blob/main/draft-specifications/CapTP%20Specification.md)).
 - **Confused-deputy resistance by construction.** Because designation and
-  authority travel together (the reference names *and* empowers), the whole
+  authority travel together (the reference names _and_ empowers), the whole
   class of "tricked into using its own authority on the wrong object" bugs
   that ACL systems suffer is designed out — this is the family's founding
   argument, restated in the Spritely whitepaper (secondary summary:
   [The Heart of Spritely](https://agent-comms.anuna.io/papers/ocap/the-heart-of-spritely---distributed-objects-and-capability-security/)).
 
 **Where live references lose:**
+
 - **Offline-first anything.** A capability to an offline object is a promise
   that breaks. There is no store-and-forward in the core model, no
   operation log to replay, no merge. (Agoric's chain use is the exception
-  that proves the rule: it works because the *chain itself* is the always-on
+  that proves the rule: it works because the _chain itself_ is the always-on
   home of the objects, with consensus as the netlayer.)
 - **Durable shared state.** Nothing in CapTP replicates data. Goblins'
-  answer is orthogonal persistence of *one node's own* object graph
+  answer is orthogonal persistence of _one node's own_ object graph
   (Aurie/Bloblin) — a checkpoint log, not replication; two nodes never hold
   convergent copies of the same object
   ([Goblins v0.17.0](https://www.spritely.institute/news/spritely-goblins-v0-17-0-persistence-is-better-than-ever.html)).
 - **Many-reader / public-data workloads.** Content distribution, feeds,
   shared documents, audit logs — the bread and butter of the log families —
   are simply not the ocap shape; you'd end up building a replication system
-  *inside* objects, badly.
+  _inside_ objects, badly.
 - **Availability coupling.** Every holder's liveness depends on the object's
   home being up and reachable. NATs, sleep, and churn are protocol-level
   problems (hence the relay work in §4), where a sync system treats them as
@@ -317,26 +319,26 @@ for §7.
 - **Peer identity is a keypair, scoped by netlayer.** In OCapN, a locator's
   designator is "self-authenticating identity (usually a public key)"
   ([Spritely, E2EE relays](https://www.spritely.institute/news/end-to-end-encrypted-relays-for-ocapn.html)).
-  Concretely: on the Tor netlayer the designator *is* the onion address
+  Concretely: on the Tor netlayer the designator _is_ the onion address
   (an ed25519 public key); on TCP+TLS, "sturdyrefs for this netlayer use a
   SHA-256D hash of the TLS certificate as the peer identifier," with address
   hints carried alongside
   ([Goblins manual, TCP+TLS](https://files.spritely.institute/docs/guile-goblins/latest/TCP-_002b-TLS.html)).
 - **Sessions have their own keys, separate from peer identity.** The OCapN
-  CapTP draft requires each side to create a *per-session* Ed25519 keypair
+  CapTP draft requires each side to create a _per-session_ Ed25519 keypair
   at `op:start-session`, used to sign handoff structures; a peer's public
   identifier within the session is the double-SHA256 of its session key
   ([CapTP draft, Cryptography](https://github.com/ocapn/ocapn/blob/main/draft-specifications/CapTP%20Specification.md)).
   So there are two identity tiers: long-lived netlayer identity (how you
-  *reach* me) and ephemeral session identity (how handoffs *authenticate*).
+  _reach_ me) and ephemeral session identity (how handoffs _authenticate_).
 - **Objects have no identity separate from their references.** A registered
   object gets a swiss number — a large random nonce — inside its sturdyref;
-  knowing the sturdyref *is* the capability to enliven it
+  knowing the sturdyref _is_ the capability to enliven it
   ([Goblins manual, CapTP API](https://files.spritely.institute/docs/guile-goblins/latest/Using-the-CapTP-API.html)).
   There is no global object namespace and no lookup without a reference.
 - **Humans name things locally.** Petnames (Endo daemon; Spritely's Brux
   project) are per-user, non-global names bound to sturdyrefs/references —
-  Zooko's-triangle-aware: human-meaningful *and* secure because they are
+  Zooko's-triangle-aware: human-meaningful _and_ secure because they are
   local mappings onto unguessable identifiers, never a global registry
   ([kriskowal.com, Endo](https://kriskowal.com/endo/);
   [Endo review](https://endojs.org/review-sandboxes-wont-save-you-from-openclaw/)).
@@ -373,14 +375,14 @@ for §7.
 - **Groups: nothing.** No group abstraction, no roles, no membership
   protocol exists in CapTP/OCapN/Endo/Goblins. A "group" would be an
   ordinary object someone writes (e.g. an object holding references to
-  members' objects and forwarding). Anyone whose auth problem is *primarily*
+  members' objects and forwarding). Anyone whose auth problem is _primarily_
   group membership over shared data (the p2panda-auth / Keyhive shape of
   problem) gets no leverage here.
 
 ## 5. Axes: encryption, transport & NAT traversal, spec/interop status
 
 **Encryption.** CapTP itself does no encryption; confidentiality and
-channel authentication are *netlayer* requirements (a netlayer must provide
+channel authentication are _netlayer_ requirements (a netlayer must provide
 a secure, ordered, bidirectional channel where only the two participants
 can insert messages —
 [Netlayers draft, via DeepWiki](https://deepwiki.com/ocapn/ocapn/6.1-netlayers-specification), secondary).
@@ -388,7 +390,7 @@ In practice: Tor netlayer inherits Tor's encryption and anonymity; TCP+TLS
 uses TLS with self-signed certs whose hash is the peer identity (so the
 channel is authenticated by construction, no CA)
 ([Goblins manual, TCP+TLS](https://files.spritely.institute/docs/guile-goblins/latest/TCP-_002b-TLS.html)).
-Handoff security does *not* depend on channel secrecy — handoff certificates
+Handoff security does _not_ depend on channel secrecy — handoff certificates
 are signed with session keys so they stay safe "even when CapTP messages are
 not kept secret"
 ([CapTP draft](https://github.com/ocapn/ocapn/blob/main/draft-specifications/CapTP%20Specification.md)).
@@ -408,7 +410,7 @@ relative to the iroh/libp2p world.
 - **Prelay** (v0.12.0) is a federated relay netlayer layered over other
   netlayers — but v0 forwards messages **in cleartext through the relay**,
   "unauthenticated, which means the relay has the power to both snoop on and
-  modify messages"; it was named *pre*-relay to discourage reliance on it
+  modify messages"; it was named _pre_-relay to discourage reliance on it
   ([Goblins manual, Prelay](https://files.spritely.institute/docs/guile-goblins/latest/Prelay.html)).
 - The fix is recent and not yet in a numbered release as of writing: an
   NLnet-funded **Noise-protocol netlayer** that composes with Prelay to make
@@ -430,7 +432,7 @@ relative to the iroh/libp2p world.
   `@endo/ocapn` ships WebSocket and TCP-testing netlayers
   ([Endo release PR #3209](https://github.com/endojs/endo/pull/3209)).
   There is no NAT story in Endo at all — the Familiar demo reaches peers
-  through a WebSocket *relay* on the invite-accept model
+  through a WebSocket _relay_ on the invite-accept model
   ([DCF, Endo Familiar demo](https://dcfoundation.io/containing-ai-agents-the-endo-familiar-demo/)).
 
 **Spec & interop status — the question the brief asks directly: has
@@ -442,7 +444,7 @@ narrowly, and against a moving spec:
   JSON marshal/SmallCaps; session-break semantics; handoff tables and GC
   unimplemented on the Agoric side)
   ([Agoric/agoric-sdk#1827](https://github.com/Agoric/agoric-sdk/issues/1827)).
-- 2023: the demonstrated interop was *intra-family* — Guile Goblins ↔
+- 2023: the demonstrated interop was _intra-family_ — Guile Goblins ↔
   Racket Goblins exchanging messages over OCapN, proven with a ported chat
   app (Milestone 1 of the NLnet standardisation grant)
   ([Spritely, Introducing OCapN](https://spritely.institute/news/introducing-ocapn-interoperable-capabilities-over-the-network.html)).
@@ -453,10 +455,9 @@ narrowly, and against a moving spec:
   for interop with Guile-Goblins peers"
   ([Endo release PR #3209](https://github.com/endojs/endo/pull/3209)).
   So: two independent implementations, one application shape (chat),
-  CI-checked. That is a genuine milestone and also the *entirety* of
+  CI-checked. That is a genuine milestone and also the _entirety_ of
   cross-vendor OCapN interop today.
-- The spec still churns underneath implementers: Goblins v0.18.0 (April
-  2026) bumped the CapTP protocol version — dropping `op:deliver-only`,
+- The spec still churns underneath implementers: Goblins v0.18.0 (April 2026) bumped the CapTP protocol version — dropping `op:deliver-only`,
   pluralising the GC ops — and states plainly that "applications built with
   an earlier release of Goblins are incompatible with the OCapN shipped in
   this release"
@@ -477,7 +478,7 @@ narrowly, and against a moving spec:
   own Syrup/Bloblin file stores (a binary delta log of the object graph);
   Endo's daemon keeps per-user formula/petname stores. Nothing in the
   family speaks SQL, and nothing would gain from Turso — persistence here
-  is *object-graph checkpointing*, not tables or replicated logs
+  is _object-graph checkpointing_, not tables or replicated logs
   ([Goblins manual, Persistence stores](https://spritely.institute/files/docs/guile-goblins/latest/Persistence-stores.html)).
 - **Languages:** JavaScript (Endo/Agoric), Guile Scheme and Racket Scheme
   (Goblins), plus a Dart implementation reported in the FOSDEM talk
@@ -487,7 +488,7 @@ narrowly, and against a moving spec:
   learning project, self-described as "Stage 0 in progress," whose stated
   goals are understanding and eventual interop with Goblins. There is no
   Rust CapTP in the OCapN sense, no crate, no maintainer community. (The
-  capability RPC that *does* exist in mature Rust form is Cap'n Proto's —
+  capability RPC that _does_ exist in mature Rust form is Cap'n Proto's —
   `capnp-rpc`, a Level-1 implementation
   ([docs.rs](https://docs.rs/crate/capnp-rpc/latest)) — but that is the
   capnproto family's divergent CapTP descendant, not OCapN; see the sibling
@@ -500,7 +501,7 @@ narrowly, and against a moving spec:
   processes with local storage — the opposite of the Workers shape. Nobody
   in this family is building for Cloudflare.
 - **iroh fit:** none, and mildly competing. A netlayer over iroh is
-  *conceivable* (iroh gives an authenticated, encrypted, NAT-traversing
+  _conceivable_ (iroh gives an authenticated, encrypted, NAT-traversing
   byte stream keyed by ed25519 NodeId — which maps cleanly onto OCapN's
   "designator = public key" locator field), but no such netlayer exists,
   and the family's own trajectory (Tor, Prelay+Noise, libp2p) is building
@@ -542,7 +543,7 @@ model for seat/team access; NAT traversal a generation behind iroh (Tor
 latency, a cleartext relay being replaced only now, an unexercised libp2p
 netlayer); a wire protocol that broke compatibility within the last year;
 and no Cloudflare story. Adopting it as the foundation would mean porting
-CapTP to Rust *and* building the missing data layer *and* the missing
+CapTP to Rust _and_ building the missing data layer _and_ the missing
 group layer — i.e. funding the family's unfinished decade with this
 estate's own roadmap.
 
@@ -567,7 +568,7 @@ and Cap'n Proto's Rust RPC is the pragmatic vehicle for those semantics
    [Endo daemon Reaper](https://github.com/endojs/endo/pull/3087) shows the
    retention-based variant: authority dies when its last name does.)
 2. **Petnames for agent-facing authority.** Whatever the estate's capability
-   format becomes, the *human/agent-facing* layer should be local,
+   format becomes, the _human/agent-facing_ layer should be local,
    meaningful names bound to unguessable identifiers — never raw hashes or
    tokens in prompts, logs, or UIs. Endo's pet daemon is the existence
    proof that this UX works for capabilities specifically
@@ -603,7 +604,7 @@ and Cap'n Proto's Rust RPC is the pragmatic vehicle for those semantics
    (MetaMask), and Endo is explicitly building bridges to AI-agent tooling
    ([endojs/endo#3019](https://github.com/endojs/endo/issues/3019)).
 7. **Formula/retention GC as a lifecycle metaphor for seats and sessions.**
-   Endo's daemon models every value as a *formula* whose liveness is its
+   Endo's daemon models every value as a _formula_ whose liveness is its
    reachability from named roots; collection cancels dependents and severs
    connections. The fleet's seat/session/lease lifecycle (claims, leases,
    emergency extension) is the same shape; the vocabulary transfers even
@@ -614,7 +615,7 @@ and Cap'n Proto's Rust RPC is the pragmatic vehicle for those semantics
 
 - A Rust OCapN implementation reaching test-suite parity (today: stage 0,
   one author — [ocapn-rs](https://codeberg.org/cmars/ocapn-rs)).
-- The Noise E2EE relay landing in a numbered Goblins release *and* being
+- The Noise E2EE relay landing in a numbered Goblins release _and_ being
   adopted by a second implementation (Endo) — that would make OCapN's NAT
   story merely "young" instead of "behind."
 - OCapN freezing a 1.0 wire version. The 2026 incompatible bump

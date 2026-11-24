@@ -1,72 +1,67 @@
 {
- "title": "AUDIT-7 Lane 2 slice 1: adjudicate substantive not_planned closes in developing-today/code",
- "body": "264 issues closed as not_planned since 2026-10-23 were triaged by AUDIT-7 Lane 2 (tracking #13878). ~168 are automation artifacts (78 'do the thing' pm-dispatch placeholders, ~90 scheduled-bot issues, 16 main-broken, 6 preserved-branch decisions). The remaining ~50 substantive code issues (incl. #780,#851,#911,#1006,#1030,#1401,#1466,#1814,#1816,#1825,#1827,#1945,#2350,#2547,#2603,#2641,#2697,#2821,#2846,#2902,#2903,#2991,#3438,#3924,#4300,#4414,#4533,#4722,#4780,#4932,#4980,#5294,#5599,#10402) were closed not_planned with comments that must each be read and adjudicated: reopen with reasons where the close dropped live work, file the correction/follow-up where a gap remains, or record clean with the closing rationale.",
- "priority": 40,
- "dedupe_key": "repo-health:v1:slice:developing-today/code:issue:13878:slice-1",
- "payload": {
-  "schema": "repo-task/v1",
-  "kind": "feature_slice",
-  "repo": "developing-today/code",
-  "queue": "repo-health-code-pilot",
-  "slice": {
-   "name": "slice1-code-notplanned-adjudication",
-   "kind": "closed-issues-review",
-   "tracking_issue": 13878,
-   "umbrella_issue": 13871,
-   "scope_summary": "264 issues closed as not_planned since 2026-10-23 were triaged by AUDIT-7 Lane 2 (tracking #13878). ~168 are automation artifacts (78 'do the thing' pm-dispatch placeholders, ~90 scheduled-bot issues, 16 main-broken, 6 preserved-branch decisions). The remaining ~50 substantive code issues (incl. #780,#851,#911,#1006,#1030,#1401,#1466,#1814,#1816,#1825,#1827,#1945,#2350,#2547,#2603,#2641,#2697,#282",
-   "parent_issue": 13878,
-   "number": 1,
-   "criterion": "Every in-scope closed issue has a recorded verdict on tracking issue #13878 (clean / reopened+why / follow-up filed+link / labels added), from a fresh full read (body + comments per_page=100, count-confirmed) via fleet gh.",
-   "done_check": "Comment on #13878 lists every in-scope issue number with its verdict and links to any reopened/filed items; no in-scope issue is unaccounted for.",
-   "owned_paths": [
-    "doc/"
-   ]
-  },
-  "issue": {
-   "number": 13878,
-   "url": "https://github.com/developing-today/code/issues/13878",
-   "title": "AUDIT-7 Lane 2 \u2014 Closed-Issues Review (past month, since 2026-10-23)",
-   "state_checked_at": "2026-11-23T23:58:00Z"
-  },
-  "problem": "264 issues closed as not_planned since 2026-10-23 were triaged by AUDIT-7 Lane 2 (tracking #13878). ~168 are automation artifacts (78 'do the thing' pm-dispatch placeholders, ~90 scheduled-bot issues, 16 main-broken, 6 preserved-branch decisions). The remaining ~50 substantive code issues (incl. #780,#851,#911,#1006,#1030,#1401,#1466,#1814,#1816,#1825,#1827,#1945,#2350,#2547,#2603,#2641,#2697,#2821,#2846,#2902,#2903,#2991,#3438,#3924,#4300,#4414,#4533,#4722,#4780,#4932,#4980,#5294,#5599,#10402) were closed not_planned with comments that must each be read and adjudicated: reopen with reasons where the close dropped live work, file the correction/follow-up where a gap remains, or record clean with the closing rationale.",
-  "evidence": [
-   "https://github.com/developing-today/code/issues/13878",
-   "Census: 5,810 closed issues in developing-today/code 2026-10-23..2026-11-23; 249 closed not_planned (fleet gh search, 2-day windows, count-confirmed)."
-  ],
-  "acceptance": [
-   "Every in-scope issue has a verdict recorded on #13878: clean (with closing rationale) / reopened (with reason) / follow-up filed (with link).",
-   "No issue is re-closed for age; reopens state the live work the not_planned close dropped."
-  ],
-  "tests": [
-   "Re-read each in-scope issue fresh via fleet gh api (comments per_page=100, count-confirmed) before acting; record the verdict per issue on #13878."
-  ],
-  "scope": {
-   "include": [
-    "Read full body+comments of the ~50 substantive not_planned code issues listed in the problem statement and adjudicate each",
-    "Reopen or file corrections/follow-ups as needed via gh-post"
-   ],
-   "exclude": [
-    "Automation-artifact not_planned closes (placeholders, scheduled-bot, main-broken, preserved-branch) \u2014 covered by the lane report's class verdicts",
-    "PR-side comparison \u2014 Lane 4's scope; post pointers on #13871 instead"
-   ]
-  },
-  "risk": {
-   "level": "low",
-   "flags": [
-    "audit",
-    "read-mostly"
-   ]
-  },
-  "priority_reason": "AUDIT-7 lane 2 remainder: exhaustive closed-issue review ordered 2026-11-23; slices exceed one session.",
-  "timebox_minutes": 240,
-  "max_attempts": 6,
-  "context_refs": [
-   "https://github.com/developing-today/code/issues/13871",
-   "https://github.com/developing-today/code/issues/13878"
-  ],
-  "dedupe": {
-   "checked_at": "2026-11-23T23:58:00Z",
-   "basis": "Singular ownership: AUDIT-7 Lane 2 owns closed-issue review; umbrella #13871 checked, no other lane claimed these slices (Lane 4 owns the PR side only, Lane 7 owns stray-work labelling outside this scope). Dedupe key per slice pattern for parent tracking issue #13878."
+  "title": "AUDIT-7 Lane 2 slice 1: adjudicate substantive not_planned closes in developing-today/code",
+  "body": "264 issues closed as not_planned since 2026-10-23 were triaged by AUDIT-7 Lane 2 (tracking #13878). ~168 are automation artifacts (78 'do the thing' pm-dispatch placeholders, ~90 scheduled-bot issues, 16 main-broken, 6 preserved-branch decisions). The remaining ~50 substantive code issues (incl. #780,#851,#911,#1006,#1030,#1401,#1466,#1814,#1816,#1825,#1827,#1945,#2350,#2547,#2603,#2641,#2697,#2821,#2846,#2902,#2903,#2991,#3438,#3924,#4300,#4414,#4533,#4722,#4780,#4932,#4980,#5294,#5599,#10402) were closed not_planned with comments that must each be read and adjudicated: reopen with reasons where the close dropped live work, file the correction/follow-up where a gap remains, or record clean with the closing rationale.",
+  "priority": 40,
+  "dedupe_key": "repo-health:v1:slice:developing-today/code:issue:13878:slice-1",
+  "payload": {
+    "schema": "repo-task/v1",
+    "kind": "feature_slice",
+    "repo": "developing-today/code",
+    "queue": "repo-health-code-pilot",
+    "slice": {
+      "name": "slice1-code-notplanned-adjudication",
+      "kind": "closed-issues-review",
+      "tracking_issue": 13878,
+      "umbrella_issue": 13871,
+      "scope_summary": "264 issues closed as not_planned since 2026-10-23 were triaged by AUDIT-7 Lane 2 (tracking #13878). ~168 are automation artifacts (78 'do the thing' pm-dispatch placeholders, ~90 scheduled-bot issues, 16 main-broken, 6 preserved-branch decisions). The remaining ~50 substantive code issues (incl. #780,#851,#911,#1006,#1030,#1401,#1466,#1814,#1816,#1825,#1827,#1945,#2350,#2547,#2603,#2641,#2697,#282",
+      "parent_issue": 13878,
+      "number": 1,
+      "criterion": "Every in-scope closed issue has a recorded verdict on tracking issue #13878 (clean / reopened+why / follow-up filed+link / labels added), from a fresh full read (body + comments per_page=100, count-confirmed) via fleet gh.",
+      "done_check": "Comment on #13878 lists every in-scope issue number with its verdict and links to any reopened/filed items; no in-scope issue is unaccounted for.",
+      "owned_paths": ["doc/"]
+    },
+    "issue": {
+      "number": 13878,
+      "url": "https://github.com/developing-today/code/issues/13878",
+      "title": "AUDIT-7 Lane 2 \u2014 Closed-Issues Review (past month, since 2026-10-23)",
+      "state_checked_at": "2026-11-23T23:58:00Z"
+    },
+    "problem": "264 issues closed as not_planned since 2026-10-23 were triaged by AUDIT-7 Lane 2 (tracking #13878). ~168 are automation artifacts (78 'do the thing' pm-dispatch placeholders, ~90 scheduled-bot issues, 16 main-broken, 6 preserved-branch decisions). The remaining ~50 substantive code issues (incl. #780,#851,#911,#1006,#1030,#1401,#1466,#1814,#1816,#1825,#1827,#1945,#2350,#2547,#2603,#2641,#2697,#2821,#2846,#2902,#2903,#2991,#3438,#3924,#4300,#4414,#4533,#4722,#4780,#4932,#4980,#5294,#5599,#10402) were closed not_planned with comments that must each be read and adjudicated: reopen with reasons where the close dropped live work, file the correction/follow-up where a gap remains, or record clean with the closing rationale.",
+    "evidence": [
+      "https://github.com/developing-today/code/issues/13878",
+      "Census: 5,810 closed issues in developing-today/code 2026-10-23..2026-11-23; 249 closed not_planned (fleet gh search, 2-day windows, count-confirmed)."
+    ],
+    "acceptance": [
+      "Every in-scope issue has a verdict recorded on #13878: clean (with closing rationale) / reopened (with reason) / follow-up filed (with link).",
+      "No issue is re-closed for age; reopens state the live work the not_planned close dropped."
+    ],
+    "tests": [
+      "Re-read each in-scope issue fresh via fleet gh api (comments per_page=100, count-confirmed) before acting; record the verdict per issue on #13878."
+    ],
+    "scope": {
+      "include": [
+        "Read full body+comments of the ~50 substantive not_planned code issues listed in the problem statement and adjudicate each",
+        "Reopen or file corrections/follow-ups as needed via gh-post"
+      ],
+      "exclude": [
+        "Automation-artifact not_planned closes (placeholders, scheduled-bot, main-broken, preserved-branch) \u2014 covered by the lane report's class verdicts",
+        "PR-side comparison \u2014 Lane 4's scope; post pointers on #13871 instead"
+      ]
+    },
+    "risk": {
+      "level": "low",
+      "flags": ["audit", "read-mostly"]
+    },
+    "priority_reason": "AUDIT-7 lane 2 remainder: exhaustive closed-issue review ordered 2026-11-23; slices exceed one session.",
+    "timebox_minutes": 240,
+    "max_attempts": 6,
+    "context_refs": [
+      "https://github.com/developing-today/code/issues/13871",
+      "https://github.com/developing-today/code/issues/13878"
+    ],
+    "dedupe": {
+      "checked_at": "2026-11-23T23:58:00Z",
+      "basis": "Singular ownership: AUDIT-7 Lane 2 owns closed-issue review; umbrella #13871 checked, no other lane claimed these slices (Lane 4 owns the PR side only, Lane 7 owns stray-work labelling outside this scope). Dedupe key per slice pattern for parent tracking issue #13878."
+    }
   }
- }
 }

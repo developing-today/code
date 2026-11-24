@@ -18,8 +18,8 @@ the record itself. Within a tier, dependency order wins; ties break on
 leverage — how much other work the item unblocks. [How priorities
 work](how-priorities-work.md) states the doctrine in full.
 
-**Types:** a *capability set* is a capability set to reach; a *problem* is a
-problem to solve; a *milestone* is a milestone; a *shift goal* is a goal
+**Types:** a _capability set_ is a capability set to reach; a _problem_ is a
+problem to solve; a _milestone_ is a milestone; a _shift goal_ is a goal
 that marks a shift. **Primary book** names the book whose high-level roadmap
 chapter carries the item in full; every item appears under exactly one
 primary book, and cross-linked items are repeated in the other books'
@@ -430,8 +430,7 @@ chapters as one-line pointers.
   side project of a side project for now — noted, not scheduled. Per-device
   verification lives in the sibling `developing-today/hardware-doc`
   repository. Tracker: #5783.
-- **Rationale:** genuinely long-term — it inherits the shell contract (item
-  22) and the lab's physical readiness (items 4–6), and blocks nothing.
+- **Rationale:** genuinely long-term — it inherits the shell contract (item 22) and the lab's physical readiness (items 4–6), and blocks nothing.
 
 ## Tier 5 — Gateway, PM and forks surfaces
 

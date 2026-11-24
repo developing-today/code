@@ -989,13 +989,21 @@ impl WorldActor {
             );
         }
 
+        // The handoff's journal position is the ownership boundary
+        // (#13711): stamp the next position on the entry and on the
+        // lease history in the same step, before the durable append.
+        // If the append fails, `next_lease` is dropped and the
+        // counter — derived from the history — never advanced, so
+        // the retry reuses the same position.
+        let position = self.core.next_lease_position();
         let mut next_lease = self.core.write_lease().clone();
-        next_lease.apply_handoff(&from, &to, epoch, expires_at_ms)?;
+        next_lease.apply_handoff(&from, &to, epoch, expires_at_ms, position)?;
         self.persist(JournalEntry::LeaseHandedOff {
             from,
             to,
             epoch,
             expires_at_ms,
+            position,
         })?;
         self.core.write_lease = next_lease;
         self.core.since_checkpoint = self.core.since_checkpoint.saturating_add(1);

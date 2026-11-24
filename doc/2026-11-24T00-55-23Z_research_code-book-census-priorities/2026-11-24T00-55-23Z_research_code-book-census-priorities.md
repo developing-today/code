@@ -16,6 +16,7 @@ Ordering logic, stated once: **execution substrate first** (nothing else lands w
 ### Tier 0 — Execution substrate (fleet)
 
 #### 1. Fleet queue, claim and placement correctness
+
 - **Type:** problem
 - **Description:** The queue broker, claim/renewal fencing, packet repair and placement must be provably correct — every other programme's work is dispatched through them.
 - **Area:** fleet (primary). Cross-links: pm (PM orchestration consumes the same queue), all books (every lane's work rides it).
@@ -24,6 +25,7 @@ Ordering logic, stated once: **execution substrate first** (nothing else lands w
 - **Ordering rationale:** Dependency root of the whole project: a queue that double-serves or loses packets silently corrupts every other item's evidence. Highest leverage in the census.
 
 #### 2. Containerised build/compile systems — in the cluster and in Actions (SEED)
+
 - **Type:** capability-set
 - **Description:** Builds and compiles run in containers with a central coordinator — atomic slots, a true load view, global budgets — plus live short-lived exec sessions inside Actions runners, so no build depends on one laptop.
 - **Area:** fleet (primary). Cross-links: lab (the in-cluster half runs on the Talos cluster, item 6), pm (dispatch views).
@@ -32,6 +34,7 @@ Ordering logic, stated once: **execution substrate first** (nothing else lands w
 - **Ordering rationale:** Build capacity is the second bottleneck after the queue; the Actions half can proceed now, the cluster half sequences behind the cluster itself.
 
 #### 3. Transport and P2P auth — one honest transport for agents and ID alike
+
 - **Type:** shift-goal
 - **Description:** Host selection without Tailscale, iroh for non-Muse agents, a generic pool primitive, and capability auth over P2P transport (p2panda-first, honestly compared) — replacing today's accreted per-surface transports.
 - **Area:** fleet (primary). Cross-links: id (ID's sync/relay rides the same decision), mcpx (daemon transports: ssh/tsnet today).
@@ -42,6 +45,7 @@ Ordering logic, stated once: **execution substrate first** (nothing else lands w
 ### Tier 1 — Physical substrate (lab)
 
 #### 4. Switches integrated and racked (SEED)
+
 - **Type:** milestone
 - **Description:** The dedicated switches from the repo's switching research are installed, racked and integrated, so the basement machines share a real fabric instead of ad-hoc links.
 - **Area:** lab (primary, sole). Cross-link: fleet (cluster networking assumptions).
@@ -50,6 +54,7 @@ Ordering logic, stated once: **execution substrate first** (nothing else lands w
 - **Ordering rationale:** First physical dependency: racking/networking precedes servers presenting (item 5) and the cluster boot (item 6). Cheap, unblocking, and entirely Drew-side/logistics-paced.
 
 #### 5. All servers online, auto-connecting and presenting to the cluster on boot (SEED)
+
 - **Type:** capability-set
 - **Description:** Every server powers on, joins the network and presents itself to the cluster declaratively — no hand-built machine that "just exists forever."
 - **Area:** lab (primary). Cross-links: fleet (enrollment is the same shape as fleet agent enrollment), id (hosted-worlds deployment pack targets these machines).
@@ -58,6 +63,7 @@ Ordering logic, stated once: **execution substrate first** (nothing else lands w
 - **Ordering rationale:** The cluster (item 6) is defined over machines that present themselves; hand-installing the first nodes would create exactly the snowflake state the programme forbids.
 
 #### 6. Talos cluster booted live, accepting data on Cozystack (SEED)
+
 - **Type:** milestone
 - **Description:** A Talos Linux cluster bootstrapped declaratively with TALM, running Cozystack with Postgres (CNPG), RustFS, NATS, FluxCD, DRBD+LINSTOR replication — live and accepting data. Hard rule of record: no HashiCorp tooling.
 - **Area:** lab (primary). Cross-links: fleet (in-cluster builds, item 2), id (hosted worlds deployment target), atlas (storage tiers).
@@ -68,6 +74,7 @@ Ordering logic, stated once: **execution substrate first** (nothing else lands w
 ### Tier 2 — Data substrate (backups, ingest, storage placement)
 
 #### 7. Backups + storage automated, minimal duplication, one coherent complete backup set (SEED)
+
 - **Type:** problem
 - **Description:** Replace per-system backup timers and overlapping copies with one automated mesh: every store backed up, deduplicated by content, restorable as one coherent set.
 - **Area:** atlas (primary — the largest store and the only working backup today). Cross-links: fleet (queue/PM Turso stores), id (ID stores), lab (local leg on cluster storage), pm (the estate census: 50 Turso DBs, 22 Workers).
@@ -76,6 +83,7 @@ Ordering logic, stated once: **execution substrate first** (nothing else lands w
 - **Ordering rationale:** Safety precedes scale: ingest automation (item 8) and storage migration (item 11) both mutate the corpus; they should not run ahead of a coherent restore story.
 
 #### 8. Atlas ingestion fully automated (SEED)
+
 - **Type:** capability-set
 - **Description:** Continuous ingestion — event hooks where the source supports them, scheduled sweeps otherwise, delta-only where possible — replacing today's manual, script-driven imports, with a recount procedure so corpus counts never freeze silently again.
 - **Area:** atlas (primary, sole).
@@ -84,6 +92,7 @@ Ordering logic, stated once: **execution substrate first** (nothing else lands w
 - **Ordering rationale:** Everything in Tier 3 is only as fresh as this pipeline. It outranks coverage expansion (item 9) because automating the pipe precedes widening what flows through it.
 
 #### 9. All repos / all ID objects into Atlas ingestion — full source coverage (SEED)
+
 - **Type:** capability-set
 - **Description:** Every source on Drew's list actually flowing: Turso queue + PM data; all GitHub issues/PRs/commits/files for all in-scope orgs; all Muse conversations and data; all OpenCode sessions (with the thinking-traces investigation answered); all ID objects across redb/Turso/hosted stores; plus the sources-inventory pass that hunts for missed sources.
 - **Area:** atlas (primary). Cross-links: id (ID objects are a source, item 12 consumes the result), fleet (queue/PM data), pm (PM stack data).
@@ -92,6 +101,7 @@ Ordering logic, stated once: **execution substrate first** (nothing else lands w
 - **Ordering rationale:** Coverage is the multiplier on items 8, 12 and 13 — but it is sequenced after automation so new sources land in a pipeline, not in another manual pile.
 
 #### 10. Atlas provenance complete — CAS, occurrences, catalog and shards (#3125 phases 3–4)
+
 - **Type:** milestone
 - **Description:** Finish the provenance-first rebuild: historical chunk-occurrence backfill (~127K occurrences dropped at first ingest; 6,344 sessions owning zero chunks), the catalog DB, collection×month shard layout, and resolve/fetch-span as MCP tools.
 - **Area:** atlas (primary, sole).
@@ -100,6 +110,7 @@ Ordering logic, stated once: **execution substrate first** (nothing else lands w
 - **Ordering rationale:** Provenance is the trust layer under dedup, deletion propagation and the ID-graph publication (item 12); finishing it before the recommender (item 13) keeps behavioural tables rebuildable.
 
 #### 11. Storage placement settled — Turso→D1 programme + Atlas D1 hot cache
+
 - **Type:** shift-goal
 - **Description:** Decide and execute where each store lives (Turso vs Cloudflare D1 vs R2 vs local) on measured economics, and land the per-tenant D1 hot cache in front of Turso for the multi-tenant serving shape.
 - **Area:** atlas (primary). Cross-links: id (the same placement question for hosted ID stores), pm (the audit's estate is PM-censused), fleet (fleet-platform stores are in the audit set).
@@ -110,6 +121,7 @@ Ordering logic, stated once: **execution substrate first** (nothing else lands w
 ### Tier 3 — Search intelligence (Atlas × ID)
 
 #### 12. Atlas↔ID integration — search runs across the core system (SEED)
+
 - **Type:** shift-goal
 - **Description:** End the split where ID has no live query path into Atlas and each server answers with basic per-server BM25-style queries: Atlas objects and provenance become ID-graph objects, ID content is vectorised into Atlas, and one retrieval core serves CLI, REST, MCP and ID.
 - **Area:** atlas (primary). Cross-links: id (the graph side and its projectors live in the ID book's detail), mcpx (the MCP surface both sides share).
@@ -118,14 +130,16 @@ Ordering logic, stated once: **execution substrate first** (nothing else lands w
 - **Ordering rationale:** The highest-leverage shift in the census: it converts two half-systems into one core. Ranked first in its tier because rerank/recommender quality (item 13) and ID-graph apps (item 15) both presume a unified corpus and ranking path.
 
 #### 13. Rerank + recommender systems in Atlas (SEED)
+
 - **Type:** capability-set
 - **Description:** A learned reranking stage in the serving path (golden-set-gated) and a recommender built from real retrieval behaviour — session co-occurrence neighbours, feedback signals, recommendation objects with per-class retention and a "next 10" surface.
 - **Area:** atlas (primary, sole; ID consumes via item 12).
 - **Most related:** [#9140 recommendation objects, search history, retention classes](https://github.com/developing-today/code/issues/9140) (open, design) · [#10158 recommendation snapshot paging](https://github.com/developing-today/code/issues/10158) (open, in review; PR [#12873](https://github.com/developing-today/code/pull/12873) open, unmerged; hard dependency #9083) · [#8627 standing cross-agent eval sets](https://github.com/developing-today/code/issues/8627) (the quality oracle) · [#5733 Jaccard third-signal gate](https://github.com/developing-today/code/issues/5733) (eval results on record) · [#5773 query-understanding front-end](https://github.com/developing-today/code/issues/5773) · [#5774 query-time parameter surface](https://github.com/developing-today/code/issues/5774) · [#9092 search v1 build-out](https://github.com/developing-today/code/issues/9092).
-- **Status today:** **designed; serving does not exist.** Verified: production fusion is reciprocal-rank fusion over FTS (BM25) + vector only; **no learned/cross-encoder reranker exists in the serving path**; feedback is captured (`atlas-feedback/v1`) with no ranking consumer found; recommendation *generation* does not exist — only the snapshot-paging state machine is in flight. Golden set: 311-query v3 + 54 held-out, the gate every candidate must pass.
+- **Status today:** **designed; serving does not exist.** Verified: production fusion is reciprocal-rank fusion over FTS (BM25) + vector only; **no learned/cross-encoder reranker exists in the serving path**; feedback is captured (`atlas-feedback/v1`) with no ranking consumer found; recommendation _generation_ does not exist — only the snapshot-paging state machine is in flight. Golden set: 311-query v3 + 54 held-out, the gate every candidate must pass.
 - **Ordering rationale:** Deliberately after items 8–10: a reranker trained/evaluated on a frozen, provenance-poor corpus would bake in today's gaps. The eval gate (#8627) existing is what makes this safe to build next.
 
 #### 14. Atlas as a multi-client search service — the product decision and its build
+
 - **Type:** milestone
 - **Description:** Answer the open product question — Atlas as a multi-client service (OpenChamber/fork sessions, ID, agents as first-class consumers) vs Drew's personal CLI — and build the service shape the answer implies, with per-agent identity instead of today's shared hosted identity.
 - **Area:** atlas (primary). Cross-links: mcpx (per-client ceilings), fleet (`fleet search` is the client of record), id (consumer via item 12).
@@ -134,6 +148,7 @@ Ordering logic, stated once: **execution substrate first** (nothing else lands w
 - **Ordering rationale:** The decision gates real investment in identity, caching and ceilings; it sits after item 12 because ID-as-consumer is the strongest evidence for the multi-client answer.
 
 #### 15. ID apps on one graph — URIs, transclusion, typed links, graph display
+
 - **Type:** capability-set
 - **Description:** The ID graph programme: apps (notes, boards, worlds) sharing one graph with stable URIs, transclusion, typed links, sneakernet bundles and a graph display — the consumer-facing payoff of the ID platform epics.
 - **Area:** id (primary). Cross-links: atlas (publication format, item 12), pm (boards lineage in the PM stack).
@@ -144,6 +159,7 @@ Ordering logic, stated once: **execution substrate first** (nothing else lands w
 ### Tier 4 — ID platform build-out
 
 #### 16. ID store abstraction — one interface over redb / Turso / D1 / IndexedDB
+
 - **Type:** capability-set
 - **Description:** One store interface with pluggable backends and a shared conformance suite, so an ID object behaves identically on a local redb, a Turso/D1 hosted store, or a browser IndexedDB.
 - **Area:** id (primary). Cross-links: atlas (placement economics, item 11), lab (cluster stores).
@@ -152,6 +168,7 @@ Ordering logic, stated once: **execution substrate first** (nothing else lands w
 - **Ordering rationale:** Every dynamic-hosting and offline item below is written against this interface; it is the ID tier's dependency root.
 
 #### 17. Tunnels to spin up ID servers dynamically — hosted worlds and hosted editions (SEED)
+
 - **Type:** capability-set
 - **Description:** Spin up an ID server on demand — through a tunnel, against a local store, a Turso store, or Cloudflare R2/D1 — with the same behaviour hosted or local: host mode in the id binary, lifecycle as authority-frame actions, and the Cloudflare hosted edition (per-user Durable Objects, SSO→ID binding, signed-object bridge, export/import).
 - **Area:** id (primary). Cross-links: fleet (tunnels/transport, item 3), lab (basement deployment pack runs on item 6), atlas (D1 cache shape shared, item 11).
@@ -160,6 +177,7 @@ Ordering logic, stated once: **execution substrate first** (nothing else lands w
 - **Ordering rationale:** This is the seed that turns ID from a binary into a platform; it depends on items 3, 6 and 16 and unlocks items 18–20's real deployments.
 
 #### 18. Discovery, registry and federation at scale
+
 - **Type:** capability-set
 - **Description:** Worlds are findable and joinable across servers: publish-to-pkarr announcements, a discovery resolver (invite link, pkarr, registries in order), a public registry endpoint, and federation with boundary gates, jurisdiction routing and delete propagation.
 - **Area:** id (primary, sole).
@@ -168,6 +186,7 @@ Ordering logic, stated once: **execution substrate first** (nothing else lands w
 - **Ordering rationale:** Federation before scale (item 19): there is little value hardening a single-server world to 100× while joining across servers is still blocked.
 
 #### 19. ID scale and performance hardening — measured limits at 10×/100×
+
 - **Type:** problem
 - **Description:** A generator + harness producing worlds at 10×/100× current sizes, measuring join time, replay, frame cost and memory on laptop- and server-class hosts, ending in a measured limits table — with Drew's performance doctrine (a multiplier is proven by benchmark, never asserted) as the bar.
 - **Area:** id (primary). Cross-link: fleet (benchmark placement rides items 1–2).
@@ -176,6 +195,7 @@ Ordering logic, stated once: **execution substrate first** (nothing else lands w
 - **Ordering rationale:** Measurement before optimisation, and before currency/federation load arrives; ranked below federation because its harness already exists and can run in parallel.
 
 #### 20. Production currencies v1, then the scaling path
+
 - **Type:** milestone
 - **Description:** Ship production currencies v1 (graph↔ledger reconciliation, grant service, RateAuthorisation), then the designed scaling path Redis → multi-Turso → TigerBeetle.
 - **Area:** id (primary, sole).
@@ -184,6 +204,7 @@ Ordering logic, stated once: **execution substrate first** (nothing else lands w
 - **Ordering rationale:** Money-shaped correctness outranks breadth: v1 is close and parked, so finishing it is cheap; the scaling path correctly waits for v1's measured load.
 
 #### 21. IndexedDB local caching in web apps (SEED)
+
 - **Type:** capability-set
 - **Description:** Browser ID clients cache and work against a local IndexedDB store behind the same store interface (item 16), with conformance proven in a real browser engine.
 - **Area:** id (primary, sole).
@@ -192,6 +213,7 @@ Ordering logic, stated once: **execution substrate first** (nothing else lands w
 - **Ordering rationale:** The prototype de-risked the seed; what remains is one decision (#9082) plus production wiring — small, and it is the prerequisite half of the offline seed (item 23).
 
 #### 22. Dynamic Android platform — many apps, push, touch, GPS, driver scope (SEED)
+
 - **Type:** shift-goal
 - **Description:** One dynamic Android platform hosting many ID apps, with push notifications, touchscreen, GPS and driver scope exposed to the hosted apps — and the **same shape** for the Bevy/native shell and the web app: one shell contract, many surfaces.
 - **Area:** id (primary). Cross-links: pm (push-notification lineage — the PM stack's Web Push is the working reference), lab (hardware shells).
@@ -200,6 +222,7 @@ Ordering logic, stated once: **execution substrate first** (nothing else lands w
 - **Ordering rationale:** The shell programme is where ID becomes tangible on the devices Drew actually carries; it is ranked after the store/hosting items because every shell is a client of them — but its contract work (already landing) should not pause.
 
 #### 23. Service-worker offline / local-first web apps (SEED)
+
 - **Type:** capability-set
 - **Description:** Web apps that keep working offline: service-worker shell + IndexedDB cache (item 21), syncing when the network returns — the web expression of ID's local-first principle.
 - **Area:** id (primary). Cross-link: pm (the PM console is the other web surface that needs the same pattern).
@@ -208,6 +231,7 @@ Ordering logic, stated once: **execution substrate first** (nothing else lands w
 - **Ordering rationale:** Last in the ID tier by dependency (it composes items 16, 17 and 21), not by value — local-first is a stated principle, and this is its web proof.
 
 #### 24. ESP32 hardware platform line — ID on microcontrollers
+
 - **Type:** capability-set
 - **Description:** ESP32-family boards as an ID hardware shell — sensors and LoRa connected to the ID project — a lab chapter today, its own line long-term.
 - **Area:** lab (primary). Cross-link: id (the hardware shell crate `id-hw-shell` and the shells programme, item 22).
@@ -218,6 +242,7 @@ Ordering logic, stated once: **execution substrate first** (nothing else lands w
 ### Tier 5 — Gateway, PM and forks surfaces
 
 #### 25. mcpx completion — supervisor, session resume, config tail, embedding surface
+
 - **Type:** problem
 - **Description:** Finish the MCP gateway: a supervisor owning every stdio child's pipes for its whole life (replacing the takeover handoff), cold-restart session resume completed, the settings effect-probe exemption tail burned to zero, and the embedding/API surfaces (Go API, C ABI, WASM, mcpx as its own upstream) decided.
 - **Area:** mcpx (primary). Cross-links: atlas (the `atlas` MCP server is live through mcpx), id (ID's MCP bridge + code-mode interop), fleet (fleet MCP via mcpx designs).
@@ -226,6 +251,7 @@ Ordering logic, stated once: **execution substrate first** (nothing else lands w
 - **Ordering rationale:** mcpx is the tool gateway every agent already uses daily, so its reliability items outrank its expansion items; it sits in Tier 5 because Tiers 0–4 are its dependencies, not its dependents.
 
 #### 26. PM stack completion — backlog as derived state, hosted PM, push end-to-end
+
 - **Type:** capability-set
 - **Description:** The PM stack finishes its own roadmap: backlog state derived from DB + GitHub with markdown as a view, the hosted-editions PM service, decision sets v2, and the push path (aggregator → Web Push → phone → answer) deployed end-to-end.
 - **Area:** pm (primary). Cross-links: fleet (queues/dispatch are shared), id (hosted editions are one epic, #9078), atlas (PM data is an ingest source, item 9).
@@ -234,6 +260,7 @@ Ordering logic, stated once: **execution substrate first** (nothing else lands w
 - **Ordering rationale:** PM is the project's own coordination surface — valuable, but it coordinates Tiers 0–4 rather than blocking them; its blocked-on-ordering verdict (#5007) is respected in this ranking.
 
 #### 27. OpenCode / OpenChamber forks programme — one shared routing implementation
+
 - **Type:** problem
 - **Description:** Converge the forks' duplicated machinery — AUDIT-7 Lane 7's top convergence candidate: quota/routing fixes recur in both forks (249 + 201 titles) — and finish OpenCode 2 config/plugin migration.
 - **Area:** pm (primary — the forks programme is carried as the liftable section of the PM book). Cross-links: fleet (routing/quota doctrine is shared), mcpx (harness adapters + plugin v2).
@@ -242,6 +269,7 @@ Ordering logic, stated once: **execution substrate first** (nothing else lands w
 - **Ordering rationale:** Real leverage (one implementation instead of two fix streams) but no other census item is blocked on it; it follows the surfaces it serves.
 
 #### 28. Fleet secrets, CA and quota plane — the trust and capacity layer
+
 - **Type:** capability-set
 - **Description:** The fleet CA/credentials design completed, the secrets broker hardened (no silent eviction on partial refresh), and the quota plane's staged acceptance (S3 observation history → S4 single-pool trial → S7 recurring activation) finished.
 - **Area:** fleet (primary). Cross-links: pm (admission policy is pm-stack-owned, consumed by fleet), mcpx (per-client ceilings).
@@ -252,6 +280,7 @@ Ordering logic, stated once: **execution substrate first** (nothing else lands w
 ### Tier 6 — The record itself
 
 #### 29. Design-register burn-down — AUDIT-7 L5/L6 (cite, don't re-derive)
+
 - **Type:** problem
 - **Description:** Close the design gap the audit measured: 111 issues whose design is missing/very simple and 121 more deficient/partial, designed as families where the audit flags convergence — the Supabase→Turso family (#5690–#5695), the Atlas/ID hosted cluster (#9068–#9155), and #9085 before #9081.
 - **Area:** pm (primary — the register is cross-project). Cross-links: all books (each family's designs land in its own book).
@@ -260,6 +289,7 @@ Ordering logic, stated once: **execution substrate first** (nothing else lands w
 - **Ordering rationale:** Designs gate implementation everywhere, but the audit already sequenced this work into packets; the merged list's job is to keep it visible as one item, not to re-rank its interior.
 
 #### 30. The books and Spaces themselves — Code Book programme completion
+
 - **Type:** milestone
 - **Description:** This programme's own deliverables: the Code Book, the Lab Book, per-book high-level sections in fleet/atlas/id/mcpx (+ PM via its tracker), the Code Space and Lab Space, and the AliExpress hardware-inventory issue.
 - **Area:** pm (primary — programme coordination). Cross-links: all books carry a section (see §2).
@@ -274,106 +304,112 @@ Ordering logic, stated once: **execution substrate first** (nothing else lands w
 Every merged-list item appears under its **primary** book in full; cross-linked items are repeated with a ◦ marker so each book's section can be built completely from its own list (Deliverable 2 completeness rule). Item numbers are §1 numbers.
 
 ### fleet — Fleet book (`pkgs/fleet/book/`, roadmap: `development/program-roadmap.md`, issue map: `operations/program-issue-map.md`)
-| # | Item |
-|---|---|
-| 1 | Fleet queue, claim and placement correctness |
-| 2 | Containerised build/compile systems — in the cluster and in Actions |
-| 3 | Transport and P2P auth — one honest transport |
-| 28 | Fleet secrets, CA and quota plane |
-| ◦6 | Talos cluster live on Cozystack (fleet consumes in-cluster builds/hosting) |
-| ◦7 | Backups + storage coherent set (fleet/queue Turso stores) |
-| ◦9 | All repos / all ID objects into Atlas (queue + PM data as sources) |
+
+| #   | Item                                                                       |
+| --- | -------------------------------------------------------------------------- |
+| 1   | Fleet queue, claim and placement correctness                               |
+| 2   | Containerised build/compile systems — in the cluster and in Actions        |
+| 3   | Transport and P2P auth — one honest transport                              |
+| 28  | Fleet secrets, CA and quota plane                                          |
+| ◦6  | Talos cluster live on Cozystack (fleet consumes in-cluster builds/hosting) |
+| ◦7  | Backups + storage coherent set (fleet/queue Turso stores)                  |
+| ◦9  | All repos / all ID objects into Atlas (queue + PM data as sources)         |
 | ◦14 | Atlas multi-client search service (`fleet search` is the client of record) |
-| ◦17 | Dynamic ID servers via tunnels (transport leg) |
-| ◦19 | ID scale harness (benchmark placement) |
-| ◦25 | mcpx completion (fleet MCP via mcpx designs #10389/#10390/#10393/#10405) |
-| ◦26 | PM stack completion (shared queues/dispatch) |
-| ◦27 | Forks programme (shared routing/quota doctrine) |
-| ◦29 | Design-register burn-down (fleet families) |
-| ◦30 | Books and Spaces (fleet book section) |
+| ◦17 | Dynamic ID servers via tunnels (transport leg)                             |
+| ◦19 | ID scale harness (benchmark placement)                                     |
+| ◦25 | mcpx completion (fleet MCP via mcpx designs #10389/#10390/#10393/#10405)   |
+| ◦26 | PM stack completion (shared queues/dispatch)                               |
+| ◦27 | Forks programme (shared routing/quota doctrine)                            |
+| ◦29 | Design-register burn-down (fleet families)                                 |
+| ◦30 | Books and Spaces (fleet book section)                                      |
 
 ### atlas — Atlas book (`pkgs/atlas-search/book/`, roadmap: `design/roadmap-and-issue-map.md`)
-| # | Item |
-|---|---|
-| 7 | Backups + storage automated, coherent complete set |
-| 8 | Atlas ingestion fully automated |
-| 9 | All repos / all ID objects into Atlas ingestion |
-| 10 | Atlas provenance complete (#3125 phases 3–4) |
-| 11 | Storage placement — Turso→D1 programme + D1 hot cache |
-| 12 | Atlas↔ID integration — search across the core system |
-| 13 | Rerank + recommender systems in Atlas |
-| 14 | Atlas as a multi-client search service |
-| ◦6 | Talos cluster (storage tiers) |
-| ◦15 | ID apps on one graph (publication consumer) |
-| ◦17 | Dynamic ID servers (shared D1 cache shape) |
-| ◦25 | mcpx completion (Atlas MCP surface, live) |
-| ◦26 | PM stack data as an ingest source |
-| ◦29 | Design-register burn-down (Atlas families) |
-| ◦30 | Books and Spaces (atlas book section) |
+
+| #   | Item                                                  |
+| --- | ----------------------------------------------------- |
+| 7   | Backups + storage automated, coherent complete set    |
+| 8   | Atlas ingestion fully automated                       |
+| 9   | All repos / all ID objects into Atlas ingestion       |
+| 10  | Atlas provenance complete (#3125 phases 3–4)          |
+| 11  | Storage placement — Turso→D1 programme + D1 hot cache |
+| 12  | Atlas↔ID integration — search across the core system  |
+| 13  | Rerank + recommender systems in Atlas                 |
+| 14  | Atlas as a multi-client search service                |
+| ◦6  | Talos cluster (storage tiers)                         |
+| ◦15 | ID apps on one graph (publication consumer)           |
+| ◦17 | Dynamic ID servers (shared D1 cache shape)            |
+| ◦25 | mcpx completion (Atlas MCP surface, live)             |
+| ◦26 | PM stack data as an ingest source                     |
+| ◦29 | Design-register burn-down (Atlas families)            |
+| ◦30 | Books and Spaces (atlas book section)                 |
 
 ### id — ID book (`pkgs/id/book/`, roadmap: `design/roadmap-and-issue-map.md`)
-| # | Item |
-|---|---|
-| 15 | ID apps on one graph (#13880) |
-| 16 | ID store abstraction (redb / Turso / D1 / IndexedDB) |
-| 17 | Tunnels to spin up ID servers dynamically; hosted worlds + hosted editions |
-| 18 | Discovery, registry and federation |
-| 19 | Scale and performance hardening (10×/100×) |
-| 20 | Production currencies v1 + scaling path |
-| 21 | IndexedDB local caching in web apps |
-| 22 | Dynamic Android platform (+ Bevy/web same shape) |
-| 23 | Service-worker offline / local-first web apps |
-| ◦3 | Transport and P2P auth (ID sync/relay) |
-| ◦9 | All ID objects into Atlas ingestion (source side) |
-| ◦11 | Storage placement (hosted ID stores) |
-| ◦12 | Atlas↔ID integration (graph/projector side: #6062, #11182–#11186) |
-| ◦13 | Rerank + recommender (ID search consumer, #9109 Part C) |
-| ◦24 | ESP32 hardware line (hardware shell) |
-| ◦25 | mcpx completion (ID MCP bridge, code-mode interop) |
-| ◦29 | Design-register burn-down (ID families) |
-| ◦30 | Books and Spaces (id book section) |
+
+| #   | Item                                                                       |
+| --- | -------------------------------------------------------------------------- |
+| 15  | ID apps on one graph (#13880)                                              |
+| 16  | ID store abstraction (redb / Turso / D1 / IndexedDB)                       |
+| 17  | Tunnels to spin up ID servers dynamically; hosted worlds + hosted editions |
+| 18  | Discovery, registry and federation                                         |
+| 19  | Scale and performance hardening (10×/100×)                                 |
+| 20  | Production currencies v1 + scaling path                                    |
+| 21  | IndexedDB local caching in web apps                                        |
+| 22  | Dynamic Android platform (+ Bevy/web same shape)                           |
+| 23  | Service-worker offline / local-first web apps                              |
+| ◦3  | Transport and P2P auth (ID sync/relay)                                     |
+| ◦9  | All ID objects into Atlas ingestion (source side)                          |
+| ◦11 | Storage placement (hosted ID stores)                                       |
+| ◦12 | Atlas↔ID integration (graph/projector side: #6062, #11182–#11186)          |
+| ◦13 | Rerank + recommender (ID search consumer, #9109 Part C)                    |
+| ◦24 | ESP32 hardware line (hardware shell)                                       |
+| ◦25 | mcpx completion (ID MCP bridge, code-mode interop)                         |
+| ◦29 | Design-register burn-down (ID families)                                    |
+| ◦30 | Books and Spaces (id book section)                                         |
 
 ### mcpx — mcpx book (`pkgs/mcpx/docs/`, 84 chapters; no programme-roadmap chapter yet — trackers carry it)
-| # | Item |
-|---|---|
-| 25 | mcpx completion — supervisor, session resume, config tail, embedding surface |
-| ◦12 | Atlas↔ID integration (shared MCP surface) |
+
+| #   | Item                                                                          |
+| --- | ----------------------------------------------------------------------------- |
+| 25  | mcpx completion — supervisor, session resume, config tail, embedding surface  |
+| ◦12 | Atlas↔ID integration (shared MCP surface)                                     |
 | ◦14 | Atlas multi-client service (per-client ceilings; `atlas` server live in mcpx) |
-| ◦22 | Shells programme (harness adapters are the agent-side shells) |
-| ◦27 | Forks programme (opencode plugin v2, harness adapters) |
-| ◦28 | Quota plane (per-client ceilings design question) |
-| ◦29 | Design-register burn-down (mcpx families: #1384/#9963 acceptance) |
-| ◦30 | Books and Spaces (mcpx book section; mcpx book is the Pages root) |
+| ◦22 | Shells programme (harness adapters are the agent-side shells)                 |
+| ◦27 | Forks programme (opencode plugin v2, harness adapters)                        |
+| ◦28 | Quota plane (per-client ceilings design question)                             |
+| ◦29 | Design-register burn-down (mcpx families: #1384/#9963 acceptance)             |
+| ◦30 | Books and Spaces (mcpx book section; mcpx book is the Pages root)             |
 
 ### pm — Project Management book (`pm-stack/book/`, via PM-BOOK tracker #13900 — requested by comment, not edited by this programme)
-| # | Item |
-|---|---|
-| 26 | PM stack completion — derived backlog, hosted PM, push end-to-end |
-| 27 | OpenCode / OpenChamber forks programme (liftable PM-book section) |
-| 29 | Design-register burn-down (cross-project register home) |
-| 30 | Books and Spaces — programme coordination (Code Book owns the merged list) |
-| ◦1 | Queue/placement correctness (PM orchestration subprogramme keeps its own design ordering) |
-| ◦2 | Actions-exec / compile dispatch (PM dispatch views) |
-| ◦7 | Backups estate (PM census: 50 Turso DBs, 22 Workers) |
-| ◦9 | PM stack data into Atlas ingestion |
-| ◦11 | Turso→D1 audit (PM-censused estate) |
-| ◦15 | ID apps on one graph (boards lineage) |
-| ◦17 | Hosted editions (PM service is one of the editions, #9078) |
-| ◦22 | Android platform (Web Push reference implementation is PM's) |
-| ◦23 | Offline/local-first (PM console as second web surface) |
-| ◦28 | Quota plane (admission policy is pm-stack-owned) |
+
+| #   | Item                                                                                      |
+| --- | ----------------------------------------------------------------------------------------- |
+| 26  | PM stack completion — derived backlog, hosted PM, push end-to-end                         |
+| 27  | OpenCode / OpenChamber forks programme (liftable PM-book section)                         |
+| 29  | Design-register burn-down (cross-project register home)                                   |
+| 30  | Books and Spaces — programme coordination (Code Book owns the merged list)                |
+| ◦1  | Queue/placement correctness (PM orchestration subprogramme keeps its own design ordering) |
+| ◦2  | Actions-exec / compile dispatch (PM dispatch views)                                       |
+| ◦7  | Backups estate (PM census: 50 Turso DBs, 22 Workers)                                      |
+| ◦9  | PM stack data into Atlas ingestion                                                        |
+| ◦11 | Turso→D1 audit (PM-censused estate)                                                       |
+| ◦15 | ID apps on one graph (boards lineage)                                                     |
+| ◦17 | Hosted editions (PM service is one of the editions, #9078)                                |
+| ◦22 | Android platform (Web Push reference implementation is PM's)                              |
+| ◦23 | Offline/local-first (PM console as second web surface)                                    |
+| ◦28 | Quota plane (admission policy is pm-stack-owned)                                          |
 
 ### lab — Lab Book (new, under #13905; cluster work lives here until it earns its own book)
-| # | Item |
-|---|---|
-| 4 | Switches integrated and racked |
-| 5 | All servers online, auto-connecting, presenting to the cluster on boot |
-| 6 | Talos cluster booted live, accepting data on Cozystack |
-| 24 | ESP32 hardware platform line (lab chapter; ID cross-link) |
-| ◦2 | Containerised builds in the cluster (runs on item 6) |
-| ◦7 | Backups local leg (cluster storage, DRBD/LINSTOR tiers) |
-| ◦17 | Basement-cluster deployment pack for hosted ID worlds (#10697) |
-| ◦30 | Lab Book + Lab Space + AliExpress inventory issue (this programme) |
+
+| #   | Item                                                                   |
+| --- | ---------------------------------------------------------------------- |
+| 4   | Switches integrated and racked                                         |
+| 5   | All servers online, auto-connecting, presenting to the cluster on boot |
+| 6   | Talos cluster booted live, accepting data on Cozystack                 |
+| 24  | ESP32 hardware platform line (lab chapter; ID cross-link)              |
+| ◦2  | Containerised builds in the cluster (runs on item 6)                   |
+| ◦7  | Backups local leg (cluster storage, DRBD/LINSTOR tiers)                |
+| ◦17 | Basement-cluster deployment pack for hosted ID worlds (#10697)         |
+| ◦30 | Lab Book + Lab Space + AliExpress inventory issue (this programme)     |
 
 **Completeness check:** items 1–30 each appear exactly once as a primary assignment: fleet 4 (1, 2, 3, 28) · atlas 8 (7–14) · id 9 (15–23) · mcpx 1 (25) · pm 4 (26, 27, 29, 30) · lab 4 (4, 5, 6, 24). Total 30. ✓
 
@@ -383,38 +419,38 @@ Every merged-list item appears under its **primary** book in full; cross-linked 
 
 Per item: when it entered the record, planned/projected dates where they exist, reprioritisations and misses with reasons. **Where the record has no timing data, this section says "no timing in record" — nothing here is projected by the census itself.**
 
-| # | Timing in record |
-|---|---|
-| 1 | Entered as fleet programme [#13272](https://github.com/developing-today/code/issues/13272), 2026-11-23. Repair-verb production drain and generation-6 broker state are dated 2026-11-23 in the fleet book roadmap. No completion date in record. |
-| 2 | [#13765](https://github.com/developing-today/code/issues/13765) and [#13774](https://github.com/developing-today/code/issues/13774) both filed 2026-11-23 (21:14Z / 21:21Z). Actions-exec slices were landing through 22:10Z the same day. No projected dates in record. |
-| 3 | [#13752](https://github.com/developing-today/code/issues/13752) filed 2026-11-23T21:11Z; [#13779](https://github.com/developing-today/code/issues/13779) filed 2026-11-23T21:29Z. No projected dates in record. |
-| 4 | No timing in record. Switch inventory itself is incomplete (make/model/count missing) — the Lab census under #13905 is the first dated step. |
-| 5 | No timing in record. Hardware state (no OS installed, power-capacity blocker, 3–5 machines first) is as recorded 2026-10-20/21 in the hardware register; no reprioritisation recorded since. |
-| 6 | The v1.9-era Talos test cluster was torn down (confirmed by Drew 2026-10-26) — a recorded **miss/reset**: the current programme (`basement-cluster.md`) restarts from declarative bootstrap. No live date in record. |
-| 7 | Atlas daily backup timer is live today (no start date in record). [#9093](https://github.com/developing-today/code/issues/9093) mesh: no timing in record. Drew's keep-everything rule is dated 2026-10-31. |
-| 8 | Continuous-ingestion design is dated by [#9097](https://github.com/developing-today/code/issues/9097)'s source list (Drew, 2026-11-12). **Miss of record:** canonical counts frozen at the 2026-10-31 publish because ingestion stayed manual — the freeze is the stated reason the recount procedure is an acceptance item. No projected automation date in record. |
-| 9 | ChatGPT export + sandbox-agents corpus interned 2026-11-23. Thinking-traces investigation: no date in record. |
-| 10 | [#3125](https://github.com/developing-today/code/issues/3125) direction dated 2026-10-31; phase-2 backfill slice landed 2026-11-23 (12,092 files, verify OK). Phases 3–4: no dates in record. |
-| 11 | [#13844](https://github.com/developing-today/code/issues/13844) audit filed 2026-11-23T23:16Z; audit doc merged same day (PR #13845); live estate read ~23:05Z 2026-11-23. D1 hot-cache design merged 2026-11-23 (PR #13098); [#13107](https://github.com/developing-today/code/issues/13107)'s first tuning round is specified as "after ~2 weeks of counters" — the only relative projection in this item; counters cannot start until #13105 lands. #13106 is flag-held (reprioritisation by gate, not by date). |
-| 12 | [#6062](https://github.com/developing-today/code/issues/6062) design open at census; projectors [#11182](https://github.com/developing-today/code/issues/11182)–[#11185](https://github.com/developing-today/code/issues/11185) enqueued 2026-11-23 (ID-100, priority 70). No projected dates in record. |
-| 13 | Golden-set gate results on record from 2026-11-08 design onward; [#10158](https://github.com/developing-today/code/issues/10158)'s PR #12873 open at census. No ship date in record — the gate doctrine is explicit that a reranker that hurts on Atlas's own queries does not ship, whenever it is ready. |
-| 14 | [#12900](https://github.com/developing-today/code/issues/12900) exploration opened by Drew 2026-11-04; moved into this repo 2026-11-22; thread 1 landed 2026-11-23 (PR #13039). Thread-2 decision: no date in record. |
-| 15 | [#13880](https://github.com/developing-today/code/issues/13880) filed 2026-11-24T00:09Z — entered the merged list during this census. Boards chain [#10237](https://github.com/developing-today/code/issues/10237)→[#10252](https://github.com/developing-today/code/issues/10252)→[#10269](https://github.com/developing-today/code/issues/10269): implementation landed but close is flag-held — a recorded stall, reason = stale labels + held oracle re-run, not missing code. |
-| 16 | Conformance fixtures [#10191](https://github.com/developing-today/code/issues/10191) closed via PR #13194 (2026-11-23 programme records). #9082's IndexedDB decision: no date in record. Sibling [#10215](https://github.com/developing-today/code/issues/10215) (NATS adapter) is tier **contingent** with a recorded review date of **2027-02-12** — the only far-future date in the census. |
-| 17 | Hosted-worlds queue tasks were recorded blocked-until **2026-11-26** (programme records) — a dated gate, now the chain's pacing fact. Export/import halves landed 2026-11-23. #10693 ownership ruled and task enqueued (21463) 2026-11-23. |
-| 18 | No timing in record; the #10706/#10708 upstream blocker is UNVERIFIED (a census gap carried forward honestly). |
-| 19 | #13083/#13085 closed with measurements 2026-11-23 programme window; #13084 flag-held (no date — Drew item-specific approval); #13087/#13088 inherit the chain with no independent dates. |
-| 20 | [#10070](https://github.com/developing-today/code/issues/10070) task 21343 parked at census; no date in record. Scaling (#5676) is explicitly sequenced behind v1 by triage verdicts — a recorded reprioritisation (v1 first). |
-| 21 | [#10213](https://github.com/developing-today/code/issues/10213) closed via PR #13219 after both its blockers (#10160, #10191) closed — all in the 2026-11-23 window. Adoption decision: no date in record. |
-| 22 | [#7938](https://github.com/developing-today/code/issues/7938) slice 1 landed (PR #13445) in the 2026-11-23 window; [#1831](https://github.com/developing-today/code/issues/1831) enqueued 2026-11-23 (task 21480, priority 70); [#5781](https://github.com/developing-today/code/issues/5781) Bevy design **adopted** 2026-11-23 — a recorded decision, ending its design phase. No platform ship date in record. |
-| 23 | No timing in record — and no owning issue (see §1 item 23 finding). |
-| 24 | No timing in record; explicitly "noted, not scheduled" in the hardware record. |
-| 25 | Exemption-tail shrink log is dated per setting (2026-11-17 → 2026-11-23, #8467–#8474 chains); 11 sibling plugin exemptions cleared 2026-11-23. [#1950](https://github.com/developing-today/code/issues/1950) OAuth landed 2026-11-23 (PR #12869). Programme tracker [#13264](https://github.com/developing-today/code/issues/13264) filed 2026-11-23T12:39Z. No completion date in record. |
-| 26 | [#9335](https://github.com/developing-today/code/issues/9335) acceptance landed + live-verified **2026-11-13** (awaiting close only — a recorded near-miss of process, not of work). [#5007](https://github.com/developing-today/code/issues/5007): verdict of record = correctly blocked on phase ordering; no start date. PM-BOOK skeleton reconciled 2026-11-23 ~18:45 CST. |
-| 27 | OpenCode 2 work active 2026-11-23 (Lane DL done note). AUDIT-7 convergence evidence is dated 2026-11-23/24. No projected dates in record. |
-| 28 | **The one hard near-term date in the census:** the quota S3 seven-day interval can first elapse **2026-11-30 at 02:30:06.420 UTC** (fleet book roadmap, from the first qualifying record 2026-11-23 02:30 UTC). S7's weekly-review timer was absent at inspection — [#13591](https://github.com/developing-today/code/issues/13591) tracks its first scheduled invocation; no date in record. [#9155](https://github.com/developing-today/code/issues/9155) task 17413 parked at expert ruling, no date. |
-| 29 | AUDIT-7 filed 2026-11-23 ~17:56 CST ([#13871](https://github.com/developing-today/code/issues/13871) created 23:57:31Z); Lane 6 complete 2026-11-24T00:38Z with 30 packets live. Continuation packets (21579/21580) carry the next batches; no completion date in record. |
-| 30 | Programme directive: Drew, 2026-11-23 ~18:43 CST; tracker [#13905](https://github.com/developing-today/code/issues/13905) created 2026-11-24T00:45:30Z. Slice checkboxes carry no dates in the tracker. AliExpress inventory: access step pending Drew — no date in record, no login attempted. |
+| #   | Timing in record                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| --- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1   | Entered as fleet programme [#13272](https://github.com/developing-today/code/issues/13272), 2026-11-23. Repair-verb production drain and generation-6 broker state are dated 2026-11-23 in the fleet book roadmap. No completion date in record.                                                                                                                                                                                                                                                                    |
+| 2   | [#13765](https://github.com/developing-today/code/issues/13765) and [#13774](https://github.com/developing-today/code/issues/13774) both filed 2026-11-23 (21:14Z / 21:21Z). Actions-exec slices were landing through 22:10Z the same day. No projected dates in record.                                                                                                                                                                                                                                            |
+| 3   | [#13752](https://github.com/developing-today/code/issues/13752) filed 2026-11-23T21:11Z; [#13779](https://github.com/developing-today/code/issues/13779) filed 2026-11-23T21:29Z. No projected dates in record.                                                                                                                                                                                                                                                                                                     |
+| 4   | No timing in record. Switch inventory itself is incomplete (make/model/count missing) — the Lab census under #13905 is the first dated step.                                                                                                                                                                                                                                                                                                                                                                        |
+| 5   | No timing in record. Hardware state (no OS installed, power-capacity blocker, 3–5 machines first) is as recorded 2026-10-20/21 in the hardware register; no reprioritisation recorded since.                                                                                                                                                                                                                                                                                                                        |
+| 6   | The v1.9-era Talos test cluster was torn down (confirmed by Drew 2026-10-26) — a recorded **miss/reset**: the current programme (`basement-cluster.md`) restarts from declarative bootstrap. No live date in record.                                                                                                                                                                                                                                                                                                |
+| 7   | Atlas daily backup timer is live today (no start date in record). [#9093](https://github.com/developing-today/code/issues/9093) mesh: no timing in record. Drew's keep-everything rule is dated 2026-10-31.                                                                                                                                                                                                                                                                                                         |
+| 8   | Continuous-ingestion design is dated by [#9097](https://github.com/developing-today/code/issues/9097)'s source list (Drew, 2026-11-12). **Miss of record:** canonical counts frozen at the 2026-10-31 publish because ingestion stayed manual — the freeze is the stated reason the recount procedure is an acceptance item. No projected automation date in record.                                                                                                                                                |
+| 9   | ChatGPT export + sandbox-agents corpus interned 2026-11-23. Thinking-traces investigation: no date in record.                                                                                                                                                                                                                                                                                                                                                                                                       |
+| 10  | [#3125](https://github.com/developing-today/code/issues/3125) direction dated 2026-10-31; phase-2 backfill slice landed 2026-11-23 (12,092 files, verify OK). Phases 3–4: no dates in record.                                                                                                                                                                                                                                                                                                                       |
+| 11  | [#13844](https://github.com/developing-today/code/issues/13844) audit filed 2026-11-23T23:16Z; audit doc merged same day (PR #13845); live estate read ~23:05Z 2026-11-23. D1 hot-cache design merged 2026-11-23 (PR #13098); [#13107](https://github.com/developing-today/code/issues/13107)'s first tuning round is specified as "after ~2 weeks of counters" — the only relative projection in this item; counters cannot start until #13105 lands. #13106 is flag-held (reprioritisation by gate, not by date). |
+| 12  | [#6062](https://github.com/developing-today/code/issues/6062) design open at census; projectors [#11182](https://github.com/developing-today/code/issues/11182)–[#11185](https://github.com/developing-today/code/issues/11185) enqueued 2026-11-23 (ID-100, priority 70). No projected dates in record.                                                                                                                                                                                                            |
+| 13  | Golden-set gate results on record from 2026-11-08 design onward; [#10158](https://github.com/developing-today/code/issues/10158)'s PR #12873 open at census. No ship date in record — the gate doctrine is explicit that a reranker that hurts on Atlas's own queries does not ship, whenever it is ready.                                                                                                                                                                                                          |
+| 14  | [#12900](https://github.com/developing-today/code/issues/12900) exploration opened by Drew 2026-11-04; moved into this repo 2026-11-22; thread 1 landed 2026-11-23 (PR #13039). Thread-2 decision: no date in record.                                                                                                                                                                                                                                                                                               |
+| 15  | [#13880](https://github.com/developing-today/code/issues/13880) filed 2026-11-24T00:09Z — entered the merged list during this census. Boards chain [#10237](https://github.com/developing-today/code/issues/10237)→[#10252](https://github.com/developing-today/code/issues/10252)→[#10269](https://github.com/developing-today/code/issues/10269): implementation landed but close is flag-held — a recorded stall, reason = stale labels + held oracle re-run, not missing code.                                  |
+| 16  | Conformance fixtures [#10191](https://github.com/developing-today/code/issues/10191) closed via PR #13194 (2026-11-23 programme records). #9082's IndexedDB decision: no date in record. Sibling [#10215](https://github.com/developing-today/code/issues/10215) (NATS adapter) is tier **contingent** with a recorded review date of **2027-02-12** — the only far-future date in the census.                                                                                                                      |
+| 17  | Hosted-worlds queue tasks were recorded blocked-until **2026-11-26** (programme records) — a dated gate, now the chain's pacing fact. Export/import halves landed 2026-11-23. #10693 ownership ruled and task enqueued (21463) 2026-11-23.                                                                                                                                                                                                                                                                          |
+| 18  | No timing in record; the #10706/#10708 upstream blocker is UNVERIFIED (a census gap carried forward honestly).                                                                                                                                                                                                                                                                                                                                                                                                      |
+| 19  | #13083/#13085 closed with measurements 2026-11-23 programme window; #13084 flag-held (no date — Drew item-specific approval); #13087/#13088 inherit the chain with no independent dates.                                                                                                                                                                                                                                                                                                                            |
+| 20  | [#10070](https://github.com/developing-today/code/issues/10070) task 21343 parked at census; no date in record. Scaling (#5676) is explicitly sequenced behind v1 by triage verdicts — a recorded reprioritisation (v1 first).                                                                                                                                                                                                                                                                                      |
+| 21  | [#10213](https://github.com/developing-today/code/issues/10213) closed via PR #13219 after both its blockers (#10160, #10191) closed — all in the 2026-11-23 window. Adoption decision: no date in record.                                                                                                                                                                                                                                                                                                          |
+| 22  | [#7938](https://github.com/developing-today/code/issues/7938) slice 1 landed (PR #13445) in the 2026-11-23 window; [#1831](https://github.com/developing-today/code/issues/1831) enqueued 2026-11-23 (task 21480, priority 70); [#5781](https://github.com/developing-today/code/issues/5781) Bevy design **adopted** 2026-11-23 — a recorded decision, ending its design phase. No platform ship date in record.                                                                                                   |
+| 23  | No timing in record — and no owning issue (see §1 item 23 finding).                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| 24  | No timing in record; explicitly "noted, not scheduled" in the hardware record.                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| 25  | Exemption-tail shrink log is dated per setting (2026-11-17 → 2026-11-23, #8467–#8474 chains); 11 sibling plugin exemptions cleared 2026-11-23. [#1950](https://github.com/developing-today/code/issues/1950) OAuth landed 2026-11-23 (PR #12869). Programme tracker [#13264](https://github.com/developing-today/code/issues/13264) filed 2026-11-23T12:39Z. No completion date in record.                                                                                                                          |
+| 26  | [#9335](https://github.com/developing-today/code/issues/9335) acceptance landed + live-verified **2026-11-13** (awaiting close only — a recorded near-miss of process, not of work). [#5007](https://github.com/developing-today/code/issues/5007): verdict of record = correctly blocked on phase ordering; no start date. PM-BOOK skeleton reconciled 2026-11-23 ~18:45 CST.                                                                                                                                      |
+| 27  | OpenCode 2 work active 2026-11-23 (Lane DL done note). AUDIT-7 convergence evidence is dated 2026-11-23/24. No projected dates in record.                                                                                                                                                                                                                                                                                                                                                                           |
+| 28  | **The one hard near-term date in the census:** the quota S3 seven-day interval can first elapse **2026-11-30 at 02:30:06.420 UTC** (fleet book roadmap, from the first qualifying record 2026-11-23 02:30 UTC). S7's weekly-review timer was absent at inspection — [#13591](https://github.com/developing-today/code/issues/13591) tracks its first scheduled invocation; no date in record. [#9155](https://github.com/developing-today/code/issues/9155) task 17413 parked at expert ruling, no date.            |
+| 29  | AUDIT-7 filed 2026-11-23 ~17:56 CST ([#13871](https://github.com/developing-today/code/issues/13871) created 23:57:31Z); Lane 6 complete 2026-11-24T00:38Z with 30 packets live. Continuation packets (21579/21580) carry the next batches; no completion date in record.                                                                                                                                                                                                                                           |
+| 30  | Programme directive: Drew, 2026-11-23 ~18:43 CST; tracker [#13905](https://github.com/developing-today/code/issues/13905) created 2026-11-24T00:45:30Z. Slice checkboxes carry no dates in the tracker. AliExpress inventory: access step pending Drew — no date in record, no login attempted.                                                                                                                                                                                                                     |
 
 ---
 

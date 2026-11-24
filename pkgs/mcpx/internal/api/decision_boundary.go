@@ -42,45 +42,9 @@ package api
 //     never contain them — including content from a denied (low-scored)
 //     trace or any other sensitive content the caller retained.
 //
-// The forbidden-field list below is what the tests iterate: a new field on
-// Decision whose JSON name appears here fails the guard, present or future.
-
-// decisionAuditAllowedJSONFields is the closed set of top-level JSON field
-// names a marshalled Decision may carry (via encoding/json default keying:
-// exported Go field name with first letter lowered).
-var decisionAuditAllowedJSONFields = map[string]bool{
-	"principal":  true,
-	"surface":    true, // nested under principal
-	"id":         true, // nested under principal (descriptive ID, not a credential)
-	"owner":      true, // nested under principal
-	"op":         true,
-	"permission": true,
-	"allowed":    true,
-	"at":         true,
-}
-
-// feedbackPayloadJSONFieldsExcludedFromDecisions lists JSON field names that
-// belong to retained feedback / interaction payloads and must never appear
-// in the decision audit export. The guard test iterates this table, so a
-// future Decision field that reuses one of these names fails closed.
-var feedbackPayloadJSONFieldsExcludedFromDecisions = []string{
-	"traceId",
-	"timestamp",
-	"sessionId",
-	"source",
-	"input",
-	"output",
-	"toolsUsed",
-	"score",
-	"target",
-	"retrievalScore",
-	"executionScore",
-	"scoresJson",
-	"feedbackNotes",
-	"feedbackAt",
-	"notes",
-	"query",
-}
+// The forbidden-field lists live in decision_boundary_test.go, which iterates
+// the Decision struct: a new field whose name reuses a feedback-payload or
+// secret fragment fails the guard, present or future.
 
 // DecisionRetentionBound reports the bounded window the decision record
 // keeps: the most recent N decisions. It is the spec value the retention

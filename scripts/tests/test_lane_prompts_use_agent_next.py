@@ -21,7 +21,7 @@ NEXT_WORK = ROOT / ".agents" / "skills" / "next-work" / "SKILL.md"
 
 def section(text, heading):
     start = text.index(heading)
-    rest = text[start + len(heading):]
+    rest = text[start + len(heading) :]
     end = rest.find("\n## ")
     return rest if end == -1 else rest[:end]
 

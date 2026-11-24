@@ -84,6 +84,8 @@ const io: Io = {
   // The made-up host trusts every caller, as demo.ts does; here it is
   // only ever reached through the edge.
   host: async (r) => (net.hostUp ? marked(await handle(r, demoDeps)) : null),
+  // Away, the made-up host is away as a laptop asleep is: never reached.
+  act: async (r) => (net.hostUp ? marked(await handle(r, demoDeps)) : "unreached"),
   publicHost: HOSTNAME,
   version: "demo",
   later: (work) => void work.catch(() => {}),

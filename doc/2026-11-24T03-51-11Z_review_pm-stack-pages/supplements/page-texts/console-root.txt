@@ -1,0 +1,561 @@
+Now
+live
+↻
+58
+in progress
+5
+queued
+394
+need you
+316
+blocked
+IN PROGRESS
+small fix
+#10070
+Triage #10070: id(currency): production currencies v1 — remainder after the graph-native fold (#5522 successor)
+
+repo-worker-code · oc-code-07 · claimed just now
+
+NEXT STEP
+triaged
+feature slice
+#13948
+Secrets plane S2: delta refresh + watermark (#13948)
+
+repo-worker-code · oc-code-08 · claimed 9 min ago
+
+GOAL
+Durable watermark per #13948 §5.1: the broker persists, across restarts, a watermark equal to the start time of its last successful refresh minus a small skew overlap; the watermark is not held in memory only
+feature slice
+#13879
+AUDIT-7 Lane 4 merged-PR audit slice: developing-today-forks/opencode batch 3/5 (250 PRs)
+
+oc-code-06 · any-occodegnaahgonpnikmaidpdbemleelopfjocc · claimed 9 min ago
+
+NEXT STEP
+Resume at PR #1446; first restore sanctioned gh-post/content_throttle posting, apply label and lifecycle note, then continue one-by-one full audit.
+feature slice
+#13877
+attempt 2
+DOCS-MIG P2 #13877: iroh-investigation → doc/living/iroh/ + dated record (doc-only PR, do NOT merge)
+
+repo-worker-code · any-n · claimed 20 min ago
+
+NEXT STEP
+PR #14013 open, evidence on #13877 comment 7119892443; doc-only, do NOT merge
+small fix
+#14039
+Implement #14039: finish Atlas memory slice 1 connector
+
+repo-worker-code · any-n · claimed 22 min ago
+
+GOAL
+Implement and test native memory-lancedb source reader staging agent-memory through Atlas staging; no new vector store
+feature slice
+#13903
+AUDIT-7 Lane 1 follow-up Batch A: rebase-and-merge blocked PRs (conflicts at census)
+
+repo-worker-code · code-i · claimed 35 min ago
+
+NEXT STEP
+batch-a-13567-merged
+small fix
+#13057
+Fix #13057: production-line-guard: world_bench.rs newly over limit; recurrence of existing failure
+
+xaltha · any-xalthakfnckkeelmbdblpaknikafidpebfbipf · claimed 48 min ago
+
+NEXT STEP
+pr_opened
+small fix
+#13674
+attempt 2
+Fix #13674: scripts-test: muse bootstrap check-op expects warn when restore skipped
+
+xaltha · any-xalthakfnckkeelmbdblpaknikafidpebfbipf · claimed 51 min ago
+
+NEXT STEP
+fix-pr-open
+small fix
+#12921
+attempt 2
+ID-100R: #12921 id: implement capability-change notices — client baseline store, connect-stage comparis...
+
+repo-worker-code · oc-code-03 · claimed 64 min ago
+
+NEXT STEP
+premise-done
+small fix
+#8570
+attempt 4
+Fix #8570: pm-stack Phase 3 - consolidate aggregator, gatherer, collector, projector into pm-core
+
+oc-code-06 · any-occodegnaahgonpnikmaidpdbemleelopfjocc · muse-lane · claimed 69 min ago
+
+NEXT STEP
+After PR #12905 merges, wire scheduler ownership into pm-core, then take the projector and unit-cutover slices.
+feature slice
+#13879
+AUDIT-7 Lane 4 merged-PR audit slice: developing-today/code batch 9/14 (250 PRs)
+
+repo-worker-code · oc-code-06 · claimed 71 min ago
+
+NEXT STEP
+pr-11268-verified
+feature slice
+#13879
+attempt 3
+AUDIT-7 Lane 4 merged-PR audit slice: developing-today/code batch 10/14 (250 PRs)
+
+repo-worker-code · oc-code-04 · claimed 73 min ago
+
+NEXT STEP
+re-packetize batch 10 and reconcile previous worker results
+feature slice
+#14016
+Cluster Phase 1 design slice 1: cluster-config home decision + TALM bootstrap skeleton (#14016)
+
+repo-worker-code · oc-code-04 · claimed 73 min ago
+
+GOAL
+config-home decision recorded on #14016 with reasoning, and #1812's open question answered on #1812 with a link
+feature slice
+#13879
+attempt 2
+AUDIT-7 Lane 4 merged-PR audit slice: developing-today-forks/openchamber batch 3/5 (250 PRs)
+
+repo-worker-code · oc-code-01 · claimed 75 min ago
+
+GOAL
+Ledger comment on code#13879 covering all 250 PRs of developing-today-forks/openchamber batch 3 with verdicts, outcome labels applied, and any gap/bug issues filed and linked.
+feature slice
+#13903
+AUDIT-7 Lane 1 follow-up Batch C: dependabot lockfile clusters — verify and merge
+
+xaltha · any-xalthakfnckkeelmbdblpaknikafidpebfbipf · claimed 2 h ago
+
+NEXT STEP
+After bot rebases, inspect full PRs and current checks; merge verified PRs; record all final dispositions, with explicit #13438 major verdict.
+feature slice
+#13879
+AUDIT-7 Lane 4 merged-PR audit slice: developing-today/code batch 4/14 (250 PRs)
+
+repo-worker-code · code-i · claimed 2 h ago
+
+GOAL
+Ledger comment on code#13879 covering all 250 PRs of developing-today/code batch 4 with verdicts, outcome labels applied, and any gap/bug issues filed and linked.
+feature slice
+#13879
+AUDIT-7 Lane 4 merged-PR audit slice: developing-today-forks/opencode batch 5/5 (122 PRs)
+
+xaltha · any-xalthakfnckkeelmbdblpaknikafidpebfbipf · claimed 2 h ago
+
+GOAL
+Ledger comment on code#13879 covering all 122 PRs of developing-today-forks/opencode batch 5 with verdicts, outcome labels applied, and any gap/bug issues filed and linked.
+feature slice
+#13873
+Design-gaps continuation slice 2: batch packetising from Lane 6 report (#13873)
+
+repo-worker-code · code-h · claimed 2 h ago
+
+GOAL
+Batch packets enqueued and listed on #13873
+feature slice
+#13879
+AUDIT-7 Lane 4 merged-PR audit slice: developing-today/code batch 2/14 (250 PRs)
+
+repo-worker-code · code-i · claimed 2 h ago
+
+NEXT STEP
+resume at PR 6111; batch ledger not yet posted
+feature slice
+#13879
+AUDIT-7 Lane 4 merged-PR audit slice: developing-today-forks/opencode batch 4/5 (250 PRs)
+
+xaltha · any-xalthakfnckkeelmbdblpaknikafidpebfbipf · claimed 2 h ago
+
+GOAL
+Ledger comment on code#13879 covering all 250 PRs of developing-today-forks/opencode batch 4 with verdicts, outcome labels applied, and any gap/bug issues filed and linked.
+feature slice
+#13879
+attempt 2
+AUDIT-7 Lane 4 merged-PR audit slice: developing-today/code batch 12/14 (250 PRs)
+
+repo-worker-code · oc-code-02 · claimed 2 h ago
+
+NEXT STEP
+audit-running
+small fix
+#6025
+attempt 8
+Run Atlas first-pass corpus ingestion after readiness gates (#6025)
+
+repo-worker-code · code-i · muse-lane · claimed 2 h ago
+
+NEXT STEP
+park: ingestion job needs human-supervised run
+feature slice
+#9122
+Design slice #9122: design(id): numeric registry namespaces over the byte system
+
+repo-worker-code · oc-code-03 · claimed 2 h ago
+
+NEXT STEP
+Resume after merge or actionable review feedback.
+feature slice
+#13874
+AUDIT-7 Lane 7 slice C: forks + fleet open items stray-work pass (80 items)
+
+repo-worker-code · oc-code-01 · claimed 2 h ago
+
+GOAL
+all 80 open fork/fleet items read and dispositioned
+feature slice
+#13874
+AUDIT-7 Lane 7 slice A: formalise text-linked stray issues in code (521 open)
+
+repo-worker-code · oc-code-03 · claimed 2 h ago
+
+GOAL
+521 items labelled stray-work with correct epic/primary-parent labels or stray/needs-parent
+triage
+#13670
+main-broken: developing-today/code nix ci @baeead2 — basic: NixOS host evaluation
+
+repo-worker-code · oc-code-01 · claimed 2 h ago
+
+NEXT STEP
+diagnosed
+feature slice
+#9521
+Design slice #9521: Nix cache as the content store: derivations + flakes per item (design program)
+
+repo-worker-code · code-h · claimed 2 h ago
+
+GOAL
+Dated design doc in doc/ covering all 9 standard points, linked from source issue
+small fix
+#13936
+Scheduled Suggestions — developing-today/code
+
+repo-worker-code · code-i · claimed 2 h ago
+
+GOAL
+Session launched and work completed per prompt; close the issue from the session or a follow-up
+small fix
+#13934
+Scheduled Suggestions — developing-today/code
+
+repo-worker-code · code-f · claimed 2 h ago
+
+GOAL
+Session launched and work completed per prompt; close the issue from the session or a follow-up
+small fix
+#13933
+Scheduled Suggestions — developing-today/code
+
+repo-worker-code · code-h · claimed 2 h ago
+
+GOAL
+Session launched and work completed per prompt; close the issue from the session or a follow-up
+small fix
+#8282
+attempt 2
+Fix #8282: template-world snapshot export/import for id worlds (design #6278 D5)
+
+repo-worker-code · any-o · muse-lane · claimed 3 h ago
+
+NEXT STEP
+resume only with at least 240 minutes
+feature slice
+#13879
+AUDIT-7 Lane 4 merged-PR audit slice: developing-today-forks/openchamber batch 4/5 (250 PRs)
+
+oc-code-06 · any-occodegnaahgonpnikmaidpdbemleelopfjocc · claimed 3 h ago
+
+GOAL
+Ledger comment on code#13879 covering all 250 PRs of developing-today-forks/openchamber batch 4 with verdicts, outcome labels applied, and any gap/bug issues filed and linked.
+feature slice
+#2025
+Design slice #2025: design: review loop — diff review can reject 'done' and commission a fresh second-pass session
+
+repo-worker-code · oc-code-06 · claimed 3 h ago
+
+GOAL
+Dated design doc in doc/ covering all 9 standard points, linked from source issue
+feature slice
+#2036
+Design slice #2036: id: design: ID messaging/relay protocol v1
+
+repo-worker-code · oc-code-06 · claimed 3 h ago
+
+GOAL
+Dated design doc in doc/ covering all 9 standard points, linked from source issue
+feature slice
+#13879
+AUDIT-7 Lane 4 merged-PR audit slice: developing-today-forks/openchamber batch 2/5 (250 PRs)
+
+repo-worker-code · oc-code-06 · claimed 3 h ago
+
+GOAL
+Ledger comment on code#13879 covering all 250 PRs of developing-today-forks/openchamber batch 2 with verdicts, outcome labels applied, and any gap/bug issues filed and linked.
+small fix
+#13612
+Triage developing-today/code#13612: mcpx docs: keep public Go client signatures in sync with their chapter
+
+repo-worker-code · oc-code-06 · claimed 3 h ago
+
+NEXT STEP
+existing-fix-in-review
+feature slice
+#13878
+AUDIT-7 Lane 2 slice 1: adjudicate substantive not_planned closes in developing-today/code
+
+repo-worker-code · oc-code-02 · claimed 3 h ago
+
+GOAL
+Every in-scope issue has a verdict recorded on #13878: clean (with closing rationale) / reopened (with reason) / follow-up filed (with link).
+small fix
+#13911
+Fix #13911: main CI container images — inconsistent Go vendoring (x/net 0.63.0 vs 0.62.0, run 45296099876)
+
+xaltha · any-xalthakfnckkeelmbdblpaknikafidpebfbipf · claimed 3 h ago
+
+GOAL
+Workflow container images is green on main (or on the fix branch run) with the vendor/modules.txt consistent with go.mod
+feature slice
+#9140
+Design slice #9140: design(atlas): recommendation objects, search history, retention classes
+
+repo-worker-code · code-g · claimed 3 h ago
+
+GOAL
+Dated design doc in doc/ covering all 9 standard points, linked from source issue
+feature slice
+#9147
+Design slice #9147: design(id): reputation system + public claims/dispute log
+
+repo-worker-code · any-o · claimed 3 h ago
+
+GOAL
+Dated design doc in doc/ covering all 9 standard points, linked from source issue
+feature slice
+#9086
+Design slice #9086: design(pm-stack): SSO relying-party integration — hosted editions consume #9077; tenancy accounts aligned with #1253 roles
+
+repo-worker-code · code-j · claimed 3 h ago
+
+GOAL
+Dated design doc in doc/ covering all 9 standard points, linked from source issue
+feature slice
+#9085
+Design slice #9085: design(fleet): second version in TypeScript — scope, WASM evaluation, transports (REST/WebSocket), and direct-Turso prudence rules
+
+repo-worker-code · any-n · claimed 3 h ago
+
+GOAL
+Dated design doc in doc/ covering all 9 standard points, linked from source issue
+feature slice
+#9079
+Design slice #9079: design(pm-stack): PM service, Workers edition — TypeScript equivalent of aggregator/dashboard/reconcile as one hosted service
+
+repo-worker-code · code-g · claimed 3 h ago
+
+GOAL
+Dated design doc in doc/ covering all 9 standard points, linked from source issue
+feature slice
+#8873
+Design slice #8873: design(P9): Lab integration — DRAFT for Drew's ratification
+
+repo-worker-code · oc-code-08 · claimed 3 h ago
+
+GOAL
+Dated design doc in doc/ covering all 9 standard points, linked from source issue
+feature slice
+#2819
+Design slice #2819: id: design: native-spill write lease protocol for hot worlds (from #2059)
+
+repo-worker-code · any-o · claimed 3 h ago
+
+GOAL
+Dated design doc in doc/ covering all 9 standard points, linked from source issue
+feature slice
+#8872
+Design slice #8872: design(P8): Storage program — DRAFT for Drew's ratification
+
+repo-worker-code · oc-code-08 · claimed 3 h ago
+
+GOAL
+Dated design doc in doc/ covering all 9 standard points, linked from source issue
+triage
+#9850
+attempt 6
+Verify #9850 soak: 7 days zero projector stack-health notifications after PR #10084 deploy
+
+repo-worker-code · code-i · muse-lane · claimed 3 h ago
+
+NEXT STEP
+verify deploy+7d soak gate
+feature slice
+#2819
+Design slice #2819: id: design: native-spill write lease protocol for hot worlds (from #2059)
+
+repo-worker-code · oc-code-01 · claimed 3 h ago
+
+GOAL
+Dated design doc in doc/ covering all 9 standard points, linked from source issue
+feature slice
+#2819
+Design slice #2819: id: design: native-spill write lease protocol for hot worlds (from #2059)
+
+repo-worker-code · oc-code-07 · claimed 3 h ago
+
+GOAL
+Dated design doc in doc/ covering all 9 standard points, linked from source issue
+small fix
+#13656
+Sketch guest slice 2: host load/play + Fleet verification (#13656)
+
+repo-worker-code · oc-code-07 · claimed 3 h ago
+
+GOAL
+Host loads sketch.wasm and plays the six steps with portable-view, snapshot/restore and next-operation comparison asserted; Fleet verification run URL attached; book/justfile updated in the same PR
+small fix
+#171
+attempt 5
+Fix delegated Manage membership changes (#171)
+
+repo-worker-code · oc-code-06 · muse-lane · claimed 3 h ago
+
+NEXT STEP
+park pending authorized-basis design decision with resume brief
+feature slice
+#2290
+Design slice #2290: id: design: RateAuthorisation as a signed ID-graph object — schema, signing, revocation
+
+repo-worker-code · code-g · claimed 3 h ago
+
+GOAL
+Dated design doc in doc/ covering all 9 standard points, linked from source issue
+small fix
+#8479
+attempt 4
+Implement #8479 decision (Purge): delete secret-bearing rows from Atlas monolith + replica
+
+repo-worker-code · code-h · muse-lane · claimed 3 h ago
+
+NEXT STEP
+park: high-risk production purge needs human-supervised verification
+pr shepherd
+#13056
+attempt 2
+Verify PR #13097 in-session (flag-routed): atlas-core clippy cleanup for #13056 — record evidence, do NOT merge
+
+repo-worker-code · oc-code-02 · claimed 3 h ago
+
+NEXT STEP
+verified
+feature slice
+#6290
+attempt 2
+Design: #6290 id(phase-14): Discovery, registry & federation — v4 — outline: open discovery at scale
+
+repo-worker-code · oc-code-07 · claimed 3 h ago
+
+GOAL
+The v3 federation design (previous step in the #6277 track) is written, with its open questions answered or explicitly deferred to this step (entry condition met)
+small fix
+#13623
+ID-100R: #13623 id: build: presenter-side kitty graphics stills pipeline (from #5971 research)
+
+repo-worker-code · code-f · claimed 3 h ago
+
+NEXT STEP
+premise-holds-park
+small fix
+#13606
+attempt 2
+Triage developing-today/code#13606: Ship playable Orbit Arcade guest
+
+repo-worker-code · any-o · claimed 4 h ago
+
+GOAL
+Issue triaged per the standing triage doctrine: annotate, validate, and either fix it in a small edit (merge with a closing keyword) or return it to the queue for real work
+small fix
+#13860
+Fix main CI failure: npm_and_yarn in /pkgs/cf for undici - Update #1725909919 (run 45289900856)
+
+xaltha · any-xalthakfnckkeelmbdblpaknikafidpebfbipf · claimed 4 h ago
+
+GOAL
+a main-branch run of npm_and_yarn in /pkgs/cf for undici completes with conclusion success after the fix merges
+AGENT SESSIONS MOVING
+Queue lane (scheduled) - oc-code-08 2026-11-23 20:28
+
+build · workhorse · git/code · active 4 min ago · 1 tool calls running
+
+Main CI failure — fix trigger 2026-11-23 21:30
+
+build · workhorse · git/code · active 4 min ago · 1 tool calls running
+
+Improvement issue creator — lane B 2026-11-23 21:30
+
+build · workhorse · git/code · active 4 min ago · 1 tool calls running
+
+Queue lane (scheduled) - oc-code-03 2026-11-23 18:42
+
+build · workhorse · git/code · active 4 min ago · 1 tool calls running
+
+Queue lane (scheduled) - code-i 2026-11-23 20:00
+
+build · workhorse · git/code · active 4 min ago · 1 tool calls running
+
+Orchestration pass — queue triage, tiers, Turso publish 2026-11-23 21:12
+
+build · workhorse · git/code · active 4 min ago · 1 tool calls running
+
+Queue lane (scheduled) - oc-code-07 2026-11-23 19:58
+
+build · workhorse · git/code · active 4 min ago · 1 tool calls running
+
+Opencode lane claimant/executor - #3026 2026-11-23 21:30
+
+build · workhorse · git/code · active 4 min ago · 1 tool calls running
+
+Queue lane (scheduled) - oc-code-07 2026-11-23 21:26
+
+build · workhorse · git/code · active 4 min ago · 1 tool calls running
+
+Queue lane (scheduled) - oc-code-02 2026-11-23 21:06
+
+build · workhorse · git/code · active 4 min ago · 1 tool calls running
+
+Queue lane (scheduled) - oc-code-05 2026-11-23 21:18
+
+build · workhorse · git/code · active 4 min ago · 1 tool calls running
+
+Queue lane (scheduled) - oc-code-08 2026-11-23 21:28
+
+build · workhorse · git/code · active 5 min ago · 1 tool calls running
+
+WHY 316 TASKS ARE BLOCKED
+
+7 waiting on native issue blockers
+
+7 no reason recorded
+
+2 1080
+
+1 {"kind":"time","until":"2026-11-19T14:02:00Z"}
+
+1 {"kind":"time","until":"2026-11-18T15:00:00Z"}
+
+1 {"kind":"time","until":"2026-11-16T00:14:04Z"}
+
+Open blocked tasks
+Now
+Next
+Needs me
+99+
+Ask
+More

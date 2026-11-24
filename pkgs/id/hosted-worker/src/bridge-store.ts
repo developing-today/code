@@ -143,10 +143,7 @@ export class BridgeStore {
   // ----- reads -----------------------------------------------------
 
   chainOf(author: string): ChainState {
-    const rows = this.sql.exec(
-      "SELECT next_seq, head, frozen FROM bridge_chains WHERE author = ?",
-      author,
-    ).toArray();
+    const rows = this.sql.exec("SELECT next_seq, head, frozen FROM bridge_chains WHERE author = ?", author).toArray();
     if (rows.length === 0) return { next_seq: 0, head: null, frozen: false };
     return {
       next_seq: Number(rows[0].next_seq),
@@ -166,29 +163,25 @@ export class BridgeStore {
   }
 
   knownAuthors(): string[] {
-    const rows = this.sql.exec(
-      `SELECT author FROM bridge_chains
+    const rows = this.sql
+      .exec(
+        `SELECT author FROM bridge_chains
        UNION SELECT author FROM bridge_events
        UNION SELECT author FROM bridge_waiting
        UNION SELECT author FROM bridge_proof_ids
        ORDER BY author`,
-    ).toArray();
+      )
+      .toArray();
     return rows.map((r) => r.author as string);
   }
 
   isStored(id: string): boolean {
-    return (
-      this.sql.exec("SELECT 1 AS x FROM bridge_events WHERE id = ?", id).toArray().length > 0
-    );
+    return this.sql.exec("SELECT 1 AS x FROM bridge_events WHERE id = ?", id).toArray().length > 0;
   }
 
   isProofHeader(author: string, id: string): boolean {
     return (
-      this.sql.exec(
-        "SELECT 1 AS x FROM bridge_proof_ids WHERE author = ? AND id = ?",
-        author,
-        id,
-      ).toArray().length > 0
+      this.sql.exec("SELECT 1 AS x FROM bridge_proof_ids WHERE author = ? AND id = ?", author, id).toArray().length > 0
     );
   }
 
@@ -196,17 +189,13 @@ export class BridgeStore {
    * event is not present. */
   isPresent(id: string): boolean {
     if (this.isStored(id)) return true;
-    return (
-      this.sql.exec("SELECT 1 AS x FROM bridge_proof_ids WHERE id = ?", id).toArray().length > 0
-    );
+    return this.sql.exec("SELECT 1 AS x FROM bridge_proof_ids WHERE id = ?", id).toArray().length > 0;
   }
 
   storedAt(author: string, seq: number): { id: string; bytes: Uint8Array } | null {
-    const rows = this.sql.exec(
-      "SELECT id, bytes FROM bridge_events WHERE author = ? AND seq = ?",
-      author,
-      seq,
-    ).toArray();
+    const rows = this.sql
+      .exec("SELECT id, bytes FROM bridge_events WHERE author = ? AND seq = ?", author, seq)
+      .toArray();
     if (rows.length === 0) return null;
     return { id: rows[0].id as string, bytes: blobBytes(rows[0].bytes) };
   }
@@ -236,10 +225,7 @@ export class BridgeStore {
   }
 
   heldEvent(id: string): HeldEvent | null {
-    let rows = this.sql.exec(
-      "SELECT author, seq, bytes FROM bridge_events WHERE id = ?",
-      id,
-    ).toArray();
+    let rows = this.sql.exec("SELECT author, seq, bytes FROM bridge_events WHERE id = ?", id).toArray();
     if (rows.length > 0) {
       return { author: rows[0].author as string, seq: Number(rows[0].seq), id, bytes: blobBytes(rows[0].bytes) };
     }
@@ -248,10 +234,7 @@ export class BridgeStore {
       const parsed = parseEvent(blobBytes(rows[0].bytes));
       return { author: parsed.authorHex, seq: parsed.seq, id, bytes: parsed.bytes };
     }
-    rows = this.sql.exec(
-      "SELECT author, seq, bytes FROM bridge_waiting WHERE id = ?",
-      id,
-    ).toArray();
+    rows = this.sql.exec("SELECT author, seq, bytes FROM bridge_waiting WHERE id = ?", id).toArray();
     if (rows.length > 0) {
       return { author: rows[0].author as string, seq: Number(rows[0].seq), id, bytes: blobBytes(rows[0].bytes) };
     }
@@ -283,12 +266,14 @@ export class BridgeStore {
 
   /** Bytes stored by this store, for the storage ceiling. */
   storedBytes(): number {
-    const rows = this.sql.exec(
-      `SELECT
+    const rows = this.sql
+      .exec(
+        `SELECT
          (SELECT COALESCE(SUM(LENGTH(bytes)), 0) FROM bridge_events) AS events,
          (SELECT COALESCE(SUM(LENGTH(bytes)), 0) FROM bridge_waiting) AS waiting,
          (SELECT COALESCE(SUM(LENGTH(bytes)), 0) FROM bridge_proof_headers) AS proofs`,
-    ).toArray();
+      )
+      .toArray();
     return Number(rows[0].events) + Number(rows[0].waiting) + Number(rows[0].proofs);
   }
 
@@ -313,10 +298,14 @@ export class BridgeStore {
       }
       applied[author] = ids;
     }
-    const waiting = this.sql.exec("SELECT id FROM bridge_waiting ORDER BY id").toArray().map((r) => r.id as string);
-    const proofs = this.sql.exec(
-      "SELECT author, seq, first_id, second_id FROM bridge_forks ORDER BY author, seq",
-    ).toArray().map((r) => `${r.author}:${Number(r.seq)}:${r.first_id}:${r.second_id}`);
+    const waiting = this.sql
+      .exec("SELECT id FROM bridge_waiting ORDER BY id")
+      .toArray()
+      .map((r) => r.id as string);
+    const proofs = this.sql
+      .exec("SELECT author, seq, first_id, second_id FROM bridge_forks ORDER BY author, seq")
+      .toArray()
+      .map((r) => `${r.author}:${Number(r.seq)}:${r.first_id}:${r.second_id}`);
     return { chains, applied, waiting, proofs };
   }
 
@@ -361,12 +350,7 @@ export class BridgeStore {
       }
       case "wait":
       case "park": {
-        const held = this.hold(
-          event,
-          decision.t === "wait" ? decision.deps : [],
-          decision.t === "park",
-          nowMs,
-        );
+        const held = this.hold(event, decision.t === "wait" ? decision.deps : [], decision.t === "park", nowMs);
         if (held === "full") {
           return {
             kind: "refused",
@@ -443,9 +427,7 @@ export class BridgeStore {
           storedPrev.author === event.authorHex &&
           storedPrev.header !== null &&
           bytesToHex(storedPrev.header) === bytesToHex(event.checkpoint.headerEncoding);
-        const previousSegment =
-          storedPrev.seq !== null &&
-          BigInt(storedPrev.seq) + 1n === event.checkpoint.segmentSeq;
+        const previousSegment = storedPrev.seq !== null && BigInt(storedPrev.seq) + 1n === event.checkpoint.segmentSeq;
         if (!sameSession || !previousSegment) {
           return {
             t: "refuse",
@@ -482,10 +464,12 @@ export class BridgeStore {
    * Applied ids are collected in application order. */
   private drain(nowMs: number, released: string[]): void {
     for (;;) {
-      const rows = this.sql.exec(
-        `SELECT * FROM bridge_waiting WHERE parked = 0 AND deps = '[]'
+      const rows = this.sql
+        .exec(
+          `SELECT * FROM bridge_waiting WHERE parked = 0 AND deps = '[]'
          ORDER BY arrival ASC LIMIT 1`,
-      ).toArray();
+        )
+        .toArray();
       if (rows.length === 0) return;
       const row = this.waitingRow(rows[0]);
       this.deleteWaiting(row.id);
@@ -552,11 +536,7 @@ export class BridgeStore {
       second.id,
     );
     for (const proofEvent of [first, second]) {
-      this.sql.exec(
-        "INSERT OR IGNORE INTO bridge_proof_ids (id, author) VALUES (?, ?)",
-        proofEvent.id,
-        author,
-      );
+      this.sql.exec("INSERT OR IGNORE INTO bridge_proof_ids (id, author) VALUES (?, ?)", proofEvent.id, author);
       this.sql.exec(
         "INSERT OR IGNORE INTO bridge_proof_headers (id, bytes) VALUES (?, ?)",
         proofEvent.id,
@@ -566,21 +546,12 @@ export class BridgeStore {
     }
   }
 
-  private hold(
-    event: SignedEvent,
-    deps: string[],
-    parked: boolean,
-    nowMs: number,
-  ): "held" | "already" | "full" {
-    const existing = this.sql.exec(
-      "SELECT 1 AS x FROM bridge_waiting WHERE id = ?",
-      event.id,
-    ).toArray();
+  private hold(event: SignedEvent, deps: string[], parked: boolean, nowMs: number): "held" | "already" | "full" {
+    const existing = this.sql.exec("SELECT 1 AS x FROM bridge_waiting WHERE id = ?", event.id).toArray();
     if (existing.length > 0) return "already";
-    const byAuthor = this.sql.exec(
-      "SELECT COUNT(*) AS n FROM bridge_waiting WHERE author = ?",
-      event.authorHex,
-    ).toArray();
+    const byAuthor = this.sql
+      .exec("SELECT COUNT(*) AS n FROM bridge_waiting WHERE author = ?", event.authorHex)
+      .toArray();
     if (Number(byAuthor[0].n) >= this.limits.perAuthor) return "full";
     const total = this.sql.exec("SELECT COUNT(*) AS n FROM bridge_waiting").toArray();
     if (Number(total[0].n) >= this.limits.total) return "full";
@@ -618,11 +589,7 @@ export class BridgeStore {
     );
     this.sql.exec("DELETE FROM bridge_waiting_by_dep WHERE id = ?", row.id);
     for (const dep of deps) {
-      this.sql.exec(
-        "INSERT OR IGNORE INTO bridge_waiting_by_dep (dep, id) VALUES (?, ?)",
-        dep,
-        row.id,
-      );
+      this.sql.exec("INSERT OR IGNORE INTO bridge_waiting_by_dep (dep, id) VALUES (?, ?)", dep, row.id);
     }
   }
 
@@ -633,23 +600,13 @@ export class BridgeStore {
 
   /** An id became present: it stops being a dependency anywhere. */
   private markPresent(id: string): void {
-    const waiting = this.sql.exec(
-      "SELECT id FROM bridge_waiting_by_dep WHERE dep = ?",
-      id,
-    ).toArray();
+    const waiting = this.sql.exec("SELECT id FROM bridge_waiting_by_dep WHERE dep = ?", id).toArray();
     this.sql.exec("DELETE FROM bridge_waiting_by_dep WHERE dep = ?", id);
     for (const w of waiting) {
-      const rows = this.sql.exec(
-        "SELECT deps FROM bridge_waiting WHERE id = ?",
-        w.id as string,
-      ).toArray();
+      const rows = this.sql.exec("SELECT deps FROM bridge_waiting WHERE id = ?", w.id as string).toArray();
       if (rows.length === 0) continue;
       const deps = (JSON.parse(rows[0].deps as string) as string[]).filter((d) => d !== id);
-      this.sql.exec(
-        "UPDATE bridge_waiting SET deps = ? WHERE id = ?",
-        JSON.stringify(deps),
-        w.id as string,
-      );
+      this.sql.exec("UPDATE bridge_waiting SET deps = ? WHERE id = ?", JSON.stringify(deps), w.id as string);
     }
   }
 
@@ -677,24 +634,22 @@ export class BridgeStore {
   }
 
   private expire(nowMs: number): void {
-    const rows = this.sql.exec(
-      "SELECT id FROM bridge_waiting WHERE arrived_at + ? <= ?",
-      this.limits.maxAgeMs,
-      nowMs,
-    ).toArray();
+    const rows = this.sql
+      .exec("SELECT id FROM bridge_waiting WHERE arrived_at + ? <= ?", this.limits.maxAgeMs, nowMs)
+      .toArray();
     for (const r of rows) this.deleteWaiting(r.id as string);
   }
 
   // ----- helpers ---------------------------------------------------
 
-  private lowestProof(
-    author: string,
-  ): { seq: number; first_id: string; second_id: string } | null {
-    const rows = this.sql.exec(
-      `SELECT seq, first_id, second_id FROM bridge_forks
+  private lowestProof(author: string): { seq: number; first_id: string; second_id: string } | null {
+    const rows = this.sql
+      .exec(
+        `SELECT seq, first_id, second_id FROM bridge_forks
        WHERE author = ? ORDER BY seq ASC LIMIT 1`,
-      author,
-    ).toArray();
+        author,
+      )
+      .toArray();
     if (rows.length === 0) return null;
     return {
       seq: Number(rows[0].seq),
@@ -704,22 +659,16 @@ export class BridgeStore {
   }
 
   private heldRivals(author: string, seq: number, excludeId: string): WaitingRow[] {
-    const rows = this.sql.exec(
-      "SELECT * FROM bridge_waiting WHERE author = ? AND seq = ? AND id != ?",
-      author,
-      seq,
-      excludeId,
-    ).toArray();
+    const rows = this.sql
+      .exec("SELECT * FROM bridge_waiting WHERE author = ? AND seq = ? AND id != ?", author, seq, excludeId)
+      .toArray();
     return rows.map((r) => this.waitingRow(r));
   }
 
-  private storedCheckpoint(
-    id: string,
-  ): { author: string; header: Uint8Array | null; seq: string | null } | null {
-    const rows = this.sql.exec(
-      "SELECT author, checkpoint_header, checkpoint_seq FROM bridge_events WHERE id = ?",
-      id,
-    ).toArray();
+  private storedCheckpoint(id: string): { author: string; header: Uint8Array | null; seq: string | null } | null {
+    const rows = this.sql
+      .exec("SELECT author, checkpoint_header, checkpoint_seq FROM bridge_events WHERE id = ?", id)
+      .toArray();
     if (rows.length === 0) return null;
     return {
       author: rows[0].author as string,
@@ -750,14 +699,9 @@ export class BridgeStore {
   }
 
   private nextArrival(): number {
-    const rows = this.sql.exec(
-      "SELECT value FROM bridge_meta WHERE key = 'arrival'",
-    ).toArray();
+    const rows = this.sql.exec("SELECT value FROM bridge_meta WHERE key = 'arrival'").toArray();
     const next = (rows.length > 0 ? Number(rows[0].value) : 0) + 1;
-    this.sql.exec(
-      "INSERT OR REPLACE INTO bridge_meta (key, value) VALUES ('arrival', ?)",
-      String(next),
-    );
+    this.sql.exec("INSERT OR REPLACE INTO bridge_meta (key, value) VALUES ('arrival', ?)", String(next));
     return next;
   }
 
@@ -768,11 +712,7 @@ export class BridgeStore {
   }
 
   metaSet(key: string, value: string): void {
-    this.sql.exec(
-      "INSERT OR REPLACE INTO bridge_meta (key, value) VALUES (?, ?)",
-      key,
-      value,
-    );
+    this.sql.exec("INSERT OR REPLACE INTO bridge_meta (key, value) VALUES (?, ?)", key, value);
   }
 
   metaDelete(key: string): void {

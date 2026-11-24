@@ -5,14 +5,14 @@ Full lane notes: research lane BLUESKY for
 public protocol sources only (specs, IETF charter, PLC announcements,
 Bluesky engineering posts, ecosystem measurements). Read 2026-11-23.
 
-**Shape of the answer.** AT Protocol was designed for *public* data —
+**Shape of the answer.** AT Protocol was designed for _public_ data —
 public posts, public follows, public everything — and in 2026 it
 essentially finished that design and handed it to formal governance. Its
 delegated-authority answer is a hardened federated OAuth profile, which
 is a different species from everything else in this bundle: authority
 lives at a server, is granted interactively, and is revoked centrally.
 For this estate the protocol itself is not a candidate substrate. Three
-things are worth taking: the permission-set *vocabulary* idea, the
+things are worth taking: the permission-set _vocabulary_ idea, the
 key-discipline patterns (cross-referenced from the survey), and one
 concrete engineering task — **read compatibility for `id`**, filed as
 [#13787](https://github.com/developing-today/code/issues/13787).
@@ -21,13 +21,13 @@ concrete engineering task — **read compatibility for `id`**, filed as
 
 - **The IETF ATP working group was chartered in March 2026.** Its scope
   is deliberately narrow: the repository data structure, firehose sync,
-  AT URIs, and identifier-resolution requirements. Explicitly *out* of
+  AT URIs, and identifier-resolution requirements. Explicitly _out_ of
   scope: OAuth, Lexicon, PLC, and non-public data. Read that scoping as
   the protocol's own statement of what is finished and universal versus
   what remains Bluesky-product territory.
 - **PLC has been institutionalised.** The **PLC Organization is a
   registered Swiss association** (announced 2026-09-28) with a board
-  mostly *not* drawn from Bluesky, preparing — not yet executing — the
+  mostly _not_ drawn from Bluesky, preparing — not yet executing — the
   takeover of plc.directory. PLC read replicas shipped in February 2026,
   so the directory is no longer a single read point even before the
   legal handover completes.
@@ -49,7 +49,7 @@ Proposal **0016**, in alpha since **2026-08-20**, is ATProto's first move
 beyond public data: **Spaces** — per-space gated repositories living
 under a single space-authority DID. The crucial precision, from the
 proposal itself: **access control here is not confidentiality.** Spaces
-gate *who the PDS serves the data to*; there is **no end-to-end
+gate _who the PDS serves the data to_; there is **no end-to-end
 encryption**, and credentials are app-bound and short-lived (~10
 minutes). Spaces is therefore best understood as "private-ish groups on
 trusted servers," architecturally closer to a Discord server than to
@@ -62,7 +62,7 @@ should build on — our permissioned-data story must be cryptographic
 
 Since ATProto has no capability tokens, its delegation story is the
 OAuth profile Bluesky hardened for federation — worth recording
-precisely, because it is well-engineered *of its kind*:
+precisely, because it is well-engineered _of its kind_:
 
 - **OAuth 2.1 profile, strict**: authorization-code flow only, **PKCE
   mandatory**, Pushed Authorization Requests (PAR), **DPoP**-bound
@@ -73,8 +73,8 @@ precisely, because it is well-engineered *of its kind*:
 - **Permission sets** (shipped early 2026) are the genuinely novel part:
   protocol-native, named bundles of authority across five resource
   types — **repo, rpc, blob, identity, account** — referenced from
-  client metadata via `include:<nsid>`, so an app asks for a *named,
-  community-reviewable permission set* instead of composing raw scopes.
+  client metadata via `include:<nsid>`, so an app asks for a _named,
+  community-reviewable permission set_ instead of composing raw scopes.
 
 The structural contrast with the capability family is the finding:
 authority in this model **lives at the PDS**, is granted in **one
@@ -93,9 +93,9 @@ the OAuth substrate.
 ## The filed task: `id` read compatibility (#13787)
 
 The one piece of engineering this lane produced:
-[#13787](https://github.com/developing-today/code/issues/13787) — *id:
+[#13787](https://github.com/developing-today/code/issues/13787) — _id:
 AT Protocol read compatibility — DID resolution + repo/record ingestion
-(consider)*, linked to epic
+(consider)_, linked to epic
 [#2056](https://github.com/developing-today/code/issues/2056) and to
 #13779. Scope, as filed:
 

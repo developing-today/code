@@ -86,10 +86,10 @@ The `id` binary's exit contract, because half of scripting against it goes wrong
 
 ## Quick checks before filing anything
 
-| Check | What it settles |
-|---|---|
-| `id --version` prints two lines | The binary is a current-source build, and the second line names the defaults source in force. |
-| `id walk --help` exists | The binary is not one of the old store builds (CLI-4). |
-| The data directory holds `.iroh-serve.lock` | A serve owns that directory now, or a lock outlived its process (unverified case, above). |
-| `id world journal check <DIR>` exits `0` | That world's journal is valid and readable by this binary. |
-| Exit code is `2` | The command line itself was rejected; fix the flags before investigating the node. |
+| Check                                       | What it settles                                                                               |
+| ------------------------------------------- | --------------------------------------------------------------------------------------------- |
+| `id --version` prints two lines             | The binary is a current-source build, and the second line names the defaults source in force. |
+| `id walk --help` exists                     | The binary is not one of the old store builds (CLI-4).                                        |
+| The data directory holds `.iroh-serve.lock` | A serve owns that directory now, or a lock outlived its process (unverified case, above).     |
+| `id world journal check <DIR>` exits `0`    | That world's journal is valid and readable by this binary.                                    |
+| Exit code is `2`                            | The command line itself was rejected; fix the flags before investigating the node.            |
