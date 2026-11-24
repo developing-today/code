@@ -183,6 +183,7 @@ import { loadOpenChamberLib, resolveLibDir as resolveOpenChamberLib } from "../s
 import { readProviderAuthAlerts } from "../src/provider-auth-alerts.ts";
 import { projectPoolState } from "../src/pool-state.ts";
 import { buildForecastLedgerRows, buildQuotaForecast, type QuotaForecastFile } from "../src/quota-forecast.ts";
+import { buildDowntimeLedgerRows, deriveDowntimeWindowRecords } from "../src/quota-downtime.ts";
 import { buildShadowPlacement } from "../src/quota-shadow-placement.ts";
 import {
   anomalyIncidentInput,
@@ -225,6 +226,10 @@ const poolStatePath = process.env.POOL_STATE_PATH ?? join(HOME, ".local/state/op
 // #12695: the Stage-3 forecast product, beside quota-current.json
 // (design D1: same directory, same fail-soft posture).
 const forecastPath = process.env.QUOTA_FORECAST_PATH ?? join(dirname(currentPath), "quota-forecast.json");
+// #13257: the C4 prediction log (design §1), beside quota-current.json
+// like the forecast product — append-only, one JSONL record per
+// prediction, monthly rotation like the snapshot store.
+const predictionsPath = process.env.QUOTA_PREDICTIONS_PATH ?? join(dirname(currentPath), "quota-predictions.jsonl");
 // #12697: the Stage-3 shadow placement record (design D3), beside
 // quota-current.json like the forecast: the latest diff record plus
 // the append-only history the weekly review (S7) scores.
@@ -1052,7 +1057,7 @@ async function runAnomalyDetectors(args: {
   }
 }
 
-async function main(): Promise<number> {
+export async function main(): Promise<number> {
   const started = Date.now();
   const tickAt = new Date(started).toISOString();
 
@@ -1281,6 +1286,49 @@ async function main(): Promise<number> {
     );
   }
 
+  // C4.1 (#13257, component of #9572; C4 design §1/§7): the
+  // complete-downtime prediction records — derived by
+  // src/quota-downtime.ts from this tick's forecast product,
+  // appended to the C4 prediction log beside the forecast
+  // product, and mirrored into the Turso ledger under the C4
+  // source "quota-prediction". Advisory only: no placement path
+  // reads them (the C6 pages and forecast alerts consume them).
+  // Fail-soft like the forecast write; a null forecast (the
+  // block above failed) derives nothing — the previous records
+  // stand and age with the previous forecast. The supersedes
+  // link reads the log's tail for the last downtime record per
+  // pool set; a missing or torn log just starts the chain over.
+  if (forecast) {
+    try {
+      const previous = new Map<string, string>();
+      const existing = await readFile(predictionsPath, "utf8").catch(() => "");
+      for (const line of existing.split("\n").slice(-500)) {
+        if (!line.trim()) continue;
+        try {
+          const parsed = JSON.parse(line) as { kind?: string; id?: string; subject?: { pools?: string[] } };
+          if (parsed.kind === "downtime_window" && parsed.id && parsed.subject?.pools) {
+            previous.set(parsed.subject.pools.join("+"), parsed.id);
+          }
+        } catch {
+          // A torn last line is not fatal.
+        }
+      }
+      const records = deriveDowntimeWindowRecords(forecast, previous);
+      if (records.length) {
+        await mkdir(dirname(predictionsPath), { recursive: true });
+        await appendFile(predictionsPath, records.map((r) => JSON.stringify(r)).join("\n") + "\n", "utf8");
+        await writeTursoForecastRecords(buildDowntimeLedgerRows(records, tickAt), tickAt);
+      }
+      console.log(
+        `quota-gatherer: downtime predictions ${records.map((r) => r.state).join(",") || "none"} -> ${predictionsPath}`,
+      );
+    } catch (err) {
+      console.error(
+        `quota-gatherer: downtime failed-soft: ${safeProviderReason(err instanceof Error ? err.message : String(err))}`,
+      );
+    }
+  }
+
   // Stage-3 S3 (#12697, design D3): the shadow placement record —
   // the forecast-informed ordering logged beside the live ordering
   // as a per-decision diff record (src/quota-shadow-placement.ts),
@@ -1318,4 +1366,4 @@ async function main(): Promise<number> {
   return 0;
 }
 
-process.exit(await main());
+if (import.meta.main) process.exit(await main());

@@ -43,6 +43,7 @@ fn event(name: &str, author: u8, after_names: &[&str], group: Option<Hash>, body
         author: key(author),
         after: after(after_names),
         group,
+        at: None,
         body,
     }
 }
@@ -117,6 +118,7 @@ fn delegate(
         grantee: key(to),
         scope,
         can_redelegate: redelegate,
+        expires_at: None,
     });
     event(name, by, after_names, Some(group), body)
 }

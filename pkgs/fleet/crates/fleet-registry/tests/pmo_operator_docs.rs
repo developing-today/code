@@ -35,6 +35,7 @@ const QUEUE_VERBS: &[&str] = &[
     "unblock",
     "dep-recheck",
     "quarantine-recheck",
+    "repair",
     "cancel",
     "revive",
     "fail",
@@ -211,4 +212,72 @@ fn pmo_operator_docs_match_registered_help_inventory() {
             "README must not claim {forbidden:?}"
         );
     }
+}
+
+/// Oracle: the same queue subcommands rendered by `fleet queue --help`.
+/// Only reference chapters linked from SUMMARY reach the published book.
+/// A group such as `session` can be documented under its individual leaves.
+#[test]
+fn published_queue_reference_matches_registered_help_inventory() {
+    use std::collections::BTreeSet;
+
+    let registered: BTreeSet<_> = fleet_registry::DOMAINS
+        .iter()
+        .find(|domain| domain.name == "queue")
+        .expect("registered queue domain")
+        .subcommands
+        .iter()
+        .copied()
+        .collect();
+    let book = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../book");
+    let summary = fs::read_to_string(book.join("SUMMARY.md")).expect("read Fleet book contents");
+    let mut documented = BTreeSet::new();
+    for line in summary.lines() {
+        let Some((_, link)) = line.trim().split_once("](reference/") else {
+            continue;
+        };
+        let Some(chapter) = link.strip_suffix(')') else {
+            continue;
+        };
+        let path = book.join("reference").join(chapter);
+        let contents = fs::read_to_string(&path)
+            .unwrap_or_else(|error| panic!("read {}: {error}", path.display()));
+        // The book uses fenced examples. Headings inside an example do
+        // not document a command for the purpose of this contract.
+        let mut fence = None;
+        for line in contents.lines() {
+            let line = line.trim_start();
+            if line.starts_with("```") || line.starts_with("~~~") {
+                let mark = line.as_bytes()[0];
+                let width = line.bytes().take_while(|&byte| byte == mark).count();
+                match fence {
+                    None => fence = Some((mark, width)),
+                    Some((open, len))
+                        if mark == open && width >= len && line[width..].trim().is_empty() =>
+                    {
+                        fence = None
+                    }
+                    _ => {}
+                }
+                continue;
+            }
+            if fence.is_none() {
+                if let Some(command) = line
+                    .strip_prefix("## fleet queue ")
+                    .or_else(|| line.strip_prefix("### fleet queue "))
+                    .and_then(|heading| heading.split_whitespace().next())
+                {
+                    documented.insert(command.to_owned());
+                }
+            }
+        }
+    }
+
+    let documented: BTreeSet<_> = documented.iter().map(String::as_str).collect();
+    let missing: Vec<_> = registered.difference(&documented).collect();
+    let obsolete: Vec<_> = documented.difference(&registered).collect();
+    assert!(
+        missing.is_empty() && obsolete.is_empty(),
+        "queue book drift: missing reference headings {missing:?}; unregistered headings {obsolete:?}"
+    );
 }

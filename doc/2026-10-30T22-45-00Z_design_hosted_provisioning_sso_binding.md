@@ -384,6 +384,52 @@ The importing node verifies before ingesting anything:
    hosted-origin objects are indistinguishable from self-hosted ones at
    the object layer.
 
+### 6.3 Object-model mapping (slice 4b, #13157)
+
+The wiring from a live per-user store to the §6.1 format settles the
+mapping between the store's object model and the export's:
+
+- **Bytes.** An export object's bytes are the stored signed envelope
+  (the p2panda header) **verbatim**. The store of record keeps the
+  received bytes as the event and never re-encodes or re-signs them;
+  the export doesn't either. The producer never re-signs an object
+  with any key — it holds none it could sign with.
+- **Hash.** The object's export hash is SHA-256 of the envelope
+  bytes. It is the export-layer digest: canonical (hash) order and
+  the manifest's concatenated-hash digest are computed over it. The
+  envelope's own BLAKE3 operation id remains its identity at the
+  object layer; neither hash replaces the other.
+- **Signer and signature.** The signer is the envelope's author and
+  the signature is the envelope's own — Ed25519 over the canonical
+  header encoding, the object's native scheme. §6.2 step 3's "hash
+  and signature verify" therefore reads: the hash is SHA-256 of the
+  received bytes, and the signature verifies by decoding the
+  envelope exactly as the native decoder does, with the decoded
+  author equal to the named signer and the signer a key in the
+  binding chain (§6.2 step 2's chain).
+- **Blob citations.** A `document.put` envelope cites its content
+  by BLAKE3 (`DocumentRef.content`, the native blob identity),
+  while hosted R2 blobs are SHA-256-addressed (the per-user
+  reference table is the access path). The producer resolves
+  citations by content: a fetched blob whose BLAKE3 equals the
+  citation is the cited blob, and the export names it — in the
+  blob set and in the object's references — by its SHA-256 hash.
+  A citation no referenced blob satisfies, or a referenced blob R2
+  cannot produce, fails the export loudly, naming the hash; an
+  export is never silently incomplete. Blobs no exported object
+  cites are not exported (§6.1 item 2, §6.2's unreferenced-blob
+  rule).
+- **Object set.** The exported objects are the store's _applied_
+  events — the graph. Waiting-pool events (dependencies unmet, not
+  yet graph objects) and fork-proof headers (evidence about the
+  graph) are not exported.
+
+Production lives in the hosted data plane (`hosted-worker/src/
+export.ts`, served by the DO's `GET /v1/bridge/export` route under
+the bridge's ID-key proof); assembly into the full export
+(manifest, binding record, rebind records) is `build_export` on
+the binding-service side.
+
 ## 7. Client-side-encryption option
 
 Offered at binding time (and changeable later only by re-encrypting via

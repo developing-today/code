@@ -129,10 +129,7 @@ describe("webhook operation forwarding (DSP-01)", () => {
     sink.failNext = 1; // first Fleet acceptance attempt fails
 
     // First delivery: projection applies, Fleet acceptance fails.
-    const first = await sendComment(
-      { deliveryId: "op-delivery-1", commentId: 91001, body: "/fleet do-now" },
-      sink,
-    );
+    const first = await sendComment({ deliveryId: "op-delivery-1", commentId: 91001, body: "/fleet do-now" }, sink);
     expect(first.status).toBe(500);
     expect(await first.json()).toEqual({ error: "operation_forward_failed" });
     // The projection WAS applied and recorded — this is the state the
@@ -142,10 +139,7 @@ describe("webhook operation forwarding (DSP-01)", () => {
 
     // Redelivery of the same GUID: the already-applied branch must
     // retry the forward instead of suppressing it.
-    const second = await sendComment(
-      { deliveryId: "op-delivery-1", commentId: 91001, body: "/fleet do-now" },
-      sink,
-    );
+    const second = await sendComment({ deliveryId: "op-delivery-1", commentId: 91001, body: "/fleet do-now" }, sink);
     expect(second.status).toBe(200);
     const secondBody = await second.json();
     expect(secondBody.status).toBe("duplicate");
@@ -159,10 +153,7 @@ describe("webhook operation forwarding (DSP-01)", () => {
 
     // A third delivery: exactly one command effect ever; the stored
     // Fleet receipt comes back marked as a duplicate.
-    const third = await sendComment(
-      { deliveryId: "op-delivery-1", commentId: 91001, body: "/fleet do-now" },
-      sink,
-    );
+    const third = await sendComment({ deliveryId: "op-delivery-1", commentId: 91001, body: "/fleet do-now" }, sink);
     expect(third.status).toBe(200);
     const thirdBody = await third.json();
     expect(thirdBody.operation.receiptId).toBe("rcpt-1");
@@ -172,10 +163,7 @@ describe("webhook operation forwarding (DSP-01)", () => {
     // A *different* delivery GUID carrying the same comment is a new
     // projection delivery but the same semantic command: still one
     // effect, same stored receipt.
-    const other = await sendComment(
-      { deliveryId: "op-delivery-2", commentId: 91001, body: "/fleet do-now" },
-      sink,
-    );
+    const other = await sendComment({ deliveryId: "op-delivery-2", commentId: 91001, body: "/fleet do-now" }, sink);
     expect(other.status).toBe(200);
     const otherBody = await other.json();
     expect(otherBody.operation.receiptId).toBe("rcpt-1");

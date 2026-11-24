@@ -3,11 +3,12 @@ name = "id-import-notion"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.96"
-description = "Notion importer manifest and inventory primitives (slice 1, #8419)"
+description = "Notion importer manifest, inventory, and page/block conversion primitives (slices 1-2, #8419/#13522)"
 license = "MIT OR Apache-2.0"
 
 [dependencies]
 anyhow = "1"
+blake3 = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tempfile = "3"

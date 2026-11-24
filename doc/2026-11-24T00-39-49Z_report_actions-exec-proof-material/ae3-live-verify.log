@@ -1,0 +1,8 @@
+open: handle=fx-e64e5bdf0b5a97668450 context=null
+extend1: {"tier":1,"outcome":"auto-approved","granted_s":900,"ext_ordinal":1}
+stream1: {"ext_state":"auto-approved","ext_count":1,"ext_total_s":600}
+extend2: {"tier":2,"outcome":"pending-deny-window","decide_after":"2026-11-24T00:45:15Z"}
+decide-deny: {"decided":true,"decision":null,"note":null}
+stream2: {"ext_state":"denied","ext_count":1,"ext_total_s":600}
+close: {"handle":null,"state":null}
+VERIFY-DONE handle=fx-e64e5bdf0b5a97668450

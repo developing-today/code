@@ -116,6 +116,12 @@ run_watchdog_jobs() { # $1 jobs list
     PATH="$BIN:$PATH" bash "$SCRIPT" 26 "$1" >"$TMP_ROOT/out.log" 2>&1
   RC=$?
 }
+run_watchdog_mesh() { # mesh records are independently fixture-controlled
+  HOME="$HOME_DIR" LAPTOP_BACKUPS_RECORD="$RECORD" WATCHDOG_STUB_TRIGGERS="$TRIG" \
+    LAPTOP_BACKUPS_MESH_RECORDS="$MESH_RECORDS" \
+    PATH="$BIN:$PATH" bash "$SCRIPT" 26 mesh >"$TMP_ROOT/out.log" 2>&1
+  RC=$?
+}
 
 expect_ok() {
   if [[ $RC -eq 0 ]]; then
@@ -333,6 +339,49 @@ set_triggers "1 hour ago" "1 hour ago"
 set_cs_result failure
 run_watchdog
 expect_ok cs-not-in-default-jobs
+
+# --- mesh restore-verification rotation (code#13463) ------------------------
+# One record per leg x store pair is required. Fresh successful records
+# cover all combinations; the record format is the rotation's durable
+# evidence, not a status file synthesized by the watchdog.
+MESH_RECORDS="$TMP_ROOT/mesh"
+mkdir -p "$MESH_RECORDS"
+write_mesh_record() { # $1 leg, $2 store, $3 result, $4 verification time
+  python3 - "$1" "$2" "$3" "$(iso_ago "$4")" "$MESH_RECORDS" <<'PYEOF'
+import json, os, sys
+leg, store, result, verified_at, root = sys.argv[1:]
+with open(os.path.join(root, f"{leg}.{store}.json"), "w") as fh:
+    json.dump({"leg": leg, "store": store, "result": result,
+               "verified_at": verified_at, "detail": "scratch restore row counts match"}, fh)
+PYEOF
+}
+for leg in class-a class-b replicate class-d class-e embeds; do
+  for store in r2 laptop drive; do
+    write_mesh_record "$leg" "$store" ok "10 days ago"
+  done
+done
+run_watchdog_mesh
+expect_ok mesh-rotation-fresh
+
+# Deliberately stalled leg: one leg/store record is older than the
+# quarterly rotation bound and must be named rather than hidden by other
+# fresh combinations.
+write_mesh_record class-a laptop ok "100 days ago"
+run_watchdog_mesh
+expect_named_failure mesh-stalled-leg class-a
+if grep -q 'store=laptop' "$TMP_ROOT/out.log"; then
+  echo "ok: mesh-stalled-leg: output names store=laptop"
+else fail "mesh-stalled-leg: output does not name store=laptop: $(cat "$TMP_ROOT/out.log")"; fi
+
+# A failed restore result is a failure even when its record is fresh.
+write_mesh_record class-a laptop failed "1 hour ago"
+run_watchdog_mesh
+expect_named_failure mesh-failed-restore class-a
+
+# Missing per-pair evidence catches an unstarted rotation.
+rm -f "$MESH_RECORDS/embeds.drive.json"
+run_watchdog_mesh
+expect_named_failure mesh-missing-record 'leg=embeds store=drive'
 
 if ((failures > 0)); then
   echo "laptop-backups-watchdog tests: $failures failure(s)" >&2

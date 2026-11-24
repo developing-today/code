@@ -1,0 +1,9 @@
+[
+ {
+  "evidence": "No issue refs in body. Fixes 6 darwin-nix mcpx e2e failures (procStat per-platform exited(), socket-path lookup, warm-async poll, JSON capture, TTL anchoring, defaults drift) with regression tests; validated via macOS go test + aarch64-darwin nix build. Judged on stated intent.",
+  "gap": null,
+  "issue": null,
+  "pr": 12613,
+  "verdict": "audit:no-issue"
+ }
+]

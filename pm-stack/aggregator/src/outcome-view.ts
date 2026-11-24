@@ -190,9 +190,7 @@ export function buildOutcomeView(facts: readonly OutcomeFact[]): OutcomeView {
     bySession: buildGroups(
       activity,
       (fact) =>
-        fact.sessionId
-          ? { rollupKey: fact.sessionId, viewKey: fact.sessionId, providerID: null, modelID: null }
-          : null,
+        fact.sessionId ? { rollupKey: fact.sessionId, viewKey: fact.sessionId, providerID: null, modelID: null } : null,
       rollup.bySession,
     ),
     unattributed: {
@@ -253,10 +251,7 @@ function matches(fact: OutcomeFact, selector: OutcomeDrillSelector): boolean {
  *  current-version activity facts can appear: source-gap facts record
  *  that a sweep failed, not activity, and a superseded version's facts
  *  are not evidence for this version's counts. */
-export function drillOutcomeFacts(
-  facts: readonly OutcomeFact[],
-  selector: OutcomeDrillSelector,
-): OutcomeDrillRow[] {
+export function drillOutcomeFacts(facts: readonly OutcomeFact[], selector: OutcomeDrillSelector): OutcomeDrillRow[] {
   return facts
     .filter(
       (fact) =>

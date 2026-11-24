@@ -90,9 +90,7 @@ const pickWithEnv = async (env: Record<string, string | undefined>) => {
     assertPermission: async (input: never) => void asserted.push(input),
   } as never);
   const pick = rt.daemonTools().find((t) => t.name === "daemon_pick")!;
-  const idx = rank(discovery.candidates, dir).findIndex(
-    (c) => targetKey(c.target) === targetKey(picked),
-  );
+  const idx = rank(discovery.candidates, dir).findIndex((c) => targetKey(c.target) === targetKey(picked));
   const out = await pick.execute({ candidate: idx } as never, { sessionID: "s1" });
   return { content: out.content, map, storage, asserted };
 };

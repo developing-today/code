@@ -46,7 +46,7 @@ import {
   type EscalationSink,
 } from "./escalation.ts";
 import { buildEscalationInput } from "./escalation-input.ts";
-import type { RemediationState } from "./remediation.ts";
+import type { FacetId, RemediationState } from "./remediation.ts";
 import type { SloFacetSummary } from "./slo.ts";
 import type { SloJournalLine } from "./slo-journal.ts";
 
@@ -108,7 +108,7 @@ export interface EscalationTickResult {
 export function createEscalationTicker(deps: EscalationTickerDeps): {
   tick(): Promise<EscalationTickResult>;
 } {
-  const deliveredKeys = new Map<string, string>();
+  const deliveredKeys = new Map<FacetId, string>();
   let running = false;
   return {
     async tick(): Promise<EscalationTickResult> {
@@ -117,9 +117,7 @@ export function createEscalationTicker(deps: EscalationTickerDeps): {
       try {
         const now = deps.now?.() ?? Date.now();
         const summaries = await deps.summaries(now);
-        const decisions = routeEscalations(
-          buildEscalationInput(summaries, deps.remediationState(now), now),
-        );
+        const decisions = routeEscalations(buildEscalationInput(summaries, deps.remediationState(now), now));
         // Recovery clears the delivered mark: a facet absent from
         // this tick's decisions has recovered (or gone unsourced),
         // so its next bad episode is a new incident.

@@ -341,9 +341,7 @@ def nudge_step(
                 "queue": {
                     "retries": sum(1 for a in to_apply if a["kind"] == "retry"),
                     "nudges": sum(1 for a in to_apply if a["kind"] == "nudge"),
-                    "escalations": sum(
-                        1 for a in to_apply if a["kind"] == "escalate"
-                    ),
+                    "escalations": sum(1 for a in to_apply if a["kind"] == "escalate"),
                 },
                 "other": {
                     "observed": sum(1 for a in to_apply if a["kind"] == "observed")
@@ -511,9 +509,7 @@ def nudge_step(
         "mode": mode,
         "round": round_no,
         "actions": outcomes,
-        "overflow": [
-            dict(a, applied=False, detail="over_queue_cap") for a in overflow
-        ],
+        "overflow": [dict(a, applied=False, detail="over_queue_cap") for a in overflow],
         "interventions": {
             "queue": round_counts["queue"],
             "other": round_counts["other"],

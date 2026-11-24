@@ -13,7 +13,7 @@
 //!   counts as verified only when it is signed by `K`.
 //! - An **invite event** is signed by the inviter. It names the target (a group, or a world
 //!   and its fronting group), the role, the expiry, the delegation terms (use cap, depth,
-//!   parent, redeemer pin), and the ticket (by digest). It is stored in the inviter's chain
+//!   parent, redeemer pin, capability pin), and the ticket (by digest). It is stored in the inviter's chain
 //!   and fetched by the joiner; it is not pasted.
 //!
 //! # What an address exposes (N30)
@@ -48,8 +48,9 @@ use anyhow::{Result, ensure};
 use iroh_tickets::endpoint::EndpointTicket;
 
 pub use event::{
-    InviteBody, InviteEvent, InviteSource, InviteTarget, InviteTerms, LINK_DEFAULT_LIFETIME_MS,
-    LINK_DEFAULT_USES_CAP, MAX_BODY_LEN, MAX_SOURCE_DEPTH,
+    CapabilityPin, InviteBody, InviteEvent, InviteSource, InviteTarget, InviteTerms,
+    LINK_DEFAULT_LIFETIME_MS, LINK_DEFAULT_USES_CAP, MAX_BODY_LEN, MAX_SOURCE_DEPTH, PinRedemption,
+    ReleaseMessageSetLookup,
 };
 pub use invitation::{Invitation, MAX_PASTE_CHARS};
 

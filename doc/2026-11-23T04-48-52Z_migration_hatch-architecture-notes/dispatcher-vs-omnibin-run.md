@@ -6,12 +6,14 @@ the `nix run` command from omnibin?
 ## What our dispatcher does
 
 `~/tools/dispatcher.sh` is a per-command resolver, triggered two ways:
+
 - bash `command_not_found_handle` (installed by `~/tools/shell-env.sh`, loaded via
   `BASH_ENV` by the `/bin/bash` wrapper — every exec gets it), and
 - pre-created stubs in `~/tools/bin/` (on PATH) so subprocesses and build tools
   find resolved binaries without bash's handler.
 
 Resolution order for `program` / `program@version`:
+
 1. **nix profile fast path** — exact `--version` match against installed profile packages.
 2. **Pinned omnibin index** — `nix run <pin-flake>#omnibin -- which --all <name>`,
    querying the prebuilt index DB. No FUSE involved.

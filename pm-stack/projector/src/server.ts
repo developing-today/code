@@ -6,11 +6,7 @@ import { applyEvent, type ProjectorStore } from "./projector";
 import { validSignature, readBoundedBody, jsonResponse } from "./webhook";
 import * as store from "./store";
 import { reconcileRepos } from "./reconcile";
-import {
-  operationEnvelopeFor,
-  type FleetOperationSink,
-  type OperationReceipt,
-} from "./operation-forwarder";
+import { operationEnvelopeFor, type FleetOperationSink, type OperationReceipt } from "./operation-forwarder";
 
 export interface ServerEnv extends Record<string, string | undefined> {
   GITHUB_WEBHOOK_SECRET?: string;
