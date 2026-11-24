@@ -23,7 +23,17 @@ updates:
       - "/pkgs/supergateway"
     schedule:
       interval: "weekly"
+    # Tarball-built npm packages (#14164): the Nix build pins a fixed
+    # registry tarball `src` plus a vendored lockfile, so a Dependabot
+    # lockfile-only bump cannot build (tarball-pin skew, stale
+    # npmDepsHash). These dirs stay excluded; bump them manually per
+    # each default.nix header (version + hash, regenerate lock,
+    # refresh npmDepsHash). Must-exclude-if-manifest-vendored:
+    # pkgs/wrangler, pkgs/command-code, pkgs/desktop-commander (same
+    # tarball + vendored-lock shape, no vendored manifest today, so
+    # Dependabot currently skips them).
     exclude-paths:
+      - "pkgs/cf/**"
       - "pkgs/grok-cli/**"
       - "pkgs/supergateway/**"
       - "pm-stack/voice-line-worker/**"
