@@ -17,8 +17,7 @@ is inferred from its owning code, the text says so.
   SCHEMA list in `pkgs/fleet/crates/fleet-queue/src/turso_queue/core.rs`, beside
   `placement_sessions` — i.e. they live in the **same single Turso database as the
   rest of the queue broker store, `fleet-queue`**. They are **not yet present** in
-  the live database (verified by enumeration 2026-11-23); the build is queue task
-  21517. Verdict for this audit: STAY-TURSO with the rest of the broker core.
+  the live database (verified by enumeration 2026-11-23); the build is queue task 21517. Verdict for this audit: STAY-TURSO with the rest of the broker core.
 - **The queue broker store is ONE Turso database** (`fleet-queue`), not several.
   The `replica_*` / `cloud_*` DDL variants in the same crate are the same schema
   aimed at embedded-replica deployments, not separate cloud databases. The
@@ -35,18 +34,18 @@ is inferred from its owning code, the text says so.
 
 ## Measured usage (current billing period, per Turso API)
 
-| Database | Rows read | Rows written | Storage |
-|---|---:|---:|---:|
-| fleet-platform | 529,260,299 | **57,436,319** | 465 MB |
-| fleet-queue | **6,080,653,109** | 5,766,063 | 312 MB |
-| atlas | 847,324,868 | 1,118,143 | **7,278 MB** |
-| muse-meta | 569,689 | 638,371 | 97 MB |
-| atlas-core-internal-content | 5,429,548 | 178,480 | 509 MB |
-| 30 atlas-core-internal-* shards (sum) | ~6.1M | ~360K | ~750 MB |
-| fleet-mirror | 1,298,613 | 5,952 | 175 MB |
-| 8 staging/recovery copies (sum) | ~2.2M | ~440K | ~480 MB |
-| everything else (sum) | <1M | <3K | <2 MB |
-| **Estate total (per-database sum)** | **~7.47B** | **~65.8M** | **~10.0 GB** |
+| Database                              |         Rows read |   Rows written |      Storage |
+| ------------------------------------- | ----------------: | -------------: | -----------: |
+| fleet-platform                        |       529,260,299 | **57,436,319** |       465 MB |
+| fleet-queue                           | **6,080,653,109** |      5,766,063 |       312 MB |
+| atlas                                 |       847,324,868 |      1,118,143 | **7,278 MB** |
+| muse-meta                             |           569,689 |        638,371 |        97 MB |
+| atlas-core-internal-content           |         5,429,548 |        178,480 |       509 MB |
+| 30 atlas-core-internal-* shards (sum) |             ~6.1M |          ~360K |      ~750 MB |
+| fleet-mirror                          |         1,298,613 |          5,952 |       175 MB |
+| 8 staging/recovery copies (sum)       |             ~2.2M |          ~440K |      ~480 MB |
+| everything else (sum)                 |               <1M |            <3K |        <2 MB |
+| **Estate total (per-database sum)**   |        **~7.47B** |     **~65.8M** | **~10.0 GB** |
 
 Three facts drive everything below:
 
@@ -94,7 +93,7 @@ goals updates 10,870, …), `agent_quota_records` (75,024), `agg_*`
 `agent_external_comms` (70).
 
 - **Why clean:** every reader and writer is a Cloudflare Worker (`pm-stack/`);
-  the data is *derived* — a mirror of Muse session/usage state plus quota
+  the data is _derived_ — a mirror of Muse session/usage state plus quota
   snapshots — so it is rebuildable from source and a cutover mistake loses
   nothing canonical. No joins against Turso-resident tables; the mirror writer
   is a scheduled sync, which dual-writes naturally during cutover.
@@ -180,7 +179,7 @@ Tables: `github_mirror_issues` (8,635), `github_mirror_pull_requests` (8,072),
 and `agent_events_pg_history` (203,004, append-only history).
 
 - **Why bridge, not clean:** the mirror writer runs with the broker (Turso
-  side), while several readers are Workers/dashboards. Move the *read side* to
+  side), while several readers are Workers/dashboards. Move the _read side_ to
   D1: writer dual-writes (or a periodic reconcile copies deltas by updated-at
   watermark); readers use D1 first and fall back to Turso on a miss or a stale
   watermark. Consistency window: one sync cycle (minutes) — acceptable for a
@@ -215,7 +214,7 @@ shadows ~343K rows, `vec_snowflake_m_v2_768_f32` 107,639 + index shadow),
 2 `atlas-core-secret-*` shards, `atlas-core-internal-content`
 (sessions 18,235 + messages 70,978, no vectors in this DB).
 
-- **Why stay:** the workload *is* native libSQL vector search (`vector_top_k`
+- **Why stay:** the workload _is_ native libSQL vector search (`vector_top_k`
   over `vec_*` tables) plus FTS5, run by the aggregator across shards. D1 has
   no vector index; Cloudflare's vector product is Vectorize, a separate store —
   moving Atlas to "D1" really means re-platforming search onto Vectorize +
@@ -248,7 +247,7 @@ directive; it also has zero measured usage.
 `fleet-supabase-runtime-tx-stage-20261118`, `fleet-platform-reconcile-stage-20261118`,
 `fleet-platform-batched-stage-20261118`, `fleet-platform-short-tx-stage-20261118`,
 `fleet-mirror-recovery-stage-20261118` — point-in-time copies from the
-2026-11-17/18 Supabase→Turso recovery. They should never be *migrated*; the
+2026-11-17/18 Supabase→Turso recovery. They should never be _migrated_; the
 programme should export each to an SQLite file in object storage and delete
 the Turso copies (frees ~480 MB storage and 8 database slots). Deletion needs
 an explicit decision per database; this audit only recommends.
@@ -283,7 +282,7 @@ run in D1." Against the measurements:
 - **By databases: confirmed.** 33 of 50 stay for Atlas alone; D1 absorbs the
   PM/dashboard plane (3 groups, ~15 small stores counting G8).
 - **By reads: refuted, and it matters.** The estate's dominant read load
-  (fleet-queue, 6.08B/month) stays on Turso *and* is a scanning problem that
+  (fleet-queue, 6.08B/month) stays on Turso _and_ is a scanning problem that
   no migration fixes. "Most things run in D1" is true of the dashboard plane,
   not of the estate's traffic.
 - **Plan math, honestly:** moving G1–G3 alone does **not** permit a downgrade

@@ -1024,6 +1024,7 @@ pub fn dispatch(t: &TursoBackend, path: &str, req: &Value) -> Value {
         "/park" => verb_park(t, req),
         "/release" => verb_release(t, req),
         "/wake" => verb_wake(t, req),
+        "/reprioritize" => verb_reprioritize(t, req),
         "/block" => verb_block(t, req),
         "/unblock" => verb_unblock(t, req),
         "/dep-recheck" => verb_dep_recheck(t, req),

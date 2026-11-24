@@ -9,15 +9,15 @@
 
 ## Counts
 
-| | |
-|---|---|
-| Examined (open at census, 2026-11-23 ~18:02 CST) | 199 unique PRs (202 page entries; 3 entries were cross-page duplicates — the two census pages were fetched ~2 min apart while other lanes were opening PRs) |
-| Merged | 101 |
-| Fixed + merged (base retarget after parent landed) | 2 |
-| Marked superseded on the PR (duplicate; surviving PR merged) | 3 |
-| Skipped (hard skip / live activity) | 3 (+1 not-open hard skip) |
-| Blocked (reason + unblocker recorded per PR below) | 90 |
-| Open code PRs after sweep | 91 at 2026-11-24T00:47Z, including 6 PRs opened by other lanes during/after the sweep (e.g. #13901, Lane 6's report PR) and minus #13814, closed by its owner after the superseded marking |
+|                                                              |                                                                                                                                                                                            |
+| ------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Examined (open at census, 2026-11-23 ~18:02 CST)             | 199 unique PRs (202 page entries; 3 entries were cross-page duplicates — the two census pages were fetched ~2 min apart while other lanes were opening PRs)                                |
+| Merged                                                       | 101                                                                                                                                                                                        |
+| Fixed + merged (base retarget after parent landed)           | 2                                                                                                                                                                                          |
+| Marked superseded on the PR (duplicate; surviving PR merged) | 3                                                                                                                                                                                          |
+| Skipped (hard skip / live activity)                          | 3 (+1 not-open hard skip)                                                                                                                                                                  |
+| Blocked (reason + unblocker recorded per PR below)           | 90                                                                                                                                                                                         |
+| Open code PRs after sweep                                    | 91 at 2026-11-24T00:47Z, including 6 PRs opened by other lanes during/after the sweep (e.g. #13901, Lane 6's report PR) and minus #13814, closed by its owner after the superseded marking |
 
 Main-branch CI at report time: post-merge runs queued/in progress; no failures observed in the runs visible at 2026-11-24T00:35Z. CI runs on main only in this repo, so the queued main runs are the verification of record for the merge batches.
 
@@ -40,8 +40,8 @@ Main-branch CI at report time: post-merge runs queued/in progress; no failures o
 
 ## Merged (101) — developing-today/code unless noted
 
-| PR | Merge SHA |
-|---|---|
+| PR     | Merge SHA                                |
+| ------ | ---------------------------------------- |
 | #13856 | 744e0d14cf3c08c924f1bad39a75e9bd708fcd50 |
 | #13855 | 9e29044684d7dedd6a6702916c4626624894d4fd |
 | #13846 | 8bb8a4e7592126843a9c46c3a29f26c4ac4b7da0 |
@@ -154,7 +154,7 @@ Main-branch CI at report time: post-merge runs queued/in progress; no failures o
 - code#13814 → superseded by merged #13820 (comment 7117805250); since closed by its owner (absent from the open list at 2026-11-24T00:47Z).
 - code#13300 → superseded by merged #13625 (comment 7118010958; the PR's own lane comment agrees).
 - code#13699 → superseded by merged #13716 (comment 7118022189).
-Disposition for all three: CLOSE as superseded (left open — a sweep lane does not close another lane's PR outright; the reason is recorded on each PR).
+  Disposition for all three: CLOSE as superseded (left open — a sweep lane does not close another lane's PR outright; the reason is recorded on each PR).
 
 ## Skipped (3 + 1)
 
@@ -166,30 +166,37 @@ Disposition for all three: CLOSE as superseded (left open — a sweep lane does 
 ## Blocked (90) — reason + unblocker
 
 ### Merge conflicts at census (DIRTY) — unblocker for all: rebase onto current main, re-run the PR's own verification, merge. Owner: originating lane.
+
 code#13850 (115-file formatter drift; also depends on #13826 which has now merged), #13842, #13772, #13738, #13701, #13700, #13639, #13600, #13589, #13567, #13445, #13406, #13397, #13372, #13368, #13313, #13210, #13167, #13155, #13133, #13132, #13127, #13113 (fix verified by oc-code-01 comment; rebase only), #13111, #13093, #13089, #13042 (conflict was package.json-only per author comment), #13037, #12840, #12814, #12756, #12732 (unbuilt locally by design — CI is its verification path), #12627, #12605, #12548, #12539 (also stack parent of #12557).
 code#13184 — its own comment names the exact conflict (event_store/ingest.rs decide_in vs main's COMPACTED residue check) and the re-test requirement.
 opencode#2629, #2541 (also needs the TS 6.0.2/7.1.0-beta merge decision confirmed at rebase), #2536, #2535, #2534 (dependabot; rebase is dependabot's own job), #2533 (body: was blocked on #2525 red main), #2532 (contains a commit from prerequisite #2525 — rebase after #2525 lands).
 openchamber#2535 (1-file stale.yml fix, closes #2534; rebase only).
 
 ### Became conflicting during this sweep (a sibling merged first) — unblocker: rebase
+
 code#13829 (conflicts after #13841 landed; both touch id-worlds), #13587 (after #13582/#13791 book changes), #13311 and #13301 (after #13325 landed in hosted-worker), #13436, #13435, #13434 (supergateway lockfile cluster after #13808/#13437 landed; dependabot rebase), #13813, #13812, #13809, #13811-cluster grok-cli lockfile (after #13847 landed; dependabot rebase) — note #13811 itself merged; the grok-cli cluster remainder is #13813/#13812/#13809, #13594 (fleet charter book; overlapping #13584 merged first — rebase and merge; content is docs-only and Codex-reviewed).
 
 ### Drafts — unblocker: author marks ready when the stated condition is met
+
 code#13425 (spill-pool model; world-actor follow-up named in body), #13407 (verification run pending per author comment; "PR remains draft"), #13371 (mcpx lint repair; still being updated 2026-11-23T20:20Z by oc-code-08), #12980, #12963 (validation pending laptop access, per body), #12741, #12726 (WIP, parked for capacity per body), #12743 (also DIRTY), #12576, #12569, #12568, #12567, #12566, #12563, #12561, #12554, #12553, #12547 (the staged Cloudflare-release family — drafts by design, manual protected releases), #12510 (also DIRTY), #12496 (DRAFT, negative result, "do not merge" in title — keep as evidence), #12348 (body: keep draft until §10 boundary resolved), #12312 (acceptance needs a live laptop MCP call), #12301, #12038 (also DIRTY; #5850 vocabulary unsettled per body), #9245 (coordinator disposition recorded on the PR 2026-11-23T20:32Z: NOT landed as-is, program dependency lifted), opencode#2499 (spike/proof; production flip is Drew's decision; also DIRTY).
 
 ### Stacked — unblocker: land the parent, retarget, merge
+
 code#13102 (parent = component A slice 2 PR, still pending; slice 1 #13054 has now merged), #13060 (parent #13047 is DIRTY; also an unresolved Codex P1 per warden note), #13047 itself is DIRTY (parent of #13060), #12557 (parent #12539 is DIRTY).
 
 ### Decision-gated
+
 code#13265 — generator proposal (NEAR_PCT 80→75); body states it does not merge itself and the #1342 controlled A/B gate applies. Unblocker: Drew decision + A/B gate.
 code#13858 — dependabot cargo GROUP with major bumps (iroh 1.4→1.5, redb 4→5, comrak 0.59→1.1) across pkgs/id; no build verification in the PR. Unblocker: build/test verification dispatch, then merge.
 code#13438 — dependabot npm group for supergateway (express 4→5, zod 3→4 majors) and now conflicting after the individual supergateway PRs landed. Unblocker: dependabot rebase + verification of the major bumps; the individual PRs (#13808, #13437 merged; #13436/#13435/#13434 awaiting rebase) are the lower-risk path and may make this group PR moot.
 fleet#1 (dezren39/fleet) — Renovate onboarding; merging ACTIVATES Renovate on the fleet repo. Unblocker: Drew / fleet-owner decision.
 
 ### Failing checks
+
 openchamber#2584 — UNSTABLE: check "build and test (macos-15)" FAILURE at head e8f8a98805f49538c2a479353d070f1951167709 (ubuntu-24.04 and windows-2022 SUCCESS). Unblocker: macOS native build/test fix by the #2573 owner work.
 
 ### Sequencing
+
 code#12740 — body requires reconciling #12605 and #12732 first (both DIRTY). Unblocker: land those, then this telemetry PR.
 
 ## Supplements
@@ -217,6 +224,7 @@ A follow-up issue carries the 90 blocked PRs as rebase-and-merge batches (premis
 > UMBRELLA TRACKING ISSUE: developing-today/code#13871 — https://github.com/developing-today/code/issues/13871 — the cross-lane coordination point. File your own tracking issue in developing-today/code first, post its link as a comment on #13871, and post progress on your tracking issue at EVERY slice boundary.
 >
 > SHARED RULES (binding on all seven lanes):
+>
 > - GitHub access: the fleet GitHub subcommand ONLY. All reads via `fleet gh api` (the `fleet` binary lives at ~/.local/share/hatch-recovery/bin/fleet — put that dir on PATH); all issue/comment writes via `~/tools/gh-post` (the GitHub App identity). NEVER plain `gh` with the user token, NEVER the GitHub connector. Reason (Drew): direct access burns the personal user API tokens; the GitHub App identity must do this work. If a fleet-gh verb you need does not exist, report that to the coordinator in your return — do not fall back to plain gh.
 > - Tracking first: file your own tracking issue in developing-today/code, link it on the umbrella (#13871), and post progress on it at EVERY slice boundary. Check the umbrella + an issue's comments before acting on it — if another lane has claimed it, the lane whose primary scope it is owns the action; the other records a pointer comment on the umbrella, never a duplicate issue or PR.
 > - Exhaustive, one by one, read everything. No sampling, no skimming by title. Volume is large — work in slices (per repo, per batch); if a slice exceeds one session, enqueue per-batch sub-work to the pilot queue (`--queue repo-health-code-pilot`, kind `feature_slice` + `payload.slice`, NEVER kind `design`; premise + singular-ownership check first, fresh fleet-gh REST reads, comments per_page=100 count-confirmed) following the lane conventions. A claim comment from another lane is a HARD STOP.

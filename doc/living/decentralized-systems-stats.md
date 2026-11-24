@@ -19,7 +19,7 @@ verified is marked **not verified** rather than estimated.
   "last activity" = `pushed_at` (last push to any branch).
 - **Codeberg** (Forgejo API): commits = `X-Total-Count` on the commits endpoint;
   last commit = newest commit on the default branch. Codeberg exposes **no
-  contributors endpoint**, so contributor counts there are *not verified*.
+  contributors endpoint**, so contributor counts there are _not verified_.
   Worm Blossom and Spritely release through crates.io / tags, not Codeberg
   releases, so release figures for those come from crates.io and tags.
 - **GitLab** (Veilid): contributors = `X-Total` on the contributors endpoint;
@@ -43,290 +43,311 @@ Delta Chat core is the clearest case (see surprises).
 
 ## Summary table
 
-| Project | Repo | Latest release | Date | Commits | Contributors | Stars |
-|---|---|---|---|---|---|---|
-| p2panda | p2panda/p2panda | v0.8.1 | 2026-11-13 | 1,591 | 19 | 603 |
-| Willow (willow25) | worm-blossom/willow_rs (Codeberg) | 0.7.11 stable; 0.7.12-alpha.1 newest (crates.io) | 2026-11-18 | 1,565 | not verified | 40 |
-| Bab (bab_rs) | worm-blossom/bab_rs (Codeberg) | 0.8.2 (crates.io) | 2026-11-17 | 194 | not verified | 9 |
-| Keyhive | inkandswitch/keyhive | keyhive-wasm/0.8.3 (per-crate tag); keyhive_core crate 0.12.3 | 2026-11-23 | 328 | 8 | 280 |
-| Subduction | inkandswitch/subduction | v0.22.0-nightly.2026-11-20 | 2026-11-20 | 280 | 9 | 139 |
-| iroh | n0-computer/iroh | v1.5.0 | 2026-11-19 | 2,688 | 77 | 13,087 |
-| iroh-gossip | n0-computer/iroh-gossip | v0.103.0 | 2026-11-16 | 346 | 21 | 154 |
-| iroh-blobs | n0-computer/iroh-blobs | v0.104.1 | 2026-11-04 | 760 | 31 | 183 |
-| Veilid | veilid/veilid (GitLab) | v0.5.8 | 2026-11-02 | 2,300 | 69 | 454 |
-| IPFS (Kubo) | ipfs/kubo | v0.43.1 | 2026-09-15 | 16,023 | 469 | 17,194 |
-| rust-libp2p | libp2p/rust-libp2p | v0.57.1 | 2026-10-15 | 4,045 | 369 | 5,652 |
-| UCAN (rs-ucan) | ucan-wg/rs-ucan | ucan-v0.4.0 | 2023-06-28 | 102 | 13 | 94 |
-| Biscuit | biscuit-auth/biscuit-rust | biscuit-quote-0.3.0 (GH tag); biscuit-auth crate 7.0.0-alpha.4 (crates.io) | 2025-07-16 / 2026-11-17 | 868 | 33 | 254 |
-| Delta Chat core | deltachat/deltachat-core-rust | v2.69.0 | 2026-11-09 | 10,851 | 68 | 952 |
-| Pubky / pkarr | pubky/pkarr | v9.0.0 | 2026-11-09 | 888 | 26 | 473 |
-| Holochain | holochain/holochain | holochain-0.8.0-dev.16 | 2026-11-23 | 13,602 | 71 | 1,403 |
-| AT Protocol | bluesky-social/atproto | @atproto/ozone@0.16.3 (per-package tag) | 2026-11-21 | 3,628 | 143 | 9,732 |
-| Cap'n Proto (Rust) | capnproto/capnproto-rust | no GH releases; capnp crate 0.28.2 (crates.io) | 2026-11-22 | 3,842 | 106 | 2,522 |
-| Cap'n Web | cloudflare/capnweb | capnweb@0.13.1 | 2026-11-20 | 231 | 36 | 4,046 |
-| Endo (Agoric) | endojs/endo | @endo/pass-style@2.0.1 (per-package tag) | 2026-08-17 | 7,386 | 62 | 1,076 |
-| Spritely Goblins (Guile) | spritely/goblins (Codeberg) | v0.18.0 (tag) | Apr 2026 (per ocap-family.md) | 1,980 | not verified | 93 |
+| Project                  | Repo                              | Latest release                                                             | Date                          | Commits | Contributors | Stars  |
+| ------------------------ | --------------------------------- | -------------------------------------------------------------------------- | ----------------------------- | ------- | ------------ | ------ |
+| p2panda                  | p2panda/p2panda                   | v0.8.1                                                                     | 2026-11-13                    | 1,591   | 19           | 603    |
+| Willow (willow25)        | worm-blossom/willow_rs (Codeberg) | 0.7.11 stable; 0.7.12-alpha.1 newest (crates.io)                           | 2026-11-18                    | 1,565   | not verified | 40     |
+| Bab (bab_rs)             | worm-blossom/bab_rs (Codeberg)    | 0.8.2 (crates.io)                                                          | 2026-11-17                    | 194     | not verified | 9      |
+| Keyhive                  | inkandswitch/keyhive              | keyhive-wasm/0.8.3 (per-crate tag); keyhive_core crate 0.12.3              | 2026-11-23                    | 328     | 8            | 280    |
+| Subduction               | inkandswitch/subduction           | v0.22.0-nightly.2026-11-20                                                 | 2026-11-20                    | 280     | 9            | 139    |
+| iroh                     | n0-computer/iroh                  | v1.5.0                                                                     | 2026-11-19                    | 2,688   | 77           | 13,087 |
+| iroh-gossip              | n0-computer/iroh-gossip           | v0.103.0                                                                   | 2026-11-16                    | 346     | 21           | 154    |
+| iroh-blobs               | n0-computer/iroh-blobs            | v0.104.1                                                                   | 2026-11-04                    | 760     | 31           | 183    |
+| Veilid                   | veilid/veilid (GitLab)            | v0.5.8                                                                     | 2026-11-02                    | 2,300   | 69           | 454    |
+| IPFS (Kubo)              | ipfs/kubo                         | v0.43.1                                                                    | 2026-09-15                    | 16,023  | 469          | 17,194 |
+| rust-libp2p              | libp2p/rust-libp2p                | v0.57.1                                                                    | 2026-10-15                    | 4,045   | 369          | 5,652  |
+| UCAN (rs-ucan)           | ucan-wg/rs-ucan                   | ucan-v0.4.0                                                                | 2023-06-28                    | 102     | 13           | 94     |
+| Biscuit                  | biscuit-auth/biscuit-rust         | biscuit-quote-0.3.0 (GH tag); biscuit-auth crate 7.0.0-alpha.4 (crates.io) | 2025-07-16 / 2026-11-17       | 868     | 33           | 254    |
+| Delta Chat core          | deltachat/deltachat-core-rust     | v2.69.0                                                                    | 2026-11-09                    | 10,851  | 68           | 952    |
+| Pubky / pkarr            | pubky/pkarr                       | v9.0.0                                                                     | 2026-11-09                    | 888     | 26           | 473    |
+| Holochain                | holochain/holochain               | holochain-0.8.0-dev.16                                                     | 2026-11-23                    | 13,602  | 71           | 1,403  |
+| AT Protocol              | bluesky-social/atproto            | @atproto/ozone@0.16.3 (per-package tag)                                    | 2026-11-21                    | 3,628   | 143          | 9,732  |
+| Cap'n Proto (Rust)       | capnproto/capnproto-rust          | no GH releases; capnp crate 0.28.2 (crates.io)                             | 2026-11-22                    | 3,842   | 106          | 2,522  |
+| Cap'n Web                | cloudflare/capnweb                | capnweb@0.13.1                                                             | 2026-11-20                    | 231     | 36           | 4,046  |
+| Endo (Agoric)            | endojs/endo                       | @endo/pass-style@2.0.1 (per-package tag)                                   | 2026-08-17                    | 7,386   | 62           | 1,076  |
+| Spritely Goblins (Guile) | spritely/goblins (Codeberg)       | v0.18.0 (tag)                                                              | Apr 2026 (per ocap-family.md) | 1,980   | not verified | 93     |
 
 ## Per-project detail
 
 ### p2panda — `p2panda/p2panda` (GitHub)
-| Field | Value |
-|---|---|
-| Commits (main) | 1,591 |
-| Contributors | 19 |
-| Stars / forks | 603 / 54 |
-| Primary language | Rust |
-| Licence | MIT OR Apache-2.0 (workspace `Cargo.toml`) |
-| Latest release | v0.8.1, 2026-11-13 |
-| Releases, last 12 mo | 9 (25 total) |
-| Last push | 2026-11-23 |
+
+| Field                | Value                                      |
+| -------------------- | ------------------------------------------ |
+| Commits (main)       | 1,591                                      |
+| Contributors         | 19                                         |
+| Stars / forks        | 603 / 54                                   |
+| Primary language     | Rust                                       |
+| Licence              | MIT OR Apache-2.0 (workspace `Cargo.toml`) |
+| Latest release       | v0.8.1, 2026-11-13                         |
+| Releases, last 12 mo | 9 (25 total)                               |
+| Last push            | 2026-11-23                                 |
 
 ### Willow / willow25 — `worm-blossom/willow_rs` (Codeberg)
-| Field | Value |
-|---|---|
-| Commits (main) | 1,565 |
-| Contributors | not verified (no Codeberg endpoint) |
-| Stars / forks | 40 / 10 |
-| Primary language | Rust |
-| Licence | Apache-2.0 (per willow-meadowcap.md repo listing) |
-| Latest release | willow25 crate: 0.7.11 stable; newest 0.7.12-alpha.1, 2026-11-18 (crates.io) |
-| Releases, last 12 mo | not verified (no Codeberg releases; ships via crates.io) |
-| Last commit | 2026-11-17 |
-| Note | Repo created on Codeberg 2025-10-23 (migration); commit history predates it |
+
+| Field                | Value                                                                        |
+| -------------------- | ---------------------------------------------------------------------------- |
+| Commits (main)       | 1,565                                                                        |
+| Contributors         | not verified (no Codeberg endpoint)                                          |
+| Stars / forks        | 40 / 10                                                                      |
+| Primary language     | Rust                                                                         |
+| Licence              | Apache-2.0 (per willow-meadowcap.md repo listing)                            |
+| Latest release       | willow25 crate: 0.7.11 stable; newest 0.7.12-alpha.1, 2026-11-18 (crates.io) |
+| Releases, last 12 mo | not verified (no Codeberg releases; ships via crates.io)                     |
+| Last commit          | 2026-11-17                                                                   |
+| Note                 | Repo created on Codeberg 2025-10-23 (migration); commit history predates it  |
 
 ### Bab — `worm-blossom/bab_rs` (Codeberg)
-| Field | Value |
-|---|---|
-| Commits (main) | 194 |
-| Contributors | not verified |
-| Stars / forks | 9 / 5 |
-| Primary language | Rust |
-| Licence | not verified |
-| Latest release | bab_rs crate 0.8.2, 2026-11-17 (crates.io) |
-| Releases, last 12 mo | not verified |
-| Last commit | 2026-11-17 |
+
+| Field                | Value                                      |
+| -------------------- | ------------------------------------------ |
+| Commits (main)       | 194                                        |
+| Contributors         | not verified                               |
+| Stars / forks        | 9 / 5                                      |
+| Primary language     | Rust                                       |
+| Licence              | not verified                               |
+| Latest release       | bab_rs crate 0.8.2, 2026-11-17 (crates.io) |
+| Releases, last 12 mo | not verified                               |
+| Last commit          | 2026-11-17                                 |
 
 ### Keyhive — `inkandswitch/keyhive` (GitHub)
-| Field | Value |
-|---|---|
-| Commits (main) | 328 |
-| Contributors | 8 |
-| Stars / forks | 280 / 22 |
-| Primary language | Rust |
-| Licence | Apache-2.0 |
-| Latest release | keyhive-wasm/0.8.3, 2026-11-23 (per-crate tags); keyhive_core crate 0.12.3, 2026-11-23 |
-| Releases, last 12 mo | 25 (32 total) |
-| Last push | 2026-11-23 |
-| Note | Beelay, the predecessor sync design, has no standalone repo (404); it lives in Keyhive's history/docs — Subduction is its successor (keyhive-subduction.md) |
+
+| Field                | Value                                                                                                                                                       |
+| -------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Commits (main)       | 328                                                                                                                                                         |
+| Contributors         | 8                                                                                                                                                           |
+| Stars / forks        | 280 / 22                                                                                                                                                    |
+| Primary language     | Rust                                                                                                                                                        |
+| Licence              | Apache-2.0                                                                                                                                                  |
+| Latest release       | keyhive-wasm/0.8.3, 2026-11-23 (per-crate tags); keyhive_core crate 0.12.3, 2026-11-23                                                                      |
+| Releases, last 12 mo | 25 (32 total)                                                                                                                                               |
+| Last push            | 2026-11-23                                                                                                                                                  |
+| Note                 | Beelay, the predecessor sync design, has no standalone repo (404); it lives in Keyhive's history/docs — Subduction is its successor (keyhive-subduction.md) |
 
 ### Subduction — `inkandswitch/subduction` (GitHub)
-| Field | Value |
-|---|---|
-| Commits (main) | 280 |
-| Contributors | 9 |
-| Stars / forks | 139 / 22 |
-| Primary language | Rust |
-| Licence | Apache-2.0 |
-| Latest release | v0.22.0-nightly.2026-11-20 |
+
+| Field                | Value                                                    |
+| -------------------- | -------------------------------------------------------- |
+| Commits (main)       | 280                                                      |
+| Contributors         | 9                                                        |
+| Stars / forks        | 139 / 22                                                 |
+| Primary language     | Rust                                                     |
+| Licence              | Apache-2.0                                               |
+| Latest release       | v0.22.0-nightly.2026-11-20                               |
 | Releases, last 12 mo | 110 (110 total — nightly train; repo created 2025-07-18) |
-| Last push | 2026-11-23 |
+| Last push            | 2026-11-23                                               |
 
 ### iroh — `n0-computer/iroh` (GitHub)
-| Field | Value |
-|---|---|
-| Commits (main) | 2,688 |
-| Contributors | 77 |
-| Stars / forks | 13,087 / 768 |
-| Primary language | Rust |
-| Licence | Apache-2.0 (GitHub API detection) |
-| Latest release | v1.5.0, 2026-11-19 |
-| Releases, last 12 mo | 19 (76 total) |
-| Last push | 2026-11-23 |
+
+| Field                | Value                             |
+| -------------------- | --------------------------------- |
+| Commits (main)       | 2,688                             |
+| Contributors         | 77                                |
+| Stars / forks        | 13,087 / 768                      |
+| Primary language     | Rust                              |
+| Licence              | Apache-2.0 (GitHub API detection) |
+| Latest release       | v1.5.0, 2026-11-19                |
+| Releases, last 12 mo | 19 (76 total)                     |
+| Last push            | 2026-11-23                        |
 
 ### iroh-gossip — `n0-computer/iroh-gossip` (GitHub)
-| Field | Value |
-|---|---|
-| Commits (main) | 346 |
-| Contributors | 21 |
-| Stars / forks | 154 / 51 |
-| Primary language | Rust |
-| Licence | Apache-2.0 |
-| Latest release | v0.103.0, 2026-11-16 |
-| Releases, last 12 mo | 8 (16 total) |
-| Last push | 2026-11-23 |
+
+| Field                | Value                |
+| -------------------- | -------------------- |
+| Commits (main)       | 346                  |
+| Contributors         | 21                   |
+| Stars / forks        | 154 / 51             |
+| Primary language     | Rust                 |
+| Licence              | Apache-2.0           |
+| Latest release       | v0.103.0, 2026-11-16 |
+| Releases, last 12 mo | 8 (16 total)         |
+| Last push            | 2026-11-23           |
 
 ### iroh-blobs — `n0-computer/iroh-blobs` (GitHub)
-| Field | Value |
-|---|---|
-| Commits (main) | 760 |
-| Contributors | 31 |
-| Stars / forks | 183 / 59 |
-| Primary language | Rust |
-| Licence | Apache-2.0 |
-| Latest release | v0.104.1, 2026-11-04 |
-| Releases, last 12 mo | 8 (16 total) |
-| Last push | 2026-11-23 |
+
+| Field                | Value                |
+| -------------------- | -------------------- |
+| Commits (main)       | 760                  |
+| Contributors         | 31                   |
+| Stars / forks        | 183 / 59             |
+| Primary language     | Rust                 |
+| Licence              | Apache-2.0           |
+| Latest release       | v0.104.1, 2026-11-04 |
+| Releases, last 12 mo | 8 (16 total)         |
+| Last push            | 2026-11-23           |
 
 ### Veilid — `veilid/veilid` (GitLab)
-| Field | Value |
-|---|---|
-| Commits (main) | 2,300 (direct paged count; API returns no total) |
-| Contributors | 69 |
-| Stars / forks | 454 / 292 |
-| Primary language | Rust (84% per GitLab language stats) |
-| Licence | MPL-2.0 |
-| Latest release | v0.5.8, 2026-11-02 |
-| Releases, last 12 mo | 8 (31 total) |
-| Last commit (main) | 2026-11-10 (project activity through 2026-11-23) |
+
+| Field                | Value                                            |
+| -------------------- | ------------------------------------------------ |
+| Commits (main)       | 2,300 (direct paged count; API returns no total) |
+| Contributors         | 69                                               |
+| Stars / forks        | 454 / 292                                        |
+| Primary language     | Rust (84% per GitLab language stats)             |
+| Licence              | MPL-2.0                                          |
+| Latest release       | v0.5.8, 2026-11-02                               |
+| Releases, last 12 mo | 8 (31 total)                                     |
+| Last commit (main)   | 2026-11-10 (project activity through 2026-11-23) |
 
 ### IPFS — `ipfs/kubo` (GitHub)
-| Field | Value |
-|---|---|
-| Commits (master) | 16,023 |
-| Contributors | 469 |
-| Stars / forks | 17,194 / 3,176 |
-| Primary language | Go |
-| Licence | NOASSERTION (GitHub API; project is dual MIT/Apache) |
-| Latest release | v0.43.1, 2026-09-15 |
-| Releases, last 12 mo | 14 (100+ total) |
-| Last push | 2026-11-23 |
-| Note | v0.43 line is the last Interplanetary Shipyard release (veilid-ipfs-libp2p.md) |
+
+| Field                | Value                                                                          |
+| -------------------- | ------------------------------------------------------------------------------ |
+| Commits (master)     | 16,023                                                                         |
+| Contributors         | 469                                                                            |
+| Stars / forks        | 17,194 / 3,176                                                                 |
+| Primary language     | Go                                                                             |
+| Licence              | NOASSERTION (GitHub API; project is dual MIT/Apache)                           |
+| Latest release       | v0.43.1, 2026-09-15                                                            |
+| Releases, last 12 mo | 14 (100+ total)                                                                |
+| Last push            | 2026-11-23                                                                     |
+| Note                 | v0.43 line is the last Interplanetary Shipyard release (veilid-ipfs-libp2p.md) |
 
 ### rust-libp2p — `libp2p/rust-libp2p` (GitHub)
-| Field | Value |
-|---|---|
-| Commits (master) | 4,045 |
-| Contributors | 369 |
-| Stars / forks | 5,652 / 1,282 |
-| Primary language | Rust |
-| Licence | MIT |
-| Latest release | libp2p crate v0.57.1, 2026-10-15 |
+
+| Field                | Value                                                                  |
+| -------------------- | ---------------------------------------------------------------------- |
+| Commits (master)     | 4,045                                                                  |
+| Contributors         | 369                                                                    |
+| Stars / forks        | 5,652 / 1,282                                                          |
+| Primary language     | Rust                                                                   |
+| Licence              | MIT                                                                    |
+| Latest release       | libp2p crate v0.57.1, 2026-10-15                                       |
 | Releases, last 12 mo | 2 GitHub releases (39 total; most releases are per-crate on crates.io) |
-| Last push | 2026-11-23 |
+| Last push            | 2026-11-23                                                             |
 
 ### UCAN — `ucan-wg/rs-ucan` + spec repos (GitHub)
-| Field | Value |
-|---|---|
-| Commits (main) | 102 |
-| Contributors | 13 |
-| Stars / forks | 94 / 26 |
-| Primary language | Rust |
-| Licence | Apache-2.0 |
-| Latest release | ucan-v0.4.0, **2023-06-28** |
-| Releases, last 12 mo | 0 |
-| Last push | 2026-06-22 |
-| Spec repos | `ucan-wg/spec` ★300, 97 commits, 17 contributors, tags incl. `v1.0-rc.1`, last push 2026-10-22; `ucan-wg/delegation` ★2, 7 commits, 2 contributors; `ucan-wg/invocation` ★20, 17 commits, 5 contributors; `ucan-wg/revocation` ★3, 3 commits, 1 contributor. None of the spec repos cut GitHub releases |
+
+| Field                | Value                                                                                                                                                                                                                                                                                                   |
+| -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Commits (main)       | 102                                                                                                                                                                                                                                                                                                     |
+| Contributors         | 13                                                                                                                                                                                                                                                                                                      |
+| Stars / forks        | 94 / 26                                                                                                                                                                                                                                                                                                 |
+| Primary language     | Rust                                                                                                                                                                                                                                                                                                    |
+| Licence              | Apache-2.0                                                                                                                                                                                                                                                                                              |
+| Latest release       | ucan-v0.4.0, **2023-06-28**                                                                                                                                                                                                                                                                             |
+| Releases, last 12 mo | 0                                                                                                                                                                                                                                                                                                       |
+| Last push            | 2026-06-22                                                                                                                                                                                                                                                                                              |
+| Spec repos           | `ucan-wg/spec` ★300, 97 commits, 17 contributors, tags incl. `v1.0-rc.1`, last push 2026-10-22; `ucan-wg/delegation` ★2, 7 commits, 2 contributors; `ucan-wg/invocation` ★20, 17 commits, 5 contributors; `ucan-wg/revocation` ★3, 3 commits, 1 contributor. None of the spec repos cut GitHub releases |
 
 ### Biscuit — `biscuit-auth/biscuit-rust` (GitHub)
-| Field | Value |
-|---|---|
-| Commits (main) | 868 |
-| Contributors | 33 |
-| Stars / forks | 254 / 57 |
-| Primary language | Rust |
-| Licence | Apache-2.0 (crate `Cargo.toml`; GitHub licence API 404s on the workspace) |
-| Latest release | GitHub: biscuit-quote-0.3.0, 2025-07-16 (per-crate tag); crates.io biscuit-auth newest 7.0.0-alpha.4, 2026-11-17 |
-| Releases, last 12 mo | 0 GitHub releases (ships via crates.io) |
-| Last push | 2026-11-21 |
-| Downloads | biscuit-auth crate: 12,979,475 all-time (crates.io) |
+
+| Field                | Value                                                                                                            |
+| -------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| Commits (main)       | 868                                                                                                              |
+| Contributors         | 33                                                                                                               |
+| Stars / forks        | 254 / 57                                                                                                         |
+| Primary language     | Rust                                                                                                             |
+| Licence              | Apache-2.0 (crate `Cargo.toml`; GitHub licence API 404s on the workspace)                                        |
+| Latest release       | GitHub: biscuit-quote-0.3.0, 2025-07-16 (per-crate tag); crates.io biscuit-auth newest 7.0.0-alpha.4, 2026-11-17 |
+| Releases, last 12 mo | 0 GitHub releases (ships via crates.io)                                                                          |
+| Last push            | 2026-11-21                                                                                                       |
+| Downloads            | biscuit-auth crate: 12,979,475 all-time (crates.io)                                                              |
 
 ### Delta Chat core — `deltachat/deltachat-core-rust` (GitHub)
-| Field | Value |
-|---|---|
-| Commits (main) | 10,851 |
-| Contributors | 68 |
-| Stars / forks | 952 / 153 |
-| Primary language | Rust |
-| Licence | NOASSERTION (GitHub API; multi-licence repo) |
-| Latest release | v2.69.0, 2026-11-09 |
-| Releases, last 12 mo | 42 |
-| Last push | 2026-11-23 |
+
+| Field                | Value                                        |
+| -------------------- | -------------------------------------------- |
+| Commits (main)       | 10,851                                       |
+| Contributors         | 68                                           |
+| Stars / forks        | 952 / 153                                    |
+| Primary language     | Rust                                         |
+| Licence              | NOASSERTION (GitHub API; multi-licence repo) |
+| Latest release       | v2.69.0, 2026-11-09                          |
+| Releases, last 12 mo | 42                                           |
+| Last push            | 2026-11-23                                   |
 
 ### Pubky / pkarr — `pubky/pkarr` (GitHub)
-| Field | Value |
-|---|---|
-| Commits (main) | 888 |
-| Contributors | 26 |
-| Stars / forks | 473 / 46 |
-| Primary language | Rust |
-| Licence | MIT |
-| Latest release | v9.0.0, 2026-11-09 (crates.io confirms pkarr 9.0.0, updated 2026-11-12) |
-| Releases, last 12 mo | 14 (24 total) |
-| Last push | 2026-11-23 |
+
+| Field                | Value                                                                   |
+| -------------------- | ----------------------------------------------------------------------- |
+| Commits (main)       | 888                                                                     |
+| Contributors         | 26                                                                      |
+| Stars / forks        | 473 / 46                                                                |
+| Primary language     | Rust                                                                    |
+| Licence              | MIT                                                                     |
+| Latest release       | v9.0.0, 2026-11-09 (crates.io confirms pkarr 9.0.0, updated 2026-11-12) |
+| Releases, last 12 mo | 14 (24 total)                                                           |
+| Last push            | 2026-11-23                                                              |
 
 ### Holochain — `holochain/holochain` (GitHub)
-| Field | Value |
-|---|---|
-| Commits (develop) | 13,602 |
-| Contributors | 71 |
-| Stars / forks | 1,403 / 199 |
-| Primary language | Rust |
-| Licence | NOASSERTION (GitHub API) |
-| Latest release | holochain-0.8.0-dev.16, 2026-11-23 (dev train; no stable 0.8 yet) |
-| Releases, last 12 mo | 74 (100+ sampled) |
-| Last push | 2026-11-23 |
+
+| Field                | Value                                                             |
+| -------------------- | ----------------------------------------------------------------- |
+| Commits (develop)    | 13,602                                                            |
+| Contributors         | 71                                                                |
+| Stars / forks        | 1,403 / 199                                                       |
+| Primary language     | Rust                                                              |
+| Licence              | NOASSERTION (GitHub API)                                          |
+| Latest release       | holochain-0.8.0-dev.16, 2026-11-23 (dev train; no stable 0.8 yet) |
+| Releases, last 12 mo | 74 (100+ sampled)                                                 |
+| Last push            | 2026-11-23                                                        |
 
 ### AT Protocol — `bluesky-social/atproto` (GitHub)
-| Field | Value |
-|---|---|
-| Commits (main) | 3,628 |
-| Contributors | 143 |
-| Stars / forks | 9,732 / 944 |
-| Primary language | TypeScript |
-| Licence | NOASSERTION (GitHub API; project is dual MIT/Apache) |
-| Latest release | @atproto/ozone@0.16.3, 2026-11-21 (per-package tags) |
+
+| Field                | Value                                                                 |
+| -------------------- | --------------------------------------------------------------------- |
+| Commits (main)       | 3,628                                                                 |
+| Contributors         | 143                                                                   |
+| Stars / forks        | 9,732 / 944                                                           |
+| Primary language     | TypeScript                                                            |
+| Licence              | NOASSERTION (GitHub API; project is dual MIT/Apache)                  |
+| Latest release       | @atproto/ozone@0.16.3, 2026-11-21 (per-package tags)                  |
 | Releases, last 12 mo | 300+ (count capped at 300 sampled; all sampled were within 12 months) |
-| Last push | 2026-11-23 |
+| Last push            | 2026-11-23                                                            |
 
 ### Cap'n Proto, Rust — `capnproto/capnproto-rust` (GitHub)
-| Field | Value |
-|---|---|
-| Commits (master) | 3,842 |
-| Contributors | 106 |
-| Stars / forks | 2,522 / 269 |
-| Primary language | Rust |
-| Licence | MIT |
-| Latest release | No GitHub releases; capnp crate 0.28.2, 2026-11-22 (crates.io) |
-| Releases, last 12 mo | 0 GitHub releases (ships via crates.io) |
-| Last push | 2026-11-22 |
-| Downloads | capnp crate: 16,597,972 all-time (crates.io) |
+
+| Field                | Value                                                          |
+| -------------------- | -------------------------------------------------------------- |
+| Commits (master)     | 3,842                                                          |
+| Contributors         | 106                                                            |
+| Stars / forks        | 2,522 / 269                                                    |
+| Primary language     | Rust                                                           |
+| Licence              | MIT                                                            |
+| Latest release       | No GitHub releases; capnp crate 0.28.2, 2026-11-22 (crates.io) |
+| Releases, last 12 mo | 0 GitHub releases (ships via crates.io)                        |
+| Last push            | 2026-11-22                                                     |
+| Downloads            | capnp crate: 16,597,972 all-time (crates.io)                   |
 
 ### Cap'n Web — `cloudflare/capnweb` (GitHub)
-| Field | Value |
-|---|---|
-| Commits (main) | 231 |
-| Contributors | 36 |
-| Stars / forks | 4,046 / 155 |
-| Primary language | TypeScript |
-| Licence | MIT |
-| Latest release | capnweb@0.13.1, 2026-11-20 |
-| Releases, last 12 mo | 23 (24 total) |
-| Last push | 2026-11-20 |
+
+| Field                | Value                      |
+| -------------------- | -------------------------- |
+| Commits (main)       | 231                        |
+| Contributors         | 36                         |
+| Stars / forks        | 4,046 / 155                |
+| Primary language     | TypeScript                 |
+| Licence              | MIT                        |
+| Latest release       | capnweb@0.13.1, 2026-11-20 |
+| Releases, last 12 mo | 23 (24 total)              |
+| Last push            | 2026-11-20                 |
 
 ### Endo — `endojs/endo` (GitHub)
-| Field | Value |
-|---|---|
-| Commits (master) | 7,386 |
-| Contributors | 62 |
-| Stars / forks | 1,076 / 90 |
-| Primary language | JavaScript |
-| Licence | Apache-2.0 |
-| Latest release | @endo/pass-style@2.0.1, 2026-08-17 (per-package tags; repo pushes daily) |
-| Releases, last 12 mo | 98 (100+ sampled) |
-| Last push | 2026-11-23 |
+
+| Field                | Value                                                                    |
+| -------------------- | ------------------------------------------------------------------------ |
+| Commits (master)     | 7,386                                                                    |
+| Contributors         | 62                                                                       |
+| Stars / forks        | 1,076 / 90                                                               |
+| Primary language     | JavaScript                                                               |
+| Licence              | Apache-2.0                                                               |
+| Latest release       | @endo/pass-style@2.0.1, 2026-08-17 (per-package tags; repo pushes daily) |
+| Releases, last 12 mo | 98 (100+ sampled)                                                        |
+| Last push            | 2026-11-23                                                               |
 
 ### Spritely Goblins (Guile) — `spritely/goblins` (Codeberg)
-| Field | Value |
-|---|---|
-| Commits (main) | 1,980 |
-| Contributors | not verified (no Codeberg endpoint) |
-| Stars / forks | 93 / 8 |
-| Primary language | Scheme |
-| Licence | not verified via API |
-| Latest release | v0.18.0 (tag; Apr 2026 per ocap-family.md); 12 tags on Codeberg |
-| Releases, last 12 mo | not verified |
-| Last commit | 2026-11-20 |
-| Note | Moved from GitLab to Codeberg (Codeberg repo created 2025-03-11); the GitLab project page now says "MOVED TO codeberg.org/spritely/goblins" |
+
+| Field                | Value                                                                                                                                       |
+| -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| Commits (main)       | 1,980                                                                                                                                       |
+| Contributors         | not verified (no Codeberg endpoint)                                                                                                         |
+| Stars / forks        | 93 / 8                                                                                                                                      |
+| Primary language     | Scheme                                                                                                                                      |
+| Licence              | not verified via API                                                                                                                        |
+| Latest release       | v0.18.0 (tag; Apr 2026 per ocap-family.md); 12 tags on Codeberg                                                                             |
+| Releases, last 12 mo | not verified                                                                                                                                |
+| Last commit          | 2026-11-20                                                                                                                                  |
+| Note                 | Moved from GitLab to Codeberg (Codeberg repo created 2025-03-11); the GitLab project page now says "MOVED TO codeberg.org/spritely/goblins" |
 
 ## Biggest dependents / projects built on each
 
@@ -398,7 +419,7 @@ Delta Chat core is the clearest case (see surprises).
    and zero releases in 12 months, while `ucan-wg/spec` carries a `v1.0-rc.1`
    tag — the spec/implementation skew from ucan-deep.md, quantified.
 5. **Subduction's release train.** 110 releases in its first ~16 months (repo
-   created 2025-07-18), nearly all nightlies — release *count* there means
+   created 2025-07-18), nearly all nightlies — release _count_ there means
    automation, not milestones. Same caution for Holochain (74 dev releases,
    still no stable 0.8) and atproto (300+ per-package tags).
 6. **Kubo is still the biggest repo here** (16,023 commits, 17,194 stars,
@@ -408,7 +429,6 @@ Delta Chat core is the clearest case (see surprises).
    GitLab — more commits than iroh itself — with only 454 stars to show for it.
 8. **Willow's footprint is tiny next to its design weight:** willow25 has 2,217
    all-time crates.io downloads and the repo 40 stars, against 1,565 commits.
-
 
 ## Change log
 

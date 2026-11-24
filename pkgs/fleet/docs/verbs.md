@@ -172,6 +172,19 @@ The resolver uses the configured Fleet secrets broker and supported fallback sto
 
 Leading `--cache-addr ADDR` options and `--no-cache` control the token cache for a call. Normal `gh` flags and subcommands pass through unchanged.
 
+The `sync-*` verbs are the typed Queue/GitHub sync surface for scripted flows (#10973, step 2.2 of #9016): each declares its whole command line, validates it strictly, and rewrites to the canonical `gh` call before the close guard, closure and metadata layers run, inheriting the rotation and the retry-safety rule. All take `--repo OWNER/REPO`.
+
+| Verb                                                                                | Purpose                                                                                               |
+| ----------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------- |
+| `sync-labels <issue\|pr> <number>`                                                  | Print the item's label names as a JSON list.                                                          |
+| `sync-view <issue\|pr> <number>`                                                    | Print the item's labels, state and title as JSON.                                                     |
+| `sync-comment <issue\|pr> <number> --body TEXT \| --body-file PATH`                 | Post a comment on the item.                                                                           |
+| `sync-issue-create --title TITLE (--body TEXT \| --body-file PATH) [--label LABEL]` | Create an issue; the metadata create path stamps the body as usual.                                   |
+| `sync-issue-get <number>`                                                           | Print one issue's API JSON.                                                                           |
+| `sync-labels-add <number> --label LABEL [--label LABEL]`                            | Add labels to an issue.                                                                               |
+| `sync-label-ensure --label LABEL --color COLOR --description TEXT`                  | Create a label, or update it when it already exists.                                                  |
+| `sync-issue-close <number> --reason REASON`                                         | Close an issue with a fleet closure reason (implemented, superseded, cancelled, started-incorrectly). |
+
 ## `bridge` — Fleet messaging
 
 | Verb     | Purpose                                                                             |
@@ -232,6 +245,18 @@ search over the fleet's session history and notes, with classification
 filters. It is the client half of the Atlas search service; the service
 itself runs on the laptop (`fleet serve search`, 127.0.0.1:18760), and
 the Cloudflare worker surface (pkgs/atlas-search/worker) forwards to it.
+
+## `orgs` — GitHub organization registry
+
+| Command | Purpose |
+| --- | --- |
+| `fleet orgs list` | List the locally stored org/App/installation snapshot as a table or JSON; supports `--app`, `--org`, and `--permission` filters. |
+| `fleet orgs sync` | Refresh the Turso registry from each configured GitHub App's own installation listing. |
+
+The registry only makes coverage claims from `GET /app/installations` authenticated
+with that App's JWT and follows every Link page. OAuth-token
+`/orgs/<org>/installations` reads are not authoritative. See
+[`orgs-registry.md`](../doc/fleet/orgs-registry.md) for configuration and schema.
 
 | Command                                             | Purpose                                                                             |
 | --------------------------------------------------- | ----------------------------------------------------------------------------------- |

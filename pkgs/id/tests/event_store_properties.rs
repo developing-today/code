@@ -165,7 +165,8 @@ type ForkPlan = BTreeMap<AuthorKey, (SeqNum, usize)>;
 /// The events a later event may name: those that are present in every delivery order. An
 /// author with a fork is referable up to its fork point. At the fork point it is referable only
 /// when there are two events there, which the fork proof holds. Above the fork point, an event
-/// is refused as frozen in some orders and kept in others, so no event names it.
+/// is kept as voided evidence when it links, but one whose backlink names a proof header is
+/// parked instead, so it is not present in every order and no event names it.
 fn referable(events: &[Event], plan: &ForkPlan) -> Vec<Event> {
     events
         .iter()

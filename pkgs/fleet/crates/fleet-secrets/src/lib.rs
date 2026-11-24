@@ -253,6 +253,14 @@ fn resolve_with_retry(
         match attempt() {
             Ok(value) => return Ok(value),
             Err(err @ SecretError::Unavailable { .. }) => {
+                // A cold secrets broker reports this stable error
+                // while its first refresh is in flight. Waiting out
+                // the generic restart budget here wedges clients
+                // behind a healthy-but-not-yet-serving broker; allow
+                // the resolver chain to try its next source now.
+                if is_initial_refresh_unavailable(&err) {
+                    return Err(err);
+                }
                 let elapsed = started.elapsed();
                 if elapsed >= policy.budget {
                     return Err(err);
@@ -273,6 +281,11 @@ fn resolve_with_retry(
             Err(err) => return Err(err),
         }
     }
+}
+
+fn is_initial_refresh_unavailable(error: &SecretError) -> bool {
+    matches!(error, SecretError::Unavailable { source: "secrets-broker", detail, .. }
+        if detail.contains("secrets not loaded yet"))
 }
 
 /// The ordered chain: broker protocol first, `bws` fallback (§1).
@@ -1746,6 +1759,28 @@ mod tests {
     }
 
     #[test]
+    fn cold_refresh_unavailable_fails_over_without_spending_restart_budget() {
+        use std::cell::Cell;
+        let calls = Cell::new(0);
+        let started = Instant::now();
+        let out = resolve_with_retry(&test_retry_policy(), || {
+            calls.set(calls.get() + 1);
+            Err(SecretError::Unavailable {
+                source: "secrets-broker",
+                name: "x".to_string(),
+                detail: "secrets-broker answered HTTP 503: secrets not loaded yet".to_string(),
+            })
+        });
+        assert!(matches!(out, Err(SecretError::Unavailable { .. })));
+        assert_eq!(
+            calls.get(),
+            1,
+            "cold-refresh response should fall through immediately"
+        );
+        assert!(started.elapsed() < Duration::from_secs(5));
+    }
+
+    #[test]
     fn retry_loop_spends_its_budget_and_returns_the_last_error() {
         use std::cell::Cell;
         let policy = RetryPolicy {
@@ -1814,6 +1849,28 @@ mod tests {
         let source = BrokerSource::new(sock, PathBuf::from("/nonexistent/token"))
             .with_retry_policy(test_retry_policy());
         (source, handle, dir)
+    }
+
+    #[test]
+    fn broker_cold_refresh_response_returns_within_client_bound() {
+        // Oracle (#13893 / #13948 S1): a broker that explicitly says
+        // its first refresh has not loaded must not consume the long
+        // restart retry budget before the resolver tries its next
+        // source. The response body is the production 503 shape.
+        let (source, handle, dir) = scripted_broker_replies(vec![(
+            503,
+            serde_json::json!({"error": "secrets not loaded yet"}),
+        )]);
+        let started = Instant::now();
+        let result = source.resolve("wanted.name");
+        assert!(matches!(result, Err(SecretError::Unavailable { .. })));
+        assert!(started.elapsed() < Duration::from_secs(5));
+        assert_eq!(
+            handle.join().unwrap(),
+            1,
+            "one prompt request reaches the broker"
+        );
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

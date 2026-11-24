@@ -178,6 +178,7 @@ export function createTursoActionsRemote(getClient: GetClient = getTursoStoreCli
               "supersedes_action_id",
               "duplicate_of_action_id",
             ])}`,
+          { operation: "actions", candidates: chunk.length },
         );
       }
     },
@@ -254,6 +255,7 @@ export function createTursoActivityRemote(getClient: GetClient = getTursoStoreCl
               ["checkpoint", "seen_ids", "source_status"],
               true,
             )}`,
+          { operation: "activity.ingestion", candidates: chunk.length },
         );
       }
       const gapRows = data.gaps.map(
@@ -267,6 +269,7 @@ export function createTursoActivityRemote(getClient: GetClient = getTursoStoreCl
           `insert into public.agg_activity_gaps (id, source, gap_from, gap_to, status, detected_at, resolved_at, updated_at) values\n` +
             `${chunk.join(",\n")}\n` +
             `on conflict (id) ${updateChanged("agg_activity_gaps", ["status", "gap_to", "resolved_at"], true)}`,
+          { operation: "activity.gaps", candidates: chunk.length },
         );
       }
     },
@@ -468,6 +471,7 @@ export function createTursoCommentsRemote(getClient: GetClient = getTursoStoreCl
               "github_error",
               "github_failed_at",
             ])}`,
+          { operation: "comments", candidates: chunk.length },
         );
       }
     },

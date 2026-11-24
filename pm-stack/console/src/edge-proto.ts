@@ -18,16 +18,17 @@
 // near the edge's own clock, and that time is later than the last sync
 // accepted.
 import type { Issuer } from "./config.ts";
+import type { SettingDiffers } from "./settings.ts";
 
-/** What the edge needs to know to recognise the owner. It comes from the
- * host in every sync, so there is one place it is set. The last four
- * fields are what the edge needs to read and write by itself: where the
- * queue store is and which token opens it, how the owner's prompts are
- * marked, and which repositories hold his needs-me items. They are
- * absent from configs stored or reported before the edge could do that:
- * those still validate, with the fields empty, and the edge does not do
- * the core itself until a config carries them (see
- * Edge.directConfigReady). */
+/** What a machine tells the edge in every sync. Who may sign in (the
+ * owners, the certificate names, the issuers, the Android signing
+ * fingerprints) the edge goes by: that is the deployment's, set where
+ * the hostname is set up. The repository's settings among these
+ * (src/settings.ts) the edge has of its own and goes by its own, bar
+ * the list of repositories (see MACHINES_FOR_NOW there); what a machine
+ * tells for them is compared and shown, not used. The last four fields
+ * are absent from configs stored or reported before the edge could act
+ * by itself: those still validate, with the fields empty. */
 export interface EdgeConfig {
   owners: string[];
   certNames: string[];
@@ -147,10 +148,22 @@ export interface MachinesAnswer {
     version: string | null;
     actions: string[];
     sections: string[];
+    /** The platform's settings it runs with others of, each with both
+     * values and which the platform goes by. Absent when there is none
+     * (and from an answer older than the saying). */
+    differs?: SettingDiffers[];
   }[];
-  /** What the owner did that waits for a machine, oldest first. */
-  held: Held[];
+  /** What the owner did that waits to be done, oldest first, and who
+   * each waits for (absent from an answer older than the saying). */
+  held: (Held & { waits?: HeldFor })[];
 }
+
+/** Who a held action waits for. "either": the platform does it itself
+ * as soon as it can again, or a machine that is back first. "machine":
+ * only a machine can do it, or it comes after something that waits for
+ * one. "asked": a machine was given it, or may have got it, and says
+ * what became of it when it is back; nobody else does it meanwhile. */
+export type HeldFor = "either" | "machine" | "asked";
 
 export interface PhoneLinks {
   devices: { id: string; name: string; hash: string; createdAt: string; seenAt: string | null }[];
@@ -165,6 +178,12 @@ export interface Held {
   /** Who took it, as the edge verified them. */
   who: string;
   at: string;
+  /** It certainly reached no machine: it was never sent toward one, or
+   * the one time it was, what answered in the machine's place said it
+   * never arrived. Only then may the platform do it itself. Without
+   * this a machine may have got it (no answer came, or one that does
+   * not say) and may have done it: it stays that machine's by name. */
+  unsent?: true;
 }
 
 export interface ApkReport {

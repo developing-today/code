@@ -185,6 +185,20 @@ test("what each kind of answer does to an entry", () => {
     note: "Kept for the laptop, which will do it when it is back.",
     result: null,
   });
+  // The platform says who it waits for, and that is what is said of it.
+  const heldNote = (waits: unknown) =>
+    O.classify({ status: 200, body: { ok: true, held: true, result: null, waits } }).note;
+  expect(heldNote("machine")).toBe("Kept for the laptop, which will do it when it is back.");
+  expect(heldNote("either")).toBe(
+    "Kept: Cloudflare does it as soon as it can again, or the laptop if it is back first.",
+  );
+  expect(heldNote("asked")).toBe(
+    "Kept: the laptop did not answer. It may have got this, and says what became of it when it is back.",
+  );
+  // Something it does not know to say is said as the plain case, never as whatever came.
+  for (const waits of ["someone", "constructor", "toString", "", 3, null, {}]) {
+    expect([waits, heldNote(waits)]).toEqual([waits, "Kept for the laptop, which will do it when it is back."]);
+  }
   // Refused or failed, in the platform's own words: not tried again by itself.
   expect(O.classify({ status: 404, body: { error: "no such issue" } })).toEqual({
     state: "failed",

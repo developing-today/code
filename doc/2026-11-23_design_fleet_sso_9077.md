@@ -26,7 +26,7 @@ is ready to be an issuer.
 - **The binding side is half-built.** #2852 slices 1–2 (account + binding
   records, ceremony, delayed rebind) landed (PRs #4854, #4885); slice 3 is
   partial (metering/budget remainder in #3811) and slice 4 (export/import,
-  #3810) is untouched. The ceremony the fold path needs *exists*; the rest
+  #3810) is untouched. The ceremony the fold path needs _exists_; the rest
   does not gate a separate provider.
 - **The consumer contract is in progress, not landed.** #1253 (one identity
   across the PM stack, roles owner/orchestrator/agent/read-only checked
@@ -83,7 +83,7 @@ boundary note) — recorded as out of scope, not covered here.
 
 1. Provider stand-up (issuer, JWKS, rotation, allowlist gate, audit).
 2. GitHub federated login. 3. Google federated login.
-4. Microsoft federated login. 5. Account linking UI/flow + history.
-6. First consumer integration (PM stack per #1253) proving the full loop:
+3. Microsoft federated login. 5. Account linking UI/flow + history.
+4. First consumer integration (PM stack per #1253) proving the full loop:
    Drew signs into a fleet service via each linked door against the same
    account, roles enforced server-side.

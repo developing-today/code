@@ -1,10 +1,10 @@
 # Platform, GitOps & Control Planes — the CNCF slice that builds clouds
 
-*Lane CNCF-PLATFORM, 2026-11-23. Scope: platform frameworks, GitOps/deployment
+_Lane CNCF-PLATFORM, 2026-11-23. Scope: platform frameworks, GitOps/deployment
 reconciliation, infrastructure control planes, cluster provisioning, and the
 durable-workflow neighbours. Every project carries its CNCF status
 (graduated / incubating / sandbox / not CNCF) and a maturity verdict.
-"What it is" is kept separate from "should we use it."*
+"What it is" is kept separate from "should we use it."_
 
 **Our estate, for the "should we" judgements:** NixOS hosts today, Talos
 Kubernetes planned, images built with Nix, CI already on GitHub Actions, and a
@@ -48,11 +48,11 @@ The real architecture, assembled from the project's own technical review
 and independent teardowns:
 
 - **Management cluster on Talos by default.** The recommended path is a full
-  Talos-based distribution that owns the nodes; it is *not* Talos-only — it
+  Talos-based distribution that owns the nodes; it is _not_ Talos-only — it
   can also install on generic Linux via Ansible (bootstrapping k3s) or onto a
   bring-your-own Kubernetes cluster ([Cozystack General Technical Review](https://github.com/cozystack/cozystack/blob/HEAD/GENERAL_TECHNICAL_REVIEW.md)).
 - **Tenant Kubernetes = Kamaji + Cluster API + KubeVirt.** Each tenant gets
-  a *real* cluster, not a namespace: Kamaji runs the tenant's control plane
+  a _real_ cluster, not a namespace: Kamaji runs the tenant's control plane
   (apiserver, controller-manager, scheduler) as pods in the management
   cluster, Cluster API manages lifecycle, and tenant worker nodes are
   KubeVirt VMs ([teardown of the Cluster API design](https://eden-cms-v2.onbex.co/blog/2026/07/11/cozystack-kubevirt-cluster-api-bare-metal-paas)).
@@ -85,16 +85,16 @@ already-made decisions:
 
 1. Your nodes run Talos (or you accept the second-class install paths).
 2. Your block storage story is LINSTOR/DRBD — Rook/Ceph becomes the
-   *object*-storage side note (SeaweedFS), not the main act.
+   _object_-storage side note (SeaweedFS), not the main act.
 3. "A VM" and "a database" and "a Kubernetes cluster" are all the same
    kind of request against one API — you give up assembling those pieces
    yourself.
 4. Tenant isolation is cluster-grade (Kamaji control planes + VM workers),
    with the overhead that implies.
 5. Flux reconciles the platform's own add-ons.
-6. You inherit Ænix's release train and its opinions (Kube-OVN *and*
+6. You inherit Ænix's release train and its opinions (Kube-OVN _and_
    Cilium, Kamaji, SeaweedFS) — each individually defensible, collectively
-   a lot of moving parts that are *theirs*, not yours.
+   a lot of moving parts that are _theirs_, not yours.
 
 ### Should we use it
 
@@ -106,7 +106,7 @@ the mirror image: it competes directly with the fleet system's own
 placement/dispatch ambitions at the platform layer, and adopting it means
 the platform's shape is Ænix's, evolving on Ænix's cadence, while the
 project is still CNCF Sandbox. A reasonable posture: trial it as the
-*tenant-facing cloud layer* on the Talos hardware while fleet remains the
+_tenant-facing cloud layer_ on the Talos hardware while fleet remains the
 agent/dispatch layer above it — and go in knowing the storage, tenancy and
 GitOps decisions listed above come with it.
 
@@ -127,7 +127,7 @@ lighter, and still healthy after its corporate sponsor (Weaveworks) shut
 down in early 2024 — development continues under CNCF governance, v2.9
 shipping in 2026.**
 
-What it is: not an application but a *toolkit* — a set of in-cluster
+What it is: not an application but a _toolkit_ — a set of in-cluster
 controllers (source, kustomize, helm, notification, image-automation) that
 are ordinary Kubernetes operators speaking CRDs. There is no central
 server and no bundled UI; multi-cluster means each cluster reconciles
@@ -143,7 +143,7 @@ Maturity verdict: the most widely adopted GitOps tool in the field —
 roughly 60% of Kubernetes clusters in the 2025 Argo CD end-user survey —
 and the one with the real UI.**
 
-What it is: a standalone *platform* — API server, repo server, application
+What it is: a standalone _platform_ — API server, repo server, application
 controller, its own RBAC with SSO, AppProjects for multi-tenancy,
 ApplicationSets for templating apps across clusters, and a genuinely good
 web UI showing diffs, health, sync history and resource trees. One central
@@ -154,7 +154,7 @@ opt-in rather than default ([Akuity's comparison](https://akuity.io/blog/argo-cd
 
 - **Argo Workflows** — a Kubernetes-native workflow/DAG engine: jobs,
   pipelines and parallel compute expressed as CRs running in pods. CI-like
-  and batch-like work *inside* the cluster. Not a deployer.
+  and batch-like work _inside_ the cluster. Not a deployer.
 - **Argo Rollouts** — progressive delivery: replaces/augments Deployment
   with canary and blue-green strategies driven by metrics.
 - **Argo Events** — event-driven triggers (webhooks, queues, schedules)
@@ -171,7 +171,7 @@ operating model, not capability:
   few, self-operated, and managed by someone fluent in Kubernetes; Flux's
   per-cluster controllers have no central control plane to run, no second
   RBAC system to learn, native SOPS decryption (we already use SOPS), and
-  it is *already inside Cozystack* reconciling the platform itself — one
+  it is _already inside Cozystack_ reconciling the platform itself — one
   reconciler to understand instead of two.
 - **Argo CD** earns its keep when many teams or many clusters need a
   shared window and guardrails — the UI, AppProjects and central view are
@@ -195,7 +195,7 @@ a heavy CRD footprint if you install big providers carelessly.**
 
 ### What it is
 
-Crossplane extends a Kubernetes cluster so that *external* infrastructure
+Crossplane extends a Kubernetes cluster so that _external_ infrastructure
 becomes Kubernetes objects. Install a **Provider** (AWS, Azure, GCP,
 GitHub, Vault, Kubernetes, Helm, Terraform…) and resources like an S3
 bucket or an RDS instance become **Managed Resources** — CRs whose
@@ -223,7 +223,7 @@ Mostly **no — not now**, and the reason is overlap, not quality:
 - Our infrastructure is NixOS/Talos declared in Nix and Git, not cloud
   APIs. Crossplane's providers shine against AWS/Azure/GCP APIs; we have
   almost no such surface.
-- Cozystack already *is* a Kubernetes-native provisioning layer for the
+- Cozystack already _is_ a Kubernetes-native provisioning layer for the
   things we'd compose (databases, buckets, clusters, VMs) with its own
   curated APIs. Running Crossplane beside it means two control planes
   offering self-service infrastructure with two different abstraction
@@ -231,9 +231,9 @@ Mostly **no — not now**, and the reason is overlap, not quality:
 - Fleet already owns dispatch/placement for agent work.
 
 Crossplane earns its keep the day we need to provision and continuously
-reconcile *external* resources — cloud buckets, DNS, GitHub org objects,
+reconcile _external_ resources — cloud buckets, DNS, GitHub org objects,
 SaaS tenants — through the same GitOps flow as cluster state, or offer a
-composed self-service API to tenants *outside* what Cozystack provides.
+composed self-service API to tenants _outside_ what Cozystack provides.
 Until that day it is a second control plane we'd be operating for
 hypothetical consumers. Revisit if the estate grows a real cloud-API
 surface; the project will still be there, and it is graduated now.
@@ -251,7 +251,7 @@ The nearest real matches for what Drew may have seen or heard:
 
 - **Argonaut** (argonaut.dev, YC S21) — a commercial SaaS that deploys
   apps and infra to AWS/GCP: Kubernetes PaaS + CI pipelines + managed
-  Terraform state with prebuilt modules ([Launch HN](https://news.ycombinator.com/item?id=36480230)). Internally it is *built on* Argo CD for delivery ([Argonaut's own Argo CD write-up](https://community.ops.io/argonaut/argocd-in-action-a-behind-the-scenes-tour-of-argonauts-gitops-approach-3ago)). It is not a Crossplane competitor so much as a hosted platform that *uses* the Argo/Terraform stack — the comparison to Crossplane is "buy a hosted deploy platform" vs "run an open control plane yourself."
+  Terraform state with prebuilt modules ([Launch HN](https://news.ycombinator.com/item?id=36480230)). Internally it is _built on_ Argo CD for delivery ([Argonaut's own Argo CD write-up](https://community.ops.io/argonaut/argocd-in-action-a-behind-the-scenes-tour-of-argonauts-gitops-approach-3ago)). It is not a Crossplane competitor so much as a hosted platform that _uses_ the Argo/Terraform stack — the comparison to Crossplane is "buy a hosted deploy platform" vs "run an open control plane yourself."
 - **Argo** itself — the most likely source of the name in conversation;
   covered in §2.
 - An "Argon" security tool could not be verified as a distinct,
@@ -268,7 +268,7 @@ commercial hosted product in a different category entirely.
 
 **Status: CNCF Sandbox. Maturity verdict: serious building block with
 real industrial users (Kubermatic, SAP, IBM's KubeStellar orbit), but a
-tool for platform *builders*, not platform *users*.**
+tool for platform _builders_, not platform _users_.**
 
 ### What it is
 
@@ -332,7 +332,7 @@ Maturity verdict: an interesting idea, small ecosystem.**
 
 Kratix's unit is the **Promise**: a platform team publishes a contract
 ("a database, like this") that bundles the API developers request against
-*and* the workflow that fulfils it, which can drive Terraform, Crossplane,
+_and_ the workflow that fulfils it, which can drive Terraform, Crossplane,
 or plain pipelines underneath. It is Crossplane's composition idea
 generalised beyond Kubernetes resources. Notable as a design reference for
 platform APIs; not an adoption candidate for an estate of our size.
@@ -346,7 +346,7 @@ platform APIs; not an adoption candidate for an estate of our size.
 OpenChoreo is the open-source evolution of WSO2's Choreo SaaS: a complete
 developer platform for Kubernetes with developer abstractions, a
 Backstage-powered portal, built-in CI/CD, GitOps and observability in one
-cohesive system, explicitly positioned *against* the assemble-it-yourself
+cohesive system, explicitly positioned _against_ the assemble-it-yourself
 toolkit approach ([OpenChoreo's 1.0 announcement](https://openchoreo.dev/blog/openchoreo-joins-cncf-and-ships-1-0/)). It competes with the
 Cozystack-shaped decision, not with any single tool in it: adopting it
 means adopting WSO2's platform shape instead of Ænix's. Mentioned here so
@@ -376,8 +376,8 @@ How it differs from the alternatives in Drew's world:
   the installation and memory; you give up some configurability and the
   "stock" layout.
 - **vs Talos:** they solve different layers. Talos shrinks and hardens
-  the *node OS* (immutable, API-managed, no shell) and runs full
-  Kubernetes on it. K3s shrinks *Kubernetes itself* and runs on a normal
+  the _node OS_ (immutable, API-managed, no shell) and runs full
+  Kubernetes on it. K3s shrinks _Kubernetes itself_ and runs on a normal
   Linux you still administer. Talos is the more opinionated, more secure
   node story; K3s is the faster, friendlier one.
 - **For us:** K3s is the right answer for throwaway/dev/CI clusters, a
@@ -397,7 +397,7 @@ have.**
 
 ### What it is
 
-OpenYurt extends an *unmodified* upstream Kubernetes cluster so nodes
+OpenYurt extends an _unmodified_ upstream Kubernetes cluster so nodes
 across unreliable cloud↔edge links behave. Its core piece is **YurtHub**,
 an agent on each edge node that proxies kubelet/apiserver traffic and
 caches the node's objects on local disk: when the link drops, the node
@@ -475,7 +475,7 @@ large scale.**
 
 Cadence (open-sourced by Uber in 2017) and Temporal (a 2019 fork of
 Cadence by its original authors) solve one problem: long-running business
-logic written as ordinary code that *cannot lose its place*. The platform
+logic written as ordinary code that _cannot lose its place_. The platform
 records every step of a workflow in an append-only event history; if the
 worker process crashes, deploys, or the machine dies, another worker
 replays the history, rebuilds the workflow's exact state, and continues
@@ -487,18 +487,18 @@ dead-letter queues ([cloudparts' Temporal profile](https://cloudparts.dev/techno
 
 Different layer, and the difference matters:
 
-- **Fleet's queue** dispatches *units of agent/infrastructure work* —
+- **Fleet's queue** dispatches _units of agent/infrastructure work_ —
   tasks claimed by lanes, placed on seats, retried as whole tasks. Its
   state is a task row; its recovery model is "re-dispatch the task."
-- **Cadence/Temporal** make a *single application's own multi-step
-  process* durable from the inside: step 3 of 12 survives a crash and
+- **Cadence/Temporal** make a _single application's own multi-step
+  process_ durable from the inside: step 3 of 12 survives a crash and
   resumes as step 3, with the values from steps 1–2 intact, because the
   workflow's history is replayed. A queue cannot give you that; it can
   only restart the whole unit or rely on the application checkpointing
   itself.
 
 So Cadence does not compete with fleet — it is the thing you'd embed
-*inside* a long-running service whose internal process must survive
+_inside_ a long-running service whose internal process must survive
 restarts (an IdP provisioning flow that waits three days for an approval;
 an agent run that must resume mid-plan rather than restart). If a future
 service has that shape, Temporal is the pragmatic pick (larger ecosystem,
@@ -518,13 +518,13 @@ Maturity verdict: the standard open developer-portal framework — and a
 framework is exactly what it is.**
 
 Backstage gives you a software catalog, scaffolding templates, TechDocs
-and a plugin system — as a React/Node application *you* build, extend and
+and a plugin system — as a React/Node application _you_ build, extend and
 operate; every adopter's Backstage is its own codebase ([iThub's Backstage profile](https://www.ithub.directory/paas-app-deployment/backstage)). It pays off when an
 organisation has hundreds of services and dozens of engineers who can't
 find them. **For us it is overkill, plainly:** one operator, a fleet
 system that already knows what exists, and books/portals we generate
 ourselves. A portal becomes interesting if the estate's service count
-grows by an order of magnitude *and* other humans need to browse it.
+grows by an order of magnitude _and_ other humans need to browse it.
 
 ### Helm vs Kustomize
 
@@ -553,7 +553,7 @@ it managed as "Agent Substrate on GKE." Maturity verdict: weeks old as a
 CNCF project but Google-production-shaped; vendor claims, not yet
 independently verified.**
 
-Agent Substrate is a runtime for *sandboxed AI agents* on Kubernetes.
+Agent Substrate is a runtime for _sandboxed AI agents_ on Kubernetes.
 Its core move is decoupling the agent's state from compute: an **Actor**
 holds an agent session's memory, files and identity; **Workers** are
 reusable sandboxes drawn from a warm pod pool; **Gateways** enforce
@@ -564,10 +564,10 @@ density of one-container-per-agent, and 500+ suspend/resume activations
 per second ([Google Cloud's announcement](https://cloud.google.com/blog/products/containers-kubernetes/open-infrastructure-for-autonomous-agents-comes-to-cncf); [NVIDIA's technical blog](https://developer.nvidia.com/blog/?p=124728)). Isolation is gVisor or
 Cloud Hypervisor microVMs.
 
-*Relevance to us:* this is the first CNCF project aimed squarely at the
+_Relevance to us:_ this is the first CNCF project aimed squarely at the
 problem our fleet system solves by hand — many agent sessions, mostly
 idle, needing isolation and fast resume. It is a **watch closely** item:
-if fleet ever needs to run agent sandboxes *inside* Kubernetes at real
+if fleet ever needs to run agent sandboxes _inside_ Kubernetes at real
 density, Substrate is the substrate to evaluate before building more of
 our own. Today our lanes run on seats/laptops, not in-cluster sandboxes,
 so it solves a problem one step removed from ours.
@@ -582,7 +582,7 @@ AI Runway "provides a web UI and a unified Kubernetes CRD to deploy AI
 models across multiple inference engines and providers" ([CNCF's AI Runway page](https://www.cncf.io/projects/ai-runway/)). In plain terms: one
 declarative API + console for putting models onto whatever serving engine
 (vLLM-style engines, cloud providers) sits underneath. It is model
-*deployment* plumbing. For an estate whose model access is API-based
+_deployment_ plumbing. For an estate whose model access is API-based
 (opencode routes, provider pools), there is nothing here yet; it becomes
 relevant only if we self-host inference on the Talos/GPU hardware.
 
@@ -593,11 +593,11 @@ Maturity verdict: the most developed of the "agents on Kubernetes"
 frameworks; its 1.0 line is a breaking redesign of the 0.x model, so it
 is still settling.**
 
-kagent is a framework for running AI agents *as Kubernetes resources* —
+kagent is a framework for running AI agents _as Kubernetes resources_ —
 agents, their MCP tools, model configs and egress policies declared as
 CRDs, with approval gates for risky tool calls and OpenTelemetry traces
 for everything ([detailed kagent profile](https://www.mrvitej.in/devops/cncf-kagent/)). Notably, kagent 1.x
-*runs on Agent Substrate* for its sandboxed sessions — the two projects
+_runs on Agent Substrate_ for its sandboxed sessions — the two projects
 compose rather than compete ([detailed kagent profile](https://www.mrvitej.in/devops/cncf-kagent/)). It is aimed at
 operations agents (troubleshoot the cluster, query Prometheus, propose
 fixes) more than at general agent workloads. For us: conceptually
@@ -608,32 +608,32 @@ Kubernetes-everything world we haven't adopted. Name to know; no action.
 
 ## 13. Verdict table
 
-| Project | CNCF status | Verdict for our estate |
-|---|---|---|
-| Cozystack | Sandbox (Incubating in due diligence) | Trial as the tenant-cloud layer on Talos; know it decides storage/tenancy/GitOps for you |
-| Flux | Graduated | **Adopt** — our GitOps reconciler; already inside Cozystack |
-| Flagger | Graduated | Later, if canary deploys matter |
-| Argo CD | Graduated | Only if a deployment UI for other humans becomes a requirement |
-| Argo Workflows / Rollouts / Events | Graduated (Argo) | Pieces to borrow later; none needed now |
-| Crossplane | Graduated (Nov 2025) | Not now — Nix + Cozystack + fleet cover its ground; revisit with a real cloud-API surface |
-| "Argonize" | — | Does not exist as an infra project; nearest match Argonaut is a hosted SaaS on Argo CD |
-| kcp | Sandbox | Watch; a builder's tool for API tenancy at SaaS scale |
-| Cluster API | K8s SIG project | Already in our future via Cozystack; default cluster provisioner otherwise |
-| Sveltos | Sandbox | At dozens of clusters, not before |
-| Kratix | Not verified as CNCF | Design reference only |
-| OpenChoreo | Sandbox | The WSO2-shaped alternative to Cozystack; not our shape |
-| K3s | Sandbox (incubation applied) | Adopt for dev/CI/laptop/small-box clusters; complements Talos |
-| OpenYurt | Incubating | Only with genuinely remote, badly-connected nodes |
-| OpenTofu | Linux Foundation (+ CNCF Sandbox 2025) | Default *if* HCL is ever needed; Nix covers us today |
-| Atlantis | Sandbox | The PR front-end for an OpenTofu estate we don't have |
-| Cadence | Sandbox | Durable execution for inside a service; does not compete with fleet's queue |
-| Temporal | Not CNCF | Same layer as Cadence; pragmatic pick if that need appears |
-| Backstage | Incubating | Overkill at our scale — a framework we'd have to staff |
-| Helm | Graduated | Use for consuming upstream charts |
-| Kustomize | K8s SIG (not CNCF) | Use for our own manifests' per-cluster overlays |
-| Agent Substrate | Sandbox (Nov 2026) | Watch closely — first CNCF answer to in-cluster agent sandboxing at density |
-| AI Runway | Sandbox (Sep 2026) | Only if we self-host model inference |
-| kagent | Sandbox | Adjacent to fleet's problem; Kubernetes-committed; no action |
+| Project                            | CNCF status                            | Verdict for our estate                                                                    |
+| ---------------------------------- | -------------------------------------- | ----------------------------------------------------------------------------------------- |
+| Cozystack                          | Sandbox (Incubating in due diligence)  | Trial as the tenant-cloud layer on Talos; know it decides storage/tenancy/GitOps for you  |
+| Flux                               | Graduated                              | **Adopt** — our GitOps reconciler; already inside Cozystack                               |
+| Flagger                            | Graduated                              | Later, if canary deploys matter                                                           |
+| Argo CD                            | Graduated                              | Only if a deployment UI for other humans becomes a requirement                            |
+| Argo Workflows / Rollouts / Events | Graduated (Argo)                       | Pieces to borrow later; none needed now                                                   |
+| Crossplane                         | Graduated (Nov 2025)                   | Not now — Nix + Cozystack + fleet cover its ground; revisit with a real cloud-API surface |
+| "Argonize"                         | —                                      | Does not exist as an infra project; nearest match Argonaut is a hosted SaaS on Argo CD    |
+| kcp                                | Sandbox                                | Watch; a builder's tool for API tenancy at SaaS scale                                     |
+| Cluster API                        | K8s SIG project                        | Already in our future via Cozystack; default cluster provisioner otherwise                |
+| Sveltos                            | Sandbox                                | At dozens of clusters, not before                                                         |
+| Kratix                             | Not verified as CNCF                   | Design reference only                                                                     |
+| OpenChoreo                         | Sandbox                                | The WSO2-shaped alternative to Cozystack; not our shape                                   |
+| K3s                                | Sandbox (incubation applied)           | Adopt for dev/CI/laptop/small-box clusters; complements Talos                             |
+| OpenYurt                           | Incubating                             | Only with genuinely remote, badly-connected nodes                                         |
+| OpenTofu                           | Linux Foundation (+ CNCF Sandbox 2025) | Default _if_ HCL is ever needed; Nix covers us today                                      |
+| Atlantis                           | Sandbox                                | The PR front-end for an OpenTofu estate we don't have                                     |
+| Cadence                            | Sandbox                                | Durable execution for inside a service; does not compete with fleet's queue               |
+| Temporal                           | Not CNCF                               | Same layer as Cadence; pragmatic pick if that need appears                                |
+| Backstage                          | Incubating                             | Overkill at our scale — a framework we'd have to staff                                    |
+| Helm                               | Graduated                              | Use for consuming upstream charts                                                         |
+| Kustomize                          | K8s SIG (not CNCF)                     | Use for our own manifests' per-cluster overlays                                           |
+| Agent Substrate                    | Sandbox (Nov 2026)                     | Watch closely — first CNCF answer to in-cluster agent sandboxing at density               |
+| AI Runway                          | Sandbox (Sep 2026)                     | Only if we self-host model inference                                                      |
+| kagent                             | Sandbox                                | Adjacent to fleet's problem; Kubernetes-committed; no action                              |
 
-*Count: 26 projects/frameworks covered (counting the Argo family as four
-and the three AI-platform names individually).*
+_Count: 26 projects/frameworks covered (counting the Argo family as four
+and the three AI-platform names individually)._

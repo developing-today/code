@@ -14,7 +14,7 @@
  * names are orphaned — never served again, retained per the
  * no-eviction policy (cache_do.ts).
  */
-import { CEILING, MODEL_REV, VEC_TABLE } from "./space";
+import { CEILING, MODEL_REV, VEC_TABLE, type DisclosureContext } from "./space";
 
 export const KEY_SCHEMA = 2;
 
@@ -26,7 +26,7 @@ export function normalizeQuery(q: string): string {
 export interface KeyParts {
   q: string;
   /** The resolved disclosure context the answer is bound for. */
-  context: string;
+  context: DisclosureContext;
   k: number;
 }
 

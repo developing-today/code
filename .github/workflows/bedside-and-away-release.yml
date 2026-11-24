@@ -1,0 +1,249 @@
+name: bedside-and-away release
+
+# Manual-only release. The version upload and production promotion are
+# separate workflow_dispatch runs with separate protected environments.
+# Configure both environments with required reviewers in repository settings.
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: Select a dry run, upload-only, or separately approved promotion
+        type: choice
+        options:
+          - dry-run
+          - upload
+          - promote
+        default: dry-run
+        required: true
+      version_id:
+        description: Exact version ID from a completed upload run (required for promote)
+        type: string
+        required: false
+      source_sha:
+        description: Exact 40-character source SHA from that upload run (required for promote)
+        type: string
+        required: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: bedside-and-away-${{ inputs.action }}
+  cancel-in-progress: false
+
+jobs:
+  upload:
+    if: github.ref == 'refs/heads/main' && (inputs.action == 'dry-run' || inputs.action == 'upload')
+    name: Build and upload Worker version only
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment:
+      name: bedside-and-away-version-upload
+    env:
+      WORKER: bedside-and-away-backend
+      TURSO_URL: ${{ vars.BEDAWAY_TURSO_URL }}
+      GATEWAY_ORIGIN: ${{ vars.BEDAWAY_GATEWAY_ORIGIN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+
+      - name: Install the repository-pinned cf version
+        run: |
+          set -euo pipefail
+          CF_VERSION="$(sed -n 's/^[[:space:]]*version = "\([^"]*\)";/\1/p' pkgs/cf/default.nix | head -n 1)"
+          test -n "$CF_VERSION"
+          npm install --global "cf@${CF_VERSION}" --no-audit --no-fund
+          cf --version
+
+      - name: Validate inputs and build the production Worker manifest
+        working-directory: pkgs/bedside-and-away
+        run: |
+          set -euo pipefail
+          test -n "$TURSO_URL"
+          test -n "$GATEWAY_ORIGIN"
+          test -n "$CLOUDFLARE_ACCOUNT_ID"
+          test "$WORKER" = bedside-and-away-backend
+          node external/cf-build.mjs
+          jq -e --arg name "$WORKER" '
+            .name == $name and
+            .workersDev == true and
+            .previewUrls == false and
+            (has("routes") | not) and
+            (has("route") | not) and
+            .env.TURSO_URL.type == "text" and
+            .env.GATEWAY_ORIGIN.type == "text" and
+            .env.TURSO_AUTH_TOKEN.type == "secret" and
+            .env.GATEWAY_HMAC_KEY.type == "secret"
+          ' .cloudflare/output/v0/workers/default/worker.config.json >/dev/null
+          node --input-type=module -e '
+            import fs from "node:fs";
+            const config = JSON.parse(fs.readFileSync(".cloudflare/output/v0/workers/default/worker.config.json", "utf8"));
+            const database = new URL(process.env.TURSO_URL);
+            const origin = new URL(process.env.GATEWAY_ORIGIN);
+            if (config.env.TURSO_URL.value !== database.href || config.env.GATEWAY_ORIGIN.value !== origin.origin) {
+              throw new Error("generated Worker environment differs from the configured production endpoints");
+            }
+          '
+
+      - name: Run native cf Versions dry run
+        working-directory: pkgs/bedside-and-away
+        run: |
+          set -euo pipefail
+          SHA="${GITHUB_SHA}"
+          TAG="git-${SHA:0:12}"
+          MESSAGE="deploy ${SHA} via protected GitHub Actions cf Versions workflow"
+          cf workers versions create --prebuilt --worker "$WORKER" --tag "$TAG" --message "$MESSAGE" --dry-run > "$RUNNER_TEMP/bedaway-cf-dry-run.out"
+
+      - name: Upload tagged version without promoting it
+        if: inputs.action == 'upload'
+        working-directory: pkgs/bedside-and-away
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          set -euo pipefail
+          test -n "$CLOUDFLARE_API_TOKEN"
+          SHA="${GITHUB_SHA}"
+          TAG="git-${SHA:0:12}"
+          MESSAGE="deploy ${SHA} via protected GitHub Actions cf Versions workflow"
+          cf workers versions create --prebuilt --worker "$WORKER" --tag "$TAG" --message "$MESSAGE" > "$RUNNER_TEMP/bedaway-upload.json"
+          cf workers versions list --worker-id "$WORKER" > "$RUNNER_TEMP/bedaway-versions.json"
+          VERSION_ID="$(jq -er --arg tag "$TAG" --arg message "$MESSAGE" '
+            (if type == "array" then .
+             elif (.result | type) == "array" then .result
+             elif (.result.items | type) == "array" then .result.items
+             elif (.versions | type) == "array" then .versions
+             else error("unexpected cf versions list response") end)
+            | map(select((.annotations["workers/tag"] // .metadata.annotations["workers/tag"]) == $tag
+              and (.annotations["workers/message"] // .metadata.annotations["workers/message"] // .metadata.message // .message) == $message))
+            | sort_by(.metadata.created_on // .created_on // .createdOn // "")
+            | last | .id // empty
+          ' "$RUNNER_TEMP/bedaway-versions.json")"
+          test -n "$VERSION_ID"
+          {
+            echo "## Uploaded Worker version (not promoted)"
+            echo
+            echo "- Worker: `$WORKER`"
+            echo "- Version ID: `$VERSION_ID`"
+            echo "- Source SHA: `$SHA`"
+            echo "- Tag: `$TAG`"
+            echo
+            echo "Promotion requires a separate `workflow_dispatch` run with action `promote`, this exact version ID, and this exact source SHA."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  promote:
+    if: github.ref == 'refs/heads/main' && inputs.action == 'promote'
+    name: Promote explicitly reviewed Worker version
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment:
+      name: bedside-and-away-production
+    env:
+      WORKER: bedside-and-away-backend
+      VERSION_ID: ${{ inputs.version_id }}
+      SOURCE_SHA: ${{ inputs.source_sha }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      WORKER_URL: ${{ vars.BEDAWAY_WORKER_URL }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+
+      - name: Install the repository-pinned cf version
+        run: |
+          set -euo pipefail
+          CF_VERSION="$(sed -n 's/^[[:space:]]*version = "\([^"]*\)";/\1/p' pkgs/cf/default.nix | head -n 1)"
+          test -n "$CF_VERSION"
+          npm install --global "cf@${CF_VERSION}" --no-audit --no-fund
+
+      - name: Verify exact version ID and source SHA before promotion
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          set -euo pipefail
+          [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          test -n "$VERSION_ID"
+          test -n "$CLOUDFLARE_API_TOKEN"
+          test -n "$CLOUDFLARE_ACCOUNT_ID"
+          test "$WORKER" = bedside-and-away-backend
+          TAG="git-${SOURCE_SHA:0:12}"
+          MESSAGE="deploy ${SOURCE_SHA} via protected GitHub Actions cf Versions workflow"
+          cf workers versions list --worker-id "$WORKER" > "$RUNNER_TEMP/bedaway-versions.json"
+          jq -e --arg id "$VERSION_ID" --arg tag "$TAG" --arg message "$MESSAGE" '
+            (if type == "array" then .
+             elif (.result | type) == "array" then .result
+             elif (.result.items | type) == "array" then .result.items
+             elif (.versions | type) == "array" then .versions
+             else error("unexpected cf versions list response") end)
+            | any(.[]; .id == $id and
+              (.annotations["workers/tag"] // .metadata.annotations["workers/tag"]) == $tag and
+              (.annotations["workers/message"] // .metadata.annotations["workers/message"] // .metadata.message // .message) == $message)
+          ' "$RUNNER_TEMP/bedaway-versions.json" >/dev/null
+          export BEDAWAY_VERSION_ID="$VERSION_ID"
+          node --input-type=module <<'NODE'
+          const endpoint = `https://api.cloudflare.com/client/v4/accounts/${process.env.CLOUDFLARE_ACCOUNT_ID}/workers/scripts/${process.env.WORKER}/versions?deployable=true`;
+          const response = await fetch(endpoint, {
+            headers: { authorization: `Bearer ${process.env.CLOUDFLARE_API_TOKEN}` },
+            signal: AbortSignal.timeout(20_000),
+          });
+          if (!response.ok) throw new Error(`cf deployable-version check returned HTTP ${response.status}`);
+          const body = await response.json();
+          const rows = Array.isArray(body.result) ? body.result : body.result?.items;
+          if (!Array.isArray(rows) || !rows.some((row) => row.id === process.env.BEDAWAY_VERSION_ID)) {
+            throw new Error("reviewed version is absent from the deployable set; promotion refused");
+          }
+          NODE
+          {
+            echo "## Reviewed Worker version promotion"
+            echo
+            echo "- Worker: `$WORKER`"
+            echo "- Version ID: `$VERSION_ID`"
+            echo "- Source SHA: `$SOURCE_SHA`"
+            echo "- Tag: `$TAG`"
+            echo "- State: version ID, tag, full source message, and deployable status matched before promotion."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Create the 100% deployment for that exact version
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          set -euo pipefail
+          VERSIONS="[{\"version_id\":\"${VERSION_ID}\",\"percentage\":100}]"
+          cf workers deployments create --worker "$WORKER" --strategy percentage --versions "$VERSIONS"
+
+      - name: Verify active version and unsigned rejection
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          set -euo pipefail
+          cf workers deployments list --worker "$WORKER" > "$RUNNER_TEMP/bedaway-deployments.json"
+          node --input-type=module <<'NODE'
+          import fs from "node:fs";
+          const data = JSON.parse(fs.readFileSync(`${process.env.RUNNER_TEMP}/bedaway-deployments.json`, "utf8"));
+          const rows = Array.isArray(data) ? data : Array.isArray(data.result) ? data.result : Array.isArray(data.result?.items) ? data.result.items : data.deployments;
+          if (!Array.isArray(rows) || rows.length === 0) throw new Error("cf returned no deployments");
+          const time = (row) => {
+            const raw = row.metadata?.created_on ?? row.created_on ?? row.createdOn ?? 0;
+            return typeof raw === "number" ? raw : Date.parse(raw) || 0;
+          };
+          const latest = [...rows].sort((a, b) => time(b) - time(a))[0];
+          const active = (latest.versions ?? []).filter((v) => Number(v.percentage) > 0);
+          if (active.length !== 1 || active[0].version_id !== process.env.VERSION_ID || Number(active[0].percentage) !== 100) {
+            throw new Error("latest deployment does not serve the exact reviewed version at 100%");
+          }
+          NODE
+          node --input-type=module -e '
+            const u = new URL(process.env.WORKER_URL);
+            if (u.protocol !== "https:" || u.pathname !== "/" || u.search || u.hash ||
+                !u.hostname.startsWith(`${process.env.WORKER}.`) || !u.hostname.endsWith(".workers.dev")) {
+              throw new Error("BEDAWAY_WORKER_URL must be the production Worker workers.dev origin");
+            }
+          '
+          STATUS="$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' --max-time 20 "${WORKER_URL}api/health")"
+          test "$STATUS" = 401 || { echo "unsigned Worker request returned HTTP $STATUS (expected 401)" >&2; exit 1; }
+          echo "Verified reviewed version ${VERSION_ID} at 100%; unsigned API request rejected with HTTP 401."

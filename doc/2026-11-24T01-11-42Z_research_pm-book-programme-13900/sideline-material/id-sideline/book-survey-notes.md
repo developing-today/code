@@ -4,9 +4,9 @@
 
 - mdBook config: `pkgs/id/book.toml` — title `id`, authors
   ["developing-today"], language en, `src = "book"`, `build-dir =
-  "rendered"`, `[build] create-missing = false` ("Every chapter in
+"rendered"`, `[build] create-missing = false` ("Every chapter in
   SUMMARY.md must exist on disk; never invent stubs"), `[output.html]
-  git-repository-url = "https://github.com/developing-today/code"`.
+git-repository-url = "https://github.com/developing-today/code"`.
   The book root is `pkgs/id` itself so sources stay next to the system.
 - Build derivation: `pkgs/id/docs.nix` — runCommand rendering book.toml +
   book/ with the flake-pinned mdbook, no network; rewrites links escaping
@@ -32,21 +32,22 @@
 Question from the brief: does the id book have a second gate like mcpx's
 compendium manifest (`TestEveryDocumentHasAChapter`)?
 Evidence gathered:
+
 - `grep -rn "compendium|TestEveryDocument|SUMMARY" pkgs/id/book/
-  --include="*.md" --include="*.toml" --include="*.rs" --include="*.go"` →
+--include="*.md" --include="*.toml" --include="*.rs" --include="*.go"` →
   only prose mentions inside development chapters (layout.md's description
   of book/, keeping-this-book-current.md's statement of the two gates).
 - `grep -rn "pkgs/id/book|id/book" --include="*.rs" --include="*.go"
-  --include="*.nix" --include="*.yml" pkgs/id/ .github/workflows/id-docs.yml
-  lib/` → only docs.nix, the workflow, and one unrelated Rust doc comment
+--include="*.nix" --include="*.yml" pkgs/id/ .github/workflows/id-docs.yml
+lib/` → only docs.nix, the workflow, and one unrelated Rust doc comment
   (an oracle path in examples/rust-colony pointing at a research evidence
   file). No Go/Rust test enumerates book files.
 - keeping-this-book-current.md itself states "The two build gates" and that
   they are "the whole of its teeth today": (1) `create-missing = false`,
   (2) the `.#id-docs` Nix build on main. It also honestly records that
   neither gate checks chapter contents against code.
-Conclusion: SUMMARY.md registration is the only registration. The PR says so
-explicitly.
+  Conclusion: SUMMARY.md registration is the only registration. The PR says so
+  explicitly.
 
 ## The book's own form rules (from keeping-this-book-current.md)
 
@@ -75,6 +76,7 @@ explicitly.
 
 `grep -rn "worker-poc|id-worker-poc|d1-journal|id-mail|mail.security|
 id-mail.security" pkgs/id/book/`:
+
 - worker-poc / d1-journal-poc: passing summary treatment in
   concepts/hosted.md, reference/hosted-worker.md, concepts/architecture.md,
   getting-started/shape.md, design/worlds-runtime.md,
@@ -85,7 +87,7 @@ id-mail.security" pkgs/id/book/`:
 - mail worker: only development/release-and-rollout.md ("Two neighbouring
   Worker workflows are not the hosted edition…") and research/releases.md
   (workflow inventory line). No routes, no config, no chapter.
-Census verdict stands: GAP for all three as named-Worker coverage.
+  Census verdict stands: GAP for all three as named-Worker coverage.
 
 ## Issue-map / prioritised-list check — NONE EXISTS for workers
 
@@ -112,8 +114,8 @@ Census verdict stands: GAP for all three as named-Worker coverage.
   - "The mail Worker API" (mirrors "The hosted Worker API").
   - "id-worker-poc: the World Durable Object proof of concept".
   - "id-d1-journal-poc: the D1 journal proof of concept".
-  (PoC titles carry the exact Worker names so the completion test — every
-  worker covered by name — passes on SUMMARY text alone.)
+    (PoC titles carry the exact Worker names so the completion test — every
+    worker covered by name — passes on SUMMARY text alone.)
 - Files changed in the PR (8): SUMMARY.md; reference/mail-worker.md (new);
   reference/worker-poc.md (new); reference/d1-journal-poc.md (new);
   reference/hosted-worker.md (one closing paragraph linking all three);
