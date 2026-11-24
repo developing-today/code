@@ -144,6 +144,38 @@ export async function encrypt(sub: Subscription, plaintext: Uint8Array): Promise
   return concat(header, sealed);
 }
 
+/** RFC 8030 section 7.2: a push service takes a message of 4096 bytes
+ * and may refuse a longer one. */
+export const PUSH_LIMIT = 4096;
+/** What sealing adds to the words (see `encrypt`): the salt, the record
+ * size, the length of the key and the key, then one delimiter and the tag. */
+const SEALED_AROUND = 16 + 4 + 1 + 65 + 1 + 16;
+
+/** The message as it is sent: whole when it fits in one push. When it
+ * does not, the body is cut to the longest start that fits, in whole
+ * characters and marked as cut, with the buttons kept; buttons that
+ * could not fit beside any words at all are left off. */
+function fitted(message: { body: string; actions?: unknown[] } & Record<string, unknown>): Uint8Array {
+  const room = PUSH_LIMIT - SEALED_AROUND;
+  // The short way round for nearly every message: what follows gives
+  // the same answer for one that fits.
+  const whole = enc.encode(JSON.stringify(message));
+  if (whole.length <= room) return whole;
+  const points = Array.from(message.body);
+  const cut = (m: Record<string, unknown>, n: number) =>
+    enc.encode(JSON.stringify({ ...m, body: n < points.length ? `${points.slice(0, n).join("")}…` : message.body }));
+  const { actions: _buttons, ...bare } = message;
+  const kept = cut(message, 0).length <= room ? message : bare;
+  let fits = 0;
+  let over = points.length;
+  while (fits < over) {
+    const mid = Math.ceil((fits + over) / 2);
+    if (cut(kept, mid).length <= room) fits = mid;
+    else over = mid - 1;
+  }
+  return cut(kept, fits);
+}
+
 type Poster = (
   url: string,
   init: { method: string; headers: Record<string, string>; body: Uint8Array; signal?: AbortSignal },
@@ -262,7 +294,7 @@ export class Push {
   ) {
     const s = await this.load();
     if (cls !== "test" && s.off.includes(cls)) return { sent: 0, gone: 0, failed: 0 };
-    const payload = enc.encode(JSON.stringify({ ...message, class: cls }));
+    const payload = fitted({ ...message, class: cls });
     let sent = 0;
     let failed = 0;
     const gone: string[] = [];

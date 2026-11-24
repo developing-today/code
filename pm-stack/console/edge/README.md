@@ -239,6 +239,9 @@ it (the laptop's, the sign-in issuer's).
   "Kept on this device…", or that it could not be done); with the app
   open, the app says it. The body says enough to act on: the reply
   itself, what to do and on which item, which unit and what it is for.
+  A push service takes a message of 4096 bytes and may refuse a longer
+  one (RFC 8030), so a message that would be longer as it is sealed is
+  cut to the longest start that fits, marked as cut, buttons kept.
 - **The app is told when something changes.** The open app holds a
   WebSocket to the Worker (`/console/api/events`, the owner signed in
   like any other request). The Worker's object keeps it by the

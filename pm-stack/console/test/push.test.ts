@@ -114,6 +114,60 @@ describe("the message a phone receives", () => {
     }
   });
 
+  // Oracle: RFC 8030 section 7.2. A push service takes a message of
+  // 4096 bytes and may refuse a longer one, so what is posted (as it is
+  // really sealed) is measured against that, and read back the way the
+  // phone reads it.
+  test("a message too long for one push is cut to fit, with its buttons kept; one that fits goes whole", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "pm-push-"));
+    try {
+      const a = await browser();
+      const posts: Uint8Array[] = [];
+      const push = new Push(
+        fileStore(join(dir, "push.json")),
+        "mailto:owner@example.com",
+        async (_url, init) => (posts.push(init.body), { status: 201 }),
+      );
+      await push.subscribe(a.subscription, "phone");
+      const actions = [{ action: "done", title: "I did it", kind: "hands.done", args: { ref: "o/r#2" } }];
+      const said = { title: "Something needs you", url: "/console/#needs/hands", tag: "hands-o/r#2" };
+      // One byte a character, two, four (a pair of code units), and one JSON writes as two.
+      for (const body of ["x".repeat(20_000), "é".repeat(9_000), "𝄞".repeat(5_000), '"'.repeat(8_000)]) {
+        expect(await push.send("needs", { ...said, body, actions })).toMatchObject({ sent: 1, failed: 0 });
+        const posted = posts.at(-1) as Uint8Array;
+        expect(posted.length).toBeLessThanOrEqual(4096);
+        // No shorter than it has to be.
+        expect(posted.length).toBeGreaterThan(4096 - 16);
+        const got = JSON.parse(await a.open(posted)) as { body: string };
+        expect(got).toMatchObject({ ...said, class: "needs", actions });
+        // The start of what was said, in whole characters, and marked as cut.
+        const kept = Array.from(got.body);
+        expect(kept.at(-1)).toBe("…");
+        expect(kept.slice(0, -1).join("")).toBe(
+          Array.from(body)
+            .slice(0, kept.length - 1)
+            .join(""),
+        );
+      }
+      // One that fits is not touched.
+      const whole = "y".repeat(3_000);
+      await push.send("needs", { ...said, body: whole, actions });
+      expect(JSON.parse(await a.open(posts.at(-1) as Uint8Array))).toEqual({
+        ...said,
+        body: whole,
+        actions,
+        class: "needs",
+      });
+      // Buttons that could not fit beside any words at all: it goes without them, said whole.
+      const many = Array.from({ length: 120 }, (_, i) => ({ action: `a${i}`, title: "x".repeat(40) }));
+      await push.send("needs", { ...said, body: "Short.", actions: many });
+      expect(posts.at(-1)?.length).toBeLessThanOrEqual(4096);
+      expect(JSON.parse(await a.open(posts.at(-1) as Uint8Array))).toEqual({ ...said, body: "Short.", class: "needs" });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test("a device that is gone is forgotten, a class switched off sends nothing, a failure is counted", async () => {
     const dir = mkdtempSync(join(tmpdir(), "pm-push-"));
     try {
