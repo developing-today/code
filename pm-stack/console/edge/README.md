@@ -225,6 +225,25 @@ it (the laptop's, the sign-in issuer's).
   says when it answers again and which of the two it was. Health has
   the times as `github.quiet.core` and `github.quiet.search`. "Try
   again now" lifts both.
+- **The app is told when something changes.** The open app holds a
+  WebSocket to the Worker (`/console/api/events`, the owner signed in
+  like any other request). The Worker's object keeps it by the
+  platform's hibernation API, so the connection stays open while the
+  object is put away and costs nothing between events. When a document
+  would be answered with another tag (a list read with other content
+  or another health, something the owner did, what is held), everyone
+  connected is told which documents, once however many changes arrive
+  together: `{"t":"changed","docs":["core"]}`. The app reads those
+  again by their tags. While someone is connected the object wakes
+  every twenty seconds to read again what it reads itself and has gone
+  stale; with nobody connected it does not wake for this. The app says
+  "ping" every 45 seconds, which the platform answers itself. What the
+  owner does still goes by its own requests (kept on the device and
+  sent again when there is no connection), never over this. With no
+  live connection (a machine serving the app by itself, or a network
+  that will not carry one) the app looks every twenty seconds, as
+  before; with one, once a minute in case something was missed. The
+  health answer says how many are connected (`listening`).
 - **The repository's settings are the platform's own.** Which
   repository and queue, where the queue's store answers and what its
   token is called, the Android app's package and the label that marks
