@@ -6,17 +6,23 @@
 // is down). The two-cycle alert is additionally recorded as an
 // incident in the aggregator's alerts ledger through post-alert.ts.
 //
-// Usage: bun run scripts/check-watchdog-heartbeat.ts [--journal <path>]
+// Usage: bun run scripts/check-watchdog-heartbeat.ts [--journal <path>] [--orchestrator-feed <path>]
 // Env: PM_AGG_SLO_JOURNAL_FILE (default: ~/.local/state/pm-aggregator/slo-journal.jsonl)
+// Env: PM_WATCHDOG_ORCHESTRATOR_FEED_FILE (default: <journal>.orchestrator-feed.jsonl)
+// A two-cycle NEEDS_ORCHESTRATOR is published to the orchestrator feed
+// (src/watchdog-orchestrator-feed.ts, #14410) on this independent path
+// BEFORE the aggregator-dependent post-alert ledger post, so the feed
+// item lands even when the aggregator is down.
 // Every option is parsed strictly before the journal is read or a subprocess
 // is spawned. The caller must schedule this independently of the aggregator.
 import { readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { checkWatchdogHeartbeatJournal, type WatchdogHeartbeatCheck } from "../src/watchdog-heartbeat-checker.ts";
+import { publishToOrchestratorFeed } from "../src/watchdog-orchestrator-feed.ts";
 
-const USAGE = "usage: check-watchdog-heartbeat.ts [--journal <path>]";
-const FLAGS = ["--journal"] as const;
+const USAGE = "usage: check-watchdog-heartbeat.ts [--journal <path>] [--orchestrator-feed <path>]";
+const FLAGS = ["--journal", "--orchestrator-feed"] as const;
 
 function usageError(message: string): never {
   console.error(`check-watchdog-heartbeat: ${message}`);
@@ -24,8 +30,9 @@ function usageError(message: string): never {
   process.exit(2);
 }
 
-function parseArgs(args: readonly string[]): { journal: string | undefined } {
+function parseArgs(args: readonly string[]): { journal: string | undefined; orchestratorFeed: string | undefined } {
   let journal: string | undefined;
+  let orchestratorFeed: string | undefined;
   const seen = new Set<string>();
   for (let i = 0; i < args.length; i++) {
     const flag = args[i] as string;
@@ -36,9 +43,10 @@ function parseArgs(args: readonly string[]): { journal: string | undefined } {
     if (value === undefined || value === "" || value.startsWith("--")) {
       usageError(`${flag} requires a value that is not a flag`);
     }
-    journal = value;
+    if (flag === "--journal") journal = value;
+    else orchestratorFeed = value;
   }
-  return { journal };
+  return { journal, orchestratorFeed };
 }
 
 /** The checker owns a small state file beside the journal holding the
@@ -118,6 +126,8 @@ async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
   const defaultJournal = join(homedir(), ".local", "state", "pm-aggregator", "slo-journal.jsonl");
   const journal = args.journal ?? process.env.PM_AGG_SLO_JOURNAL_FILE ?? defaultJournal;
+  const orchestratorFeed =
+    args.orchestratorFeed ?? process.env.PM_WATCHDOG_ORCHESTRATOR_FEED_FILE ?? `${journal}.orchestrator-feed.jsonl`;
   const nowMs = Date.now();
   // Startup grace is based on monitoring activation, not on the
   // journal's oldest sample: with no persisted activation, this run is
@@ -148,6 +158,14 @@ async function main(): Promise<void> {
       `PAGE_DREW: PM-stack watchdog heartbeat missing. ${reference} ${result.missedCycles} five-minute cycles have been missed.`,
     );
     return;
+  }
+  if (result.alert === "needs-orchestrator") {
+    // Orchestrator-feed publication (#14410) comes first: it is a local
+    // file append on this independent path, so it lands even when the
+    // aggregator (and therefore post-alert below) is down. Dedupe by
+    // outage id inside publishToOrchestratorFeed keeps it exactly one
+    // item per outage across repeated checker runs.
+    await publishToOrchestratorFeed(result, orchestratorFeed, nowMs);
   }
   await postAlert(result);
   if (result.alert === "needs-orchestrator") {
