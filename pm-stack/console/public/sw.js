@@ -14,10 +14,33 @@
 self.importScripts("/console/outbox.js");
 
 const KEPT = "pm-console-v1";
-/** The app's own files, fetched when the worker is installed so that
- * the first visit is already enough to open it offline. */
-const FILES = ["/console/", "/console/app.js", "/console/outbox.js", "/console/app.css", "/console/icon.svg"];
+/** Where the app's own files are named: one list (public/files.json)
+ * that the services, the Worker's build and this worker all read. */
+const LIST = "/console/files.json";
+const PAGE = "/console/";
 const EXTRAS = ["/manifest.webmanifest", "/icons/icon-192.png", "/icons/icon-512.png"];
+/** What one of the app's files ends in. Anything else under /console
+ * (the Android build, say, which is large and is a download) is none
+ * of this worker's business. */
+const APP_FILE = /^\/console\/[a-z0-9/_-]+\.(?:js|css|svg|json|woff2)$/;
+
+/** The files to fetch when the worker is installed, so that the first
+ * visit is already enough to open the app offline: the page, the list,
+ * and what the list says is kept from the start. A typeface is kept
+ * when it is first used instead, so nobody fetches the ones they did
+ * not choose. Without the list (it could not be fetched) it is the
+ * page alone; the rest is kept as the page next asks for it. */
+async function filesToKeep() {
+  try {
+    const res = await self.fetch(LIST, { cache: "no-store", redirect: "manual" });
+    if (!res.ok) return [PAGE];
+    const list = await res.json();
+    const named = (list.files ?? []).filter((f) => f.kept === "installed").map((f) => `/console/${f.path}`);
+    return [...new Set([PAGE, LIST, ...named])];
+  } catch {
+    return [PAGE];
+  }
+}
 /** How long the network is waited for before a copy is shown instead.
  * The network's answer still replaces the copy when it comes. */
 const PAGE_WAIT_MS = 4_000;
@@ -33,7 +56,8 @@ self.addEventListener("install", (event) => {
         const cache = await self.caches.open(KEPT);
         // Each by itself: one that cannot be fetched (not signed in,
         // say) does not stop the others, or the worker.
-        await Promise.all([...FILES, ...EXTRAS].map((path) => keep(cache, path).catch(() => {})));
+        const files = await filesToKeep();
+        await Promise.all([...files, ...EXTRAS].map((path) => keep(cache, path).catch(() => {})));
       } catch {
         // Nothing is kept this time.
       }
@@ -75,7 +99,7 @@ function kindOf(request, url) {
   if (!path.startsWith("/console")) return null;
   // The app is one page, at one address (its screens are after the #).
   if (path === "/console/" || path === "/console") return "page";
-  return FILES.includes(path) ? "file" : null;
+  return APP_FILE.test(path) && path !== "/console/sw.js" ? "file" : null;
 }
 
 /** The address a copy is kept under: what was asked, without the mark

@@ -43,15 +43,13 @@ import { contact, Push } from "./push.ts";
 import { Named } from "./named.ts";
 import { EdgeLink } from "./sync.ts";
 import { Work } from "./work.ts";
+import appFiles from "../public/files.json";
 
 const PUBLIC_DIR = join(import.meta.dir, "..", "public");
-const STATIC = new Map([
-  ["app.js", "text/javascript; charset=utf-8"],
-  ["outbox.js", "text/javascript; charset=utf-8"],
-  ["app.css", "text/css; charset=utf-8"],
-  ["icon.svg", "image/svg+xml"],
-  ["sw.js", "text/javascript; charset=utf-8"],
-]);
+/** The app's files and what each is served as: public/files.json is the
+ * one list of them (the Worker, its build and the service worker read
+ * the same one). */
+const STATIC = new Map<string, string>(appFiles.files.map((f) => [f.path, f.type]));
 
 const APK_NAME = "pm-console.apk";
 const ACT_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
