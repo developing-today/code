@@ -141,8 +141,9 @@ use anyhow::{Context, Result, ensure};
 use id::guest_burn::GuestBurnBudget;
 use id::sandbox::{GuestCall, Sandbox, SandboxLimits};
 use id::world::{
-    CapabilityBounds, JoinCapability, JournalEntry, Participant, RestoredWorld, WorldCore,
-    WorldEvent, WorldEventKind, WorldHandle, WorldJournal, WorldLimits, WorldProgram, WorldScopes,
+    CapabilityBounds, JoinCapability, JournalAckMode, JournalEntry, Participant, RestoredWorld,
+    WorldCore, WorldEvent, WorldEventKind, WorldHandle, WorldJournal, WorldLimits, WorldProgram,
+    WorldScopes,
 };
 use id::world_hub::{HubLimits, OpenFuture, WorldHub, WorldOpener};
 use id::world_limits::RuntimeLimits;
@@ -262,6 +263,33 @@ fn mw_env(name: &str, default: usize) -> usize {
         .ok()
         .and_then(|value| value.parse().ok())
         .unwrap_or(default)
+}
+
+/// Benchmark-only journal ack mode selector (#557): `ID_BENCH_MW_JOURNAL_ACK_MODE`
+/// with `sync` (default), `batched`, or `async`. Unset or unparseable falls
+/// back to the production default [`JournalAckMode::Sync`] — the same
+/// fallback rule as [`mw_env`]. Never changes the production default or
+/// durability contracts; the bench alone opts into the relaxed modes.
+fn mw_journal_ack_mode() -> JournalAckMode {
+    parse_journal_ack_mode(&std::env::var("ID_BENCH_MW_JOURNAL_ACK_MODE").unwrap_or_default())
+}
+
+fn parse_journal_ack_mode(value: &str) -> JournalAckMode {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "batched" => JournalAckMode::Batched,
+        "async" => JournalAckMode::Async,
+        _ => JournalAckMode::Sync,
+    }
+}
+
+/// Machine-readable name of a [`JournalAckMode`] for the `bench many_worlds`
+/// result line (`journal_ack_mode=<name>`).
+fn journal_ack_mode_name(mode: JournalAckMode) -> &'static str {
+    match mode {
+        JournalAckMode::Sync => "sync",
+        JournalAckMode::Batched => "batched",
+        JournalAckMode::Async => "async",
+    }
 }
 
 impl ManyWorldsConfig {
@@ -419,6 +447,8 @@ async fn bench_many_worlds(root: &Path, quick: bool) -> Result<()> {
     };
     let mut limits = WorldLimits::default();
     limits.checkpoint_every = config.checkpoint_every;
+    limits.journal_ack_mode = mw_journal_ack_mode();
+    let ack_mode_name = journal_ack_mode_name(limits.journal_ack_mode);
     let blobs: iroh_blobs::api::Store = iroh_blobs::store::mem::MemStore::new().into();
     let runtime = RuntimeLimits::default();
     let opener = Arc::new(DurableBenchOpener {
@@ -689,7 +719,7 @@ async fn bench_many_worlds(root: &Path, quick: bool) -> Result<()> {
         .map(|latency| latency.as_secs_f64() * 1_000.0)
         .fold(f64::INFINITY, f64::min);
     println!(
-        "bench many_worlds unit=ms_per_command median={p50:.3} min={min:.3} reps=1 p50_ms={p50:.3} p95_ms={p95:.3} p99_ms={p99:.3} wake_p50_ms={wake_p50:.3} wake_p95_ms={wake_p95:.3} wake_p99_ms={wake_p99:.3} input_ack_p50_ms={input_ack_p50:.3} input_ack_p95_ms={input_ack_p95:.3} input_ack_p99_ms={input_ack_p99:.3} target_p99_ms=50 target_met={target_met} idle_worlds={} active_worlds={} events_per_second={} duration_secs={} commands={} load_elapsed_secs={load_elapsed_secs:.3} completed_events_per_second={completed_events_per_second:.1} checkpoint_triggers={} checkpoints={} evicted={} reopened={}",
+        "bench many_worlds unit=ms_per_command median={p50:.3} min={min:.3} reps=1 journal_ack_mode={ack_mode_name} p50_ms={p50:.3} p95_ms={p95:.3} p99_ms={p99:.3} wake_p50_ms={wake_p50:.3} wake_p95_ms={wake_p95:.3} wake_p99_ms={wake_p99:.3} input_ack_p50_ms={input_ack_p50:.3} input_ack_p95_ms={input_ack_p95:.3} input_ack_p99_ms={input_ack_p99:.3} target_p99_ms=50 target_met={target_met} idle_worlds={} active_worlds={} events_per_second={} duration_secs={} commands={} load_elapsed_secs={load_elapsed_secs:.3} completed_events_per_second={completed_events_per_second:.1} checkpoint_triggers={} checkpoints={} evicted={} reopened={}",
         config.idle_worlds,
         config.active_worlds,
         config.events_per_second,
@@ -1919,4 +1949,44 @@ fn main() -> Result<()> {
 
     let _ = std::fs::remove_dir_all(&dir);
     Ok(())
+}
+
+#[cfg(test)]
+mod ack_mode_selector_tests {
+    use super::{journal_ack_mode_name, parse_journal_ack_mode};
+    use id::world::JournalAckMode;
+
+    #[test]
+    fn accepted_values_map_to_modes() {
+        assert_eq!(parse_journal_ack_mode("sync"), JournalAckMode::Sync);
+        assert_eq!(parse_journal_ack_mode("batched"), JournalAckMode::Batched);
+        assert_eq!(parse_journal_ack_mode("async"), JournalAckMode::Async);
+    }
+
+    #[test]
+    fn matching_is_case_and_whitespace_tolerant() {
+        assert_eq!(parse_journal_ack_mode("  Batched "), JournalAckMode::Batched);
+        assert_eq!(parse_journal_ack_mode("ASYNC"), JournalAckMode::Async);
+    }
+
+    #[test]
+    fn unset_or_garbage_falls_back_to_sync_default() {
+        assert_eq!(parse_journal_ack_mode(""), JournalAckMode::Sync);
+        assert_eq!(
+            parse_journal_ack_mode("fsync-everything"),
+            JournalAckMode::Sync
+        );
+        assert_eq!(
+            parse_journal_ack_mode("sync "),
+            JournalAckMode::Sync,
+            "trailing input still resolves before the fallback"
+        );
+    }
+
+    #[test]
+    fn machine_readable_names_cover_every_mode() {
+        assert_eq!(journal_ack_mode_name(JournalAckMode::Sync), "sync");
+        assert_eq!(journal_ack_mode_name(JournalAckMode::Batched), "batched");
+        assert_eq!(journal_ack_mode_name(JournalAckMode::Async), "async");
+    }
 }
