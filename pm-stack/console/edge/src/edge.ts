@@ -112,6 +112,7 @@ const SECTIONS: Record<string, number> = {
   priorities: 180_000,
   done: 120_000,
   agents: 75_000,
+  pipeline: 75_000,
   services: 45_000,
   more: 2 * 60 * 60_000,
 };
@@ -1497,13 +1498,16 @@ export class Edge {
     return Boolean(this.direct?.bridgeToken) && Boolean(this.direct?.bridgeFetch);
   }
 
-  /** The kinds this side does itself when it does the core. A message
-   * is this side's only with the bridge held (bridgeReady): without
-   * it the kind stays a machine's, as it was before the bridge path
-   * existed, and is held for one like any other. */
+  /** The kinds this side does itself when it does the core. The
+   * composer's kinds — a message, its broaden, its offer (#14375) —
+   * are this side's only with the bridge held (bridgeReady): without
+   * it each stays a machine's, as message.send was before the bridge
+   * path existed, and is held for one like any other. */
   private kinds(): readonly string[] {
     const base = this.direct?.kinds ?? DIRECT_ACTIONS;
-    return this.bridgeReady() && !base.includes("message.send") ? [...base, "message.send"] : base;
+    if (!this.bridgeReady()) return base;
+    const composer = ["message.send", "message.broaden", "message.offer"].filter((k) => !base.includes(k));
+    return composer.length ? [...base, ...composer] : base;
   }
 
   /** A kind this side does itself when it does the core; any other is
@@ -1549,7 +1553,9 @@ export class Edge {
         // The agents list is the bridge's: read here only while this
         // side holds the PM bridge credential (#14373). Without it a
         // machine goes on reporting the list, as it did before.
-        (name !== "agents" || this.bridgeReady()),
+        (name !== "agents" || this.bridgeReady()) &&
+        // The pipeline count is the bridge's the same way (#14377).
+        (name !== "pipeline" || this.bridgeReady()),
     );
   }
 
@@ -1749,11 +1755,12 @@ export class Edge {
     for (const name of DIRECT_READ_SECTIONS) {
       // The agents section is the bridge's: with no PM bridge
       // credential held there is no path here to prove, and the
-      // section is a machine's, as it was before (#14373). Every
+      // section is a machine's, as it was before (#14373). The
+      // pipeline count is the bridge's the same way (#14377). Every
       // other section is checked even while it is a machine's for
       // being refused: the check is how this side finds it can read
       // the section itself again.
-      if (name === "agents" && !this.bridgeReady()) continue;
+      if ((name === "agents" || name === "pipeline") && !this.bridgeReady()) continue;
       try {
         await directRead(name, direct.ops, direct.work);
         kinds[name] = { ok: true };
@@ -2502,15 +2509,18 @@ export class Edge {
         }
         // What needs only GitHub, the queue store and the bridge is
         // read here, by the code a machine would read it with. The
-        // bridge's own reads (the message log, and the unified
-        // pipeline and directory, #14374) are attempted only while
+        // bridge's own reads (the message log, the unified
+        // pipeline and directory, #14374, the offers list,
+        // #14375, and the enroll-token state, #14376) are
+        // attempted only while
         // this side holds the bridge credential: without it they are
         // a machine's to read, and the request goes to the host
         // below as it did before.
         const mine = this.mine(cfg);
         const bridgeRead =
           seg.length === 1 &&
-          (seg[0] === "messages" || seg[0] === "pipeline" || seg[0] === "directory" || seg[0] === "enroll-tokens");
+          (seg[0] === "messages" || seg[0] === "pipeline" || seg[0] === "directory" || seg[0] === "offers" ||
+            seg[0] === "enroll-tokens");
         if (mine && !(bridgeRead && !this.bridgeReady())) {
           const from = this.outwardN;
           let read: unknown;

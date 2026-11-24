@@ -69,6 +69,13 @@ This chapter covers all 21 console hash views in the survey census, one entry ea
 - **Behaviour:** The console's cut of the session registry; the aggregator's cut is `/sessions`.
 - **Failure shapes:** None recorded in the survey.
 
+## `#more/messages` — Messages
+
+- **What it is:** The owner's message pipeline and composer (`viewMessages`, `ops`): every message on every surface (connector, fleet, notes) with its real sender, plus the offers list.
+- **Inputs:** `GET /console/api/pipeline` (filters: kind, surface, sender, receiver, batch, work state, unread), `GET /console/api/offers`; sends post to the action table as `message.send`, `message.broaden`, `message.offer`.
+- **Behaviour:** The composer takes the bridge's whole addressing grammar — names, globs (`agent:f*`), groups, `all` — with a kind toggle (message / instruction) and an optional limit. A send answers with the bridge's match report (matched, delivered, recipients named, remaining), shown in place; while agents remain, **Broaden** delivers the send's own remainder on its batch, never a fresh fan-out. **Offer instead** posts the text as a claim offer with a slot count; the offer's row shows its claims as they land, and its claims and replies read together through the batch filter. Instructions reach agents sender-stripped (the bridge's job); this screen always shows the owner as sender. Sends ride the PM stack's bridge credential at the edge; without it they are held for a machine, like any other held action.
+- **Failure shapes:** A send whose answer carries no match report is said so ("the bridge did not say who that reached"), never recounted console-side. The offers list failing to read is shown as its own empty state, apart from the pipeline's.
+
 ## `#more/services` — Services
 
 - **What it is:** The systemd units the console may manage (`viewServices`, `ops`).

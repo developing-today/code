@@ -31,6 +31,7 @@ import {
   deviceLabel,
   deviceState,
   endpointMark,
+  enrollCommand,
   everyRead,
   flushSaid,
   freshSaid,
@@ -48,6 +49,9 @@ import {
   needsLead,
   recommendedSets,
   machinesMark,
+  matchReportSaid,
+  mergeMatchReport,
+  offerSaid,
   phaseHeading,
   platformCounts,
   prCheck,
@@ -1222,6 +1226,37 @@ test("each kind of prompt has its own words, and the platform takes every kind t
   expect(askSent("task", { issue: 7, queued: false })).toBe("Filed as #7.");
 });
 
+// An enroll command shared to the phone is read back for the
+// provisioning form (#14377): the binding the mint put in it. The
+// oracle is the command the form itself shows at a mint (name, kind,
+// groups, the bootstrap token); the token is opaque, so a command is
+// known by its flags, and text without one is not a command.
+test("a shared enroll command gives its binding back, and other text does not", () => {
+  expect(
+    enrollCommand("fleet agent enroll --name scout-1 --kind muse --groups muse,fleet --bootstrap tok-abc123"),
+  ).toEqual({ token: "tok-abc123", name: "scout-1", kind: "muse", groups: ["muse", "fleet"], notesIdentity: undefined });
+  expect(enrollCommand("fleet agent enroll --name solo --bootstrap tok-xyz")).toEqual({
+    token: "tok-xyz",
+    name: "solo",
+    kind: undefined,
+    groups: [],
+    notesIdentity: undefined,
+  });
+  expect(enrollCommand("fleet agent enroll --name n --kind codex --notes-identity muse/n --bootstrap t")).toEqual({
+    token: "t",
+    name: "n",
+    kind: "codex",
+    groups: [],
+    notesIdentity: "muse/n",
+  });
+  // No bootstrap token, no enroll step, or not text at all: not a command.
+  expect(enrollCommand("fleet agent enroll --name scout-1 --kind muse")).toBeNull();
+  expect(enrollCommand("please enroll the new laptop when it arrives")).toBeNull();
+  expect(enrollCommand("run --bootstrap the servers")).toBeNull();
+  expect(enrollCommand(null)).toBeNull();
+  expect(enrollCommand(42)).toBeNull();
+});
+
 // A goal most of a list shares is said once, not on every card. Seen
 // live: sixty queued tasks, fifty-nine of them triage with the same
 // three lines of goal each. The oracle is counting: the goal that more
@@ -1249,6 +1284,28 @@ test("a goal most of the tasks share is found, to be said once; where there is n
   expect(sharedGoalSaid({ goal: same, n: 3 }, 3)).toBe(
     "All 3 have the same goal, said here once: Record a verdict on the issue",
   );
+});
+
+// The composer's match report, said as the bridge reported it
+// (#14375, acceptance 1-2): matched and delivered counts with the
+// recipients named, the remainder while any are left, and a broaden
+// folded in until none remain — the screen then shows no Broaden.
+test("a match report is said with its recipients, and a broaden folds into it", () => {
+  const sent = { batch: "b9", matched: 2, delivered: 1, recipients: ["felix-1"], remaining: 1 };
+  expect(matchReportSaid(sent)).toBe("Matched 2 · sent to 1 (felix-1) · 1 more matched and not yet reached");
+  const widened = mergeMatchReport(sent, { batch: "b9", matched: 2, delivered: 1, recipients: ["felix-2"], remaining: 0 });
+  expect(widened.delivered).toBe(2);
+  expect(widened.recipients).toEqual(["felix-1", "felix-2"]);
+  expect(widened.remaining).toBe(0);
+  expect(matchReportSaid(widened)).toBe("Matched 2 · sent to 2 (felix-1, felix-2)");
+  // An answer that is not a report (a send held for a machine) is
+  // not said as one.
+  expect(matchReportSaid({ held: true })).toBeNull();
+  expect(matchReportSaid(null)).toBeNull();
+  expect(mergeMatchReport(sent, { held: true })).toBe(sent);
+  // An offer is said by its state and its claimed slots.
+  expect(offerSaid({ state: "open", claimed: 1, slots: 2, claims: [{ agent: "felix-1" }] })).toBe("open · 1 of 2 claimed");
+  expect(offerSaid({ state: "filled", slots: 2, claims: [{ agent: "a" }, { agent: "b" }] })).toBe("filled · 2 of 2 claimed");
 });
 
 // A reason that was cut where the queue's store cuts it says that it

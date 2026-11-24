@@ -59,7 +59,7 @@ use ed25519_dalek::{Signature, Signer as _, SigningKey, Verifier as _, Verifying
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 
-use crate::agent_quota_ledger::{AgentQuotaLedger, QuotaLedgerStore};
+use crate::agent_quota_ledger::{AgentQuotaLedger, LedgerCheckedOut, QuotaLedgerStore};
 use crate::mcp_bridge::{BridgeError, BridgeSession, ToolAction, ToolDefinition};
 use crate::role_config::QuotaClass;
 
@@ -665,21 +665,28 @@ impl PolicySession {
     /// for an agent grants the role's budget; a rejoin reopens the
     /// persisted ledger with its spend intact, so rejoining never
     /// resets a budget (#8301).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LedgerCheckedOut`] when the agent's ledger for
+    /// the grant's world is already checked out by a live session
+    /// (#14526): one ledger backs at most one live session, so a
+    /// duplicate open is refused instead of doubling the budget.
     pub fn open_stored(
         grant: RoleGrant,
         bridge: BridgeSession,
         host_key: SigningKey,
         store: &mut QuotaLedgerStore,
         now: u64,
-    ) -> Self {
+    ) -> Result<Self, LedgerCheckedOut> {
         let ledger = store.open(
             grant.agent_key,
             grant.world.clone(),
             grant.role.clone(),
             grant.quota_class,
             now,
-        );
-        Self {
+        )?;
+        Ok(Self {
             grant,
             bridge,
             audit: AuditLog::new(host_key),
@@ -687,7 +694,7 @@ impl PolicySession {
             parked: false,
             object_classes: BTreeMap::new(),
             admitted_at: BTreeMap::new(),
-        }
+        })
     }
 
     /// End the session, handing its quota ledger back to the host's
@@ -1560,7 +1567,8 @@ mod tests {
             host_key(),
             &mut store,
             TEST_NOW,
-        );
+        )
+        .unwrap();
         assert!(matches!(
             first.act("world.join", &json!({ "capability": "cap-1" }), TEST_NOW),
             PolicyOutcome::Executed(_)
@@ -1587,7 +1595,8 @@ mod tests {
             host_key(),
             &mut store,
             TEST_NOW + 1,
-        );
+        )
+        .unwrap();
         assert_eq!(second.spend(TEST_NOW + 1), spent_after_leave);
         second.act(
             "world.join",

@@ -39,8 +39,9 @@ import { memoryShelf, type Shelf, Trends } from "../../src/trends.ts";
 /** Sections the edge reads itself. `agents` is read through the
  * bridge, so it is only the edge's while it holds the PM bridge
  * credential (edge.ts `owned` says which of these are its, case by
- * case); the rest are GitHub's and the queue store's. */
-export const DIRECT_READ_SECTIONS = ["board", "prs", "priorities", "asks", "census", "done", "agents"] as const;
+ * case); the pipeline's unread-instruction count is the bridge's
+ * the same way (#14377); the rest are GitHub's and the queue store's. */
+export const DIRECT_READ_SECTIONS = ["board", "prs", "priorities", "asks", "census", "done", "agents", "pipeline"] as const;
 /** Actions the edge runs itself: each is one or a few calls to GitHub
  * or the queue store, and needs nothing a machine has. */
 export const DIRECT_ACTIONS = [
@@ -84,6 +85,7 @@ export const READ_FROM: Record<(typeof DIRECT_READ_SECTIONS)[number], Outward["t
   census: ["github"],
   done: ["queue", "github"],
   agents: ["bridge"],
+  pipeline: ["bridge"],
 };
 
 export interface DirectSecrets {
@@ -730,9 +732,11 @@ export const BRIDGE_AGENT = "pm-stack";
 /** One `fleet bridge` call as a call to the bridge Worker over its
  * service binding, presenting the PM credential in the path (the
  * bridge's own way: /fleet/<credential>/...). The verbs the console's
- * classes use — send, agents, log, and the unified views pipeline,
- * directory and credentials (#14374) — and no others: anything else
- * is refused as a machine's, like every verb this side does not
+ * classes use — send, agents, log, the unified views pipeline,
+ * directory and credentials (#14374), and the composer's offer and
+ * offers (#14375; a send's --limit and --broaden ride the send verb)
+ * — and no others: anything else is refused as a machine's, like
+ * every verb this side does not
  * carry. `revoke` is deliberately not among them: the PM credential
  * holds the read scope, and revoking is the owner's act through the
  * owner token on a machine — the action is held for one instead
@@ -821,6 +825,8 @@ async function bridgeCall(
     const to: string[] = [];
     let kind = "message";
     let useStdin = false;
+    let limit: number | undefined;
+    let broaden: string | undefined;
     for (let i = 0; i < rest.length; i++) {
       const arg = rest[i];
       if (arg === "--to") {
@@ -831,14 +837,70 @@ async function bridgeCall(
         to.push(...list);
       } else if (arg === "--command") kind = "command";
       else if (arg === "--kind") kind = rest[++i] ?? "message";
+      else if (arg === "--limit") {
+        const n = Number(rest[++i]);
+        if (!Number.isInteger(n) || n < 1) throw new OpError(502, "fleet bridge send: --limit must be a positive whole number");
+        limit = n;
+      } else if (arg === "--broaden") broaden = rest[++i] ?? "";
       else if (arg === "-") useStdin = true;
       else throw new OpError(502, `fleet bridge send: unexpected argument ${arg}`);
     }
-    if (to.length === 0) throw new OpError(502, "fleet bridge send: needs --to");
-    if (!useStdin) throw new OpError(502, "fleet bridge send: the text comes on stdin here");
     method = "POST";
     path = `/fleet/${token}/send`;
-    body = JSON.stringify({ agent: BRIDGE_AGENT, to, body: opts?.stdin ?? "", kind });
+    if (broaden !== undefined) {
+      // A broaden carries no text and no targets (#14375): the bridge
+      // re-delivers the original send's body to the matched agents
+      // its limit left over, as this credential — the distribution's
+      // own sender, so the store allows it.
+      if (broaden === "") throw new OpError(502, "fleet bridge send: --broaden needs a batch");
+      body = JSON.stringify({ agent: BRIDGE_AGENT, broaden, ...(limit === undefined ? {} : { limit }) });
+    } else {
+      if (to.length === 0) throw new OpError(502, "fleet bridge send: needs --to");
+      if (!useStdin) throw new OpError(502, "fleet bridge send: the text comes on stdin here");
+      body = JSON.stringify({ agent: BRIDGE_AGENT, to, body: opts?.stdin ?? "", kind, ...(limit === undefined ? {} : { limit }) });
+    }
+  } else if (what === "offer") {
+    // A claim offer posted as this credential (#14375): the bridge
+    // fixes the sender to the credential's own address.
+    const to: string[] = [];
+    let kind = "message";
+    let useStdin = false;
+    let slots: number | undefined;
+    let ttl: number | undefined;
+    for (let i = 0; i < rest.length; i++) {
+      const arg = rest[i];
+      if (arg === "--to") {
+        const list = (rest[++i] ?? "").split(",").map((t) => t.trim()).filter(Boolean);
+        to.push(...list);
+      } else if (arg === "--command") kind = "command";
+      else if (arg === "--kind") kind = rest[++i] ?? "message";
+      else if (arg === "--slots") {
+        const n = Number(rest[++i]);
+        if (!Number.isInteger(n) || n < 1) throw new OpError(502, "fleet bridge offer: --slots must be a positive whole number");
+        slots = n;
+      } else if (arg === "--ttl") {
+        const n = Number(rest[++i]);
+        if (!Number.isInteger(n) || n < 1) throw new OpError(502, "fleet bridge offer: --ttl must be a positive whole number");
+        ttl = n;
+      } else if (arg === "-") useStdin = true;
+      else throw new OpError(502, `fleet bridge offer: unexpected argument ${arg}`);
+    }
+    if (to.length === 0) throw new OpError(502, "fleet bridge offer: needs --to");
+    if (slots === undefined) throw new OpError(502, "fleet bridge offer: needs --slots");
+    if (!useStdin) throw new OpError(502, "fleet bridge offer: the text comes on stdin here");
+    method = "POST";
+    path = `/fleet/${token}/offer`;
+    body = JSON.stringify({
+      agent: BRIDGE_AGENT,
+      to,
+      body: opts?.stdin ?? "",
+      kind,
+      slots,
+      ...(ttl === undefined ? {} : { ttl_seconds: ttl }),
+    });
+  } else if (what === "offers") {
+    if (rest.length > 0) throw new OpError(502, "fleet bridge offers takes no arguments here");
+    path = `/fleet/${token}/offers`;
   } else {
     throw new OpError(502, "needs a machine");
   }
@@ -1023,6 +1085,8 @@ export async function directRead(section: string, ops: Ops, work: Work): Promise
       return work.done();
     case "agents":
       return ops.agents();
+    case "pipeline":
+      return ops.unreadInstructions();
     default:
       throw new Error(`not a section the edge reads itself: ${section}`);
   }
