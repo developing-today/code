@@ -64,7 +64,7 @@ F4 is a composition of existing seams, not a new central scheduler. A normal wor
 | F4.15 | Queue-state unification / `fleet` single door; #8575, slices #8579–#8585 | Durable truth and failure behavior; implementation status must be checked live. |
 | F4.16 | Provider browser-auth renewal; #6120 | Credential availability supports dispatch but is not orchestration itself. |
 | F4.17 | Agent SDKs and always-on swarms; investigation goal | Investigation, not an adopted dispatch contract; unresolved names stay unresolved. |
-| F4.18 | Time-based route-pool priority; #8838 and design record | A route-selection policy layered beneath the queue and above leaf selection. |
+| F4.18 | Time-based route-pool priority; #8838 and `doc/2026-11-17_design_time_based_route_priority.md` | Design exists; the issue's Nov 17 ground-truth comment says runtime support was absent, and implementation remains separate. |
 
 ## 5. Dependency-ordered slices and acceptance
 
@@ -90,11 +90,11 @@ No runtime rollout is part of this record. The documentation change is reversibl
 
 ## 8. Open questions
 
-- **F4.15 full design lineage and current slice state:** #8575 and its maintainers settle which issue/design is authoritative for each of #8580–#8585; resolve by reading live issue state and recording the resulting links before implementation planning.
-- **F4.18 implementation reality:** #8838 maintainers settle whether time-based route priority is running, merely proposed, or superseded; verify configuration and tests before classifying it.
-- **F4.17 names “Rockbot” and “Dots”:** the source register records these as unresolved transcription/name questions. The investigation owner can identify them if they become necessary; this family design does not guess.
-- **Multicall D1–D8:** decisions belong to #5412 and its decision comments; the current register snapshot says the picks were not shown in the reviewed record. Verify the issue history before reusing any as settled family-wide constraints.
-- **Surface parity and residual child gaps:** owning issues settle current OpenChamber/Muse/fleet surface status; the register is not sufficient evidence of present runtime state.
+- **F4.15 full design lineage and current slice state:** Drew settles any product-level boundary questions on #8575; the maintainers of #8575/#8580–#8585 provide current slice evidence. Resolve the authoritative links before implementation planning.
+- **F4.18 implementation reality:** Drew settles product scope; the implementation owner for #8838/#8805 verifies whether the designed behavior has shipped. The issue's Nov 17 comment establishes absence at that date, not current state.
+- **F4.17 names “Rockbot” and “Dots”:** Drew is the source of the unresolved names in the register; this family design does not guess their identity.
+- **Multicall D1–D8:** decisions belong to #5412 and its decision comments; Drew settles any missing product picks. Verify the issue history before reusing them as settled family-wide constraints.
+- **Surface parity and residual child gaps:** Drew settles product-level scope; the owning issue maintainers provide current OpenChamber/Muse/fleet evidence. The register alone is not sufficient evidence of present runtime state.
 
 ## 9. Record and tracking
 
