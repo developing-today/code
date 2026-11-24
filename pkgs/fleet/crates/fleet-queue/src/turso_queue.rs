@@ -3218,6 +3218,90 @@ mod tests {
     }
 
     #[test]
+    fn health_entry_defaults_failed_events_to_zero() {
+        // #1233 criterion 1 ("zero dead-in-queue over a rolling 7
+        // days") is unmeasured today: health lumps failed terminal
+        // events into terminal_events_24h/7d together with completed
+        // ones, so a queue can show 2846 terminal events in 7d with
+        // no way to tell whether any were failures. The failed-only
+        // counters default to zero here and are filled by the
+        // terminal-events fold.
+        let e = health_entry("repo-health-code-pilot");
+        assert_eq!(e.get("failed_events_24h"), Some(&json!(0)));
+        assert_eq!(e.get("failed_events_7d"), Some(&json!(0)));
+    }
+
+    #[test]
+    fn terminal_events_fold_splits_failed_from_completed() {
+        // Fixture for #1233: queue-mixed had 5 terminal events in
+        // 7d (3 in 24h), of which 2 were failures (1 in 24h);
+        // queue-clean had terminal events but zero failures;
+        // queue-quiet had none.
+        let mut by_queue: Map<String, Value> = Map::new();
+        for q in ["queue-mixed", "queue-clean", "queue-quiet"] {
+            by_queue.insert(q.to_string(), health_entry(q));
+        }
+        let rows = vec![
+            json!({"queue": "queue-mixed", "n24": 3, "n7": 5, "f24": 1, "f7": 2}),
+            json!({"queue": "queue-clean", "n24": 4, "n7": 9, "f24": 0, "f7": 0}),
+        ];
+        apply_terminal_events(&mut by_queue, &rows);
+        let mixed = &by_queue["queue-mixed"];
+        assert_eq!(mixed.get("terminal_events_24h"), Some(&json!(3)));
+        assert_eq!(mixed.get("terminal_events_7d"), Some(&json!(5)));
+        assert_eq!(mixed.get("failed_events_24h"), Some(&json!(1)));
+        assert_eq!(mixed.get("failed_events_7d"), Some(&json!(2)));
+        // Completed-only rows leave the failed counters at zero,
+        // and a queue with no terminal events at all keeps every
+        // default.
+        assert_eq!(
+            by_queue["queue-clean"].get("failed_events_7d"),
+            Some(&json!(0))
+        );
+        assert_eq!(
+            by_queue["queue-quiet"].get("failed_events_7d"),
+            Some(&json!(0))
+        );
+        assert_eq!(
+            by_queue["queue-quiet"].get("terminal_events_7d"),
+            Some(&json!(0))
+        );
+    }
+
+    #[test]
+    fn health_failed_events_count_terminal_failures_only() {
+        // Codex review on #12682 (discussion 4660035001): the
+        // failed-only sums counted every 'failed' event, so a
+        // transient requeue or a block read as a dead-in-queue
+        // failure, while a terminal lease expiry at cap read as
+        // zero. The terminal-events query must distinguish
+        // dispositions: requeued and blocked 'failed' events are
+        // live retries, lease_expired_at_cap is a terminal failure.
+        let src = &test_source();
+        let seg = seg8217(src, "fn verb_health(", "Merge-intent stack storage");
+        assert!(
+            seg.contains("'lease_expired_at_cap'"),
+            "the kind filter includes terminal lease-expiry events"
+        );
+        assert!(
+            seg.contains("json_extract(e.detail, '$.requeued')"),
+            "the failed sums read the requeued disposition from the event detail"
+        );
+        assert!(
+            seg.contains("json_extract(e.detail, '$.reason_class')"),
+            "the failed sums read the reason_class disposition from the event detail"
+        );
+        assert!(
+            seg.contains("'blocked'"),
+            "blocked failures are excluded from the terminal failed sums"
+        );
+        assert!(
+            !seg.contains("e.kind = 'failed' THEN 1"),
+            "the failed sums no longer count every 'failed' event"
+        );
+    }
+
+    #[test]
     fn at_cap_fold_covers_zero_claimable_and_partial_queues() {
         // Fixture for #6528 criterion 3: queue-dead has queued > 0
         // with EVERY queued task at cap (zero claimable); queue-live
