@@ -56,6 +56,7 @@ pub mod filters;
 pub mod fusion;
 pub mod gate;
 pub mod github_comments;
+pub mod id_projection;
 pub mod join;
 pub mod local;
 pub mod manifest;
