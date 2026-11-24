@@ -2303,7 +2303,9 @@ mod chat_tests {
         let policy = crate::event_store::CompactionPolicy::default();
         assert_eq!(node.compact(&policy).unwrap(), 0);
         assert!(
-            node.store.event_by_id(&chat_ids[0]).unwrap().is_some(),
+            node.read_store(|store| store.event_by_id(&chat_ids[0]))
+                .unwrap()
+                .is_some(),
             "a chat event lost its bytes without a live-kinds declaration"
         );
 
@@ -2326,18 +2328,29 @@ mod chat_tests {
         // timeline projection needs message bodies, so it cannot
         // list compacted events; presence is the residue's promise.)
         assert!(
-            node.store.roster(&group).unwrap().contains(&author),
+            node.read_store(|store| store.roster(&group))
+                .unwrap()
+                .contains(&author),
             "the roster no longer reads through the compaction residue"
         );
         for id in &chat_ids {
             assert!(
-                node.store.validity_now(id).unwrap() == crate::event_store::Validity::Applies,
+                node.read_store(|store| store.validity_now(id)).unwrap()
+                    == crate::event_store::Validity::Applies,
                 "chat {id} changed its verdict under compaction"
             );
         }
         // Durable facts keep their bytes.
-        assert!(node.store.event_by_id(&document.id).unwrap().is_some());
-        assert!(node.store.event_by_id(&anchor).unwrap().is_some());
+        assert!(
+            node.read_store(|store| store.event_by_id(&document.id))
+                .unwrap()
+                .is_some()
+        );
+        assert!(
+            node.read_store(|store| store.event_by_id(&anchor))
+                .unwrap()
+                .is_some()
+        );
 
         // The node still writes after compaction: the chain head and
         // the backlink resolution are intact.
@@ -2348,7 +2361,7 @@ mod chat_tests {
             )
             .unwrap();
         assert_ne!(after, group);
-        node.store.check_invariants().unwrap();
+        node.read_store(EventStore::check_invariants).unwrap();
 
         // The store reopens with the compaction residue intact (the
         // reopen half of criterion 8): a fresh node over the same
@@ -2358,20 +2371,22 @@ mod chat_tests {
         let reopened = LocalEvents::open(dir.path(), key(61)).unwrap();
         assert!(
             reopened
-                .store
-                .roster(&group)
+                .read_store(|store| store.roster(&group))
                 .unwrap()
                 .contains(&reopened.author()),
             "the reopened store lost the roster"
         );
         assert!(
-            reopened.store.event_by_id(&after).unwrap().is_some(),
+            reopened
+                .read_store(|store| store.event_by_id(&after))
+                .unwrap()
+                .is_some(),
             "the reopened store lost the post-compaction write"
         );
         assert!(
             !reopened.chat_timeline(group).unwrap().is_empty(),
             "the reopened store lost the surviving recent chat"
         );
-        reopened.store.check_invariants().unwrap();
+        reopened.read_store(EventStore::check_invariants).unwrap();
     }
 }
