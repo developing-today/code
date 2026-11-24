@@ -452,9 +452,10 @@ The fleet program — full investigation of the fleet system, design completion,
 and new designs toward a fully featured platform — is chartered by the
 [Fleet program investigation & build-out prompt](../../doc/2026-11-23T12-45-06Z_design_fleet_program_investigation/2026-11-23T12-45-06Z_design_fleet_program_investigation.md),
 tracked in [#13272](https://github.com/developing-today/code/issues/13272).
-Its deliverables include a fleet charter, the fleet book extended in place
-under `/code/fleet/`, and a prioritized map of all fleet issues with blockers
-marked.
+Read the [Fleet charter](../../doc/2026-11-23T12-45-06Z_design_fleet_program_investigation/charter.md),
+the [research and implementation roadmap](book/development/program-roadmap.md),
+and the [open issue and dependency map](book/operations/program-issue-map.md).
+The design series is published in the existing [Fleet book](https://developing-today.github.io/code/fleet/).
 
 ## Build and smoke
 
