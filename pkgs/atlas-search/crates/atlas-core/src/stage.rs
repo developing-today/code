@@ -1692,4 +1692,231 @@ mod tests {
             "unexpected error: {err}"
         );
     }
+
+    // ---- #12403: boundary-safe classified staging fixtures ----
+    // Oracle: staging composes producer-declared segments through
+    // the boundary splitter, so chunks_raw never crosses a declared
+    // boundary and the per-chunk records carry exact offsets plus
+    // effective sensitivity. Unchanged embeds keep byte-identical
+    // chunks (same text, same content_hash, same record), so their
+    // vectors and decisions stay valid; a boundary revision changes
+    // only the chunks it overlaps.
+
+    fn classified_entry(text: &str) -> ArtifactEntry {
+        ArtifactEntry {
+            kind: "prose".to_string(),
+            repo: "developing-today/code".to_string(),
+            path: "fixtures/boundary.md".to_string(),
+            commit_sha: "abc1234".to_string(),
+            language: "markdown".to_string(),
+            sensitivity: Tier::Internal,
+            text: text.to_string(),
+        }
+    }
+
+    fn staged_chunks(conn: &Connection, item_id: i64) -> Vec<(String, String)> {
+        let mut stmt = conn
+            .prepare("SELECT text, content_hash FROM chunks_raw WHERE item_id = ?1 ORDER BY idx")
+            .expect("chunk query");
+        stmt.query_map(params![item_id], |r| Ok((r.get(0)?, r.get(1)?)))
+            .expect("chunk rows")
+            .collect::<std::result::Result<_, _>>()
+            .expect("chunk values")
+    }
+
+    #[test]
+    fn classified_transcript_turns_never_cross_message_boundaries() {
+        let dir =
+            std::env::temp_dir().join(format!("atlas-stage-12403-transcript-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let conn = provisioned_conn(&dir);
+        let trip = "Trip: book flights for the offsite next week.\n";
+        let deploy = "Deploy: roll out the new queue worker tonight.\n";
+        let text = format!("{trip}{deploy}");
+        let segments = [
+            ClassificationSegment::certain(0, trip.len(), Sensitivity::Personal),
+            ClassificationSegment::certain(trip.len(), text.len(), Sensitivity::Shareable),
+        ];
+        let item_id =
+            stage_classified_artifact(&conn, "unit-12403", &classified_entry(&text), &segments, "2026-11-24T00:00:00Z")
+                .expect("stage classified transcript");
+        let chunks = staged_chunks(&conn, item_id);
+        assert_eq!(chunks.len(), 2, "one chunk per turn: {chunks:?}");
+        assert_eq!(chunks[0].0, trip);
+        assert_eq!(chunks[1].0, deploy);
+        assert!(!chunks[0].0.contains("Deploy"));
+        assert!(!chunks[1].0.contains("Trip"));
+        let records = chunk_classifications(&conn, item_id)
+            .expect("read records")
+            .expect("classified item carries records");
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[0].sensitivity, Sensitivity::Personal);
+        assert_eq!(records[1].sensitivity, Sensitivity::Shareable);
+        assert_eq!((records[0].start, records[0].end), (0, trip.len()));
+        assert_eq!((records[1].start, records[1].end), (trip.len(), text.len()));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn classified_embedded_secret_isolated_and_boundaries_hold() {
+        let dir =
+            std::env::temp_dir().join(format!("atlas-stage-12403-secret-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let conn = provisioned_conn(&dir);
+        let before = "fn deploy() {\n    let region = \"eu-west-1\";\n";
+        let secret = "    let token = \"AKIAIOSFODNN7EXAMPLE\";\n";
+        let after = "    start_server(region);\n}\n";
+        let text = format!("{before}{secret}{after}");
+        let secret_start = before.len();
+        let secret_end = secret_start + secret.len();
+        let segments = [
+            ClassificationSegment::certain(0, secret_start, Sensitivity::Shareable),
+            ClassificationSegment::certain(secret_start, secret_end, Sensitivity::SecretBearing),
+            ClassificationSegment::certain(secret_end, text.len(), Sensitivity::Shareable),
+        ];
+        let item_id =
+            stage_classified_artifact(&conn, "unit-12403", &classified_entry(&text), &segments, "2026-11-24T00:00:00Z")
+                .expect("stage classified secret");
+        let chunks = staged_chunks(&conn, item_id);
+        assert_eq!(chunks.len(), 3, "before/secret/after: {chunks:?}");
+        assert_eq!(chunks[1].0, secret);
+        assert!(!chunks[0].0.contains("AKIAIOSFODNN7EXAMPLE"));
+        assert!(!chunks[2].0.contains("AKIAIOSFODNN7EXAMPLE"));
+        assert_eq!(
+            chunks.iter().map(|(t, _)| t.as_str()).collect::<String>(),
+            text,
+            "chunks partition the source exactly"
+        );
+        let records = chunk_classifications(&conn, item_id)
+            .expect("read records")
+            .expect("classified item carries records");
+        assert_eq!(records[1].sensitivity, Sensitivity::SecretBearing);
+        assert!(!records[1].uncertain);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn classified_code_and_log_units_align_to_declared_units() {
+        let dir =
+            std::env::temp_dir().join(format!("atlas-stage-12403-units-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let conn = provisioned_conn(&dir);
+        let code = "fn alpha() {}\nfn beta() {}\n";
+        let segments = [
+            ClassificationSegment::certain(0, 14, Sensitivity::Shareable),
+            ClassificationSegment::certain(14, code.len(), Sensitivity::Personal),
+        ];
+        let item_id =
+            stage_classified_artifact(&conn, "unit-12403", &classified_entry(code), &segments, "2026-11-24T00:00:00Z")
+                .expect("stage classified code");
+        let chunks = staged_chunks(&conn, item_id);
+        assert_eq!(chunks.len(), 2);
+        assert_eq!(chunks[0].0, "fn alpha() {}\n");
+        assert_eq!(chunks[1].0, "fn beta() {}\n");
+
+        let logs = "2026-11-22T09:00:00Z INFO started\n2026-11-22T09:01:00Z ERROR boom\n";
+        let first_len = "2026-11-22T09:00:00Z INFO started\n".len();
+        let segments = [
+            ClassificationSegment::certain(0, first_len, Sensitivity::Shareable),
+            ClassificationSegment::certain(first_len, logs.len(), Sensitivity::LocalOnly),
+        ];
+        let item_id =
+            stage_classified_artifact(&conn, "unit-12403", &classified_entry(logs), &segments, "2026-11-24T00:00:00Z")
+                .expect("stage classified logs");
+        let chunks = staged_chunks(&conn, item_id);
+        assert_eq!(chunks.len(), 2);
+        assert_eq!(chunks[0].0, "2026-11-22T09:00:00Z INFO started\n");
+        assert_eq!(chunks[1].0, "2026-11-22T09:01:00Z ERROR boom\n");
+        let records = chunk_classifications(&conn, item_id)
+            .expect("read records")
+            .expect("classified item carries records");
+        assert_eq!(records[1].sensitivity, Sensitivity::LocalOnly);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn classified_unchanged_embeds_retain_vectors_and_decisions() {
+        // Retention rule (#12403 acceptance): re-staging identical
+        // bytes with identical segments yields byte-identical chunks
+        // with identical content hashes and records, so existing
+        // vectors and decisions stay valid; revising one boundary
+        // changes only the chunks it overlaps.
+        let dir =
+            std::env::temp_dir().join(format!("atlas-stage-12403-retain-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let conn = provisioned_conn(&dir);
+        let text = "aaaaBBBBcccc";
+        let segments = [
+            ClassificationSegment::certain(0, 4, Sensitivity::Shareable),
+            ClassificationSegment::certain(4, 8, Sensitivity::Personal),
+            ClassificationSegment::certain(8, 12, Sensitivity::Shareable),
+        ];
+        let first = stage_classified_artifact(
+            &conn,
+            "unit-12403",
+            &classified_entry(text),
+            &segments,
+            "2026-11-24T00:00:00Z",
+        )
+        .expect("stage first");
+        let second = stage_classified_artifact(
+            &conn,
+            "unit-12403",
+            &classified_entry(text),
+            &segments,
+            "2026-11-24T00:00:01Z",
+        )
+        .expect("stage second");
+        let first_chunks = staged_chunks(&conn, first);
+        let second_chunks = staged_chunks(&conn, second);
+        assert_eq!(first_chunks, second_chunks, "unchanged embeds retain chunks/hashes");
+        let first_records = chunk_classifications(&conn, first)
+            .expect("records")
+            .expect("records present");
+        let second_records = chunk_classifications(&conn, second)
+            .expect("records")
+            .expect("records present");
+        assert_eq!(
+            first_records
+                .iter()
+                .map(|r| (r.start, r.end, r.sensitivity, r.uncertain))
+                .collect::<Vec<_>>(),
+            second_records
+                .iter()
+                .map(|r| (r.start, r.end, r.sensitivity, r.uncertain))
+                .collect::<Vec<_>>(),
+            "unchanged embeds retain decisions"
+        );
+
+        // Revise the middle boundary: only the overlapped chunk
+        // changes; neighbours keep exact bytes and hashes.
+        let revised = [
+            ClassificationSegment::certain(0, 4, Sensitivity::Shareable),
+            ClassificationSegment::certain(4, 8, Sensitivity::LocalOnly),
+            ClassificationSegment::certain(8, 12, Sensitivity::Shareable),
+        ];
+        let third = stage_classified_artifact(
+            &conn,
+            "unit-12403",
+            &classified_entry(text),
+            &revised,
+            "2026-11-24T00:00:02Z",
+        )
+        .expect("stage revised");
+        let third_chunks = staged_chunks(&conn, third);
+        assert_eq!(third_chunks.len(), first_chunks.len());
+        assert_eq!(third_chunks[0], first_chunks[0]);
+        assert_eq!(third_chunks[2], first_chunks[2]);
+        assert_eq!(third_chunks[0].0, "aaaa");
+        assert_eq!(third_chunks[2].0, "cccc");
+        let third_records = chunk_classifications(&conn, third)
+            .expect("records")
+            .expect("records present");
+        assert_eq!(third_records[1].sensitivity, Sensitivity::LocalOnly);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
