@@ -71,6 +71,28 @@ beforeAll(async () => {
   };
   const feedFile = join(dir, "fleet-feed.json");
   await writeFile(feedFile, JSON.stringify(feed));
+  // #14167: the spawned server must not touch the real machine — its
+  // background jobs (the pm-core quota/fleet-feed schedulers, the Meta
+  // renewal keeper and the snapshot/hot-list consumers) run real
+  // collection unless their seams are disconnected. The fixture
+  // subcommand answers with empty provider readings so the gatherer's
+  // files stay in the tmp dir; the renewal keeper is disabled; the Turso
+  // sink is off; the audit logs and snapshots land beside the feed.
+  const subcommandPath = join(dir, "quota-subcommand.mjs");
+  const providerResult = {
+    providerId: "openai",
+    providerName: "OpenAI",
+    ok: true,
+    configured: true,
+    fetchedAt: Date.parse(now),
+    failureClass: "no-data",
+    lastSuccessAt: Date.parse(now),
+    usage: { windows: { weekly: { usedPercent: null } } },
+  };
+  // Fixture subcommand: answers with one valid provider row so the
+  // gatherer exercises its write paths (heartbeat, current, anomaly
+  // state) without touching real provider credentials or the network.
+  await writeFile(subcommandPath, `console.log(${JSON.stringify(JSON.stringify([providerResult]))});\n`, "utf8");
   const port = 5100 + Math.floor(Math.random() * 800);
   packageDirBefore = (await readdir(packageDir)).sort();
   proc = spawn({
@@ -78,13 +100,24 @@ beforeAll(async () => {
     cwd: dir,
     env: {
       ...Bun.env,
+      HOME: dir,
       PM_AGG_PORT: String(port),
       PM_AGG_FRESHNESS_PORT: String(port + 1000),
       PM_AGG_SOURCE: "live",
       PM_AGG_FEED_FILE: feedFile,
       PM_AGG_QUOTA_CURRENT_FILE: join(dir, "quota-current.json"),
       QUOTA_CURRENT_PATH: join(dir, "quota-current.json"),
+      QUOTA_HEARTBEAT_PATH: join(dir, "quota-gatherer-heartbeat.json"),
+      QUOTA_GATHERER_STATE_PATH: join(dir, "quota-gatherer-state.json"),
+      QUOTA_SNAPSHOTS_DIR: join(dir, "snapshots"),
+      QUOTA_FORECAST_PATH: join(dir, "quota-forecast.json"),
+      QUOTA_SUBCOMMAND: `${process.execPath} ${subcommandPath}`,
+      QUOTA_SUBCOMMAND_TIMEOUT_MS: "5000",
+      META_RENEWAL_DISABLED: "1",
+      OPENDESIGN_RENEWAL_DISABLED: "1",
+      TURSO_QUOTA_SINK: "0",
       META_RENEWAL_STATE_PATH: join(dir, "meta-renewal.json"),
+      PM_CORE_JOBS_AUDIT_PATH: join(dir, "pm-core-jobs.jsonl"),
       PM_AGG_REGISTRY_FILE: join(dir, "registry.json"),
       PM_AGG_COMMENTS_FILE: join(dir, "comments.json"),
       PM_AGG_SNAPSHOTS_DIR: join(dir, "snapshots"),
