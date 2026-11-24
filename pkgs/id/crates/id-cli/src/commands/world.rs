@@ -1875,6 +1875,7 @@ fn render_view_frame(
         id_worlds::world_presentation::WorldSurface::Scene(_) => None,
         id_worlds::world_presentation::WorldSurface::Audio(_) => None,
         id_worlds::world_presentation::WorldSurface::Widget(_) => None,
+        id_worlds::world_presentation::WorldSurface::Media(_) => None,
     }
 }
 
