@@ -150,7 +150,7 @@ This chapter covers all 21 console hash views in the survey census, one entry ea
 
 - **What it is:** The intake routing list (`viewIntake`): kinds note, bug, and change, with their label and rank routes (`plan.ts` `ROUTES`; `INTAKE_LABEL = "owner/intake"`).
 - **Inputs:** A submission from this view.
-- **Behaviour:** Submitting files a GitHub issue and a triage/prompt queue packet, routed by kind through the `ROUTES` table.
+- **Behaviour:** Submitting files a GitHub issue and a triage/prompt queue packet, routed by kind through the `ROUTES` table. A change against a capability with a roadmap file is also made by the platform itself, as a pull request against that file alone (`console/src/roadmap-change.ts`), when it can be made mechanically — a row added, moved, marked built, dropped, or retitled; the pull request is recorded on the issue, and a change that cannot be made mechanically says why in the answer and stands as issue and task alone.
 - **Failure shapes:** None recorded in the survey.
 
 Sources: PM-SURVEY website census (`pm-stack/console/public/app.js`, `pm-stack/console/src/server.ts`, `pm-stack/console/src/work.ts`, `pm-stack/console/src/ops.ts`, `pm-stack/console/src/plan.ts`), survey files `website-pages.md` and `disagreements.md` (D4, D12, D13), census date 2026-11-23.
