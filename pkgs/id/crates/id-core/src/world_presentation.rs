@@ -29,6 +29,15 @@
 //! player uses the audio text projection; a host that does not know the
 //! kind at all drops the document to the legacy text path.
 //!
+//! A program may instead return a versioned `kind: media` JSON document
+//! (`media/1`, #13679): a bounded list of typed media references — an
+//! artifact id, a sort (image, audio or video) and optional dimensions or
+//! duration. Items carry no embedded bytes, URLs or mime strings: a
+//! presenter resolves each artifact id against the world's own media
+//! artifacts. A shell without a media presenter uses the media text
+//! projection; a host that does not know the kind drops the document to
+//! the legacy text path.
+//!
 //! Semantic token adapter contract (xterm-256 foreground, bold; 1-bit):
 //! | token | terminal | 1-bit | text |
 //! |---|---|---|---|
@@ -88,6 +97,14 @@ pub const MAX_AUDIO_DURATION_MS: u32 = 3_600_000;
 pub const MAX_WIDGET_CONTROLS: usize = 64;
 /// Maximum serialized widget document size in bytes.
 pub const MAX_WIDGET_BYTES: usize = 64 * 1024;
+/// Maximum items accepted in one world media document.
+pub const MAX_MEDIA_ITEMS: usize = 64;
+/// Maximum serialized media document size in bytes.
+pub const MAX_MEDIA_SURFACE_BYTES: usize = 64 * 1024;
+/// Maximum width or height of a media item, in pixels.
+pub const MAX_MEDIA_DIMENSION: u32 = 16_384;
+/// Maximum duration of a media item, in milliseconds (24 hours).
+pub const MAX_MEDIA_DURATION_MS: u32 = 86_400_000;
 
 /// A validated view understood by more than one transport presenter.
 ///
@@ -115,6 +132,10 @@ pub enum WorldSurface {
     /// shells with a widget presenter; other shells use its text
     /// projection.
     Widget(WidgetSurface),
+    /// A media reference list (`media/1`): typed artifact ids with a sort,
+    /// rendered natively by shells with a media presenter; other shells
+    /// use its text projection.
+    Media(MediaSurface),
 }
 
 impl WorldSurface {
@@ -131,6 +152,7 @@ impl WorldSurface {
             Self::Scene(scene) => scene.text_projection(),
             Self::Audio(audio) => audio.text_projection(),
             Self::Widget(widget) => widget.text_projection(),
+            Self::Media(media) => media.text_projection(),
         }
     }
 }
@@ -1117,6 +1139,168 @@ impl AudioSurface {
     }
 }
 
+/// A versioned `media/1` document: a bounded list of typed media
+/// references. An item names an artifact id the presenter resolves against
+/// the world's own media artifacts, so the document carries no bytes, URLs,
+/// scripts or mime strings.
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct MediaSurface {
+    /// Media format version. `media/1` defines version 1.
+    pub version: u8,
+    /// Optional caption naming the media list; the text projection's
+    /// first line.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    /// The document's items, in document order. Ids are unique.
+    pub items: Vec<MediaItem>,
+}
+
+/// One typed media reference in a [`MediaSurface`].
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct MediaItem {
+    /// Stable identifier, unique within the document.
+    pub id: String,
+    /// Human-readable name, used by the text projection.
+    pub label: String,
+    /// The kind of media the artifact is, from the closed sort set.
+    pub sort: MediaSort,
+    /// The world media artifact id a presenter resolves.
+    pub artifact: String,
+    /// Pixel width, when the item has one. Requires `height`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub width: Option<u32>,
+    /// Pixel height, when the item has one. Requires `width`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub height: Option<u32>,
+    /// Length in milliseconds, for audio and video items.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_ms: Option<u32>,
+}
+
+/// The closed set of media sorts a `media/1` item may name. Mirrors the
+/// `media.image`, `media.audio` and `media.video` artifact sorts.
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MediaSort {
+    /// A still image.
+    Image,
+    /// An audio clip.
+    Audio,
+    /// A video clip.
+    Video,
+}
+
+impl MediaSort {
+    /// The document spelling of the sort, used by the text projection.
+    #[must_use]
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            Self::Image => "image",
+            Self::Audio => "audio",
+            Self::Video => "video",
+        }
+    }
+}
+
+impl MediaSurface {
+    /// Validate the version, item set, identifiers, safe text, artifact
+    /// references, dimension and duration bounds, sort consistency and
+    /// total size. Hosts run this before any presenter sees the document
+    /// (via [`parse_surface`]).
+    ///
+    /// # Errors
+    ///
+    /// Rejects unsupported versions, unsafe titles, empty or oversized
+    /// item sets, duplicate ids, unsafe labels or artifact ids,
+    /// out-of-bound dimensions or durations, dimensions or durations that
+    /// contradict the item's sort, and oversize documents.
+    pub fn validate(&self) -> Result<()> {
+        ensure!(
+            self.version == 1,
+            "unsupported world media version {}",
+            self.version
+        );
+        ensure!(
+            self.title.as_deref().is_none_or(safe_form_text),
+            "invalid media title"
+        );
+        ensure!(
+            !self.items.is_empty() && self.items.len() <= MAX_MEDIA_ITEMS,
+            "invalid media item count"
+        );
+        let mut ids = std::collections::HashSet::new();
+        for item in &self.items {
+            ensure!(
+                safe_form_id(&item.id)
+                    && safe_form_text(&item.label)
+                    && safe_form_id(&item.artifact),
+                "invalid media item id, label or artifact"
+            );
+            ensure!(ids.insert(item.id.as_str()), "duplicate media item id");
+            match (item.width, item.height) {
+                (None, None) => {}
+                (Some(width), Some(height)) => {
+                    ensure!(
+                        item.sort != MediaSort::Audio,
+                        "audio media item has dimensions"
+                    );
+                    ensure!(
+                        (1..=MAX_MEDIA_DIMENSION).contains(&width)
+                            && (1..=MAX_MEDIA_DIMENSION).contains(&height),
+                        "media item dimensions out of bounds"
+                    );
+                }
+                _ => anyhow::bail!("media item width and height must be given together"),
+            }
+            if let Some(duration) = item.duration_ms {
+                ensure!(
+                    item.sort != MediaSort::Image,
+                    "image media item has a duration"
+                );
+                ensure!(
+                    (1..=MAX_MEDIA_DURATION_MS).contains(&duration),
+                    "media item duration out of bounds"
+                );
+            }
+        }
+        ensure!(
+            serde_json::to_vec(self)?.len() <= MAX_MEDIA_SURFACE_BYTES,
+            "media exceeds {MAX_MEDIA_SURFACE_BYTES} bytes"
+        );
+        Ok(())
+    }
+
+    /// Deterministic escape-free projection: the title (or `Media`), then
+    /// one numbered line per item naming its label, sort and, when present,
+    /// its dimensions and duration. This is what a shell without a media
+    /// presenter shows, so it is designed here, with the kind.
+    #[must_use]
+    pub fn text_projection(&self) -> String {
+        let mut lines = vec![self.title.clone().unwrap_or_else(|| "Media".to_owned())];
+        for (index, item) in self.items.iter().enumerate() {
+            let dimensions = match (item.width, item.height) {
+                (Some(width), Some(height)) => format!("; {width}x{height}"),
+                _ => String::new(),
+            };
+            let duration = item
+                .duration_ms
+                .map(|duration| format!("; {duration} ms"))
+                .unwrap_or_default();
+            lines.push(format!(
+                "{}. {} ({}{}{})",
+                index + 1,
+                item.label,
+                item.sort.as_str(),
+                dimensions,
+                duration,
+            ));
+        }
+        lines.join("\n")
+    }
+}
+
 /// A versioned `widget/1` document: a bounded list of descriptive
 /// controls. Guest input is data only: a control names a kind from a
 /// closed set and, where it acts, the id of a world action — there are
@@ -1571,7 +1755,7 @@ pub fn parse_surface(data: &str) -> Result<Option<WorldSurface>> {
                     .and_then(Value::as_str);
                 if matches!(
                     kind,
-                    Some("screen" | "text" | "form" | "scene" | "audio" | "widget")
+                    Some("screen" | "text" | "form" | "scene" | "audio" | "widget" | "media")
                 ) || top_level_kind_is_duplicated(data)
                 {
                     return Err(err).context("duplicate JSON object key in world presentation");
@@ -1621,6 +1805,16 @@ pub fn parse_surface(data: &str) -> Result<Option<WorldSurface>> {
                 serde_json::from_value(value).context("decode world widget presentation")?;
             widget.validate()?;
             return Ok(Some(WorldSurface::Widget(widget)));
+        }
+        Some("media") => {
+            let mut value = value;
+            if let Some(object) = value.as_object_mut() {
+                object.remove("kind");
+            }
+            let media: MediaSurface =
+                serde_json::from_value(value).context("decode world media presentation")?;
+            media.validate()?;
+            return Ok(Some(WorldSurface::Media(media)));
         }
         Some("text") => {
             let payload: TextPayload =
@@ -2743,6 +2937,82 @@ mod tests {
         };
         assert_eq!(scene(0.0), scene(0.0));
         assert_ne!(scene(0.0), scene(-0.0));
+    }
+
+    #[test]
+    fn media_surface_parses_projects_and_round_trips() {
+        // Oracle: #13679 — a versioned media document is accepted by host
+        // validation, projects deterministically to text (the old-shell
+        // fallback), and round-trips through serialization.
+        let document = serde_json::json!({
+            "kind": "media", "version": 1, "title": "Harbor Media",
+            "items": [
+                {"id": "sunset", "label": "Sunset", "sort": "image",
+                 "artifact": "media-1", "width": 800, "height": 600},
+                {"id": "theme", "label": "Theme", "sort": "audio",
+                 "artifact": "media-2", "duration_ms": 12000},
+                {"id": "clip", "label": "Clip", "sort": "video",
+                 "artifact": "media-3", "width": 640, "height": 360,
+                 "duration_ms": 5000}
+            ]
+        });
+        let parsed = parse_surface(&document.to_string()).unwrap().unwrap();
+        assert_eq!(
+            parsed.text_projection(),
+            "Harbor Media\n1. Sunset (image; 800x600)\n2. Theme (audio; 12000 ms)\n3. Clip (video; 640x360; 5000 ms)"
+        );
+        let serialized = serde_json::to_string(&parsed).unwrap();
+        assert_eq!(parse_surface(&serialized).unwrap(), Some(parsed));
+
+        let untitled = parse_surface(
+            r#"{"kind":"media","version":1,"items":[{"id":"a","label":"A","sort":"image","artifact":"media-a"}]}"#,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(untitled.text_projection(), "Media\n1. A (image)");
+    }
+
+    #[test]
+    fn media_surface_rejects_unsafe_or_inconsistent_documents() {
+        // Oracle: #13679 — malformed or inconsistent media is refused by
+        // host validation (an Err from parse_surface), never accepted.
+        let item = |id: &str, sort: &str| serde_json::json!({"id": id, "label": "A", "sort": sort, "artifact": "media-a"});
+        let media = |items: Value| {
+            serde_json::json!({"kind": "media", "version": 1, "items": items}).to_string()
+        };
+        assert!(
+            parse_surface(&media(serde_json::json!([item("a", "image")])))
+                .unwrap()
+                .is_some()
+        );
+        assert!(
+            parse_surface(
+                &serde_json::json!({"kind": "media", "version": 2, "items": [item("a", "image")]})
+                    .to_string()
+            )
+            .is_err()
+        );
+        assert!(parse_surface(&media(serde_json::json!([]))).is_err());
+        assert!(
+            parse_surface(&media(serde_json::json!([
+                item("a", "image"),
+                item("a", "image")
+            ])))
+            .is_err()
+        );
+        assert!(
+            parse_surface(&media(
+                serde_json::json!([{"id": "a", "label": "A", "sort": "gif", "artifact": "media-a"}])
+            ))
+            .is_err()
+        );
+        assert!(parse_surface(&media(serde_json::json!([{"id": "a", "label": "A", "sort": "image", "artifact": "https://example.invalid/x.png"}]))).is_err());
+        assert!(parse_surface(&media(serde_json::json!([{"id": "a", "label": "A", "sort": "image", "artifact": "media-a", "mime": "image/png"}]))).is_err());
+        assert!(parse_surface(&media(serde_json::json!([{"id": "a", "label": "A", "sort": "image", "artifact": "media-a", "width": 10}]))).is_err());
+        assert!(parse_surface(&media(serde_json::json!([{"id": "a", "label": "A", "sort": "audio", "artifact": "media-a", "width": 10, "height": 10}]))).is_err());
+        assert!(parse_surface(&media(serde_json::json!([{"id": "a", "label": "A", "sort": "image", "artifact": "media-a", "duration_ms": 10}]))).is_err());
+        assert!(parse_surface(&media(serde_json::json!([{"id": "a", "label": "A", "sort": "video", "artifact": "media-a", "width": 0, "height": 10}]))).is_err());
+        assert!(parse_surface(&media(serde_json::json!([{"id": "a", "label": "A", "sort": "video", "artifact": "media-a", "duration_ms": 86400001}]))).is_err());
     }
 
     #[test]
