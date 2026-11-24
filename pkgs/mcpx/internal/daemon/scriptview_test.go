@@ -1143,7 +1143,6 @@ func TestScriptViewCommandTimeoutKillsSpawnedWorkers(t *testing.T) {
 		if processExited(pid) {
 			return // the worker is gone: the group was terminated
 		}
-		}
 		time.Sleep(50 * time.Millisecond)
 	}
 	t.Fatalf("worker %d survived the call's timeout: the process group was not terminated", pid)
