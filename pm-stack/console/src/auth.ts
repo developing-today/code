@@ -44,6 +44,11 @@ const JWKS_TTL_MS = 10 * 60_000;
 const JWKS_REFRESH_COOLDOWN_MS = 30_000;
 const JWKS_FETCH_TIMEOUT_MS = 5_000;
 const SKEW_MS = 60_000;
+/** The issuers' key sets. Module memory only, by decision: each object
+ * starting asks its issuer again (one public request, cached ten
+ * minutes while the object lasts), and sharing keys across objects
+ * would need storage reads on every request to save one cacheable
+ * fetch per object lifetime. */
 const jwksCache = new Map<string, { at: number; keys: Jwk[] }>();
 const jwksInFlight = new Map<string, Promise<Jwk[]>>();
 
