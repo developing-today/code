@@ -45,6 +45,9 @@ When migrating or filing material, ask which kind it is before choosing a home: 
 - `2026-11-24T00-51-33Z_report_audit-7-lane-2-closed-issues-review/` — AUDIT-7 Lane 2 CLOSED-ISSUES review: all 8,161 issues closed 2026-10-23..2026-11-23 across the four repos triaged, high-risk union deep-read, per-issue ledger + all raw census data as supplements (tracking #13878).
 -  — AUDIT-7 Lane 7 STRAY-WORK audit: census of 18,594 items across the four repos, 10 evidence-backed trends in work not tied to a design or roadmap item, 34 orphaned issues linked into maintenance/scheduled-tasks/design-register parents with labels, 3 new labels in all four repos, and the repeatable stray-work procedure (tracking #13874).
 
+
+- `2026-11-24T00-40-00Z_audit_audit7-lane1-pr-sweep/` — AUDIT-7 Lane 1 PR-SWEEP audit: every open PR across the four repos read and dispositioned — 103 merged, 3 duplicates marked superseded, 90 blocked with named unblockers (tracking #13872).
+
 This list is the workflow's request catalog (`request_catalog` in [`.agents/research-workflow.json`](../.agents/research-workflow.json)). Add one line per new package. For a package's current state, run `python3 -I scripts/research_workflow.py status --package doc/<folder>`.
 
 - [Research intake to implementation](2026-10-19T06-09-02Z_research_research-intake-to-implementation/main.md). Created 2026-10-19 from the request that defined this workflow. It has 14 concepts. The design record is [research workflow](2026-10-19T06-09-02Z_design_research_workflow/2026-10-19T06-09-02Z_design_research_workflow.md).
