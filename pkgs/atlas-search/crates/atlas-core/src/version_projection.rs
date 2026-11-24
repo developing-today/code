@@ -846,6 +846,16 @@ mod tests {
     }
 
     #[test]
+    fn tombstone_claim_obeys_id_nfc_and_512_byte_value_oracle() {
+        // Oracle: ID tag values are NFC text with a maximum encoded byte size.
+        let mut source = tombstone_fixture();
+        source.rule = "x".repeat(513);
+        assert!(project_tombstone(&source).is_err());
+        source.rule = "e\u{301}".into();
+        assert!(project_tombstone(&source).is_err());
+    }
+
+    #[test]
     fn fixture_lineage_recomputes_from_explicit_atlas_keys() {
         let rows = fixture_rows();
         let (bindings, edges) = lineage_fixture();
