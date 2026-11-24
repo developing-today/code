@@ -57,7 +57,9 @@ export function normalizeNew({ body, sender, direction, source, channel = "claud
   }
   let from = null;
   if (from_addr !== undefined && from_addr !== null) {
-    if (typeof from_addr !== "string" || !FROM_ADDR.test(from_addr)) throw new InputError("from_addr must be channel:<name> or agent:<name>");
+    if (typeof from_addr !== "string" || !FROM_ADDR.test(from_addr)) {
+      throw new InputError("from_addr must be channel:<name>, agent:<name> or service:<name>");
+    }
     if (from_addr === `channel:${channel}`) throw new InputError("a connector can't send to its own channel");
     if (direction !== "inbound" || (source !== "mcp" && source !== "fleet")) {
       throw new InputError("from_addr is only for messages a connector or an agent sends");
@@ -69,7 +71,7 @@ export function normalizeNew({ body, sender, direction, source, channel = "claud
   return { body, sender: s, direction, source, channel, kind: k, from_addr: from };
 }
 
-const FROM_ADDR = /^(channel:(claude|chatgpt)|agent:[a-z0-9][a-z0-9._-]{0,63})$/;
+const FROM_ADDR = /^(channel:(claude|chatgpt)|(agent|service):[a-z0-9][a-z0-9._-]{0,63})$/;
 
 /** Validates a new message's kind; empty means "message". Throws InputError. */
 export function normalizeKind(kind) {
@@ -192,11 +194,17 @@ export class MemoryStore {
   // #14368), same semantics as the Durable Object: hashes only.
   async fleetCredentialAuth(token_hash) {
     const c = this.fleetCredentials.get(token_hash);
-    return c && !c.revoked_at ? { agent: c.agent, scopes: [...c.scopes] } : null;
+    return c && !c.revoked_at ? { agent: c.agent, scopes: [...c.scopes], addr: c.addr ?? null } : null;
   }
-  async fleetCredentialPut({ token_hash, agent, scopes, created }) {
-    this.fleetCredentials.set(token_hash, { agent, scopes: [...scopes], created: created ?? this.now(), revoked_at: null });
-    return { agent, scopes: [...scopes] };
+  async fleetCredentialPut({ token_hash, agent, scopes, created, addr = null }) {
+    this.fleetCredentials.set(token_hash, {
+      agent,
+      scopes: [...scopes],
+      created: created ?? this.now(),
+      revoked_at: null,
+      addr,
+    });
+    return { agent, scopes: [...scopes], addr };
   }
   async fleetCredentialRevoke(agent) {
     let n = 0;

@@ -62,6 +62,36 @@
 //   POST /api/<owner>/notes-tokens/revoke  {identity}: revokes an
 //                                      identity's notes token(s)
 //
+// Service credentials (#14373, design §4.8): the owner can also mint a
+// credential directly, with the scopes it names:
+//
+//   POST /api/<owner>/fleet/credentials/mint  {agent, scopes?, addr?}:
+//                                      mints a credential outside the
+//                                      enroll flow; the value is
+//                                      returned once, here
+//
+// A credential minted with an `addr` sends as that address instead of
+// agent:<its name>. The one addr form is service:<name>, and the name
+// must be the credential's own: it is how a platform service that is
+// not an agent — the PM stack, from_addr service:pm-stack — holds a
+// scoped credential of its own (send + the pipeline read below)
+// instead of relaying through a machine's shared token. Provenance
+// tells such rows apart from owner-sent (from_addr null) and
+// agent-sent (agent:<name>) ones in the owner's log; a command still
+// reaches its agent with no sender, as every command does.
+//
+// A third scope, "read", opens the owner's two pipeline views to the
+// credential that holds it, at the agent-side address:
+//
+//   GET  /fleet/<credential>/agents    the registered agents (the
+//                                      ownerRoute "agents" store op)
+//   GET  /fleet/<credential>/messages  the fleet message log (the
+//                                      ownerRoute "messages" store op)
+//
+// Enroll-minted agent credentials never carry "read" (the exchange
+// mints CREDENTIAL_SCOPES only): the pipeline stays the owner's and
+// its services', not every agent's.
+//
 // `to` names recipients as "agent:<name>" (or a bare name), "group:<name>"
 // (every registered agent in that group) or "all" (every registered
 // agent); a list or a comma-separated string mixes them. kind is
@@ -214,11 +244,13 @@ export function parseTargets(to) {
   return { agents, groups, all };
 }
 
-const FROM_ADDR = /^(channel:(claude|chatgpt)|agent:[a-z0-9][a-z0-9._-]{0,63})$/;
+const FROM_ADDR = /^(channel:(claude|chatgpt)|(agent|service):[a-z0-9][a-z0-9._-]{0,63})$/;
 
 function normalizeFromAddr(v) {
   if (v === undefined || v === null) return null;
-  if (typeof v !== "string" || !FROM_ADDR.test(v)) throw new InputError("from_addr must be channel:<name> or agent:<name>");
+  if (typeof v !== "string" || !FROM_ADDR.test(v)) {
+    throw new InputError("from_addr must be channel:<name>, agent:<name> or service:<name>");
+  }
   return v;
 }
 
@@ -333,6 +365,10 @@ export function fleetSchema(sql) {
     created TEXT NOT NULL,
     revoked_at TEXT
   )`);
+  // Service credentials (#14373): the address a credential sends as,
+  // when it is not agent:<its name> (service:<name>, its own name).
+  const credCols = sql.exec("PRAGMA table_info(fleet_credential)").toArray();
+  if (!credCols.some((c) => c.name === "addr")) sql.exec("ALTER TABLE fleet_credential ADD COLUMN addr TEXT");
   // Bootstrap enroll tokens (#14368): hash only, bound at mint time to
   // the agent name, kind and groups; single-use (used_at), expiring
   // (expires_at), revocable while unused (revoked_at).
@@ -572,6 +608,10 @@ export async function fleetCall(stub, op, args) {
 // ---- per-agent credentials and bootstrap enrollment (#14368) ----
 
 export const CREDENTIAL_SCOPES = ["inbox", "send"];
+/** Every scope a credential can hold. "read" (the owner's pipeline
+ * views, #14373) is minted directly by the owner only; the enroll
+ * exchange mints CREDENTIAL_SCOPES and never this. */
+export const MINT_SCOPES = ["inbox", "send", "read"];
 export const ENROLL_DEFAULT_TTL_SECONDS = 24 * 3600;
 export const ENROLL_MIN_TTL_SECONDS = 60;
 export const ENROLL_MAX_TTL_SECONDS = 7 * 24 * 3600;
@@ -589,20 +629,75 @@ export function randomTokenValue() {
 
 export function fleetCredentialAuthSql(sql, token_hash) {
   const r = sql
-    .exec("SELECT agent, scopes FROM fleet_credential WHERE token_hash = ? AND revoked_at IS NULL", token_hash)
+    .exec("SELECT agent, scopes, addr FROM fleet_credential WHERE token_hash = ? AND revoked_at IS NULL", token_hash)
     .toArray()[0];
-  return r ? { agent: r.agent, scopes: JSON.parse(r.scopes) } : null;
+  return r ? { agent: r.agent, scopes: JSON.parse(r.scopes), addr: r.addr ?? null } : null;
 }
 
-export function fleetCredentialPutSql(sql, { token_hash, agent, scopes, created }) {
+export function fleetCredentialPutSql(sql, { token_hash, agent, scopes, created, addr = null }) {
   sql.exec(
-    "INSERT INTO fleet_credential (token_hash, agent, scopes, created) VALUES (?, ?, ?, ?)",
+    "INSERT INTO fleet_credential (token_hash, agent, scopes, created, addr) VALUES (?, ?, ?, ?, ?)",
     token_hash,
     agent,
     JSON.stringify(scopes),
     created,
+    addr,
   );
-  return { agent, scopes: [...scopes] };
+  return { agent, scopes: [...scopes], addr };
+}
+
+const SERVICE_ADDR = /^service:([a-z0-9][a-z0-9._-]{0,63})$/;
+
+/**
+ * Validates a direct credential mint body (the owner's service
+ * credentials, #14373). The addr, when given, is service:<name> and
+ * the name is the credential's own agent name: a service speaks as
+ * itself, never as another principal. Default scopes follow the form:
+ * a service gets send + read (it has no mailbox of its own to read),
+ * an agent minted directly gets the enroll pair.
+ */
+export function normalizeMintCredential(data) {
+  if (!data || typeof data !== "object" || Array.isArray(data)) throw new InputError("body must be a JSON object");
+  const agent = normalizeName(data.agent);
+  let addr = null;
+  if (data.addr !== undefined && data.addr !== null && data.addr !== "") {
+    const m = typeof data.addr === "string" ? SERVICE_ADDR.exec(data.addr) : null;
+    if (!m) throw new InputError("addr must be service:<name>");
+    if (m[1] !== agent) throw new InputError("addr must name the credential's own agent (service:<agent>)");
+    addr = data.addr;
+  }
+  let scopes;
+  if (data.scopes === undefined || data.scopes === null) {
+    scopes = addr ? ["send", "read"] : [...CREDENTIAL_SCOPES];
+  } else {
+    if (!Array.isArray(data.scopes) || data.scopes.length === 0) {
+      throw new InputError(`scopes must be a non-empty list drawn from ${MINT_SCOPES.join(", ")}`);
+    }
+    scopes = [];
+    for (const s of data.scopes) {
+      if (!MINT_SCOPES.includes(s)) throw new InputError(`scopes must be drawn from ${MINT_SCOPES.join(", ")}`);
+      if (!scopes.includes(s)) scopes.push(s);
+    }
+  }
+  return { agent, addr, scopes };
+}
+
+/**
+ * Mints a credential directly for the owner, outside the enroll flow:
+ * how a platform service (the PM stack) gets its own. The value exists
+ * only in this return value; the store receives its SHA-256 hash.
+ */
+export async function mintFleetCredential(store, data, now = new Date().toISOString()) {
+  const m = normalizeMintCredential(data);
+  const value = randomTokenValue();
+  await store.fleetCredentialPut({
+    token_hash: await noteTokenHash(value),
+    agent: m.agent,
+    scopes: m.scopes,
+    addr: m.addr,
+    created: now,
+  });
+  return { agent: m.agent, addr: m.addr, scopes: m.scopes, credential: value };
 }
 
 /** Revokes every live credential of the agent; returns how many. */
@@ -833,8 +928,11 @@ const query = (url) => Object.fromEntries(url.searchParams.entries());
 /**
  * An agent's send: to central as before, or (with to, or reply_to a row
  * another assistant or agent sent) through relay.js to any address.
+ * `fromAddr` is the sender address the credential fixes (a service
+ * credential's service:<name>, #14373); without one the sender is
+ * agent:<the agent>, as it has always been.
  */
-async function agentSend(store, d, delivered) {
+async function agentSend(store, d, delivered, fromAddr = null) {
   if (d.to === undefined || d.to === null || d.to === "") {
     let origin = null;
     if (d.reply_to !== undefined && d.reply_to !== null) {
@@ -850,7 +948,13 @@ async function agentSend(store, d, delivered) {
   if (d.reply_to !== undefined && d.reply_to !== null) {
     await store.fleet("origin", { agent, id: d.reply_to }); // must be a row to this agent
   }
-  const out = await relay(store, { from: `agent:${agent}`, to: d.to, body: d.body, kind: d.kind, sender: d.sender ?? agent });
+  const out = await relay(store, {
+    from: fromAddr ?? `agent:${agent}`,
+    to: d.to,
+    body: d.body,
+    kind: d.kind,
+    sender: d.sender ?? agent,
+  });
   if (d.reply_to !== undefined && d.reply_to !== null) await store.fleet("ack", { agent, ids: [d.reply_to] });
   delivered(out);
   return out;
@@ -908,11 +1012,23 @@ async function agentRoute(request, store, what, url, delivered, cred = null) {
     const d = await readJson(request);
     if (cred) {
       if (!scoped("send") || credOwnName(d.agent, cred) === null) return notFound();
-      // from_addr is fixed by the relay to agent:<this name>; the
-      // sender label follows it, whatever the body claims.
-      d.sender = cred.agent;
+      // from_addr is fixed by the relay to the credential's address
+      // (agent:<this name>, or service:<name> for a service credential,
+      // #14373); the sender label follows it, whatever the body claims.
+      d.sender = cred.addr ?? cred.agent;
+      return json(await agentSend(store, d, delivered, cred.addr ?? `agent:${cred.agent}`), 201);
     }
     return json(await agentSend(store, d, delivered), 201);
+  }
+  // The owner's pipeline views, for a credential holding the "read"
+  // scope (a service credential, #14373): the same store ops the owner
+  // routes answer, nothing more. Enroll-minted agent credentials never
+  // hold the scope, and the shared fleet token does not open these.
+  if (what === "agents" || what === "messages") {
+    if (request.method !== "GET") return notAllowed("GET");
+    if (!cred || !scoped("read")) return notFound();
+    if (what === "agents") return json(await store.fleet("agents", {}));
+    return json(await store.fleet("messages", query(url)));
   }
   return notFound();
 }
@@ -981,6 +1097,10 @@ export async function handleFleet(request, env, url, getStore, deliveredFor = ()
           if (request.method !== "POST") return notAllowed("POST");
           const agent = normalizeName((await readJson(request)).agent);
           return json({ agent, revoked: await store.fleetCredentialRevoke(agent) });
+        }
+        if (parts.length === 5 && parts[3] === "credentials" && parts[4] === "mint") {
+          if (request.method !== "POST") return notAllowed("POST");
+          return json(await mintFleetCredential(store, await readJson(request)), 201);
         }
         return notFound();
       }

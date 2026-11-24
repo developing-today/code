@@ -11,9 +11,18 @@
 // are run, by the same code a machine runs: nothing here re-implements
 // their shapes.
 //
+// The bridge is the edge's too, when it holds the PM stack's own
+// bridge credential (#14373): `run` then turns `fleet bridge` argv
+// into calls to the bridge Worker over its service binding,
+// presenting that credential, so a message the owner sends from the
+// app is delivered by the edge itself — as service:pm-stack, the
+// bridge's name for the PM stack — and the agents list and message
+// log are read there too. Without the credential and the binding,
+// `fleet bridge` stays a machine's, exactly as before.
+//
 // What stays a machine's: `fleet queue enqueue` (the fleet binary is
-// not here), `fleet bridge`, `systemctl`, and anything that reads the
-// dashboard or the decisions file, which live on a machine alone.
+// not here), `systemctl`, and anything that reads the dashboard or
+// the decisions file, which live on a machine alone.
 // A prompt, a note or a bug is filed at the edge and only its queue
 // task is held for a machine, as `prompt.enqueue` or `triage.enqueue`:
 // the issue is never filed twice.
@@ -25,8 +34,11 @@ import { Plan } from "../../src/plan.ts";
 import { timed } from "../../src/timed.ts";
 import { Work } from "../../src/work.ts";
 
-/** Sections the edge reads itself. */
-export const DIRECT_READ_SECTIONS = ["board", "prs", "priorities", "asks", "census", "done"] as const;
+/** Sections the edge reads itself. `agents` is read through the
+ * bridge, so it is only the edge's while it holds the PM bridge
+ * credential (edge.ts `owned` says which of these are its, case by
+ * case); the rest are GitHub's and the queue store's. */
+export const DIRECT_READ_SECTIONS = ["board", "prs", "priorities", "asks", "census", "done", "agents"] as const;
 /** Actions the edge runs itself: each is one or a few calls to GitHub
  * or the queue store, and needs nothing a machine has. */
 export const DIRECT_ACTIONS = [
@@ -53,7 +65,7 @@ export const DIRECT_ACTIONS = [
  * before then: it is recorded as the 429 it would have been, and as
  * it was not sent it wrote nothing and GitHub answered nothing. */
 export interface Outward {
-  to: "github" | "queue";
+  to: "github" | "queue" | "bridge";
   write: boolean;
   status: number;
   limited?: boolean;
@@ -61,7 +73,7 @@ export interface Outward {
   unsent?: boolean;
 }
 
-/** Which of the two each section this side reads is read from. */
+/** Which of them each section this side reads is read from. */
 export const READ_FROM: Record<(typeof DIRECT_READ_SECTIONS)[number], Outward["to"][]> = {
   board: ["queue"],
   prs: ["github"],
@@ -69,11 +81,23 @@ export const READ_FROM: Record<(typeof DIRECT_READ_SECTIONS)[number], Outward["t
   asks: ["github", "queue"],
   census: ["github"],
   done: ["queue", "github"],
+  agents: ["bridge"],
 };
 
 export interface DirectSecrets {
   githubToken?: string;
   queueToken?: string;
+  /** The PM stack's own bridge credential (#14373): minted on the
+   * bridge for service:pm-stack, held here as a Worker secret (put
+   * there by scripts/expose.py --edge-direct, from the vault name it
+   * reads). With `bridgeFetch` it makes `fleet bridge` this side's:
+   * sends go out as service:pm-stack, and the agents list and the
+   * message log are read with its read scope. Absent either, the
+   * bridge stays a machine's. The value is never logged or returned. */
+  bridgeToken?: string;
+  /** The bridge Worker's fetch: its service binding's, in the Worker.
+   * A stand-in in tests. */
+  bridgeFetch?: Fetch;
   /** Told of every call made, as it is answered. */
   seen?: (call: Outward) => void;
   /** Where GitHub's API and the queue store are, when a local run puts
@@ -681,8 +705,126 @@ async function ghApi(
   return { code: 0, stdout: text, stderr: "" };
 }
 
+/** Where the bridge is asked, over its service binding: the binding
+ * answers for the bridge Worker whatever host the address names, as
+ * with the app's own files (worker.ts asks https://assets.internal). */
+const BRIDGE_BASE = "https://bridge.internal";
+/** How long the bridge has to answer a call, body and all. */
+const BRIDGE_ASK_MS = 20_000;
+/** The name the PM stack's bridge credential is bound to (#14373):
+ * the bridge fixes a credential's sends to its own name, and this
+ * side's sends go out under it, as service:pm-stack. */
+export const BRIDGE_AGENT = "pm-stack";
+
+/** One `fleet bridge` call as a call to the bridge Worker over its
+ * service binding, presenting the PM credential in the path (the
+ * bridge's own way: /fleet/<credential>/...). The verbs the console's
+ * classes use — send, agents, log — and no others: anything else is
+ * refused as a machine's, like every verb this side does not carry.
+ * A failed call answers the way the fleet binary would: a non-zero
+ * code with the reason on stderr. The bridge's plain 404 for a wrong
+ * token is said plainly here — the credential unknown or revoked —
+ * because that is the console-side error the owner acts on (mint a
+ * new one; the laptop's own dispatch is untouched by it). */
+async function bridgeCall(
+  argv: string[],
+  opts: { stdin?: string } | undefined,
+  secrets: DirectSecrets,
+): Promise<RunResult> {
+  const token = secrets.bridgeToken;
+  const fetchImpl = secrets.bridgeFetch;
+  if (!token || !fetchImpl) throw new OpError(502, "needs a machine");
+  const [what, ...rest] = argv;
+  let method = "GET";
+  let path = "";
+  let body: string | undefined;
+  if (what === "agents") {
+    if (rest.length > 0) throw new OpError(502, "fleet bridge agents takes no arguments here");
+    path = `/fleet/${token}/agents`;
+  } else if (what === "log") {
+    const query = new URLSearchParams();
+    const names: Record<string, string> = {
+      "--agent": "agent",
+      "--direction": "direction",
+      "--kind": "kind",
+      "--since-id": "since_id",
+      "--before-id": "before_id",
+      "--limit": "limit",
+      "--order": "order",
+    };
+    for (let i = 0; i < rest.length; i += 2) {
+      const name = names[rest[i]];
+      if (!name || rest[i + 1] === undefined) throw new OpError(502, `fleet bridge log: unexpected argument ${rest[i]}`);
+      query.set(name, rest[i + 1]);
+    }
+    const qs = query.toString();
+    path = `/fleet/${token}/messages${qs === "" ? "" : `?${qs}`}`;
+  } else if (what === "send") {
+    const to: string[] = [];
+    let kind = "message";
+    let useStdin = false;
+    for (let i = 0; i < rest.length; i++) {
+      const arg = rest[i];
+      if (arg === "--to") {
+        const list = (rest[++i] ?? "").split(",").map((t) => t.trim()).filter(Boolean);
+        to.push(...list);
+      } else if (arg === "--command") kind = "command";
+      else if (arg === "--kind") kind = rest[++i] ?? "message";
+      else if (arg === "-") useStdin = true;
+      else throw new OpError(502, `fleet bridge send: unexpected argument ${arg}`);
+    }
+    if (to.length === 0) throw new OpError(502, "fleet bridge send: needs --to");
+    if (!useStdin) throw new OpError(502, "fleet bridge send: the text comes on stdin here");
+    method = "POST";
+    path = `/fleet/${token}/send`;
+    body = JSON.stringify({ agent: BRIDGE_AGENT, to, body: opts?.stdin ?? "", kind });
+  } else {
+    throw new OpError(502, "needs a machine");
+  }
+  const write = method !== "GET";
+  let res: Awaited<ReturnType<Fetch>>;
+  let text = "";
+  try {
+    await timed(BRIDGE_ASK_MS, async (signal) => {
+      res = await fetchImpl(`${BRIDGE_BASE}${path}`, {
+        method,
+        headers: {
+          "user-agent": "pm-console-edge",
+          ...(body === undefined ? {} : { "content-type": "application/json" }),
+        },
+        ...(body === undefined ? {} : { body }),
+        signal,
+      });
+      // The answer is read as JSON and written back out, like GitHub's:
+      // the classes parse what the fleet binary would have printed.
+      try {
+        text = JSON.stringify(await res.json());
+      } catch {
+        text = "";
+      }
+    });
+  } catch (error) {
+    secrets.seen?.({ to: "bridge", write, status: 0 });
+    return { code: 1, stdout: "", stderr: `the bridge could not be reached: ${(error as Error).message}` };
+  }
+  secrets.seen?.({ to: "bridge", write, status: res!.status });
+  if (!res!.ok) {
+    if (res!.status === 404) {
+      return {
+        code: 1,
+        stdout: "",
+        stderr: "the bridge turned the PM credential away (unknown or revoked); nothing was sent",
+      };
+    }
+    const why = text === "" || text === "null" ? `the bridge answered http ${res!.status}` : text;
+    return { code: 1, stdout: "", stderr: why };
+  }
+  return { code: 0, stdout: text, stderr: "" };
+}
+
 /** The edge's `run`: GitHub through REST, the queue token from its
- * Worker secret, and everything else refused as a machine's. */
+ * Worker secret, the bridge through its binding with the PM
+ * credential, and everything else refused as a machine's. */
 export function edgeRun(config: Config, secrets: DirectSecrets, fetchImpl: Fetch): Run {
   const origin = (secrets.githubApi || GITHUB_API).replace(/\/+$/, "");
   return async (argv, opts) => {
@@ -705,6 +847,9 @@ export function edgeRun(config: Config, secrets: DirectSecrets, fetchImpl: Fetch
         return { code: 0, stdout: `${secrets.queueToken}\n`, stderr: "" };
       }
       throw new OpError(502, `the edge has no secret named ${name ?? "?"}`);
+    }
+    if (bin === config.fleetBin && verb === "bridge") {
+      return bridgeCall(rest, opts, secrets);
     }
     throw new OpError(502, "needs a machine");
   };
@@ -809,6 +954,8 @@ export async function directRead(section: string, ops: Ops, work: Work): Promise
       return work.censusDirect();
     case "done":
       return work.done();
+    case "agents":
+      return ops.agents();
     default:
       throw new Error(`not a section the edge reads itself: ${section}`);
   }

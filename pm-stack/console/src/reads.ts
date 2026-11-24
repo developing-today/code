@@ -1,10 +1,11 @@
-// Reads that need nothing but GitHub and the queue store.
+// Reads that need nothing but GitHub, the queue store and the bridge.
 //
 // They are answered by the same code wherever the app is served from: a
 // machine asks through the fleet binary, and Cloudflare asks GitHub's
-// and the queue store's own APIs (edge/src/direct.ts). Neither needs the
-// other for these. A read that does need a machine (its units, its
-// agents, the dashboard's questions) is not here, and is asked of one.
+// and the queue store's own APIs and the bridge Worker over its
+// service binding (edge/src/direct.ts). Neither needs the other for
+// these. A read that does need a machine (its units, the dashboard's
+// questions) is not here, and is asked of one.
 import type { Ops } from "./ops.ts";
 import type { Plan } from "./plan.ts";
 
@@ -37,6 +38,13 @@ export async function platformRead(seg: string[], query: URLSearchParams, ops: O
         return plan.bugs(fresh);
       case "intake":
         return plan.intakeList(fresh);
+      // The bridge's message log (#14373). On a machine this address
+      // is answered by the server's own switch before this list is
+      // reached; at the edge it is this list, read through the PM
+      // bridge credential. (`agents` is a document section instead:
+      // edge/src/direct.ts reads it the same way.)
+      case "messages":
+        return ops.messages(query.get("limit"));
     }
   }
   if (seg.length === 2 && seg[0] === "prs") return ops.pr(seg[1]);

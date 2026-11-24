@@ -22,7 +22,9 @@
 //
 // Every row another assistant or agent sends records who sent it in
 // from_addr ("channel:claude", "agent:muse-3"), so the recipient can tell
-// it from something Drew sent and answer it with reply_to.
+// it from something Drew sent and answer it with reply_to. A platform
+// service sends as service:<name> ("service:pm-stack", #14373): not an
+// agent and not Drew, and the owner's log tells the three apart.
 
 import { CHANNELS, CHANNEL_NAMES, InputError, MAX_BODY } from "./messages.js";
 
@@ -38,10 +40,13 @@ export function relayKind(kind) {
   throw new InputError("kind must be message or instruction");
 }
 
-/** The sender's own channel or agent name, from its address. */
+/** The sender's own channel or agent name, from its address. A
+ * service sender (service:<name>, a platform service like the PM
+ * stack, #14373) counts as its own name here: it is never its own
+ * recipient, and a post to central lands under its name. */
 function self(from) {
   const [type, name] = from.split(":");
-  return { channel: type === "channel" ? name : null, agent: type === "agent" ? name : null };
+  return { channel: type === "channel" ? name : null, agent: type === "agent" || type === "service" ? name : null };
 }
 
 /**

@@ -17,7 +17,9 @@
 // #12591 landed it — the table is now EMPTY: every component-C
 // door is live. The 501 test below iterates zero routes and
 // stands as the invariant's guard for any future skeleton door;
-// the sync door's behaviour is covered by test/sync.test.ts.
+// the sync door's behaviour is covered by test/sync.test.ts. The
+// bridge door (#14373) joined DOOR_ROUTES live, never a stub; its
+// behaviour is covered by test/bridge.test.ts.
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
@@ -35,6 +37,9 @@ const DOOR_ROUTES: { method: string; path: string; fillingIssue: string }[] = [
   { method: "POST", path: "/v1/ingestion/github", fillingIssue: "#12590" },
   { method: "POST", path: "/v1/sync/project", fillingIssue: "#12591" },
   { method: "POST", path: "/v1/sync/queue-github", fillingIssue: "#12591" },
+  { method: "POST", path: "/v1/bridge/send", fillingIssue: "#14373" },
+  { method: "GET", path: "/v1/bridge/agents", fillingIssue: "#14373" },
+  { method: "GET", path: "/v1/bridge/messages", fillingIssue: "#14373" },
 ];
 
 const STUB_ROUTES = DOOR_ROUTES.filter(

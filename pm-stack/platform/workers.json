@@ -1,13 +1,13 @@
 {
   "about": "Every Cloudflare Worker this repository holds: where it lives, what it does, whether it is in service and how it gets there. The PM app's Platform screen is drawn from this file. `state` was checked from outside on the day in `checked`, by asking each Worker's address.",
-  "checked": "2026-11-23",
+  "checked": "2026-11-24",
   "workers": [
     {
       "name": "pm-console-edge",
       "title": "PM console",
       "group": "platform",
       "path": "pm-stack/console/edge",
-      "does": "Serves the PM app, does the core itself (the board, prompts, pull requests, ranked issues, the plan) and holds what waits for a machine.",
+      "does": "Serves the PM app, does the core itself (the board, prompts, pull requests, ranked issues, the plan), sends messages to agents itself through the message bridge on a service binding (as service:pm-stack), and holds what waits for a machine.",
       "state": "in service",
       "deploy": "actions",
       "workflow": "pm-console-edge-deploy.yml",
