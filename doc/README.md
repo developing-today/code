@@ -40,9 +40,11 @@ When migrating or filing material, ask which kind it is before choosing a home: 
 ## Research packages
 
 - `2026-11-24T00-24-54Z_audit_design-gaps/` — AUDIT-7 Lane 6 DESIGN-GAPS audit: designs missing, demanded, or insufficient across the four repos, with the prioritised packet list (tracking #13873).
-- `2026-11-24T00-40-00Z_audit_audit7-lane1-pr-sweep/` — AUDIT-7 Lane 1 PR-SWEEP audit: every open PR across the four repos read and dispositioned — 103 merged, 3 duplicates marked superseded, 90 blocked with named unblockers (tracking #13872).
+- `2026-11-24T00-58-48Z_research_code-book-census-lab/` — Census C for the Lab Book (tracking #13905): the Osseo site as the record supports it, the Talos/Cozystack/LINSTOR/DRBD cluster programme with the proven TALM per-node disk flow, the switches research folded in (21 devices; DX010 resolution; the #13920 inventory gap), the hardware inventory and its gaps, ESP32 verification (ESP32-S3 reference, ESP32-P4 named) and the Tanmatsu resolution — with the full supplements, issue census and grep outputs in the folder.
 - `2026-11-24T00-51-33Z_report_audit-7-lane-2-closed-issues-review/` — AUDIT-7 Lane 2 CLOSED-ISSUES review: all 8,161 issues closed 2026-10-23..2026-11-23 across the four repos triaged, high-risk union deep-read, per-issue ledger + all raw census data as supplements (tracking #13878).
 -  — AUDIT-7 Lane 7 STRAY-WORK audit: census of 18,594 items across the four repos, 10 evidence-backed trends in work not tied to a design or roadmap item, 34 orphaned issues linked into maintenance/scheduled-tasks/design-register parents with labels, 3 new labels in all four repos, and the repeatable stray-work procedure (tracking #13874).
+
+- `2026-11-24T00-40-00Z_audit_audit7-lane1-pr-sweep/` — AUDIT-7 Lane 1 PR-SWEEP audit: every open PR across the four repos read and dispositioned — 103 merged, 3 duplicates marked superseded, 90 blocked with named unblockers (tracking #13872).
 
 This list is the workflow's request catalog (`request_catalog` in [`.agents/research-workflow.json`](../.agents/research-workflow.json)). Add one line per new package. For a package's current state, run `python3 -I scripts/research_workflow.py status --package doc/<folder>`.
 
@@ -189,6 +191,7 @@ Two names break the pattern. They stay as they are because other documents link 
 - [ID investigation research corpus](2026-11-23T23-50-00Z_research_id-investigation/2026-11-23T23-50-00Z_research_id-investigation.md) — the 2026-11-23 research behind the ID programme investigation (#13240): system state, technology, Roc research, the ID-100 list.
 - [mcpx investigation research corpus](2026-11-23T23-51-36Z_research_mcpx-investigation/2026-11-23T23-51-36Z_research_mcpx-investigation.md) — the 2026-11-23 research behind the mcpx programme investigation (#13264), plus the mcpx door build notes.
 - [Code Book census — retrospective](2026-11-24T00-56-13Z_research_code-book-census-retrospective/2026-11-24T00-56-13Z_research_code-book-census-retrospective.md) — the retrospective census for the Code Book programme (#13905), compiled 2026-11-23: the honestly covered period assessed source by source, week-by-week rollups (biggest builds, hardest challenges, where the time went, capabilities unlocked) for W12–W48 with thin weeks stated plainly, month rollups, quarter/year honesty notes, and the capabilities timeline — with all raw supplements (source inventory, GitHub merged-PR counts and title samples, doc/ census, memory completion extracts, cycle-log inventory) inside the folder.
+- [PM book programme — research record](2026-11-24T01-11-42Z_research_pm-book-programme-13900/2026-11-24T01-11-42Z_research_pm-book-programme-13900.md) — The Project Management book programme's gathered material: coverage ledger, Turso estate list, surveys, LLM evidence pack, sideline deposits, Space content pack (#13900).
 
 ## Legacy places
 
