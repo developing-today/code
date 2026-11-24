@@ -2794,7 +2794,7 @@ mod task_history_tests {
             }}),
         );
         assert_eq!(enq["ok"], true, "{enq}");
-        let id = enq["task"]["id"].as_i64().expect("enqueued task id");
+        let id = enq["row"]["id"].as_i64().expect("enqueued task id");
         let status_of = |t: &TursoBackend| {
             get_task(t, id).unwrap().unwrap()["status"]
                 .as_str()
