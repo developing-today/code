@@ -95,3 +95,10 @@ updates:
     groups:
       nuget:
         patterns: ["*"]
+  - package-ecosystem: "npm"
+    directory: "/pkgs/grok-cli"
+    schedule:
+      interval: "weekly"
+    groups:
+      npm-grok-cli:
+        patterns: ["*"]
