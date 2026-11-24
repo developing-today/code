@@ -2751,4 +2751,89 @@ mod reprioritize_tests {
             .unwrap();
         assert!(rows.is_empty());
     }
+
+    // -- #14317: park ready_condition retention ---------------------
+
+    /// Park one claimed task with a caller-supplied ready
+    /// condition; returns (task id, park envelope).
+    fn park_with_condition(t: &TursoBackend) -> (i64, Value) {
+        let id = seed_task(t, "claimed", 90, json!({}), Some("w"));
+        let out = verb_park(
+            t,
+            &json!({
+                "task_id": id, "worker": "w", "reason": "waiting on the trigger",
+                "not_before": "2027-06-01T00:00:00Z",
+                "ready_condition": {"kind": "event_seen", "event_kind": "trigger_fired",
+                                    "note": "trigger prioritized"},
+                "progress": {},
+            }),
+        );
+        assert_eq!(out["ok"], true, "{out}");
+        (id, out)
+    }
+
+    /// #14317 oracle (storage + read-back): parking with
+    /// --ready-condition persists the supplied structured
+    /// condition, and the rich /list read-back behind `queue show`
+    /// / `list --json` returns it intact — before the fix the
+    /// rich projection omitted ready_condition (and park_kind /
+    /// wait_kind / last_error) entirely, so a parked task read
+    /// back `ready_condition: null` and lost its early-wake hook.
+    /// Oracle: the supplied condition object itself, compared
+    /// verbatim at both layers.
+    #[test]
+    fn park_retains_ready_condition_through_rich_list_readback_14317() {
+        let (t, _) = fake_backend();
+        let (id, out) = park_with_condition(&t);
+        let supplied = json!({"kind": "event_seen", "event_kind": "trigger_fired",
+                              "note": "trigger prioritized"});
+        // The park envelope's own row carries the condition.
+        assert_eq!(out["row"]["ready_condition"], supplied, "{out}");
+        // The stored row carries it, parked until the explicit
+        // not_before.
+        let row = get_task(&t, id).unwrap().unwrap();
+        assert_eq!(row["status"], "parked");
+        assert_eq!(row["ready_condition"], supplied);
+        assert_eq!(row["not_before"], "2027-06-01T00:00:00Z");
+        // The rich list read-back (queue show / list --json)
+        // carries it too, alongside the other park wait fields
+        // the show field list reads from the row.
+        let list = verb_list(&t, &json!({"rich": true, "task": id, "limit": 1}));
+        assert_eq!(list["ok"], true, "{list}");
+        let rows = list["rows"].as_array().unwrap();
+        assert_eq!(rows.len(), 1, "{list}");
+        assert_eq!(rows[0]["ready_condition"], supplied, "{list}");
+        assert_eq!(rows[0]["park_kind"], "absolute");
+        assert_eq!(rows[0]["wait_kind"], "external");
+        assert!(rows[0].get("last_error").is_some(), "{list}");
+    }
+
+    /// #14317 oracle (early wake): the stored condition is what
+    /// the park-revalidation sweeper evaluates — when the named
+    /// event fires, the sweeper releases the parked task even
+    /// though its not_before is still months away.
+    #[test]
+    fn parked_ready_condition_is_evaluated_before_not_before_14317() {
+        let (t, _) = fake_backend();
+        let (id, _) = park_with_condition(&t);
+        // The trigger fires: the named event lands on the task.
+        t.exec(
+            "INSERT INTO events (worker_id, task_id, kind, detail, created_at) \
+             VALUES ('trigger-source', ?, 'trigger_fired', '{}', ?)",
+            &[Arg::Int(id), Arg::Text(now_iso())],
+        )
+        .unwrap();
+        // Age the park past the sweeper's recheck cutoff.
+        t.exec(
+            "UPDATE tasks SET last_checked_at = '2020-01-01T00:00:00Z', \
+             updated_at = '2020-01-01T00:00:00Z' WHERE id = ?",
+            &[Arg::Int(id)],
+        )
+        .unwrap();
+        let summary = revalidate_parked(&t, 0, 10, false).unwrap();
+        assert_eq!(summary["released"], 1, "{summary}");
+        let row = get_task(&t, id).unwrap().unwrap();
+        assert_eq!(row["status"], "queued", "{row}");
+        assert_eq!(row["not_before"], Value::Null, "{row}");
+    }
 }
