@@ -1506,3 +1506,34 @@ headless browser at a phone's width. What was wrong, and what was done:
 - The console in service on the machine runs from `~/git/code`, which
   was on a lane's branch: the app it served was that branch's, and its
   code was seven hours behind main (#13833). Not fixed by this.
+
+## 2026-11-24T08:40Z Update: the app is told when something changes
+
+**Intent.** The app looked every twenty seconds. What changed in
+between was seen at the next look, and every look was a request
+whether or not anything had changed. The owner asked for an app that
+receives events as they happen.
+
+**Done.** The documents class says when what a document would say has
+changed (`Docs.onChange`: a section read with other content or another
+health, a value beside the sections, what the owner did), and never
+for a read that changed nothing. The Worker's object holds a WebSocket
+for each open copy of the app, by the platform's hibernation API, and
+passes those changes on: which documents, once for however many changes
+arrive together. The app reads them again by their tags. While someone
+is connected the object wakes every twenty seconds to read what has
+gone stale; with nobody connected it does not.
+
+**Not over the connection.** What the owner does. It goes by requests
+that are kept on the device and sent again, which a connection that may
+drop is no place for.
+
+**Checked.** In the real Worker runtime, with a real WebSocket: the
+owner is connected and a stranger is not (401), the platform answers
+the app's ping, something the owner does is said to the connected app
+by the document's name, and nobody is counted as connected after the
+app goes away. Nineteen faults planted one at a time: eighteen caught,
+and the nineteenth showed a flag that did nothing, which was removed.
+
+**Not seen.** A phone connected in service: `listening` in the health
+answer says when one is.
