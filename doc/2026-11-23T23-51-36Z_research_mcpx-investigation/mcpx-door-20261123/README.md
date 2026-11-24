@@ -82,14 +82,14 @@ Architecture in place; enforcement spec pending on #13657.
 
 ## Secrets — by name only, never values
 
-| Where | Name |
-| --- | --- |
-| fleet secrets (Bitwarden) | `cloudflare.access.mcpx-link-client-id` / `-client-secret` — bridge-door token the Worker presents |
-| fleet secrets (Bitwarden) | `cloudflare.api-token-mcpx-worker` — scoped deploy token |
-| fleet secrets (Bitwarden) | `mcpx.machine-bearer` — the /mcp machine bearer |
-| fleet secrets (Bitwarden) | `cloudflare.tunnel.sandbox-link-token` — the sandbox-link tunnel the bridge door rides |
-| GitHub environment `mcpx-production` | `MCPX_WORKER_CF_TOKEN` (same deploy token), `BRIDGE_ACCESS_CLIENT_ID`, `BRIDGE_ACCESS_CLIENT_SECRET`, `MACHINE_BEARER` |
-| Worker version secrets | `ACCESS_CLIENT_ID`, `ACCESS_CLIENT_SECRET`, `MACHINE_BEARER` — uploaded per version by the publish workflow from the environment secrets |
+| Where                                | Name                                                                                                                                     |
+| ------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| fleet secrets (Bitwarden)            | `cloudflare.access.mcpx-link-client-id` / `-client-secret` — bridge-door token the Worker presents                                       |
+| fleet secrets (Bitwarden)            | `cloudflare.api-token-mcpx-worker` — scoped deploy token                                                                                 |
+| fleet secrets (Bitwarden)            | `mcpx.machine-bearer` — the /mcp machine bearer                                                                                          |
+| fleet secrets (Bitwarden)            | `cloudflare.tunnel.sandbox-link-token` — the sandbox-link tunnel the bridge door rides                                                   |
+| GitHub environment `mcpx-production` | `MCPX_WORKER_CF_TOKEN` (same deploy token), `BRIDGE_ACCESS_CLIENT_ID`, `BRIDGE_ACCESS_CLIENT_SECRET`, `MACHINE_BEARER`                   |
+| Worker version secrets               | `ACCESS_CLIENT_ID`, `ACCESS_CLIENT_SECRET`, `MACHINE_BEARER` — uploaded per version by the publish workflow from the environment secrets |
 
 ## Deploys — cf version deployments via GitHub Actions
 

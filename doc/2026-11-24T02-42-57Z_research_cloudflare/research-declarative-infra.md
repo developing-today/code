@@ -46,8 +46,8 @@ Engine, static assets, service bindings).
 
 ### Auto-created vs must pre-exist
 
-**Automatic provisioning (the big change).** If a binding in the config has *no resource
-ID*, Wrangler creates the resource for you:
+**Automatic provisioning (the big change).** If a binding in the config has _no resource
+ID_, Wrangler creates the resource for you:
 
 - The configuration reference states: "Wrangler can automatically provision resources
   for you when you deploy your Worker… This currently works for the following resources:
@@ -88,8 +88,8 @@ ID*, Wrangler creates the resource for you:
   binding section)
 - **Vectorize** — not in the Wrangler auto-provisioning list; the binding references an
   existing index (`index_name`) created beforehand via `wrangler vectorize create` or
-  the dashboard. (Note: the *Deploy button* flow below does list
-...[truncated 14597 chars]  Vectorize among the resources it provisions — the two flows have different lists.)
+  the dashboard. (Note: the _Deploy button_ flow below does list
+  ...[truncated 14597 chars] Vectorize among the resources it provisions — the two flows have different lists.)
 - **The target zone** for any route or custom domain must already exist and be active
   in the account; Wrangler does not create zones or DNS.
 - **Secrets** are never in the config: they are set out-of-band with
@@ -98,13 +98,13 @@ ID*, Wrangler creates the resource for you:
 
 ### Reproducibility for another person
 
-Clone → `npm install` → `npx wrangler login` (OAuth) *or* set
+Clone → `npm install` → `npx wrangler login` (OAuth) _or_ set
 `CLOUDFLARE_API_TOKEN` + `CLOUDFLARE_ACCOUNT_ID` → `npx wrangler deploy`.
-With ID-less bindings, the deploy provisions KV/R2/D1/Queues/etc. into *their* account
+With ID-less bindings, the deploy provisions KV/R2/D1/Queues/etc. into _their_ account
 and writes the fresh IDs back into their local config copy. `wrangler dev` runs the
 same config locally (Miniflare/workerd emulation) with locally-provisioned resources.
 This is the lowest-friction route that still leaves the user in control of a normal
-git repo. The committed `wrangler.jsonc` should ship bindings *without* IDs (or with
+git repo. The committed `wrangler.jsonc` should ship bindings _without_ IDs (or with
 clearly-placeholder IDs) so each deployer gets their own resources.
 
 ### What Wrangler does NOT manage
@@ -148,7 +148,7 @@ in release notes) · https://developers.cloudflare.com/tunnel/guides/terraform/ 
 https://developers.cloudflare.com/pipelines/reference/terraform/ ·
 https://registry.terraform.io/providers/cloudflare/cloudflare/latest/docs/resources/workflow
 
-Worker *code* in Terraform is clunky compared to Wrangler: `cloudflare_workers_script`
+Worker _code_ in Terraform is clunky compared to Wrangler: `cloudflare_workers_script`
 takes built file content + `content_sha256`, and the newer granular
 `cloudflare_worker_version` / deployment resources were still labelled **beta** in the
 2025-10-09 changelog.
@@ -157,7 +157,7 @@ Source: https://developers.cloudflare.com/changelog/2025-10-09-workflows-terrafo
 ### State & maturity caveats
 
 - Standard Terraform state rules apply: the state file is a local `terraform.tfstate`
-  unless *you* configure a remote backend (for a team, you must). Nothing Cloudflare-
+  unless _you_ configure a remote backend (for a team, you must). Nothing Cloudflare-
   specific hosts it for you. Auth is an API token passed to the provider
   (`api_token`, sourced from env in practice).
   Sources: https://developers.cloudflare.com/pipelines/reference/terraform/ (provider
@@ -170,7 +170,7 @@ Source: https://developers.cloudflare.com/changelog/2025-10-09-workflows-terrafo
   Treat v5 as GA-but-still-hardening; pin versions and read the per-release notes.
   Source: https://developers.cloudflare.com/changelog/product/terraform/
 - **cf-terraforming** is Cloudflare's official Go tool (built on cloudflare-go) that
-  reads an existing account/zone and *generates* Terraform config + import statements,
+  reads an existing account/zone and _generates_ Terraform config + import statements,
   for adopting Terraform over hand-built infrastructure.
   Source: https://blog.cloudflare.com/introducing-cf-terraforming/
 
@@ -188,7 +188,7 @@ Source: https://www.pulumi.com/registry/packages/cloudflare/
   the Terraform provider — the registry's package details state "This Pulumi package is
   based on the `cloudflare` Terraform Provider" — so resource breadth tracks
   Terraform's (zones, DNS, Workers, R2, D1, Zero Trust, Tunnels…), with the same
-  coverage lag. Cloudflare's own Pulumi tutorial demonstrates a *dynamic provider*
+  coverage lag. Cloudflare's own Pulumi tutorial demonstrates a _dynamic provider_
   workaround for a resource the provider didn't support yet (Vectorize), and pairs
   Pulumi with Wrangler for Worker deployment.
   Sources: https://www.pulumi.com/registry/packages/cloudflare/api-docs/tunnel/
@@ -225,12 +225,13 @@ https://sst.dev/docs/component/cloudflare/worker/
   Source: https://sst.dev/docs/cloudflare/
 - **Credentials**: an account API token; SST's Cloudflare guide says to create it from
   the **"Edit Cloudflare Workers"** token template and add permissions such as
-  *Account – D1 – Edit*.
+  _Account – D1 – Edit_.
   Source: https://sst.dev/docs/cloudflare/
 
 **Verdict:** nice if you want SST's component/linking model or one config spanning AWS
-+ Cloudflare. For a pure-Cloudflare app it's a heavier stack (SST → Pulumi → TF
-provider v5) than the problem needs.
+
+- Cloudflare. For a pure-Cloudflare app it's a heavier stack (SST → Pulumi → TF
+  provider v5) than the problem needs.
 
 ---
 
@@ -345,14 +346,14 @@ in-browser Playground is for throwaway experiments, not a distribution mechanism
 
 ### What the other person needs, per route
 
-| Route | They need | Commands | State to manage |
-|---|---|---|---|
-| Deploy button | CF account + GitHub/GitLab account | 0 local (clicks only) | None (CF hosts repo copy + Builds) |
-| Wrangler config | CF account; Node; `wrangler login` OAuth **or** scoped API token + account ID env vars | `npm install`, `npx wrangler deploy` | None — config file is the state |
-| Alchemy | CF account + API credentials; Bun | `bun install`, `bun alchemy deploy` | `.alchemy/` local dir, or CF-backed store |
-| SST | CF account API token ("Edit Cloudflare Workers" template + perms) | `npx sst deploy` | SST state (can be an R2 bucket via `home: "cloudflare"`) |
-| Terraform | CF API token; Terraform CLI; a state backend decision | `terraform init && terraform apply` | tfstate — **you** must host/share it |
-| Pulumi | CF API token; Pulumi CLI + language runtime | `pulumi up` | Pulumi Cloud or self-managed backend |
+| Route           | They need                                                                              | Commands                             | State to manage                                          |
+| --------------- | -------------------------------------------------------------------------------------- | ------------------------------------ | -------------------------------------------------------- |
+| Deploy button   | CF account + GitHub/GitLab account                                                     | 0 local (clicks only)                | None (CF hosts repo copy + Builds)                       |
+| Wrangler config | CF account; Node; `wrangler login` OAuth **or** scoped API token + account ID env vars | `npm install`, `npx wrangler deploy` | None — config file is the state                          |
+| Alchemy         | CF account + API credentials; Bun                                                      | `bun install`, `bun alchemy deploy`  | `.alchemy/` local dir, or CF-backed store                |
+| SST             | CF account API token ("Edit Cloudflare Workers" template + perms)                      | `npx sst deploy`                     | SST state (can be an R2 bucket via `home: "cloudflare"`) |
+| Terraform       | CF API token; Terraform CLI; a state backend decision                                  | `terraform init && terraform apply`  | tfstate — **you** must host/share it                     |
+| Pulumi          | CF API token; Pulumi CLI + language runtime                                            | `pulumi up`                          | Pulumi Cloud or self-managed backend                     |
 
 ### Ranking for a solo dev sharing a Cloudflare app
 
@@ -361,11 +362,11 @@ in-browser Playground is for throwaway experiments, not a distribution mechanism
    files, no extra toolchain; covers the entire Worker-side stack (Workers, D1, R2,
    KV, Queues, DOs, Containers, Workflows, AI). Its blind spot is everything
    zone/account-level.
-2. **Deploy to Cloudflare button** — the absolute lowest friction for *consumers*
+2. **Deploy to Cloudflare button** — the absolute lowest friction for _consumers_
    of your template (no local tooling at all, broadest auto-provisioning list in
    Cloudflare's own docs). Ranked second only because the deployer ends up with a
    forked repo + dashboard-managed IDs rather than a clean local-first workflow;
-   ideal *in addition to* #1 — the same repo supports both.
+   ideal _in addition to_ #1 — the same repo supports both.
 3. **Alchemy** — best ergonomics for a TypeScript-native, multi-resource app
    (typed bindings, D1 migrations in the deploy, stages, local emulation), but
    **beta** and Effect-flavoured. Adopt knowingly.
@@ -392,14 +393,14 @@ in-browser Playground is for throwaway experiments, not a distribution mechanism
   an R2 subscription… Complete the checkout flow to add an R2 subscription").
   Source: https://developers.cloudflare.com/r2/get-started/
 - **The first API token** — token creation is a dashboard act (chicken-and-egg);
-  only *after* a sufficiently-privileged token exists can Terraform manage further
+  only _after_ a sufficiently-privileged token exists can Terraform manage further
   tokens (`cloudflare_account_token`). `wrangler login` OAuth avoids the token for
   interactive use.
 - **Domains** — buying a domain (Registrar purchase is a checkout), transferring a
   domain in, and changing nameservers at an external registrar are outside IaC;
   a zone only becomes active in Cloudflare once nameservers point at it, so routes/
   custom domains in any tool wait on that human/DNS step.
-- **Secrets' values** — secret *slots* can be declared, but the values must be
+- **Secrets' values** — secret _slots_ can be declared, but the values must be
   supplied by the runner (`wrangler secret put`, SST/Pulumi/Terraform secret
   config); a template can never ship working third-party API keys.
 - **Product ToS/first-run gates** — several products have dashboard first-run steps

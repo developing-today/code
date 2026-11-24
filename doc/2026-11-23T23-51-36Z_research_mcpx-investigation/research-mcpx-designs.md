@@ -92,10 +92,11 @@ exemptions, ~60 internal packages, one public Go package (`pkg/client`), the
 transports socket/systemd + ssh + tsnet.
 
 Suspected gaps (hypotheses for the survey pass, labelled unverified):
+
 - The book predates parts of the settings ratchet: whether the configuration
   chapter enumerates all 252 settings with defaults + provenance, or a subset,
   is unmeasured. The docs-twins check inside `.#mcpx-docs` gates twin currency
-  for *some* surfaces only.
+  for _some_ surfaces only.
 - The exemption tail (§5 of the state file) — the book's `declared-but-unread.md`
   covers declared-but-unread settings; whether the 8 effect exemptions are
   documented as a set anywhere public is unmeasured.
@@ -122,7 +123,7 @@ Suspected gaps (hypotheses for the survey pass, labelled unverified):
    MCP Sampling's deprecation forces the question. The `proxy` command and
    `prompt` command both hang off this.
 5. **Two searches**: mcpx's semantic tool search (embeddings subsystem,
-   `embeddings.wasmPath`, wazero) vs Atlas corpus search (served *through*
+   `embeddings.wasmPath`, wazero) vs Atlas corpus search (served _through_
    mcpx as the `atlas` remote server). Discovery-inside-mcpx vs corpus search
    is an un-drawn boundary.
 6. **Embedding mcpx itself** (#1877, #1885): public Go API (pkg/client exists),

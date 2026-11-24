@@ -54,7 +54,7 @@ describe("queryKey", () => {
     };
     const words = ["alpha", "beta", "fleet", "queue", "café", "naïve", "x", "deep", "search", "42", "MUSE"];
     const spaces = [" ", "  ", "\t", "\n", " \t "];
-    const pick = <T,>(xs: readonly T[]): T => xs[Math.floor(next() * xs.length)];
+    const pick = <T>(xs: readonly T[]): T => xs[Math.floor(next() * xs.length)];
     for (let i = 0; i < 64; i++) {
       const wordCount = 1 + Math.floor(next() * 4);
       let q = "";

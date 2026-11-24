@@ -5,6 +5,7 @@ The fifth house book, assembled from the programme's finished drafts and landed 
 **Layout (ruled):** `pm-stack/book/` + `pm-stack/book.toml`, mirroring `pkgs/fleet` (book.toml at the package root, chapters directly under `book/`, no `src/`). 58 chapters + SUMMARY.
 
 **Plumbing:**
+
 - `pm-stack/docs.nix` — mirrors `pkgs/fleet/docs.nix`; flake output `.#pm-docs` wired in `lib/default.nix` (`pmDocs`).
 - `.github/workflows/pm-docs.yml` — build-only workflow mirroring `fleet-docs.yml`; never deploys.
 - `.github/workflows/mcpx-docs.yml` — the shared deploy job gains two steps after the id book: build `pm-docs` with siteUrl `/code/pm/` and stage under `site/pm/`. Published URL: https://developing-today.github.io/code/pm/

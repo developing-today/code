@@ -1,6 +1,6 @@
 # pkarr and discovery
 
-*Part of the [iroh ecosystem research record](2026-11-23T22-00-30Z_research_iroh-ecosystem.md).*
+_Part of the [iroh ecosystem research record](2026-11-23T22-00-30Z_research_iroh-ecosystem.md)._
 
 ## What pkarr is
 
@@ -35,7 +35,7 @@ format restricts it to addresses. In practice the ecosystem uses it as
 a tiny, globally resolvable, self-certifying data channel:
 
 - **Pubky** publishes each user's homeserver pointer as a record in
-  their packet; resolving a person *is* resolving their pkarr packet.
+  their packet; resolving a person _is_ resolving their pkarr packet.
 - **pkdns** publishes whole DNS zone files as pkarr packets, making
   public keys function as resolvable domains for ordinary DNS
   clients.
@@ -51,7 +51,7 @@ setup) that any third party can carry without being trusted.
 ## Role two: the initial discovery and relay bootstrap
 
 This is the role iroh productionised. The problem: an `EndpointId` is
-all you have; you need a *dialable* address, and the endpoint's IP
+all you have; you need a _dialable_ address, and the endpoint's IP
 changes constantly.
 
 - The endpoint signs a pkarr packet containing its **relay URL** and

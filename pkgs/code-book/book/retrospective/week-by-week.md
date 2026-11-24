@@ -220,7 +220,7 @@ combined window.
   loop: Drew's 2026-11-22 order to keep picking up `fleet agent next` items
   continuously, with the running-lane floor raised through the day.
 - **Capabilities unlocked:** fleet access verified without SSH (`fleet agent
-  next` run directly from the sandbox, verified 2026-11-21); a Grok seat
+next` run directly from the sandbox, verified 2026-11-21); a Grok seat
   enrolled (2026-11-22).
 - **What we can do now:** any enrolled agent, of any kind, can claim any
   queue job under any name — the lane model the Nov 23 burn then ran on.

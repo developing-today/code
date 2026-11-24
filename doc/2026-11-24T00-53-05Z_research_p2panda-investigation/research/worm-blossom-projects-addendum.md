@@ -40,7 +40,7 @@ for manipulating nested data, flexible enough to be useful for a variety of
 different tasks (chat, forums, image sharing, etc)", illustrated with
 hand-drawn UI sketches ([projects page](https://worm-blossom.org/projects/)).
 
-**How it would work.** The single organisational primitive is *nesting*:
+**How it would work.** The single organisational primitive is _nesting_:
 Willow entries arranged in nested paths, multi-writer and capability-scoped
 via Meadowcap, and the "applications" (a chat, a forum, an image board) are
 not separate programs but emergent shapes of how a group nests and arranges
@@ -139,7 +139,7 @@ Codeberg org (`macromania`); the GitHub repo is a migration stub pointing
 there (catalogue §8). 2026 development concentrated in **macromania-web**
 (cross-domain URL references, asset moving/transformation, automatic
 stylesheet/script dependency injection, principled KaTeX rendering) and in
-porting **defref** to support *cross-domain* references via WebTT — so
+porting **defref** to support _cross-domain_ references via WebTT — so
 worm-blossom.org can now define-discuss terms (e.g. AreaSlices) whose
 definitions live on willowprotocol.org (catalogue, 2026-W42 and W46
 entries).
@@ -157,13 +157,13 @@ collective's formative process failures — the tool is good; the rewrite it
 enabled was a lesson.
 
 **Relation to the stack.** Orthogonal to Willow-the-protocol: it is the
-*publishing* layer for the whole project (specs, diary, sites), and the
+_publishing_ layer for the whole project (specs, diary, sites), and the
 substrate WebTT's reference behaviour is expressed in (via
 macromania-webtt).
 
 **Estate relevance.** Low, and indirect. We will not adopt a niche,
 documentation-poor TypeScript templating DSL. But defref + WebTT together
-are a genuinely interesting *documentation technique* — define a term once,
+are a genuinely interesting _documentation technique_ — define a term once,
 reference it from any of several independently hosted sites, get a tooltip
 of the canonical definition — which is the closest existing analogue to
 what our own multi-book documentation (fleet/atlas/id/mcpx) might want for
@@ -172,7 +172,7 @@ cross-references. Worth remembering as a pattern, not a dependency.
 ## 4. Willow URIs — spec published (Proposal); no implementation found
 
 **What it is.** The `willow://` URI scheme: a standardised, human-readable
-way to *name* Willow resources — the stack's missing URL. The specification
+way to _name_ Willow resources — the stack's missing URL. The specification
 opens: "each willow:// URI identifies either an Entry (optionally together
 with a single contiguous slice of its Payload), or an AreaOfInterest in
 some namespace" ([Willow URIs spec](https://willowprotocol.org/specs/uris/)).
@@ -186,7 +186,7 @@ semantic details reward an engineer's attention:
 
 - **Digest pinning that respects deletion.** An entry URI may carry an
   expected payload digest; it then identifies only an entry with exactly
-  that payload. The spec is explicit that this does *not* pin data against
+  that payload. The spec is explicit that this does _not_ pin data against
   pruning: "using an Entry URI will not 'pin' it in any way… retrieval
   deliberately fails if the intended Entry got pruned." Deletion wins over
   links, by design.
@@ -198,7 +198,7 @@ semantic details reward an engineer's attention:
   dataset," the same Area object Meadowcap grants over and sync
   reconciles.
 - **Resolution hints.** Every URI contains a (possibly empty, ordered)
-  sequence of *other* URIs serving as hints for how/where to obtain the
+  sequence of _other_ URIs serving as hints for how/where to obtain the
   data — the scheme is transport-agnostic and expects resolution to be
   bootstrapped from ordinary web hints.
 
@@ -215,7 +215,7 @@ released implementation has been found** — not in willow25, not elsewhere.
 It remains a published Proposal awaiting code.
 
 **Relation to the stack.** The naming/addressing layer: Meadowcap says who
-may write, WTP moves data, URIs are how anything *refers* to data. Cobweb
+may write, WTP moves data, URIs are how anything _refers_ to data. Cobweb
 is its flagship intended consumer (mutable links without link rot);
 sneakerweb conspicuously does without it (subspace key = domain, served
 locally), which shows the scheme is for the live, linked web of Willow
@@ -242,13 +242,13 @@ term on willowprotocol.org and you get its canonical definition, wherever
 it is hosted.
 
 **How it works.** Three components ([WebTT](https://worm-blossom.org/webtt)):
-(1) *tooltip definitions* — arbitrary self-contained static HTML pages,
-served from any domain; (2) *references* — any HTML element carrying a
-`data-tooltip-anchor=<tooltip URL>` attribute; (3) *one client-side
-JavaScript file* (plus CSS) included on both referencing pages and tooltip
+(1) _tooltip definitions_ — arbitrary self-contained static HTML pages,
+served from any domain; (2) _references_ — any HTML element carrying a
+`data-tooltip-anchor=<tooltip URL>` attribute; (3) _one client-side
+JavaScript file_ (plus CSS) included on both referencing pages and tooltip
 pages, which loads the tooltip page in a **sandboxed iframe** on hover.
 Nesting falls out naturally: a tooltip page can itself contain anchors.
-The specification proper prescribes only the *required communication flow*
+The specification proper prescribes only the _required communication flow_
 between tooltip page and containing page (how heights/presence are
 negotiated); how tooltips are displayed, timed, or dismissed is explicitly
 implementation-defined, so independent compatible implementations are
@@ -273,8 +273,8 @@ worm-blossom.org, bab-hash.org, sneakerweb.org) reads as one hyperlinked
 document because definitions resolve across domains at hover time.
 
 **Estate relevance.** Minor but real, as a technique rather than a
-product: WebTT is a working proof that *static, serverless cross-references
-between separately hosted documents* are practical — no API, no build-time
+product: WebTT is a working proof that _static, serverless cross-references
+between separately hosted documents_ are practical — no API, no build-time
 coupling, just a convention plus one script. If our published books ever
 want live cross-book definition references, this is the lightest known
 pattern for it. As infrastructure for fleet/id/atlas/mcpx or the iroh work,
@@ -284,11 +284,11 @@ it is irrelevant.
 
 ## Bottom line for the five
 
-Two of the five are real, shipped software — and both are *publishing
-tooling* (Macromania, WebTT), not p2p technology. One is a finished-on-paper
+Two of the five are real, shipped software — and both are _publishing
+tooling_ (Macromania, WebTT), not p2p technology. One is a finished-on-paper
 naming spec waiting for an implementation (Willow URIs). Two are
 application visions with no code at all (Rummager, Cobweb). That
 distribution is itself the finding: worm-blossom's protocol layer is
 genuinely built, its site tooling is genuinely built, and its application
-layer — the layer that would show what Willow is *for*, end-user-side —
+layer — the layer that would show what Willow is _for_, end-user-side —
 remains sketches, one rejected grant, and good intentions.

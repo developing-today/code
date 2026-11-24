@@ -234,11 +234,22 @@ fn identity_profiles_differ_in_facts_not_just_names() {
     // profiles likewise. Neither pair is interchangeable.
     let blob = facts("iroh-blob-blake3");
     let event = facts("event-payload-blake3");
-    assert_eq!(family(&blob.0), family(&event.0), "both profiles are BLAKE3-256");
-    assert_ne!(blob, event, "blob and event BLAKE3 commitments differ in input");
+    assert_eq!(
+        family(&blob.0),
+        family(&event.0),
+        "both profiles are BLAKE3-256"
+    );
+    assert_ne!(
+        blob, event,
+        "blob and event BLAKE3 commitments differ in input"
+    );
     let artifact = facts("artifact-sha256");
     let atlas = facts("atlas-content-hash");
-    assert_eq!(family(&artifact.0), family(&atlas.0), "both profiles are SHA-256");
+    assert_eq!(
+        family(&artifact.0),
+        family(&atlas.0),
+        "both profiles are SHA-256"
+    );
     assert_ne!(
         artifact, atlas,
         "artifact SHA-256 over canonical JSON differs from observed Atlas SHA-256 over chunk text"
@@ -270,7 +281,10 @@ fn source_evidence_carries_each_identity_mechanism() {
             &["Hash::digest"],
         ),
         ("crates/id-worlds/src/world_store.rs", &["journal.jsonl"]),
-        ("crates/id-sync/src/artifact.rs", &["signed_bytes", "Sha256"]),
+        (
+            "crates/id-sync/src/artifact.rs",
+            &["signed_bytes", "Sha256"],
+        ),
     ];
     for (rel, markers) in cases {
         let text = std::fs::read_to_string(manifest_dir().join(rel))

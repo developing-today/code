@@ -20,24 +20,24 @@ Readiness has four dimensions: process reachability, refresh activity, initial i
 
 Bind every distributed credential file to immutable provider item and project IDs, owning service, intended principal, audience and required seat capability. Distinguish daemon credentials from client credentials at lookup. Ambiguous aliases fail before any file is created. Install atomically under the intended owner and private mode. Audit the protected local recovery copy by version, permission and a scoped restore canary. Return a verdict without logging values or reusable fingerprints. The transport chain may recover from a connection failure using a route with equivalent authority. A denial or expired grant terminates the lookup across transports.
 
-| Event or class | Proposed behavior | Independent oracle |
-|---|---|---|
-| Privileged or one-time capability | Bound by audience, expiry, revocation and class-specific maximum age | A revoked synthetic credential fails at the consuming service on every transport. |
-| Explicitly offline-eligible credential | Retain its last successful observation and bounded age | A fixed clock one tick beyond the allowed age produces a precise stale verdict. |
-| One failed item fetch | Retain the old revision and observation age | Other entries update and the failed item never becomes artificially fresh. |
-| Complete, authoritative list omits an item | Reconcile removal after inventory completion | An interrupted or malformed paginated list preserves prior entries. |
+| Event or class                             | Proposed behavior                                                    | Independent oracle                                                                |
+| ------------------------------------------ | -------------------------------------------------------------------- | --------------------------------------------------------------------------------- |
+| Privileged or one-time capability          | Bound by audience, expiry, revocation and class-specific maximum age | A revoked synthetic credential fails at the consuming service on every transport. |
+| Explicitly offline-eligible credential     | Retain its last successful observation and bounded age               | A fixed clock one tick beyond the allowed age produces a precise stale verdict.   |
+| One failed item fetch                      | Retain the old revision and observation age                          | Other entries update and the failed item never becomes artificially fresh.        |
+| Complete, authoritative list omits an item | Reconcile removal after inventory completion                         | An interrupted or malformed paginated list preserves prior entries.               |
 
 The [per-item refresh change](https://github.com/developing-today/code/pull/8491) already distinguishes ages, partial results and authoritative delisting. Evaluate cost before selecting a new TTL. A list-plus-one-get-per-entry design makes 222 provider calls at 221 items and 2,211 at 2,210 items, before retries. Confirm the installed CLI’s list contents, revision semantics, privacy and pagination using a synthetic project. Compare full list-only, changed-revision fetch plus periodic full reconciliation, and current behavior at 0%, 1% and 100% churn. Measure list time, fetch makespan, bytes, process starts, throttling, memory and rotation-to-availability latency. Reject stale results from superseded sweeps and distinguish a completed attempt from a successful fetch.
 
 ## Recovery authority and rollout
 
-| Leg | Local observation | Recovery owner |
-|---|---|---|
-| Tailnet | Daemon state and intended peer reachability | Host service manager restores a failed local daemon. A peer outage stays attributed to that route. |
-| Relay | Listener and authenticated upstream round trip | Relay reconnects with bounded backoff after transport recovery. |
-| Session broker | Framed challenge via the normal relay path | Broker supervisor repairs its listener or diagnoses negotiation failure. |
+| Leg            | Local observation                                         | Recovery owner                                                                                             |
+| -------------- | --------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
+| Tailnet        | Daemon state and intended peer reachability               | Host service manager restores a failed local daemon. A peer outage stays attributed to that route.         |
+| Relay          | Listener and authenticated upstream round trip            | Relay reconnects with bounded backoff after transport recovery.                                            |
+| Session broker | Framed challenge via the normal relay path                | Broker supervisor repairs its listener or diagnoses negotiation failure.                                   |
 | Secrets broker | Refresh stage, age of last success, scoped synthetic read | The refresh worker owns bounded upstream timeout and retry. A reachable, refreshing process stays running. |
-| GitHub | Authorized read of the intended repo | Credential owner handles denial. Rate-limited requests back off using provider evidence. |
+| GitHub         | Authorized read of the intended repo                      | Credential owner handles denial. Rate-limited requests back off using provider evidence.                   |
 
 Size cold readiness gates from measured list time, fetch batches, installation, allowed retries and probe delay. A user-facing rollout timeout should preserve the previous usable generation. It must not repeatedly kill a cold refresh before the inventory becomes usable. Preflight an isolated listener, serialize heal and deployment per service, and journal activation intent before changing the registry pointer. Verify the running executable, generation directory, listener and authenticated client. On interrupted activation, reconcile the pointer with the durable journal and restore the previous working closure when the candidate fails. Use the [registry deployment path](https://github.com/developing-today/code/pull/7692) for the real cutover.
 

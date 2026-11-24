@@ -6,15 +6,15 @@ commercial · **Demo/toy** = exists to demonstrate the language or a platform.
 
 ## Production
 
-- **Niclas Åhdén's production Roc (Joy framework)** — *Production,
-  small-team/consulting scale.* Åhdén (instateam.se) has used Roc in
+- **Niclas Åhdén's production Roc (Joy framework)** — _Production,
+  small-team/consulting scale._ Åhdén (instateam.se) has used Roc in
   production for ~2 years; Feldman calls him "Roc's most prolific production
   user." His Func Prog Sweden talk (2026-11-10), "Roc and Joy: Productivity in
   Production," states Joy "already powers real web apps in the wild." His
   package suite (see the libraries page) is the by-product of that work.
   Sources: [rtfeldman.com/fp-vs-c](https://rtfeldman.com/fp-vs-c),
   [github.com/niclas-ahden](https://github.com/niclas-ahden).
-- **roc-deflate** — *Production, single-package.* Åhdén's pure-Roc DEFLATE
+- **roc-deflate** — _Production, single-package._ Åhdén's pure-Roc DEFLATE
   implementation runs in **paid production**. Feldman spent weeks optimising
   it and benchmarked it against libdeflate over 144 Silesia-corpus runs
   (levels L1–L12): median **8.9% slower than libdeflate on a Ryzen 9 3900X,
@@ -23,14 +23,14 @@ commercial · **Demo/toy** = exists to demonstrate the language or a platform.
   are non-streaming only, and one heavily optimised package is not the general
   case. Source: [rtfeldman.com/fp-vs-c](https://rtfeldman.com/fp-vs-c)
   (2026-10-22).
-- **roc-pdf in production** — *Production, single-package.* Niclas Åhdén
+- **roc-pdf in production** — _Production, single-package._ Niclas Åhdén
   generates real-estate record-sale flyers with Luke Boswell's roc-pdf 0.1.0
   (reported in the November Zulip window).
 
 ## Substantial hobby / community infrastructure
 
 - **Steve Howell's [roc.lynrummy.com](https://roc.lynrummy.com) portfolio** —
-  *Substantial hobby, production-adjacent.* The largest public body of
+  _Substantial hobby, production-adjacent._ The largest public body of
   new-compiler Roc application code found in this investigation, all UPL-1.0
   and, by the author's own account, built "through agentic development, with
   Claude"; the apps also run in-browser as wasm.
@@ -44,19 +44,19 @@ commercial · **Demo/toy** = exists to demonstrate the language or a platform.
     roc-chat message; held to 314 frozen CommonMark/GFM spec examples.
   - **roc-syntax-color** — 5,242 lines; syntax highlighting for 7 languages.
   - **Safari Ride** — 14,268 lines, 98 modules, 816 expects; plus a 39-chapter
-    online book, *Safari Ride: a tour of a real Roc program* (early draft).
+    online book, _Safari Ride: a tour of a real Roc program_ (early draft).
   - **A BASIC interpreter** — 6,733 lines; ECMA-55 Minimal BASIC plus the 1978
     Creative Computing dialect; graded against 208 NBS test programs and 99
-    games from *BASIC Computer Games*.
+    games from _BASIC Computer Games_.
   - **Roc on Shale** — 25 Roc programs, ~25,700 lines: code-check/report
     scripts for his Shale agent scripting language.
   - **Seattle Delivery** (4,704 lines; vehicle-routing solver, Clarke–Wright
-    + local search, bit-for-bit reproducible native vs wasm), **Fast Track**
-    (4,166 lines; board game with search AI), **Dog Park** (3,688 lines;
-    herding game), **Safari Walk** (1,666 lines; built on the Rocco 3D
-    engine), a shared 1,439-line chess kit behind Knight's Tour / Eight
-    Queens, the roc-screensaver platform, and animated shorts (*Trick or
-    Treat*, *Welcome to Roc*, *Robot Thanksgiving*).
+    - local search, bit-for-bit reproducible native vs wasm), **Fast Track**
+      (4,166 lines; board game with search AI), **Dog Park** (3,688 lines;
+      herding game), **Safari Walk** (1,666 lines; built on the Rocco 3D
+      engine), a shared 1,439-line chess kit behind Knight's Tour / Eight
+      Queens, the roc-screensaver platform, and animated shorts (_Trick or
+      Treat_, _Welcome to Roc_, _Robot Thanksgiving_).
   - Also from the November window: **Roc on a unikernel** — a Roc app running
     on zig-metal-unikernel + zig-webbox.
   - Howell is also writing "a little Roc book" — early draft at
@@ -66,15 +66,15 @@ commercial · **Demo/toy** = exists to demonstrate the language or a platform.
 
 ## Demos and smaller projects
 
-- **Rocci Bird** (bhansconnect, 2024; art by Luke DeVault) — *Demo, but a
-  load-bearing one.* A WASM-4 Flappy-Bird-like, ported to the new compiler as
+- **Rocci Bird** (bhansconnect, 2024; art by Luke DeVault) — _Demo, but a
+  load-bearing one._ A WASM-4 Flappy-Bird-like, ported to the new compiler as
   the feature-parity proof: `roc build --opt=size` produces a **31 KB wasm**,
   less than half the old compiler's output. Playable on itch.io and embedded
   in Feldman's rewrite post. Source:
   [rtfeldman.com/rust-to-zig](https://rtfeldman.com/rust-to-zig).
 - **roc-ray example games/tools** (with the platform) — Breakout, Spark Run,
   Cave Climb, Pixel Workshop, Particles, Live Plot, Postcard Studio.
-  *Small-but-complete.*
+  _Small-but-complete._
 - **kai** ([thebrandonlucas/kai](https://github.com/thebrandonlucas/kai)) — a
   CLI frontend for Nix, listed as a showcase app on the awesome list.
 - **roc-gui demo apps** — a dozen GPUI demo applications (HTTP Workbench,

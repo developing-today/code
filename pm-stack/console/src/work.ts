@@ -5,11 +5,29 @@
 // Every write is something the fleet already understands: an answer to a
 // decision set through the dashboard's own endpoint, an issue and a
 // queue task, a comment, a label.
+import { type Census, censusOf, type NeedsItem, readCensus } from "./needs.ts";
 import { OpError, type Ops, PRIORITY_SCALE, type Row, type RunResult } from "./ops.ts";
 import { timed } from "./timed.ts";
 
 const P = "CASE WHEN json_valid(payload) THEN payload ELSE '{}' END";
 const G = "CASE WHEN json_valid(progress) THEN progress ELSE '{}' END";
+/** A task's condition for being ready, where it is JSON; `{}` where it
+ * is words, or nothing. */
+const R = "CASE WHEN json_valid(ready_condition) THEN ready_condition ELSE '{}' END";
+/** How many tasks of a queue are blocked, by the kind of reason: one
+ * written on the task (each is its own text, so the texts are not
+ * counted: the commonest six once said fifteen of 272), a time waited
+ * for and whether it has passed, other tasks waited on, or nothing
+ * recorded. Every blocked task is counted once, in the order the
+ * reason shown for it is chosen (reason, blocker, condition, tasks). */
+export const BLOCKED_KINDS_SQL = `SELECT CASE
+  WHEN coalesce(json_extract(${G},'$.reason'), json_extract(${G},'$.blocker')) IS NOT NULL THEN 'reason'
+  WHEN json_extract(${R},'$.kind') = 'time' THEN
+    CASE WHEN substr(json_extract(${R},'$.until'),1,19) <= strftime('%Y-%m-%dT%H:%M:%S','now') THEN 'time-past' ELSE 'time' END
+  WHEN coalesce(ready_condition,'') <> '' THEN 'reason'
+  WHEN coalesce(blocked_deps,'') NOT IN ('','[]') THEN 'tasks'
+  ELSE 'none' END AS kind, count(*) AS n
+  FROM tasks WHERE queue = ? AND status = 'blocked' GROUP BY 1 ORDER BY n DESC`;
 const TASK_COLS = `id, title, priority, status, attempts,
   substr(coalesce(claimed_at,''),1,19) AS claimed, substr(coalesce(lease_until,''),1,19) AS lease,
   substr(created_at,1,19) AS created, worker_id AS worker, lane_id AS lane, claim_model AS model,
@@ -163,16 +181,13 @@ export class Work {
         sql: `SELECT ${TASK_COLS} FROM tasks WHERE queue = ? AND status = 'queued' ORDER BY (priority IS NULL), priority ASC, created_at ASC, id ASC LIMIT 60`,
         args: [q],
       },
-      {
-        sql: `SELECT substr(coalesce(json_extract(${G},'$.reason'), json_extract(${G},'$.blocker'), ready_condition, blocked_deps, 'no reason recorded'),1,140) AS why, count(*) AS n FROM tasks WHERE queue = ? AND status = 'blocked' GROUP BY 1 ORDER BY n DESC LIMIT 6`,
-        args: [q],
-      },
+      { sql: BLOCKED_KINDS_SQL, args: [q] },
     ]);
     return {
       counts: Object.fromEntries(counts.map((r) => [String(r.status), Number(r.n)])),
       now: now.map(this.task),
       next: next.map(this.task),
-      blockedWhy: why,
+      blockedKinds: why.map((r) => ({ kind: String(r.kind), n: Number(r.n) })),
     };
   }
 
@@ -226,43 +241,30 @@ export class Work {
     return { moving, waiting };
   }
 
-  /** Issues and pull requests labelled as waiting on the owner. */
-  async census() {
+  /** Issues and pull requests labelled as waiting on the owner, as the
+   * dashboard has censused them. */
+  async census(): Promise<Census> {
     const data = (await this.dash("/api/needs-drew.json")) as {
       fetchedAt?: string;
       complete?: boolean;
-      items?: {
-        ref: string;
-        kind: string;
-        title: string;
-        url: string;
-        needsLabels: string[];
-        reason: string | null;
-        updatedAt: string;
-        hands?: { kind: string; action: string | null } | null;
-      }[];
+      items?: (Omit<NeedsItem, "kind"> & { kind: string })[];
     };
-    const base = (i: NonNullable<typeof data.items>[number]) => ({
-      ref: i.ref,
-      title: clip(i.title, 200),
-      url: i.url,
-      pr: i.kind === "pr",
-      updated: clip(i.updatedAt, 19),
-    });
-    const items = data.items ?? [];
-    return {
-      at: data.fetchedAt ?? null,
-      complete: data.complete !== false,
-      // A hands item is one action only a person can do (FDR-0013).
-      hands: items
-        .filter((i) => i.hands?.kind)
-        .map((i) => ({ ...base(i), kind: i.hands?.kind, action: clip(i.hands?.action, 400) })),
-      reviews: items.filter((i) => !i.hands?.kind && i.needsLabels.includes("user/review")).map(base),
-      // Escalated with no stated action: the fleet's to decide, listed so nothing is hidden.
-      other: items
-        .filter((i) => !i.hands?.kind && !i.needsLabels.includes("user/review"))
-        .map((i) => ({ ...base(i), why: clip(i.reason, 300) })),
-    };
+    const items = (data.items ?? []).map((i) => ({
+      ...i,
+      kind: i.kind === "pr" ? ("pr" as const) : ("issue" as const),
+    }));
+    return censusOf(items, data.fetchedAt ?? null, data.complete !== false);
+  }
+
+  /** The same list, read from GitHub by a side that has no dashboard to
+   * ask (see needs.ts). */
+  async censusDirect(): Promise<Census> {
+    try {
+      return await readCensus(this.ops.cfg.needsRepos, (path) => this.ops.gh([path]));
+    } catch (error) {
+      if (error instanceof OpError) throw error;
+      throw new OpError(502, `what needs you could not be read: ${(error as Error).message}`);
+    }
   }
 
   private async sets(): Promise<DecisionSet[]> {
@@ -287,7 +289,8 @@ export class Work {
           open.push({
             set: set.setId,
             setTitle: clip(set.title, 120),
-            created: clip(set.createdAt, 19),
+            // To the second, cut and not shortened with a mark: it is a time.
+            created: typeof set.createdAt === "string" ? set.createdAt.slice(0, 19) : "",
             ledger: item.ledgerId,
             item: clip(item.title, 200),
             links: (item.links ?? []).slice(0, 3),
@@ -398,19 +401,30 @@ export class Work {
     return { repo: m[1], number: Number(m[2]) };
   }
 
-  /** The owner did the one thing only he could: say so and take the item off his list. */
+  /** The owner did the one thing only he could: take the item off his
+   * list and say so. The label goes first. Taking a label off twice is
+   * the same as once (GitHub says it is not there, which is what was
+   * wanted), and saying "done" twice is two comments: so a failure
+   * part-way can be tried again from the start, by the owner or by
+   * whoever holds this for him, and it is said once. */
   async handsDone(args: Record<string, unknown>) {
     const { repo, number } = this.ref(args.ref);
     const note =
       typeof args.note === "string" && args.note.trim() !== "" ? `\n\n${words(args.note, "note", 4000)}` : "";
+    try {
+      await this.ops.gh([
+        "-X",
+        "DELETE",
+        `repos/${repo}/issues/${number}/labels/${encodeURIComponent("user/escalated")}`,
+      ]);
+    } catch (error) {
+      // Already off: an agent took it, or this is a second try after
+      // the comment failed. GitHub's words for it, and no other 404.
+      if (!(error instanceof OpError) || !/Label does not exist/i.test(error.message)) throw error;
+    }
     await this.ops.gh(["-X", "POST", `repos/${repo}/issues/${number}/comments`], {
       body: `Done by the owner, from the PM console. The step that needed a person is finished; carry on.${note}\n\n${OWNER_REPLY_MARK}`,
     });
-    await this.ops.gh([
-      "-X",
-      "DELETE",
-      `repos/${repo}/issues/${number}/labels/${encodeURIComponent("user/escalated")}`,
-    ]);
     return { ref: args.ref, done: true };
   }
 

@@ -230,9 +230,7 @@ export class GitHubClient {
         stderr: "pipe",
       });
     } catch (e) {
-      throw new GitHubError(
-        `fleet gh ${args[0]} failed to start: ${e instanceof Error ? e.message : String(e)}`,
-      );
+      throw new GitHubError(`fleet gh ${args[0]} failed to start: ${e instanceof Error ? e.message : String(e)}`);
     }
     // The fetch routes are bounded (#10825) and so is the direct-gh
     // fallback below: a subprocess parked on API rate-limit retries

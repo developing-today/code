@@ -238,13 +238,7 @@ impl PocNode {
 async fn five_nodes(extra_bridges: &[(&'static str, u8)]) -> HashMap<&'static str, PocNode> {
     // Endpoints first: addresses are needed before any sink is built.
     let mut endpoints: HashMap<&'static str, (u8, Endpoint, EndpointAddr)> = HashMap::new();
-    for (name, seed) in [
-        ("a", 1u8),
-        ("b", 2),
-        ("c", 3),
-        ("d", 4),
-        ("e", 5),
-    ] {
+    for (name, seed) in [("a", 1u8), ("b", 2), ("c", 3), ("d", 4), ("e", 5)] {
         let ep = endpoint().await;
         let addr = loopback_addr(&ep);
         endpoints.insert(name, (seed, ep, addr));
@@ -273,12 +267,7 @@ async fn five_nodes(extra_bridges: &[(&'static str, u8)]) -> HashMap<&'static st
         } else if name == "e" {
             names.extend(bridges.iter().copied());
         }
-        Arc::new(
-            names
-                .into_iter()
-                .map(|n| (id_of(n), addr_of(n)))
-                .collect(),
-        )
+        Arc::new(names.into_iter().map(|n| (id_of(n), addr_of(n))).collect())
     };
 
     let mut nodes = HashMap::new();
@@ -325,7 +314,11 @@ async fn five_node_bridge_delivery_with_latency() {
     // is environment-dependent); the report records the medians.
     let nodes = five_nodes(&[]).await;
     let (a, b, c, d, e) = (
-        &nodes["a"], &nodes["b"], &nodes["c"], &nodes["d"], &nodes["e"],
+        &nodes["a"],
+        &nodes["b"],
+        &nodes["c"],
+        &nodes["d"],
+        &nodes["e"],
     );
     let mut direct = Vec::new();
     let mut bridged = Vec::new();
@@ -442,12 +435,7 @@ async fn tampered_copy_is_refused_in_five_node_topology() {
     forged.content = ChainedContent::Inline {
         bytes: b"forged".to_vec(),
     };
-    let outcome = forward_message(
-        &a.endpoint,
-        d.addr.clone(),
-        &RelayedMessage::new(forged),
-    )
-    .await;
+    let outcome = forward_message(&a.endpoint, d.addr.clone(), &RelayedMessage::new(forged)).await;
     assert!(
         matches!(outcome, Outcome::Refused(_)),
         "tampered copy must be refused at D, got {outcome:?}"

@@ -6,10 +6,10 @@ The decision-API model experiment (Worker C, code#13675 Part 3b): can a harness/
 
 **PASS.** Luna low + harness is seatable in `systemone` after the free legs: 36/36 schema-faithful (100%), 35/36 correct (97.2% accuracy), within 2.8 points of the native baseline — all four bar criteria met.
 
-| System | Schema-faithful | Accuracy |
-|---|---|---|
-| Luna low + harness | 36/36 (100%) | 35/36 (97.2%) |
-| Google Decision 1 native (baseline) | 36/36 (100%) | 36/36 (100%) |
+| System                              | Schema-faithful | Accuracy      |
+| ----------------------------------- | --------------- | ------------- |
+| Luna low + harness                  | 36/36 (100%)    | 35/36 (97.2%) |
+| Google Decision 1 native (baseline) | 36/36 (100%)    | 36/36 (100%)  |
 
 The one miss: choice item c07 (a queue row asking to send a third-party email with no per-item approval recorded — expected `escalate`, Luna answered `hold`). Spend: ~$0.08 OpenAI PAYG across 36 calls (inside the $2 bound); Google baseline ran on the free tier.
 
