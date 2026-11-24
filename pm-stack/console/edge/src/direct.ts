@@ -238,6 +238,8 @@ export function githubMemory(
   const most = options.most ?? 240;
   const one = options.one ?? 6_000_000;
   const pieceSize = Math.max(1, options.piece ?? ANSWER_PIECE);
+  /** The most pieces an answer that is kept can have. */
+  const longest = Math.max(1, Math.ceil(one / pieceSize));
   const place = (id: number, n: number) => `gh:a:${id}:${n}`;
 
   interface State {
@@ -279,7 +281,12 @@ export function githubMemory(
               typeof e.etag === "string" &&
               Number.isInteger(e.pieces) &&
               e.pieces >= 1 &&
+              // (No more than an answer kept here can have: what is
+              // read back says how many pieces to clear.)
+              e.pieces <= longest &&
               Number.isInteger(e.size) &&
+              e.size >= 0 &&
+              e.size <= one &&
               typeof e.at === "number"
             ) {
               places.add(e.id);
@@ -306,9 +313,14 @@ export function githubMemory(
         },
         {},
       );
+      // Only for as long as a wait could have been set for: a time
+      // read back is not kept to past that.
+      const latest = now() + QUIET_MOST_MS;
       for (const allowance of ALLOWANCES) {
         const q = stored[allowance];
-        if (q && (waits[allowance]?.until ?? 0) < q.until) waits[allowance] = q;
+        if (q && (waits[allowance]?.until ?? 0) < q.until) {
+          waits[allowance] = { until: Math.min(q.until, latest), why: q.why };
+        }
       }
       const count = await take<Count>(
         "gh:count",

@@ -814,7 +814,9 @@ its tests started a new object.
   forgot. One that cannot be read is not written to (what it holds is
   not known, and is not to be written over with less), is tried again
   by the next to ask, and the object keeps to GitHub's wait in its own
-  mind meanwhile.
+  mind meanwhile. What is read back is held to what could have been
+  written: a wait for no longer than one can be set for, an index line
+  for no more than an answer kept here can be.
 - _Health says when the object started_ (`woke`), so how long one
   lasts can be seen from outside.
 - _Nothing left running._ `AbortSignal.timeout` leaves its timer
@@ -843,8 +845,8 @@ its tests started a new object.
   first so many pieces with none missing, the places are few, no more
   is kept than there is room for, and a change that finishes leaves
   nothing behind it.
-- 68 single faults planted in the memory, the deadline and the edge's
-  use of them: 66 fail a test. The two that do not each remove a check
+- 73 single faults planted in the memory, the deadline and the edge's
+  use of them: 71 fail a test. The two that do not each remove a check
   that another doubles (a missing index line, also caught by the catch
   around the read; a missing piece, also caught by the answer's
   length), and either way the read gives the same "nothing kept".
@@ -884,4 +886,5 @@ growing while `woke` changes.
 **Next.** The same wrong assumption may sit elsewhere in the object:
 the ten-minute gate on asking for the released Android build is in
 memory, so every object that starts asks again; the queue store is
-asked with no deadline at all. Filed to be gone through one by one.
+asked with no deadline at all. #14001 has the list, to be gone through
+one by one.

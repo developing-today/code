@@ -1117,7 +1117,7 @@ describe("what the edge remembers of GitHub", () => {
     const kept = { etag: 'W/"kept"', text: "kept before the trouble" };
     const before = githubMemory(s.store, { now: () => clock.t });
     await before.set("u", kept);
-    await before.hush(["search"], { until: 9_000_000, why: "searching too fast" });
+    await before.hush(["search"], { until: 4_500_000, why: "searching too fast" });
     await before.hush(["core"], { until: 4_000_000, why: "an earlier hour" });
     await before.count(true);
     const held = structuredClone([...inner.kept.entries()]);
@@ -1132,16 +1132,16 @@ describe("what the edge remembers of GitHub", () => {
     await memory.count(false);
     await memory.free();
     // GitHub's wait is kept to by this object all the same, in its own mind.
-    await memory.hush(["core"], { until: 5_000_000, why: "the hour is used up" });
-    expect(await memory.quiet()).toEqual({ core: { until: 5_000_000, why: "the hour is used up" } });
+    await memory.hush(["core"], { until: 4_800_000, why: "the hour is used up" });
+    expect(await memory.quiet()).toEqual({ core: { until: 4_800_000, why: "the hour is used up" } });
     expect([s.state.hit, [...inner.kept.entries()]]).toEqual([false, held]);
     // The store can be read again: the same object finds what was kept, and both waits (of
     // two for one allowance, the later: what the store held does not shorten what was said since).
     s.state.unread = false;
     expect(await memory.get("u")).toEqual(kept);
     expect(await memory.quiet()).toEqual({
-      core: { until: 5_000_000, why: "the hour is used up" },
-      search: { until: 9_000_000, why: "searching too fast" },
+      core: { until: 4_800_000, why: "the hour is used up" },
+      search: { until: 4_500_000, why: "searching too fast" },
     });
     expect(await memory.said()).toMatchObject({ kept: 1, answers: 1, unchanged: 1 });
     await memory.set("v", { etag: 'W/"v"', text: "kept now" });
@@ -1186,6 +1186,11 @@ describe("what the edge remembers of GitHub", () => {
       { entries: { u: { id: 0, etag: 7, pieces: 1, size: 1, at: 1 } } },
       { entries: { u: { id: 0, etag: 'W/"x"', pieces: 1, size: "1", at: 1 } } },
       { entries: { u: { id: 0, etag: 'W/"x"', pieces: 1, size: 1 } } },
+      // More pieces than any answer kept here has, or longer than any is: what was read back
+      // would say how much to clear, and how much is held.
+      { entries: { u: { id: 0, etag: 'W/"x"', pieces: 11, size: 1, at: 1 } } },
+      { entries: { u: { id: 0, etag: 'W/"x"', pieces: 1, size: 6_000_001, at: 1 } } },
+      { entries: { u: { id: 0, etag: 'W/"x"', pieces: 1, size: -1, at: 1 } } },
     ]) {
       const odd = mapStore(
         new Map<string, unknown>([
@@ -1209,6 +1214,21 @@ describe("what the edge remembers of GitHub", () => {
     expect([first.u, first.e, first.t]).toEqual(["u", kept.etag, kept.text]);
     first.t = first.t.slice(0, -1);
     expect(await githubMemory(cut).get("u")).toBeUndefined();
+    // A wait read back is kept to for no longer than one could have been set for.
+    const far = mapStore(
+      new Map<string, unknown>([
+        ["gh:quiet", { core: { until: clock.t + 400 * 24 * 60 * 60_000, why: "a time that cannot be right" } }],
+      ]),
+    );
+    expect(await githubMemory(far, { now: () => clock.t }).quiet()).toEqual({
+      core: { until: clock.t + 65 * 60_000, why: "a time that cannot be right" },
+    });
+    // The most an entry may say it has is what an answer of the longest kept would have.
+    const most = mapStore();
+    const full = { etag: 'W/"full"', text: "f".repeat(41) };
+    await githubMemory(most, { piece: 4, one: 41 }).set("u", full);
+    expect((most.kept.get("gh:index") as { entries: Record<string, { pieces: number }> }).entries.u.pieces).toBe(11);
+    expect(await githubMemory(most, { piece: 4, one: 41 }).get("u")).toEqual(full);
     // Two addresses the index gives one place: the place is the first's, and the other's is nothing.
     const shared = mapStore();
     await githubMemory(shared).set("u", kept);
