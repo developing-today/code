@@ -27,8 +27,16 @@ class CoverageTests(unittest.TestCase):
     def test_module_drift(self):
         """Oracle: source and book inventories must match exactly, including declared counts."""
         for rust, table, diagnostic in [
-            (self.rust + "\npub mod added;", self.table, "missing.*added"),
-            (self.rust.replace("pub mod source_registry;\n", ""), self.table, "stale.*source_registry"),
+            (
+                self.rust + "\npub mod added;",
+                self.table.replace("The 2", "The 3").replace("declares 2", "declares 3"),
+                "missing.*added",
+            ),
+            (
+                self.rust.replace("pub mod source_registry;\n", ""),
+                self.table.replace("The 2", "The 1").replace("declares 2", "declares 1"),
+                "stale.*source_registry",
+            ),
             (self.rust, self.table.replace("The 2", "The 3").replace("declares 2", "declares 3"), "stale public-module count"),
             (self.rust, self.table + "\n| `retired` | Old |", "stale.*retired"),
             (self.rust, self.table + "\n| `search` | Again |", "duplicate"),
