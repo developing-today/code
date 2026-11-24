@@ -205,9 +205,12 @@ test("the read scope sees the same state list; plainer doors stay shut, and revo
   assert.equal((await h.call(`/fleet/${h.ft}/enroll-tokens`)).status, 404);
   assert.equal((await h.call(`/fleet/${"x".repeat(43)}/enroll-tokens`)).status, 404);
 
-  // Minting and revoking never open at the credential address.
+  // Minting and revoking never open at the credential address: the
+  // revoke path is no route there at all (404), and a mint POST meets
+  // the read view's method refusal — 405, as on every console view
+  // since #14374, whose method check precedes the credential check.
   assert.equal((await h.as(pm).revokeEnroll({ token_hash: "0".repeat(64) })).status, 404);
-  assert.equal((await h.post(`/fleet/${pm}/enroll-tokens`, { agent: "x-1" })).status, 404);
+  assert.equal((await h.post(`/fleet/${pm}/enroll-tokens`, { agent: "x-1" })).status, 405);
 });
 
 test("the Durable Object's SQL folds the same states, hash-free (store parity)", async () => {

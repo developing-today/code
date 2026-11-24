@@ -1277,7 +1277,7 @@ export function enrollTokenListSql(sql) {
     .map((r) => ({
       agent: r.agent,
       kind: r.kind,
-      groups: parseJson(r.groups, []),
+      groups: JSON.parse(r.groups),
       notes_identity: r.notes_identity,
       created: r.created,
       expires_at: r.expires_at,
