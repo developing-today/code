@@ -222,6 +222,36 @@ mod tests {
     }
 
     #[test]
+    fn timeline_surfaces_staleness_autocomplete_14268() {
+        // #14268: a claim-time staleness retirement writes exactly
+        // one event, `staleness_autocomplete`, and no `claimed`
+        // event. While the history kind lists omitted it, four
+        // retired tasks read as "zero history events, no result"
+        // through every client surface and were misdiagnosed as
+        // silent completions. Both surfaces that assemble a task's
+        // history query the kind now.
+        let src = include_str!("client/commands_query.rs");
+        let timeline_seg = src
+            .split("fn cmd_timeline(")
+            .nth(1)
+            .and_then(|s| s.split("let resp = call(").next())
+            .unwrap_or("");
+        assert!(
+            timeline_seg.contains("\"staleness_autocomplete\""),
+            "cmd_timeline queries staleness_autocomplete so retirements are visible"
+        );
+        let show_seg = src
+            .split("fn cmd_show(")
+            .nth(1)
+            .and_then(|s| s.split("fn cmd_timeline(").next())
+            .unwrap_or("");
+        assert!(
+            show_seg.contains("\"staleness_autocomplete\""),
+            "cmd_show queries staleness_autocomplete so retirements are visible"
+        );
+    }
+
+    #[test]
     fn collapse_timeline_9046_drops_only_duplicate_writes() {
         // #9046 oracle: same (kind, session, leaf, trigger) inside
         // 120 s = one record written by two surfaces; a changed
