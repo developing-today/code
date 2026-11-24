@@ -10,7 +10,11 @@ use axum::{
 };
 use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
 use rsa::{pkcs1::EncodeRsaPrivateKey, RsaPrivateKey};
-use samael::crypto::{Crypto, CryptoProvider};
+use samael::{
+    crypto::{CertificateDer, Crypto, CryptoProvider},
+    signature::Signature,
+    traits::ToXml,
+};
 
 const HTTP_POST: &str = "urn:oasis:names:tc:SAML:2.0:bindings:HTTP-POST";
 const HTTP_REDIRECT: &str = "urn:oasis:names:tc:SAML:2.0:bindings:HTTP-Redirect";
@@ -61,9 +65,14 @@ impl MetadataSigner {
         let issuer = xml_escape(&self.issuer);
         let cert = B64.encode(&self.certificate_der);
         let id = format!("_{}", crate::registry::random_b64url(18));
+        let signature =
+            Signature::template(&id, &CertificateDer::from(self.certificate_der.clone()))
+                .to_string()
+                .map_err(|e| format!("SAML metadata signature template failed: {e:?}"))?;
         let unsigned = format!(
             "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\
              <md:EntityDescriptor xmlns:md=\"urn:oasis:names:tc:SAML:2.0:metadata\" xmlns:ds=\"http://www.w3.org/2000/09/xmldsig#\" ID=\"{id}\" entityID=\"{issuer}\">\
+               {signature}\
                <md:IDPSSODescriptor protocolSupportEnumeration=\"urn:oasis:names:tc:SAML:2.0:protocol\" WantAuthnRequestsSigned=\"false\">\
                  <md:KeyDescriptor use=\"signing\"><ds:KeyInfo><ds:X509Data><ds:X509Certificate>{cert}</ds:X509Certificate></ds:X509Data></ds:KeyInfo></md:KeyDescriptor>\
                  <md:NameIDFormat>{PERSISTENT_NAME_ID}</md:NameIDFormat>\
@@ -130,11 +139,10 @@ mod tests {
                 days_until_expiration: 1,
             })
             .unwrap();
-        let metadata = format!(
-            "<md:EntityDescriptor xmlns:md=\"urn:oasis:names:tc:SAML:2.0:metadata\" xmlns:ds=\"http://www.w3.org/2000/09/xmldsig#\" ID=\"_test\" entityID=\"https://idp.example\"><md:IDPSSODescriptor protocolSupportEnumeration=\"urn:oasis:names:tc:SAML:2.0:protocol\"><md:KeyDescriptor use=\"signing\"><ds:KeyInfo><ds:X509Data><ds:X509Certificate>{}</ds:X509Certificate></ds:X509Data></ds:KeyInfo></md:KeyDescriptor><md:NameIDFormat>{PERSISTENT_NAME_ID}</md:NameIDFormat><md:SingleSignOnService Binding=\"{HTTP_REDIRECT}\" Location=\"https://idp.example/saml/sso\"/><md:SingleSignOnService Binding=\"{HTTP_POST}\" Location=\"https://idp.example/saml/sso\"/></md:IDPSSODescriptor></md:EntityDescriptor>",
-            B64.encode(cert.der_data())
-        );
-        let signed = Crypto::sign_xml(&metadata, &idp.export_private_key_der().unwrap()).unwrap();
+        let key = RsaPrivateKey::from_pkcs1_der(&idp.export_private_key_der().unwrap()).unwrap();
+        let signer =
+            MetadataSigner::new("https://idp.example", &key, cert.der_data().to_vec()).unwrap();
+        let signed = signer.metadata_xml().unwrap();
         Crypto::verify_signed_xml(&signed, &cert, Some("ID")).unwrap();
         assert!(signed.contains(PERSISTENT_NAME_ID));
         assert!(signed.contains(HTTP_REDIRECT));
