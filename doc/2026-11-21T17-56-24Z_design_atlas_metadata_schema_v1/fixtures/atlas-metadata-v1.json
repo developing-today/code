@@ -159,32 +159,18 @@
       "object": {
         "schema_version": 1,
         "fields": {
-          "tags": [
-            1,
-            2,
-            3
-          ],
-          "counts": [
-            "10",
-            "x"
-          ]
+          "tags": [1, 2, 3],
+          "counts": ["10", "x"]
         },
         "extras": {}
       },
       "executable": false,
       "doctrine_projection": {
         "fields": {
-          "tags": [
-            "1",
-            "2",
-            "3"
-          ]
+          "tags": ["1", "2", "3"]
         },
         "extras": {
-          "counts": [
-            "10",
-            "x"
-          ]
+          "counts": ["10", "x"]
         },
         "reason": "unconvertible"
       }

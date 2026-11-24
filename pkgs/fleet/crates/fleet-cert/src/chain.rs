@@ -80,7 +80,9 @@ fn tbs_bytes(der: &[u8]) -> Result<Vec<u8>> {
         Ok((len, i + n))
     }
     if der.is_empty() || der[0] != 0x30 {
-        return Err(CertError::manifest("certificate DER does not start with a SEQUENCE"));
+        return Err(CertError::manifest(
+            "certificate DER does not start with a SEQUENCE",
+        ));
     }
     let (_, content_start) = read_len(der, 1)?;
     if content_start >= der.len() || der[content_start] != 0x30 {
@@ -119,10 +121,7 @@ pub fn parse_cert(der: &[u8]) -> Result<CertInfo> {
         .map_err(|e| CertError::manifest(format!("certificate parse failed: {e}")))?;
     let tbs = &cert.tbs_certificate;
     let (bc_is_ca, bc_path_len) = match tbs.basic_constraints() {
-        Ok(Some(bc)) => (
-            bc.value.ca,
-            bc.value.path_len_constraint.map(|n| n as u8),
-        ),
+        Ok(Some(bc)) => (bc.value.ca, bc.value.path_len_constraint.map(|n| n as u8)),
         _ => (false, None),
     };
     // Extension lookup by OID string (2.5.29.14 SKI, 2.5.29.35 AKI).
@@ -179,7 +178,7 @@ pub fn parse_cert(der: &[u8]) -> Result<CertInfo> {
 /// panics on untrusted input.
 pub fn verify_signature(issuer: &CertInfo, subject: &CertInfo) -> bool {
     use aws_lc_rs::signature::{
-        UnparsedPublicKey, ECDSA_P256_SHA256_ASN1, ED25519, ML_DSA_44, RSA_PKCS1_2048_8192_SHA256,
+        ECDSA_P256_SHA256_ASN1, ED25519, ML_DSA_44, RSA_PKCS1_2048_8192_SHA256, UnparsedPublicKey,
     };
     let key = &issuer.spki_bytes;
     let ok = match subject.signature_oid.as_str() {
@@ -189,11 +188,9 @@ pub fn verify_signature(issuer: &CertInfo, subject: &CertInfo) -> bool {
         "1.2.840.10045.4.3.2" => UnparsedPublicKey::new(&ECDSA_P256_SHA256_ASN1, key)
             .verify(&subject.tbs, &subject.signature)
             .is_ok(),
-        "1.2.840.113549.1.1.11" => {
-            UnparsedPublicKey::new(&RSA_PKCS1_2048_8192_SHA256, key)
-                .verify(&subject.tbs, &subject.signature)
-                .is_ok()
-        }
+        "1.2.840.113549.1.1.11" => UnparsedPublicKey::new(&RSA_PKCS1_2048_8192_SHA256, key)
+            .verify(&subject.tbs, &subject.signature)
+            .is_ok(),
         "2.16.840.1.101.3.4.3.17" => UnparsedPublicKey::new(&ML_DSA_44, key)
             .verify(&subject.tbs, &subject.signature)
             .is_ok(),
@@ -236,9 +233,10 @@ impl TrustSelection {
     fn root_admitted(&self, root: &CertInfo) -> bool {
         match self {
             TrustSelection::All => true,
-            TrustSelection::Classical => {
-                root.subject_algorithm.map(|a| a.is_classical()).unwrap_or(false)
-            }
+            TrustSelection::Classical => root
+                .subject_algorithm
+                .map(|a| a.is_classical())
+                .unwrap_or(false),
             TrustSelection::Pq => root.subject_algorithm == Some(AlgorithmId::MlDsa44),
         }
     }
@@ -315,11 +313,9 @@ fn dfs(
     let mut candidates: Vec<&CertInfo> = pool
         .iter()
         .filter(|cand| cand.subject_name_der == current.issuer_name_der)
-        .filter(|cand| {
-            match (&current.aki, &cand.ski) {
-                (Some(aki), Some(ski)) => aki == ski,
-                _ => true,
-            }
+        .filter(|cand| match (&current.aki, &cand.ski) {
+            (Some(aki), Some(ski)) => aki == ski,
+            _ => true,
         })
         .filter(|cand| cand.is_ca || is_self_signed(cand))
         .filter(|cand| verify_signature(cand, current))
@@ -399,7 +395,11 @@ pub fn validate_chain(
             checks.push(Check {
                 name: format!("ca-flag:{}", cert.subject_dn),
                 ok: ok_ca,
-                detail: if ok_ca { "CA:true".into() } else { "not a CA".into() },
+                detail: if ok_ca {
+                    "CA:true".into()
+                } else {
+                    "not a CA".into()
+                },
             });
             if let Some(pl) = cert.path_len {
                 let below = (i - 1) as u8; // CA certs strictly below this one
@@ -445,7 +445,11 @@ pub fn validate_chain(
             TrustSelection::Classical => {
                 let anchor = p.last();
                 let ok = anchor
-                    .map(|a| a.subject_algorithm.map(|x| x.is_classical()).unwrap_or(false))
+                    .map(|a| {
+                        a.subject_algorithm
+                            .map(|x| x.is_classical())
+                            .unwrap_or(false)
+                    })
                     .unwrap_or(false);
                 if !ok {
                     valid = false;

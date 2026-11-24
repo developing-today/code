@@ -17,7 +17,7 @@ rustup target add wasm32-unknown-unknown
 ```
 
 `build.sh` refreshes the checked-in `counter.wasm`, which the host's
-F12.7 conformance suite (`pkgs/id/src/sandbox.rs`) loads as the
+F12.7 conformance suite (`pkgs/id/crates/id-worlds/src/sandbox.rs`) loads as the
 `rust-counter` fixture — no Rust toolchain is needed to run the suite.
 
 ## Run a hosted world

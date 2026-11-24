@@ -14,9 +14,9 @@ query → classifier → conditional transforms → routed retrieval → fuse �
 ```
 
 - **Classifier first, and fast.** A lightweight classifier reads the raw query (plus conversation context where the surface supplies it) and assigns a query class, an intent, and the signals the later stages need. Its budget is **under 10 milliseconds**: it is a small, local decision — heuristics and a small model, never a hosted call and never a large language model round-trip on the critical path. A planner whose first stage costs more than the retrieval it optimises has inverted its purpose.
-- **Transforms are conditional.** Each transform below runs only when the classifier's output calls for it (see *Adaptive selection*). The default path for a simple, self-contained query is no transform at all.
+- **Transforms are conditional.** Each transform below runs only when the classifier's output calls for it (see _Adaptive selection_). The default path for a simple, self-contained query is no transform at all.
 - **Retrieval is routed.** The (possibly transformed) query is sent to the branches and shards its route selects — not broadcast everywhere by default.
-- **Fuse and rerank are not the planner's job.** Fusion is reciprocal rank fusion over the branch pools, as today; reranking is a separate stage with its own design ([Design: the reranking stage](reranking.md)). The planner decides *what to retrieve and how to ask*; it does not reorder the final ranking, and conflating the two makes both unmeasurable.
+- **Fuse and rerank are not the planner's job.** Fusion is reciprocal rank fusion over the branch pools, as today; reranking is a separate stage with its own design ([Design: the reranking stage](reranking.md)). The planner decides _what to retrieve and how to ask_; it does not reorder the final ranking, and conflating the two makes both unmeasurable.
 
 Every stage emits its decision into the query trace — the class assigned, the transforms applied, the routes taken, the filters extracted — so that any result can be explained after the fact and every strategy can be evaluated per class (below).
 
@@ -24,7 +24,7 @@ Every stage emits its decision into the query trace — the class assigned, the 
 
 ### Conversational rewriting
 
-A follow-up query is rewritten into a self-contained query using the conversation history: pronouns and ellipses are resolved, and the topic established by earlier turns is carried into the rewrite. "What did it cost?" after a discussion of one named system becomes a query naming that system. The rewrite replaces the query for retrieval; the original text is retained in the trace, and the rewrite is a transform of the *query*, never of the corpus. This component is first-wave (see *Minimum viable planner*) because agent surfaces are conversational by default — a planner that cannot handle a follow-up fails the most common agent query shape there is.
+A follow-up query is rewritten into a self-contained query using the conversation history: pronouns and ellipses are resolved, and the topic established by earlier turns is carried into the rewrite. "What did it cost?" after a discussion of one named system becomes a query naming that system. The rewrite replaces the query for retrieval; the original text is retained in the trace, and the rewrite is a transform of the _query_, never of the corpus. This component is first-wave (see _Minimum viable planner_) because agent surfaces are conversational by default — a planner that cannot handle a follow-up fails the most common agent query shape there is.
 
 ### Expansion
 
@@ -36,7 +36,7 @@ The query is restated as several distinct queries — different phrasings, diffe
 
 ### HyDE, gated to underspecified queries
 
-HyDE (hypothetical document embeddings) generates a short hypothetical document that *would* answer the query, embeds that document, and retrieves by its vector — document-to-document similarity instead of question-to-document similarity. It is powerful exactly where the query is too short or too vague to embed well, and wasteful or actively misleading where the query is already specific (a generated answer to a precise factual question invents details the corpus never claimed). The design therefore **gates HyDE to underspecified queries**: the classifier must judge the query underspecified — few content terms, no named entity, no filterable structure — before HyDE may run. It never runs by default, and its gate is part of what its evaluation slice must prove.
+HyDE (hypothetical document embeddings) generates a short hypothetical document that _would_ answer the query, embeds that document, and retrieves by its vector — document-to-document similarity instead of question-to-document similarity. It is powerful exactly where the query is too short or too vague to embed well, and wasteful or actively misleading where the query is already specific (a generated answer to a precise factual question invents details the corpus never claimed). The design therefore **gates HyDE to underspecified queries**: the classifier must judge the query underspecified — few content terms, no named entity, no filterable structure — before HyDE may run. It never runs by default, and its gate is part of what its evaluation slice must prove.
 
 ### Decomposition
 
@@ -50,7 +50,7 @@ The query is generalised one level — from the specific incident to the class o
 
 The classifier's route decides where retrieval happens:
 
-- **By source and corpus** — a query about code goes to the code shards, a memory-recall query to the memory corpora, a statistics question to the statistics source. Routing is a recall *and* a cost decision: shards outside the route are not scanned.
+- **By source and corpus** — a query about code goes to the code shards, a memory-recall query to the memory corpora, a statistics question to the statistics source. Routing is a recall _and_ a cost decision: shards outside the route are not scanned.
 - **By intent** — an exact-fact lookup, an error investigation, and a conceptual question demand different branch weights, pool depths, and transforms. The route carries those choices; the branches themselves stay generic.
 - **By sensitivity tier** — routing respects the caller's ceiling as a hard boundary, exactly as retrieval does today: filters and ceilings are applied inside the branch queries, before ranking. The planner may narrow a route below the caller's ceiling (a public-surface answer routes only to public material — the lowest rung, spelled `shareable` in code); it may never widen one. The planner is not a place where tier discipline can leak — it inherits the ceiling from the request and can only intersect with it.
 

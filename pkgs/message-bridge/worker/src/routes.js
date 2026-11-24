@@ -29,6 +29,17 @@
 //                                     never the token or path, wake.js)
 //   POST /api/<token>/wake-hooks      JSON {address, url, token?} sets one;
 //                                     {address, url: null} removes it
+//   POST /notes/register              owner Bearer token; registers a
+//                                     class/name identity + token hash
+//   POST /notes/send                  identity Bearer token; {to, note},
+//                                     to one identity or a */segment match
+//   GET  /notes/inbox                 identity Bearer token; its pending
+//                                     notes
+//   POST /notes/ack                   identity Bearer token; {id|ids|
+//                                     up_to_id} acknowledges its notes
+//   GET  /<class>/<name>              public wake signal (notes.js): one
+//                                     bare UUID, same shape registered
+//                                     or not, decoy-rotated per path
 //   GET  /healthz                     {ok, configured, chatgpt_configured,
 //                                     version, token_fingerprint}, no data
 //   POST / and POST /mcp              the MCP server for a connector added
@@ -47,6 +58,7 @@ import { MCP_CORS, bearerChannel, handleOAuth, ownerCookie, unauthorized } from 
 import { InputError, normalizeKind, normalizeRecipients } from "./messages.js";
 import { renderPage } from "./page.js";
 import { normalizeHook, showHook, wakeAll, WAKE_ADDRESS } from "./wake.js";
+import { handleNotes, handleSignal } from "./notes.js";
 
 const MAX_FORM_BYTES = 64 * 1024;
 const PAGE_SIZE = 200;
@@ -305,6 +317,12 @@ export async function route(request, env, getStore, waitUntil = (p) => p) {
   // Fleet mailboxes: /fleet/<fleet token>/... and /api/<owner>/fleet/...
   const fleet = await handleFleet(request, env, url, getStore, (store) => deliveredFor(env, store, waitUntil));
   if (fleet) return fleet;
+  // Class/name notes (notes.js): the authenticated /notes API, then the
+  // public content-free signal on any other two-segment path.
+  const notes = await handleNotes(request, env, url, getStore);
+  if (notes) return notes;
+  const signal = await handleSignal(request, url, getStore);
+  if (signal) return signal;
   const m = matchTokenPath(url.pathname, env);
   if (!m) return notFound();
   const token = env.ACCESS_TOKEN;

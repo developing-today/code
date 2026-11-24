@@ -50,7 +50,9 @@ const makeLeaf = (name, expectedKey) => {
       } catch {}
       leaf.last = { headers: req.headers, body, url: req.url };
       if (leaf.mode === "slow") return;
-      if (req.headers.authorization !== `Bearer ${expectedKey}`) {
+      const bearerOk = req.headers.authorization === `Bearer ${expectedKey}`;
+      const googOk = req.headers["x-goog-api-key"] === expectedKey;
+      if (!bearerOk && !googOk) {
         res.writeHead(401, { "content-type": "application/json" });
         return res.end(JSON.stringify({ error: { message: "bad key" } }));
       }
@@ -165,6 +167,112 @@ const makeLeaf = (name, expectedKey) => {
         res.writeHead(200, { "content-type": "text/event-stream" });
         res.write(": heartbeat\n\n");
         return setTimeout(() => res.destroy(), 10);
+      }
+      if (leaf.mode === "embed-400") {
+        res.writeHead(400, { "content-type": "application/json" });
+        return res.end(JSON.stringify({ error: { message: "bad embedding request" } }));
+      }
+      if (req.url.includes(":batchEmbedContent")) {
+        // Google native batch shape.
+        const reqs = Array.isArray(body.requests) ? body.requests : [];
+        if (reqs.some((r) => typeof r?.content?.parts?.[0]?.text !== "string")) {
+          res.writeHead(400, { "content-type": "application/json" });
+          return res.end(JSON.stringify({ error: { message: "bad batch request" } }));
+        }
+        if (
+          leaf.mode === "embed-bad-item" &&
+          reqs.some((r) => String(r.content.parts[0].text).includes("bad"))
+        ) {
+          res.writeHead(400, { "content-type": "application/json" });
+          return res.end(JSON.stringify({ error: { message: "bad item" } }));
+        }
+        res.writeHead(200, { "content-type": "application/json" });
+        return res.end(
+          JSON.stringify({
+            embeddings: reqs.map((r) => ({
+              values: [r.content.parts[0].text.length, 0.5],
+            })),
+          }),
+        );
+      }
+      if (req.url.includes(":embedContent")) {
+        // Google native single shape.
+        const text = body?.content?.parts?.[0]?.text;
+        if (typeof text !== "string") {
+          res.writeHead(400, { "content-type": "application/json" });
+          return res.end(JSON.stringify({ error: { message: "bad embed request" } }));
+        }
+        res.writeHead(200, { "content-type": "application/json" });
+        return res.end(
+          JSON.stringify({ embedding: { values: [text.length, 0.5] } }),
+        );
+      }
+      if (req.url.includes("/embeddings")) {
+        const input = body.input;
+        const texts = typeof input === "string" ? [input] : input;
+        if (
+          leaf.mode === "embed-bad-item" &&
+          Array.isArray(texts) &&
+          texts.some((t) => typeof t === "string" && t.includes("bad"))
+        ) {
+          res.writeHead(400, { "content-type": "application/json" });
+          return res.end(JSON.stringify({ error: { message: "bad item" } }));
+        }
+        if (typeof input === "string") {
+          res.writeHead(200, { "content-type": "application/json" });
+          return res.end(
+            JSON.stringify({
+              object: "list",
+              data: [{ object: "embedding", index: 0, embedding: [input.length, 0.5] }],
+              model: body.model,
+            }),
+          );
+        }
+        if (Array.isArray(input) && input.every((t) => typeof t === "string")) {
+          res.writeHead(200, { "content-type": "application/json" });
+          return res.end(
+            JSON.stringify({
+              object: "list",
+              data: input.map((t, i) => ({
+                object: "embedding",
+                index: i,
+                embedding: [t.length, 0.5],
+              })),
+              model: body.model,
+            }),
+          );
+        }
+        res.writeHead(400, { "content-type": "application/json" });
+        return res.end(JSON.stringify({ error: { message: "bad embedding input" } }));
+      }
+      if (req.url.includes("/decisions")) {
+        if (leaf.mode === "dec-400") {
+          res.writeHead(400, { "content-type": "application/json" });
+          return res.end(JSON.stringify({ error: { message: "bad decision" } }));
+        }
+        res.writeHead(200, { "content-type": "application/json" });
+        return res.end(
+          JSON.stringify({ decision: "yes", model: body.model, echo: body.input ?? null }),
+        );
+      }
+      if (req.url.includes("/rerank")) {
+        res.writeHead(200, { "content-type": "application/json" });
+        const docs = Array.isArray(body.documents) ? body.documents : [];
+        return res.end(
+          JSON.stringify({
+            results: docs.map((d, i) => ({ index: i, score: 1 - i * 0.1, document: d })),
+            model: body.model,
+          }),
+        );
+      }
+      if (req.url.includes("/audio/transcriptions")) {
+        res.writeHead(200, { "content-type": "application/json" });
+        return res.end(JSON.stringify({ text: `transcribed-by-${name}` }));
+      }
+      if (req.url.includes("/audio/speech")) {
+        const audio = Buffer.from(`audio-by-${name}`, "utf8");
+        res.writeHead(200, { "content-type": "audio/mpeg", "content-length": audio.length });
+        return res.end(audio);
       }
       if (body.stream) {
         res.writeHead(200, { "content-type": "text/event-stream" });
@@ -366,6 +474,66 @@ const startProxy = async (arg = {}) => {
       "options": { "baseURL": "http://127.0.0.1:${leafB.port}/v1", "apiKey": "key-b" },
       "models": { "m-b": {} },
     },
+    "leafG": {
+      "npm": "@ai-sdk/openai-compatible",
+      "options": {
+        "baseURL": "http://127.0.0.1:${leafA.port}/v1beta",
+        "apiKey": "key-a",
+        "endpoints": {
+          "embed": { "kind": "google-embed", "path": "/models/{model}:embedContent" },
+          "decision": { "kind": "google-decisions", "path": "/decisions" }
+        }
+      },
+      "models": { "m-ge": {}, "m-gd": {} },
+    },
+    "leafGsplit": {
+      "npm": "@ai-sdk/openai-compatible",
+      "options": {
+        "baseURL": "http://127.0.0.1:${leafA.port}/v1beta",
+        "apiKey": "key-a",
+        "endpoints": {
+          "embed": { "kind": "google-embed", "path": "/models/{model}:embedContent", "maxBatchItems": 2 }
+        }
+      },
+      "models": { "m-ge": {} },
+    },
+    "leafZ": {
+      "npm": "@ai-sdk/openai-compatible",
+      "options": {
+        "baseURL": "http://127.0.0.1:${leafA.port}/v1",
+        "apiKey": "key-a",
+        "endpoints": {
+          "decision": { "kind": "jev-systemone", "path": "/decisions" }
+        }
+      },
+      "models": { "m-zd": {} },
+    },
+    "leafF": {
+      "npm": "@ai-sdk/openai-compatible",
+      "options": {
+        "baseURL": "http://127.0.0.1:${leafA.port}/v1",
+        "apiKey": "key-a",
+        "endpoints": {
+          "decision": { "kind": "fireworks", "path": "/decisions" }
+        }
+      },
+      "models": { "m-fd": {} },
+    },
+    "leafWeird": {
+      "npm": "@ai-sdk/openai-compatible",
+      "options": {
+        "baseURL": "http://127.0.0.1:${leafA.port}/v1",
+        "apiKey": "key-a",
+        "endpoints": {
+          "decision": { "kind": "not-a-real-kind", "path": "/decisions" }
+        }
+      },
+      "models": { "m-wd": {} },
+    },
+  },
+  "model_designations": {
+    "m-desig-dec": { "purposes": ["decision"] },
+    "m-desig-chat": { "purposes": ["chat"] }
   },
   "experimental": {
     "provider_routes": {
@@ -419,6 +587,20 @@ const startProxy = async (arg = {}) => {
       "t-group-skip": { "selection": "ordered", "targets": ["grp-ordered/m-a"] },
       "t-openai-default": { "selection": "ordered", "targets": ["openai/m-gpt"] },
       "t-a-only": { "selection": "ordered", "targets": ["leafA/m-a"] },
+      "t-decide": { "purpose": "decision", "selection": "ordered", "targets": ["leafA/m-a", "leafB/m-b"] },
+      "t-decide-goog": { "purpose": "decision", "selection": "ordered", "targets": ["leafG/m-gd"] },
+      "t-decide-zen": { "purpose": "decision", "selection": "ordered", "targets": ["leafZ/m-zd"] },
+      "t-decide-fw": { "purpose": "decision", "selection": "ordered", "targets": ["leafF/m-fd"] },
+      "t-decide-weird": { "purpose": "decision", "selection": "ordered", "targets": ["leafWeird/m-wd"] },
+      "t-decide-desig": { "purpose": "decision", "selection": "ordered", "targets": ["leafA/m-desig-dec", "leafB/m-desig-chat"] },
+      "t-embed": { "purpose": "embed", "selection": "ordered", "targets": ["leafA/m-a", "leafB/m-b"] },
+      "t-embed-goog": { "purpose": "embed", "selection": "ordered", "targets": ["leafG/m-ge"] },
+      "t-embed-split": { "purpose": "embed", "selection": "ordered", "targets": ["leafGsplit/m-ge"] },
+      "t-rerank": { "purpose": "rerank", "selection": "ordered", "targets": ["leafA/m-a", "leafB/m-b"] },
+      "t-transcribe": { "purpose": "transcribe", "selection": "ordered", "targets": ["leafA/m-a", "leafB/m-b"] },
+      "t-speak": { "purpose": "speak", "selection": "ordered", "targets": ["leafA/m-a", "leafB/m-b"] },
+      "t-guard": { "purpose": "guard", "selection": "ordered", "targets": ["leafA/m-a", "leafB/m-b"] },
+      "t-chat-desig": { "selection": "ordered", "targets": ["leafA/m-desig-dec", "leafB/m-b"] },
     },
   },
 }`,
@@ -2152,6 +2334,357 @@ test("429 with {\"retryDelay\": \"30s\"} JSON gates the pair (#13693)", async ()
     assert.equal(second.status, 200);
     assert.equal((await second.json()).choices[0].message.content, "LEAF-B");
     assert.equal(p.leafA.hits, 1);
+  } finally {
+    await p.cleanup();
+  }
+});
+
+// ---------------- Part 2: purpose-routed endpoints (#13675 P2) ----------------
+//
+// Helpers for the non-chat doors. p.post only targets chat; these hit
+// the purpose endpoints directly.
+const postPurpose = (p, endpoint, payload, raw) =>
+  fetch(`${p.base}${endpoint}`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: raw !== undefined ? raw : JSON.stringify(payload),
+  });
+
+const postTranscription = (p, model, fileBytes = "fake-audio-bytes") => {
+  const boundary = "----part2testboundary";
+  const body =
+    `--${boundary}\r\nContent-Disposition: form-data; name="model"\r\n\r\n${model}\r\n` +
+    `--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="a.wav"\r\n` +
+    `Content-Type: audio/wav\r\n\r\n${fileBytes}\r\n` +
+    `--${boundary}--\r\n`;
+  return fetch(`${p.base}/v1/audio/transcriptions`, {
+    method: "POST",
+    headers: { "content-type": `multipart/form-data; boundary=${boundary}` },
+    body,
+  });
+};
+
+test("decisions have no OpenAI default: plain leaves refuse with 400 (#13675 P2)", async () => {
+  const p = await startProxy();
+  try {
+    const res = await postPurpose(p, "/v1/decisions", {
+      model: "opencode-route/t-decide",
+      input: { state: 1 },
+      questions: { ok: { type: "noul" } },
+    });
+    assert.equal(res.status, 400);
+    assert.match(await res.text(), /no members serving decision/);
+    assert.equal(p.leafA.hits, 0);
+    assert.equal(p.leafB.hits, 0);
+  } finally {
+    await p.cleanup();
+  }
+});
+
+test("decisions dispatch natively via google-decisions with x-goog-api-key (#13675 P2)", async () => {
+  const p = await startProxy();
+  try {
+    const res = await postPurpose(p, "/v1/decisions", {
+      model: "opencode-route/t-decide-goog",
+      input: { state: 1 },
+      questions: { ok: { type: "noul" } },
+    });
+    assert.equal(res.status, 200);
+    const json = await res.json();
+    assert.equal(json.decision, "yes");
+    assert.ok(p.leafA.last.url.includes("/decisions"));
+    assert.equal(p.leafA.last.headers["x-goog-api-key"], "key-a");
+    assert.ok(!("authorization" in p.leafA.last.headers));
+    const rows = await waitForAttempts(p, 1);
+    assert.equal(rows[0].route_id, "t-decide-goog");
+    assert.equal(rows[0].outcome, "success");
+    assert.equal(rows[0].session_id, null);
+  } finally {
+    await p.cleanup();
+  }
+});
+
+test("decisions dispatch via jev-systemone with Bearer auth (#13675 P2)", async () => {
+  const p = await startProxy();
+  try {
+    const res = await postPurpose(p, "/v1/decisions", {
+      model: "opencode-route/t-decide-zen",
+      input: { state: 2 },
+      questions: { ok: { type: "noul" } },
+    });
+    assert.equal(res.status, 200);
+    assert.equal((await res.json()).decision, "yes");
+    assert.ok(p.leafA.last.url.endsWith("/decisions"));
+    assert.equal(p.leafA.last.headers.authorization, "Bearer key-a");
+  } finally {
+    await p.cleanup();
+  }
+});
+
+test("decisions dispatch via fireworks passthrough with required path (#13675 P2)", async () => {
+  const p = await startProxy();
+  try {
+    const res = await postPurpose(p, "/v1/decisions", {
+      model: "opencode-route/t-decide-fw",
+      input: { state: 3 },
+      questions: { ok: { type: "noul" } },
+    });
+    assert.equal(res.status, 200);
+    assert.equal((await res.json()).model, "m-fd");
+  } finally {
+    await p.cleanup();
+  }
+});
+
+test("unknown decision kinds never invent a surface (#13675 P2)", async () => {
+  const p = await startProxy();
+  try {
+    const res = await postPurpose(p, "/v1/decisions", {
+      model: "opencode-route/t-decide-weird",
+      input: { state: 1 },
+      questions: { ok: { type: "noul" } },
+    });
+    assert.equal(res.status, 400);
+    assert.match(await res.text(), /no members serving decision/);
+    assert.equal(p.leafA.hits, 0);
+  } finally {
+    await p.cleanup();
+  }
+});
+
+test("new-endpoint unknown routes 404; pool-purpose mismatches refuse 400 (#13675 P2)", async () => {
+  const p = await startProxy();
+  try {
+    const unknown = await postPurpose(p, "/v1/decisions", {
+      model: "opencode-route/no-such-pool",
+      input: { state: 1 },
+      questions: { ok: { type: "noul" } },
+    });
+    assert.equal(unknown.status, 404);
+    assert.match(await unknown.text(), /unknown route/);
+    const mismatch = await postPurpose(p, "/v1/embeddings", {
+      model: "opencode-route/t-decide-goog",
+      input: "hello",
+    });
+    assert.equal(mismatch.status, 400);
+    assert.match(await mismatch.text(), /cannot serve embed/);
+    assert.equal(p.leafA.hits, 0);
+    assert.equal(p.leafB.hits, 0);
+  } finally {
+    await p.cleanup();
+  }
+});
+
+test("chat calls naming a decision pool are refused, never forwarded (#13675 P2)", async () => {
+  const p = await startProxy();
+  try {
+    const res = await p.post({
+      model: "opencode-route/t-decide-goog",
+      messages: MSGS,
+    });
+    assert.equal(res.status, 502);
+    assert.match(await res.text(), /cannot serve chat/);
+    assert.equal(p.leafA.hits, 0);
+    assert.equal(p.leafB.hits, 0);
+  } finally {
+    await p.cleanup();
+  }
+});
+
+test("runtime designations filter leaves at dispatch (#13675 P2)", async () => {
+  const p = await startProxy();
+  try {
+    const res = await postPurpose(p, "/v1/decisions", {
+      model: "opencode-route/t-decide-desig",
+      input: { state: 1 },
+      questions: { ok: { type: "noul" } },
+    });
+    assert.equal(res.status, 400);
+    const chat = await p.post({
+      model: "opencode-route/t-chat-desig",
+      messages: MSGS,
+    });
+    assert.equal(chat.status, 200);
+    assert.equal((await chat.json()).choices[0].message.content, "LEAF-B");
+    const rows = await waitForAttempts(p, 1);
+    assert.equal(rows[0].provider_id, "leafB");
+  } finally {
+    await p.cleanup();
+  }
+});
+
+test("embeddings serve a single string via the OpenAI default (#13675 P2)", async () => {
+  const p = await startProxy();
+  try {
+    const res = await postPurpose(p, "/v1/embeddings", {
+      model: "opencode-route/t-embed",
+      input: "hello",
+    });
+    assert.equal(res.status, 200);
+    const json = await res.json();
+    assert.equal(json.object, "list");
+    assert.equal(json.data.length, 1);
+    assert.equal(json.data[0].index, 0);
+    assert.deepEqual(json.data[0].embedding, [5, 0.5]);
+    assert.equal(json.model, "opencode-route/t-embed");
+  } finally {
+    await p.cleanup();
+  }
+});
+
+test("embeddings normalize the google single-item shape (#13675 P2)", async () => {
+  const p = await startProxy();
+  try {
+    const res = await postPurpose(p, "/v1/embeddings", {
+      model: "opencode-route/t-embed-goog",
+      input: "hello",
+    });
+    assert.equal(res.status, 200);
+    const json = await res.json();
+    assert.equal(json.object, "list");
+    assert.equal(json.data.length, 1);
+    assert.deepEqual(json.data[0].embedding, [5, 0.5]);
+    assert.ok(p.leafA.last.url.includes(":embedContent"));
+  } finally {
+    await p.cleanup();
+  }
+});
+
+test("A2 splits oversized batches and re-joins in caller order (#13675 P2)", async () => {
+  const p = await startProxy();
+  try {
+    const input = ["a", "bb", "ccc", "dddd", "eeeee"];
+    const res = await postPurpose(p, "/v1/embeddings", {
+      model: "opencode-route/t-embed-split",
+      input,
+    });
+    assert.equal(res.status, 200);
+    const json = await res.json();
+    assert.equal(json.data.length, 5);
+    for (let i = 0; i < 5; i++) {
+      assert.equal(json.data[i].index, i);
+      assert.deepEqual(json.data[i].embedding, [input[i].length, 0.5]);
+    }
+    assert.ok(!("errors" in json));
+  } finally {
+    await p.cleanup();
+  }
+});
+
+test("A2 retryable sub-batch failure fails over to the next candidate (#13675 P2)", async () => {
+  const p = await startProxy();
+  try {
+    p.leafA.mode = "rate";
+    const ok = await postPurpose(p, "/v1/embeddings", {
+      model: "opencode-route/t-embed",
+      input: ["aa", "bbb"],
+    });
+    assert.equal(ok.status, 200);
+    const okJson = await ok.json();
+    assert.equal(okJson.data.length, 2);
+    assert.deepEqual(okJson.data[0].embedding, [2, 0.5]);
+    assert.deepEqual(okJson.data[1].embedding, [3, 0.5]);
+    assert.equal(p.leafA.hits, 1);
+    assert.equal(p.leafB.hits, 1);
+  } finally {
+    await p.cleanup();
+  }
+});
+
+test("A2 non-retryable sub-batch failure answers 207 with index-faithful errors (#13675 P2)", async () => {
+  const q = await startProxy();
+  try {
+    q.leafA.mode = "embed-bad-item";
+    const res = await postPurpose(q, "/v1/embeddings", {
+      model: "opencode-route/t-embed-split",
+      input: ["aa", "bb", "bad-1", "bad-2", "cc"],
+    });
+    assert.equal(res.status, 207);
+    const json = await res.json();
+    assert.deepEqual(
+      json.data.map((d) => d.index),
+      [0, 1, 4],
+    );
+    assert.deepEqual(
+      json.errors.map((e) => e.index),
+      [2, 3],
+    );
+    assert.deepEqual(json.data[0].embedding, [2, 0.5]);
+    assert.deepEqual(json.data[2].embedding, [2, 0.5]);
+  } finally {
+    await q.cleanup();
+  }
+});
+
+test("rerank relays documents with scores (#13675 P2)", async () => {
+  const p = await startProxy();
+  try {
+    const res = await postPurpose(p, "/v1/rerank", {
+      model: "opencode-route/t-rerank",
+      query: "what",
+      documents: ["doc-a", "doc-b"],
+    });
+    assert.equal(res.status, 200);
+    const json = await res.json();
+    assert.equal(json.results.length, 2);
+    assert.equal(json.results[0].index, 0);
+    assert.ok(json.results[0].score > json.results[1].score);
+    const bad = await postPurpose(p, "/v1/rerank", {
+      model: "opencode-route/t-rerank",
+      query: "",
+      documents: [],
+    });
+    assert.equal(bad.status, 400);
+  } finally {
+    await p.cleanup();
+  }
+});
+
+test("transcription relays the leaf answer bytes untouched (#13675 P2)", async () => {
+  const p = await startProxy();
+  try {
+    const res = await postTranscription(p, "opencode-route/t-transcribe");
+    assert.equal(res.status, 200);
+    assert.equal((await res.json()).text, "transcribed-by-LEAF-A");
+    const missing = await postPurpose(p, "/v1/audio/transcriptions", null, "--x\r\n");
+    assert.equal(missing.status, 400);
+  } finally {
+    await p.cleanup();
+  }
+});
+
+test("speech relays leaf audio bytes with the leaf content-type (#13675 P2)", async () => {
+  const p = await startProxy();
+  try {
+    const res = await postPurpose(p, "/v1/audio/speech", {
+      model: "opencode-route/t-speak",
+      input: "say this",
+      voice: "alloy",
+    });
+    assert.equal(res.status, 200);
+    assert.match(res.headers.get("content-type"), /audio\/mpeg/);
+    assert.equal(Buffer.from(await res.arrayBuffer()).toString("utf8"), "audio-by-LEAF-A");
+  } finally {
+    await p.cleanup();
+  }
+});
+
+test("guard serves chat-shaped calls through the guard pool only (#13675 P2)", async () => {
+  const p = await startProxy();
+  try {
+    const res = await postPurpose(p, "/v1/guard", {
+      model: "opencode-route/t-guard",
+      messages: MSGS,
+    });
+    assert.equal(res.status, 200);
+    assert.equal((await res.json()).choices[0].message.content, "LEAF-A");
+    assert.ok(p.leafA.last.url.endsWith("/chat/completions"));
+    const mismatch = await postPurpose(p, "/v1/guard", {
+      model: "opencode-route/t-ordered",
+      messages: MSGS,
+    });
+    assert.equal(mismatch.status, 400);
+    assert.match(await mismatch.text(), /cannot serve guard/);
   } finally {
     await p.cleanup();
   }

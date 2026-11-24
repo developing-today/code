@@ -14,11 +14,11 @@ The pinned snapshot matters as much as the name. The model revision is `95c27414
 
 The same model appears under three spellings in the tree, and they are not interchangeable strings. The book uses each spelling only where it is operative:
 
-| Spelling | Where it is operative |
-|---|---|
-| `Snowflake/snowflake-arctic-embed-m-v2.0` | The Hugging Face identity: `DEFAULT_MODEL` in atlas-core, the default in atlas-proto, the Worker's pinned model value, and the Python reference's model constant. This is the spelling a `--model` flag carries. |
-| `snowflake-arctic-embed-m-v2.0` | The shard and staging identity: `EMBEDDING_MODEL_ID` in the shards module. This exact string is stamped into shard manifests and staging-database manifests, and it is the string discovery and fan-out compare against. |
-| `Snowflake arctic-embed-m-v2.0` | A shortened display spelling in the fleet CLI's help text. It names the same model for a human reader and is not compared against anything. |
+| Spelling                                  | Where it is operative                                                                                                                                                                                                    |
+| ----------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `Snowflake/snowflake-arctic-embed-m-v2.0` | The Hugging Face identity: `DEFAULT_MODEL` in atlas-core, the default in atlas-proto, the Worker's pinned model value, and the Python reference's model constant. This is the spelling a `--model` flag carries.         |
+| `snowflake-arctic-embed-m-v2.0`           | The shard and staging identity: `EMBEDDING_MODEL_ID` in the shards module. This exact string is stamped into shard manifests and staging-database manifests, and it is the string discovery and fan-out compare against. |
+| `Snowflake arctic-embed-m-v2.0`           | A shortened display spelling in the fleet CLI's help text. It names the same model for a human reader and is not compared against anything.                                                                              |
 
 A shard stamped by the aggregator can therefore never string-equal `DEFAULT_MODEL`, and no code converts between the spellings. Each subsystem compares only within its own spelling. That is a recorded wart, not a design feature: it works because the comparisons never cross, and any future code that compares across subsystems must normalise first or it will refuse every shard it is handed.
 

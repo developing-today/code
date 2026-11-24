@@ -226,7 +226,11 @@ export class NotifyRelayClient {
   private async loadSnapshotSeq(): Promise<void> {
     try {
       const parsed = JSON.parse(await readFile(this.deps.stateFile, "utf8")) as { snapshotSeq?: unknown };
-      if (typeof parsed.snapshotSeq === "number" && Number.isSafeInteger(parsed.snapshotSeq) && parsed.snapshotSeq > 0) {
+      if (
+        typeof parsed.snapshotSeq === "number" &&
+        Number.isSafeInteger(parsed.snapshotSeq) &&
+        parsed.snapshotSeq > 0
+      ) {
         this.snapshotSeq = parsed.snapshotSeq;
       }
     } catch {

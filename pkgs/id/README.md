@@ -1,6 +1,6 @@
 # id
 
-A peer-to-peer collaboration platform built with [Iroh](https://iroh.computer). Its file core stores, retrieves and shares files across a decentralized network; the same binary also ships the layers above it — signed event logs addressed as `id://` records, multiplayer worlds, the directory, groups and group encryption, the currency registry, and an optional collaborative web UI.
+A peer-to-peer collaboration platform built with [Iroh](https://iroh.computer). Its file core stores, retrieves and shares files across a decentralized network; the same binary also ships the layers above it — signed event logs addressed as `id://` records, multiplayer worlds, the directory, groups and group encryption, the currency registry, and an optional collaborative web UI. The `id` Rust facade re-exports the workspace API at historical `id::` paths; the command layer lives in `id-cli`.
 
 ## The book
 
@@ -44,8 +44,8 @@ just serve
 ### With Cargo
 
 ```bash
-# Default build: sandbox and world included, no web UI
-# (--no-default-features would also remove sandbox and world)
+# Lib variant (no web UI): the default features (sandbox and world included)
+# (--no-default-features is not the variant switch: it would also remove sandbox and world)
 cargo build
 cargo run -- serve
 
@@ -58,6 +58,42 @@ cargo run --features web -- serve --web
 The lib/web split is the `web` feature. `--no-default-features` is not that
 switch: it turns off the default `sandbox` and `world` features and leaves
 the web feature off, so it builds neither variant.
+
+## Five-minute path
+
+Phase 12 exit criterion 1 (#12595): from an empty directory to a
+running world a friend can join in under 5 minutes, one command per
+step. `pkgs/id/scripts/five-minute-path.sh` runs the path and prints
+the elapsed time; run it from anywhere — it creates its own run
+directory, clones the repo, builds `id`, serves a world, mints an
+invite, and has a second node join it:
+
+```bash
+pkgs/id/scripts/five-minute-path.sh
+# ... per-step output ...
+# RESULT verdict=PASS elapsed_s=123 budget_s=300 world=five-minute steps=clone=12 build=80 serve=3 invite=1 join=2 records=1 run_dir=/tmp/tmp.XXXXXX
+```
+
+The steps, one command each (the script runs exactly these):
+
+```bash
+git clone --depth 1 https://github.com/developing-today/code.git five-minute-path
+cargo build --release --no-default-features -p id   # in five-minute-path/pkgs/id
+id serve --world --world-name five-minute --data-dir host --iroh-port 17001 --no-relay --no-gossip --no-mdns
+id --data-dir host id                                # the host's node id
+id world invite <node> --name friend --world five-minute --addr 127.0.0.1:17001 --no-relay
+id world join <node> --capability <cap> --world five-minute --addr 127.0.0.1:17001 --no-relay --command-mode --json
+id world records <node> --capability <cap> --world five-minute --addr 127.0.0.1:17001 --no-relay
+```
+
+The admin token is a fresh random value passed only through
+`ID_WORLD_ADMIN_TOKEN`; the guest capability travels via
+`ID_WORLD_CAPABILITY`. All traffic is direct loopback, so no relay,
+DHT, gossip, or mDNS is involved. `--dry-run` prints the steps without
+running them; `--id-bin PATH` skips the clone and build steps (reported
+as skipped in the `RESULT` line). The script exits 0 only when the
+path completes under the 300-second budget. The timed result is
+recorded on #12595, where the Phase 12 exit audit (#12231) can cite it.
 
 ## Usage
 
@@ -433,7 +469,7 @@ tests/
 - [ARCHITECTURE.md](ARCHITECTURE.md) — System architecture and design decisions
 - [WEB.md](WEB.md) — Web interface documentation
 - [web/README.md](web/README.md) — Wire protocol and frontend details
-- [docs/](docs/) — Feature documentation (chronological)
+- [docs/](docs/) — Design-record archive (symlink to the repo-root `doc/` archive)
 - [AGENTS.md](AGENTS.md) — AI agent development guidelines
 
 ### ID program

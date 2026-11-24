@@ -131,7 +131,7 @@ enum Stage {
     ServedSupported,
     /// A stage timed out or errored before the target's fate could
     /// be decided; the payload is the failed stage.
-    StageError(PipelineStage),
+    Error(PipelineStage),
 }
 
 /// Coverage confidence, returned independently of the stage: how
@@ -319,7 +319,7 @@ fn diagnose_with(input: &FixtureInput, rules: Rules) -> Result<Diagnosis, Malfor
                 coverage
             };
             return Ok(Diagnosis {
-                stage: Stage::StageError(f.stage),
+                stage: Stage::Error(f.stage),
                 coverage,
             });
         }
@@ -395,12 +395,12 @@ fn reference_diagnose(input: &FixtureInput) -> Result<Diagnosis, Malformed> {
     let failed = input.failure.map(|f| f.stage);
     // Masked check: the observation made by `stage` is trusted only
     // when no failure happened at or before it.
-    let trusted = |stage: PipelineStage| failed.map_or(true, |f| stage.rank() < f.rank());
+    let trusted = |stage: PipelineStage| failed.is_none_or(|f| stage.rank() < f.rank());
     let t = &input.target;
 
     if !trusted(PipelineStage::Enumeration) {
         return Ok(Diagnosis {
-            stage: Stage::StageError(PipelineStage::Enumeration),
+            stage: Stage::Error(PipelineStage::Enumeration),
             coverage: Coverage::Incomplete,
         });
     }
@@ -414,7 +414,7 @@ fn reference_diagnose(input: &FixtureInput) -> Result<Diagnosis, Malformed> {
     }
     if !trusted(PipelineStage::Indexing) {
         return Ok(Diagnosis {
-            stage: Stage::StageError(PipelineStage::Indexing),
+            stage: Stage::Error(PipelineStage::Indexing),
             coverage,
         });
     }
@@ -426,7 +426,7 @@ fn reference_diagnose(input: &FixtureInput) -> Result<Diagnosis, Malformed> {
     }
     if !trusted(PipelineStage::CandidateGeneration) {
         return Ok(Diagnosis {
-            stage: Stage::StageError(PipelineStage::CandidateGeneration),
+            stage: Stage::Error(PipelineStage::CandidateGeneration),
             coverage,
         });
     }
@@ -439,7 +439,7 @@ fn reference_diagnose(input: &FixtureInput) -> Result<Diagnosis, Malformed> {
     }
     if !trusted(PipelineStage::Serving) {
         return Ok(Diagnosis {
-            stage: Stage::StageError(PipelineStage::Serving),
+            stage: Stage::Error(PipelineStage::Serving),
             coverage,
         });
     }
@@ -451,7 +451,7 @@ fn reference_diagnose(input: &FixtureInput) -> Result<Diagnosis, Malformed> {
     }
     if !trusted(PipelineStage::ContextPacking) {
         return Ok(Diagnosis {
-            stage: Stage::StageError(PipelineStage::ContextPacking),
+            stage: Stage::Error(PipelineStage::ContextPacking),
             coverage,
         });
     }
@@ -463,7 +463,7 @@ fn reference_diagnose(input: &FixtureInput) -> Result<Diagnosis, Malformed> {
     }
     if !trusted(PipelineStage::AnswerSupport) {
         return Ok(Diagnosis {
-            stage: Stage::StageError(PipelineStage::AnswerSupport),
+            stage: Stage::Error(PipelineStage::AnswerSupport),
             coverage,
         });
     }
@@ -650,7 +650,7 @@ fn fixtures() -> Vec<NamedFixture> {
         name: "stage_timeout",
         input: i,
         expected: Diagnosis {
-            stage: Stage::StageError(PipelineStage::CandidateGeneration),
+            stage: Stage::Error(PipelineStage::CandidateGeneration),
             coverage: Coverage::Complete,
         },
     });
@@ -791,7 +791,7 @@ impl Rng {
     }
 
     fn coin(&mut self) -> bool {
-        self.next() % 2 == 0
+        self.next().is_multiple_of(2)
     }
 
     fn below(&mut self, n: usize) -> usize {
@@ -860,7 +860,7 @@ fn generated_world(rng: &mut Rng) -> FixtureInput {
 /// structurally on every generated world.
 #[test]
 fn runner_matches_reference_on_generated_corpora() {
-    let mut rng = Rng(0x8525_6020_F01);
+    let mut rng = Rng(0x0852_5602_0F01);
     for case in 0..4000 {
         let input = generated_world(&mut rng);
         let got = diagnose(&input).expect("generated worlds are well-formed");
@@ -877,14 +877,15 @@ fn runner_matches_reference_on_generated_corpora() {
                 "case {case}: policy exclusion presented as absence"
             );
         }
-        if let Some(f) = input.failure {
-            if f.stage == PipelineStage::Enumeration && !input.policy_excluded {
-                assert_eq!(
-                    got.stage,
-                    Stage::StageError(PipelineStage::Enumeration),
-                    "case {case}: enumeration failure not surfaced"
-                );
-            }
+        if let Some(f) = input.failure
+            && f.stage == PipelineStage::Enumeration
+            && !input.policy_excluded
+        {
+            assert_eq!(
+                got.stage,
+                Stage::Error(PipelineStage::Enumeration),
+                "case {case}: enumeration failure not surfaced"
+            );
         }
     }
 }
@@ -1055,7 +1056,7 @@ fn deterministic_replay() {
         served_not_in_context:ServedNotInContext/Complete;\
         delivered_unsupported:ContextDeliveredUnsupported/Complete;\
         served_supported:ServedSupported/Complete;\
-        stage_timeout:StageError(CandidateGeneration)/Complete;\
+        stage_timeout:Error(CandidateGeneration)/Complete;\
         policy_excluded:PolicyExcluded/Complete";
     let transcript = |table: &[NamedFixture]| {
         table

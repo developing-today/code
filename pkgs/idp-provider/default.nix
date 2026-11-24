@@ -12,7 +12,10 @@ rustPlatform.buildRustPackage {
 
   meta = {
     description = "Minimal OIDC provider: discovery, JWKS, authorize/token/userinfo (code + PKCE) signing with the IdP PKI key";
-    license = with lib.licenses; [ mit asl20 ];
+    license = with lib.licenses; [
+      mit
+      asl20
+    ];
     mainProgram = "idp-provider";
   };
 }

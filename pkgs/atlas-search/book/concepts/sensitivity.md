@@ -21,7 +21,7 @@ the secret tier and nothing of its content.
 ## Two ladders, one model
 
 The model has two vocabularies because it answers two different questions:
-*where may this content live?* and *how much may this caller see?*
+_where may this content live?_ and _how much may this caller see?_
 
 **Corpus tiers** — where content lives. Three tiers, in ascending
 sensitivity: `public`, `internal`, `secret`. A tier is a physical placement
@@ -43,7 +43,7 @@ themselves it uses the canonical names; where it quotes a flag value, a
 config cap, or a stored label it spells the value as the code does, because
 the code spellings remain the literal values until the identifier rename
 (#13506) lands with alias/migration handling for the stored values.
-A *ceiling* is a maximum: a search run at ceiling `personal` may return
+A _ceiling_ is a maximum: a search run at ceiling `personal` may return
 chunks classified `shareable` or `personal`, and nothing above. The default
 ceiling is `personal` — a caller who asks for nothing gets `personal`, and
 `local-only` and `secret-bearing` material is excluded unless a ceiling
@@ -52,11 +52,11 @@ above the default is both requested and granted.
 The mapping between the ladders is fixed:
 
 | Client ceiling (code spelling) | Canonical name | Corpus tier it reaches |
-|---|---|---|
-| `shareable` | `public` | `public` |
-| `personal` | `internal` | `internal` |
-| `local-only` | `private` | `internal` |
-| `secret-bearing` | `sensitive` | `secret` |
+| ------------------------------ | -------------- | ---------------------- |
+| `shareable`                    | `public`       | `public`               |
+| `personal`                     | `internal`     | `internal`             |
+| `local-only`                   | `private`      | `internal`             |
+| `secret-bearing`               | `sensitive`    | `secret`               |
 
 Note the deliberate pinch in the middle: two ceiling levels map to the
 internal tier. The ceiling ladder is finer-grained than physical placement,
@@ -73,11 +73,11 @@ open decision, recorded on #13506: the canonical ceiling names now share
 not settled.
 
 A third, related vocabulary appears at the output boundary: the
-*disclosure context*, which names the destination surface rather than the
+_disclosure context_, which names the destination surface rather than the
 caller. Each context carries its own ceiling — `fleet-internal` allows up
 to `local-only`, `hosted-per-user` up to `personal`, `public-surface` up to
 `shareable`, and `local-owner` up to `secret-bearing` — and the effective
-ceiling for a response is the *minimum* of the caller's granted ceiling and
+ceiling for a response is the _minimum_ of the caller's granted ceiling and
 the context's ceiling. Neither widens the other. An absent or unrecognized
 context fails closed to `public-surface`. One classification sits outside
 the ladders entirely: content marked `excluded_personal_life` is ineligible
@@ -92,11 +92,11 @@ recorded on the search job and reported back in the result envelope, so a
 caller can always see the ceiling it was actually served at. The named
 identities in service today:
 
-| Client identity | Who it is | Ceiling cap |
-|---|---|---|
-| `drew-cli` | The user's own CLI on the laptop | `secret-bearing` |
-| `sandbox-scripts` | Muse lanes and scripts on the sandbox seat, via the tailnet | `personal` |
-| `cf-worker` | The Cloudflare Worker, calling the service | `personal` |
+| Client identity   | Who it is                                                   | Ceiling cap      |
+| ----------------- | ----------------------------------------------------------- | ---------------- |
+| `drew-cli`        | The user's own CLI on the laptop                            | `secret-bearing` |
+| `sandbox-scripts` | Muse lanes and scripts on the sandbox seat, via the tailnet | `personal`       |
+| `cf-worker`       | The Cloudflare Worker, calling the service                  | `personal`       |
 
 The design of record's v1 client set matches this shape: the user's CLI is the
 only identity capped above `personal`; OpenChamber sessions and fork /
@@ -109,7 +109,7 @@ sufficient to leak:
 
 1. **Inside the branch queries.** The ceiling is a clause in the SQL that
    gathers the full-text and vector candidate pools — `{sensitivity} IN
-   (allowed set)` — applied before ranking. A chunk above the ceiling is
+(allowed set)` — applied before ranking. A chunk above the ceiling is
    never retrieved, never counted, and its existence is not leaked by a
    gap in the results. A chunk with NULL sensitivity never passes.
 2. **At the shard set.** Tier ceilings are physical: a shard above the
@@ -118,7 +118,7 @@ sufficient to leak:
    read-only token, and the secret tier's token is never derived from
    another tier's. Because the default ceiling `personal` maps to the
    internal tier, a default fan-out can never include the secret tier; it
-   takes an explicit `secret-bearing` ceiling *and* the secret credential.
+   takes an explicit `secret-bearing` ceiling _and_ the secret credential.
 3. **At the output boundary.** Retrieved details are checked again against
    the effective ceiling (caller grant intersected with disclosure
    context) before rendering, in every output shape — flat, grouped, and
@@ -149,8 +149,8 @@ boundary is the failure this whole model exists to prevent.
 **The classification manifest (#5410).** A small table in the corpus
 database declares the filterable dimensions — kind, client, topics,
 projects, creation time — with their storage shapes and match semantics,
-and carries the per-source tier rules. Its safety invariant is *narrow,
-never widen*: the manifest schema has no sensitivity keys at all (the
+and carries the per-source tier rules. Its safety invariant is _narrow,
+never widen_: the manifest schema has no sensitivity keys at all (the
 names `sensitivity`, `max_sensitivity`, `ceiling`, and `sens` are a
 reserved namespace the loader rejects), its column shapes bind only to
 code-known label columns, and any unknown shape, semantics, column, or key
@@ -162,7 +162,7 @@ how content is filtered; it cannot change how much of it a caller may see.
 checked that nothing sensitive sits at the wrong tier, combining three
 independent signals: deterministic secret-pattern scanning (gitleaks),
 a classifier pass, and a vector-neighbourhood check — internal chunks that
-embed *close to* secret chunks are candidates for review, a check that is
+embed _close to_ secret chunks are candidates for review, a check that is
 only meaningful because one embedding model and pipeline serve every tier.
 The Layer-1 scan report (2026-11-15) records counts, classes, and ids
 only, ran gitleaks with redaction, and used private copies that were
@@ -213,7 +213,7 @@ in the production monolith and in a local replica**, alongside pre-tiering
 unclassified snapshots. Outside the shard set, then, the standing claim
 that secret material exists only in the two secret databases does not
 currently hold: query-time ceiling enforcement still governs what any
-caller is *served* from those stores, but the physical placement boundary
+caller is _served_ from those stores, but the physical placement boundary
 — the second layer of the defence above — is not intact there.
 
 The remediation is filed (#12406: inventory, a verified destination copy

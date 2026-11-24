@@ -109,15 +109,12 @@ def d1_read_table(d1, db_id, table, create_sql):
         for c in columns
     )
     decoders = [
-        d1_integer_value if "INT" in types.get(c, "") else d1_value
-        for c in columns
+        d1_integer_value if "INT" in types.get(c, "") else d1_value for c in columns
     ]
     pk_cols = fq_common._pk_columns(create_sql)
     keyset = (
         pk_cols[0]
-        if pk_cols
-        and len(pk_cols) == 1
-        and "INT" in types.get(pk_cols[0], "")
+        if pk_cols and len(pk_cols) == 1 and "INT" in types.get(pk_cols[0], "")
         else None
     )
     offset = 0
@@ -140,15 +137,10 @@ def d1_read_table(d1, db_id, table, create_sql):
                 f'ORDER BY CAST("{keyset}" AS INTEGER) LIMIT {READ_PAGE}'
             )
         else:
-            sql = (
-                f'SELECT {select} FROM "{table}" '
-                f"LIMIT {READ_PAGE} OFFSET {offset}"
-            )
+            sql = f'SELECT {select} FROM "{table}" LIMIT {READ_PAGE} OFFSET {offset}'
         rows = d1.query(db_id, sql)
         for row in rows:
-            values = tuple(
-                decode(row[c]) for decode, c in zip(decoders, columns)
-            )
+            values = tuple(decode(row[c]) for decode, c in zip(decoders, columns))
             if keyset is not None:
                 last_key = values[columns.index(keyset)]
             yield values

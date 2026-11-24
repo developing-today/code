@@ -40,8 +40,8 @@
 set -euo pipefail
 
 # ---- pinned artifacts (update together; sha256 of the downloaded file) ----
-FLEET_URL="${FLEET_URL:-https://github.com/developing-today/code/releases/download/fleet-static-bcc8043/fleet-x86_64-linux-musl}"
-FLEET_SHA256="${FLEET_SHA256:-33c1b5d0ac8df479cd813e9663b8c20d555a82d1ff50c48259a6919dfbc70bd5}"
+FLEET_URL="${FLEET_URL:-https://github.com/developing-today/code/releases/download/fleet-static-f56dc7f/fleet-x86_64-linux-musl}"
+FLEET_SHA256="${FLEET_SHA256:-145635246a876036f24451a3ddf35c25fda767deb75d8321751fa245c8fe12ef}"
 BWS_URL="https://github.com/bitwarden/sdk-sm/releases/download/bws-v2.1.0/bws-x86_64-unknown-linux-musl-2.1.0.zip"
 BWS_SHA256="f59ee150e42b82128d437087e9bac920053c6bfddcb960d20ce9386e5ac9bba6"
 RESTIC_URL="https://github.com/restic/restic/releases/download/v0.20.0/restic_0.20.0_linux_amd64.bz2"

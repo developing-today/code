@@ -224,6 +224,83 @@ CANDIDATE = {
 
 
 class TestLaunchStep(unittest.TestCase):
+    def test_live_mid_loop_cap_exhaustion_hands_back_next_candidate(self):
+        # The oracle is the real launch/hand-back subprocess boundary:
+        # with one launch slot and two candidates, the second task must
+        # be claimed, parked as executor-saturated and noted, not merely
+        # left as a cap_saturated fire-log skip.
+        binds = []
+        calls = empty_calls()
+        first = dict(
+            CANDIDATE,
+            id=777,
+            stage="launch_failed",
+            issue="#1187",
+            packet={"repo": "developing-today/code", "issue": {"number": 1187}},
+        )
+        second = dict(
+            first,
+            id=889,
+            issue="#1188",
+            packet={"repo": "developing-today/code", "issue": {"number": 1188}},
+        )
+        base_fake = make_fake_run(binds)
+        handback_fake = make_handback_run(calls)
+
+        def fake_run(cmd, **kwargs):
+            argv = [str(part) for part in cmd]
+            if "repo-queue" in argv[0] and ("claim" in argv or "park" in argv):
+                return handback_fake(cmd, **kwargs)
+            if argv and argv[0] == "gh":
+                calls["gh"].append(argv)
+                if "view" in argv:
+                    return Result(0, "[]")
+                return Result(0, "")
+            return base_fake(cmd, **kwargs)
+
+        with (
+            patch.object(
+                claimant,
+                "run_poll",
+                return_value={"candidates": [first, second]},
+            ),
+            patch.object(claimant.subprocess, "run", fake_run),
+        ):
+            hand_back = []
+            launched, skips = claimant.launch_step(
+                "live",
+                1,
+                fire_start_candidates=[first, second],
+                hand_back_out=hand_back,
+            )
+
+        self.assertEqual(len(launched), 1)
+        self.assertEqual(launched[0]["task_id"], 777)
+        self.assertIn({"task_id": 889, "reason": "cap_saturated"}, skips)
+        self.assertEqual(len(calls["claim"]), 1)
+        claim_argv = calls["claim"][0]
+        self.assertEqual(claim_argv[claim_argv.index("--task") + 1], "889")
+        self.assertEqual(len(calls["park"]), 1)
+        self.assertIn("executor-saturated", " ".join(calls["park"][0]))
+        self.assertTrue(
+            any(
+                "handed back" in argv[argv.index("--body") + 1]
+                for argv in calls["gh"]
+                if "--body" in argv
+            )
+        )
+        self.assertEqual(
+            hand_back,
+            [
+                {
+                    "task_id": 889,
+                    "parked": True,
+                    "noted": True,
+                    "reason": "executor-saturated",
+                }
+            ],
+        )
+
     def test_valid_candidate_launches_and_binds(self):
         binds = []
         with (
@@ -1563,6 +1640,24 @@ class TestHandBackStep(unittest.TestCase):
         self.assertEqual(calls["park"], [])
         self.assertEqual(calls["gh"], [])
 
+    def test_handback_reuses_claim_already_collected_for_launch(self):
+        calls = empty_calls()
+        with patch.object(
+            claimant.subprocess,
+            "run",
+            make_handback_run(calls),
+        ):
+            record = claimant.hand_back_step(
+                "live",
+                [dict(HANDBACK_CANDIDATE)],
+                already_claimed_task_ids=[888],
+            )
+        self.assertEqual(record["parked"], True)
+        self.assertEqual(record["noted"], True)
+        self.assertEqual(calls["claim"], [])
+        self.assertEqual(len(calls["park"]), 1)
+        self.assertEqual(len(calls["gh"]), 1)
+
     def test_mismatched_claim_parks_nothing(self):
         calls = empty_calls()
         with patch.object(
@@ -1776,9 +1871,7 @@ class TestCodeSourceFireLog(unittest.TestCase):
             not_a_repo.mkdir()
             with (
                 patch.object(claimant, "PRIMARY_CLONE", not_a_repo),
-                patch.object(
-                    claimant.subprocess, "run", self._fake_git(returncode=1)
-                ),
+                patch.object(claimant.subprocess, "run", self._fake_git(returncode=1)),
             ):
                 source = claimant.read_code_source()
         self.assertEqual(source["state"], "unreadable")

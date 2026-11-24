@@ -1039,10 +1039,12 @@ mod tests {
         }));
         let unscored = evaluate(&d, Split::Dev).unwrap();
         assert_eq!(unscored.signals[0].queries_scored, 0);
-        assert!(select_best_signal(&unscored, Metric::Ndcg10)
-            .unwrap_err()
-            .to_string()
-            .contains("no scored development queries"));
+        assert!(
+            select_best_signal(&unscored, Metric::Ndcg10)
+                .unwrap_err()
+                .to_string()
+                .contains("no scored development queries")
+        );
 
         d.qrels[0].grade = 1;
         let judged = evaluate(&d, Split::Dev).unwrap();
@@ -1242,6 +1244,17 @@ mod tests {
         }
     }
 
+    /// One generated duplicate-key case: (raw runs text, signal
+    /// named in the error, query named, clean runs text, expected
+    /// surviving runs as (signal, [(query, doc ids)])).
+    type DupKeyCase<'a> = (
+        String,
+        String,
+        String,
+        String,
+        Vec<(&'a str, Vec<(&'a str, &'a [&'a str])>)>,
+    );
+
     // Oracle: the #6390 parser invariant, property-style over
     // generated documents (the repo testing doctrine for parsers):
     // for arbitrary query ids (including ids that need JSON
@@ -1311,66 +1324,60 @@ mod tests {
             let r2: &[&str] = &["d3"];
             let ro: &[&str] = &["d9"];
 
-            // (raw runs text, signal named in the error, query named)
-            let (dup_runs, dup_signal, dup_query, clean_runs, expected): (
-                String,
-                String,
-                String,
-                String,
-                Vec<(&str, Vec<(&str, &[&str])>)>,
-            ) = match case % 3 {
-                0 => (
-                    run_obj(
-                        &signal,
-                        &results_obj(&[(&q_dup, r1), (&q_dup, r2)]),
-                        results_first,
-                    ),
-                    signal.clone(),
-                    q_dup.clone(),
-                    run_obj(&signal, &results_obj(&[(&q_dup, r1)]), results_first),
-                    vec![(signal.as_str(), vec![(q_dup.as_str(), r1)])],
-                ),
-                1 => (
-                    run_obj(
-                        &signal,
-                        &results_obj(&[(&q_dup, r1), (&q_other, ro), (&q_dup, r2)]),
-                        results_first,
-                    ),
-                    signal.clone(),
-                    q_dup.clone(),
-                    run_obj(
-                        &signal,
-                        &results_obj(&[(&q_dup, r1), (&q_other, ro)]),
-                        results_first,
-                    ),
-                    vec![(
-                        signal.as_str(),
-                        vec![(q_dup.as_str(), r1), (q_other.as_str(), ro)],
-                    )],
-                ),
-                _ => (
-                    format!(
-                        "{}, {}",
-                        run_obj(&signal, &results_obj(&[(&q_dup, r1)]), results_first),
+            let (dup_runs, dup_signal, dup_query, clean_runs, expected): DupKeyCase<'_> =
+                match case % 3 {
+                    0 => (
                         run_obj(
-                            &signal2,
-                            &results_obj(&[(&q_other, ro), (&q_other, r1)]),
-                            results_first
-                        )
-                    ),
-                    signal2.clone(),
-                    q_other.clone(),
-                    format!(
-                        "{}, {}",
+                            &signal,
+                            &results_obj(&[(&q_dup, r1), (&q_dup, r2)]),
+                            results_first,
+                        ),
+                        signal.clone(),
+                        q_dup.clone(),
                         run_obj(&signal, &results_obj(&[(&q_dup, r1)]), results_first),
-                        run_obj(&signal2, &results_obj(&[(&q_other, ro)]), results_first)
+                        vec![(signal.as_str(), vec![(q_dup.as_str(), r1)])],
                     ),
-                    vec![
-                        (signal.as_str(), vec![(q_dup.as_str(), r1)]),
-                        (signal2.as_str(), vec![(q_other.as_str(), ro)]),
-                    ],
-                ),
-            };
+                    1 => (
+                        run_obj(
+                            &signal,
+                            &results_obj(&[(&q_dup, r1), (&q_other, ro), (&q_dup, r2)]),
+                            results_first,
+                        ),
+                        signal.clone(),
+                        q_dup.clone(),
+                        run_obj(
+                            &signal,
+                            &results_obj(&[(&q_dup, r1), (&q_other, ro)]),
+                            results_first,
+                        ),
+                        vec![(
+                            signal.as_str(),
+                            vec![(q_dup.as_str(), r1), (q_other.as_str(), ro)],
+                        )],
+                    ),
+                    _ => (
+                        format!(
+                            "{}, {}",
+                            run_obj(&signal, &results_obj(&[(&q_dup, r1)]), results_first),
+                            run_obj(
+                                &signal2,
+                                &results_obj(&[(&q_other, ro), (&q_other, r1)]),
+                                results_first
+                            )
+                        ),
+                        signal2.clone(),
+                        q_other.clone(),
+                        format!(
+                            "{}, {}",
+                            run_obj(&signal, &results_obj(&[(&q_dup, r1)]), results_first),
+                            run_obj(&signal2, &results_obj(&[(&q_other, ro)]), results_first)
+                        ),
+                        vec![
+                            (signal.as_str(), vec![(q_dup.as_str(), r1)]),
+                            (signal2.as_str(), vec![(q_other.as_str(), ro)]),
+                        ],
+                    ),
+                };
 
             let queries: Vec<&str> = vec![&q_dup, &q_other];
             let err = EvalData::from_json(&document(&queries, &dup_runs))
@@ -1628,13 +1635,11 @@ mod tests {
         assert!(err.to_string().contains("forbids"), "{err}");
 
         let mut dup_forbidden = base.clone();
-        dup_forbidden["queries"][0]["forbidden"] =
-            serde_json::json!(["secret-1", "secret-1"]);
+        dup_forbidden["queries"][0]["forbidden"] = serde_json::json!(["secret-1", "secret-1"]);
         assert!(EvalData::from_json(&dup_forbidden.to_string()).is_err());
 
         let mut dup_corpus = base.clone();
-        dup_corpus["queries"][0]["corpora"] =
-            serde_json::json!(["agent-memory", "agent-memory"]);
+        dup_corpus["queries"][0]["corpora"] = serde_json::json!(["agent-memory", "agent-memory"]);
         assert!(EvalData::from_json(&dup_corpus.to_string()).is_err());
 
         let mut dup_doc = base.clone();

@@ -43,6 +43,9 @@ serde_json = { workspace = true }
 # The OpenCode session liveness probe (session_state.rs) only;
 # optional so the connect variant stays under the D7 size gate.
 base64 = { version = "0.23", optional = true }
+# The actions domain's R2 egress helper (#13774): SigV4 signing
+# over the workspace SHA-256.
+sha2 = { workspace = true, optional = true }
 # The gh domain (code#8887) mints App installation tokens over the
 # GitHub API; same ureq pin as fleet-queue/fleet-search (rustls, no
 # native-tls). Only the JSON-free surface is needed: bodies are read
@@ -83,11 +86,16 @@ full = [
   "dispatch",
   "dispatch-test",
   "laptop-agent",
+  "commander",
+  "http",
+  "ssh",
+  "laptop",
   "secrets",
   "gh",
   "bridge",
   "agent",
   "cert",
+  "actions",
   "opencode-probe",
 ]
 # The serve variant's set, as one feature for the nix build.
@@ -134,6 +142,24 @@ gh = [
   "dep:rusqlite",
 ]
 laptop-agent = ["dep:fleet-secrets", "dep:fleet-laptop-agent"]
+# The laptop route forms (developing-today/code#13717): T1 commander
+# (an MCP client over ureq; the bearer comes from fleet-secrets), T2
+# http (the daemon client, HTTP legs only), T3 ssh (no deps: the
+# binary owns the ssh argv), T0 the tiered walker composing T1-T3.
+commander = ["dep:fleet-secrets", "dep:ureq"]
+http = ["dep:fleet-laptop-agent"]
+ssh = []
+laptop = ["commander", "http", "ssh"]
+# The actions domain (#13774): live exec sessions inside Actions
+# runners — seat verbs over the queue client, the runner-side
+# agent, and the R2 egress helper (SigV4 over sha2). Full only.
+actions = [
+  "dep:fleet-secrets",
+  "dep:fleet-queue",
+  "fleet-queue/client",
+  "dep:ureq",
+  "dep:sha2",
+]
 # Ask the local OpenCode server whether a worktree's recorded session
 # is live before reusing it (session_state.rs). In full and serve;
 # never in connect, where ureq+rustls would break the D7 2 MiB gate

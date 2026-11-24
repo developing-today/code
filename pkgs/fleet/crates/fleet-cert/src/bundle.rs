@@ -97,7 +97,7 @@ pub fn base64_decode(text: &str) -> Result<Vec<u8>> {
             other => {
                 return Err(CertError::manifest(format!(
                     "invalid base64 character '{other}'"
-                )))
+                )));
             }
         }
     }

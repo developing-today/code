@@ -225,10 +225,7 @@ export class InvalidationStore {
     reason: string;
     atSeconds: number;
   }): Promise<PurgeAuditRecord> {
-    const deleted = await this.db
-      .prepare("DELETE FROM hot_cache WHERE tenant_id = ?")
-      .bind(purge.tenantId)
-      .run();
+    const deleted = await this.db.prepare("DELETE FROM hot_cache WHERE tenant_id = ?").bind(purge.tenantId).run();
     const current = await this.tenantState(purge.tenantId);
     const keepCurrent =
       current !== undefined && current.lastInvalidationAt !== null && purge.atSeconds < current.lastInvalidationAt;

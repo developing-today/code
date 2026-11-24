@@ -115,10 +115,7 @@ export class OpenCodeClient {
    * account provider.
    */
   async activeIntegrationCredentialLabel(integrationId: string, directory: string): Promise<string> {
-    const data = (await this.api(
-      "GET",
-      `/api/integration?directory=${encodeURIComponent(directory)}`,
-    )) as unknown;
+    const data = (await this.api("GET", `/api/integration?directory=${encodeURIComponent(directory)}`)) as unknown;
     if (!Array.isArray(data)) throw new OpenCodeError("opencode integration list returned no array");
     const integration = data.find(
       (item): item is { id: string; connections?: unknown } =>
@@ -131,7 +128,9 @@ export class OpenCodeClient {
     // connections may follow but are not console accounts for this guard.
     const active = integration.connections.find(
       (connection): connection is { type: string; label?: unknown } =>
-        typeof connection === "object" && connection !== null && "type" in connection &&
+        typeof connection === "object" &&
+        connection !== null &&
+        "type" in connection &&
         (connection as { type?: unknown }).type === "credential",
     );
     if (!active || typeof active.label !== "string" || !active.label.trim()) {

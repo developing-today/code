@@ -133,7 +133,7 @@ with `status=queued` — the run lists themselves are never enumerated. Tier-1
 load per owner is `running + queued`, summed across its host repos. Failures
 are soft but never silent: no token, a non-200, a transport error, or a
 200 whose body lacks a valid `total_count` makes that repo/status read
-*missing* rather than zero, adds a `load_read_errors` entry (surfaced in
+_missing_ rather than zero, adds a `load_read_errors` entry (surfaced in
 the dispatch output when non-empty), and is recorded in the owner's load
 coverage. Coverage is one of `measured` (every required read returned a
 count), `partial` (some did), `unknown` (none did), or `simulated` (an
@@ -253,10 +253,10 @@ handle, despite the workflow describing it as one.
 
 A dispatched job gets a session handle: `fp_` plus 16 random bytes from
 `/dev/urandom`, hex-encoded — `fp_` plus 32 lowercase hex characters, 128
-bits. Records live in the local store at `$FLEET_PLACE_STATE/sessions.json`,
-default `~/.local/state/fleet-place/sessions.json` — a labelled stopgap with
-the reference implementation's path and record shape, so records migrate
-when the designed queue-backend table lands. The store is guarded by a lock
+bits. The local store at `$FLEET_PLACE_STATE/sessions.json` defaults to
+`~/.local/state/fleet-place/sessions.json`. Dispatch commits locally and then
+mirrors the record to the queue broker’s `placement_sessions` table. The
+placement decision uses the local session history. The store is guarded by a lock
 directory (waiters poll every 50 ms up to 15 s; a lock older than 120 s is
 stale and is broken) and written by rename of a temp file, with keys
 recursively sorted.
@@ -270,11 +270,13 @@ recorded-field caveat, stated as the source behaves: `actor` is hardcoded
 to `developing-today[bot] (GitHub App dispatch)` even for surfaces that
 dispatch as the user.
 
-`fleet queue session status|result|list` reads the store: `status` refreshes
+An `fp_` lookup for status, result or follow-up selects the newer copy by
+`updated_at` across the local store and the broker mirror. Status and result
+can seed the local store from that record. The session verbs then work as follows: `status` refreshes
 the record from GitHub and prints its state, surface, and run URL; `result`
 adds `terminal` (true exactly for `succeeded|failed|cancelled`) and, when
 not terminal, the note "not terminal yet — reconnect with the same handle";
-`list` prints stored records newest first without refreshing (`--mine`
+`list` combines local records with up to 200 from the mirror, then prints them newest first without refreshing GitHub (`--mine`
 filters to the current `USER@hostname`). Anywhere a handle is accepted, the
 portable `OWNER/REPO#RUN_ID` is accepted too and is resolved **directly
 against GitHub without the local store** — the repo must be a registered

@@ -66,7 +66,10 @@ impl CrossSigningMode {
     }
 
     pub fn issuer_level_active(&self) -> bool {
-        matches!(self, CrossSigningMode::IssuersDirect | CrossSigningMode::Both)
+        matches!(
+            self,
+            CrossSigningMode::IssuersDirect | CrossSigningMode::Both
+        )
     }
 }
 
@@ -225,15 +228,27 @@ mod tests {
         // default root set (primary + 2 classical crosses... the
         // ML-DSA root may not sign them), ML-DSA issuer keys get 4.
         assert_eq!(
-            g.expected_issuer_variants(AlgorithmId::Ed25519, DEFAULT_ALGORITHMS, CrossSigningMode::Both),
+            g.expected_issuer_variants(
+                AlgorithmId::Ed25519,
+                DEFAULT_ALGORITHMS,
+                CrossSigningMode::Both
+            ),
             3
         );
         assert_eq!(
-            g.expected_issuer_variants(AlgorithmId::MlDsa44, DEFAULT_ALGORITHMS, CrossSigningMode::Both),
+            g.expected_issuer_variants(
+                AlgorithmId::MlDsa44,
+                DEFAULT_ALGORITHMS,
+                CrossSigningMode::Both
+            ),
             4
         );
         assert_eq!(
-            g.expected_issuer_variants(AlgorithmId::MlDsa44, DEFAULT_ALGORITHMS, CrossSigningMode::RootsOnly),
+            g.expected_issuer_variants(
+                AlgorithmId::MlDsa44,
+                DEFAULT_ALGORITHMS,
+                CrossSigningMode::RootsOnly
+            ),
             1
         );
     }

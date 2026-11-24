@@ -94,7 +94,14 @@ describe("the message a phone receives", () => {
       // It still holds both devices, each known by its mark and not by its address.
       const marks = [await endpointMark(a.subscription.endpoint), await endpointMark(m.subscription.endpoint)];
       // And what came of the send above, which a restart does not lose.
-      const last = { at: new Date(NOW).toISOString(), class: "replies" as const, sent: 2, gone: 0, failed: 0, refused: [] };
+      const last = {
+        at: new Date(NOW).toISOString(),
+        class: "replies" as const,
+        sent: 2,
+        gone: 0,
+        failed: 0,
+        refused: [],
+      };
       expect(await again.status()).toEqual({ ...status, devices: 2, known: marks, last });
       expect(status.known).toEqual([]);
       expect(marks[0]).toMatch(/^[A-Za-z0-9_-]{16}$/);

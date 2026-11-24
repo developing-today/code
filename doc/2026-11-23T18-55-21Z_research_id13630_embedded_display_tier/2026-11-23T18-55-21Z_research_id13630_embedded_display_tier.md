@@ -16,7 +16,7 @@ apply — most importantly its placement rule, which this tier inverts in an ins
 
 **Amendment (2026-11-23, Drewry's scope addition on #13630):** §§9–15 extend this record
 with the Tanmatsu review and the app/comms/gateway model Drewry directed after the base
-record landed: worlds working *as apps* on-device (§9–§10), MQTT and a simplified HTTPS
+record landed: worlds working _as apps_ on-device (§9–§10), MQTT and a simplified HTTPS
 gateway as first-class transports with embedded certificate identity (§11), capability
 classes with per-class app variants (§12), live vs batch/offline operation with automatic
 switching (§13), and gateway tiers reaching ESP-NOW / LoRa / Meshtastic leaves (§14). §15
@@ -30,7 +30,7 @@ Done check against main at the time of writing (2026-11-23):
 
 - **The boundary is already drawn.** The #786 design (`doc/2026-11-01_design_id786.md`)
   fixes the presenter contract this tier inherits: the presenter is the adapter that owns
-  the output device; it probes capability and keeps the resulting profile *local*; tier
+  the output device; it probes capability and keeps the resulting profile _local_; tier
   selection affects rendering only — never journal contents, world authority, or the wire
   contract; and a guest may never supply device-level output bytes (there, kitty/sixel
   escapes; here, panel rasters or LVGL objects). The SSH and iroh TTY presenters are the
@@ -48,7 +48,7 @@ Done check against main at the time of writing (2026-11-23):
   record is that track.
 - **Nothing embedded exists in the repo yet.** No ESP-IDF project, firmware tree, or
   embedded presenter record exists on main; the tier starts from this document.
-- **One thing this record deliberately does not design:** the world-side *view contract*
+- **One thing this record deliberately does not design:** the world-side _view contract_
   for glanceable cards. The terminal presenters consume a cell-grid surface
   (`WorldSurface`); a 240×240 round panel needs a state-card projection instead. §5 fixes
   what the device renders and returns; the projection's wire shape is named as an open
@@ -58,12 +58,12 @@ Done check against main at the time of writing (2026-11-23):
 
 ### 2.1 Chips
 
-| Chip | CPU | SRAM | PSRAM (typical modules) | Radios | USB | Place in this tier |
-| --- | --- | --- | --- | --- | --- | --- |
-| ESP32-S3 | Xtensa LX7 dual-core @ 240 MHz, vector (SIMD) instructions | 512 KB | 2–16 MB (quad or octal; N16R8 module = 16 MB flash + 8 MB octal) | WiFi 4 (2.4 GHz), BLE 5.0 | Native USB OTG + USB Serial/JTAG | **The tier's reference chip** — every first-wave target below is S3 |
-| ESP32 (original) | Xtensa LX6 dual-core @ 240 MHz | 520 KB | 0–4 MB (WROVER modules carry PSRAM) | WiFi 4, BLE 4.2 + BT Classic | None on-chip (boards use a USB-UART bridge) | Supported envelope: huge installed base of display boards; weaker (no SIMD for JPEG, no native USB, BLE 4.2) |
-| ESP32-C3 | RISC-V single-core @ 160 MHz | 400 KB | Usually none in-package | WiFi 4, BLE 5.0 | USB Serial/JTAG | Cost floor for very small panels; single core and no PSRAM put it in the bridge-only, LAN class (§4) |
-| ESP32-P4 | RISC-V dual-core @ 400 MHz | 768 KB | Up to 32 MB | **None on-chip** (WiFi via an ESP32-C6 companion over ESP-Hosted) | USB 2.0 HS OTG | Named, not targeted: MIPI-DSI and a hardware JPEG codec make it the future larger-panel tier (>320×240, RGB panels), at the price of a two-chip design |
+| Chip             | CPU                                                        | SRAM   | PSRAM (typical modules)                                          | Radios                                                            | USB                                         | Place in this tier                                                                                                                                     |
+| ---------------- | ---------------------------------------------------------- | ------ | ---------------------------------------------------------------- | ----------------------------------------------------------------- | ------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| ESP32-S3         | Xtensa LX7 dual-core @ 240 MHz, vector (SIMD) instructions | 512 KB | 2–16 MB (quad or octal; N16R8 module = 16 MB flash + 8 MB octal) | WiFi 4 (2.4 GHz), BLE 5.0                                         | Native USB OTG + USB Serial/JTAG            | **The tier's reference chip** — every first-wave target below is S3                                                                                    |
+| ESP32 (original) | Xtensa LX6 dual-core @ 240 MHz                             | 520 KB | 0–4 MB (WROVER modules carry PSRAM)                              | WiFi 4, BLE 4.2 + BT Classic                                      | None on-chip (boards use a USB-UART bridge) | Supported envelope: huge installed base of display boards; weaker (no SIMD for JPEG, no native USB, BLE 4.2)                                           |
+| ESP32-C3         | RISC-V single-core @ 160 MHz                               | 400 KB | Usually none in-package                                          | WiFi 4, BLE 5.0                                                   | USB Serial/JTAG                             | Cost floor for very small panels; single core and no PSRAM put it in the bridge-only, LAN class (§4)                                                   |
+| ESP32-P4         | RISC-V dual-core @ 400 MHz                                 | 768 KB | Up to 32 MB                                                      | **None on-chip** (WiFi via an ESP32-C6 companion over ESP-Hosted) | USB 2.0 HS OTG                              | Named, not targeted: MIPI-DSI and a hardware JPEG codec make it the future larger-panel tier (>320×240, RGB panels), at the price of a two-chip design |
 
 Sources: ESP32-S3 datasheet facts as compiled in the Zephyr board documentation and the
 ESP32-S3 variant survey (512 KB SRAM, BLE 5.0, USB OTG + Serial/JTAG, module PSRAM/flash
@@ -76,19 +76,19 @@ holds its frame in its own GRAM, the MCU streams regions into it, and ESP-IDF's 
 component is the uniform driver surface. ESP-IDF ships ST7789 and SSD1306 drivers in-tree;
 the rest live in the Espressif Component Registry.
 
-| Panel class | Example geometry | Driver path | Touch pairing | Notes |
-| --- | --- | --- | --- | --- |
-| Round | GC9A01, 1.28″, **240×240** | `espressif/esp_lcd_gc9a01` (registry, Apache-2.0, all targets) | CST816S | The constraint-first viewport: §5 designs against it |
-| Small rectangular | ST7789 family: 135×240 (1.14″), 240×240 (1.3″/1.54″), 240×280 (1.69″), 240×320 (2.0″) | `esp_lcd` in-tree ST7789 | CST816S or FT6x36 where fitted; many modules are display-only | One driver covers the whole rectangular small end |
-| Mid rectangular | ILI9341-class, 320×240 (2.8″) | ILI9341 driver in current ESP-IDF | FT6336 (FT6x36 family) | The roomy end of "small"; where the Freenove/LCDWiki S3 boards sit |
-| Very small | SSD1306 OLED, **128×64** mono | `esp_lcd` in-tree SSD1306 (I2C or SPI) | None (typical) | The floor: 1 KB framebuffer, text/ticker class, display-only presenter (§5.4) |
+| Panel class       | Example geometry                                                                      | Driver path                                                    | Touch pairing                                                 | Notes                                                                         |
+| ----------------- | ------------------------------------------------------------------------------------- | -------------------------------------------------------------- | ------------------------------------------------------------- | ----------------------------------------------------------------------------- |
+| Round             | GC9A01, 1.28″, **240×240**                                                            | `espressif/esp_lcd_gc9a01` (registry, Apache-2.0, all targets) | CST816S                                                       | The constraint-first viewport: §5 designs against it                          |
+| Small rectangular | ST7789 family: 135×240 (1.14″), 240×240 (1.3″/1.54″), 240×280 (1.69″), 240×320 (2.0″) | `esp_lcd` in-tree ST7789                                       | CST816S or FT6x36 where fitted; many modules are display-only | One driver covers the whole rectangular small end                             |
+| Mid rectangular   | ILI9341-class, 320×240 (2.8″)                                                         | ILI9341 driver in current ESP-IDF                              | FT6336 (FT6x36 family)                                        | The roomy end of "small"; where the Freenove/LCDWiki S3 boards sit            |
+| Very small        | SSD1306 OLED, **128×64** mono                                                         | `esp_lcd` in-tree SSD1306 (I2C or SPI)                         | None (typical)                                                | The floor: 1 KB framebuffer, text/ticker class, display-only presenter (§5.4) |
 
 Touch controllers, both I2C, both with official Espressif `esp_lcd_touch` drivers:
 
-| Controller | Points | Interface / address | Gesture support | Driver |
-| --- | --- | --- | --- | --- |
-| CST816S (Hynitron) | 1 | I2C, 0x15 | **In hardware**: slide up/down/left/right, single click, double click, long press (register 0x01 gesture ID) | `espressif/esp_lcd_touch_cst816s` (ESP-BSP) |
-| FT6236 / FT6336 (FocalTech FT6x36 family) | Up to 2 | I2C, 0x38 | Points + press/release events; gestures composed host-side | `espressif/esp_lcd_touch_ft5x06` (covers the FT5x06/FT6x36 family, FT6236 named) |
+| Controller                                | Points  | Interface / address | Gesture support                                                                                              | Driver                                                                           |
+| ----------------------------------------- | ------- | ------------------- | ------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------- |
+| CST816S (Hynitron)                        | 1       | I2C, 0x15           | **In hardware**: slide up/down/left/right, single click, double click, long press (register 0x01 gesture ID) | `espressif/esp_lcd_touch_cst816s` (ESP-BSP)                                      |
+| FT6236 / FT6336 (FocalTech FT6x36 family) | Up to 2 | I2C, 0x38           | Points + press/release events; gestures composed host-side                                                   | `espressif/esp_lcd_touch_ft5x06` (covers the FT5x06/FT6x36 family, FT6236 named) |
 
 GT911-class controllers (larger capacitive panels) exist in the same driver family and are
 named for the P4/larger-panel future, not the first wave.
@@ -112,7 +112,7 @@ named for the P4/larger-panel future, not the first wave.
   and ≈12 ms at 80 MHz (≈86 fps). Two routing facts gate the top rate: pins routed through
   the GPIO matrix cap at ~40 MHz, while the IO_MUX pins reach 80 MHz — the recommended
   first target (§7) routes its panel on IO_MUX pins and is vendor-rated at 80 MHz. But a
-  glanceable presenter updates on *state change*, at single-digit Hz, flushing kilobytes —
+  glanceable presenter updates on _state change_, at single-digit Hz, flushing kilobytes —
   the ceiling buys smooth transitions, not a frame-rate obligation.
 - **Power is backlight and radio, not pixels.** The S3's WiFi transmit peaks at ≈355 mA
   (datasheet, 802.11b at full power); the backlight is the steady drain; deep sleep is
@@ -147,19 +147,19 @@ One stack covers every first-wave panel:
 
 ### 3.2 What renders where
 
-| Work | Place | Why |
-| --- | --- | --- |
-| Scene composition (cards, text, rings, layout) | **On-device** (LVGL) | It is a function of live world state and the panel's exact geometry; it is also cheap — LVGL was built for this class of chip |
-| Dirty-rectangle flushes, transitions, local animation of held assets | **On-device** | The upload-once lesson of #5971 §2.1 applies verbatim: assets transmit once, the device animates locally, steady-state bandwidth is state diffs, not frames |
-| JPEG decode of asset images | **On-device** (esp_new_jpeg) | Decode at panel geometry is a solved, measured path on the S3 (§3.1) |
-| Format normalization, sanitization, resize, re-encode of uploaded media | **Upload time** (media plane) | Viewer-independent per device class — see §3.3 |
-| Derivatives per device class (e.g. the 240×240-round JPEG, the 128×64 mono bitmap) | **Upload time**, cached by `(content hash, device class, converter version)` | Geometry is a device-class constant, known before any session exists |
-| Video decode, video→frames, anything FFmpeg-class | **Gateway/host only — and not a tier** | #5971 §2.2's verdict, stronger here: the decode cost does not exist on-device at all. Animated assets are bounded frame sets or nothing |
-| Full-frame raster rendering for the weakest devices | **Gateway** (fallback rung, §3.4) | A no-PSRAM or mono device may receive rendered tiles/frames instead of a scene description |
+| Work                                                                               | Place                                                                        | Why                                                                                                                                                         |
+| ---------------------------------------------------------------------------------- | ---------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Scene composition (cards, text, rings, layout)                                     | **On-device** (LVGL)                                                         | It is a function of live world state and the panel's exact geometry; it is also cheap — LVGL was built for this class of chip                               |
+| Dirty-rectangle flushes, transitions, local animation of held assets               | **On-device**                                                                | The upload-once lesson of #5971 §2.1 applies verbatim: assets transmit once, the device animates locally, steady-state bandwidth is state diffs, not frames |
+| JPEG decode of asset images                                                        | **On-device** (esp_new_jpeg)                                                 | Decode at panel geometry is a solved, measured path on the S3 (§3.1)                                                                                        |
+| Format normalization, sanitization, resize, re-encode of uploaded media            | **Upload time** (media plane)                                                | Viewer-independent per device class — see §3.3                                                                                                              |
+| Derivatives per device class (e.g. the 240×240-round JPEG, the 128×64 mono bitmap) | **Upload time**, cached by `(content hash, device class, converter version)` | Geometry is a device-class constant, known before any session exists                                                                                        |
+| Video decode, video→frames, anything FFmpeg-class                                  | **Gateway/host only — and not a tier**                                       | #5971 §2.2's verdict, stronger here: the decode cost does not exist on-device at all. Animated assets are bounded frame sets or nothing                     |
+| Full-frame raster rendering for the weakest devices                                | **Gateway** (fallback rung, §3.4)                                            | A no-PSRAM or mono device may receive rendered tiles/frames instead of a scene description                                                                  |
 
 ### 3.3 The placement rule, inverted on purpose
 
-#5971 §5's rule is: *placement follows what the conversion's output depends on* — and for
+#5971 §5's rule is: _placement follows what the conversion's output depends on_ — and for
 terminals the answer was "the session" (probed tier, cell geometry, color depth), so
 conversion sat at render time. **For this tier the same rule gives the opposite answer.**
 An embedded presenter's geometry, color depth, and decoder set are fixed by its device
@@ -193,7 +193,7 @@ full view, then resumes diffs — the same full-repaint-on-attach rule as the ce
 
 ### 4.2 Two tracks to the world
 
-The world's native transport is iroh. The survey found the honest answer is *two tracks*,
+The world's native transport is iroh. The survey found the honest answer is _two tracks_,
 because the evidence cuts both ways:
 
 **Track 2 — native iroh on-device (the direction of travel).** Iroh's own compatibility
@@ -209,7 +209,7 @@ sits across the grain from the C/LVGL display ecosystem of §3 — the two can b
 one ESP-IDF image, but the LVGL binding surface from Rust is the immature seam; and flash
 budget matters (iroh's reduced-dependency build exists for <8 MB parts; the recommended
 target carries 16 MB). Identity on this track is native and clean: the endpoint's keypair
-*is* the device identity, and adoption is by endpoint ID.
+_is_ the device identity, and adoption is by endpoint ID.
 
 **Track 1 — bridge (recommended first).** The device speaks one simple, TLS-wrapped
 protocol to a bridge process on a host that already holds a world session: WebSocket via
@@ -249,7 +249,7 @@ frames and input events the native endpoint would carry.
 
 ### 5.1 The geometry is the design
 
-Round and tiny viewports are constraints to design *from*, not rectangles to scale into:
+Round and tiny viewports are constraints to design _from_, not rectangles to scale into:
 
 - **Round 240×240:** the inscribed safe square is ≈170×170 px centered (240/√2). Text and
   touch targets live inside it. The corners and rim are for what circles do well — ring
@@ -275,13 +275,13 @@ Bounded by the cheapest touch hardware in the envelope (CST816S: one point, gest
 recognized in the controller itself), and deliberately not extended by richer controllers
 in v1:
 
-| Verb | Gesture (CST816S gesture ID) | Meaning |
-| --- | --- | --- |
-| Select / ack | Tap (single click) | Primary action on the card; acknowledges an alert takeover |
-| Secondary | Double-tap | The card's second action, if it declares one |
-| Back / context | Long-press | Leave the card / open its context — the only "navigation chrome" verb |
-| Next / previous card | Swipe left / right | Move in the card stack |
-| More / less | Swipe up / down | Scroll within a card, or step its value |
+| Verb                 | Gesture (CST816S gesture ID) | Meaning                                                               |
+| -------------------- | ---------------------------- | --------------------------------------------------------------------- |
+| Select / ack         | Tap (single click)           | Primary action on the card; acknowledges an alert takeover            |
+| Secondary            | Double-tap                   | The card's second action, if it declares one                          |
+| Back / context       | Long-press                   | Leave the card / open its context — the only "navigation chrome" verb |
+| Next / previous card | Swipe left / right           | Move in the card stack                                                |
+| More / less          | Swipe up / down              | Scroll within a card, or step its value                               |
 
 Alerts are full-screen takeovers (backlight up, §2.3) dismissed by tap. There is **no text
 entry, no pinch, no drag, no keyboard** on this tier — input that needs them hands off to
@@ -298,9 +298,9 @@ idle state and its power posture (§2.3), not a screensaver.
 
 ## 6. Licensing posture
 
-Method, following #5971 §6: a component is *linkable* when its license permits bundling
-into shipped firmware (with attribution where the license asks), *oracle/external* when it
-may inform or run on a developer's host but must never be bundled or linked, and *excluded*
+Method, following #5971 §6: a component is _linkable_ when its license permits bundling
+into shipped firmware (with attribution where the license asks), _oracle/external_ when it
+may inform or run on a developer's host but must never be bundled or linked, and _excluded_
 when the project should not touch it. Firmware has one wrinkle executables do not: the
 whole image ships as a single artifact, so the rule is applied to the **component manifest**
 (`idf_component.yml` + ESP-IDF's own components), and that manifest is what feeds the
@@ -308,19 +308,19 @@ license checker (#5985).
 
 ### 6.1 Linkable set — the recommended stack
 
-| Component | What it is | License | Usable as |
-| --- | --- | --- | --- |
-| ESP-IDF (incl. `esp_lcd`, in-tree ST7789/SSD1306 drivers, `esp-mqtt`, lwIP, FreeRTOS port) | The framework itself | Apache-2.0 (FreeRTOS kernel MIT; lwIP BSD-style) | Framework + drivers + network |
-| `espressif/esp_lcd_gc9a01` | GC9A01 round-panel driver | Apache-2.0 | Round panel driver |
-| `espressif/esp_lcd_touch_cst816s` | CST816S touch driver (ESP-BSP) | Apache-2.0 | Touch, round + small panels |
-| `espressif/esp_lcd_touch_ft5x06` | FT5x06/FT6x36-family touch driver (FT6236 named) | Apache-2.0 | Touch, rectangular panels |
-| `espressif/esp_lvgl_port` | LVGL↔esp_lcd integration | Apache-2.0 | Compositor glue |
-| LVGL | The UI library | MIT | Scene rendering |
-| `espressif/esp_new_jpeg` | Baseline JPEG decoder (SIMD on S3) | Apache-2.0 | On-device image decode |
-| `espressif/esp_jpeg` (TJpgDec) | Small JPEG decoder (ROM option) | Apache-2.0 component; TJpgDec core under ChaN's permissive custom license | Alternative decoder |
-| `espressif/esp_websocket_client` | WebSocket client (bridge track) | Apache-2.0 | Device↔bridge transport |
-| mbedTLS | TLS for WSS / HTTPS | Dual Apache-2.0 / GPL-2.0-or-later — **the Apache-2.0 option is the one taken** | TLS |
-| `pngle` / `lodepng` | PNG decoders (candidates only, §3.1) | MIT / zlib | Only if an asset class demands on-device PNG |
+| Component                                                                                  | What it is                                       | License                                                                         | Usable as                                    |
+| ------------------------------------------------------------------------------------------ | ------------------------------------------------ | ------------------------------------------------------------------------------- | -------------------------------------------- |
+| ESP-IDF (incl. `esp_lcd`, in-tree ST7789/SSD1306 drivers, `esp-mqtt`, lwIP, FreeRTOS port) | The framework itself                             | Apache-2.0 (FreeRTOS kernel MIT; lwIP BSD-style)                                | Framework + drivers + network                |
+| `espressif/esp_lcd_gc9a01`                                                                 | GC9A01 round-panel driver                        | Apache-2.0                                                                      | Round panel driver                           |
+| `espressif/esp_lcd_touch_cst816s`                                                          | CST816S touch driver (ESP-BSP)                   | Apache-2.0                                                                      | Touch, round + small panels                  |
+| `espressif/esp_lcd_touch_ft5x06`                                                           | FT5x06/FT6x36-family touch driver (FT6236 named) | Apache-2.0                                                                      | Touch, rectangular panels                    |
+| `espressif/esp_lvgl_port`                                                                  | LVGL↔esp_lcd integration                         | Apache-2.0                                                                      | Compositor glue                              |
+| LVGL                                                                                       | The UI library                                   | MIT                                                                             | Scene rendering                              |
+| `espressif/esp_new_jpeg`                                                                   | Baseline JPEG decoder (SIMD on S3)               | Apache-2.0                                                                      | On-device image decode                       |
+| `espressif/esp_jpeg` (TJpgDec)                                                             | Small JPEG decoder (ROM option)                  | Apache-2.0 component; TJpgDec core under ChaN's permissive custom license       | Alternative decoder                          |
+| `espressif/esp_websocket_client`                                                           | WebSocket client (bridge track)                  | Apache-2.0                                                                      | Device↔bridge transport                      |
+| mbedTLS                                                                                    | TLS for WSS / HTTPS                              | Dual Apache-2.0 / GPL-2.0-or-later — **the Apache-2.0 option is the one taken** | TLS                                          |
+| `pngle` / `lodepng`                                                                        | PNG decoders (candidates only, §3.1)             | MIT / zlib                                                                      | Only if an asset class demands on-device PNG |
 
 **Verdict: the recommended stack adds no new license-checker cases.** Everything in the
 linkable set is Apache-2.0, MIT, BSD-style, or a permissive custom license of the kind
@@ -329,12 +329,12 @@ respect). Nothing copyleft is linked, and nothing in the set blocks bundling.
 
 ### 6.2 Obligations, external-only, and the registry long tail
 
-| Component | License | Posture |
-| --- | --- | --- |
-| Arduino core for ESP32 (+ Arduino-shaped libraries: TFT_eSPI, LovyanGFX) | Core LGPL-2.1; libraries BSD-style custom licenses plus font terms | **Not used.** The native ESP-IDF path needs nothing from the Arduino ecosystem; reaching for it would import the tier's only copyleft-adjacent surface for zero capability |
-| esptool | GPL-2.0 | Host-side flashing tool, run by the developer — external only, never bundled (the icat pattern of #5971 §6.2) |
-| Community registry components | Mixed — the registry's long tail includes Custom, unspecified, and copyleft licenses alongside permissive ones | **Rule:** firmware pins `espressif/*` components or individually license-verified ones only; an unverified registry component is a review item, not a dependency. The manifest check belongs in #5985's checker |
-| Waveshare board support / example code | Vendor examples, license varies by repo | Reference for pin maps and init sequences (behavioral oracle); firmware is written against ESP-IDF APIs, not copied from vendor examples |
+| Component                                                                | License                                                                                                        | Posture                                                                                                                                                                                                         |
+| ------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Arduino core for ESP32 (+ Arduino-shaped libraries: TFT_eSPI, LovyanGFX) | Core LGPL-2.1; libraries BSD-style custom licenses plus font terms                                             | **Not used.** The native ESP-IDF path needs nothing from the Arduino ecosystem; reaching for it would import the tier's only copyleft-adjacent surface for zero capability                                      |
+| esptool                                                                  | GPL-2.0                                                                                                        | Host-side flashing tool, run by the developer — external only, never bundled (the icat pattern of #5971 §6.2)                                                                                                   |
+| Community registry components                                            | Mixed — the registry's long tail includes Custom, unspecified, and copyleft licenses alongside permissive ones | **Rule:** firmware pins `espressif/*` components or individually license-verified ones only; an unverified registry component is a review item, not a dependency. The manifest check belongs in #5985's checker |
+| Waveshare board support / example code                                   | Vendor examples, license varies by repo                                                                        | Reference for pin maps and init sequences (behavioral oracle); firmware is written against ESP-IDF APIs, not copied from vendor examples                                                                        |
 
 ## 7. Recommendation: first target and first slice
 
@@ -395,14 +395,14 @@ named as this tier's future larger-panel tier. The Tanmatsu is that tier, shippi
 
 ### 9.1 The board
 
-| Part | What it is |
-| --- | --- |
-| Application processor | ESP32-P4 (dual RISC-V @ 400 MHz, 768 KB SRAM, **32 MB PSRAM**, 16 MB flash) — runs the launcher and apps |
-| Radio coprocessor | ESP32-C6 module (WiFi 6, BLE 5.3, IEEE 802.15.4) over ESP-Hosted (SDIO) — the P4 has no radio of its own |
+| Part                   | What it is                                                                                                            |
+| ---------------------- | --------------------------------------------------------------------------------------------------------------------- |
+| Application processor  | ESP32-P4 (dual RISC-V @ 400 MHz, 768 KB SRAM, **32 MB PSRAM**, 16 MB flash) — runs the launcher and apps              |
+| Radio coprocessor      | ESP32-C6 module (WiFi 6, BLE 5.3, IEEE 802.15.4) over ESP-Hosted (SDIO) — the P4 has no radio of its own              |
 | Management coprocessor | WCH CH32V203 (keyboard matrix + power management, an I2C peripheral to the P4; its firmware is updatable from the P4) |
-| Display | 3.97″ 800×480 MIPI-DSI (ST7701S), driven by Nicolai's `esp_lcd` MIPI-DSI component |
-| Input | 69-key QWERTY keyboard (no touchscreen) |
-| Extra radios | LoRa module (Ai-Thinker Ra-01S/SH, 433 or 868/915 MHz) on the C6 side; microSD slot |
+| Display                | 3.97″ 800×480 MIPI-DSI (ST7701S), driven by Nicolai's `esp_lcd` MIPI-DSI component                                    |
+| Input                  | 69-key QWERTY keyboard (no touchscreen)                                                                               |
+| Extra radios           | LoRa module (Ai-Thinker Ra-01S/SH, 433 or 868/915 MHz) on the C6 side; microSD slot                                   |
 
 Software is MIT-licensed; hardware is CERN-OHL-P-2.0. Both are bundling-compatible
 postures under §6's method.
@@ -414,8 +414,8 @@ status bar and keyboard navigation. Everything else on the device is an **app**,
 mechanism is **AppFS** (badge.team's `badgeteam/appfs` ESP-IDF component, created by
 Jeroen Domburg for the PocketSprite and carried by badge.team since):
 
-- **An app is a standard, unmodified ESP-IDF application binary.** Apps require *no
-  changes* to run under AppFS; only the launcher links the component. A modified
+- **An app is a standard, unmodified ESP-IDF application binary.** Apps require _no
+  changes_ to run under AppFS; only the launcher links the component. A modified
   second-stage bootloader (part of the component) can boot a binary stored in the AppFS
   partition instead of an OTA slot — the app to start is selected via an RTC register,
   so "which app runs" survives the reset that starts it.
@@ -436,12 +436,12 @@ Jeroen Domburg for the PocketSprite and carried by badge.team since):
 
 Stock P4 flash layout (16 MB), from the Tanmatsu flash-layout documentation:
 
-| Region | Size | Holds |
-| --- | --- | --- |
-| Bootloader + partition table + NVS + OTA data | ~128 KB | Boot chain and settings |
-| Firmware A / B | 2 MB + 2 MB | The launcher (OTA-updatable) |
-| **AppFS** | **8 MB** | Installed app binaries |
-| FAT filesystem | ~3.9 MB | `/apps/<slug>/` data, icons, user files |
+| Region                                        | Size        | Holds                                   |
+| --------------------------------------------- | ----------- | --------------------------------------- |
+| Bootloader + partition table + NVS + OTA data | ~128 KB     | Boot chain and settings                 |
+| Firmware A / B                                | 2 MB + 2 MB | The launcher (OTA-updatable)            |
+| **AppFS**                                     | **8 MB**    | Installed app binaries                  |
+| FAT filesystem                                | ~3.9 MB     | `/apps/<slug>/` data, icons, user files |
 
 ### 9.3 How apps get onto the device
 
@@ -462,13 +462,13 @@ Four routes, all landing in the same AppFS partition with the same metadata:
    `appfs_add_file.py <image> <app.bin> <slug> <title> <version>` inserts apps into it
    before flashing — i.e. **apps embedded in the firmware image at build time** (§10.2).
 4. **An app as main firmware.** The template project also supports installing one app
-   *as* the device firmware, replacing the launcher entirely (§10.3).
+   _as_ the device firmware, replacing the launcher entirely (§10.3).
 
 ### 9.4 What this tier adopts from the Tanmatsu model
 
 - **The presenter is an app.** The embedded presenter ships as a standard ESP-IDF app
   binary with slug/title/version metadata — installable, listable, deletable, and
-  startable by whatever launcher the device runs, and equally able to *be* the firmware
+  startable by whatever launcher the device runs, and equally able to _be_ the firmware
   on a dedicated device. Nothing presenter-specific is baked into a launcher.
 - **Slug-keyed data.** Presenter state (pairing record, offline queue, cached assets)
   lives under the app's own data directory, keyed by slug — so the app and its data
@@ -482,7 +482,7 @@ Four routes, all landing in the same AppFS partition with the same metadata:
 - **One honest gap:** stock AppFS bootloader support covers ESP32, ESP32-C6, and
   ESP32-P4 — **not yet the ESP32-S3**, this tier's first target (§7). Adopting AppFS
   literally on the S3 presenter waits on an upstream bootloader port (or a port carried
-  as part of a later slice). On P4-class hardware it works today. The app *shape* (§10)
+  as part of a later slice). On P4-class hardware it works today. The app _shape_ (§10)
   is adoptable everywhere immediately, because it asks nothing of the app itself.
 
 ## 10. Amendment: the app model — selection, embedding, and kiosk boot
@@ -508,7 +508,7 @@ Because AppFS images are built host-side (§9.3, route 3), a shipped firmware im
 carry **any set of apps pre-installed** in its AppFS partition alongside the launcher:
 the factory image for a presenter device is launcher + presenter app (+ provisioning
 app) composed at build time, with no on-device install step. The same composition is
-how a *bundle* ships: several world presenters, or a presenter plus its fallback
+how a _bundle_ ships: several world presenters, or a presenter plus its fallback
 variant (§12.3), embedded together and selected at runtime. Nothing about the apps
 changes — embedding is a packaging act on the partition image, which is exactly the
 property that makes it safe to adopt.
@@ -517,10 +517,10 @@ property that makes it safe to adopt.
 
 Two mechanisms exist in the field, with different trade-offs:
 
-| Mechanism | How | Cost / posture |
-| --- | --- | --- |
-| **Standalone app image** (proven: the wadamesh Tanmatsu build offers exactly this) | The app is built/flashed as the device firmware, replacing the launcher; the device boots into it directly | The launcher and other apps are gone (recoverable via the recovery site / reflash). Notably, the data partition is kept at the same address, so identity, contacts, and settings **survive** switching between app-mode and standalone mode — the precedent that identity must live outside the firmware partitions (§11.3) |
-| **Launcher auto-start** (mechanism present, setting not shipped) | The bootloader already boots an RTC-register-selected app; a launcher that records a default slug and selects it on boot gives kiosk behavior while keeping the launcher one exit away | Not a documented stock Tanmatsu feature — named here as this tier's design choice for dedicated presenters, because it preserves the recovery and provisioning surface that standalone mode gives up |
+| Mechanism                                                                          | How                                                                                                                                                                                    | Cost / posture                                                                                                                                                                                                                                                                                                              |
+| ---------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Standalone app image** (proven: the wadamesh Tanmatsu build offers exactly this) | The app is built/flashed as the device firmware, replacing the launcher; the device boots into it directly                                                                             | The launcher and other apps are gone (recoverable via the recovery site / reflash). Notably, the data partition is kept at the same address, so identity, contacts, and settings **survive** switching between app-mode and standalone mode — the precedent that identity must live outside the firmware partitions (§11.3) |
+| **Launcher auto-start** (mechanism present, setting not shipped)                   | The bootloader already boots an RTC-register-selected app; a launcher that records a default slug and selects it on boot gives kiosk behavior while keeping the launcher one exit away | Not a documented stock Tanmatsu feature — named here as this tier's design choice for dedicated presenters, because it preserves the recovery and provisioning surface that standalone mode gives up                                                                                                                        |
 
 Recommendation for this tier: **auto-start for dedicated presenters, standalone only
 for sealed appliances.** A world presenter that can still exit to a launcher can be
@@ -534,11 +534,11 @@ the device↔bridge protocol gets **three coequal transports**, chosen per deplo
 all carrying the same view frames and typed input events (the §4.2 rule that the bridge
 must be deletable later applies to all three):
 
-| Transport | Shape | When it is the right choice |
-| --- | --- | --- |
-| WebSocket (base record) | One long-lived TLS connection, frames both ways | LAN presenters with a host bridge awake; lowest latency |
-| **MQTT** (`esp-mqtt`, in ESP-IDF) | Publish/subscribe via a broker the gateway hosts | Fleets and intermittently-connected devices; the broker *is* the meeting point, so neither side needs the other awake |
-| **Simplified HTTPS gateway** | Plain HTTPS requests: the device POSTs input events and GETs its current view from a small gateway API | The weakest devices and the nastiest networks: no long-lived connection, no broker client, works through proxies and captive-ish networks; polling cost is paid in latency and radio time |
+| Transport                         | Shape                                                                                                  | When it is the right choice                                                                                                                                                               |
+| --------------------------------- | ------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| WebSocket (base record)           | One long-lived TLS connection, frames both ways                                                        | LAN presenters with a host bridge awake; lowest latency                                                                                                                                   |
+| **MQTT** (`esp-mqtt`, in ESP-IDF) | Publish/subscribe via a broker the gateway hosts                                                       | Fleets and intermittently-connected devices; the broker _is_ the meeting point, so neither side needs the other awake                                                                     |
+| **Simplified HTTPS gateway**      | Plain HTTPS requests: the device POSTs input events and GETs its current view from a small gateway API | The weakest devices and the nastiest networks: no long-lived connection, no broker client, works through proxies and captive-ish networks; polling cost is paid in latency and radio time |
 
 ### 11.1 MQTT maps onto the card model unusually well
 
@@ -566,7 +566,7 @@ current card stack, with a version/ETag so an unchanged view costs a 304), `POST
 and §13's batch drains), `GET /config` (mode, poll interval, staged commands). Every
 call is one short TLS session with the device certificate (§11.3). This is the
 transport of last resort and the batch mode's natural drain path (§13.4); its pull-only
-shape is also its honesty: a device on HTTPS polling is never *pushed* to, and §13
+shape is also its honesty: a device on HTTPS polling is never _pushed_ to, and §13
 says what that means for alerts.
 
 ### 11.3 Embedded certificate/key: device identity for the alternate transports
@@ -579,7 +579,7 @@ per-device client certificate**, provisioned once and embedded in the device:
   code on its own screen, and — once the owner confirms — receives its certificate from
   the owner's gateway/CA, delivered over the local link (BLE provisioning channel, or
   BadgeLink-class USB on launcher devices, §9.3). What is "embedded" in firmware is
-  therefore the *mechanism* (cert/key storage slots, the CA root), never a shared
+  therefore the _mechanism_ (cert/key storage slots, the CA root), never a shared
   secret: each device's key is its own.
 - **Storage** follows §4.3: key and certificate in NVS/flash under flash encryption,
   in a data partition that survives firmware replacement (the Tanmatsu standalone
@@ -588,7 +588,7 @@ per-device client certificate**, provisioned once and embedded in the device:
   via its standard embedded-file mechanism, and `esp_crt_bundle` covers server
   verification against public roots where the gateway is publicly hosted; a private
   gateway CA is pinned instead.
-- **One identity across transports.** The certificate's identity *is* the device
+- **One identity across transports.** The certificate's identity _is_ the device
   identity §4.3 adopts it under — the same device presenting over WebSocket today and
   MQTT tomorrow is one device, and on track 2 (§4.2) the same keypair discipline is
   what an iroh endpoint key already is. Revocation is by the gateway refusing the
@@ -608,12 +608,12 @@ defines the class side.
 A class is a device constant — like panel geometry in §3.3, it is known before any
 session exists, so variant selection is an install-time act, never a runtime probe.
 
-| Class | Exemplar hardware | Presenter form |
-| --- | --- | --- |
-| **A — palmtop** | Tanmatsu (P4 + C6, 800×480, keyboard, 32 MB PSRAM) | Full presenter app: card stacks, lists, text-capable input via keyboard; can host the gateway role (§14) |
-| **B — glance** | §7's target (S3 + PSRAM, round/small touch panel) | The §5 card presenter with the six-verb touch vocabulary |
+| Class           | Exemplar hardware                                       | Presenter form                                                                                                                                  |
+| --------------- | ------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| **A — palmtop** | Tanmatsu (P4 + C6, 800×480, keyboard, 32 MB PSRAM)      | Full presenter app: card stacks, lists, text-capable input via keyboard; can host the gateway role (§14)                                        |
+| **B — glance**  | §7's target (S3 + PSRAM, round/small touch panel)       | The §5 card presenter with the six-verb touch vocabulary                                                                                        |
 | **C — reduced** | S3/original ESP32 without PSRAM, or display-only panels | Card presenter without on-device JPEG/photo cards (gateway-rendered tiles, §3.4's fallback rung); display-only rotation where there is no touch |
-| **D — minimal** | C3-class, SSD1306 128×64 mono | Headline/ticker app (§5.4): one datum, no cards; or a leaf behind a §14 gateway |
+| **D — minimal** | C3-class, SSD1306 128×64 mono                           | Headline/ticker app (§5.4): one datum, no cards; or a leaf behind a §14 gateway                                                                 |
 
 ### 12.2 Declaring compatibility
 
@@ -634,12 +634,12 @@ correct failure.
   Variant selection happens at install; the device itself never downloads a binary
   "for" another class.
 - **Alternate apps** cover the cases a variant cannot: where a class changes the
-  *interaction model* and not just the rendering (class D's ticker vs class B's card
+  _interaction model_ and not just the rendering (class D's ticker vs class B's card
   stack; a display-only build with no input back-channel), the honest packaging is a
   separate app under its own slug, declared as the alternate for that class — so a
   fleet tool can answer "which presenter runs on this device" from metadata alone.
 - **Fallback within a session** stays §3.4's ladder (scene → gateway tiles → headline);
-  classes decide what an app *is*, the ladder decides how a given view is carried.
+  classes decide what an app _is_, the ladder decides how a given view is carried.
   The two must not be conflated: a class B device receiving a photo card it cannot
   decode takes the ladder's tile rung; it does not become class C.
 
@@ -647,18 +647,18 @@ correct failure.
 
 §4.3 specified disconnected behavior as a display rule (last card, marked stale). The
 amendment makes offline a **mode of operation**, not an error state: a presenter can be
-*deployed* offline-first (a garden sensor's display, a badge at a camp with no
+_deployed_ offline-first (a garden sensor's display, a badge at a camp with no
 infrastructure — the badge world's normal case) as well as fall into offline when a
 live link dies.
 
 ### 13.1 The two modes
 
-| | Live mode | Batch/offline mode |
-| --- | --- | --- |
-| View | Gateway pushes view changes as they happen (WS frame, MQTT publish) | The device renders from its last synced card stack; updates arrive at sync points |
-| Input | Each typed event is sent as it happens | Events are **recorded to the on-device queue** and uploaded in a batch when connected |
-| Alerts | Full-screen takeover on arrival | No push exists; an alert is shown at the next sync, or immediately if it was already staged on-device with an expiry |
-| Power posture | Radio associated, connection held | Radio sleeps between sync windows; touch/ button wake can force an early sync |
+|               | Live mode                                                           | Batch/offline mode                                                                                                   |
+| ------------- | ------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
+| View          | Gateway pushes view changes as they happen (WS frame, MQTT publish) | The device renders from its last synced card stack; updates arrive at sync points                                    |
+| Input         | Each typed event is sent as it happens                              | Events are **recorded to the on-device queue** and uploaded in a batch when connected                                |
+| Alerts        | Full-screen takeover on arrival                                     | No push exists; an alert is shown at the next sync, or immediately if it was already staged on-device with an expiry |
+| Power posture | Radio associated, connection held                                   | Radio sleeps between sync windows; touch/ button wake can force an early sync                                        |
 
 A device is in exactly one mode at a time, and **the mode is visible**: the ambient
 card (§5.4) shows live/batch state and queue depth — a user must be able to see that
@@ -675,7 +675,7 @@ break §4.3's staleness honesty in the input direction.
   The sequence number is the deduplication key (§11.1's QoS-1 duplicates are expected,
   not an error); the timestamp is device time, recorded as such — on upload the
   gateway stamps arrival time alongside, and the world sees both. Batched input enters
-  the world as input events *with their age attached*; presenters still never write
+  the world as input events _with their age attached_; presenters still never write
   journals (§4.3), and a world that cannot accept aged input for a given card says so
   in that card's contract (the view contract of §8 gains this question).
 - **Drain semantics:** on connection, the device uploads in sequence order and deletes
@@ -685,11 +685,11 @@ break §4.3's staleness honesty in the input direction.
 
 ### 13.3 Push and pull, in both modes
 
-| Direction | Live | Batch/offline |
-| --- | --- | --- |
+| Direction      | Live                                                                        | Batch/offline                                                                                                                                                                              |
+| -------------- | --------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | World → device | **Push**: WS frame / MQTT publish (retained view topic keeps it idempotent) | **Staged pull**: the gateway holds the new view (retained MQTT message, or the HTTPS gateway's current-view document); the device pulls it at its next sync and takes the full view (§3.4) |
-| Device → world | **Push**: event sent on occurrence | **Push-at-sync**: the queue drains as one batch upload (MQTT publishes or one HTTPS `POST /events`) the moment connectivity returns |
-| Wake | n/a (connection held) | The sync trigger itself: timer, touch/button wake, or a §14 gateway's wake packet on the local link (ESP-NOW/BLE) telling the leaf a staged view exists |
+| Device → world | **Push**: event sent on occurrence                                          | **Push-at-sync**: the queue drains as one batch upload (MQTT publishes or one HTTPS `POST /events`) the moment connectivity returns                                                        |
+| Wake           | n/a (connection held)                                                       | The sync trigger itself: timer, touch/button wake, or a §14 gateway's wake packet on the local link (ESP-NOW/BLE) telling the leaf a staged view exists                                    |
 
 Pull is also the live mode's recovery: any reconnect, in any mode, begins with the
 device pulling its current view rather than trusting what it held (§3.4).
@@ -700,7 +700,7 @@ Mode is a device-side policy with three inputs, in priority order: **(1) explici
 — a mode verb from the owner (a card action, a launcher setting, a gateway command in
 `/config`); **(2) power** — a battery device below its charge threshold drops to batch
 and lengthens sync intervals, because the radio is the power budget (§2.3); **(3)
-link reality** — *N* consecutive failed heartbeats/connect attempts (or an MQTT will
+link reality** — _N_ consecutive failed heartbeats/connect attempts (or an MQTT will
 from its own gateway session ending) switches live → batch, and the first successful
 sync switches batch → live, with hysteresis (a minimum dwell in each mode) so a
 flapping link produces one switch, not fifty. Every switch is itself queued as a
@@ -715,16 +715,16 @@ in range of another ESP but not of any infrastructure.
 
 ### 14.1 The tiers
 
-| Tier | Hardware | World side | Device side |
-| --- | --- | --- | --- |
-| **G2 — full gateway** | Laptop/host/phone-class box (or a class A palmtop, §12) | A **real iroh endpoint** holding world sessions (this is §4.2 track 2, terminated on a box that can afford it) plus the bridge | Hosts the MQTT broker and/or HTTPS gateway (§11) and WebSocket bridge for LAN devices; holds per-device staged views and the durable copy of every queue |
-| **G1 — ESP funnel** | An ESP with connectivity (S3 on WiFi; a Tanmatsu-class device whose C6 gives it WiFi/BLE/802.15.4 and whose LoRa module is on board) | One upstream connection as a *client*: MQTT or HTTPS to a G2 (or directly to a broker) — a funnel ESP needs no world session of its own | Southbound links to leaves: **ESP-NOW**, **BLE**, **LoRa** (raw or Meshtastic, §14.3) |
+| Tier                  | Hardware                                                                                                                             | World side                                                                                                                              | Device side                                                                                                                                              |
+| --------------------- | ------------------------------------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **G2 — full gateway** | Laptop/host/phone-class box (or a class A palmtop, §12)                                                                              | A **real iroh endpoint** holding world sessions (this is §4.2 track 2, terminated on a box that can afford it) plus the bridge          | Hosts the MQTT broker and/or HTTPS gateway (§11) and WebSocket bridge for LAN devices; holds per-device staged views and the durable copy of every queue |
+| **G1 — ESP funnel**   | An ESP with connectivity (S3 on WiFi; a Tanmatsu-class device whose C6 gives it WiFi/BLE/802.15.4 and whose LoRa module is on board) | One upstream connection as a _client_: MQTT or HTTPS to a G2 (or directly to a broker) — a funnel ESP needs no world session of its own | Southbound links to leaves: **ESP-NOW**, **BLE**, **LoRa** (raw or Meshtastic, §14.3)                                                                    |
 
 The rule that makes the tiers compose: **a gateway is a client upstream and a bridge
 downstream, and it holds no world authority of its own.** A leaf's input events travel
 leaf → G1 → G2 → world as input events at every hop (§4.3's rule, extended: every
 gateway is trusted for liveness, none for authority), and the G2's iroh endpoint
-identity is the *gateway's*, adopted for the worlds it serves — the devices behind it
+identity is the _gateway's_, adopted for the worlds it serves — the devices behind it
 are adopted individually (§14.2), not by transitivity.
 
 ### 14.2 What a far (leaf) device needs
@@ -732,7 +732,7 @@ are adopted individually (§14.2), not by transitivity.
 A leaf is a device whose only link is a southbound one (ESP-NOW/BLE/LoRa) to a G1:
 
 - **Its own identity.** A per-device keypair/certificate as in §11.3, provisioned at
-  pairing *through* the gateway (the ceremony's confirm step happens on whatever
+  pairing _through_ the gateway (the ceremony's confirm step happens on whatever
   presenter the owner has; the credential reaches the leaf over its local link during
   the ceremony window). Where the leaf is too small for TLS (class D), the floor is a
   provisioned per-device symmetric key plus device ID, used by the link-layer security
@@ -748,11 +748,11 @@ A leaf is a device whose only link is a southbound one (ESP-NOW/BLE/LoRa) to a G
 
 ### 14.3 The southbound links, honestly sized
 
-| Link | Envelope | Consequences for the model |
-| --- | --- | --- |
-| **ESP-NOW** (ESP-IDF, Apache-2.0) | 2.4 GHz, ~200 m line-of-sight, ≤250-byte packets, ≤20 peers (10 encrypted), per-peer AES-128 (CCMP), **no routing** — direct range only | View frames must be chunked with reassembly, or reduced to headline form for the far leg; forwarding beyond one hop is application-level (a G1 relaying to another G1), designed, not assumed |
-| **LoRa, raw** | Kilometres at kbps-and-below, small packets, duty-cycle limits in some bands | Only headline/ticker traffic and batched event drains fit; a photo card does not cross a LoRa leg in any form — §12's classes and §3.4's ladder both terminate at "headline" here |
-| **Meshtastic** (as a network to speak to) | LoRa mesh firmware with flood routing (hop limit 3 default, 7 max), store-and-forward facilities, per-channel keys + public-key DMs; **GPL-3.0** | **Interop only, never bundled** (§6's method): our gateway runs its own firmware and speaks Meshtastic's protocol over the air or to a Meshtastic radio over serial — the Tanmatsu's own Meshtastic arrangement is the precedent (GUI app on the P4, Meshtastic firmware on the C6 radio). Where a mesh stack must be *bundled* into gateway firmware, MeshCore (MIT) is the named candidate instead |
+| Link                                      | Envelope                                                                                                                                         | Consequences for the model                                                                                                                                                                                                                                                                                                                                                                           |
+| ----------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **ESP-NOW** (ESP-IDF, Apache-2.0)         | 2.4 GHz, ~200 m line-of-sight, ≤250-byte packets, ≤20 peers (10 encrypted), per-peer AES-128 (CCMP), **no routing** — direct range only          | View frames must be chunked with reassembly, or reduced to headline form for the far leg; forwarding beyond one hop is application-level (a G1 relaying to another G1), designed, not assumed                                                                                                                                                                                                        |
+| **LoRa, raw**                             | Kilometres at kbps-and-below, small packets, duty-cycle limits in some bands                                                                     | Only headline/ticker traffic and batched event drains fit; a photo card does not cross a LoRa leg in any form — §12's classes and §3.4's ladder both terminate at "headline" here                                                                                                                                                                                                                    |
+| **Meshtastic** (as a network to speak to) | LoRa mesh firmware with flood routing (hop limit 3 default, 7 max), store-and-forward facilities, per-channel keys + public-key DMs; **GPL-3.0** | **Interop only, never bundled** (§6's method): our gateway runs its own firmware and speaks Meshtastic's protocol over the air or to a Meshtastic radio over serial — the Tanmatsu's own Meshtastic arrangement is the precedent (GUI app on the P4, Meshtastic firmware on the C6 radio). Where a mesh stack must be _bundled_ into gateway firmware, MeshCore (MIT) is the named candidate instead |
 
 ### 14.4 Where the offline queue lives in this topology
 
@@ -763,7 +763,7 @@ device when it has storage of its own.** Concretely:
   gateway acknowledges receipt; the outbox is small because acks are one hop away.
 - **The gateway holds the durable queue**: per-leaf staged views waiting to go down,
   and per-leaf event batches waiting to go up, in the gateway's flash (G1) or disk
-  (G2). If the G1→G2 leg is down, the G1 *is* the offline queue for its whole subtree —
+  (G2). If the G1→G2 leg is down, the G1 _is_ the offline queue for its whole subtree —
   which is §13's batch mode with the batch point moved up one tier, and the same
   drain/ack discipline applied recursively.
 - A storage-less leaf (below class D, if such a presenter is ever built) holds nothing:
@@ -795,7 +795,7 @@ device when it has storage of its own.** Concretely:
   custom license of the retain-notice kind §6 already admits (TJpgDec's class), and
   #5985's checker must know it by name. Two exclusions by §6's own method: Meshtastic
   (GPL-3.0) is interop/external only, and painlessMesh (GPL-3.0) is not used. One
-  provenance caveat, recorded because a field guide flagged it: the AppFS *host tools'*
+  provenance caveat, recorded because a field guide flagged it: the AppFS _host tools'_
   circulating copies carry no license header — the component itself is licensed as
   above, but the tier pins the registry component (`badgeteam/appfs`), not a copied
   script.

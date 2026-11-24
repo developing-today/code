@@ -65,6 +65,7 @@ usage: fleet agent <verb> [options]
          [--lane L] [--repo OWNER/NAME] [--low-water N]
          [--shortlist PATH] [--platform P] [--pool P]
          [--remaining-budget-minutes N] [--filter EXPR] [--queue Q]
+         [--model-provider P] [--model-id M] [--model-variant V]
          [--no-push] [--no-queue] [--no-shortlist] [--no-priority]
   shortlist status|take|clear   the local list `next` draws on
   shortlist add --issue N --title T [--repo R] [--rank N] [--why TEXT]

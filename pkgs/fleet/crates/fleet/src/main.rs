@@ -51,6 +51,17 @@ mod secrets;
 #[cfg(feature = "gh")]
 mod gh;
 
+#[cfg(feature = "actions")]
+mod actions;
+#[cfg(feature = "commander")]
+mod commander;
+#[cfg(any(
+    feature = "commander",
+    feature = "http",
+    feature = "ssh",
+    feature = "laptop"
+))]
+mod forms;
 #[cfg(feature = "gh")]
 mod gh_cache;
 #[cfg(feature = "gh")]
@@ -59,8 +70,14 @@ mod gh_closure;
 mod gh_guard;
 #[cfg(feature = "gh")]
 mod gh_metadata;
+#[cfg(feature = "http")]
+mod http;
 mod invocation_ledger;
+#[cfg(feature = "laptop")]
+mod laptop;
 mod session_state;
+#[cfg(feature = "ssh")]
+mod ssh;
 
 #[allow(dead_code)]
 // the derivation runs in build.rs (which includes this module by path); the binary itself consumes only the baked FLEET_DERIVED_VERSION value, plus these unit tests
@@ -111,6 +128,18 @@ fn compiled_capabilities() -> CapabilitySet {
     if cfg!(feature = "laptop-agent") {
         caps.insert(Capability::LaptopAgent);
     }
+    if cfg!(feature = "commander") {
+        caps.insert(Capability::Commander);
+    }
+    if cfg!(feature = "http") {
+        caps.insert(Capability::LaptopHttp);
+    }
+    if cfg!(feature = "ssh") {
+        caps.insert(Capability::LaptopSsh);
+    }
+    if cfg!(feature = "laptop") {
+        caps.insert(Capability::Laptop);
+    }
     if cfg!(feature = "secrets") {
         caps.insert(Capability::Secrets);
     }
@@ -125,6 +154,9 @@ fn compiled_capabilities() -> CapabilitySet {
     }
     if cfg!(feature = "cert") {
         caps.insert(Capability::Cert);
+    }
+    if cfg!(feature = "actions") {
+        caps.insert(Capability::Actions);
     }
     caps
 }
@@ -807,6 +839,18 @@ fn run_domain_with_initializer(
         println!("{}", fleet_cert::cli::CERT_USAGE);
         return EXIT_OK;
     }
+    // The actions domain's own usage answers `fleet actions
+    // --help` (#13774): the registry help names the leaves but not
+    // the lease contract — the same carve-out the cert domain
+    // gets above.
+    #[cfg(feature = "actions")]
+    if d.name == "actions"
+        && args.first().is_some_and(|a| is_help_flag(a))
+        && surface.cap_state(Capability::Actions, d.name) == CapState::Available
+    {
+        println!("{}", actions::ACTIONS_USAGE);
+        return EXIT_OK;
+    }
     // The proxy role under its serve spelling has its own usage
     // (SERVE_PROXY_USAGE, #6770): `fleet serve proxy --help` asks for
     // the role's help, not the serve domain's — answer it before the
@@ -988,6 +1032,31 @@ fn run_domain_with_initializer(
             #[cfg(feature = "laptop-agent")]
             if d.name == "laptop-agent" {
                 return fleet_laptop_agent::cli::run(&surface.config, args);
+            }
+            // developing-today/code#13717: the laptop route forms -
+            // T1 commander, T2 http, T3 ssh, and T0, the tiered
+            // walker (`fleet laptop`).
+            #[cfg(feature = "commander")]
+            if d.name == "commander" {
+                return commander::run(&surface.config, args);
+            }
+            #[cfg(feature = "http")]
+            if d.name == "http" {
+                return http::run(&surface.config, args);
+            }
+            #[cfg(feature = "ssh")]
+            if d.name == "ssh" {
+                return ssh::run(&surface.config, args);
+            }
+            #[cfg(feature = "laptop")]
+            if d.name == "laptop" {
+                return laptop::run(&surface.config, args);
+            }
+            // #13774: the actions domain runs for real — live exec
+            // sessions inside Actions runners (seat + agent + put).
+            #[cfg(feature = "actions")]
+            if d.name == "actions" {
+                return actions::run(&surface.config, args);
             }
             // code#8887: the gh domain runs for real — the real
             // `gh` binary as a passthrough under the token

@@ -11,13 +11,13 @@
 //! verify-against-JWKS check of the crate's signing path.
 
 use axum::body::Body;
-use axum::http::{header, Request, StatusCode};
-use base64::{engine::general_purpose::URL_SAFE_NO_PAD as B64URL, Engine as _};
+use axum::http::{Request, StatusCode, header};
+use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD as B64URL};
 use idp_provider::audit::AuditLog;
 use idp_provider::flow::FlowState;
 use idp_provider::registry::{Account, Client, Identity, ProviderConfig};
 use idp_provider::signing::TokenSigner;
-use idp_provider::{b64url, build_app_with_flow, Config, Jwk, Jwks};
+use idp_provider::{Config, Jwk, Jwks, b64url, build_app_with_flow};
 use rand_core::OsRng;
 use rsa::pkcs1v15::{Signature, VerifyingKey};
 use rsa::signature::Verifier;
@@ -87,13 +87,20 @@ fn harness() -> Harness {
                 redirect_uris: vec!["http://127.0.0.1:8913/callback".to_string()],
             },
         ],
+        doors: vec![],
         audit_db_path: None,
+        identity_db_path: None,
     };
     let audit = Arc::new(AuditLog::open(None).expect("in-memory audit"));
+    let identities = Arc::new(
+        idp_provider::identities::IdentityStore::open(None).expect("in-memory identity store"),
+    );
     let flow = Arc::new(FlowState::new(
         registry,
         TokenSigner::new(key, kid.clone()),
         audit.clone(),
+        identities,
+        vec![],
         ISSUER.to_string(),
     ));
     let config = Config {
@@ -103,6 +110,10 @@ fn harness() -> Harness {
         provider_config_path: None,
         signing_key_path: None,
         audit_db_path: None,
+        identity_db_path: None,
+        oidc_cert_paths: vec![],
+        signing_key_paths: vec![],
+        oidc_active_kid: None,
     };
     Harness {
         app: build_app_with_flow(config, jwks, Some(flow)),
@@ -289,9 +300,11 @@ async fn full_code_pkce_loop_with_role_claims_and_userinfo() {
     assert!(entries.iter().any(|e| e.endpoint == "authorize"
         && e.outcome == "allowed"
         && e.identity == "devtoday-local:drew"));
-    assert!(entries
-        .iter()
-        .any(|e| e.endpoint == "token" && e.outcome == "allowed"));
+    assert!(
+        entries
+            .iter()
+            .any(|e| e.endpoint == "token" && e.outcome == "allowed")
+    );
 }
 
 #[tokio::test]

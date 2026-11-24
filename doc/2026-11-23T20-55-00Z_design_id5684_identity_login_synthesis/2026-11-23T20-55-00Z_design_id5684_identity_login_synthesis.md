@@ -72,14 +72,14 @@ from child-level ones. Everything else is citation.
 
 ## 3. Acceptance map — #5684's six items against the records
 
-| #5684 acceptance item | Satisfied by | State |
-|---|---|---|
-| Design document covering the native ID, variants (a)–(d), and the seven flows, linked from the issue | This synthesis (§§2, 5–7), over #5884 (native ID), #5886 (a), #5887 (b), #5888 (c), #5889 (d) | Done — this record |
-| Feasibility matrix: login method × custody variant, classified, construction or blocker named | #5885 decision record (reproduced in §5) | Done |
-| Signed-hash construction: what is signed at setup, what is stored where, verification flows | #5884 §§4, 8 (genesis); #5885 (login binding); reconciled in §4 and §8 R2 | Done |
-| Per-variant plain-language "who can sign / lock out / recover" statements, incl. the all-codes-lost statement for (c) verbatim | #5886 §5 (a); #5887 §§4–5 + #5890 §3 (b); #5888 §7 (c); #5889 §3 + #5890 §3 (d); collected in §6 | Done |
-| Delegation model for pseudo-login identities: ownership forms, scope, expiry, revocation, raw-view provenance | #5889 §§1–6; management view #5890 §2 | Done |
-| Follow-on design tickets filed from the decomposition sketch | #5884–#5890, filed 2026-11-05, all now closed with records landed | Done |
+| #5684 acceptance item                                                                                                          | Satisfied by                                                                                     | State              |
+| ------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------ | ------------------ |
+| Design document covering the native ID, variants (a)–(d), and the seven flows, linked from the issue                           | This synthesis (§§2, 5–7), over #5884 (native ID), #5886 (a), #5887 (b), #5888 (c), #5889 (d)    | Done — this record |
+| Feasibility matrix: login method × custody variant, classified, construction or blocker named                                  | #5885 decision record (reproduced in §5)                                                         | Done               |
+| Signed-hash construction: what is signed at setup, what is stored where, verification flows                                    | #5884 §§4, 8 (genesis); #5885 (login binding); reconciled in §4 and §8 R2                        | Done               |
+| Per-variant plain-language "who can sign / lock out / recover" statements, incl. the all-codes-lost statement for (c) verbatim | #5886 §5 (a); #5887 §§4–5 + #5890 §3 (b); #5888 §7 (c); #5889 §3 + #5890 §3 (d); collected in §6 | Done               |
+| Delegation model for pseudo-login identities: ownership forms, scope, expiry, revocation, raw-view provenance                  | #5889 §§1–6; management view #5890 §2                                                            | Done               |
+| Follow-on design tickets filed from the decomposition sketch                                                                   | #5884–#5890, filed 2026-11-05, all now closed with records landed                                | Done               |
 
 No acceptance item is left unsatisfied. The genuine gaps this synthesis
 found are below the acceptance line — cross-record seams (§8) and residual
@@ -139,10 +139,10 @@ recovery conditions hold. A password-derived ID signing key without
 independent high-entropy protection is **speculative/unsafe** and is not an
 approved construction in any cell.
 
-| Login | (a) Service-held key | (b) User-held key | (c) Security-code recovery | (d) Pseudo-login + delegation |
-|---|---|---|---|---|
-| Google / OIDC | Proven-feasible, but custodial; outside the keyless boundary | Feasible-with-caveats: OIDC authenticates the account; a client-held key signs. A new device needs the old device, a user-held backup secret, or another recovery path | Feasible-with-caveats: OIDC authenticates the account; codes are independent recovery authority — high-entropy, rate-limited at redemption, under #5888's threshold/rotation rules | Feasible-with-caveats, only when the pseudo-login has a client-generated key and the ID key signs a scoped delegation. OIDC alone cannot mint or revoke that delegation |
-| Username / password | Proven-feasible, but custodial; outside the keyless boundary | Feasible-with-caveats with OPAQUE (RFC 9807) plus a client-held key/backup. Directly deriving the ID key from a human password is speculative/unsafe: a stolen verifier or encrypted blob is an offline guessing target and a KDF cannot add entropy | Feasible-with-caveats: password authentication coexists with independent codes; password reset must not silently rebind or recover the ID key | Feasible-with-caveats if the PAKE authenticates the account and the client holds the pseudo-login key; the parent ID signs the least-privilege delegation |
+| Login               | (a) Service-held key                                         | (b) User-held key                                                                                                                                                                                                                                    | (c) Security-code recovery                                                                                                                                                         | (d) Pseudo-login + delegation                                                                                                                                           |
+| ------------------- | ------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Google / OIDC       | Proven-feasible, but custodial; outside the keyless boundary | Feasible-with-caveats: OIDC authenticates the account; a client-held key signs. A new device needs the old device, a user-held backup secret, or another recovery path                                                                               | Feasible-with-caveats: OIDC authenticates the account; codes are independent recovery authority — high-entropy, rate-limited at redemption, under #5888's threshold/rotation rules | Feasible-with-caveats, only when the pseudo-login has a client-generated key and the ID key signs a scoped delegation. OIDC alone cannot mint or revoke that delegation |
+| Username / password | Proven-feasible, but custodial; outside the keyless boundary | Feasible-with-caveats with OPAQUE (RFC 9807) plus a client-held key/backup. Directly deriving the ID key from a human password is speculative/unsafe: a stolen verifier or encrypted blob is an offline guessing target and a KDF cannot add entropy | Feasible-with-caveats: password authentication coexists with independent codes; password reset must not silently rebind or recover the ID key                                      | Feasible-with-caveats if the PAKE authenticates the account and the client holds the pseudo-login key; the parent ID signs the least-privilege delegation               |
 
 Answers to the parent's investigation questions, in one line each:
 **OIDC with no key custody — yes**, feasible-with-caveats: the provider
@@ -150,7 +150,7 @@ authenticates, the client holds and signs with the key, the relying party
 verifies challenge signatures against the bound public key (#5885).
 **Username/password with no authorizer key custody — yes, via OPAQUE**,
 feasible-with-caveats: the server stores an OPAQUE registration record and
-ciphertext only; the RFC 9807 `export_key` composition wraps a *random* ID
+ciphertext only; the RFC 9807 `export_key` composition wraps a _random_ ID
 key client-side. The brute-force exposure is named, not waved away: a
 corrupted server holding the OPRF seed, or a stolen Argon2id-wrapped blob,
 admits offline guessing whose cost the KDF raises but cannot make a weak
@@ -250,9 +250,9 @@ the raw record always carries the full tuple even where the friendly UI
 renders the action as the user's (#5889 §§1, 6). **Login-derived /
 nobody-owned** identities are session identities only: no standing scope,
 no renewal without a fresh authentication event, revoked by deleting the
-server-side session record — stated plainly: *nobody holds a key for this
+server-side session record — stated plainly: _nobody holds a key for this
 login; it ends when the session ends, and it cannot be extended — only
-replaced by logging in again* (#5889 §3). A login-derived identity may be
+replaced by logging in again_ (#5889 §3). A login-derived identity may be
 **adopted** — converted to user-owned by an explicit, user-visible grant
 from the principal — never automatically. The service-held pseudo-login
 form inherits variant (a)'s honesty statement verbatim (#5889 §3).
@@ -387,7 +387,7 @@ synthesis states the boundary so neither is read as the other:
   invariant 3 ("delegation only narrows"); #6379's D2 grantor veto
   parallels the principal's revocation authority in #5889 §4; both keep
   provenance in the raw record.
-- **Expiry differs, on purpose.** #6379 D1 adopts an *optional* signed
+- **Expiry differs, on purpose.** #6379 D1 adopts an _optional_ signed
   `expires_at` for group grants, with interim guarantee G9 — a group grant
   has no expiry until #13534 lands. #5889 makes expiry **mandatory** for
   login delegation grants. Neither satisfies the other: an implementation
@@ -405,15 +405,15 @@ synthesis states the boundary so neither is read as the other:
 
 ## 10. Parent open questions — dispositions
 
-| #5684 open question | Disposition |
-|---|---|
-| Is Google Drive an acceptable key home for variant (b), or does file-based custody fail simplicity? | Answered — #5887 §8: Drive as the default home passes (the user never handles a file; the blob's residence is invisible plumbing over ciphertext); file-only custody as the normal path would fail. Residual wording risk goes to non-technical tester validation in implementation |
-| Password-derived keys: disqualifying, or do PAKE/KDF constructions make it feasible-with-caveats? | Answered — #5885: direct derivation is speculative/unsafe and rejected; OPAQUE over a random client-held key is feasible-with-caveats, with the offline-guessing exposure stated |
-| Nobody-owned pseudo-logins: in what sense is the delegation still a cryptographic artefact; does it weaken raw provenance? | Answered — #5889 §3: it is not a delegation holder at all; it is session state, holds no standing scope, and the provenance guarantee applies in full to grant-backed actions. Session actions carry session provenance, labelled as such in the management view (#5890 §2) |
-| How many pseudo-logins will a user accumulate before the management view breaks simplicity? | **Partially answered — the one residual.** #5890 §2 designs the view to scale by shape (one row per pseudo-login, grants grouped, sessions separated) but no record sets a numeric bound or a consolidation rule. Carried to the management-UX implementation as a validation item, not silently assumed away |
-| Should variant (a) exist at all? | Answered — #5886 §8: yes, as the disclosed default on-ramp with audit and a real exit |
-| What threshold for the 10 codes — any-one vs quorum — and can the user choose? | Answered — #5888 §4: any-one, single-use, not per-identity configurable; the stolen-code case is bought down by the settle window, cancellation, and notification instead |
-| Does the signed-hash setup artefact create a permanent linkage/fingerprinting surface? | Answered — #5884 §9: the artefact binds one identity's genesis and introduces no identifier beyond the public key the identity already is; mitigations are domain separation, hash-not-contents commitments, and day-granularity `created_at`. Residual (genesis timing is visible to chain holders) accepted and stated |
+| #5684 open question                                                                                                        | Disposition                                                                                                                                                                                                                                                                                                              |
+| -------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Is Google Drive an acceptable key home for variant (b), or does file-based custody fail simplicity?                        | Answered — #5887 §8: Drive as the default home passes (the user never handles a file; the blob's residence is invisible plumbing over ciphertext); file-only custody as the normal path would fail. Residual wording risk goes to non-technical tester validation in implementation                                      |
+| Password-derived keys: disqualifying, or do PAKE/KDF constructions make it feasible-with-caveats?                          | Answered — #5885: direct derivation is speculative/unsafe and rejected; OPAQUE over a random client-held key is feasible-with-caveats, with the offline-guessing exposure stated                                                                                                                                         |
+| Nobody-owned pseudo-logins: in what sense is the delegation still a cryptographic artefact; does it weaken raw provenance? | Answered — #5889 §3: it is not a delegation holder at all; it is session state, holds no standing scope, and the provenance guarantee applies in full to grant-backed actions. Session actions carry session provenance, labelled as such in the management view (#5890 §2)                                              |
+| How many pseudo-logins will a user accumulate before the management view breaks simplicity?                                | **Partially answered — the one residual.** #5890 §2 designs the view to scale by shape (one row per pseudo-login, grants grouped, sessions separated) but no record sets a numeric bound or a consolidation rule. Carried to the management-UX implementation as a validation item, not silently assumed away            |
+| Should variant (a) exist at all?                                                                                           | Answered — #5886 §8: yes, as the disclosed default on-ramp with audit and a real exit                                                                                                                                                                                                                                    |
+| What threshold for the 10 codes — any-one vs quorum — and can the user choose?                                             | Answered — #5888 §4: any-one, single-use, not per-identity configurable; the stolen-code case is bought down by the settle window, cancellation, and notification instead                                                                                                                                                |
+| Does the signed-hash setup artefact create a permanent linkage/fingerprinting surface?                                     | Answered — #5884 §9: the artefact binds one identity's genesis and introduces no identifier beyond the public key the identity already is; mitigations are domain separation, hash-not-contents commitments, and day-granularity `created_at`. Residual (genesis timing is visible to chain holders) accepted and stated |
 
 One further residual, from #5885 rather than the parent's list: the
 **browser trust boundary** (§4) — a web authorizer serving hostile client
@@ -440,7 +440,7 @@ flows, over the one client-held-key shape — OIDC (Google) as the primary
 sign-in, OPAQUE for username/password — covering binding-statement
 enrolment and verification, challenge sign/verify at login and new-device
 enrolment, and the six #5885 invariants as test oracles. (The idp-provider
-scaffold under #13658 is the *provider* side — id acting as an issuer —
+scaffold under #13658 is the _provider_ side — id acting as an issuer —
 and is a different workstream from this login-consumption slice.)
 
 Named here, filed separately as the programme is sequenced (each child

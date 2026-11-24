@@ -27,12 +27,7 @@ export const DEFAULT_FILTER_PROFILE = "conservative";
 // Tools a client may see and call in each non-full profile. The
 // selected profile adds exactly the two dispatch tools; exec and
 // tool_invoke (and every other mcpx_* extra) are never exposed here.
-export const DISCOVERY_TOOLS = [
-  "mcpx_namespaces",
-  "mcpx_catalog",
-  "mcpx_types",
-  "mcpx_search",
-] as const;
+export const DISCOVERY_TOOLS = ["mcpx_namespaces", "mcpx_catalog", "mcpx_types", "mcpx_search"] as const;
 export const SELECTED_DISPATCH_TOOLS = ["mcpx_call", "mcpx_batch"] as const;
 
 export type FilterMode = "conservative" | "selected" | "full";
@@ -99,10 +94,7 @@ function inSelectedSet(selector: FilterSelector, namespace: string): boolean {
 // mcpx's own resolution rules: an empty tool with a dotted namespace
 // splits on the first dot; an empty namespace with a dotted tool does
 // the same the other way round.
-function resolveTarget(
-  namespace: unknown,
-  tool: unknown,
-): { namespace: string; tool: string } {
+function resolveTarget(namespace: unknown, tool: unknown): { namespace: string; tool: string } {
   let ns = typeof namespace === "string" ? namespace.trim() : "";
   let name = typeof tool === "string" ? tool.trim() : "";
   if (!name && ns.includes(".")) {
@@ -161,10 +153,7 @@ function gatewayCallAllowed(selector: FilterSelector, message: JsonRpcMessage): 
       return calls.every((raw) => {
         if (!raw || typeof raw !== "object") return false;
         const call = raw as Record<string, unknown>;
-        const target = resolveTarget(
-          call.namespace,
-          call.tool ?? call.name,
-        );
+        const target = resolveTarget(call.namespace, call.tool ?? call.name);
         if (!target.namespace || !target.tool) return false;
         if (isGatewayTool(target.tool) || isGatewayTool(target.namespace)) return false;
         return inSelectedSet(selector, target.namespace);
@@ -185,10 +174,7 @@ function uriAllowed(selector: FilterSelector, uri: unknown): boolean {
 }
 
 // True when the request may be sent upstream.
-export function mcpRequestAllowed(
-  message: JsonRpcMessage,
-  selector: FilterSelector,
-): boolean {
+export function mcpRequestAllowed(message: JsonRpcMessage, selector: FilterSelector): boolean {
   if (selector.mode === "full") return true;
   if (!message || typeof message !== "object") return true;
 
@@ -228,10 +214,7 @@ export interface GatedRequest {
 
 // Gate a raw request body. Returns null when the body is not JSON-RPC
 // we can police (the caller then forwards it untouched).
-export function gateMcpRequestBody(
-  raw: string,
-  selector: FilterSelector,
-): GatedRequest | null {
+export function gateMcpRequestBody(raw: string, selector: FilterSelector): GatedRequest | null {
   const trimmed = raw.trim();
   if (!trimmed) return null;
   let parsed: unknown;
@@ -285,9 +268,7 @@ function filterNamespaceValue(value: unknown, selector: FilterSelector): unknown
     return inSelectedSet(selector, namespacePart(value)) ? value : undefined;
   }
   if (Array.isArray(value)) {
-    return value
-      .map((entry) => filterNamespaceValue(entry, selector))
-      .filter((entry) => entry !== undefined);
+    return value.map((entry) => filterNamespaceValue(entry, selector)).filter((entry) => entry !== undefined);
   }
   if (value && typeof value === "object") {
     const record = value as Record<string, unknown>;
@@ -303,8 +284,7 @@ function filterNamespaceValue(value: unknown, selector: FilterSelector): unknown
     // A bare namespace object: expose it only when its own name is in
     // the selected set.
     const name = typeof record.name === "string" ? record.name : undefined;
-    const namespace =
-      typeof record.namespace === "string" ? record.namespace : undefined;
+    const namespace = typeof record.namespace === "string" ? record.namespace : undefined;
     const identity = name ?? namespace;
     if (identity !== undefined && !inSelectedSet(selector, namespacePart(identity))) {
       return undefined;
@@ -342,17 +322,11 @@ function filterNamespaceResult(result: unknown, selector: FilterSelector): unkno
 function filterUriList(result: unknown, selector: FilterSelector): unknown {
   if (!result || typeof result !== "object") return result;
   const record = result as Record<string, unknown>;
-  const key = Array.isArray(record.resources)
-    ? "resources"
-    : Array.isArray(record.prompts)
-      ? "prompts"
-      : null;
+  const key = Array.isArray(record.resources) ? "resources" : Array.isArray(record.prompts) ? "prompts" : null;
   if (!key) return result;
   return {
     ...record,
-    [key]: (record[key] as Array<Record<string, unknown>>).filter((entry) =>
-      uriAllowed(selector, entry?.uri),
-    ),
+    [key]: (record[key] as Array<Record<string, unknown>>).filter((entry) => uriAllowed(selector, entry?.uri)),
   };
 }
 
@@ -383,12 +357,7 @@ function transformResponseMessage(
   return message;
 }
 
-function transformBody(
-  body: string,
-  selector: FilterSelector,
-  requests: JsonRpcMessage[],
-  isSse: boolean,
-): string {
+function transformBody(body: string, selector: FilterSelector, requests: JsonRpcMessage[], isSse: boolean): string {
   if (isSse) {
     return body
       .split("\n")
@@ -457,9 +426,7 @@ export async function mergeBatchRejections(
 
   if (contentType.includes("text/event-stream")) {
     const body = await filtered.text();
-    const events = rejected
-      .map((error) => `event: message\ndata: ${JSON.stringify(error)}\n\n`)
-      .join("");
+    const events = rejected.map((error) => `event: message\ndata: ${JSON.stringify(error)}\n\n`).join("");
     return new Response(body + events, {
       status: filtered.status,
       statusText: filtered.statusText,

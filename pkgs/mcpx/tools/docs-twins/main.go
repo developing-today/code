@@ -192,6 +192,7 @@ func (cfg config) generate() (map[string]string, []chapter, error) {
 		return nil, nil, fmt.Errorf("no chapters parsed from %s", filepath.Join(cfg.docsDir, "SUMMARY.md"))
 	}
 
+	links := newChapterLinks(chapters)
 	contents := make(map[string]string, len(chapters))
 	files := make(map[string]string)
 	for _, ch := range chapters {
@@ -199,8 +200,8 @@ func (cfg config) generate() (map[string]string, []chapter, error) {
 		if err != nil {
 			return nil, nil, err
 		}
-		contents[ch.Source] = content
-		files[ch.twinRel()] = content
+		contents[ch.Source] = links.markdown(content, ch.Source, "llms-full.txt")
+		files[ch.twinRel()] = links.markdown(content, ch.Source, ch.twinRel())
 	}
 
 	// llms-full.txt: levels 1-2 concatenated, compendium excluded (it
@@ -294,15 +295,18 @@ func linkTags(ch chapter) (alternate, describedby string) {
 }
 
 // injectLinks adds the discovery tags to a built HTML page, once.
-func injectLinks(htmlPath string, ch chapter) error {
+func injectLinks(htmlPath string, ch chapter, links chapterLinks) error {
 	data, err := os.ReadFile(htmlPath)
 	if err != nil {
 		return err
 	}
 	alternate, describedby := linkTags(ch)
-	content := string(data)
+	content := links.html(string(data), ch)
 	if strings.Contains(content, `rel="alternate" type="text/markdown"`) {
-		return nil
+		if content == string(data) {
+			return nil
+		}
+		return os.WriteFile(htmlPath, []byte(content), 0o644)
 	}
 	idx := strings.Index(content, "</head>")
 	if idx < 0 {
@@ -331,12 +335,13 @@ func runEmit(cfg config) error {
 			return err
 		}
 	}
+	links := newChapterLinks(chapters)
 	for _, ch := range chapters {
 		htmlPath := filepath.Join(cfg.outDir, filepath.FromSlash(ch.htmlRel()))
 		if _, err := os.Stat(htmlPath); err != nil {
 			return fmt.Errorf("built page missing for chapter %s (%s): emit runs after mdbook build", ch.Source, htmlPath)
 		}
-		if err := injectLinks(htmlPath, ch); err != nil {
+		if err := injectLinks(htmlPath, ch, links); err != nil {
 			return err
 		}
 	}
@@ -369,12 +374,16 @@ func runCheck(cfg config) error {
 	if len(files["llms.txt"]) > llmsTxtBudget {
 		problems = append(problems, fmt.Sprintf("llms.txt over the %d-byte budget", llmsTxtBudget))
 	}
+	links := newChapterLinks(chapters)
 	for _, ch := range chapters {
 		htmlPath := filepath.Join(cfg.outDir, filepath.FromSlash(ch.htmlRel()))
 		data, err := os.ReadFile(htmlPath)
 		if err != nil {
 			problems = append(problems, fmt.Sprintf("missing built page %s", ch.htmlRel()))
 			continue
+		}
+		if links.html(string(data), ch) != string(data) {
+			problems = append(problems, fmt.Sprintf("%s links to an unpublished README.html", ch.htmlRel()))
 		}
 		alternate, describedby := linkTags(ch)
 		if !strings.Contains(string(data), alternate) {
