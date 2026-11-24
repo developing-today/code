@@ -48,6 +48,8 @@ mod admin;
 mod claim;
 mod closed_bound;
 mod core;
+#[cfg(all(test, feature = "queue-broker"))]
+mod hrana_double;
 mod label_enrich;
 mod lifecycle;
 mod placement_sessions;
