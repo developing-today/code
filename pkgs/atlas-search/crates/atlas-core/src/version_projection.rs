@@ -65,6 +65,45 @@ pub struct ProjectedVersion {
     pub claims: Vec<ProjectedTag>,
 }
 
+/// Symbolic identity of a note event, resolved to its signed ID by a publisher.
+/// The create event is both the stable note identity and its first revision.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct ProjectedNoteEventRef {
+    pub file_id: String,
+    pub version_seq: u64,
+}
+
+/// ID's blob reference shape; this is not a `document.put` event reference.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct ProjectedDocumentRef {
+    pub content_hash: String,
+    pub media_type: String,
+    pub size: u64,
+}
+
+/// Unsigned note operation matching ID's create/revise content and parent model.
+/// Symbolic references must be bound to signed note event IDs, not blob hashes.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(tag = "kind")]
+pub enum ProjectedNote {
+    #[serde(rename = "note.create")]
+    Create { content: ProjectedDocumentRef },
+    #[serde(rename = "note.revise")]
+    Revise {
+        note: ProjectedNoteEventRef,
+        content: ProjectedDocumentRef,
+        parents: Vec<ProjectedNoteEventRef>,
+    },
+}
+
+/// One head transition: immutable document/claims plus a logical-file revision.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct ProjectedHeadVersion {
+    pub event_ref: ProjectedNoteEventRef,
+    pub document: ProjectedVersion,
+    pub note: ProjectedNote,
+}
+
 fn refuse(message: impl std::fmt::Display) -> Error {
     Error::fatal(format!("version_projection: {message}"))
 }
@@ -149,6 +188,39 @@ pub fn project_versions(rows: &[AtlasVersionRow]) -> Result<Vec<ProjectedVersion
     Ok(projected)
 }
 
+/// Recompute a complete head history from successive Atlas head-version rows.
+///
+/// Every supplied row must represent a head transition. This is a stateless
+/// replay from the first published head, not an incremental publication API:
+/// do not pass arbitrary non-head backfills or only a suffix of the history.
+/// Rows are ordered by `(file_id, version_seq)`; gaps and renames are allowed.
+/// Ordinary immutable-version/backfill projection remains `project_versions`.
+pub fn project_head_versions(rows: &[AtlasVersionRow]) -> Result<Vec<ProjectedHeadVersion>> {
+    let documents = project_versions(rows)?;
+    let mut ordered = rows.iter().collect::<Vec<_>>();
+    ordered.sort_by(|a, b| (&a.file_id, a.version_seq).cmp(&(&b.file_id, b.version_seq)));
+    Ok(ordered
+        .into_iter()
+        .zip(documents)
+        .map(|(row, document)| {
+            let event_ref = ProjectedNoteEventRef {
+                file_id: row.file_id.clone(),
+                version_seq: row.version_seq,
+            };
+            let content = ProjectedDocumentRef {
+                content_hash: document.content_hash.clone(),
+                media_type: document.media_type.clone(),
+                size: document.size,
+            };
+            ProjectedHeadVersion {
+                event_ref,
+                document,
+                note: ProjectedNote::Create { content },
+            }
+        })
+        .collect())
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
@@ -223,6 +295,81 @@ mod tests {
         let mut rows = fixture_rows();
         rows.push(rows[0].clone());
         assert!(project_versions(&rows).is_err());
+    }
+
+    /// Oracle: recomputation from Atlas fixture rows, independently selecting
+    /// the minimum and predecessor keys within each file (no projector state).
+    fn assert_head_recomputes(rows: &[AtlasVersionRow], output: &ProjectedHeadVersion) {
+        let row = rows
+            .iter()
+            .find(|row| {
+                row.file_id == output.event_ref.file_id
+                    && row.version_seq == output.event_ref.version_seq
+            })
+            .unwrap();
+        assert_recomputes(row, &output.document);
+        let reference = |row: &AtlasVersionRow| ProjectedNoteEventRef {
+            file_id: row.file_id.clone(),
+            version_seq: row.version_seq,
+        };
+        let content = ProjectedDocumentRef {
+            content_hash: blake3::hash(row.content.as_bytes()).to_hex().to_string(),
+            media_type: row.media_type.clone(),
+            size: row.content.len() as u64,
+        };
+        let prior = rows
+            .iter()
+            .filter(|candidate| {
+                candidate.file_id == row.file_id && candidate.version_seq < row.version_seq
+            })
+            .max_by_key(|candidate| candidate.version_seq);
+        let expected = match prior {
+            None => ProjectedNote::Create { content },
+            Some(prior) => {
+                let first = rows
+                    .iter()
+                    .filter(|candidate| candidate.file_id == row.file_id)
+                    .min_by_key(|candidate| candidate.version_seq)
+                    .unwrap();
+                ProjectedNote::Revise {
+                    note: reference(first),
+                    content,
+                    parents: vec![reference(prior)],
+                }
+            }
+        };
+        assert_eq!(output.note, expected);
+    }
+
+    #[test]
+    fn fixture_head_chains_recompute_with_independent_file_heads() {
+        let mut rows = fixture_rows();
+        // A third alpha head distinguishes stable note identity from prior head.
+        let mut third = rows[1].clone();
+        third.version_seq = 7;
+        rows.push(third);
+        let projected = project_head_versions(&rows).unwrap();
+        assert_eq!(projected.len(), rows.len());
+        for output in &projected {
+            assert_head_recomputes(&rows, output);
+        }
+    }
+
+    #[test]
+    fn fixture_head_replay_is_deterministic_and_rejects_duplicate_keys() {
+        // Oracle: full row recomputation is invariant under input permutation.
+        let mut rows = fixture_rows();
+        let first = project_head_versions(&rows).unwrap();
+        rows.reverse();
+        let replay = project_head_versions(&rows).unwrap();
+        assert_eq!(first, replay);
+        assert_eq!(
+            serde_json::to_vec(&first).unwrap(),
+            serde_json::to_vec(&replay).unwrap()
+        );
+        rows.push(rows[0].clone());
+        assert!(project_head_versions(&rows).is_err());
+        assert!(project_head_versions(&[]).unwrap().is_empty());
     }
 
     proptest! {
