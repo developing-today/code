@@ -1665,6 +1665,7 @@ function viewMore() {
       tile("more/prs", "Pull requests", ops.prs ? `${ops.prs.filter((p) => !p.draft).length} ready of ${ops.prs.length}` : "open and ready to merge"),
       tile("more/issues", "Ranked issues", ops.priorities ? `${ops.priorities.issues.length} ranked` : "change what matters most"),
       tile("more/agents", "Agents", ops.agents ? `${ops.agents.length} registered` : "message one or all"),
+      tile("more/messages", "Messages", "every surface, who really sent what"),
       tile("more/services", "Services", ops.services ? `${ops.services.filter((u) => u.active === "failed").length} failed of ${ops.services.length}` : "start, stop, logs"),
       tile("more/notify", "Notifications", "choose what reaches this device"),
       tile("more/phone", "Phones", "the Android app and its home-screen widget"),
@@ -3569,6 +3570,110 @@ function viewIssues() {
   ];
 }
 
+/** The Messages screen's filters, kept across draws (#14374). */
+let messageFilters = { kind: "", surface: "", sender: "", receiver: "", batch: "", work: "", unread: false };
+
+/**
+ * Every message on every surface, with the sender it really came from
+ * (#14374, design §4.9). This is the owner's console: provenance here
+ * is complete — an instruction shows its true sender. (Anonymity is
+ * what agents see of an instruction, never this view.) Read-only: the
+ * composer is the Agents screen's, as before.
+ */
+async function viewMessages() {
+  const f = messageFilters;
+  const qs = new URLSearchParams({ limit: "100" });
+  if (f.kind) qs.set("kind", f.kind);
+  if (f.surface) qs.set("surface", f.surface);
+  if (f.sender) qs.set("sender", f.sender);
+  if (f.receiver) qs.set("receiver", f.receiver);
+  if (f.batch) qs.set("batch", f.batch);
+  if (f.work) qs.set("work_state", f.work);
+  if (f.unread) qs.set("unread", "1");
+  let rows = [];
+  let failed = "";
+  try {
+    const got = await api(`pipeline?${qs}`);
+    if (Array.isArray(got)) rows = got;
+  } catch (error) {
+    failed = error.message;
+  }
+  const pick = (label, key, options) =>
+    h(
+      "select",
+      {
+        class: "narrow",
+        "aria-label": label,
+        onchange: (e) => {
+          messageFilters[key] = e.target.value;
+          draw();
+        },
+      },
+      h("option", { value: "" }, label),
+      options.map((o) => h("option", { value: o, selected: f[key] === o }, o)),
+    );
+  const find = (label, key, placeholder) =>
+    h("input", {
+      type: "search",
+      placeholder,
+      "aria-label": label,
+      value: f[key],
+      onchange: (e) => {
+        messageFilters[key] = e.target.value.trim();
+        draw();
+      },
+    });
+  const filters = card(
+    h(
+      "div",
+      { class: "row" },
+      pick("Kind", "kind", ["message", "instruction", "command", "note"]),
+      pick("Surface", "surface", ["connector", "fleet", "notes"]),
+      find("Sender", "sender", "Sender"),
+      find("Receiver", "receiver", "Receiver"),
+      find("Batch", "batch", "Batch"),
+      find("Work state", "work", "Work state"),
+      h(
+        "label",
+        { class: "row check meta" },
+        h("input", {
+          type: "checkbox",
+          checked: f.unread || undefined,
+          onchange: (e) => {
+            messageFilters.unread = e.target.checked;
+            draw();
+          },
+        }),
+        "Unread only",
+      ),
+    ),
+  );
+  const row = (m) => {
+    const who = m.sender_label && m.sender_addr && m.sender_label !== m.sender_addr ? `${m.sender_label} (${m.sender_addr})` : (m.sender_addr ?? "—");
+    const meta = [
+      `${ago(m.ts)} · ${m.surface} · ${m.kind}`,
+      `${who} → ${m.receiver}`,
+      m.direction,
+      m.read_at ? `read ${ago(m.read_at)}` : "unread",
+      m.batch ? `batch ${m.batch}` : "",
+      m.reply_to != null ? `reply to #${m.reply_to}` : "",
+      m.work_state ? `work: ${m.work_state}${m.work_task_id ? ` (task ${m.work_task_id})` : ""}` : "",
+    ]
+      .filter(Boolean)
+      .join(" · ");
+    return card(h("p", { class: "meta" }, meta), h("p", {}, String(m.body ?? "").slice(0, 1200)));
+  };
+  return [
+    filters,
+    h("h2", {}, `Messages (${rows.length})`),
+    ...(failed
+      ? [empty(`The messages could not be read just now: ${failed}`)]
+      : rows.length
+        ? rows.map(row)
+        : [empty("No messages match. Loosen a filter to see more.")]),
+  ];
+}
+
 async function viewAgents() {
   const agents = docs.ops?.agents || [];
   const to = h("select", { "aria-label": "To" }, h("option", { value: "all" }, "Everyone"), agents.map((a) => h("option", { value: `agent:${a.name}` }, a.name)));
@@ -3603,13 +3708,75 @@ async function viewAgents() {
   } catch (error) {
     unread = error.message;
   }
+  // The roster is the bridge's unified directory (#14374): fleet
+  // registry rows and notes identities, each with its credential
+  // state. Where that read cannot be made (an older bridge, no
+  // credential), the fleet roster from the ops document still stands,
+  // and the screen says the credential state is not shown.
+  let directory = null;
+  try {
+    const got = await api("directory");
+    if (Array.isArray(got)) directory = got;
+  } catch {
+    directory = null;
+  }
+  const roster =
+    directory ??
+    agents.map((a) => ({
+      surface: "fleet",
+      name: a.name,
+      groups: a.groups ?? [],
+      presence: "last_seen",
+      last_seen: a.last_seen ?? null,
+      unread: a.unread ?? (a.unread_commands ?? 0) + (a.unread_messages ?? 0),
+      unread_commands: a.unread_commands ?? 0,
+      unread_messages: a.unread_messages ?? 0,
+      credential: null,
+    }));
+  const agentCard = (a) => {
+    const cred = a.credential;
+    const credSaid = !cred
+      ? "credential state not shown"
+      : cred.state === "active"
+        ? `credentials active${cred.scopes?.length ? ` (${cred.scopes.join(", ")})` : ""}`
+        : "credentials revoked";
+    const meta =
+      a.surface === "notes"
+        ? `notes only · no presence on this surface · ${credSaid}`
+        : `${(a.groups || []).join(", ")} · seen ${ago(a.last_seen) || "never"} · ${a.unread_commands ?? 0} commands and ${a.unread_messages ?? 0} messages unread · ${credSaid}`;
+    return card(
+      h("div", { class: "row" }, h("h3", {}, a.name), chip(a.surface, a.surface === "notes" ? "warn" : "good")),
+      h("p", { class: "meta" }, meta),
+      cred?.state === "active"
+        ? h(
+            "div",
+            { class: "row end" },
+            h(
+              "button",
+              {
+                class: "small ghost",
+                onclick: async (e) => {
+                  const yes = await ask({
+                    title: `Revoke ${a.name}'s ${a.surface === "notes" ? "notes tokens" : "bridge credentials"}?`,
+                    text: "It is cut off from the bridge until it is given a new credential. This is the per-agent kill switch.",
+                    okLabel: "Revoke",
+                    danger: true,
+                  });
+                  if (yes !== null) act("agent.revoke", { surface: a.surface, name: a.name }, `Revoked ${a.name}`, e.target);
+                },
+              },
+              "Revoke",
+            ),
+          )
+        : null,
+    );
+  };
   return [
     ...notices(docs.ops, ["agents"]),
     compose,
-    h("h2", {}, `Agents (${agents.length})`),
-    ...agents.map((a) =>
-      card(h("h3", {}, a.name), h("p", { class: "meta" }, `${(a.groups || []).join(", ")} · seen ${ago(a.last_seen) || "never"} · ${a.unread_commands ?? 0} commands and ${a.unread_messages ?? 0} messages unread`)),
-    ),
+    h("h2", {}, `Agents (${roster.length})`),
+    directory === null ? empty("The unified directory could not be read just now; the fleet roster is shown, without credential state.") : null,
+    ...roster.map(agentCard),
     h("h2", {}, "Recent messages"),
     ...(recent.length
       ? recent.map((m) => card(h("p", { class: "meta" }, `${ago(m.ts)} · ${m.direction} · ${m.agent} · ${m.kind}`), h("p", {}, String(m.body ?? "").slice(0, 600))))
@@ -3696,6 +3863,7 @@ const VIEWS = {
   "more/prs": ["Pull requests", viewPrs, "ops"],
   "more/issues": ["Ranked issues", viewIssues, "ops"],
   "more/agents": ["Agents", viewAgents, "ops"],
+  "more/messages": ["Messages", viewMessages],
   "more/services": ["Services", viewServices, "ops"],
   "more/notify": ["Notifications", viewNotify],
   "more/phone": ["Phones", viewPhone],

@@ -228,6 +228,44 @@ export class MemoryStore {
     }
     return n;
   }
+  // Per-agent credential state (fleet.js foldCredentialState, #14374),
+  // folded the same way over this store's rows: state, never hashes.
+  async fleetCredentialState() {
+    const byAgent = new Map();
+    for (const c of this.fleetCredentials.values()) {
+      let a = byAgent.get(c.agent);
+      if (!a) {
+        a = {
+          agent: c.agent,
+          state: "revoked",
+          scopes: [],
+          addr: null,
+          credentials: 0,
+          live: 0,
+          created: c.created,
+          revoked_at: null,
+        };
+        byAgent.set(c.agent, a);
+      }
+      a.credentials++;
+      if (c.created < a.created) a.created = c.created;
+      if (c.revoked_at) {
+        if (!a.revoked_at || c.revoked_at > a.revoked_at) a.revoked_at = c.revoked_at;
+      } else {
+        a.live++;
+        for (const s of c.scopes) if (!a.scopes.includes(s)) a.scopes.push(s);
+        if (c.addr) a.addr = c.addr;
+      }
+    }
+    const out = [...byAgent.values()];
+    for (const a of out) {
+      if (a.live > 0) {
+        a.state = "active";
+        a.revoked_at = null;
+      }
+    }
+    return out.sort((x, y) => (x.agent < y.agent ? -1 : x.agent > y.agent ? 1 : 0));
+  }
   async enrollTokenMint(row) {
     this.enrollTokens.set(row.token_hash, { ...row, groups: [...row.groups], used_at: null, revoked_at: null });
     return { agent: row.agent, kind: row.kind, groups: [...row.groups], notes_identity: row.notes_identity, expires_at: row.expires_at, created: row.created };

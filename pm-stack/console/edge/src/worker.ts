@@ -80,6 +80,7 @@ export class PmEdge extends DurableObject<Env> {
     // The app says "ping" to keep its connection from being dropped as
     // idle; the platform answers "pong" itself, without waking this.
     ctx.setWebSocketAutoResponse(new WebSocketRequestResponsePair("ping", "pong"));
+    const bridge = env.BRIDGE;
     this.edge = new Edge({
       fetchImpl: keysFetch(env),
       kv: {
@@ -96,9 +97,9 @@ export class PmEdge extends DurableObject<Env> {
         bridgeToken: env.BRIDGE_TOKEN,
         // The binding's fetch, shaped as the fetch the classes take:
         // not to be called as a method, like the platform's own.
-        bridgeFetch: env.BRIDGE
+        bridgeFetch: bridge
           ? (url: string | URL | Request, init?: RequestInit) =>
-              env.BRIDGE.fetch(new Request(url as string, init))
+              bridge.fetch(new Request(url as string, init))
           : undefined,
         githubApi: env.GITHUB_API_ORIGIN,
         queueDb: env.QUEUE_DB_ORIGIN,
