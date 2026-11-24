@@ -1374,7 +1374,11 @@ describe("the owner, at the edge", () => {
     await w.link.now.once();
     const pieces = [...w.stored.entries()].filter(([k]) => k.startsWith("m:questions:"));
     expect(pieces.length).toBeGreaterThan(2);
-    for (const [, value] of pieces) expect((value as string).length).toBeLessThanOrEqual(600_000);
+    for (const [, value] of pieces) {
+      const text = typeof value === "string" ? value : (value as { t: string }).t;
+      expect(text.length).toBeLessThanOrEqual(600_000);
+      if (typeof value !== "string") expect(value).toMatchObject({ n: "questions" });
+    }
     // A new object with the same storage: nothing in memory.
     w.edge.now = w.makeEdge();
     const res = await w.browse("/console/api/doc/questions");
@@ -1407,6 +1411,40 @@ describe("the owner, at the edge", () => {
     // Nobody reads for a while: not watching.
     w.now.t += 91_000;
     expect((await w.link.now.once())?.watching).toBe(false);
+  });
+
+  test("someone looking survives the object being put away", async () => {
+    const w = await setup();
+    await w.hostReads();
+    await w.link.now.once();
+    await w.core();
+    expect(w.stored.get("docAt")).toBe(w.now.t);
+    // A new object over the same storage, as after being put away idle:
+    // it has seen no document read, but the host is still told someone
+    // is looking.
+    w.edge.now = w.makeEdge();
+    w.now.t += 1_000;
+    expect((await w.link.now.once())?.watching).toBe(true);
+    // And after long enough with no read, it is not.
+    w.now.t += 91_000;
+    w.edge.now = w.makeEdge();
+    expect((await w.link.now.once())?.watching).toBe(false);
+  });
+
+  test("a section kept in pieces that is not one section's is no copy", async () => {
+    const w = await setup();
+    const big = { open: Array.from({ length: 4000 }, (_, i) => ({ qid: `q${i}`, question: "é".repeat(400) })) };
+    w.data.questions = big;
+    await w.hostReads();
+    await w.link.now.once();
+    const meta = w.stored.get("m:questions") as { hash: string; chunks: number };
+    expect(meta.chunks).toBeGreaterThan(2);
+    // A piece from another write under the same index is not taken for
+    // this section's: the copy is asked for again.
+    w.stored.set("m:questions:0", { n: "questions", h: "other", t: "x" });
+    w.edge.now = w.makeEdge();
+    const res = await w.browse("/console/api/doc/questions");
+    expect(res.status).toBe(200);
   });
 });
 
@@ -2005,7 +2043,10 @@ describe("the Android build", () => {
   const questionsAtEdge = (w: Awaited<ReturnType<typeof setup>>) => {
     const pieces = (w.stored.get("m:questions") as { chunks: number } | undefined)?.chunks ?? 0;
     let text = "";
-    for (let i = 0; i < pieces; i++) text += String(w.stored.get(`m:questions:${i}`));
+    for (let i = 0; i < pieces; i++) {
+      const kept = w.stored.get(`m:questions:${i}`) as { t: string } | string | undefined;
+      text += typeof kept === "string" ? kept : (kept?.t ?? "");
+    }
     return text === "" ? null : (JSON.parse(text) as Record<string, any>);
   };
 
@@ -2590,6 +2631,41 @@ describe("the host's report is the host's", () => {
     expect(second.bodyUsed).toBe(false);
   });
 
+  test("the key-fetch gate survives the object being put away", async () => {
+    const w = await setup();
+    const firstPair = await newKeyPair();
+    const body = new TextEncoder().encode(JSON.stringify({ v: 1, at: w.now.t, sections: [], have: {}, acks: [] }));
+    const first = new Request(`https://${HOST}/console/edge/sync`, {
+      method: "POST",
+      body,
+      headers: {
+        "x-pm-key": await keyId(firstPair.publicJwk),
+        "x-pm-signature": await sign(firstPair.privateJwk, body),
+      },
+    });
+    expect((await w.edge.now.fetch(first)).headers.get("x-pm-next")).toBe("key");
+    expect(w.stored.get("keyFetch")).toBe(w.now.t);
+    // A new object over the same storage, still within the thirty
+    // seconds: another stranger is refused without asking the host.
+    w.edge.now = w.makeEdge();
+    w.now.t += 1_000;
+    w.hostSaw.length = 0;
+    const secondPair = await newKeyPair();
+    const secondBody = new TextEncoder().encode(
+      JSON.stringify({ v: 1, at: w.now.t, sections: [], have: {}, acks: [] }),
+    );
+    const second = new Request(`https://${HOST}/console/edge/sync`, {
+      method: "POST",
+      body: secondBody,
+      headers: {
+        "x-pm-key": await keyId(secondPair.publicJwk),
+        "x-pm-signature": await sign(secondPair.privateJwk, secondBody),
+      },
+    });
+    expect((await w.edge.now.fetch(second)).status).toBe(401);
+    expect(w.hostSaw).toEqual([]);
+  });
+
   test("an address whose reports keep failing is refused unread, and nobody else is", async () => {
     const w = await setup();
     await w.hostReads();
@@ -2695,7 +2771,13 @@ describe("the host's report is the host's", () => {
     w.now.t += 1_000;
     expect((await report(w, () => {}, bySomeoneElse, await keyId(stranger.publicJwk))).status).toBe(401);
     expect(w.hostSaw).toEqual(["GET /console/edge/key"]);
-    expect(JSON.stringify([...w.stored.entries()])).toBe(before);
+    // The key-fetch gate itself is kept: asking the host once is the
+    // one change, and the second stranger changes nothing further.
+    const afterFetch = JSON.stringify([...w.stored.entries()]);
+    w.now.t += 1_000;
+    expect((await report(w, () => {}, bySomeoneElse, await keyId(stranger.publicJwk))).status).toBe(401);
+    expect(w.hostSaw).toEqual(["GET /console/edge/key"]);
+    expect(JSON.stringify([...w.stored.entries()])).toBe(afterFetch);
     // The owner is still the owner, and the forged one is nobody.
     expect((await w.browse("/console/api/me")).status).toBe(200);
     expect(

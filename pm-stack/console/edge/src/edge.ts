@@ -221,6 +221,17 @@ interface Mirror {
   written: number;
 }
 
+/** One stored piece of a section, marked with whose it is. Pieces are
+ * written first and the index (`m:<name>`) last: a write stopped
+ * between pieces leaves pieces the index never names, and an index
+ * naming pieces another section's write left behind never matches,
+ * so neither reads as the section. */
+interface MirrorPiece {
+  n: string;
+  h: string;
+  t: string;
+}
+
 /** What the stateless part of the Worker must do with a request this
  * part has checked: serve a file of the app, or pass the request to the
  * host. Anything else is an ordinary response. */
@@ -341,8 +352,18 @@ export class Edge {
   private handed: Set<string> | null = null;
   private ownActs: Act[] | null = null;
   private hostActs: Act[] = [];
+  /** When a document was last read. The app reads while it is open
+   * (every 20 s), far more often than an object lasts once idle, so a
+   * new object would always say nobody is looking unless this is kept
+   * in storage and read back. Stored under "docAt", write-through. */
   private lastDocAt = 0;
+  private docAtRead = false;
+  /** When the host's key was last asked for. Strangers trigger the
+   * fetch, gated to 30 s; without storage the gate lasts only as long
+   * as the object answering, so every new object would ask again.
+   * Stored under "keyFetch", write-through. */
   private lastKeyFetch = 0;
+  private keyFetchRead = false;
   private hostSeen: number | null = null;
   private hostSeq: number | null = null;
   /** For each section, the content the host last said it has and when
@@ -366,9 +387,17 @@ export class Edge {
    * nearly every one that is asked) would otherwise ask GitHub again
    * each time, and the ten minutes between askings would mean nothing. */
   private released: Released | null | undefined = undefined;
+  /** Reports refused per address. Memory only, by decision: a flood
+   * keeps the object in memory while it lasts, which is when the
+   * limiter matters; across objects each new one starts counting
+   * afresh, and the host's own reports never fail these checks. */
   private syncRefused: KeyedLimiter;
   readonly docs: Docs;
   readonly push: Push;
+  /** Phone link/attempt limiters. Memory only, by the same decision:
+   * they blunt a burst against the object answering, and a new object
+   * starting over does not let a burst through to anything but
+   * another in-memory count. */
   readonly phones: Phones;
   private notifier: Notifier;
   private table: Record<string, Action>;
@@ -689,21 +718,39 @@ export class Edge {
     let found: Mirror | null = null;
     if (meta) {
       const parts: string[] = [];
-      for (let i = 0; i < meta.chunks; i++) parts.push(String((await this.kv.get(`m:${name}:${i}`)) ?? ""));
+      let marked = true;
+      for (let i = 0; i < meta.chunks; i++) {
+        const kept = (await this.kv.get(`m:${name}:${i}`)) as Partial<MirrorPiece> | string | undefined;
+        if (typeof kept === "string") {
+          // Written before pieces were marked: still this section's.
+          parts.push(kept);
+          continue;
+        }
+        // A piece of another write, or none: what the index names was
+        // never finished, or is being replaced. Nothing is kept.
+        if (!kept || kept.n !== name || kept.h !== meta.hash || typeof kept.t !== "string") {
+          marked = false;
+          break;
+        }
+        parts.push(kept.t);
+      }
       try {
-        const own = meta.own === true;
-        // As current as the host last said it was, which may be later
-        // than when the copy itself was sent. A copy read here is as
-        // current as that read, whatever a machine says of its own.
-        const told = !own && this.confirmed[name]?.hash === meta.hash ? this.confirmed[name].at : 0;
-        found = {
-          at: Math.max(meta.at, told),
-          hash: meta.hash,
-          data: JSON.parse(parts.join("")),
-          own,
-          chunks: meta.chunks,
-          written: meta.at,
-        };
+        if (!marked) found = null;
+        else {
+          const own = meta.own === true;
+          // As current as the host last said it was, which may be later
+          // than when the copy itself was sent. A copy read here is as
+          // current as that read, whatever a machine says of its own.
+          const told = !own && this.confirmed[name]?.hash === meta.hash ? this.confirmed[name].at : 0;
+          found = {
+            at: Math.max(meta.at, told),
+            hash: meta.hash,
+            data: JSON.parse(parts.join("")),
+            own,
+            chunks: meta.chunks,
+            written: meta.at,
+          };
+        }
       } catch {
         found = null; // a copy that cannot be read is no copy: the host is asked for it again
       }
@@ -717,8 +764,14 @@ export class Edge {
     const text = JSON.stringify(section.data);
     const chunks = Math.max(1, Math.ceil(text.length / CHUNK));
     const before = (await this.kv.get(`m:${section.name}`)) as { chunks: number } | undefined;
+    // Pieces first, each marked with the section and content they hold,
+    // then the index last: see `mirror`.
     for (let i = 0; i < chunks; i++)
-      await this.kv.put(`m:${section.name}:${i}`, text.slice(i * CHUNK, (i + 1) * CHUNK));
+      await this.kv.put(`m:${section.name}:${i}`, {
+        n: section.name,
+        h: section.hash,
+        t: text.slice(i * CHUNK, (i + 1) * CHUNK),
+      } satisfies MirrorPiece);
     for (let i = chunks; i < (before?.chunks ?? 0); i++) await this.kv.delete(`m:${section.name}:${i}`);
     await this.kv.put(`m:${section.name}`, {
       at: section.at,
@@ -752,6 +805,11 @@ export class Edge {
       // itself, while it could, gives way to the machine's whenever it
       // comes: this side is no longer reading it.)
       if (have && !have.own && have.at > raw.at) continue;
+      // Unchanged content is not written again: the host sends every
+      // section it holds with each report, and a write per report per
+      // section is the steady-state write load. The time is still taken
+      // as current through `confirmed` (see `mirror`), not stored.
+      if (have && !have.own && have.hash === raw.hash) continue;
       await this.putMirror({ name: raw.name, at: Math.min(raw.at, this.now()), hash: raw.hash, data: raw.data });
       names.push(raw.name);
     }
@@ -940,6 +998,26 @@ export class Edge {
       };
       still(kept?.kinds, this.refused);
       still(kept?.reads, this.unread);
+    }
+    if (!this.docAtRead) {
+      this.docAtRead = true;
+      try {
+        const at = (await this.kv.get("docAt")) as number | undefined;
+        const now = this.now();
+        if (typeof at === "number" && at > 0 && at <= now) this.lastDocAt = at;
+      } catch {
+        // Unread storage is no storage: nobody is looking until a read.
+      }
+    }
+    if (!this.keyFetchRead) {
+      this.keyFetchRead = true;
+      try {
+        const at = (await this.kv.get("keyFetch")) as number | undefined;
+        const now = this.now();
+        if (typeof at === "number" && at > 0 && at <= now) this.lastKeyFetch = at;
+      } catch {
+        // Unread storage is no storage: the next stranger fetches.
+      }
     }
   }
 
@@ -1305,11 +1383,27 @@ export class Edge {
     const now = this.now();
     if (!key || key.kid !== kid) {
       // A key this side has not seen: ask the host for its key, but not
-      // on every stranger's request. Nothing has been read yet.
+      // on every stranger's request. Nothing has been read yet. The
+      // gate is kept in storage: without it every new object would ask
+      // again, since objects last seconds and the gate is thirty.
+      if (!this.keyFetchRead) {
+        this.keyFetchRead = true;
+        try {
+          const at = (await this.kv.get("keyFetch")) as number | undefined;
+          if (typeof at === "number" && at > 0 && at <= now) this.lastKeyFetch = at;
+        } catch {
+          // Unread storage is no storage.
+        }
+      }
       if (req.headers.get("x-pm-key-fetched") === "1" || now - this.lastKeyFetch < KEY_FETCH_EVERY_MS) {
         return refuse({ error: "this is not signed with the host's key" }, 401);
       }
       this.lastKeyFetch = now;
+      try {
+        await this.kv.put("keyFetch", now);
+      } catch (failed) {
+        console.error(`pm-edge: keeping key fetch: ${(failed as Error).message}`);
+      }
       // The report is sent again once the key is known, from a second
       // copy of the same upload. This copy has to be read to its end
       // first: in the Worker runtime the two share one stream, and a
@@ -1755,6 +1849,11 @@ export class Edge {
         }
         if (seg.length === 2 && seg[0] === "doc" && DOC_NAMES.includes(seg[1] as DocName)) {
           this.lastDocAt = this.now();
+          try {
+            await this.kv.put("docAt", this.lastDocAt);
+          } catch (failed) {
+            console.error(`pm-edge: keeping doc read: ${(failed as Error).message}`);
+          }
           const res = docResponse(req, await this.docs.doc(seg[1] as DocName));
           // What the document started reading behind this answer (the
           // sections this side reads itself, when they have gone stale)

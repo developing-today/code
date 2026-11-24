@@ -275,7 +275,10 @@ it (the laptop's, the sign-in issuer's).
   deadline, and an object with a timer running is not put away. In
   the local runtime an object that had asked GitHub one thing, with
   twenty seconds allowed, was still in memory 26 seconds after its
-  last request; one that had left no timer was gone within 14. A test
+  last request; one that had left no timer was gone within 14. In
+  service, over three minutes of health reads twenty seconds apart,
+  eight of nine were answered by an object started since the read
+  before: under twenty seconds idle. A test
   follows the Worker's imports and fails if anything it runs uses
   `AbortSignal.timeout`. The real-runtime check (`scripts/edge-smoke.ts`)
   leaves the Worker alone until health says another object answers,
