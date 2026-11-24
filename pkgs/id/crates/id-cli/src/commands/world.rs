@@ -2287,7 +2287,7 @@ mod tests {
     use super::{
         PumpLine, check_contract, check_journal_bytes, check_suite_file, journal_backup,
         local_transcript_record, print_journal_check, pump_command, read_execution_profile,
-        scaffold_world, step_is_applied, world_list_plain_row, world_provenance,
+        render_view_frame, scaffold_world, step_is_applied, world_list_plain_row, world_provenance,
     };
 
     #[test]
@@ -2300,6 +2300,62 @@ mod tests {
         std::fs::write(&path, r#"{"x":1,"x":2,"wasm_fuel":1000000}"#).unwrap();
         let error = format!("{:#}", read_execution_profile(&path).unwrap_err());
         assert!(error.contains("parse execution profile"), "{error}");
+    }
+
+    #[test]
+    fn render_view_frame_presents_screen_and_text_and_leaves_other_frames_alone() {
+        let screen_surface = serde_json::json!({
+            "kind": "screen",
+            "version": 1,
+            "width": 2,
+            "height": 1,
+            "cells": [
+                {"symbol": "o", "fg": 0, "bg": 0, "bold": false, "columns": 1, "token": null},
+                {"symbol": "k", "fg": 0, "bg": 0, "bold": false, "columns": 1, "token": null}
+            ]
+        });
+        let screen_frame = serde_json::to_vec(&serde_json::json!({
+            "type": "view",
+            "surface": screen_surface.clone()
+        }))
+        .unwrap();
+        let screen: id_worlds::world_presentation::ScreenSurface =
+            serde_json::from_value(screen_surface).unwrap();
+        let mut screen_presenter = id_worlds::world_terminal::TierPresenter::new(
+            id_worlds::world_terminal::TerminalProfile {
+                cursor_position_report: true,
+                indexed_color: true,
+                ..Default::default()
+            },
+        );
+
+        assert_eq!(
+            render_view_frame(&mut screen_presenter, &screen_frame),
+            screen.render_ansi()
+        );
+        assert_eq!(render_view_frame(&mut screen_presenter, &screen_frame), Some(String::new()));
+
+        let text_frame = serde_json::to_vec(&serde_json::json!({
+            "type": "view",
+            "surface": {"kind": "text", "version": 1, "width": 80, "lines": ["hello", "world"]}
+        }))
+        .unwrap();
+        let mut text_presenter =
+            id_worlds::world_terminal::TierPresenter::new(Default::default());
+        assert_eq!(
+            render_view_frame(&mut text_presenter, &text_frame),
+            Some("hello\r\nworld\r\n".to_owned())
+        );
+        assert_eq!(render_view_frame(&mut text_presenter, &text_frame), Some(String::new()));
+
+        let widget_frame = serde_json::to_vec(&serde_json::json!({
+            "type": "view",
+            "surface": {"kind": "widget", "version": 1, "controls": []}
+        }))
+        .unwrap();
+        assert_eq!(render_view_frame(&mut text_presenter, &widget_frame), None);
+        assert_eq!(render_view_frame(&mut text_presenter, br#"{"type":"event"}"#), None);
+        assert_eq!(render_view_frame(&mut text_presenter, b"not json"), None);
     }
 
     /// #3089: a world name containing LF must not forge an extra row in
