@@ -53,7 +53,9 @@ is a deliverable, not an embarrassment.
   [Talos and Cozystack](cluster/talos-and-cozystack.md),
   [Storage: LINSTOR and DRBD](cluster/storage-linstor-and-drbd.md)
   and [Boot and auto-join](cluster/boot-and-auto-join.md) cover the
-  three design areas in turn.
+  three design areas in turn. The storage chapter's design centre
+  is the tiered-storage design, and it carries the Postgres
+  treatment (CloudNativePG with streaming replicas).
 - **The network** — [Switches](network/switches.md) folds in the
   dedicated switching research: 21 devices, enriched in April 2026.
 - **Platform and toolchain** — the part added from the platform
@@ -73,8 +75,9 @@ is a deliverable, not an embarrassment.
   [The pipes into Cloudflare and externally](platform/pipes-to-cloudflare.md),
   with shorter chapters on dev shells, clan, VMs and KubeVirt,
   Terraform, Crossplane, next-gen Nix tooling, build servers,
-  artifact repositories, automation and scaling, and the
-  RustFS-versus-SeaweedFS object-storage question.
+  artifact repositories, automation and scaling, the
+  RustFS-versus-SeaweedFS object-storage question, and
+  [Security: Falco runtime detection](platform/security-and-falco.md).
 - **Microcontrollers** — [ESP32](microcontrollers/esp32.md) covers
   the ESP32-S3 reference part, the ESP32-P4 tier, and the Tanmatsu.
 - **Roadmap and plans** — the

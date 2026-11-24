@@ -64,6 +64,13 @@ this: the ID currency-autoscaling design (#5825) is
 *application-level* scaling design — a stateless front end and
 its scaling triggers — not infrastructure autoscaling.
 
+## Detection feeds — planned
+
+Falco's runtime detections are planned to feed this automation
+layer as their consumer: the tripwire's alerts become automation
+inputs (see [Security: Falco runtime detection](security-and-falco.md)).
+No wiring exists; this is planned only.
+
 ## Gaps
 
 - No written automation and scaling strategy ties these layers
