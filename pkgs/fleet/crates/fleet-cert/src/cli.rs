@@ -36,7 +36,7 @@ Groups and verbs (spec §6.1 tree; status as built):
   ocsp     sign | inspect | test
   chain    build | test
   bundle   inspect
-  profile  list | show
+  profile  list | show | validate | scaffold
   algorithms list | describe
   explain  [topic]
   doctor
@@ -433,7 +433,7 @@ fn leaf_cmd(args: &[String], json_out: bool) -> Result<i32> {
             let issuer = p.require("issuer", "leaf issue")?;
             let signer = signer_source(&p, "issuer-key-dir", "leaf issue")?;
             let profile_name = p.require("profile", "leaf issue")?;
-            let prof = profile::leaf_profile(&profile_name)?;
+            let prof = profile::resolve_profile(&profile_name)?;
             let name = p
                 .get("name")
                 .map(|s| s.to_string())
@@ -771,8 +771,53 @@ fn profile_cmd(args: &[String], json_out: bool) -> Result<i32> {
             });
             Ok(emit(json_out, text, value))
         }
+        "scaffold" => {
+            let p = parse_args(rest, &["name", "out"], &["json"])?;
+            let name = p
+                .get("name")
+                .or_else(|| p.positional(0))
+                .ok_or_else(|| CertError::usage("profile scaffold needs --name <name>"))?;
+            let out = p.require("out", "profile scaffold")?;
+            let scaffold = profile::CustomProfile::scaffold(name);
+            scaffold.validate()?;
+            let bytes = serde_json::to_vec_pretty(&scaffold)
+                .map_err(|e| CertError::engine(e.to_string()))?;
+            use std::io::Write;
+            let mut file = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&out)
+                .map_err(|e| CertError::engine(format!("cannot create profile {out}: {e}")))?;
+            file.write_all(&bytes)
+                .map_err(|e| CertError::engine(format!("cannot write profile {out}: {e}")))?;
+            Ok(emit(
+                json_out,
+                format!("Scaffolded custom profile {name} at {out}\n"),
+                json!({"name": name, "path": out, "profile": scaffold}),
+            ))
+        }
+        "validate" => {
+            let p = parse_args(rest, &["file"], &["json"])?;
+            let path = p
+                .get("file")
+                .or_else(|| p.positional(0))
+                .ok_or_else(|| CertError::usage("profile validate needs <file>"))?;
+            let (custom, resolved) = profile::load_custom_profile(&PathBuf::from(path))?;
+            let text = format!(
+                "Valid custom profile {} (key={}, validity={}d, ceiling={}d)\n",
+                custom.name,
+                resolved.key_algorithm.name(),
+                custom.default_validity_days,
+                custom.max_validity_days
+            );
+            Ok(emit(
+                json_out,
+                text,
+                json!({"valid": true, "profile": custom}),
+            ))
+        }
         other => Err(CertError::usage(format!(
-            "unknown profile verb '{other}' (list | show)"
+            "unknown profile verb '{other}' (list | show | validate | scaffold)"
         ))),
     }
 }
@@ -865,10 +910,6 @@ const NOT_BUILT: &[(&str, &str)] = &[
         "key inspect/import/export/convert-public (spec §6.1)",
     ),
     ("format", "format list/describe/export/convert (spec §7.5)"),
-    (
-        "profile validate/scaffold",
-        "profile validation + scaffolding (spec §6.1)",
-    ),
     (
         "algorithms benchmark/doctor",
         "algorithm benchmarks (spec §6.1)",
@@ -984,7 +1025,7 @@ fn doctor_cmd(_args: &[String], json_out: bool) -> Result<i32> {
         "  openssl (independent validator): {}\n",
         openssl.as_deref().unwrap_or("not found")
     ));
-    text.push_str("  built: root, issuer, leaf, chain, bundle (inspect), profile (list/show), algorithms (list/describe), explain, doctor\n");
+    text.push_str("  built: root, issuer, leaf, chain, bundle (inspect), profile (list/show/validate/scaffold), algorithms (list/describe), explain, doctor\n");
     text.push_str("  not built yet (tracked as child issues under #9157):\n");
     for (name, what) in NOT_BUILT {
         text.push_str(&format!("    {name} — {what}\n"));
@@ -992,7 +1033,7 @@ fn doctor_cmd(_args: &[String], json_out: bool) -> Result<i32> {
     let value = json!({
         "engine_self_test": algo_results.iter().map(|(i, ok)| json!({"algorithm": i.name, "ok": ok})).collect::<Vec<_>>(),
         "openssl": openssl,
-        "built": ["root", "issuer", "leaf", "chain", "bundle-inspect", "profile-list/show", "algorithms-list/describe", "explain", "doctor"],
+        "built": ["root", "issuer", "leaf", "chain", "bundle-inspect", "profile-list/show/validate/scaffold", "algorithms-list/describe", "explain", "doctor"],
         "not_built": NOT_BUILT.iter().map(|(n, w)| json!({"surface": n, "scope": w})).collect::<Vec<_>>(),
     });
     let code = emit(json_out, text, value);
