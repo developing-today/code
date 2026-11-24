@@ -692,6 +692,9 @@ async function setup(options: { direct?: boolean; kinds?: readonly string[]; bri
   const bridgeCredentials = [
     { agent: "lane-1", state: "active", scopes: ["inbox", "send"], addr: null, credentials: 1, live: 1, created: "2026-11-24T00:00:00Z", revoked_at: null },
   ];
+  const bridgeEnrollTokens = [
+    { agent: "new-1", kind: "muse", groups: ["muse"], notes_identity: null, created: "2026-11-24T00:00:00Z", expires_at: "2026-11-25T00:00:00Z", used_at: null, revoked_at: null, state: "pending" },
+  ];
   const bridgeRefuses = { on: false };
   const bridgeFetch = (async (
     url: string,
@@ -723,6 +726,9 @@ async function setup(options: { direct?: boolean; kinds?: readonly string[]; bri
     }
     if (method === "GET" && u.endsWith("/credentials")) {
       return { ok: true, status: 200, json: async () => ({ credentials: bridgeCredentials }) };
+    }
+    if (method === "GET" && u.endsWith("/enroll-tokens")) {
+      return { ok: true, status: 200, json: async () => ({ enroll_tokens: bridgeEnrollTokens }) };
     }
     throw new Error(`unexpected bridge fetch ${method} ${u}`);
   }) as never;
@@ -3917,6 +3923,15 @@ describe("the edge does the core itself", () => {
     ]);
     expect(w.hostSaw).not.toContain("GET /console/api/pipeline?kind=command&sender=lane-1");
     expect(w.hostSaw).not.toContain("GET /console/api/directory");
+    // The provisioning read (#14376): the minted enroll tokens'
+    // state, read the same way — state only, no hash, no value.
+    const enrollTokens = (await (await w.browse("/console/api/enroll-tokens")).json()) as { agent: string; state: string }[];
+    expect(enrollTokens).toEqual([
+      { agent: "new-1", kind: "muse", groups: ["muse"], notes_identity: null, created: "2026-11-24T00:00:00Z", expires_at: "2026-11-25T00:00:00Z", used_at: null, revoked_at: null, state: "pending" },
+    ]);
+    expect(w.bridgeCalls.at(-1)?.method).toBe("GET");
+    expect(w.bridgeCalls.at(-1)?.url).toBe("https://bridge.internal/fleet/pm-cred-test/enroll-tokens");
+    expect(w.hostSaw).not.toContain("GET /console/api/enroll-tokens");
     // A revoke asked here is held for a machine — the edge's
     // credential holds the read scope only — and the bridge is not
     // asked for one.
@@ -3924,8 +3939,18 @@ describe("the edge does the core itself", () => {
     const held = await w.act("agent.revoke", { surface: "fleet", name: "lane-1" });
     expect(await held.json()).toEqual({ ok: true, held: true, result: null, waits: "machine" });
     expect(w.bridgeCalls).toHaveLength(callsBefore);
+    // Taking back unused enroll tokens is held the same way (#14376).
+    const heldEnroll = await w.act("agent.revoke-enroll", { agent: "new-1" });
+    expect(await heldEnroll.json()).toEqual({ ok: true, held: true, result: null, waits: "machine" });
+    expect(w.bridgeCalls).toHaveLength(callsBefore);
+    // A mint is never held: its answer is the secret itself, shown
+    // once on the screen that asked — with no machine answering, it
+    // is refused, and the bridge is not asked for one either.
+    const mint = await w.act("agent.mint-enroll", { agent: "new-2", kind: "muse" });
+    expect(((await mint.json()) as { held?: unknown }).held).not.toBe(true);
+    expect(w.bridgeCalls).toHaveLength(callsBefore);
     const machines = (await (await w.browse("/console/api/machines")).json()) as MachinesAnswer;
-    expect(machines.held.map((entry) => entry.kind)).toEqual(["agent.revoke"]);
+    expect(machines.held.map((entry) => entry.kind)).toEqual(["agent.revoke", "agent.revoke-enroll"]);
   });
 
   test("a bridge credential the bridge no longer knows stops the send here, with the reason said", async () => {

@@ -702,6 +702,160 @@ export class Ops {
     return { surface: s, name: n, revoked: typeof out.revoked === "number" ? out.revoked : 0 };
   }
 
+  /** The minted bootstrap tokens' state for the Agents screen
+   * (#14376): pending, used, expired or revoked, each with the times
+   * that closed it. State only — the bridge stores hashes and returns
+   * neither a hash nor a value here; a token's value existed once, in
+   * its mint answer. */
+  async enrollTokens() {
+    const rows = (
+      JSON.parse(await this.must([this.cfg.fleetBin, "bridge", "enroll-tokens"])) as {
+        enroll_tokens?: unknown;
+      } | null
+    )?.enroll_tokens;
+    return Array.isArray(rows) ? (rows as Record<string, unknown>[]) : [];
+  }
+
+  /**
+   * Mint a bootstrap enroll token from the Agents screen (#14376,
+   * design §4.9), bound at mint to the new agent's name, kind, groups
+   * and class notes identity, for the TTL the owner picked. The
+   * bridge's answer carries the token value, and it passes straight
+   * through to the caller — the one screen that shows it, once.
+   * Nothing keeps it: this class holds no state but the queue token,
+   * the action's audit record names only the binding (actions.ts),
+   * and the value never travels as an argument — the CLI builds the
+   * mint from these flags, and the value comes back on stdout alone.
+   * The binding is checked here first, in the console's own terms,
+   * before anything runs.
+   */
+  async mintEnrollToken(input: {
+    agent?: unknown;
+    kind?: unknown;
+    groups?: unknown;
+    notesIdentity?: unknown;
+    ttlSeconds?: unknown;
+  }) {
+    const name = (value: unknown, what: string, max = 128) => {
+      const n = text(value, what, max);
+      if (!/^[A-Za-z0-9][A-Za-z0-9@._/-]{0,127}$/.test(n)) {
+        throw new OpError(400, `${what}: not a name: ${JSON.stringify(n).slice(0, 80)}`);
+      }
+      return n;
+    };
+    const agent = name(input.agent, "agent");
+    const argv = [this.cfg.fleetBin, "bridge", "mint-enroll", "--agent", agent];
+    if (input.kind !== undefined && input.kind !== null && input.kind !== "") {
+      argv.push("--kind", name(input.kind, "kind", 64));
+    }
+    if (input.groups !== undefined && input.groups !== null && input.groups !== "") {
+      const groups = (Array.isArray(input.groups) ? input.groups : String(input.groups).split(","))
+        .map((g) => (typeof g === "string" ? g.trim() : g))
+        .filter((g) => g !== "");
+      if (groups.length > 16) throw new OpError(400, "groups: at most sixteen");
+      for (const g of groups) {
+        if (typeof g !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(g)) {
+          throw new OpError(400, `groups: not a group name: ${JSON.stringify(g).slice(0, 80)}`);
+        }
+      }
+      if (groups.length > 0) argv.push("--groups", groups.join(","));
+    }
+    if (input.notesIdentity !== undefined && input.notesIdentity !== null && input.notesIdentity !== "") {
+      argv.push("--notes-identity", name(input.notesIdentity, "notes identity"));
+    }
+    if (input.ttlSeconds !== undefined && input.ttlSeconds !== null && input.ttlSeconds !== "") {
+      const ttl = id(input.ttlSeconds, "ttl");
+      if (ttl < 60 || ttl > 604_800) throw new OpError(400, "ttl: between a minute and a week, in seconds");
+      argv.push("--ttl", String(ttl));
+    }
+    const out = JSON.parse(await this.must(argv)) as {
+      agent?: unknown;
+      kind?: unknown;
+      groups?: unknown;
+      notes_identity?: unknown;
+      expires_at?: unknown;
+      bootstrap_token?: unknown;
+    } | null;
+    if (typeof out?.bootstrap_token !== "string" || out.bootstrap_token === "") {
+      throw new OpError(502, "the bridge's mint answer carried no token");
+    }
+    return {
+      agent: typeof out.agent === "string" ? out.agent : agent,
+      kind: typeof out.kind === "string" ? out.kind : "agent",
+      groups: Array.isArray(out.groups) ? out.groups.filter((g) => typeof g === "string") : [],
+      notes_identity: typeof out.notes_identity === "string" ? out.notes_identity : null,
+      expires_at: typeof out.expires_at === "string" ? out.expires_at : null,
+      bootstrap_token: out.bootstrap_token,
+    };
+  }
+
+  /**
+   * Take back an agent's unused bootstrap tokens from the Agents
+   * screen (#14376): every still-pending token minted for the agent.
+   * By name, never by value — the list shows no hash, and a token
+   * value has no business travelling to undo its own minting. Used
+   * tokens are not this revoke's (they became credentials; revoke
+   * those above), and expired ones are already dead.
+   */
+  async revokeEnrollTokens(agent: unknown) {
+    const n = text(agent, "agent", 200);
+    if (!/^[A-Za-z0-9][A-Za-z0-9@._/-]{0,127}$/.test(n)) {
+      throw new OpError(400, `agent: not an agent name: ${JSON.stringify(n).slice(0, 80)}`);
+    }
+    const out = JSON.parse(
+      await this.must([this.cfg.fleetBin, "bridge", "revoke-enroll", "--agent", n]),
+    ) as { revoked?: unknown };
+    return { agent: n, revoked: typeof out.revoked === "number" ? out.revoked : 0 };
+  }
+
+  /**
+   * Mint a per-agent credential directly from the Agents screen
+   * (#14376): for an agent that is already enrolled, or a service
+   * credential with --addr. Like the enroll mint, the value passes
+   * straight through to the one screen that shows it, once, and is
+   * kept nowhere. A service address must name the agent itself — the
+   * bridge binds a service credential to its own name, and the check
+   * is made here first as everywhere else.
+   */
+  async mintCredential(input: { agent?: unknown; scopes?: unknown; addr?: unknown }) {
+    const agent = text(input.agent, "agent", 200);
+    if (!/^[A-Za-z0-9][A-Za-z0-9@._/-]{0,127}$/.test(agent)) {
+      throw new OpError(400, `agent: not an agent name: ${JSON.stringify(agent).slice(0, 80)}`);
+    }
+    const argv = [this.cfg.fleetBin, "bridge", "mint-credential", "--agent", agent];
+    if (input.scopes !== undefined && input.scopes !== null && input.scopes !== "") {
+      const scopes = (Array.isArray(input.scopes) ? input.scopes : String(input.scopes).split(","))
+        .map((s) => (typeof s === "string" ? s.trim() : s))
+        .filter((s) => s !== "");
+      if (scopes.length === 0 || scopes.some((s) => s !== "inbox" && s !== "send" && s !== "read")) {
+        throw new OpError(400, "scopes: only inbox, send and read exist");
+      }
+      argv.push("--scopes", scopes.join(","));
+    }
+    if (input.addr !== undefined && input.addr !== null && input.addr !== "") {
+      const addr = text(input.addr, "addr", 200);
+      if (addr !== `service:${agent}`) {
+        throw new OpError(400, "addr: a service credential is bound to its own name (service:<agent>)");
+      }
+      argv.push("--addr", addr);
+    }
+    const out = JSON.parse(await this.must(argv)) as {
+      agent?: unknown;
+      scopes?: unknown;
+      addr?: unknown;
+      credential?: unknown;
+    } | null;
+    if (typeof out?.credential !== "string" || out.credential === "") {
+      throw new OpError(502, "the bridge's mint answer carried no credential");
+    }
+    return {
+      agent: typeof out.agent === "string" ? out.agent : agent,
+      scopes: Array.isArray(out.scopes) ? out.scopes.filter((s) => typeof s === "string") : [],
+      addr: typeof out.addr === "string" ? out.addr : null,
+      credential: out.credential,
+    };
+  }
+
   /** Send a message or a command to agents, groups, or everyone.
    * Targets are the bridge's whole grammar (#14375, design §4.1): a
    * name, a glob (agent:f*), a group, or all. `limit` caps how many

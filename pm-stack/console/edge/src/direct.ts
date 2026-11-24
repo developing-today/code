@@ -738,7 +738,11 @@ export const BRIDGE_AGENT = "pm-stack";
  * carry. `revoke` is deliberately not among them: the PM credential
  * holds the read scope, and revoking is the owner's act through the
  * owner token on a machine — the action is held for one instead
- * (src/edge-proto.ts).
+ * (src/edge-proto.ts). The provisioning verbs stand with it:
+ * `enroll-tokens` is read here (state only, #14376), while
+ * mint-enroll, mint-credential and revoke-enroll are never translated
+ * — a mint's value must reach the owner's screen from the machine
+ * that minted it, and a revoke is held for a machine.
  * A failed call answers the way the fleet binary would: a non-zero
  * code with the reason on stderr. The bridge's plain 404 for a wrong
  * token is said plainly here — the credential unknown or revoked —
@@ -810,6 +814,9 @@ async function bridgeCall(
   } else if (what === "credentials") {
     if (rest.length > 0) throw new OpError(502, "fleet bridge credentials takes no arguments here");
     path = `/fleet/${token}/credentials`;
+  } else if (what === "enroll-tokens") {
+    if (rest.length > 0) throw new OpError(502, "fleet bridge enroll-tokens takes no arguments here");
+    path = `/fleet/${token}/enroll-tokens`;
   } else if (what === "send") {
     const to: string[] = [];
     let kind = "message";

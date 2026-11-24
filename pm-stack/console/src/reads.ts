@@ -67,6 +67,11 @@ export async function platformRead(
       // edge, a machine reads it with the owner token.
       case "offers":
         return ops.offers();
+      // The minted enroll tokens' state (#14376): the provisioning
+      // half of the Agents screen. Same story again — state only,
+      // never a hash or a value.
+      case "enroll-tokens":
+        return ops.enrollTokens();
       case "trends":
         return trends ? trends.read(query.get("days"), fresh, query.get("end")) : undefined;
     }
