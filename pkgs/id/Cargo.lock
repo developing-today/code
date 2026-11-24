@@ -5062,6 +5062,7 @@ name = "id-events"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "base64 0.22.1",
  "cbor-core",
  "clap",
  "id-core",
@@ -5073,6 +5074,7 @@ dependencies = [
  "p2panda-core",
  "proptest",
  "redb 5.0.0",
+ "rusqlite",
  "serde",
  "serde_json",
  "tempfile",

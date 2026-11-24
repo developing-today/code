@@ -70,6 +70,7 @@ use redb::{
 };
 
 use id_store::chain::{self, Event};
+use id_store::event_rows::RowWrite;
 
 mod anchors;
 mod author_events;
@@ -84,6 +85,9 @@ pub mod sync;
 mod validity;
 mod waiting_rows;
 mod writer_set;
+
+#[cfg(test)]
+mod persistence_tests;
 
 pub use author_events::{AuthorEvent, CandidateQuery, Candidates};
 pub use compaction::CompactionPolicy;
@@ -1586,22 +1590,17 @@ fn decode_proof(bytes: &[u8]) -> Result<ForkProof, StoreError> {
 
 /// Stores an accepted event at its position, and indexes it by ID and group.
 /// A position that is already stored is refused, inside the same transaction.
-pub(crate) fn store_event(txn: &WriteTransaction, event: &Event) -> Result<(), StoreError> {
+pub fn store_event(mut txn: impl RowWrite, event: &Event) -> Result<(), StoreError> {
     let author = *event.header.verifying_key.as_bytes();
     let seq = event.header.seq_num;
     let key = position_key(&author, seq);
-    let mut events = txn.open_table(EVENTS)?;
-    if events.get(key.as_slice())?.is_some() {
+    if txn.get("events", key.as_slice())?.is_some() {
         return Err(StoreError::Occupied { seq });
     }
-    events.insert(key.as_slice(), event.bytes.as_slice())?;
-    drop(events);
-    let mut hashes = txn.open_table(HASHES)?;
-    hashes.insert(event.id.as_bytes().as_slice(), key.as_slice())?;
-    drop(hashes);
+    txn.put("events", key.as_slice(), event.bytes.as_slice())?;
+    txn.put("hashes", event.id.as_bytes().as_slice(), key.as_slice())?;
     if let Some(group) = event.header.extensions.group {
-        let mut groups = txn.open_multimap_table(GROUPS)?;
-        groups.insert(group.as_bytes().as_slice(), key.as_slice())?;
+        txn.multi_put("groups", group.as_bytes().as_slice(), key.as_slice())?;
     }
     Ok(())
 }
@@ -1609,41 +1608,33 @@ pub(crate) fn store_event(txn: &WriteTransaction, event: &Event) -> Result<(), S
 /// Stores the verified body of an event, by event ID. The caller has checked the body
 /// against the header's commitment (hash and size); a body already stored is replaced by
 /// the same bytes, because only the committed body ever passes that check.
-pub(crate) fn store_body(txn: &WriteTransaction, id: &Hash, body: &[u8]) -> Result<(), StoreError> {
-    let mut bodies = txn.open_table(BODIES)?;
-    bodies.insert(id.as_bytes().as_slice(), body)?;
-    Ok(())
+pub fn store_body(mut txn: impl RowWrite, id: &Hash, body: &[u8]) -> Result<(), StoreError> {
+    txn.put("bodies", id.as_bytes().as_slice(), body)
 }
 
 /// Writes an author's chain row.
-pub(crate) fn store_chain(
-    txn: &WriteTransaction,
+pub fn store_chain(
+    mut txn: impl RowWrite,
     author: &AuthorKey,
     chain: Chain,
 ) -> Result<(), StoreError> {
-    let mut chains = txn.open_table(CHAINS)?;
-    chains.insert(author.as_slice(), chain.encode().as_slice())?;
-    Ok(())
+    txn.put("chains", author.as_slice(), chain.encode().as_slice())
 }
 
 /// Writes the fork proof at `seq`, replacing the proof at that point only. Both headers become
 /// present, and their bytes are kept. A proof at a lower point later does not remove them.
-pub(crate) fn store_fork(
-    txn: &WriteTransaction,
+pub fn store_fork(
+    mut txn: impl RowWrite,
     author: &AuthorKey,
     seq: SeqNum,
     a: &Event,
     b: &Event,
 ) -> Result<(), StoreError> {
     let proof = encode_proof(seq, a, b)?;
-    let mut forks = txn.open_table(FORKS)?;
-    forks.insert(position_key(author, seq).as_slice(), proof.as_slice())?;
-    drop(forks);
-    let mut proof_ids = txn.open_table(PROOF_IDS)?;
-    let mut headers = txn.open_table(PROOF_HEADERS)?;
+    txn.put("forks", position_key(author, seq).as_slice(), proof.as_slice())?;
     for header in [a, b] {
-        proof_ids.insert(header.id.as_bytes().as_slice(), author.as_slice())?;
-        headers.insert(header.id.as_bytes().as_slice(), header.bytes.as_slice())?;
+        txn.put("proof_ids", header.id.as_bytes().as_slice(), author.as_slice())?;
+        txn.put("proof_headers", header.id.as_bytes().as_slice(), header.bytes.as_slice())?;
     }
     Ok(())
 }

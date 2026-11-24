@@ -33,6 +33,7 @@ pub mod chat;
 pub mod chat_anchor;
 pub mod content_store;
 pub mod documents;
+pub mod event_rows;
 pub mod event_types;
 pub mod graph_index;
 pub mod identity;

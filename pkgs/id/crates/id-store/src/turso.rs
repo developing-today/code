@@ -179,6 +179,10 @@ pub const STORE_TABLES: &[StoreTable] = &[
         name: "tag_fold",
         kind: TableKind::Single,
     },
+    StoreTable {
+        name: "compacted",
+        kind: TableKind::Single,
+    },
 ];
 
 /// The kind of the named store table.

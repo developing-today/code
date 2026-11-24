@@ -28,6 +28,9 @@ const CHAIN_LEN: usize = 8 + 32 + 1;
 /// events are reported as outcomes, not errors.
 #[derive(Debug, thiserror::Error)]
 pub enum StoreError {
+    /// A tenant transport, protocol, SQL or transaction operation failed.
+    #[error("event store tenant database: {0}")]
+    Tenant(#[from] crate::turso::TursoError),
     /// The directory could not be read or written.
     #[error("event store file I/O: {0}")]
     Io(#[from] io::Error),
