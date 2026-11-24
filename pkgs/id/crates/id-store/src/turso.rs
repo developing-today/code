@@ -705,12 +705,12 @@ impl<T: PipelineTransport> Connection<T> {
         if self.closed {
             return Err(TursoError::Closed);
         }
-        // Mark closed first: even if the close call itself fails, this
-        // handle must not be used again — its baton is spent either way.
+        // Mark closed even if the close call itself fails: the baton
+        // is spent either way and this handle must not be used again.
+        let result = self.round_trip(&[json!({"type": "close"})]);
         self.closed = true;
-        self.round_trip(&[json!({"type": "close"})])?;
         self.baton = None;
-        Ok(())
+        result.map(|_| ())
     }
 }
 
@@ -963,7 +963,7 @@ impl<T: PipelineTransport> TenantStore<T> {
     pub fn scan(
         &mut self,
         table: &str,
-        range: impl RangeBounds<[u8]>,
+        range: impl RangeBounds<Vec<u8>>,
         limit: usize,
     ) -> Result<Vec<(Vec<u8>, Vec<u8>)>, TursoError> {
         self.checked_table(table, TableKind::Single)?;
@@ -992,8 +992,8 @@ impl<T: PipelineTransport> TenantStore<T> {
         limit: usize,
     ) -> Result<Vec<(Vec<u8>, Vec<u8>)>, TursoError> {
         match prefix_successor(prefix) {
-            Some(successor) => self.scan(table, prefix..successor.as_slice(), limit),
-            None => self.scan(table, prefix.., limit),
+            Some(successor) => self.scan(table, prefix.to_vec()..successor, limit),
+            None => self.scan(table, prefix.to_vec().., limit),
         }
     }
 
@@ -1032,7 +1032,7 @@ impl<T: PipelineTransport> TenantStore<T> {
 /// placeholder order: a lower clause (` AND key >= ?` or `> ?`) when
 /// the range is bounded below, then an upper clause (`<=` or `<`) when
 /// bounded above. Unbounded sides contribute neither.
-fn range_clauses(range: &impl RangeBounds<[u8]>) -> (String, Vec<SqlValue>) {
+fn range_clauses(range: &impl RangeBounds<Vec<u8>>) -> (String, Vec<SqlValue>) {
     use std::ops::Bound::{Excluded, Included, Unbounded};
     let mut sql = String::new();
     let mut args = Vec::new();
@@ -1101,8 +1101,7 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     use redb::{
-        Database, MultimapTableDefinition, ReadableDatabase, ReadableMultimapTable, ReadableTable,
-        TableDefinition,
+        Database, MultimapTableDefinition, ReadableDatabase, ReadableTable, TableDefinition,
     };
     use rusqlite::types::Value as SqliteValue;
 
@@ -1437,15 +1436,19 @@ mod tests {
             let txn = db.begin_write().unwrap();
             {
                 let mut table = txn.open_table(EVENTS).unwrap();
-                assert!(table.remove(b"b").unwrap().is_some());
-                assert!(table.remove(b"b").unwrap().is_none());
+                assert!(table.remove(b"b".as_slice()).unwrap().is_some());
+                assert!(table.remove(b"b".as_slice()).unwrap().is_none());
             }
             txn.commit().unwrap();
         }
         assert!(store.remove("events", b"b").unwrap());
         assert!(!store.remove("events", b"b").unwrap());
 
-        // Full scans and bounded scans agree, in key order.
+        // Full scans and bounded scans agree, in key order. The read
+        // handle above predates the remove, so reopen it: the oracle is
+        // the native table's current contents, not a stale snapshot.
+        let read = db.begin_read().unwrap();
+        let native = read.open_table(EVENTS).unwrap();
         let native_all: Vec<(Vec<u8>, Vec<u8>)> = native
             .iter()
             .unwrap()
@@ -1465,7 +1468,7 @@ mod tests {
             .collect();
         assert_eq!(
             store
-                .scan("events", b"a".as_slice()..b"b".as_slice(), 100)
+                .scan("events", b"a".to_vec()..b"b".to_vec(), 100)
                 .unwrap(),
             native_range,
         );
@@ -1484,11 +1487,11 @@ mod tests {
             let txn = db.begin_write().unwrap();
             {
                 let mut table = txn.open_multimap_table(GROUPS).unwrap();
-                table.insert(b"g", b"m2").unwrap();
-                table.insert(b"g", b"m1").unwrap();
-                table.insert(b"g", b"m2").unwrap();
-                table.insert(b"g", b"m3").unwrap();
-                assert!(table.remove(b"g", b"m2").unwrap());
+                table.insert(b"g".as_slice(), b"m2".as_slice()).unwrap();
+                table.insert(b"g".as_slice(), b"m1".as_slice()).unwrap();
+                table.insert(b"g".as_slice(), b"m2".as_slice()).unwrap();
+                table.insert(b"g".as_slice(), b"m3".as_slice()).unwrap();
+                assert!(table.remove(b"g".as_slice(), b"m2".as_slice()).unwrap());
             }
             txn.commit().unwrap();
         }
@@ -1500,7 +1503,7 @@ mod tests {
         let read = db.begin_read().unwrap();
         let native_multi = read.open_multimap_table(GROUPS).unwrap();
         let native_values: Vec<Vec<u8>> = native_multi
-            .get(b"g")
+            .get(b"g".as_slice())
             .unwrap()
             .map(|guard| guard.unwrap().value().to_vec())
             .collect();
