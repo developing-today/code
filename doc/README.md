@@ -234,6 +234,7 @@ Two names break the pattern. They stay as they are because other documents link 
 - [Iroh investigation research corpus](2026-11-24T02-11-50Z_research_iroh-investigation/2026-11-24T02-11-50Z_research_iroh-investigation.md) — the 2026-11-23 iroh source set (protocol census, real-projects and community review, blog-chunk working files); the blog catalogue and talks files are living documents in `doc/living/iroh/` (tracking #13877).
 - [Cloudflare research — Workers, costs, containers and prototypes](2026-11-24T02-42-57Z_research_cloudflare/2026-11-24T02-42-57Z_research_cloudflare.md) — the 2026-10-20 Cloudflare research series (Workers Paid, free tiers, paid-only, declarative infra, multiple-plans ToS, containers-vs-DO costs, DO practices) plus ideas, project README, magic-environment note and the two prototype READMEs; code stays in hatch-personal (tracking #13877).
 - [mcpx door build record](2026-11-24T02-09-07Z_research_mcpx-door-20261123/2026-11-24T02-09-07Z_research_mcpx-door-20261123.md) — dated record of the 2026-11-23 mcpx door build (public MCP endpoint at `mcpx.security.cab`, part of #13657): door README, lane continuation brief, `adapt.py` and `filter.ts`, copied byte-for-byte (tracking #13877).
+- [design(fleet): TypeScript second version — WASM, transports, direct-Turso prudence (#9085)](2026-11-24T04-50-00Z_design_fleet_typescript_second_version/2026-11-24T04-50-00Z_design_fleet_typescript_second_version.md) — design record, PR #14085 (2026-11-24).
 
 ## Legacy places
 
