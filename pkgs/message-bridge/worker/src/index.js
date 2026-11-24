@@ -661,6 +661,7 @@ function storeFor(env) {
     noteIdentities: () => stub.noteIdentities(),
     noteDeliver: (delivery) => stub.noteDeliver(delivery),
     noteBroaden: (broaden) => stub.noteBroaden(broaden),
+    noteOrigin: (identity, id) => stub.noteOrigin(identity, id),
     noteInbox: (identity) => stub.noteInbox(identity),
     noteAck: (identity, sel) => stub.noteAck(identity, sel),
     noteSignal: (identity) => stub.noteSignal(identity),
