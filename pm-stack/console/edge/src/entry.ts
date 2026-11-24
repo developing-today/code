@@ -7,7 +7,7 @@
 // file of the app, fetch the host's key, or pass the request to the host
 // behind the tunnel. If the host cannot be reached, an action that may
 // be done late is handed back to the state to hold.
-import { SECURITY } from "../../src/http.ts";
+import { SECURITY, sameEntity } from "../../src/http.ts";
 
 export interface Io {
   /** The object with the state (edge.ts). */
@@ -17,6 +17,12 @@ export interface Io {
   /** The host behind the hostname's route. `ms` is how long it has to
    * start answering. Null when it could not be reached. */
   host: (request: Request, ms: number) => Promise<Response | null>;
+  /** The host, asked to do something. As `host`, but what came back in
+   * the host's place is looked at: "unreached" when it says the host
+   * was never reached (the tunnel had no connection to send it down),
+   * so that nothing asked of it was done. Null is no answer at all, or
+   * one that does not say: the host may have got it, and done it. */
+  act: (request: Request, ms: number) => Promise<Response | "unreached" | null>;
   /** The hostname this Worker is routed on. Only there is the host
    * behind it; anywhere else only the public paths answer. */
   publicHost: string;
@@ -100,7 +106,7 @@ export async function route(request: Request, io: Io): Promise<Response> {
     });
   }
 
-  const forHost = request.clone();
+  const forHost = request.clone() as Request;
   let res = await io.state(request);
   let what = res.headers.get("x-pm-next");
 
@@ -134,9 +140,21 @@ export async function route(request: Request, io: Io): Promise<Response> {
   if (what === "asset") {
     const file = await io.asset(String(detail.path));
     if (!file.ok) return new Response("not found", { status: 404, headers: SECURITY });
-    return new Response(request.method === "HEAD" ? null : file.body, {
-      headers: { "Content-Type": String(detail.type), "Cache-Control": "no-cache", ...SECURITY },
-    });
+    // "no-cache" is "ask before using your copy". The file's tag is what
+    // the browser asks with; when its copy is still the file, the answer
+    // is that and nothing else, so a visit does not download the app again.
+    const headers: Record<string, string> = {
+      "Content-Type": String(detail.type),
+      "Cache-Control": "no-cache",
+      ...SECURITY,
+    };
+    const etag = file.headers.get("etag");
+    if (etag) headers.ETag = etag;
+    if (sameEntity(request.headers.get("if-none-match"), etag)) {
+      await file.body?.cancel();
+      return new Response(null, { status: 304, headers });
+    }
+    return new Response(request.method === "HEAD" ? null : file.body, { headers });
   }
 
   // Everything below is for the host. Away from the routed hostname
@@ -146,17 +164,29 @@ export async function route(request: Request, io: Io): Promise<Response> {
   if (detail.mode === "act") {
     // The host is told the action's name with the action. No answer may
     // mean the host never got it, or did it and the answer was lost: it
-    // is held under that name, and the host sorts out which.
+    // is held under that name, and the host sorts out which. Only when
+    // what answered in its place says the host was never reached is the
+    // state told so: then, and only then, it may do the action itself.
     const named = withHeader(withHeader(forHost, "x-pm-edge", "1"), "x-pm-act", String(detail.id ?? ""));
-    const answer = await io.host(named, ACT_MS);
-    if (answer === null) return tell("/internal/hold", detail);
+    const answer = await io.act(named, ACT_MS);
+    if (answer === null || answer === "unreached") {
+      return tell("/internal/hold", { ...detail, unreached: answer === "unreached" });
+    }
     // The host's answer says what it read again; keep that here, and
     // send the owner the rest.
     if (!(answer.headers.get("content-type") ?? "").startsWith("application/json")) return answer;
     const body = (await answer.json().catch(() => null)) as Record<string, unknown> | null;
-    if (body === null) return offline("the host's answer could not be read");
+    if (body === null) {
+      // The host answered, so it has the name written down, whatever
+      // it said: a hold left under the name is settled as by any other
+      // answer of the host's, and is nobody else's to do.
+      await tell("/internal/relayed", { id: detail.id });
+      return offline("the host's answer could not be read");
+    }
     const { sections, acts, ...rest } = body;
-    if (sections !== undefined || acts !== undefined) await tell("/internal/relayed", { sections, acts });
+    // The relayed name is settled even when the host read nothing new:
+    // a hold left behind by a lost answer for the same name is dropped.
+    await tell("/internal/relayed", { sections, acts, id: detail.id });
     const headers = new Headers(answer.headers);
     headers.delete("content-length");
     headers.delete("content-encoding");

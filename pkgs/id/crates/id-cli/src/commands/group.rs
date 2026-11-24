@@ -500,6 +500,7 @@ pub async fn cmd_delegate(path: Option<PathBuf>, args: DelegateArgs) -> Result<(
         grantee,
         scope: args.scope,
         can_redelegate: args.redelegate,
+        expires_at: args.expires_at,
     };
     let delegated = log.delegate(author().await?, group, delegate, args.mode)?;
     if let (Some(change), Some(mode)) = (&delegated.mode_change, args.mode) {

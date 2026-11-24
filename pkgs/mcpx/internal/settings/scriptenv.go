@@ -298,6 +298,14 @@ func ScriptEnv() []EnvVar {
 			Meaning: "the fingerprint of an adapter's declaration, set on the server an adapter launches: PoolID hashes the environment, so editing the declaration replaces the pool instead of keeping a child started for the old one",
 			ReadBy:  "the pool, as a pool identity input (PoolID hashes the server environment); the daemon, which exempts an adapter's own exact name from the namespace-collision check when the adapter is replaced",
 		},
+		{
+			Name:    "MCPX_ADAPTERS_ALLOW_BARE",
+			SetBy:   []Setter{SetByCLI},
+			When:    "only when the resolved adapters.allowBare is on",
+			Meaning: "the bare-adapter permission the daemon resolved, forwarded to the adapter serve child it spawns for a declaration: the child re-resolves its own settings, and a grant made only by the daemon's flag would otherwise read as the default off there, so the child would refuse the declaration its parent accepted (#13118)",
+			ReadBy:  "`mcpx` run inside the daemon's spawn (the adapter serve child), as its adapters.allowBare setting",
+			Setting: "adapters.allowBare",
+		},
 		// ---- how the script runs ----
 		{
 			Name:    "MCPX_RUNTIME",

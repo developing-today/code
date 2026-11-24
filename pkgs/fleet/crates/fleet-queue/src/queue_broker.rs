@@ -247,6 +247,11 @@ fn validate_durations(path: &str, req: &Value) -> Result<(), String> {
         "/claim" | "/claim-flow" => lease_seconds(req).map(|_| ()),
         "/heartbeat" => extend_seconds(req).map(|_| ()),
         "/park" => delay_seconds(req).map(|_| ()),
+        "/reprioritize" => crate::validate::resolve_priority(
+            req.get("priority").unwrap_or(&Value::Null),
+            "priority",
+        )
+        .map(|_| ()),
         _ => Ok(()),
     }
 }
@@ -544,6 +549,298 @@ fn maybe_raise_needs_drew(st: &State, req: &Value, resp: &Value) {
     });
 }
 
+/// #13774: the actions-exec agent verbs authenticate with the
+/// job's GitHub OIDC JWT instead of the broker token — the agent
+/// runs on a public runner and never holds the broker token. A
+/// JWT-shaped X-Agent-Token (three base64url segments) on one of
+/// these paths passes the token gate; the verb then verifies the
+/// JWT against GitHub's JWKS and binds its claims to the session
+/// row before acting. Any other call on these paths still needs
+/// the broker token.
+const ACTIONS_EXEC_AGENT_PATHS: [&str; 5] = [
+    "/actions-exec-register",
+    "/actions-exec-poll",
+    "/actions-exec-io",
+    "/actions-exec-result",
+    "/actions-exec-close",
+];
+
+fn actions_exec_agent_call(path: &str, provided_token: Option<&str>) -> bool {
+    if !ACTIONS_EXEC_AGENT_PATHS.contains(&path) {
+        return false;
+    }
+    let Some(token) = provided_token else {
+        return false;
+    };
+    let mut parts = token.split('.');
+    match (parts.next(), parts.next(), parts.next(), parts.next()) {
+        (Some(h), Some(p), Some(s), None) => {
+            !h.is_empty()
+                && !p.is_empty()
+                && !s.is_empty()
+                && token
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_'))
+        }
+        _ => false,
+    }
+}
+
+/// #13774: an extension request raises its tier's push on the
+/// PM surface (fire-and-forget, the /block pattern): tier 1's
+/// notification, tier 2's deny-window warning, tier 3's manual
+/// ask. The verb has already recorded (or, tier 1, applied) the
+/// request; this post is what puts it in front of Drew.
+fn maybe_raise_actions_exec_extension(st: &State, resp: &Value) {
+    if resp.get("requested").and_then(|v| v.as_bool()) != Some(true) {
+        return;
+    }
+    let (Some(handle), Some(host_repo)) = (
+        resp.get("handle").and_then(|v| v.as_str()),
+        resp.get("host_repo").and_then(|v| v.as_str()),
+    ) else {
+        return;
+    };
+    let s = |k: &str| {
+        resp.get(k)
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string()
+    };
+    let i = |k: &str, d: i64| resp.get(k).and_then(|v| v.as_i64()).unwrap_or(d);
+    let info = crate::needs_drew::ExtensionAlert {
+        key: s("alert_key"),
+        handle: handle.to_string(),
+        context: resp
+            .get("context")
+            .and_then(|v| v.as_str())
+            .map(str::to_string),
+        host_repo: host_repo.to_string(),
+        workflow: s("workflow"),
+        seat: s("seat"),
+        run_id: resp.get("run_id").and_then(|v| v.as_i64()),
+        run_attempt: resp.get("run_attempt").and_then(|v| v.as_i64()),
+        created_at: s("created_at"),
+        granted_s: i("granted_s", 0),
+        elapsed_s: i("elapsed_s", 0),
+        lease_until: s("lease_until"),
+        max_until: s("max_until"),
+        extend_s: i("extend_s", 1800),
+        tier: i("tier", 3),
+        ext_count_before: i("ext_count", 0),
+        ext_total_s_before: i("ext_total_s", 0),
+        decide_after: resp
+            .get("decide_after")
+            .and_then(|v| v.as_str())
+            .map(str::to_string),
+        grace_until: s("grace_until"),
+        reason: s("reason"),
+    };
+    let body = crate::needs_drew::build_extension_alert_body(&info);
+    let secrets_url = st.secrets_url.clone();
+    let secrets_token = st.secrets_token.clone();
+    let agent = st.agent.clone();
+    std::thread::spawn(move || {
+        let resolver = Resolver::new(vec![Box::new(DirectSecrets {
+            url: secrets_url,
+            token: secrets_token,
+            agent: agent.clone(),
+        })]);
+        let raised = resolver
+            .resolve(crate::needs_drew::ALERTS_INTAKE_TOKEN_SECRET)
+            .map_err(|e| e.to_string())
+            .and_then(|token| {
+                crate::needs_drew::post_plain_alert_to(
+                    &crate::needs_drew::alerts_url(),
+                    token.expose(),
+                    &body,
+                )
+            });
+        match raised {
+            Ok(_) => crate::log::info("queue-broker", "actions-exec extension alert raised"),
+            Err(e) => crate::log::info(
+                "queue-broker",
+                &format!("actions-exec extension alert failed: {e}"),
+            ),
+        }
+    });
+}
+
+/// Broker-owned GitHub synchronization for a committed reprioritize.
+/// Queue state is never rolled back on an API failure; the durable
+/// retry row and task event are written instead. Only `priority/*`
+/// labels are edited, so expedite/next-up and unrelated labels are
+/// outside this operation's write set.
+fn sync_reprioritized(st: &State, t: &crate::turso_queue::TursoBackend, resp: &Value) {
+    let Some(row) = resp.get("row") else { return };
+    let id = row.get("id").and_then(Value::as_i64).unwrap_or(0);
+    let payload = row.get("payload").unwrap_or(&Value::Null);
+    let Some(number) = payload.pointer("/issue/number").and_then(Value::as_i64) else {
+        return; // queue-only task; no linked issue
+    };
+    let Some(repo) = payload.get("repo").and_then(Value::as_str) else {
+        return;
+    };
+    let Some(priority) = row.get("priority").and_then(Value::as_i64) else {
+        return;
+    };
+    let Some(label) = crate::validate::label_for_priority(priority) else {
+        return;
+    };
+    let category = crate::validate::category_for_priority(priority).unwrap_or("unknown");
+    let attempt = (|| -> Result<(), String> {
+        let resolver = Resolver::new(vec![Box::new(DirectSecrets {
+            url: st.secrets_url.clone(),
+            token: st.secrets_token.clone(),
+            agent: st.agent.clone(),
+        })]);
+        let token = resolver
+            .resolve(GH_DEP_TOKEN_SECRET)
+            .map_err(|e| e.to_string())?;
+        let base = format!("https://api.github.com/repos/{repo}/issues/{number}");
+        let get = st
+            .agent
+            .get(&base)
+            .header("Authorization", &format!("Bearer {}", token.expose()))
+            .header("Accept", "application/vnd.github+json")
+            .header("User-Agent", "fleet-queue-broker")
+            .call()
+            .map_err(|e| format!("github_read_failed: {e}"))?;
+        let issue: Value = get
+            .into_body()
+            .read_json()
+            .map_err(|e| format!("github_read_failed: {e}"))?;
+        let names: Vec<String> = issue
+            .get("labels")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|l| l.get("name").and_then(Value::as_str).map(str::to_owned))
+            .collect();
+        for old in names
+            .iter()
+            .filter(|n| n.starts_with("priority/") && n.as_str() != label)
+        {
+            let url = format!("{base}/labels/{}", old.replace('/', "%2F"));
+            st.agent
+                .delete(&url)
+                .header("Authorization", &format!("Bearer {}", token.expose()))
+                .header("Accept", "application/vnd.github+json")
+                .header("User-Agent", "fleet-queue-broker")
+                .call()
+                .map_err(|e| format!("github_label_remove_failed: {e}"))?;
+        }
+        if !names.iter().any(|n| n == label) {
+            st.agent
+                .post(&format!("{base}/labels"))
+                .header("Authorization", &format!("Bearer {}", token.expose()))
+                .header("Accept", "application/vnd.github+json")
+                .header("User-Agent", "fleet-queue-broker")
+                .send_json(json!({"labels": [label]}))
+                .map_err(|e| format!("github_label_add_failed: {e}"))?;
+        }
+        // Update lineage.priority only inside an existing metadata block.
+        if let Some(body) = issue.get("body").and_then(Value::as_str) {
+            if let (Some(start), Some(end)) = (
+                body.find("<!-- pm-metadata:start -->"),
+                body.find("<!-- pm-metadata:end -->"),
+            ) {
+                if end > start {
+                    let block = &body[start..end];
+                    if let Some(open) = block.find("```json") {
+                        let json_start = open + "```json".len();
+                        if let Some(relative_close) = block[json_start..].find("```") {
+                            let close = json_start + relative_close;
+                            let mut metadata: Value =
+                                serde_json::from_str(block[json_start..close].trim())
+                                    .map_err(|e| format!("pm_metadata_parse_failed: {e}"))?;
+                            if metadata.get("lineage").is_some_and(Value::is_object) {
+                                metadata["lineage"]["priority"] = json!(category);
+                                let replacement = format!(
+                                    "```json\n{}\n```",
+                                    serde_json::to_string_pretty(&metadata).unwrap_or_default()
+                                );
+                                let patched = format!(
+                                    "{}{}{}",
+                                    &body[..start],
+                                    block.replacen(&block[open..close + 3], &replacement, 1),
+                                    &body[end..]
+                                );
+                                st.agent
+                                    .patch(&base)
+                                    .header("Authorization", &format!("Bearer {}", token.expose()))
+                                    .header("Accept", "application/vnd.github+json")
+                                    .header("User-Agent", "fleet-queue-broker")
+                                    .send_json(json!({"body": patched}))
+                                    .map_err(|e| format!("github_metadata_update_failed: {e}"))?;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        Ok(())
+    })();
+    // Do not acknowledge an older sync if another reprioritize landed
+    // while the GitHub request was in flight. The durable intent for
+    // the newer category remains pending and will reconcile from the
+    // current task row on the next broker request.
+    let still_current = crate::turso_queue::get_task(t, id)
+        .ok()
+        .flatten()
+        .and_then(|current| current.get("priority").and_then(Value::as_i64))
+        == Some(priority);
+    if attempt.is_ok() && still_current {
+        let _ = t.exec("UPDATE tasks SET progress = json_set(COALESCE(progress, '{}'), '$.reprioritize_sync_pending', false) WHERE id = ?", &[
+            crate::turso_queue::Arg::Int(id),
+        ]);
+        let _ = t.exec("UPDATE reprioritize_sync_outbox SET state = 'done', updated_at = ? WHERE task_id = ? AND issue = ? AND state = 'pending'", &[
+            crate::turso_queue::Arg::Text(crate::turso_queue::now_iso()), crate::turso_queue::Arg::Int(id), crate::turso_queue::Arg::Int(number),
+        ]);
+    }
+    if let Err(error) = attempt {
+        let now = crate::turso_queue::now_iso();
+        let error_class = error.split(':').next().unwrap_or("github_sync_failed");
+        let pending = t.query_objs("SELECT id FROM reprioritize_sync_outbox WHERE task_id = ? AND issue = ? AND state = 'pending' LIMIT 1", &[
+            crate::turso_queue::Arg::Int(id), crate::turso_queue::Arg::Int(number),
+        ], &[]).unwrap_or_default();
+        if pending.is_empty() {
+            let _ = t.exec("INSERT INTO reprioritize_sync_outbox (task_id, repo, issue, category, label, state, attempts, available_at, last_error_class, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 'pending', 0, ?, ?, ?, ?)", &[
+            crate::turso_queue::Arg::Int(id), crate::turso_queue::Arg::Text(repo.to_owned()), crate::turso_queue::Arg::Int(number),
+            crate::turso_queue::Arg::Text(category.to_owned()), crate::turso_queue::Arg::Text(label.to_owned()), crate::turso_queue::Arg::Text(now.clone()),
+            crate::turso_queue::Arg::Text(error_class.to_owned()), crate::turso_queue::Arg::Text(now.clone()), crate::turso_queue::Arg::Text(now.clone()),
+        ]);
+        } else {
+            let _ = t.exec("UPDATE reprioritize_sync_outbox SET attempts = attempts + 1, available_at = ?, last_error_class = ?, updated_at = ? WHERE task_id = ? AND issue = ? AND state = 'pending'", &[
+            crate::turso_queue::Arg::Text(crate::turso_queue::iso(crate::turso_queue::now_unix() + 30)), crate::turso_queue::Arg::Text(error_class.to_owned()), crate::turso_queue::Arg::Text(now.clone()), crate::turso_queue::Arg::Int(id), crate::turso_queue::Arg::Int(number),
+        ]);
+        }
+        let detail = json!({"error_class": error_class, "issue": number, "category": category});
+        let _ = t.exec("INSERT INTO events (worker_id, task_id, kind, detail, created_at) VALUES ('queue-broker', ?, 'reprioritize_sync_pending', ?, ?)", &[
+            crate::turso_queue::Arg::Int(id), crate::turso_queue::Arg::Text(detail.to_string()), crate::turso_queue::Arg::Text(now),
+        ]);
+        let _ = crate::log::info(
+            "queue-broker",
+            &format!("reprioritize GitHub sync pending for task {id}: {error_class}"),
+        );
+    }
+}
+
+/// Retry due sync intents before serving the next broker call. A
+/// retry uses the latest task row (if it still exists), so a newer
+/// reprioritize supersedes an older pending category cleanly.
+fn retry_reprioritize_sync(st: &State, t: &crate::turso_queue::TursoBackend) {
+    let Ok(rows) = t.query_objs("SELECT task_id FROM reprioritize_sync_outbox WHERE state = 'pending' AND available_at <= ? ORDER BY id LIMIT 20", &[
+        crate::turso_queue::Arg::Text(crate::turso_queue::now_iso()),
+    ], &[]) else { return };
+    for r in rows {
+        let id = r.get("task_id").and_then(Value::as_i64).unwrap_or(0);
+        if let Ok(Some(row)) = crate::turso_queue::get_task(t, id) {
+            sync_reprioritized(st, t, &json!({"row": row}));
+        }
+    }
+}
+
 fn dispatch(st: &State, path: &str, req: &Value) -> Value {
     if let Err(e) = validate_durations(path, req) {
         return fail(2, e);
@@ -567,11 +864,43 @@ fn dispatch(st: &State, path: &str, req: &Value) -> Value {
                     .unwrap_or_default();
                 return fail(3, format!("queue backend not ready: {why}"));
             };
-            let resp = crate::turso_queue::dispatch(turso, path, req);
+            retry_reprioritize_sync(st, turso);
+            // The worker id arrives over the broker's authenticated
+            // (X-Agent-Token) channel, like every other lifecycle
+            // verb — that is the authenticated caller identity the
+            // reprioritized event records as actor. A legacy `actor`
+            // string without a worker is promoted for back-compat;
+            // a caller-provided actor never overrides the worker.
+            let mut effective_req = req.clone();
+            if path == "/reprioritize" {
+                let has_worker = effective_req
+                    .get("worker")
+                    .and_then(Value::as_str)
+                    .is_some_and(|s| !s.trim().is_empty());
+                if !has_worker {
+                    if let Some(a) = effective_req
+                        .get("actor")
+                        .and_then(Value::as_str)
+                        .map(str::to_owned)
+                    {
+                        if !a.trim().is_empty() {
+                            effective_req["worker"] = json!(a);
+                        }
+                    }
+                }
+            }
+            let resp = crate::turso_queue::dispatch(turso, path, &effective_req);
+            if path == "/reprioritize" && resp.get("ok").and_then(Value::as_bool) == Some(true) {
+                sync_reprioritized(st, turso, &resp);
+            }
             // #8568: the broker-side needs-drew raise for an
             // escalated block (fire-and-forget).
             if path == "/block" {
                 maybe_raise_needs_drew(st, req, &resp);
+            }
+            // #13774: the emergency-extension needs-drew raise.
+            if path == "/actions-exec-extend-request" {
+                maybe_raise_actions_exec_extension(st, &resp);
             }
             resp
         }
@@ -613,7 +942,7 @@ fn pre_body_refusal(
     if method == "GET" && path == "/healthz" {
         return None;
     }
-    if !token_matches(provided_token, token) {
+    if !actions_exec_agent_call(path, provided_token) && !token_matches(provided_token, token) {
         return Some((401, json!({"error": "unauthorized"})));
     }
     if let Some(n) = content_length {
@@ -639,14 +968,28 @@ fn handle_request(
     let path = target.split('?').next().unwrap_or("");
     if method == "GET" && path == "/healthz" {
         (200, ok(json!({"service": "queue-broker"})))
-    } else if !token_matches(provided_token, token) {
+    } else if !actions_exec_agent_call(path, provided_token)
+        && !token_matches(provided_token, token)
+    {
         (401, json!({"error": "unauthorized"}))
     } else if method != "POST" {
         (405, json!({"error": "POST only"}))
     } else {
         match std::str::from_utf8(body) {
             Ok(buf) => {
-                let parsed: Value = serde_json::from_str(buf).unwrap_or(Value::Null);
+                let mut parsed: Value = serde_json::from_str(buf).unwrap_or(Value::Null);
+                // #13774: _oidc_jwt is broker-injected, never
+                // client-supplied — strip any spoofed copy from
+                // every body, then inject the header token on
+                // agent-path calls for the verbs to verify.
+                if let Some(obj) = parsed.as_object_mut() {
+                    obj.remove("_oidc_jwt");
+                    if actions_exec_agent_call(path, provided_token) {
+                        if let Some(tok) = provided_token {
+                            obj.insert("_oidc_jwt".to_string(), Value::String(tok.to_string()));
+                        }
+                    }
+                }
                 (200, dispatch(st, path, &parsed))
             }
             Err(e) => (
@@ -688,9 +1031,19 @@ pub fn run() -> i32 {
         }
     };
 
+    // Platform root store, not webpki-roots alone: this agent
+    // carries the broker's GitHub dep-probe reads, and a broker
+    // running behind a TLS-intercepting egress proxy presents
+    // the proxy's CA, which only the platform store carries
+    // (code#13122; same fix as fleet's gh.rs App leg).
     let agent: ureq::Agent = ureq::Agent::config_builder()
         .http_status_as_error(false)
         .timeout_global(Some(Duration::from_secs(90)))
+        .tls_config(
+            ureq::tls::TlsConfig::builder()
+                .root_certs(ureq::tls::RootCerts::PlatformVerifier)
+                .build(),
+        )
         .build()
         .into();
     // Turso is the only queue backend: QUEUE_BROKER_BACKEND unset
@@ -1310,5 +1663,74 @@ mod startup_retry_tests {
         let r = resolve_with_startup_retry(&resolver, "some.token", Duration::from_millis(300));
         assert!(r.is_err());
         assert!(start.elapsed() < Duration::from_secs(5));
+    }
+}
+
+#[cfg(test)]
+mod reprioritize_sync_tests {
+    /// T3/T4 contract pins (#14100): the GitHub sync leg runs after
+    /// the queue commit, touches only priority/* labels, sets
+    /// lineage.priority only inside an existing pm-metadata block,
+    /// and records failures as pending + outbox without rolling
+    /// back the queue change.
+    const SRC: &str = include_str!("queue_broker.rs");
+
+    fn sync_fn() -> &'static str {
+        let start = SRC
+            .find("fn sync_reprioritized")
+            .expect("sync_reprioritized must exist");
+        let rest = &SRC[start..];
+        let end = rest
+            .find("\nfn retry_reprioritize_sync")
+            .expect("retry fn follows");
+        &rest[..end]
+    }
+
+    #[test]
+    fn sync_touches_only_priority_labels() {
+        let f = sync_fn();
+        // Removal is scoped to priority/* labels, add is the mapped one.
+        assert!(f.contains("starts_with(\"priority/\")"), "{f}");
+        // expedite/next-up are never in the sync write set.
+        assert!(!f.contains("expedite"), "must not touch expedite");
+        assert!(!f.contains("next-up"), "must not touch next-up");
+    }
+
+    #[test]
+    fn sync_sets_lineage_only_inside_an_existing_block() {
+        let f = sync_fn();
+        assert!(f.contains("pm-metadata:start"), "reads existing block");
+        assert!(
+            f.contains("[\"lineage\"][\"priority\"]"),
+            "sets lineage.priority"
+        );
+        assert!(
+            f.contains("get(\"lineage\").is_some_and(Value::is_object)"),
+            "never creates a block speculatively"
+        );
+    }
+
+    #[test]
+    fn queue_change_never_rolls_back_and_failure_is_recorded() {
+        // The sync runs only after a committed queue write.
+        assert!(
+            SRC.contains("if path == \"/reprioritize\" && resp.get(\"ok\")"),
+            "sync is post-commit only"
+        );
+        let f = sync_fn();
+        // Failure path: pending event + durable outbox row, and the
+        // success path clears the visible marker only when no newer
+        // reprioritize landed meanwhile.
+        assert!(f.contains("reprioritize_sync_pending"), "pending event");
+        assert!(
+            f.contains("INSERT INTO reprioritize_sync_outbox"),
+            "durable intent"
+        );
+        assert!(
+            f.contains("still_current"),
+            "no stale clear of a newer intent"
+        );
+        // The retry runs ahead of serving, from the latest task row.
+        assert!(SRC.contains("retry_reprioritize_sync(st, turso)"));
     }
 }

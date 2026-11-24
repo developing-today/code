@@ -377,11 +377,11 @@ pub(super) fn batch_count_flag(n: Option<i64>) -> Result<i64, String> {
     match n {
         None => Ok(1),
         Some(n) if n == 1 => Ok(1),
-        Some(n) if (2..=crate::turso_queue::BATCH_CLAIM_MAX).contains(&n) => Ok(n),
+        Some(n) if (2..=crate::BATCH_CLAIM_MAX).contains(&n) => Ok(n),
         Some(n) => Err(format!(
             "claim --count {n} is out of range: a batch claim takes \
              1..={} items (#8217)",
-            crate::turso_queue::BATCH_CLAIM_MAX
+            crate::BATCH_CLAIM_MAX
         )),
     }
 }
@@ -522,7 +522,7 @@ pub(super) fn cmd_release(rest: &[String]) -> i32 {
             "reason": reason,
         }),
     ));
-    let row = require_row(&resp, "release_repo_task");
+    let row = served_row(require_row(&resp, "release_repo_task"), "release");
     // #9046: a release closes the binding window on the timeline.
     unbound_append(&opt_worker(&args), &row, "release");
     print_json(&row);
@@ -679,7 +679,10 @@ pub(super) fn cmd_lane(rest: &[String]) -> i32 {
             "clear_platform_limit": args.has("clear-platform-limit"),
         }),
     ));
-    print_json(&require_row(&resp, "assign_repo_task_lane"));
+    print_json(&served_row(
+        require_row(&resp, "assign_repo_task_lane"),
+        "lane",
+    ));
     0
 }
 
@@ -753,7 +756,10 @@ pub(super) fn cmd_bind(rest: &[String]) -> i32 {
             }),
         );
     }
-    print_json(&require_row(&resp, "bind_repo_task_lane_session"));
+    print_json(&served_row(
+        require_row(&resp, "bind_repo_task_lane_session"),
+        "bind",
+    ));
     0
 }
 
@@ -923,7 +929,37 @@ pub(super) fn cmd_park(rest: &[String]) -> i32 {
     if let Some(row) = resp.get("row") {
         unbound_append(&opt_worker(&args), row, "park");
     }
-    row_or_ledger(&resp, "park_task");
+    row_or_ledger(&resp, "park_task", "park");
+    0
+}
+
+/// Change a task's queue priority and request the broker's linked
+/// GitHub synchronization.
+pub(super) fn cmd_reprioritize(rest: &[String]) -> i32 {
+    let args = parse_verb_args("reprioritize", rest, &["worker", "reason"], &[]);
+    reject_extra_pos("reprioritize", &args, 2);
+    let id = args.pos_i64(0, "task_id");
+    let raw = args
+        .pos(1)
+        .unwrap_or_else(|| die(2, "reprioritize: priority is required"));
+    let v: Value = match raw.parse::<i64>() {
+        Ok(n) => json!(n),
+        Err(_) => json!(raw),
+    };
+    let to = match crate::validate::resolve_priority(&v, "priority") {
+        Ok(n) => n,
+        Err(e) => die(2, &e),
+    };
+    // The actor is the authenticated caller identity: the worker id
+    // presented over the broker's X-Agent-Token channel (opt_worker
+    // default), exactly like the other lifecycle verbs. No free-form
+    // actor string is accepted — it would be spoofable.
+    let body = json!({"task_id": id, "priority": to, "worker": opt_worker(&args), "reason": args.get("reason")});
+    let resp = unwrap_ok(call("/reprioritize", &body));
+    print_json(&served_row(
+        require_row(&resp, "reprioritize_task"),
+        "reprioritize",
+    ));
     0
 }
 
@@ -939,7 +975,7 @@ pub(super) fn cmd_wake(rest: &[String]) -> i32 {
         "reason": args.get("reason").unwrap_or_default(),
     });
     let resp = unwrap_ok(call("/wake", &body));
-    print_json(&require_row(&resp, "wake_task"));
+    print_json(&served_row(require_row(&resp, "wake_task"), "wake"));
     0
 }
 
@@ -1153,7 +1189,7 @@ pub(super) fn cmd_block(rest: &[String]) -> i32 {
         body["dep_max_ttl_seconds"] = json!(s);
     }
     let resp = unwrap_ok(call("/block", &body));
-    print_json(&require_row(&resp, "block_task"));
+    print_json(&served_row(require_row(&resp, "block_task"), "block"));
     // #8568: the live raise path — after the block lands, post
     // the needs-drew alert to the PM throat. Emission failure
     // must NOT fail the block (the block already succeeded and
@@ -1225,21 +1261,71 @@ pub(super) fn dep_flags(args: &Args) -> Vec<Value> {
     deps
 }
 
+/// Parse the --drop-dep list of an unblock (#12777): comma-
+/// separated dep identities in the form kind:ref — issue:
+/// owner/repo#N, pr:owner/repo#N, ci:owner/repo#RUN_ID,
+/// task:ID — the same refs block's --blocked-by-* flags take,
+/// kind-prefixed so one list can name several kinds. The
+/// broker re-validates every spec; a bad ref dies here first,
+/// at the caller's terminal.
+pub(super) fn parse_drop_dep_list(list: &str) -> Result<Vec<Value>, String> {
+    let mut deps = Vec::new();
+    for item in list.split(',').map(str::trim).filter(|s| !s.is_empty()) {
+        let bad = |what: &str| format!("unblock: --drop-dep expects {what}, got '{item}'");
+        let Some((kind, r)) = item.split_once(':') else {
+            return Err(bad("kind:ref"));
+        };
+        match kind {
+            "pr" | "issue" | "ci" => {
+                let Some((repo, num)) = r.rsplit_once('#') else {
+                    return Err(bad("owner/repo#N after the kind"));
+                };
+                let n: i64 = num
+                    .parse()
+                    .map_err(|_| bad("owner/repo#N after the kind"))?;
+                if kind == "ci" {
+                    deps.push(json!({"kind": kind, "repo": repo, "run_id": n}));
+                } else {
+                    deps.push(json!({"kind": kind, "repo": repo, "number": n}));
+                }
+            }
+            "task" => {
+                let n: i64 = r.parse().map_err(|_| bad("a task id after 'task:'"))?;
+                deps.push(json!({"kind": "task", "task_id": n}));
+            }
+            _ => return Err(bad("kind pr|issue|task|ci")),
+        }
+    }
+    Ok(deps)
+}
+
+pub(super) fn drop_dep_flags(args: &Args) -> Vec<Value> {
+    match args.get("drop-dep") {
+        Some(v) => parse_drop_dep_list(&v).unwrap_or_else(|e| die(2, &e)),
+        None => Vec::new(),
+    }
+}
+
 /// unblock (#8276): the manual override — release a blocked
 /// task now, dep-blocked or classic. The broker audits who
-/// overrode and what dep record was discarded.
+/// overrode and what dep record was discarded. With
+/// --drop-dep (#12777) the override turns surgical: only the
+/// named dep entries leave the task's record, and the task
+/// stays blocked on the rest.
 pub(super) fn cmd_unblock(rest: &[String]) -> i32 {
-    let args = parse_verb_args("unblock", rest, &["worker", "reason"], &[]);
+    let args = parse_verb_args("unblock", rest, &["worker", "reason", "drop-dep"], &[]);
     reject_extra_pos("unblock", &args, 1);
-    let resp = unwrap_ok(call(
-        "/unblock",
-        &json!({
-            "task_id": args.pos_i64(0, "task_id"),
-            "worker": opt_worker(&args),
-            "reason": args.get("reason").unwrap_or_default(),
-        }),
-    ));
-    print_json(&require_row(&resp, "unblock_task"));
+    let mut body = json!({
+        "task_id": args.pos_i64(0, "task_id"),
+        "worker": opt_worker(&args),
+        "reason": args.get("reason").unwrap_or_default(),
+    });
+    let drops = drop_dep_flags(&args);
+    if !drops.is_empty() {
+        body["drop_deps"] = json!(drops);
+    }
+    let resp = unwrap_ok(call("/unblock", &body));
+    print_json(&served_row(require_row(&resp, "unblock_task"), "unblock"));
     0
 }
 
@@ -1258,7 +1344,10 @@ pub(super) fn cmd_dep_recheck(rest: &[String]) -> i32 {
         body["limit"] = json!(l);
     }
     let resp = unwrap_ok(call("/dep-recheck", &body));
-    print_json(&require_row(&resp, "dep_recheck"));
+    print_json(&served_row(
+        require_row(&resp, "dep_recheck"),
+        "dep-recheck",
+    ));
     0
 }
 
@@ -1279,7 +1368,30 @@ pub(super) fn cmd_quarantine_recheck(rest: &[String]) -> i32 {
         body["limit"] = json!(l);
     }
     let resp = unwrap_ok(call("/quarantine-recheck", &body));
-    print_json(&require_row(&resp, "quarantine_recheck"));
+    print_json(&served_row(
+        require_row(&resp, "quarantine_recheck"),
+        "quarantine-recheck",
+    ));
+    0
+}
+/// repair (#13191): repair a quarantined / malformed task
+/// packet in place. The broker re-runs the packet validators,
+/// applies the deterministic repairs whose correct value can be
+/// re-derived (today: the dedupe stamp, re-performed live), and
+/// restores the task to claimable state; unrepairable defects
+/// fail with the defect list and change nothing. --dry-run
+/// reports defects + planned repairs and writes nothing.
+pub(super) fn cmd_repair(rest: &[String]) -> i32 {
+    let args = parse_verb_args("repair", rest, &["worker", "reason"], &["dry-run"]);
+    reject_extra_pos("repair", &args, 1);
+    let body = json!({
+        "task_id": args.pos_i64(0, "task_id"),
+        "worker": opt_worker(&args),
+        "reason": args.get("reason").unwrap_or_default(),
+        "dry_run": args.has("dry-run"),
+    });
+    let resp = unwrap_ok(call("/repair", &body));
+    print_json(&require_row(&resp, "repair_task"));
     0
 }
 
@@ -1300,7 +1412,7 @@ pub(super) fn cmd_cancel(rest: &[String]) -> i32 {
             "reason": reason,
         }),
     ));
-    let row = require_row(&resp, "cancel_repo_task");
+    let row = served_row(require_row(&resp, "cancel_repo_task"), "cancel");
     // #9046: a cancel closes the binding window on the timeline.
     unbound_append(&worker, &row, "cancel");
     print_json(&row);
@@ -1327,7 +1439,7 @@ pub(super) fn cmd_revive(rest: &[String]) -> i32 {
         body["not_before"] = json!(nb);
     }
     let resp = unwrap_ok(call("/revive", &body));
-    print_json(&require_row(&resp, "revive_task"));
+    print_json(&served_row(require_row(&resp, "revive_task"), "revive"));
     0
 }
 
@@ -1366,7 +1478,7 @@ pub(super) fn cmd_fail(rest: &[String]) -> i32 {
     if let Some(row) = resp.get("row") {
         unbound_append(&opt_worker(&args), row, "fail");
     }
-    row_or_ledger(&resp, "fail_repo_task");
+    row_or_ledger(&resp, "fail_repo_task", "fail");
     0
 }
 
@@ -1381,7 +1493,6 @@ pub(super) fn cmd_complete(rest: &[String]) -> i32 {
             "result-file",
             "telemetry",
             "execution",
-            "queue",
         ],
         &[],
     );
@@ -1501,7 +1612,7 @@ pub(super) fn cmd_complete(rest: &[String]) -> i32 {
     if let Some(row) = resp.get("row") {
         unbound_append(&opt_worker(&args), row, "complete");
     }
-    row_or_ledger(&resp, "complete_task");
+    row_or_ledger(&resp, "complete_task", "complete");
     0
 }
 

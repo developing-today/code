@@ -21,6 +21,23 @@
 //! scene's text projection; a host that does not know the kind at all
 //! drops the document to the legacy text path (see [`parse_surface`]).
 //!
+//! A program may instead return a versioned `kind: audio` JSON document
+//! (`audio/1`, #12657): a bounded list of descriptive audio cues — named
+//! references with a closed format set, durations and repeat flags. Cues
+//! carry no embedded bytes, URLs or scripts: a presenter resolves each
+//! cue id against the world's own assets. A shell without an audio
+//! player uses the audio text projection; a host that does not know the
+//! kind at all drops the document to the legacy text path.
+//!
+//! A program may instead return a versioned `kind: media` JSON document
+//! (`media/1`, #13679): a bounded list of descriptive media items —
+//! typed artifact-id references with a closed sort set, dimensions and
+//! durations. Items carry no embedded bytes, URLs, scripts or mime
+//! strings: a presenter resolves each artifact id against the world's
+//! own media artifacts. A shell without a media presenter uses the
+//! media text projection; a host that does not know the kind at all
+//! drops the document to the legacy text path.
+//!
 //! Semantic token adapter contract (xterm-256 foreground, bold; 1-bit):
 //! | token | terminal | 1-bit | text |
 //! |---|---|---|---|
@@ -68,6 +85,27 @@ pub const MAX_SCENE_BYTES: usize = 64 * 1024;
 /// units. Keeps scene geometry in a range every presenter can scale
 /// without overflow.
 pub const MAX_SCENE_EXTENT: f64 = 1_000_000.0;
+/// Maximum cues accepted in one world audio document.
+pub const MAX_AUDIO_CUES: usize = 64;
+/// Maximum serialized audio document size in bytes.
+pub const MAX_AUDIO_BYTES: usize = 64 * 1024;
+/// Maximum duration of one audio cue, in milliseconds (one hour). Keeps
+/// a cue's stated length in a range every presenter can schedule
+/// without overflow.
+pub const MAX_AUDIO_DURATION_MS: u32 = 3_600_000;
+/// Maximum controls accepted in one world widget document.
+pub const MAX_WIDGET_CONTROLS: usize = 64;
+/// Maximum serialized widget document size in bytes.
+pub const MAX_WIDGET_BYTES: usize = 64 * 1024;
+/// Maximum items accepted in one world media document.
+pub const MAX_MEDIA_ITEMS: usize = 64;
+/// Maximum serialized media document size in bytes.
+pub const MAX_MEDIA_SURFACE_BYTES: usize = 64 * 1024;
+/// Maximum width or height of one media item, in pixels. Keeps item
+/// geometry in a range every presenter can scale without overflow.
+pub const MAX_MEDIA_DIMENSION: u32 = 16384;
+/// Maximum duration of one media item, in milliseconds (24 hours).
+pub const MAX_MEDIA_DURATION_MS: u32 = 86_400_000;
 
 /// A validated view understood by more than one transport presenter.
 ///
@@ -86,6 +124,20 @@ pub enum WorldSurface {
     /// sizes, rendered by native shells; other shells use its text
     /// projection.
     Scene(SceneSurface),
+    /// An audio cue list (`audio/1`): named sound references with
+    /// formats, durations and repeat flags, played by shells with an
+    /// audio player; other shells use its text projection.
+    Audio(AudioSurface),
+    /// A widget control list (`widget/1`): named controls from a
+    /// closed kind set (button, toggle, link), rendered natively by
+    /// shells with a widget presenter; other shells use its text
+    /// projection.
+    Widget(WidgetSurface),
+    /// A media item list (`media/1`): typed artifact-id references
+    /// with a closed sort set (image, audio, video), rendered natively
+    /// by shells with a media presenter; other shells use its text
+    /// projection.
+    Media(MediaSurface),
 }
 
 impl WorldSurface {
@@ -100,6 +152,9 @@ impl WorldSurface {
             Self::Text(text) => text.render_text(),
             Self::Form(form) => form.text_projection(),
             Self::Scene(scene) => scene.text_projection(),
+            Self::Audio(audio) => audio.text_projection(),
+            Self::Widget(widget) => widget.text_projection(),
+            Self::Media(media) => media.text_projection(),
         }
     }
 }
@@ -916,8 +971,7 @@ impl SceneSurface {
                 node.position
                     .iter()
                     .chain(node.size.iter())
-                    .all(|component| component.is_finite()
-                        && component.abs() <= MAX_SCENE_EXTENT),
+                    .all(|component| component.is_finite() && component.abs() <= MAX_SCENE_EXTENT),
                 "scene geometry out of bounds"
             );
             ensure!(
@@ -958,13 +1012,497 @@ impl SceneSurface {
     }
 }
 
+/// A versioned `audio/1` document: a bounded list of descriptive audio
+/// cues. Guest input is data only: a cue names a sound and describes it
+/// (format, duration, repeat) — there are no embedded bytes, URL,
+/// script or gain fields, so a presenter resolves each cue id against
+/// the world's own assets and derives everything audible from the
+/// description. The document shape is the struct shape, so a parsed
+/// audio document round-trips through [`parse_surface`].
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct AudioSurface {
+    /// Audio format version. `audio/1` defines version 1.
+    pub version: u8,
+    /// Optional caption naming the cue list; the text projection's
+    /// first line.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    /// The document's cues, in document order. Ids are unique.
+    pub cues: Vec<AudioCue>,
+}
+
+/// One named sound in an [`AudioSurface`].
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct AudioCue {
+    /// Stable identifier, unique within the document. A presenter
+    /// resolves it against the world's own assets.
+    pub id: String,
+    /// Human-readable name, used by the text projection and by
+    /// presenters that label cues.
+    pub label: String,
+    /// The referenced sound's encoding, from the closed format set.
+    pub format: AudioFormat,
+    /// The sound's length in milliseconds.
+    pub duration_ms: u32,
+    /// Whether the sound repeats until the view changes.
+    pub repeat: bool,
+}
+
+/// The closed set of sound encodings an `audio/1` cue may name. Guest
+/// documents reject unknown formats.
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AudioFormat {
+    /// Waveform audio (PCM WAV).
+    Wav,
+    /// Ogg container (Vorbis/Opus).
+    Ogg,
+    /// MP3 audio.
+    Mp3,
+}
+
+impl AudioFormat {
+    /// The document spelling of the format, used by the text projection.
+    #[must_use]
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            Self::Wav => "wav",
+            Self::Ogg => "ogg",
+            Self::Mp3 => "mp3",
+        }
+    }
+}
+
+impl AudioSurface {
+    /// Validate the version, cue set, identifiers, safe text, duration
+    /// bounds and total size. Hosts run this before any presenter sees
+    /// the document (via [`parse_surface`]).
+    ///
+    /// # Errors
+    ///
+    /// Rejects unsupported versions, unsafe titles, empty or oversized
+    /// cue sets, duplicate ids, unsafe labels, out-of-bound durations,
+    /// and oversize documents.
+    pub fn validate(&self) -> Result<()> {
+        ensure!(
+            self.version == 1,
+            "unsupported world audio version {}",
+            self.version
+        );
+        ensure!(
+            self.title.as_deref().is_none_or(safe_form_text),
+            "invalid audio title"
+        );
+        ensure!(
+            !self.cues.is_empty() && self.cues.len() <= MAX_AUDIO_CUES,
+            "invalid audio cue count"
+        );
+        let mut ids = std::collections::HashSet::new();
+        for cue in &self.cues {
+            ensure!(
+                safe_form_id(&cue.id) && safe_form_text(&cue.label),
+                "invalid audio cue id or label"
+            );
+            ensure!(ids.insert(cue.id.as_str()), "duplicate audio cue id");
+            ensure!(
+                (1..=MAX_AUDIO_DURATION_MS).contains(&cue.duration_ms),
+                "audio cue duration out of bounds"
+            );
+        }
+        ensure!(
+            serde_json::to_vec(self)?.len() <= MAX_AUDIO_BYTES,
+            "audio exceeds {MAX_AUDIO_BYTES} bytes"
+        );
+        Ok(())
+    }
+
+    /// Deterministic escape-free projection: the title (or `Audio`),
+    /// then one numbered line per cue naming its label, format and
+    /// duration, with a `repeats` marker for looping cues. This is what
+    /// a shell without an audio player shows, so it is designed here,
+    /// with the kind, not discovered by the renderer slice.
+    #[must_use]
+    pub fn text_projection(&self) -> String {
+        let mut lines = vec![self.title.clone().unwrap_or_else(|| "Audio".to_owned())];
+        for (index, cue) in self.cues.iter().enumerate() {
+            let repeat = if cue.repeat { "; repeats" } else { "" };
+            lines.push(format!(
+                "{}. {} ({}; {} ms{})",
+                index + 1,
+                cue.label,
+                cue.format.as_str(),
+                cue.duration_ms,
+                repeat,
+            ));
+        }
+        lines.join("\n")
+    }
+}
+
+/// A versioned `widget/1` document: a bounded list of descriptive
+/// controls. Guest input is data only: a control names a kind from a
+/// closed set and, where it acts, the id of a world action — there are
+/// no URLs, scripts or embedded payloads, so a presenter resolves each
+/// action id against the world's own actions and derives everything
+/// interactive from the description. The document shape is the struct
+/// shape, so a parsed widget document round-trips through
+/// [`parse_surface`].
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct WidgetSurface {
+    /// Widget format version. `widget/1` defines version 1.
+    pub version: u8,
+    /// Optional caption naming the control list; the text projection's
+    /// first line.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    /// The document's controls, in document order. Ids are unique.
+    pub controls: Vec<WidgetControl>,
+}
+
+/// One named control in a [`WidgetSurface`]. The kind set is closed:
+/// guest documents reject unknown kinds.
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum WidgetControl {
+    /// An action control: presents its label; invoking it delivers
+    /// the named action to the world.
+    Button {
+        /// Stable identifier, unique within the document.
+        id: String,
+        /// Human-readable name, used by the text projection and by
+        /// presenters that label controls.
+        label: String,
+        /// The world action invoking the control delivers, named by
+        /// id; a presenter resolves it against the world's own
+        /// actions. Absent names a display-only control.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        action: Option<String>,
+    },
+    /// A stateful control: presents its label and current state;
+    /// invoking it delivers the named action to the world.
+    Toggle {
+        /// Stable identifier, unique within the document.
+        id: String,
+        /// Human-readable name, used by the text projection and by
+        /// presenters that label controls.
+        label: String,
+        /// The world action invoking the control delivers, named by
+        /// id; a presenter resolves it against the world's own
+        /// actions. Absent names a display-only control.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        action: Option<String>,
+        /// The control's state as presented.
+        on: bool,
+    },
+    /// A navigation control: following it delivers the named action
+    /// to the world (for example, presenting another view).
+    Link {
+        /// Stable identifier, unique within the document.
+        id: String,
+        /// Human-readable name, used by the text projection and by
+        /// presenters that label controls.
+        label: String,
+        /// The world action following the control delivers, named by
+        /// id; a presenter resolves it against the world's own
+        /// actions.
+        action: String,
+    },
+}
+
+impl WidgetControl {
+    /// The control's stable identifier.
+    #[must_use]
+    pub fn id(&self) -> &str {
+        match self {
+            Self::Button { id, .. } | Self::Toggle { id, .. } | Self::Link { id, .. } => id,
+        }
+    }
+
+    /// The control's human-readable name.
+    #[must_use]
+    pub fn label(&self) -> &str {
+        match self {
+            Self::Button { label, .. } | Self::Toggle { label, .. } | Self::Link { label, .. } => {
+                label
+            }
+        }
+    }
+
+    /// The world action the control delivers, when it acts.
+    #[must_use]
+    pub fn action(&self) -> Option<&str> {
+        match self {
+            Self::Button { action, .. } | Self::Toggle { action, .. } => action.as_deref(),
+            Self::Link { action, .. } => Some(action),
+        }
+    }
+
+    /// The document spelling of the control's kind, used by the text
+    /// projection.
+    #[must_use]
+    pub const fn kind_str(&self) -> &'static str {
+        match self {
+            Self::Button { .. } => "button",
+            Self::Toggle { .. } => "toggle",
+            Self::Link { .. } => "link",
+        }
+    }
+}
+
+impl WidgetSurface {
+    /// Validate the version, control set, identifiers, safe text,
+    /// action references and total size. Hosts run this before any
+    /// presenter sees the document (via [`parse_surface`]).
+    ///
+    /// # Errors
+    ///
+    /// Rejects unsupported versions, unsafe titles, empty or oversized
+    /// control sets, duplicate ids, unsafe labels, unsafe action ids,
+    /// and oversize documents.
+    pub fn validate(&self) -> Result<()> {
+        ensure!(
+            self.version == 1,
+            "unsupported world widget version {}",
+            self.version
+        );
+        ensure!(
+            self.title.as_deref().is_none_or(safe_form_text),
+            "invalid widget title"
+        );
+        ensure!(
+            !self.controls.is_empty() && self.controls.len() <= MAX_WIDGET_CONTROLS,
+            "invalid widget control count"
+        );
+        let mut ids = std::collections::HashSet::new();
+        for control in &self.controls {
+            ensure!(
+                safe_form_id(control.id()) && safe_form_text(control.label()),
+                "invalid widget control id or label"
+            );
+            ensure!(ids.insert(control.id()), "duplicate widget control id");
+            ensure!(
+                control.action().is_none_or(safe_form_id),
+                "invalid widget control action"
+            );
+        }
+        ensure!(
+            serde_json::to_vec(self)?.len() <= MAX_WIDGET_BYTES,
+            "widget exceeds {MAX_WIDGET_BYTES} bytes"
+        );
+        Ok(())
+    }
+
+    /// Deterministic escape-free projection: the title (or `Widgets`),
+    /// then one numbered line per control naming its label, kind,
+    /// state (for a toggle) and action (when it acts). This is what a
+    /// shell without a widget presenter shows, so it is designed here,
+    /// with the kind, not discovered by the renderer slice.
+    #[must_use]
+    pub fn text_projection(&self) -> String {
+        let mut lines = vec![self.title.clone().unwrap_or_else(|| "Widgets".to_owned())];
+        for (index, control) in self.controls.iter().enumerate() {
+            let mut parts = vec![control.kind_str().to_owned()];
+            if let WidgetControl::Toggle { on, .. } = control {
+                parts.push(if *on {
+                    "on".to_owned()
+                } else {
+                    "off".to_owned()
+                });
+            }
+            if let Some(action) = control.action() {
+                parts.push(format!("action {action}"));
+            }
+            lines.push(format!(
+                "{}. {} ({})",
+                index + 1,
+                control.label(),
+                parts.join("; ")
+            ));
+        }
+        lines.join("\n")
+    }
+}
+
+/// A versioned `media/1` document: a bounded list of descriptive media
+/// items. Guest input is data only: an item names a sort from a closed
+/// set and the id of a world media artifact — there are no embedded
+/// bytes, URLs, scripts or mime strings, so a presenter resolves each
+/// artifact id against the world's own media artifacts and derives
+/// everything renderable from the referenced artifact. The document
+/// shape is the struct shape, so a parsed media document round-trips
+/// through [`parse_surface`].
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct MediaSurface {
+    /// Media format version. `media/1` defines version 1.
+    pub version: u8,
+    /// Optional caption naming the item list; the text projection's
+    /// first line.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    /// The document's items, in document order. Ids are unique.
+    pub items: Vec<MediaItem>,
+}
+
+/// One named media reference in a [`MediaSurface`].
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct MediaItem {
+    /// Stable identifier, unique within the document.
+    pub id: String,
+    /// Human-readable name, used by the text projection and by
+    /// presenters that label items.
+    pub label: String,
+    /// The referenced artifact's sort, from the closed sort set.
+    pub sort: MediaSort,
+    /// The world media artifact this item names, by id; a presenter
+    /// resolves it against the world's own media artifacts. An
+    /// unresolvable artifact is a presenter-side miss: the item still
+    /// appears in the text projection.
+    pub artifact: String,
+    /// The item's width in pixels, for image and video sorts. Width
+    /// and height are both given or both absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub width: Option<u32>,
+    /// The item's height in pixels, for image and video sorts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub height: Option<u32>,
+    /// The item's length in milliseconds, for audio and video sorts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_ms: Option<u32>,
+}
+
+/// The closed set of media sorts a `media/1` item may name, mirroring
+/// the `id-store` media plane (`MediaSort`, #2342). Guest documents
+/// reject unknown sorts.
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MediaSort {
+    /// Still pictures.
+    Image,
+    /// Sound.
+    Audio,
+    /// Moving pictures.
+    Video,
+}
+
+impl MediaSort {
+    /// The document spelling of the sort, used by the text projection.
+    #[must_use]
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            Self::Image => "image",
+            Self::Audio => "audio",
+            Self::Video => "video",
+        }
+    }
+}
+
+impl MediaSurface {
+    /// Validate the version, item set, identifiers, safe text,
+    /// artifact references, dimension/duration consistency and total
+    /// size. Hosts run this before any presenter sees the document
+    /// (via [`parse_surface`]).
+    ///
+    /// # Errors
+    ///
+    /// Rejects unsupported versions, unsafe titles, empty or oversized
+    /// item sets, duplicate ids, unsafe labels, unsafe artifact ids,
+    /// half-given or out-of-bound dimensions, dimensions on audio
+    /// items, durations on image items, and oversize documents.
+    pub fn validate(&self) -> Result<()> {
+        ensure!(
+            self.version == 1,
+            "unsupported world media version {}",
+            self.version
+        );
+        ensure!(
+            self.title.as_deref().is_none_or(safe_form_text),
+            "invalid media title"
+        );
+        ensure!(
+            !self.items.is_empty() && self.items.len() <= MAX_MEDIA_ITEMS,
+            "invalid media item count"
+        );
+        let mut ids = std::collections::HashSet::new();
+        for item in &self.items {
+            ensure!(
+                safe_form_id(&item.id) && safe_form_text(&item.label),
+                "invalid media item id or label"
+            );
+            ensure!(ids.insert(item.id.as_str()), "duplicate media item id");
+            ensure!(safe_form_id(&item.artifact), "invalid media item artifact");
+            match (item.width, item.height) {
+                (None, None) => {}
+                (Some(width), Some(height)) => {
+                    ensure!(
+                        (1..=MAX_MEDIA_DIMENSION).contains(&width)
+                            && (1..=MAX_MEDIA_DIMENSION).contains(&height),
+                        "media item dimensions out of bounds"
+                    );
+                    ensure!(
+                        item.sort != MediaSort::Audio,
+                        "audio media items carry no dimensions"
+                    );
+                }
+                _ => return Err(anyhow::anyhow!("media item width and height come together")),
+            }
+            if let Some(duration_ms) = item.duration_ms {
+                ensure!(
+                    (1..=MAX_MEDIA_DURATION_MS).contains(&duration_ms),
+                    "media item duration out of bounds"
+                );
+                ensure!(
+                    item.sort != MediaSort::Image,
+                    "image media items carry no duration"
+                );
+            }
+        }
+        ensure!(
+            serde_json::to_vec(self)?.len() <= MAX_MEDIA_SURFACE_BYTES,
+            "media exceeds {MAX_MEDIA_SURFACE_BYTES} bytes"
+        );
+        Ok(())
+    }
+
+    /// Deterministic escape-free projection: the title (or `Media`),
+    /// then one numbered line per item naming its label, sort,
+    /// dimensions and duration. This is what a shell without a media
+    /// presenter shows, so it is designed here, with the kind, not
+    /// discovered by the renderer slice.
+    #[must_use]
+    pub fn text_projection(&self) -> String {
+        let mut lines = vec![self.title.clone().unwrap_or_else(|| "Media".to_owned())];
+        for (index, item) in self.items.iter().enumerate() {
+            let mut parts = vec![item.sort.as_str().to_owned()];
+            if let (Some(width), Some(height)) = (item.width, item.height) {
+                parts.push(format!("{width}x{height}"));
+            }
+            if let Some(duration_ms) = item.duration_ms {
+                parts.push(format!("{duration_ms} ms"));
+            }
+            lines.push(format!(
+                "{}. {} ({})",
+                index + 1,
+                item.label,
+                parts.join("; ")
+            ));
+        }
+        lines.join("\n")
+    }
+}
+
 /// A cell-run delta between two consecutive screens (F12.11, first slice).
 ///
 /// A patch carries only the cells that changed, grouped into maximal runs of
 /// consecutive row-major indices. It is transport-neutral: the same patch can
 /// ride any shell transport, and a client that applies it to the previous
-/// screen holds exactly the next full frame. Binary encoding and compression
-/// are later F12.11 slices; this type is the delta they will encode.
+/// screen holds exactly the next full frame. Binary encoding is the F12.11
+/// phase-3 slice and optional compression the phase-4 slice, both in
+/// `screen_codec`; this type is the delta they encode.
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ScreenPatch {
@@ -1224,8 +1762,10 @@ pub fn parse_surface(data: &str) -> Result<Option<WorldSurface>> {
                     .as_ref()
                     .and_then(|value| value.get("kind"))
                     .and_then(Value::as_str);
-                if matches!(kind, Some("screen" | "text" | "form" | "scene"))
-                    || top_level_kind_is_duplicated(data)
+                if matches!(
+                    kind,
+                    Some("screen" | "text" | "form" | "scene" | "audio" | "widget" | "media")
+                ) || top_level_kind_is_duplicated(data)
                 {
                     return Err(err).context("duplicate JSON object key in world presentation");
                 }
@@ -1254,6 +1794,36 @@ pub fn parse_surface(data: &str) -> Result<Option<WorldSurface>> {
                 serde_json::from_value(value).context("decode world scene presentation")?;
             scene.validate()?;
             return Ok(Some(WorldSurface::Scene(scene)));
+        }
+        Some("audio") => {
+            let mut value = value;
+            if let Some(object) = value.as_object_mut() {
+                object.remove("kind");
+            }
+            let audio: AudioSurface =
+                serde_json::from_value(value).context("decode world audio presentation")?;
+            audio.validate()?;
+            return Ok(Some(WorldSurface::Audio(audio)));
+        }
+        Some("widget") => {
+            let mut value = value;
+            if let Some(object) = value.as_object_mut() {
+                object.remove("kind");
+            }
+            let widget: WidgetSurface =
+                serde_json::from_value(value).context("decode world widget presentation")?;
+            widget.validate()?;
+            return Ok(Some(WorldSurface::Widget(widget)));
+        }
+        Some("media") => {
+            let mut value = value;
+            if let Some(object) = value.as_object_mut() {
+                object.remove("kind");
+            }
+            let media: MediaSurface =
+                serde_json::from_value(value).context("decode world media presentation")?;
+            media.validate()?;
+            return Ok(Some(WorldSurface::Media(media)));
         }
         Some("text") => {
             let payload: TextPayload =
@@ -2264,39 +2834,45 @@ mod tests {
             serde_json::json!({"kind": "scene", "version": 1, "nodes": nodes}).to_string()
         };
         // Bad versions.
-        assert!(parse_surface(
-            &serde_json::json!({"kind": "scene", "version": 2, "nodes": [node("a")]})
-                .to_string()
-        )
-        .is_err());
-        assert!(parse_surface(
-            &serde_json::json!({"kind": "scene", "version": 0, "nodes": [node("a")]})
-                .to_string()
-        )
-        .is_err());
+        assert!(
+            parse_surface(
+                &serde_json::json!({"kind": "scene", "version": 2, "nodes": [node("a")]})
+                    .to_string()
+            )
+            .is_err()
+        );
+        assert!(
+            parse_surface(
+                &serde_json::json!({"kind": "scene", "version": 0, "nodes": [node("a")]})
+                    .to_string()
+            )
+            .is_err()
+        );
         // Unknown fields, top level and per node (deny_unknown_fields).
         assert!(parse_surface(
             &serde_json::json!({"kind": "scene", "version": 1, "html": "<b>x</b>", "nodes": [node("a")]})
                 .to_string()
         )
         .is_err());
-        assert!(parse_surface(&scene(serde_json::json!([
-            {"id": "a", "label": "A", "shape": "box", "position": [0, 0, 0],
-             "size": [1, 1, 1], "onclick": "run()"}
-        ])))
-        .is_err());
+        assert!(
+            parse_surface(&scene(serde_json::json!([
+                {"id": "a", "label": "A", "shape": "box", "position": [0, 0, 0],
+                 "size": [1, 1, 1], "onclick": "run()"}
+            ])))
+            .is_err()
+        );
         // Unknown shape: the shape set is closed.
-        assert!(parse_surface(&scene(serde_json::json!([
-            {"id": "a", "label": "A", "shape": "mesh", "position": [0, 0, 0], "size": [1, 1, 1]}
-        ])))
-        .is_err());
+        assert!(
+            parse_surface(&scene(serde_json::json!([
+                {"id": "a", "label": "A", "shape": "mesh", "position": [0, 0, 0], "size": [1, 1, 1]}
+            ])))
+            .is_err()
+        );
         // Empty and duplicate-id node sets.
         assert!(parse_surface(&scene(serde_json::json!([]))).is_err());
         assert!(parse_surface(&scene(serde_json::json!([node("a"), node("a")]))).is_err());
         // Too many nodes: the bound is 256 (MAX_SCENE_NODES).
-        let many: Vec<Value> = (0..257)
-            .map(|index| node(&format!("n{index}")))
-            .collect();
+        let many: Vec<Value> = (0..257).map(|index| node(&format!("n{index}"))).collect();
         assert!(parse_surface(&scene(Value::Array(many))).is_err());
         // Unsafe label text (a JSON-escaped ESC).
         assert!(parse_surface(&scene(serde_json::json!([
@@ -2305,14 +2881,18 @@ mod tests {
         .is_err());
         // Geometry bounds: size must be positive, position and size
         // components stay within 1_000_000 (MAX_SCENE_EXTENT).
-        assert!(parse_surface(&scene(serde_json::json!([
-            {"id": "a", "label": "A", "shape": "box", "position": [0, 0, 0], "size": [0, 1, 1]}
-        ])))
-        .is_err());
-        assert!(parse_surface(&scene(serde_json::json!([
-            {"id": "a", "label": "A", "shape": "box", "position": [0, 0, 0], "size": [-1, 1, 1]}
-        ])))
-        .is_err());
+        assert!(
+            parse_surface(&scene(serde_json::json!([
+                {"id": "a", "label": "A", "shape": "box", "position": [0, 0, 0], "size": [0, 1, 1]}
+            ])))
+            .is_err()
+        );
+        assert!(
+            parse_surface(&scene(serde_json::json!([
+                {"id": "a", "label": "A", "shape": "box", "position": [0, 0, 0], "size": [-1, 1, 1]}
+            ])))
+            .is_err()
+        );
         assert!(parse_surface(&scene(serde_json::json!([
             {"id": "a", "label": "A", "shape": "box", "position": [1000001, 0, 0], "size": [1, 1, 1]}
         ])))
@@ -2369,18 +2949,426 @@ mod tests {
     }
 
     #[test]
+    fn audio_surface_parses_projects_and_round_trips() {
+        // Oracle: #12657 slice 1b — a versioned audio document is accepted
+        // by host validation, projects deterministically to text (the
+        // old-shell fallback), and round-trips through serialization.
+        let document = serde_json::json!({
+            "kind": "audio", "version": 1, "title": "Harbor Sounds",
+            "cues": [
+                {"id": "rain", "label": "Rain", "format": "ogg",
+                 "duration_ms": 90000, "repeat": true},
+                {"id": "bell", "label": "Bell", "format": "wav",
+                 "duration_ms": 2500, "repeat": false}
+            ]
+        });
+        let parsed = parse_surface(&document.to_string()).unwrap().unwrap();
+        assert_eq!(
+            parsed.text_projection(),
+            "Harbor Sounds\n1. Rain (ogg; 90000 ms; repeats)\n2. Bell (wav; 2500 ms)"
+        );
+        let serialized = serde_json::to_string(&parsed).unwrap();
+        assert_eq!(parse_surface(&serialized).unwrap(), Some(parsed));
+
+        // Without a title the projection still names what the view is.
+        let untitled = parse_surface(
+            r#"{"kind":"audio","version":1,"cues":[{"id":"a","label":"A","format":"mp3","duration_ms":1000,"repeat":false}]}"#,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(untitled.text_projection(), "Audio\n1. A (mp3; 1000 ms)");
+    }
+
+    #[test]
+    fn audio_surface_rejects_unsafe_or_oversize_documents() {
+        // Oracle: #12657 criterion — malformed or oversized rich surfaces
+        // are refused by host validation (an Err from parse_surface, which
+        // the host turns into an error frame), never silently dropped to
+        // the legacy text path and never accepted.
+        let cue = |id: &str| {
+            serde_json::json!({"id": id, "label": "A", "format": "ogg",
+                "duration_ms": 1000, "repeat": false})
+        };
+        let audio = |cues: Value| {
+            serde_json::json!({"kind": "audio", "version": 1, "cues": cues}).to_string()
+        };
+        // Bad versions.
+        assert!(
+            parse_surface(
+                &serde_json::json!({"kind": "audio", "version": 2, "cues": [cue("a")]}).to_string()
+            )
+            .is_err()
+        );
+        assert!(
+            parse_surface(
+                &serde_json::json!({"kind": "audio", "version": 0, "cues": [cue("a")]}).to_string()
+            )
+            .is_err()
+        );
+        // Unknown fields, top level and per cue (deny_unknown_fields) —
+        // in particular a cue carries no embedded bytes or URL.
+        assert!(parse_surface(
+            &serde_json::json!({"kind": "audio", "version": 1, "src": "x.ogg", "cues": [cue("a")]})
+                .to_string()
+        )
+        .is_err());
+        assert!(
+            parse_surface(&audio(serde_json::json!([
+                {"id": "a", "label": "A", "format": "ogg", "duration_ms": 1000,
+                 "repeat": false, "data": "AAAB"}
+            ])))
+            .is_err()
+        );
+        // Unknown format: the format set is closed.
+        assert!(
+            parse_surface(&audio(serde_json::json!([
+                {"id": "a", "label": "A", "format": "flac", "duration_ms": 1000, "repeat": false}
+            ])))
+            .is_err()
+        );
+        // Empty and duplicate-id cue sets.
+        assert!(parse_surface(&audio(serde_json::json!([]))).is_err());
+        assert!(parse_surface(&audio(serde_json::json!([cue("a"), cue("a")]))).is_err());
+        // Too many cues: the bound is 64 (MAX_AUDIO_CUES).
+        let many: Vec<Value> = (0..65).map(|index| cue(&format!("c{index}"))).collect();
+        assert!(parse_surface(&audio(Value::Array(many))).is_err());
+        // Unsafe label text (a JSON-escaped ESC).
+        assert!(parse_surface(&audio(serde_json::json!([
+            {"id": "a", "label": "A\u{001b}[2J", "format": "ogg", "duration_ms": 1000, "repeat": false}
+        ])))
+        .is_err());
+        // Duration bounds: a cue lasts 1..=3_600_000 ms
+        // (MAX_AUDIO_DURATION_MS, one hour).
+        assert!(
+            parse_surface(&audio(serde_json::json!([
+                {"id": "a", "label": "A", "format": "ogg", "duration_ms": 0, "repeat": false}
+            ])))
+            .is_err()
+        );
+        assert!(
+            parse_surface(&audio(serde_json::json!([
+                {"id": "a", "label": "A", "format": "ogg", "duration_ms": 3600001, "repeat": false}
+            ])))
+            .is_err()
+        );
+        // Oversize document: the serialized cap is 65536 bytes
+        // (MAX_AUDIO_BYTES); a single huge label trips it.
+        assert!(parse_surface(&audio(serde_json::json!([
+            {"id": "a", "label": "x".repeat(70_000), "format": "ogg", "duration_ms": 1000, "repeat": false}
+        ])))
+        .is_err());
+    }
+
+    #[test]
+    fn media_surface_parses_projects_and_round_trips() {
+        // Oracle: #13679 — a versioned media document is accepted by
+        // host validation, projects deterministically to text (the
+        // old-shell fallback), and round-trips through serialization.
+        let document = serde_json::json!({
+            "kind": "media", "version": 1, "title": "Harbor Media",
+            "items": [
+                {"id": "sunset", "label": "Sunset", "sort": "image",
+                 "artifact": "artifact_sunset", "width": 800, "height": 600},
+                {"id": "theme", "label": "Theme", "sort": "audio",
+                 "artifact": "artifact_theme", "duration_ms": 12000},
+                {"id": "clip", "label": "Clip", "sort": "video",
+                 "artifact": "artifact_clip", "width": 640, "height": 360,
+                 "duration_ms": 5000}
+            ]
+        });
+        let parsed = parse_surface(&document.to_string()).unwrap().unwrap();
+        assert_eq!(
+            parsed.text_projection(),
+            "Harbor Media\n1. Sunset (image; 800x600)\n2. Theme (audio; 12000 ms)\n3. Clip (video; 640x360; 5000 ms)"
+        );
+        let serialized = serde_json::to_string(&parsed).unwrap();
+        assert_eq!(parse_surface(&serialized).unwrap(), Some(parsed));
+
+        // Without a title the projection still names what the view is.
+        let untitled = parse_surface(
+            r#"{"kind":"media","version":1,"items":[{"id":"a","label":"A","sort":"video","artifact":"artifact_a"}]}"#,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(untitled.text_projection(), "Media\n1. A (video)");
+    }
+
+    #[test]
+    fn media_surface_rejects_unsafe_or_oversize_documents() {
+        // Oracle: #13679 criterion — malformed or oversized media
+        // surfaces are refused by host validation (an Err from
+        // parse_surface, which the host turns into an error frame),
+        // never silently dropped to the legacy text path and never
+        // accepted.
+        let item = |id: &str| {
+            serde_json::json!({"id": id, "label": "A", "sort": "video",
+                "artifact": "artifact_a"})
+        };
+        let media = |items: Value| {
+            serde_json::json!({"kind": "media", "version": 1, "items": items}).to_string()
+        };
+        // Bad versions.
+        assert!(
+            parse_surface(
+                &serde_json::json!({"kind": "media", "version": 2, "items": [item("a")]})
+                    .to_string()
+            )
+            .is_err()
+        );
+        assert!(
+            parse_surface(
+                &serde_json::json!({"kind": "media", "version": 0, "items": [item("a")]})
+                    .to_string()
+            )
+            .is_err()
+        );
+        // Unknown fields, top level and per item (deny_unknown_fields) —
+        // in particular an item carries no embedded bytes, URL or mime
+        // string.
+        assert!(parse_surface(
+            &serde_json::json!({"kind": "media", "version": 1, "src": "x.mp4", "items": [item("a")]})
+                .to_string()
+        )
+        .is_err());
+        assert!(
+            parse_surface(&media(serde_json::json!([
+                {"id": "a", "label": "A", "sort": "video", "artifact": "artifact_a",
+                 "data": "AAAB"}
+            ])))
+            .is_err()
+        );
+        // Unknown sort: the sort set is closed.
+        assert!(
+            parse_surface(&media(serde_json::json!([
+                {"id": "a", "label": "A", "sort": "gif", "artifact": "artifact_a"}
+            ])))
+            .is_err()
+        );
+        // Empty and duplicate-id item sets.
+        assert!(parse_surface(&media(serde_json::json!([]))).is_err());
+        assert!(parse_surface(&media(serde_json::json!([item("a"), item("a")]))).is_err());
+        // Too many items: the bound is 64 (MAX_MEDIA_ITEMS).
+        let many: Vec<Value> = (0..65).map(|index| item(&format!("i{index}"))).collect();
+        assert!(parse_surface(&media(Value::Array(many))).is_err());
+        // Unsafe artifact id.
+        assert!(
+            parse_surface(&media(serde_json::json!([
+                {"id": "a", "label": "A", "sort": "video", "artifact": "artifact a!"}
+            ])))
+            .is_err()
+        );
+        // Unsafe label text (a JSON-escaped ESC).
+        assert!(
+            parse_surface(&media(serde_json::json!([
+                {"id": "a", "label": "A\u{001b}[2J", "sort": "video", "artifact": "artifact_a"}
+            ])))
+            .is_err()
+        );
+        // Half-given dimensions: width and height come together.
+        assert!(
+            parse_surface(&media(serde_json::json!([
+                {"id": "a", "label": "A", "sort": "image", "artifact": "artifact_a",
+                 "width": 800}
+            ])))
+            .is_err()
+        );
+        // Dimensions out of bounds: 1..=16384 (MAX_MEDIA_DIMENSION).
+        assert!(
+            parse_surface(&media(serde_json::json!([
+                {"id": "a", "label": "A", "sort": "image", "artifact": "artifact_a",
+                 "width": 0, "height": 600}
+            ])))
+            .is_err()
+        );
+        assert!(
+            parse_surface(&media(serde_json::json!([
+                {"id": "a", "label": "A", "sort": "image", "artifact": "artifact_a",
+                 "width": 16385, "height": 600}
+            ])))
+            .is_err()
+        );
+        // Dimensions on audio items are refused.
+        assert!(
+            parse_surface(&media(serde_json::json!([
+                {"id": "a", "label": "A", "sort": "audio", "artifact": "artifact_a",
+                 "width": 800, "height": 600}
+            ])))
+            .is_err()
+        );
+        // Duration bounds: an item lasts 1..=86_400_000 ms
+        // (MAX_MEDIA_DURATION_MS, 24 hours).
+        assert!(
+            parse_surface(&media(serde_json::json!([
+                {"id": "a", "label": "A", "sort": "video", "artifact": "artifact_a",
+                 "duration_ms": 0}
+            ])))
+            .is_err()
+        );
+        assert!(
+            parse_surface(&media(serde_json::json!([
+                {"id": "a", "label": "A", "sort": "video", "artifact": "artifact_a",
+                 "duration_ms": 86400001}
+            ])))
+            .is_err()
+        );
+        // Duration on image items is refused.
+        assert!(
+            parse_surface(&media(serde_json::json!([
+                {"id": "a", "label": "A", "sort": "image", "artifact": "artifact_a",
+                 "duration_ms": 1000}
+            ])))
+            .is_err()
+        );
+        // Oversize document: the serialized cap is 65536 bytes
+        // (MAX_MEDIA_SURFACE_BYTES); a single huge label trips it.
+        assert!(
+            parse_surface(&media(serde_json::json!([
+                {"id": "a", "label": "x".repeat(70_000), "sort": "video", "artifact": "artifact_a"}
+            ])))
+            .is_err()
+        );
+        // Duplicate JSON key: a media document with a duplicate key
+        // is rejected, never last-wins collapsed.
+        assert!(
+            parse_surface(
+                r#"{"kind":"media","version":1,"version":99,"items":[{"id":"a","label":"A","sort":"video","artifact":"artifact_a"}]}"#
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn widget_surface_parses_projects_and_round_trips() {
+        // Oracle: #12657 slice 1c — a versioned widget document is
+        // accepted by host validation, projects deterministically to
+        // text (the old-shell fallback), and round-trips through
+        // serialization.
+        let document = serde_json::json!({
+            "kind": "widget", "version": 1, "title": "Harbor Controls",
+            "controls": [
+                {"kind": "button", "id": "start", "label": "Start",
+                 "action": "start"},
+                {"kind": "toggle", "id": "lights", "label": "Lights",
+                 "action": "lights", "on": true},
+                {"kind": "link", "id": "enter", "label": "Enter the harbor",
+                 "action": "enter_harbor"}
+            ]
+        });
+        let parsed = parse_surface(&document.to_string()).unwrap().unwrap();
+        assert_eq!(
+            parsed.text_projection(),
+            "Harbor Controls\n1. Start (button; action start)\n2. Lights (toggle; on; action lights)\n3. Enter the harbor (link; action enter_harbor)"
+        );
+        let serialized = serde_json::to_string(&parsed).unwrap();
+        assert_eq!(parse_surface(&serialized).unwrap(), Some(parsed));
+
+        // Without a title the projection still names what the view is,
+        // and a display-only button names no action.
+        let untitled = parse_surface(
+            r#"{"kind":"widget","version":1,"controls":[{"kind":"button","id":"a","label":"A"}]}"#,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(untitled.text_projection(), "Widgets\n1. A (button)");
+    }
+
+    #[test]
+    fn widget_surface_rejects_unsafe_or_oversize_documents() {
+        // Oracle: #12657 criterion — malformed or oversized rich
+        // surfaces are refused by host validation (an Err from
+        // parse_surface, which the host turns into an error frame),
+        // never silently dropped to the legacy text path and never
+        // accepted.
+        let button = |id: &str| serde_json::json!({"kind": "button", "id": id, "label": "A", "action": "go"});
+        let widget = |controls: Value| {
+            serde_json::json!({"kind": "widget", "version": 1, "controls": controls}).to_string()
+        };
+        // Bad versions.
+        assert!(
+            parse_surface(
+                &serde_json::json!({"kind": "widget", "version": 2, "controls": [button("a")]})
+                    .to_string()
+            )
+            .is_err()
+        );
+        assert!(
+            parse_surface(
+                &serde_json::json!({"kind": "widget", "version": 0, "controls": [button("a")]})
+                    .to_string()
+            )
+            .is_err()
+        );
+        // Unknown fields, top level and per control
+        // (deny_unknown_fields) — in particular a control carries no
+        // URL or script.
+        assert!(parse_surface(
+            &serde_json::json!({"kind": "widget", "version": 1, "href": "https://example.invalid", "controls": [button("a")]})
+                .to_string()
+        )
+        .is_err());
+        assert!(
+            parse_surface(&widget(serde_json::json!([
+                {"kind": "button", "id": "a", "label": "A", "action": "go",
+                 "script": "run()"}
+            ])))
+            .is_err()
+        );
+        // Unknown control kind: the kind set is closed.
+        assert!(
+            parse_surface(&widget(serde_json::json!([
+                {"kind": "slider", "id": "a", "label": "A", "action": "go"}
+            ])))
+            .is_err()
+        );
+        // A link names no action: following it must deliver one.
+        assert!(
+            parse_surface(&widget(serde_json::json!([
+                {"kind": "link", "id": "a", "label": "A"}
+            ])))
+            .is_err()
+        );
+        // Empty and duplicate-id control sets.
+        assert!(parse_surface(&widget(serde_json::json!([]))).is_err());
+        assert!(parse_surface(&widget(serde_json::json!([button("a"), button("a")]))).is_err());
+        // Too many controls: the bound is 64 (MAX_WIDGET_CONTROLS).
+        let many: Vec<Value> = (0..65).map(|index| button(&format!("c{index}"))).collect();
+        assert!(parse_surface(&widget(Value::Array(many))).is_err());
+        // Unsafe label text (a JSON-escaped ESC) and an unsafe action
+        // id (a URL is not an action id).
+        assert!(
+            parse_surface(&widget(serde_json::json!([
+                {"kind": "button", "id": "a", "label": "A\u{001b}[2J", "action": "go"}
+            ])))
+            .is_err()
+        );
+        assert!(
+            parse_surface(&widget(serde_json::json!([
+                {"kind": "button", "id": "a", "label": "A",
+                 "action": "https://example.invalid"}
+            ])))
+            .is_err()
+        );
+        // Oversize document: the serialized cap is 65536 bytes
+        // (MAX_WIDGET_BYTES); a single huge label trips it.
+        assert!(
+            parse_surface(&widget(serde_json::json!([
+                {"kind": "button", "id": "a", "label": "x".repeat(70_000), "action": "go"}
+            ])))
+            .is_err()
+        );
+    }
+
+    #[test]
     fn unknown_rich_surface_kinds_stay_on_the_legacy_path() {
         // Forward-compat seam (#12657 triage): a rich kind this host does
         // not know is not an error — the document drops to the legacy
         // plain-text path, so a new-kind document is safe on an old host.
-        // (Audio and widget kinds land in slices 1b/1c; today both are
-        // unknown here.)
+        // (The widget kind landed in slice 1c: a document that names
+        // the kind but fails validation — this one names no
+        // controls — is refused, not dropped to the legacy path.)
+        assert!(parse_surface(r#"{"kind":"widget","version":1}"#).is_err());
         assert_eq!(
-            parse_surface(r#"{"kind":"audio","version":1,"title":"Song"}"#).unwrap(),
-            None
-        );
-        assert_eq!(
-            parse_surface(r#"{"kind":"widget","version":1}"#).unwrap(),
+            parse_surface(r#"{"kind":"hologram","version":1}"#).unwrap(),
             None
         );
     }

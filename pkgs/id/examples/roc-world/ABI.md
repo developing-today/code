@@ -3,7 +3,7 @@
 This document specifies the byte-level boundary between an `id` world host and
 a Roc world compiled for Wasm32. Version 1 is the interface implemented by
 [`host/src/host.zig`](host/src/host.zig), [`platform.roc`](platform.roc), and
-the import-free guest runner in [`../../src/sandbox.rs`](../../src/sandbox.rs).
+the import-free guest runner in [`../../crates/id-worlds/src/sandbox.rs`](../../crates/id-worlds/src/sandbox.rs).
 The Roc platform's module-level functions are described in the
 [world-platform README](README.md).
 
@@ -145,7 +145,7 @@ outstanding requests after replay.
 - Export implementation and memory/output ownership: [`host/src/host.zig`](host/src/host.zig).
 - Wasm export list and Roc-to-host declarations: [`platform.roc`](platform.roc).
 - Required/optional export checks, memory marshalling, and result handling:
-  [`../../src/sandbox.rs`](../../src/sandbox.rs).
+  [`../../crates/id-worlds/src/sandbox.rs`](../../crates/id-worlds/src/sandbox.rs).
 - Capability schema, limits, and catalog:
   [`../../crates/id-core/src/world_caps.rs`](../../crates/id-core/src/world_caps.rs).
 - Capability execution and result values:

@@ -32,17 +32,20 @@ so, and prints what it did:
    happens only once the Worker answers its health check and says it is
    built for this hostname; until then, and after `--edge off`, the
    hostname goes straight to this host.
-7. With `--edge-direct on`, the Worker also gets the two tokens it needs
-   to act itself while the laptop is away (the repository automation
-   token and the queue store token) and the explicit opt-in that lets it
-   use them. Off by default, remembered like `--edge`, and nothing is
-   uploaded on a run that does not change the choice (unless the Worker
-   has lost one of them, and then it gets them again). Turning it off
-   turns the opt-in off and takes the two tokens away again. They go
-   through Cloudflare's API with the token this script already holds, so
-   nothing has to be installed here for it. The Worker says in
-   /console/health whether the flag is on and whether each token is
-   there.
+7. The Worker is given the two tokens it needs to do the core itself,
+   with this host connected or not (the repository automation token and
+   the queue store token), and the switch that lets it use them. On
+   unless `--edge-direct off` was asked for, which is remembered like
+   `--edge`, turns the switch off and takes the two tokens away again.
+   Nothing is uploaded on a run that changes nothing (unless the Worker
+   has lost one of them, and then it gets them again). A run that was
+   never told either way and cannot do it (a secret that is not readable
+   here, Cloudflare refusing) says so and carries on: the rest of what
+   this script keeps is not held up by it, and the next run tries again.
+   The tokens go through Cloudflare's API with the token this script
+   already holds, so nothing has to be installed here for it. The Worker
+   says in /console/health whether the switch is on and whether each
+   token is there.
 
 The gate comes first and the routes last, so the origin is never
 reachable without sign-in in front of it. If the console does not come
@@ -68,11 +71,11 @@ Usage: expose.py [--check] [--edge on|off] [--edge-direct on|off]
                nothing.
   --edge off   take the hostname off the edge Worker; remembered by later
                runs (the timer's included) until --edge on.
-  --edge-direct on
-               let the edge Worker act itself while the laptop is away:
-               upload the GitHub and queue tokens and turn the opt-in
-               on; remembered by later runs until --edge-direct off,
-               which also takes the tokens away. Off by default.
+  --edge-direct on|off
+               whether the edge Worker does the core itself: on uploads
+               the GitHub and queue tokens and turns the switch on; off
+               turns it off and takes the tokens away. Remembered by
+               later runs. On when never said.
 """
 
 from __future__ import annotations
@@ -114,12 +117,21 @@ PUBLIC_PATHS = (
 WORKER = "pm-console-edge"
 GOOGLE_ID = "google.access-sso.client-id"
 GOOGLE_SECRET = "google.access-sso.client-secret"
-# Bitwarden names for the two tokens the edge Worker acts with while the
-# laptop is away: the repository automation token (the same name the
+# Bitwarden names for the two tokens the edge Worker does the core
+# with: the repository automation token (the same name the
 # queue-transport-alert deploy uses), and the queue store token, whose
 # name the console's environment file may override.
 GITHUB_TOKEN_SECRET = "github.developing-today-code-automation"
 QUEUE_TOKEN_DEFAULT = "turso.fleet-queue-rw-token"
+# The vault name of the PM stack's own bridge credential (#14373),
+# minted on the message bridge for service:pm-stack and put in the
+# vault by hand; the console's environment file may override the name,
+# like the queue token's. The edge Worker presents it to the bridge
+# over its service binding, so the owner's messages are delivered at
+# the edge. It rides along with the direct tokens: a run that cannot
+# read it leaves the bridge a machine's and says so, and never fails
+# over it — its absence is a state (not minted yet), not an error.
+BRIDGE_TOKEN_DEFAULT = "bridge.pm-stack-token"
 
 
 @contextlib.contextmanager
@@ -256,17 +268,18 @@ def edge_choice(state: pathlib.Path, choice: str | None, keep: bool) -> bool:
 
 
 def direct_choice(state: pathlib.Path, choice: str | None, keep: bool) -> bool:
-    """Whether the edge Worker may act itself while the laptop is away.
-    A choice given now decides, and with `keep` it is written to a file,
-    so a timer's run keeps what was last asked for. With no choice given
-    the file decides, and with no file the answer is no: off by default."""
+    """Whether the edge Worker does the core itself. A choice given now
+    decides, and with `keep` it is written to a file, so a timer's run
+    keeps what was last asked for. With no choice given the file decides,
+    and with no file the answer is yes: Cloudflare carrying the core is
+    how this is set up, and `off` is the choice that has to be made."""
     marker = state / "edge-direct"
     if choice is not None:
         if keep:
             state.mkdir(parents=True, exist_ok=True, mode=0o700)
             marker.write_text(choice + "\n")
         return choice != "off"
-    return marker.exists() and marker.read_text().strip() == "on"
+    return not marker.exists() or marker.read_text().strip() != "off"
 
 
 def ensure_edge_direct(
@@ -276,8 +289,10 @@ def ensure_edge_direct(
     choice: str | None,
     check: bool,
 ) -> None:
-    """Upload the two tokens the edge Worker acts with, and its opt-in,
-    or turn the opt-in off and take the tokens away again.
+    """Upload the two tokens the edge Worker acts with, and its switch,
+    or turn the switch off and take the tokens away again. The Worker's
+    bridge token (#14373) rides along in both directions when the vault
+    holds it; it is never one of the three the mode stands on.
 
     A secret is read by name through `fleet secrets get` and sent to
     Cloudflare's API as a Worker secret; it is never printed, written to
@@ -289,7 +304,13 @@ def ensure_edge_direct(
     off first, so the Worker stops at once, and then removes the tokens;
     if that stops part-way the mode is still off and a later run
     finishes. A run that changes nothing uploads nothing, with one
-    exception: a mode that is on gets back whatever the Worker has lost."""
+    exception: a mode that is on gets back whatever the Worker has lost.
+
+    On is what a run does when it was never told either way. Such a run
+    that cannot do it says why and returns: it was not asked for this,
+    so it does not fail over it, and the next run tries again. A run
+    that was asked (`--edge-direct on`), or whose mode is already on,
+    fails as before."""
     state = env.parent
     # Read what is remembered before the choice overwrites it. Nothing is
     # written here: the marker moves only once the Worker has the change.
@@ -314,10 +335,16 @@ def ensure_edge_direct(
         state.mkdir(parents=True, exist_ok=True, mode=0o700)
         marker.write_text(mode + "\n")
 
+    def bridge_name() -> str:
+        return (
+            env_values(env).get("PM_CONSOLE_BRIDGE_TOKEN_NAME")
+            or BRIDGE_TOKEN_DEFAULT
+        )
+
     def take_tokens_away() -> None:
         """Off means the Worker holds nothing it could act with."""
         names = held()
-        for name in ("GITHUB_TOKEN", "QUEUE_TOKEN"):
+        for name in ("GITHUB_TOKEN", "QUEUE_TOKEN", "BRIDGE_TOKEN"):
             if name in names:
                 cf.change(
                     f"edge direct: take {name} away from the Worker",
@@ -340,6 +367,19 @@ def ensure_edge_direct(
             put("GITHUB_TOKEN", github)
             put("QUEUE_TOKEN", queue)
             put("EDGE_DIRECT", "on")
+            # The bridge token rides along when the vault holds it; a
+            # vault without it is a state (not minted yet), said once
+            # here, and the mode stands on the three above regardless.
+            bridge = secret(bridge_name())
+            if bridge:
+                put("BRIDGE_TOKEN", bridge)
+            else:
+                print(
+                    "note: the edge Worker was not given its bridge token: "
+                    f"{bridge_name()} is not readable here; the owner's "
+                    "messages stay a machine's until it is, and the next "
+                    "run tries again"
+                )
         except SystemExit:
             # Part-way is not on. What did get there is taken away again,
             # so a failed attempt leaves the Worker holding nothing.
@@ -364,6 +404,56 @@ def ensure_edge_direct(
             )
             if not check:
                 upload()
+            return
+        # Nothing of the three is lost. The bridge token is given when
+        # the vault holds it and the Worker does not; a vault without
+        # it is left alone in silence — not a loss, and the timer's run
+        # is not made to say so every quarter hour.
+        try:
+            if "BRIDGE_TOKEN" not in held():
+                bridge = secret(bridge_name())
+                if bridge:
+                    cf.changes.append("edge direct: give the Worker its bridge token")
+                    if not check:
+                        put("BRIDGE_TOKEN", bridge)
+        except SystemExit as error:
+            print(f"note: could not see what the Worker holds: {error}")
+        return
+    if wanted and choice is None:
+        # Never told either way: on is how this is set up. Whether it can
+        # be done is found out first, so that a run that cannot says
+        # nothing will change, and does not fail over what it was not
+        # asked for.
+        queue_name = (
+            env_values(env).get("PM_CONSOLE_QUEUE_TOKEN_NAME") or QUEUE_TOKEN_DEFAULT
+        )
+        missing = [
+            name for name in (GITHUB_TOKEN_SECRET, queue_name) if not secret(name)
+        ]
+        if missing:
+            print(
+                "note: the edge Worker was not given its tokens: "
+                f"{' and '.join(missing)} not readable here; the next run tries again"
+            )
+            return
+        before = len(cf.changes)
+        cf.changes.append(
+            "edge direct: upload the GitHub and queue tokens and turn direct actions on"
+        )
+        if check:
+            return
+        try:
+            upload()
+        except SystemExit as error:
+            # What got there was taken away again (upload does that), so
+            # nothing has changed, and nothing is listed as changed.
+            del cf.changes[before:]
+            print(
+                f"note: the edge Worker was not given its tokens: {error}; "
+                "the next run tries again"
+            )
+            return
+        remember("on")
         return
     if wanted:
         cf.changes.append(
@@ -387,8 +477,14 @@ def ensure_edge_direct(
         take_tokens_away()
         return
     if choice == "off":
-        # Asked for off while already off, or after an attempt to turn it
-        # on that never finished: make sure nothing was left behind.
+        # Asked for off while it is not on: never turned on, off already,
+        # or after an attempt to turn it on that never finished. The
+        # Worker is not acting, so the choice is remembered first; a run
+        # that was never told turns it on, and without this the next
+        # timer's run would undo what was just asked for. Then make sure
+        # nothing was left behind.
+        if not check:
+            remember("off")
         take_tokens_away()
         return
     if marker.exists():
@@ -803,9 +899,9 @@ def configure() -> int:
     parser.add_argument(
         "--edge-direct",
         choices=["on", "off"],
-        help="let the edge Worker act itself while the laptop is away: upload "
-        "its GitHub and queue tokens and turn the opt-in on; the choice is "
-        "kept for later runs (default: off)",
+        help="whether the edge Worker does the core itself: on uploads its "
+        "GitHub and queue tokens and turns the switch on, off takes them "
+        "away; the choice is kept for later runs (default: on)",
     )
     args = parser.parse_args()
     env = pathlib.Path.home() / ".local/state/pm-console/.env"
@@ -902,8 +998,8 @@ def configure() -> int:
         # Last: by now the host is up, knows where the edge is, and is
         # reachable behind the hostname the Worker will sit on.
         ensure_edge_route(cf, zone, args.host, edge)
-        # The direct switch is independent of the route: it only decides
-        # whether the Worker already deployed may act itself.
+        # The switch is independent of the route: it only decides whether
+        # the Worker already deployed does the core itself.
         ensure_edge_direct(cf, account, env, args.edge_direct, args.check)
     else:
         raise SystemExit(

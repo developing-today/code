@@ -183,6 +183,23 @@ pub const BROKER_RETRY_MAX_DELAY: Duration = Duration::from_secs(15);
 /// would ever run.
 pub const BROKER_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// Per-invocation ceiling on a single fallback-tier subprocess
+/// wait (`bws` / `op` through a [`CommandRunner`], and the
+/// `--version` probe in program resolution). The broker legs bound
+/// each exchange with [`BROKER_ATTEMPT_TIMEOUT`]; the fallback
+/// tiers spawn children, and `Command::output()` waits forever --
+/// a wedged `bws` or `op` child was the one remaining path by
+/// which a secrets client could still hang under the never-hang
+/// ruling (#14040 Residual B). Same discipline: one named
+/// per-attempt ceiling, in one obvious place.
+pub const SUBPROCESS_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Ceiling on the `--version` probe [`program_runs`] runs against
+/// a candidate program. A healthy candidate answers instantly, so
+/// the probe gets a shorter bound than a real invocation: a wedged
+/// candidate must fail the gate, not hang resolution.
+pub const PROGRAM_PROBE_TIMEOUT: Duration = Duration::from_secs(5);
+
 /// How a broker source retries `Unavailable` outcomes before
 /// giving up to the chain. `NotFound` (a broker 404) and
 /// `InvalidName` are definitive and never retry, at any policy.
@@ -253,6 +270,14 @@ fn resolve_with_retry(
         match attempt() {
             Ok(value) => return Ok(value),
             Err(err @ SecretError::Unavailable { .. }) => {
+                // A cold secrets broker reports this stable error
+                // while its first refresh is in flight. Waiting out
+                // the generic restart budget here wedges clients
+                // behind a healthy-but-not-yet-serving broker; allow
+                // the resolver chain to try its next source now.
+                if is_initial_refresh_unavailable(&err) {
+                    return Err(err);
+                }
                 let elapsed = started.elapsed();
                 if elapsed >= policy.budget {
                     return Err(err);
@@ -273,6 +298,11 @@ fn resolve_with_retry(
             Err(err) => return Err(err),
         }
     }
+}
+
+fn is_initial_refresh_unavailable(error: &SecretError) -> bool {
+    matches!(error, SecretError::Unavailable { source: "secrets-broker", detail, .. }
+        if detail.contains("secrets not loaded yet"))
 }
 
 /// The ordered chain: broker protocol first, `bws` fallback (§1).
@@ -741,14 +771,104 @@ pub trait CommandRunner {
     fn run(&self, program: &str, args: &[&str]) -> Result<String, String>;
 }
 
-pub struct ProcessRunner;
+/// Run `cmd` to completion collecting its output -- a bounded
+/// `Command::output()`. The unbounded call waits forever: a child
+/// that never exits (a `bws` wedged on a dead network, an `op`
+/// stuck on a prompt nobody can see) would block the fallback tier
+/// -- and with it the whole chain -- indefinitely. Here the child
+/// is polled and killed once `timeout` elapses, the same
+/// spawn/poll/kill shape the secrets broker's own `bws` runner
+/// uses (fleet-queue's `BwsRunner`). Stdout and stderr are drained
+/// on threads so a chatty child cannot fill a pipe and deadlock
+/// the wait. Error shapes match the runners' existing ones: spawn
+/// failures name the io error kind; a timeout names the bound.
+fn run_command_bounded(
+    cmd: &mut Command,
+    timeout: Duration,
+) -> Result<std::process::Output, String> {
+    use std::io::Read;
+    cmd.stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| format!("spawn failed: {}", e.kind()))?;
+    let mut stdout_pipe = child.stdout.take();
+    let stdout_thread = std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        if let Some(pipe) = stdout_pipe.as_mut() {
+            let _ = pipe.read_to_end(&mut buf);
+        }
+        buf
+    });
+    let mut stderr_pipe = child.stderr.take();
+    let stderr_thread = std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        if let Some(pipe) = stderr_pipe.as_mut() {
+            let _ = pipe.read_to_end(&mut buf);
+        }
+        buf
+    });
+    let started = Instant::now();
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) => {
+                if started.elapsed() >= timeout {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(format!("timed out after {}s", timeout.as_secs()));
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            Err(e) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(format!("wait failed: {}", e.kind()));
+            }
+        }
+    };
+    let stdout = stdout_thread.join().unwrap_or_default();
+    let stderr = stderr_thread.join().unwrap_or_default();
+    Ok(std::process::Output {
+        status,
+        stdout,
+        stderr,
+    })
+}
+
+pub struct ProcessRunner {
+    timeout: Duration,
+}
+
+impl ProcessRunner {
+    /// A runner with the standard per-invocation ceiling
+    /// ([`SUBPROCESS_ATTEMPT_TIMEOUT`]).
+    pub fn new() -> ProcessRunner {
+        ProcessRunner {
+            timeout: SUBPROCESS_ATTEMPT_TIMEOUT,
+        }
+    }
+
+    /// A runner with a caller-chosen ceiling -- the shape tests
+    /// use to prove a never-exiting child fails within the bound
+    /// without waiting out the production ceiling.
+    pub fn with_timeout(timeout: Duration) -> ProcessRunner {
+        ProcessRunner { timeout }
+    }
+}
+
+impl Default for ProcessRunner {
+    fn default() -> ProcessRunner {
+        ProcessRunner::new()
+    }
+}
 
 impl CommandRunner for ProcessRunner {
     fn run(&self, program: &str, args: &[&str]) -> Result<String, String> {
-        let out = Command::new(program)
-            .args(args)
-            .output()
-            .map_err(|e| format!("spawn failed: {}", e.kind()))?;
+        let mut cmd = Command::new(program);
+        cmd.args(args);
+        let out = run_command_bounded(&mut cmd, self.timeout)?;
         if !out.status.success() {
             return Err(format!("exit status {}", out.status));
         }
@@ -824,9 +944,41 @@ fn is_executable_file(p: &Path) -> bool {
     rc == 0
 }
 
-/// The pure core of [`resolve_bws_program`], split out for tests:
-/// a candidate wins only when it is an executable file, in
-/// override -> PATH -> well-known-locations order.
+/// X_OK is not sufficient: a Nix binary whose ELF interpreter is
+/// absent passes `access(2)` and then fails every exec with
+/// ENOENT -- the #12498 defect the shell tooling fixed by
+/// resolving through test execution. A candidate must also
+/// actually run: probe it with `--version` (the harmless
+/// invocation the shell resolver uses), stdio discarded; a spawn
+/// error or a non-zero exit means the candidate does not run on
+/// this host and must not shadow a working one later in the
+/// order.
+fn program_runs(p: &Path) -> bool {
+    program_runs_within(p, PROGRAM_PROBE_TIMEOUT)
+}
+
+/// [`program_runs`] with a caller-chosen bound, split out for
+/// tests: the probe is a subprocess wait like any other, and an
+/// unbounded one would hang program resolution itself on a wedged
+/// candidate (#14040 Residual B).
+fn program_runs_within(p: &Path, timeout: Duration) -> bool {
+    let mut cmd = std::process::Command::new(p);
+    cmd.arg("--version");
+    run_command_bounded(&mut cmd, timeout)
+        .map(|out| out.status.success())
+        .unwrap_or(false)
+}
+
+/// The full candidate gate for [`resolve_bws_program_from`]:
+/// an executable file that actually runs.
+fn is_runnable_program(p: &Path) -> bool {
+    is_executable_file(p) && program_runs(p)
+}
+
+/// The core of [`resolve_bws_program`], split out for tests:
+/// a candidate wins only when it is an executable file that
+/// actually runs, in override -> PATH -> well-known-locations
+/// order.
 fn resolve_bws_program_from(
     env_override: Option<&str>,
     path_var: Option<&std::ffi::OsStr>,
@@ -834,7 +986,7 @@ fn resolve_bws_program_from(
 ) -> PathBuf {
     if let Some(p) = env_override {
         let p = p.trim();
-        if !p.is_empty() && is_executable_file(Path::new(p)) {
+        if !p.is_empty() && is_runnable_program(Path::new(p)) {
             // Canonicalize a relative override: the bare name would
             // make Command::new search PATH and could run a
             // different program than the one validated here
@@ -845,7 +997,7 @@ fn resolve_bws_program_from(
     if let Some(path_var) = path_var {
         for dir in std::env::split_paths(path_var) {
             let cand = dir.join("bws");
-            if is_executable_file(&cand) {
+            if is_runnable_program(&cand) {
                 return cand;
             }
         }
@@ -855,7 +1007,7 @@ fn resolve_bws_program_from(
         home.join(".nix-profile/bin/bws"),
         PathBuf::from("/run/current-system/sw/bin/bws"),
     ] {
-        if is_executable_file(&cand) {
+        if is_runnable_program(&cand) {
             return cand;
         }
     }
@@ -874,17 +1026,30 @@ fn resolve_bws_program_from(
 /// value cannot masquerade as a credential either.
 pub struct BwsTokenRunner {
     token: Option<String>,
+    timeout: Duration,
 }
 
 impl BwsTokenRunner {
     pub fn from_environment() -> BwsTokenRunner {
         BwsTokenRunner {
             token: bws_access_token(),
+            timeout: SUBPROCESS_ATTEMPT_TIMEOUT,
         }
     }
 
     pub fn with_token(token: Option<String>) -> BwsTokenRunner {
-        BwsTokenRunner { token }
+        BwsTokenRunner {
+            token,
+            timeout: SUBPROCESS_ATTEMPT_TIMEOUT,
+        }
+    }
+
+    /// The same runner with a caller-chosen subprocess ceiling --
+    /// the shape tests use to prove a never-exiting child fails
+    /// within the bound without waiting out the production one.
+    pub fn with_timeout(mut self, timeout: Duration) -> BwsTokenRunner {
+        self.timeout = timeout;
+        self
     }
 }
 
@@ -910,9 +1075,7 @@ impl CommandRunner for BwsTokenRunner {
                 cmd.env_remove("BWS_ACCESS_TOKEN");
             }
         }
-        let out = cmd
-            .output()
-            .map_err(|e| format!("spawn failed: {}", e.kind()))?;
+        let out = run_command_bounded(&mut cmd, self.timeout)?;
         if !out.status.success() {
             return Err(format!("exit status {}", out.status));
         }
@@ -1059,7 +1222,11 @@ impl OpSource {
     pub fn from_environment() -> Option<OpSource> {
         let vault = std::env::var(Self::VAULT_ENV).ok();
         let field = std::env::var(Self::FIELD_ENV).ok();
-        Self::from_values(vault.as_deref(), field.as_deref(), Box::new(ProcessRunner))
+        Self::from_values(
+            vault.as_deref(),
+            field.as_deref(),
+            Box::new(ProcessRunner::new()),
+        )
     }
 
     fn is_segment(s: &str) -> bool {
@@ -1598,12 +1765,65 @@ mod tests {
         let empty_home = dir.join("empty-home");
         std::fs::create_dir_all(&empty_home).unwrap();
         let sys = Path::new("/run/current-system/sw/bin/bws");
-        let expected = if is_executable_file(sys) {
+        let expected = if is_runnable_program(sys) {
             sys.to_path_buf()
         } else {
             PathBuf::from("bws")
         };
         assert_eq!(resolve_bws_program_from(None, None, &empty_home), expected);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn bws_program_resolution_skips_candidates_that_do_not_run() {
+        // oracle (#12498): a candidate that passes access(X_OK)
+        // but cannot actually run -- a script naming a missing
+        // interpreter stands in for a Nix binary whose ELF
+        // interpreter is absent -- is skipped, not trusted, and
+        // does not shadow a working candidate later in the order.
+        // Same for a candidate that runs but exits non-zero.
+        use std::os::unix::fs::PermissionsExt;
+        let dir = test_temp_dir("bws-resolve-broken");
+        let path_dir = dir.join("pathbin");
+        let home = dir.join("home");
+        std::fs::create_dir_all(&path_dir).unwrap();
+        std::fs::create_dir_all(home.join("tools/bin")).unwrap();
+        let mk = |p: &Path, body: &str| {
+            std::fs::write(p, body).unwrap();
+            std::fs::set_permissions(p, std::fs::Permissions::from_mode(0o755)).unwrap();
+        };
+        let broken = dir.join("broken-bws");
+        mk(&broken, "#!/nonexistent/fleet-test-interp\n");
+        let nonzero = dir.join("nonzero-bws");
+        mk(&nonzero, "#!/bin/sh\nexit 3\n");
+        let working = path_dir.join("bws");
+        mk(&working, "#!/bin/sh\n");
+        let path_var = std::env::join_paths([&path_dir]).unwrap();
+        // Both unrunnable overrides are skipped for the working
+        // PATH candidate.
+        assert_eq!(
+            resolve_bws_program_from(Some(broken.to_str().unwrap()), Some(&path_var), &home),
+            working
+        );
+        assert_eq!(
+            resolve_bws_program_from(Some(nonzero.to_str().unwrap()), Some(&path_var), &home),
+            working
+        );
+        // An unrunnable PATH candidate is skipped for the working
+        // well-known home location.
+        let home_bws = home.join("tools/bin/bws");
+        mk(&home_bws, "#!/bin/sh\n");
+        let broken_path_dir = dir.join("broken-pathbin");
+        std::fs::create_dir_all(&broken_path_dir).unwrap();
+        mk(
+            &broken_path_dir.join("bws"),
+            "#!/nonexistent/fleet-test-interp\n",
+        );
+        let broken_path_var = std::env::join_paths([&broken_path_dir]).unwrap();
+        assert_eq!(
+            resolve_bws_program_from(None, Some(&broken_path_var), &home),
+            home_bws
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1663,6 +1883,28 @@ mod tests {
         });
         assert_eq!(out.unwrap().expose(), "fixture-value-not-a-secret");
         assert_eq!(calls.get(), 3);
+    }
+
+    #[test]
+    fn cold_refresh_unavailable_fails_over_without_spending_restart_budget() {
+        use std::cell::Cell;
+        let calls = Cell::new(0);
+        let started = Instant::now();
+        let out = resolve_with_retry(&test_retry_policy(), || {
+            calls.set(calls.get() + 1);
+            Err(SecretError::Unavailable {
+                source: "secrets-broker",
+                name: "x".to_string(),
+                detail: "secrets-broker answered HTTP 503: secrets not loaded yet".to_string(),
+            })
+        });
+        assert!(matches!(out, Err(SecretError::Unavailable { .. })));
+        assert_eq!(
+            calls.get(),
+            1,
+            "cold-refresh response should fall through immediately"
+        );
+        assert!(started.elapsed() < Duration::from_secs(5));
     }
 
     #[test]
@@ -1734,6 +1976,28 @@ mod tests {
         let source = BrokerSource::new(sock, PathBuf::from("/nonexistent/token"))
             .with_retry_policy(test_retry_policy());
         (source, handle, dir)
+    }
+
+    #[test]
+    fn broker_cold_refresh_response_returns_within_client_bound() {
+        // Oracle (#13893 / #13948 S1): a broker that explicitly says
+        // its first refresh has not loaded must not consume the long
+        // restart retry budget before the resolver tries its next
+        // source. The response body is the production 503 shape.
+        let (source, handle, dir) = scripted_broker_replies(vec![(
+            503,
+            serde_json::json!({"error": "secrets not loaded yet"}),
+        )]);
+        let started = Instant::now();
+        let result = source.resolve("wanted.name");
+        assert!(matches!(result, Err(SecretError::Unavailable { .. })));
+        assert!(started.elapsed() < Duration::from_secs(5));
+        assert_eq!(
+            handle.join().unwrap(),
+            1,
+            "one prompt request reaches the broker"
+        );
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
@@ -1967,6 +2231,74 @@ mod tests {
             "set"
         );
         assert_eq!(probe(&BwsTokenRunner::with_token(None)), "unset");
+    }
+
+    // ---- bounded subprocess waits (#14040 Residual B) ----
+    //
+    // Oracle: the never-hang ruling -- a fallback-tier child that
+    // never exits must fail its tier within the named bound
+    // instead of blocking the caller forever. Each test drives a
+    // real `sh -c "sleep 60"` child through the production code
+    // path with a short caller-chosen ceiling and asserts both the
+    // timeout error and that the elapsed time stays bounded.
+
+    #[test]
+    fn bounded_run_kills_a_never_exiting_child_within_the_bound() {
+        let mut cmd = Command::new("sh");
+        cmd.args(["-c", "sleep 60"]);
+        let started = Instant::now();
+        let err = run_command_bounded(&mut cmd, Duration::from_millis(200))
+            .expect_err("a never-exiting child must fail, not hang");
+        assert!(err.contains("timed out"), "unexpected error: {err}");
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "the bound must actually bound: {:?}",
+            started.elapsed()
+        );
+    }
+
+    #[test]
+    fn bounded_run_returns_output_and_status_for_a_quick_child() {
+        let mut cmd = Command::new("sh");
+        cmd.args(["-c", "echo hello; exit 3"]);
+        let out = run_command_bounded(&mut cmd, Duration::from_secs(10)).unwrap();
+        assert_eq!(out.status.code(), Some(3));
+        assert_eq!(String::from_utf8(out.stdout).unwrap(), "hello\n");
+    }
+
+    #[test]
+    fn process_runner_times_out_a_hanging_child() {
+        let runner = ProcessRunner::with_timeout(Duration::from_millis(200));
+        let started = Instant::now();
+        let err = runner
+            .run("sh", &["-c", "sleep 60"])
+            .expect_err("a hanging child must fail the tier");
+        assert!(err.contains("timed out"), "unexpected error: {err}");
+        assert!(started.elapsed() < Duration::from_secs(10));
+    }
+
+    #[test]
+    fn bws_token_runner_times_out_a_hanging_child() {
+        let runner = BwsTokenRunner::with_token(None).with_timeout(Duration::from_millis(200));
+        let started = Instant::now();
+        let err = runner
+            .run("sh", &["-c", "sleep 60"])
+            .expect_err("a hanging child must fail the tier");
+        assert!(err.contains("timed out"), "unexpected error: {err}");
+        assert!(started.elapsed() < Duration::from_secs(10));
+    }
+
+    #[test]
+    fn program_probe_times_out_a_hanging_candidate() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = test_temp_dir("probe-hang");
+        let script = dir.join("bws");
+        std::fs::write(&script, "#!/bin/sh\nsleep 60\n").unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let started = Instant::now();
+        assert!(!program_runs_within(&script, Duration::from_millis(200)));
+        assert!(started.elapsed() < Duration::from_secs(10));
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     // ---- op (1Password) source ----

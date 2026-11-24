@@ -93,7 +93,16 @@ describe("the message a phone receives", () => {
       }));
       // It still holds both devices, each known by its mark and not by its address.
       const marks = [await endpointMark(a.subscription.endpoint), await endpointMark(m.subscription.endpoint)];
-      expect(await again.status()).toEqual({ ...status, devices: 2, known: marks });
+      // And what came of the send above, which a restart does not lose.
+      const last = {
+        at: new Date(NOW).toISOString(),
+        class: "replies" as const,
+        sent: 2,
+        gone: 0,
+        failed: 0,
+        refused: [],
+      };
+      expect(await again.status()).toEqual({ ...status, devices: 2, known: marks, last });
       expect(status.known).toEqual([]);
       expect(marks[0]).toMatch(/^[A-Za-z0-9_-]{16}$/);
       expect(marks[0]).not.toBe(marks[1]);
@@ -105,21 +114,88 @@ describe("the message a phone receives", () => {
     }
   });
 
+  // Oracle: RFC 8030 section 7.2. A push service takes a message of
+  // 4096 bytes and may refuse a longer one, so what is posted (as it is
+  // really sealed) is measured against that, and read back the way the
+  // phone reads it.
+  test("a message too long for one push is cut to fit, with its buttons kept; one that fits goes whole", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "pm-push-"));
+    try {
+      const a = await browser();
+      const posts: Uint8Array[] = [];
+      const push = new Push(
+        fileStore(join(dir, "push.json")),
+        "mailto:owner@example.com",
+        async (_url, init) => (posts.push(init.body), { status: 201 }),
+      );
+      await push.subscribe(a.subscription, "phone");
+      const actions = [{ action: "done", title: "I did it", kind: "hands.done", args: { ref: "o/r#2" } }];
+      const said = { title: "Something needs you", url: "/console/#needs/hands", tag: "hands-o/r#2" };
+      // One byte a character, two, four (a pair of code units), and one JSON writes as two.
+      for (const body of ["x".repeat(20_000), "é".repeat(9_000), "𝄞".repeat(5_000), '"'.repeat(8_000)]) {
+        expect(await push.send("needs", { ...said, body, actions })).toMatchObject({ sent: 1, failed: 0 });
+        const posted = posts.at(-1) as Uint8Array;
+        expect(posted.length).toBeLessThanOrEqual(4096);
+        // No shorter than it has to be.
+        expect(posted.length).toBeGreaterThan(4096 - 16);
+        const got = JSON.parse(await a.open(posted)) as { body: string };
+        expect(got).toMatchObject({ ...said, class: "needs", actions });
+        // The start of what was said, in whole characters, and marked as cut.
+        const kept = Array.from(got.body);
+        expect(kept.at(-1)).toBe("…");
+        expect(kept.slice(0, -1).join("")).toBe(
+          Array.from(body)
+            .slice(0, kept.length - 1)
+            .join(""),
+        );
+      }
+      // One that fits is not touched.
+      const whole = "y".repeat(3_000);
+      await push.send("needs", { ...said, body: whole, actions });
+      expect(JSON.parse(await a.open(posts.at(-1) as Uint8Array))).toEqual({
+        ...said,
+        body: whole,
+        actions,
+        class: "needs",
+      });
+      // Buttons that could not fit beside any words at all: it goes without them, said whole.
+      const many = Array.from({ length: 120 }, (_, i) => ({ action: `a${i}`, title: "x".repeat(40) }));
+      await push.send("needs", { ...said, body: "Short.", actions: many });
+      expect(posts.at(-1)?.length).toBeLessThanOrEqual(4096);
+      expect(JSON.parse(await a.open(posts.at(-1) as Uint8Array))).toEqual({ ...said, body: "Short.", class: "needs" });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test("a device that is gone is forgotten, a class switched off sends nothing, a failure is counted", async () => {
     const dir = mkdtempSync(join(tmpdir(), "pm-push-"));
     try {
       const a = await browser();
       const b = await browser("web.push.apple.com");
-      let answer = (url: string) => (url === a.subscription.endpoint ? 410 : 201);
+      let answer: (url: string) => number = (url: string) => (url === a.subscription.endpoint ? 410 : 201);
       let posts = 0;
-      const push = new Push(
-        fileStore(join(dir, "push.json")),
-        "mailto:o@example.com",
-        async (url) => (posts++, { status: answer(url) }),
-      );
+      // What a push service answers has a body nobody reads, and each send has a deadline.
+      let letGo = 0;
+      const deadlines: (AbortSignal | undefined)[] = [];
+      const push = new Push(fileStore(join(dir, "push.json")), "mailto:o@example.com", async (url, init) => {
+        posts++;
+        deadlines.push(init.signal);
+        const answered = {
+          status: answer(url),
+          body: {
+            cancel: async () => {
+              letGo++;
+            },
+          },
+        };
+        return answered;
+      });
       await push.subscribe(a.subscription, "");
       await push.subscribe(b.subscription, "");
       expect(await push.send("needs", { title: "t", body: "b", url: "/" })).toEqual({ sent: 1, gone: 1, failed: 0 });
+      // Each was sent under a deadline that had not run out, and its answer's body let go of.
+      expect([deadlines.map((signal) => signal?.aborted), letGo]).toEqual([[false, false], 2]);
       expect((await push.status()).devices).toBe(1);
       expect(await push.setClass("needs", false)).toEqual({
         replies: true,
@@ -142,10 +218,94 @@ describe("the message a phone receives", () => {
     }
   });
 
+  test("what came of the last send is kept: how many it was taken for, and which push service refused", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "pm-push-"));
+    try {
+      const a = await browser(); // Google's
+      const m = await browser("updates.push.services.mozilla.com");
+      const w = await browser("web.push.apple.com");
+      const MSG = { title: "t", body: "b", url: "/console/" };
+      let answer: (url: string) => number = () => 201;
+      let now = Date.parse("2026-11-23T05:00:00Z");
+      const file = join(dir, "push.json");
+      const make = () =>
+        new Push(
+          fileStore(file),
+          "mailto:o@example.com",
+          async (url) => {
+            const status = answer(url);
+            if (status < 0) throw new Error("no route to the push service");
+            return { status };
+          },
+          () => now,
+        );
+      const push = make();
+      expect((await push.status()).last).toBeNull(); // nothing has been sent
+      await push.send("replies", MSG);
+      expect((await push.status()).last).toBeNull(); // with nobody to send to, nothing was
+      for (const b of [a, m, w]) await push.subscribe(b.subscription, "");
+      await push.send("replies", MSG);
+      expect((await push.status()).last).toEqual({
+        at: "2026-11-23T05:00:00.000Z",
+        class: "replies",
+        sent: 3,
+        gone: 0,
+        failed: 0,
+        refused: [],
+      });
+      // One service refuses, one cannot be reached, one says the device is gone.
+      answer = (url) => (url === a.subscription.endpoint ? 403 : url === m.subscription.endpoint ? -1 : 410);
+      now += 60_000;
+      await push.send("test", MSG);
+      const last = (await make().status()).last; // as a restarted service reads it back
+      expect(last).toEqual({
+        at: "2026-11-23T05:01:00.000Z",
+        class: "test",
+        sent: 0,
+        gone: 1,
+        failed: 2,
+        refused: [
+          { host: "fcm.googleapis.com", status: 403 },
+          { host: "updates.push.services.mozilla.com", status: 0 },
+        ],
+      });
+      // It names the service, never the device: no address, no key.
+      for (const secret of ["abc123", a.subscription.keys.auth, a.subscription.keys.p256dh]) {
+        expect(JSON.stringify(await push.status())).not.toContain(secret);
+      }
+      // A class that is switched off sends nothing, and the account stays as it was.
+      await push.setClass("needs", false);
+      now += 60_000;
+      await push.send("needs", MSG);
+      expect((await push.status()).last?.at).toBe("2026-11-23T05:01:00.000Z");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test("the server only posts to push services", async () => {
     const good = (await browser()).subscription;
     expect(validSubscription(good)).toEqual(good);
+    // What browsers really name. The second Google host is the one a
+    // Chrome off the stable channel gives (a real Chrome 153 did, when
+    // this was checked against Google's service); both are in Chromium's
+    // push_messaging_constants.cc.
     for (const endpoint of [
+      "https://fcm.googleapis.com/fcm/send/dQw:APA91b",
+      "https://fcm.googleapis.com/wp/dQw:APA91b",
+      "https://jmt17.google.com/fcm/send/dQw:APA91b",
+      "https://updates.push.services.mozilla.com/wpush/v2/gAAAA",
+      "https://web.push.apple.com/QGx",
+      "https://wns2-by3p.notify.windows.com/w/?token=AwYAAAB",
+    ]) {
+      expect(validSubscription({ ...good, endpoint })?.endpoint).toBe(endpoint);
+    }
+    for (const endpoint of [
+      "https://jmt17.google.com.evil.example/fcm/send/x",
+      "https://x.jmt17.google.com/fcm/send/x",
+      "https://jmt18.google.com/fcm/send/x",
+      "https://www.google.com/fcm/send/x",
+      "https://google.com/fcm/send/x",
       "http://fcm.googleapis.com/fcm/send/x", // not https
       "https://127.0.0.1:4870/api/alerts", // this machine
       "https://fcm.googleapis.com.evil.example/x",
@@ -206,6 +366,25 @@ describe("when a notification is owed", () => {
     expect(changes(first.seen, state()).messages).toEqual([]); // and nothing is said twice
   });
 
+  test("the fleet's reply on a question is announced as its answer", () => {
+    const seen: Seen = changes(NOTHING_SEEN, state()).seen;
+    const out = changes(
+      seen,
+      state({
+        asks: [
+          { issue: 12601, intent: "question", replies: [reply("2026-11-22T08:00:00")] },
+          { issue: 12602, intent: "directive", replies: [reply("2026-11-22T08:00:00")] },
+          { issue: 12603, replies: [reply("2026-11-22T08:00:00")] },
+        ],
+      }),
+    );
+    expect(out.messages.map((m) => m.title)).toEqual([
+      "The fleet answered your question (#12601)",
+      "The fleet replied on #12602",
+      "The fleet replied on #12603",
+    ]);
+  });
+
   test("each new thing is announced once, with where to go", () => {
     const seen: Seen = changes(NOTHING_SEEN, state()).seen;
     const later = state({
@@ -229,11 +408,40 @@ describe("when a notification is owed", () => {
     const out = changes(seen, later);
     expect(out.messages.map((m) => [m.cls, m.title, m.body, m.url])).toEqual([
       ["replies", "The fleet replied on #12501", "Done. #12279 is first in the queue.", "/console/#ask"],
-      ["needs", "Something needs you", "Sign the form", "/console/#needs/hands"],
+      // What to do and on what; a session waiting on him has no item to name.
+      ["needs", "Something needs you", "Sign the form (o/r#2)", "/console/#needs/hands"],
       ["needs", "Something needs you", "Log into the main account", "/console/#needs/hands"],
       ["questions", "3 new questions for you", "363 open in all.", "/console/#needs/questions"],
       ["trouble", "A unit failed", "a.service", "/console/#more/services"],
     ]);
+    // What can be done about each from the notification itself: an
+    // action of the owner's, as the app would send it, or a screen.
+    expect(
+      out.messages.map((m) =>
+        (m.actions ?? []).map((a) => [a.title, a.kind ?? a.url, a.args ?? null, a.reply ?? false]),
+      ),
+    ).toEqual([
+      [
+        ["Reply", "ask.reply", { issue: 12501 }, true],
+        ["Close it", "ask.close", { issue: 12501 }, false],
+      ],
+      [
+        ["I did it", "hands.done", { ref: "o/r#2" }, false],
+        ["Open", "/console/#needs/hands", null, false],
+      ],
+      // Not an item with a label to take off: it can only be looked at.
+      [["Open", "/console/#needs/hands", null, false]],
+      [["Look at them", "/console/#needs/questions", null, false]],
+      [
+        ["Restart it", "unit.act", { unit: "a.service", action: "restart" }, false],
+        ["Look", "/console/#more/services", null, false],
+      ],
+    ]);
+    // A button that takes text says where to go where a device cannot take it.
+    expect(out.messages[0].actions?.[0].url).toBe("/console/#ask");
+    // Every button has a name of its own within its notification.
+    for (const m of out.messages)
+      expect(new Set((m.actions ?? []).map((a) => a.action)).size).toBe((m.actions ?? []).length);
     expect(changes(out.seen, later).messages).toEqual([]);
     // His own reply is not news to him; fewer questions is not news either,
     // but it lowers the mark, so the next new one is.
@@ -259,7 +467,15 @@ describe("when a notification is owed", () => {
     try {
       let now = state();
       const still = { ttlMs: 1e12, load: async () => "x" };
-      const sections = { board: still, prs: still, priorities: still, agents: still, more: still, questions: still };
+      const sections = {
+        board: still,
+        prs: still,
+        priorities: still,
+        done: still,
+        agents: still,
+        more: still,
+        questions: still,
+      };
       const live = (name: string) => ({ ttlMs: 1e12, load: async () => (now as Record<string, unknown>)[name] });
       const docs = new Docs({
         ...sections,
@@ -409,6 +625,7 @@ test("a list of units that has stopped being read cannot make one failed run loo
           "questions",
           "prs",
           "priorities",
+          "done",
           "agents",
           "more",
         ].map((name) => [name, empty]),

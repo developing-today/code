@@ -102,6 +102,7 @@ type ArgError struct {
 	Reason string
 }
 
+// Error reports the operation, parameter, and reason the call was refused for.
 func (e *ArgError) Error() string {
 	return fmt.Sprintf("client: operation %s, parameter %s: %s", e.Op, e.Param, e.Reason)
 }
@@ -117,6 +118,7 @@ type HTTPError struct {
 	Body      []byte
 }
 
+// Error reports the daemon's message for a non-2xx answer, or the raw body when it is not that shape.
 func (e *HTTPError) Error() string {
 	if e.Message != "" {
 		return fmt.Sprintf("client: http %d: %s", e.Status, e.Message)

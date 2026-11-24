@@ -1,0 +1,34 @@
+[package]
+name = "fleet-cert"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "The `fleet cert` domain: PKI/X.509 roots, issuers, leaves, chains and bundles over a library-first Rust API (developing-today/code#9157, spec doc/2026-11-13T01-34-11Z_design_fleet_ca_credentials_secrets)."
+
+[dependencies]
+# rcgen is the certificate engine: key generation, TBS construction and
+# signing for every registered algorithm, ML-DSA-44 included (RFC 9881
+# identifiers, via the aws-lc-rs backend — the ring backend has no
+# ML-DSA). Certificates produced here verify in OpenSSL 3.5+.
+rcgen = { version = "0.14.10", default-features = false, features = [
+  "aws_lc_rs",
+  "pem",
+] }
+# Direct aws-lc-rs link for chain signature verification (all five
+# registered algorithms, ML-DSA-44 included) — the same backend rcgen
+# signs with, so verify semantics match the signer.
+aws-lc-rs = { version = "1.18", default-features = false }
+# Certificate parsing for inspect/validate/chain work (DER + PEM).
+x509-parser = "0.18"
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+time = { version = "0.3", features = ["parsing", "formatting"] }
+# PKCS#8 key wrapper rcgen's loader takes (rustls-pki-types).
+rustls-pki-types = "1"
+
+[dev-dependencies]
+# Integration tests drive the built library API end to end and shell
+# out to `openssl` (when present) as the independent validator.
+serde_json = { workspace = true }

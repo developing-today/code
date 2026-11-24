@@ -365,13 +365,7 @@ export function scoreWindowSeries(args: {
         continue;
       }
       const predicted = proj.wallsBeforeReset;
-      const outcome: ForecastOutcome = predicted
-        ? walledAt !== null
-          ? "tp"
-          : "fp"
-        : walledAt !== null
-          ? "fn"
-          : "tn";
+      const outcome: ForecastOutcome = predicted ? (walledAt !== null ? "tp" : "fp") : walledAt !== null ? "fn" : "tn";
       const errorMin =
         outcome === "tp" && proj.projectedWallAt !== null && walledAt !== null
           ? (proj.projectedWallAt - walledAt) / 60_000
@@ -413,7 +407,9 @@ function quantile(sorted: number[], q: number): number {
   const base = Math.floor(pos);
   const rest = pos - base;
   const next = sorted[base + 1];
-  return next !== undefined ? (sorted[base] as number) + rest * (next - (sorted[base] as number)) : (sorted[base] as number);
+  return next !== undefined
+    ? (sorted[base] as number) + rest * (next - (sorted[base] as number))
+    : (sorted[base] as number);
 }
 
 export function errorDistribution(errorsMin: readonly number[]): ErrorDistribution | null {
@@ -483,11 +479,7 @@ export interface ForecastAccuracyLedger {
   pools: PoolBaseline[];
 }
 
-function baselineFromScoring(
-  window: string,
-  pointsCount: number,
-  scoring: WindowScoring,
-): WindowBaseline {
+function baselineFromScoring(window: string, pointsCount: number, scoring: WindowScoring): WindowBaseline {
   const tp = scoring.facts.filter((f) => f.outcome === "tp").length;
   const fp = scoring.facts.filter((f) => f.outcome === "fp").length;
   const fn = scoring.facts.filter((f) => f.outcome === "fn").length;
@@ -505,7 +497,9 @@ function baselineFromScoring(
   }
   const scored = tp + fp + fn + tn;
   if (scoring.periodsScored > 0 && scored === 0) {
-    reasons.push("every issued forecast was insufficient-history — the pace was never measurable in a completed period");
+    reasons.push(
+      "every issued forecast was insufficient-history — the pace was never measurable in a completed period",
+    );
   }
   const precision = tp + fp > 0 ? Math.round((tp / (tp + fp)) * 1000) / 1000 : null;
   const recall = tp + fn > 0 ? Math.round((tp / (tp + fn)) * 1000) / 1000 : null;
@@ -669,7 +663,9 @@ export function renderBacktestReport(ledger: ForecastAccuracyLedger): string {
   lines.push("");
   lines.push("## Per-pool calibration (rollup over windows)");
   lines.push("");
-  lines.push("| pool | scoreable | periods (scored/walled) | forecasts (scored/insufficient) | precision | recall | wall error (projected − realized) |");
+  lines.push(
+    "| pool | scoreable | periods (scored/walled) | forecasts (scored/insufficient) | precision | recall | wall error (projected − realized) |",
+  );
   lines.push("|---|---|---|---|---|---|---|");
   for (const p of ledger.pools) {
     const r = p.rollup;
@@ -696,7 +692,9 @@ export function renderBacktestReport(ledger: ForecastAccuracyLedger): string {
       if (w.periodsTotal === 0 && w.forecastsIssued === 0 && !w.unscoreableReasons.length) continue;
       lines.push(
         `- **${w.window}** — scoreable: ${w.scoreable ? "yes" : "NO"}; periods scored ${w.periodsScored} (walled ${w.periodsWalled}, open ${w.periodsOpen}, no-reset ${w.periodsNoReset}); forecasts scored ${w.forecastsScored} (TP ${w.tp} / FP ${w.fp} / FN ${w.fn} / TN ${w.tn}), insufficient ${w.forecastsInsufficient}, detections ${w.detectionsWhileWalled}; precision ${fmtMetric(w.precision)}, recall ${fmtMetric(w.recall)}; wall error ${fmtErr(w.wallErrorMin)}; first-call lead ${
-          w.firstCallLeadMin ? `median ${w.firstCallLeadMin.medianMin}m over ${w.firstCallLeadMin.count} walled periods` : "—"
+          w.firstCallLeadMin
+            ? `median ${w.firstCallLeadMin.medianMin}m over ${w.firstCallLeadMin.count} walled periods`
+            : "—"
         }`,
       );
       for (const reason of w.unscoreableReasons) lines.push(`  - note: ${reason}`);
@@ -714,6 +712,350 @@ export function renderBacktestReport(ledger: ForecastAccuracyLedger): string {
   lines.push(
     "- Wall-error resolution finer than the reading cadence: the realized wall is known only at the first at/over-limit reading, so errors carry the gather cadence's quantization (15 minutes in the gatherer era, a day in the manual era).",
   );
+  lines.push("");
+  return lines.join("\n");
+}
+
+// ---------------------------------------------------------------------------
+// downtime_window scoring (C4.1 criterion 2, #13257; design §3 + §7)
+//
+// Scores the C4 prediction records quota-downtime.ts issues
+// (kind "downtime_window", source "quota-prediction", #13295) against
+// realized complete-downtime windows. Pure functions over plain
+// values — no I/O, no clock reads except through arguments.
+//
+// Design §3, downtime_window bullet, verbatim:
+// - Start error and end error (signed minutes), plus interval
+//   overlap (intersection ÷ union of predicted vs realized window).
+// - A predicted window that never occurs scores as a false window;
+//   a realized complete-downtime with no prediction scores as a
+//   miss. Both count, per S2's precision/recall shape.
+// - Honesty states (insufficient_history / no_basis — the §1
+//   published states, never an invented range) are NOT scored: they
+//   are the honest answer, and scoring them would pay for guessing
+//   (the model_plan_arrival §3 precedent).
+//
+// Realized windows come from the same gatherer/pool-state history
+// the forecast product already consumes — no second gatherer: the
+// caller assembles per-provider walled intervals from the snapshot
+// store (pct >= 100 readings, the same realized-wall definition S2
+// uses) and joins them with deriveRealizedDowntimeWindows below,
+// the realized-side mirror of deriveDowntimeWindowRecords'
+// intersection. Open predictions are unscored, never assumed.
+
+/** Minimal structural input: accepts C4PredictionRecord verbatim. */
+export interface DowntimePredictionInput {
+  id: string;
+  state: string;
+  prediction: { earliest: string; latest: string } | null;
+}
+
+export interface DowntimeRealizedWindow {
+  /** ISO-8601 UTC bound of the realized all-walled interval. */
+  start: string;
+  end: string;
+}
+
+export type DowntimeScoreOutcome = "hit" | "false_window" | "miss";
+
+export interface ScoredDowntimeWindow {
+  /** The prediction record id for hits and false windows; null for misses. */
+  id: string | null;
+  outcome: DowntimeScoreOutcome;
+  predictedEarliest: string | null;
+  predictedLatest: string | null;
+  realizedStart: string | null;
+  realizedEnd: string | null;
+  /** predicted earliest − realized start, signed minutes; hits only. */
+  startErrorMin: number | null;
+  /** predicted latest − realized end, signed minutes; hits only. */
+  endErrorMin: number | null;
+  /** Intersection ÷ union of predicted vs realized window; hits only. */
+  overlapIoU: number | null;
+}
+
+export interface DowntimeWindowScoring {
+  facts: ScoredDowntimeWindow[];
+  /** Predicted records in a scored state (predicted with a range). */
+  predictionsScored: number;
+  /** Predicted records in an honesty state: published, never scored. */
+  predictionsUnscored: number;
+  hits: number;
+  falseWindows: number;
+  misses: number;
+}
+
+const MIN = 60_000;
+
+/** States that publish no range: the honest answer, never scored (§1, §3). */
+export function isDowntimeUnscoredState(state: string): boolean {
+  return state === "insufficient_history" || state === "no_basis" || state === "adjustment_unavailable";
+}
+
+function downtimeOverlapIoU(pStart: number, pEnd: number, rStart: number, rEnd: number): number {
+  const intersection = Math.max(0, Math.min(pEnd, rEnd) - Math.max(pStart, rStart));
+  const union = pEnd - pStart + (rEnd - rStart) - intersection;
+  if (!(union > 0)) return 0;
+  return Math.round((intersection / union) * 1000) / 1000;
+}
+
+/**
+ * Score one predicted window against its realized window: start
+ * error and end error (signed minutes) plus interval overlap
+ * (intersection ÷ union). Both intervals must be finite with
+ * earliest < latest (the §1 refusal of degenerate ranges); NaN or
+ * degenerate inputs score 0 overlap rather than throwing, so one
+ * bad record cannot poison a ledger rollup.
+ */
+export function scoreDowntimePair(args: {
+  predictedEarliest: string;
+  predictedLatest: string;
+  realizedStart: string;
+  realizedEnd: string;
+}): { startErrorMin: number; endErrorMin: number; overlapIoU: number } {
+  const pStart = Date.parse(args.predictedEarliest);
+  const pEnd = Date.parse(args.predictedLatest);
+  const rStart = Date.parse(args.realizedStart);
+  const rEnd = Date.parse(args.realizedEnd);
+  if (!Number.isFinite(pStart) || !Number.isFinite(pEnd) || !Number.isFinite(rStart) || !Number.isFinite(rEnd)) {
+    return { startErrorMin: 0, endErrorMin: 0, overlapIoU: 0 };
+  }
+  return {
+    startErrorMin: Math.round(((pStart - rStart) / MIN) * 10) / 10,
+    endErrorMin: Math.round(((pEnd - rEnd) / MIN) * 10) / 10,
+    overlapIoU: downtimeOverlapIoU(pStart, pEnd, rStart, rEnd),
+  };
+}
+
+/**
+ * Join predicted downtime_window records to realized windows.
+ * Greedy best-overlap match in prediction order: each predicted
+ * range takes the unmatched realized window with the highest IoU
+ * above 0; a predicted range with no overlapping realized window
+ * scores as a false window; a realized window no prediction takes
+ * scores as a miss. Honesty-state records (and predicted-state
+ * records carrying no range) are counted in predictionsUnscored
+ * and never scored.
+ */
+export function scoreDowntimeWindows(args: {
+  predictions: readonly DowntimePredictionInput[];
+  realized: readonly DowntimeRealizedWindow[];
+}): DowntimeWindowScoring {
+  const taken = new Array<boolean>(args.realized.length).fill(false);
+  const out: DowntimeWindowScoring = {
+    facts: [],
+    predictionsScored: 0,
+    predictionsUnscored: 0,
+    hits: 0,
+    falseWindows: 0,
+    misses: 0,
+  };
+  for (const pred of args.predictions) {
+    if (isDowntimeUnscoredState(pred.state) || pred.prediction === null) {
+      out.predictionsUnscored++;
+      continue;
+    }
+    out.predictionsScored++;
+    const pStart = Date.parse(pred.prediction.earliest);
+    const pEnd = Date.parse(pred.prediction.latest);
+    let best = -1;
+    let bestIoU = 0;
+    if (Number.isFinite(pStart) && Number.isFinite(pEnd) && pEnd > pStart) {
+      for (let i = 0; i < args.realized.length; i++) {
+        if (taken[i]) continue;
+        const r = args.realized[i] as DowntimeRealizedWindow;
+        const rStart = Date.parse(r.start);
+        const rEnd = Date.parse(r.end);
+        if (!Number.isFinite(rStart) || !Number.isFinite(rEnd) || rEnd <= rStart) continue;
+        const iou = downtimeOverlapIoU(pStart, pEnd, rStart, rEnd);
+        if (iou > bestIoU) {
+          bestIoU = iou;
+          best = i;
+        }
+      }
+    }
+    if (best < 0) {
+      out.falseWindows++;
+      out.facts.push({
+        id: pred.id,
+        outcome: "false_window",
+        predictedEarliest: pred.prediction.earliest,
+        predictedLatest: pred.prediction.latest,
+        realizedStart: null,
+        realizedEnd: null,
+        startErrorMin: null,
+        endErrorMin: null,
+        overlapIoU: null,
+      });
+      continue;
+    }
+    taken[best] = true;
+    const r = args.realized[best] as DowntimeRealizedWindow;
+    const pair = scoreDowntimePair({
+      predictedEarliest: pred.prediction.earliest,
+      predictedLatest: pred.prediction.latest,
+      realizedStart: r.start,
+      realizedEnd: r.end,
+    });
+    out.hits++;
+    out.facts.push({
+      id: pred.id,
+      outcome: "hit",
+      predictedEarliest: pred.prediction.earliest,
+      predictedLatest: pred.prediction.latest,
+      realizedStart: r.start,
+      realizedEnd: r.end,
+      startErrorMin: pair.startErrorMin,
+      endErrorMin: pair.endErrorMin,
+      overlapIoU: pair.overlapIoU,
+    });
+  }
+  for (let i = 0; i < args.realized.length; i++) {
+    if (taken[i]) continue;
+    const r = args.realized[i] as DowntimeRealizedWindow;
+    out.misses++;
+    out.facts.push({
+      id: null,
+      outcome: "miss",
+      predictedEarliest: null,
+      predictedLatest: null,
+      realizedStart: r.start,
+      realizedEnd: r.end,
+      startErrorMin: null,
+      endErrorMin: null,
+      overlapIoU: null,
+    });
+  }
+  return out;
+}
+
+export interface DowntimeWindowBaseline {
+  scoreable: boolean;
+  unscoreableReasons: string[];
+  predictionsScored: number;
+  predictionsUnscored: number;
+  hits: number;
+  falseWindows: number;
+  misses: number;
+  /** Null when no hit was scored (undefined, not 0). */
+  precision: number | null;
+  /** Null when no realized window was scored (undefined, not 0). */
+  recall: number | null;
+  startErrorMin: ErrorDistribution | null;
+  endErrorMin: ErrorDistribution | null;
+  /** Mean intersection-over-union across hits; null with no hits. */
+  meanOverlapIoU: number | null;
+}
+
+/** Roll up scored downtime facts the way S2 rolls up forecasts. */
+export function summarizeDowntimeScoring(scoring: DowntimeWindowScoring): DowntimeWindowBaseline {
+  const { hits, falseWindows, misses } = scoring;
+  const reasons: string[] = [];
+  if (scoring.predictionsScored === 0 && scoring.predictionsUnscored > 0) {
+    reasons.push("every predicted record was an honesty state — published, never scored");
+  }
+  if (hits + falseWindows + misses === 0) {
+    reasons.push("no predicted windows and no realized windows in the scored span");
+  }
+  const precision = hits + falseWindows > 0 ? Math.round((hits / (hits + falseWindows)) * 1000) / 1000 : null;
+  const recall = hits + misses > 0 ? Math.round((hits / (hits + misses)) * 1000) / 1000 : null;
+  if (hits + falseWindows + misses > 0 && precision === null) {
+    reasons.push("precision undefined: no predicted windows were scored");
+  }
+  if (hits + falseWindows + misses > 0 && recall === null) {
+    reasons.push("recall undefined: no realized windows were scored");
+  }
+  const hitsFacts = scoring.facts.filter((f) => f.outcome === "hit");
+  const startErrors = hitsFacts.map((f) => f.startErrorMin).filter((n): n is number => n !== null);
+  const endErrors = hitsFacts.map((f) => f.endErrorMin).filter((n): n is number => n !== null);
+  const ious = hitsFacts.map((f) => f.overlapIoU).filter((n): n is number => n !== null);
+  return {
+    scoreable: hits + falseWindows + misses > 0,
+    unscoreableReasons: reasons,
+    predictionsScored: scoring.predictionsScored,
+    predictionsUnscored: scoring.predictionsUnscored,
+    hits,
+    falseWindows,
+    misses,
+    precision,
+    recall,
+    startErrorMin: errorDistribution(startErrors),
+    endErrorMin: errorDistribution(endErrors),
+    meanOverlapIoU: ious.length ? Math.round((ious.reduce((s, n) => s + n, 0) / ious.length) * 1000) / 1000 : null,
+  };
+}
+
+/**
+ * Realized-side join: maximal intervals where every provider is
+ * down. The realized mirror of deriveDowntimeWindowRecords'
+ * intersection sweep (quota-downtime.ts §7), over caller-assembled
+ * per-provider walled intervals — each provider's down-set is the
+ * union of its pools' walled [wall, reset) spans from the same
+ * snapshot store the forecast product reads (pct >= 100, the S2
+ * realized-wall definition), so no second gatherer is involved.
+ * Ends are ms epochs; Infinity (no reported reset) leaves the
+ * interval unbounded and unscoreable as a realized window, and is
+ * dropped — a realized outcome must be bounded to be scored.
+ */
+export function deriveRealizedDowntimeWindows(
+  perProviderIntervals: readonly (readonly { start: number; end: number }[])[],
+): { start: number; end: number }[] {
+  if (perProviderIntervals.length === 0) return [];
+  if (perProviderIntervals.some((ivs) => ivs.length === 0)) return [];
+  const covers = (intervals: readonly { start: number; end: number }[], t: number) =>
+    intervals.some((iv) => iv.start <= t && t < iv.end);
+  const boundarySet = new Set<number>();
+  for (const ivs of perProviderIntervals) {
+    for (const iv of ivs) {
+      if (!Number.isFinite(iv.start)) continue;
+      boundarySet.add(iv.start);
+      if (Number.isFinite(iv.end)) boundarySet.add(iv.end);
+    }
+  }
+  const points = [...boundarySet].sort((a, b) => a - b);
+  const overlaps: { start: number; end: number }[] = [];
+  let runStart: number | null = null;
+  for (let i = 0; i < points.length; i++) {
+    const t = points[i] as number;
+    const allDown = perProviderIntervals.every((ivs) => covers(ivs, t));
+    if (allDown) {
+      if (runStart === null) runStart = t;
+      if (i === points.length - 1 && runStart !== null) {
+        const end = Math.min(
+          ...perProviderIntervals.map((ivs) =>
+            Math.min(...ivs.filter((iv) => iv.start <= t && t < iv.end).map((iv) => iv.end)),
+          ),
+        );
+        if (Number.isFinite(end) && end > runStart) overlaps.push({ start: runStart, end });
+        runStart = null;
+      }
+    } else if (runStart !== null) {
+      if (t > runStart) overlaps.push({ start: runStart, end: t });
+      runStart = null;
+    }
+  }
+  return overlaps.filter((o) => Number.isFinite(o.end) && o.end > o.start);
+}
+
+/** The human downtime-accuracy report: the §3 numbers with the method stated. */
+export function renderDowntimeAccuracyReport(args: {
+  scoring: DowntimeWindowScoring;
+  baseline: DowntimeWindowBaseline;
+}): string {
+  const { scoring, baseline } = args;
+  const lines: string[] = [];
+  lines.push("# Downtime-window accuracy — C4.1 criterion 2 (#13257)");
+  lines.push("");
+  lines.push(
+    "- Method: join predicted downtime_window records (kind downtime_window, source quota-prediction, #13295) to realized complete-downtime windows — maximal intervals where every routing pool's pool-state history shows walled (pct >= 100, the S2 realized-wall definition) from the same snapshot store the forecast product reads. Greedy best-overlap match in prediction order; honesty states (insufficient_history / no_basis) published, never scored.",
+  );
+  lines.push(
+    `- Predictions: scored ${scoring.predictionsScored}, honesty-unscored ${scoring.predictionsUnscored}; hits ${scoring.hits}, false windows ${scoring.falseWindows}, misses ${scoring.misses}; precision ${baseline.precision ?? "—"}, recall ${baseline.recall ?? "—"}.`,
+  );
+  lines.push(
+    `- Start error (predicted earliest − realized start): ${fmtErr(baseline.startErrorMin)}; end error (predicted latest − realized end): ${fmtErr(baseline.endErrorMin)}; mean overlap (intersection ÷ union) across hits: ${baseline.meanOverlapIoU ?? "—"}.`,
+  );
+  for (const reason of baseline.unscoreableReasons) lines.push(`- note: ${reason}`);
   lines.push("");
   return lines.join("\n");
 }

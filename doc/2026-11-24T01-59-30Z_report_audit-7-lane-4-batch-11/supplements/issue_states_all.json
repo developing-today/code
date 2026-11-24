@@ -1,0 +1,989 @@
+{
+  "3819": {
+    "number": 3819,
+    "state": "open",
+    "title": "id: build: durable multiplayer note checkpoints and merges",
+    "comments": 49,
+    "is_pr": false
+  },
+  "9074": {
+    "number": 9074,
+    "state": "closed",
+    "title": "impl(fleet): metadata database + fleet Metadata query surface",
+    "comments": 16,
+    "is_pr": false
+  },
+  "8887": {
+    "number": 8887,
+    "state": "closed",
+    "title": "fleet gh: one passthrough that rotates personal + App tokens for every fleet gh call",
+    "comments": 5,
+    "is_pr": false
+  },
+  "8474": {
+    "number": 8474,
+    "state": "closed",
+    "title": "mcpx coverage burn-down: settings (script family) with no effect probe",
+    "comments": 7,
+    "is_pr": false
+  },
+  "12521": {
+    "number": 12521,
+    "state": "open",
+    "title": "pm-console edge: limit the report endpoint, keep the Android build at the edge, deploy by the repo's cf flow",
+    "comments": 12,
+    "is_pr": false
+  },
+  "12520": {
+    "number": 12520,
+    "state": "open",
+    "title": "Rebuild commits that change files still leave the laptop's main ahead and behind at once",
+    "comments": 6,
+    "is_pr": false
+  },
+  "3790": {
+    "number": 3790,
+    "state": "open",
+    "title": "id(app): PoC \u2014 sticky notes + did-it tracker, the first ID app (Phase 3 of #2031)",
+    "comments": 33,
+    "is_pr": false
+  },
+  "1372": {
+    "number": 1372,
+    "state": "open",
+    "title": "id(ci): nixos-integration VM test still times out silently \u2014 #896 acceptance recurrence (nightly 40457980141)",
+    "comments": 96,
+    "is_pr": false
+  },
+  "2179": {
+    "number": 2179,
+    "state": "open",
+    "title": "Machine pool: onboard additional machines as fleet job nodes and redesign placement around a pool",
+    "comments": 33,
+    "is_pr": false
+  },
+  "12229": {
+    "number": 12229,
+    "state": "open",
+    "title": "id: test pkgs/id changes before they merge (batched gate)",
+    "comments": 12,
+    "is_pr": false
+  },
+  "8200": {
+    "number": 8200,
+    "state": "closed",
+    "title": "feat(queue): fleet queue history verb \u2014 read one task's full audit timeline in one call",
+    "comments": 10,
+    "is_pr": false
+  },
+  "12648": {
+    "number": 12648,
+    "state": "closed",
+    "title": "id: browser reconnect resume retains its baseline; host restores viewport from the retained baseline",
+    "comments": 3,
+    "is_pr": false
+  },
+  "12233": {
+    "number": 12233,
+    "state": "closed",
+    "title": "queue: stop repeat triage of large issues and add a feature_slice kind",
+    "comments": 8,
+    "is_pr": false
+  },
+  "12420": {
+    "number": 12420,
+    "state": "closed",
+    "title": "fix(id): persist restored-key rotation markers durably",
+    "comments": 1,
+    "is_pr": false
+  },
+  "12618": {
+    "number": 12618,
+    "state": "closed",
+    "title": "fleet: queue complete cannot close tasks claimed via fleet agent next (claim worker identity mismatch)",
+    "comments": 4,
+    "is_pr": false
+  },
+  "12208": {
+    "number": 12208,
+    "state": "closed",
+    "title": "Scheduled Palette \u2014 developing-today/code",
+    "comments": 3,
+    "is_pr": false
+  },
+  "12250": {
+    "number": 12250,
+    "state": "open",
+    "title": "Palette: daily UX and accessibility improvement",
+    "comments": 3,
+    "is_pr": false
+  },
+  "12595": {
+    "number": 12595,
+    "state": "closed",
+    "title": "id: A9 five-minute path \u2014 scripted empty-directory-to-joinable-world run with elapsed time",
+    "comments": 2,
+    "is_pr": false
+  },
+  "12608": {
+    "number": 12608,
+    "state": "closed",
+    "title": "id: http_fetch schedule tests panic in the nix build sandbox \u2014 reqwest finds no system CA certificates",
+    "comments": 4,
+    "is_pr": false
+  },
+  "12542": {
+    "number": 12542,
+    "state": "closed",
+    "title": "Daily flake sync & config optimization",
+    "comments": 11,
+    "is_pr": false
+  },
+  "12254": {
+    "number": 12254,
+    "state": "closed",
+    "title": "fix(id): make world namespace and publication registry writes durable",
+    "comments": 5,
+    "is_pr": false
+  },
+  "12405": {
+    "number": 12405,
+    "state": "closed",
+    "title": "atlas(classification): classify unclassified remainder and review schema changes",
+    "comments": 26,
+    "is_pr": false
+  },
+  "12555": {
+    "number": 12555,
+    "state": "closed",
+    "title": "fleet proxy serve: auto-spawned broker inherits the caller ambient proxy env and silently breaks tailnet tunnels",
+    "comments": 3,
+    "is_pr": false
+  },
+  "12270": {
+    "number": 12270,
+    "state": "closed",
+    "title": "mcpx: accept systemd fd 3 for daemon TCP transport",
+    "comments": 1,
+    "is_pr": false
+  },
+  "12350": {
+    "number": 12350,
+    "state": "closed",
+    "title": "C7 leaf 5: edit-window conflict and correction review UX",
+    "comments": 27,
+    "is_pr": false
+  },
+  "12603": {
+    "number": 12603,
+    "state": "closed",
+    "title": "C3 runner: post the full incident record (healthHook extension), one record shape, recovery title 'recovered' (#12599 de",
+    "comments": 12,
+    "is_pr": false
+  },
+  "12244": {
+    "number": 12244,
+    "state": "closed",
+    "title": "Daily flake sync & config optimization",
+    "comments": 2,
+    "is_pr": false
+  },
+  "8471": {
+    "number": 8471,
+    "state": "closed",
+    "title": "mcpx coverage burn-down: settings (model-ai family) with no effect probe",
+    "comments": 9,
+    "is_pr": false
+  },
+  "12670": {
+    "number": 12670,
+    "state": "closed",
+    "title": "pm-dispatch validate.test.ts: 'fixture cleanup' test deletes its fixture and asserts nothing",
+    "comments": 2,
+    "is_pr": false
+  },
+  "9130": {
+    "number": 9130,
+    "state": "closed",
+    "title": "design(id): true-delete + moderation pipeline",
+    "comments": 6,
+    "is_pr": false
+  },
+  "1374": {
+    "number": 1374,
+    "state": "open",
+    "title": "id(ci): nixos-playwright-e2e VM test fails on first curl \u2014 no server readiness wait (nightly 40457980141)",
+    "comments": 44,
+    "is_pr": false
+  },
+  "1177": {
+    "number": 1177,
+    "state": "closed",
+    "title": "design(quota-plane): Stage 3 \u2014 predictive, self-tuning quota operations",
+    "comments": 15,
+    "is_pr": false
+  },
+  "11350": {
+    "number": 11350,
+    "state": "closed",
+    "title": "developing-today/code / Dependabot Updates: five ecosystem entries fail on main",
+    "comments": 23,
+    "is_pr": false
+  },
+  "12604": {
+    "number": 12604,
+    "state": "closed",
+    "title": "main-broken: developing-today/code production-line-guard 45037289665 \u2014 new Rust files exceed limit",
+    "comments": 4,
+    "is_pr": false
+  },
+  "9800": {
+    "number": 9800,
+    "state": "closed",
+    "title": "Voice line: speech-to-text first step (Cloudflare Whisper direct, silence auto-trimmed)",
+    "comments": 7,
+    "is_pr": false
+  },
+  "805": {
+    "number": 805,
+    "state": "open",
+    "title": "id: F12.11 delta and binary frames (screen patches, resume tokens)",
+    "comments": 76,
+    "is_pr": false
+  },
+  "9576": {
+    "number": 9576,
+    "state": "open",
+    "title": "C8 \u2014 Atlas ingestion of reports & pages + error-driven investigation boosts",
+    "comments": 19,
+    "is_pr": false
+  },
+  "7011": {
+    "number": 7011,
+    "state": "open",
+    "title": "investigate: CPU/memory load over time + parallelism sweet spot on the sandbox VM",
+    "comments": 63,
+    "is_pr": false
+  },
+  "12242": {
+    "number": 12242,
+    "state": "closed",
+    "title": "id: F12.11 phase 3 \u2014 negotiate MessagePack screen transport",
+    "comments": 16,
+    "is_pr": false
+  },
+  "12403": {
+    "number": 12403,
+    "state": "open",
+    "title": "atlas(classification): enforce source-boundary-safe embed classification",
+    "comments": 20,
+    "is_pr": false
+  },
+  "12544": {
+    "number": 12544,
+    "state": "closed",
+    "title": "fleet: agent next queue rung is dead for muse agents (lane defaults to agent name, not a canonical lane)",
+    "comments": 4,
+    "is_pr": false
+  },
+  "12657": {
+    "number": 12657,
+    "state": "closed",
+    "title": "id: rich presentation surfaces \u2014 versioned scene/audio/widget contract extension + Bevy renderers (F13.6 follow-on)",
+    "comments": 14,
+    "is_pr": false
+  },
+  "12659": {
+    "number": 12659,
+    "state": "closed",
+    "title": "fix(id): make http.fetch allowlist port semantics explicit and enforceable",
+    "comments": 3,
+    "is_pr": false
+  },
+  "12622": {
+    "number": 12622,
+    "state": "closed",
+    "title": "atlas(worker): state the disclosure context on hosted search requests and key the result cache by it",
+    "comments": 10,
+    "is_pr": false
+  },
+  "12247": {
+    "number": 12247,
+    "state": "closed",
+    "title": "fleet-smoke red on main: microsoft/onnxruntime v1.31.1 source no longer fetchable (GitHub 404)",
+    "comments": 2,
+    "is_pr": false
+  },
+  "12275": {
+    "number": 12275,
+    "state": "closed",
+    "title": "web-gen-api-axum: restore a stable-compatible Leptos build",
+    "comments": 4,
+    "is_pr": false
+  },
+  "2138": {
+    "number": 2138,
+    "state": "closed",
+    "title": "Issue-sweep-rotating endgame: convert to a Make-role triage feeder, or retire",
+    "comments": 20,
+    "is_pr": false
+  },
+  "9358": {
+    "number": 9358,
+    "state": "closed",
+    "title": "pm-stack(aggregator): /api/quota.json meta pool disagrees with the quota read \u2014 page weekly 98/stale vs read weekly 100/",
+    "comments": 35,
+    "is_pr": false
+  },
+  "12486": {
+    "number": 12486,
+    "state": "closed",
+    "title": "feat(pm-stack): compose C7 period rollups",
+    "comments": 2,
+    "is_pr": true
+  },
+  "8932": {
+    "number": 8932,
+    "state": "closed",
+    "title": "id: wire a shipped form presenter + presenting-device manifest for form.* (#2340 follow-on)",
+    "comments": 11,
+    "is_pr": false
+  },
+  "12519": {
+    "number": 12519,
+    "state": "closed",
+    "title": "pm-console: a phone linked on one side is unknown to the other after an edge on/off change",
+    "comments": 5,
+    "is_pr": false
+  },
+  "12487": {
+    "number": 12487,
+    "state": "closed",
+    "title": "id(key): serialize concurrent restored-key imports",
+    "comments": 16,
+    "is_pr": false
+  },
+  "9463": {
+    "number": 9463,
+    "state": "closed",
+    "title": "design(pm-orchestration): Journal event schema, append-only correction, and provenance crosswalk",
+    "comments": 8,
+    "is_pr": false
+  },
+  "8427": {
+    "number": 8427,
+    "state": "open",
+    "title": "openclaw: off-box gateway-death watch \u2014 surface a dead gateway in the main chat (#6167 \u00a75)",
+    "comments": 26,
+    "is_pr": false
+  },
+  "9024": {
+    "number": 9024,
+    "state": "closed",
+    "title": "id(backup): replayed uploads can recreate a backup after account-deletion purge",
+    "comments": 6,
+    "is_pr": false
+  },
+  "9087": {
+    "number": 9087,
+    "state": "closed",
+    "title": "design(pm-stack): self-hosted tier \u2014 Kubernetes cluster with multi-TB tiered storage as the largest central store; RustF",
+    "comments": 6,
+    "is_pr": false
+  },
+  "9075": {
+    "number": 9075,
+    "state": "closed",
+    "title": "impl(fleet): session state \u2014 session id in env + worktree pwd-file",
+    "comments": 41,
+    "is_pr": false
+  },
+  "1964": {
+    "number": 1964,
+    "state": "closed",
+    "title": "mcpx: Roc as a script language, and whether mcpx should be a Roc platform",
+    "comments": 117,
+    "is_pr": false
+  },
+  "8581": {
+    "number": 8581,
+    "state": "open",
+    "title": "Fleet unification slice 3: fleet verb contract v2 \u2014 routes and degraded modes in the tool",
+    "comments": 41,
+    "is_pr": false
+  },
+  "12172": {
+    "number": 12172,
+    "state": "closed",
+    "title": "scratch-worktree add: a base without a remote prefix (e.g. --base main) skips the fetch silently and branches from a sta",
+    "comments": 2,
+    "is_pr": false
+  },
+  "12344": {
+    "number": 12344,
+    "state": "open",
+    "title": "web-gen-api: restore a stable-compatible Leptos build",
+    "comments": 6,
+    "is_pr": false
+  },
+  "10639": {
+    "number": 10639,
+    "state": "open",
+    "title": "opencode handover not in effect: socket unit disabled, same-build switch darkened port ~16s and cut drain at 40ms (2026-",
+    "comments": 28,
+    "is_pr": false
+  },
+  "12456": {
+    "number": 12456,
+    "state": "closed",
+    "title": "fix(id): keep restored-key rotation state atomic with import",
+    "comments": 3,
+    "is_pr": false
+  },
+  "12352": {
+    "number": 12352,
+    "state": "closed",
+    "title": "C7 leaf 2: period rollup composer and generation commands",
+    "comments": 12,
+    "is_pr": false
+  },
+  "12249": {
+    "number": 12249,
+    "state": "open",
+    "title": "Bolt: daily performance improvement",
+    "comments": 26,
+    "is_pr": false
+  },
+  "2313": {
+    "number": 2313,
+    "state": "open",
+    "title": "review loop PoC (Stage A): pr-diff-review records shadow verdicts, report distribution (design #2025 \u00a78)",
+    "comments": 21,
+    "is_pr": false
+  },
+  "12697": {
+    "number": 12697,
+    "state": "closed",
+    "title": "impl(quota-plane): stage-3 S3 \u2014 shadow placement: forecast-informed ordering logged beside live ordering",
+    "comments": 7,
+    "is_pr": false
+  },
+  "12513": {
+    "number": 12513,
+    "state": "closed",
+    "title": "fix(pm-console): retain retryable state when edge push delivery fails",
+    "comments": 7,
+    "is_pr": false
+  },
+  "12665": {
+    "number": 12665,
+    "state": "closed",
+    "title": "id: clippy-lint red on main \u2014 unwrap() in boards/records.rs tests (and formerly screen_codec tests)",
+    "comments": 3,
+    "is_pr": false
+  },
+  "12454": {
+    "number": 12454,
+    "state": "closed",
+    "title": "fix(pm-stack): prompts appear at once, board-sync links are not replies, and five review findings",
+    "comments": 2,
+    "is_pr": true
+  },
+  "12468": {
+    "number": 12468,
+    "state": "closed",
+    "title": "Scheduled Palette \u2014 developing-today/code",
+    "comments": 3,
+    "is_pr": false
+  },
+  "12658": {
+    "number": 12658,
+    "state": "open",
+    "title": "id(ci): scheduled id-check runs cancelled at ~90 min for five days \u2014 no verdict",
+    "comments": 4,
+    "is_pr": false
+  },
+  "12636": {
+    "number": 12636,
+    "state": "closed",
+    "title": "fix(id-sync): do not hold replica lock while waiting on peer transfer",
+    "comments": 3,
+    "is_pr": false
+  },
+  "12416": {
+    "number": 12416,
+    "state": "closed",
+    "title": "pm-aggregator: link to the console when the dashboard is served through the console's gate",
+    "comments": 2,
+    "is_pr": false
+  },
+  "12280": {
+    "number": 12280,
+    "state": "open",
+    "title": "fleet: ready PRs are left unmerged (20 open; the merge sweep has filed nothing since 2026-11-17)",
+    "comments": 15,
+    "is_pr": false
+  },
+  "7030": {
+    "number": 7030,
+    "state": "open",
+    "title": "fleet-stalling: Drew's expedite set has no active worker",
+    "comments": 93,
+    "is_pr": false
+  },
+  "12452": {
+    "number": 12452,
+    "state": "closed",
+    "title": "feat(pm-stack): the console becomes the app: Now, Next, Needs me, Ask",
+    "comments": 2,
+    "is_pr": true
+  },
+  "8583": {
+    "number": 8583,
+    "state": "open",
+    "title": "Fleet unification slice 5: local coordination replica for database-down resilience",
+    "comments": 48,
+    "is_pr": false
+  },
+  "12232": {
+    "number": 12232,
+    "state": "closed",
+    "title": "id: walking skeleton for #9106 \u2014 a signed record at an id:// address synced between two nodes",
+    "comments": 20,
+    "is_pr": false
+  },
+  "2232": {
+    "number": 2232,
+    "state": "closed",
+    "title": "implement: fleet OpenCode scheduled-task pattern \u2014 systemd timers + opencode run with per-job route",
+    "comments": 36,
+    "is_pr": false
+  },
+  "12495": {
+    "number": 12495,
+    "state": "closed",
+    "title": "fix(id-worlds): reject malformed kv JSON during journal replay",
+    "comments": 1,
+    "is_pr": false
+  },
+  "12154": {
+    "number": 12154,
+    "state": "closed",
+    "title": "fleet gh: read-only identity fallback for GraphQL 'Could not resolve to a node' on board reads",
+    "comments": 2,
+    "is_pr": false
+  },
+  "12261": {
+    "number": 12261,
+    "state": "closed",
+    "title": "Avoid evaluating Bitwarden secret values as shell code in drain wrapper",
+    "comments": 8,
+    "is_pr": false
+  },
+  "12470": {
+    "number": 12470,
+    "state": "closed",
+    "title": "id: check the record join at admission, not only on read",
+    "comments": 1,
+    "is_pr": true
+  },
+  "12412": {
+    "number": 12412,
+    "state": "closed",
+    "title": "fix(pm-stack): the console is the gate for the whole public hostname",
+    "comments": 2,
+    "is_pr": true
+  },
+  "12236": {
+    "number": 12236,
+    "state": "open",
+    "title": "fleet agent: put every lane on the intake ladder (follow-ups to #12227)",
+    "comments": 14,
+    "is_pr": false
+  },
+  "12602": {
+    "number": 12602,
+    "state": "closed",
+    "title": "C3 aggregator: throat healthHook extension \u2014 store the full incident record in the alerts ledger + read projection (#125",
+    "comments": 14,
+    "is_pr": false
+  },
+  "12703": {
+    "number": 12703,
+    "state": "closed",
+    "title": "id: shell contract test fails on main \u2014 join.device_input null disagreement between contract and host",
+    "comments": 3,
+    "is_pr": false
+  },
+  "9106": {
+    "number": 9106,
+    "state": "open",
+    "title": "epic: ID/Atlas extensible primitives, federation, namespaces \u2014 major design iteration (2026-11-12 directive)",
+    "comments": 45,
+    "is_pr": false
+  },
+  "12718": {
+    "number": 12718,
+    "state": "closed",
+    "title": "deploy: babysitter pool-state feed not live on the laptop (aggregator predates #12689, no POOL_STATE_PATH)",
+    "comments": 6,
+    "is_pr": false
+  },
+  "1067": {
+    "number": 1067,
+    "state": "open",
+    "title": "id: F12.10 fair scheduling and per-account quotas",
+    "comments": 83,
+    "is_pr": false
+  },
+  "6049": {
+    "number": 6049,
+    "state": "closed",
+    "title": "task(atlas): personal-inventory pattern pack \u2014 owner-specific identifiers as highest-severity detectors",
+    "comments": 16,
+    "is_pr": false
+  },
+  "8957": {
+    "number": 8957,
+    "state": "closed",
+    "title": "pkgs/dht crate split \u2014 step 2: extract dht-node; slim bin to facade",
+    "comments": 5,
+    "is_pr": false
+  },
+  "12427": {
+    "number": 12427,
+    "state": "closed",
+    "title": "bootstrap tailnet phase did not fall back to userspace after kernel TUN failure; keeper left tailscaled dead",
+    "comments": 2,
+    "is_pr": false
+  },
+  "12274": {
+    "number": 12274,
+    "state": "closed",
+    "title": "web-gen: restore a stable-compatible Leptos build",
+    "comments": 8,
+    "is_pr": false
+  },
+  "8469": {
+    "number": 8469,
+    "state": "closed",
+    "title": "mcpx coverage burn-down: settings (http-transport family) with no effect probe",
+    "comments": 108,
+    "is_pr": false
+  },
+  "2137": {
+    "number": 2137,
+    "state": "open",
+    "title": "Design + PoC: event-driven Slack collector (Socket Mode) to replace archer-slack-review polling",
+    "comments": 31,
+    "is_pr": false
+  },
+  "8584": {
+    "number": 8584,
+    "state": "open",
+    "title": "Fleet unification slice 6: backups \u2014 Turso into D1, repos to Cloudflare plus mirror plus R2",
+    "comments": 73,
+    "is_pr": false
+  },
+  "12607": {
+    "number": 12607,
+    "state": "closed",
+    "title": "developing-today/code / fleet-rust-tests: main run 45038179826 fails to compile fleet-agent tests",
+    "comments": 21,
+    "is_pr": false
+  },
+  "12628": {
+    "number": 12628,
+    "state": "closed",
+    "title": "atlas(classification): wire boundary-safe chunks into staging and promotion",
+    "comments": 8,
+    "is_pr": false
+  },
+  "8470": {
+    "number": 8470,
+    "state": "closed",
+    "title": "mcpx coverage burn-down: settings (long-tail families) with no effect probe",
+    "comments": 21,
+    "is_pr": false
+  },
+  "12428": {
+    "number": 12428,
+    "state": "closed",
+    "title": "mcpx e2e: TestFileScriptPrefixRunsBeforeTopLevelCode fails on main \u2014 amd system build blocked",
+    "comments": 4,
+    "is_pr": false
+  },
+  "10041": {
+    "number": 10041,
+    "state": "closed",
+    "title": "impl(pm-stack): model data pipeline Phase 2 slice 3 \u2014 identity resolution (#1248)",
+    "comments": 30,
+    "is_pr": false
+  },
+  "12257": {
+    "number": 12257,
+    "state": "closed",
+    "title": "test(pm-stack/lane-guard): inject time in CLI dedupe test",
+    "comments": 6,
+    "is_pr": false
+  },
+  "12279": {
+    "number": 12279,
+    "state": "closed",
+    "title": "id: check the record join at admission, not only on read (#12232 slice 3)",
+    "comments": 1,
+    "is_pr": false
+  },
+  "12467": {
+    "number": 12467,
+    "state": "open",
+    "title": "Scheduled Bolt \u2014 developing-today/code",
+    "comments": 3,
+    "is_pr": false
+  },
+  "12671": {
+    "number": 12671,
+    "state": "open",
+    "title": "pm-stack: production line guard covers only .rs, so render.ts (8.5k lines) and server.ts (4.7k) are unchecked",
+    "comments": 3,
+    "is_pr": false
+  },
+  "1782": {
+    "number": 1782,
+    "state": "closed",
+    "title": "ci: Phase 3 \u2014 main-gate + remediation chain (Jules \u2192 issue \u2192 priority-90 Muse packet)",
+    "comments": 46,
+    "is_pr": false
+  },
+  "557": {
+    "number": 557,
+    "state": "open",
+    "title": "id(world): F12.12 many worlds per node: 1,000 idle / 100 active with a per-world memory budget",
+    "comments": 136,
+    "is_pr": false
+  },
+  "12716": {
+    "number": 12716,
+    "state": "closed",
+    "title": "Fleet build fails: microsoft/onnxruntime source returns 404 (repo made private)",
+    "comments": 4,
+    "is_pr": false
+  },
+  "12518": {
+    "number": 12518,
+    "state": "open",
+    "title": "pm-console edge: do queue and GitHub operations from Cloudflare while the laptop is away",
+    "comments": 9,
+    "is_pr": false
+  },
+  "9571": {
+    "number": 9571,
+    "state": "open",
+    "title": "C3 \u2014 Health hooks: failure-triggered checks that troubleshoot and report",
+    "comments": 137,
+    "is_pr": false
+  },
+  "9068": {
+    "number": 9068,
+    "state": "open",
+    "title": "impl(pm-stack): design-spawn backfill \u2014 native parenting of sub-design tracking issues + spawn rollup",
+    "comments": 55,
+    "is_pr": false
+  },
+  "1062": {
+    "number": 1062,
+    "state": "closed",
+    "title": "id: F12.5 first new providers \u2014 kv, blob, http.fetch, notify",
+    "comments": 55,
+    "is_pr": false
+  },
+  "12235": {
+    "number": 12235,
+    "state": "open",
+    "title": "fleet: converge fleet-run.yml across the three fleet copies (org sync failing since 2026-11-05)",
+    "comments": 5,
+    "is_pr": false
+  },
+  "12360": {
+    "number": 12360,
+    "state": "closed",
+    "title": "feat(pm-stack): add pm-console, the stack's write side",
+    "comments": 2,
+    "is_pr": true
+  },
+  "1338": {
+    "number": 1338,
+    "state": "closed",
+    "title": "Babysitter live: interval rounds over all OpenCode sessions with verdicts, quota, and pool attribution",
+    "comments": 32,
+    "is_pr": false
+  },
+  "10179": {
+    "number": 10179,
+    "state": "closed",
+    "title": "Consume the Atlas producer contract as separate ID compatibility vectors",
+    "comments": 11,
+    "is_pr": false
+  },
+  "8968": {
+    "number": 8968,
+    "state": "closed",
+    "title": "pkgs/web-gen-api-axum crate split \u2014 step 2: extract start-axum-ui (dark_mode + app)",
+    "comments": 10,
+    "is_pr": false
+  },
+  "12624": {
+    "number": 12624,
+    "state": "closed",
+    "title": "atlas(search): full-content payloads can carry sibling-chunk text above the served chunk's classification",
+    "comments": 7,
+    "is_pr": false
+  },
+  "8312": {
+    "number": 8312,
+    "state": "closed",
+    "title": "feat(atlas-worker): gated per-key purge route for the search cache (from #6805 policy)",
+    "comments": 6,
+    "is_pr": false
+  },
+  "8871": {
+    "number": 8871,
+    "state": "closed",
+    "title": "design(P7): GitHub and dynamic compute \u2014 fleet decision recorded",
+    "comments": 5,
+    "is_pr": false
+  },
+  "12492": {
+    "number": 12492,
+    "state": "closed",
+    "title": "id: keep versions and reports on disk through id_store::content_store (#12232 slice 4)",
+    "comments": 5,
+    "is_pr": false
+  },
+  "9607": {
+    "number": 9607,
+    "state": "closed",
+    "title": "impl(pm-stack): migration \u2014 provenance markers on existing records + owner-confirmed name linking (#1253 split 5)",
+    "comments": 71,
+    "is_pr": false
+  },
+  "1187": {
+    "number": 1187,
+    "state": "open",
+    "title": "OpenChamber dispatch v1.1: admission control, hand-backs, stall nudges, harvesting, Workhorse-first routing",
+    "comments": 90,
+    "is_pr": false
+  },
+  "12696": {
+    "number": 12696,
+    "state": "closed",
+    "title": "impl(quota-plane): stage-3 S2 \u2014 forecast accuracy ledger + backtest harness over the snapshot history",
+    "comments": 6,
+    "is_pr": false
+  },
+  "12349": {
+    "number": 12349,
+    "state": "closed",
+    "title": "C7 leaf 1: canonical report records, KV append, period generation, and snapshots",
+    "comments": 7,
+    "is_pr": false
+  },
+  "8967": {
+    "number": 8967,
+    "state": "closed",
+    "title": "pkgs/web-gen-api-axum crate split \u2014 step 1: extract start-axum-error (leaf: error_template)",
+    "comments": 8,
+    "is_pr": false
+  },
+  "2438": {
+    "number": 2438,
+    "state": "closed",
+    "title": "mcpx: Phase 3 of #2434 \u2014 -32021 when no broker audience can answer + error-register truth-up (ERR-08, conflict #8, three",
+    "comments": 154,
+    "is_pr": false
+  },
+  "8392": {
+    "number": 8392,
+    "state": "closed",
+    "title": "Build performance: fleet cargo builds pile up \u2014 lock orphaned, per-worktree target dirs, GNU ld storm (measured 2026-11-",
+    "comments": 11,
+    "is_pr": false
+  },
+  "796": {
+    "number": 796,
+    "state": "closed",
+    "title": "id phase-9/10: verification debt \u2014 delivered faster than verified, no dedicated issues carry it",
+    "comments": 63,
+    "is_pr": false
+  },
+  "6028": {
+    "number": 6028,
+    "state": "closed",
+    "title": "design(atlas): delta-only ingestion + offset embeds \u2014 land only changes; span-anchored chunks with non-doubling joins",
+    "comments": 52,
+    "is_pr": false
+  },
+  "12616": {
+    "number": 12616,
+    "state": "closed",
+    "title": "id: cargo-fmt-check and just-recipes-drift are red on main (format/generator drift)",
+    "comments": 3,
+    "is_pr": false
+  },
+  "12730": {
+    "number": 12730,
+    "state": "closed",
+    "title": "openai-plan: switch selection to ordered \u2014 popesdrew (Student) in front, drewrypope the failover leg",
+    "comments": 3,
+    "is_pr": false
+  },
+  "11791": {
+    "number": 11791,
+    "state": "closed",
+    "title": "FileOps: base-name delete sweeps legacy archive-shaped siblings",
+    "comments": 6,
+    "is_pr": false
+  },
+  "12404": {
+    "number": 12404,
+    "state": "open",
+    "title": "atlas(classification): enforce disclosure-context filters at output boundaries",
+    "comments": 31,
+    "is_pr": false
+  },
+  "10910": {
+    "number": 10910,
+    "state": "open",
+    "title": "impl(observability): attribution rollups per job/model/session (#2072 slice 4)",
+    "comments": 15,
+    "is_pr": false
+  },
+  "9081": {
+    "number": 9081,
+    "state": "open",
+    "title": "design(fleet): fleet tool, Workers/TypeScript equivalent \u2014 hosted Metadata stamping/query, session provenance, sync tool",
+    "comments": 54,
+    "is_pr": false
+  },
+  "12231": {
+    "number": 12231,
+    "state": "open",
+    "title": "id: Phase 12 exit audit and the id/v0.12.0 tag",
+    "comments": 13,
+    "is_pr": false
+  },
+  "9096": {
+    "number": 9096,
+    "state": "closed",
+    "title": "design(atlas): classification model \u2014 per-embed granularity, boundary-safe chunking, disclosure contexts",
+    "comments": 5,
+    "is_pr": false
+  },
+  "12466": {
+    "number": 12466,
+    "state": "closed",
+    "title": "Fix Roc client wire semantics and execution safety",
+    "comments": 5,
+    "is_pr": false
+  }
+}

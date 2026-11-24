@@ -1,0 +1,23 @@
+# VERBATIM: pkgs/fleet/hosted-worker/wrangler.toml
+# Laptop clone ~/git/code @ 44aaf731ad285f25723f9198f7dabed8a2d21992, read 2026-11-23 (lane FLEET-GAPS-SURVEY)
+
+# fleet-hosted (#12583; design doc/2026-11-22T14-28-45Z_design_fleet-tool-workers-edition §3.1).
+# LOCAL ONLY in this slice: this config is for wrangler dev / tests. No
+# account-level deployment or billable resource is authorized by this
+# package — the acceptance's "Worker deploys" is a local wrangler dev
+# run until a later C issue owns production deployment.
+name = "fleet-hosted"
+main = "src/worker.ts"
+compatibility_date = "2025-06-01"
+
+[vars]
+RP_AUDIENCE = "fleet-hosted"
+
+# INGESTION_REPOS = "developing-today/code"   (commented out in the file; empty = sweep has nothing to scan)
+
+[triggers]
+crons = ["*/15 * * * *"]
+
+# NOTE: no [[d1_databases]], no [[kv_namespaces]], no [[r2_buckets]], no
+# [durable_objects] sections exist in this file. All state sits behind
+# fixture/in-memory interfaces wired at module scope in src/worker.ts.

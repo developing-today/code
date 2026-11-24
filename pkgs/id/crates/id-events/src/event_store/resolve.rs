@@ -44,6 +44,7 @@ use p2panda_auth::group::{GroupAction, GroupMember};
 use p2panda_core::{Hash, SeqNum};
 use redb::ReadableTable;
 
+use super::compaction::Residue;
 use super::{StoreError, corrupt, decode_proof, decode_stored, split_position};
 use crate::groups::{
     Body as GroupBody, Create as GroupCreate, DeviceOp, Event as GroupEvent, MemberOp, Policy,
@@ -95,6 +96,10 @@ struct Node {
     /// The author's own previous event, from the header backlink. A chat event's
     /// membership position includes it: a first message may name its group only here.
     backlink: Option<Hash>,
+    /// True for a compacted event's residue: it stands in the causal graph with
+    /// its edges, and it keeps the applied verdict it held when its bytes were
+    /// reclaimed (#3797).
+    residue: bool,
 }
 
 /// The author of an event.
@@ -102,7 +107,9 @@ pub(super) fn author_of(event: &Event) -> AuthorKey {
     *event.header.verifying_key.as_bytes()
 }
 
-/// Resolves which of `stored` apply, given the fork proofs as `(author, fork point)`.
+/// Resolves which of `stored` apply, given the fork proofs as `(author, fork point)`
+/// and the compaction residue, whose events keep the verdict they held when their
+/// bytes were reclaimed.
 ///
 /// # Errors
 ///
@@ -113,6 +120,7 @@ pub(super) fn resolve(
     stored: &[Stored],
     forks: &HashMap<AuthorKey, SeqNum>,
     proof_headers: &[Event],
+    residue: &[Residue],
 ) -> Result<Resolved, StoreError> {
     let mut nodes: Vec<Node> = Vec::new();
     let mut position: HashMap<Hash, usize> = HashMap::new();
@@ -132,6 +140,7 @@ pub(super) fn resolve(
             excluded,
             chat: event.header.extensions.kind == CHAT_MESSAGE_KIND,
             backlink: event.header.backlink,
+            residue: false,
         });
     }
     for header in proof_headers {
@@ -149,6 +158,30 @@ pub(super) fn resolve(
             excluded: true,
             chat: header.header.extensions.kind == CHAT_MESSAGE_KIND,
             backlink: header.header.backlink,
+            residue: false,
+        });
+    }
+    // A compacted event stands in the graph as its residue: present, with the
+    // causal edges it had, so every position computed over the graph is the
+    // position that was computed before its bytes were reclaimed (#3797).
+    for item in residue {
+        if position.contains_key(&item.id) {
+            continue;
+        }
+        position.insert(item.id, nodes.len());
+        nodes.push(Node {
+            id: item.id,
+            author: item.author,
+            group: None,
+            after: item.after.clone(),
+            action: None,
+            device: None,
+            excluded: forks
+                .get(&item.author)
+                .is_some_and(|point| item.seq >= *point),
+            chat: false,
+            backlink: item.backlink,
+            residue: true,
         });
     }
 
@@ -224,10 +257,16 @@ pub(super) fn resolve(
         if node.excluded {
             continue;
         }
-        let takes_effect = match (&node.action, membership.as_mut()) {
-            (Some(_), Some(layer)) => layer.is_effective(&node.id),
-            (Some(_), None) => false,
-            (None, layer) => content_applies(node, &applied, layer)?,
+        let takes_effect = if node.residue {
+            // A compacted event applied before its bytes were reclaimed; the
+            // residue keeps that verdict (#3797).
+            true
+        } else {
+            match (&node.action, membership.as_mut()) {
+                (Some(_), Some(layer)) => layer.is_effective(&node.id),
+                (Some(_), None) => false,
+                (None, layer) => content_applies(node, &applied, layer)?,
+            }
         };
         if takes_effect {
             applied.insert(node.id);
@@ -370,6 +409,7 @@ fn bridge(node: &Node) -> Option<GroupEvent> {
             author: node.author,
             after: Vec::new(),
             group: Some(group),
+            at: None,
             body: GroupBody::Device(*op),
         });
     }
@@ -436,6 +476,7 @@ fn bridge(node: &Node) -> Option<GroupEvent> {
         author: node.author,
         after: Vec::new(),
         group: node.group,
+        at: None,
         body,
     })
 }
@@ -714,6 +755,7 @@ mod tests {
             excluded: false,
             chat: false,
             backlink: None,
+            residue: false,
         }
     }
 
@@ -737,6 +779,7 @@ mod tests {
                     excluded: false,
                     chat: false,
                     backlink: None,
+                    residue: false,
                 })
                 .collect();
             let position: HashMap<Hash, usize> = nodes
@@ -806,6 +849,7 @@ mod tests {
             excluded: false,
             chat: false,
             backlink: None,
+            residue: false,
         };
         let pass_through = Node {
             id: Hash::digest([42]),
@@ -817,6 +861,7 @@ mod tests {
             excluded: true,
             chat: false,
             backlink: None,
+            residue: false,
         };
         vec![create, pass_through]
     }
@@ -847,6 +892,7 @@ mod tests {
             excluded: false,
             chat: false,
             backlink: None,
+            residue: false,
         };
         assert!(matches!(fold_projection_checked(&[create]), Ok(Some(_))));
 

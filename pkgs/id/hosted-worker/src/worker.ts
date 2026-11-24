@@ -12,9 +12,14 @@
 // No Iroh QUIC runs inside the Worker (issue excludes).
 
 import { FailClosed, parseBindingId, parseJurisdiction, userStub, type ObjectNamespaceLike } from "./routing.ts";
-import { HDR_BINDING, HDR_JURISDICTION, HDR_ROUTED, bodyTooLarge, requestBodyLimit } from "./user-do.ts";
+import { HDR_BINDING, HDR_IROH, HDR_JURISDICTION, HDR_ROUTED, bodyTooLarge, requestBodyLimit } from "./user-do.ts";
 
 export { UserDO } from "./user-do.ts";
+// The tenancy control plane's per-tenant operations object (E2 of
+// #9083, #12797). Exported and bound so the platform knows the
+// class; the front door does not route to it — the tenancy Worker
+// drives it over internal calls.
+export { TenantOpsDO } from "./tenant-ops.ts";
 
 interface Env {
   USERS: ObjectNamespaceLike;
@@ -47,6 +52,14 @@ export default {
       const headers = new Headers(req.headers);
       headers.delete("x-binding-id");
       headers.delete("x-jurisdiction");
+      // The bound ID key (#3818): consumed from the internal
+      // caller like the binding context, stripped of any
+      // client-supplied copy, and re-set as an internal header.
+      // Absent stays absent — the bridge routes fail closed on it.
+      const irohId = req.headers.get("x-iroh-id");
+      headers.delete("x-iroh-id");
+      headers.delete(HDR_IROH);
+      if (irohId !== null) headers.set(HDR_IROH, irohId);
       headers.set(HDR_BINDING, bindingId);
       headers.set(HDR_JURISDICTION, jurisdiction);
       headers.set(HDR_ROUTED, "restricted");

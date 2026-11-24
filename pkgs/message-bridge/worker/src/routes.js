@@ -13,6 +13,16 @@
 //   GET  /api/<token>/messages        JSON history (direction, channel,
 //                                     kind, since_id, before_id, unread_only,
 //                                     limit, order)
+//   GET  /api/<token>/pipeline        one normalized feed over connector
+//                                     messages, fleet messages and notes
+//                                     (pipeline.js; kind, sender, receiver,
+//                                     surface, batch, unread_only,
+//                                     since_id, before_id, limit, order)
+//   GET  /api/<token>/notes           owner read over the notes table
+//                                     (pipeline.js; the same filters)
+//   GET  /api/<token>/agents          unified connected-agents list:
+//                                     fleet registry + note identities,
+//                                     each row marked by surface
 //   POST /api/<token>/messages        JSON {body, sender, to, kind}: store
 //                                     an inbound message per recipient; to
 //                                     is "claude" (default), "chatgpt" or
@@ -29,6 +39,42 @@
 //                                     never the token or path, wake.js)
 //   POST /api/<token>/wake-hooks      JSON {address, url, token?} sets one;
 //                                     {address, url: null} removes it
+//   POST /fleet/<token>/hello|inbox|ack|send  fleet mailboxes (fleet.js);
+//                                     the token is the shared fleet token
+//                                     or one agent's own credential
+//                                     (#14368), which acts only as itself
+//   POST /api/<token>/enroll-tokens   owner: mint a bootstrap enroll
+//                                     token bound to a name/kind/groups;
+//                                     the value is returned once
+//   POST /api/<token>/enroll-tokens/revoke  owner: revoke an unused
+//                                     bootstrap token
+//   POST /enroll/exchange             {bootstrap_token, agent}: burn the
+//                                     token, register the mailbox (and
+//                                     notes identity), return the agent's
+//                                     fleet credential + notes token once
+//   POST /api/<token>/fleet/credentials/revoke  owner: revoke an agent's
+//                                     fleet credential(s)
+//   POST /api/<token>/fleet/credentials/mint  owner: mint a credential
+//                                     directly ({agent, scopes?, addr?};
+//                                     addr service:<own name> + scope
+//                                     "read" is a service credential,
+//                                     #14373): the value is returned once
+//   GET  /fleet/<credential>/agents|messages  the owner's pipeline
+//                                     views, for a credential holding
+//                                     the "read" scope (#14373)
+//   POST /api/<token>/notes-tokens/revoke  owner: revoke an identity's
+//                                     notes token(s)
+//   POST /notes/register              owner Bearer token; registers a
+//                                     class/name identity + token hash
+//   POST /notes/send                  identity Bearer token; {to, note},
+//                                     to one identity or a */segment match
+//   GET  /notes/inbox                 identity Bearer token; its pending
+//                                     notes
+//   POST /notes/ack                   identity Bearer token; {id|ids|
+//                                     up_to_id} acknowledges its notes
+//   GET  /<class>/<name>              public wake signal (notes.js): one
+//                                     bare UUID, same shape registered
+//                                     or not, decoy-rotated per path
 //   GET  /healthz                     {ok, configured, chatgpt_configured,
 //                                     version, token_fingerprint}, no data
 //   POST / and POST /mcp              the MCP server for a connector added
@@ -47,6 +93,8 @@ import { MCP_CORS, bearerChannel, handleOAuth, ownerCookie, unauthorized } from 
 import { InputError, normalizeKind, normalizeRecipients } from "./messages.js";
 import { renderPage } from "./page.js";
 import { normalizeHook, showHook, wakeAll, WAKE_ADDRESS } from "./wake.js";
+import { handleNotes, handleSignal } from "./notes.js";
+import { notesOwnerFeed, pipelineFeed, unifiedAgents } from "./pipeline.js";
 
 const MAX_FORM_BYTES = 64 * 1024;
 const PAGE_SIZE = 200;
@@ -205,6 +253,18 @@ async function handleApi(request, store, rest, url, delivered) {
     }
     return new Response("Method Not Allowed", { status: 405, headers: { allow: "GET, POST" } });
   }
+  if (what === "pipeline") {
+    if (request.method !== "GET") return new Response("Method Not Allowed", { status: 405, headers: { allow: "GET" } });
+    return json(await pipelineFeed(store, Object.fromEntries(url.searchParams.entries())));
+  }
+  if (what === "notes") {
+    if (request.method !== "GET") return new Response("Method Not Allowed", { status: 405, headers: { allow: "GET" } });
+    return json(await notesOwnerFeed(store, Object.fromEntries(url.searchParams.entries())));
+  }
+  if (what === "agents") {
+    if (request.method !== "GET") return new Response("Method Not Allowed", { status: 405, headers: { allow: "GET" } });
+    return json(await unifiedAgents(store));
+  }
   if (what === "oauth-events") {
     if (request.method !== "GET") return new Response("Method Not Allowed", { status: 405, headers: { allow: "GET" } });
     return json({ events: await store.oauthEvents() });
@@ -305,6 +365,12 @@ export async function route(request, env, getStore, waitUntil = (p) => p) {
   // Fleet mailboxes: /fleet/<fleet token>/... and /api/<owner>/fleet/...
   const fleet = await handleFleet(request, env, url, getStore, (store) => deliveredFor(env, store, waitUntil));
   if (fleet) return fleet;
+  // Class/name notes (notes.js): the authenticated /notes API, then the
+  // public content-free signal on any other two-segment path.
+  const notes = await handleNotes(request, env, url, getStore);
+  if (notes) return notes;
+  const signal = await handleSignal(request, url, getStore);
+  if (signal) return signal;
   const m = matchTokenPath(url.pathname, env);
   if (!m) return notFound();
   const token = env.ACCESS_TOKEN;

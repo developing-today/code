@@ -13,11 +13,24 @@ fn dist_has_assets(web_dist: &Path) -> bool {
     }
 }
 
+/// The cargo directive declaring `web_dist` as a build-script input.
+///
+/// The built assets under `web/dist` are untracked build output (only
+/// the `.gitkeep` placeholder is tracked), so without a declared input
+/// cargo is not guaranteed to re-run this script when the frontend
+/// output changes: a rebuilt frontend could be embedded stale, and a
+/// release build could skip the asset assertion in `main` against a
+/// changed dist. Emitting `cargo:rerun-if-changed` for the directory
+/// makes the build system detect web-asset variant changes (#6377).
+fn rerun_if_changed_directive(web_dist: &Path) -> String {
+    format!("cargo:rerun-if-changed={}", web_dist.display())
+}
+
 #[cfg(test)]
 mod tests {
-    use super::dist_has_assets;
+    use super::{dist_has_assets, rerun_if_changed_directive};
     use std::fs;
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn temp_dir(name: &str) -> PathBuf {
@@ -50,6 +63,15 @@ mod tests {
 
         let _ = fs::remove_dir_all(&dir);
     }
+
+    #[test]
+    fn rerun_directive_declares_the_dist_dir() {
+        let dir = Path::new("/pkg/web/dist");
+        assert_eq!(
+            rerun_if_changed_directive(dir),
+            "cargo:rerun-if-changed=/pkg/web/dist"
+        );
+    }
 }
 
 fn main() {
@@ -77,10 +99,12 @@ fn main() {
              cd web && bun install && bun run build",
             web_dist.display()
         );
+        println!("{}", rerun_if_changed_directive(&web_dist));
         return;
     }
 
     if !web_dist.exists() {
         let _ = fs::create_dir_all(&web_dist);
     }
+    println!("{}", rerun_if_changed_directive(&web_dist));
 }

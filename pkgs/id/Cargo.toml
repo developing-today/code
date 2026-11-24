@@ -3,7 +3,7 @@ name = "id"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.96"
-description = "A peer-to-peer file sharing CLI built with Iroh"
+description = "Peer-to-peer platform and Rust facade built with Iroh"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/developing-today/code"
 keywords = ["p2p", "file-sharing", "iroh", "cli"]
@@ -18,6 +18,7 @@ categories = ["command-line-utilities", "network-programming"]
 [workspace]
 members = [
   "crates/id-core",
+  "crates/id-config",
   "crates/id-caps",
   "crates/id-store",
   "crates/id-events",
@@ -29,18 +30,23 @@ members = [
   "crates/id-web",
   "crates/id-render",
   "crates/id-native-shell",
+  "crates/id-hw-shell",
+  "crates/id-tui-shell",
   "crates/id-cli",
   "crates/id-import-notion",
+  "crates/id-client",
+  "crates/id-pg",
 ]
 # The vendored crates stay OUT of the workspace: as path dependencies inside
 # this directory Cargo would otherwise treat them as members, and a member's
 # feature graph joins the lock resolve — p2panda-sync's `test_utils` feature
 # forwards to `p2panda-store/test_utils`, whose `sqlite` feature pulls sqlx
 # into Cargo.lock even though no build here enables it (see vendor/README.md).
-exclude = ["vendor/p2panda-sync", "vendor/p2panda-encryption"]
+exclude = ["vendor/p2panda-sync", "vendor/p2panda-encryption", "vendor/kdl"]
 default-members = [
   ".",
   "crates/id-core",
+  "crates/id-config",
   "crates/id-caps",
   "crates/id-store",
   "crates/id-events",
@@ -53,6 +59,8 @@ default-members = [
   "crates/id-render",
   "crates/id-cli",
   "crates/id-import-notion",
+  "crates/id-pg",
+  "crates/id-client",
 ]
 
 # =============================================================================
@@ -68,10 +76,10 @@ sandbox = [
   "id-worlds/sandbox",
   "id-cli/sandbox",
 ]
-world = ["id-core/world", "id-cli/world"]
+world = ["id-core/world", "id-cli/world", "dep:num-bigint"]
 ssh = ["world", "id-worlds/ssh", "id-cli/ssh"]
 web = ["world", "dep:id-web", "id-core/web", "id-cli/web"]
-# Mainline DHT address lookup (P7.3, decision 15). Off in the default build; src/dht.rs decides per server.
+# Mainline DHT address lookup (P7.3, decision 15). Off in the default build; the implementation is in id-sync and the command wiring is in id-cli.
 dht = ["id-sync/dht", "id-cli/dht"]
 # Live-cluster binding for the currency PoC (#2289): the official TigerBeetle
 # Rust client, pinned to the harness server version (harness.rs). Off by
@@ -79,6 +87,7 @@ dht = ["id-sync/dht", "id-cli/dht"]
 currency-poc-tb = ["dep:tigerbeetle"]
 
 [dependencies]
+num-bigint = { version = "0.5.1", optional = true }
 # Foundation leaf modules extracted in Phase 1 of the crate split (#3447).
 # Features are forwarded explicitly (see [features]); the crate's modules
 # are re-exported at their historical crate:: paths in src/lib.rs.
@@ -112,6 +121,9 @@ id-cli = { path = "crates/id-cli", default-features = false }
 # Directory-family modules extracted in step 6b of the crate split
 # (#4409). Re-exported at their historical crate:: paths in src/lib.rs.
 id-directory = { path = "crates/id-directory", default-features = false }
+# Currency registry + account factory (F1 #2317, F2 #2318); composed
+# with the gateway envelope by the #2321 PoC (src/currency/gateway_poc.rs).
+id-currency-registry = { path = "crates/id-currency-registry", default-features = false }
 anyhow = "1"
 cbor-core = { version = "=0.10.1", features = ["serde"] }
 # Calendar arithmetic and the IANA time-zone database for the did-it tracker's
@@ -133,9 +145,9 @@ iroh-tickets = "1"
 # against: Docs::spawn takes their Store and Gossip types, so a newer
 # release cannot be mixed in until iroh-docs moves to it (iroh-docs 0.101
 # needs iroh-blobs 0.103 and iroh-gossip 0.101).
-iroh-blobs = "0.103"
+iroh-blobs = "0.105"
 iroh-docs = "0.101"
-iroh-gossip = { version = "0.101", features = ["net"] }
+iroh-gossip = { version = "0.103", features = ["net"] }
 p2panda-core = { git = "https://github.com/p2panda/p2panda", rev = "da80c05b95269926bf58121cf6a2d3dd5ca41dfc" }
 # Store traits only. The default features would pull in SQLite (explainers section 14).
 p2panda-store = { git = "https://github.com/p2panda/p2panda", rev = "da80c05b95269926bf58121cf6a2d3dd5ca41dfc", default-features = false }
@@ -152,7 +164,7 @@ p2panda-auth = { git = "https://github.com/p2panda/p2panda", rev = "da80c05b9526
 # declared there now, with the same features.
 postcard = { version = "1", features = ["alloc"] }
 rand = "0.10"
-redb = "=4.6.0"
+redb = "=5.0.0"
 rustyline = "19"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -212,28 +224,35 @@ id-core = { path = "crates/id-core", default-features = false, features = [
 id-caps = { path = "crates/id-caps", default-features = false, features = [
   "test-provider",
 ] }
+# The versioned config contract (slice 9111-01, #10178); its invariant
+# tests live in tests/config_invariants.rs.
+id-config = { path = "crates/id-config" }
 # The artifact/envelope test seams live in id-sync since step 3c (#4406).
 id-sync = { path = "crates/id-sync", default-features = false, features = [
   "test-utils",
 ] }
 # SQLite for the bridge PoC's DO-shaped hosted store (#2276). Bundled, so no system SQLite is needed.
-rusqlite = { version = "0.42", features = ["bundled"] }
+rusqlite = { version = "0.43", features = ["bundled"] }
 wat = "=1.263.0"
 tokio-tungstenite = "0.30"
 # vt100 moved to id-worlds (dev) with world_ssh in step 5c (#4408).
 # The CLI integration tests drive an SSH client against the world SSH
 # server; the server side (and its russh) lives in id-worlds since
 # step 5c, so the facade keeps russh for its tests only.
-russh = "=0.65.1"
+russh = "=0.65.2"
 proptest = "1.12"
 # Interop vectors for the canonical CBOR of event headers. Dev only.
 dcbor = "=0.25.2"
 # Local relay server for the startup-wait tests (iroh's test-utils feature). Dev only.
 iroh = { version = "1", features = ["test-utils"] }
+# In-memory blob store for the MCP bridge end-to-end test's world host
+# (tests/mcp_bridge_e2e.rs, #7914). Dev only; already in the lock via the
+# root package's own iroh-blobs dependency.
+iroh-blobs = "0.105"
 # Parses the relay kit's configs in tests/relay_ops.rs. Dev only.
 toml = "1"
 # Local mainline DHT testnet for tests/dht_testnet.rs (P7.3). Dev only; already in the lock via the `dht` feature.
-n0-mainline = "0.7"
+n0-mainline = "0.8"
 # The lookup under test in tests/dht_testnet.rs (P7.3); the root package
 # only names it for that test, so it is a dev-dependency.
 iroh-mainline-address-lookup = "0.6"

@@ -179,15 +179,9 @@ pub(super) fn journal_backup(dir: &std::path::Path, out: &std::path::Path) -> Re
     if out.exists() {
         bail!("backup output {} already exists", out.display());
     }
-    std::fs::write(out, &bytes).with_context(|| format!("write {}", out.display()))?;
-    let written = std::fs::read(out).with_context(|| format!("read back {}", out.display()))?;
-    if written != bytes {
-        bail!(
-            "backup verification failed: {} does not match {} byte for byte",
-            out.display(),
-            path.display()
-        );
-    }
+    write_backup(out, &bytes, &path, |path, contents| {
+        std::fs::write(path, contents)
+    })?;
     println!(
         "backed up {} ({} bytes, journal version {}) to {}",
         path.display(),
@@ -196,6 +190,47 @@ pub(super) fn journal_backup(dir: &std::path::Path, out: &std::path::Path) -> Re
         out.display()
     );
     Ok(())
+}
+
+/// Write the backup bytes to `out` and read them back for
+/// verification. Past the exists-guard in `journal_backup`, the file
+/// at `out` belongs to this invocation, so any failure here — a
+/// partial write, a read-back mismatch — removes it before the error
+/// returns: left behind, the partial file would trip the guard on
+/// every retry and strand the corrupt copy the guard exists to
+/// protect against (#12786). A removal failure is appended to the
+/// original error, never reported as success; a file that was never
+/// created needs no removal. `write` is a seam so tests can inject
+/// write failures.
+fn write_backup(
+    out: &std::path::Path,
+    bytes: &[u8],
+    journal_path: &std::path::Path,
+    write: impl FnOnce(&std::path::Path, &[u8]) -> std::io::Result<()>,
+) -> Result<()> {
+    let attempt = (|| -> Result<()> {
+        write(out, bytes).with_context(|| format!("write {}", out.display()))?;
+        let written = std::fs::read(out).with_context(|| format!("read back {}", out.display()))?;
+        if written != bytes {
+            bail!(
+                "backup verification failed: {} does not match {} byte for byte",
+                out.display(),
+                journal_path.display()
+            );
+        }
+        Ok(())
+    })();
+    match attempt {
+        Ok(()) => Ok(()),
+        Err(err) => match std::fs::remove_file(out) {
+            Ok(()) => Err(err),
+            Err(remove_err) if remove_err.kind() == std::io::ErrorKind::NotFound => Err(err),
+            Err(remove_err) => Err(err.context(format!(
+                "additionally, removing the partial backup output {} failed: {remove_err}",
+                out.display()
+            ))),
+        },
+    }
 }
 
 /// Read a world directory's journal entries for inspection, without
@@ -406,5 +441,39 @@ mod tests {
         write_journal(corrupt.path(), b"not a journal\n");
         let err = journal_backup(corrupt.path(), &corrupt.path().join("b.jsonl")).unwrap_err();
         assert!(format!("{err}").contains("invalid journal"), "{err}");
+    }
+
+    /// Oracle: #12786 — a backup that fails after creating its output
+    /// leaves no file behind, so the same path can be retried instead
+    /// of refusing "already exists" forever. The injected writers
+    /// stand in for a torn write (partial bytes, then an error) and
+    /// for bytes that fail the read-back verification.
+    #[test]
+    fn journal_backup_removes_partial_output_on_failure() {
+        let dir = tempfile::tempdir().unwrap();
+        let bytes = journal_fixture(1);
+        write_journal(dir.path(), &bytes);
+        let journal_path = dir.path().join("journal.jsonl");
+
+        let out = dir.path().join("partial.jsonl");
+        let err = write_backup(&out, &bytes, &journal_path, |path, contents| {
+            std::fs::write(path, &contents[..4])?;
+            Err(std::io::Error::other("injected write failure"))
+        })
+        .unwrap_err();
+        assert!(format!("{err}").contains("write"), "{err}");
+        assert!(!out.exists(), "partial output must be removed");
+
+        let out = dir.path().join("mismatch.jsonl");
+        let err = write_backup(&out, &bytes, &journal_path, |path, _contents| {
+            std::fs::write(path, b"torn write")
+        })
+        .unwrap_err();
+        assert!(format!("{err}").contains("verification failed"), "{err}");
+        assert!(!out.exists(), "unverified output must be removed");
+
+        // The retry the guard used to refuse: a real backup to the
+        // first path now succeeds.
+        journal_backup(dir.path(), &dir.path().join("partial.jsonl")).unwrap();
     }
 }

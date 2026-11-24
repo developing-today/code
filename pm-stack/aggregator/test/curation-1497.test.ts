@@ -68,6 +68,15 @@ const DECISIONS: Record<string, "primary" | "dropdown"> = {
   // find the question stack) promotes it to primary — a curation
   // ruling recorded here like the others.
   decisions: "primary",
+  // Post-#1497 addition (#12491, 2026-11-22): the report-conflict
+  // review page enters at dropdown tier — no curation ruling promotes
+  // it, and new pages do not take primary slots without one.
+  reports: "dropdown",
+  // Post-#1497 addition (#10035, 2026-11-23): the prompt chat/session
+  // surface enters at dropdown tier — no curation ruling promotes it,
+  // and new pages do not take primary slots without one. Its unread
+  // badge rides the nav bar itself (design #9539 §4), not a bar slot.
+  chat: "dropdown",
 };
 
 describe("the #1497 decision table is applied to the manifest", () => {

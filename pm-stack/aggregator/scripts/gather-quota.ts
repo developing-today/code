@@ -89,6 +89,29 @@
 //     the reading rows. Fail-soft on the same terms: a forecast
 //     failure never fails the tick and the previous forecast
 //     stands and ages.
+//   - quota-shadow-placement.json beside quota-current.json, plus
+//     one appended line per tick in
+//     quota-shadow-placement-history.jsonl beside it — the Stage-3
+//     shadow placement record (#12697, design D3): the
+//     forecast-informed ordering logged beside the live ordering
+//     as a per-decision diff record, projected by
+//     src/quota-shadow-placement.ts from this tick's entries + the
+//     forecast product. SHADOW ONLY: no live path reads it; the
+//     live ordering is computed from the measured entries alone.
+//     Fail-soft on the same terms as the forecast.
+//   - quota-anomaly-state.json + quota-anomaly-history.jsonl beside
+//     quota-current.json — the Stage-3 anomaly detectors (#12699,
+//     design D6): burn spike, adapter schema drift, vendor plan
+//     change, run by src/quota-anomaly.ts over this tick's entries
+//     and records + the store's history. The state file holds the
+//     recorded baselines (parsed shapes, limits, window sets,
+//     fired keys); each NEW finding is appended to the history
+//     JSONL as an evidence-baseline diff record and posted to the
+//     alerts ledger (AlertsStore.postIncident, source
+//     "quota-anomaly"; no alerts store = the history record still
+//     stands). Fail-soft on the same terms: a detector failure
+//     never fails the tick, and a lost/corrupt state file simply
+//     re-baselines (no alert storm).
 //
 // Fail-soft contract: if the subcommand cannot be run or its output
 // cannot be parsed, the tick writes a heartbeat carrying the error
@@ -108,6 +131,11 @@
 //      cap; the subcommand self-limits per provider),
 //      QUOTA_CURRENT_PATH, QUOTA_HEARTBEAT_PATH, QUOTA_FORECAST_PATH
 //      (default: quota-forecast.json beside QUOTA_CURRENT_PATH),
+//      QUOTA_SHADOW_PLACEMENT_PATH / QUOTA_SHADOW_PLACEMENT_HISTORY_PATH
+//      (defaults: quota-shadow-placement.json /
+//      quota-shadow-placement-history.jsonl beside QUOTA_CURRENT_PATH),
+//      QUOTA_ANOMALY_STATE_PATH / QUOTA_ANOMALY_HISTORY_PATH
+//      (defaults beside QUOTA_CURRENT_PATH),
 //      QUOTA_GATHERER_STATE_PATH, QUOTA_SNAPSHOTS_DIR (./snapshots),
 //      USAGE_SNAPSHOT_OUTBOX_PATH,
 //      QUOTA_GATHER_CONCURRENCY (retained for interface stability;
@@ -154,7 +182,17 @@ import { ensureLibDependencies } from "../src/lib-deps.ts";
 import { loadOpenChamberLib, resolveLibDir as resolveOpenChamberLib } from "../src/openchamber-lib.ts";
 import { readProviderAuthAlerts } from "../src/provider-auth-alerts.ts";
 import { projectPoolState } from "../src/pool-state.ts";
-import { buildForecastLedgerRows, buildQuotaForecast } from "../src/quota-forecast.ts";
+import { buildForecastLedgerRows, buildQuotaForecast, type QuotaForecastFile } from "../src/quota-forecast.ts";
+import { buildDowntimeLedgerRows, deriveDowntimeWindowRecords } from "../src/quota-downtime.ts";
+import { buildDayTypeShadowRecords, dayTypeShadowSubjectKey } from "../src/quota-daytype-adjustment.ts";
+import { buildShadowPlacement } from "../src/quota-shadow-placement.ts";
+import {
+  anomalyIncidentInput,
+  emptyAnomalyState,
+  isAnomalyStateFile,
+  runAnomalyTick,
+  type AnomalyStateFile,
+} from "../src/quota-anomaly.ts";
 import { renewMetaSession } from "../src/meta-renewal.ts";
 import { classEnabled, getAlertsStore } from "../src/alerts.ts";
 import { sendPush, type PushTarget } from "../src/push.ts";
@@ -189,6 +227,28 @@ const poolStatePath = process.env.POOL_STATE_PATH ?? join(HOME, ".local/state/op
 // #12695: the Stage-3 forecast product, beside quota-current.json
 // (design D1: same directory, same fail-soft posture).
 const forecastPath = process.env.QUOTA_FORECAST_PATH ?? join(dirname(currentPath), "quota-forecast.json");
+// #13257: the C4 prediction log (design §1), beside quota-current.json
+// like the forecast product — append-only, one JSONL record per
+// prediction, monthly rotation like the snapshot store.
+const predictionsPath = process.env.QUOTA_PREDICTIONS_PATH ?? join(dirname(currentPath), "quota-predictions.jsonl");
+// #12697: the Stage-3 shadow placement record (design D3), beside
+// quota-current.json like the forecast: the latest diff record plus
+// the append-only history the weekly review (S7) scores.
+const shadowPlacementPath =
+  process.env.QUOTA_SHADOW_PLACEMENT_PATH ?? join(dirname(currentPath), "quota-shadow-placement.json");
+const shadowPlacementHistoryPath =
+  process.env.QUOTA_SHADOW_PLACEMENT_HISTORY_PATH ?? join(dirname(currentPath), "quota-shadow-placement-history.jsonl");
+// #13259: the C4.3 day-type shadow records (design §5 earn-in),
+// beside quota-current.json like the other shadow products —
+// append-only JSONL, deliberately NOT the C4 prediction log:
+// shadow records are not the published forecast.
+const daytypeShadowPath =
+  process.env.QUOTA_DAYTYPE_SHADOW_PATH ?? join(dirname(currentPath), "quota-daytype-shadow.jsonl");
+// #12699: the Stage-3 anomaly detectors' state + history, beside
+// quota-current.json in the quota-watchdog shape (design D6).
+const anomalyStatePath = process.env.QUOTA_ANOMALY_STATE_PATH ?? join(dirname(currentPath), "quota-anomaly-state.json");
+const anomalyHistoryPath =
+  process.env.QUOTA_ANOMALY_HISTORY_PATH ?? join(dirname(currentPath), "quota-anomaly-history.jsonl");
 /** Strict millisecond parse for boot-time env (#2835 env-number contract):
  * digits only, 1..2^31-1, else fail naming the variable and the value
  * instead of coercing NaN/negative/huge values into a fetch deadline. */
@@ -925,7 +985,86 @@ async function writeTursoForecastRecords(
   }
 }
 
-async function main(): Promise<number> {
+/**
+ * The Stage-3 anomaly detectors (#12699, design D6), run beside
+ * the tick after the forecast publish. All logic is
+ * src/quota-anomaly.ts (pure); this wrapper does the state/history
+ * file IO and the alerts-ledger posts. Fail-soft throughout: any
+ * failure is logged and the tick still succeeds; a missing or
+ * corrupt state file re-baselines from empty (the detectors'
+ * recorded shapes/limits rebuild from the next ticks' parses, and
+ * re-baselining files no findings — a state loss never becomes an
+ * alert storm). No alerts store (Turso unavailable) = the history
+ * records still stand and the skip is logged, the meta-keeper
+ * posture.
+ */
+async function runAnomalyDetectors(args: {
+  entries: QuotaCurrentEntry[];
+  fresh: SnapshotRecord[];
+  tickAt: string;
+}): Promise<void> {
+  try {
+    let state: AnomalyStateFile = emptyAnomalyState(new Date(args.tickAt));
+    try {
+      const raw: unknown = JSON.parse(await readFile(anomalyStatePath, "utf8"));
+      if (isAnomalyStateFile(raw)) state = raw;
+      else console.log("quota-gatherer: anomaly state file unreadable as a v1 state — re-baselining");
+    } catch {
+      // No state file yet (or unreadable): re-baseline from empty.
+    }
+    const stored = await new SnapshotStore(snapshotsDir).readAll().catch((): SnapshotRecord[] => []);
+    const result = runAnomalyTick({
+      state,
+      entries: args.entries,
+      freshRecords: args.fresh,
+      history: [...stored, ...args.fresh],
+      now: new Date(args.tickAt),
+    });
+    if (result.findings.length) {
+      await mkdir(dirname(anomalyHistoryPath), { recursive: true });
+      await appendFile(
+        anomalyHistoryPath,
+        result.findings.map((f) => JSON.stringify({ kind: "quota-anomaly-finding", version: 1, ...f })).join("\n") +
+          "\n",
+        "utf8",
+      );
+      const store = await getAlertsStore();
+      if (!store) {
+        console.log(
+          `quota-gatherer: anomaly: ${result.findings.length} finding(s) recorded in history; no alerts store — no ledger post`,
+        );
+      } else {
+        for (const f of result.findings) {
+          try {
+            await store.postIncident(anomalyIncidentInput(f), {
+              detector: f.detector,
+              serviceId: f.serviceId,
+              window: f.window,
+              baseline: f.baseline,
+              observed: f.observed,
+              detail: f.detail,
+            });
+          } catch (err) {
+            console.log(
+              `quota-gatherer: anomaly: ledger post failed-soft for ${f.key}: ${safeProviderReason(err instanceof Error ? err.message : String(err))}`,
+            );
+          }
+        }
+      }
+    }
+    await writeAtomic(anomalyStatePath, JSON.stringify(result.state, null, 2) + "\n");
+    const unevaluable = result.evaluations.filter((e) => e.state === "unevaluable").length;
+    console.log(
+      `quota-gatherer: anomaly detectors: ${result.findings.length} new finding(s), ${result.evaluations.length} evaluations (${unevaluable} unevaluable)`,
+    );
+  } catch (err) {
+    console.error(
+      `quota-gatherer: anomaly detectors failed-soft: ${safeProviderReason(err instanceof Error ? err.message : String(err))}`,
+    );
+  }
+}
+
+export async function main(): Promise<number> {
   const started = Date.now();
   const tickAt = new Date(started).toISOString();
 
@@ -1137,9 +1276,10 @@ async function main(): Promise<number> {
   // write: any failure logs and the tick still succeeds; the
   // previous forecast stands and ages, exactly as a failed tick
   // leaves the previous quota-current.json standing.
+  let forecast: QuotaForecastFile | null = null;
   try {
     const stored = await new SnapshotStore(snapshotsDir).readAll().catch((): SnapshotRecord[] => []);
-    const forecast = buildQuotaForecast(file, [...stored, ...fresh], new Date(tickAt));
+    forecast = buildQuotaForecast(file, [...stored, ...fresh], new Date(tickAt));
     await writeAtomic(forecastPath, JSON.stringify(forecast, null, 2) + "\n");
     const forecastRows = buildForecastLedgerRows(forecast, tickAt);
     await writeTursoForecastRecords(forecastRows, tickAt);
@@ -1153,6 +1293,135 @@ async function main(): Promise<number> {
     );
   }
 
+  // C4.1 (#13257, component of #9572; C4 design §1/§7): the
+  // complete-downtime prediction records — derived by
+  // src/quota-downtime.ts from this tick's forecast product,
+  // appended to the C4 prediction log beside the forecast
+  // product, and mirrored into the Turso ledger under the C4
+  // source "quota-prediction". Advisory only: no placement path
+  // reads them (the C6 pages and forecast alerts consume them).
+  // Fail-soft like the forecast write; a null forecast (the
+  // block above failed) derives nothing — the previous records
+  // stand and age with the previous forecast. The supersedes
+  // link reads the log's tail for the last downtime record per
+  // pool set; a missing or torn log just starts the chain over.
+  if (forecast) {
+    try {
+      const previous = new Map<string, string>();
+      const existing = await readFile(predictionsPath, "utf8").catch(() => "");
+      for (const line of existing.split("\n").slice(-500)) {
+        if (!line.trim()) continue;
+        try {
+          const parsed = JSON.parse(line) as { kind?: string; id?: string; subject?: { pools?: string[] } };
+          if (parsed.kind === "downtime_window" && parsed.id && parsed.subject?.pools) {
+            previous.set(parsed.subject.pools.join("+"), parsed.id);
+          }
+        } catch {
+          // A torn last line is not fatal.
+        }
+      }
+      const records = deriveDowntimeWindowRecords(forecast, previous);
+      if (records.length) {
+        await mkdir(dirname(predictionsPath), { recursive: true });
+        await appendFile(predictionsPath, records.map((r) => JSON.stringify(r)).join("\n") + "\n", "utf8");
+        await writeTursoForecastRecords(buildDowntimeLedgerRows(records, tickAt), tickAt);
+      }
+      console.log(
+        `quota-gatherer: downtime predictions ${records.map((r) => r.state).join(",") || "none"} -> ${predictionsPath}`,
+      );
+    } catch (err) {
+      console.error(
+        `quota-gatherer: downtime failed-soft: ${safeProviderReason(err instanceof Error ? err.message : String(err))}`,
+      );
+    }
+  }
+
+  // Stage-3 S3 (#12697, design D3): the shadow placement record —
+  // the forecast-informed ordering logged beside the live ordering
+  // as a per-decision diff record (src/quota-shadow-placement.ts),
+  // written as the latest-state file plus one appended line per
+  // tick in the history JSONL the weekly review (S7) scores.
+  // SHADOW ONLY: no live path reads the record, and it is computed
+  // after every live output above is already written; a null
+  // forecast (the block above failed) still yields a record, with
+  // the shadow ordering equal to the live one. Fail-soft like the
+  // forecast write: any failure logs and the tick still succeeds.
+  try {
+    const shadow = buildShadowPlacement(file, forecast, new Date(tickAt));
+    await writeAtomic(shadowPlacementPath, JSON.stringify(shadow, null, 2) + "\n");
+    await mkdir(dirname(shadowPlacementHistoryPath), { recursive: true });
+    await appendFile(shadowPlacementHistoryPath, JSON.stringify(shadow) + "\n", "utf8");
+    console.log(
+      `quota-gatherer: shadow placement wrote ${shadow.summary.pools} pools, ${shadow.summary.demotedByForecast} forecast demotions (shadow only) -> ${shadowPlacementPath}`,
+    );
+  } catch (err) {
+    console.error(
+      `quota-gatherer: shadow placement failed-soft: ${safeProviderReason(err instanceof Error ? err.message : String(err))}`,
+    );
+  }
+
+  // C4.3 (#13259 criterion 2, component of #9572; C4 design §5):
+  // the day-type + spike-day SHADOW records — this tick's v1
+  // forecast adjusted by the admitted day-type cells' measured
+  // ratios, plus the explicit spike-day verdict — appended to
+  // quota-daytype-shadow.jsonl beside the forecast product.
+  // SHADOW ONLY (design §5 earn-in): no live path reads them and
+  // the published forecast is never modified; they accumulate
+  // for the criterion-3 S2-harness comparison. Fail-soft like
+  // the shadow placement write; a null forecast (the forecast
+  // block above failed) derives nothing. The supersedes chain
+  // reads the file's tail for the last shadow record per
+  // subject; a missing or torn file just starts the chain over.
+  if (forecast) {
+    try {
+      const stored = await new SnapshotStore(snapshotsDir).readAll().catch((): SnapshotRecord[] => []);
+      const previous = new Map<string, string>();
+      const existing = await readFile(daytypeShadowPath, "utf8").catch(() => "");
+      for (const line of existing.split("\n").slice(-2000)) {
+        if (!line.trim()) continue;
+        try {
+          const parsed = JSON.parse(line) as {
+            kind?: string;
+            id?: string;
+            subject?: { pool?: string; serviceId?: string; window?: string };
+          };
+          if (
+            parsed.kind === "daytype_shadow" &&
+            parsed.id &&
+            parsed.subject?.pool &&
+            parsed.subject?.serviceId &&
+            parsed.subject?.window
+          ) {
+            previous.set(
+              dayTypeShadowSubjectKey(parsed.subject.pool, parsed.subject.serviceId, parsed.subject.window),
+              parsed.id,
+            );
+          }
+        } catch {
+          // A torn last line is not fatal.
+        }
+      }
+      const records = buildDayTypeShadowRecords(forecast, [...stored, ...fresh], previous, new Date(tickAt));
+      if (records.length) {
+        await mkdir(dirname(daytypeShadowPath), { recursive: true });
+        await appendFile(daytypeShadowPath, records.map((r) => JSON.stringify(r)).join("\n") + "\n", "utf8");
+      }
+      console.log(
+        `quota-gatherer: daytype shadow ${records.filter((r) => r.state === "shadow").length} adjusted / ${records.filter((r) => r.state === "adjustment_unavailable").length} adjustment_unavailable -> ${daytypeShadowPath}`,
+      );
+    } catch (err) {
+      console.error(
+        `quota-gatherer: daytype shadow failed-soft: ${safeProviderReason(err instanceof Error ? err.message : String(err))}`,
+      );
+    }
+  }
+
+  // Stage-3 S5 (#12699, design D6): the anomaly detectors beside
+  // the tick (burn spike / schema drift / plan change). Fail-soft
+  // inside runAnomalyDetectors; the tick's own result never
+  // depends on it.
+  await runAnomalyDetectors({ entries, fresh, tickAt });
+
   const okCount = runs.filter((r) => r.state === "ok").length;
   console.log(
     `quota-gatherer: tick ${tickAt} providers=${runs.length} ok=${okCount} records=+${fresh.length} durationMs=${heartbeat.durationMs} -> ${currentPath}`,
@@ -1160,4 +1429,4 @@ async function main(): Promise<number> {
   return 0;
 }
 
-process.exit(await main());
+if (import.meta.main) process.exit(await main());

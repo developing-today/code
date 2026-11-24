@@ -30,9 +30,29 @@
 //! latency to every claim. `FLEET_STALENESS_CHECK=0` turns the
 //! whole check off; a packet with `staleness_check: false` opts out.
 //!
+//! Two packet shapes are exempt by construction (#14268): a packet
+//! carrying a `dedupe_override` reason is a deliberate parallel
+//! filing — the filer recorded that its work arises from the
+//! linked issue rather than being the issue's own canonical task,
+//! so the issue's state cannot complete it; and a feature slice
+//! (CompletionClass::Slice) delivers an artifact against a parent
+//! issue whose state is not the slice's completion — only the
+//! slice's own linked PR landing retires it. Both exemptions fail
+//! open the same way as the rest of the check: the claim proceeds
+//! exactly as before.
+//!
 //! Only the default pick runs the check. A by-id claim, a transfer
 //! and the handoff pick name their row deliberately — the override
 //! path #9178 keeps — so they claim as before.
+//!
+//! The filing-time half (#12966, proposal step 5) reads the stamp
+//! the generators already write, `payload.issue.state_checked_at`.
+//! A packet filed with a stamp older than `FILING_RECHECK_AFTER`
+//! is re-verified at enqueue and retires in place the same way, so
+//! already-done work never rides the queue waiting for a claim. A
+//! fresh stamp is trusted — the generator just checked — and a
+//! missing or unparsable one files exactly as before: the
+//! claim-time check stays the net for everything else.
 
 use super::*;
 
@@ -54,6 +74,11 @@ pub const STALENESS_FAILURE_BACKOFF: Duration = Duration::from_secs(60);
 /// The most rows one claim call may retire as already done before
 /// it gives up and returns no claim (the next call carries on).
 pub const MAX_STALENESS_RETIRES_PER_CALL: usize = 64;
+
+/// How old a packet's `issue.state_checked_at` stamp may be at
+/// filing before the enqueue re-verifies the linked work (#12966;
+/// proposal step 5 of #10626 names a small bound: 1h).
+pub const FILING_RECHECK_AFTER: Duration = Duration::from_secs(3600);
 
 /// The kind of linked work a task carries.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -225,8 +250,32 @@ pub fn staleness_verdict(
     if payload.get("staleness_check").and_then(|v| v.as_bool()) == Some(false) {
         return None;
     }
+    // #14268: a deliberate-parallel filing is never retired on its
+    // linked issue's state. `dedupe_override` is the filer's
+    // recorded assertion that this packet is not the issue's
+    // canonical task — its deliverables arise from the issue
+    // (follow-on filings, dispatched work), so the issue closing
+    // does not complete it. (Tasks 22913/22927: the #5834
+    // follow-on filing packet, eaten at claim because #5834 had
+    // just been closed by the lane that filed the packet.)
+    if dedupe_override(row).is_some() {
+        return None;
+    }
     let links = task_links(row);
     if links.is_empty() {
+        return None;
+    }
+    // #14268: a feature slice delivers an artifact; its parent
+    // issue's state is not the slice's completion
+    // (CompletionClass::Slice — the parent issue stays open by
+    // design and slices recur against it, #12233 F2c). An issue
+    // link alone never retires a slice; the slice's own PR
+    // landing still does, through the PR links. (Tasks
+    // 22966/22984: the #12428 NixOS handoff slices, eaten at
+    // claim because their parent issue was closed.)
+    if completion_class(&payload) == CompletionClass::Slice
+        && links.iter().all(|l| l.kind == LinkKind::Issue)
+    {
         return None;
     }
     let created_at = row
@@ -263,6 +312,48 @@ pub fn staleness_verdict(
         }
     }
     verdict
+}
+
+/// The packet's filing-time state stamp (#12966): the generators
+/// (pm-stack dispatch and console) write `issue.state_checked_at`
+/// when they snapshot the issue for the packet.
+pub fn filing_stamp(row: &Value) -> Option<String> {
+    task_payload(row)
+        .get("issue")
+        .and_then(|i| i.get("state_checked_at"))
+        .and_then(|v| v.as_str())
+        .map(str::to_string)
+}
+
+/// Whether a filing stamp is old enough at `now` that the state it
+/// vouches for must be re-verified (pure). A missing or unparsable
+/// stamp, and one in the future, never trigger the re-check: the
+/// claim-time check remains the net (fail open, as everywhere here).
+pub fn stamp_needs_recheck(stamp: &str, now: &str, bound: Duration) -> bool {
+    let (Some(stamp_s), Some(now_s)) = (
+        crate::disposition::parse_rfc3339_epoch(stamp),
+        crate::disposition::parse_rfc3339_epoch(now),
+    ) else {
+        return false;
+    };
+    now_s - stamp_s > bound.as_secs() as i64
+}
+
+/// The filing-time verdict (pure; the lookups come through `look`):
+/// the claim-time verdict, gated on the packet's stamp being older
+/// than the bound. A fresh stamp is trusted, so no lookup runs at
+/// all; no stamp, no check.
+pub fn filing_verdict(
+    row: &Value,
+    now: &str,
+    tier2: bool,
+    look: &mut dyn FnMut(&Link) -> Landing,
+) -> Option<Stale> {
+    let stamp = filing_stamp(row)?;
+    if !stamp_needs_recheck(&stamp, now, FILING_RECHECK_AFTER) {
+        return None;
+    }
+    staleness_verdict(row, now, tier2, look)
 }
 
 /// The broker's staleness lookups: the cache and the failure
@@ -344,6 +435,21 @@ pub(crate) fn stale_pick(t: &TursoBackend, row: &Value) -> Option<Stale> {
     })
 }
 
+/// The filing-time check for one just-enqueued row (#12966). None
+/// when the check is off, the broker has no GitHub probe, the
+/// packet carries no stamp or a fresh one, or the linked work has
+/// not landed: the enqueue stands exactly as filed.
+pub(crate) fn filing_recheck(t: &TursoBackend, row: &Value) -> Option<Stale> {
+    if !flag_on("FLEET_STALENESS_CHECK") {
+        return None;
+    }
+    let probe = t.gh_probe()?;
+    let tier2 = flag_on("FLEET_STALENESS_TIER2");
+    filing_verdict(row, &now_iso(), tier2, &mut |link| {
+        t.staleness.look(probe, link)
+    })
+}
+
 /// Retire a picked row whose work already landed: done, outcome
 /// `already_done` with the evidence on its result, and one
 /// `staleness_autocomplete` event. The row is still the picking
@@ -354,6 +460,7 @@ pub(crate) fn retire_stale(
     worker: &str,
     row: &Value,
     stale: &Stale,
+    via: &str,
 ) -> Result<(), TErr> {
     let id = row.get("id").and_then(|v| v.as_i64()).unwrap_or(0);
     let prior = match row.get("result").cloned().unwrap_or(json!({})) {
@@ -368,7 +475,11 @@ pub(crate) fn retire_stale(
             "outcome": "already_done",
             "staleness": evidence,
             "summary": format!(
-                "Retired at claim (#10626): {} {} {} at {}, before any session ran.",
+                "{}: {} {} {} at {}, before any session ran.",
+                match via {
+                    "enqueue_staleness_check" => "Retired at filing (#12966)",
+                    _ => "Retired at claim (#10626)",
+                },
                 stale.link.kind.as_str(),
                 stale.link.key(),
                 stale.state,
@@ -394,7 +505,7 @@ pub(crate) fn retire_stale(
         Some(id),
         "staleness_autocomplete",
         &with_marks(
-            &json!({"via": "claim_staleness_check", "outcome": "already_done", "evidence": evidence}),
+            &json!({"via": via, "outcome": "already_done", "evidence": evidence}),
             row,
         ),
     )?;
@@ -489,6 +600,77 @@ mod tests {
         assert!(
             staleness_verdict(&t, NOW, true, &mut |_| landed("2026-10-01T00:00:00Z")).is_none()
         );
+    }
+
+    #[test]
+    fn deliberate_parallel_override_is_never_retired() {
+        // #14268 (tasks 22913/22927): a triage packet filed with a
+        // dedupe_override reason carries NEW work arising from its
+        // already-closed issue — filing the design record's
+        // follow-ons. The override is the filer's recorded
+        // assertion that the packet is not the issue's canonical
+        // task, so the claim proceeds even though the issue landed
+        // before the task was created.
+        let t = row(
+            json!({"kind": "triage", "repo": "developing-today/code",
+                   "issue": {"number": 5},
+                   "dedupe_override": "deliberate parallel: files the record follow-ons"}),
+            "2026-11-10T00:00:00Z",
+        );
+        assert!(
+            staleness_verdict(&t, NOW, true, &mut |_| landed("2026-10-01T00:00:00Z")).is_none()
+        );
+        // A boolean `true` is not an override (work_identity's
+        // parsing, asserted there too): the packet retires as
+        // before.
+        let t = row(
+            json!({"kind": "triage", "repo": "developing-today/code",
+                   "issue": {"number": 5}, "dedupe_override": true}),
+            "2026-11-10T00:00:00Z",
+        );
+        assert!(
+            staleness_verdict(&t, NOW, true, &mut |_| landed("2026-10-01T00:00:00Z")).is_some()
+        );
+    }
+
+    #[test]
+    fn feature_slice_is_not_retired_by_its_parent_issue() {
+        // #14268 (tasks 22966/22984): a slice packet whose parent
+        // issue is closed still has its artifact to deliver — the
+        // parent's closure is not the slice's completion.
+        let t = row(
+            json!({"kind": "feature_slice", "repo": "developing-today/code",
+                   "issue": {"number": 5}}),
+            "2026-11-10T00:00:00Z",
+        );
+        assert!(
+            staleness_verdict(&t, NOW, true, &mut |_| landed("2026-10-01T00:00:00Z")).is_none()
+        );
+        // The slice's own PR landing still retires it: with a PR
+        // link present the PR decides, as for a shepherd.
+        let t = row(
+            json!({"kind": "feature_slice", "repo": "developing-today/code",
+                   "issue": {"number": 5}, "pr": {"number": 9}}),
+            "2026-11-10T00:00:00Z",
+        );
+        let mut look = |l: &Link| match l.kind {
+            LinkKind::Pr => landed("2026-10-01T00:00:00Z"),
+            LinkKind::Issue => Landing::Open,
+        };
+        assert!(staleness_verdict(&t, NOW, true, &mut look).is_some());
+    }
+
+    #[test]
+    fn filing_check_honours_the_same_exemptions() {
+        // The filing-time re-check shares the verdict, so a
+        // stamped slice packet with an old stamp files live even
+        // when its parent issue has landed.
+        let t = row(
+            json!({"kind": "feature_slice", "repo": "developing-today/code",
+                   "issue": {"number": 5, "state_checked_at": "2026-11-18T09:00:00Z"}}),
+            "2026-11-18T11:30:00Z",
+        );
+        assert!(filing_verdict(&t, NOW, true, &mut |_| landed("2026-11-17T00:00:00Z")).is_none());
     }
 
     #[test]
@@ -637,6 +819,106 @@ mod tests {
             ureq::agent(),
         );
         assert!(stale_pick(&backend, &issue_task(5)).is_none());
+    }
+
+    fn stamped_task(stamp: &str) -> Value {
+        row(
+            json!({"repo": "developing-today/code",
+                   "issue": {"number": 5, "state_checked_at": stamp}}),
+            "2026-11-18T11:30:00Z",
+        )
+    }
+
+    #[test]
+    fn filing_stamp_comes_from_the_issue_object() {
+        assert_eq!(
+            filing_stamp(&stamped_task("2026-11-18T09:00:00Z")).as_deref(),
+            Some("2026-11-18T09:00:00Z")
+        );
+        assert!(filing_stamp(&issue_task(5)).is_none());
+    }
+
+    #[test]
+    fn stamp_age_gate_trusts_fresh_and_fails_open() {
+        // 15 minutes old at NOW: the generator just checked; trust it.
+        assert!(!stamp_needs_recheck(
+            "2026-11-18T11:45:00Z",
+            NOW,
+            FILING_RECHECK_AFTER
+        ));
+        // Three hours old: re-verify.
+        assert!(stamp_needs_recheck(
+            "2026-11-18T09:00:00Z",
+            NOW,
+            FILING_RECHECK_AFTER
+        ));
+        // Unparsable or future stamps infer nothing.
+        assert!(!stamp_needs_recheck("recently", NOW, FILING_RECHECK_AFTER));
+        assert!(!stamp_needs_recheck(
+            "2026-11-19T00:00:00Z",
+            NOW,
+            FILING_RECHECK_AFTER
+        ));
+    }
+
+    #[test]
+    fn filing_verdict_only_looks_when_the_stamp_is_old() {
+        // Old stamp, work landed before filing: tier 1, as at claim.
+        let stale = filing_verdict(
+            &stamped_task("2026-11-18T09:00:00Z"),
+            NOW,
+            true,
+            &mut |_| landed("2026-11-17T00:00:00Z"),
+        )
+        .unwrap();
+        assert_eq!(stale.tier, 1);
+        // Fresh stamp: trusted, and the probe is never called.
+        let mut called = false;
+        assert!(
+            filing_verdict(
+                &stamped_task("2026-11-18T11:45:00Z"),
+                NOW,
+                true,
+                &mut |_| {
+                    called = true;
+                    landed("2026-11-17T00:00:00Z")
+                },
+            )
+            .is_none()
+        );
+        assert!(!called, "a fresh stamp means no lookup");
+        // No stamp at all: files as before, no lookup.
+        assert!(
+            filing_verdict(&issue_task(5), NOW, true, &mut |_| {
+                called = true;
+                landed("2026-11-17T00:00:00Z")
+            })
+            .is_none()
+        );
+        assert!(!called, "no stamp means no filing check");
+        // Old stamp but the work is still open: files live.
+        assert!(
+            filing_verdict(
+                &stamped_task("2026-11-18T09:00:00Z"),
+                NOW,
+                true,
+                &mut |_| Landing::Open,
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn enqueue_runs_the_filing_recheck_after_insert() {
+        let src = include_str!("claim.rs");
+        let start = src.find("fn verb_enqueue(").unwrap();
+        let body = &src[start..];
+        let insert = body.find("INSERT INTO tasks").unwrap();
+        let check = body
+            .find("filing_recheck(t, &row)")
+            .expect("enqueue runs the filing re-check");
+        assert!(insert < check, "the re-check retires the filed row");
+        assert!(body.contains("\"enqueue_staleness_check\""));
     }
 
     #[test]

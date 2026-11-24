@@ -33,7 +33,7 @@ const freePort = () =>
 const makeLeaf = (name, expectedKey) => {
   const leaf = {
     name,
-    mode: "ok", // ok | rate | auth | sse-rate | delayed-sse-rate | stream-break | late-sse-rate | delayed-stream | big-first-event | preface-flood
+    mode: "ok", // ok | rate | rate-body-reset | auth | sse-rate | delayed-sse-rate | stream-break | late-sse-rate | delayed-stream | big-first-event | preface-flood
     last: null,
     hits: 0,
     server: null,
@@ -50,7 +50,9 @@ const makeLeaf = (name, expectedKey) => {
       } catch {}
       leaf.last = { headers: req.headers, body, url: req.url };
       if (leaf.mode === "slow") return;
-      if (req.headers.authorization !== `Bearer ${expectedKey}`) {
+      const bearerOk = req.headers.authorization === `Bearer ${expectedKey}`;
+      const googOk = req.headers["x-goog-api-key"] === expectedKey;
+      if (!bearerOk && !googOk) {
         res.writeHead(401, { "content-type": "application/json" });
         return res.end(JSON.stringify({ error: { message: "bad key" } }));
       }
@@ -64,6 +66,65 @@ const makeLeaf = (name, expectedKey) => {
         res.writeHead(429, {
           "content-type": "application/json",
           "retry-after": "30",
+        });
+        return res.end(JSON.stringify({ error: { message: "quota" } }));
+      }
+      if (leaf.mode === "rate-body-reset") {
+        // A quota wall that names its reset in the BODY with no
+        // Retry-After header (the _muse shape in code#9859): the
+        // reset instant must still wall the leaf (#12228).
+        res.writeHead(429, { "content-type": "application/json" });
+        const resetAt = new Date(Date.now() + 3600 * 1000).toISOString();
+        return res.end(
+          JSON.stringify({
+            error: {
+              message: `Subscription quota exhausted. Your usage window resets at ${resetAt}.`,
+            },
+          }),
+        );
+      }
+      if (leaf.mode === "rate-http-date") {
+        // Retry-After as an HTTP-date, ~1h out (#13693 RC-1).
+        res.writeHead(429, {
+          "content-type": "application/json",
+          "retry-after": new Date(Date.now() + 3600 * 1000).toUTCString(),
+        });
+        return res.end(JSON.stringify({ error: { message: "quota" } }));
+      }
+      if (leaf.mode === "rate-prose") {
+        // No header; the body names only a duration in prose (#13693).
+        res.writeHead(429, { "content-type": "application/json" });
+        return res.end(
+          JSON.stringify({
+            error: {
+              message: "Quota exceeded. Please try again in 20 minutes.",
+            },
+          }),
+        );
+      }
+      if (leaf.mode === "rate-json-retry-after") {
+        // No header; the body carries {"retry_after": 30} (#13693).
+        res.writeHead(429, { "content-type": "application/json" });
+        return res.end(
+          JSON.stringify({ error: { message: "quota", retry_after: 30 } }),
+        );
+      }
+      if (leaf.mode === "rate-json-retry-delay") {
+        // No header; the body carries {"retryDelay": "30s"}, the
+        // Google-style pure-duration string (#13693).
+        res.writeHead(429, { "content-type": "application/json" });
+        return res.end(
+          JSON.stringify({ error: { message: "quota", retryDelay: "30s" } }),
+        );
+      }
+      if (leaf.mode === "rate-x-reset") {
+        // No Retry-After; an x-ratelimit-reset epoch-seconds header
+        // ~1h out carries the reset (#13693 RC-1).
+        res.writeHead(429, {
+          "content-type": "application/json",
+          "x-ratelimit-reset": String(
+            Math.floor((Date.now() + 3600 * 1000) / 1000),
+          ),
         });
         return res.end(JSON.stringify({ error: { message: "quota" } }));
       }
@@ -106,6 +167,112 @@ const makeLeaf = (name, expectedKey) => {
         res.writeHead(200, { "content-type": "text/event-stream" });
         res.write(": heartbeat\n\n");
         return setTimeout(() => res.destroy(), 10);
+      }
+      if (leaf.mode === "embed-400") {
+        res.writeHead(400, { "content-type": "application/json" });
+        return res.end(JSON.stringify({ error: { message: "bad embedding request" } }));
+      }
+      if (req.url.includes(":batchEmbedContent")) {
+        // Google native batch shape.
+        const reqs = Array.isArray(body.requests) ? body.requests : [];
+        if (reqs.some((r) => typeof r?.content?.parts?.[0]?.text !== "string")) {
+          res.writeHead(400, { "content-type": "application/json" });
+          return res.end(JSON.stringify({ error: { message: "bad batch request" } }));
+        }
+        if (
+          leaf.mode === "embed-bad-item" &&
+          reqs.some((r) => String(r.content.parts[0].text).includes("bad"))
+        ) {
+          res.writeHead(400, { "content-type": "application/json" });
+          return res.end(JSON.stringify({ error: { message: "bad item" } }));
+        }
+        res.writeHead(200, { "content-type": "application/json" });
+        return res.end(
+          JSON.stringify({
+            embeddings: reqs.map((r) => ({
+              values: [r.content.parts[0].text.length, 0.5],
+            })),
+          }),
+        );
+      }
+      if (req.url.includes(":embedContent")) {
+        // Google native single shape.
+        const text = body?.content?.parts?.[0]?.text;
+        if (typeof text !== "string") {
+          res.writeHead(400, { "content-type": "application/json" });
+          return res.end(JSON.stringify({ error: { message: "bad embed request" } }));
+        }
+        res.writeHead(200, { "content-type": "application/json" });
+        return res.end(
+          JSON.stringify({ embedding: { values: [text.length, 0.5] } }),
+        );
+      }
+      if (req.url.includes("/embeddings")) {
+        const input = body.input;
+        const texts = typeof input === "string" ? [input] : input;
+        if (
+          leaf.mode === "embed-bad-item" &&
+          Array.isArray(texts) &&
+          texts.some((t) => typeof t === "string" && t.includes("bad"))
+        ) {
+          res.writeHead(400, { "content-type": "application/json" });
+          return res.end(JSON.stringify({ error: { message: "bad item" } }));
+        }
+        if (typeof input === "string") {
+          res.writeHead(200, { "content-type": "application/json" });
+          return res.end(
+            JSON.stringify({
+              object: "list",
+              data: [{ object: "embedding", index: 0, embedding: [input.length, 0.5] }],
+              model: body.model,
+            }),
+          );
+        }
+        if (Array.isArray(input) && input.every((t) => typeof t === "string")) {
+          res.writeHead(200, { "content-type": "application/json" });
+          return res.end(
+            JSON.stringify({
+              object: "list",
+              data: input.map((t, i) => ({
+                object: "embedding",
+                index: i,
+                embedding: [t.length, 0.5],
+              })),
+              model: body.model,
+            }),
+          );
+        }
+        res.writeHead(400, { "content-type": "application/json" });
+        return res.end(JSON.stringify({ error: { message: "bad embedding input" } }));
+      }
+      if (req.url.includes("/decisions")) {
+        if (leaf.mode === "dec-400") {
+          res.writeHead(400, { "content-type": "application/json" });
+          return res.end(JSON.stringify({ error: { message: "bad decision" } }));
+        }
+        res.writeHead(200, { "content-type": "application/json" });
+        return res.end(
+          JSON.stringify({ decision: "yes", model: body.model, echo: body.input ?? null }),
+        );
+      }
+      if (req.url.includes("/rerank")) {
+        res.writeHead(200, { "content-type": "application/json" });
+        const docs = Array.isArray(body.documents) ? body.documents : [];
+        return res.end(
+          JSON.stringify({
+            results: docs.map((d, i) => ({ index: i, score: 1 - i * 0.1, document: d })),
+            model: body.model,
+          }),
+        );
+      }
+      if (req.url.includes("/audio/transcriptions")) {
+        res.writeHead(200, { "content-type": "application/json" });
+        return res.end(JSON.stringify({ text: `transcribed-by-${name}` }));
+      }
+      if (req.url.includes("/audio/speech")) {
+        const audio = Buffer.from(`audio-by-${name}`, "utf8");
+        res.writeHead(200, { "content-type": "audio/mpeg", "content-length": audio.length });
+        return res.end(audio);
       }
       if (body.stream) {
         res.writeHead(200, { "content-type": "text/event-stream" });
@@ -307,6 +474,82 @@ const startProxy = async (arg = {}) => {
       "options": { "baseURL": "http://127.0.0.1:${leafB.port}/v1", "apiKey": "key-b" },
       "models": { "m-b": {} },
     },
+    "leafG": {
+      "npm": "@ai-sdk/openai-compatible",
+      "options": {
+        "baseURL": "http://127.0.0.1:${leafA.port}/v1beta",
+        "apiKey": "key-a",
+        "endpoints": {
+          "embed": { "kind": "google-embed", "path": "/models/{model}:embedContent" },
+          "decision": { "kind": "google-decisions", "path": "/decisions" }
+        }
+      },
+      "models": { "m-ge": {}, "m-gd": {} },
+    },
+    "leafGsplit": {
+      "npm": "@ai-sdk/openai-compatible",
+      "options": {
+        "baseURL": "http://127.0.0.1:${leafA.port}/v1beta",
+        "apiKey": "key-a",
+        "endpoints": {
+          "embed": { "kind": "google-embed", "path": "/models/{model}:embedContent", "maxBatchItems": 2 }
+        }
+      },
+      "models": { "m-ge": {} },
+    },
+    "leafZ": {
+      "npm": "@ai-sdk/openai-compatible",
+      "options": {
+        "baseURL": "http://127.0.0.1:${leafA.port}/v1",
+        "apiKey": "key-a",
+        "endpoints": {
+          "decision": { "kind": "jev-systemone", "path": "/decisions" }
+        }
+      },
+      "models": { "m-zd": {} },
+    },
+    "leafF": {
+      "npm": "@ai-sdk/openai-compatible",
+      "options": {
+        "baseURL": "http://127.0.0.1:${leafA.port}/v1",
+        "apiKey": "key-a",
+        "endpoints": {
+          "decision": { "kind": "fireworks", "path": "/decisions" }
+        }
+      },
+      "models": { "m-fd": {} },
+    },
+    "leafWeird": {
+      "npm": "@ai-sdk/openai-compatible",
+      "options": {
+        "baseURL": "http://127.0.0.1:${leafA.port}/v1",
+        "apiKey": "key-a",
+        "endpoints": {
+          "decision": { "kind": "not-a-real-kind", "path": "/decisions" }
+        }
+      },
+      "models": { "m-wd": {} },
+    },
+    "leafFree": {
+      "npm": "@ai-sdk/openai-compatible",
+      "options": { "baseURL": "http://127.0.0.1:${leafA.port}/v1", "apiKey": "key-a" },
+      "tokenMetering": {
+        "groups": {
+          "big": { "dailyTokens": 28, "marginTokens": 7, "models": ["m-free"] },
+          "small": { "dailyTokens": 700, "marginTokens": 0, "models": ["m-free2"] }
+        }
+      },
+      "models": { "m-free": {}, "m-free2": {} },
+    },
+    "leafPaid": {
+      "npm": "@ai-sdk/openai-compatible",
+      "options": { "baseURL": "http://127.0.0.1:${leafB.port}/v1", "apiKey": "key-b" },
+      "models": { "m-free": {} },
+    },
+  },
+  "model_designations": {
+    "m-desig-dec": { "purposes": ["decision"] },
+    "m-desig-chat": { "purposes": ["chat"] }
   },
   "experimental": {
     "provider_routes": {
@@ -360,6 +603,23 @@ const startProxy = async (arg = {}) => {
       "t-group-skip": { "selection": "ordered", "targets": ["grp-ordered/m-a"] },
       "t-openai-default": { "selection": "ordered", "targets": ["openai/m-gpt"] },
       "t-a-only": { "selection": "ordered", "targets": ["leafA/m-a"] },
+      "t-decide": { "purpose": "decision", "selection": "ordered", "targets": ["leafA/m-a", "leafB/m-b"] },
+      "t-decide-goog": { "purpose": "decision", "selection": "ordered", "targets": ["leafG/m-gd"] },
+      "t-decide-zen": { "purpose": "decision", "selection": "ordered", "targets": ["leafZ/m-zd"] },
+      "t-decide-fw": { "purpose": "decision", "selection": "ordered", "targets": ["leafF/m-fd"] },
+      "t-decide-weird": { "purpose": "decision", "selection": "ordered", "targets": ["leafWeird/m-wd"] },
+      "t-decide-desig": { "purpose": "decision", "selection": "ordered", "targets": ["leafA/m-desig-dec", "leafB/m-desig-chat"] },
+      "t-embed": { "purpose": "embed", "selection": "ordered", "targets": ["leafA/m-a", "leafB/m-b"] },
+      "t-embed-goog": { "purpose": "embed", "selection": "ordered", "targets": ["leafG/m-ge"] },
+      "t-embed-split": { "purpose": "embed", "selection": "ordered", "targets": ["leafGsplit/m-ge"] },
+      "t-rerank": { "purpose": "rerank", "selection": "ordered", "targets": ["leafA/m-a", "leafB/m-b"] },
+      "t-transcribe": { "purpose": "transcribe", "selection": "ordered", "targets": ["leafA/m-a", "leafB/m-b"] },
+      "t-speak": { "purpose": "speak", "selection": "ordered", "targets": ["leafA/m-a", "leafB/m-b"] },
+      "t-guard": { "purpose": "guard", "selection": "ordered", "targets": ["leafA/m-a", "leafB/m-b"] },
+      "t-chat-desig": { "selection": "ordered", "targets": ["leafA/m-desig-dec", "leafB/m-b"] },
+      "t-metered": { "selection": "ordered", "targets": ["leafFree/m-free", "leafPaid/m-free"] },
+      "t-metered-only": { "selection": "ordered", "targets": ["leafFree/m-free"] },
+      "t-metered-groups": { "selection": "ordered", "targets": ["leafFree/m-free", "leafFree/m-free2", "leafPaid/m-free"] },
     },
   },
 }`,
@@ -556,37 +816,69 @@ test("429 on the first leaf fails over; both attempts recorded", async () => {
   }
 });
 
-test("repeated authentication failures demote a leaf until it succeeds", async () => {
+test("429 naming a body reset walls the leaf for later sessions (#12228)", async () => {
+  const p = await startProxy();
+  try {
+    p.leafA.mode = "rate-body-reset";
+    // The first session fails over to leafB ...
+    const first = await p.post({ model: "opencode-route/t-ordered", messages: MSGS });
+    assert.equal(first.status, 200);
+    assert.equal((await first.json()).choices[0].message.content, "LEAF-B");
+    // ... and the 429's body-carried reset is recorded as quota detail.
+    const rows = await waitForAttempts(p, 2);
+    assert.equal(rows.length, 2);
+    assert.equal(rows[0].error_tag, "RateLimit");
+    assert.notEqual(rows[0].quota, null);
+    const quota = JSON.parse(rows[0].quota);
+    const resetMs = Date.parse(quota.resetsAt ?? quota.resetAt ?? quota.retryAt ?? NaN);
+    assert.ok(
+      Number.isFinite(resetMs) && resetMs > Date.now(),
+      `body reset not recorded as a future instant: ${rows[0].quota}`,
+    );
+    // A later session must not touch the walled leaf before its reset.
+    const second = await p.post({ model: "opencode-route/t-ordered", messages: MSGS });
+    assert.equal(second.status, 200);
+    assert.equal((await second.json()).choices[0].message.content, "LEAF-B");
+    assert.equal(p.leafA.hits, 1);
+  } finally {
+    await p.cleanup();
+  }
+});
+
+test("an authentication failure benches a leaf until a probe succeeds (#12228)", async () => {
   const p = await startProxy();
   try {
     p.leafA.mode = "auth";
-    for (let i = 0; i < 3; i++) {
-      const res = await p.post({ model: "opencode-route/t-ordered", messages: MSGS });
-      assert.equal(res.status, 200);
-      assert.equal((await res.json()).choices[0].message.content, "LEAF-B");
-    }
-
-    const beforeDemotion = p.attempts();
-    const authFailures = beforeDemotion.filter((row) => row.provider_id === "leafA");
-    assert.equal(authFailures.length, 3);
+    // The first session fails over to leafB, and the 401 is recorded.
+    const first = await p.post({ model: "opencode-route/t-ordered", messages: MSGS });
+    assert.equal(first.status, 200);
+    assert.equal((await first.json()).choices[0].message.content, "LEAF-B");
+    const authFailures = p.attempts().filter((row) => row.provider_id === "leafA");
+    assert.equal(authFailures.length, 1);
     assert.ok(authFailures.every((row) => row.outcome === "failure"));
     assert.ok(authFailures.every((row) => row.error_tag === "Authentication"));
     assert.ok(authFailures.every((row) => row.error_status === 401));
     assert.ok(authFailures.every((row) => row.quota === null));
 
-    // Three prior auth failures move leafA behind leafB for the next turn.
-    const fallback = await p.post({ model: "opencode-route/t-ordered", messages: MSGS });
-    assert.equal(fallback.status, 200);
-    assert.equal((await fallback.json()).choices[0].message.content, "LEAF-B");
-    assert.equal(
-      p.attempts().filter((row) => row.provider_id === "leafA").length,
-      3,
+    // Later sessions must not be routed to the dead door while its
+    // bench holds: leafA sees no second attempt, and the bench says
+    // so on the diagnostics stream.
+    const second = await p.post({ model: "opencode-route/t-ordered", messages: MSGS });
+    assert.equal(second.status, 200);
+    assert.equal((await second.json()).choices[0].message.content, "LEAF-B");
+    assert.equal(p.leafA.hits, 1);
+    assert.ok(
+      p.log().includes("auth bench excluded leafA/m-a"),
+      `bench decision should be in the proxy diagnostics: ${p.log()}`,
     );
 
-    // A success on the demoted pair clears the failure run.
+    // A successful probe re-admits the leaf. leafA has recovered; a
+    // single-target request through it IS the probe (the bench's
+    // fail-safe keeps a benched last resort as the only candidate).
     p.leafA.mode = "ok";
-    const recovered = await p.post({ model: "opencode-route/t-a-only", messages: MSGS });
-    assert.equal(recovered.status, 200);
+    const probe = await p.post({ model: "opencode-route/t-a-only", messages: MSGS });
+    assert.equal(probe.status, 200);
+    assert.equal((await probe.json()).choices[0].message.content, "LEAF-A");
     const primaryAgain = await p.post({ model: "opencode-route/t-ordered", messages: MSGS });
     assert.equal(primaryAgain.status, 200);
     assert.equal(
@@ -1335,6 +1627,114 @@ const seedQuotaFailure = (dbPath, { provider, model, atMs, retryAfterMs, endedMs
   db.close();
 };
 
+// Seed one quota-class failure carrying NO parseable reset (a
+// reset-less 429 shape, or a 402 paymentRequired record), as the
+// inferred-wall fixtures need (#13693). Written straight into the
+// fixture ledger the proxy reads.
+const seedQuotaClassFailure = (
+  dbPath,
+  { provider, model, atMs, endedMs, quota, status = 429 },
+) => {
+  const db = new DatabaseSync(dbPath);
+  db.prepare(
+    `INSERT INTO route_attempt (
+       time_started, time_ended, session_id, assistant_message_id,
+       route_id, provider_id, model_id, variant, outcome,
+       error_tag, error_code, error_status, error_message, retryable,
+       output_started, failed_over_to, quota
+     ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+  ).run(
+    atMs,
+    endedMs ?? atMs + 50,
+    null,
+    null,
+    "seed",
+    provider,
+    model,
+    null,
+    "failure",
+    "RateLimit",
+    null,
+    status,
+    "leaf HTTP 429: quota",
+    1,
+    0,
+    null,
+    JSON.stringify(quota),
+  );
+  db.close();
+};
+
+// Seed one authentication failure for a (provider, model) pair, as if
+// the leaf had answered 403 (or 401) at `atMs`. Written straight into
+// the fixture ledger the proxy reads.
+const seedAuthFailure = (
+  dbPath,
+  { provider, model, atMs, endedMs, status = 403 },
+) => {
+  const db = new DatabaseSync(dbPath);
+  db.prepare(
+    `INSERT INTO route_attempt (
+       time_started, time_ended, session_id, assistant_message_id,
+       route_id, provider_id, model_id, variant, outcome,
+       error_tag, error_code, error_status, error_message, retryable,
+       output_started, failed_over_to, quota
+     ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+  ).run(
+    atMs,
+    endedMs ?? atMs + 50,
+    null,
+    null,
+    "seed",
+    provider,
+    model,
+    null,
+    "failure",
+    "Authentication",
+    null,
+    status,
+    "leaf HTTP 403: disabled",
+    0,
+    0,
+    null,
+    null,
+  );
+  db.close();
+};
+
+// Seed one success for a (provider, model) pair completing at
+// `endedMs` (started `startedMs`), as if the leaf had served.
+const seedSuccess = (dbPath, { provider, model, startedMs, endedMs }) => {
+  const db = new DatabaseSync(dbPath);
+  db.prepare(
+    `INSERT INTO route_attempt (
+       time_started, time_ended, session_id, assistant_message_id,
+       route_id, provider_id, model_id, variant, outcome,
+       error_tag, error_code, error_status, error_message, retryable,
+       output_started, failed_over_to, quota
+     ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+  ).run(
+    startedMs,
+    endedMs,
+    null,
+    null,
+    "seed",
+    provider,
+    model,
+    null,
+    "success",
+    null,
+    null,
+    null,
+    null,
+    1,
+    0,
+    null,
+    null,
+  );
+  db.close();
+};
+
 // A Monday noon UTC, pinned via OPENCODE_ROUTE_PROXY_NOW_MS so the
 // gate's clock is deterministic.
 const GATE_NOW = Date.UTC(2026, 0, 5, 12, 0, 0);
@@ -1568,5 +1968,1019 @@ test("an overlapping success completed before the quota response does not clear 
     assert.equal(p.leafA.hits, 0);
   } finally {
     await p.cleanup();
+  }
+});
+
+// ------------------------------------------------------------- #12228 auth bench
+
+test("a 403-auth-failed pair is excluded while another candidate is live (#12228)", async () => {
+  const p = await startProxy({ nowMs: GATE_NOW });
+  try {
+    seedAuthFailure(p.dbPath, {
+      provider: "leafA",
+      model: "m-a",
+      atMs: GATE_NOW - 60_000,
+    });
+    const res = await p.post({ model: "opencode-route/t-ordered", messages: MSGS });
+    assert.equal(res.status, 200);
+    assert.equal((await res.json()).choices[0].message.content, "LEAF-B");
+    assert.equal(p.leafA.hits, 0, "dead leaf must not be attempted");
+    assert.ok(
+      p.log().includes("auth bench excluded leafA/m-a"),
+      `bench decision should be in the proxy diagnostics: ${p.log()}`,
+    );
+  } finally {
+    await p.cleanup();
+  }
+});
+
+test("an auth-bench pair returns after a successful probe (#12228)", async () => {
+  const p = await startProxy({ nowMs: GATE_NOW });
+  try {
+    seedAuthFailure(p.dbPath, {
+      provider: "leafA",
+      model: "m-a",
+      atMs: GATE_NOW - 60_000,
+    });
+    seedSuccess(p.dbPath, {
+      provider: "leafA",
+      model: "m-a",
+      startedMs: GATE_NOW - 30_000,
+      endedMs: GATE_NOW - 20_000,
+    });
+    const res = await p.post({ model: "opencode-route/t-ordered", messages: MSGS });
+    assert.equal(res.status, 200);
+    assert.equal((await res.json()).choices[0].message.content, "LEAF-A");
+    assert.equal(p.leafA.hits, 1, "successful probe re-admits the leaf");
+  } finally {
+    await p.cleanup();
+  }
+});
+
+test("when every candidate is auth-benched, the route still walks in order (#12228)", async () => {
+  const p = await startProxy({ nowMs: GATE_NOW });
+  try {
+    seedAuthFailure(p.dbPath, {
+      provider: "leafA",
+      model: "m-a",
+      atMs: GATE_NOW - 60_000,
+    });
+    seedAuthFailure(p.dbPath, {
+      provider: "leafB",
+      model: "m-b",
+      atMs: GATE_NOW - 60_000,
+    });
+    // A benched route is still usable as a last resort, just like the
+    // quota gate: preserve availability rather than return no route.
+    const res = await p.post({ model: "opencode-route/t-ordered", messages: MSGS });
+    assert.equal(res.status, 200);
+    assert.equal((await res.json()).choices[0].message.content, "LEAF-A");
+    assert.ok(
+      p.log().includes("auth bench gate bypassed"),
+      `all-benched fallback should be explicit: ${p.log()}`,
+    );
+  } finally {
+    await p.cleanup();
+  }
+});
+
+// ------------------------------------------------------------ #13693 walls
+
+test("429 with an HTTP-date Retry-After gates the pair until that date (#13693)", async () => {
+  // Oracle: #13693 RC-1(a) — an HTTP-date Retry-After is a reset
+  // shape; the pair must gate until that date, not record
+  // retryAfterMs: null and stay walkable.
+  const p = await startProxy();
+  try {
+    p.leafA.mode = "rate-http-date";
+    const first = await p.post({ model: "opencode-route/t-ordered", messages: MSGS });
+    assert.equal(first.status, 200);
+    assert.equal((await first.json()).choices[0].message.content, "LEAF-B");
+    const rows = await waitForAttempts(p, 2);
+    const quota = JSON.parse(rows[0].quota);
+    assert.ok(
+      Number.isFinite(quota.retryAfterMs) &&
+        quota.retryAfterMs > 0 &&
+        quota.retryAfterMs <= 3600_000,
+      `HTTP-date Retry-After not recorded as a positive delta: ${rows[0].quota}`,
+    );
+    const second = await p.post({ model: "opencode-route/t-ordered", messages: MSGS });
+    assert.equal(second.status, 200);
+    assert.equal((await second.json()).choices[0].message.content, "LEAF-B");
+    assert.equal(p.leafA.hits, 1, "the date-gated leaf must not be re-attempted");
+  } finally {
+    await p.cleanup();
+  }
+});
+
+test("429 with duration-prose body gates the pair (#13693)", async () => {
+  // Oracle: #13693 RC-1(a) — "try again in 20 minutes" in the body,
+  // with no header, is a reset shape (receipt + duration).
+  const p = await startProxy();
+  try {
+    p.leafA.mode = "rate-prose";
+    const first = await p.post({ model: "opencode-route/t-ordered", messages: MSGS });
+    assert.equal(first.status, 200);
+    assert.equal((await first.json()).choices[0].message.content, "LEAF-B");
+    const rows = await waitForAttempts(p, 2);
+    const quota = JSON.parse(rows[0].quota);
+    const resetMs = Date.parse(quota.resetsAt ?? quota.resetAt ?? NaN);
+    assert.ok(
+      Number.isFinite(resetMs) && resetMs > Date.now() + 10 * 60_000,
+      `duration prose not recorded as a ~20-minute reset: ${rows[0].quota}`,
+    );
+    const second = await p.post({ model: "opencode-route/t-ordered", messages: MSGS });
+    assert.equal(second.status, 200);
+    assert.equal((await second.json()).choices[0].message.content, "LEAF-B");
+    assert.equal(p.leafA.hits, 1);
+  } finally {
+    await p.cleanup();
+  }
+});
+
+test("429 with {\"retry_after\": 30} JSON gates the pair (#13693)", async () => {
+  // Oracle: #13693 RC-1(a) — a small number under an after key is
+  // seconds-from-receipt, not an epoch (which parsed as NaN before).
+  const p = await startProxy();
+  try {
+    p.leafA.mode = "rate-json-retry-after";
+    const first = await p.post({ model: "opencode-route/t-ordered", messages: MSGS });
+    assert.equal(first.status, 200);
+    assert.equal((await first.json()).choices[0].message.content, "LEAF-B");
+    const rows = await waitForAttempts(p, 2);
+    const quota = JSON.parse(rows[0].quota);
+    const resetMs = Date.parse(quota.resetsAt ?? quota.resetAt ?? NaN);
+    assert.ok(
+      Number.isFinite(resetMs) &&
+        resetMs > Date.now() &&
+        resetMs <= Date.now() + 60_000,
+      `retry_after seconds not recorded as a near reset: ${rows[0].quota}`,
+    );
+    const second = await p.post({ model: "opencode-route/t-ordered", messages: MSGS });
+    assert.equal(second.status, 200);
+    assert.equal((await second.json()).choices[0].message.content, "LEAF-B");
+    assert.equal(p.leafA.hits, 1);
+  } finally {
+    await p.cleanup();
+  }
+});
+
+test("429 with an x-ratelimit-reset header gates the pair (#13693)", async () => {
+  // Oracle: #13693 RC-1(d) — x-ratelimit-reset (epoch seconds here)
+  // is recorded as resetsAtMs in the quota detail and gates.
+  const p = await startProxy();
+  try {
+    p.leafA.mode = "rate-x-reset";
+    const first = await p.post({ model: "opencode-route/t-ordered", messages: MSGS });
+    assert.equal(first.status, 200);
+    assert.equal((await first.json()).choices[0].message.content, "LEAF-B");
+    const rows = await waitForAttempts(p, 2);
+    const quota = JSON.parse(rows[0].quota);
+    assert.ok(
+      Number.isFinite(quota.resetsAtMs) &&
+        quota.resetsAtMs > Date.now() + 30 * 60_000,
+      `x-ratelimit-reset not recorded as resetsAtMs: ${rows[0].quota}`,
+    );
+    const second = await p.post({ model: "opencode-route/t-ordered", messages: MSGS });
+    assert.equal(second.status, 200);
+    assert.equal((await second.json()).choices[0].message.content, "LEAF-B");
+    assert.equal(p.leafA.hits, 1);
+  } finally {
+    await p.cleanup();
+  }
+});
+
+test("a reset-less failure after a reset-carrying one keeps the gate (#13693)", async () => {
+  // Oracle: #13693 RC-2 — the gate judges the pair's current failure
+  // RUN: a later reset-less quota failure must not dissolve the
+  // wall the earlier failure recorded.
+  const p = await startProxy({ nowMs: GATE_NOW });
+  try {
+    seedQuotaFailure(p.dbPath, {
+      provider: "leafA",
+      model: "m-a",
+      atMs: GATE_NOW - 120_000,
+      retryAfterMs: 3_600_000,
+    });
+    seedQuotaClassFailure(p.dbPath, {
+      provider: "leafA",
+      model: "m-a",
+      atMs: GATE_NOW - 60_000,
+      quota: { status: 429 },
+    });
+    const res = await p.post({ model: "opencode-route/t-ordered", messages: MSGS });
+    assert.equal(res.status, 200);
+    assert.equal((await res.json()).choices[0].message.content, "LEAF-B");
+    assert.equal(p.leafA.hits, 0, "the run's recorded reset must still gate");
+    assert.ok(
+      p.log().includes("known-exhausted gate excluded leafA/m-a"),
+      `run gate decision should be in the proxy diagnostics: ${p.log()}`,
+    );
+  } finally {
+    await p.cleanup();
+  }
+});
+
+test("three reset-less quota failures infer a bounded wall (#13693)", async () => {
+  // Oracle: #13693 RC-1(c) — >=3 quota-class failures in the
+  // demotion window with no success since the run began exclude
+  // the pair while a live pair exists, even with no stated reset.
+  const p = await startProxy({ nowMs: GATE_NOW });
+  try {
+    for (const atMs of [GATE_NOW - 180_000, GATE_NOW - 120_000, GATE_NOW - 60_000])
+      seedQuotaClassFailure(p.dbPath, {
+        provider: "leafA",
+        model: "m-a",
+        atMs,
+        quota: { status: 429 },
+      });
+    const res = await p.post({ model: "opencode-route/t-ordered", messages: MSGS });
+    assert.equal(res.status, 200);
+    assert.equal((await res.json()).choices[0].message.content, "LEAF-B");
+    assert.equal(p.leafA.hits, 0, "the inferred-walled leaf must not be attempted");
+    assert.ok(
+      p.log().includes("inferred wall excluded leafA/m-a"),
+      `inferred exclusion should be in the proxy diagnostics: ${p.log()}`,
+    );
+  } finally {
+    await p.cleanup();
+  }
+});
+
+test("an inferred wall expires and the pair is seated again (#13693)", async () => {
+  // Oracle: #13693 RC-1(c) — the inferred wall is BOUNDED (15 min
+  // from the run's latest failure for a first inference): once it
+  // passes, the pair is no longer excluded; the next seating is
+  // the probe. (Demotion may still reorder the pair — this test
+  // oracles the gate's own decision, recorded in the diagnostics.)
+  const p = await startProxy({ nowMs: GATE_NOW + 16 * 60_000 });
+  try {
+    for (const atMs of [GATE_NOW - 180_000, GATE_NOW - 120_000, GATE_NOW - 60_000])
+      seedQuotaClassFailure(p.dbPath, {
+        provider: "leafA",
+        model: "m-a",
+        atMs,
+        quota: { status: 429 },
+      });
+    const res = await p.post({ model: "opencode-route/t-ordered", messages: MSGS });
+    assert.equal(res.status, 200);
+    await res.json();
+    assert.ok(
+      !p.log().includes("inferred wall excluded leafA/m-a"),
+      `expired inferred wall must not exclude: ${p.log()}`,
+    );
+  } finally {
+    await p.cleanup();
+  }
+});
+
+test("a 402-only run also infers a wall (balance wall) (#13693)", async () => {
+  // Oracle: #13693 RC-1(c) — 402 paymentRequired records are
+  // quota-class failures for the inferred wall.
+  const p = await startProxy({ nowMs: GATE_NOW });
+  try {
+    for (const atMs of [GATE_NOW - 180_000, GATE_NOW - 120_000, GATE_NOW - 60_000])
+      seedQuotaClassFailure(p.dbPath, {
+        provider: "leafA",
+        model: "m-a",
+        atMs,
+        quota: { paymentRequired: true },
+        status: 402,
+      });
+    const res = await p.post({ model: "opencode-route/t-ordered", messages: MSGS });
+    assert.equal(res.status, 200);
+    assert.equal((await res.json()).choices[0].message.content, "LEAF-B");
+    assert.equal(p.leafA.hits, 0);
+    assert.ok(
+      p.log().includes("inferred wall excluded leafA/m-a"),
+      `402 inference should be in the proxy diagnostics: ${p.log()}`,
+    );
+  } finally {
+    await p.cleanup();
+  }
+});
+
+test("all candidates reset-gated with a recent attempt: 503 + Retry-After (#13693)", async () => {
+  // Oracle: #13693 RC-4 — when every candidate is gated on a known
+  // future reset >60s away and a walk already paid attempts within
+  // the last 60s, the proxy paces with 503 + Retry-After instead of
+  // walking into the wall again.
+  const p = await startProxy({ nowMs: GATE_NOW });
+  try {
+    seedQuotaFailure(p.dbPath, {
+      provider: "leafA",
+      model: "m-a",
+      atMs: GATE_NOW - 30_000,
+      retryAfterMs: 3_600_000,
+    });
+    seedQuotaFailure(p.dbPath, {
+      provider: "leafB",
+      model: "m-b",
+      atMs: GATE_NOW - 30_000,
+      retryAfterMs: 3_600_000,
+    });
+    const res = await p.post({ model: "opencode-route/t-ordered", messages: MSGS });
+    assert.equal(res.status, 503);
+    const retryAfter = Number(res.headers.get("retry-after"));
+    assert.ok(
+      Number.isFinite(retryAfter) && retryAfter > 3500 && retryAfter <= 3600,
+      `Retry-After should run to the earliest reset: ${res.headers.get("retry-after")}`,
+    );
+    const body = await res.json();
+    assert.match(body.error.message, /quota-walled/);
+    assert.equal(p.leafA.hits + p.leafB.hits, 0, "a paced request must not walk");
+    assert.ok(
+      p.log().includes("wall pacing"),
+      `pacing decision should be in the proxy diagnostics: ${p.log()}`,
+    );
+  } finally {
+    await p.cleanup();
+  }
+});
+
+test("all candidates inferred-gated: route still walks, fail-safe preserved (#13693)", async () => {
+  // Oracle: #13693 RC-4 — pacing applies ONLY to reset-carrying
+  // known-exhausted exclusions; soft (inferred) gates keep the
+  // walk-anyway fail-safe byte-for-byte.
+  const p = await startProxy({ nowMs: GATE_NOW });
+  try {
+    for (const atMs of [GATE_NOW - 180_000, GATE_NOW - 120_000, GATE_NOW - 60_000]) {
+      seedQuotaClassFailure(p.dbPath, {
+        provider: "leafA",
+        model: "m-a",
+        atMs,
+        quota: { status: 429 },
+      });
+      seedQuotaClassFailure(p.dbPath, {
+        provider: "leafB",
+        model: "m-b",
+        atMs,
+        quota: { status: 429 },
+      });
+    }
+    const res = await p.post({ model: "opencode-route/t-ordered", messages: MSGS });
+    assert.equal(res.status, 200);
+    assert.equal((await res.json()).choices[0].message.content, "LEAF-A");
+    assert.ok(
+      p.log().includes("gate bypassed"),
+      `inferred bypass should be in the proxy diagnostics: ${p.log()}`,
+    );
+  } finally {
+    await p.cleanup();
+  }
+});
+
+test("429 with {\"retryDelay\": \"30s\"} JSON gates the pair (#13693)", async () => {
+  // Oracle: #13693 RC-1(a) — a pure-duration string under a retry
+  // key (Google-style retryDelay) is a duration from receipt, not
+  // an instant to Date.parse.
+  const p = await startProxy();
+  try {
+    p.leafA.mode = "rate-json-retry-delay";
+    const first = await p.post({ model: "opencode-route/t-ordered", messages: MSGS });
+    assert.equal(first.status, 200);
+    assert.equal((await first.json()).choices[0].message.content, "LEAF-B");
+    const rows = await waitForAttempts(p, 2);
+    const quota = JSON.parse(rows[0].quota);
+    const resetMs = Date.parse(quota.resetsAt ?? quota.resetAt ?? NaN);
+    assert.ok(
+      Number.isFinite(resetMs) &&
+        resetMs > Date.now() &&
+        resetMs <= Date.now() + 60_000,
+      `retryDelay duration not recorded as a near reset: ${rows[0].quota}`,
+    );
+    const second = await p.post({ model: "opencode-route/t-ordered", messages: MSGS });
+    assert.equal(second.status, 200);
+    assert.equal((await second.json()).choices[0].message.content, "LEAF-B");
+    assert.equal(p.leafA.hits, 1);
+  } finally {
+    await p.cleanup();
+  }
+});
+
+// ---------------- Part 2: purpose-routed endpoints (#13675 P2) ----------------
+//
+// Helpers for the non-chat doors. p.post only targets chat; these hit
+// the purpose endpoints directly.
+const postPurpose = (p, endpoint, payload, raw) =>
+  fetch(`${p.base}${endpoint}`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: raw !== undefined ? raw : JSON.stringify(payload),
+  });
+
+const postTranscription = (p, model, fileBytes = "fake-audio-bytes") => {
+  const boundary = "----part2testboundary";
+  const body =
+    `--${boundary}\r\nContent-Disposition: form-data; name="model"\r\n\r\n${model}\r\n` +
+    `--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="a.wav"\r\n` +
+    `Content-Type: audio/wav\r\n\r\n${fileBytes}\r\n` +
+    `--${boundary}--\r\n`;
+  return fetch(`${p.base}/v1/audio/transcriptions`, {
+    method: "POST",
+    headers: { "content-type": `multipart/form-data; boundary=${boundary}` },
+    body,
+  });
+};
+
+test("decisions have no OpenAI default: plain leaves refuse with 400 (#13675 P2)", async () => {
+  const p = await startProxy();
+  try {
+    const res = await postPurpose(p, "/v1/decisions", {
+      model: "opencode-route/t-decide",
+      input: { state: 1 },
+      questions: { ok: { type: "noul" } },
+    });
+    assert.equal(res.status, 400);
+    assert.match(await res.text(), /no members serving decision/);
+    assert.equal(p.leafA.hits, 0);
+    assert.equal(p.leafB.hits, 0);
+  } finally {
+    await p.cleanup();
+  }
+});
+
+test("decisions dispatch natively via google-decisions with x-goog-api-key (#13675 P2)", async () => {
+  const p = await startProxy();
+  try {
+    const res = await postPurpose(p, "/v1/decisions", {
+      model: "opencode-route/t-decide-goog",
+      input: { state: 1 },
+      questions: { ok: { type: "noul" } },
+    });
+    assert.equal(res.status, 200);
+    const json = await res.json();
+    assert.equal(json.decision, "yes");
+    assert.ok(p.leafA.last.url.includes("/decisions"));
+    assert.equal(p.leafA.last.headers["x-goog-api-key"], "key-a");
+    assert.ok(!("authorization" in p.leafA.last.headers));
+    const rows = await waitForAttempts(p, 1);
+    assert.equal(rows[0].route_id, "t-decide-goog");
+    assert.equal(rows[0].outcome, "success");
+    assert.equal(rows[0].session_id, null);
+  } finally {
+    await p.cleanup();
+  }
+});
+
+test("decisions dispatch via jev-systemone with Bearer auth (#13675 P2)", async () => {
+  const p = await startProxy();
+  try {
+    const res = await postPurpose(p, "/v1/decisions", {
+      model: "opencode-route/t-decide-zen",
+      input: { state: 2 },
+      questions: { ok: { type: "noul" } },
+    });
+    assert.equal(res.status, 200);
+    assert.equal((await res.json()).decision, "yes");
+    assert.ok(p.leafA.last.url.endsWith("/decisions"));
+    assert.equal(p.leafA.last.headers.authorization, "Bearer key-a");
+  } finally {
+    await p.cleanup();
+  }
+});
+
+test("decisions dispatch via fireworks passthrough with required path (#13675 P2)", async () => {
+  const p = await startProxy();
+  try {
+    const res = await postPurpose(p, "/v1/decisions", {
+      model: "opencode-route/t-decide-fw",
+      input: { state: 3 },
+      questions: { ok: { type: "noul" } },
+    });
+    assert.equal(res.status, 200);
+    assert.equal((await res.json()).model, "m-fd");
+  } finally {
+    await p.cleanup();
+  }
+});
+
+test("unknown decision kinds never invent a surface (#13675 P2)", async () => {
+  const p = await startProxy();
+  try {
+    const res = await postPurpose(p, "/v1/decisions", {
+      model: "opencode-route/t-decide-weird",
+      input: { state: 1 },
+      questions: { ok: { type: "noul" } },
+    });
+    assert.equal(res.status, 400);
+    assert.match(await res.text(), /no members serving decision/);
+    assert.equal(p.leafA.hits, 0);
+  } finally {
+    await p.cleanup();
+  }
+});
+
+test("new-endpoint unknown routes 404; pool-purpose mismatches refuse 400 (#13675 P2)", async () => {
+  const p = await startProxy();
+  try {
+    const unknown = await postPurpose(p, "/v1/decisions", {
+      model: "opencode-route/no-such-pool",
+      input: { state: 1 },
+      questions: { ok: { type: "noul" } },
+    });
+    assert.equal(unknown.status, 404);
+    assert.match(await unknown.text(), /unknown route/);
+    const mismatch = await postPurpose(p, "/v1/embeddings", {
+      model: "opencode-route/t-decide-goog",
+      input: "hello",
+    });
+    assert.equal(mismatch.status, 400);
+    assert.match(await mismatch.text(), /cannot serve embed/);
+    assert.equal(p.leafA.hits, 0);
+    assert.equal(p.leafB.hits, 0);
+  } finally {
+    await p.cleanup();
+  }
+});
+
+test("chat calls naming a decision pool are refused, never forwarded (#13675 P2)", async () => {
+  const p = await startProxy();
+  try {
+    const res = await p.post({
+      model: "opencode-route/t-decide-goog",
+      messages: MSGS,
+    });
+    assert.equal(res.status, 502);
+    assert.match(await res.text(), /cannot serve chat/);
+    assert.equal(p.leafA.hits, 0);
+    assert.equal(p.leafB.hits, 0);
+  } finally {
+    await p.cleanup();
+  }
+});
+
+test("runtime designations filter leaves at dispatch (#13675 P2)", async () => {
+  const p = await startProxy();
+  try {
+    const res = await postPurpose(p, "/v1/decisions", {
+      model: "opencode-route/t-decide-desig",
+      input: { state: 1 },
+      questions: { ok: { type: "noul" } },
+    });
+    assert.equal(res.status, 400);
+    const chat = await p.post({
+      model: "opencode-route/t-chat-desig",
+      messages: MSGS,
+    });
+    assert.equal(chat.status, 200);
+    assert.equal((await chat.json()).choices[0].message.content, "LEAF-B");
+    const rows = await waitForAttempts(p, 1);
+    assert.equal(rows[0].provider_id, "leafB");
+  } finally {
+    await p.cleanup();
+  }
+});
+
+test("embeddings serve a single string via the OpenAI default (#13675 P2)", async () => {
+  const p = await startProxy();
+  try {
+    const res = await postPurpose(p, "/v1/embeddings", {
+      model: "opencode-route/t-embed",
+      input: "hello",
+    });
+    assert.equal(res.status, 200);
+    const json = await res.json();
+    assert.equal(json.object, "list");
+    assert.equal(json.data.length, 1);
+    assert.equal(json.data[0].index, 0);
+    assert.deepEqual(json.data[0].embedding, [5, 0.5]);
+    assert.equal(json.model, "opencode-route/t-embed");
+  } finally {
+    await p.cleanup();
+  }
+});
+
+test("embeddings normalize the google single-item shape (#13675 P2)", async () => {
+  const p = await startProxy();
+  try {
+    const res = await postPurpose(p, "/v1/embeddings", {
+      model: "opencode-route/t-embed-goog",
+      input: "hello",
+    });
+    assert.equal(res.status, 200);
+    const json = await res.json();
+    assert.equal(json.object, "list");
+    assert.equal(json.data.length, 1);
+    assert.deepEqual(json.data[0].embedding, [5, 0.5]);
+    assert.ok(p.leafA.last.url.includes(":embedContent"));
+  } finally {
+    await p.cleanup();
+  }
+});
+
+test("A2 splits oversized batches and re-joins in caller order (#13675 P2)", async () => {
+  const p = await startProxy();
+  try {
+    const input = ["a", "bb", "ccc", "dddd", "eeeee"];
+    const res = await postPurpose(p, "/v1/embeddings", {
+      model: "opencode-route/t-embed-split",
+      input,
+    });
+    assert.equal(res.status, 200);
+    const json = await res.json();
+    assert.equal(json.data.length, 5);
+    for (let i = 0; i < 5; i++) {
+      assert.equal(json.data[i].index, i);
+      assert.deepEqual(json.data[i].embedding, [input[i].length, 0.5]);
+    }
+    assert.ok(!("errors" in json));
+  } finally {
+    await p.cleanup();
+  }
+});
+
+test("A2 retryable sub-batch failure fails over to the next candidate (#13675 P2)", async () => {
+  const p = await startProxy();
+  try {
+    p.leafA.mode = "rate";
+    const ok = await postPurpose(p, "/v1/embeddings", {
+      model: "opencode-route/t-embed",
+      input: ["aa", "bbb"],
+    });
+    assert.equal(ok.status, 200);
+    const okJson = await ok.json();
+    assert.equal(okJson.data.length, 2);
+    assert.deepEqual(okJson.data[0].embedding, [2, 0.5]);
+    assert.deepEqual(okJson.data[1].embedding, [3, 0.5]);
+    assert.equal(p.leafA.hits, 1);
+    assert.equal(p.leafB.hits, 1);
+  } finally {
+    await p.cleanup();
+  }
+});
+
+test("A2 non-retryable sub-batch failure answers 207 with index-faithful errors (#13675 P2)", async () => {
+  const q = await startProxy();
+  try {
+    q.leafA.mode = "embed-bad-item";
+    const res = await postPurpose(q, "/v1/embeddings", {
+      model: "opencode-route/t-embed-split",
+      input: ["aa", "bb", "bad-1", "bad-2", "cc"],
+    });
+    assert.equal(res.status, 207);
+    const json = await res.json();
+    assert.deepEqual(
+      json.data.map((d) => d.index),
+      [0, 1, 4],
+    );
+    assert.deepEqual(
+      json.errors.map((e) => e.index),
+      [2, 3],
+    );
+    assert.deepEqual(json.data[0].embedding, [2, 0.5]);
+    assert.deepEqual(json.data[2].embedding, [2, 0.5]);
+  } finally {
+    await q.cleanup();
+  }
+});
+
+test("rerank relays documents with scores (#13675 P2)", async () => {
+  const p = await startProxy();
+  try {
+    const res = await postPurpose(p, "/v1/rerank", {
+      model: "opencode-route/t-rerank",
+      query: "what",
+      documents: ["doc-a", "doc-b"],
+    });
+    assert.equal(res.status, 200);
+    const json = await res.json();
+    assert.equal(json.results.length, 2);
+    assert.equal(json.results[0].index, 0);
+    assert.ok(json.results[0].score > json.results[1].score);
+    const bad = await postPurpose(p, "/v1/rerank", {
+      model: "opencode-route/t-rerank",
+      query: "",
+      documents: [],
+    });
+    assert.equal(bad.status, 400);
+  } finally {
+    await p.cleanup();
+  }
+});
+
+test("transcription relays the leaf answer bytes untouched (#13675 P2)", async () => {
+  const p = await startProxy();
+  try {
+    const res = await postTranscription(p, "opencode-route/t-transcribe");
+    assert.equal(res.status, 200);
+    assert.equal((await res.json()).text, "transcribed-by-LEAF-A");
+    const missing = await postPurpose(p, "/v1/audio/transcriptions", null, "--x\r\n");
+    assert.equal(missing.status, 400);
+  } finally {
+    await p.cleanup();
+  }
+});
+
+test("speech relays leaf audio bytes with the leaf content-type (#13675 P2)", async () => {
+  const p = await startProxy();
+  try {
+    const res = await postPurpose(p, "/v1/audio/speech", {
+      model: "opencode-route/t-speak",
+      input: "say this",
+      voice: "alloy",
+    });
+    assert.equal(res.status, 200);
+    assert.match(res.headers.get("content-type"), /audio\/mpeg/);
+    assert.equal(Buffer.from(await res.arrayBuffer()).toString("utf8"), "audio-by-LEAF-A");
+  } finally {
+    await p.cleanup();
+  }
+});
+
+test("guard serves chat-shaped calls through the guard pool only (#13675 P2)", async () => {
+  const p = await startProxy();
+  try {
+    const res = await postPurpose(p, "/v1/guard", {
+      model: "opencode-route/t-guard",
+      messages: MSGS,
+    });
+    assert.equal(res.status, 200);
+    assert.equal((await res.json()).choices[0].message.content, "LEAF-A");
+    assert.ok(p.leafA.last.url.endsWith("/chat/completions"));
+    const mismatch = await postPurpose(p, "/v1/guard", {
+      model: "opencode-route/t-ordered",
+      messages: MSGS,
+    });
+    assert.equal(mismatch.status, 400);
+    assert.match(await mismatch.text(), /cannot serve guard/);
+  } finally {
+    await p.cleanup();
+  }
+});
+
+// ------------------------------------------------ metering wall (#13839)
+//
+// Fixture arithmetic: every successful fake-leaf call reports
+// usage { prompt_tokens: 5, completion_tokens: 2 } = 7 counted
+// tokens. leafFree's big group (model m-free) declares
+// dailyTokens 28 with marginTokens 7, so its counted cap is 21 =
+// exactly three calls; its small group (m-free2) declares 700.
+// leafPaid is the unmetered paid tail behind the same model.
+
+test("metering wall: counted usage walls the free leg at bucket minus margin and the route falls through (oracle: the ledger's own recorded usage, 7 tokens per fixture response)", async () => {
+  const p = await startProxy();
+  try {
+    for (let i = 0; i < 3; i++) {
+      const res = await p.post({ model: "opencode-route/t-metered", messages: MSGS });
+      assert.equal(res.status, 200);
+      assert.equal((await res.json()).choices[0].message.content, "LEAF-A");
+    }
+    await waitForAttempts(p, 3);
+    // Counting accuracy: the ledger rows the proxy itself recorded
+    // carry the fixture usage verbatim, and their input+output sum
+    // is the counted total the wall judges.
+    const db = new DatabaseSync(p.dbPath, { readOnly: true });
+    const counted = db
+      .prepare(
+        "SELECT tokens_input, tokens_output FROM route_attempt WHERE provider_id = 'leafFree' ORDER BY id",
+      )
+      .all();
+    db.close();
+    assert.deepEqual(
+      counted.map((r) => [r.tokens_input, r.tokens_output]),
+      [
+        [5, 2],
+        [5, 2],
+        [5, 2],
+      ],
+    );
+    assert.equal(
+      counted.reduce((s, r) => s + r.tokens_input + r.tokens_output, 0),
+      21,
+    );
+    // The 4th turn must not serve via leafFree: 21 counted tokens
+    // is the big group's cap (28 - 7 margin). No spill.
+    const fourth = await p.post({ model: "opencode-route/t-metered", messages: MSGS });
+    assert.equal(fourth.status, 200);
+    assert.equal((await fourth.json()).choices[0].message.content, "LEAF-B");
+    const after = p.attempts();
+    assert.equal(
+      after.filter((r) => r.provider_id === "leafFree").length,
+      3,
+      "a metered leg served after its bucket was spent",
+    );
+    assert.equal(after.filter((r) => r.provider_id === "leafPaid").length, 1);
+    assert.match(p.log(), /metering wall excluded leafFree\/m-free/);
+  } finally {
+    await p.cleanup();
+  }
+});
+
+test("metering wall: the cap is bucket minus margin, exactly, and reasoning tokens count once (oracle: seeded ledger counts at the boundary)", async () => {
+  const PINNED = Date.UTC(2026, 0, 15, 12, 0, 0);
+  const seed = (p, tokensInput, tokensOutput, tokensReasoning) => {
+    const db = new DatabaseSync(p.dbPath);
+    db.prepare(
+      `INSERT INTO route_attempt
+       (time_started, time_ended, route_id, provider_id, model_id, outcome, output_started, tokens_input, tokens_output, tokens_reasoning)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(
+      PINNED - 60_000,
+      PINNED - 59_000,
+      "t-metered-only",
+      "leafFree",
+      "m-free",
+      "success",
+      1,
+      tokensInput,
+      tokensOutput,
+      tokensReasoning,
+    );
+    db.close();
+  };
+  // 20 counted tokens < cap 21: the leg still serves. The seeded
+  // row carries 10 reasoning tokens inside its 10 output tokens
+  // (the OpenAI usage shape usageFields records): counted once,
+  // the total is 20 — double-counting the subset would read 30
+  // and wall the leg here.
+  const under = await startProxy({ nowMs: PINNED });
+  try {
+    seed(under, 10, 10, 10);
+    const res = await under.post({ model: "opencode-route/t-metered-only", messages: MSGS });
+    assert.equal(res.status, 200);
+    assert.equal((await res.json()).choices[0].message.content, "LEAF-A");
+  } finally {
+    await under.cleanup();
+  }
+  // 21 counted tokens = cap 21 (28 dailyTokens - 7 margin): the
+  // leg walls, and with no fall-through leg the request fails
+  // closed instead of billing.
+  const at = await startProxy({ nowMs: PINNED });
+  try {
+    seed(at, 11, 10, 3);
+    const res = await at.post({ model: "opencode-route/t-metered-only", messages: MSGS });
+    assert.equal(res.status, 502);
+    assert.match((await res.json()).error.message, /no available members/);
+    assert.equal(at.leafA.hits, 0, "the metered leg was called despite the spent bucket");
+    assert.equal(
+      at.attempts().filter((r) => r.provider_id === "leafFree").length,
+      1,
+      "only the seeded row exists; no new free-leg attempt was recorded",
+    );
+  } finally {
+    await at.cleanup();
+  }
+});
+
+test("metering wall: groups count separately (oracle: a spent big group walls only its own models)", async () => {
+  const p = await startProxy();
+  try {
+    const db = new DatabaseSync(p.dbPath);
+    const now = Date.now();
+    db.prepare(
+      `INSERT INTO route_attempt
+       (time_started, time_ended, route_id, provider_id, model_id, outcome, output_started, tokens_input, tokens_output)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(now - 1000, now - 999, "t-metered-groups", "leafFree", "m-free", "success", 1, 500, 500);
+    db.close();
+    // m-free (big group, cap 21) is walled by the seeded 1000
+    // tokens; m-free2 (small group, cap 700, count 0) still serves
+    // on the same provider.
+    const res = await p.post({ model: "opencode-route/t-metered-groups", messages: MSGS });
+    assert.equal(res.status, 200);
+    assert.equal((await res.json()).choices[0].message.content, "LEAF-A");
+    const freeSuccesses = p
+      .attempts()
+      .filter((r) => r.provider_id === "leafFree" && r.outcome === "success");
+    assert.equal(freeSuccesses.at(-1).model_id, "m-free2");
+    // And the plain metered route falls through to the paid tail.
+    const res2 = await p.post({ model: "opencode-route/t-metered", messages: MSGS });
+    assert.equal(res2.status, 200);
+    assert.equal((await res2.json()).choices[0].message.content, "LEAF-B");
+  } finally {
+    await p.cleanup();
+  }
+});
+
+test("metering wall: the wall lifts at the 00:00 UTC reset with no operator action (oracle: the pinned clock's UTC day window)", async () => {
+  const AFTER_MIDNIGHT = Date.UTC(2026, 0, 16, 0, 0, 30);
+  const p = await startProxy({ nowMs: AFTER_MIDNIGHT });
+  try {
+    const db = new DatabaseSync(p.dbPath);
+    // Yesterday's spend: 1000 counted tokens, started before
+    // midnight — far past the cap, but in yesterday's window.
+    db.prepare(
+      `INSERT INTO route_attempt
+       (time_started, time_ended, route_id, provider_id, model_id, outcome, output_started, tokens_input, tokens_output)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(
+      Date.UTC(2026, 0, 15, 23, 59, 0),
+      Date.UTC(2026, 0, 15, 23, 59, 1),
+      "t-metered-only",
+      "leafFree",
+      "m-free",
+      "success",
+      1,
+      600,
+      400,
+    );
+    db.close();
+    const res = await p.post({ model: "opencode-route/t-metered-only", messages: MSGS });
+    assert.equal(res.status, 200);
+    assert.equal((await res.json()).choices[0].message.content, "LEAF-A");
+  } finally {
+    await p.cleanup();
+  }
+});
+
+// A minimal second spawn helper for the restart test: startProxy
+// always builds a fresh fixture home, so a restart over the SAME
+// config + ledger needs its own boot.
+const spawnProxyOn = async ({ configPath, dbPath, home }) => {
+  const port = await freePort();
+  const env = {
+    ...process.env,
+    HOME: home,
+    OPENCODE_ROUTE_PROXY_PORT: String(port),
+    OPENCODE_ROUTE_PROXY_CONFIG: configPath,
+    OPENCODE_ROUTE_PROXY_DB: dbPath,
+    OPENCODE_ROUTE_PROXY_TIMEOUT_MS: "15000",
+  };
+  const child = spawn(
+    process.execPath,
+    [path.join(binDir, "opencode-route-proxy.mjs")],
+    { env, stdio: ["ignore", "pipe", "pipe"] },
+  );
+  let log = "";
+  child.stdout.on("data", (d) => (log += d));
+  child.stderr.on("data", (d) => (log += d));
+  const base = `http://127.0.0.1:${port}`;
+  for (let i = 0; i < 50; i++) {
+    try {
+      const res = await fetch(`${base}/health`);
+      if (res.ok) break;
+    } catch {}
+    await new Promise((r) => setTimeout(r, 100));
+    if (i === 49) throw new Error(`proxy did not start: ${log}`);
+  }
+  return {
+    post: (payload) =>
+      fetch(`${base}/v1/chat/completions`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(payload),
+      }),
+    kill: () => child.kill("SIGKILL"),
+  };
+};
+
+test("metering wall: the counted bucket survives a proxy restart (oracle: a fresh process over the same ledger still walls with zero new usage)", async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "route-proxy-metering-restart-"));
+  const leaf = await makeLeaf("LEAF-R", "key-r");
+  try {
+    const dbPath = path.join(tmp, "opencode.db");
+    const db = new DatabaseSync(dbPath);
+    db.exec(
+      `CREATE TABLE credential (id integer PRIMARY KEY, integration_id text, label text, value text, active integer);
+       ${ROUTE_ATTEMPT_SCHEMA}`,
+    );
+    db.close();
+    const configPath = path.join(tmp, "opencode.jsonc");
+    fs.writeFileSync(
+      configPath,
+      `{
+  "provider": {
+    "soloFree": {
+      "npm": "@ai-sdk/openai-compatible",
+      "options": { "baseURL": "http://127.0.0.1:${leaf.port}/v1", "apiKey": "key-r" },
+      "tokenMetering": { "groups": { "g": { "dailyTokens": 21, "marginTokens": 0, "models": ["m-solo"] } } },
+      "models": { "m-solo": {} }
+    }
+  },
+  "experimental": {
+    "model_routes": {
+      "t-solo": { "selection": "ordered", "targets": ["soloFree/m-solo"] }
+    }
+  }
+}`,
+    );
+    const first = await spawnProxyOn({ configPath, dbPath, home: tmp });
+    try {
+      for (let i = 0; i < 3; i++) {
+        const res = await first.post({ model: "opencode-route/t-solo", messages: MSGS });
+        assert.equal(res.status, 200);
+        await res.text();
+      }
+      const walled = await first.post({ model: "opencode-route/t-solo", messages: MSGS });
+      assert.equal(walled.status, 502);
+      await walled.text();
+      assert.equal(leaf.hits, 3);
+    } finally {
+      first.kill();
+    }
+    // A fresh process over the same ledger: the spent bucket is
+    // still spent — the counter is the ledger, not memory.
+    const second = await spawnProxyOn({ configPath, dbPath, home: tmp });
+    try {
+      const res = await second.post({ model: "opencode-route/t-solo", messages: MSGS });
+      assert.equal(res.status, 502);
+      await res.text();
+      assert.equal(leaf.hits, 3, "the restarted proxy served a metered leg off a spent bucket");
+    } finally {
+      second.kill();
+    }
+  } finally {
+    leaf.server.close();
   }
 });
