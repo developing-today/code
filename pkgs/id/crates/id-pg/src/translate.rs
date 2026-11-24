@@ -45,7 +45,19 @@ impl Translator {
     /// Build a translator over the owner's allowlist of collections.
     /// The adapter exposes exactly these collections; a query naming
     /// any other relation is `not_available`.
+    ///
+    /// Construction contract: every collection must pass
+    /// [`CollectionAllowlist::validate`]. Registration (#13758) owns
+    /// the fallible path; until it lands, a bad config is a
+    /// programming error and fails fast in debug builds, while
+    /// release builds still refuse the unsafe query at translate
+    /// time (defense in depth in [`resolve_projection`] and the
+    /// filter/order checks).
     pub fn new(collections: Vec<CollectionAllowlist>) -> Self {
+        debug_assert!(
+            collections.iter().all(|c| c.validate().is_ok()),
+            "Translator built over an invalid collection allowlist"
+        );
         Translator { collections }
     }
 
@@ -216,6 +228,18 @@ fn resolve_projection(
     collection: &CollectionAllowlist,
     select: &[SelectItem],
 ) -> Result<Vec<String>, Refusal> {
+    // Defense in depth for the construction contract
+    // (`Translator::new`): a declared column that is not a usable
+    // field name must never reach the `select` parameter, on any
+    // projection path — including `*`, which expands to the declared
+    // list. Refuse before emitting anything.
+    if collection
+        .declared_column_names()
+        .iter()
+        .any(|name| !is_usable_field_name(name))
+    {
+        return Err(Refusal::shape(Feature::FieldUnsupported));
+    }
     if select.is_empty() || select.iter().any(|item| matches!(item, SelectItem::All)) {
         return Ok(declared_columns(collection));
     }
@@ -445,9 +469,29 @@ mod tests {
         Translator::new(vec![collection])
     }
 
+    /// Build a translator that deliberately violates the construction
+    /// contract, to exercise the translate-time backstop
+    /// (`resolve_projection` / filter / order refusal) that protects
+    /// release builds. Production code must go through
+    /// `Translator::new`, whose debug assertion rejects these.
+    fn unchecked_translator(names: &[&str]) -> Translator {
+        let mut collection = collection();
+        collection.columns = names
+            .iter()
+            .map(|name| ColumnDecl {
+                name: name.to_string(),
+                filterable: true,
+                orderable: true,
+            })
+            .collect();
+        Translator {
+            collections: vec![collection],
+        }
+    }
+
     #[test]
     fn filter_on_reserved_parameter_name_is_refused() {
-        let translator = collection_with_columns(&["id", "or", "select"]);
+        let translator = unchecked_translator(&["id", "or", "select"]);
         for name in ["or", "select"] {
             let refusal = translator.translate(&leaf_query(name)).unwrap_err();
             assert_eq!(refusal, Refusal::shape(Feature::FieldUnsupported));
@@ -456,7 +500,7 @@ mod tests {
 
     #[test]
     fn order_on_reserved_parameter_name_is_refused() {
-        let translator = collection_with_columns(&["id", "limit"]);
+        let translator = unchecked_translator(&["id", "limit"]);
         let mut query = Query::read("items");
         query.order = vec![OrderKey {
             column: "limit".to_string(),
@@ -468,7 +512,7 @@ mod tests {
 
     #[test]
     fn filter_on_non_identifier_column_is_refused() {
-        let translator = collection_with_columns(&["id", "a,b"]);
+        let translator = unchecked_translator(&["id", "a,b"]);
         let refusal = translator.translate(&leaf_query("a,b")).unwrap_err();
         assert_eq!(refusal, Refusal::shape(Feature::FieldUnsupported));
     }
@@ -477,7 +521,9 @@ mod tests {
     fn unsafe_relation_name_collapses_to_not_available() {
         let mut collection = collection();
         collection.relation = "items/x".to_string();
-        let translator = Translator::new(vec![collection]);
+        let translator = Translator {
+            collections: vec![collection],
+        };
         let refusal = translator.translate(&Query::read("items/x")).unwrap_err();
         assert_eq!(refusal, Refusal::not_available());
     }
@@ -486,6 +532,57 @@ mod tests {
     fn plain_filter_column_still_translates() {
         let request = translator().translate(&leaf_query("title")).unwrap();
         assert_eq!(param(&request, "title"), Some("eq.1"));
+    }
+
+    #[test]
+    fn validate_accepts_a_plain_allowlist() {
+        assert!(collection().validate().is_ok());
+    }
+
+    #[test]
+    fn validate_refuses_a_comma_column() {
+        let mut bad = collection();
+        bad.columns.push(ColumnDecl {
+            name: "a,b".to_string(),
+            filterable: true,
+            orderable: true,
+        });
+        assert!(bad.validate().is_err());
+    }
+
+    #[test]
+    fn validate_refuses_a_reserved_column() {
+        let mut bad = collection();
+        bad.columns.push(ColumnDecl {
+            name: "or".to_string(),
+            filterable: true,
+            orderable: true,
+        });
+        assert!(bad.validate().is_err());
+    }
+
+    #[test]
+    fn validate_refuses_an_undeclared_unique_key_entry() {
+        let mut bad = collection();
+        bad.unique_key = vec!["never_declared".to_string()];
+        assert!(bad.validate().is_err());
+    }
+
+    #[test]
+    fn validate_refuses_an_unsafe_relation() {
+        let mut bad = collection();
+        bad.relation = "items/x".to_string();
+        assert!(bad.validate().is_err());
+    }
+
+    #[test]
+    fn select_star_against_unsafe_declared_column_is_refused() {
+        // The `*` expansion would join the declared names raw into
+        // the select parameter, so the whole query is refused and no
+        // select parameter is emitted.
+        let translator = unchecked_translator(&["id", "x(y)"]);
+        let refusal = translator.translate(&Query::read("items")).unwrap_err();
+        assert_eq!(refusal, Refusal::shape(Feature::FieldUnsupported));
     }
 
     #[test]

@@ -114,4 +114,45 @@ impl CollectionAllowlist {
     pub fn declared_column_names(&self) -> Vec<&str> {
         self.columns.iter().map(|c| c.name.as_str()).collect()
     }
+
+    /// Validate the names this allowlist declares, before any request
+    /// is built from them.
+    ///
+    /// Rejected, with the offending name:
+    /// - a `relation` that is not a plain identifier — it is
+    ///   interpolated raw into the request path, so `items/x` would
+    ///   address a different resource than the owner listed;
+    /// - a declared column that fails [`is_usable_field_name`] — a
+    ///   comma, parenthesis, quote, or whitespace would change the
+    ///   shape of the `select` list the source parses, and a reserved
+    ///   PostgREST parameter name (`or`, `select`, …) would be read
+    ///   as a directive rather than a column;
+    /// - a `unique_key` entry that is not a declared column — the key
+    ///   is appended to every ordering, so an undeclared entry would
+    ///   leak ordering (and cursor shape) outside the allowlist.
+    pub fn validate(&self) -> Result<(), String> {
+        if !is_plain_identifier(&self.relation) {
+            return Err(format!(
+                "relation {:?} is not a plain identifier",
+                self.relation
+            ));
+        }
+        for column in &self.columns {
+            if !is_usable_field_name(&column.name) {
+                return Err(format!(
+                    "declared column {:?} is not a usable field name",
+                    column.name
+                ));
+            }
+        }
+        for key in &self.unique_key {
+            if !self.is_declared(key) {
+                return Err(format!(
+                    "unique_key entry {:?} is not a declared column",
+                    key
+                ));
+            }
+        }
+        Ok(())
+    }
 }
