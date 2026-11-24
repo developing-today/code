@@ -47,8 +47,9 @@ test("public signal answers registered and unregistered paths in the same shape"
     assert.match((await res.text()).trim(), UUID, path);
     assert.equal(res.headers.get("cache-control"), "no-store");
   }
-  // Operational token routes keep their own shape: the page path is not a signal.
-  assert.equal((await call(`/p/${OWNER}`)).status, 200);
+  // Operational token routes keep their own shape: the owner link is a
+  // redirect to the console (#14378), not a signal.
+  assert.equal((await call(`/p/${OWNER}`)).status, 303);
 });
 
 test("registration is owner-only and tokens are not echoed", async () => {

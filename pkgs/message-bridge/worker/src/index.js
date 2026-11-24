@@ -1,7 +1,8 @@
 // Message bridge Worker: a remote MCP server Claude can add as a custom
 // connector, the same MCP server for the ChatGPT connector (reached
-// through its private Site with a token of its own), plus a page where
-// Drew sends a message to either or both and sees the history. Every
+// through its private Site with a token of its own). Drew sends and
+// reads through the PM Stack console; this Worker is transport only
+// (its standalone page was retired, #14378). Every
 // message sent or received is stored in one SQLite-backed Durable
 // Object, so writes never race; each row names its channel.
 //

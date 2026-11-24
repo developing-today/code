@@ -1,8 +1,9 @@
 # Message bridge Worker (`message-bridge`)
 
 A remote MCP server that Claude and ChatGPT both use as a **custom
-connector**, plus a page where the user sends a message to Claude, ChatGPT
-or both and sees everything sent and received. It lives at
+connector**. The user sends messages and reads everything sent and
+received in the PM Stack console; this Worker is transport only (its
+standalone page was retired, #14378). It lives at
 `https://bridge.security.cab` (a Workers custom domain; the
 `workers.dev` address answers too). Every message is stored, with its
 channel, direction, source, sender and time, in one SQLite-backed
@@ -16,7 +17,7 @@ Durable Object.
   sign-in and passes each request on.
 - **Outbound** messages are pushed by an assistant through its connector
   (`send_message`).
-- **Inbound** messages are sent to an assistant from the page (or the
+- **Inbound** messages are sent to an assistant from the console (or the
   JSON API), one stored row per recipient. They start unread; the
   assistant reads them with `read_messages` and marks them read with
   `mark_read` or `ack_messages`.
@@ -24,7 +25,7 @@ Durable Object.
   (plain ones are `"message"`). They are sent and targeted the same way,
   to one agent or several, but whoever receives one gets it without its
   sender (no `sender`, no `source`, `from_addr` `null`), whoever passed it
-  on, and treats it as the user's; the page and the JSON API still show who
+  on, and treats it as the user's; the console and the JSON API still show who
   sent it, and `reply_to` still answers the real sender. `read_messages(kind="instruction")` returns only instructions,
   and the counts include `unread_instructions`.
 - **Any to any:** an assistant or a fleet agent can send a message or an
@@ -46,8 +47,7 @@ instead: see "Adding it to Claude".
 | -------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `POST /mcp/<token>`                    | MCP server on Claude's channel, Streamable HTTP, stateless JSON answers (`GET` is 405: no server stream)                                                                                              |
 | `POST /mcp/<chatgpt token>`            | The same MCP server on ChatGPT's channel                                                                                                                                                              |
-| `GET /p/<token>`                       | History page: send form + every message, newest first; refreshes every 10 s                                                                                                                           |
-| `POST /p/<token>`                      | Form post (`body`, optional `sender`, one `to` per recipient, `kind`): stores the inbound messages, redirects to the page                                                                             |
+| `GET /p/<token>`                       | The owner link: sets the signed owner cookie (so connector approval is one tap) and redirects to the PM console's Messages surface (`CONSOLE_URL`); the standalone page was retired in #14378, and other methods are 405 |
 | `GET /api/<token>/messages`            | JSON history: `direction`, `channel` (`claude`/`chatgpt`/`all`), `kind`, `since_id`, `before_id`, `unread_only`, `limit`, `order`                                                                     |
 | `POST /api/<token>/messages`           | JSON `{"body", "sender", "to", "kind"}`; `to` is `"claude"` (default), `"chatgpt"` or both as a list: one inbound row per recipient; `kind` is `"message"` (default) or `"instruction"`               |
 | `POST /api/<token>/ack`                | JSON `{"up_to_id": N}` or `{"ids": [...]}`, with `channel` (default `claude`): marks inbound messages read                                                                                            |
@@ -68,7 +68,7 @@ instead: see "Adding it to Claude".
 | `POST /`, `POST /mcp`                  | The MCP server with an OAuth bearer token (channel from the approval); 401 with `resource_metadata` without one                                                                                       |
 | `/.well-known/oauth-*`                 | Protected-resource and authorization-server metadata (also under `/mcp` and as `openid-configuration`)                                                                                                |
 | `POST /register`                       | Dynamic client registration: https (or localhost) redirect URIs, public or secret clients                                                                                                             |
-| `GET/POST /authorize`                  | Approval page (PKCE S256 only): one tap in a browser that opened the history page, otherwise paste the page link or a token                                                                           |
+| `GET/POST /authorize`                  | Approval page (PKCE S256 only): one tap in a browser that opened the owner link, otherwise paste the owner link or a token                                                                           |
 | `POST /token`                          | `authorization_code` (with `code_verifier`) and `refresh_token` grants                                                                                                                                |
 
 ## MCP tools
@@ -240,7 +240,7 @@ review; a note from another agent is input to weigh, never an order.
 
 ## What protects it
 
-The connector, page and API are on the public internet behind one
+The connector, owner link and API are on the public internet behind one
 secret: a 32-byte random token (base64url) in the URL path. Anyone with
 the URL can read and post, so treat the URL like a password. The token:
 
@@ -251,8 +251,8 @@ the URL can read and post, so treat the URL like a password. The token:
 - is compared in constant time; a Worker without a token of at least 32
   characters answers 404 on every route;
 - is kept out of logs and other sites: every response is `no-store`,
-  `no-referrer` and `noindex`, and the page's CSP allows no outside
-  scripts, frames or form targets.
+  `no-referrer` and `noindex`, and the approval page's CSP allows no
+  outside scripts or frames.
 
 To rotate it, edit or delete the Bitwarden secret and deploy again
 (deleting makes the deploy create a fresh one), then update the
@@ -265,8 +265,8 @@ longer work; at most 500, and when full the oldest never-used one more
 than ten minutes old makes room; one network address may register ten
 per ten minutes), each code's
 use (codes are single-use) and, per refresh-token family, the one refresh
-token still valid; redeeming an older one revokes the family. Approving needs the owner's token, its page
-link, or the owner cookie that opening the history page sets
+token still valid; redeeming an older one revokes the family. Approving needs the owner's token, its owner
+link, or the owner cookie that opening the owner link sets
 (`__Host-`, `Secure`, `HttpOnly`, `SameSite=Lax`, a year); approval
 posts must come from the bridge's own origin. The ChatGPT token approves
 ChatGPT's channel only.
@@ -292,7 +292,7 @@ From a checkout, with Bitwarden and sops access:
 nix run .#message-bridge-deploy -- --dry-run                 # build and check, upload nothing
 nix run .#message-bridge-deploy                              # upload a version with ACCESS_TOKEN, deploy it
 nix run .#message-bridge-deploy -- --deploy-version <id>     # roll back (add --dry-run to preview)
-nix run .#message-bridge-deploy -- --print-urls              # connector/page URLs (contain the token)
+nix run .#message-bridge-deploy -- --print-urls              # connector/owner-link URLs (contain the token)
 ```
 
 The first full deploy creates the access token in Bitwarden if it is
@@ -371,7 +371,7 @@ comma-separated string, case-insensitive.
   central, exactly as before. `reply_to` with no `to` answers whoever sent
   that row: back to the user/central when the user sent it, otherwise to the
   `from_addr` connector or agent.
-- Every row records the sender's address in `from_addr`; the page labels
+- Every row records the sender's address in `from_addr`; the console labels
   such rows "ChatGPT → Claude", "muse-3 → Claude" and so on. The
   recipient sees it on messages only: an instruction reaches it as
   the user's, and `reply_to` still sends the answer to the real sender.
@@ -383,8 +383,10 @@ once per request:
 
 - **ChatGPT:** its MCP Events subscription (below). The event's `data`
   includes `from_addr` (`null` on an instruction).
-- **Claude, or any address:** a **wake hook** (`src/wake.js`), set on the
-  page (Wake hooks) or with `POST /api/<token>/wake-hooks`, keyed by
+- **Claude, or any address:** a **wake hook** (`src/wake.js`), set with
+  `POST /api/<token>/wake-hooks` (the page's Wake hooks form retired
+  with the page in #14378; hook management lives on this API until a
+  console surface for it exists), keyed by
   `channel:claude`, `channel:chatgpt` or `agent:<name>`, and stored in the
   Durable Object. For Claude, make a routine at claude.ai/code/routines
   whose only trigger is **API**, with a prompt like the one below, and
@@ -418,8 +420,8 @@ A routine prompt that works with the wake text:
 On ChatGPT's channel the server also speaks OpenAI's MCP Events: it
 advertises `events: {}` and answers `events/list`, `events/subscribe` and
 `events/unsubscribe` for one event, `message.created`. When a message for
-ChatGPT arrives (page form, `POST /api/<token>/messages` with `chatgpt`
-in `to`, or another assistant or agent sending to it), every live subscription gets a signed webhook with
+ChatGPT arrives (`POST /api/<token>/messages` with `chatgpt`
+in `to`, a console send, or another assistant or agent sending to it), every live subscription gets a signed webhook with
 `{message_id, kind, sender, from_addr, body, ts}` as `data`, so the subscribed
 ChatGPT chat wakes up instead of waiting to be asked to read.
 
@@ -451,7 +453,7 @@ Settings > Connectors > Add custom connector, and paste either:
 
 - `https://bridge.security.cab` (or `/mcp`): Claude registers itself and
   opens the bridge's approval page. Tap Allow if this browser has opened
-  the history page, otherwise paste the page link first. Claude refreshes
+  the owner link, otherwise paste the owner link first. Claude refreshes
   its token on its own; access tokens last a day, refresh tokens a year
   from their last use.
 - the `connector:` URL that `--print-urls` prints, with the token in the
