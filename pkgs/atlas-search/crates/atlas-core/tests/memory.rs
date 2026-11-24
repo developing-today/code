@@ -195,11 +195,57 @@ fn replaying_a_memory_export_is_idempotent() {
     let (_registry, agent_db) = register(&dir);
     let entries = parse_memory_export(EXPORT).unwrap();
     let first = stage_memory_export_in_db(&agent_db, AGENT_MEMORY_UNIT, &entries, NOW).unwrap();
-    let second = stage_memory_export_in_db(&agent_db, AGENT_MEMORY_UNIT, &entries, "2026-11-24T00:00:00Z").unwrap();
+    let second = stage_memory_export_in_db(
+        &agent_db,
+        AGENT_MEMORY_UNIT,
+        &entries,
+        "2026-11-24T00:00:00Z",
+    )
+    .unwrap();
 
     assert_eq!(first.len(), 2);
-    assert!(second.is_empty(), "an unchanged source revision stages zero changed items");
-    assert_eq!(list_staged_items_in_db(&agent_db, Some(AGENT_MEMORY_UNIT)).unwrap().len(), 2);
+    assert!(
+        second.is_empty(),
+        "an unchanged source revision stages zero changed items"
+    );
+    assert_eq!(
+        list_staged_items_in_db(&agent_db, Some(AGENT_MEMORY_UNIT))
+            .unwrap()
+            .len(),
+        2
+    );
+}
+
+/// Oracle: a newer source revision replaces the prior row and chunks
+/// under the same source identity instead of creating a duplicate.
+#[test]
+fn a_new_memory_revision_replaces_the_existing_staged_item() {
+    let dir = temp_dir("revision");
+    let (_registry, agent_db) = register(&dir);
+    let entries = parse_memory_export(EXPORT).unwrap();
+    let initial = stage_memory_export_in_db(&agent_db, AGENT_MEMORY_UNIT, &entries, NOW).unwrap();
+    let original_id = initial[0];
+    let mut revised = entries[0].clone();
+    revised.text = "A corrected transcript of the same memory.".to_string();
+    revised.created_at_ms = Some(revised.created_at_ms.unwrap() + 60_000.0);
+
+    let changed = stage_memory_export_in_db(
+        &agent_db,
+        AGENT_MEMORY_UNIT,
+        &[revised],
+        "2026-11-24T00:01:00Z",
+    )
+    .unwrap();
+    let items = list_staged_items_in_db(&agent_db, Some(AGENT_MEMORY_UNIT)).unwrap();
+
+    assert_eq!(changed, vec![original_id]);
+    assert_eq!(
+        items.len(),
+        2,
+        "revisions do not duplicate source identities"
+    );
+    assert_eq!(items[0].id, original_id);
+    assert_eq!(items[0].text, "A corrected transcript of the same memory.");
 }
 
 /// Oracle: the slice's acceptance — after promotion through the
