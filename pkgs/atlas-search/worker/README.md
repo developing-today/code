@@ -20,7 +20,10 @@ and caches the result **indefinitely** (no TTL/eviction in v1).
 - `src/service.ts` — calls to `fleet serve search`
   (`POST /v1/embed`, `POST /v1/search`) via the
   `atlas-search.security.cab` tunnel hostname + Cloudflare
-  Access service token. The service enforces this client's
+  Access service token. Search requests explicitly state the
+  `hosted-per-user` disclosure context (#12622, `CONTEXT` in
+  `src/space.ts`, typed as `DisclosureContext`) and this client's
+  `personal` tier ceiling. The service enforces this client's
   `personal` tier ceiling, and the Worker enforces it too: every
   search response's `effective_ceiling` is checked against the
   pinned ceiling and a mismatch is refused (502) before anything
