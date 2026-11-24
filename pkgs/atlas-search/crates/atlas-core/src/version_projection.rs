@@ -152,6 +152,8 @@ pub fn project_versions(rows: &[AtlasVersionRow]) -> Result<Vec<ProjectedVersion
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
+    use proptest::prelude::*;
+
     use super::*;
 
     fn fixture_rows() -> Vec<AtlasVersionRow> {
@@ -221,5 +223,29 @@ mod tests {
         let mut rows = fixture_rows();
         rows.push(rows[0].clone());
         assert!(project_versions(&rows).is_err());
+    }
+
+    proptest! {
+        #[test]
+        fn arbitrary_utf8_content_recomputes_to_its_document_hash(
+            content in "[ -~]{0,128}",
+            version_seq in 1u64..10_000,
+        ) {
+            let row = AtlasVersionRow {
+                file_id: "property-file".to_owned(),
+                version_seq,
+                media_type: "text/plain".to_owned(),
+                content: content.clone(),
+                path: "fixture.txt".to_owned(),
+                source_locator: "system@property@now".to_owned(),
+                ingested_at: "2026-11-24T00:00:00Z".to_owned(),
+                batch_id: "property-batch".to_owned(),
+            };
+            let projected = project_version(&row).unwrap();
+            prop_assert_eq!(projected.content, content.as_bytes());
+            prop_assert_eq!(projected.content_hash, blake3::hash(content.as_bytes()).to_hex().to_string());
+            prop_assert_eq!(projected.size, content.len() as u64);
+            prop_assert!(projected.claims.iter().all(|claim| claim.subject == ProjectedSubject::DocumentPut));
+        }
     }
 }
