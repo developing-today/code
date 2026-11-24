@@ -8,7 +8,7 @@
 // Routes and auth: see routes.js and auth.js. The access token is the
 // Worker secret ACCESS_TOKEN; it is never in git.
 import { DurableObject } from "cloudflare:workers";
-import { OAUTH_CLIENT_IDLE, OAUTH_MAX_CLIENTS, OAUTH_MAX_EVENTS, OAUTH_PENDING_GRACE, OAUTH_REG_PER_SOURCE, ackSelector, normalizeChannel, normalizeNew, normalizeQuery } from "./messages.js";
+import { OAUTH_CLIENT_IDLE, OAUTH_MAX_CLIENTS, OAUTH_MAX_EVENTS, OAUTH_PENDING_GRACE, OAUTH_REG_PER_SOURCE, ackSelector, normalizeChannel, normalizeNew, normalizeQuery, noteForInbox } from "./messages.js";
 import {
   enrollTokenClaimSql,
   enrollTokenGetSql,
@@ -114,12 +114,24 @@ export class MessageStore extends DurableObject {
       recipient TEXT NOT NULL,
       sender TEXT NOT NULL,
       body TEXT NOT NULL,
-      ack_at TEXT
+      ack_at TEXT,
+      kind TEXT NOT NULL DEFAULT 'note',
+      reply_to INTEGER,
+      batch TEXT
     )`);
-    // Sends carry their distribution batch (design §4.1); rows from
-    // before pattern addressing have none.
+    // Rows from before notes had kinds and threading (#14370, design
+    // §4.4) and before sends carried their distribution batch (design
+    // §4.1): the same ALTER-on-start migration fleet_message uses.
     const noteCols = this.sql.exec("PRAGMA table_info(note_message)").toArray();
-    if (!noteCols.some((c) => c.name === "batch")) this.sql.exec("ALTER TABLE note_message ADD COLUMN batch TEXT");
+    if (!noteCols.some((c) => c.name === "kind")) {
+      this.sql.exec("ALTER TABLE note_message ADD COLUMN kind TEXT NOT NULL DEFAULT 'note'");
+    }
+    if (!noteCols.some((c) => c.name === "reply_to")) {
+      this.sql.exec("ALTER TABLE note_message ADD COLUMN reply_to INTEGER");
+    }
+    if (!noteCols.some((c) => c.name === "batch")) {
+      this.sql.exec("ALTER TABLE note_message ADD COLUMN batch TEXT");
+    }
     this.sql.exec("CREATE INDEX IF NOT EXISTS note_message_inbox ON note_message (recipient, ack_at, id)");
   }
 
@@ -278,7 +290,7 @@ export class MessageStore extends DurableObject {
     return this.sql.exec("SELECT identity FROM note_identity ORDER BY identity").toArray().map((r) => r.identity);
   }
 
-  noteDeliver({ from, recipients, note, batch = null, pattern = null, limit_n = null, matched = null }) {
+  noteDeliver({ from, recipients, note, kind = "note", reply_to = null, batch = null, pattern = null, limit_n = null, matched = null }) {
     const ts = new Date().toISOString();
     const notes = [];
     for (const recipient of recipients) {
@@ -286,16 +298,27 @@ export class MessageStore extends DurableObject {
       if (!known) continue;
       const row = this.sql
         .exec(
-          "INSERT INTO note_message (ts, recipient, sender, body, batch) VALUES (?, ?, ?, ?, ?) RETURNING id, ts, recipient, sender, body, batch",
+          "INSERT INTO note_message (ts, recipient, sender, body, kind, reply_to, batch) VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING id, ts, recipient, sender, body, kind, reply_to, batch",
           ts,
           recipient,
           from,
           note,
+          kind,
+          reply_to,
           batch,
         )
         .one();
       this.sql.exec("UPDATE note_identity SET signal_counter = signal_counter + 1 WHERE identity = ?", recipient);
-      notes.push({ id: row.id, recipient: row.recipient, from: row.sender, note: row.body, ts: row.ts, batch: row.batch });
+      notes.push({
+        id: row.id,
+        recipient: row.recipient,
+        from: row.sender,
+        note: row.body,
+        ts: row.ts,
+        kind: row.kind,
+        reply_to: row.reply_to,
+        batch: row.batch,
+      });
     }
     if (batch) {
       recordDistribution(this.sql, {
@@ -309,6 +332,18 @@ export class MessageStore extends DurableObject {
       });
     }
     return { delivered: notes.length, recipients: notes.map((n) => n.recipient), notes };
+  }
+
+  /**
+   * The sender of a note in `identity`'s inbox, or null. Reply routing
+   * (design §4.4) reads it store-side: a reply answers the real sender
+   * without the replier ever seeing who it was.
+   */
+  noteOrigin(identity, id) {
+    const row = this.sql
+      .exec("SELECT sender FROM note_message WHERE id = ? AND recipient = ?", id, identity)
+      .toArray()[0];
+    return row ? row.sender : null;
   }
 
   /**
@@ -371,11 +406,11 @@ export class MessageStore extends DurableObject {
   noteInbox(identity) {
     return this.sql
       .exec(
-        "SELECT id, sender AS \"from\", body AS note, ts FROM note_message WHERE recipient = ? AND ack_at IS NULL ORDER BY id ASC",
+        "SELECT id, sender, body AS note, ts, kind, reply_to FROM note_message WHERE recipient = ? AND ack_at IS NULL ORDER BY id ASC",
         identity,
       )
       .toArray()
-      .map((r) => ({ ...r }));
+      .map((r) => noteForInbox(r));
   }
 
   noteAck(identity, { ids, up_to_id }) {
@@ -641,6 +676,7 @@ function storeFor(env) {
     noteIdentities: () => stub.noteIdentities(),
     noteDeliver: (delivery) => stub.noteDeliver(delivery),
     noteBroaden: (broaden) => stub.noteBroaden(broaden),
+    noteOrigin: (identity, id) => stub.noteOrigin(identity, id),
     noteInbox: (identity) => stub.noteInbox(identity),
     noteAck: (identity, sel) => stub.noteAck(identity, sel),
     noteSignal: (identity) => stub.noteSignal(identity),
