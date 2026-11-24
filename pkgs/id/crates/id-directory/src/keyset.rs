@@ -1020,6 +1020,40 @@ mod tests {
         hex_encode(&key(seed).verifying_key().to_bytes())
     }
 
+    proptest! {
+        /// Oracle: ADR Decision 4 rule 3 — revocation removes every
+        /// authority of the revoked key prospectively, including when
+        /// migration assigned the same key both admin and device roles.
+        #[test]
+        fn test_revoked_dual_role_key_cannot_authorize_later_records(
+            seed in 2..=250u8,
+            later_lamport in 3..1000u64,
+            reverse_delivery in any::<bool>(),
+        ) {
+            let admin = key(seed);
+            let public = hex_encode(&admin.verifying_key().to_bytes());
+            let first = KeysetRecord::sign(&admin, 1, "", KeysetEntry::Genesis {
+                admin_key: public.clone(), device_key: public.clone(), label: "initial".into(),
+            }, None).unwrap();
+            let revoked = append(&first, &admin, 2, KeysetEntry::DeviceRevoked {
+                device_key: public.clone(), reason: "compromised".into(),
+            }, None);
+            let later = append(&revoked, &admin, later_lamport, KeysetEntry::IdpBindingBound {
+                binding_id: "must-not-authorize".into(),
+            }, None);
+            let mut records = vec![first.clone(), revoked.clone(), later];
+            if reverse_delivery { records.reverse(); }
+            let mut log = Log::default();
+            for record in records { log.insert(record).unwrap(); }
+            let state = fold(&log, &first.hash).unwrap();
+            prop_assert_eq!(&state.head_hash, &revoked.hash);
+            prop_assert_eq!(state.records_folded, 2);
+            prop_assert!(!state.is_device(&public));
+            prop_assert!(!state.is_admin(&public));
+            prop_assert!(state.idp_bindings.is_empty());
+        }
+    }
+
     fn genesis() -> KeysetRecord {
         let admin = key(1);
         KeysetRecord::sign(
