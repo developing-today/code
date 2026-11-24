@@ -1195,7 +1195,8 @@ often, out of reach, or GitHub in trouble: the read ends at the first
 such answer and nothing more is asked. No repository readable at all
 is a failed read, so the last good copy stays and says why. Refused
 for all of it, the list is left to a machine for the hour, as with
-anything else the edge reads.
+anything else the edge reads. A machine that has not said which
+repositories to look in goes on reporting the list itself.
 
 **Three faults found on the way, none of them in this change.**
 
@@ -1215,17 +1216,17 @@ anything else the edge reads.
   cut, which made it no time at all: every card said "updated" and
   nothing after. It is cut to the second now.
 
-**Checked.** 458 tests pass (21 new: 13 of the reading in
-`test/needs.test.ts`, two of the console's own command for it, five at
-the edge with the machine away, one of the app's wording). At the
-edge: read from each repository's list with no machine; a repository
-that cannot be seen; none that can; by tag, with only the list that
-changed read whole and nothing written again; refused and left to the
-laptop; and a new hands item told to a subscribed device by the edge's
-own wake. In the real runtime (47 checks): the Worker's own check of
-the read comes back good, the stand-in's one review is shown, and the
-lists were asked for. 38 single faults planted in the new code: all 38
-fail a test.
+**Checked.** 459 tests pass (22 new: 13 of the reading in
+`test/needs.test.ts`, two of the console's own command for it, six at
+the edge, one of the app's wording). At the edge: read from each
+repository's list with no machine; a repository that cannot be seen;
+none that can; by tag, with only the list that changed read whole and
+nothing written again; refused and left to the laptop; a laptop that
+names no repositories; and a new hands item told to a subscribed
+device by the edge's own wake. In the real runtime (47 checks): the
+Worker's own check of the read comes back good, the stand-in's one
+review is shown, and the lists were asked for. 40 single faults
+planted in the new code: all 40 fail a test.
 
 **One thing it costs.** When GitHub turns the edge away for the
 hour, two sections of the first screen now ask at once (the prompts

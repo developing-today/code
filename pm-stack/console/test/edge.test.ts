@@ -3866,6 +3866,30 @@ describe("the edge does the core itself", () => {
     ]);
   });
 
+  test("a laptop that has not said which repositories to look in goes on reporting what needs the owner itself", async () => {
+    const w = await primary();
+    NEEDS(w);
+    // Its report names no repositories (a console from before it did).
+    const saidBefore = needsCalls(w).length;
+    w.edgeConfig.needsRepos = [];
+    (w.data.census as { reviews: unknown[] }).reviews = [
+      { ref: "developing-today/code#12", title: "From the laptop", url: "u", pr: true, updated: "" },
+    ];
+    w.now.t += 1_000;
+    await w.hostReads();
+    // It is told the list is not read here, sends its own, and that is what is shown.
+    expect((await w.link.now.once())?.owns).toEqual(["board", "prs", "priorities", "asks"]);
+    w.now.t += 121_000;
+    await w.hostReads();
+    await w.link.now.once();
+    await w.core();
+    await settle(w);
+    expect((await w.core()).doc.census.reviews.map((i: { title: string }) => i.title)).toEqual(["From the laptop"]);
+    // And GitHub is not asked again for lists it has no repositories to ask of.
+    expect(needsCalls(w).length).toBe(saidBefore);
+    expect((await w.core()).doc.health.census).toEqual({ ok: true, error: null });
+  });
+
   test("refused every one of the lists, this side leaves what needs the owner to the laptop for the hour, as with anything it reads", async () => {
     const w = await primary();
     NEEDS(w);

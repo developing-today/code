@@ -1461,7 +1461,15 @@ export class Edge {
   private owned(cfg: EdgeConfig | null): string[] {
     if (!this.primary(cfg)) return [];
     const refused = this.refusedReads();
-    return DIRECT_READ_SECTIONS.filter((name) => !refused.includes(name));
+    return DIRECT_READ_SECTIONS.filter(
+      (name) =>
+        !refused.includes(name) &&
+        // What is labelled as needing the owner is read repository by
+        // repository: a machine that has not said which they are (one
+        // from before it did) goes on reporting the list itself. Read
+        // from no repositories it would be an empty list, and whole.
+        (name !== "census" || (cfg?.needsRepos.length ?? 0) > 0),
+    );
   }
 
   /** Sections this side's token was turned away for, and still is. */
