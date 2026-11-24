@@ -12,6 +12,9 @@
 //!   [`world_native`], [`world_fixture`], [`world_cache`] and, under
 //!   the `sandbox` feature, [`sandbox`] — the wasmtime guest runner
 //!   whose fuel budgets are the split's determinism canary.
+//! - [`host`]: host mode's supervisor state for #10693 (packet P1) — the
+//!   lifecycle host file, transitions, rebuild, per-state census, and
+//!   the replaying supervisor over one data root.
 //! - [`program_bundle`]: the signed single-file program bundle (#8280,
 //!   design D1-D3): export, verify and fork, fully offline.
 //! - [`shell_contract`]: the F13.1 shell contract the native shell
@@ -43,6 +46,7 @@ pub mod blob_gate;
 pub mod chat_anchor_render;
 pub mod groups;
 pub mod guest_burn;
+pub mod host;
 pub mod input_framing;
 pub mod program_bundle;
 pub mod program_gallery;
