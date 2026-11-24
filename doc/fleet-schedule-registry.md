@@ -450,7 +450,7 @@ from issue #1319.
 the surface is retained in this registry so a future Jules schedule,
 if one is ever created, lands here in the same pass.
 
-## Surface 4 — GitHub Actions schedules (3 entries)
+## Surface 4 — GitHub Actions schedules (4 entries)
 
 Scheduled workflows in this repo (`.github/workflows/*` with a
 `schedule:` trigger). This surface was added 2026-11-05 with its first
@@ -464,6 +464,7 @@ review, not silently normalised.
 | `bws-freshness` (`.github/workflows/bws-freshness.yml`)                 | developing-today/code | `23 6 * * *` (daily 06:23 UTC) + `workflow_dispatch`    | enabled (fixture tests); live check gated off pending a secure credentialed runner (`BWS_FRESHNESS_ENABLED`)                                                                                                           | issue #5451   | `.github/workflows/bws-freshness.yml`; check implementation `lib/bws-to-sops.sh --check` | not recorded | Disable the schedule if the fixture tests fail on main repeatedly or the drift-issue automation misfires | 2026-11-05 | 2026-11-05  |
 | `dispatch-health-probe` (`.github/workflows/dispatch-health-probe.yml`) | developing-today/code | `*/30 * * * *` (every 30 min UTC) + `workflow_dispatch` | enabled; outside probe of dispatch.security.cab — opens/updates one `meta/dispatch-probe` alert issue on failure, comments + closes it on recovery                                                                     | issue #6992   | `.github/workflows/dispatch-health-probe.yml`                                            | not recorded | Disable the schedule if the probe misfires (repeated false alerts) or dispatch.security.cab is retired   | 2026-11-11 | 2026-11-11  |
 | `fleet-sync-probe` (`.github/workflows/fleet-sync-probe.yml`)           | developing-today/code | `30 14 * * *` (daily 14:30 UTC) + `workflow_dispatch`   | enabled; judges each fork's sync-upstream freshness (successful scheduled run within 30h, no failed latest run) and opens/updates one `meta/fleet-sync-probe` alert issue on failure, comments + closes it on recovery | issue #12235  | `.github/workflows/fleet-sync-probe.yml`; probe `scripts/fleet/fleet-sync-probe.py`      | not recorded | Disable the schedule if the probe misfires (repeated false alerts) or sync-upstream is retired           | 2026-11-22 | 2026-11-22  |
+| `root-status-guard` (`.github/workflows/root-status-guard.yml`) | developing-today/code | `17 7 * * *` (daily 07:17 UTC) + `workflow_dispatch` | enabled; pure-bash guard that fails when a repo-root file is named *COMPLETE* / *SUMMARY* (#12136) | issue #12136 | `.github/workflows/root-status-guard.yml`; check `.github/scripts/check-root-status-files.sh` | not recorded | Disable the schedule if the guard misfires (repeated false failures on main) or the root status-file rule is retired | 2026-11-24 | 2026-11-24 |
 
 ## Surface 5 — Mac launchd jobs (3 entries)
 
