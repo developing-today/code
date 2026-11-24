@@ -556,6 +556,80 @@ async fn google_door_full_loop_links_and_reaches_same_account() {
 }
 
 #[tokio::test]
+async fn pending_identity_is_acknowledged_without_issuing_a_code() {
+    let h = harness().await;
+    assert!(h
+        .identities
+        .register_pending("google", GOOGLE_SUB, "drew", "email-match")
+        .unwrap());
+
+    let resp = drive_door(&h, "google").await;
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    assert!(
+        location(&resp).is_empty(),
+        "pending login must not redirect with a code"
+    );
+    assert!(audit_has(
+        &h,
+        "door/google",
+        "denied",
+        "identity_pending",
+        &format!("google:{GOOGLE_SUB}")
+    ));
+    assert_eq!(
+        h.identities
+            .status("google", GOOGLE_SUB)
+            .unwrap()
+            .as_deref(),
+        Some("pending")
+    );
+    assert!(h
+        .identities
+        .events()
+        .unwrap()
+        .iter()
+        .any(|e| e.event == "register"));
+}
+
+#[test]
+fn identity_history_records_pending_disposition_and_provisioning_events() {
+    let store = IdentityStore::open(None).unwrap();
+    assert!(store
+        .register_pending("google", "approved-sub", "drew", "session-add")
+        .unwrap());
+    assert!(store
+        .approve_pending("google", "approved-sub", "established-session")
+        .unwrap());
+    assert!(store
+        .register_pending("microsoft", "rejected-sub", "drew", "email-match")
+        .unwrap());
+    assert!(store
+        .reject_pending("microsoft", "rejected-sub", "established-session")
+        .unwrap());
+    store
+        .record_provision("github", "new-sub", "new-account", "provisioner")
+        .unwrap();
+
+    let events = store.events().unwrap();
+    assert_eq!(
+        events
+            .iter()
+            .map(|event| event.event.as_str())
+            .collect::<Vec<_>>(),
+        ["register", "approve", "register", "reject", "provision"]
+    );
+    let approved = store
+        .list()
+        .unwrap()
+        .into_iter()
+        .find(|row| row.subject == "approved-sub")
+        .unwrap();
+    assert_eq!(approved.status, "active");
+    assert_eq!(approved.claimed_via.as_deref(), Some("session-add"));
+    assert!(approved.claimed_at.is_some());
+}
+
+#[tokio::test]
 async fn github_door_full_loop_reaches_same_account() {
     let h = harness().await;
     let resp = drive_door(&h, "github").await;

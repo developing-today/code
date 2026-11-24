@@ -32,9 +32,7 @@ function importVerifyKey(publicRaw: Uint8Array): Promise<CryptoKey> {
   const cacheKey = bytesToHex(publicRaw);
   let cached = keyCache.get(cacheKey);
   if (!cached) {
-    cached = crypto.subtle.importKey("raw", publicRaw as BufferSource, "Ed25519", false, [
-      "verify",
-    ]);
+    cached = crypto.subtle.importKey("raw", publicRaw as BufferSource, "Ed25519", false, ["verify"]);
     keyCache.set(cacheKey, cached);
   }
   return cached;
@@ -76,9 +74,7 @@ export async function importIdKey(seed: Uint8Array): Promise<IdKey> {
   const pkcs8 = new Uint8Array(PKCS8_SEED_PREFIX.length + 32);
   pkcs8.set(PKCS8_SEED_PREFIX);
   pkcs8.set(seed, PKCS8_SEED_PREFIX.length);
-  const privateKey = await crypto.subtle.importKey("pkcs8", pkcs8 as BufferSource, "Ed25519", true, [
-    "sign",
-  ]);
+  const privateKey = await crypto.subtle.importKey("pkcs8", pkcs8 as BufferSource, "Ed25519", true, ["sign"]);
   const jwk = await crypto.subtle.exportKey("jwk", privateKey);
   if (!jwk.x) throw new Error("exported key has no public component");
   const publicRaw = b64urlToBytes(jwk.x);

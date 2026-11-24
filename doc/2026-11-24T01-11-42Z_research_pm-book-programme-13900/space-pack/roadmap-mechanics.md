@@ -14,12 +14,12 @@
 There is **no single "hierarchy" type enum in code**. Four levels are carried
 by four different systems, joined by refs.
 
-| Level | What it actually is in code | Source of record |
-|---|---|---|
-| **Programs** (the brief's "major initiatives") | **Programs P1–P9** — a *document* scheme, not a schema: `pm-stack/design-reprioritization-2026-11-12.md` defines nine programs (P1 ID, P2 Atlas (rolling), P3 Fleet, P4 SaaS for ID/Atlas/fleet, P5 PM stack, P6 Turso+Cloudflare, P7 GitHub+dynamic compute, P8 Storage, P9 Lab), each with a queue band. In live data a program surfaces as a **project** in the aggregator's project registry / program page and as an **Area** value in GitHub Project #4. | Design doc + `aggregator/src/program.ts`, `project-config.ts`, `projects.ts` |
-| **Projects** (portfolio) | **One GitHub Project**: org Project "Developing Today" (#4), the portfolio map. Its items carry single-select fields **Status / Area / Horizon / Kind**, read verbatim by the aggregator into `ProjectPoolItem{status, area, horizon, kind}`. "Project" in the aggregator's own registry (`/program`, `/program/<id>`) is a second, repo-side notion: a tracked programme with its own status/roadmap derived from the registry + tracked issues + the Project pool. | `aggregator/src/projects.ts`; `pm-stack/README.md` ("GitHub Project #4 conventions") |
-| **Epics** | **Project items with `Kind = "Epic"` — canonical.** The aggregator reads this field and resolves `epicRef` through native sub-issue parents; it does **not** infer epic membership from labels. The `epic` *label* is the maintained gate/mirror (every pool item with Kind=Epic carries it, no other pool item does); `meta/epic` is retired with no consumer. In code, `ProjectPoolItem.epicRef` is absent for epics themselves and names the parent epic for children. | `pm-stack/README.md`; `aggregator/src/projects.ts` (~line 311), `aggregator/src/model.ts` |
-| **Tasks / items** (below the epic) | Project pool items with `Kind = "Task"`, GitHub issues/PRs (`GhItem`, kind `issue|pr`), Kaneo cards, and Grist/repo roadmap rows — all joined as refs (`owner/repo#N`) and registry subjects (`gh:…`, `kaneo:<slug>/<id>`, `grist:<doc>/Roadmap/<id>`, `session:…`, `orch:…`). | `aggregator/src/model.ts` and source adapters |
+| Level                                          | What it actually is in code                                                                                                                                                                                                                                                                                                                                                                                                                                               | Source of record                                                                                                                                                                             |
+| ---------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Programs** (the brief's "major initiatives") | **Programs P1–P9** — a _document_ scheme, not a schema: `pm-stack/design-reprioritization-2026-11-12.md` defines nine programs (P1 ID, P2 Atlas (rolling), P3 Fleet, P4 SaaS for ID/Atlas/fleet, P5 PM stack, P6 Turso+Cloudflare, P7 GitHub+dynamic compute, P8 Storage, P9 Lab), each with a queue band. In live data a program surfaces as a **project** in the aggregator's project registry / program page and as an **Area** value in GitHub Project #4.            | Design doc + `aggregator/src/program.ts`, `project-config.ts`, `projects.ts`                                                                                                                 |
+| **Projects** (portfolio)                       | **One GitHub Project**: org Project "Developing Today" (#4), the portfolio map. Its items carry single-select fields **Status / Area / Horizon / Kind**, read verbatim by the aggregator into `ProjectPoolItem{status, area, horizon, kind}`. "Project" in the aggregator's own registry (`/program`, `/program/<id>`) is a second, repo-side notion: a tracked programme with its own status/roadmap derived from the registry + tracked issues + the Project pool.      | `aggregator/src/projects.ts`; `pm-stack/README.md` ("GitHub Project #4 conventions")                                                                                                         |
+| **Epics**                                      | **Project items with `Kind = "Epic"` — canonical.** The aggregator reads this field and resolves `epicRef` through native sub-issue parents; it does **not** infer epic membership from labels. The `epic` _label_ is the maintained gate/mirror (every pool item with Kind=Epic carries it, no other pool item does); `meta/epic` is retired with no consumer. In code, `ProjectPoolItem.epicRef` is absent for epics themselves and names the parent epic for children. | `pm-stack/README.md`; `aggregator/src/projects.ts` (~line 311), `aggregator/src/model.ts`                                                                                                    |
+| **Tasks / items** (below the epic)             | Project pool items with `Kind = "Task"`, GitHub issues/PRs (`GhItem`, kind `issue                                                                                                                                                                                                                                                                                                                                                                                         | pr`), Kaneo cards, and Grist/repo roadmap rows — all joined as refs (`owner/repo#N`) and registry subjects (`gh:…`, `kaneo:<slug>/<id>`, `grist:<doc>/Roadmap/<id>`, `session:…`, `orch:…`). | `aggregator/src/model.ts` and source adapters |
 
 **Edges are kept distinct** (`pm-stack/README.md`): **hierarchy** = native
 GitHub sub-issue parents (epic membership); **dependencies** = native
@@ -33,7 +33,7 @@ as data is in `priorities-and-maps.md`.
 > Programme framing lists "major initiatives, projects, epics, aggregators"
 > as hierarchy types. In code, Kind on Project #4 is exactly
 > **`Task | Epic`** (`aggregator/src/model.ts`), programs are a document
-> scheme, and "aggregator" names a *service* — the dashboard
+> scheme, and "aggregator" names a _service_ — the dashboard
 > (`aggregator/src/program.ts`: "This dashboard is the aggregator of the PM
 > stack") — not a node type. The other "aggregator" in the estate is Atlas's
 > staging aggregator (embed-at-promotion) — unrelated to the PM hierarchy.
@@ -51,11 +51,11 @@ page derived from it) frames Drew's four types but states this code reality.
 
 No single "horizon" definition is correct:
 
-| Surface | Vocabulary |
-|---|---|
+| Surface                        | Vocabulary                                                                                                                  |
+| ------------------------------ | --------------------------------------------------------------------------------------------------------------------------- |
 | Repo-file / Grist roadmap rows | `Now \| Next \| Later \| Ideas \| Ongoing` (`sources/repo-roadmap.ts` `HORIZON_BUCKETS`, validated by `roadmap-horizon.ts`) |
-| Aggregator tier items | `Horizon = today \| tomorrow \| next-3-days \| longer \| incoming` (`aggregator/src/model.ts`) |
-| GitHub Project #4 | Its own free-standing `Horizon` single-select; values are whatever the Project defines, read verbatim in `projects.ts` |
+| Aggregator tier items          | `Horizon = today \| tomorrow \| next-3-days \| longer \| incoming` (`aggregator/src/model.ts`)                              |
+| GitHub Project #4              | Its own free-standing `Horizon` single-select; values are whatever the Project defines, read verbatim in `projects.ts`      |
 
 ### Two roadmap implementations (D12)
 
@@ -72,6 +72,7 @@ No single "horizon" definition is correct:
 ## 2. How items roll up
 
 ### Epic rollup
+
 - `aggregator/src/epics.ts`: `uniqueEpicItemsByRef` takes every pool item
   classified Epic; `buildEpicRollups` groups children by `epicRef` and counts
   done/total — a child is done per `isEpicChildDone` (state/status).
@@ -79,6 +80,7 @@ No single "horizon" definition is correct:
   `/roadmap` drill-down.
 
 ### Complexity weighting — progress is weight, not counts
+
 - `aggregator/src/weights.ts` (#1108): `effort/xs=1, s=4, m=12, l=40` (`l` is a
   floor, flagged open-ended).
 - Unsized items contribute **no weight** and are counted visibly as unsized,
@@ -87,6 +89,7 @@ No single "horizon" definition is correct:
   weight, online, unmoded).
 
 ### Epic closure gate
+
 - `epics.ts` `evaluateEpicClosureGate` + `scripts/epic-closure-gate.ts`,
   monitored report-only by `fleet-monitor/epic_close_check.py`: an epic may
   not close while its complete subtree has open children / unmet conditions;
@@ -96,11 +99,13 @@ No single "horizon" definition is correct:
   (auto-reopens automation closes with open sub-issues or no closing keyword).
 
 ### Reparenting
+
 - `aggregator/src/epic-reparent.ts` + `scripts/epic-reparent.ts` move
   sub-issue parents; conformance is checked by
   `scripts/check-epic-conformance.ts`.
 
 ### Roadmap roll-up (`/roadmap`)
+
 Rows from three sources merge:
 
 1. Grist `Roadmap` table (`sources/live.ts` `gristRoadmap()`).
@@ -116,6 +121,7 @@ View filtering is shared between the page and its twin
 `roadmap-annotations.ts` (see §4).
 
 ### Program roll-up (`/program`)
+
 Per project: status distributions over Status/Area/Horizon/Kind
 (`projects.ts` `distribution(...)`), epic rollups, tracked-issue state,
 orchestration freshness. Stale/conflicting Project Status vs derived state is
@@ -123,6 +129,7 @@ orchestration freshness. Stale/conflicting Project Status vs derived state is
 `/conflicts` lists every live source disagreement.
 
 ### Console roll-up
+
 `console/src/plan.ts`: `PHASES = doing|now|next|later|built` derived from
 labels (`phaseOf`), `KINDS = note|bug|change`, `CAPABILITIES` with phases;
 `parseRoadmap` parses the plan doc. A second, simpler ladder for the phone —
@@ -140,7 +147,7 @@ surface:
    `10/20/30/40/50/70/90` (`design-reprioritization-2026-11-12.md` band map;
    queue tasks carry `priority`, claimed in priority-then-age order —
    `console/src/work.ts` `board()`: `ORDER BY (priority IS NULL), priority
-   ASC, created_at ASC`). Programs map to bands in the 2026-11-12 scheme
+ASC, created_at ASC`). Programs map to bands in the 2026-11-12 scheme
    (P1–P3 band 20, P4–P6 band 30, P7–P9 band 40); the doc's "Queue re-banding
    — APPLIED (2026-11-12, queue lane)" section records the re-banding as
    done. Owner prompts from the console take the top band, **10**
@@ -148,10 +155,10 @@ surface:
 2. **Console task priority scale** — `PRIORITY_SCALE = [10,20,30,40,50,70,90]`
    (`console/src/ops.ts`); `Ops.setTaskPriority` writes it on queue tasks.
 3. **Issue rank labels (console ranked-issues view)** — `RANKS = [expedite,
-   priority/critical, now, priority/high, next]` with `RANK_PRIORITY` mapping
+priority/critical, now, priority/high, next]` with `RANK_PRIORITY` mapping
    to numbers (`console/src/ops.ts`); `Ops.priorities()` searches open issues
    carrying any rank label and sorts by rank then issue number;
-   `Ops.setRank()` adds the new label *first*, then removes the others, so a
+   `Ops.setRank()` adds the new label _first_, then removes the others, so a
    failure never leaves an issue rankless. Intake routes assign ranks by kind
    (`console/src/plan.ts` `ROUTES`: per-kind labels + rank).
 4. **Project fields (portfolio intent)** — Horizon + Status + Area on
@@ -195,7 +202,7 @@ that change roadmap/priority state:
   answer / defer / request-info records a resolution in the decisions store;
   the dropped-thread catcher applies it to the Muse-side decisions ledger
   per question. A `status-request`-class consequence (e.g. an epic/project
-  status change) is *not* written by the dashboard — it becomes an action
+  status change) is _not_ written by the dashboard — it becomes an action
   (next bullet).
 - **Dashboard actions** (`POST /api/actions`, `POST /api/actions/batch`;
   consumers poll `GET /api/actions.json?state=new`; outcomes return via
@@ -218,14 +225,14 @@ that change roadmap/priority state:
   audit-logged before execution (`console/src/{ops,work,server}.ts`).
   **D4:** the aggregator service never writes GitHub labels; the stack does,
   through the console — the orchestrator is not the only label writer. (The
-  single-writer rule is about Project *fields*; the console writes *labels* —
+  single-writer rule is about Project _fields_; the console writes _labels_ —
   the seam must not be blurred.)
 - **Roadmap annotations** (`POST /api/roadmap/annotations`, `/alias`):
   Drew-side notes/aliases attach to roadmap rows without editing Grist or the
   repo files — the annotation store (`roadmap-annotations.ts`) is the
   aggregator's own, reconciled at render (`roadmap-reconcile.ts`).
 - **Intake** (console `#more/intake`, `plan.ts`): a note/bug/change becomes a
-  GitHub issue with the route's labels + rank *and* a queue packet
+  GitHub issue with the route's labels + rank _and_ a queue packet
   (`triage.enqueue`, or `prompt.enqueue` once an issue exists) — new work
   enters both the portfolio record and the execution queue in one action,
   with the rank from the route table, not chosen ad hoc. Intake label:

@@ -43,7 +43,9 @@ def partitions(data):
             continue
         if not isinstance(session["opens"], list):
             raise ValueError("expected ordered opens")
-        opens = dict.fromkeys(item for item in session["opens"] if reference(item) in allowed_items)
+        opens = dict.fromkeys(
+            item for item in session["opens"] if reference(item) in allowed_items
+        )
         if end <= cutoff:
             train.append(tuple(opens))
         else:
@@ -90,11 +92,17 @@ def evaluate(data, k):
         if ranks:
             reciprocal_ranks += 1 / ranks[0]
             dcg = sum(1 / log2(rank + 1) for rank in ranks)
-            ideal = sum(1 / log2(rank + 1) for rank in range(1, min(k, len(targets)) + 1))
+            ideal = sum(
+                1 / log2(rank + 1) for rank in range(1, min(k, len(targets)) + 1)
+            )
             ndcg += dcg / ideal
     return {
-        "k": k, "training_sessions": len(train), "held_out_sessions": len(held_out),
-        "scored_sessions": scored, "hits": hits, "held_out_items": relevant,
+        "k": k,
+        "training_sessions": len(train),
+        "held_out_sessions": len(held_out),
+        "scored_sessions": scored,
+        "hits": hits,
+        "held_out_items": relevant,
         "precision_at_k": hits / (scored * k) if scored else None,
         "recall_at_k": hits / relevant if relevant else None,
         "mrr_at_k": reciprocal_ranks / scored if scored else None,

@@ -67,7 +67,8 @@ function parseArgs(argv: string[]): Options {
     }
   }
   if (repo === null) usageError("--repo is required");
-  if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repo)) usageError(`--repo must be <owner/name> (got ${JSON.stringify(repo)})`);
+  if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repo))
+    usageError(`--repo must be <owner/name> (got ${JSON.stringify(repo)})`);
   return { repo, dryRun };
 }
 
@@ -133,7 +134,9 @@ export function planPrimaryParentLabels(labels: GhLabel[]): {
 
 function main(): void {
   const options = parseArgs(process.argv.slice(2));
-  const labels = JSON.parse(runFleet(["gh", "label", "list", "--repo", options.repo, "--limit", "500", "--json", "name,color"])) as GhLabel[];
+  const labels = JSON.parse(
+    runFleet(["gh", "label", "list", "--repo", options.repo, "--limit", "500", "--json", "name,color"]),
+  ) as GhLabel[];
   const { plan, existing, skippedTooLong } = planPrimaryParentLabels(labels);
   const created: string[] = [];
   const failures: { name: string; error: string }[] = [];

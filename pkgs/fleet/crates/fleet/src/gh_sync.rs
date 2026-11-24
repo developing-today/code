@@ -115,11 +115,7 @@ impl Parsed {
     }
 }
 
-fn parse_declared(
-    verb: &str,
-    tail: &[String],
-    value_flags: &[&str],
-) -> Result<Parsed, String> {
+fn parse_declared(verb: &str, tail: &[String], value_flags: &[&str]) -> Result<Parsed, String> {
     let mut parsed = Parsed {
         flags: Vec::new(),
         positionals: Vec::new(),
@@ -241,17 +237,10 @@ fn no_positionals(verb: &str, parsed: &Parsed) -> Result<(), String> {
 /// file refuses the verb before any GitHub write.
 fn body(verb: &str, parsed: &Parsed) -> Result<String, String> {
     match (parsed.get("--body"), parsed.get("--body-file")) {
-        (Some(_), Some(_)) => Err(err(
-            verb,
-            "give exactly one of '--body' and '--body-file'",
-        )),
+        (Some(_), Some(_)) => Err(err(verb, "give exactly one of '--body' and '--body-file'")),
         (Some(text), None) => Ok(text.to_string()),
-        (None, Some(path)) => std::fs::read_to_string(path).map_err(|e| {
-            err(
-                verb,
-                &format!("cannot read --body-file '{path}': {e}"),
-            )
-        }),
+        (None, Some(path)) => std::fs::read_to_string(path)
+            .map_err(|e| err(verb, &format!("cannot read --body-file '{path}': {e}"))),
         (None, None) => Err(err(
             verb,
             "missing required flag '--body' (or '--body-file')",
@@ -357,13 +346,7 @@ pub fn parse(args: &[String]) -> Result<Option<Vec<String>>, String> {
             if labels.is_empty() {
                 return Err(err(verb, "missing required flag '--label'"));
             }
-            let mut out = vec![
-                "issue".into(),
-                "edit".into(),
-                item,
-                "--repo".into(),
-                repo,
-            ];
+            let mut out = vec!["issue".into(), "edit".into(), item, "--repo".into(), repo];
             for label in labels {
                 out.push("--add-label".into());
                 out.push(label.to_string());
@@ -535,10 +518,8 @@ mod tests {
 
     #[test]
     fn sync_comment_reads_a_body_file() {
-        let path = std::env::temp_dir().join(format!(
-            "fleet-gh-sync-test-{}-body.md",
-            std::process::id()
-        ));
+        let path =
+            std::env::temp_dir().join(format!("fleet-gh-sync-test-{}-body.md", std::process::id()));
         std::fs::write(&path, "from a file\n").unwrap();
         let out = rewrite(&[
             "sync-comment",
@@ -566,7 +547,10 @@ mod tests {
             "--body-file",
             "y",
         ]);
-        assert!(both.contains("exactly one of '--body' and '--body-file'"), "{both}");
+        assert!(
+            both.contains("exactly one of '--body' and '--body-file'"),
+            "{both}"
+        );
         let missing = refused(&[
             "sync-comment",
             "--repo",
@@ -584,7 +568,10 @@ mod tests {
             "issue",
             "7",
         ]);
-        assert!(neither.contains("missing required flag '--body'"), "{neither}");
+        assert!(
+            neither.contains("missing required flag '--body'"),
+            "{neither}"
+        );
     }
 
     #[test]
@@ -718,50 +705,64 @@ mod tests {
             "--reason",
             "not planned",
         ]);
-        assert!(gh_shape.contains("unknown reason 'not planned'"), "{gh_shape}");
+        assert!(
+            gh_shape.contains("unknown reason 'not planned'"),
+            "{gh_shape}"
+        );
     }
 
     #[test]
     fn strict_parsing_refuses_undeclared_shapes() {
         // Unknown flag.
-        assert!(refused(&[
-            "sync-labels",
-            "--repo",
-            "developing-today/code",
-            "issue",
-            "1",
-            "--json",
-            "labels"
-        ])
-        .contains("unexpected argument '--json'"));
+        assert!(
+            refused(&[
+                "sync-labels",
+                "--repo",
+                "developing-today/code",
+                "issue",
+                "1",
+                "--json",
+                "labels"
+            ])
+            .contains("unexpected argument '--json'")
+        );
         // Missing --repo.
         assert!(refused(&["sync-labels", "issue", "1"]).contains("missing required flag '--repo'"));
         // Repo that is not an OWNER/REPO slug.
-        assert!(refused(&["sync-labels", "--repo", "code", "issue", "1"])
-            .contains("is not an OWNER/REPO slug"));
-        assert!(refused(&["sync-labels", "--repo", "a/b/c", "issue", "1"])
-            .contains("is not an OWNER/REPO slug"));
+        assert!(
+            refused(&["sync-labels", "--repo", "code", "issue", "1"])
+                .contains("is not an OWNER/REPO slug")
+        );
+        assert!(
+            refused(&["sync-labels", "--repo", "a/b/c", "issue", "1"])
+                .contains("is not an OWNER/REPO slug")
+        );
         // Kind that is neither issue nor pr.
-        assert!(refused(&["sync-labels", "--repo", "a/b", "issuee", "1"])
-            .contains("not an item kind"));
+        assert!(
+            refused(&["sync-labels", "--repo", "a/b", "issuee", "1"]).contains("not an item kind")
+        );
         // Item that is not a number.
-        assert!(refused(&["sync-labels", "--repo", "a/b", "issue", "12a"])
-            .contains("is not an item number"));
+        assert!(
+            refused(&["sync-labels", "--repo", "a/b", "issue", "12a"])
+                .contains("is not an item number")
+        );
         // A value flag with no value.
         assert!(refused(&["sync-labels", "--repo"]).contains("flag '--repo' needs a value"));
         // A stray positional on a flag-only verb.
-        assert!(refused(&[
-            "sync-label-ensure",
-            "--repo",
-            "a/b",
-            "--label",
-            "l",
-            "--color",
-            "c",
-            "--description",
-            "d",
-            "extra"
-        ])
-        .contains("unexpected argument 'extra'"));
+        assert!(
+            refused(&[
+                "sync-label-ensure",
+                "--repo",
+                "a/b",
+                "--label",
+                "l",
+                "--color",
+                "c",
+                "--description",
+                "d",
+                "extra"
+            ])
+            .contains("unexpected argument 'extra'")
+        );
     }
 }

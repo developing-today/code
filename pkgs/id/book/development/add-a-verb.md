@@ -10,16 +10,16 @@ The second binary, `id-native-shell`, has a hand-rolled argument parser in `crat
 
 The clap derive parser lives in the `id-cli` crate, in `src/cli/`:
 
-| File | What it declares |
-|---|---|
-| `cli/mod.rs` | The `Cli` struct with the global flags, the top-level `Command` enum, the `serve` arguments, and the families that have no file of their own. |
-| `cli/world.rs` | The `world` family: one argument struct per subcommand. |
-| `cli/tag.rs` | The `tag` family. |
-| `cli/groups.rs` | The `group` family, plus `delegate` and `revoke`. |
-| `cli/gallery.rs` | The `gallery` family. |
-| `cli/walk.rs` | The `walk` family. |
-| `cli/claim.rs`, `cli/doc.rs`, `cli/writer_sets.rs`, `cli/match_audit.rs` | The `claim`, `doc`, `writer-sets` and `match-audit` families. |
-| `cli/tests.rs` | The parser test suite for the whole `cli` module. |
+| File                                                                     | What it declares                                                                                                                              |
+| ------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| `cli/mod.rs`                                                             | The `Cli` struct with the global flags, the top-level `Command` enum, the `serve` arguments, and the families that have no file of their own. |
+| `cli/world.rs`                                                           | The `world` family: one argument struct per subcommand.                                                                                       |
+| `cli/tag.rs`                                                             | The `tag` family.                                                                                                                             |
+| `cli/groups.rs`                                                          | The `group` family, plus `delegate` and `revoke`.                                                                                             |
+| `cli/gallery.rs`                                                         | The `gallery` family.                                                                                                                         |
+| `cli/walk.rs`                                                            | The `walk` family.                                                                                                                            |
+| `cli/claim.rs`, `cli/doc.rs`, `cli/writer_sets.rs`, `cli/match_audit.rs` | The `claim`, `doc`, `writer-sets` and `match-audit` families.                                                                                 |
+| `cli/tests.rs`                                                           | The parser test suite for the whole `cli` module.                                                                                             |
 
 Declare the new command in the file for its family: a variant on the family's command enum, an argument struct with one `#[arg]` field per flag or positional, and doc comments on both. The doc comments are the help text — clap renders them — so each one states what the argument does, its literal default where it has one, and any requirement or conflict a caller would otherwise have to read the handler to learn. Follow the family's existing conventions for the repeated shapes:
 
@@ -34,11 +34,11 @@ If the new syntax interacts with argument rewriting, check `cli::normalize_args`
 
 Three gating shapes exist in the current parser, and a new command takes one of them deliberately:
 
-| Shape | Precedent | Behaviour in a build without the feature |
-|---|---|---|
-| Parser variant gated with `#[cfg(feature = "...")]` | The `sandbox` variants `world dev`, `world measure`, `world replay`, `world verify`, and the whole `match-audit` command. | The command does not exist: clap reports an unrecognized subcommand, and the help tree does not show it. |
-| Parser unconditional, dispatch gated | The whole `world` family: the `Command` variant is unconditional, and `src/main.rs` carries a gated dispatch arm plus a fallback arm. | The help tree prints in full, and every invocation fails at runtime with `this build has no world support`. |
-| Parser unconditional, handler guard | `serve --web` and `serve --server-config`. | The flag parses, and startup fails with an error that names the missing feature and the rebuild flag. |
+| Shape                                               | Precedent                                                                                                                             | Behaviour in a build without the feature                                                                    |
+| --------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------- |
+| Parser variant gated with `#[cfg(feature = "...")]` | The `sandbox` variants `world dev`, `world measure`, `world replay`, `world verify`, and the whole `match-audit` command.             | The command does not exist: clap reports an unrecognized subcommand, and the help tree does not show it.    |
+| Parser unconditional, dispatch gated                | The whole `world` family: the `Command` variant is unconditional, and `src/main.rs` carries a gated dispatch arm plus a fallback arm. | The help tree prints in full, and every invocation fails at runtime with `this build has no world support`. |
+| Parser unconditional, handler guard                 | `serve --web` and `serve --server-config`.                                                                                            | The flag parses, and startup fails with an error that names the missing feature and the rebuild flag.       |
 
 The feature names are defined in the root `Cargo.toml` and mirrored in `crates/id-cli/Cargo.toml`; the definitions and defaults are in [Building and testing](building.md). A command that needs wasmtime takes the first shape. A command in a family that must stay discoverable in help takes the second or third, and its help text states the requirement.
 

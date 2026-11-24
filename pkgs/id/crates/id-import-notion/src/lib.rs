@@ -5,9 +5,12 @@
 //!
 //! Slice 2 (page/block core, link rewriting, files) lives in [`content`].
 //! Slice 4 comment claims (§2.4) live in [`comments`].
+//! Slice 3 (databases: note identity and per-data-source schema claims)
+//! lives in [`databases`].
 
 pub mod comments;
 pub mod content;
+pub mod databases;
 
 #[cfg(unix)]
 use std::fs::File;
@@ -577,6 +580,11 @@ pub struct Manifest {
     pub inventory: Inventory,
     /// Stable Notion page UUID -> destination note UUID.
     pub page_id_to_note_id: BTreeMap<String, String>,
+    /// Stable Notion database UUID -> destination note UUID. Assigned by
+    /// [`Manifest::assign_database_identities`]; absent from slice-1/2
+    /// manifests, so it defaults empty when an older manifest is loaded.
+    #[serde(default)]
+    pub database_id_to_note_id: BTreeMap<String, String>,
     /// Stable Notion block UUID -> (destination note UUID, block identity).
     pub block_id_to_identity: BTreeMap<String, (String, String)>,
     /// Stable data-source UUID -> (current database UUID, source identity).
@@ -653,6 +661,7 @@ impl Manifest {
                 .collect(),
             inventory,
             page_id_to_note_id: BTreeMap::new(),
+            database_id_to_note_id: BTreeMap::new(),
             block_id_to_identity: BTreeMap::new(),
             data_source_id_to_identity,
             file_blobs: BTreeMap::new(),
@@ -679,8 +688,12 @@ impl Manifest {
             .filter(|object| object.kind == "page")
             .map(|object| object.id.clone())
             .collect();
-        let mut taken: std::collections::BTreeSet<String> =
-            self.page_id_to_note_id.values().cloned().collect();
+        let mut taken: std::collections::BTreeSet<String> = self
+            .page_id_to_note_id
+            .values()
+            .cloned()
+            .chain(self.database_id_to_note_id.values().cloned())
+            .collect();
         let mut assigned = 0;
         for page_id in page_ids {
             if self.page_id_to_note_id.contains_key(&page_id) {
@@ -695,6 +708,50 @@ impl Manifest {
                 bail!("note id minter returned duplicate id {note_id}");
             }
             self.page_id_to_note_id.insert(page_id, note_id);
+            assigned += 1;
+        }
+        Ok(assigned)
+    }
+
+    /// Assign a destination note ID to every inventoried database that
+    /// lacks one (design §2.2: one note per database; §3: identity is
+    /// assigned for the whole inventory before any content converts, so
+    /// forward references resolve). Mirrors
+    /// [`Manifest::assign_page_identities`]: assignments already recorded
+    /// are never changed, and a minter that returns an empty or
+    /// already-used ID fails the pass rather than forking identity.
+    /// Returns how many databases were newly assigned.
+    pub fn assign_database_identities(
+        &mut self,
+        mint: &mut dyn FnMut(&str) -> Result<String>,
+    ) -> Result<usize> {
+        let database_ids: Vec<String> = self
+            .inventory
+            .objects
+            .values()
+            .filter(|object| object.kind == "database")
+            .map(|object| object.id.clone())
+            .collect();
+        let mut taken: std::collections::BTreeSet<String> = self
+            .database_id_to_note_id
+            .values()
+            .cloned()
+            .chain(self.page_id_to_note_id.values().cloned())
+            .collect();
+        let mut assigned = 0;
+        for database_id in database_ids {
+            if self.database_id_to_note_id.contains_key(&database_id) {
+                continue;
+            }
+            let note_id = mint(&database_id)
+                .with_context(|| format!("mint note id for database {database_id}"))?;
+            if note_id.trim().is_empty() {
+                bail!("note id minter returned an empty id for database {database_id}");
+            }
+            if !taken.insert(note_id.clone()) {
+                bail!("note id minter returned duplicate id {note_id}");
+            }
+            self.database_id_to_note_id.insert(database_id, note_id);
             assigned += 1;
         }
         Ok(assigned)

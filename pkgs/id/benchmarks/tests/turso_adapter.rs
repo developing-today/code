@@ -23,8 +23,8 @@
 //!
 //! Run: `cargo test --manifest-path pkgs/id/benchmarks/Cargo.toml --test turso_adapter`
 
-use id_benchmarks::adapters::turso::{TursoStore, NETWORK_LOCAL_ONLY};
-use id_benchmarks::{content_id, support_level, ReferenceStore};
+use id_benchmarks::adapters::turso::{NETWORK_LOCAL_ONLY, TursoStore};
+use id_benchmarks::{ReferenceStore, content_id, support_level};
 use serde_json::Value;
 use std::collections::BTreeMap;
 use std::path::PathBuf;

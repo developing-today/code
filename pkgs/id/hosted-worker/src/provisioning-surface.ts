@@ -125,10 +125,7 @@ async function tryGet(
  * Returns the gate's BucketEvidence: `actualJurisdiction` is what
  * the API reports ("default" for a bucket outside every supported
  * jurisdiction), or null when no read could verify the bucket. */
-export async function readBucketEvidence(
-  client: CloudflareApiClient,
-  bucketName: string,
-): Promise<BucketEvidence> {
+export async function readBucketEvidence(client: CloudflareApiClient, bucketName: string): Promise<BucketEvidence> {
   // A jurisdiction-less read sees default-jurisdiction buckets only.
   const plain = await tryGet(client, bucketName);
   if (plain?.status === 200) {

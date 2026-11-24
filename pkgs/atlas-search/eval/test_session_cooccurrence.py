@@ -32,13 +32,22 @@ class SessionCooccurrenceTests(unittest.TestCase):
             ("crossing", "reader", 2, 14),
             ("another", "different-reader", 1, 2),
         ]:
-            data["sessions"].append(dict(id=sid, subject=owner, start=start, end=end,
-                                         opens=["anchor", "companion", "novel"]))
+            data["sessions"].append(
+                dict(
+                    id=sid,
+                    subject=owner,
+                    start=start,
+                    end=end,
+                    opens=["anchor", "companion", "novel"],
+                )
+            )
         for session in data["sessions"]:
             session["opens"].insert(0, "retired-item")
         self.assertEqual(original, evaluate(data, 2))
         train, _ = partitions(data)
-        self.assertEqual(candidates(index_sessions(train), ["anchor"], 3), ["bridge", "companion"])
+        self.assertEqual(
+            candidates(index_sessions(train), ["anchor"], 3), ["bridge", "companion"]
+        )
 
     def test_deduplicates_before_scoring_and_splitting(self):
         data = fixture()
@@ -52,7 +61,9 @@ class SessionCooccurrenceTests(unittest.TestCase):
         data = fixture()
         data["sessions"] = data["sessions"][2:]
         report = evaluate(data, 2)
-        self.assertEqual((report["training_sessions"], report["hits"], report["mrr_at_k"]), (0, 0, 0))
+        self.assertEqual(
+            (report["training_sessions"], report["hits"], report["mrr_at_k"]), (0, 0, 0)
+        )
 
     def test_empty_scope_and_ambiguous_input(self):
         data = fixture()

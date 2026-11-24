@@ -1,0 +1,10 @@
+# EXAMPLE NODE — NOT A REAL MACHINE. Do not apply. Placeholder serials only.
+# Drive class: fast tier, Samsung 990 Pro boot NVMe. Real node files replace this
+# header with `talm template -i` output from the maintenance-mode node (#1810).
+# talm: nodes=["192.0.2.21"], endpoints=["192.0.2.21"], templates=["templates/controlplane.yaml"]
+# Discovered hardware (example values):
+#   disk /dev/nvme0n1  serial=EXAMPLE-990PRO-0001  model="Samsung SSD 990 PRO 2TB"  size=2TB  transport=nvme
+machine:
+  install:
+    diskSelector:
+      serial: "EXAMPLE-990PRO-0001"

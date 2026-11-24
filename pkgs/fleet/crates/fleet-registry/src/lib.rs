@@ -87,6 +87,8 @@ pub enum Capability {
     /// runner-side agent, and the egress helper. A working-seat
     /// client surface, so full only.
     Actions,
+    /// `fleet orgs …` — the Turso-backed GitHub org/App registry.
+    Orgs,
 }
 
 impl Capability {
@@ -115,6 +117,7 @@ impl Capability {
             Capability::Laptop => "laptop",
             Capability::Cert => "cert",
             Capability::Actions => "actions",
+            Capability::Orgs => "orgs",
         }
     }
 
@@ -142,6 +145,7 @@ impl Capability {
         Capability::Laptop,
         Capability::Cert,
         Capability::Actions,
+        Capability::Orgs,
     ];
 }
 
@@ -380,6 +384,14 @@ pub const DOMAINS: &[Domain] = &[
         subcommands: &[
             "send", "agents", "log", "hello", "inbox", "post", "ack", "health",
         ],
+    },
+    Domain {
+        name: "orgs",
+        summary: "Turso-backed GitHub org, App and installation registry.",
+        capabilities: &[Capability::Orgs],
+        primary: Capability::Orgs,
+        aliases: &[],
+        subcommands: &["list", "sync"],
     },
     Domain {
         name: "agent",

@@ -29,12 +29,29 @@ UNITS=(pm-console.service pm-console-expose.service pm-console-expose.timer pm-c
 
 # What is in the checkout: the console's tree, and the units it runs
 # under. A checkout that is part-way through an update (files that do
-# not match its commit yet) is left for the next run.
+# not match its commit yet) is left for the next run — but not silently
+# for hours (#13833): once it has skipped for more than a few minutes
+# the run fails, which the console's Services screen and its
+# notifications show, naming the paths that are stuck.
 paths=(pm-stack/console)
 for unit in "${UNITS[@]}"; do paths+=("pm-stack/systemd/$unit"); done
+SKIP_GRACE_SECONDS=600
+SKIPPED="$STATE/deploy-skipped"
 if ! git -C "$REPO" diff --quiet HEAD -- "${paths[@]}"; then
+  mkdir -p "$STATE"
+  now="$(date +%s)"
+  first="$(cat "$SKIPPED" 2>/dev/null || true)"
+  case "$first" in
+  '' | *[!0-9]*) first="$now" && printf '%s\n' "$first" >"$SKIPPED" ;;
+  esac
+  if [ "$((now - first))" -ge "$SKIP_GRACE_SECONDS" ]; then
+    echo "redeploy: the checkout has been part-way through an update for $(((now - first) / 60)) minutes; the code in service is unchanged. Still different from its commit:" >&2
+    git -C "$REPO" status --porcelain -- "${paths[@]}" >&2
+    exit 1
+  fi
   exit 0
 fi
+rm -f "$SKIPPED"
 want="$(for path in "${paths[@]}"; do git -C "$REPO" rev-parse "HEAD:$path"; done | tr '\n' ' ')"
 have="$(cat "$STATE/deployed" 2>/dev/null || true)"
 if [ "$want" = "$have" ]; then
