@@ -9,6 +9,7 @@ import importlib.util
 from pathlib import Path
 import random
 import unittest
+from unittest import mock
 
 SPEC = importlib.util.spec_from_file_location(
     "fleet_completion_usage", Path(__file__).with_name("fleet_completion_usage.py")
@@ -81,6 +82,46 @@ class CompletionUsageTest(unittest.TestCase):
         data = fixture()
         data["events"] = []
         self.assertEqual(usage.report(data, START, END)["queues"], [])
+
+    def test_zero_usage_is_measured(self):
+        data = fixture()
+        for session in data["sessions"]:
+            session["tokens"]["input"] = 0
+        self.assertEqual(self.result(data)["input_tokens_per_completed_task"], 0)
+
+    def test_missing_completion_event_blocks_ratio_for_affected_queue(self):
+        data = fixture()
+        data["tasks"].append({"id": 4, "queue": "code", "status": "done"})
+        result = usage.report(data, START, END)
+        self.assertEqual(result["done_tasks_without_completion_event"], [4])
+        self.assertIsNone(result["queues"][0]["input_tokens_per_completed_task"])
+
+    def test_queue_groups_do_not_share_numerator(self):
+        data = fixture()
+        data["tasks"][1]["queue"] = "other"
+        data["ledger"][-1]["queue"] = "other"
+        rows = usage.report(data, START, END)["queues"]
+        self.assertEqual([row["known_input_tokens"] for row in rows], [15, 25])
+
+    def test_invalid_window(self):
+        for start, end in [(END, START), (START, START), ("2026-11-01", END)]:
+            with self.subTest(start=start), self.assertRaises(ValueError):
+                usage.report(fixture(), start, end)
+
+    def test_strict_cli_before_file_io(self):
+        base = ["--snapshot", "missing.json", "--start", START, "--end", END]
+        for extra in [["--unknown"], ["stray"], ["--snapshot"], ["--sta", START]]:
+            with self.subTest(extra=extra), mock.patch.object(usage.Path, "read_text") as read:
+                with mock.patch("sys.stderr"), self.assertRaises(SystemExit) as error:
+                    usage.main(base + extra)
+                self.assertEqual(error.exception.code, 2)
+                read.assert_not_called()
+
+    def test_cli_emits_report(self):
+        with mock.patch.object(usage.Path, "read_text", return_value=usage.json.dumps(fixture())):
+            with mock.patch("builtins.print") as output:
+                usage.main(["--snapshot=x.json", "--start=" + START, "--end=" + END])
+            self.assertEqual(usage.json.loads(output.call_args.args[0])["queues"][0]["known_input_tokens"], 40)
 
     def test_shared_session_rejects_double_attribution(self):
         data = fixture()
