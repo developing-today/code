@@ -266,7 +266,11 @@ export async function verifyReadCapability(
   if (Number.isNaN(expiresMs)) {
     throw new FailClosed(401, "capability_bad_expiry", "capability expiry is not parseable");
   }
-  if (Date.parse(now) >= expiresMs) {
+  const nowMs = Date.parse(now);
+  if (Number.isNaN(nowMs)) {
+    throw new FailClosed(400, "capability_bad_now", "current time is not a parseable timestamp");
+  }
+  if (nowMs >= expiresMs) {
     throw new FailClosed(401, "capability_expired", "capability has expired");
   }
   const { mac, ...unsigned } = capability;
