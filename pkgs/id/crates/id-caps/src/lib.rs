@@ -11,6 +11,7 @@
 //! This crate depends on `id-core` for [`id_core::json_unique`] only;
 //! the dependency points one way — `id-core` never names this crate.
 
+pub mod account_quota;
 pub mod agent_delegation;
 pub mod cap_baseline;
 pub mod cap_class;

@@ -31,6 +31,10 @@ url = "2"
 [dev-dependencies]
 proptest = "1.12"
 
+[dev-dependencies]
+# Property coverage for the quota-ledger invariants (account_quota.rs, #1067).
+proptest = "1.12"
+
 [lints.rust]
 # Rust compiler lints
 unsafe_code = "warn"
