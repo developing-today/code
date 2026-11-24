@@ -98,9 +98,9 @@ use redb::{ReadableTable, ReadableTableMetadata, WriteTransaction};
 use super::resolve::{self, decode_action, encode_action, encode_device_op};
 use super::waiting_rows::{Hold, Mirror};
 use super::{
-    ACTIONS, APPLIED, CHAINS, Chain, DEVICE_OPS, EVENTS, EventStore, FORKS, ForkProof, HASHES,
-    PROOF_HEADERS, PROOF_IDS, StoreError, corrupt, decode_stored, lowest_proof, position_key,
-    store_body, store_chain, store_event, store_fork,
+    ACTIONS, APPLIED, CHAINS, COMPACTED, Chain, DEVICE_OPS, EVENTS, EventStore, FORKS, ForkProof,
+    HASHES, PROOF_HEADERS, PROOF_IDS, StoreError, corrupt, decode_stored, lowest_proof,
+    position_key, store_body, store_chain, store_event, store_fork,
 };
 use super::{Ingest, Refusal};
 use id_core::membership::AuthId;
@@ -448,10 +448,12 @@ impl EventStore {
     }
 }
 
-/// The first bytes of every `group.event` body: a CBOR array of seven items, then the
-/// family's tag as a text string. A body that starts with these bytes claims to be a
-/// group-layer event in the wire family of [`crate::groups::event`].
-const GROUP_EVENT_CLAIM: &[u8] = b"\x87\x6bgroup.event";
+/// The first bytes of every `group.event` body: a CBOR array of seven (v1) or eight
+/// (v2, with the `at` timestamp) items, then the family's tag as a text string. A body
+/// that starts with these bytes claims to be a group-layer event in the wire family
+/// of [`crate::groups::event`].
+const GROUP_EVENT_CLAIM_V1: &[u8] = b"\x87\x6bgroup.event";
+const GROUP_EVENT_CLAIM_V2: &[u8] = b"\x88\x6bgroup.event";
 
 /// The device operation an event's body carries, with the group the body names (issue
 /// #5656). `Ok(None)` when the body is absent, is not a `group.event` body, or is a
@@ -472,7 +474,7 @@ fn body_device_op(
     let Some(body) = body else {
         return Ok(None);
     };
-    if !body.starts_with(GROUP_EVENT_CLAIM) {
+    if !body.starts_with(GROUP_EVENT_CLAIM_V1) && !body.starts_with(GROUP_EVENT_CLAIM_V2) {
         return Ok(None);
     }
     let wire =
@@ -980,6 +982,13 @@ fn decide_in(
             });
         }
     }
+    // A compacted position keeps its event as residue: present, applied, and
+    // never overwritten. A rival there can never be proven a fork — a proof is
+    // written from stored bytes, and the bytes are gone — so it is parked, the
+    // answer a fork proof header's rival gets (#3797).
+    if super::compaction::residue_at(&txn.open_table(COMPACTED)?, &author, seq)?.is_some() {
+        return Ok(Decision::Park);
+    }
     if !conflicts.is_empty() {
         // The first conflict at this sequence number, or one below the fork point.
         conflicts.push(event.clone());
@@ -1031,6 +1040,8 @@ fn decide_in(
         let linked = match event.header.backlink {
             Some(backlink) => {
                 stored_at(txn, &author, seq - 1)?.is_some_and(|before| before.id == backlink)
+                    || super::compaction::residue_at(&txn.open_table(COMPACTED)?, &author, seq - 1)?
+                        .is_some_and(|residue| residue.id == backlink)
             }
             None => false,
         };
@@ -1117,7 +1128,11 @@ pub(super) fn refresh(txn: &WriteTransaction) -> Result<(), StoreError> {
         let proof_headers = txn.open_table(PROOF_HEADERS)?;
         resolve::load(&events, &actions, &device_ops, &forks, &proof_headers)?
     };
-    let resolved = resolve::resolve(&stored, &forks, &headers)?;
+    let residue = {
+        let compacted = txn.open_table(COMPACTED)?;
+        super::compaction::load_residue(&compacted)?
+    };
+    let resolved = resolve::resolve(&stored, &forks, &headers, &residue)?;
 
     let mut applied_table = txn.open_table(APPLIED)?;
     let mut previous = Vec::new();
@@ -1144,6 +1159,13 @@ pub(super) fn refresh(txn: &WriteTransaction) -> Result<(), StoreError> {
             )
         })
         .collect();
+    // A compacted position counts toward its author's prefix like the stored
+    // event it was: the resolution still applies it (#3797).
+    order.extend(
+        residue
+            .iter()
+            .map(|item| (item.author, item.seq, resolved.applied.contains(&item.id))),
+    );
     order.sort_unstable();
     let mut next: BTreeMap<AuthorKey, SeqNum> = forks.keys().map(|author| (*author, 0)).collect();
     for (author, seq, applied) in order {
@@ -1156,6 +1178,22 @@ pub(super) fn refresh(txn: &WriteTransaction) -> Result<(), StoreError> {
         set_prefix(txn, &author, prefix, forks.contains_key(&author))?;
     }
     Ok(())
+}
+
+/// The ID of the event at `author`'s `seq`: the stored event's, or the
+/// compaction residue's when the position's bytes were reclaimed (#3797).
+///
+/// # Errors
+///
+/// Returns [`StoreError::Corrupt`] when the position holds neither.
+fn id_at(txn: &WriteTransaction, author: &AuthorKey, seq: SeqNum) -> Result<Hash, StoreError> {
+    if let Some(event) = stored_at(txn, author, seq)? {
+        return Ok(event.id);
+    }
+    match super::compaction::residue_at(&txn.open_table(COMPACTED)?, author, seq)? {
+        Some(residue) => Ok(residue.id),
+        None => Err(corrupt("an applied sequence number has no stored event")),
+    }
 }
 
 /// Writes `author`'s chain row for an applied prefix of `next_seq` events. A chain with
@@ -1173,9 +1211,8 @@ fn set_prefix(
     }
     let head = next_seq
         .checked_sub(1)
-        .map(|last| stored_event(txn, author, last))
-        .transpose()?
-        .map(|event| event.id);
+        .map(|last| id_at(txn, author, last))
+        .transpose()?;
     store_chain(
         txn,
         author,
@@ -1235,15 +1272,6 @@ fn stored_at(
     let events = txn.open_table(EVENTS)?;
     let row = events.get(position_key(author, seq).as_slice())?;
     row.map(|row| decode_stored(row.value())).transpose()
-}
-
-fn stored_event(
-    txn: &WriteTransaction,
-    author: &AuthorKey,
-    seq: SeqNum,
-) -> Result<Event, StoreError> {
-    stored_at(txn, author, seq)?
-        .ok_or_else(|| corrupt("an applied sequence number has no stored event"))
 }
 
 /// The stored event with this ID, applied or voided, if there is one. Reads the `hashes`
@@ -1474,6 +1502,7 @@ mod tests {
             author: *signer.verifying_key().as_bytes(),
             after: vec![],
             group: Some(group),
+            at: None,
             body: GroupBody::Device(DeviceOp::Add {
                 device: *key(91).verifying_key().as_bytes(),
                 scope: GroupRole::Admin,
@@ -1611,6 +1640,7 @@ mod tests {
             author: *signer.verifying_key().as_bytes(),
             after: vec![],
             group: Some(group),
+            at: None,
             body: GroupBody::Device(DeviceOp::Add {
                 device: *key(95).verifying_key().as_bytes(),
                 scope: GroupRole::Admin,
@@ -1677,6 +1707,7 @@ mod tests {
             author: *signer.verifying_key().as_bytes(),
             after: vec![],
             group: Some(group),
+            at: None,
             body: GroupBody::Device(DeviceOp::Add {
                 device: *key(91).verifying_key().as_bytes(),
                 scope: GroupRole::Admin,
@@ -2492,6 +2523,7 @@ mod tests {
             author: *signer.verifying_key().as_bytes(),
             after: vec![],
             group: Some(group),
+            at: None,
             body: GroupBody::Device(DeviceOp::Add {
                 device: *key(98).verifying_key().as_bytes(),
                 scope: GroupRole::Admin,

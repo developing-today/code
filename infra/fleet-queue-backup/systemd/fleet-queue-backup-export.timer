@@ -1,0 +1,10 @@
+[Unit]
+Description=fleet-queue-backup Turso to D1 export (daily)
+
+[Timer]
+OnCalendar=*-*-* 02:15:00
+Persistent=true
+RandomizedDelaySec=30m
+
+[Install]
+WantedBy=timers.target

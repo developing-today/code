@@ -80,7 +80,7 @@ python3 $GB/bin/app_setup.py webhook-secret   # webhook secret -> Bitwarden by n
 python3 $GB/bin/app_setup.py install-report
 ```
 
-Owners where Drew is only a member (NixOS, vertexinc) cannot install the
+Owners where the user is only a member (NixOS, vertexinc) cannot install the
 App — they stay sweep-only; that is expected and recorded in config.json.
 
 ## 4. Adding a new owner/org to the mirror set + sweep
@@ -89,7 +89,7 @@ App — they stay sweep-only; that is expected and recorded in config.json.
 # 1. config edit only — add the login to "owners" in:
 $EDITOR $GB/config.json
 # 2. commit + PR the config change (developing-today/code), merge, pull on laptop.
-# 3. install the App on the new org (§3) if Drew is an admin there.
+# 3. install the App on the new org (§3) if the user is an admin there.
 # 4. pick up the new owner immediately instead of waiting for Sunday:
 python3 $GB/bin/reconcile.py
 ```
@@ -187,8 +187,12 @@ remote object with a second `rclone copyto`, and compares its SHA-256 against
 the local bundle. The content-addressed key is under
 `github-backup/cold-bundles/<owner>/<repo>/<head>-<sha256>.bundle`, so a newer
 artifact does not replace an earlier one. A non-zero upload or read-back check
-is a failed run. This command handles one repository only;
-recurring scheduling and an all-repository status record are separate work.
+is a failed run. This command handles one repository only; the daily
+`github-backup-r2.timer` runs the four-fleet-repository uploader through the
+existing runtime-only Bitwarden/R2 credential path. A failed fleet repository makes
+the scheduled run fail; disable the timer until the cause is fixed and a full
+run succeeds. This does not provide a freshness/lag status record or automatic
+issue filing.
 
 ```sh
 # normal repo:
@@ -199,7 +203,32 @@ git bundle verify /tmp/<repo>.bundle
 git clone /tmp/<repo>.bundle ./<repo>
 ```
 
-## 9. Disaster recovery (tree lost, GitHub intact)
+## 9. Synchronize a plain Git mirror
+
+The plain mirror target for `OWNER/REPO` is the pre-created
+`developing-today/<repo>-mirror` repository. Create it under the approved
+organization before the first sync, then run:
+
+```sh
+python3 ~/git/code/infra/github-backup/bin/plain_mirror.py \
+  --repo developing-today/code --root ~/backups/github
+```
+
+The command pushes all branches and tags from the valid local mirror, prunes
+branches/tags removed from the source, then compares remote ref names and
+object IDs with the local source. GitHub's reserved `refs/pull/*` namespace is
+not pushed. It never creates or deletes a GitHub repository. The daily
+`github-backup-mirror.timer` runs the four-repository synchronizer and fails
+if any destination cannot be synced and verified. Install it with
+`systemd/install-units.sh`; inspect or run it with:
+
+```sh
+systemctl --user list-timers github-backup-mirror.timer --no-pager
+systemctl --user start github-backup-mirror.service
+systemctl --user status github-backup-mirror.service --no-pager
+```
+
+## 10. Disaster recovery (tree lost, GitHub intact)
 
 Config (this repo) + Bitwarden are the only inputs. §7 Option B rebuilds
 the entire tree; MANIFEST.json regenerates at the end. Exclusions and
@@ -213,7 +242,7 @@ copy, and a failed owner's repos stay planned rather than silently
 dropping out of the manifest. Read that section before treating any
 status surface here as coverage.
 
-## 10. Health checks
+## 11. Health checks
 
 ```sh
 systemctl --user list-timers 'github-backup-*'

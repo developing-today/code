@@ -8,8 +8,8 @@
 use super::*;
 
 pub(crate) fn verb_enqueue(t: &TursoBackend, req: &Value) -> Value {
-    let packet = req.get("packet").cloned().unwrap_or(Value::Null);
-    let (errors, warnings) = validate_packet(&packet);
+    let mut packet = req.get("packet").cloned().unwrap_or(Value::Null);
+    let (errors, mut warnings) = validate_packet(&packet);
     if !errors.is_empty() {
         return json!({
             "ok": false, "exit": 2,
@@ -33,6 +33,25 @@ pub(crate) fn verb_enqueue(t: &TursoBackend, req: &Value) -> Value {
                  (CLI: --shadow-intent) to enqueue there deliberately"
             ),
         );
+    }
+    // #12744: label carriage. No producer writes payload.labels, so
+    // the #7030 band selection in task_from_packet never fired on a
+    // live packet. Before the row is built, fill the payload's
+    // labels from the GitHub mirror in this same store when the
+    // packet identifies an issue and carries no labels array of its
+    // own (label_enrich.rs has the semantics). The mirror is a read
+    // model and never gates work: a failed lookup warns and the
+    // enqueue proceeds exactly as it did before this change.
+    let dedupe = packet
+        .get("dedupe_key")
+        .and_then(|v| v.as_str())
+        .map(str::to_string);
+    if let Some(payload) = packet.get_mut("payload") {
+        if let Err(e) = enrich_payload_labels(t, payload, dedupe.as_deref()) {
+            warnings.push(format!(
+                "payload.labels: GitHub mirror enrichment skipped ({e})"
+            ));
+        }
     }
     let mut task = task_from_packet(&packet, &queue);
     // #8097 Rule 2: the optional coarse platform selector. The
@@ -82,6 +101,23 @@ pub(crate) fn verb_enqueue(t: &TursoBackend, req: &Value) -> Value {
             if let Some(row) = live {
                 return Ok((row, None, None));
             }
+            // #13091: a COMPLETED predecessor is terminal for the
+            // key. The work was done and dispositioned; a re-filing
+            // (a generator re-scanning, a stale snapshot) must not
+            // manufacture a fresh servable task out of it — the
+            // completed row is the dedupe hit, exactly like a live
+            // one. Failed and cancelled predecessors keep
+            // revive-on-enqueue (#6838), and a declared
+            // dedupe_override still files its deliberate parallel
+            // below, revive bookkeeping included.
+            if override_reason.is_none() {
+                if let Some(row) = terminal
+                    .as_ref()
+                    .filter(|r| r.get("status").and_then(|v| v.as_str()) == Some("done"))
+                {
+                    return Ok((row.clone(), None, None));
+                }
+            }
             predecessor = terminal;
         }
         // #10627: open-collision rule. A live task in any queue that
@@ -96,6 +132,26 @@ pub(crate) fn verb_enqueue(t: &TursoBackend, req: &Value) -> Value {
                 .unwrap_or("");
             if let Some(holder) = live_identity_holder(t, ident, kind)? {
                 let detail = collision_detail(&holder, ident);
+                return Ok((holder, None, Some(detail)));
+            }
+            // #13091: a COMPLETED holder of the identity absorbs
+            // the filing the same way. #10627 left terminal rows
+            // out so failures could re-queue, and left already-done
+            // detection to the claim-time staleness probe — which
+            // fails open by standing rule, so while a probe was
+            // degraded, completed work was served again and
+            // completed a second time (2026-11-23 incidents). The
+            // broker knows its own completions locally; no probe
+            // is involved. Failed and cancelled holders still
+            // never block a filing.
+            if let Some(holder) = done_identity_holder(t, ident, kind)? {
+                let mut detail = collision_detail(&holder, ident);
+                detail["rule"] = json!("done_work_identity");
+                detail["hint"] = json!(
+                    "this work already completed under another task; a completed \
+                     task is never re-served (#13091) — file with \
+                     payload.dedupe_override=\"<reason>\" for a deliberate parallel"
+                );
                 return Ok((holder, None, Some(detail)));
             }
         }
@@ -186,6 +242,24 @@ pub(crate) fn verb_enqueue(t: &TursoBackend, req: &Value) -> Value {
             )?;
         }
         let row = get_task(t, id).map(|r| r.unwrap_or(Value::Null))?;
+        // #12966 (proposal step 5 of #10626): the filing-time state
+        // re-check. A packet whose issue stamp is older than the
+        // bound is re-verified now, at filing, instead of riding
+        // the queue until the claim-time check catches it: when the
+        // linked work already landed, the fresh row retires in
+        // place with the same evidence and event the claim path
+        // writes. A fresh or missing stamp files exactly as before.
+        if let Some(stale) = filing_recheck(t, &row) {
+            retire_stale(
+                t,
+                "enqueue_repo_task",
+                &row,
+                &stale,
+                "enqueue_staleness_check",
+            )?;
+            let row = get_task(t, id).map(|r| r.unwrap_or(Value::Null))?;
+            return Ok((row, predecessor, None));
+        }
         Ok((row, predecessor, None))
     })();
     match work {
@@ -2089,7 +2163,10 @@ pub(crate) fn claim_update_sql(pick_predicate: &str) -> String {
 /// handoff pick and by-id claim keep working unchanged. Since
 /// #8234 a sink row is never 'parked', so the timed parked branch
 /// needs no sink exclusion — genuine wait parks release through
-/// claim at not_before, and only there. The sink branch carries
+/// claim at not_before, and only there. #13091 narrows "genuine
+/// wait": a park whose recorded term is a broker-owned condition
+/// or a person's answer (PARKED_TERM_EXCLUSION) is not the pick's
+/// to release — the revalidation sweeper and /wake own those. The sink branch carries
 /// no `?` placeholder, so the pick SELECT and the claim UPDATE
 /// re-check keep their four leading arguments: the two `now`s of
 /// the queued/parked branches, then the claimer's declared
@@ -2121,6 +2198,23 @@ pub(crate) fn budget_bypass_sql() -> String {
     format!("({REQUIRED_BUDGET_EXPR} IS NOT NULL AND COALESCE(?, -1) >= {REQUIRED_BUDGET_EXPR})")
 }
 
+/// #13091: the park terms the default pick may NOT release on its
+/// timer. A park whose recorded ready condition is a broker-owned
+/// condition (`task_terminal`, `task_status`, `event_seen`) is
+/// released by the park-revalidation sweeper when the broker
+/// itself observes the condition — never by a lane claiming the
+/// row on the clock. A `person_answer` park waits on a person and
+/// releases through /wake when the person acts. Serving either
+/// kind to a lane on the park's (possibly default) timer hands
+/// work to a lane that can only re-park it — the double-serve
+/// incidents of 2026-11-23. Every other park (time, ci, review,
+/// capacity, triage, external, or a legacy row with no recorded
+/// condition) keeps its timer release: for those, claim-at-
+/// not_before IS the designed release path (FDR-0008). Literals
+/// only — the predicate's placeholder count is pinned.
+pub(crate) const PARKED_TERM_EXCLUSION: &str = "COALESCE(json_extract(ready_condition, '$.kind'), 'time') \
+    NOT IN ('task_terminal', 'task_status', 'event_seen', 'person_answer')";
+
 pub(crate) fn default_pick_predicate() -> String {
     let gate = budget_gate_sql();
     let bypass = budget_bypass_sql();
@@ -2128,7 +2222,7 @@ pub(crate) fn default_pick_predicate() -> String {
         "(((status = 'queued' AND attempts < max_attempts \
          AND (not_before IS NULL OR not_before <= ?)) \
        OR (status = 'parked' AND ((not_before IS NOT NULL AND not_before <= ?) \
-         OR (wait_kind = 'capacity' AND {bypass})))) \
+         OR (wait_kind = 'capacity' AND {bypass})) AND {PARKED_TERM_EXCLUSION})) \
        AND {gate}) \
        OR ({HANDOFF_SQL})"
     )

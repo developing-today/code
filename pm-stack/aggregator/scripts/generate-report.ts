@@ -7,7 +7,8 @@ import { generateReportFromStoredRecords } from "../src/report-composer.ts";
 import { parseStoreBackend } from "../src/store-backend.ts";
 import { createTursoDocumentRemote } from "../src/remote-stores.ts";
 
-const USAGE = "usage: generate-report.ts --kind <daily|weekly|monthly|quarterly|annual> --period <explicit-identity> --as-of <ISO-8601> [--store <jsonl-path>]";
+const USAGE =
+  "usage: generate-report.ts --kind <daily|weekly|monthly|quarterly|annual> --period <explicit-identity> --as-of <ISO-8601> [--store <jsonl-path>]";
 
 interface Command {
   kind: ReportPeriodKind;
@@ -41,7 +42,10 @@ export function parseArgs(args: string[]): Command {
     throw new Error("--as-of must be a canonical ISO-8601 timestamp");
   }
   // Resolve now so bad/implicit period identities fail before any store I/O.
-  reportPeriod(kind, identity);
+  const period = reportPeriod(kind, identity);
+  if (Date.parse(asOf) < Date.parse(period.periodStart) || Date.parse(asOf) >= Date.parse(period.periodEnd)) {
+    throw new Error("--as-of must fall within the report period");
+  }
   const store = values.get("--store")?.trim();
   if (values.has("--store") && !store) throw new Error("--store must not be empty");
   return { kind, identity, asOf, ...(store ? { store } : {}) };
@@ -65,11 +69,21 @@ async function main(args: string[]): Promise<void> {
     process.exitCode = 2;
     return;
   }
-  const location: ReportRecordLocation = backend === "turso"
-    ? createTursoDocumentRemote()
-    : command.store ?? defaultReportRecordsFile();
+  const location: ReportRecordLocation =
+    backend === "turso" ? createTursoDocumentRemote() : (command.store ?? defaultReportRecordsFile());
   const result = await generateReportFromStoredRecords(location, period, { asOf: command.asOf });
-  console.log(JSON.stringify({ inserted: result.inserted, id: result.record.id, period: result.record.period.id, sourceCursor: result.record.sourceCursor }, null, 2));
+  console.log(
+    JSON.stringify(
+      {
+        inserted: result.inserted,
+        id: result.record.id,
+        period: result.record.period.id,
+        sourceCursor: result.record.sourceCursor,
+      },
+      null,
+      2,
+    ),
+  );
 }
 
 if (import.meta.main) {

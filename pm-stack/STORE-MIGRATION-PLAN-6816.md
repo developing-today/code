@@ -85,6 +85,28 @@ promotion; no configuration permits two active writers.**
 6. Rollback window: keep the laptop volumes untouched and the old config
    for 7 days (see §5).
 
+### The gate: `pm-stack/scripts/kaneo-cutover.sh`
+
+Steps 1 and 5 run through one driver, so the rule "no configuration permits
+two active writers" is mechanical instead of advisory:
+
+- `--mode presync` (step 1, while live): `pg_dump` the source `kaneo`
+  database, `pg_restore` it into the target, and require **schema parity**
+  (same public table count). Row drift is reported, not failed — the final
+  delta has not landed yet.
+- `--mode promote` (step 5, the gate): refuses unless
+  `pm-stack/scripts/fence-check.sh` reports **FENCED** (fail closed on
+  anything unreadable) **and** the target's exact table count and row count
+  equal the source's. A refused promotion touches no store. Only a pass
+  writes a cutover receipt (fence verdict, both counts, verdict line) with
+  no DSN in it — the operator attaches it to the window record.
+
+DSNs are read from files (`--source-dsn-file`, `--target-dsn-file`), so no
+credential enters argv, logs, or the receipt. Suites:
+`pm-stack/scripts/kaneo-cutover.test.sh` (driver gates) and
+`pm-stack/scripts/fence-check.test.sh` (fencing rule), both run by
+`.github/workflows/pm-stack-tests.yml`.
+
 ## 5. Rollback
 
 - **Kaneo:** stop Kaneo, restore the local DSN, start the local stack. Any
@@ -100,7 +122,10 @@ promotion; no configuration permits two active writers.**
 
 ## 6. What remains after this step
 
-- Step 2 (windowed): the cutover itself, per §4.
+- Step 2 (windowed): the cutover itself, per §4 — run `presync`, then the
+  fenced writers, then `promote` (the gate in §4 names the driver and what
+  it refuses). Rollback (§5) is not yet driven by a script: it is operator
+  steps until the first window records a run.
 - Step 3 (windowed): the first isolated laptop-off drill, recorded per
-  `pm-stack/COLD-RESTORE-RUNBOOK.md` with measured RTO/RPO against the
+  `doc/pm-stack/COLD-RESTORE-RUNBOOK.md` with measured RTO/RPO against the
   #1258 targets (4 h core RTO; 1 h Kaneo RPO; 24 h Grist/Pad RPO).

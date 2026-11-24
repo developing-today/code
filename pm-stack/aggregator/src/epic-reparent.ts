@@ -32,8 +32,7 @@ export type ReparentSelection =
   | { kind: "ambiguous"; reason: Exclude<ReparentRelation, "maintenance_fallback">; refs: RefKey[] }
   | { kind: "unavailable"; reason: "no_open_destination_or_maintenance_epic" };
 
-const intersection = (a: readonly string[], b: readonly string[]) =>
-  a.filter((value) => b.includes(value));
+const intersection = (a: readonly string[], b: readonly string[]) => a.filter((value) => b.includes(value));
 
 function sharedLabel(child: ReparentIssue, epic: ReparentEpic, prefix: string): boolean {
   const childLabels = child.labels.filter((label) => label.startsWith(prefix));
@@ -53,10 +52,11 @@ export function selectReparentDestination(
     "shared_area",
   ];
   const related = candidates.filter(
-    (candidate) => candidate.state === "OPEN"
-      && candidate.ref !== child.ref
-      && candidate.ref !== child.parentRef
-      && !candidate.primaryParentChain.includes(child.ref),
+    (candidate) =>
+      candidate.state === "OPEN" &&
+      candidate.ref !== child.ref &&
+      candidate.ref !== child.parentRef &&
+      !candidate.primaryParentChain.includes(child.ref),
   );
   for (const relation of rank) {
     const matches = related.filter((candidate) => {
@@ -76,8 +76,7 @@ export function selectReparentDestination(
       return { kind: "ambiguous", reason: relation, refs: matches.map((match) => match.ref).sort() };
   }
   const maintenance = related.filter((candidate) => candidate.maintenance);
-  if (maintenance.length === 1)
-    return { kind: "selected", epic: maintenance[0]!, reason: "maintenance_fallback" };
+  if (maintenance.length === 1) return { kind: "selected", epic: maintenance[0]!, reason: "maintenance_fallback" };
   if (maintenance.length > 1)
     return { kind: "ambiguous", reason: "shared_area", refs: maintenance.map((match) => match.ref).sort() };
   return { kind: "unavailable", reason: "no_open_destination_or_maintenance_epic" };
@@ -121,7 +120,9 @@ export function setHistoricalParentMetadata(
   };
   if (present && links.some((link) => isParentLink(link) && (link as { status?: unknown }).status === "historical"))
     return body;
-  const nextLinks = links.filter((link) => !(isParentLink(link) && (link as { status?: unknown }).status === "historical"));
+  const nextLinks = links.filter(
+    (link) => !(isParentLink(link) && (link as { status?: unknown }).status === "historical"),
+  );
   if (present)
     nextLinks.push({
       target: { repo, number },
@@ -138,21 +139,20 @@ export function setHistoricalParentMetadata(
 }
 
 /** Build the exact label set for a move; only the primary-parent label is replaced. */
-export function planEpicReparent(
-  child: ReparentIssue,
-  destination: ReparentEpic,
-): EpicReparentPlan {
+export function planEpicReparent(child: ReparentIssue, destination: ReparentEpic): EpicReparentPlan {
   if (destination.state !== "OPEN") throw new Error(`destination epic is not open: ${destination.ref}`);
   if (destination.ref === child.ref) throw new Error(`issue cannot be re-parented to itself: ${child.ref}`);
-  if (destination.ref === child.parentRef) throw new Error(`destination is already the child's parent: ${destination.ref}`);
+  if (destination.ref === child.parentRef)
+    throw new Error(`destination is already the child's parent: ${destination.ref}`);
   if (destination.primaryParentChain.includes(child.ref))
-    throw new Error(`destination is a descendant of the child and would create a native-parent cycle: ${destination.ref}`);
+    throw new Error(
+      `destination is a descendant of the child and would create a native-parent cycle: ${destination.ref}`,
+    );
   const slugs = destination.labels
     .filter((label) => label.startsWith("epic/"))
     .map((label) => label.slice("epic/".length))
     .filter(Boolean);
-  if (slugs.length !== 1)
-    throw new Error(`destination must have exactly one epic/<slug> label: ${destination.ref}`);
+  if (slugs.length !== 1) throw new Error(`destination must have exactly one epic/<slug> label: ${destination.ref}`);
   const labelsToApply = new Set(child.labels.filter((label) => !label.startsWith("primary-parent/")));
   labelsToApply.add(`primary-parent/${slugs[0]}`);
   return {
@@ -188,8 +188,7 @@ export async function applyEpicReparent(
 ): Promise<void> {
   const child = await gateway.readChildLive(plan.ref);
   if (child.state !== "OPEN") throw new Error(`child is not open: ${plan.ref}`);
-  if (child.parentRef !== plan.oldParentRef)
-    throw new Error(`child parent changed since plan was made: ${plan.ref}`);
+  if (child.parentRef !== plan.oldParentRef) throw new Error(`child parent changed since plan was made: ${plan.ref}`);
   const labels = [...new Set(child.labels)].sort();
   if (JSON.stringify(labels) !== JSON.stringify(plan.expectedLabels))
     throw new Error(`child labels changed since plan was made: ${plan.ref}`);
@@ -200,8 +199,7 @@ export async function applyEpicReparent(
   try {
     await gateway.replaceNativeParent(plan.ref, plan.oldParentRef, plan.newParentRef);
     await gateway.replaceLabels(plan.ref, plan.labelsToApply);
-    if (plan.oldParentRef)
-      historicalParentRecorded = await gateway.recordHistoricalParent(plan.ref, plan.oldParentRef);
+    if (plan.oldParentRef) historicalParentRecorded = await gateway.recordHistoricalParent(plan.ref, plan.oldParentRef);
   } catch (cause) {
     const compensationErrors: unknown[] = [];
     if (plan.oldParentRef && historicalParentRecorded) {
@@ -217,10 +215,8 @@ export async function applyEpicReparent(
       compensationErrors.push(error);
     }
     try {
-      if (plan.oldParentRef)
-        await gateway.replaceNativeParent(plan.ref, plan.newParentRef, plan.oldParentRef);
-      else
-        await gateway.removeNativeParent(plan.ref, plan.newParentRef);
+      if (plan.oldParentRef) await gateway.replaceNativeParent(plan.ref, plan.newParentRef, plan.oldParentRef);
+      else await gateway.removeNativeParent(plan.ref, plan.newParentRef);
     } catch (error) {
       compensationErrors.push(error);
     }

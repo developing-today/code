@@ -9,12 +9,17 @@ outcome; a running one carries neither. Non-dict / child entries must
 never count.
 """
 
+import contextlib
 import importlib.util
+import io
 import json
 import tempfile
+import time
 import unittest
+import urllib.error
+import urllib.parse
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import mock_open, patch
 
 _spec = importlib.util.spec_from_file_location(
     "poll", Path(__file__).resolve().parent / "poll.py"
@@ -758,21 +763,23 @@ class TestFetchClaimedRows(unittest.TestCase):
 
 
 class TestFetchSessions(unittest.TestCase):
-    """Fetch-layer completeness (#4757): /api/session truncates at 50
-    by default and honours limit but not offset, so fetch_sessions
-    escalates the limit until a read comes back below it — and fails
-    closed (None) whenever completeness cannot be proven.
+    """Fetch-layer completeness: session list pages use cursor.next
+    and never request more than the server's 200-row cap.
     _server_get is stubbed; no server is touched."""
 
     def stub_server(self, total, fail_on_call=None):
         calls = []
 
-        def fake_get(path):
+        def fake_get(path, **_kwargs):
             calls.append(path)
             if fail_on_call is not None and len(calls) == fail_on_call:
                 return None
-            limit = int(path.rsplit("limit=", 1)[1])
-            return [{"id": f"ses_{i}"} for i in range(min(limit, total))]
+            query = urllib.parse.parse_qs(path.partition("?")[2])
+            limit = int(query["limit"][0])
+            start = int(query.get("cursor", ["0"])[0])
+            page = [{"id": f"ses_{i}"} for i in range(start, min(start + limit, total))]
+            next_cursor = str(start + limit) if start + limit < total else None
+            return {"data": page, "cursor": {"next": next_cursor}}
 
         return fake_get, calls
 
@@ -785,31 +792,35 @@ class TestFetchSessions(unittest.TestCase):
         finally:
             poll._server_get = original
 
-    def test_short_single_read_is_complete(self):
+    def test_short_single_page_is_complete(self):
         sessions, calls = self.run_fetch(3)
         self.assertEqual(len(sessions), 3)
         self.assertEqual(len(calls), 1)
 
-    def test_escalating_limit_finds_the_whole_list(self):
-        sessions, calls = self.run_fetch(2500)
-        self.assertEqual(len(sessions), 2500)
-        self.assertEqual(len(calls), 2)
-
-    def test_count_exactly_at_a_limit_escalates(self):
-        sessions, calls = self.run_fetch(1000)
-        self.assertEqual(len(sessions), 1000)
-        self.assertEqual(len(calls), 2)
+    def test_more_than_200_sessions_follow_cursor_to_completion(self):
+        sessions, calls = self.run_fetch(450)
+        self.assertEqual(len(sessions), 450)
+        self.assertEqual([s["id"] for s in sessions], [f"ses_{i}" for i in range(450)])
+        self.assertEqual(len(calls), 3)
+        for path in calls:
+            query = urllib.parse.parse_qs(path.partition("?")[2])
+            self.assertLessEqual(int(query["limit"][0]), 200)
+        self.assertEqual(calls[0], "/api/session?limit=200")
+        self.assertIn("cursor=200", calls[1])
 
     def test_failed_read_fails_closed(self):
-        sessions, _ = self.run_fetch(2500, fail_on_call=1)
+        sessions, _ = self.run_fetch(450, fail_on_call=1)
         self.assertIsNone(sessions)
-        sessions, _ = self.run_fetch(2500, fail_on_call=2)
+        sessions, _ = self.run_fetch(450, fail_on_call=2)
         self.assertIsNone(sessions)
 
-    def test_count_at_every_limit_fails_closed(self):
-        sessions, calls = self.run_fetch(10**9)
-        self.assertIsNone(sessions)
-        self.assertEqual(len(calls), len(poll.SESSION_FETCH_LIMITS))
+    def test_http_error_is_not_swallowed_for_session_list(self):
+        error = urllib.error.HTTPError("url", 400, "Bad Request", {}, None)
+        with patch("builtins.open", mock_open(read_data='{"password":"pw"}')):
+            with patch.object(poll.urllib.request, "urlopen", side_effect=error):
+                with self.assertRaises(urllib.error.HTTPError) as raised:
+                    poll._server_get("/api/session?limit=1000", raise_http_errors=True)
+        self.assertEqual(raised.exception.code, 400)
 
 
 class TestStaleBinding(unittest.TestCase):
@@ -951,6 +962,207 @@ class TestFetchRowsReadErrors(unittest.TestCase):
             rows = poll._fetch_rows("repo-health-code-pilot", "claimed")
         self.assertEqual(rows, [])
         self.assertIn("claimed", poll.queue_read_errors("repo-health-code-pilot"))
+
+
+class TestPollCompleteness(unittest.TestCase):
+    def test_shorter_than_total_missing_rows_and_capped_are_unknown(self):
+        for response in (
+            {"total": 2, "rows": [{"id": 1}]},
+            {"total": 0},
+            [{"id": i} for i in range(poll.LIST_LIMIT)],
+        ):
+            with (
+                self.subTest(size=len(response)),
+                patch.object(poll, "_broker_post", return_value=response),
+            ):
+                poll._READ_ERRORS.clear()
+                self.assertEqual(poll.fetch_claimed_rows("fixture"), [])
+                self.assertIn("claimed", poll.queue_read_errors("fixture"))
+        poll._READ_ERRORS.clear()
+
+    def test_child_timeout_uses_remaining_budget(self):
+        with (
+            patch.object(poll, "_POLL_DEADLINE", 44.0),
+            patch.object(poll.time, "monotonic", side_effect=[41.0, 45.0]),
+        ):
+            self.assertEqual(poll._poll_timeout(30), 3.0)
+            with self.assertRaises(TimeoutError):
+                poll._poll_timeout(30)
+
+    def test_repeated_census_cursor_is_incomplete(self):
+        page = {"data": [], "cursor": {"next": "same"}}
+        with patch.object(poll, "_server_get", return_value=page) as request:
+            self.assertIsNone(poll.fetch_sessions())
+        self.assertEqual(request.call_count, 2)
+
+
+class TestReadTimeoutConstants(unittest.TestCase):
+    """#13135: every external read is bounded at its transport. The
+    constants carry the historical values — the broker's 30s is also
+    pinned end-to-end by test_poll_transport.py — and the slow-read
+    threshold sits far below every timeout so drift is noted before
+    a read can fail."""
+
+    def test_timeouts_carry_the_historical_values(self):
+        self.assertEqual(poll.SERVER_READ_TIMEOUT_S, 15)
+        self.assertEqual(poll.BROKER_READ_TIMEOUT_S, 30)
+        self.assertEqual(poll.LEDGER_READ_TIMEOUT_S, 60)
+
+    def test_slow_threshold_below_every_timeout(self):
+        self.assertLess(poll.SLOW_READ_MS, poll.SERVER_READ_TIMEOUT_S * 1000)
+        self.assertLess(poll.SLOW_READ_MS, poll.BROKER_READ_TIMEOUT_S * 1000)
+        self.assertLess(poll.SLOW_READ_MS, poll.LEDGER_READ_TIMEOUT_S * 1000)
+
+
+class TestTimedRead(unittest.TestCase):
+    """#13135: _timed_read records a slow-read note for a read that
+    takes at least SLOW_READ_MS and is otherwise transparent — same
+    result, same exceptions."""
+
+    def setUp(self):
+        poll._SLOW_READS.clear()
+
+    def tearDown(self):
+        poll._SLOW_READS.clear()
+
+    def test_fast_read_records_no_note(self):
+        with patch.object(poll, "SLOW_READ_MS", 60_000):
+            self.assertEqual(poll._timed_read("fast", lambda: 42), 42)
+        self.assertEqual(poll.slow_reads(), [])
+
+    def test_slow_read_records_note_and_returns_result(self):
+        def slow():
+            time.sleep(0.05)
+            return "rows"
+
+        with patch.object(poll, "SLOW_READ_MS", 10):
+            with contextlib.redirect_stderr(io.StringIO()) as err:
+                self.assertEqual(poll._timed_read("queue q claimed rows", slow), "rows")
+        notes = poll.slow_reads()
+        self.assertEqual(len(notes), 1)
+        self.assertEqual(notes[0]["read"], "queue q claimed rows")
+        self.assertGreaterEqual(notes[0]["elapsed_ms"], 10)
+        self.assertIn("slow read queue q claimed rows", err.getvalue())
+
+    def test_slow_failing_read_still_records_and_propagates(self):
+        def slow_fail():
+            time.sleep(0.05)
+            raise RuntimeError("backend down")
+
+        with patch.object(poll, "SLOW_READ_MS", 10):
+            with contextlib.redirect_stderr(io.StringIO()):
+                with self.assertRaises(RuntimeError):
+                    poll._timed_read("ledger bindings", slow_fail)
+        self.assertEqual([n["read"] for n in poll.slow_reads()], ["ledger bindings"])
+
+
+class TestMainParallelReads(unittest.TestCase):
+    """#13135: main() runs the independent external reads concurrently
+    and the printed JSON keeps its exact shape and semantics. Every
+    fetch is stubbed; no broker, server or subprocess is touched."""
+
+    SLEEP_S = 0.25
+
+    def run_main(self, sessions_ok):
+        now = int(time.time() * 1000)
+        live_root = {
+            "id": "ses_live",
+            "time": {"created": now - 5 * MIN, "updated": now - MIN},
+        }
+        candidate = {
+            "id": 42,
+            "status": "claimed",
+            "priority": 1,
+            "progress": {"lane": "opencode", "stage": "handed_off"},
+        }
+
+        def fake_sessions():
+            time.sleep(self.SLEEP_S)
+            return [live_root] if sessions_ok else None
+
+        def fake_active():
+            time.sleep(self.SLEEP_S)
+            return set()
+
+        def fake_claimed(queue):
+            time.sleep(self.SLEEP_S)
+            return [dict(candidate)] if queue == poll.QUEUES[0] else []
+
+        def fake_handed_off(queue):
+            time.sleep(self.SLEEP_S)
+            return []
+
+        def fake_bindings(ids):
+            time.sleep(self.SLEEP_S)
+            return {}
+
+        stdout = io.StringIO()
+        start = time.monotonic()
+        with (
+            patch.object(poll, "fetch_sessions", side_effect=fake_sessions),
+            patch.object(poll, "fetch_active_ids", side_effect=fake_active),
+            patch.object(poll, "fetch_claimed_rows", side_effect=fake_claimed),
+            patch.object(poll, "fetch_handed_off_rows", side_effect=fake_handed_off),
+            patch.object(poll, "fetch_ledger_bindings", side_effect=fake_bindings),
+            contextlib.redirect_stdout(stdout),
+            contextlib.redirect_stderr(io.StringIO()),
+        ):
+            rc = poll.main()
+        elapsed = time.monotonic() - start
+        return rc, json.loads(stdout.getvalue()), elapsed
+
+    def test_reads_overlap_and_output_shape_is_unchanged(self):
+        rc, out, elapsed = self.run_main(True)
+        self.assertEqual(rc, 0)
+        # 11 stubbed reads of SLEEP_S each: sequential would take
+        # ~2.75s; concurrent must finish in a small multiple of one
+        # read (the ledger read still waits for the queue reads).
+        self.assertLess(elapsed, 6 * self.SLEEP_S)
+        self.assertEqual(
+            set(out),
+            {
+                "queues",
+                "candidates",
+                "stuck_bound",
+                "stale_binding",
+                "ledger_readable",
+                "live_root_sessions",
+                "active_root_sessions",
+                "cap",
+                "concurrency_cap",
+                "cap_room",
+            },
+        )
+        self.assertEqual(set(out["queues"]), set(poll.QUEUES))
+        for entry in out["queues"].values():
+            self.assertEqual(
+                set(entry),
+                {
+                    "claimed",
+                    "handed_off",
+                    "candidates",
+                    "stuck_bound",
+                    "stale_binding",
+                    "read_ok",
+                    "read_errors",
+                },
+            )
+            self.assertTrue(entry["read_ok"])
+        self.assertEqual([c["id"] for c in out["candidates"]], [42])
+        self.assertEqual(out["candidates"][0]["queue"], poll.QUEUES[0])
+        self.assertTrue(out["ledger_readable"])
+        self.assertEqual(out["live_root_sessions"], 1)
+        self.assertEqual(out["active_root_sessions"], 1)
+        self.assertEqual(out["cap_room"], poll.CAP - 1)
+
+    def test_unreadable_session_list_still_fails_closed(self):
+        rc, out, _elapsed = self.run_main(False)
+        self.assertEqual(rc, 0)
+        self.assertIsNone(out["live_root_sessions"])
+        self.assertIsNone(out["active_root_sessions"])
+        self.assertIsNone(out["cap_room"])
+        # Queue discovery is unaffected by the server outage.
+        self.assertEqual([c["id"] for c in out["candidates"]], [42])
 
 
 if __name__ == "__main__":

@@ -438,8 +438,11 @@ let
   # Provides `grok`, which t3code's `grok` driver shells out to.
   grok-cli = pkgs.callPackage (lib.from-root "pkgs/grok-cli") { };
 
-  # mcpx MCP gateway and Code Mode execution runner.
-  mcpx = pkgs.callPackage (lib.from-root "pkgs/mcpx/package.nix") { };
+  # mcpx MCP gateway and Code Mode execution runner. The standalone package
+  # still runs the Go checks; a system rebuild skips that duplicate test phase.
+  mcpx = pkgs.callPackage (lib.from-root "pkgs/mcpx/package.nix") {
+    doCheck = false;
+  };
 
   # Claude Code 2.1.293 (nixpkgs has 2.1.234 in both channel and unstable).
   claude-code = pkgs.callPackage (lib.from-root "pkgs/claude-code") { };
@@ -451,7 +454,7 @@ let
   latestCli = pkgs.callPackage (lib.from-root "pkgs/latest-cli") { };
 
   # Rust toolchain for the whole system, matching the devshell exactly: the
-  # same pkgs/id/rust-toolchain.toml (channel 1.99.0) resolved through the same
+  # same pkgs/id/rust-toolchain.toml (channel 1.99.1) resolved through the same
   # rust-overlay lock. This is what places clippy, rust-analyzer, rustfmt and
   # llvm-tools on the system, which the plain nixpkgs rustc/cargo cannot.
   #
@@ -1130,7 +1133,7 @@ in
       # libxkbcommon
       # lsix
       # mesa.drivers
-      # cargo / rustc come from `rustToolchain` below (1.99.0 + clippy /
+      # cargo / rustc come from `rustToolchain` below (1.99.1 + clippy /
       # rust-analyzer / llvm-tools), not the nixpkgs build.
       rustup
       # simple-http-server
@@ -1440,7 +1443,7 @@ in
       # VR
       #immersed
     ])
-    # Pinned Rust toolchain (1.99.0) shared with the devshell. Replaces the
+    # Pinned Rust toolchain (1.99.1) shared with the devshell. Replaces the
     # nixpkgs cargo/rustc/rustfmt above so PATH stays on one version.
     ++ [ rustToolchain ];
     ######## STUPID PACKAGES BULLSHIT ABOVE THIS LINE

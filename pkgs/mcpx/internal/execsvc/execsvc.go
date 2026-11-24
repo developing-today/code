@@ -400,8 +400,9 @@ type callHistory struct {
 	calls     []CallInfo
 }
 
+var callHistoryTTL = defaults.ExecCallHistoryTTL
+
 const (
-	callHistoryTTL = 10 * time.Minute
 	// callHistoryIdleTTL bounds a history that never completes: a local CLI
 	// that exits before its snapshot leaves its entry active forever.
 	callHistoryIdleTTL   = time.Hour

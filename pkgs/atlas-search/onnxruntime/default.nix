@@ -14,6 +14,16 @@
 #
 # Local changes vs the nixpkgs expression:
 # - version 1.27.1 -> 1.31.1; src hash refreshed.
+# - src is fetched from the vendored mirror repo
+#   developing-today-forks/onnxruntime-src (release v<version>), not
+#   fetchFromGitHub: microsoft/onnxruntime has returned 404 since
+#   2026-11-20 (repo made private) — code#12247. The mirror tarball
+#   packs the verified upstream tree with submodules inlined; the
+#   pinned hash below is the recursive hash of that tree, unchanged
+#   from the fetchFromGitHub pin, so the mirror URL is replaceable by
+#   any host serving the same tree. To move versions: pack the new
+#   tag's verified tree the same way, upload it to the mirror repo
+#   as release v<version>, refresh the hash (code#12716).
 # - onnx-src v1.21.0 -> v1.22.0 (ORT 1.31.1's cmake/deps.txt pin).
 # - pythonSupport defaults to false: the only consumers are the
 #   atlas-search / fleet binaries, which dlopen the shared library;

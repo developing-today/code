@@ -93,6 +93,11 @@ export interface EscalationRecord {
   class: FailureClass;
   /** When the escalation effects ran. */
   since: string;
+  /** When the latest re-escalation update was posted to the incident
+   *  issue (#10630), or absent if the hand-off has not re-fired yet.
+   *  The repeat window is measured from this stamp when present, else
+   *  from `since`. */
+  lastReEscalatedAt?: string;
   /** Fleet queue task id, or null if the enqueue has not confirmed. */
   queueTaskId: string | null;
   /** Repo owning the adapter (and therefore the incident issue). */
@@ -102,8 +107,8 @@ export interface EscalationRecord {
   /** Earlier hand-offs for OTHER failure classes of this same
    *  incident, displaced as "current" when the class changed but
    *  still open (Codex P2 on PR #8357): dedupe consults them (a class
-   *  that changes back finds its pair here) and recovery closes and
-   *  completes every one. Flat: entries carry no `previous` of their
+   *  that changes back finds its pair here) and recovery comments on
+   *  every existing issue without disposition. Flat: entries carry no `previous` of their
    *  own. Absent = no earlier hand-off. */
   previous?: EscalationRecord[];
 }
@@ -217,7 +222,7 @@ export function decide(
               at,
               rung: 1,
               outcome: "succeeded",
-              detail: "source recovered; incident closed",
+              detail: "source recovered; operational attention cleared",
             }),
       incident: null,
     };
@@ -427,6 +432,7 @@ export function coerceHealth(source: string, raw: unknown): SourceHealth {
           queueTaskId: typeof e.queueTaskId === "string" ? e.queueTaskId : null,
           issueRepo: e.issueRepo,
           issueNumber: typeof e.issueNumber === "number" && Number.isFinite(e.issueNumber) ? e.issueNumber : null,
+          ...(typeof e.lastReEscalatedAt === "string" ? { lastReEscalatedAt: e.lastReEscalatedAt } : {}),
         }
       : null;
   };

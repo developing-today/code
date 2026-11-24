@@ -1,10 +1,10 @@
 # Architecture
 
-System architecture for the `id` peer-to-peer file sharing CLI.
+System architecture for the `id` peer-to-peer platform and Rust facade.
 
 ## Overview
 
-`id` is built on [Iroh](https://iroh.computer), a peer-to-peer networking library that provides content-addressed blob storage and document synchronization. The application layers a CLI interface, interactive REPL, and optional web UI on top of Iroh's primitives.
+`id` is a peer-to-peer collaboration platform built on [Iroh](https://iroh.computer). It composes a workspace of crates through the root facade: an Iroh-based file core (blob storage, metadata documents and peer networking) plus signed events, groups, the directory, currency services and the world runtime. The CLI, REPL and optional web UI consume those layers. The facade retains historical `id::` paths by re-exporting the split modules. The diagram below shows the file-core path, not the entire platform; the crate table and store-port boundaries describe the wider workspace.
 
 ```
 ┌──────────────────────────────────────────────────────────────────┐
@@ -22,7 +22,7 @@ System architecture for the `id` peer-to-peer file sharing CLI.
 │                   Core Services                                  │
 │  ┌───────────┐  ┌───────────┐  ┌───────────┐  ┌──────────────┐  │
 │  │  Protocol │  │   Store   │  │  TagStore  │  │  Discovery   │  │
-│  │ (P2P RPC) │  │ (blobs)   │  │ (metadata) │  │  (mDNS/DHT) │  │
+│  │ (P2P RPC) │  │ (blobs)   │  │ (metadata) │  │(gossip/mDNS) │  │
 │  └─────┬─────┘  └─────┬─────┘  └─────┬─────┘  └──────┬───────┘  │
 ├────────┴──────────────┴──────────────┴───────────────┴───────────┤
 │                     Iroh Runtime                                 │
@@ -39,33 +39,40 @@ crate is consumed outside `pkgs/id/`).
 
 | Crate | Classification | Notes |
 |-------|----------------|-------|
-| `id` (root, `src/`) | Public surface | The only crate whose `lib.rs` re-exports the API; the CLI and binaries build on it. |
-| `id-core` | Public surface (shared core) | Depended on by 10 crates. The root re-exports a subset (`abuse`, `access`, `connectivity`, `discovery`, `frames`, `holders`, `membership`, `rejection`, `residency`, `sync_method`, `tuple`, `waiting`, plus `KEY_FILE`, `CLIENT_KEY_FILE`, `SERVE_LOCK`, `is_node_id`). Modules not re-exported by `id` are internal to the workspace. |
+| `id` (root, `src/`) | Public facade and binary | Re-exports the workspace API at historical `id::` paths; command parsing and dispatch are implemented in `id-cli`. |
+| `id-core` | Shared core | Depended on by nine sibling crates and the root. The facade re-exports a selected subset; it also includes `admission_gate`, `migration_control`, `petname`, `world_presentation`, and feature-gated `qr`. See `src/lib.rs` for the authoritative list. |
 | `id-caps`, `id-store`, `id-events`, `id-groups`, `id-sync`, `id-worlds`, `id-directory`, `id-web` | Internal | Used only by sibling crates and the root. |
 | `id-cli` | Internal (binary) | Only the root depends on it. |
-| `id-native-shell` | Internal (app) | Not a default workspace member. |
-| `id-currency-registry`, `id-render` | Internal, no dependents | Candidates for removal or for documenting as unused. |
+| `id-config` | Internal (dev only) | The facade lists it as a dev-dependency for invariant tests (`tests/config_invariants.rs`); it has no production dependent. |
+| `id-currency-registry` | Internal | Only the root depends on it. |
+| `id-native-shell`, `id-hw-shell` | Internal (app) | Workspace members, but not default members; both production-depend on the facade, and nothing depends on them. `id-native-shell` rejects `--help` and unknown flags; it has no `--version` option. |
+| `id-render` | Internal compiler library | Rendering-pipeline compiler core: semantic-markup parsing and vocabulary validation, with composition/lowering/emission stages. Nothing depends on it. |
+| `id-import-notion` | Internal importer library | Notion importer manifest and inventory primitives, with maintained integration tests. Nothing depends on it. |
 
 Standalone examples and benchmarks (`examples/`, `benchmarks`) are not
 public API. Vendored crates (`vendor/p2panda-sync`, `vendor/p2panda-encryption`)
 are third-party code.
 
 Rustdoc coverage on public items is about 99% in `id-core` and the root
-crate. `missing_docs = "warn"` is set in both `Cargo.toml` files.
+crate. `missing_docs = "warn"` is set in both `Cargo.toml` files. DES-3: this chapter's module map once followed the pre-split single-crate layout and pointed at paths that no longer exist; it now follows the workspace layout at `06450991e33` (`crates/id-cli/src/cli/`, `crates/id-sync/src/protocol.rs`, `crates/id-store/src/store.rs`, `crates/id-core/src/tuple.rs`, `crates/id-web/src/`, `web/src/`).
 
 ## Core Modules
 
-### Entry Point (`main.rs`, `lib.rs`)
+### Entry Point (`src/main.rs`, `src/lib.rs`)
 
-`main.rs` parses CLI args and dispatches to command handlers. `lib.rs` exports the library API and contains `start_node()` which bootstraps an Iroh node with blob storage, document sync, and peer discovery.
+`main.rs` starts the facade binary; command parsing and dispatch are implemented in `id-cli` and re-exported at the historical facade paths. Node services are composed by the current command/server layers.
 
-### CLI (`cli.rs`)
+### CLI (`crates/id-cli/src/cli/`)
 
-Defines the command-line interface using [clap](https://docs.rs/clap). All commands, subcommands, options, and aliases are declared here. The `tag` command accepts aliases `label` and `link`.
+Defines the command-line interface using [clap](https://docs.rs/clap). All commands, subcommands, options, and aliases are declared here (`mod.rs` plus one module per command group, such as `world.rs`, `groups.rs` and `walk.rs`). The `tag` command accepts aliases `label` and `link`.
 
-### Protocol (`protocol.rs`)
+### Commands (`crates/id-cli/src/commands/`)
 
-Defines the P2P request/response protocol between nodes. Uses Iroh's RPC mechanism with custom `MetaRequest`/`MetaResponse` types serialized as postcard-encoded bytes.
+Implements the command handlers the parser dispatches to; see [Command Layer](#command-layer).
+
+### Protocol (`crates/id-sync/src/protocol.rs`)
+
+Defines the P2P request/response protocol between nodes. Uses Iroh's RPC mechanism with custom `MetaRequest`/`MetaResponse` types serialized as postcard-encoded bytes. The ALPN is `/iroh-meta/3` (`META_ALPN`).
 
 Key message types:
 
@@ -76,11 +83,11 @@ Key message types:
 - `SetTag`/`DelTag`/`GetTags`/`SearchTags` — metadata operations (SearchTags uses structured query syntax)
 - `MigrateTags` — add name/file auto-tags to all existing files
 
-### Store (`store.rs`)
+### Store (`crates/id-store/src/store.rs`)
 
 Wraps Iroh's blob store for named file operations. Maps human-readable names to content hashes via Iroh tags. Handles import from filesystem, export, and content retrieval.
 
-### Tags (`tags.rs`, `tuple.rs`)
+### Tags (`crates/id-store/src/tags.rs`, `crates/id-core/src/tuple.rs`)
 
 The metadata tag system uses a dual-index architecture for efficient queries:
 
@@ -107,17 +114,17 @@ Operations: `set_tag`, `del_tag`, `get_tags`, `search_by_query` (structured synt
 
 Display: Values truncated at 256 bytes by default. CLI supports `--hex`, `--binary`, `--no-truncate` flags. Web UI shows `name`/`file`/`path` tags as display names and deduplicates files with identical (hash, display_name, tags).
 
-### Discovery (`discovery.rs`)
+### Discovery (`crates/id-core/src/discovery.rs`)
 
-Peer discovery using mDNS for local network and Iroh's DHT for global discovery. Maintains a peer list and provides lookup by node ID prefix.
+Peer discovery with three mechanisms that coexist: gossip over a shared topic (the wide-area default), mDNS on the local network (on by default), and mainline DHT address lookup and publishing (off by default, enabled with `id serve --dht` behind the `dht` cargo feature). The module holds the announcement types and the in-memory peer table; the hardcoded fallbacks are `DEFAULT_TOPIC` (`id-peer-discovery-v1`) and `DEFAULT_TOPIC_SECRET` (`id-public-discovery-v1`), with `defaults.json` the operative source on a stock serve. It maintains a peer list and provides lookup by node ID prefix.
 
-### Helpers (`helpers.rs`)
+### Helpers (`crates/id-cli/src/helpers.rs`)
 
 Utility functions for hash parsing, node ID validation, file size formatting, timestamp handling, and output formatting.
 
 ## Command Layer
 
-Each command in `src/commands/` follows a consistent pattern:
+Each command in `crates/id-cli/src/commands/` follows a consistent pattern:
 
 1. Parse arguments (from CLI or REPL)
 2. Determine local vs. remote operation (check if first arg is a 64-char hex node ID)
@@ -136,7 +143,7 @@ id list a1b2c3d4...        # Remote (64-char hex node ID)
 
 Remote operations serialize the request via `protocol.rs` and send it over Iroh's QUIC transport.
 
-## REPL (`repl/`)
+## REPL (`crates/id-cli/src/repl/`)
 
 The interactive REPL (`runner.rs`) provides a shell-like experience:
 
@@ -144,11 +151,11 @@ The interactive REPL (`runner.rs`) provides a shell-like experience:
 - **Shell features** (`input.rs`): Pipe to shell (`|>`), subshell capture (`$()`), backtick expansion, heredocs (`<<<`, `<<EOF`), input redirection
 - **Alias groups**: `tag`/`label`/`link` are interchangeable prefixes; `tags`/`labels`/`links` for listing
 
-## Web UI (`src/web/`, `web/`)
+## Web UI (`crates/id-web/src/`, `web/src/`)
 
 Feature-gated behind `--features web`. Embeds a full browser UI in the binary.
 
-### Backend (`src/web/`)
+### Backend (`crates/id-web/src/`)
 
 | Module            | Purpose                                            |
 | ----------------- | -------------------------------------------------- |
@@ -160,7 +167,7 @@ Feature-gated behind `--features web`. Embeds a full browser UI in the binary.
 | `content_mode.rs` | Content type detection and rendering mode          |
 | `markdown.rs`     | Markdown → HTML rendering with syntax highlighting |
 
-### Frontend (`web/`)
+### Frontend (`web/src/`)
 
 TypeScript bundled with Bun, producing a single JS file and CSS file embedded in the binary.
 
@@ -301,7 +308,7 @@ flattening, and `tests/store_port_boundary.rs` rejects it.
 
 The project uses Nix flakes for reproducible builds:
 
-- `flake.nix` — packages (`id-web`, `id-lib`), checks (11 CI checks), apps (all justfile commands)
+- `flake.nix` — packages (`id-web`, `id-lib`), checks (the CI set plus the NixOS VM checks; 50 attributes under `checks.x86_64-linux` when measured on 2026-11-23 at `06450991e33` with `nix eval '.#checks.x86_64-linux' --apply 'x: builtins.length (builtins.attrNames x)'` in `pkgs/id`), apps (all justfile commands)
 - `nix-common.nix` — shared build inputs and dev shell packages
 - `rust-toolchain.toml` — Rust version pinning (read by rust-overlay)
 - `web/bun.nix` — offline npm dependency fetching via bun2nix
@@ -313,19 +320,21 @@ The project uses Nix flakes for reproducible builds:
 | `lib`   | (none)       | No              | CLI binary   |
 | `web`   | `web`        | `web/dist/`     | CLI + web UI |
 
-The build script (`scripts/build.sh`) tracks the current variant in `target/.build-variant` to detect when a rebuild is needed due to variant change.
+The build script (`scripts/build.sh`) tracks the current variant beside its Cargo artifacts: under `CARGO_TARGET_DIR` when set (including a broker-leased shared target), or under `target/` otherwise.
 
 ## Testing
 
-| Layer                   | Framework         | Command                          | Count |
-| ----------------------- | ----------------- | -------------------------------- | ----- |
-| Unit                    | `cargo test`      | `just test-unit`                 | ~408  |
-| Integration             | `cargo test`      | `just test-int`                  | ~93   |
-| TypeScript              | vitest            | `just test-web-unit`             | ~304  |
-| E2E                     | Playwright        | `just test-e2e`                  | 208   |
-| NixOS VM (API)          | curl/Python       | `just test-nixos-serve`          | ~15   |
-| NixOS VM (DOM)          | Chromium          | `just test-nixos-e2e`            | ~10   |
-| NixOS VM (Integration)  | cargo test binary | `just test-nixos-integration`    | ~93   |
-| NixOS 4-VM (Playwright) | Playwright        | `just test-nixos-playwright-e2e` | 208   |
+| Layer                   | Framework         | Command                          |
+| ----------------------- | ----------------- | -------------------------------- |
+| Unit                    | `cargo test`      | `just test-unit`                 |
+| Integration             | `cargo test`      | `just test-int`                  |
+| TypeScript              | vitest            | `just test-web-unit`             |
+| E2E                     | Playwright        | `just test-e2e`                  |
+| NixOS VM (API)          | curl/Python       | `just test-nixos-serve`          |
+| NixOS VM (DOM)          | Chromium          | `just test-nixos-e2e`            |
+| NixOS VM (Integration)  | cargo test binary | `just test-nixos-integration`    |
+| NixOS 4-VM (Playwright) | Playwright        | `just test-nixos-playwright-e2e` |
 
-`just test-nix` (`nix flake check`, 27 checks) runs everything — all test layers above are included. See [`doc/testing-architecture`](../../doc/2026-03-29T00-00-00Z_reference_testing_architecture/2026-03-29T00-00-00Z_reference_testing_architecture.md) for the complete testing reference.
+Test totals are deliberately not stated: a count is a measurement of one run on one date, and this file records it with its date or not at all. To produce a current count for one layer, run its command and record the summary line with the date and the commit.
+
+`just test-nix` (`nix flake check`, 50 checks on `x86_64-linux` when measured on 2026-11-23 by the method above) runs everything — all test layers above are included. See [`doc/testing-architecture`](../../doc/2026-03-29T00-00-00Z_reference_testing_architecture/2026-03-29T00-00-00Z_reference_testing_architecture.md) for the complete testing reference.

@@ -60,7 +60,14 @@ function calendarDate(date: string): Date {
   return parsed;
 }
 
-function period(kind: ReportPeriodKind, identity: string, start: string, end: string, softCloseDate: string, softCloseHour: number): ReportPeriod {
+function period(
+  kind: ReportPeriodKind,
+  identity: string,
+  start: string,
+  end: string,
+  softCloseDate: string,
+  softCloseHour: number,
+): ReportPeriod {
   return {
     id: `${kind}:${identity}:${TIME_ZONE}`,
     kind,
@@ -124,10 +131,15 @@ export function annualReportPeriod(year: string): ReportPeriod & { kind: "annual
 /** Resolve a canonical C7 period identity; reject implicit or malformed identities. */
 export function reportPeriod(kind: ReportPeriodKind, identity: string): ReportPeriod {
   switch (kind) {
-    case "daily": return dailyReportPeriod(identity);
-    case "weekly": return weeklyReportPeriod(identity);
-    case "monthly": return monthlyReportPeriod(identity);
-    case "quarterly": return quarterlyReportPeriod(identity);
-    case "annual": return annualReportPeriod(identity);
+    case "daily":
+      return dailyReportPeriod(identity);
+    case "weekly":
+      return weeklyReportPeriod(identity);
+    case "monthly":
+      return monthlyReportPeriod(identity);
+    case "quarterly":
+      return quarterlyReportPeriod(identity);
+    case "annual":
+      return annualReportPeriod(identity);
   }
 }

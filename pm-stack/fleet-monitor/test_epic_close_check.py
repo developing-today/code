@@ -82,7 +82,9 @@ class EpicCloseCheckTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             checks.monitor_records({})
         with self.assertRaises(ValueError):
-            checks.monitor_records({"reports": [{"root": "o/r#1", "rootState": "OPEN"}]})
+            checks.monitor_records(
+                {"reports": [{"root": "o/r#1", "rootState": "OPEN"}]}
+            )
 
     def test_closed_root_with_unfinished_direct_child_reports_skipped_reparent(self):
         records = checks.monitor_records(

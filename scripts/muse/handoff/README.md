@@ -43,17 +43,19 @@ the Worker secret before issuing another link.
 Use the URL from the generator output and the generated name:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/developing-today/code/codex/muse-agent-enrollment-20261122/scripts/muse/handoff/enroll-agent.py -o /tmp/enroll-agent.py
+curl -fsSL https://raw.githubusercontent.com/developing-today/code/main/scripts/muse/handoff/enroll-agent.py -o /tmp/enroll-agent.py
 python3 /tmp/enroll-agent.py --name <agent-name> --handoff-url '<one-time-url>'
 ```
 
 The helper consumes the URL, saves both tokens to 0600 files, downloads the
-pinned bootstrap script, runs all bootstrap phases, enrolls the lane, and runs
-`fleet agent doctor`. If a phase fails, the token files remain and the helper
+pinned bootstrap script, runs the bootstrap phases for the agent kind, enrolls
+the lane, and runs `fleet agent doctor`. Pass `--kind <kind>` for a non-Muse
+agent: the Muse home restore (and the persist/init phases that serve it) are
+skipped for every kind except `muse`. If a phase fails, the token files remain and the helper
 prints a resume command:
 
 ```bash
-python3 /tmp/enroll-agent.py --name <same-agent-name> --resume
+python3 /tmp/enroll-agent.py --name <same-agent-name> --kind <same-kind> --resume
 ```
 
 After successful enrollment, run `~/tools/fleet agent next`. Exit 5 means

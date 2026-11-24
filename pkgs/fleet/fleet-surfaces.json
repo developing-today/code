@@ -35,11 +35,7 @@
       "owner": "dezren39",
       "repo": "dezren39/fleet",
       "status": "active",
-      "targets": [
-        "dezren39/*",
-        "developing-today/*",
-        "developing-today-forks/*"
-      ],
+      "targets": ["dezren39/*", "developing-today/*", "developing-today-forks/*"],
       "workflow": "fleet-command.yml",
       "platform_input": true,
       "previous_run_id_input": true,
@@ -56,11 +52,7 @@
       "owner": "developing-today",
       "repo": "developing-today/fleet",
       "status": "active",
-      "targets": [
-        "dezren39/*",
-        "developing-today/*",
-        "developing-today-forks/*"
-      ],
+      "targets": ["dezren39/*", "developing-today/*", "developing-today-forks/*"],
       "workflow": "fleet-command.yml",
       "platform_input": true,
       "previous_run_id_input": true,
@@ -79,11 +71,7 @@
       "owner": "developing-today-forks",
       "repo": "developing-today-forks/fleet",
       "status": "active",
-      "targets": [
-        "dezren39/*",
-        "developing-today/*",
-        "developing-today-forks/*"
-      ],
+      "targets": ["dezren39/*", "developing-today/*", "developing-today-forks/*"],
       "workflow": "fleet-command.yml",
       "platform_input": true,
       "previous_run_id_input": true,
@@ -101,9 +89,7 @@
       "owner": "developing-today",
       "repo": "developing-today/code",
       "status": "standby",
-      "targets": [
-        "developing-today/*"
-      ],
+      "targets": ["developing-today/*"],
       "workflow": "fleet-command.yml",
       "platform_input": false,
       "previous_run_id_input": false,
@@ -126,11 +112,7 @@
       "owner": "developing-today",
       "repo": "developing-today/fleet",
       "status": "active",
-      "targets": [
-        "dezren39/*",
-        "developing-today/*",
-        "developing-today-forks/*"
-      ],
+      "targets": ["dezren39/*", "developing-today/*", "developing-today-forks/*"],
       "workflow": "fleet-command.yml",
       "platform_input": true,
       "previous_run_id_input": true,
@@ -152,11 +134,7 @@
       "owner": "dezren39",
       "repo": null,
       "status": "pending-scope",
-      "targets": [
-        "dezren39/*",
-        "developing-today/*",
-        "developing-today-forks/*"
-      ],
+      "targets": ["dezren39/*", "developing-today/*", "developing-today-forks/*"],
       "workflow": null
     },
     {
@@ -167,9 +145,7 @@
       "owner": "dezren39",
       "repo": null,
       "status": "handoff-only",
-      "targets": [
-        "*"
-      ],
+      "targets": ["*"],
       "workflow": null
     }
   ],

@@ -253,6 +253,14 @@ fn resolve_with_retry(
         match attempt() {
             Ok(value) => return Ok(value),
             Err(err @ SecretError::Unavailable { .. }) => {
+                // A cold secrets broker reports this stable error
+                // while its first refresh is in flight. Waiting out
+                // the generic restart budget here wedges clients
+                // behind a healthy-but-not-yet-serving broker; allow
+                // the resolver chain to try its next source now.
+                if is_initial_refresh_unavailable(&err) {
+                    return Err(err);
+                }
                 let elapsed = started.elapsed();
                 if elapsed >= policy.budget {
                     return Err(err);
@@ -273,6 +281,11 @@ fn resolve_with_retry(
             Err(err) => return Err(err),
         }
     }
+}
+
+fn is_initial_refresh_unavailable(error: &SecretError) -> bool {
+    matches!(error, SecretError::Unavailable { source: "secrets-broker", detail, .. }
+        if detail.contains("secrets not loaded yet"))
 }
 
 /// The ordered chain: broker protocol first, `bws` fallback (§1).
@@ -824,9 +837,36 @@ fn is_executable_file(p: &Path) -> bool {
     rc == 0
 }
 
-/// The pure core of [`resolve_bws_program`], split out for tests:
-/// a candidate wins only when it is an executable file, in
-/// override -> PATH -> well-known-locations order.
+/// X_OK is not sufficient: a Nix binary whose ELF interpreter is
+/// absent passes `access(2)` and then fails every exec with
+/// ENOENT -- the #12498 defect the shell tooling fixed by
+/// resolving through test execution. A candidate must also
+/// actually run: probe it with `--version` (the harmless
+/// invocation the shell resolver uses), stdio discarded; a spawn
+/// error or a non-zero exit means the candidate does not run on
+/// this host and must not shadow a working one later in the
+/// order.
+fn program_runs(p: &Path) -> bool {
+    std::process::Command::new(p)
+        .arg("--version")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+/// The full candidate gate for [`resolve_bws_program_from`]:
+/// an executable file that actually runs.
+fn is_runnable_program(p: &Path) -> bool {
+    is_executable_file(p) && program_runs(p)
+}
+
+/// The core of [`resolve_bws_program`], split out for tests:
+/// a candidate wins only when it is an executable file that
+/// actually runs, in override -> PATH -> well-known-locations
+/// order.
 fn resolve_bws_program_from(
     env_override: Option<&str>,
     path_var: Option<&std::ffi::OsStr>,
@@ -834,7 +874,7 @@ fn resolve_bws_program_from(
 ) -> PathBuf {
     if let Some(p) = env_override {
         let p = p.trim();
-        if !p.is_empty() && is_executable_file(Path::new(p)) {
+        if !p.is_empty() && is_runnable_program(Path::new(p)) {
             // Canonicalize a relative override: the bare name would
             // make Command::new search PATH and could run a
             // different program than the one validated here
@@ -845,7 +885,7 @@ fn resolve_bws_program_from(
     if let Some(path_var) = path_var {
         for dir in std::env::split_paths(path_var) {
             let cand = dir.join("bws");
-            if is_executable_file(&cand) {
+            if is_runnable_program(&cand) {
                 return cand;
             }
         }
@@ -855,7 +895,7 @@ fn resolve_bws_program_from(
         home.join(".nix-profile/bin/bws"),
         PathBuf::from("/run/current-system/sw/bin/bws"),
     ] {
-        if is_executable_file(&cand) {
+        if is_runnable_program(&cand) {
             return cand;
         }
     }
@@ -1598,12 +1638,65 @@ mod tests {
         let empty_home = dir.join("empty-home");
         std::fs::create_dir_all(&empty_home).unwrap();
         let sys = Path::new("/run/current-system/sw/bin/bws");
-        let expected = if is_executable_file(sys) {
+        let expected = if is_runnable_program(sys) {
             sys.to_path_buf()
         } else {
             PathBuf::from("bws")
         };
         assert_eq!(resolve_bws_program_from(None, None, &empty_home), expected);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn bws_program_resolution_skips_candidates_that_do_not_run() {
+        // oracle (#12498): a candidate that passes access(X_OK)
+        // but cannot actually run -- a script naming a missing
+        // interpreter stands in for a Nix binary whose ELF
+        // interpreter is absent -- is skipped, not trusted, and
+        // does not shadow a working candidate later in the order.
+        // Same for a candidate that runs but exits non-zero.
+        use std::os::unix::fs::PermissionsExt;
+        let dir = test_temp_dir("bws-resolve-broken");
+        let path_dir = dir.join("pathbin");
+        let home = dir.join("home");
+        std::fs::create_dir_all(&path_dir).unwrap();
+        std::fs::create_dir_all(home.join("tools/bin")).unwrap();
+        let mk = |p: &Path, body: &str| {
+            std::fs::write(p, body).unwrap();
+            std::fs::set_permissions(p, std::fs::Permissions::from_mode(0o755)).unwrap();
+        };
+        let broken = dir.join("broken-bws");
+        mk(&broken, "#!/nonexistent/fleet-test-interp\n");
+        let nonzero = dir.join("nonzero-bws");
+        mk(&nonzero, "#!/bin/sh\nexit 3\n");
+        let working = path_dir.join("bws");
+        mk(&working, "#!/bin/sh\n");
+        let path_var = std::env::join_paths([&path_dir]).unwrap();
+        // Both unrunnable overrides are skipped for the working
+        // PATH candidate.
+        assert_eq!(
+            resolve_bws_program_from(Some(broken.to_str().unwrap()), Some(&path_var), &home),
+            working
+        );
+        assert_eq!(
+            resolve_bws_program_from(Some(nonzero.to_str().unwrap()), Some(&path_var), &home),
+            working
+        );
+        // An unrunnable PATH candidate is skipped for the working
+        // well-known home location.
+        let home_bws = home.join("tools/bin/bws");
+        mk(&home_bws, "#!/bin/sh\n");
+        let broken_path_dir = dir.join("broken-pathbin");
+        std::fs::create_dir_all(&broken_path_dir).unwrap();
+        mk(
+            &broken_path_dir.join("bws"),
+            "#!/nonexistent/fleet-test-interp\n",
+        );
+        let broken_path_var = std::env::join_paths([&broken_path_dir]).unwrap();
+        assert_eq!(
+            resolve_bws_program_from(None, Some(&broken_path_var), &home),
+            home_bws
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1663,6 +1756,28 @@ mod tests {
         });
         assert_eq!(out.unwrap().expose(), "fixture-value-not-a-secret");
         assert_eq!(calls.get(), 3);
+    }
+
+    #[test]
+    fn cold_refresh_unavailable_fails_over_without_spending_restart_budget() {
+        use std::cell::Cell;
+        let calls = Cell::new(0);
+        let started = Instant::now();
+        let out = resolve_with_retry(&test_retry_policy(), || {
+            calls.set(calls.get() + 1);
+            Err(SecretError::Unavailable {
+                source: "secrets-broker",
+                name: "x".to_string(),
+                detail: "secrets-broker answered HTTP 503: secrets not loaded yet".to_string(),
+            })
+        });
+        assert!(matches!(out, Err(SecretError::Unavailable { .. })));
+        assert_eq!(
+            calls.get(),
+            1,
+            "cold-refresh response should fall through immediately"
+        );
+        assert!(started.elapsed() < Duration::from_secs(5));
     }
 
     #[test]
@@ -1734,6 +1849,28 @@ mod tests {
         let source = BrokerSource::new(sock, PathBuf::from("/nonexistent/token"))
             .with_retry_policy(test_retry_policy());
         (source, handle, dir)
+    }
+
+    #[test]
+    fn broker_cold_refresh_response_returns_within_client_bound() {
+        // Oracle (#13893 / #13948 S1): a broker that explicitly says
+        // its first refresh has not loaded must not consume the long
+        // restart retry budget before the resolver tries its next
+        // source. The response body is the production 503 shape.
+        let (source, handle, dir) = scripted_broker_replies(vec![(
+            503,
+            serde_json::json!({"error": "secrets not loaded yet"}),
+        )]);
+        let started = Instant::now();
+        let result = source.resolve("wanted.name");
+        assert!(matches!(result, Err(SecretError::Unavailable { .. })));
+        assert!(started.elapsed() < Duration::from_secs(5));
+        assert_eq!(
+            handle.join().unwrap(),
+            1,
+            "one prompt request reaches the broker"
+        );
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

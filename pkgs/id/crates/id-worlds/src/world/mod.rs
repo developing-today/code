@@ -80,7 +80,6 @@ pub use hotness::{FiredSignal, HotnessBand, HotnessReport, HotnessSignal};
 /// The F12.14 portal policy types (code#1068), re-exported so the
 /// handle/hub portal surface names the same types the kernel checks.
 pub use id_caps::portal::{PortalGrantState, PortalGrants, PortalRefusal};
-pub(crate) use journal::JournalAdminHistory;
 pub use journal::{
     CoordinatorJournalEntry, JOURNAL_VERSION, JOURNAL_VERSION_BLOB,
     JOURNAL_VERSION_CHECKPOINT_PARTS, JOURNAL_VERSION_EXECUTION_PROFILE,
@@ -88,8 +87,9 @@ pub use journal::{
     JOURNAL_VERSION_OPEN_PRESENCE, JOURNAL_VERSION_PORTALS, JOURNAL_VERSION_PROGRAM_BUNDLE,
     JOURNAL_VERSION_REGION_HANDOFF, JOURNAL_VERSION_SCHEDULE_RECURRENCE,
     JOURNAL_VERSION_SIGNED_PLAY, JOURNAL_VERSION_WORLD_BUDGET, JOURNAL_VERSION_WRITE_LEASE,
-    JournalEntry, JournalSignedMove, JournalSnapshot, JournalSnapshotSource, MAX_JOURNAL_VERSION,
-    TrustBasis, TrustDecision, WorldJournal, journal_version_required_by,
+    JournalAckMode, JournalAdminHistory, JournalEntry, JournalSignedMove, JournalSnapshot,
+    JournalSnapshotSource, MAX_JOURNAL_VERSION, TrustBasis, TrustDecision, WorldJournal,
+    journal_version_required_by,
 };
 pub use metrics::{
     HistogramSnapshot, MetricsSnapshot, RegionWrites, WorldMetrics, WriteLocalitySnapshot,
@@ -174,6 +174,14 @@ pub struct WorldLimits {
     /// Trim the journal behind a program snapshot once this many events were
     /// committed since the last one. `0` disables checkpointing.
     pub checkpoint_every: u64,
+    /// When the world's journal acknowledges an append relative to the
+    /// sync that makes it durable (#557). Runtime configuration, not
+    /// journaled; the default [`JournalAckMode::Sync`] is the original
+    /// durability-before-ack contract. The relaxed modes trade a
+    /// bounded (or, for `Async`, sync-point-bounded) loss window for
+    /// fewer syncs on the input ack path — see [`JournalAckMode`] for
+    /// the guarantees and when to choose each.
+    pub journal_ack_mode: JournalAckMode,
     /// Minimum tick interval a program may subscribe to, in milliseconds.
     /// Subscriptions below this floor are refused at subscription time.
     pub min_tick_ms: u64,
@@ -186,7 +194,8 @@ pub struct WorldLimits {
     /// admin allowlist. Runtime configuration, not journaled; empty
     /// by default, which refuses every fetch. Entries are matched
     /// exactly against the URL's normalized host — no wildcards, no
-    /// implied subdomains.
+    /// implied subdomains. A bare host admits only the scheme's
+    /// default port; `host:port` admits that port only.
     pub http_fetch_hosts: BTreeSet<String>,
 }
 
@@ -201,6 +210,7 @@ impl Default for WorldLimits {
             presentation_bytes: 8192,
             snapshot_bytes: 512 * 1024,
             checkpoint_every: 1000,
+            journal_ack_mode: JournalAckMode::Sync,
             min_tick_ms: 1000,
             grant_on_use: false,
             server_caps: crate::world_caps::default_ceiling_names(),

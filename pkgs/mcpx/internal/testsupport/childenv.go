@@ -33,6 +33,12 @@ import (
 //   - PATH, so the child finds its runtimes (deno, bun, node) and sh;
 //   - TMPDIR (TEMP/TMP), LANG, LANGUAGE, LC_* and TERM, so locale-aware
 //     output and the temp directory behave as on the caller's machine;
+//   - TZ, so the child reads dates in the test's zone. Without it a child
+//     falls back to /etc/localtime while the test keeps its TZ: nixpkgs'
+//     stdenv sets TZ=UTC, so in a nix build on a UTC-6 machine the test and
+//     the child disagreed on the date from 18:00 to midnight, and
+//     TestLoggingMaxAgeRotatesAnAgedFile found the child's log under the
+//     other day's name;
 //   - SYSTEMROOT, so the same builder stays correct if the suite ever runs
 //     on Windows (#136);
 //   - the runtime-cache passthroughs DENO_DIR, BUN_INSTALL_CACHE_DIR and
@@ -90,7 +96,7 @@ func ChildEnv(parent []string, dir string, extra ...string) []string {
 func inheritedFromParent(name string) bool {
 	switch name {
 	case "PATH", "TMPDIR", "TEMP", "TMP",
-		"LANG", "LANGUAGE", "TERM",
+		"LANG", "LANGUAGE", "TERM", "TZ",
 		"DENO_DIR", "BUN_INSTALL_CACHE_DIR", "NPM_CONFIG_CACHE",
 		"SYSTEMROOT":
 		return true

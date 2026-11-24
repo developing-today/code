@@ -24,7 +24,10 @@ use serde_json::{Value, json};
 
 use crate::shell::{self, Options, Target};
 use crate::shortlist::{self, Entry, Shortlist};
-use crate::{AgentError, EXIT_DOWN, EXIT_NO_WORK, EXIT_OK, Out, World, argv, execute};
+use crate::{
+    AgentError, EXIT_DOWN, EXIT_NO_WORK, EXIT_OK, Out, USAGE, USAGE_FOOTER, World, argv, execute,
+    verb_usage,
+};
 
 static NEXT_DIR: AtomicU32 = AtomicU32::new(0);
 
@@ -270,10 +273,140 @@ fn an_empty_mailbox_falls_to_a_queue_claim() {
         rung_results(&out),
         vec![("push".to_string(), "empty".to_string())]
     );
-    // The claim carries the agent as worker, the lane, and the claimer's own flags.
+    // For an unrecognized custom lane, the agent remains the fallback
+    // worker; the lane and the claimer's own flags are also preserved.
     assert!(fake.called(
-        "fleet queue claim --worker oc-go-1 --lane go --platform opencode --remaining-budget-minutes 90"
+        "fleet queue claim --worker oc-go-1 --lane go --lease-seconds 14400 --platform opencode --remaining-budget-minutes 90"
     ));
+}
+
+#[test]
+fn a_queue_claim_carries_the_claimers_model_leaf_when_given() {
+    let fake = Fake::new();
+    fake.on(INBOX, vec![empty_inbox()]).on(
+        CLAIM,
+        vec![ok(
+            json!({"id": 10813, "queue": "fleet", "status": "claimed",
+                       "title": "Next task"}),
+        )],
+    );
+    let (out, code) = run(
+        &fake,
+        &[
+            "next",
+            "--agent",
+            "oc-go-1",
+            "--lane",
+            "go",
+            "--model-provider",
+            "_openai.main",
+            "--model-id",
+            "gpt-6-luna",
+            "--model-variant",
+            "high",
+        ],
+    );
+    assert_eq!(code, EXIT_OK);
+    assert_eq!(out["rung"], "queue");
+    assert_eq!(out["task"]["queue_task_id"], 10813);
+    // The claim stamps the claimer's own serving leaf, so the
+    // meta-reviewer's per-model tables can grade it (#1340, #1334).
+    assert!(fake.called(
+        "fleet queue claim --worker oc-go-1 --lane go --lease-seconds 14400 --model-provider _openai.main --model-id gpt-6-luna --model-variant high"
+    ));
+}
+
+#[test]
+fn next_uses_the_registered_worker_for_a_known_lane() {
+    // Oracle (#6853): the broker's canonical lane registry binds
+    // these lane/worker pairs, and claim/complete must preserve them.
+    for (lane, worker) in [
+        ("code-i", "repo-worker-code"),
+        ("code-a", "repo-worker-code"),
+        ("code-b", "repo-worker-code"),
+        ("opencode-a", "repo-worker-opencode"),
+        ("opencode-b", "repo-worker-opencode"),
+        ("openchamber-a", "repo-worker-openchamber"),
+        ("openchamber-b", "repo-worker-openchamber"),
+        ("nix-a", "repo-worker-nix"),
+        ("nix-b", "repo-worker-nix"),
+        ("not-code-a", "repo-worker-nix"),
+        ("not-code-b", "repo-worker-opencode"),
+        ("not-code-c", "repo-worker-code"),
+        ("not-code-d", "repo-worker-openchamber"),
+        ("not-code-e", "repo-worker-opencode"),
+        ("not-code-f", "repo-worker-code"),
+        ("not-code-g", "repo-worker-nix"),
+        ("oc-code-01", "repo-worker-code"),
+        ("oc-code-04", "repo-worker-code"),
+        ("oc-code-08", "repo-worker-code"),
+    ] {
+        let fake = Fake::new();
+        fake.on(INBOX, vec![empty_inbox()]).on(
+            CLAIM,
+            vec![ok(
+                json!({"id": 10814, "queue": "fleet", "status": "claimed"}),
+            )],
+        );
+        let (out, code) = run(&fake, &["next", "--agent", "code-i", "--lane", lane]);
+        assert_eq!(code, EXIT_OK, "lane {lane}");
+        assert_eq!(out["rung"], "queue", "lane {lane}");
+        assert!(
+            fake.called(&format!(
+                "fleet queue claim --worker {worker} --lane {lane} --lease-seconds 14400"
+            )),
+            "lane {lane} must be claimed by {worker}: {:?}",
+            fake.calls()
+        );
+        assert!(
+            out["then"][0]
+                .as_str()
+                .unwrap()
+                .contains(&format!("--worker {worker}"))
+        );
+        assert!(
+            out["then"][1]
+                .as_str()
+                .unwrap()
+                .contains(&format!("--worker {worker}"))
+        );
+    }
+}
+
+#[test]
+fn a_queue_claim_carries_the_agent_lease_and_the_handout_names_it() {
+    // Oracle (#12618): a claim taken by `next` asks the queue for the
+    // agent-work lease explicitly — 14400 seconds, never the queue's
+    // 2700-second default, which lapsed mid-task and evaporated the
+    // claim — and the task handed to the worker names that lease, so
+    // the completion deadline is visible instead of silent.
+    let fake = Fake::new();
+    fake.on(INBOX, vec![empty_inbox()]).on(
+        CLAIM,
+        vec![ok(
+            json!({"id": 10813, "queue": "fleet", "status": "claimed", "title": "Lease task"}),
+        )],
+    );
+    let (out, code) = run(&fake, &["next", "--agent", "archer"]);
+    assert_eq!(code, EXIT_OK);
+    assert_eq!(out["rung"], "queue");
+    let lane = crate::next::default_lane("archer");
+    assert!(
+        fake.called(&format!(
+            "fleet queue claim --worker archer --lane {lane} --lease-seconds 14400"
+        )),
+        "the claim argv must carry the agent lease: {:?}",
+        fake.calls()
+    );
+    assert_eq!(out["task"]["lease_seconds"], 14_400);
+    assert!(
+        out["task"]["instructions"]
+            .as_str()
+            .unwrap()
+            .contains("14400 seconds"),
+        "the hand-out must name the lease: {}",
+        out["task"]["instructions"]
+    );
 }
 
 #[test]
@@ -343,6 +476,126 @@ fn legs_that_are_down_are_named_and_the_shortlist_answers() {
     let list = shortlist::load(&fake.shortlist_path()).unwrap();
     assert_eq!(list.entries.len(), 3);
     assert!(list.recently_handed("developing-today/code", 805));
+}
+
+#[test]
+fn a_lane_verdict_from_the_broker_is_a_rejected_rung_not_a_down_one() {
+    // #6853, criterion 2: the claim reached the broker and the broker
+    // refused this lane. The answer is scripted in the queue verb's
+    // fallback-switch spelling — exit 6, the verdict in the envelope's
+    // error field and repeated in the stderr wrapper — which is how
+    // the live recurrence arrived. The rung must read "rejected", not
+    // "down": the broker is healthy and answering.
+    let fake = Fake::new();
+    fake.on(INBOX, vec![empty_inbox()]).on(
+        CLAIM,
+        vec![Out {
+            code: 6,
+            stdout: json!({
+                "ok": false,
+                "fallback": true,
+                "switch_to": "github-fallback",
+                "verb": "/claim",
+                "broker_exit": 4,
+                "error": "claim_repo_task: lane code-h belongs to worker repo-worker-nix, not repo-worker-code",
+            })
+            .to_string(),
+            stderr: "repo-queue: primary queue store failed on /claim (exit 4): claim_repo_task: lane code-h belongs to worker repo-worker-nix, not repo-worker-code;          switching this work to the GitHub fallback".to_string(),
+        }],
+    );
+    // Four entries is above the low-water mark of three: a take, not a refill.
+    fake.seed(vec![
+        entry(900, 5, 10),
+        entry(557, 2, 20),
+        entry(805, 2, 15),
+        entry(1062, 3, 5),
+    ]);
+    let (out, code) = run(&fake, &["next", "--agent", "code-h"]);
+    assert_eq!(code, EXIT_OK);
+    assert_eq!(out["rung"], "shortlist");
+    let tried = rung_results(&out);
+    assert_eq!(
+        tried,
+        vec![
+            ("push".to_string(), "empty".to_string()),
+            ("queue".to_string(), "rejected".to_string())
+        ]
+    );
+    let why = out["tried"][1]["why"].as_str().unwrap();
+    assert!(
+        why.contains("lane code-h belongs to worker repo-worker-nix"),
+        "{why}"
+    );
+    // The wrapper's own sentence is not part of the verdict.
+    assert!(!why.contains("switching"), "{why}");
+}
+
+#[test]
+fn a_lane_verdict_on_the_plain_error_path_is_also_rejected() {
+    // With the fallback switch off, the same verdict arrives as a
+    // plain error: the broker's exit code, the message on stderr, no
+    // envelope. The classification must not depend on the spelling.
+    let fake = Fake::new();
+    fake.on(INBOX, vec![empty_inbox()]).on(
+        CLAIM,
+        vec![fail(4, "claim_repo_task: lane code-h is disabled")],
+    );
+    fake.seed(vec![
+        entry(900, 5, 10),
+        entry(557, 2, 20),
+        entry(805, 2, 15),
+        entry(1062, 3, 5),
+    ]);
+    let (out, code) = run(&fake, &["next", "--agent", "code-h"]);
+    assert_eq!(code, EXIT_OK);
+    assert_eq!(out["rung"], "shortlist");
+    let tried = rung_results(&out);
+    assert_eq!(
+        tried,
+        vec![
+            ("push".to_string(), "empty".to_string()),
+            ("queue".to_string(), "rejected".to_string())
+        ]
+    );
+    assert!(
+        out["tried"][1]["why"]
+            .as_str()
+            .unwrap()
+            .contains("lane code-h is disabled")
+    );
+}
+
+#[test]
+fn a_claim_failure_that_is_not_a_lane_verdict_stays_down() {
+    // Only the lane family of `claim_repo_task:` errors is a verdict.
+    // A different refusal under the same prefix — here a by-id
+    // transfer refusal — keeps the "down" reading it has today, as
+    // does any store failure.
+    let fake = Fake::new();
+    fake.on(INBOX, vec![empty_inbox()]).on(
+        CLAIM,
+        vec![fail(
+            4,
+            "claim_repo_task: transfer refused: the claim changed under the transfer",
+        )],
+    );
+    fake.seed(vec![
+        entry(900, 5, 10),
+        entry(557, 2, 20),
+        entry(805, 2, 15),
+        entry(1062, 3, 5),
+    ]);
+    let (out, code) = run(&fake, &["next", "--agent", "code-h"]);
+    assert_eq!(code, EXIT_OK);
+    assert_eq!(out["rung"], "shortlist");
+    let tried = rung_results(&out);
+    assert_eq!(
+        tried,
+        vec![
+            ("push".to_string(), "empty".to_string()),
+            ("queue".to_string(), "down".to_string())
+        ]
+    );
 }
 
 #[test]
@@ -1027,7 +1280,7 @@ fn a_build_takes_a_lock_slot_and_an_hour() {
     )
     .unwrap();
     assert_eq!(
-        plan.args,
+        &plan.args[..8],
         argv(&[
             "laptop-agent",
             "exec",
@@ -1037,30 +1290,397 @@ fn a_build_takes_a_lock_slot_and_an_hour() {
             "3600",
             "--shell",
             "--",
-            "~/tools/fleet-build-lock sh -c 'cargo test -p id-core'",
         ])
+        .as_slice()
     );
+    let command = plan.args.last().unwrap();
+    assert!(command.starts_with("~/tools/fleet-build-lock sh -c "));
+    assert!(command.contains("cargo-target-broker"));
+    assert!(command.contains("cargo test -p id-core"));
 }
 
 #[test]
-fn a_compound_build_command_runs_whole_under_the_lock() {
-    // The lock wrapper execs one program with its arguments
-    // (pkgs/fleet/fleet-build-lock ends in `exec "$@"`), so `cd` and
-    // `&&` must reach it inside one shell's argument.
+fn a_single_string_cargo_command_uses_the_shared_target_lane() {
     let plan = shell::plan(
         Target::Laptop,
         "test".into(),
-        &words(&["cd pkgs/id && cargo test -p 'id core'"]),
+        &words(&["cargo test -p 'id core'"]),
         &Options {
             build: true,
             ..opts()
         },
     )
     .unwrap();
-    assert_eq!(
-        plan.args.last().unwrap(),
-        r#"~/tools/fleet-build-lock sh -c 'cd pkgs/id && cargo test -p '\''id core'\'''"#
+    let command = plan.args.last().unwrap();
+    assert!(command.starts_with("~/tools/fleet-build-lock sh -c "));
+    assert!(command.contains("cargo-target-broker"));
+    assert!(command.contains("cargo test -p"));
+    assert!(command.contains("id core"));
+}
+
+#[test]
+fn cargo_formatting_does_not_checkout_and_clean_a_shared_target() {
+    let plan = shell::plan(
+        Target::Laptop,
+        "format".into(),
+        &words(&["cargo fmt --check"]),
+        &Options {
+            build: true,
+            ..opts()
+        },
+    )
+    .unwrap();
+    let command = plan.args.last().unwrap();
+    assert!(command.starts_with("~/tools/fleet-build-lock sh -c "));
+    assert!(!command.contains("cargo-target-broker"));
+    assert!(command.contains("cargo fmt --check"));
+}
+
+#[test]
+fn toolchain_prefixed_cargo_builds_use_the_shared_target_lane() {
+    let plan = shell::plan(
+        Target::Laptop,
+        "build".into(),
+        &words(&["cargo +stable check -p id-core"]),
+        &Options {
+            build: true,
+            ..opts()
+        },
+    )
+    .unwrap();
+    let command = plan.args.last().unwrap();
+    assert!(command.contains("cargo-target-broker"));
+    assert!(command.contains("cargo +stable check -p id-core"));
+}
+
+#[test]
+fn manifest_selected_cargo_builds_use_the_selected_workspace_lane() {
+    let manifest = "/tmp/other-workspace/Cargo.toml";
+    let command_text = format!("cargo test --manifest-path {manifest}");
+    let plan = shell::plan(
+        Target::Laptop,
+        "test".into(),
+        &words(&[command_text.as_str()]),
+        &Options {
+            cwd: Some("caller-workspace".into()),
+            build: true,
+            ..opts()
+        },
+    )
+    .unwrap();
+    let command = plan.args.last().unwrap();
+    assert!(command.contains("--workspace-cwd"));
+    assert!(command.contains("locate-project --workspace --message-format plain --manifest-path"));
+    assert!(command.contains(manifest));
+}
+
+#[test]
+fn shell_builtins_run_in_a_shell_under_the_build_lock() {
+    for command in ["exit 0", ":", "ulimit -n"] {
+        let plan = shell::plan(
+            Target::Laptop,
+            "test".into(),
+            &words(&[command]),
+            &Options {
+                build: true,
+                ..opts()
+            },
+        )
+        .unwrap();
+        let rendered = plan.args.last().unwrap();
+        assert!(
+            rendered.starts_with("~/tools/fleet-build-lock sh -c "),
+            "{command}: {rendered}"
+        );
+        assert!(rendered.contains(command), "{command}: {rendered}");
+    }
+}
+
+#[test]
+fn a_build_with_environment_assignment_uses_the_shared_target_lane() {
+    let plan = shell::plan(
+        Target::Laptop,
+        "test".into(),
+        &words(&["RUST_LOG=debug cargo test"]),
+        &Options {
+            cwd: Some("pkgs/id".into()),
+            build: true,
+            ..opts()
+        },
+    )
+    .unwrap();
+    let command = plan.args.last().unwrap();
+    assert!(command.starts_with("~/tools/fleet-build-lock sh -c "));
+    assert!(command.contains("cargo-target-broker"));
+    assert!(command.contains("RUST_LOG=debug cargo test"));
+}
+
+#[test]
+fn a_compound_build_command_uses_one_lock_and_a_shared_workspace_lane() {
+    let plan = shell::plan(
+        Target::Laptop,
+        "test".into(),
+        &words(&["cargo test -p 'id core' && cargo clippy -p id-core"]),
+        &Options {
+            cwd: Some("pkgs/id".into()),
+            build: true,
+            ..opts()
+        },
+    )
+    .unwrap();
+    let command = plan.args.last().unwrap();
+    assert!(command.starts_with("~/tools/fleet-build-lock sh -c "));
+    assert!(command.contains("cargo-target-broker"));
+    assert!(command.contains("checkout --repo \"$repo\" --profile test"));
+    assert!(command.contains("cargo test -p"));
+}
+
+#[test]
+fn a_background_cargo_build_holds_its_target_lease_until_exit() {
+    let home = home_with_a_recording_lock();
+    let tools = home.join("tools");
+    let workspace = home.join("workspace");
+    std::fs::create_dir_all(&tools).unwrap();
+    std::fs::create_dir_all(&workspace).unwrap();
+    std::fs::write(workspace.join("Cargo.toml"), "[workspace]\nmembers = []\n").unwrap();
+
+    let cargo = tools.join("cargo");
+    std::fs::write(
+        &cargo,
+        "#!/bin/sh\nif [ \"$1\" = locate-project ]; then printf '%s/Cargo.toml\\n' \"$PWD\"; exit 0; fi\nprintf started > \"$HOME/started\"\nwhile [ ! -e \"$HOME/release\" ]; do sleep 0.01; done\nprintf finished > \"$HOME/finished\"\n",
+    )
+    .unwrap();
+    let broker = tools.join("cargo-target-broker");
+    std::fs::write(
+        &broker,
+        format!(
+            "#!/bin/sh\ncase \"$1\" in checkout) printf '{{\"path\":\"{}\",\"lease\":\"lease-1\"}}\\n' ;; checkin) printf '%s\\n' \"$*\" >> \"$HOME/broker.log\" ;; esac\n",
+            home.join("target").display()
+        ),
+    )
+    .unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    for path in [&cargo, &broker] {
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    let plan = shell::plan(
+        Target::Local,
+        "test".into(),
+        &words(&["cargo test & exec true"]),
+        &Options {
+            cwd: Some("workspace".into()),
+            build: true,
+            ..opts()
+        },
+    )
+    .unwrap();
+    let mut child = std::process::Command::new("/bin/sh")
+        .arg("-c")
+        .arg(&plan.args[1])
+        .env("HOME", &home)
+        .env(
+            "PATH",
+            format!(
+                "{}:{}",
+                tools.display(),
+                std::env::var("PATH").unwrap_or_default()
+            ),
+        )
+        .env_remove("CARGO_TARGET_DIR")
+        // The nix check sandbox exports CARGO_BUILD_JOBS, which the lock
+        // script honours; clear it so the half-the-cores default is tested.
+        .env_remove("CARGO_BUILD_JOBS")
+        .current_dir(&home)
+        .spawn()
+        .unwrap();
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    while !home.join("started").exists() && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    if !home.join("started").exists() {
+        let _ = child.kill();
+        let _ = child.wait();
+        panic!("background cargo process did not start");
+    }
+    let checked_in_early = std::fs::read_to_string(home.join("broker.log"))
+        .map(|log| !log.is_empty())
+        .unwrap_or(false);
+    std::fs::write(home.join("release"), "").unwrap();
+    let output = child.wait_with_output().unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
     );
+    assert!(
+        !checked_in_early,
+        "target lease returned while Cargo was active"
+    );
+    assert!(home.join("finished").exists());
+    assert_eq!(
+        std::fs::read_to_string(home.join("broker.log")).unwrap(),
+        "checkin --lease lease-1\n"
+    );
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+#[test]
+fn a_leased_cargo_run_preserves_the_callers_stdin() {
+    let home = std::env::temp_dir().join(format!(
+        "fleet-agent-stdin-{}-{}",
+        std::process::id(),
+        NEXT_DIR.fetch_add(1, Ordering::SeqCst)
+    ));
+    let tools = home.join("tools");
+    let workspace = home.join("workspace");
+    std::fs::create_dir_all(&tools).unwrap();
+    std::fs::create_dir_all(&workspace).unwrap();
+    std::fs::write(workspace.join("Cargo.toml"), "[workspace]\nmembers = []\n").unwrap();
+
+    let cargo = tools.join("cargo");
+    std::fs::write(
+        &cargo,
+        "#!/bin/sh\nif [ \"$1\" = locate-project ]; then printf '%s/Cargo.toml\\n' \"$PWD\"; exit 0; fi\ncat > \"$HOME/input.log\"\n",
+    )
+    .unwrap();
+    let broker = tools.join("cargo-target-broker");
+    std::fs::write(
+        &broker,
+        format!(
+            "#!/bin/sh\ncase \"$1\" in checkout) printf '{{\"path\":\"{}\",\"lease\":\"lease-1\"}}\\n' ;; checkin) printf '%s\\n' \"$*\" >> \"$HOME/broker.log\" ;; esac\n",
+            home.join("target").display()
+        ),
+    )
+    .unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    for path in [&cargo, &broker] {
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let lock = tools.join("fleet-build-lock");
+    std::fs::write(&lock, "#!/bin/sh\nexec \"$@\"\n").unwrap();
+    std::fs::set_permissions(&lock, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    let plan = shell::plan(
+        Target::Local,
+        "run".into(),
+        &words(&["cargo run -- -"]),
+        &Options {
+            cwd: Some("workspace".into()),
+            build: true,
+            ..opts()
+        },
+    )
+    .unwrap();
+    let mut child = std::process::Command::new("/bin/sh")
+        .arg("-c")
+        .arg(&plan.args[1])
+        .env("HOME", &home)
+        .env(
+            "PATH",
+            format!(
+                "{}:{}",
+                tools.display(),
+                std::env::var("PATH").unwrap_or_default()
+            ),
+        )
+        .current_dir(&home)
+        .env_remove("CARGO_TARGET_DIR")
+        .env_remove("CARGO_BUILD_JOBS")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    use std::io::Write;
+    child.stdin.take().unwrap().write_all(b"payload\n").unwrap();
+    let output = child.wait_with_output().unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        std::fs::read_to_string(home.join("input.log")).unwrap(),
+        "payload\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(home.join("broker.log")).unwrap(),
+        "checkin --lease lease-1\n"
+    );
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+#[test]
+fn cargo_lane_classifier_preserves_global_arguments_and_scans_compound_commands() {
+    for (command, should_lease) in [
+        ("cargo +1.84.1 test", true),
+        ("cargo --config net.offline=true check", true),
+        ("cargo --manifest-path=../pkgs/id/Cargo.toml test", true),
+        ("/usr/bin/cargo +1.84.1 test", true),
+        ("cargo --color always check", true),
+        ("cargo fmt --check && cargo test", true),
+        ("cargo metadata --format-version 1 && cargo build", true),
+        ("cargo fmt --package test", false),
+        ("cargo help build", false),
+    ] {
+        let plan = shell::plan(
+            Target::Local,
+            "test".into(),
+            &words(&[command]),
+            &Options {
+                build: true,
+                ..opts()
+            },
+        )
+        .unwrap();
+        let line = plan.args.last().unwrap();
+        assert_eq!(
+            line.contains("cargo-target-broker"),
+            should_lease,
+            "unexpected lane classification for {command:?}: {line}"
+        );
+    }
+}
+
+#[test]
+fn a_just_build_command_uses_the_shared_target_lane() {
+    let plan = shell::plan(
+        Target::Laptop,
+        "test".into(),
+        &words(&["just test"]),
+        &Options {
+            cwd: Some("pkgs/id".into()),
+            build: true,
+            ..opts()
+        },
+    )
+    .unwrap();
+    let command = plan.args.last().unwrap();
+    assert!(command.starts_with("~/tools/fleet-build-lock sh -c "));
+    assert!(command.contains("cargo-target-broker"));
+    assert!(command.contains("checkout --repo \"$repo\" --profile test"));
+    assert!(command.contains("just test"));
+}
+
+#[test]
+fn codespace_build_uses_shared_lane_tools_when_installed() {
+    let plan = shell::plan(
+        Target::Codespace("dev".into()),
+        "test".into(),
+        &words(&["cargo test -p id-core"]),
+        &Options {
+            cwd: Some("pkgs/id".into()),
+            build: true,
+            ..opts()
+        },
+    )
+    .unwrap();
+    assert_eq!(plan.program, "gh");
+    let command = plan.args.last().unwrap();
+    assert!(command.contains("fleet-build-lock"));
+    assert!(command.contains("cargo-target-broker"));
+    assert!(command.contains("cd pkgs/id"));
 }
 
 /// A HOME whose `tools/fleet-build-lock` logs its arguments, one per
@@ -1084,6 +1704,260 @@ fn home_with_a_recording_lock() -> PathBuf {
     home
 }
 
+#[test]
+fn fleet_build_lock_routes_manifest_selected_cargo_through_the_target_broker() {
+    let home = std::env::temp_dir().join(format!(
+        "fleet-agent-direct-lock-{}-{}",
+        std::process::id(),
+        NEXT_DIR.fetch_add(1, Ordering::SeqCst)
+    ));
+    let tools = home.join("tools");
+    let workspace = home.join("code/pkgs/id");
+    let caller = home.join("caller");
+    std::fs::create_dir_all(&tools).unwrap();
+    std::fs::create_dir_all(&workspace).unwrap();
+    std::fs::create_dir_all(&caller).unwrap();
+    std::fs::write(workspace.join("Cargo.toml"), "[workspace]\nmembers = []\n").unwrap();
+
+    let cargo = tools.join("cargo");
+    std::fs::write(
+        &cargo,
+        r#"#!/bin/sh
+if [ "$1" = locate-project ]; then
+  [ "${MOCK_NO_WORKSPACE:-0}" = 1 ] && exit 1
+  shift
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --manifest-path) shift; printf '%s\n' "$1"; exit 0 ;;
+      --manifest-path=*) printf '%s\n' "${1#--manifest-path=}"; exit 0 ;;
+    esac
+    shift
+  done
+  printf '%s/Cargo.toml\n' "$PWD"
+  exit 0
+fi
+printf '%s|%s|%s|%s\n' "$PWD" "$CARGO_TARGET_DIR" "$CARGO_BUILD_JOBS" "$*" > "$HOME/cargo.log"
+"#,
+    )
+    .unwrap();
+    let broker = tools.join("cargo-target-broker");
+    std::fs::write(
+        &broker,
+        "#!/bin/sh\nprintf '%s\\n' \"$*\" > \"$HOME/broker.log\"\nshift\nwhile [ \"$#\" -gt 0 ] && [ \"$1\" != -- ]; do shift; done\n[ \"$#\" -gt 0 ] && shift\nCARGO_TARGET_DIR=\"$HOME/leased-target\"\nexport CARGO_TARGET_DIR\nexec \"$@\"\n",
+    )
+    .unwrap();
+    let flock = tools.join("flock");
+    std::fs::write(&flock, "#!/bin/sh\nexit 0\n").unwrap();
+    let nproc = tools.join("nproc");
+    std::fs::write(&nproc, "#!/bin/sh\nprintf '4\\n'\n").unwrap();
+
+    use std::os::unix::fs::PermissionsExt;
+    for path in [&cargo, &broker, &flock, &nproc] {
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    let lock_script =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fleet-build-lock");
+    let manifest = workspace.join("Cargo.toml").display().to_string();
+    let output = std::process::Command::new("bash")
+        .arg(&lock_script)
+        .args([
+            "cargo",
+            "test",
+            "-p",
+            "id-core",
+            "--manifest-path",
+            manifest.as_str(),
+        ])
+        .env("HOME", &home)
+        .env(
+            "PATH",
+            format!(
+                "{}:{}",
+                tools.display(),
+                std::env::var("PATH").unwrap_or_default()
+            ),
+        )
+        .env_remove("CARGO_TARGET_DIR")
+        .env_remove("CARGO_BUILD_JOBS")
+        .current_dir(&caller)
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        std::fs::read_to_string(home.join("broker.log")).unwrap(),
+        format!(
+            "exec --repo id --profile test --workspace-cwd {} --wait 900 -- cargo test -p id-core --manifest-path {}\n",
+            workspace.display(),
+            manifest
+        )
+    );
+    assert_eq!(
+        std::fs::read_to_string(home.join("cargo.log")).unwrap(),
+        format!(
+            "{}|{}|2|test -p id-core --manifest-path {}\n",
+            caller.display(),
+            home.join("leased-target").display(),
+            manifest
+        )
+    );
+
+    // A word resembling a compile action after help/fmt is an argument,
+    // not the command. Conversely, global options and toolchain selection
+    // must not make a real compile bypass the broker.
+    let initial_broker_log = std::fs::read_to_string(home.join("broker.log")).unwrap();
+    for args in [
+        vec!["cargo", "help", "build"],
+        vec!["cargo", "fmt", "--package", "test"],
+    ] {
+        let output = std::process::Command::new("bash")
+            .arg(&lock_script)
+            .args(args)
+            .env("HOME", &home)
+            .env(
+                "PATH",
+                format!(
+                    "{}:{}",
+                    tools.display(),
+                    std::env::var("PATH").unwrap_or_default()
+                ),
+            )
+            .env_remove("CARGO_TARGET_DIR")
+            .env_remove("CARGO_BUILD_JOBS")
+            .current_dir(&caller)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(
+            std::fs::read_to_string(home.join("broker.log")).unwrap(),
+            initial_broker_log
+        );
+    }
+
+    let no_workspace = std::process::Command::new("bash")
+        .arg(&lock_script)
+        .args(["cargo", "install", "some-crate"])
+        .env("HOME", &home)
+        .env("MOCK_NO_WORKSPACE", "1")
+        .env(
+            "PATH",
+            format!(
+                "{}:{}",
+                tools.display(),
+                std::env::var("PATH").unwrap_or_default()
+            ),
+        )
+        .env_remove("CARGO_TARGET_DIR")
+        .env_remove("CARGO_BUILD_JOBS")
+        .current_dir(&caller)
+        .output()
+        .unwrap();
+    assert!(
+        no_workspace.status.success(),
+        "{}",
+        String::from_utf8_lossy(&no_workspace.stderr)
+    );
+    assert_eq!(
+        std::fs::read_to_string(home.join("broker.log")).unwrap(),
+        initial_broker_log,
+        "a registry install outside a workspace must bypass workspace cleanup"
+    );
+    assert_eq!(
+        std::fs::read_to_string(home.join("cargo.log")).unwrap(),
+        format!("{}||2|install some-crate\n", caller.display())
+    );
+
+    let path_install = std::process::Command::new("bash")
+        .arg(&lock_script)
+        .args(["cargo", "install", "--path"])
+        .arg(&workspace)
+        .env("HOME", &home)
+        .env(
+            "PATH",
+            format!(
+                "{}:{}",
+                tools.display(),
+                std::env::var("PATH").unwrap_or_default()
+            ),
+        )
+        .env_remove("CARGO_TARGET_DIR")
+        .env_remove("CARGO_BUILD_JOBS")
+        .current_dir(&caller)
+        .output()
+        .unwrap();
+    assert!(
+        path_install.status.success(),
+        "{}",
+        String::from_utf8_lossy(&path_install.stderr)
+    );
+    assert_eq!(
+        std::fs::read_to_string(home.join("broker.log")).unwrap(),
+        format!(
+            "exec --repo id --profile release --workspace-cwd {} --wait 900 -- cargo install --path {}\n",
+            workspace.display(),
+            workspace.display()
+        )
+    );
+    assert_eq!(
+        std::fs::read_to_string(home.join("cargo.log")).unwrap(),
+        format!(
+            "{}|{}|2|install --path {}\n",
+            caller.display(),
+            home.join("leased-target").display(),
+            workspace.display()
+        )
+    );
+
+    for (args, expected_profile) in [
+        (vec!["cargo", "+1.84.1", "test"], "test"),
+        (
+            vec!["cargo", "--config", "net.offline=true", "check"],
+            "dev",
+        ),
+    ] {
+        let output = std::process::Command::new("bash")
+            .arg(&lock_script)
+            .args(&args)
+            .env("HOME", &home)
+            .env(
+                "PATH",
+                format!(
+                    "{}:{}",
+                    tools.display(),
+                    std::env::var("PATH").unwrap_or_default()
+                ),
+            )
+            .env_remove("CARGO_TARGET_DIR")
+            .env_remove("CARGO_BUILD_JOBS")
+            .current_dir(&caller)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let log = std::fs::read_to_string(home.join("broker.log")).unwrap();
+        let cargo_args = args[1..].join(" ");
+        assert_eq!(
+            log,
+            format!(
+                "exec --repo caller --profile {expected_profile} --wait 900 -- cargo {cargo_args}\n"
+            )
+        );
+    }
+    let _ = std::fs::remove_dir_all(&home);
+}
+
 fn run_local_plan(home: &std::path::Path, plan: &shell::Plan) -> std::process::Output {
     assert_eq!(plan.program, "sh");
     assert_eq!(plan.args[0], "-lc");
@@ -1091,6 +1965,16 @@ fn run_local_plan(home: &std::path::Path, plan: &shell::Plan) -> std::process::O
         .arg("-c")
         .arg(&plan.args[1])
         .env("HOME", home)
+        .env(
+            "PATH",
+            format!(
+                "{}:{}",
+                home.join("tools").display(),
+                std::env::var("PATH").unwrap_or_default()
+            ),
+        )
+        .env_remove("CARGO_TARGET_DIR")
+        .env_remove("CARGO_BUILD_JOBS")
         .current_dir(home)
         .output()
         .expect("sh runs")
@@ -1122,7 +2006,125 @@ fn a_local_build_runs_every_part_of_the_command_under_the_lock() {
     );
     assert_eq!(String::from_utf8_lossy(&out.stdout), "first\nsecond\n");
     let log = std::fs::read_to_string(home.join("lock.log")).unwrap();
-    assert_eq!(log, "sh\n-c\ncd 'work dir' && echo first && echo second\n");
+    assert_eq!(log, "sh\n-c\necho first && echo second\n");
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+#[test]
+fn a_manifest_selected_compound_build_leases_the_target_and_keeps_the_caller_cwd() {
+    let home = home_with_a_recording_lock();
+    let tools = home.join("tools");
+    let workspace = home.join("code/pkgs/id");
+    let caller = home.join("caller");
+    std::fs::create_dir_all(&workspace).unwrap();
+    std::fs::create_dir_all(&caller).unwrap();
+    std::fs::write(workspace.join("Cargo.toml"), "[workspace]\nmembers = []\n").unwrap();
+
+    let cargo = tools.join("cargo");
+    std::fs::write(
+        &cargo,
+        r#"#!/bin/sh
+if [ "$1" = locate-project ]; then
+  [ "${MOCK_NO_WORKSPACE:-0}" = 1 ] && exit 1
+  shift
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --manifest-path) shift; printf '%s\n' "$1"; exit 0 ;;
+      --manifest-path=*) printf '%s\n' "${1#--manifest-path=}"; exit 0 ;;
+    esac
+    shift
+  done
+  printf '%s/Cargo.toml\n' "$PWD"
+  exit 0
+fi
+printf '%s|%s|%s\n' "$PWD" "$CARGO_TARGET_DIR" "$*" >> "$HOME/cargo.log"
+"#,
+    )
+    .unwrap();
+    let broker = tools.join("cargo-target-broker");
+    std::fs::write(
+        &broker,
+        format!(
+            "#!/bin/sh\ncase \"$1\" in checkout) printf '%s\\n' \"$*\" >> \"$HOME/broker.log\"; printf '{{\"path\":\"{}\",\"lease\":\"lease-1\"}}\\n' ;; checkin) printf '%s\\n' \"$*\" >> \"$HOME/broker.log\" ;; esac\n",
+            home.join("target").display()
+        ),
+    )
+    .unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    for path in [&cargo, &broker] {
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    let manifest = "../code/pkgs/id/Cargo.toml";
+    let command =
+        format!("cargo test --manifest-path {manifest} && cargo check --manifest-path {manifest}");
+    let plan = shell::plan(
+        Target::Local,
+        "test".into(),
+        &words(&[command.as_str()]),
+        &Options {
+            cwd: Some("caller".into()),
+            build: true,
+            ..opts()
+        },
+    )
+    .unwrap();
+    let out = run_local_plan(&home, &plan);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let expected = format!(
+        "{}|{}|test --manifest-path {manifest}\n{}|{}|check --manifest-path {manifest}\n",
+        caller.display(),
+        home.join("target").display(),
+        caller.display(),
+        home.join("target").display()
+    );
+    assert_eq!(
+        std::fs::read_to_string(home.join("cargo.log")).unwrap(),
+        expected
+    );
+    assert_eq!(
+        std::fs::read_to_string(home.join("broker.log")).unwrap(),
+        format!(
+            "checkout --repo id --profile test --workspace-cwd {} --wait 900 --json\ncheckin --lease lease-1\n",
+            workspace.display()
+        )
+    );
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+#[test]
+fn a_local_direct_build_enters_the_lock_after_selecting_its_workspace() {
+    let home = home_with_a_recording_lock();
+    std::fs::create_dir_all(home.join("work dir")).unwrap();
+    let plan = shell::plan(
+        Target::Local,
+        "test".into(),
+        &words(&["pwd"]),
+        &Options {
+            cwd: Some("work dir".into()),
+            build: true,
+            ..opts()
+        },
+    )
+    .unwrap();
+    let out = run_local_plan(&home, &plan);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        format!("{}\n", home.join("work dir").display())
+    );
+    assert_eq!(
+        std::fs::read_to_string(home.join("lock.log")).unwrap(),
+        "sh\n-c\npwd\n"
+    );
     let _ = std::fs::remove_dir_all(&home);
 }
 
@@ -1248,7 +2250,7 @@ fn config() -> fleet_config::Config {
 fn auto_on_the_laptop_runs_here_without_probing() {
     let fake = Fake::new();
     fake.set_env("FLEET_LOCATION", "laptop");
-    let (target, because) = shell::resolve(&config(), &fake, "auto", None).unwrap();
+    let (target, because) = shell::resolve(&config(), &fake, "auto", None, None).unwrap();
     assert_eq!(target, Target::Local);
     assert!(because.contains("laptop"));
     assert!(fake.calls().is_empty());
@@ -1259,7 +2261,9 @@ fn auto_elsewhere_prefers_the_laptop_then_a_codespace_then_here() {
     let fake = Fake::new();
     fake.on("fleet laptop-agent health", vec![ok(json!({"ok": true}))]);
     assert_eq!(
-        shell::resolve(&config(), &fake, "auto", None).unwrap().0,
+        shell::resolve(&config(), &fake, "auto", None, None)
+            .unwrap()
+            .0,
         Target::Laptop
     );
 
@@ -1269,7 +2273,9 @@ fn auto_elsewhere_prefers_the_laptop_then_a_codespace_then_here() {
         vec![ok(json!([{"name": "sleepy", "state": "Shutdown"}, {"name": "awake", "state": "Available"}]))],
     );
     assert_eq!(
-        shell::resolve(&config(), &fake, "auto", None).unwrap().0,
+        shell::resolve(&config(), &fake, "auto", None, None)
+            .unwrap()
+            .0,
         Target::Codespace("awake".to_string()),
         "a running codespace is preferred over the first listed"
     );
@@ -1280,7 +2286,7 @@ fn auto_elsewhere_prefers_the_laptop_then_a_codespace_then_here() {
         vec![fail(3, "no leg answered")],
     )
     .on("gh codespace list", vec![fail(1, "HTTP 403")]);
-    let (target, because) = shell::resolve(&config(), &fake, "auto", None).unwrap();
+    let (target, because) = shell::resolve(&config(), &fake, "auto", None, None).unwrap();
     assert_eq!(target, Target::Local);
     assert!(because.contains("running here"), "{because}");
 }
@@ -1295,7 +2301,9 @@ fn an_explicit_target_is_never_swapped_for_another() {
     // Asked for the laptop while it is down: still the laptop, so the caller
     // sees the failure instead of a build quietly running in a sandbox.
     assert_eq!(
-        shell::resolve(&config(), &fake, "laptop", None).unwrap().0,
+        shell::resolve(&config(), &fake, "laptop", None, None)
+            .unwrap()
+            .0,
         Target::Laptop
     );
     assert!(fake.calls().is_empty(), "an explicit target is not probed");
@@ -1303,7 +2311,7 @@ fn an_explicit_target_is_never_swapped_for_another() {
     let fake = Fake::new();
     fake.on("gh codespace list", vec![ok(json!([]))]);
     assert!(matches!(
-        shell::resolve(&config(), &fake, "codespace", None),
+        shell::resolve(&config(), &fake, "codespace", None, None),
         Err(AgentError::Down(_))
     ));
 }
@@ -1313,17 +2321,21 @@ fn the_environment_can_pin_auto_and_a_bad_pin_is_refused() {
     let fake = Fake::new();
     fake.set_env("FLEET_SHELL_TARGET", "local");
     assert_eq!(
-        shell::resolve(&config(), &fake, "auto", None).unwrap().0,
+        shell::resolve(&config(), &fake, "auto", None, None)
+            .unwrap()
+            .0,
         Target::Local
     );
     fake.set_env("FLEET_SHELL_TARGET", "moon");
     assert!(matches!(
-        shell::resolve(&config(), &fake, "auto", None),
+        shell::resolve(&config(), &fake, "auto", None, None),
         Err(AgentError::Usage(_))
     ));
     // An explicit --target wins over the environment.
     assert_eq!(
-        shell::resolve(&config(), &fake, "laptop", None).unwrap().0,
+        shell::resolve(&config(), &fake, "laptop", None, None)
+            .unwrap()
+            .0,
         Target::Laptop
     );
 }
@@ -1342,12 +2354,13 @@ fn shell_runs_the_plan_or_prints_it() {
     match printed {
         shell::Done::Printed(plan) => {
             assert_eq!(plan["target"], "laptop");
-            assert_eq!(
-                plan["args"][6],
-                "~/tools/fleet-build-lock sh -c 'cargo check'"
-            );
+            let command = plan["args"][6].as_str().unwrap();
+            assert!(command.starts_with("~/tools/fleet-build-lock sh -c "));
+            assert!(command.contains("cargo-target-broker"));
+            assert!(command.contains("cargo check"));
         }
         shell::Done::Ran(_) => panic!("--print must not run"),
+        shell::Done::PrintedCode(_, _) => panic!("--print must not run"),
     }
     assert!(fake.attached.borrow().is_empty());
     let ran = shell::run(&config(), &fake, &argv(&["--", "uname", "-a"])).unwrap();
@@ -1361,6 +2374,297 @@ fn shell_runs_the_plan_or_prints_it() {
         shell::run(&config(), &fake, &argv(&["uname"])),
         Err(AgentError::Usage(_))
     ));
+}
+
+#[test]
+fn an_actions_plan_is_the_placement_dispatch() {
+    let plan = shell::plan(
+        Target::Actions("dezren39/fleet".to_string()),
+        "test".into(),
+        &words(&["cargo", "test", "-p", "fleet-agent"]),
+        &opts(),
+    )
+    .unwrap();
+    assert_eq!(plan.program, "fleet");
+    assert_eq!(
+        plan.args,
+        argv(&[
+            "queue",
+            "dispatch",
+            "--repo",
+            "dezren39/fleet",
+            "--command",
+            "cargo test -p fleet-agent",
+            "--dispatch",
+            "--json",
+        ])
+    );
+    let printed = plan.to_json();
+    assert_eq!(printed["target"], "actions");
+    assert_eq!(printed["repo"], "dezren39/fleet");
+    // No shell to open, no host build lock, no runner cwd.
+    assert!(matches!(
+        shell::plan(
+            Target::Actions("dezren39/fleet".into()),
+            "t".into(),
+            &[],
+            &opts()
+        ),
+        Err(AgentError::Usage(_))
+    ));
+    assert!(matches!(
+        shell::plan(
+            Target::Actions("dezren39/fleet".into()),
+            "t".into(),
+            &words(&["true"]),
+            &Options {
+                build: true,
+                ..opts()
+            },
+        ),
+        Err(AgentError::Usage(_))
+    ));
+    assert!(matches!(
+        shell::plan(
+            Target::Actions("dezren39/fleet".into()),
+            "t".into(),
+            &words(&["true"]),
+            &Options {
+                cwd: Some("/tmp".into()),
+                ..opts()
+            },
+        ),
+        Err(AgentError::Usage(_))
+    ));
+}
+
+#[test]
+fn actions_resolution_takes_the_flag_then_the_checkout_origin() {
+    let fake = Fake::new();
+    let (target, _) = shell::resolve(
+        &config(),
+        &fake,
+        "actions",
+        None,
+        Some("dezren39/fleet".into()),
+    )
+    .unwrap();
+    assert_eq!(target, Target::Actions("dezren39/fleet".to_string()));
+    assert!(fake.calls().is_empty(), "an explicit --repo is not probed");
+
+    // No flag: the checkout's origin, in either URL shape.
+    for url in [
+        "git@github.com:developing-today/code.git\n",
+        "https://github.com/developing-today/code.git\n",
+    ] {
+        let fake = Fake::new();
+        fake.on(
+            "git remote get-url origin",
+            vec![Out {
+                code: 0,
+                stdout: url.to_string(),
+                stderr: String::new(),
+            }],
+        );
+        let (target, _) = shell::resolve(&config(), &fake, "actions", None, None).unwrap();
+        assert_eq!(target, Target::Actions("developing-today/code".to_string()));
+    }
+
+    // No flag and no usable origin: a clear refusal, never a guess.
+    let fake = Fake::new();
+    fake.on("git remote get-url origin", vec![fail(128, "no remote")]);
+    assert!(matches!(
+        shell::resolve(&config(), &fake, "actions", None, None),
+        Err(AgentError::Down(_))
+    ));
+    // A malformed --repo is a usage error.
+    let fake = Fake::new();
+    assert!(matches!(
+        shell::resolve(&config(), &fake, "actions", None, Some("noslash".into())),
+        Err(AgentError::Usage(_))
+    ));
+    // auto never picks actions, even with a repo at hand.
+    let fake = Fake::new();
+    fake.set_env("FLEET_LOCATION", "laptop");
+    assert_eq!(
+        shell::resolve(
+            &config(),
+            &fake,
+            "auto",
+            None,
+            Some("dezren39/fleet".into())
+        )
+        .unwrap()
+        .0,
+        Target::Local
+    );
+}
+
+#[test]
+fn an_actions_run_dispatches_waits_and_reports_the_verdict() {
+    let fake = Fake::new();
+    fake.on(
+        "fleet queue dispatch",
+        vec![ok(json!({"handle": "fp_test", "state": "queued", "run_url": "https://example.invalid/runs/1"}))],
+    )
+    .on(
+        "fleet queue session result",
+        vec![ok(json!({"handle": "fp_test", "state": "succeeded", "terminal": true, "run_url": "https://example.invalid/runs/1"}))],
+    );
+    let done = shell::run(
+        &config(),
+        &fake,
+        &argv(&[
+            "--target",
+            "actions",
+            "--repo",
+            "dezren39/fleet",
+            "--",
+            "cargo",
+            "test",
+        ]),
+    )
+    .unwrap();
+    match done {
+        shell::Done::PrintedCode(record, code) => {
+            assert_eq!(code, 0);
+            assert_eq!(record["state"], "succeeded");
+            assert_eq!(record["handle"], "fp_test");
+        }
+        _ => panic!("an actions run prints its record with the verdict code"),
+    }
+    assert!(fake.called("fleet queue dispatch --repo dezren39/fleet"));
+    assert!(fake.called("fleet queue session result fp_test --json"));
+    assert!(
+        fake.attached.borrow().is_empty(),
+        "nothing is attached locally"
+    );
+
+    // A failed run is exit 1, with the same record shape.
+    let fake = Fake::new();
+    fake.on(
+        "fleet queue dispatch",
+        vec![ok(json!({"handle": "fp_bad", "state": "queued"}))],
+    )
+    .on(
+        "fleet queue session result",
+        vec![ok(
+            json!({"handle": "fp_bad", "state": "failed", "terminal": true}),
+        )],
+    );
+    let done = shell::run(
+        &config(),
+        &fake,
+        &argv(&[
+            "--target",
+            "actions",
+            "--repo",
+            "dezren39/fleet",
+            "--",
+            "cargo",
+            "test",
+        ]),
+    )
+    .unwrap();
+    assert!(matches!(done, shell::Done::PrintedCode(_, 1)));
+}
+
+#[test]
+fn an_actions_detach_returns_the_handle_without_waiting() {
+    let fake = Fake::new();
+    fake.on(
+        "fleet queue dispatch",
+        vec![ok(
+            json!({"handle": "fp_away", "state": "dispatched", "run_url": null}),
+        )],
+    );
+    let done = shell::run(
+        &config(),
+        &fake,
+        &argv(&[
+            "--target",
+            "actions",
+            "--repo",
+            "dezren39/fleet",
+            "--detach",
+            "--",
+            "cargo",
+            "build",
+        ]),
+    )
+    .unwrap();
+    match done {
+        shell::Done::Printed(record) => {
+            assert_eq!(record["handle"], "fp_away");
+            assert!(record["note"].as_str().unwrap().contains("session result"));
+        }
+        _ => panic!("a detached actions run prints the dispatch record"),
+    }
+    assert!(!fake.called("session result"), "detach never polls");
+}
+
+#[test]
+fn an_actions_wait_that_expires_names_the_reconnect() {
+    let fake = Fake::new();
+    fake.on(
+        "fleet queue dispatch",
+        vec![ok(json!({"handle": "fp_slow", "state": "queued"}))],
+    )
+    .on(
+        "fleet queue session result",
+        vec![ok(
+            json!({"handle": "fp_slow", "state": "running", "terminal": false}),
+        )],
+    );
+    // A zero budget: the first non-terminal answer is already late.
+    let err = shell::run(
+        &config(),
+        &fake,
+        &argv(&[
+            "--target",
+            "actions",
+            "--repo",
+            "dezren39/fleet",
+            "--timeout",
+            "0",
+            "--",
+            "cargo",
+            "test",
+        ]),
+    );
+    match err {
+        Err(AgentError::Down(msg)) => {
+            assert!(msg.contains("fp_slow"), "{msg}");
+            assert!(msg.contains("session result"), "{msg}");
+        }
+        Err(e) => panic!("expected a Down error naming the reconnect, got: {e}"),
+        Ok(_) => panic!("expected a Down error naming the reconnect, got a result"),
+    }
+}
+
+#[test]
+fn the_targets_listing_names_actions_and_its_reachability() {
+    let fake = Fake::new();
+    fake.set_env("FLEET_LOCATION", "laptop");
+    fake.on(
+        "fleet queue surfaces",
+        vec![ok(
+            json!({"surfaces": [{"id": "x", "kind": "github-actions"}]}),
+        )],
+    );
+    let done = shell::run(&config(), &fake, &argv(&["targets"])).unwrap();
+    match done {
+        shell::Done::Printed(listing) => {
+            let actions = listing["targets"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|t| t["target"] == "actions")
+                .expect("actions is listed");
+            assert_eq!(actions["reachable"], true);
+        }
+        _ => panic!("targets prints its listing"),
+    }
 }
 
 proptest! {
@@ -1927,4 +3231,23 @@ fn the_step_limit_is_a_positive_number_of_seconds_or_the_default() {
         crate::step_limit(Some(" 7 ")),
         std::time::Duration::from_secs(7)
     );
+}
+
+/// #13175 oracle: every agent verb has its own help — it starts
+/// with the verb's own usage line, ends with the shared footer,
+/// and is not the shared USAGE; USAGE itself ends with the footer
+/// so the two cannot drift apart.
+#[test]
+fn every_agent_verb_has_its_own_help() {
+    for verb in ["kinds", "enroll", "doctor", "next", "shortlist"] {
+        let text = verb_usage(verb).unwrap_or_else(|| panic!("{verb} must have usage"));
+        assert!(
+            text.starts_with(&format!("usage: fleet agent {verb}")),
+            "{verb} help must open with its own usage line: {text}"
+        );
+        assert!(text.ends_with(USAGE_FOOTER), "{verb}: {text}");
+        assert_ne!(text, USAGE, "{verb} help must not be the shared text");
+    }
+    assert!(verb_usage("bogus").is_none());
+    assert!(USAGE.ends_with(USAGE_FOOTER));
 }

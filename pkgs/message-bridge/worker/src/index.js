@@ -78,6 +78,29 @@ export class MessageStore extends DurableObject {
     this.sql.exec("CREATE TABLE IF NOT EXISTS wake_log (address TEXT NOT NULL, ts INTEGER NOT NULL)");
     // Fleet mailboxes (fleet.js): agents and their messages, own tables.
     fleetSchema(this.sql);
+    // Class/name notes (notes.js): registered identities, token hashes
+    // (never token values), per-identity inboxes and the delivery
+    // counter behind the public wake signal.
+    this.sql.exec(`CREATE TABLE IF NOT EXISTS note_identity (
+      identity TEXT PRIMARY KEY,
+      signal_counter INTEGER NOT NULL DEFAULT 0,
+      created TEXT NOT NULL
+    )`);
+    this.sql.exec(`CREATE TABLE IF NOT EXISTS note_token (
+      token_hash TEXT PRIMARY KEY,
+      identity TEXT NOT NULL,
+      can_send INTEGER NOT NULL DEFAULT 1,
+      can_inbox INTEGER NOT NULL DEFAULT 1
+    )`);
+    this.sql.exec(`CREATE TABLE IF NOT EXISTS note_message (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      ts TEXT NOT NULL,
+      recipient TEXT NOT NULL,
+      sender TEXT NOT NULL,
+      body TEXT NOT NULL,
+      ack_at TEXT
+    )`);
+    this.sql.exec("CREATE INDEX IF NOT EXISTS note_message_inbox ON note_message (recipient, ack_at, id)");
   }
 
   /** One fleet mailbox operation over arguments fleetCall validated. */
@@ -158,6 +181,97 @@ export class MessageStore extends DurableObject {
     if (this.sql.exec("SELECT COUNT(*) AS n FROM wake_log WHERE address = ?", address).one().n >= max) return false;
     this.sql.exec("INSERT INTO wake_log (address, ts) VALUES (?, ?)", address, now);
     return true;
+  }
+
+  noteRegister({ identity, token_hash, can_send, can_inbox }) {
+    this.sql.exec(
+      "INSERT OR IGNORE INTO note_identity (identity, created) VALUES (?, ?)",
+      identity,
+      new Date().toISOString(),
+    );
+    this.sql.exec(
+      "INSERT OR REPLACE INTO note_token (token_hash, identity, can_send, can_inbox) VALUES (?, ?, ?, ?)",
+      token_hash,
+      identity,
+      can_send ? 1 : 0,
+      can_inbox ? 1 : 0,
+    );
+    return { identity, can_send, can_inbox };
+  }
+
+  noteAuth(token_hash) {
+    const row = this.sql
+      .exec("SELECT identity, can_send, can_inbox FROM note_token WHERE token_hash = ?", token_hash)
+      .toArray()[0];
+    return row ? { identity: row.identity, can_send: !!row.can_send, can_inbox: !!row.can_inbox } : null;
+  }
+
+  noteIdentities() {
+    return this.sql.exec("SELECT identity FROM note_identity ORDER BY identity").toArray().map((r) => r.identity);
+  }
+
+  noteDeliver({ from, recipients, note }) {
+    const ts = new Date().toISOString();
+    const notes = [];
+    for (const recipient of recipients) {
+      const known = this.sql.exec("SELECT 1 FROM note_identity WHERE identity = ?", recipient).toArray().length > 0;
+      if (!known) continue;
+      const row = this.sql
+        .exec(
+          "INSERT INTO note_message (ts, recipient, sender, body) VALUES (?, ?, ?, ?) RETURNING id, ts, recipient, sender, body",
+          ts,
+          recipient,
+          from,
+          note,
+        )
+        .one();
+      this.sql.exec("UPDATE note_identity SET signal_counter = signal_counter + 1 WHERE identity = ?", recipient);
+      notes.push({ id: row.id, recipient: row.recipient, from: row.sender, note: row.body, ts: row.ts });
+    }
+    return { delivered: notes.length, recipients: notes.map((n) => n.recipient), notes };
+  }
+
+  noteInbox(identity) {
+    return this.sql
+      .exec(
+        "SELECT id, sender AS \"from\", body AS note, ts FROM note_message WHERE recipient = ? AND ack_at IS NULL ORDER BY id ASC",
+        identity,
+      )
+      .toArray()
+      .map((r) => ({ ...r }));
+  }
+
+  noteAck(identity, { ids, up_to_id }) {
+    const ts = new Date().toISOString();
+    let acked = 0;
+    if (up_to_id !== null) {
+      acked += this.sql
+        .exec(
+          "UPDATE note_message SET ack_at = ? WHERE recipient = ? AND ack_at IS NULL AND id <= ? RETURNING id",
+          ts,
+          identity,
+          up_to_id,
+        )
+        .toArray().length;
+    }
+    for (const id of ids) {
+      acked += this.sql
+        .exec(
+          "UPDATE note_message SET ack_at = ? WHERE recipient = ? AND ack_at IS NULL AND id = ? RETURNING id",
+          ts,
+          identity,
+          id,
+        )
+        .toArray().length;
+    }
+    return { acked };
+  }
+
+  noteSignal(identity) {
+    const row = this.sql
+      .exec("SELECT signal_counter FROM note_identity WHERE identity = ?", identity)
+      .toArray()[0];
+    return row ? { registered: true, counter: row.signal_counter } : { registered: false, counter: 0 };
   }
 
   eventSubGet(id) {
@@ -337,6 +451,13 @@ function storeFor(env) {
     wakeHookDelete: (address) => stub.wakeHookDelete(address),
     wakeHooks: () => stub.wakeHooks(),
     wakeClaim: (address, now, max) => stub.wakeClaim(address, now, max),
+    noteRegister: (reg) => stub.noteRegister(reg),
+    noteAuth: (token_hash) => stub.noteAuth(token_hash),
+    noteIdentities: () => stub.noteIdentities(),
+    noteDeliver: (delivery) => stub.noteDeliver(delivery),
+    noteInbox: (identity) => stub.noteInbox(identity),
+    noteAck: (identity, sel) => stub.noteAck(identity, sel),
+    noteSignal: (identity) => stub.noteSignal(identity),
     fleet: (op, args) => fleetCall(stub, op, args),
   };
 }

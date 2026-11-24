@@ -41,6 +41,7 @@ from pathlib import Path
 ROW_JQ = (
     ".[] | {n:.number, t:.title, s:.state, sr:.state_reason, "
     "pr:(.pull_request!=null), merged:(.pull_request.merged_at // null), "
+    "d:(.draft // false), "
     "c:.created_at, x:.closed_at, u:.updated_at, l:[.labels[].name], "
     "a:.user.login, cm:.comments} | @json"
 )
@@ -278,6 +279,19 @@ def issue_section(rows: list[dict], repo: str, now: dt.datetime) -> dict:
         ) >= week_ago:
             id_last_week += 1
 
+    # #12280's soak metric: ready (non-draft) PRs still open a day
+    # after they were opened. Rows fetched before `d` was recorded
+    # read as ready (the fetch defaults draft to false), matching how
+    # the warden's scan treats an unmarked PR.
+    day_ago = now - dt.timedelta(hours=24)
+    prs_open_ready_over_24h = sum(
+        1
+        for row in pulls
+        if row["s"] == "open"
+        and not row.get("d", False)
+        and parse_time(row["c"]) <= day_ago
+    )
+
     comments = sorted(row["cm"] for row in issues)
     merge_minutes = sorted(
         (parse_time(row["merged"]) - parse_time(row["c"])).total_seconds() / 60
@@ -303,6 +317,7 @@ def issue_section(rows: list[dict], repo: str, now: dt.datetime) -> dict:
         "prs_closed_unmerged": sum(
             row["s"] == "closed" and not row["merged"] for row in pulls
         ),
+        "prs_open_ready_over_24h": prs_open_ready_over_24h,
         "weekly": dict(sorted(weekly.items())),
         "effort": effort,
         "open_stalled": stalled,
@@ -336,7 +351,9 @@ def render_markdown(report: dict) -> str:
     out = [
         f"# Flow report: {report['repo']}",
         "",
-        f"As of {issues['as_of']}. Source: `{report['inputs']['issues']}`"
+        f"Age calculations use {issues['as_of']}. "
+        f"Issue collection started: {report['inputs']['issues_fetch_started_at'] or 'unknown'}. "
+        f"Source: `{report['inputs']['issues']}`"
         + (
             f", git `{report['inputs']['git']}`"
             if report["inputs"].get("git")
@@ -350,6 +367,7 @@ def render_markdown(report: dict) -> str:
         "| --- | ---: |",
         f"| Issues (open) | {issues['issues']} ({issues['issues_open']}) |",
         f"| PRs merged / closed unmerged | {issues['prs_merged']} / {issues['prs_closed_unmerged']} |",
+        f"| Open ready PRs older than 24 hours | {issues['prs_open_ready_over_24h']} |",
         f"| Open issues blocked, parked or waiting | {issues['open_stalled']} ({issues['open_stalled_pct']}%) |",
         f"| Open issues labelled `user/escalated` | {issues['open_user_escalated']} |",
         f"| Open `kind/design` issues | {issues['open_design']} |",
@@ -413,10 +431,23 @@ def render_markdown(report: dict) -> str:
     return "\n".join(out) + "\n"
 
 
+def issue_fetch_started_at(rows: list[dict]) -> str | None:
+    # Legacy and combined files do not have a single collection clock.
+    stamp = rows[0].get("fetch_started_at")
+    if not isinstance(stamp, str) or any(row.get("fetch_started_at") != stamp for row in rows):
+        return None
+    try:
+        parsed = parse_time(stamp)
+    except ValueError:
+        return None
+    return parsed.isoformat() if parsed.tzinfo is not None else None
+
+
 def cmd_fetch(args: argparse.Namespace) -> int:
     endpoint = (
         f"repos/{args.repo}/issues?state=all&per_page=100&sort=created&direction=asc"
     )
+    started = dt.datetime.now(dt.timezone.utc).isoformat(timespec="microseconds")
     command = ["gh", "api", "--paginate", endpoint, "--jq", ROW_JQ]
     try:
         result = subprocess.run(command, capture_output=True, text=True, check=False)
@@ -426,8 +457,16 @@ def cmd_fetch(args: argparse.Namespace) -> int:
         raise ToolError(f"gh api failed: {result.stderr.strip()[:300]}")
     if not result.stdout.strip():
         raise ToolError(f"gh api returned no rows for {args.repo}")
-    args.out.write_text(result.stdout, encoding="utf-8")
-    print(f"{args.out}: {len(result.stdout.splitlines())} rows from {args.repo}")
+    lines = []
+    for number, line in enumerate(result.stdout.splitlines(), start=1):
+        try:
+            row = json.loads(line)
+            row["fetch_started_at"] = started
+        except (ValueError, TypeError) as error:
+            raise ToolError(f"gh api returned an invalid issue row on line {number}") from error
+        lines.append(json.dumps(row, ensure_ascii=False, separators=(",", ":")))
+    args.out.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    print(f"{args.out}: {len(lines)} rows from {args.repo}")
     return 0
 
 
@@ -436,7 +475,11 @@ def cmd_report(args: argparse.Namespace) -> int:
     now = parse_time(args.now) if args.now else dt.datetime.now(dt.timezone.utc)
     report = {
         "repo": args.repo,
-        "inputs": {"issues": str(args.issues), "git": None},
+        "inputs": {
+            "issues": str(args.issues),
+            "issues_fetch_started_at": issue_fetch_started_at(rows),
+            "git": None,
+        },
         "issues": issue_section(rows, args.repo, now),
     }
     if args.git_dir:
@@ -479,7 +522,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     report.add_argument("--since", help="only commits after this date (git --since)")
     report.add_argument(
-        "--now", help="ISO time to stamp the report with (default: now)"
+        "--now", help="reference time for age calculations (ISO time, default: now)"
     )
     report.add_argument("--format", choices=("md", "json"), default="md")
     report.set_defaults(run=cmd_report)

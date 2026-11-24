@@ -152,6 +152,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use anyhow::{Context, Result, bail, ensure};
 use serde::{Deserialize, Serialize};
 
+use crate::cap_class;
+
 /// Version of the `wants` document the host understands.
 pub const WANTS_VERSION: u64 = 1;
 
@@ -332,6 +334,14 @@ pub struct ProviderManifest {
     /// namespace with an excluded default ceiling (see
     /// [`ProviderManifest::side_contract_violation`]).
     pub side: ProviderSide,
+    /// The capability class this provider's name maps to for
+    /// change-notice disclosure: an id in the shipped class table
+    /// ([`crate::cap_class::CAP_CLASSES`]), carried as registry data —
+    /// never derived from the name (#5999 §2.4). A name whose class
+    /// assignment has not been designed yet carries
+    /// [`crate::cap_class::CLASS_UNKNOWN`] and so always discloses,
+    /// until a design pass assigns it a class.
+    pub class: &'static str,
 }
 
 /// Existing catalog entries as full manifests. The macro generates the
@@ -345,6 +355,7 @@ macro_rules! define_provider_registry {
             bounds: $bounds:expr,
             required_scope: $required_scope:expr,
             default_ceiling: $default_ceiling:expr,
+            class: $class:expr,
         },
     )+) => {
         /// All statically registered production providers, in stable catalog
@@ -361,6 +372,7 @@ macro_rules! define_provider_registry {
                 required_scope: $required_scope,
                 default_ceiling: $default_ceiling,
                 side: ProviderSide::Host,
+                class: $class,
             }),+
         ];
 
@@ -634,6 +646,7 @@ define_provider_registry! {
         bounds: COMMON_REQUEST_BOUNDS,
         required_scope: RequiredScope::Join,
         default_ceiling: DefaultCeiling::Included,
+        class: cap_class::CLASS_NONE,
     },
     "time.tick" => {
         version: 1,
@@ -642,6 +655,7 @@ define_provider_registry! {
         bounds: TICK_BOUNDS,
         required_scope: RequiredScope::Join,
         default_ceiling: DefaultCeiling::Included,
+        class: cap_class::CLASS_NONE,
     },
     "random.u64" => {
         version: 1,
@@ -650,6 +664,7 @@ define_provider_registry! {
         bounds: COMMON_REQUEST_BOUNDS,
         required_scope: RequiredScope::Join,
         default_ceiling: DefaultCeiling::Included,
+        class: cap_class::CLASS_NONE,
     },
     "players" => {
         version: 1,
@@ -658,6 +673,7 @@ define_provider_registry! {
         bounds: &[],
         required_scope: RequiredScope::Join,
         default_ceiling: DefaultCeiling::Included,
+        class: cap_class::CLASS_WORLD_PRESENCE,
     },
     "players.list" => {
         version: 1,
@@ -666,6 +682,7 @@ define_provider_registry! {
         bounds: COMMON_REQUEST_BOUNDS,
         required_scope: RequiredScope::Join,
         default_ceiling: DefaultCeiling::Included,
+        class: cap_class::CLASS_WORLD_PRESENCE,
     },
     "chat.say" => {
         version: 1,
@@ -674,6 +691,7 @@ define_provider_registry! {
         bounds: CHAT_SAY_BOUNDS,
         required_scope: RequiredScope::Chat,
         default_ceiling: DefaultCeiling::Included,
+        class: cap_class::CLASS_CHAT_WRITE,
     },
     "chat.history" => {
         version: 1,
@@ -682,6 +700,7 @@ define_provider_registry! {
         bounds: CHAT_HISTORY_BOUNDS,
         required_scope: RequiredScope::ChatRead,
         default_ceiling: DefaultCeiling::Included,
+        class: cap_class::CLASS_CHAT_READ,
     },
     "records.read" => {
         version: 1,
@@ -690,6 +709,7 @@ define_provider_registry! {
         bounds: RECORDS_READ_BOUNDS,
         required_scope: RequiredScope::Join,
         default_ceiling: DefaultCeiling::Included,
+        class: cap_class::CLASS_WORLD_RECORDS,
     },
     // The F12.5 `kv` store (#1062): a bounded, durable, per-world
     // key-value store. Inward-facing like `records.read` and
@@ -702,6 +722,7 @@ define_provider_registry! {
         bounds: KV_GET_BOUNDS,
         required_scope: RequiredScope::Join,
         default_ceiling: DefaultCeiling::Included,
+        class: cap_class::CLASS_UNKNOWN,
     },
     "kv.set" => {
         version: 1,
@@ -710,6 +731,7 @@ define_provider_registry! {
         bounds: KV_SET_BOUNDS,
         required_scope: RequiredScope::Join,
         default_ceiling: DefaultCeiling::Included,
+        class: cap_class::CLASS_UNKNOWN,
     },
     "kv.delete" => {
         version: 1,
@@ -718,6 +740,7 @@ define_provider_registry! {
         bounds: KV_DELETE_BOUNDS,
         required_scope: RequiredScope::Join,
         default_ceiling: DefaultCeiling::Included,
+        class: cap_class::CLASS_UNKNOWN,
     },
     // The F12.5 `blob` store (#1062): a bounded, durable, per-world
     // set of content-addressed blobs. Inward-facing like `kv.*` and
@@ -730,6 +753,7 @@ define_provider_registry! {
         bounds: BLOB_PUT_BOUNDS,
         required_scope: RequiredScope::Join,
         default_ceiling: DefaultCeiling::Included,
+        class: cap_class::CLASS_UNKNOWN,
     },
     "blob.get" => {
         version: 1,
@@ -738,6 +762,7 @@ define_provider_registry! {
         bounds: BLOB_GET_BOUNDS,
         required_scope: RequiredScope::Join,
         default_ceiling: DefaultCeiling::Included,
+        class: cap_class::CLASS_UNKNOWN,
     },
     "blob.delete" => {
         version: 1,
@@ -746,6 +771,7 @@ define_provider_registry! {
         bounds: BLOB_DELETE_BOUNDS,
         required_scope: RequiredScope::Join,
         default_ceiling: DefaultCeiling::Included,
+        class: cap_class::CLASS_UNKNOWN,
     },
     // The F12.5 `http.fetch` provider (#1062): an outbound GET
     // against an admin allowlist. Outward-facing, unlike `kv.*`
@@ -760,6 +786,7 @@ define_provider_registry! {
         bounds: HTTP_FETCH_BOUNDS,
         required_scope: RequiredScope::Join,
         default_ceiling: DefaultCeiling::Excluded,
+        class: cap_class::CLASS_NET_OUT,
     },
     // The F12.5 `notify` provider (#1062): a user-visible outbound
     // notification, committed to the world's event stream as a
@@ -776,6 +803,7 @@ define_provider_registry! {
         bounds: NOTIFY_BOUNDS,
         required_scope: RequiredScope::Join,
         default_ceiling: DefaultCeiling::Excluded,
+        class: cap_class::CLASS_UNKNOWN,
     },
     "schedule.at" => {
         version: 1,
@@ -784,6 +812,7 @@ define_provider_registry! {
         bounds: SCHEDULE_AT_BOUNDS,
         required_scope: RequiredScope::Join,
         default_ceiling: DefaultCeiling::Included,
+        class: cap_class::CLASS_WORLD_SCHEDULE,
     },
     "schedule.cancel" => {
         version: 1,
@@ -792,6 +821,7 @@ define_provider_registry! {
         bounds: SCHEDULE_CANCEL_BOUNDS,
         required_scope: RequiredScope::Join,
         default_ceiling: DefaultCeiling::Included,
+        class: cap_class::CLASS_WORLD_SCHEDULE,
     },
     "world.info" => {
         version: 1,
@@ -800,6 +830,7 @@ define_provider_registry! {
         bounds: COMMON_REQUEST_BOUNDS,
         required_scope: RequiredScope::Join,
         default_ceiling: DefaultCeiling::Included,
+        class: cap_class::CLASS_NONE,
     },
     "device.info" => {
         version: 1,
@@ -808,6 +839,7 @@ define_provider_registry! {
         bounds: COMMON_REQUEST_BOUNDS,
         required_scope: RequiredScope::Join,
         default_ceiling: DefaultCeiling::Included,
+        class: cap_class::CLASS_UNKNOWN,
     },
     "form.present" => {
         version: 1,
@@ -816,6 +848,7 @@ define_provider_registry! {
         bounds: FORM_BOUNDS,
         required_scope: RequiredScope::Join,
         default_ceiling: DefaultCeiling::Included,
+        class: cap_class::CLASS_UNKNOWN,
     },
     "form.result" => {
         version: 1,
@@ -824,6 +857,7 @@ define_provider_registry! {
         bounds: &[ProviderBound::ResponseBytes(MAX_EVENT_BYTES)],
         required_scope: RequiredScope::Join,
         default_ceiling: DefaultCeiling::Included,
+        class: cap_class::CLASS_UNKNOWN,
     },
     "form.cancel" => {
         version: 1,
@@ -832,6 +866,7 @@ define_provider_registry! {
         bounds: FORM_BOUNDS,
         required_scope: RequiredScope::Join,
         default_ceiling: DefaultCeiling::Included,
+        class: cap_class::CLASS_UNKNOWN,
     },
     // Sensor caps (#2341): excluded from default ceilings, so a world
     // reaches them only through an explicit ceiling entry and an
@@ -843,6 +878,7 @@ define_provider_registry! {
         bounds: LOC_POSITION_BOUNDS,
         required_scope: RequiredScope::Join,
         default_ceiling: DefaultCeiling::Excluded,
+        class: cap_class::CLASS_DEVICE_LOCATION,
     },
     "loc.watch" => {
         version: 1,
@@ -851,6 +887,7 @@ define_provider_registry! {
         bounds: LOC_WATCH_BOUNDS,
         required_scope: RequiredScope::Join,
         default_ceiling: DefaultCeiling::Excluded,
+        class: cap_class::CLASS_DEVICE_LOCATION,
     },
     // Microphone capabilities require an explicit ceiling/grant and a
     // per-use consent decision. Capture frames share the media event ceiling.
@@ -861,6 +898,7 @@ define_provider_registry! {
         bounds: COMMON_REQUEST_BOUNDS,
         required_scope: RequiredScope::Join,
         default_ceiling: DefaultCeiling::Excluded,
+        class: cap_class::CLASS_UNKNOWN,
     },
     "speech.capture" => {
         version: 1,
@@ -869,6 +907,7 @@ define_provider_registry! {
         bounds: SPEECH_CAPTURE_BOUNDS,
         required_scope: RequiredScope::Join,
         default_ceiling: DefaultCeiling::Excluded,
+        class: cap_class::CLASS_UNKNOWN,
     },
     "speech.synthesize" => {
         version: 1,
@@ -877,6 +916,7 @@ define_provider_registry! {
         bounds: COMMON_REQUEST_BOUNDS,
         required_scope: RequiredScope::Join,
         default_ceiling: DefaultCeiling::Included,
+        class: cap_class::CLASS_UNKNOWN,
     },
     "Key" => {
         version: 1,
@@ -885,6 +925,7 @@ define_provider_registry! {
         bounds: &[],
         required_scope: RequiredScope::Join,
         default_ceiling: DefaultCeiling::Included,
+        class: cap_class::CLASS_DEVICE_KEYBOARD,
     },
     "Screen" => {
         version: 1,
@@ -893,6 +934,7 @@ define_provider_registry! {
         bounds: &[],
         required_scope: RequiredScope::Join,
         default_ceiling: DefaultCeiling::Included,
+        class: cap_class::CLASS_DEVICE_SCREEN,
     },
     "RocJson" => {
         version: 1,
@@ -901,6 +943,7 @@ define_provider_registry! {
         bounds: &[],
         required_scope: RequiredScope::Join,
         default_ceiling: DefaultCeiling::Included,
+        class: cap_class::CLASS_NONE,
     },
     "RocGrid" => {
         version: 1,
@@ -909,6 +952,7 @@ define_provider_registry! {
         bounds: &[],
         required_scope: RequiredScope::Join,
         default_ceiling: DefaultCeiling::Included,
+        class: cap_class::CLASS_NONE,
     },
     "RocCap" => {
         version: 1,
@@ -917,6 +961,7 @@ define_provider_registry! {
         bounds: &[],
         required_scope: RequiredScope::Join,
         default_ceiling: DefaultCeiling::Included,
+        class: cap_class::CLASS_NONE,
     },
     "RocText" => {
         version: 1,
@@ -925,6 +970,7 @@ define_provider_registry! {
         bounds: &[],
         required_scope: RequiredScope::Join,
         default_ceiling: DefaultCeiling::Included,
+        class: cap_class::CLASS_NONE,
     },
 }
 
@@ -951,61 +997,19 @@ const TEST_PROVIDER_MANIFEST: ProviderManifest = ProviderManifest {
     required_scope: RequiredScope::Join,
     default_ceiling: DefaultCeiling::Excluded,
     side: ProviderSide::Host,
+    class: cap_class::CLASS_NONE,
 };
 
-/// The name of the first client-side provider (F13.7 step 5).
-pub const CLIENT_FILE_READ_NAME: &str = "client.file.read";
-
-/// Argument schema for `client.file.read`: one required `path` string,
-/// interpreted by the client executor relative to its user-selected
-/// root (never as a host path).
-const CLIENT_FILE_READ_ARGUMENTS: &[ProviderArgument] = &[ProviderArgument {
-    name: "path",
-    value_type: ArgumentType::String,
-    required: true,
-}];
-
-/// Largest single read `client.file.read` may return, in bytes: the
-/// design's starting bound for the first slice (32 KiB), mirrored by
-/// the client shell's `LocalBounds::DESIGN_DEFAULT`.
-pub const MAX_CLIENT_FILE_READ_BYTES: usize = 32_768;
-
-/// Bounds for `client.file.read`: argument bytes plus the read cap.
-const CLIENT_FILE_READ_BOUNDS: &[ProviderBound] = &[
-    ProviderBound::ArgsBytes(MAX_ARGS_BYTES),
-    ProviderBound::ResponseBytes(MAX_CLIENT_FILE_READ_BYTES),
-];
-
-/// The `client.file.read` manifest (F13.7 step 5, design
-/// `doc/2026-11-01_design_id789.md`): the first provider executed by
-/// the originating session's client rather than the host. It registers
-/// exactly like a production provider — one manifest entry — and is
-/// excluded from every default ceiling, so registration alone widens
-/// no world's authority: both the world ceiling/grant and the local
-/// client grant must permit it before any read can happen.
-pub const CLIENT_FILE_READ_MANIFEST: ProviderManifest = ProviderManifest {
-    name: CLIENT_FILE_READ_NAME,
-    version: 1,
-    kind: ProviderKind::Request,
-    argument_schema: ArgumentSchema::JsonObject(CLIENT_FILE_READ_ARGUMENTS),
-    bounds: CLIENT_FILE_READ_BOUNDS,
-    required_scope: RequiredScope::Join,
-    default_ceiling: DefaultCeiling::Excluded,
-    side: ProviderSide::Client,
+mod client;
+pub use client::{
+    CLIENT_CATALOG_ENTRIES,
+    CLIENT_FILE_READ_MANIFEST,
+    CLIENT_FILE_READ_NAME,
+    CLIENT_NOTIFY_MANIFEST,
+    CLIENT_NOTIFY_NAME,
+    MAX_CLIENT_FILE_READ_BYTES,
+    MAX_CLIENT_NOTIFY_RESPONSE_BYTES,
 };
-
-/// Production client-side entries, assembled into the registry after
-/// the host production entries. They are deliberately not part of the
-/// macro-generated legacy [`CATALOG`] name view: that view is the host
-/// catalog compatibility surface, and adding a client provider must
-/// not edit it (F13.7 acceptance: registry growth without a host
-/// catalog edit).
-///
-/// This is the declared client segment, and the source of truth the
-/// registry exit proofs assert against: the assembled registry is
-/// exactly the legacy [`CATALOG`] entries, then these entries, then
-/// any feature-gated registry-only additions — nothing else.
-pub const CLIENT_CATALOG_ENTRIES: &[ProviderManifest] = &[CLIENT_FILE_READ_MANIFEST];
 
 /// Registry-only entries added on top of [`PRODUCTION_CATALOG_ENTRIES`].
 #[cfg(feature = "test-provider")]
@@ -1379,49 +1383,9 @@ pub fn validate_blob_hash(hash: &str) -> Result<()> {
     Ok(())
 }
 
-/// The canonical spelling of an `http.fetch` host for allowlist
-/// comparison: lowercase, with one trailing dot (the DNS root in
-/// a fully-qualified name) stripped. Applied to URL hosts and to
-/// allowlist entries alike, so the comparison is between like
-/// spellings.
-#[must_use]
-pub fn normalize_http_fetch_host(host: &str) -> String {
-    let mut normalized = host.to_ascii_lowercase();
-    if normalized.ends_with('.') {
-        normalized.pop();
-    }
-    normalized
-}
-
-/// Check an `http.fetch` URL and return its normalized host: the
-/// spelling the admin allowlist is matched against. Only `http`
-/// and `https` URLs with a host and no userinfo pass — other
-/// schemes are not fetches, and credentials in a URL would leak
-/// into logs and audit digests.
-///
-/// # Errors
-///
-/// Names the rule the URL breaks.
-pub fn validate_http_fetch_url(url: &str) -> Result<String> {
-    ensure!(
-        !url.is_empty() && url.len() <= MAX_HTTP_FETCH_URL_BYTES,
-        "http fetch url must be 1 to {MAX_HTTP_FETCH_URL_BYTES} bytes"
-    );
-    let parsed =
-        url::Url::parse(url).map_err(|_| anyhow::anyhow!("http fetch url is malformed"))?;
-    ensure!(
-        matches!(parsed.scheme(), "http" | "https"),
-        "http fetch url scheme must be http or https"
-    );
-    ensure!(
-        parsed.username().is_empty() && parsed.password().is_none(),
-        "http fetch url must not carry credentials"
-    );
-    let host = parsed
-        .host_str()
-        .ok_or_else(|| anyhow::anyhow!("http fetch url has no host"))?;
-    Ok(normalize_http_fetch_host(host))
-}
+pub use crate::http_fetch_url::{
+    http_fetch_entry_admits, normalize_http_fetch_host, validate_http_fetch_url,
+};
 
 /// Whether `name` is a capability the server can provide.
 #[must_use]
@@ -2483,7 +2447,7 @@ pub struct CapsReport {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
 
@@ -2850,6 +2814,130 @@ mod tests {
     }
 
     #[test]
+    fn http_fetch_allowlist_entries_constrain_ports() {
+        // (entry, url, admitted)
+        let cases = [
+            // A bare host admits the scheme's default port only,
+            // whether the URL spells it out or not.
+            ("example.com", "https://example.com/", true),
+            ("example.com", "http://example.com/", true),
+            ("example.com", "https://example.com:443/", true),
+            ("EXAMPLE.com.", "http://example.com:80/x", true),
+            ("example.com", "https://example.com:8443/", false),
+            ("example.com", "http://example.com:443/", false),
+            ("example.com", "https://example.com:80/", false),
+            // An entry with a port admits that port only, under
+            // either scheme, and still matches the host exactly.
+            ("example.com:8443", "https://example.com:8443/", true),
+            ("example.com:8443", "http://example.com:8443/", true),
+            ("example.com:443", "https://example.com/", true),
+            ("example.com:8443", "https://example.com/", false),
+            ("example.com:8443", "https://example.com:8444/", false),
+            ("example.com:8443", "https://api.example.com:8443/", false),
+            // IPv4 and bracketed IPv6 hosts, with and without a port.
+            ("127.0.0.1:8080", "http://127.0.0.1:8080/x", true),
+            ("127.0.0.1", "http://127.0.0.1:8080/x", false),
+            ("[2001:db8::1]", "https://[2001:db8::1]/x", true),
+            ("[2001:db8::1]:8443", "https://[2001:db8::1]:8443/x", true),
+            ("[2001:db8::1]", "https://[2001:db8::1]:8443/x", false),
+            // Malformed entries and URLs admit nothing.
+            ("example.com:99999", "https://example.com:9999/", false),
+            ("example.com:", "https://example.com/", false),
+            ("example.com", "ftp://example.com/", false),
+            ("example.com", "https://user@example.com/", false),
+        ];
+        for (entry, url, admitted) in cases {
+            assert_eq!(
+                http_fetch_entry_admits(entry, url),
+                admitted,
+                "{entry:?} admitting {url:?}"
+            );
+        }
+    }
+
+    mod http_fetch_allowlist_properties {
+        //! Property tests for the `http.fetch` allowlist's port rule
+        //! (#12659). The oracle is the rule itself: an entry with a
+        //! port admits exactly that port, a bare host admits exactly
+        //! the scheme's default port, and an entry whose port suffix
+        //! is not a valid port admits nothing.
+        use super::super::http_fetch_entry_admits;
+        use proptest::prelude::*;
+
+        fn host() -> impl Strategy<Value = String> {
+            prop_oneof![
+                "[a-z][a-z0-9]{0,8}(\\.[a-z][a-z0-9]{0,8}){0,2}",
+                (any::<u8>(), any::<u8>(), any::<u8>(), any::<u8>())
+                    .prop_map(|(a, b, c, d)| format!("{a}.{b}.{c}.{d}")),
+                // Nonzero groups keep the spelling canonical, the
+                // form the URL parser gives back.
+                (1u16.., 1u16..).prop_map(|(a, b)| format!("[2001:db8::{a:x}:{b:x}]")),
+            ]
+        }
+
+        fn scheme() -> impl Strategy<Value = (&'static str, u16)> {
+            prop_oneof![Just(("http", 80u16)), Just(("https", 443u16))]
+        }
+
+        proptest! {
+            #[test]
+            fn a_port_entry_admits_exactly_its_port(
+                host in host(),
+                (scheme, _default) in scheme(),
+                listed in 1u16..,
+                requested in 1u16..,
+            ) {
+                let entry = format!("{host}:{listed}");
+                let url = format!("{scheme}://{host}:{requested}/x");
+                prop_assert_eq!(http_fetch_entry_admits(&entry, &url), listed == requested);
+            }
+
+            #[test]
+            fn a_bare_entry_admits_exactly_the_default_port(
+                host in host(),
+                (scheme, default) in scheme(),
+                requested in 1u16..,
+            ) {
+                let url = format!("{scheme}://{host}:{requested}/x");
+                prop_assert_eq!(http_fetch_entry_admits(&host, &url), requested == default);
+                let unported = format!("{scheme}://{host}/x");
+                prop_assert!(http_fetch_entry_admits(&host, &unported));
+            }
+
+            #[test]
+            fn a_malformed_port_suffix_admits_nothing(
+                host in host(),
+                (scheme, _default) in scheme(),
+                suffix in prop_oneof![
+                    Just(String::new()),
+                    (65_536u32..10_000_000).prop_map(|port| port.to_string()),
+                ],
+                requested in 1u16..,
+            ) {
+                let entry = format!("{host}:{suffix}");
+                let ported = format!("{scheme}://{host}:{requested}/x");
+                let unported = format!("{scheme}://{host}/x");
+                prop_assert!(!http_fetch_entry_admits(&entry, &ported));
+                prop_assert!(!http_fetch_entry_admits(&entry, &unported));
+            }
+
+            #[test]
+            fn another_host_is_never_admitted(
+                listed in host(),
+                requested in host(),
+                (scheme, _default) in scheme(),
+                port in 1u16..,
+            ) {
+                prop_assume!(listed != requested);
+                let url = format!("{scheme}://{requested}:{port}/x");
+                let ported_entry = format!("{listed}:{port}");
+                prop_assert!(!http_fetch_entry_admits(&listed, &url));
+                prop_assert!(!http_fetch_entry_admits(&ported_entry, &url));
+            }
+        }
+    }
+
+    #[test]
     fn notify_is_registered_but_off_by_default() {
         // The provider exists in the catalog (an operator can name
         // it in a ceiling) but joins no default ceiling: the
@@ -2865,6 +2953,42 @@ mod tests {
                 .bounds
                 .contains(&ProviderBound::WorldLimit("chat_bytes"))
         );
+    }
+
+    #[test]
+    fn client_notify_is_registered_but_off_by_default() {
+        // #10930 (shells v1 slice 4): the mobile shell's
+        // notification power exists in the registry in the F12.4
+        // manifest shape — an operator can name it in an explicit
+        // ceiling — but it is client-side and joins no default
+        // ceiling: the registry half of the off-by-default rule
+        // for client providers. The executor half (local grant,
+        // bounds, revoke, audit) is the shell adapter's, in the
+        // follow-on slice.
+        let manifest = PROVIDER_REGISTRY.get(CLIENT_NOTIFY_NAME).unwrap();
+        assert_eq!(manifest.side, ProviderSide::Client);
+        assert_eq!(manifest.default_ceiling, DefaultCeiling::Excluded);
+        assert_eq!(manifest.required_scope, RequiredScope::Join);
+        assert_eq!(manifest.side_contract_violation(), None);
+        assert!(catalog_names().contains(CLIENT_NOTIFY_NAME));
+        assert!(!CATALOG.contains(&CLIENT_NOTIFY_NAME));
+        assert!(!default_ceiling_names().contains(CLIENT_NOTIFY_NAME));
+        // The schema is a re-sync hint only: the single optional
+        // `head` field, and no content-bearing field — a
+        // notification under this provider carries no world
+        // content of its own (shells v1 record §1).
+        match manifest.argument_schema {
+            ArgumentSchema::JsonObject(fields) => {
+                assert_eq!(fields.len(), 1);
+                assert_eq!(fields[0].name, "head");
+                assert_eq!(fields[0].value_type, ArgumentType::UnsignedInteger);
+                assert!(!fields[0].required);
+            }
+            other => panic!("client.notify schema must be a JSON object, got {other:?}"),
+        }
+        assert!(manifest.bounds.contains(&ProviderBound::ResponseBytes(
+            MAX_CLIENT_NOTIFY_RESPONSE_BYTES
+        )));
     }
 
     #[test]
@@ -2957,6 +3081,7 @@ mod tests {
             required_scope: RequiredScope::Join,
             default_ceiling,
             side: ProviderSide::Host,
+            class: cap_class::CLASS_UNKNOWN,
         }
     }
 
@@ -2966,19 +3091,24 @@ mod tests {
             assert_eq!(entry.side_contract_violation(), None, "{}", entry.name);
         }
         // F13.7 step 5 registers the first client provider,
-        // client.file.read. Every other catalog entry is still
-        // host-side, and the legacy host catalog view is unchanged:
-        // the client provider joins the registry without joining
-        // CATALOG or any default ceiling.
+        // client.file.read; #10930 adds the second, client.notify.
+        // Every other catalog entry is still host-side, and the
+        // legacy host catalog view is unchanged: the client
+        // providers join the registry without joining CATALOG or
+        // any default ceiling.
         let client_entries: Vec<&ProviderManifest> = CATALOG_ENTRIES
             .iter()
             .filter(|entry| entry.side == ProviderSide::Client)
             .collect();
-        assert_eq!(client_entries.len(), 1);
+        assert_eq!(client_entries.len(), 2);
         assert_eq!(client_entries[0].name, CLIENT_FILE_READ_NAME);
+        assert_eq!(client_entries[1].name, CLIENT_NOTIFY_NAME);
         assert_eq!(client_entries[0].default_ceiling, DefaultCeiling::Excluded);
+        assert_eq!(client_entries[1].default_ceiling, DefaultCeiling::Excluded);
         assert!(!CATALOG.contains(&CLIENT_FILE_READ_NAME));
+        assert!(!CATALOG.contains(&CLIENT_NOTIFY_NAME));
         assert!(!default_ceiling_names().contains(CLIENT_FILE_READ_NAME));
+        assert!(!default_ceiling_names().contains(CLIENT_NOTIFY_NAME));
     }
 
     #[test]
@@ -3027,12 +3157,13 @@ mod tests {
         #[cfg(not(feature = "test-provider"))]
         let production_names: Vec<&str> = entry_names.clone();
         // F13.7 step 5: the registry also carries the production
-        // client-side entries (client.file.read), which are
-        // deliberately not part of the legacy catalog view this test
-        // pins — registration without a host catalog edit.
+        // client-side entries (client.file.read, and client.notify
+        // since #10930), which are deliberately not part of the
+        // legacy catalog view this test pins — registration without
+        // a host catalog edit.
         let production_names: Vec<&str> = production_names
             .into_iter()
-            .filter(|name| *name != CLIENT_FILE_READ_NAME)
+            .filter(|name| *name != CLIENT_FILE_READ_NAME && *name != CLIENT_NOTIFY_NAME)
             .collect();
         assert_eq!(
             production_names, CATALOG,
@@ -3128,6 +3259,8 @@ mod tests {
         // subtracted the same way.
         // client.file.read (F13.7 step 5) is likewise Excluded: it is
         // in the registry's name set but joins no default ceiling.
+        // client.notify (#10930) is Excluded for the same reason: a
+        // client-side provider the local user grants per world.
         // http.fetch (#1062) is Excluded for the same reason: an
         // outward-facing provider joins no default ceiling, and its
         // executor additionally enforces the admin host allowlist.
@@ -3142,6 +3275,7 @@ mod tests {
             "http.fetch",
             "notify",
             CLIENT_FILE_READ_NAME,
+            CLIENT_NOTIFY_NAME,
         ]);
         #[cfg(feature = "test-provider")]
         let excluded_from_ceiling = {

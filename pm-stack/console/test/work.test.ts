@@ -11,10 +11,13 @@ import { readFileSync } from "node:fs";
 import { gunzipSync } from "node:zlib";
 import { actions, perform } from "../src/actions.ts";
 import { readConfig } from "../src/config.ts";
-import { Docs } from "../src/docs.ts";
+import { Docs, Stamped } from "../src/docs.ts";
+import { Named } from "../src/named.ts";
 import { type Fetch, OpError, Ops, type Run } from "../src/ops.ts";
 import { type Deps, handle, loaders } from "../src/server.ts";
+import { memoryStore } from "../src/store.ts";
 import { promptPacket, Work } from "../src/work.ts";
+import { asThePlatformFetch } from "./support.ts";
 
 const CFG = readConfig({ HOME: "/h" });
 const REPO = "developing-today/code";
@@ -74,7 +77,8 @@ function world(opts: {
     const a = opts.commands?.(argv, o?.stdin) ?? "{}";
     return typeof a === "string" ? { code: 0, stdout: a, stderr: "" } : { code: a.code, stdout: "", stderr: a.stderr };
   };
-  const ops = new Ops(CFG, run, fetchImpl);
+  // As the Worker runtime's fetch is (these classes run there too): not to be called as a method.
+  const ops = new Ops(CFG, run, asThePlatformFetch(fetchImpl) as Fetch);
   return { ops, sqls, dashed, calls, gh: () => calls.filter((c) => c.argv[1] === "gh").map((c) => c.argv.slice(3)) };
 }
 
@@ -505,6 +509,48 @@ describe("what the owner asks for in his own words", () => {
     await expect(work.askReply({ issue: "12501/comments", text: "x" })).rejects.toThrow(OpError);
   });
 
+  test("a custom enqueue hook takes the queue task instead of the laptop's command", async () => {
+    const w = world({
+      commands: (argv) =>
+        argv.includes(`repos/${REPO}/issues`) ? JSON.stringify({ number: 12501, html_url: "https://x/12501" }) : "{}",
+    });
+    const work = new Work(w.ops, undefined, () => new Date("2026-11-22T06:00:00Z"));
+    const held: unknown[] = [];
+    const hook = async (packet: unknown) => {
+      held.push(packet);
+      return { code: 0, stdout: "", stderr: "" };
+    };
+    // A new prompt: the issue is filed at once, the task goes to the hook.
+    expect(await work.ask({ text: "Do the docs" }, hook)).toEqual({
+      issue: 12501,
+      url: "https://x/12501",
+      queued: true,
+    });
+    expect(held).toHaveLength(1);
+    expect(held[0]).toEqual(
+      promptPacket(REPO, "repo-health-code-pilot", 12501, "Do the docs", "2026-11-22T06:00:00.000Z"),
+    );
+    expect(w.calls.some((c) => c.argv[1] === "queue")).toBe(false);
+    // A reply: the comment is posted at once, the task goes to the hook.
+    const issue = (state: string, labels: string[]) =>
+      JSON.stringify({ state, labels: labels.map((name) => ({ name })) });
+    const r = world({
+      commands: (argv) =>
+        argv[3] === `repos/${REPO}/issues/12501` ? issue("open", ["owner/prompt"]) : JSON.stringify({ id: 777 }),
+    });
+    const replyWork = new Work(r.ops, undefined, () => new Date("2026-11-22T06:00:00Z"));
+    expect(await replyWork.askReply({ issue: 12501, text: "also do the docs" }, hook)).toEqual({
+      issue: 12501,
+      queued: true,
+    });
+    expect(held).toHaveLength(2);
+    expect(held[1]).toMatchObject({
+      priority: 10,
+      dedupe_key: `repo-health:v1:triage:${REPO}:issue:12501`,
+    });
+    expect(r.calls.some((c) => c.argv[1] === "queue")).toBe(false);
+  });
+
   test("each prompt shows where it stands", async () => {
     const found = (n: number, state: string, comments: number) => ({
       number: n,
@@ -602,6 +648,42 @@ describe("what the owner asks for in his own words", () => {
     // Threads are read again only when the issue has changed.
     await work.asks();
     expect(commentReads).toBe(3);
+    // A holder that was restarted and kept its last list (the edge)
+    // recalls it, and reads no thread that has not changed since.
+    const restarted = new Work(w.ops);
+    restarted.recall(JSON.parse(JSON.stringify(asks)));
+    expect((await restarted.asks()).map((a) => a.replies)).toEqual(asks.map((a) => a.replies));
+    expect(commentReads).toBe(3);
+    // One whose issue changed since the list was kept is read again, alone.
+    const older = JSON.parse(JSON.stringify(asks)) as { issue: number; updated: string }[];
+    (older.find((a) => a.issue === 4) as { updated: string }).updated = "2026-11-22T03:59:59";
+    const behind = new Work(w.ops);
+    behind.recall(older);
+    await behind.asks();
+    expect(commentReads).toBe(4);
+    // What was read since is not unlearned by recalling an older list.
+    const knows = new Work(w.ops);
+    await knows.asks();
+    const read = commentReads;
+    knows.recall(older);
+    await knows.asks();
+    expect(commentReads).toBe(read);
+    // What is not such a list teaches nothing: every thread is read, as from new.
+    for (const junk of [null, "asks", { issue: 1 }, [null, 5, { issue: "1", updated: "x", replies: [] }]]) {
+      const fresh = new Work(w.ops);
+      fresh.recall(junk);
+      const before = commentReads;
+      await fresh.asks();
+      expect(commentReads - before).toBe(3);
+    }
+    // Nor does an entry whose replies are not replies: its thread is read.
+    const bent = JSON.parse(JSON.stringify(asks)) as { issue: number; replies: unknown[] }[];
+    (bent.find((a) => a.issue === 2) as { replies: unknown[] }).replies = [{ you: "no", at: 1, text: null }];
+    const wary = new Work(w.ops);
+    wary.recall(bent);
+    const before = commentReads;
+    await wary.asks();
+    expect(commentReads - before).toBe(1);
   });
 });
 
@@ -686,6 +768,181 @@ describe("the state kept ready", () => {
     expect(body.health.board).toEqual({ ok: false, error: "source is down" });
     expect(after.etag).not.toBe(good.etag);
     expect(after.asOf).toBe(now - 1_000); // the board is a second past its interval
+    // Two times travel with it: when the board was last tried, which the failed try moved
+    // on, and when what is shown of it was read, which it did not.
+    const wasRead = new Date(now - 11_000).toISOString();
+    expect([body.read.board, body.good.board]).toEqual([new Date(now).toISOString(), wasRead]);
+    expect(JSON.parse(good.body).good.board).toBe(wasRead);
+    // Tried again and failing again an hour on, the copy is as old as it is, not as the try.
+    now += 3_600_000;
+    await docs.refresh("board");
+    const later = JSON.parse((await docs.doc("core")).body);
+    expect([later.read.board, later.good.board]).toEqual([new Date(now).toISOString(), wasRead]);
+    // Read again, both are now.
+    s.break(false);
+    now += 11_000;
+    await docs.refresh("board");
+    const mended = JSON.parse((await docs.doc("core")).body);
+    expect([mended.read.board, mended.good.board]).toEqual([new Date(now).toISOString(), new Date(now).toISOString()]);
+    // A section never read has neither.
+    const never = new Docs(all({ ttlMs: 10_000, load: async () => new Promise(() => {}) }), () => now);
+    expect(never.goodAt("board")).toBe(0);
+  });
+
+  test("a copy kept from before is shown at once and read again behind the same answer", async () => {
+    let now = 1_000_000;
+    let reads = 0;
+    let fail = false;
+    // A loader that can read its source, and that starts from a copy it
+    // kept five minutes ago (the edge, after a restart).
+    const load = async () => {
+      reads++;
+      if (reads === 1) return new Stamped({ kept: true }, now - 300_000, null, true);
+      if (fail) throw new Error("source is down");
+      return { fresh: reads };
+    };
+    const docs = new Docs(all({ ttlMs: 10_000, load }), () => now);
+    expect(docs.tried("board")).toBe(false);
+    const first = await docs.doc("core");
+    // The kept copy, said to be as old as it is ...
+    expect(JSON.parse(first.body).board).toEqual({ kept: true });
+    expect(first.asOf).toBe(now - 300_000 + 10_000);
+    expect(JSON.parse(first.body).read.board).toBe(new Date(now - 300_000).toISOString());
+    // ... and already being read again, with nobody having asked twice.
+    expect(reads).toBe(2);
+    await docs.settled(["board"]);
+    const second = await docs.doc("core");
+    expect(JSON.parse(second.body).board).toEqual({ fresh: 2 });
+    expect(second.asOf).toBe(now);
+    expect(reads).toBe(2);
+    expect(docs.tried("board")).toBe(true);
+    // settled() with nothing under way answers at once, and for every section when none is named.
+    await docs.settled();
+
+    // A copy that somewhere else read (no way to read it here) is shown
+    // the same way, and is not asked for again until its interval is up.
+    let mirrored = 0;
+    const far = new Docs(
+      all({ ttlMs: 10_000, load: async () => (mirrored++, new Stamped({ theirs: true }, now - 300_000)) }),
+      () => now,
+    );
+    await far.doc("core");
+    await far.settled();
+    expect(mirrored).toBe(1);
+    now += 11_000;
+    await far.doc("core");
+    await far.settled();
+    expect(mirrored).toBe(2);
+
+    // A kept copy whose first read behind it fails stays, with the reason.
+    reads = 0;
+    fail = true;
+    const down = new Docs(all({ ttlMs: 10_000, load }), () => now);
+    await down.doc("core");
+    await down.settled(["board"]);
+    const body = JSON.parse((await down.doc("core")).body);
+    expect(body.board).toEqual({ kept: true });
+    expect(body.health.board).toEqual({ ok: false, error: "source is down" });
+    // A source never read with success has been tried all the same.
+    const never = new Docs(
+      all({
+        ttlMs: 10_000,
+        load: async () => {
+          throw new Error("nothing yet");
+        },
+      }),
+      () => now,
+    );
+    await never.refresh("board");
+    expect([never.tried("board"), never.goodAt("board")]).toEqual([true, 0]);
+  });
+
+  test("after a change, a read that was already under way is not taken as showing it", async () => {
+    let now = 1_000_000;
+    let value = "first";
+    let reads = 0;
+    let gate: Promise<void> | null = null;
+    let open = () => {};
+    const hold = () => {
+      gate = new Promise<void>((r) => {
+        open = r;
+      });
+    };
+    const release = () => {
+      gate = null;
+      open();
+    };
+    // What the source held when the read began is what the read gives.
+    const load = async () => {
+      reads++;
+      const seen = value;
+      await gate;
+      return { seen };
+    };
+    const docs = new Docs(all({ ttlMs: 10_000, load }), () => now);
+    const board = async () => JSON.parse((await docs.doc("core")).body).board;
+    await docs.doc("core");
+    // Reading now shares a read under way, whatever it saw.
+    now += 11_000;
+    hold();
+    await docs.doc("core"); // a read starts behind the answer, and has seen "first"
+    expect(reads).toBe(2);
+    value = "second";
+    const shared = docs.touch(["board"]);
+    release();
+    await shared;
+    expect(reads).toBe(2);
+    expect(await board()).toEqual({ seen: "first" });
+    // Reading after a change waits for the read under way, which may
+    // have been taken before the change, and then reads once more.
+    now += 11_000;
+    hold();
+    await docs.doc("core"); // this one has seen "second"
+    expect(reads).toBe(3);
+    value = "third"; // something is done
+    const reread = docs.reread(["board"]);
+    release();
+    await reread;
+    expect(reads).toBe(4);
+    expect(await board()).toEqual({ seen: "third" });
+    // With no read under way it is one read, and a section there is no
+    // such thing as is passed over.
+    await docs.reread(["board", "nonesuch"]);
+    expect(reads).toBe(5);
+  });
+
+  test("what an action changed is on the next page, though a read was under way while it ran", async () => {
+    let now = 1_000_000;
+    let value = "before";
+    let gate: Promise<void> | null = null;
+    let open = () => {};
+    const load = async () => {
+      const seen = value;
+      await gate;
+      return { seen };
+    };
+    const docs = new Docs(all({ ttlMs: 10_000, load }), () => now);
+    await docs.doc("core");
+    now += 11_000;
+    gate = new Promise<void>((r) => {
+      open = r;
+    });
+    await docs.doc("core"); // the board is being read, and has seen "before"
+    const table = {
+      "thing.do": {
+        run: async () => {
+          value = "after";
+          return { done: true };
+        },
+        touch: ["board"],
+        audit: () => ({}),
+      },
+    };
+    const doing = perform(table, docs, "thing.do", {});
+    gate = null;
+    open();
+    expect(await doing).toEqual({ done: true });
+    expect(JSON.parse((await docs.doc("core")).body).board).toEqual({ seen: "after" });
   });
 
   test("an unchanged document keeps its tag, and nothing is read when nobody is looking", async () => {
@@ -753,7 +1010,7 @@ describe("the interface's endpoints", () => {
     const { d } = deps();
     const res = await handle(get("/console/api/doc/questions"), d);
     expect(res.status).toBe(200);
-    const body = await res.json();
+    const body = (await res.json()) as { questions: { total: number } };
     expect(body.questions.total).toBe(4);
     expect(JSON.stringify(body)).not.toContain(TOKEN);
     const etag = res.headers.get("etag") ?? "";
@@ -769,6 +1026,209 @@ describe("the interface's endpoints", () => {
     expect(raw.byteLength).toBeLessThan(JSON.stringify(body).length / 2);
     expect((await handle(get("/console/api/doc/secrets"), d)).status).toBe(404);
     expect((await handle(get("/console/api/doc/core"), deps(401).d)).status).toBe(401);
+  });
+
+  test("with no edge in front of it, a host does an action once under the name a device gave it", async () => {
+    const { d, w } = deps();
+    d.named = new Named(memoryStore());
+    const id = "0e000000-0000-4000-8000-000000000001";
+    const moves = () => w.sqls.flat().filter((s) => s.sql.startsWith("UPDATE tasks SET priority")).length;
+    const first = await handle(
+      post("/console/api/act", { kind: "task.move", args: { task: 21016, to: "first" }, id }),
+      d,
+    );
+    expect(await first.json()).toEqual({ ok: true, result: { task: 21016, priority: 10 } });
+    const second = await handle(
+      post("/console/api/act", { kind: "task.move", args: { task: 21016, to: "first" }, id }),
+      d,
+    );
+    expect(await second.json()).toEqual({ ok: true, result: { task: 21016, priority: 10 }, again: true });
+    expect(moves()).toBe(1);
+    // Its record of what was done carries the name, once.
+    const core = (await (await handle(get("/console/api/doc/core"), d)).json()) as {
+      acts: { id: string; status: string }[];
+    };
+    expect(core.acts.map((a: { id: string; status: string }) => [a.id, a.status])).toEqual([[id, "done"]]);
+    // With nowhere to write names down, an action is done as often as it is asked: as it always was.
+    const bare = deps();
+    await handle(post("/console/api/act", { kind: "task.move", args: { task: 21016, to: "first" }, id }), bare.d);
+    await handle(post("/console/api/act", { kind: "task.move", args: { task: 21016, to: "first" }, id }), bare.d);
+    expect(bare.w.sqls.flat().filter((s) => s.sql.startsWith("UPDATE tasks SET priority")).length).toBe(2);
+  });
+
+  test("two arrivals under one name at the same moment: one does it, the other is told it is being done", async () => {
+    const { d, w, audited } = deps();
+    d.named = new Named(memoryStore());
+    const moves = () => w.sqls.flat().filter((s) => s.sql.startsWith("UPDATE tasks SET priority")).length;
+    const body = (id: string) => ({ kind: "task.move", args: { task: 21016, to: "first" }, id });
+    // The record of what is done is slow to write, which is where two
+    // arrivals used to pass each other: both had looked, neither had begun.
+    let open: () => void = () => {};
+    const gate = new Promise<void>((r) => {
+      open = r;
+    });
+    const audit = d.audit;
+    d.audit = async (e) => {
+      await gate;
+      return audit(e);
+    };
+    const id = "0e000000-0000-4000-8000-000000000002";
+    const a = handle(post("/console/api/act", body(id)), d);
+    const b = handle(post("/console/api/act", body(id)), d);
+    await new Promise((r) => setTimeout(r, 5));
+    open();
+    const answers = await Promise.all([a, b]);
+    expect(answers.map((r) => r.status).sort()).toEqual([200, 409]);
+    const told = await (answers.find((r) => r.status === 409) as Response).json();
+    expect(told).toEqual({ error: "This is still being done.", running: true });
+    expect(moves()).toBe(1);
+    expect(audited.filter((e) => e.phase === "start")).toHaveLength(1);
+    // Asked again once it is over, it is answered from the record.
+    expect(await (await handle(post("/console/api/act", body(id)), d)).json()).toMatchObject({ ok: true, again: true });
+    // An action that could not be recorded is not taken, and its name
+    // is not left taken either: tried again, it is simply done.
+    const other = "0e000000-0000-4000-8000-000000000003";
+    d.audit = async () => {
+      throw new Error("disk full");
+    };
+    const refused = await handle(post("/console/api/act", body(other)), d);
+    expect([refused.status, await refused.json()]).toEqual([
+      502,
+      { error: "the action could not be recorded, so it was not taken" },
+    ]);
+    d.audit = audit;
+    const retried = await handle(post("/console/api/act", body(other)), d);
+    expect(await retried.json()).toEqual({ ok: true, result: { task: 21016, priority: 10 } });
+    expect(moves()).toBe(2);
+  });
+
+  test("the record of names: what each state means, how many are kept, and a record that cannot be read", async () => {
+    const store = memoryStore();
+    const named = new Named(store);
+    expect(await named.seen("a")).toBeNull();
+    await named.begin("a");
+    expect(await named.seen("a")).toEqual({ state: "running" });
+    await named.end("a", { ok: true, result: { n: 1 } });
+    expect(await named.seen("a")).toEqual({ state: "done", fate: { ok: true, result: { n: 1 } } });
+    await named.begin("b");
+    await named.end("b", { ok: false, error: "no", status: 404 });
+    expect(await named.seen("b")).toEqual({ state: "done", fate: { ok: false, error: "no", status: 404 } });
+    // Started, and the process stopped: another one, reading the same
+    // record, knows it was started and not how it ended.
+    await named.begin("c");
+    const after = new Named(store);
+    expect(await after.seen("c")).toEqual({ state: "lost" });
+    expect(await after.seen("a")).toEqual({ state: "done", fate: { ok: true, result: { n: 1 } } });
+    expect([named.isRunning("c"), after.isRunning("c")]).toEqual([true, false]);
+    // An outcome that cannot be written still frees the name in this process.
+    const failing = new Named({
+      read: async () => null,
+      write: async (text) => {
+        if (text.includes('"ok"')) throw new Error("disk full");
+      },
+    });
+    await failing.begin("d");
+    await expect(failing.end("d", { ok: true })).rejects.toThrow("disk full");
+    expect(failing.isRunning("d")).toBe(false);
+    // A name is taken by one at a time, and given back.
+    const one = new Named(memoryStore());
+    expect([one.take("t"), one.take("t"), one.isRunning("t")]).toEqual([true, false, true]);
+    expect(await one.seen("t")).toEqual({ state: "running" });
+    one.release("t");
+    expect([one.isRunning("t"), await one.seen("t"), one.take("t")]).toEqual([false, null, true]);
+    // Three hundred names are kept: the oldest is forgotten first, and
+    // one seen again counts as new.
+    const many = new Named(memoryStore());
+    for (let i = 0; i < 300; i++) await many.record(`n${i}`, { ok: true });
+    await many.record("n0", { ok: true });
+    await many.record("n300", { ok: true });
+    expect([await many.get("n1"), await many.get("n0"), await many.get("n2")]).toEqual([
+      undefined,
+      { ok: true },
+      { ok: true },
+    ]);
+    // A record that cannot be read is an empty one, not a crash.
+    const broken = new Named({ read: async () => "not json", write: async () => {} });
+    expect(await broken.seen("x")).toBeNull();
+  });
+
+  test("the record of names on a slow disk: read once however many ask together, and no write lands over a later one", async () => {
+    let content: string | null = JSON.stringify({ old: { ok: true } });
+    let reads = 0;
+    // Each write takes as long as it is told to.
+    const delays: number[] = [];
+    const disk = {
+      read: async () => {
+        reads++;
+        await new Promise((r) => setTimeout(r, 5));
+        return content;
+      },
+      write: async (text: string) => {
+        await new Promise((r) => setTimeout(r, delays.shift() ?? 1));
+        content = text;
+      },
+    };
+    const named = new Named(disk);
+    // Three ask at the same moment, before the record has been read.
+    await Promise.all([named.begin("a"), named.begin("b"), named.record("c", { ok: true })]);
+    expect(reads).toBe(1);
+    // All three are in the record, with what was there before.
+    expect(Object.keys(JSON.parse(content as string))).toEqual(["old", "a", "b", "c"]);
+    expect([named.isRunning("a"), named.isRunning("b")]).toEqual([true, true]);
+    // One write is slow, and another name is written down while it is
+    // out: the slow one does not land afterwards, over the newer.
+    delays.push(12, 1);
+    const slow = named.record("d", { ok: true });
+    await new Promise((r) => setTimeout(r, 3));
+    const quick = named.record("e", { ok: true });
+    await Promise.all([slow, quick]);
+    expect(Object.keys(JSON.parse(content as string))).toEqual(["old", "a", "b", "c", "d", "e"]);
+    // A process started now reads all of them back.
+    const after = new Named(disk);
+    expect([await after.seen("a"), await after.seen("c"), await after.seen("e")]).toEqual([
+      { state: "lost" },
+      { state: "done", fate: { ok: true } },
+      { state: "done", fate: { ok: true } },
+    ]);
+    // A write that fails is its own caller's to hear of; the next one is written all the same.
+    const flaky = { fail: true };
+    const kept: string[] = [];
+    const sometimes = new Named({
+      read: async () => null,
+      write: async (text) => {
+        if (flaky.fail) throw new Error("disk full");
+        kept.push(text);
+      },
+    });
+    await expect(sometimes.record("x", { ok: true })).rejects.toThrow("disk full");
+    flaky.fail = false;
+    await sometimes.record("y", { ok: true });
+    expect(Object.keys(JSON.parse(kept[kept.length - 1]))).toEqual(["x", "y"]);
+  });
+
+  test("asked which machines there are, a machine serving the app by itself answers with itself: nothing is in front of it, and nothing waits", async () => {
+    const { d } = deps();
+    d.self = { name: "nixos", version: "0123abcd4567" };
+    await handle(get("/console/api/doc/core"), d);
+    const answer = (await (await handle(get("/console/api/machines"), d)).json()) as {
+      served: string;
+      platform: unknown;
+      machines: { name: string; quiet: boolean; version: string | null; actions: string[]; sections: string[] }[];
+      held: unknown[];
+    };
+    expect([answer.served, answer.platform, answer.held]).toEqual(["machine", null, []]);
+    expect(answer.machines).toHaveLength(1);
+    const [self] = answer.machines;
+    expect([self.name, self.quiet, self.version]).toEqual(["nixos", false, "0123abcd4567"]);
+    // What it can do is what it has: its actions by kind, and every section it reads.
+    expect(self.actions).toEqual(Object.keys(d.actions ?? {}).sort());
+    expect(self.actions).toContain("task.cancel");
+    expect(self.sections).toContain("questions");
+    expect(self.sections).toEqual([...self.sections].sort());
+    // With no name given it, it is still a machine.
+    d.self = undefined;
+    const unnamed = (await (await handle(get("/console/api/machines"), d)).json()) as typeof answer;
+    expect([unnamed.machines[0].name, unnamed.machines[0].version]).toEqual(["this machine", null]);
   });
 
   test("an action runs, is recorded without the owner's words, and shows in the state", async () => {
@@ -793,7 +1253,9 @@ describe("the interface's endpoints", () => {
       ["need.comment", "done", { ref: `${REPO}#5` }],
     ]);
     expect(JSON.stringify(audited)).not.toContain("private words");
-    const core = await (await handle(get("/console/api/doc/core"), d)).json();
+    const core = (await (await handle(get("/console/api/doc/core"), d)).json()) as {
+      acts: { kind: string; status: string }[];
+    };
     expect(core.acts.map((a: { kind: string; status: string }) => [a.kind, a.status])).toEqual([
       ["need.comment", "done"],
       ["task.move", "done"],
@@ -811,7 +1273,9 @@ describe("the interface's endpoints", () => {
       expect((await handle(post("/console/api/act", body), d)).status).toBe(400);
     }
     expect(w.calls.length).toBe(before);
-    const failed = (await (await handle(get("/console/api/doc/core"), d)).json()).acts[0];
+    const failed = (
+      (await (await handle(get("/console/api/doc/core"), d)).json()) as { acts: { kind: string; status: string }[] }
+    ).acts[0];
     expect([failed.kind, failed.status]).toEqual(["task.move", "failed"]);
     await expect(perform(actions(w.ops, new Work(w.ops)), deps().docs, "__proto__", {})).rejects.toThrow(
       /not an action/,

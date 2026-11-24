@@ -223,6 +223,7 @@ pub(crate) enum WorldCommand {
         token: JoinCapability,
         input: Vec<u8>,
         session_id: Option<SessionId>,
+        device_input: Option<serde_json::Value>,
         /// The player-signed move event bytes for this input (#2814), when
         /// the participant plays signed. `None` is the unsigned path,
         /// which refuses participants with a bound author key.
@@ -650,6 +651,10 @@ pub(crate) struct WorldActor {
     /// device re-enumeration. `None` when the host cannot describe
     /// its device — `device.info` then refuses with `unknown_cap`.
     pub(crate) device_manifest: Option<crate::world_caps::DeviceManifest>,
+    /// Input affordances of the session whose input is currently being
+    /// processed. Unlike `device_manifest`, this describes the presenter,
+    /// not the hosting device, and is only used for this actor turn.
+    pub(crate) acting_device_input: Option<serde_json::Value>,
     /// The host's current location consent (#2341 slice 2): the seam a
     /// host fills from its permission prompt / OS state. The default
     /// host records no consent, so sensor caps refuse
@@ -804,6 +809,7 @@ impl WorldActor {
                 command.as_ref(),
                 Some(WorldCommand::Input {
                     signed_move: None,
+                    device_input: None,
                     ..
                 })
             ) {
@@ -817,6 +823,7 @@ impl WorldActor {
                                 next,
                                 WorldCommand::Input {
                                     signed_move: None,
+                                    device_input: None,
                                     ..
                                 }
                             ) =>
@@ -857,6 +864,7 @@ impl WorldActor {
             self.drain_provider_completions().await;
             self.acting = None;
             self.acting_session = None;
+            self.acting_device_input = None;
         }
     }
 
@@ -1333,6 +1341,7 @@ impl WorldActor {
                 token,
                 input,
                 session_id,
+                device_input,
                 signed_move,
                 reply,
             } => {
@@ -1359,6 +1368,7 @@ impl WorldActor {
                     Ok((candidate, signed)) if self.program_healthy => {
                         self.acting = Some(candidate.participant_id);
                         self.acting_session = session_id;
+                        self.acting_device_input = device_input;
                         match self
                             .program
                             .update(&candidate)
@@ -3441,6 +3451,166 @@ mod device_info_tests {
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod authority_boundary_tests {
+    use super::*;
+    use crate::world_caps::{
+        CATALOG_ENTRIES, CapError, DeviceManifest, ProviderKind, ProviderSide, Request,
+    };
+
+    struct BoundaryProgram;
+
+    impl WorldProgram for BoundaryProgram {
+        fn snapshot(&mut self) -> Result<Option<String>> {
+            Ok(Some("{}".to_owned()))
+        }
+    }
+
+    fn sample_manifest() -> DeviceManifest {
+        DeviceManifest {
+            display: serde_json::json!({"kind": "pixel", "width": 128, "height": 64, "colors": 1}),
+            input: serde_json::json!({"keys": 8, "encoder": true, "pointer": false, "text_entry": "none"}),
+            sensors: serde_json::json!({"gnss": {"accuracy_m": 5}, "microphone": false, "camera": false}),
+            audio: serde_json::json!({"out": "pcm", "in": null}),
+            network: serde_json::json!({"transport": "mqtt", "rtt_class": "slow"}),
+        }
+    }
+
+    /// An actor with every registered provider granted and inside the
+    /// ceiling, so `execute` reaches its dispatch match for each name
+    /// instead of stopping at the ledger.
+    fn boundary_actor() -> WorldActor {
+        let mut core = WorldCore::new("lobby", WorldLimits::default()).unwrap();
+        let all: BTreeSet<String> = CATALOG_ENTRIES
+            .iter()
+            .map(|entry| entry.name.to_owned())
+            .collect();
+        core.ledger.set_granted(all.clone());
+        core.ledger.set_allowed(all);
+        let mut actor = WorldActor::for_test(core, Box::new(BoundaryProgram), None);
+        // `device.info` reports `unknown_cap` when the host cannot
+        // describe its device; a manifest is supplied so the test
+        // measures the dispatch arm, not the host's self-description.
+        actor.device_manifest = Some(sample_manifest());
+        actor
+    }
+
+    fn request(cap: &str) -> Request {
+        Request {
+            id: "b1".to_owned(),
+            cap: cap.to_owned(),
+            args: serde_json::json!({}),
+        }
+    }
+
+    #[test]
+    fn every_host_request_provider_has_an_execute_arm() {
+        // Oracle: the authority-boundary audit (#12597) — the host
+        // request dispatch must serve every host-side Request-kind
+        // registry entry. A registered provider with no executor is
+        // a fail-closed gap, not a bypass, but the audit pins it
+        // here so registry growth without an executor fails loudly
+        // instead of silently returning `unknown_cap` to a granted
+        // world. The two speech request providers are the
+        // documented exception (audit finding F-1): registered but
+        // with no executor, so a granted request fails closed.
+        let mut actor = boundary_actor();
+        let mut served = 0;
+        for entry in CATALOG_ENTRIES {
+            if entry.kind != ProviderKind::Request || entry.side != ProviderSide::Host {
+                continue;
+            }
+            match actor.execute(&request(entry.name)) {
+                Ok(_) => served += 1,
+                Err(error) if matches!(entry.name, "speech.transcribe" | "speech.synthesize") => {
+                    assert_eq!(
+                        error.code(),
+                        CapError::unknown().code(),
+                        "{} is registered with no executor and must fail closed",
+                        entry.name
+                    );
+                }
+                Err(error) => {
+                    assert_ne!(
+                        error.code(),
+                        CapError::unknown().code(),
+                        "{} must dispatch to an executor, got unknown_cap",
+                        entry.name
+                    );
+                    served += 1;
+                }
+            }
+        }
+        let expected = CATALOG_ENTRIES
+            .iter()
+            .filter(|entry| entry.kind == ProviderKind::Request && entry.side == ProviderSide::Host)
+            .count()
+            - 2;
+        assert_eq!(
+            served, expected,
+            "every host request provider except the two documented speech exceptions must dispatch"
+        );
+    }
+
+    #[test]
+    fn unregistered_names_fail_closed_with_unknown_cap() {
+        // Oracle: the authority-boundary audit (#12597) — a name
+        // outside the registry never reaches an executor: the ledger
+        // denies it before the dispatch match is consulted.
+        let mut actor = boundary_actor();
+        for name in [
+            "not.a.provider",
+            "kv",
+            "http",
+            "client.file.write",
+            "speech",
+            "form.unknown",
+        ] {
+            let error = actor.execute(&request(name)).unwrap_err();
+            assert_eq!(
+                error.code(),
+                CapError::unknown().code(),
+                "{name} must fail closed with unknown_cap"
+            );
+        }
+    }
+
+    #[test]
+    fn client_providers_never_execute_on_the_host() {
+        // Oracle: the authority-boundary audit (#12597) — a
+        // client-side provider is brokered to the originating
+        // session, never executed by the host, even when a caller
+        // reaches `execute` directly instead of the broker route.
+        let mut actor = boundary_actor();
+        let error = actor.execute(&request("client.file.read")).unwrap_err();
+        assert_eq!(error.code(), CapError::failed().code());
+        assert_eq!(
+            error.reason().map(String::as_str),
+            Some("client_provider_async")
+        );
+    }
+
+    #[test]
+    fn event_only_and_subscription_names_do_not_execute() {
+        // Oracle: the authority-boundary audit (#12597) — `execute`
+        // serves host requests only. `form.result` is an event, so
+        // it is refused as event-only; subscriptions are delivered
+        // by arm/fire, so naming one as a request fails closed.
+        let mut actor = boundary_actor();
+        let error = actor.execute(&request("form.result")).unwrap_err();
+        assert_eq!(error.code(), CapError::bad_args().code());
+        for name in ["time.tick", "players", "loc.watch", "speech.capture"] {
+            let error = actor.execute(&request(name)).unwrap_err();
+            assert_eq!(
+                error.code(),
+                CapError::unknown().code(),
+                "{name} is a subscription, not a request"
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod form_tests {
     use super::*;
     use crate::world_caps::{CapError, Request};
@@ -3518,6 +3688,7 @@ mod form_tests {
             audio: serde_json::json!({}),
             network: serde_json::json!({}),
         });
+        actor.acting_device_input = None;
         (actor, events)
     }
 
@@ -3587,6 +3758,9 @@ mod form_tests {
         let (mut actor, _) = form_actor();
         let headless = crate::world::WorldHandle::host_device_manifest();
         actor.device_manifest = Some(headless.clone());
+        actor.acting_device_input = Some(serde_json::json!({
+            "keys": 128, "text_entry": "keyboard", "encoder": false, "pointer": true
+        }));
         let form = form(vec![FormField::Text {
             id: "name".to_owned(),
             label: "Name".to_owned(),
@@ -3600,6 +3774,27 @@ mod form_tests {
                 "keys": 128, "text_entry": "keyboard", "encoder": false, "pointer": false
             }))
             .is_ok()
+        );
+    }
+
+    #[test]
+    fn presenter_without_text_entry_is_refused_even_when_host_can_type() {
+        let (mut actor, _) = form_actor();
+        actor.acting_device_input = Some(serde_json::json!({
+            "keys": 0, "text_entry": "none", "encoder": false, "pointer": false
+        }));
+        let text_form = form(vec![FormField::Text {
+            id: "name".to_owned(),
+            label: "Name".to_owned(),
+            required: true,
+            max_length: 32,
+        }]);
+        assert_eq!(
+            present(&mut actor, &text_form)
+                .unwrap_err()
+                .reason()
+                .map(String::as_str),
+            Some("text_entry_unavailable")
         );
     }
 
@@ -4097,6 +4292,7 @@ impl WorldActor {
             stale_wants_at_open: BTreeSet::new(),
             acting: None,
             acting_session: None,
+            acting_device_input: None,
             device_manifest: None,
             location_consent: crate::world_caps::LocationConsent::ConsentRequired,
             location_fix: None,

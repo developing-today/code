@@ -32,6 +32,20 @@ so, and prints what it did:
    happens only once the Worker answers its health check and says it is
    built for this hostname; until then, and after `--edge off`, the
    hostname goes straight to this host.
+7. The Worker is given the two tokens it needs to do the core itself,
+   with this host connected or not (the repository automation token and
+   the queue store token), and the switch that lets it use them. On
+   unless `--edge-direct off` was asked for, which is remembered like
+   `--edge`, turns the switch off and takes the two tokens away again.
+   Nothing is uploaded on a run that changes nothing (unless the Worker
+   has lost one of them, and then it gets them again). A run that was
+   never told either way and cannot do it (a secret that is not readable
+   here, Cloudflare refusing) says so and carries on: the rest of what
+   this script keeps is not held up by it, and the next run tries again.
+   The tokens go through Cloudflare's API with the token this script
+   already holds, so nothing has to be installed here for it. The Worker
+   says in /console/health whether the switch is on and whether each
+   token is there.
 
 The gate comes first and the routes last, so the origin is never
 reachable without sign-in in front of it. If the console does not come
@@ -40,7 +54,8 @@ up with its sign-in settings, the run stops before the route.
 Every secret is read by name through `fleet secrets get` and stays in
 memory. Nothing printed is a secret.
 
-Usage: expose.py [--check] [--edge on|off] [--host pm.security.cab] [--owner ADDRESS]
+Usage: expose.py [--check] [--edge on|off] [--edge-direct on|off]
+                 [--host pm.security.cab] [--owner ADDRESS]
                  [--google-stdin] [--status]
   --owner      whose sign-in is let in. Needed the first time; after that
                the console's environment file remembers it. The address
@@ -56,11 +71,18 @@ Usage: expose.py [--check] [--edge on|off] [--host pm.security.cab] [--owner ADD
                nothing.
   --edge off   take the hostname off the edge Worker; remembered by later
                runs (the timer's included) until --edge on.
+  --edge-direct on|off
+               whether the edge Worker does the core itself: on uploads
+               the GitHub and queue tokens and turns the switch on; off
+               turns it off and takes the tokens away. Remembered by
+               later runs. On when never said.
 """
 
 from __future__ import annotations
 
 import argparse
+import contextlib
+import fcntl
 import json
 import pathlib
 import re
@@ -95,6 +117,27 @@ PUBLIC_PATHS = (
 WORKER = "pm-console-edge"
 GOOGLE_ID = "google.access-sso.client-id"
 GOOGLE_SECRET = "google.access-sso.client-secret"
+# Bitwarden names for the two tokens the edge Worker does the core
+# with: the repository automation token (the same name the
+# queue-transport-alert deploy uses), and the queue store token, whose
+# name the console's environment file may override.
+GITHUB_TOKEN_SECRET = "github.developing-today-code-automation"
+QUEUE_TOKEN_DEFAULT = "turso.fleet-queue-rw-token"
+
+
+@contextlib.contextmanager
+def one_at_a_time(state: pathlib.Path):
+    """Hold this for a run that may change something: a second run waits
+    for the first. The timer's run and one started from the app would
+    otherwise each read what is so, then both act on it (one deleting a
+    token the other has just uploaded)."""
+    state.mkdir(parents=True, exist_ok=True, mode=0o700)
+    with open(state / "expose.lock", "w") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(lock, fcntl.LOCK_UN)
 
 
 def secret(name: str) -> str:
@@ -213,6 +256,201 @@ def edge_choice(state: pathlib.Path, choice: str | None, keep: bool) -> bool:
             marker.write_text(choice + "\n")
         return choice != "off"
     return not marker.exists() or marker.read_text().strip() != "off"
+
+
+def direct_choice(state: pathlib.Path, choice: str | None, keep: bool) -> bool:
+    """Whether the edge Worker does the core itself. A choice given now
+    decides, and with `keep` it is written to a file, so a timer's run
+    keeps what was last asked for. With no choice given the file decides,
+    and with no file the answer is yes: Cloudflare carrying the core is
+    how this is set up, and `off` is the choice that has to be made."""
+    marker = state / "edge-direct"
+    if choice is not None:
+        if keep:
+            state.mkdir(parents=True, exist_ok=True, mode=0o700)
+            marker.write_text(choice + "\n")
+        return choice != "off"
+    return not marker.exists() or marker.read_text().strip() != "off"
+
+
+def ensure_edge_direct(
+    cf: Cloudflare,
+    account: str,
+    env: pathlib.Path,
+    choice: str | None,
+    check: bool,
+) -> None:
+    """Upload the two tokens the edge Worker acts with, and its switch,
+    or turn the switch off and take the tokens away again.
+
+    A secret is read by name through `fleet secrets get` and sent to
+    Cloudflare's API as a Worker secret; it is never printed, written to
+    a file or put on a command line.
+
+    The choice is remembered only once the Worker has it. Turning it on
+    either gets all three there or leaves none: an attempt that fails
+    part-way takes away what it uploaded. Turning it off puts the opt-in
+    off first, so the Worker stops at once, and then removes the tokens;
+    if that stops part-way the mode is still off and a later run
+    finishes. A run that changes nothing uploads nothing, with one
+    exception: a mode that is on gets back whatever the Worker has lost.
+
+    On is what a run does when it was never told either way. Such a run
+    that cannot do it says why and returns: it was not asked for this,
+    so it does not fail over it, and the next run tries again. A run
+    that was asked (`--edge-direct on`), or whose mode is already on,
+    fails as before."""
+    state = env.parent
+    # Read what is remembered before the choice overwrites it. Nothing is
+    # written here: the marker moves only once the Worker has the change.
+    marker = state / "edge-direct"
+    current = marker.exists() and marker.read_text().strip() == "on"
+    wanted = direct_choice(state, choice, keep=False)
+    # Straight to Cloudflare's API, with the token this script already
+    # holds: nothing to install on this host, and the value travels in
+    # the request body, never on a command line.
+    secrets_path = f"/accounts/{account}/workers/scripts/{WORKER}/secrets"
+    all_three = ("GITHUB_TOKEN", "QUEUE_TOKEN", "EDGE_DIRECT")
+
+    def put(name: str, value: str) -> None:
+        cf.call(
+            "PUT", secrets_path, {"name": name, "text": value, "type": "secret_text"}
+        )
+
+    def held() -> set[str]:
+        return {s.get("name") for s in cf.get(secrets_path)}
+
+    def remember(mode: str) -> None:
+        state.mkdir(parents=True, exist_ok=True, mode=0o700)
+        marker.write_text(mode + "\n")
+
+    def take_tokens_away() -> None:
+        """Off means the Worker holds nothing it could act with."""
+        names = held()
+        for name in ("GITHUB_TOKEN", "QUEUE_TOKEN"):
+            if name in names:
+                cf.change(
+                    f"edge direct: take {name} away from the Worker",
+                    "DELETE",
+                    f"{secrets_path}/{name}",
+                    None,
+                )
+
+    def upload() -> None:
+        github = secret(GITHUB_TOKEN_SECRET)
+        queue_name = (
+            env_values(env).get("PM_CONSOLE_QUEUE_TOKEN_NAME") or QUEUE_TOKEN_DEFAULT
+        )
+        queue = secret(queue_name)
+        if not github:
+            raise SystemExit(f"secret {GITHUB_TOKEN_SECRET} is not readable here")
+        if not queue:
+            raise SystemExit(f"secret {queue_name} is not readable here")
+        try:
+            put("GITHUB_TOKEN", github)
+            put("QUEUE_TOKEN", queue)
+            put("EDGE_DIRECT", "on")
+        except SystemExit:
+            # Part-way is not on. What did get there is taken away again,
+            # so a failed attempt leaves the Worker holding nothing.
+            if not current:
+                try:
+                    take_tokens_away()
+                except SystemExit:
+                    pass
+            raise
+
+    if wanted and current:
+        # On already. A timer's run uploads nothing, unless the Worker
+        # has lost one of the three, and then it gets them again.
+        try:
+            lost = sorted(set(all_three) - held())
+        except SystemExit as error:
+            print(f"note: could not see what the Worker holds: {error}")
+            return
+        if lost:
+            cf.changes.append(
+                f"edge direct: give the Worker back what it has lost ({', '.join(lost)})"
+            )
+            if not check:
+                upload()
+        return
+    if wanted and choice is None:
+        # Never told either way: on is how this is set up. Whether it can
+        # be done is found out first, so that a run that cannot says
+        # nothing will change, and does not fail over what it was not
+        # asked for.
+        queue_name = (
+            env_values(env).get("PM_CONSOLE_QUEUE_TOKEN_NAME") or QUEUE_TOKEN_DEFAULT
+        )
+        missing = [
+            name for name in (GITHUB_TOKEN_SECRET, queue_name) if not secret(name)
+        ]
+        if missing:
+            print(
+                "note: the edge Worker was not given its tokens: "
+                f"{' and '.join(missing)} not readable here; the next run tries again"
+            )
+            return
+        before = len(cf.changes)
+        cf.changes.append(
+            "edge direct: upload the GitHub and queue tokens and turn direct actions on"
+        )
+        if check:
+            return
+        try:
+            upload()
+        except SystemExit as error:
+            # What got there was taken away again (upload does that), so
+            # nothing has changed, and nothing is listed as changed.
+            del cf.changes[before:]
+            print(
+                f"note: the edge Worker was not given its tokens: {error}; "
+                "the next run tries again"
+            )
+            return
+        remember("on")
+        return
+    if wanted:
+        cf.changes.append(
+            "edge direct: upload the GitHub and queue tokens and turn direct actions on"
+        )
+        if check:
+            return
+        upload()
+        # The Worker has all three now, so the choice is remembered; a
+        # failure above raises before this line and leaves no marker.
+        remember("on")
+        return
+    if current:
+        cf.changes.append("edge direct: turn direct actions off")
+        if check:
+            return
+        # The opt-in goes first, so the Worker stops acting at once, and
+        # the mode is off from here whatever happens to the tidying.
+        put("EDGE_DIRECT", "off")
+        remember("off")
+        take_tokens_away()
+        return
+    if choice == "off":
+        # Asked for off while it is not on: never turned on, off already,
+        # or after an attempt to turn it on that never finished. The
+        # Worker is not acting, so the choice is remembered first; a run
+        # that was never told turns it on, and without this the next
+        # timer's run would undo what was just asked for. Then make sure
+        # nothing was left behind.
+        if not check:
+            remember("off")
+        take_tokens_away()
+        return
+    if marker.exists():
+        # Off, after having been on, and nobody asking: a token left by a
+        # run that stopped part-way is taken away now. This is tidying;
+        # it never fails a run that changes nothing else.
+        try:
+            take_tokens_away()
+        except SystemExit as error:
+            print(f"note: could not look for tokens left on the Worker: {error}")
 
 
 def worker_ready(cf: Cloudflare, account: str, host: str) -> bool:
@@ -581,6 +819,15 @@ def ensure_console(
 
 
 def main() -> int:
+    # A run that only looks needs no turn. One that may change something
+    # waits for any other such run to finish first.
+    if {"--status", "--check"} & set(sys.argv[1:]):
+        return configure()
+    with one_at_a_time(pathlib.Path.home() / ".local/state/pm-console"):
+        return configure()
+
+
+def configure() -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--check", action="store_true")
     parser.add_argument("--host", default="pm.security.cab")
@@ -604,6 +851,13 @@ def main() -> int:
         choices=["on", "off"],
         help="send the hostname through the edge Worker, or straight to this host; "
         "the choice is kept for later runs (default: on, once the Worker answers)",
+    )
+    parser.add_argument(
+        "--edge-direct",
+        choices=["on", "off"],
+        help="whether the edge Worker does the core itself: on uploads its "
+        "GitHub and queue tokens and turns the switch on, off takes them "
+        "away; the choice is kept for later runs (default: on)",
     )
     args = parser.parse_args()
     env = pathlib.Path.home() / ".local/state/pm-console/.env"
@@ -700,6 +954,9 @@ def main() -> int:
         # Last: by now the host is up, knows where the edge is, and is
         # reachable behind the hostname the Worker will sit on.
         ensure_edge_route(cf, zone, args.host, edge)
+        # The switch is independent of the route: it only decides whether
+        # the Worker already deployed does the core itself.
+        ensure_edge_direct(cf, account, env, args.edge_direct, args.check)
     else:
         raise SystemExit(
             "the Access application has no audience tag; not routing the hostname"

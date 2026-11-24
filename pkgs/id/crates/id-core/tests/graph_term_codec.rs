@@ -13,9 +13,7 @@
 //! encoding must reject with its exact failure class. No vector hashes
 //! an ID into its own preimage.
 //!
-//! `graph/mod.rs` and the crate root do not export these modules yet
-//! (slice 9110-09 wires them), so this test includes them, and the
-//! modules they build on, by path.
+//! This suite includes the graph modules and their dependencies by path.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 

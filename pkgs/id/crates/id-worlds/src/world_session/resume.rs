@@ -143,6 +143,19 @@ impl BaselineCache {
         Some(baseline)
     }
 
+    /// Peek the viewport bound to a live token without consuming its baseline.
+    ///
+    /// Reconnected sessions need this before their first view is rendered;
+    /// `take_matching` still performs the one-shot, shape-checked consume.
+    pub(crate) fn viewport_for(&mut self, token: &str, participant: u64) -> Option<(u16, u16)> {
+        self.evict_expired();
+        let (_, baseline) = self
+            .entries
+            .iter()
+            .find(|(candidate, _)| candidate == token)?;
+        (baseline.participant == participant).then_some((baseline.width, baseline.height))
+    }
+
     fn next_token(&mut self) -> String {
         let mut hasher = blake3::Hasher::new();
         hasher.update(b"developing-today/id-world-resume-token/v1\0");
@@ -197,6 +210,18 @@ mod tests {
         ScreenBaseline::new(participant, revision, 1, 1, 1, screen("a"))
     }
 
+    fn screen_2x1() -> ScreenSurface {
+        let cell = |glyph: &str| ScreenCell {
+            symbol: glyph.to_owned(),
+            fg: 0,
+            bg: 0,
+            bold: false,
+            columns: 1,
+            token: None,
+        };
+        ScreenSurface::from_cells(2, 1, vec![cell("a"), cell("b")]).expect("a 2x1 screen")
+    }
+
     #[test]
     fn a_token_names_one_bound_baseline_and_is_consumed() {
         let mut cache = BaselineCache::default();
@@ -249,6 +274,36 @@ mod tests {
         assert!(
             cache.take_matching(&token, 7, 1, 1, 1).is_none(),
             "a matched token is still single-use"
+        );
+    }
+
+    #[test]
+    fn viewport_for_peeks_without_consuming() {
+        let mut cache = BaselineCache::default();
+        let token = cache.issue(ScreenBaseline::new(7, 3, 1, 2, 1, screen_2x1()));
+        assert_eq!(
+            cache.viewport_for(&token, 8),
+            None,
+            "another participant peeks nothing"
+        );
+        assert_eq!(
+            cache.viewport_for("not-a-token", 7),
+            None,
+            "an unknown token peeks nothing"
+        );
+        assert_eq!(
+            cache.viewport_for(&token, 7),
+            Some((2, 1)),
+            "the bound viewport peeks"
+        );
+        let taken = cache
+            .take_matching(&token, 7, 1, 2, 1)
+            .expect("the peek left the baseline in place");
+        assert_eq!(taken.revision, 3);
+        assert_eq!(
+            cache.viewport_for(&token, 7),
+            None,
+            "a consumed token peeks nothing"
         );
     }
 

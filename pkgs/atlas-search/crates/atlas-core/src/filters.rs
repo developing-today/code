@@ -4,7 +4,11 @@
 //! concatenation the Python's f-strings use (including the double
 //! space the empty Turso `sens_join` leaves in two statements): the
 //! strings are the contract with the database, and the parity
-//! fixtures record them byte-for-byte.
+//! fixtures record them byte-for-byte. One named exception to
+//! the byte-for-byte claim: the topics/projects LIKE clauses
+//! escape `%`, `_`, `\` and carry `ESCAPE '\'` where the Python
+//! emits a bare `LIKE ?` (#5375) — see the fixtures README's
+//! "Intentional parity deviation" section and #13280.
 
 use serde_json::{Map, Value as Json};
 
@@ -465,6 +469,12 @@ pub fn details_sql(shape: BackendShape, n_ids: usize) -> String {
 
 pub const NEIGHBORS_SQL: &str = "SELECT id, chunk_idx, text FROM chunks \
     WHERE message_id = ? AND chunk_idx BETWEEN ? AND ? ORDER BY chunk_idx";
+
+/// Every chunk row of one message, ordered by chunk_idx — the
+/// enumeration the full-content span filter (#12624) classifies
+/// before a message payload may cross the output boundary.
+pub const MESSAGE_CHUNKS_SQL: &str = "SELECT id, chunk_idx, text FROM chunks \
+    WHERE message_id = ? ORDER BY chunk_idx";
 
 pub const MESSAGE_SQL: &str = "SELECT id, role, text FROM messages WHERE id = ?";
 
