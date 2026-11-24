@@ -266,3 +266,103 @@ fn promoted_agent_memory_is_searchable_by_the_fanout() {
     assert_eq!(hits[0].chunk_id, 1, "the transcript memory ranks first");
     assert!(hits[0].dist < hits[1].dist);
 }
+
+/// Write a synthetic memory-lancedb-shaped dataset (the store's own
+/// columns, including a vector the reader must ignore) into `path`.
+fn write_fixture_store(path: &Path) {
+    use std::sync::Arc;
+    use arrow::array::{FixedSizeListArray, Float64Array, RecordBatch, RecordBatchIterator, StringArray};
+    use arrow::datatypes::{DataType, Field, Schema};
+
+    let vec_field = Arc::new(Field::new("item", DataType::Float32, true));
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Utf8, false),
+        Field::new("text", DataType::Utf8, false),
+        Field::new("vector", DataType::FixedSizeList(vec_field.clone(), 3), true),
+        Field::new("importance", DataType::Float64, true),
+        Field::new("category", DataType::Utf8, true),
+        Field::new("createdAt", DataType::Float64, true),
+        Field::new("agentId", DataType::Utf8, true),
+    ]));
+    let values = arrow::array::Float32Array::from(vec![0.25f32, 0.5, 0.75, 0.1, 0.2, 0.3]);
+    let vectors = FixedSizeListArray::new(vec_field, 3, Arc::new(values), None);
+    let batch = RecordBatch::try_new(
+        schema.clone(),
+        vec![
+            Arc::new(StringArray::from(vec!["mem-transcript", "mem-deploy"])),
+            Arc::new(StringArray::from(vec![
+                "Continue the current task from the existing transcript, preserving completed work.",
+                "The deploy window opens on Sunday evening after the freeze lifts.",
+            ])),
+            Arc::new(vectors),
+            Arc::new(Float64Array::from(vec![0.9, 0.4])),
+            Arc::new(StringArray::from(vec!["fact", "fact"])),
+            Arc::new(Float64Array::from(vec![1_763_000_000_000.0, 1_763_100_000_000.0])),
+            Arc::new(StringArray::from(vec!["main", "main"])),
+        ],
+    )
+    .unwrap();
+    let reader = RecordBatchIterator::new(vec![Ok(batch)], schema);
+    let uri = path.to_str().unwrap().to_string();
+    tokio::runtime::Runtime::new().unwrap().block_on(async {
+        lance::Dataset::write(reader, &uri, None).await.unwrap();
+    });
+}
+
+/// Oracle: the native reader maps a `.lance` dataset's columns onto
+/// the same entries the JSON export parser produces, and never reads
+/// the vector column.
+#[test]
+fn native_reader_reads_a_lancedb_store_without_its_vectors() {
+    let dir = temp_dir("native");
+    let store = dir.join("memories.lance");
+    write_fixture_store(&store);
+
+    let mut native = atlas_core::memory::read_lancedb_store_blocking(&store).unwrap();
+    native.sort_by(|a, b| a.id.cmp(&b.id));
+    let mut json = parse_memory_export(EXPORT).unwrap();
+    json.sort_by(|a, b| a.id.cmp(&b.id));
+    assert_eq!(native, json);
+}
+
+/// Oracle: rebuild-from-sources — staging the native read into a
+/// fresh unit and promoting it yields a searchable shard with the
+/// same hits as the export path (the staged corpus is the source).
+#[test]
+fn native_store_rebuilds_the_index_from_sources() {
+    let dir = temp_dir("rebuild");
+    let store = dir.join("memories.lance");
+    write_fixture_store(&store);
+    let (registry, agent_db) = register(&dir);
+    let entries = atlas_core::memory::read_lancedb_store_blocking(&store).unwrap();
+    stage_memory_export_in_db(&agent_db, AGENT_MEMORY_UNIT, &entries, NOW).unwrap();
+    let report = embed_unit_into_shard(
+        &registry, AGENT_MEMORY_UNIT, &dir.join("shards"), "agent-memory", &KeywordEmbedder, NOW,
+    )
+    .unwrap();
+    assert_eq!(report.items, 2);
+    assert_eq!(report.chunks, 2);
+}
+
+/// Oracle: idempotency — a second sync of an unchanged store restages
+/// nothing; a changed text restages only that entry.
+#[test]
+fn sync_is_idempotent_and_restages_only_changed_entries() {
+    let dir = temp_dir("sync");
+    let (_registry, agent_db) = register(&dir);
+    let conn = rusqlite::Connection::open(&agent_db).unwrap();
+    let mut entries = parse_memory_export(EXPORT).unwrap();
+
+    let first = atlas_core::memory::sync_memory_entries(&conn, AGENT_MEMORY_UNIT, &entries, NOW).unwrap();
+    assert_eq!((first.added, first.restaged, first.unchanged), (2, 0, 0));
+
+    let again = atlas_core::memory::sync_memory_entries(&conn, AGENT_MEMORY_UNIT, &entries, NOW).unwrap();
+    assert_eq!((again.added, again.restaged, again.unchanged), (0, 0, 2));
+
+    entries[1].text = "The deploy window moved to Monday.".to_string();
+    let changed = atlas_core::memory::sync_memory_entries(&conn, AGENT_MEMORY_UNIT, &entries, NOW).unwrap();
+    assert_eq!((changed.added, changed.restaged, changed.unchanged), (0, 1, 1));
+
+    let items = list_staged_items_in_db(&agent_db, Some(AGENT_MEMORY_UNIT)).unwrap();
+    assert_eq!(items.len(), 2, "restaging replaces the old item");
+}

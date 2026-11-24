@@ -23,11 +23,11 @@
 //!   `chunks_raw` write path every staged unit uses; promotion and
 //!   search are the existing aggregator and fan-out, unchanged.
 //!
-//! Out of scope (slice 1b, the #8622 remainder): the native LanceDB
-//! reader, idempotency keyed on id+updated_at, and the
-//! rebuild-from-sources proof. Until 1b, this connector stages a
-//! unit once and the unit is then promoted — promotion is the
-//! terminal write, as for every staged unit.
+//! Slice 1b (developing-today/code#14039) adds the native reader
+//! [`read_lancedb_store`], which opens the store directly with the
+//! trimmed `lance` crate (no second vector store), and
+//! [`sync_memory_entries`], which restages only the entries whose
+//! content changed since the last sync (idempotent by source_ref).
 
 use std::path::Path;
 
@@ -309,4 +309,148 @@ pub fn stage_memory_export_in_db(
 ) -> Result<Vec<i64>> {
     let conn = open(db)?;
     stage_memory_export(&conn, unit_id, entries, now)
+}
+
+/// What one [`sync_memory_entries`] run did to a unit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct SyncReport {
+    /// Entries staged for the first time.
+    pub added: usize,
+    /// Entries whose recorded content changed, restaged in place.
+    pub restaged: usize,
+    /// Entries already staged with identical content — untouched.
+    pub unchanged: usize,
+}
+
+/// Read the memory-lancedb store at `path` natively: open the
+/// `memories.lance` dataset with the `lance` crate and map its
+/// `id`, `text`, `agentId`, `category`, `importance` and `createdAt`
+/// columns onto [`MemoryEntry`]. The `vector` column is never read.
+/// A missing required column or an empty id/text is a loud error.
+pub async fn read_lancedb_store(path: &Path) -> Result<Vec<MemoryEntry>> {
+    use arrow::array::{Array, ArrayRef, RecordBatch};
+    use arrow::compute::cast;
+    use arrow::datatypes::DataType;
+
+    let uri = path
+        .to_str()
+        .ok_or_else(|| Error::fatal("memory connector: store path is not valid UTF-8"))?;
+    let dataset = lance::Dataset::open(uri)
+        .await
+        .map_err(|e| Error::backend(format!("memory connector: opening {uri}: {e}")))?;
+    let batch: RecordBatch = dataset
+        .scan()
+        .try_into_batch()
+        .await
+        .map_err(|e| Error::backend(format!("memory connector: scanning {uri}: {e}")))?;
+
+    let column = |name: &str| -> Result<Option<ArrayRef>> {
+        match batch.column_by_name(name) {
+            None => Ok(None),
+            Some(col) => cast(col, &DataType::Utf8)
+                .map(Some)
+                .map_err(|e| Error::fatal(format!("memory connector: column `{name}`: {e}"))),
+        }
+    };
+    let numbers = |name: &str| -> Result<Option<ArrayRef>> {
+        match batch.column_by_name(name) {
+            None => Ok(None),
+            Some(col) => cast(col, &DataType::Float64)
+                .map(Some)
+                .map_err(|e| Error::fatal(format!("memory connector: column `{name}`: {e}"))),
+        }
+    };
+    let id = column("id")?
+        .ok_or_else(|| Error::fatal("memory connector: store has no `id` column"))?;
+    let text = column("text")?
+        .ok_or_else(|| Error::fatal("memory connector: store has no `text` column"))?;
+    let agent = column("agentId")?;
+    let category = column("category")?;
+    let importance = numbers("importance")?;
+    let created = numbers("createdAt")?;
+
+    fn str_at(col: &Option<ArrayRef>, i: usize) -> Option<String> {
+        let arr = col.as_ref()?.as_any().downcast_ref::<arrow::array::StringArray>()?;
+        (!arr.is_null(i)).then(|| arr.value(i).to_string())
+    }
+    fn num_at(col: &Option<ArrayRef>, i: usize) -> Option<f64> {
+        let arr = col.as_ref()?.as_any().downcast_ref::<arrow::array::Float64Array>()?;
+        (!arr.is_null(i)).then(|| arr.value(i))
+    }
+
+    let mut out = Vec::with_capacity(batch.num_rows());
+    for i in 0..batch.num_rows() {
+        let row_id = str_at(&Some(id.clone()), i)
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| Error::fatal(format!("memory connector: row {i} has no `id`")))?;
+        let row_text = str_at(&Some(text.clone()), i)
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| {
+                Error::fatal(format!("memory connector: row {row_id} has no `text`"))
+            })?;
+        out.push(MemoryEntry {
+            id: row_id,
+            text: row_text,
+            agent: str_at(&agent, i),
+            category: str_at(&category, i),
+            importance: num_at(&importance, i),
+            created_at_ms: num_at(&created, i),
+            sensitivity: Tier::Internal,
+        });
+    }
+    Ok(out)
+}
+
+/// Blocking form of [`read_lancedb_store`] for the CLI and tests.
+pub fn read_lancedb_store_blocking(path: &Path) -> Result<Vec<MemoryEntry>> {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| Error::backend(format!("memory connector: tokio runtime: {e}")))?
+        .block_on(read_lancedb_store(path))
+}
+
+/// Sync entries into a unit, idempotently: an entry whose source_ref
+/// is already staged with the same text is skipped; one whose text
+/// changed is restaged (its old item and chunks removed first); a new
+/// one is staged. Re-running with the same export changes nothing.
+pub fn sync_memory_entries(
+    conn: &Connection,
+    unit_id: &str,
+    entries: &[MemoryEntry],
+    now: &str,
+) -> Result<SyncReport> {
+    check_stage_schema(conn)?;
+    let mut report = SyncReport::default();
+    for entry in entries {
+        let source = entry.source_ref();
+        let existing: Vec<(i64, String)> = {
+            let mut stmt = conn
+                .prepare("SELECT id, text FROM items WHERE unit_id = ?1 AND source = ?2")
+                .map_err(|e| Error::backend(format!("memory connector: {e}")))?;
+            let rows = stmt
+                .query_map(params![unit_id, source], |r| Ok((r.get(0)?, r.get(1)?)))
+                .map_err(|e| Error::backend(format!("memory connector: {e}")))?;
+            rows.collect::<std::result::Result<_, _>>()
+                .map_err(|e| Error::backend(format!("memory connector: {e}")))?
+        };
+        match existing.as_slice() {
+            [] => {
+                stage_memory_entry(conn, unit_id, entry, now)?;
+                report.added += 1;
+            }
+            [(_, text)] if *text == entry.text => report.unchanged += 1,
+            old => {
+                for (item_id, _) in old {
+                    conn.execute("DELETE FROM chunks_raw WHERE item_id = ?1", params![item_id])
+                        .map_err(|e| Error::backend(format!("memory connector: {e}")))?;
+                    conn.execute("DELETE FROM items WHERE id = ?1", params![item_id])
+                        .map_err(|e| Error::backend(format!("memory connector: {e}")))?;
+                }
+                stage_memory_entry(conn, unit_id, entry, now)?;
+                report.restaged += 1;
+            }
+        }
+    }
+    Ok(report)
 }
