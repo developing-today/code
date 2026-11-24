@@ -294,15 +294,37 @@ func (a *App) inlineDaemon(ctx context.Context) (*Client, error) {
 		return paths.Socket, nil
 	})
 	deadline := time.Now().Add(a.Settings().Duration("daemon.inlineStartTimeout"))
-	for time.Now().Before(deadline) {
+	poll := a.Settings().Duration("daemon.inlineStartPoll")
+	// attempts counts the readiness probes that ran, so the timeout
+	// below can say how many. The first probe always runs, even when
+	// the start budget is already spent: a zero-probe timeout would
+	// report nothing observed.
+	attempts := 0
+	for {
+		attempts++
 		if inlineDaemonPing(c, ctx) {
 			return c, nil
+		}
+		if err := ctx.Err(); err != nil {
+			a.inlineStop()
+			return nil, err
+		}
+		// The last wait is bounded to the remaining start budget: a
+		// poll interval longer than what is left must not sleep past
+		// the deadline.
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			break
+		}
+		wait := poll
+		if wait > remaining {
+			wait = remaining
 		}
 		select {
 		case <-ctx.Done():
 			a.inlineStop()
 			return nil, ctx.Err()
-		case <-time.After(a.Settings().Duration("daemon.inlineStartPoll")):
+		case <-time.After(wait):
 		}
 	}
 	if err := ctx.Err(); err != nil {
@@ -310,7 +332,7 @@ func (a *App) inlineDaemon(ctx context.Context) (*Client, error) {
 		return nil, err
 	}
 	a.inlineStop()
-	return nil, fmt.Errorf("the in-process daemon did not answer")
+	return nil, fmt.Errorf("the in-process daemon did not answer after %d readiness probes", attempts)
 }
 
 // inProcessTransport carries HTTP requests to a handler hosted in this

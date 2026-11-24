@@ -13,7 +13,6 @@
 # (2026-11-11, task 14824): 403 required features, 152 covered, 251
 # exempt below.
 
-setting	daemon.inlineStartPoll	no integration-test exercise yet; burn-down #8468 (settings daemon family); needs an EffectProbes entry + e2e test
 setting	daemon.tsnet.hostname	no integration-test exercise yet; burn-down #8468 (settings daemon family); needs an EffectProbes entry + e2e test
 setting	daemon.tsnetUpTimeout	no integration-test exercise yet; burn-down #8468 (settings daemon family); needs an EffectProbes entry + e2e test
 setting	http.streamBufferInit	allocation-capacity hint only; output and line ceiling are unchanged, so allocation size has no stable e2e behavior oracle

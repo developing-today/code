@@ -198,6 +198,7 @@ var implementedEffectProbes = map[string]string{
 	"autostart.logTail":                  "TestAutostartLogTailBoundsTheFailureExcerptFromTheEnvironment",
 	"daemon.watchConfig":                 "TestDaemonWatchConfigPicksUpAHandEditFromTheEnvironment",
 	"daemon.inlineStartTimeout":          "TestDaemonInlineStartTimeoutBoundsTheInProcessStartFromTheEnvironment",
+	"daemon.inlineStartPoll":             "TestDaemonInlineStartPollPacesTheReadinessProbesFromTheEnvironment",
 	"daemon.probeTimeout":                "TestDaemonProbeTimeoutDecidesWhetherASiblingDaemonIsReportedFromTheEnvironment",
 	"daemon.warmTimeout":                 "TestDaemonWarmTimeoutBoundsTheStartupWarm",
 	"autostart.connectTimeout":           "TestAutostartConnectTimeoutBoundsTheWaitForADaemon",
@@ -440,6 +441,7 @@ var effectProbeFuncs = map[string]func(*testing.T){
 	"TestAutostartLogTailBoundsTheFailureExcerptFromTheEnvironment":                  TestAutostartLogTailBoundsTheFailureExcerptFromTheEnvironment,
 	"TestDaemonWatchConfigPicksUpAHandEditFromTheEnvironment":                        TestDaemonWatchConfigPicksUpAHandEditFromTheEnvironment,
 	"TestDaemonInlineStartTimeoutBoundsTheInProcessStartFromTheEnvironment":          TestDaemonInlineStartTimeoutBoundsTheInProcessStartFromTheEnvironment,
+	"TestDaemonInlineStartPollPacesTheReadinessProbesFromTheEnvironment":             TestDaemonInlineStartPollPacesTheReadinessProbesFromTheEnvironment,
 	"TestDaemonProbeTimeoutDecidesWhetherASiblingDaemonIsReportedFromTheEnvironment": TestDaemonProbeTimeoutDecidesWhetherASiblingDaemonIsReportedFromTheEnvironment,
 	"TestDaemonWarmTimeoutBoundsTheStartupWarm":                                      TestDaemonWarmTimeoutBoundsTheStartupWarm,
 	"TestAutostartConnectTimeoutBoundsTheWaitForADaemon":                             TestAutostartConnectTimeoutBoundsTheWaitForADaemon,
@@ -3516,6 +3518,46 @@ func TestDaemonInlineStartTimeoutBoundsTheInProcessStartFromTheEnvironment(t *te
 	}
 	if !strings.Contains(out, "the in-process daemon did not answer") {
 		t.Fatalf("the failure should be the inline rung's expired start, got:\n%s", out)
+	}
+}
+
+// TestDaemonInlineStartPollPacesTheReadinessProbesFromTheEnvironment is
+// the effect probe for daemon.inlineStartPoll. With daemon.inline=always
+// the client hosts the daemon in process, and with
+// autostart.pingTimeout=1ns every readiness ping expires at once, so the
+// in-process start never observes a live daemon and reports its timeout,
+// which names how many probes ran. At an equal start budget a 1ms poll
+// runs many more probes than a 1s poll, so the interval paces the
+// readiness loop. The default poll lets the same ls answer.
+func TestDaemonInlineStartPollPacesTheReadinessProbesFromTheEnvironment(t *testing.T) {
+	probes := func(extra ...string) int {
+		e := newEnv(t, oneServer)
+		e.setenv(append([]string{"MCPX_DAEMON_INLINE=always", "MCPX_AUTOSTART_PING_TIMEOUT=1ns"}, extra...)...)
+		out, err := e.try("ls")
+		if err == nil {
+			t.Fatalf("with autostart.pingTimeout=1ns no readiness ping can succeed, so the inline ls should fail; got:\n%s", out)
+		}
+		const marker = "the in-process daemon did not answer after "
+		i := strings.Index(out, marker)
+		if i < 0 {
+			t.Fatalf("the inline failure should name its readiness-probe count, got:\n%s", out)
+		}
+		var n int
+		if _, serr := fmt.Sscanf(out[i+len(marker):], "%d", &n); serr != nil || n < 1 {
+			t.Fatalf("the inline failure names no positive probe count, got:\n%s", out)
+		}
+		return n
+	}
+	e := newEnv(t, oneServer)
+	e.setenv("MCPX_DAEMON_INLINE=always")
+	if out := e.run("ls"); !strings.Contains(out, "demo") {
+		t.Fatalf("oracle: an inline ls with the default poll should list demo:\n%s", out)
+	}
+	budget := "MCPX_DAEMON_INLINE_START_TIMEOUT=500ms"
+	fast := probes(budget, "MCPX_DAEMON_INLINE_START_POLL=1ms")
+	slow := probes(budget, "MCPX_DAEMON_INLINE_START_POLL=1s")
+	if fast <= slow {
+		t.Fatalf("at an equal 500ms start budget a 1ms poll ran %d probes and a 1s poll ran %d: the interval must pace the readiness loop", fast, slow)
 	}
 }
 

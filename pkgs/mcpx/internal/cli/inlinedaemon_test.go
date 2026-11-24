@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -167,6 +168,95 @@ func TestInlineDaemonNeverAnswersStillTimesOut(t *testing.T) {
 			_ = os.RemoveAll(dir)
 			t.Fatalf("inlineDaemon left its in-process daemon's directory %s behind after the timeout", dir)
 		}
+	}
+}
+
+// inlineProbeCount parses the readiness-probe count out of an
+// inlineDaemon timeout error, failing the test when the diagnostic does
+// not name one.
+func inlineProbeCount(t *testing.T, err error) int {
+	t.Helper()
+	if err == nil {
+		t.Fatal("inlineDaemon returned no error, want the did-not-answer timeout")
+	}
+	const prefix = "the in-process daemon did not answer after "
+	i := strings.Index(err.Error(), prefix)
+	if i < 0 {
+		t.Fatalf("inlineDaemon error %q does not name its readiness-probe count (want %q<N> readiness probes)", err, prefix)
+	}
+	var n int
+	if _, serr := fmt.Sscanf(err.Error()[i+len(prefix):], "%d", &n); serr != nil || n < 1 {
+		t.Fatalf("inlineDaemon error %q names no positive probe count: %v", err, serr)
+	}
+	return n
+}
+
+// The timeout diagnostic names how many readiness probes ran, so a slow
+// inline start can be told apart from a start that never probed at all.
+func TestInlineDaemonTimeoutNamesItsProbeCount(t *testing.T) {
+	neverAnswers(t)
+	a := inlineDaemonApp(t)
+	if err := a.Settings().SetRuntime("daemon.inlineStartTimeout", "800ms"); err != nil {
+		t.Fatal(err)
+	}
+	_, err := a.inlineDaemon(context.Background())
+	if n := inlineProbeCount(t, err); n < 2 {
+		t.Fatalf("800ms at the default 20ms poll ran %d probes, want at least 2", n)
+	}
+}
+
+// At an equal start budget, the configured poll interval changes the
+// actual retry count: a fast poll probes many times, while a poll
+// longer than the budget probes once and then waits out only what is
+// left. Both runs share the neverAnswers shape, so the difference is
+// the interval, not the daemon.
+func TestInlineDaemonRetryCountVariesWithPollInterval(t *testing.T) {
+	neverAnswers(t)
+	probes := func(poll string) int {
+		t.Helper()
+		a := inlineDaemonApp(t)
+		if err := a.Settings().SetRuntime("daemon.inlineStartTimeout", "400ms"); err != nil {
+			t.Fatal(err)
+		}
+		if err := a.Settings().SetRuntime("daemon.inlineStartPoll", poll); err != nil {
+			t.Fatal(err)
+		}
+		_, err := a.inlineDaemon(context.Background())
+		return inlineProbeCount(t, err)
+	}
+	fast := probes("2ms")
+	slow := probes("30s")
+	if fast <= slow {
+		t.Fatalf("fast poll ran %d probes, slow poll %d: varying the interval at an equal budget must change the retry count", fast, slow)
+	}
+	if slow != 2 {
+		t.Fatalf("a poll longer than the budget should probe once and once more at the deadline, got %d probes", slow)
+	}
+	if fast < 10 {
+		t.Fatalf("400ms at a 2ms poll ran only %d probes, want many", fast)
+	}
+}
+
+// The last wait never sleeps past the deadline: with a poll interval far
+// longer than the start budget, inlineDaemon gives up at the budget,
+// not one poll interval later.
+func TestInlineDaemonLastWaitNeverSleepsPastTheDeadline(t *testing.T) {
+	neverAnswers(t)
+	a := inlineDaemonApp(t)
+	if err := a.Settings().SetRuntime("daemon.inlineStartTimeout", "200ms"); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.Settings().SetRuntime("daemon.inlineStartPoll", "30s"); err != nil {
+		t.Fatal(err)
+	}
+	start := time.Now()
+	_, err := a.inlineDaemon(context.Background())
+	elapsed := time.Since(start)
+	if n := inlineProbeCount(t, err); n != 2 {
+		t.Fatalf("over-long poll ran %d probes, want exactly 2 (one at entry, one at the bounded deadline)", n)
+	}
+	if elapsed > 5*time.Second {
+		t.Fatalf("inlineDaemon with a 200ms budget and a 30s poll took %v, want the wait bounded to the remaining budget", elapsed)
 	}
 }
 
