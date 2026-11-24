@@ -1,0 +1,159 @@
+name: cold-store-rehydrator promote
+
+# Promotion is intentionally unavailable until an audited isolated private
+# staging workflow exists. Workers Versions URLs cannot stage this DO Worker.
+on:
+  workflow_dispatch:
+    inputs:
+      upload_run_id:
+        description: "Successful cold-store-rehydrator-upload run ID"
+        required: true
+        type: string
+      private_staging_run_id:
+        description: "Successful cold-store-rehydrator-private-staging run ID"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: cold-store-rehydrator-cloudflare
+  cancel-in-progress: false
+
+jobs:
+  promote:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    environment: cold-store-rehydrator-production
+    steps:
+      - name: Validate the trusted upload run
+        id: upload-run
+        env:
+          GH_TOKEN: ${{ github.token }}
+          UPLOAD_RUN_ID: ${{ inputs.upload_run_id }}
+        run: |
+          [[ "$UPLOAD_RUN_ID" =~ ^[0-9]+$ ]]
+          curl --fail --silent --show-error \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/$GITHUB_REPOSITORY/actions/runs/$UPLOAD_RUN_ID" \
+            > "$RUNNER_TEMP/upload-run.json"
+          jq -e --arg repo "$GITHUB_REPOSITORY" '
+            .status == "completed" and .conclusion == "success" and
+            .event == "workflow_dispatch" and .head_branch == "main" and
+            .head_repository.full_name == $repo and
+            (.path | endswith(".github/workflows/cold-store-rehydrator-upload.yml"))
+          ' "$RUNNER_TEMP/upload-run.json" > /dev/null
+          echo "head_sha=$(jq -r .head_sha "$RUNNER_TEMP/upload-run.json")" >> "$GITHUB_OUTPUT"
+
+      - name: Download the exact uploaded version record
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: cold-store-rehydrator-version
+          run-id: ${{ inputs.upload_run_id }}
+          repository: ${{ github.repository }}
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/cold-store-rehydrator-version
+
+      - name: Validate version identity and recorded serving baseline
+        id: version
+        env:
+          UPLOAD_RUN_ID: ${{ inputs.upload_run_id }}
+          UPLOAD_SHA: ${{ steps.upload-run.outputs.head_sha }}
+        run: |
+          reference="$RUNNER_TEMP/cold-store-rehydrator-version/cold-store-rehydrator-version.json"
+          jq -e --arg sha "$UPLOAD_SHA" --arg run_id "$UPLOAD_RUN_ID" '
+            .worker_sha == $sha and .upload_run_id == $run_id and
+            (.version_id | test("^[0-9a-fA-F-]{36}$")) and
+            (.baseline_sha256 | test("^[0-9a-f]{64}$"))
+          ' "$reference" > /dev/null
+          echo "version_id=$(jq -r .version_id "$reference")" >> "$GITHUB_OUTPUT"
+          echo "worker_sha=$UPLOAD_SHA" >> "$GITHUB_OUTPUT"
+          echo "baseline_sha256=$(jq -r .baseline_sha256 "$reference")" >> "$GITHUB_OUTPUT"
+
+      - name: Require successful isolated private staging evidence
+        env:
+          GH_TOKEN: ${{ github.token }}
+          STAGING_RUN_ID: ${{ inputs.private_staging_run_id }}
+          UPLOAD_RUN_ID: ${{ inputs.upload_run_id }}
+          VERSION_ID: ${{ steps.version.outputs.version_id }}
+          WORKER_SHA: ${{ steps.version.outputs.worker_sha }}
+        run: |
+          [[ "$STAGING_RUN_ID" =~ ^[0-9]+$ ]]
+          curl --fail --silent --show-error \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/$GITHUB_REPOSITORY/actions/runs/$STAGING_RUN_ID" \
+            > "$RUNNER_TEMP/staging-run.json"
+          jq -e --arg repo "$GITHUB_REPOSITORY" '
+            .status == "completed" and .conclusion == "success" and
+            .event == "workflow_dispatch" and .head_branch == "main" and
+            .head_repository.full_name == $repo and
+            (.path | endswith(".github/workflows/cold-store-rehydrator-private-staging.yml"))
+          ' "$RUNNER_TEMP/staging-run.json" > /dev/null || {
+            echo "No successful trusted private-staging workflow run exists. Version URLs are unavailable for this Durable Object Worker; promotion is blocked." >&2
+            exit 1
+          }
+          curl --fail --silent --show-error \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/$GITHUB_REPOSITORY/actions/runs/$STAGING_RUN_ID/artifacts" \
+            > "$RUNNER_TEMP/staging-artifacts.json"
+          jq -e '.artifacts | any(.name == "cold-store-rehydrator-private-staging-evidence" and .expired == false)' \
+            "$RUNNER_TEMP/staging-artifacts.json" > /dev/null
+          echo "staging_run_id=$STAGING_RUN_ID" >> "$GITHUB_OUTPUT"
+
+      - name: Download the private-staging evidence artifact
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: cold-store-rehydrator-private-staging-evidence
+          run-id: ${{ inputs.private_staging_run_id }}
+          repository: ${{ github.repository }}
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/cold-store-rehydrator-private-staging-evidence
+
+      - name: Bind staging evidence to the exact uploaded version
+        env:
+          UPLOAD_RUN_ID: ${{ inputs.upload_run_id }}
+          VERSION_ID: ${{ steps.version.outputs.version_id }}
+          WORKER_SHA: ${{ steps.version.outputs.worker_sha }}
+        run: |
+          jq -e --arg upload_run_id "$UPLOAD_RUN_ID" --arg version_id "$VERSION_ID" --arg worker_sha "$WORKER_SHA" '
+            .schema_version == 1 and .upload_run_id == $upload_run_id and
+            .version_id == $version_id and .worker_sha == $worker_sha and
+            .result == "passed" and .isolated_private_staging == true and
+            .production_secrets_used == false and .production_resources_touched == false
+          ' "$RUNNER_TEMP/cold-store-rehydrator-private-staging-evidence/evidence.json" > /dev/null
+
+      - name: Checkout main
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: main
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@3138316df39ed29be04236d7ffc686fa525866aa # v23
+
+      - name: Set up Nix cache
+        uses: DeterminateSystems/magic-nix-cache-action@84c0677f58dcedf3b91f8223ce36a9ea5b3c84b7 # v15
+
+      - name: Build the pinned cf CLI and deploy app
+        run: nix build --impure .#coldStoreRehydratorDeploy --print-build-logs
+
+      - name: Promote only if the serving baseline is unchanged
+        env:
+          COLD_STORE_REHYDRATOR_CF_API_TOKEN: ${{ secrets.COLD_STORE_REHYDRATOR_CF_API_TOKEN }}
+          COLD_STORE_REHYDRATOR_CF_ACCOUNT_ID: ${{ vars.COLD_STORE_REHYDRATOR_CF_ACCOUNT_ID }}
+          COLD_STORE_REHYDRATOR_PRIVATE_STAGING_VERIFIED: "true"
+          COLD_STORE_REHYDRATOR_UPLOAD_RUN_ID: ${{ inputs.upload_run_id }}
+          COLD_STORE_REHYDRATOR_WORKER_SHA: ${{ steps.version.outputs.worker_sha }}
+          VERSION_ID: ${{ steps.version.outputs.version_id }}
+          BASELINE_SHA256: ${{ steps.version.outputs.baseline_sha256 }}
+        run: |
+          nix run --impure .#coldStoreRehydratorDeploy -- --deploy-version "$VERSION_ID" --expected-baseline "$BASELINE_SHA256"
+          echo "Promoted version ${VERSION_ID} after private staging." >> "$GITHUB_STEP_SUMMARY"
