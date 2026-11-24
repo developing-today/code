@@ -87,6 +87,7 @@ pub(crate) fn verb_reprioritize(t: &TursoBackend, req: &Value) -> Value {
             ("BEGIN IMMEDIATE", vec![]),
             ("UPDATE tasks SET priority = ?, payload = CASE WHEN ? IS NULL THEN payload ELSE ? END, progress = CASE WHEN ? IS NOT NULL AND ? > 0 THEN json_set(COALESCE(progress, '{}'), '$.reprioritize_sync_pending', true) ELSE progress END, updated_at = ? WHERE id = ? AND priority = ? AND status IN ('queued','claimed','parked','blocked')", vec![Arg::Int(to), payload_text.clone().map(Arg::Text).unwrap_or(Arg::Null), payload_text.map(Arg::Text).unwrap_or(Arg::Null), repo.map(|s| Arg::Text(s.to_owned())).unwrap_or(Arg::Null), issue_number.map(Arg::Int).unwrap_or(Arg::Null), Arg::Text(now_iso()), Arg::Int(id), Arg::Int(from)]),
             ("INSERT INTO events (worker_id, task_id, kind, detail, created_at) SELECT ?, ?, 'reprioritized', ?, ? WHERE changes() = 1", vec![Arg::Text(actor.to_string()), Arg::Int(id), Arg::Text(detail.to_string()), Arg::Text(now_iso())]),
+            (HISTORY_INSERT_SQL, vec![Arg::Null, Arg::Null]),
             // Persist the external side-effect intent in the same
             // transaction. Queue-only tasks have no linked issue and
             // intentionally produce no sync row.
@@ -2869,5 +2870,41 @@ mod task_history_tests {
         let blocked = rows.iter().find(|r| r["kind"] == "blocked").unwrap();
         assert_eq!(blocked["to_status"], "blocked");
         assert_eq!(blocked["actor"], "oracle-w");
+    }
+
+    /// Oracle (#14170 Q1): backfill inserts one row per mapped event
+    /// that has none (source='backfill'), reports census = inserted +
+    /// skipped, is idempotent, and history-since returns the rows in
+    /// id order for the task.
+    #[test]
+    fn backfill_reconciles_to_events_census_and_is_idempotent() {
+        let (t, _) = fake_backend();
+        let mut task = |w: &str| {
+            t.exec(
+                "INSERT INTO events (worker_id, task_id, kind, detail, created_at) VALUES (?, 7, ?, '{}', '2026-11-01T00:00:00Z')",
+                &[Arg::Text(w.to_string()), Arg::Text("claimed".to_string())],
+            )
+            .unwrap();
+        };
+        task("w1");
+        task("w2");
+        t.exec(
+            "INSERT INTO events (worker_id, task_id, kind, detail, created_at) VALUES ('w3', 7, 'checkpoint', '{}', '2026-11-01T00:00:00Z')",
+            &[],
+        )
+        .unwrap();
+        let first = verb_history_backfill(&t, &json!({}));
+        assert_eq!(first["ok"], true, "{first}");
+        assert_eq!(first["census"], 2, "{first}");
+        assert_eq!(first["inserted"], 2, "{first}");
+        assert_eq!(first["skipped"], 0, "{first}");
+        let second = verb_history_backfill(&t, &json!({}));
+        assert_eq!(second["inserted"], 0, "{second}");
+        assert_eq!(second["skipped"], 2, "{second}");
+        let rows = history_rows(&t, 7);
+        assert_eq!(rows.len(), 2);
+        assert!(rows.iter().all(|r| r["from_status"] == "queued" && r["to_status"] == "claimed"));
+        let since = verb_history_since(&t, &json!({"task_id": 7}));
+        assert_eq!(since["rows"].as_array().unwrap().len(), 2, "{since}");
     }
 }

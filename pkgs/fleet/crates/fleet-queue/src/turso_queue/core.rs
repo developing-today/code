@@ -1251,7 +1251,7 @@ pub(crate) fn history_transition(kind: &str) -> Option<(Option<&'static str>, Op
 /// inside the BEGIN IMMEDIATE batch that inserted that event. Marks
 /// come from the event detail, which the transition wrote from its
 /// own context (with_marks), never from the task's current claim.
-const HISTORY_INSERT_SQL: &str = "INSERT OR IGNORE INTO task_history \
+pub(crate) const HISTORY_INSERT_SQL: &str = "INSERT OR IGNORE INTO task_history \
     (event_id, task_id, kind, from_status, to_status, from_priority, to_priority, \
      actor, session_id, model_provider, model_id, detail, source, created_at) \
     SELECT e.id, e.task_id, e.kind, ?, ?, \
@@ -1262,7 +1262,110 @@ const HISTORY_INSERT_SQL: &str = "INSERT OR IGNORE INTO task_history \
         json_extract(e.detail, '$.model_provider'), \
         json_extract(e.detail, '$.model_id'), \
         e.detail, 'live', e.created_at \
-    FROM events e WHERE e.id = (SELECT max(id) FROM events)";
+    FROM events e WHERE e.id = (SELECT max(id) FROM events) AND changes() = 1";
+
+/// Every event kind that history_transition maps: the backfill census.
+pub(crate) const HISTORY_KINDS: [&str; 12] = [
+    "enqueued", "task_revived", "claimed", "parked", "released", "woken", "blocked",
+    "unblocked", "dep_unblocked", "completed", "cancelled", "failed",
+];
+
+/// Backfill: one history row per mapped events row that has none
+/// (INSERT OR IGNORE on event_id), source='backfill'. The from/to
+/// CASE expressions come from history_transition, so backfill and
+/// the live dual-write cannot disagree. `reprioritized` is included.
+fn backfill_sql() -> String {
+    let mut kinds: Vec<&str> = HISTORY_KINDS.to_vec();
+    kinds.push("reprioritized");
+    let arm = |pick: fn((Option<&'static str>, Option<&'static str>)) -> Option<&'static str>| {
+        kinds
+            .iter()
+            .map(|k| {
+                let v = history_transition(k).and_then(pick);
+                format!(
+                    "WHEN '{k}' THEN {}",
+                    v.map(|s| format!("'{s}'")).unwrap_or_else(|| "NULL".into())
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
+    let in_list = kinds.iter().map(|k| format!("'{k}'")).collect::<Vec<_>>().join(", ");
+    format!(
+        "INSERT OR IGNORE INTO task_history \
+         (event_id, task_id, kind, from_status, to_status, from_priority, to_priority, \
+          actor, session_id, model_provider, model_id, detail, source, created_at) \
+         SELECT e.id, e.task_id, e.kind, \
+            CASE e.kind {from} END, CASE e.kind {to} END, \
+            CASE WHEN e.kind = 'reprioritized' THEN json_extract(e.detail, '$.from') END, \
+            CASE WHEN e.kind = 'reprioritized' THEN json_extract(e.detail, '$.to') END, \
+            COALESCE(json_extract(e.detail, '$.actor'), e.worker_id), \
+            json_extract(e.detail, '$.session_id'), \
+            json_extract(e.detail, '$.model_provider'), \
+            json_extract(e.detail, '$.model_id'), \
+            e.detail, 'backfill', e.created_at \
+         FROM events e WHERE e.task_id IS NOT NULL AND e.kind IN ({in_list})",
+        from = arm(|(f, _)| f),
+        to = arm(|(_, t)| t),
+    )
+}
+
+/// /history-backfill: idempotent. Reports the census of mapped
+/// events, the rows inserted now, and the rows skipped because a
+/// history row already existed for that event.
+pub(crate) fn verb_history_backfill(t: &TursoBackend, _req: &Value) -> Value {
+    let mut kinds: Vec<&str> = HISTORY_KINDS.to_vec();
+    kinds.push("reprioritized");
+    let in_list = kinds.iter().map(|k| format!("'{k}'")).collect::<Vec<_>>().join(", ");
+    let work = (|| -> Result<Value, TErr> {
+        let census = t
+            .query_objs(
+                &format!("SELECT count(*) AS n FROM events WHERE task_id IS NOT NULL AND kind IN ({in_list})"),
+                &[],
+                &[],
+            )?
+            .first()
+            .and_then(|r| r["n"].as_i64())
+            .unwrap_or(0);
+        let inserted = t.exec(&backfill_sql(), &[])?.affected as i64;
+        Ok(json!({
+            "source": "backfill",
+            "census": census,
+            "inserted": inserted,
+            "skipped": census - inserted,
+        }))
+    })();
+    match work {
+        Ok(v) => ok(v),
+        Err(e) => fail(2, e),
+    }
+}
+
+/// /history-since: task_history rows in id order, optionally for one
+/// task and/or created at or after `since`. The per-task timeline and
+/// the notes interleave read this table.
+pub(crate) fn verb_history_since(t: &TursoBackend, req: &Value) -> Value {
+    let task_id = req_i64(req, "task_id");
+    let limit = req_i64(req, "limit").unwrap_or(200).clamp(1, 50_000);
+    let mut sql = "SELECT id, event_id, task_id, kind, from_status, to_status, from_priority, \
+                   to_priority, actor, session_id, model_provider, model_id, detail, source, created_at \
+                   FROM task_history WHERE 1 = 1"
+        .to_string();
+    let mut args: Vec<Arg> = vec![];
+    if let Some(id) = task_id {
+        sql += " AND task_id = ?";
+        args.push(Arg::Int(id));
+    }
+    if let Some(s) = req_str(req, "since") {
+        sql += " AND created_at >= ?";
+        args.push(Arg::Text(s.to_string()));
+    }
+    sql += &format!(" ORDER BY id ASC LIMIT {limit}");
+    match t.query_objs(&sql, &args, &["detail"]) {
+        Ok(rows) => ok(json!({"rows": rows, "task_id": task_id})),
+        Err(e) => fail(2, e),
+    }
+}
 
 pub(crate) fn event(
     t: &TursoBackend,
