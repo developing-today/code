@@ -284,6 +284,8 @@
         "pkgs/id/hosted-worker/test/routing.test.ts",
         "pkgs/id/hosted-worker/test/admission-gate.test.ts",
         "pkgs/id/hosted-worker/test/provisioning.test.ts",
+        "pkgs/id/hosted-worker/test/provisioning-surface.test.ts",
+        "pkgs/id/hosted-worker/test/enablement.test.ts",
         "pkgs/id/hosted-worker/test/blobs.test.ts",
         "pkgs/id/hosted-worker/test/canonical-cbor.test.ts",
         "pkgs/id/hosted-worker/test/usage.test.ts",
@@ -297,7 +299,7 @@
         "pkgs/id/hosted-worker/test/bridge-session.test.ts",
         "pkgs/id/hosted-worker/test/bridge-do.test.ts"
       ],
-      "invocation": "cd pkgs/id/hosted-worker && npm test (node --experimental-transform-types --test test/routing.test.ts test/admission-gate.test.ts test/provisioning.test.ts test/blobs.test.ts test/canonical-cbor.test.ts test/usage.test.ts test/currency.test.ts test/front-door.test.ts test/id-uri-vectors.test.ts test/bridge-blake3.test.ts test/bridge-event.test.ts test/bridge-range.test.ts test/bridge-store.test.ts test/bridge-session.test.ts test/bridge-do.test.ts)",
+      "invocation": "cd pkgs/id/hosted-worker && npm test (node --experimental-transform-types --test test/routing.test.ts test/admission-gate.test.ts test/provisioning.test.ts test/provisioning-surface.test.ts test/enablement.test.ts test/blobs.test.ts test/canonical-cbor.test.ts test/usage.test.ts test/currency.test.ts test/front-door.test.ts test/id-uri-vectors.test.ts test/bridge-blake3.test.ts test/bridge-event.test.ts test/bridge-range.test.ts test/bridge-store.test.ts test/bridge-session.test.ts test/bridge-do.test.ts)",
       "venue": {
         "workflow": ".github/workflows/id-hosted-worker-tests.yml",
         "job_step": "hosted-worker-tests / Run the hosted-worker routing suite",

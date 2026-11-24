@@ -89,6 +89,25 @@ function refuse(code: string, message: string): never {
   throw new FailClosed(503, code, message);
 }
 
+/** The plans this module has issued. Module-private: a value carried
+ * here cannot be constructed outside `validateEnablement`, so a
+ * production enablement path can require the gate's verdict itself
+ * rather than a look-alike object that merely spells its fields. */
+const issuedPlans = new WeakSet<object>();
+
+/** True only for a plan object returned by `validateEnablement`.
+ * Structural equality is not enough — the gate's verdict is what
+ * authorizes enablement. */
+export function isValidatedEnablementPlan(value: unknown): value is EnablementPlan {
+  return typeof value === "object" && value !== null && issuedPlans.has(value);
+}
+
+/** Validate a configuration against deployed-account evidence and
+ * return the frozen plan a production deployment may enable. The
+ * returned object is registered here, so
+ * `isValidatedEnablementPlan` distinguishes it from a look-alike: the
+ * production enablement point (./enablement.ts) accepts only this
+ * verdict, never a re-spelled configuration. */
 export function validateEnablement(config: EnablementConfig, evidence: AccountEvidence): EnablementPlan {
   // 1. The jurisdiction must be explicitly configured and supported.
   // The design's policy constant is not a silent runtime fallback: an
@@ -189,9 +208,11 @@ export function validateEnablement(config: EnablementConfig, evidence: AccountEv
     );
   }
 
-  return {
+  const plan: EnablementPlan = Object.freeze({
     jurisdiction,
     durableObjectBinding: config.durableObjectBinding,
-    bucket: { binding: bucket.binding, bucketName: bucket.bucketName, jurisdiction },
-  };
+    bucket: Object.freeze({ binding: bucket.binding, bucketName: bucket.bucketName, jurisdiction }),
+  });
+  issuedPlans.add(plan);
+  return plan;
 }
