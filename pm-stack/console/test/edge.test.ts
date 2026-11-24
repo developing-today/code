@@ -7571,6 +7571,61 @@ describe("the edge does the core itself", () => {
     expect(w.ran.filter((r) => r.kind === "issue.comment")).toHaveLength(1);
   });
 
+  test("two ranks seconds apart: the newer waits while the older rank is still out at the laptop", async () => {
+    const w = await primary();
+    const labels = (method: string, url: string) => method === "POST" && /\/issues\/\d+\/labels$/.test(url);
+    // Add the host's rank handler after its report: the edge can do ranks, and
+    // the machine can do the relayed action, without changing the test's report.
+    w.table["issue.rank"] = {
+      run: async (a) => {
+        w.ran.push({ kind: "issue.rank", args: a });
+        await w.gate.wait;
+        return { ranked: a.issue, rank: a.rank };
+      },
+      touch: ["priorities"],
+      audit: (a) => ({ issue: a.issue, rank: a.rank }),
+    };
+    w.ghRefuses.push(labels);
+    // The older rank is turned away here and is slow at the laptop.
+    let open = () => {};
+    w.gate.wait = new Promise<void>((resolve) => {
+      open = resolve;
+    });
+    const acts = () => w.hostSaw.filter((seen) => seen === "POST /console/api/act").length;
+    const before = acts();
+    const first = w.act("issue.rank", { issue: 201, rank: "now" }, ID(311));
+    for (let turn = 0; turn < 200 && acts() === before; turn++) await new Promise((r) => setTimeout(r, 1));
+    expect(acts()).toBe(before + 1);
+
+    // A newer rank for the same issue must neither run here nor go to the laptop.
+    const calls = w.githubCalls.filter((c) => labels(c.method, c.url)).length;
+    const second = await w.act("issue.rank", { issue: 201, rank: "next" }, ID(312));
+    expect([second.status, await second.json()]).toMatchObject([200, { held: true }]);
+    expect([heldIds(w), acts(), w.githubCalls.filter((c) => labels(c.method, c.url)).length]).toEqual([
+      [ID(312)],
+      before + 1,
+      calls,
+    ]);
+
+    // The laptop answers for the older rank; only then is its asking settled.
+    w.gate.wait = null;
+    open();
+    expect(await (await first).json()).toMatchObject({ ok: true });
+    await settle(w);
+    expect(heldIds(w)).toEqual([ID(312)]);
+    expect(w.githubCalls.filter((c) => labels(c.method, c.url))).toHaveLength(calls);
+    expect([...w.stored.keys()].filter((key) => key.startsWith("relaying:"))).toEqual([]);
+    // The older is answered; on the next machine report the newer rank follows it.
+    w.net.hostUp = true;
+    w.net.edgeUp = true;
+    await w.hostReads();
+    expect((await w.link.now.once())?.commands.map((command) => command.id)).toEqual([ID(312)]);
+    expect(w.ran.filter((action) => action.kind === "issue.rank").map((action) => action.args.rank)).toEqual([
+      "now",
+      "next",
+    ]);
+  });
+
   test("with no machine ever reporting, what only a machine can do is still dropped after a day, and said to have been", async () => {
     const w = await primary();
     w.net.hostUp = false;
