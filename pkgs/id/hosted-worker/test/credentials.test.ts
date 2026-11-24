@@ -78,3 +78,25 @@ test("revokes idempotently by jti without retaining the bearer token", async () 
   assert.equal(await revokeCredential(sql, result.credentialId, deps.issuer, at), true);
   assert.deepEqual(revoked, ["id-2"]);
 });
+
+test("retries issuer revocation after a failed attempt", async () => {
+  const { db, sql, deps } = setup();
+  const result = await issueCredential(sql, session, "read", deps);
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+
+  let attempts = 0;
+  const issuer = { async revoke(jti: string) {
+    assert.equal(jti, "id-2");
+    attempts++;
+    if (attempts === 1) throw new Error("issuer unavailable");
+  } };
+
+  await assert.rejects(revokeCredential(sql, result.credentialId, issuer, at), /issuer unavailable/);
+  assert.equal(attempts, 1);
+  assert.equal((db.prepare("SELECT revoked_at FROM credential WHERE credential_id = ?").get(result.credentialId) as { revoked_at: unknown }).revoked_at, null);
+
+  assert.equal(await revokeCredential(sql, result.credentialId, issuer, at), true);
+  assert.equal(attempts, 2);
+  assert.equal((db.prepare("SELECT revoked_at FROM credential WHERE credential_id = ?").get(result.credentialId) as { revoked_at: unknown }).revoked_at, at.toISOString());
+});

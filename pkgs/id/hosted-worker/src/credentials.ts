@@ -84,7 +84,7 @@ export async function revokeCredential(
   const row = one(sql, "SELECT jti, revoked_at FROM credential WHERE credential_id = ?", credentialId);
   if (!row) return false;
   if (row.revoked_at !== null) return true;
-  sql.exec("UPDATE credential SET revoked_at = ? WHERE credential_id = ? AND revoked_at IS NULL", now.toISOString(), credentialId);
   await issuer?.revoke?.(row.jti as string);
+  sql.exec("UPDATE credential SET revoked_at = ? WHERE credential_id = ? AND revoked_at IS NULL", now.toISOString(), credentialId);
   return true;
 }
