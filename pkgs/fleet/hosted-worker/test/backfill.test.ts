@@ -258,7 +258,14 @@ test("a malformed-block item is named in the run's failures while the run contin
 
 interface DivergenceDoc {
   repos: string[];
-  counts: { items: number; rows: number; agreeing: number; missing_row: number; stale_field: number; orphan_row: number };
+  counts: {
+    items: number;
+    rows: number;
+    agreeing: number;
+    missing_row: number;
+    stale_field: number;
+    orphan_row: number;
+  };
   findings: { class: string; number: number; fields?: string[]; binding_id?: string }[];
 }
 

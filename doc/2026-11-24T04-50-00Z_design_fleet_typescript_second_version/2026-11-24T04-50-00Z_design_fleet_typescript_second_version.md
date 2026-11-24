@@ -33,13 +33,13 @@ Non-goals:
 
 ## 3. Alternatives considered
 
-| Option | What it means | Tradeoff |
-| --- | --- | --- |
-| A. Do nothing; each component ships its own TypeScript port ad hoc | Fastest for one component | Drift is near-certain; transport and direct-access rules become per-component decisions; rejected. |
-| B. Compile all Rust core to WASM and run it on Workers and in browsers | Single source of semantics | Crypto correctness risk is concentrated in one blob; bundle and cold-start cost; WASM cannot do the I/O the Workers runtime does; not viable for server-side I/O paths. |
-| C. Rewrite everything in TypeScript; no WASM | One runtime, simple deployment | Duplicates crypto and canonical encoding by hand; highest correctness risk for ID crypto; no reuse of tested Rust code. |
-| D. Per-component decision (chosen): WASM only where the logic is pure, deterministic and bounded; TypeScript rewrite for I/O and orchestration; server-side only where secrets live | Reuse where cheap and safe, rewrite where Workers forces it | Requires a conformance suite to prevent drift (§4.4); evaluation work per component. |
-| E. Do-nothing-plus-pinning: keep Rust as sole source, generate TypeScript types only | Keeps semantics in one place | Does not cover behaviour, only shapes; insufficient for Metadata and packet semantics. |
+| Option                                                                                                                                                                              | What it means                                               | Tradeoff                                                                                                                                                                |
+| ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| A. Do nothing; each component ships its own TypeScript port ad hoc                                                                                                                  | Fastest for one component                                   | Drift is near-certain; transport and direct-access rules become per-component decisions; rejected.                                                                      |
+| B. Compile all Rust core to WASM and run it on Workers and in browsers                                                                                                              | Single source of semantics                                  | Crypto correctness risk is concentrated in one blob; bundle and cold-start cost; WASM cannot do the I/O the Workers runtime does; not viable for server-side I/O paths. |
+| C. Rewrite everything in TypeScript; no WASM                                                                                                                                        | One runtime, simple deployment                              | Duplicates crypto and canonical encoding by hand; highest correctness risk for ID crypto; no reuse of tested Rust code.                                                 |
+| D. Per-component decision (chosen): WASM only where the logic is pure, deterministic and bounded; TypeScript rewrite for I/O and orchestration; server-side only where secrets live | Reuse where cheap and safe, rewrite where Workers forces it | Requires a conformance suite to prevent drift (§4.4); evaluation work per component.                                                                                    |
+| E. Do-nothing-plus-pinning: keep Rust as sole source, generate TypeScript types only                                                                                                | Keeps semantics in one place                                | Does not cover behaviour, only shapes; insufficient for Metadata and packet semantics.                                                                                  |
 
 Chosen: option D, with the conformance suite from §4.4 as a precondition for every TypeScript rewrite.
 
@@ -51,14 +51,14 @@ Criteria, applied in order: (1) crypto correctness risk, (2) maintenance diverge
 
 Rule: logic that is pure, deterministic and has no secrets in scope may be compiled to WASM and reused. Logic that does I/O, orchestration or holds secrets is rewritten in TypeScript or stays server-side.
 
-| Component | Rust logic | Verdict (proposed) | Evidence needed before commit |
-| --- | --- | --- | --- |
-| ID crypto (`pkgs/id`) | key derivation, signing, canonical encoding | WASM reuse for pure primitives (hash, canonical encoding, verify); TypeScript only for thin wrappers; signing with server-held keys stays server-side | Measured WASM size and cold-start on Workers; audit of the chosen crypto crate's WASM build; test vectors shared with Rust |
-| ID store logic | redb/Turso store contract, sync cursors | TypeScript rewrite behind the storage interface (intake S5); not WASM, because it is I/O-bound | Store conformance suite passing on both backends |
-| PM aggregator / reconcile (A) | board registry, hierarchy, Metadata | TypeScript rewrite; Metadata encoding shared via WASM only if a pure encoder is extracted | Metadata fixture parity (§4.4) |
-| Fleet tool (C) | Metadata stamping and query, session provenance, sync tools | TypeScript CLI and service; stamping logic shares the pure encoder if extracted | Stamping parity fixtures |
-| Packet schema (repo-task/v1) | JSON schema and validation | Shared JSON Schema and fixtures; validators generated or hand-written per language, checked against the same fixtures | Schema compiles to both validators |
-| Browser client | any local crypto or parsing | WASM allowed for pure primitives only, behind feature checks | Bundle budget per the owner's limit (to be set by E) |
+| Component                     | Rust logic                                                  | Verdict (proposed)                                                                                                                                    | Evidence needed before commit                                                                                              |
+| ----------------------------- | ----------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
+| ID crypto (`pkgs/id`)         | key derivation, signing, canonical encoding                 | WASM reuse for pure primitives (hash, canonical encoding, verify); TypeScript only for thin wrappers; signing with server-held keys stays server-side | Measured WASM size and cold-start on Workers; audit of the chosen crypto crate's WASM build; test vectors shared with Rust |
+| ID store logic                | redb/Turso store contract, sync cursors                     | TypeScript rewrite behind the storage interface (intake S5); not WASM, because it is I/O-bound                                                        | Store conformance suite passing on both backends                                                                           |
+| PM aggregator / reconcile (A) | board registry, hierarchy, Metadata                         | TypeScript rewrite; Metadata encoding shared via WASM only if a pure encoder is extracted                                                             | Metadata fixture parity (§4.4)                                                                                             |
+| Fleet tool (C)                | Metadata stamping and query, session provenance, sync tools | TypeScript CLI and service; stamping logic shares the pure encoder if extracted                                                                       | Stamping parity fixtures                                                                                                   |
+| Packet schema (repo-task/v1)  | JSON schema and validation                                  | Shared JSON Schema and fixtures; validators generated or hand-written per language, checked against the same fixtures                                 | Schema compiles to both validators                                                                                         |
+| Browser client                | any local crypto or parsing                                 | WASM allowed for pure primitives only, behind feature checks                                                                                          | Bundle budget per the owner's limit (to be set by E)                                                                       |
 
 Open question Q1 (decider: owner of #9085 with the crypto reviewer): whether any ID crypto primitive is so security-sensitive that it must stay native-only even on the client. Default until decided: WASM is not used for signing; only verification and canonical encoding may use WASM.
 
@@ -74,13 +74,13 @@ Interaction classes:
 
 Base-function inventory (per component; the full table is the first slice's output):
 
-| Component | Base functions (minimum) | Class |
-| --- | --- | --- |
-| A PM | list boards, read item, write item, reconcile run, dashboard read | request/response; reconcile is streaming; dashboard subscription is realtime |
-| B ID | sign, verify, store put/get, sync pull, sync push | request/response; sync is realtime |
-| C fleet | stamp, query Metadata, session provenance write, queue claim/complete | request/response; queue status is streaming |
-| E tenancy | route resolve, credential issue, credential refresh | request/response |
-| F content | put object reference, get reference, publish | request/response |
+| Component | Base functions (minimum)                                              | Class                                                                        |
+| --------- | --------------------------------------------------------------------- | ---------------------------------------------------------------------------- |
+| A PM      | list boards, read item, write item, reconcile run, dashboard read     | request/response; reconcile is streaming; dashboard subscription is realtime |
+| B ID      | sign, verify, store put/get, sync pull, sync push                     | request/response; sync is realtime                                           |
+| C fleet   | stamp, query Metadata, session provenance write, queue claim/complete | request/response; queue status is streaming                                  |
+| E tenancy | route resolve, credential issue, credential refresh                   | request/response                                                             |
+| F content | put object reference, get reference, publish                          | request/response                                                             |
 
 Offline and reconnect: clients keep a local operation log with idempotency keys. On reconnect they replay the log from their last acknowledged sequence. The server returns the authoritative sequence; conflicts are resolved by the owning component's rule (for Metadata, last-writer-wins by server sequence; for queue claims, the atomic claim wins). No component may invent a different reconnect rule without an entry in this table.
 
@@ -149,13 +149,13 @@ Every automated test names its oracle: fixture parity uses the Rust result as or
 
 ## 8. Open questions
 
-| # | Question | Decider | Default until decided |
-| --- | --- | --- | --- |
-| Q1 | Must any ID crypto primitive stay native-only, including on the client? | Owner of #9085 with the crypto reviewer | WASM is used for verification and canonical encoding only; no WASM signing. |
-| Q2 | Expiry window and revocation for direct Turso tokens | Owner of E #9083 | 1 hour expiry; revocation by rotating the per-database token through the tenancy service. |
-| Q3 | Location and packaging of the shared fixture directory | Owner of #9085 | Lives beside the shared schema package, not under `doc/`. |
-| Q4 | Browser WASM bundle budget | Owner of E #9083 with the browser client owner | Pure primitives only; no budget set, so measure in slice 5 and record. |
-| Q5 | Whether HTTP/3 is in the required transport set | Owner of #9085 | Not required; REST and WebSocket are the contract, QUIC is an optimisation. |
+| #   | Question                                                                | Decider                                        | Default until decided                                                                     |
+| --- | ----------------------------------------------------------------------- | ---------------------------------------------- | ----------------------------------------------------------------------------------------- |
+| Q1  | Must any ID crypto primitive stay native-only, including on the client? | Owner of #9085 with the crypto reviewer        | WASM is used for verification and canonical encoding only; no WASM signing.               |
+| Q2  | Expiry window and revocation for direct Turso tokens                    | Owner of E #9083                               | 1 hour expiry; revocation by rotating the per-database token through the tenancy service. |
+| Q3  | Location and packaging of the shared fixture directory                  | Owner of #9085                                 | Lives beside the shared schema package, not under `doc/`.                                 |
+| Q4  | Browser WASM bundle budget                                              | Owner of E #9083 with the browser client owner | Pure primitives only; no budget set, so measure in slice 5 and record.                    |
+| Q5  | Whether HTTP/3 is in the required transport set                         | Owner of #9085                                 | Not required; REST and WebSocket are the contract, QUIC is an optimisation.               |
 
 ## 9. Source and status
 

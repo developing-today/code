@@ -56,8 +56,18 @@
 //   POST /api/<token>/enroll-tokens   owner: mint a bootstrap enroll
 //                                     token bound to a name/kind/groups;
 //                                     the value is returned once
+//   GET  /api/<token>/enroll-tokens   owner: every minted token's state
+//                                     (pending/used/expired/revoked with
+//                                     its closing times; never a hash)
+//   GET  /fleet/<credential>/enroll-tokens  credential ("read"): the
+//                                     same state list, for the console's
+//                                     edge reads (#14376)
 //   POST /api/<token>/enroll-tokens/revoke  owner: revoke an unused
-//                                     bootstrap token
+//                                     bootstrap token, by {agent} (all
+//                                     of the agent's pending tokens —
+//                                     the console's form, since the
+//                                     list shows no hash) or by
+//                                     {bootstrap_token | token_hash}
 //   POST /enroll/exchange             {bootstrap_token, agent}: burn the
 //                                     token, register the mailbox (and
 //                                     notes identity), return the agent's
@@ -72,6 +82,15 @@
 //   GET  /fleet/<credential>/agents|messages  the owner's pipeline
 //                                     views, for a credential holding
 //                                     the "read" scope (#14373)
+//   GET  /api/<token>/fleet/credentials  owner: per-agent credential
+//                                     state (active / revoked, scopes;
+//                                     never a hash) (#14374)
+//   GET  /fleet/<credential>/pipeline|directory|credentials  the
+//                                     unified pipeline feed, the
+//                                     unified agents list and the
+//                                     credential state, for a
+//                                     credential holding the "read"
+//                                     scope (#14374)
 //   POST /api/<token>/notes-tokens/revoke  owner: revoke an identity's
 //                                     notes token(s)
 //   POST /notes/register              owner Bearer token; registers a

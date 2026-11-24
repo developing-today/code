@@ -12,12 +12,15 @@ import { OAUTH_CLIENT_IDLE, OAUTH_MAX_CLIENTS, OAUTH_MAX_EVENTS, OAUTH_PENDING_G
 import {
   enrollTokenClaimSql,
   enrollTokenGetSql,
+  enrollTokenListSql,
   enrollTokenMintSql,
+  enrollTokenRevokeAgentSql,
   enrollTokenRevokeSql,
   fleetCall,
   fleetCredentialAuthSql,
   fleetCredentialPutSql,
   fleetCredentialRevokeSql,
+  fleetCredentialStateSql,
   fleetOp,
   fleetSchema,
   getDistribution,
@@ -149,6 +152,10 @@ export class MessageStore extends DurableObject {
     return fleetCredentialRevokeSql(this.sql, agent, new Date().toISOString());
   }
 
+  fleetCredentialState() {
+    return fleetCredentialStateSql(this.sql);
+  }
+
   enrollTokenMint(row) {
     return enrollTokenMintSql(this.sql, row);
   }
@@ -163,6 +170,14 @@ export class MessageStore extends DurableObject {
 
   enrollTokenRevoke(token_hash) {
     return enrollTokenRevokeSql(this.sql, token_hash, new Date().toISOString());
+  }
+
+  enrollTokenRevokeAgent(agent) {
+    return enrollTokenRevokeAgentSql(this.sql, agent, new Date().toISOString());
+  }
+
+  enrollTokenList() {
+    return enrollTokenListSql(this.sql);
   }
 
   /** Deletes an identity's notes token(s); returns how many were revoked. */
@@ -665,10 +680,13 @@ function storeFor(env) {
     fleetCredentialAuth: (token_hash) => stub.fleetCredentialAuth(token_hash),
     fleetCredentialPut: (rec) => stub.fleetCredentialPut(rec),
     fleetCredentialRevoke: (agent) => stub.fleetCredentialRevoke(agent),
+    fleetCredentialState: () => stub.fleetCredentialState(),
     enrollTokenMint: (row) => stub.enrollTokenMint(row),
     enrollTokenGet: (token_hash) => stub.enrollTokenGet(token_hash),
     enrollTokenClaim: (token_hash, agent, now) => stub.enrollTokenClaim(token_hash, agent, now),
     enrollTokenRevoke: (token_hash) => stub.enrollTokenRevoke(token_hash),
+    enrollTokenRevokeAgent: (agent) => stub.enrollTokenRevokeAgent(agent),
+    enrollTokenList: () => stub.enrollTokenList(),
   };
 }
 

@@ -52,6 +52,20 @@ export async function platformRead(
       // edge/src/direct.ts reads it the same way.)
       case "messages":
         return ops.messages(query.get("limit"));
+      // The unified owner pipeline and the unified agents list
+      // (#14374). Same story as `messages`: at the edge these are
+      // read through the PM bridge credential (edge/src/direct.ts
+      // translates the bridge argv); on a machine the server's switch
+      // may answer first, and either way the Ops call is the same.
+      case "pipeline":
+        return ops.pipelineFeed(query);
+      case "directory":
+        return ops.directory();
+      // The minted enroll tokens' state (#14376): the provisioning
+      // half of the Agents screen. Same story again — state only,
+      // never a hash or a value.
+      case "enroll-tokens":
+        return ops.enrollTokens();
       case "trends":
         return trends ? trends.read(query.get("days"), fresh, query.get("end")) : undefined;
     }

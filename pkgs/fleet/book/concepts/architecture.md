@@ -29,9 +29,9 @@ Source: https://github.com/developing-today/code/blob/main/pkgs/fleet/Cargo.toml
 | `fleet-bridge`        | The `bridge` domain: the mailbox client for the message bridge (send/agents/log for central; hello/inbox/post/ack/health for agents).                                                                                                                                                                                                                                                                                                                                                                                               |
 | `fleet-agent`         | The `agent` and `shell` domains: kinds, enrolment, doctor, the intake ladder (`next`), the shortlist, and the shell target planner. It links only `fleet-config`: it runs the other domains' verbs through this same binary rather than linking them.                                                                                                                                                                                                                                                                               |
 
-| `fleet-kv`          | Identity-scoped local SQLite storage: the local store other fleet surfaces build on. |
-| `fleet-cert`        | The `cert` domain: PKI/X.509 roots, issuers, leaves, chains and bundles over a library-first Rust API, plus the OCSP verb group. |
-| `fleet-orgs`        | The `orgs` domain: the Turso-backed org/App registry, synced from each GitHub App's own JWT. |
+| `fleet-kv` | Identity-scoped local SQLite storage: the local store other fleet surfaces build on. |
+| `fleet-cert` | The `cert` domain: PKI/X.509 roots, issuers, leaves, chains and bundles over a library-first Rust API, plus the OCSP verb group. |
+| `fleet-orgs` | The `orgs` domain: the Turso-backed org/App registry, synced from each GitHub App's own JWT. |
 
 Domain ownership, one line each: `queue` → `fleet-queue`; `serve` → bin-crate
 glue over `fleet-queue` / `fleet-search` / `fleet-proxy`; `proxy` →
