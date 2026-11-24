@@ -758,11 +758,15 @@ mod tests {
         let fixture = build(manifest, &encoded, &f32le(&[1.0, -2.5, 0.5, 3.25]));
         let shard = ColdShard::open(&fixture.bytes).expect("zstd span section opens");
         assert_eq!(
-            shard.reconstruct_version("file-1", 1).expect("v1 reconstructs"),
+            shard
+                .reconstruct_version("file-1", 1)
+                .expect("v1 reconstructs"),
             b"hello world"
         );
         assert_eq!(
-            shard.reconstruct_version("file-1", 2).expect("v2 reconstructs"),
+            shard
+                .reconstruct_version("file-1", 2)
+                .expect("v2 reconstructs"),
             b"hello !"
         );
     }
