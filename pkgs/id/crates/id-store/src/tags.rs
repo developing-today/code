@@ -866,12 +866,13 @@ impl TagStore {
         let alpha_key = encode_alpha_key(subject, key, value);
         let omega_key = encode_omega_key(subject, key, value);
 
+        let docs_hash = docs_hash(hash);
         ns.alpha
-            .set_hash(self.author, alpha_key, hash, size)
+            .set_hash(self.author, alpha_key, docs_hash, size)
             .await
             .context("writing α entry")?;
         ns.omega
-            .set_hash(self.author, omega_key, hash, size)
+            .set_hash(self.author, omega_key, docs_hash, size)
             .await
             .context("writing Ω entry")?;
 
@@ -1477,6 +1478,19 @@ async fn query_omega_prefix(doc: &Doc, prefix: &[u8]) -> Result<Vec<Tag>> {
     Ok(tags)
 }
 
+/// Convert a content hash from the iroh-docs hash type to the blob-store type.
+///
+/// iroh-docs 0.101 pins iroh-blobs 0.103 while this crate uses 0.105; both
+/// wrap the same 32-byte BLAKE3 digest.
+fn docs_hash(hash: Hash) -> iroh_blobs_docs::Hash {
+    iroh_blobs_docs::Hash::from_bytes(*hash.as_bytes())
+}
+
+/// Convert an iroh-docs content hash to the blob-store type.
+fn blob_hash(hash: iroh_blobs_docs::Hash) -> Hash {
+    Hash::from_bytes(*hash.as_bytes())
+}
+
 /// Convert an α entry to a [`Tag`].
 fn entry_to_tag_alpha(entry: &iroh_docs::Entry) -> Result<Tag> {
     let (subject, key, value) = decode_alpha_key(entry.key())?;
@@ -1484,7 +1498,7 @@ fn entry_to_tag_alpha(entry: &iroh_docs::Entry) -> Result<Tag> {
         subject,
         key,
         value,
-        hash: entry.content_hash(),
+        hash: blob_hash(entry.content_hash()),
         len: entry.content_len(),
         timestamp: entry.timestamp(),
         author: entry.author(),
@@ -1498,7 +1512,7 @@ fn entry_to_tag_omega(entry: &iroh_docs::Entry) -> Result<Tag> {
         subject,
         key,
         value,
-        hash: entry.content_hash(),
+        hash: blob_hash(entry.content_hash()),
         len: entry.content_len(),
         timestamp: entry.timestamp(),
         author: entry.author(),

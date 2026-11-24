@@ -31,6 +31,8 @@ id-core = { path = "../id-core", default-features = false }
 iroh = "1"
 iroh-base = "1"
 iroh-blobs = "0.105"
+# The hash type iroh-docs 0.101 uses; pinned to the same 0.103 it depends on.
+iroh-blobs-docs = { package = "iroh-blobs", version = "0.103.1" }
 iroh-docs = "0.101"
 p2panda-core = { git = "https://github.com/p2panda/p2panda", rev = "da80c05b95269926bf58121cf6a2d3dd5ca41dfc" }
 # Store traits only. The default features would pull in SQLite.

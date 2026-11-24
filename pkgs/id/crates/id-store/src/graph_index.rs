@@ -609,7 +609,7 @@ impl GraphIndex {
         let mut last_key = None;
         let mut more = false;
         for entry in table
-            .range::<&[u8]>((lower, Bound::Unbounded))
+            .range((lower, Bound::Unbounded))
             .map_err(storage)?
         {
             let (key, _) = entry.map_err(storage)?;
