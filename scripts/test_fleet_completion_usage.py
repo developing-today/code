@@ -22,6 +22,7 @@ END = "2026-11-02T00:00:00Z"
 
 def fixture():
     return {
+        "binding_history_complete": True,
         "tasks": [
             {"id": 1, "queue": "code", "status": "done", "progress": {"session_id": "s1"}},
             {"id": 2, "queue": "code", "status": "done", "progress": "{}"},
@@ -71,6 +72,17 @@ class CompletionUsageTest(unittest.TestCase):
         data["ledger"] = []
         data["tasks"][1]["claim_session_id"] = "s2"
         self.assertEqual(self.result(data)["missing_task_ids"], [2])
+
+    def test_native_overwriting_ledger_does_not_prove_retry_completeness(self):
+        data = fixture()
+        # Native ledger upserts can leave only s1, dropping the older retry.
+        data["ledger"] = [row for row in data["ledger"] if row["session_id"] != "retry"]
+        del data["binding_history_complete"]
+        result = self.result(data)
+        self.assertEqual(result["known_input_tokens"], 35)
+        self.assertEqual(result["measured_tasks"], 0)
+        self.assertEqual(result["missing_task_ids"], [1, 2])
+        self.assertIsNone(result["input_tokens_per_completed_task"])
 
     def test_latest_completion_and_half_open_window(self):
         data = fixture()
@@ -148,7 +160,8 @@ class CompletionUsageTest(unittest.TestCase):
         for _ in range(100):
             data = copy.deepcopy(fixture())
             for rows in data.values():
-                rng.shuffle(rows)
+                if isinstance(rows, list):
+                    rng.shuffle(rows)
             self.assertEqual(usage.report(data, START, END), expected)
 
 

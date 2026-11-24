@@ -34,6 +34,9 @@ def report(snapshot, start, end):
     for key in ("tasks", "events", "ledger", "sessions"):
         if not isinstance(snapshot.get(key), list):
             raise ValueError(f"snapshot.{key} must be an array")
+    history_complete = snapshot.get("binding_history_complete", False)
+    if type(history_complete) is not bool:
+        raise ValueError("binding_history_complete must be boolean")
 
     tasks, bindings, owners = {}, {}, {}
 
@@ -111,7 +114,7 @@ def report(snapshot, start, end):
         sessions = bindings[task_id]
         known = [tokens[s] for s in sessions if tokens.get(s) is not None]
         queue["known_input_tokens"] += sum(known)
-        if sessions and len(known) == len(sessions):
+        if history_complete and sessions and len(known) == len(sessions):
             queue["measured_tasks"] += 1
         else:
             queue["missing_task_ids"].append(task_id)
@@ -126,6 +129,7 @@ def report(snapshot, start, end):
     return {
         "scope": "completed-cohort cumulative bound-session input tokens; not window spend",
         "start": start, "end": end,
+        "binding_history_complete": history_complete,
         "done_tasks_without_completion_event": sorted(unlocated),
         "queues": [queues[q] for q in sorted(queues)],
     }

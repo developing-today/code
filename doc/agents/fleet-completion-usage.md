@@ -14,13 +14,22 @@ python3 -I scripts/fleet_completion_usage.py --snapshot cohort.json \
 | --- | --- | --- |
 | `tasks` | `id`, `queue`, `status`, `progress.session_id` (object or JSON string); optional normalized `session_id` | rich broker task export; `pkgs/fleet/hosted-worker/src/queue-store.ts` |
 | `events` | `task_id`, `kind`, `created_at` | complete broker event export for those tasks |
-| `ledger` | `queue`, `task_id`, `session_id` | broker execution ledger, including retries |
+| `ledger` | `queue`, `task_id`, `session_id` | execution bindings; see retry-history caveat below |
 | `sessions` | `id`, `tokens.input` | cumulative OpenCode session export; `pm-stack/aggregator/src/sources/opencode.ts` |
 
 Export all relevant task rows, finishing events, execution bindings and sessions
 before deleting sessions. This command intentionally does not query the broker
 or OpenCode: collection/pagination and check-in publication are subsequent slices.
 An absent history/binding cannot be reconstructed by this report.
+
+The native ledger **upserts** its session binding (`turso_queue/core.rs` ledger
+write), so a raw export is not a complete retry history. Ratios default to null.
+Set the top-level `binding_history_complete: true` attestation **only after**
+augmenting bindings from retained launch/event history and verifying all execution
+attempts are present. The report cannot establish this from the latest ledger
+alone. Without the attestation it prints known tokens, marks tasks missing, and
+does not claim complete measurement. This is an explicit collection prerequisite,
+not an automatically populated production data source.
 
 ## Meaning and limits
 
@@ -29,7 +38,8 @@ An absent history/binding cannot be reconstructed by this report.
   the half-open interval `[start,end)`. Reopened tasks do not count. Repeated
   finishing events count once, at the latest timestamp.
 - The numerator is **cumulative input tokens of the bound execution sessions for
-  those completed tasks**, including distinct retry sessions from the ledger.
+  those completed tasks**, including distinct retry sessions from the augmented
+  binding history.
   It is not input spent during the time window, total lane-shift overhead,
   cache-read tokens, output tokens, or the average of per-task ratios.
 - `claim_session_id` is not an execution binding: it may identify a supervisor.
