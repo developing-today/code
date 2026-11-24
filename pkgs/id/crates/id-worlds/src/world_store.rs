@@ -218,7 +218,10 @@ fn check_journal_partition(path: &Path, world_id: &str, jurisdiction: Option<&st
                     world_id: world_id.to_owned(),
                     jurisdiction: jurisdiction.to_owned(),
                 };
-                let parent = metadata_path.parent().unwrap_or_else(|| Path::new("."));
+                let parent = metadata_path
+                    .parent()
+                    .filter(|parent| !parent.as_os_str().is_empty())
+                    .unwrap_or_else(|| Path::new("."));
                 let mut file = tempfile::NamedTempFile::new_in(parent)?;
                 file.write_all(&serde_json::to_vec(&record)?)?;
                 file.as_file().sync_all()?;
@@ -325,11 +328,16 @@ impl FileJournal {
                 .with_context(|| format!("create {}", parent.display()))?;
         }
         let lock = acquire_journal_lock(path)?;
-        if jurisdiction.is_some() {
-            ensure!(
-                !std::fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_symlink()),
-                "world partition unavailable"
-            );
+        // All opens reject aliases: an unscoped symlink would otherwise look
+        // beside the alias rather than beside the assigned target journal.
+        ensure!(
+            !std::fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_symlink()),
+            "world partition unavailable"
+        );
+        #[cfg(unix)]
+        if let Ok(metadata) = std::fs::metadata(path) {
+            use std::os::unix::fs::MetadataExt;
+            ensure!(metadata.nlink() == 1, "world partition unavailable");
         }
         check_journal_partition(path, world_id, jurisdiction)?;
         let mut options = OpenOptions::new();
@@ -1698,6 +1706,66 @@ mod tests {
         let before = std::fs::read(&outside).unwrap();
         assert!(FileJournal::open_in_partition(&alias, "w", "eu", JournalAckMode::Sync).is_err());
         assert_eq!(std::fs::read(&outside).unwrap(), before);
+
+        let assigned = dir.path().join("assigned.jsonl");
+        drop(FileJournal::open_in_partition(&assigned, "w", "eu", JournalAckMode::Sync).unwrap());
+        OpenOptions::new()
+            .append(true)
+            .open(&assigned)
+            .unwrap()
+            .write_all(b"{torn")
+            .unwrap();
+        let before = std::fs::read(&assigned).unwrap();
+        let unscoped_alias = dir.path().join("unscoped.jsonl");
+        std::os::unix::fs::symlink(&assigned, &unscoped_alias).unwrap();
+        assert!(FileJournal::open(&unscoped_alias, "w").is_err());
+        let hard_alias = dir.path().join("hard.jsonl");
+        std::fs::hard_link(&assigned, &hard_alias).unwrap();
+        assert!(FileJournal::open(&hard_alias, "w").is_err());
+        assert_eq!(std::fs::read(&assigned).unwrap(), before);
+    }
+
+    #[test]
+    fn partition_fence_bare_relative_path() {
+        // Oracle: relative and absolute journal paths have identical creation
+        // semantics. A subprocess avoids changing the other tests' cwd.
+        const CHILD: &str = "ID_PARTITION_RELATIVE_TEST";
+        if std::env::var_os(CHILD).is_some() {
+            drop(
+                FileJournal::open_in_partition(
+                    Path::new("journal.jsonl"),
+                    "w",
+                    "eu",
+                    JournalAckMode::Sync,
+                )
+                .unwrap(),
+            );
+            FileJournal::open_in_partition(
+                Path::new("journal.jsonl"),
+                "w",
+                "eu",
+                JournalAckMode::Sync,
+            )
+            .unwrap();
+            return;
+        }
+        let dir = TempDir::new().unwrap();
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "world_store::tests::partition_fence_bare_relative_path",
+            ])
+            .env(CHILD, "1")
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{} {}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(dir.path().join("journal.jsonl").exists());
     }
 
     proptest::proptest! {
