@@ -57,6 +57,7 @@ This list is the workflow's request catalog (`request_catalog` in [`.agents/rese
 
 ## Dated records
 
+- [Cold-store nightly backup: as-built design and operating contract](2026-11-24T05-54-02Z_design_cold-store-nightly/2026-11-24T05-54-02Z_design_cold-store-nightly.md) — nine-point as-built design for #8833: daily D1/Turso Drive backups, verified Turso reconstruction, isolated nightly stages, retention, security boundaries, acceptance evidence, and the distinction from the broader proposed R2/bundling layout.
 - [Free models & free tokens census](2026-11-24T01-21-58Z_research_free-census/2026-11-24T01-21-58Z_research_free-census.md) — dated record of the 2026-11-23 free-provider and free-token census; the evidence base for the free-first route order (tracking #13877).
 
 Folders are named `<UTC datetime>_<kind>_<name>`. The kinds in use are `feature`, `design`, `architecture`, `phase`, `fix`, `reference`, `research` and `report`. A `report` record is the usual home for lane work product — a report or one-off with all of its gathered material in the folder; [`DOCUMENTATION_PROTOCOL.md`](DOCUMENTATION_PROTOCOL.md) gives the landing rules. Run `ls doc/` to list them all. Some starting points:
