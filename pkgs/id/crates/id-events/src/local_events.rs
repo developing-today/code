@@ -329,6 +329,32 @@ impl LocalEvents {
         *self.key.verifying_key().as_bytes()
     }
 
+    /// Reclaims caller-declared live-class bytes under `policy`, the
+    /// node's retention path for #2036 design §4.6 (#5534): the same
+    /// store every other seam here writes through, so the pass sees
+    /// exactly what the node has applied. Durable kinds, checkpoints
+    /// and each author's retained recent history are never touched
+    /// (see [`crate::event_store::CompactionPolicy`]); a compacted
+    /// event keeps its presence, applied verdict and causal edges as
+    /// a residue. Returns how many events lost their bytes.
+    ///
+    /// The policy is the caller's channel/session retention
+    /// declaration: `live_kinds` names the event kinds this node
+    /// treats as bounded-retention (for the chat channel family,
+    /// `chat.message.v1`), and `retain_recent` is how many of each
+    /// author's most recent applied events are always kept. The
+    /// default policy declares no live kinds, so it reclaims nothing
+    /// — retention is opt-in, never inferred from the event kind.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the store is unusable or the compaction write fails;
+    /// in that case the store is unchanged (the pass is one
+    /// transaction).
+    pub fn compact(&mut self, policy: &crate::event_store::CompactionPolicy) -> Result<usize> {
+        Ok(self.store.compact(policy)?)
+    }
+
     /// Publishes this node's identity event if its log has none (#160, Option A).
     ///
     /// The identity event is a kind-only signed event whose ID is the node's user subject
@@ -2182,5 +2208,124 @@ mod chat_tests {
         }
         let refused = node.send_chat(group, ChatMessage::new("one too many", Vec::new()).unwrap());
         assert!(refused.is_err());
+    }
+
+    /// Oracle: the #2036 design record §4.6 and its acceptance
+    /// criterion 8 — compaction reclaims only caller-declared
+    /// live-class bytes below each author's retain frontier, keeps
+    /// every durable fact and checkpoint, and the store stays valid
+    /// (`EventStore::check_invariants`, the store's own oracle). The
+    /// node's seam is [`LocalEvents::compact`]: the same store `id
+    /// doc`, `id claim` and range sync write through, so what it
+    /// publishes is the production caller #5534 asks for.
+    #[test]
+    fn test_compact_reclaims_live_chat_and_keeps_durable_facts() {
+        let alice = key(60);
+        let (create, body) = create_event(&alice, &key(61));
+        let group = create.id;
+        let dir = tempfile::tempdir().unwrap();
+        let mut node = node(dir.path(), alice, &create, &body);
+        let author = node.author();
+
+        // Live-class history the policy will reclaim, plus durable
+        // facts (a document, a chat anchor) that must survive it.
+        let mut chat_ids = Vec::new();
+        for index in 0..6 {
+            chat_ids.push(
+                node.send_chat(
+                    group,
+                    ChatMessage::new(&format!("message {index}"), Vec::new()).unwrap(),
+                )
+                .unwrap(),
+            );
+        }
+        let document = node.publish("text/plain", b"durable", &[]).unwrap();
+        let anchor = node
+            .send_anchor(
+                group,
+                ChatAnchor::bind(
+                    id_store::chat_anchor::ObjectRef::new(document.id, node.author()),
+                    id_store::chat_anchor::AnchorRelation::About,
+                    None,
+                )
+                .unwrap(),
+            )
+            .unwrap();
+
+        // No caller-declared live kinds: nothing is eligible, and the
+        // store is unchanged.
+        let policy = crate::event_store::CompactionPolicy::default();
+        assert_eq!(node.compact(&policy).unwrap(), 0);
+        assert!(
+            node.store.event_by_id(&chat_ids[0]).unwrap().is_some(),
+            "a chat event lost its bytes without a live-kinds declaration"
+        );
+
+        // The channel policy — chat declared live, three recent sends
+        // always kept. Alice's chain holds eight events (six chat, a
+        // document, an anchor), so the frontier is 8 - 3 = 5 and the
+        // five chat events below it are reclaimed; the document and
+        // the anchor are durable and stay.
+        let policy = crate::event_store::CompactionPolicy {
+            live_kinds: [CHAT_MESSAGE_KIND.to_owned()].into(),
+            retain_recent: 3,
+        };
+        assert_eq!(node.compact(&policy).unwrap(), 5);
+        // Compaction is idempotent at this seam too.
+        assert_eq!(node.compact(&policy).unwrap(), 0);
+
+        // Presence and application survive for every event: a
+        // compacted event's residue keeps it present and applied,
+        // and the roster still reads through the residue. (The
+        // timeline projection needs message bodies, so it cannot
+        // list compacted events; presence is the residue's promise.)
+        assert!(
+            node.store.roster(&group).unwrap().contains(&author),
+            "the roster no longer reads through the compaction residue"
+        );
+        for id in &chat_ids {
+            assert!(
+                node.store.validity_now(id).unwrap() == crate::event_store::Validity::Applies,
+                "chat {id} changed its verdict under compaction"
+            );
+        }
+        // Durable facts keep their bytes.
+        assert!(node.store.event_by_id(&document.id).unwrap().is_some());
+        assert!(node.store.event_by_id(&anchor).unwrap().is_some());
+
+        // The node still writes after compaction: the chain head and
+        // the backlink resolution are intact.
+        let after = node
+            .send_chat(
+                group,
+                ChatMessage::new("still writing", Vec::new()).unwrap(),
+            )
+            .unwrap();
+        assert_ne!(after, group);
+        node.store.check_invariants().unwrap();
+
+        // The store reopens with the compaction residue intact (the
+        // reopen half of criterion 8): a fresh node over the same
+        // directory still resolves the roster and the post-compaction
+        // write, and the surviving recent chat is still readable.
+        drop(node);
+        let reopened = LocalEvents::open(dir.path(), key(61)).unwrap();
+        assert!(
+            reopened
+                .store
+                .roster(&group)
+                .unwrap()
+                .contains(&reopened.author()),
+            "the reopened store lost the roster"
+        );
+        assert!(
+            reopened.store.event_by_id(&after).unwrap().is_some(),
+            "the reopened store lost the post-compaction write"
+        );
+        assert!(
+            !reopened.chat_timeline(group).unwrap().is_empty(),
+            "the reopened store lost the surviving recent chat"
+        );
+        reopened.store.check_invariants().unwrap();
     }
 }
