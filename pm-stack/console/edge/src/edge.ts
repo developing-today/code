@@ -287,6 +287,12 @@ export interface EdgeOptions {
     enabled: boolean;
     githubToken?: string;
     queueToken?: string;
+    /** The PM stack's own bridge credential and the bridge Worker's
+     * service binding (#14373): with both, `message.send` and the
+     * agents/messages reads are this side's, done through the bridge
+     * as service:pm-stack. Either missing, they stay a machine's. */
+    bridgeToken?: string;
+    bridgeFetch?: unknown;
     fetchImpl?: typeof fetch;
     /** Where GitHub's API and the queue store are, when a local run
      * puts stand-ins in their place. */
@@ -1485,9 +1491,19 @@ export class Edge {
 
   // ---- doing the core here ------------------------------------------------
 
-  /** The kinds this side does itself when it does the core. */
+  /** Whether this side holds the PM bridge credential and the bridge
+   * binding (#14373): the two together make the bridge this side's. */
+  private bridgeReady(): boolean {
+    return Boolean(this.direct?.bridgeToken) && Boolean(this.direct?.bridgeFetch);
+  }
+
+  /** The kinds this side does itself when it does the core. A message
+   * is this side's only with the bridge held (bridgeReady): without
+   * it the kind stays a machine's, as it was before the bridge path
+   * existed, and is held for one like any other. */
   private kinds(): readonly string[] {
-    return this.direct?.kinds ?? DIRECT_ACTIONS;
+    const base = this.direct?.kinds ?? DIRECT_ACTIONS;
+    return this.bridgeReady() && !base.includes("message.send") ? [...base, "message.send"] : base;
   }
 
   /** A kind this side does itself when it does the core; any other is
@@ -1529,7 +1545,11 @@ export class Edge {
         // repository: a machine that has not said which they are (one
         // from before it did) goes on reporting the list itself. Read
         // from no repositories it would be an empty list, and whole.
-        (name !== "census" || (cfg?.needsRepos.length ?? 0) > 0),
+        (name !== "census" || (cfg?.needsRepos.length ?? 0) > 0) &&
+        // The agents list is the bridge's: read here only while this
+        // side holds the PM bridge credential (#14373). Without it a
+        // machine goes on reporting the list, as it did before.
+        (name !== "agents" || this.bridgeReady()),
     );
   }
 
@@ -1551,6 +1571,8 @@ export class Edge {
       const made = directClasses(cfg, {
         githubToken: this.direct?.githubToken,
         queueToken: this.direct?.queueToken,
+        bridgeToken: this.direct?.bridgeToken,
+        bridgeFetch: this.direct?.bridgeFetch as never,
         githubApi: this.direct?.githubApi,
         queueDb: this.direct?.queueDb,
         fetchImpl: this.direct?.fetchImpl as never,
@@ -1725,6 +1747,13 @@ export class Edge {
     }
     const kinds: Record<string, { ok: boolean; error?: string }> = {};
     for (const name of DIRECT_READ_SECTIONS) {
+      // The agents section is the bridge's: with no PM bridge
+      // credential held there is no path here to prove, and the
+      // section is a machine's, as it was before (#14373). Every
+      // other section is checked even while it is a machine's for
+      // being refused: the check is how this side finds it can read
+      // the section itself again.
+      if (name === "agents" && !this.bridgeReady()) continue;
       try {
         await directRead(name, direct.ops, direct.work);
         kinds[name] = { ok: true };
@@ -2471,10 +2500,14 @@ export class Edge {
           await this.schedule(cfg);
           return res;
         }
-        // What needs only GitHub and the queue store is read here, by
-        // the code a machine would read it with.
+        // What needs only GitHub, the queue store and the bridge is
+        // read here, by the code a machine would read it with. The
+        // bridge's own read (the message log) is attempted only while
+        // this side holds the bridge credential: without it the log
+        // is a machine's to read, and the request goes to the host
+        // below as it did before.
         const mine = this.mine(cfg);
-        if (mine) {
+        if (mine && !(seg.length === 1 && seg[0] === "messages" && !this.bridgeReady())) {
           const from = this.outwardN;
           let read: unknown;
           try {

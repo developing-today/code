@@ -717,6 +717,23 @@ describe("the document the Trends screen draws", () => {
     expect((await w.trends.read("30")).days.length).toBe(60);
     for (const odd of [null, "", "0", "8", "abc", "-7", "1e2"])
       expect([(await w.trends.read(odd)).window, odd]).toEqual([30, odd]);
+    // A single day, for a report of one: set against the day before.
+    const day = await w.trends.read("1");
+    expect([day.window, day.days, day.end]).toEqual([1, ["2026-11-23", "2026-11-24"], "2026-11-24"]);
+    // A window that ends on an earlier day: the week to the 23rd, and what merged then.
+    const earlier = await w.trends.read("7", false, "2026-11-23");
+    expect([earlier.end, earlier.today, earlier.days.length, earlier.days[13]]).toEqual([
+      "2026-11-23",
+      "2026-11-24",
+      14,
+      "2026-11-23",
+    ]);
+    expect(earlier.merged.all.slice(-2)).toEqual([0, 1]);
+    expect(earlier.features.latest.id.map((f) => f.number)).toEqual([1]);
+    // A day that is not one, or has not come, is today.
+    for (const odd of ["2026-11-25", "2027-01-01", "yesterday", "2026-13-40", "", "2026-11-2"]) {
+      expect([odd, (await w.trends.read("7", false, odd)).end]).toEqual([odd, "2026-11-24"]);
+    }
     // Ninety days back is all the history there is: no day before it is shown.
     expect((await w.trends.read("90")).days[0]).toBe("2026-08-27");
   });

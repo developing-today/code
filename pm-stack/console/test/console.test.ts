@@ -1227,6 +1227,12 @@ describe("HTTP surface", () => {
       expect(last.bugs.opened[at("2026-11-21")]).toBe(1);
       expect(last.features.latest.fleet.map((f) => f.number)).toEqual([41]);
     }
+    // A window that ends on an earlier day, as a report of a week gone by asks for.
+    const earlier = (await (await handle(get("/console/api/trends?days=7&end=2026-11-21"), d)).json()) as {
+      end: string;
+      days: string[];
+    };
+    expect([earlier.end, earlier.days[earlier.days.length - 1]]).toEqual(["2026-11-21", "2026-11-21"]);
     // Whole, and asked again at once: GitHub is not asked.
     expect((await handle(get("/console/api/trends?days=7"), d)).status).toBe(200);
     expect(asked()).toBe(9);

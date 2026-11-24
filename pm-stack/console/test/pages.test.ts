@@ -12,6 +12,7 @@ import { join } from "node:path";
 import "../public/look.js";
 import { routesKnown } from "../public/app.js";
 import { PAGES } from "../public/pages/index.js";
+import reports, { dayFrom, reportOf } from "../public/pages/reports.js";
 import trends, { notes, shape, wholeFrom } from "../public/pages/trends.js";
 
 const PUBLIC = join(import.meta.dir, "../public");
@@ -74,6 +75,7 @@ function doc(window: number, count: number) {
     window,
     days,
     today: "2026-11-24",
+    end: "2026-11-24",
     history: {
       from: "2026-08-26",
       whole: true,
@@ -275,4 +277,169 @@ test("the queue out of reach leaves the tasks out, and what cannot be seen yet i
   // Read from the very start of a day, that day is whole; and across a month's end.
   expect(wholeFrom("2026-08-26T00:00:00Z")).toBe("2026-08-26");
   expect(wholeFrom("2026-10-31T23:59:59Z")).toBe("2026-11-01");
+});
+
+test("a week as a report: what merged and against what, the features by project, issues, and the queue, in sentences", () => {
+  const d = doc(7, 14);
+  d.merged.all = [10, 10, 10, 10, 10, 10, 10, 12, 12, 12, 12, 12, 12, 5];
+  d.merged.kinds.feat = [4, 4, 4, 4, 4, 4, 4, 6, 6, 6, 6, 6, 6, 2];
+  d.merged.kinds.fix = [6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 3];
+  d.features.projects.id = [3, 3, 3, 3, 3, 3, 3, 2, 2, 2, 2, 2, 2, 1];
+  d.features.projects["pm-stack"] = [1, 1, 1, 1, 1, 1, 1, 4, 4, 4, 4, 4, 4, 1];
+  d.features.latest["pm-stack"] = [
+    {
+      number: 14379,
+      title: "the app's look",
+      at: "2026-11-24T13:36:00Z",
+      url: "https://github.com/developing-today/code/pull/14379",
+    },
+  ];
+  d.issues.closed = [0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1];
+  d.issues.opened = [0, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0];
+  d.merged.minutes = [null, null, null, null, null, null, null, 30, 60, null, 90, 120, 600, 20];
+  d.tasks = {
+    all: [1, 1, 1, 1, 1, 1, 1, 2, 2, 2, 2, 2, 2, 2],
+    kinds: [
+      { kind: "small fix", days: [0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1] },
+      { kind: "feature slice", days: [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1] },
+    ],
+    since: "2026-11-11",
+  };
+  const r = reportOf(d, { claimed: 118, queued: 99, blocked: 283 });
+  expect([r.title, r.period, r.today, r.whole]).toEqual([
+    "7 days to Tue 24 Nov",
+    "Wed 18 Nov to Tue 24 Nov",
+    true,
+    true,
+  ]);
+  // 77 against 70; 38 features (13 in id, 25 in the PM stack) against 28.
+  expect(r.headline).toBe("77 pull requests merged (▲ 10% on the 7 days before), 38 of them features.");
+  expect(r.sections.map((s: { title: string }) => s.title)).toEqual([
+    "Merged",
+    "Features, by project",
+    "Issues",
+    "The queue",
+  ]);
+  expect(r.sections[0].lines).toEqual([
+    "77 pull requests merged (▲ 10% on the 7 days before).",
+    "That is 38 features and 39 fixes.",
+    // The middle of 20, 30, 60, 90, 120 and 600.
+    "The middle one waited 75 min from opened to merged.",
+    "The busiest day was Wed 18 Nov, with 12.",
+  ]);
+  expect(r.sections[1].lines).toEqual([
+    "38 features merged (▲ 36% on the 7 days before): 25 in PM stack and 13 in id.",
+  ]);
+  expect(r.sections[1].links).toEqual([
+    { text: "the app's look", meta: "PM stack · #14379", url: "https://github.com/developing-today/code/pull/14379" },
+  ]);
+  expect(r.sections[2].lines).toEqual([
+    "2 issues opened and 7 closed (▲ from none on the 7 days before): the backlog went down by 5.",
+    "0 bugs reported and 0 fixed.",
+    "0 pull requests opened; 0 closed without merging.",
+  ]);
+  expect(r.sections[3].lines).toEqual([
+    "14 tasks finished (▲ 100% on the 7 days before): 7 small fix and 7 feature slice.",
+    "Right now 118 are in progress, 99 queued and 283 blocked.",
+  ]);
+  expect(r.notes).toEqual(["Today is not over."]);
+  // A project that merged many features lists its latest three to open, not all of them.
+  const many = doc(7, 14);
+  many.features.projects.id = many.days.map(() => 1);
+  many.features.latest.id = [5, 4, 3, 2, 1].map((n) => ({
+    number: n,
+    title: `feature ${n}`,
+    at: "2026-11-24T10:00:00Z",
+    url: `u${n}`,
+  }));
+  expect(reportOf(many).sections[1].links.map((l: { text: string }) => l.text)).toEqual([
+    "feature 5",
+    "feature 4",
+    "feature 3",
+  ]);
+  // As text, to copy or share: every sentence, and each feature with where it is.
+  expect(r.text.split("\n").slice(0, 3)).toEqual([
+    "7 days to Tue 24 Nov (Wed 18 Nov to Tue 24 Nov, UTC)",
+    "",
+    "Merged",
+  ]);
+  expect(r.text).toContain("- the app's look (PM stack · #14379) https://github.com/developing-today/code/pull/14379");
+  expect(r.text.endsWith("Today is not over.")).toBe(true);
+  for (const section of r.sections) for (const line of section.lines) expect(r.text).toContain(line);
+});
+
+test("a day gone by as a report: named by its day, set against the day before, with nothing said of now", () => {
+  const d = doc(1, 2);
+  d.days = ["2026-11-22", "2026-11-23"];
+  d.end = "2026-11-23";
+  d.merged.all = [4, 1];
+  d.merged.kinds.other = [4, 1];
+  d.issues.opened = [0, 3];
+  d.issues.closed = [0, 1];
+  d.bugs.opened = [0, 1];
+  d.tasks = { error: "queue store http 503" };
+  const r = reportOf(d, { claimed: 5, queued: 5, blocked: 5 });
+  expect([r.title, r.period, r.today]).toEqual(["Mon 23 Nov", "Mon 23 Nov", false]);
+  expect(r.headline).toBe("1 pull request merged (▼ 75% on the day before), 0 of them features.");
+  // One of something is said as one; nothing of a kind is not listed; a day has no busiest day.
+  expect(r.sections[0].lines).toEqual(["1 pull request merged (▼ 75% on the day before).", "That is 1 other."]);
+  expect(r.sections.map((s: { title: string }) => s.title)).toEqual(["Merged", "Issues"]);
+  expect(r.sections[1].lines[0]).toBe(
+    "3 issues opened and 1 closed (▲ from none on the day before): the backlog grew by 2.",
+  );
+  expect(r.sections[1].lines[1]).toBe("1 bug reported and 0 fixed.");
+  expect(r.notes).toEqual([]);
+  // Today, as a day: "so far", and the queue as it stands.
+  const t = doc(1, 2);
+  t.tasks = { all: [0, 2], kinds: [{ kind: "triage", days: [0, 2] }], since: "2026-11-24" };
+  const now = reportOf(t, { claimed: 1, queued: 2, blocked: 3 });
+  expect([now.title, now.notes]).toEqual(["Today so far", ["The day is not over."]]);
+  expect(now.sections[now.sections.length - 1].lines).toEqual([
+    "2 tasks finished (▲ from none on the day before): 2 triage.",
+    "Right now 1 are in progress, 2 queued and 3 blocked.",
+  ]);
+  expect(reportOf(t, null).sections[now.sections.length - 1].lines.length).toBe(1);
+  // Level, and nothing either way.
+  const level = doc(7, 14);
+  level.issues.opened = level.days.map(() => 1);
+  level.issues.closed = level.days.map(() => 1);
+  expect(reportOf(level).sections[1].lines[0]).toBe(
+    "7 issues opened and 7 closed (level on the 7 days before): the backlog stayed level.",
+  );
+});
+
+test("a report says when its numbers are not whole, and sets nothing against days that are not", () => {
+  const d = doc(7, 14);
+  d.merged.all = [10, 10, 10, 10, 10, 10, 10, 12, 12, 12, 12, 12, 12, 5];
+  d.history.whole = false;
+  d.history.covered = "2026-11-17T12:00:00Z";
+  // The week is whole (from the 18th); the week before is not: no comparison, and nothing to warn of.
+  const week = reportOf(d);
+  expect([week.whole, week.headline, week.notes]).toEqual([
+    true,
+    "77 pull requests merged, 0 of them features.",
+    ["Today is not over."],
+  ]);
+  d.history.covered = "2026-11-21T12:00:00Z";
+  const part = reportOf(d);
+  expect(part.whole).toBe(false);
+  expect(part.notes[0]).toBe(
+    "GitHub's history is whole from Sun 22 Nov on: days before that in this report are undercounted. It is still being read.",
+  );
+  d.history.covered = null;
+  d.partial = true;
+  d.why = "GitHub's history could not be read on: timed out";
+  expect(reportOf(d).notes).toEqual([
+    "GitHub's history is still being read for the first time: these numbers are what has been read so far.",
+    "Today is not over.",
+    "GitHub's history could not be read on: timed out",
+  ]);
+  // Stepping a report back and forth by its own length, across a month's end.
+  expect([
+    dayFrom("2026-11-24", -7),
+    dayFrom("2026-11-03", -7),
+    dayFrom("2026-11-24", 1),
+    dayFrom("2026-12-31", 1),
+  ]).toEqual(["2026-11-17", "2026-10-27", "2026-11-25", "2027-01-01"]);
+  expect(reports.route).toBe("more/reports");
 });

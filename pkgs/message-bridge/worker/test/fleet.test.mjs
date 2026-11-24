@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { DatabaseSync } from "node:sqlite";
-import { deriveFleetToken, fleetCall, fleetOp, fleetSchema, fleetToken, parseTargets } from "../src/fleet.js";
+import { deriveFleetToken, fleetCall, fleetOp, fleetSchema, fleetToken, getDistribution, parseTargets } from "../src/fleet.js";
 import { MemoryStore } from "../src/messages.js";
 import { route } from "../src/routes.js";
 
@@ -236,4 +236,104 @@ test("inbox mark_read hands each message out once", async () => {
   box = await (await agent.inbox({ agent: "m" })).json();
   assert.equal(box.messages.length, 0);
   assert.equal(box.stats.unread_commands + box.stats.unread_messages, 0);
+});
+
+test("glob targets parse like names, and malformed globs are refused", () => {
+  assert.deepEqual(parseTargets("agent:f*"), { agents: ["f*"], groups: [], all: false });
+  assert.deepEqual(parseTargets(["agent:Muse-*", "group:muse"]), { agents: ["muse-*"], groups: ["muse"], all: false });
+  for (const bad of ["agent:f o*", "agent:-*", `agent:${"*".repeat(65)}`]) {
+    assert.throws(() => parseTargets(bad), /pattern|agent/, JSON.stringify(bad));
+  }
+});
+
+test("pattern send with limit: first match in name order, match report, broaden remainder", async () => {
+  const { agent, owner } = await harness();
+  await agent.hello({ agent: "fable" });
+  await agent.hello({ agent: "falcon" });
+  await agent.hello({ agent: "muse-1", groups: ["muse"] });
+
+  // Oracle (#14367): agent:f* matches two registered agents; limit 1
+  // delivers to exactly the first by name order and reports the rest.
+  const res = await owner.send({ body: "take the next task", to: "agent:f*", kind: "command", limit: 1 });
+  assert.equal(res.status, 201);
+  const sent = await res.json();
+  assert.equal(sent.matched, 2);
+  assert.equal(sent.delivered, 1);
+  assert.deepEqual(sent.recipients, ["fable"]);
+  assert.equal(sent.remaining, 1);
+  assert.equal((await (await agent.inbox({ agent: "fable" })).json()).messages.length, 1);
+  assert.equal((await (await agent.inbox({ agent: "falcon" })).json()).messages.length, 0);
+
+  // Broaden with limit 2 delivers to exactly the remaining agent.
+  const b1 = await (await owner.send({ broaden: sent.batch, limit: 2 })).json();
+  assert.equal(b1.matched, 2);
+  assert.equal(b1.delivered, 1);
+  assert.deepEqual(b1.recipients, ["falcon"]);
+  assert.equal(b1.remaining, 0);
+  const falconBox = (await (await agent.inbox({ agent: "falcon" })).json()).messages;
+  assert.equal(falconBox.length, 1);
+  assert.equal(falconBox[0].body, "take the next task");
+  assert.equal(falconBox[0].batch, sent.batch);
+
+  // A second identical broaden delivers nothing — never a duplicate.
+  const b2 = await (await owner.send({ broaden: sent.batch, limit: 2 })).json();
+  assert.equal(b2.delivered, 0);
+  assert.deepEqual(b2.messages, []);
+  assert.equal((await (await agent.inbox({ agent: "fable" })).json()).messages.length, 1);
+  assert.equal((await (await agent.inbox({ agent: "falcon" })).json()).messages.length, 1);
+});
+
+test("a glob matching nobody is an error, like an empty group", async () => {
+  const { agent, owner } = await harness();
+  await agent.hello({ agent: "fable" });
+  const res = await owner.send({ body: "x", to: "agent:z*" });
+  assert.equal(res.status, 400);
+  assert.match((await res.json()).error, /no registered agent matches agent:z\*/);
+});
+
+test("limit applies across group and all sends, in name order", async () => {
+  const { agent, owner } = await harness();
+  await agent.hello({ agent: "fable" });
+  await agent.hello({ agent: "falcon", groups: ["crew"] });
+  await agent.hello({ agent: "muse-1", groups: ["crew"] });
+  const sent = await (await owner.send({ body: "crew task", to: "group:crew", limit: 1 })).json();
+  assert.equal(sent.matched, 2);
+  assert.deepEqual(sent.recipients, ["falcon"]);
+  assert.equal(sent.remaining, 1);
+  const all = await (await owner.send({ body: "everyone", to: "all", limit: 2 })).json();
+  assert.equal(all.matched, 3);
+  assert.deepEqual(all.recipients, ["fable", "falcon"]);
+  assert.equal(all.remaining, 1);
+});
+
+test("broaden can widen the pattern and still never re-delivers", async () => {
+  const { agent, owner } = await harness();
+  await agent.hello({ agent: "fable" });
+  await agent.hello({ agent: "falcon" });
+  await agent.hello({ agent: "muse-1" });
+  const sent = await (await owner.send({ body: "widen me", to: "agent:f*", limit: 1 })).json();
+  assert.deepEqual(sent.recipients, ["fable"]);
+  const b = await (await owner.send({ broaden: sent.batch, to: "agent:m*", limit: 5 })).json();
+  assert.equal(b.matched, 3);
+  assert.deepEqual(b.recipients, ["falcon", "muse-1"]);
+  assert.equal(b.remaining, 0);
+  assert.equal((await (await agent.inbox({ agent: "fable" })).json()).messages.length, 1);
+});
+
+test("every pattern send writes its bridge_distribution record", async () => {
+  const sql = sqlite();
+  fleetSchema(sql);
+  const stub = { fleet: (op, args) => fleetOp(sql, op, args, "2026-11-24T00:00:00.000Z") };
+  const call = (op, args) => fleetCall(stub, op, args);
+  await call("hello", { agent: "fable" });
+  await call("hello", { agent: "falcon" });
+  const sent = await call("send", { body: "b", to: "agent:f*", limit: 1 });
+  const dist = getDistribution(sql, sent.batch);
+  assert.equal(dist.pattern, "agent:f*");
+  assert.equal(dist.limit_n, 1);
+  assert.equal(dist.sender_addr, null);
+  assert.deepEqual(dist.matched, ["fable", "falcon"]);
+  assert.deepEqual(dist.delivered, ["fable"]);
+  await call("broaden", { batch: sent.batch, limit: 5 });
+  assert.deepEqual(getDistribution(sql, sent.batch).delivered, ["fable", "falcon"]);
 });
