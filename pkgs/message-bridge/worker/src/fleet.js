@@ -18,6 +18,13 @@
 //                                      &unread_only=&mark_read=&limit=: the
 //                                      agent's inbound rows, oldest first
 //   POST /fleet/<fleet token>/ack      {agent, up_to_id | ids}: mark read
+//   POST /fleet/<fleet token>/work     {agent, id, state, task_id?}:
+//                                      record the work-item lifecycle of
+//                                      one of the agent's own inbound
+//                                      rows (design §4.6): state is
+//                                      acted | queued | done, moving
+//                                      only forward from received;
+//                                      queued names its queue task id
 //   POST /fleet/<fleet token>/send     {agent, body, to?, kind?, reply_to?}:
 //                                      a message from the agent. With no
 //                                      to it goes to central (or, with
@@ -166,7 +173,7 @@
 
 import { MIN_TOKEN_LENGTH, matchTokenPath, safeEqual, tokenConfigured } from "./auth.js";
 import { GLOB_SEGMENT, globMatch, isGlob } from "./glob.js";
-import { InputError, MAX_BODY, MAX_SENDER } from "./messages.js";
+import { InputError, MAX_BODY, MAX_SENDER, normalizeWorkMark, workTransitionError } from "./messages.js";
 import { normalizeNoteIdentity, noteTokenHash } from "./notes.js";
 import { pipelineFeed, unifiedAgents } from "./pipeline.js";
 import { relay, replyAddress } from "./relay.js";
@@ -373,6 +380,8 @@ export function normalizeFleetOp(op, a = {}) {
       };
     case "ack":
       return { agent: normalizeName(a.agent), ...ackArgs(a) };
+    case "work":
+      return { agent: normalizeName(a.agent), ...normalizeWorkMark(a) };
     case "post":
       return {
         agent: normalizeName(a.agent),
@@ -485,6 +494,10 @@ export function fleetSchema(sql) {
   // Rows from before connectors and agents could message agents all came from central.
   const cols = sql.exec("PRAGMA table_info(fleet_message)").toArray();
   if (!cols.some((c) => c.name === "from_addr")) sql.exec("ALTER TABLE fleet_message ADD COLUMN from_addr TEXT");
+  // The instruction work-item lifecycle (#14372, design §4.6): null
+  // until the receiving agent marks the row; null reads as "received".
+  if (!cols.some((c) => c.name === "work_state")) sql.exec("ALTER TABLE fleet_message ADD COLUMN work_state TEXT");
+  if (!cols.some((c) => c.name === "work_task_id")) sql.exec("ALTER TABLE fleet_message ADD COLUMN work_task_id INTEGER");
   sql.exec("CREATE INDEX IF NOT EXISTS fleet_message_mailbox ON fleet_message (agent, direction, read_at)");
   // Per-agent credentials (#14368): only the SHA-256 hash of a credential
   // is stored, never the value. scopes is a JSON array drawn from
@@ -798,6 +811,33 @@ export function fleetOp(sql, op, a, now = new Date().toISOString()) {
       }
       touch(sql, a.agent, null, now);
       return { acked, stats: mailboxStats(sql, a.agent) };
+    }
+    case "work": {
+      // Only the receiving agent's own inbound rows can be marked: the
+      // lookup is scoped to this mailbox, so another agent's row (or a
+      // row this agent sent) is simply not found. Transitions are
+      // forward-only (messages.js workTransitionError); a queued mark
+      // already named its task id at validation time, and a later mark
+      // without one keeps the recorded id.
+      const row = sql
+        .exec(
+          "SELECT id, work_state, work_task_id FROM fleet_message WHERE id = ? AND agent = ? AND direction = 'inbound'",
+          a.id,
+          a.agent,
+        )
+        .toArray()[0];
+      if (!row) return { error: `message ${a.id} is not in ${a.agent}'s mailbox` };
+      const err = workTransitionError(row.work_state, a.state);
+      if (err) return { error: err };
+      sql.exec(
+        "UPDATE fleet_message SET work_state = ?, work_task_id = ? WHERE id = ?",
+        a.state,
+        a.task_id ?? row.work_task_id ?? null,
+        a.id,
+      );
+      touch(sql, a.agent, null, now);
+      const message = { ...sql.exec("SELECT * FROM fleet_message WHERE id = ?", a.id).toArray()[0] };
+      return { message, stats: mailboxStats(sql, a.agent) };
     }
     case "post": {
       let batch = null;
@@ -1633,6 +1673,20 @@ async function agentRoute(request, store, what, url, delivered, cred = null) {
     const d = await readJson(request);
     if (cred && (!scoped("inbox") || credOwnName(d.agent, cred) === null)) return notFound();
     return json(await store.fleet("ack", d));
+  }
+  if (what === "work") {
+    if (request.method !== "POST") return notAllowed("POST");
+    const d = await readJson(request);
+    if (cred && (!scoped("inbox") || credOwnName(d.agent, cred) === null)) return notFound();
+    try {
+      return json(await store.fleet("work", d));
+    } catch (e) {
+      // With a credential every work refusal is the plain 404, like
+      // every other credential refusal: the caller learns nothing
+      // about rows that are not its own.
+      if (cred && e instanceof InputError) return notFound();
+      throw e;
+    }
   }
   if (what === "send") {
     if (request.method !== "POST") return notAllowed("POST");

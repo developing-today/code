@@ -16,7 +16,8 @@
 //   GET /api/<token>/agents    fleet registry + note identities
 //
 // Normalized row: {surface, id, batch, ts, kind, sender_addr,
-// sender_label, receiver, direction, read_at, reply_to, body}.
+// sender_label, receiver, direction, read_at, reply_to, body,
+// work_state, work_task_id}.
 //   surface     "connector" | "fleet" | "notes"
 //   kind        the surface's own kind: connector rows are "message" |
 //               "instruction", fleet rows "message" | "command", notes
@@ -33,15 +34,25 @@
 //               batch today, so null (a batch filter therefore only
 //               matches fleet rows)
 //   reply_to    the fleet row a reply answers; null elsewhere today
+//   work_state  the instruction work-item lifecycle (design §4.6):
+//               fleet and notes rows carry the state the receiving
+//               agent recorded (unmarked reads as "received");
+//               connector instructions derive it from read state
+//               (unread "received", read "acted" — they store no
+//               lifecycle fields in this build-out); null on rows
+//               that are not work items (outbound rows, plain
+//               connector messages)
+//   work_task_id the fleet-queue task a `queued` instruction became;
+//               null unless the receiving agent recorded one
 //
 // Filters: kind, sender, receiver, surface, batch, unread_only,
-// since_id, before_id, limit, order. since_id/before_id are per-surface
+// work_state, since_id, before_id, limit, order. since_id/before_id are per-surface
 // id cursors (each surface numbers its own rows), applied on every
 // surface the query touches. sender/receiver match an address or its
 // bare name: "felix", "agent:felix" and — for notes — "muse/felix" all
 // name the same sender as far as the owner is concerned.
 
-import { InputError, MAX_LIMIT } from "./messages.js";
+import { InputError, MAX_LIMIT, WORK_STATES } from "./messages.js";
 
 export const PIPELINE_SURFACES = ["connector", "fleet", "notes"];
 export const PIPELINE_KINDS = ["message", "instruction", "command", "note"];
@@ -84,9 +95,14 @@ export function normalizePipelineQuery(q = {}) {
   }
   const order = q.order === undefined || q.order === null || q.order === "" ? "asc" : String(q.order).toLowerCase();
   if (order !== "asc" && order !== "desc") throw new InputError("order must be asc or desc");
+  const work_state = q.work_state === undefined || q.work_state === null || q.work_state === "" ? "all" : String(q.work_state).toLowerCase();
+  if (work_state !== "all" && !WORK_STATES.includes(work_state)) {
+    throw new InputError(`work_state must be all or one of ${WORK_STATES.join(", ")}`);
+  }
   return {
     surface,
     kind,
+    work_state,
     sender: textFilter(q.sender, "sender"),
     receiver: textFilter(q.receiver, "receiver"),
     batch: textFilter(q.batch, "batch", { lower: false }),
@@ -147,6 +163,10 @@ export function projectConnector(m) {
     direction: m.direction,
     read_at: m.read_at ?? null,
     reply_to: null,
+    // Connector instructions store no lifecycle fields (§4.6): read
+    // state stands in — unread is `received`, read is `acted`.
+    work_state: inbound && m.kind === "instruction" ? (m.read_at ? "acted" : "received") : null,
+    work_task_id: null,
     body: m.body,
     channel: m.channel,
   };
@@ -166,6 +186,8 @@ export function projectFleet(m) {
     direction: m.direction,
     read_at: m.read_at ?? null,
     reply_to: m.reply_to ?? null,
+    work_state: inbound ? (m.work_state ?? "received") : null,
+    work_task_id: inbound ? (m.work_task_id ?? null) : null,
     body: m.body,
     agent: m.agent,
   };
@@ -184,6 +206,8 @@ export function projectNote(r) {
     direction: "inbound",
     read_at: r.ack_at ?? null,
     reply_to: null,
+    work_state: r.work_state ?? "received",
+    work_task_id: r.work_task_id ?? null,
     body: r.body,
   };
 }
@@ -192,6 +216,7 @@ export function projectNote(r) {
 
 function matches(e, q) {
   if (q.kind !== "all" && e.kind !== q.kind) return false;
+  if (q.work_state !== "all" && e.work_state !== q.work_state) return false;
   if (q.batch !== null && e.batch !== q.batch) return false;
   if (q.unread_only && !(e.direction === "inbound" && e.read_at === null)) return false;
   if (!addressMatches(q.sender, e.sender_addr, e.sender_label)) return false;
@@ -230,7 +255,7 @@ function identityFilter(v) {
  */
 export async function pipelineFeed(store, rawQuery = {}) {
   const q = normalizePipelineQuery(rawQuery);
-  const fetchLimit = q.sender || q.receiver || q.batch ? MAX_LIMIT : q.limit;
+  const fetchLimit = q.sender || q.receiver || q.batch || q.work_state !== "all" ? MAX_LIMIT : q.limit;
   const want = (s) => q.surface === "all" || q.surface === s;
   const kindFor = (...kinds) => q.kind === "all" || kinds.includes(q.kind);
   const entries = [];
@@ -296,8 +321,9 @@ export async function notesOwnerFeed(store, rawQuery = {}) {
   });
   const notes = rows
     .filter((r) => addressMatches(q.sender, r.sender) && addressMatches(q.receiver, r.recipient))
+    .filter((r) => q.work_state === "all" || (r.work_state ?? "received") === q.work_state)
     .slice(0, q.limit)
-    .map((r) => ({ id: r.id, ts: r.ts, recipient: r.recipient, sender: r.sender, body: r.body, ack_at: r.ack_at ?? null }));
+    .map((r) => ({ id: r.id, ts: r.ts, recipient: r.recipient, sender: r.sender, body: r.body, ack_at: r.ack_at ?? null, work_state: r.work_state ?? null, work_task_id: r.work_task_id ?? null }));
   return { notes };
 }
 
