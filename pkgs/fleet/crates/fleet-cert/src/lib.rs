@@ -40,6 +40,7 @@ pub mod chain;
 pub mod cli;
 pub mod engine;
 pub mod error;
+pub mod format;
 pub mod graph;
 pub mod model;
 pub mod naming;

@@ -36,6 +36,7 @@ Groups and verbs (spec §6.1 tree; status as built):
   ocsp     sign | inspect | test
   chain    build | test
   bundle   inspect
+  format   convert | verify
   profile  list | show
   algorithms list | describe
   explain  [topic]
@@ -228,6 +229,7 @@ fn run_inner(args: &[String]) -> Result<i32> {
         "ocsp" => ocsp_cmd(rest, json_out),
         "chain" => chain_cmd(rest, json_out),
         "bundle" => bundle_cmd(rest, json_out),
+        "format" => format_cmd(rest, json_out),
         "profile" => profile_cmd(rest, json_out),
         "algorithms" => algorithms_cmd(rest, json_out),
         "explain" => explain_cmd(rest, json_out),
@@ -719,6 +721,59 @@ fn list_cmd(args: &[String], json_out: bool, want: BundleType) -> Result<i32> {
         })).collect::<Vec<_>>(),
     });
     Ok(emit(json_out, text, value))
+}
+
+fn format_cmd(args: &[String], json_out: bool) -> Result<i32> {
+    let verb = args.first().map(|s| s.as_str()).unwrap_or("");
+    let rest = &args[1.min(args.len())..];
+    match verb {
+        "convert" => {
+            let p = parse_args(rest, &["in", "to", "out"], &["json"])?;
+            let input = p.require("in", "format convert")?;
+            let to = crate::format::Encoding::parse(&p.require("to", "format convert")?)?;
+            let bytes = std::fs::read(&input)
+                .map_err(|e| CertError::usage(format!("cannot read {input}: {e}")))?;
+            let out = crate::format::convert(&bytes, to)?;
+            match p.get("out") {
+                Some(path) => {
+                    std::fs::write(path, &out)
+                        .map_err(|e| CertError::engine(format!("cannot write {path}: {e}")))?;
+                    Ok(emit(
+                        json_out,
+                        format!("wrote {} ({})\n", path, to.as_str()),
+                        json!({ "out": path, "format": to.as_str(), "bytes": out.len() }),
+                    ))
+                }
+                None => {
+                    use std::io::Write;
+                    std::io::stdout()
+                        .write_all(&out)
+                        .map_err(|e| CertError::engine(format!("cannot write stdout: {e}")))?;
+                    Ok(0)
+                }
+            }
+        }
+        "verify" => {
+            let p = parse_args(rest, &["in"], &["json"])?;
+            let input = p.require("in", "format verify")?;
+            let bytes = std::fs::read(&input)
+                .map_err(|e| CertError::usage(format!("cannot read {input}: {e}")))?;
+            let v = crate::format::verify(&bytes)?;
+            Ok(emit(
+                json_out,
+                format!(
+                    "{input}: valid X.509 certificate ({} input, {} DER bytes, sha256 {}); PEM and DER round trips match\n",
+                    v.input.as_str(),
+                    v.der_len,
+                    v.sha256
+                ),
+                json!({ "in": input, "input": v.input.as_str(), "der_bytes": v.der_len, "sha256": v.sha256 }),
+            ))
+        }
+        other => Err(CertError::usage(format!(
+            "unknown format verb '{other}' (convert | verify)"
+        ))),
+    }
 }
 
 fn profile_cmd(args: &[String], json_out: bool) -> Result<i32> {
