@@ -76,6 +76,16 @@ type Provider interface {
 // reached and failed.
 var ErrUnavailable = errors.New("model: no provider available")
 
+// PaymentRequiredError marks a provider's HTTP 402 response. A profile
+// stops at this provider so it cannot spend through a different account.
+type PaymentRequiredError struct {
+	Provider string
+}
+
+func (e *PaymentRequiredError) Error() string {
+	return "model: provider " + e.Provider + " returned HTTP 402 (payment required)"
+}
+
 // SplitModelID splits the provider/model namespace: the provider is the
 // segment before the first slash, the model is the rest. A bare id has an
 // empty provider.

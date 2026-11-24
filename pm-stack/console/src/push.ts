@@ -7,7 +7,10 @@
 // VAPID). The key pair is made here on first use and kept in this
 // service's own store; nobody ever handles it.
 import type { Store } from "./store.ts";
+import { timed, unread } from "./timed.ts";
 
+/** How long a push service has to answer one message. */
+const PUSH_SEND_MS = 15_000;
 const enc = new TextEncoder();
 const b64u = (bytes: Uint8Array | ArrayBuffer) => Buffer.from(bytes as ArrayBuffer).toString("base64url");
 
@@ -104,7 +107,12 @@ export function validSubscription(value: unknown): Subscription | null {
   return { endpoint: url.href, keys: { p256dh: v.keys.p256dh, auth: v.keys.auth } };
 }
 
-async function hkdf(salt: Uint8Array, ikm: Uint8Array, info: Uint8Array, length: number): Promise<Uint8Array> {
+async function hkdf(
+  salt: Uint8Array<ArrayBuffer>,
+  ikm: Uint8Array<ArrayBuffer>,
+  info: Uint8Array<ArrayBuffer>,
+  length: number,
+): Promise<Uint8Array<ArrayBuffer>> {
   const key = await crypto.subtle.importKey("raw", ikm, "HKDF", false, ["deriveBits"]);
   return new Uint8Array(await crypto.subtle.deriveBits({ name: "HKDF", hash: "SHA-256", salt, info }, key, length * 8));
 }
@@ -260,18 +268,19 @@ export class Push {
     for (const sub of s.subscriptions) {
       const host = new URL(sub.endpoint).hostname;
       try {
-        const res = await this.post(sub.endpoint, {
-          method: "POST",
-          headers: {
-            Authorization: await this.vapid(sub.endpoint),
-            "Content-Encoding": "aes128gcm",
-            "Content-Type": "application/octet-stream",
-            TTL: "86400",
-            Urgency: "high",
-          },
-          body: await encrypt(sub, payload),
-          signal: AbortSignal.timeout(15_000),
-        });
+        const headers = {
+          Authorization: await this.vapid(sub.endpoint),
+          "Content-Encoding": "aes128gcm",
+          "Content-Type": "application/octet-stream",
+          TTL: "86400",
+          Urgency: "high",
+        };
+        const body = await encrypt(sub, payload);
+        // Only the status is read, so the deadline is the answer's.
+        const res = await timed(PUSH_SEND_MS, (signal) =>
+          this.post(sub.endpoint, { method: "POST", headers, body, signal }),
+        );
+        unread(res);
         if (res.status === 404 || res.status === 410) gone.push(sub.endpoint);
         else if (res.status >= 200 && res.status < 300) sent++;
         else {

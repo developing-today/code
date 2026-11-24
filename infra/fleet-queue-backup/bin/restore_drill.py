@@ -30,7 +30,11 @@ import sys
 
 import fq_common
 
-BATCH = 100
+# Rows per D1 read page and per pipeline write batch. Sized for the
+# measured per-request latency of the laptop-to-Turso path (seconds
+# per request, #8584): at 100 the restore ran at ~3 rows/s.
+READ_PAGE = 1000
+BATCH = 1000
 
 
 def _require_env(name):
@@ -64,26 +68,85 @@ def d1_schema(d1, db_id):
     )
 
 
-def d1_columns(d1, db_id, table):
-    """Column names in table order, from PRAGMA table_info — the
-    drill never trusts JSON object key order for column position."""
-    rows = d1.query(db_id, f'PRAGMA table_info("{table}")')
-    return [r["name"] for r in sorted(rows, key=lambda r: r["cid"])]
+def d1_columns(create_sql):
+    """Column names in table order, parsed from the CREATE TABLE --
+    the drill never trusts JSON object key order for column position,
+    and the D1 query API refuses PRAGMA statements (SQLITE_AUTH, seen
+    live on the first drill run, #8584), so PRAGMA table_info cannot
+    be the source."""
+    return fq_common.table_columns(create_sql)
 
 
-def d1_read_table(d1, db_id, table):
-    columns = d1_columns(d1, db_id, table)
+def d1_integer_value(value):
+    """Decode an INTEGER-affinity column read back as CAST AS TEXT.
+
+    The D1 query API serializes numbers through JavaScript doubles,
+    so an int64 beyond 2^53 arrives rounded: the source's
+    autoincrement sequence tables hold i64::MAX, which came back as
+    9223372036854776000 and the target rejected it as out of range
+    (live drill run, #8584). CAST AS TEXT returns the exact decimal.
+    Decode int first, then float (a REAL stored in an INTEGER
+    column), then the string itself (a non-numeric value, which
+    column affinity leaves stored as text).
+    """
+    if value is None or isinstance(value, int):
+        return value
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        pass
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return value
+
+
+def d1_read_table(d1, db_id, table, create_sql):
+    columns = d1_columns(create_sql)
+    types = fq_common.table_column_types(create_sql)
+    select = ", ".join(
+        f'CAST("{c}" AS TEXT) AS "{c}"' if "INT" in types.get(c, "") else f'"{c}"'
+        for c in columns
+    )
+    decoders = [
+        d1_integer_value if "INT" in types.get(c, "") else d1_value for c in columns
+    ]
+    pk_cols = fq_common._pk_columns(create_sql)
+    keyset = (
+        pk_cols[0]
+        if pk_cols and len(pk_cols) == 1 and "INT" in types.get(pk_cols[0], "")
+        else None
+    )
     offset = 0
+    last_key = None
     for _page in range(fq_common.MAX_PAGES):
-        rows = d1.query(
-            db_id,
-            f'SELECT * FROM "{table}" LIMIT {fq_common.PAGE_ROWS} OFFSET {offset}',
-        )
+        # ORDER BY must name the CAST, not "{keyset}": the select list
+        # aliases CAST("{keyset}" AS TEXT) AS "{keyset}", and ORDER BY
+        # resolves the alias first -- text ordering ('1', '10', '100',
+        # ...) silently loses rows between pages (hermetic keyset test
+        # caught this: 1701 of 2600 rows restored).
+        if keyset is not None and last_key is not None:
+            sql = (
+                f'SELECT {select} FROM "{table}" '
+                f'WHERE "{keyset}" > {last_key} '
+                f'ORDER BY CAST("{keyset}" AS INTEGER) LIMIT {READ_PAGE}'
+            )
+        elif keyset is not None:
+            sql = (
+                f'SELECT {select} FROM "{table}" '
+                f'ORDER BY CAST("{keyset}" AS INTEGER) LIMIT {READ_PAGE}'
+            )
+        else:
+            sql = f'SELECT {select} FROM "{table}" LIMIT {READ_PAGE} OFFSET {offset}'
+        rows = d1.query(db_id, sql)
         for row in rows:
-            yield tuple(d1_value(row[c]) for c in columns)
-        if len(rows) < fq_common.PAGE_ROWS:
+            values = tuple(decode(row[c]) for decode, c in zip(decoders, columns))
+            if keyset is not None:
+                last_key = values[columns.index(keyset)]
+            yield values
+        if len(rows) < READ_PAGE:
             return
-        offset += fq_common.PAGE_ROWS
+        offset += READ_PAGE
     raise RuntimeError(
         f"{table}: D1 pagination exceeded {fq_common.MAX_PAGES} pages; "
         "refusing to page unboundedly"
@@ -107,15 +170,20 @@ def restore(d1_name, target_url):
     schema = [
         (r["type"], r["name"], r["tbl_name"], r["sql"]) for r in d1_schema(d1, db_id)
     ]
+    # D1 keeps its own _cf_KV table in every database: it is not part
+    # of the backup, the query API prohibits reading it ("access to
+    # _cf_KV.key is prohibited: SQLITE_AUTH", seen live on the first
+    # drill run, #8584), and the target must not recreate it.
+    schema = [entry for entry in schema if entry[1] != "_cf_KV"]
     tables = [(name, sql) for kind, name, _t, sql in schema if kind == "table"]
     for name, _sql in tables:
         target.execute(f'DROP TABLE IF EXISTS "{name}"')
     for _name, sql in tables:
         target.execute(sql.rstrip().rstrip(";"))
-    for name, _sql in tables:
+    for name, sql in tables:
         batch = []
         placeholders = None
-        for row in d1_read_table(d1, db_id, name):
+        for row in d1_read_table(d1, db_id, name, sql):
             if placeholders is None:
                 placeholders = ", ".join("?" for _ in row)
             batch.append((f'INSERT INTO "{name}" VALUES ({placeholders})', row))

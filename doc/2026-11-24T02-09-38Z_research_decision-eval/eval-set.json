@@ -1,0 +1,518 @@
+{
+  "version": 1,
+  "families": [
+    "noul",
+    "choice",
+    "score"
+  ],
+  "items": [
+    {
+      "id": "n01",
+      "family": "noul",
+      "state": "Quota window: pool openai-plan, remaining 3%, reset in 26 hours. Fleet rule: a pool is walled when remaining is below 5%.",
+      "question": {
+        "type": "noul",
+        "instructions": "Is this pool walled under the stated rule?",
+        "criteria": {
+          "true_description": "Remaining below 5% means walled.",
+          "false_description": "Remaining at or above 5% means not walled."
+        }
+      },
+      "expected": true
+    },
+    {
+      "id": "n02",
+      "family": "noul",
+      "state": "Quota window: pool claude-plan, remaining 42%, reset in 3 days. Fleet rule: a pool is walled when remaining is below 5%.",
+      "question": {
+        "type": "noul",
+        "instructions": "Is this pool walled under the stated rule?"
+      },
+      "expected": false
+    },
+    {
+      "id": "n03",
+      "family": "noul",
+      "state": "Lane state: lane A, status running, last output 2 minutes ago, heartbeat ok. A lane is stalled only if it has produced no output for more than 15 minutes.",
+      "question": {
+        "type": "noul",
+        "instructions": "Is this lane stalled?"
+      },
+      "expected": false
+    },
+    {
+      "id": "n04",
+      "family": "noul",
+      "state": "Lane state: lane B, status running, last output 47 minutes ago, heartbeat ok. A lane is stalled only if it has produced no output for more than 15 minutes.",
+      "question": {
+        "type": "noul",
+        "instructions": "Is this lane stalled?"
+      },
+      "expected": true
+    },
+    {
+      "id": "n05",
+      "family": "noul",
+      "state": "Queue row: task 18141, status quarantined, repairable flag true, attempts 1 of 3 max.",
+      "question": {
+        "type": "noul",
+        "instructions": "Can this task be repaired and requeued under the stated limits?"
+      },
+      "expected": true
+    },
+    {
+      "id": "n06",
+      "family": "noul",
+      "state": "Queue row: task 18533, status failed, attempts 3 of 3 max, repairable flag false.",
+      "question": {
+        "type": "noul",
+        "instructions": "Can this task be repaired and requeued under the stated limits?"
+      },
+      "expected": false
+    },
+    {
+      "id": "n07",
+      "family": "noul",
+      "state": "A pull request has all required checks green, no merge conflicts, and one approval. Merge rule: merge when checks are green, there are no conflicts, and at least one approval exists.",
+      "question": {
+        "type": "noul",
+        "instructions": "Does this pull request meet the merge rule?"
+      },
+      "expected": true
+    },
+    {
+      "id": "n08",
+      "family": "noul",
+      "state": "A pull request has one failing check, no merge conflicts, and two approvals. Merge rule: merge when checks are green, there are no conflicts, and at least one approval exists.",
+      "question": {
+        "type": "noul",
+        "instructions": "Does this pull request meet the merge rule?"
+      },
+      "expected": false
+    },
+    {
+      "id": "n09",
+      "family": "noul",
+      "state": "Weather report: the temperature is 34 degrees Fahrenheit and it is raining steadily. Water freezes at 32 degrees Fahrenheit.",
+      "question": {
+        "type": "noul",
+        "instructions": "Is the temperature currently below the freezing point of water?"
+      },
+      "expected": false
+    },
+    {
+      "id": "n10",
+      "family": "noul",
+      "state": "A package was shipped on Monday with 3-day delivery. It is now Friday of the same week and tracking shows it still in transit, not delivered.",
+      "question": {
+        "type": "noul",
+        "instructions": "Is the package overdue under the stated 3-day delivery promise?"
+      },
+      "expected": true
+    },
+    {
+      "id": "n11",
+      "family": "noul",
+      "state": "Server metrics: CPU 22%, memory 41%, disk 58%, error rate 0.1%. Alert rule: alert only if any metric exceeds 90% or error rate exceeds 5%.",
+      "question": {
+        "type": "noul",
+        "instructions": "Should an alert fire under the stated rule?"
+      },
+      "expected": false
+    },
+    {
+      "id": "n12",
+      "family": "noul",
+      "state": "Server metrics: CPU 35%, memory 50%, disk 96%, error rate 0.2%. Alert rule: alert only if any metric exceeds 90% or error rate exceeds 5%.",
+      "question": {
+        "type": "noul",
+        "instructions": "Should an alert fire under the stated rule?"
+      },
+      "expected": true
+    },
+    {
+      "id": "c01",
+      "family": "choice",
+      "state": "Support message: I was charged twice for my order and I want my money back.",
+      "question": {
+        "type": "choice",
+        "instructions": "Which department should handle this request?",
+        "criteria": {
+          "billing": "Payments, invoices, refunds and duplicate charges.",
+          "technical": "Product bugs, crashes and errors using the product.",
+          "shipping": "Delivery, tracking and lost packages.",
+          "other": "Anything outside billing, technical and shipping."
+        }
+      },
+      "expected": "billing"
+    },
+    {
+      "id": "c02",
+      "family": "choice",
+      "state": "Support message: The export page crashes in Safari every time I click Export.",
+      "question": {
+        "type": "choice",
+        "instructions": "Which department should handle this request?",
+        "criteria": {
+          "billing": "Payments, invoices, refunds and duplicate charges.",
+          "technical": "Product bugs, crashes and errors using the product.",
+          "shipping": "Delivery, tracking and lost packages.",
+          "other": "Anything outside billing, technical and shipping."
+        }
+      },
+      "expected": "technical"
+    },
+    {
+      "id": "c03",
+      "family": "choice",
+      "state": "Support message: My package tracking has not moved in six days and the parcel has not arrived.",
+      "question": {
+        "type": "choice",
+        "instructions": "Which department should handle this request?",
+        "criteria": {
+          "billing": "Payments, invoices, refunds and duplicate charges.",
+          "technical": "Product bugs, crashes and errors using the product.",
+          "shipping": "Delivery, tracking and lost packages.",
+          "other": "Anything outside billing, technical and shipping."
+        }
+      },
+      "expected": "shipping"
+    },
+    {
+      "id": "c04",
+      "family": "choice",
+      "state": "Support message: Please change the name on my account to my married name.",
+      "question": {
+        "type": "choice",
+        "instructions": "Which department should handle this request?",
+        "criteria": {
+          "billing": "Payments, invoices, refunds and duplicate charges.",
+          "technical": "Product bugs, crashes and errors using the product.",
+          "shipping": "Delivery, tracking and lost packages.",
+          "other": "Anything outside billing, technical and shipping."
+        }
+      },
+      "expected": "other"
+    },
+    {
+      "id": "c05",
+      "family": "choice",
+      "state": "Queue row: task ready, an idle lane is available, no blockers recorded.",
+      "question": {
+        "type": "choice",
+        "instructions": "What should happen to this task?",
+        "criteria": {
+          "dispatch": "Start the task on an idle lane now.",
+          "hold": "Keep the task queued because a stated blocker applies.",
+          "escalate": "Send the task to a human decision-maker.",
+          "drop": "Cancel the task permanently."
+        }
+      },
+      "expected": "dispatch"
+    },
+    {
+      "id": "c06",
+      "family": "choice",
+      "state": "Queue row: task ready, but its pool is walled until tomorrow and the task may only run on that pool.",
+      "question": {
+        "type": "choice",
+        "instructions": "What should happen to this task?",
+        "criteria": {
+          "dispatch": "Start the task on an idle lane now.",
+          "hold": "Keep the task queued because a stated blocker applies.",
+          "escalate": "Send the task to a human decision-maker.",
+          "drop": "Cancel the task permanently."
+        }
+      },
+      "expected": "hold"
+    },
+    {
+      "id": "c07",
+      "family": "choice",
+      "state": "Queue row: task asks to send an email to a third party and no per-item approval from the owner is recorded.",
+      "question": {
+        "type": "choice",
+        "instructions": "What should happen to this task?",
+        "criteria": {
+          "dispatch": "Start the task on an idle lane now.",
+          "hold": "Keep the task queued because a stated blocker applies.",
+          "escalate": "Send the task to a human decision-maker.",
+          "drop": "Cancel the task permanently."
+        }
+      },
+      "expected": "escalate"
+    },
+    {
+      "id": "c08",
+      "family": "choice",
+      "state": "Queue row: task was explicitly cancelled by the owner with the instruction to never run it.",
+      "question": {
+        "type": "choice",
+        "instructions": "What should happen to this task?",
+        "criteria": {
+          "dispatch": "Start the task on an idle lane now.",
+          "hold": "Keep the task queued because a stated blocker applies.",
+          "escalate": "Send the task to a human decision-maker.",
+          "drop": "Cancel the task permanently."
+        }
+      },
+      "expected": "drop"
+    },
+    {
+      "id": "c09",
+      "family": "choice",
+      "state": "Routing state: the free leg has 8000 requests remaining today, the plan leg is available, and the PAYG leg is available. Fleet rule: free legs lead wherever they can serve.",
+      "question": {
+        "type": "choice",
+        "instructions": "Which leg should serve this decision call first?",
+        "criteria": {
+          "free_leg": "A free-tier decision/embedding leg with quota remaining.",
+          "plan_leg": "A paid plan leg with quota remaining.",
+          "payg_leg": "A metered pay-as-you-go leg billed per token.",
+          "none": "No leg should be used."
+        }
+      },
+      "expected": "free_leg"
+    },
+    {
+      "id": "c10",
+      "family": "choice",
+      "state": "Routing state: the free leg has 0 requests remaining today, the plan leg has quota remaining, and the PAYG leg is available. Fleet rule: free legs lead, then plan legs, PAYG last.",
+      "question": {
+        "type": "choice",
+        "instructions": "Which leg should serve this decision call first?",
+        "criteria": {
+          "free_leg": "A free-tier decision/embedding leg with quota remaining.",
+          "plan_leg": "A paid plan leg with quota remaining.",
+          "payg_leg": "A metered pay-as-you-go leg billed per token.",
+          "none": "No leg should be used."
+        }
+      },
+      "expected": "plan_leg"
+    },
+    {
+      "id": "c11",
+      "family": "choice",
+      "state": "Routing state: the free leg has 0 requests remaining today, the plan leg is walled, and only the PAYG leg is available. Fleet rule: free legs lead, then plan legs, PAYG last.",
+      "question": {
+        "type": "choice",
+        "instructions": "Which leg should serve this decision call first?",
+        "criteria": {
+          "free_leg": "A free-tier decision/embedding leg with quota remaining.",
+          "plan_leg": "A paid plan leg with quota remaining.",
+          "payg_leg": "A metered pay-as-you-go leg billed per token.",
+          "none": "No leg should be used."
+        }
+      },
+      "expected": "payg_leg"
+    },
+    {
+      "id": "c12",
+      "family": "choice",
+      "state": "Routing state: every leg is walled or exhausted and the task is not urgent.",
+      "question": {
+        "type": "choice",
+        "instructions": "Which leg should serve this decision call first?",
+        "criteria": {
+          "free_leg": "A free-tier decision/embedding leg with quota remaining.",
+          "plan_leg": "A paid plan leg with quota remaining.",
+          "payg_leg": "A metered pay-as-you-go leg billed per token.",
+          "none": "No leg should be used."
+        }
+      },
+      "expected": "none"
+    },
+    {
+      "id": "s01",
+      "family": "score",
+      "state": "Incident: the dashboard logo renders 2 pixels off-centre. All features work normally.",
+      "question": {
+        "type": "score",
+        "instructions": "How severe is this incident?",
+        "criteria": [
+          "Cosmetic only: appearance affected, no functionality lost.",
+          "Minor: a feature is degraded but a workaround exists.",
+          "Major: a core task fails with no workaround.",
+          "Critical: data loss or a security breach."
+        ]
+      },
+      "expected": 0
+    },
+    {
+      "id": "s02",
+      "family": "score",
+      "state": "Incident: CSV export produces garbled dates, but users can export as JSON instead and convert it.",
+      "question": {
+        "type": "score",
+        "instructions": "How severe is this incident?",
+        "criteria": [
+          "Cosmetic only: appearance affected, no functionality lost.",
+          "Minor: a feature is degraded but a workaround exists.",
+          "Major: a core task fails with no workaround.",
+          "Critical: data loss or a security breach."
+        ]
+      },
+      "expected": 1
+    },
+    {
+      "id": "s03",
+      "family": "score",
+      "state": "Incident: users cannot save any document; saving fails for everyone and there is no other way to save.",
+      "question": {
+        "type": "score",
+        "instructions": "How severe is this incident?",
+        "criteria": [
+          "Cosmetic only: appearance affected, no functionality lost.",
+          "Minor: a feature is degraded but a workaround exists.",
+          "Major: a core task fails with no workaround.",
+          "Critical: data loss or a security breach."
+        ]
+      },
+      "expected": 2
+    },
+    {
+      "id": "s04",
+      "family": "score",
+      "state": "Incident: an attacker gained access to user records and exfiltrated personal data.",
+      "question": {
+        "type": "score",
+        "instructions": "How severe is this incident?",
+        "criteria": [
+          "Cosmetic only: appearance affected, no functionality lost.",
+          "Minor: a feature is degraded but a workaround exists.",
+          "Major: a core task fails with no workaround.",
+          "Critical: data loss or a security breach."
+        ]
+      },
+      "expected": 3
+    },
+    {
+      "id": "s05",
+      "family": "score",
+      "state": "Claim review: a blog post asserts a pool reset early, with no linked records and no second source.",
+      "question": {
+        "type": "score",
+        "instructions": "How strong is the evidence for this claim?",
+        "criteria": [
+          "No evidence: the claim is unsupported.",
+          "Weak evidence: one unverified report only.",
+          "Moderate evidence: two independent verified sources agree.",
+          "Strong evidence: primary records plus independent verification agree."
+        ]
+      },
+      "expected": 0
+    },
+    {
+      "id": "s06",
+      "family": "score",
+      "state": "Claim review: one user reports a price change; no receipt, screenshot or second report exists.",
+      "question": {
+        "type": "score",
+        "instructions": "How strong is the evidence for this claim?",
+        "criteria": [
+          "No evidence: the claim is unsupported.",
+          "Weak evidence: one unverified report only.",
+          "Moderate evidence: two independent verified sources agree.",
+          "Strong evidence: primary records plus independent verification agree."
+        ]
+      },
+      "expected": 1
+    },
+    {
+      "id": "s07",
+      "family": "score",
+      "state": "Claim review: two independent verified receipts show the same new price.",
+      "question": {
+        "type": "score",
+        "instructions": "How strong is the evidence for this claim?",
+        "criteria": [
+          "No evidence: the claim is unsupported.",
+          "Weak evidence: one unverified report only.",
+          "Moderate evidence: two independent verified sources agree.",
+          "Strong evidence: primary records plus independent verification agree."
+        ]
+      },
+      "expected": 2
+    },
+    {
+      "id": "s08",
+      "family": "score",
+      "state": "Claim review: the primary billing record and an independent audit both show the same charge.",
+      "question": {
+        "type": "score",
+        "instructions": "How strong is the evidence for this claim?",
+        "criteria": [
+          "No evidence: the claim is unsupported.",
+          "Weak evidence: one unverified report only.",
+          "Moderate evidence: two independent verified sources agree.",
+          "Strong evidence: primary records plus independent verification agree."
+        ]
+      },
+      "expected": 3
+    },
+    {
+      "id": "s09",
+      "family": "score",
+      "state": "Issue: a typo in an internal README heading. No user-facing impact.",
+      "question": {
+        "type": "score",
+        "instructions": "What priority is this issue?",
+        "criteria": [
+          "Low: cosmetic or documentation only, no user impact.",
+          "Normal: user impact with a workaround, fix in the normal queue.",
+          "High: core workflow blocked for some users, expedite.",
+          "Urgent: core workflow blocked for all users or data at risk, act immediately."
+        ]
+      },
+      "expected": 0
+    },
+    {
+      "id": "s10",
+      "family": "score",
+      "state": "Issue: search is slow for all users but still returns correct results after a delay.",
+      "question": {
+        "type": "score",
+        "instructions": "What priority is this issue?",
+        "criteria": [
+          "Low: cosmetic or documentation only, no user impact.",
+          "Normal: user impact with a workaround, fix in the normal queue.",
+          "High: core workflow blocked for some users, expedite.",
+          "Urgent: core workflow blocked for all users or data at risk, act immediately."
+        ]
+      },
+      "expected": 1
+    },
+    {
+      "id": "s11",
+      "family": "score",
+      "state": "Issue: checkout is blocked for users on one browser, about 20 percent of users; other browsers work.",
+      "question": {
+        "type": "score",
+        "instructions": "What priority is this issue?",
+        "criteria": [
+          "Low: cosmetic or documentation only, no user impact.",
+          "Normal: user impact with a workaround, fix in the normal queue.",
+          "High: core workflow blocked for some users, expedite.",
+          "Urgent: core workflow blocked for all users or data at risk, act immediately."
+        ]
+      },
+      "expected": 2
+    },
+    {
+      "id": "s12",
+      "family": "score",
+      "state": "Issue: the primary database is corrupting writes for every user right now.",
+      "question": {
+        "type": "score",
+        "instructions": "What priority is this issue?",
+        "criteria": [
+          "Low: cosmetic or documentation only, no user impact.",
+          "Normal: user impact with a workaround, fix in the normal queue.",
+          "High: core workflow blocked for some users, expedite.",
+          "Urgent: core workflow blocked for all users or data at risk, act immediately."
+        ]
+      },
+      "expected": 3
+    }
+  ]
+}

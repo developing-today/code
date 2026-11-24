@@ -1,0 +1,51 @@
+Worm Blossom / Willow — private research mirror
+=================================================
+Created: 2026-11-23 (America/Chicago), by Drew's agent (lane WB-SCRAPE)
+Method:  wget --mirror --page-requisites --convert-links --adjust-extension
+         --no-parent, polite pace (--wait=1 --random-wait), sandbox host.
+Purpose: Drew's private research archive. Not published or shared anywhere.
+
+COVERAGE
+--------
+willowprotocol.org — MIRRORED IN FULL (no robots.txt exists on the host;
+         the file itself returns 404, so no robots restrictions apply).
+         231 files, ~17 MB downloaded: 31 HTML pages including the home
+         page, all 15 spec sections (confidential-sync, data-model,
+         drop-format, e2e, encodings, grouping-entries,
+         handshake_and_encryption, lcmux, meadowcap, pio, rbsr, rbsr_3d,
+         uris, willow25, wtp), the essays under more/ (why_willow,
+         willow_compared, timestamps_really, about-us, changes,
+         3dstorage), the Rust tutorials, misc-definitions, RSS feeds,
+         and all page assets (CSS, KaTeX fonts, spec diagrams, the
+         references PDF). Links converted for offline reading.
+         Known gaps — 4 font files the site's own CSS references but the
+         server does not have (upstream 404, nothing to mirror):
+           assets/fonts/LinLibertine_R.woff
+           assets/fonts/LinLibertine_RB.woff
+           assets/fonts/LinLibertine_RBI.woff
+           assets/fonts/LinLibertine_RI.woff
+         (Those four are the only LinLibertine references in the CSS;
+         the KaTeX font family — 68 files — is present in full. Body
+         text falls back to a default serif offline; content unaffected.)
+
+worm-blossom.org — NOT MIRRORED, by the site's own robots.txt.
+         https://worm-blossom.org/robots.txt disallows the entire site
+         (Disallow: /) to ~70 named AI crawlers and assistants —
+         including Meta-ExternalAgent, Meta-ExternalFetcher, ClaudeBot,
+         Claude-User, ChatGPT-User and GPTBot — and for every other
+         agent it sets DisallowAITraining: /, Content-Usage: train-ai=n
+         and Content-Signal: ai-input=no. An AI agent fetching the site
+         under a spoofed browser user-agent would defeat exactly the
+         preference the owners published, so the mirror was skipped
+         rather than laundered through a fake identity. If Drew wants
+         this half archived, he can pull it down himself in a browser,
+         or direct otherwise with the robots position in view.
+
+PLACEMENT
+---------
+- Sandbox working copy: ~/workspace/worm-blossom-mirror/
+- Laptop archive of record: ~/archives/worm-blossom/ (amd)
+- hatch-private: NOT committed — there is no hatch-private clone on the
+  laptop (checked 2026-11-23: ~/git and home to depth 4; hatch-personal
+  clones exist, hatch-private does not). Per the task's own fallback,
+  the laptop copy is the archive of record.

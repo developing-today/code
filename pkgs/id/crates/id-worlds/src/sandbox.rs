@@ -2107,6 +2107,80 @@ mod tests {
     }
 
     #[test]
+    fn checked_in_mind_map_replays_same_label_distinct_nodes() {
+        // Oracle: mind-map/same-label-distinct-nodes in app-vectors.json
+        // (revision b9d8177). Inputs carry the event tag stripped; the after
+        // states below are literal copies of the vector projections.
+        let wasm = include_bytes!("../../../examples/roc-mind-map/mind-map.wasm");
+        let runner = Sandbox::compile(wasm, SandboxLimits::default()).unwrap();
+        let mut live = runner.instantiate(7).unwrap();
+        let records = |world: &mut WorldInstance| -> serde_json::Value {
+            serde_json::from_slice(&world.records().unwrap().unwrap()).unwrap()
+        };
+        let nodes = |u_name: &str, u_parent: &str| -> serde_json::Value {
+            serde_json::json!([
+                {"id": "P", "name": "North", "parent": "R", "position": [0, 1]},
+                {"id": "Q", "name": "South", "parent": "R", "position": [2, 1]},
+                {"id": "R", "name": "World", "parent": null, "position": [1, 0]},
+                {"id": "U", "name": u_name, "parent": u_parent, "position": [0, 2]},
+                {"id": "V", "name": "Archive", "parent": "Q", "position": [2, 2]}
+            ])
+        };
+        // (input, expected outcome, expected after-state)
+        let steps = [
+            (
+                r#"{"kind":"AddCrossLink","source":"U","target":"V"}"#,
+                "linked",
+                serde_json::json!({
+                    "root": "R",
+                    "nodes": nodes("Archive", "P"),
+                    "cross_links": [{"from": "U", "to": "V"}]
+                }),
+            ),
+            (
+                r#"{"kind":"Reparent","id":"U","new_parent":"Q"}"#,
+                "moved",
+                serde_json::json!({
+                    "root": "R",
+                    "nodes": nodes("Archive", "Q"),
+                    "cross_links": [{"from": "U", "to": "V"}]
+                }),
+            ),
+            (
+                r#"{"kind":"Rename","id":"U","name":"Inbox"}"#,
+                "renamed",
+                serde_json::json!({
+                    "root": "R",
+                    "nodes": nodes("Inbox", "Q"),
+                    "cross_links": [{"from": "U", "to": "V"}]
+                }),
+            ),
+            (
+                r#"{"kind":"Reparent","id":"Q","new_parent":"U"}"#,
+                "refused-cycle",
+                serde_json::json!({
+                    "root": "R",
+                    "nodes": nodes("Inbox", "Q"),
+                    "cross_links": [{"from": "U", "to": "V"}]
+                }),
+            ),
+        ];
+        assert_eq!(records(&mut live)["nodes"], nodes("Archive", "P"));
+        for (input, outcome, after) in steps {
+            live.update(1, input.as_bytes()).unwrap();
+            let doc = records(&mut live);
+            assert_eq!(doc["outcome"], outcome, "{input}");
+            assert_eq!(doc["root"], after["root"], "{input}");
+            assert_eq!(doc["nodes"], after["nodes"], "{input}");
+            assert_eq!(doc["cross_links"], after["cross_links"], "{input}");
+        }
+        let snapshot = live.snapshot().unwrap().unwrap();
+        let mut restored = runner.instantiate(7).unwrap();
+        restored.restore(&snapshot).unwrap();
+        assert_eq!(records(&mut restored), records(&mut live));
+    }
+
+    #[test]
     fn checked_in_chat_example_sends_and_reads_history() {
         use crate::world::{WorldEvent, WorldEventKind};
 

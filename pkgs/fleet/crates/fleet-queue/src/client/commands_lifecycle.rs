@@ -377,11 +377,11 @@ pub(super) fn batch_count_flag(n: Option<i64>) -> Result<i64, String> {
     match n {
         None => Ok(1),
         Some(n) if n == 1 => Ok(1),
-        Some(n) if (2..=crate::turso_queue::BATCH_CLAIM_MAX).contains(&n) => Ok(n),
+        Some(n) if (2..=crate::BATCH_CLAIM_MAX).contains(&n) => Ok(n),
         Some(n) => Err(format!(
             "claim --count {n} is out of range: a batch claim takes \
              1..={} items (#8217)",
-            crate::turso_queue::BATCH_CLAIM_MAX
+            crate::BATCH_CLAIM_MAX
         )),
     }
 }
@@ -1332,6 +1332,26 @@ pub(super) fn cmd_quarantine_recheck(rest: &[String]) -> i32 {
     print_json(&require_row(&resp, "quarantine_recheck"));
     0
 }
+/// repair (#13191): repair a quarantined / malformed task
+/// packet in place. The broker re-runs the packet validators,
+/// applies the deterministic repairs whose correct value can be
+/// re-derived (today: the dedupe stamp, re-performed live), and
+/// restores the task to claimable state; unrepairable defects
+/// fail with the defect list and change nothing. --dry-run
+/// reports defects + planned repairs and writes nothing.
+pub(super) fn cmd_repair(rest: &[String]) -> i32 {
+    let args = parse_verb_args("repair", rest, &["worker", "reason"], &["dry-run"]);
+    reject_extra_pos("repair", &args, 1);
+    let body = json!({
+        "task_id": args.pos_i64(0, "task_id"),
+        "worker": opt_worker(&args),
+        "reason": args.get("reason").unwrap_or_default(),
+        "dry_run": args.has("dry-run"),
+    });
+    let resp = unwrap_ok(call("/repair", &body));
+    print_json(&require_row(&resp, "repair_task"));
+    0
+}
 
 pub(super) fn cmd_cancel(rest: &[String]) -> i32 {
     let args = parse_verb_args("cancel", rest, &["worker", "reason"], &[]);
@@ -1431,7 +1451,6 @@ pub(super) fn cmd_complete(rest: &[String]) -> i32 {
             "result-file",
             "telemetry",
             "execution",
-            "queue",
         ],
         &[],
     );

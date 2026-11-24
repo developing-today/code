@@ -47,7 +47,15 @@ test("wrong or missing token is a plain 404 everywhere", async () => {
   // The bare address ("/", "/mcp") asks for OAuth instead: oauth.test.mjs.
   for (const path of ["/mcp/nope", "/p/nope", "/api/nope/messages", `/x/${TOKEN}`]) {
     assert.equal((await call(path, { method: "POST", body: "{}" })).status, 404, path);
-    assert.equal((await call(path)).status, 404, path);
+    if (path.startsWith("/x/")) {
+      // A two-segment GET is the public note signal (notes.js), even
+      // when its second segment happens to be a token: same bare UUID.
+      const signal = await call(path);
+      assert.equal(signal.status, 200, path);
+      assert.match((await signal.text()).trim(), /^[0-9a-f-]{36}$/);
+    } else {
+      assert.equal((await call(path)).status, 404, path);
+    }
   }
   const health = await (await call("/healthz")).json();
   const { tokenFingerprint } = await import("../src/auth.js");

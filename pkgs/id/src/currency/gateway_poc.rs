@@ -218,7 +218,7 @@ impl GraphLog {
         ))
     }
 
-    fn record(&mut self, event: &Event, body: &[u8]) -> u128 {
+    pub(crate) fn record(&mut self, event: &Event, body: &[u8]) -> u128 {
         let stamp = Self::stamp_of(event);
         self.events.insert(stamp, event.clone());
         self.bodies.insert(stamp, body.to_vec());
@@ -313,12 +313,30 @@ fn u128_hex(value: u128) -> String {
 }
 
 /// The F3 authorization view over the F1 registry (write-up
-/// items 1 and 5).
-struct RegistryView<'a> {
+/// items 1 and 5). Shared with the production gateway service
+/// ([`super::gateway_service`]) so the two compositions read the
+/// registry identically.
+pub(crate) struct RegistryView<'a> {
     registry: &'a Registry<InMemoryStore>,
     currency_ids: &'a BTreeMap<[u8; 32], String>,
     minters: &'a BTreeMap<String, HashSet<String>>,
     issued: &'a BTreeMap<String, u128>,
+}
+
+impl<'a> RegistryView<'a> {
+    pub(crate) fn new(
+        registry: &'a Registry<InMemoryStore>,
+        currency_ids: &'a BTreeMap<[u8; 32], String>,
+        minters: &'a BTreeMap<String, HashSet<String>>,
+        issued: &'a BTreeMap<String, u128>,
+    ) -> Self {
+        Self {
+            registry,
+            currency_ids,
+            minters,
+            issued,
+        }
+    }
 }
 
 impl CurrencyRegistry for RegistryView<'_> {
@@ -343,8 +361,14 @@ impl CurrencyRegistry for RegistryView<'_> {
 
 /// The F2 factory's cluster seam over the #2289 ledger seam
 /// (write-up item 7).
-struct BackendCluster<'a, B: LedgerBackend> {
+pub(crate) struct BackendCluster<'a, B: LedgerBackend> {
     backend: &'a mut B,
+}
+
+impl<'a, B: LedgerBackend> BackendCluster<'a, B> {
+    pub(crate) fn new(backend: &'a mut B) -> Self {
+        Self { backend }
+    }
 }
 
 impl<B: LedgerBackend> AccountCluster for BackendCluster<'_, B> {
@@ -836,21 +860,31 @@ impl<B: LedgerBackend> GatewayPoc<B> {
     }
 
     fn sign_receipt(&self, receipt: Receipt) -> Result<SignedReceipt, PocError> {
-        let body = receipt.body()?;
-        let signature = self.gateway_key.sign(&receipt_message(&body));
-        Ok(SignedReceipt {
-            receipt,
-            body,
-            signature,
-        })
+        sign_receipt_with(&self.gateway_key, receipt)
     }
+}
+
+/// Sign a receipt with a gateway key (the production gateway
+/// service signs its receipts through the same scheme, so a
+/// receipt verifies identically whichever composition issued it).
+pub(crate) fn sign_receipt_with(
+    key: &ed25519_dalek::SigningKey,
+    receipt: Receipt,
+) -> Result<SignedReceipt, PocError> {
+    let body = receipt.body()?;
+    let signature = key.sign(&receipt_message(&body));
+    Ok(SignedReceipt {
+        receipt,
+        body,
+        signature,
+    })
 }
 
 /// Verify a presented graph event for a write op: its bytes must
 /// decode (signature and canonical form), its kind must be the
 /// op's kind, its payload hash must commit to the presented body,
 /// and its author must be `expected_author` (an account id, hex).
-fn check_event(
+pub(crate) fn check_event(
     event: &Event,
     body: &[u8],
     kind: &str,
@@ -870,7 +904,7 @@ fn check_event(
 }
 
 /// The PoC's `currency_id` minting scheme (write-up item 2).
-fn mint_currency_id(issuer: &str, op: &RegisterCurrency) -> String {
+pub(crate) fn mint_currency_id(issuer: &str, op: &RegisterCurrency) -> String {
     let mut hasher = blake3::Hasher::new();
     hasher.update(b"id.currency.poc.currency-id.v1");
     hasher.update(issuer.as_bytes());
@@ -1448,6 +1482,71 @@ mod tests {
         assert!(supply.matches());
         assert_eq!(recon.transfers_checked, 2);
         assert_eq!(recon.unstamped_transfers, 0);
+    }
+
+    /// Oracle: an off-chart sink receives exactly one unit. The discrepancy
+    /// stays one after returning 2^127 units to the issuer, even though both
+    /// accounts now have lifetime counters beyond the signed report range.
+    #[test]
+    fn reconcile_preserves_unit_drift_for_full_width_posted_counters() {
+        let mut fx = fixture_with(InMemoryLedger::default());
+        let (_, currency, definition) = registered(&mut fx);
+        let key = *currency.compact_hash().as_bytes();
+        issue_to_alice(&mut fx, &currency, &definition, 2, 1, 1);
+        let issuer = derived_id(&fx, &fx.issuer.account, AccountKind::Issuer);
+        let holder = derived_id(&fx, &fx.alice.account, AccountKind::Holder);
+        let sink = 987_654_321;
+        assert_eq!(
+            fx.svc.backend.create_accounts(&[LedgerAccount {
+                id: sink,
+                ledger: id_currency_registry::CURRENCY_RANGE_START,
+                code: 9,
+                flags: LedgerFlags::default(),
+            }]),
+            vec![Ok(())]
+        );
+        let large = 1_u128 << 127;
+        inject_transfer(&mut fx, 0x13542_0001, issuer, holder, large, 0);
+        inject_transfer(&mut fx, 0x13542_0002, holder, sink, 1, 0);
+        let currency_id = fx
+            .svc
+            .registry_record(&key)
+            .expect("registered")
+            .currency_id;
+        let ledger_id = id_currency_registry::CURRENCY_RANGE_START;
+        let report = fx.svc.reconcile(0);
+        assert!(report.currencies[0].supply.is_none());
+        assert_eq!(
+            report.findings,
+            vec![ReconFinding::SupplyOutsideReportRange {
+                currency_id: currency_id.clone(),
+                ledger_id,
+                issued: (large + 1).to_string(),
+                accounted: large.to_string(),
+                difference: "1".to_owned(),
+            }],
+        );
+        let serialized = serde_json::to_string(&report).expect("serialize wide totals");
+        let restored: crate::currency::reconcile::ReconReport =
+            serde_json::from_str(&serialized).expect("restore wide totals");
+        assert_eq!(report, restored);
+        assert!(!restored.is_clean());
+
+        inject_transfer(&mut fx, 0x13542_0003, holder, issuer, large, 0);
+        let report = fx.svc.reconcile(0);
+        assert_eq!(
+            report.findings,
+            vec![ReconFinding::SupplyMismatch {
+                currency_id,
+                ledger_id,
+                issued: 1,
+                accounted: 0,
+            }],
+        );
+        assert_eq!(
+            report.currencies[0].supply.as_ref().unwrap().difference(),
+            1
+        );
     }
 
     /// F4 acceptance (#2320): a transfer whose `user_data_128`

@@ -10,6 +10,7 @@ use tokio::sync::mpsc;
 use crate::world_presentation::FormSurface;
 
 use super::{Inbound, MAX_FORM_RESPONSE_BYTES, SshInputFrame, SshProbe, terminal_text};
+use crate::world_terminal::ProbeOutcome;
 
 /// The retry alias recorded for a rejected form answer:
 /// `(form_id, view_token, current_token)`.
@@ -250,6 +251,7 @@ pub(super) enum FormBytes {
 pub(super) async fn recv_bytes_through_probe(
     frames: &mut mpsc::Receiver<SshInputFrame>,
     probe: &mut Option<SshProbe>,
+    probe_outcome: &mut Option<ProbeOutcome>,
 ) -> FormBytes {
     loop {
         let Some(deadline) = probe.as_ref().map(|probe| probe.deadline) else {
@@ -287,6 +289,10 @@ pub(super) async fn recv_bytes_through_probe(
                             ?tier,
                             "terminal capability probe closed; Tier 3 fallback stays active"
                         );
+                        // The outcome is retained even on this path, so
+                        // kitty activation (#787 Slice E) can still read
+                        // the detected support once the form closes.
+                        *probe_outcome = Some(probe.demux.outcome());
                         probe.demux.expire()
                     }
                     None => Vec::new(),

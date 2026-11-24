@@ -231,6 +231,7 @@ mod tests {
                 author: key(author),
                 after: self.last.get(world).copied().into_iter().collect(),
                 group: group.map(hid),
+                at: None,
                 body,
             };
             self.last.insert(world.to_owned(), event.id);
@@ -285,6 +286,7 @@ mod tests {
                 grantee: key(to),
                 scope,
                 can_redelegate: redelegate,
+                expires_at: None,
             });
             self.push(world, by, Some(&group), body)
         }
@@ -305,6 +307,7 @@ mod tests {
                     grantee: key(to),
                     scope,
                     can_redelegate: redelegate,
+                    expires_at: None,
                 },
                 world: names.to_owned(),
             };

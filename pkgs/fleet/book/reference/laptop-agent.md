@@ -4,7 +4,7 @@
 
 See also [fleet proxy](proxy.md) and [fleet shell](shell.md).
 
-Known discrepancy: there is **no `--help` handling anywhere in this domain**. The shared USAGE text is printed only as part of error messages, and a `--help` argument is treated as data — `laptop-agent jobs --help` errors `unknown command "jobs"` (because `jobs` accepts no trailing arguments), `poll --help` actually polls a job named `--help` and prints its real `HTTP 404: no such job`, and `kill --help` prints nothing. This chapter is written from source. A second stale-help note: the domain status line still claims "implementation lands in a later step of epic #5412"; the source is a full client mirroring the Python daemon client verb for verb.
+Help: a help token anywhere before the `--` separator — and not swallowed as an option's value — prints the domain's shared USAGE and exits 0, before any transport is touched: `poll --help` asks for help; it does not poll a job named `--help` (#13175).
 
 ## Shared behaviour (all verbs)
 

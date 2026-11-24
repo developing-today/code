@@ -4,7 +4,7 @@
 # The same gate covers the MCP endpoint (POST /mcp, #8625).
 #
 # Secrets (wrangler secret put; values never in this file):
-#   GATE_TOKEN          inbound bearer gate for /v1/*
+#   GATE_TOKEN          inbound bearer gate for /v1/* and POST /mcp
 #   SERVICE_TOKEN       the `cf-worker` client token of the fleet
 #                       search service (ceiling_cap: personal)
 #   ACCESS_CLIENT_ID    Cloudflare Access service token for

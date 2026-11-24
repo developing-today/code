@@ -45,9 +45,12 @@ pkgs.mkShell {
   inherit (nixCommon)
     buildInputs
     shellHook
-    nativeBuildInputs
     TREEFMT_TREE_ROOT_CMD
     ;
+
+  # Pristine bun for the shell (#13337); the shared set carries the
+  # patchelf'd nixpkgs bun for the sandbox (#13751).
+  nativeBuildInputs = nixCommon.shellNativeBuildInputs;
 
   # OpenSSL configuration for native builds
   inherit (nixCommon.opensslEnv)

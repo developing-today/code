@@ -1,0 +1,6715 @@
+OVERVIEW
+Overview
+Today
+Needs you
+Decision sets
+Roadmap
+WORK
+Program status
+Queue
+OPS
+Usage & billing
+Health
+Alerts
+Pages ▾
+Overview — The stack front door (#1134): needs-you, projects, quotas, and health at a glance.
+Today — The day's top objectives + per-project momentum.
+Digest — The scheduled PM digest (#1278): moved / blocked / needs Drew / done / quota outlook from the canonical projection, archived per day at /digest?date=<date>.
+Needs you — NEEDS USER vs NEEDS ORCHESTRATOR, and every live session.
+Decision sets — Every raised decision set (#8867): new today, this week, or all — with open-question counts. Each row opens the set's own page.
+Board — The curated cross-repo WIP board.
+Roadmap — The program roadmap at every grain.
+Reports — Review report versions and resolve prose conflicts without overwriting stored text.
+Source conflicts — One read-only queue of every live source disagreement, with both values and its age.
+Sessions — The agent/session identity registry: who ran what, tokens, task links.
+Search — Search board, roadmap, registry sessions, DNS, services, and tier items by title or linked issue/PR ref.
+Events — The cross-stack chronological stream of dashboard actions, orchestration publishes, and session outcomes.
+Comments queue — Dashboard comments still waiting on a loop (#1210): messages awaiting triage and GitHub comments pending or failed to post, with kind/state counts and each failed item's last error.
+Program status — The projects hub: every project's status, roadmap, and tracked work, one page per project under /program/<id> — fed from the project registry, the tracked issues, and the Project pool.
+Queue — In progress, blocked, recently completed, and next-up work across projects.
+Usage & billing — Token quotas, PAYG dollars, and every SaaS service's usage vs its limits.
+DNS register — Every domain: next renewal, unused, earmarked. (#902's register)
+Cost Explorer — Two tabs over the fleet's cost data: AA Explorer (Artificial Analysis measurements, frontier charts, plan/API/per-task efficiency) and Model Explorer (every model in the fleet's catalogs, its pool seats, plan, and measured value).
+Health — Service & page health (#1147): live probes for every stack service, feed section ages, last job runs, this dashboard's render history — and the services & ports topology (#1137).
+Alerts — The alert throat (#3676): sentinel incidents, Web Push delivery + one escalation, ack/close, the Turso ledger.
+Notifications — Notification measurement (#3319): the weekly sent-vs-acted-on roll-up over the alert throat's send ledger, with display-only default-off proposals under 10%.
+All pages — This manifest as a page — every registered view in one place.
+Search
+◐
+Dark
+board · live
+items · live · 5m old
+orchestration · live · 18m old
+Cross-repo WIP board
+
+What is being worked on now is the in-flight lane: synthetic entries from the orchestrator's lined-up tasks (the fleet feed's orchestration section), not Kaneo cards. The other columns are the curated Kaneo board across the four repos, including its completion history — on their own they are a record of finished and in-review work, not a live WIP list. Each Kaneo card's execution strip is derived from its linked issues/PRs: implementing → review → merged.
+
+IN FLIGHT — ORCHESTRATOR · IN FLIGHT · SECTION 2026-11-24 03:13:18Z (2/10)
+orchestrator · in flight developing-today-forks/openchamber #2577 / task 21429 — stale OpenChamber update hash fix is claimed
+💬
+
+
+in-progress
+developing-today-forks/openchamber
+
+
+
+goal: Keep the four repos healthy
+developing-today-forks/openchamber#2577
+orchestrator · in flight developing-today-forks/opencode #2787 — recent creator filing; no independent queue or worker state available from this source
+💬
+
+
+queued
+developing-today-forks/opencode
+
+
+
+goal: Keep the four repos healthy
+developing-today-forks/opencode#2787
+TO-DO (0/10)
+IN-PROGRESS (0/10)
+IN-REVIEW (366/10) LANE OVER CAP BY 356 PROJECT HTTPS://GITHUB.COM/ORGS/DEVELOPING-TODAY/PROJECTS/4 110/10
+id: test pkgs/id changes before they merge (batched gate)
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+⚠ board: in-review · project: Todo
+merged: 2
+PR merged developing-today/code#12463
+PR merged developing-today/code#13206
+queued: 1
+issue developing-today/code#12229
+Act as
+Drew
+Muse
+Orchestrator (orchestration-pass) (agent)
+Jules keeper (jules-review) (agent)
+Stewardship cycle (agent)
+Request status change to 
+Todo
+In Progress
+In Review
+Done
+Request status change
+A request, not a write — the orchestration pass (the Project's single writer) applies it on its next run.
+Derived brief (derived from the projection — not authored)
+State: Todo — open, with no orchestration reference placing it in flight. Evidence: developing-today/code#12229.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#12229.
+Last activity by dezren39 at 2026-11-23T10:48:50Z (issue_comment). Evidence: developing-today/code#12229 comment.
+Next: Pick up or schedule: not blocked and not currently in flight. Evidence: developing-today/code#12229.
+C4 design section 4: compound range form unimplemented and day form unreachable in the shared formatter
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+review: 1
+PR developing-today/code#13406
+queued: 1
+issue developing-today/code#13357
+pm stack: centralize all service data as shared tables in one database schema
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+⚠ board: in-review · project: Todo
+merged: 1
+PR merged developing-today/code#12691
+queued: 1
+issue developing-today/code#1744
+Act as
+Drew
+Muse
+Orchestrator (orchestration-pass) (agent)
+Jules keeper (jules-review) (agent)
+Stewardship cycle (agent)
+Request status change to 
+Todo
+In Progress
+In Review
+Done
+Request status change
+A request, not a write — the orchestration pass (the Project's single writer) applies it on its next run.
+Derived brief (derived from the projection — not authored)
+State: Todo — open, with no orchestration reference placing it in flight. Evidence: developing-today/code#1744.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#1744.
+Last activity by dezren39 at 2026-11-23T02:11:33Z (issue_comment). Evidence: developing-today/code#1744 comment.
+Next: Pick up or schedule: not blocked and not currently in flight. Evidence: developing-today/code#1744.
+id: event store — audit prune_behind_cut and range-sync advertisement against compacted residue
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+merged: 1
+PR merged developing-today/code#13483
+queued: 1
+issue developing-today/code#13401
+pm-stack Phase 3: consolidation — merge aggregator, quota gatherer, fleet-feed collector and projector into one pm-core service (dispatch stays separate)
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+⚠ board: in-review · project: Todo
+merged: 2
+PR merged developing-today/code#13187
+PR merged developing-today/code#13555
+queued: 1
+issue developing-today/code#8570
+Act as
+Drew
+Muse
+Orchestrator (orchestration-pass) (agent)
+Jules keeper (jules-review) (agent)
+Stewardship cycle (agent)
+Request status change to 
+Todo
+In Progress
+In Review
+Done
+Request status change
+A request, not a write — the orchestration pass (the Project's single writer) applies it on its next run.
+Derived brief (derived from the projection — not authored)
+State: Todo — open, with no orchestration reference placing it in flight. Evidence: developing-today/code#8570.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#8570.
+Last activity by dezren39 at 2026-11-23T18:03:50Z (issue_comment). Evidence: developing-today/code#8570 comment.
+Next: Pick up or schedule: not blocked and not currently in flight. Evidence: developing-today/code#8570.
+mcpx program — full-investigation prompt: design completion & build-out for the MCP gateway
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+merged: 1
+PR merged developing-today/code#13269
+queued: 1
+issue developing-today/code#13264
+id: design: adapter conformance harness & interop matrix CI (from #5674)
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+merged: 2
+PR merged developing-today/code#7853
+PR merged developing-today/code#13734
+queued: 1
+issue developing-today/code#5814
+e2e: editor-features test defects — image locator strict-mode + save payloads missing doc_id (#229 follow-up)
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+⚠ board: in-review · project: Done
+merged: 1
+PR merged developing-today/code#1238
+closed: 1
+issue developing-today/code#1228
+Act as
+Drew
+Muse
+Orchestrator (orchestration-pass) (agent)
+Jules keeper (jules-review) (agent)
+Stewardship cycle (agent)
+Request status change to 
+Todo
+In Progress
+In Review
+Done
+Request status change
+A request, not a write — the orchestration pass (the Project's single writer) applies it on its next run.
+Derived brief (derived from the projection — not authored)
+State: Done — the linked issue/PR is closed or merged. Evidence: developing-today/code#1228.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#1228.
+Last activity by dezren39 at 2026-10-29T03:34:03Z (issue_comment). Evidence: developing-today/code#1228 comment.
+Next: No action — this item is done. Evidence: developing-today/code#1228.
+Rename sensitivity ladder identifiers in code to canonical public/internal/private/sensitive (aliases/migration, not a blind swap)
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+merged: 1
+PR merged developing-today/code#13508
+queued: 1
+issue developing-today/code#13506
+mcpx: Phase 2 of #1834 — sampling message + result validation at the broker (pairing, era shape, no silent fill-in)
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+⚠ board: in-review · project: Done
+merged: 2
+PR merged developing-today/code#2487
+PR merged developing-today/code#2443
+closed: 1
+issue developing-today/code#1836
+Act as
+Drew
+Muse
+Orchestrator (orchestration-pass) (agent)
+Jules keeper (jules-review) (agent)
+Stewardship cycle (agent)
+Request status change to 
+Todo
+In Progress
+In Review
+Done
+Request status change
+A request, not a write — the orchestration pass (the Project's single writer) applies it on its next run.
+Derived brief (derived from the projection — not authored)
+State: Done — the linked issue/PR is closed or merged. Evidence: developing-today/code#1836.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#1836.
+Last activity by dezren39 at 2026-11-03T15:02:27Z (issue_comment). Evidence: developing-today/code#1836 comment.
+Next: No action — this item is done. Evidence: developing-today/code#1836.
+dns(save.sh): encrypting the tfstate of record is not atomic — a failed sops -e truncates terraform.tfstate.enc to zero bytes
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+merged: 1
+PR merged developing-today/code#8021
+closed: 1
+issue developing-today/code#6536
+impl(atlas): D1 hot-cache admission policy — heat, heavy-query, tenant quotas, eviction
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+review: 1
+PR developing-today/code#13132
+queued: 1
+issue developing-today/code#13103
+External-system observability: unified PM + queue + quota attribution (webhooks, hot list, session IDs, projections)
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+⚠ board: in-review · project: Todo
+merged: 1
+PR merged developing-today/code#12709
+queued: 1
+issue developing-today/code#2072
+Act as
+Drew
+Muse
+Orchestrator (orchestration-pass) (agent)
+Jules keeper (jules-review) (agent)
+Stewardship cycle (agent)
+Request status change to 
+Todo
+In Progress
+In Review
+Done
+Request status change
+A request, not a write — the orchestration pass (the Project's single writer) applies it on its next run.
+Derived brief (derived from the projection — not authored)
+State: Todo — open, with no orchestration reference placing it in flight. Evidence: developing-today/code#2072.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#2072.
+Last activity by dezren39 at 2026-11-23T07:46:04Z (issue_comment). Evidence: developing-today/code#2072 comment.
+Next: Pick up or schedule: not blocked and not currently in flight. Evidence: developing-today/code#2072.
+id(web): classify_tag treats any 'auto-' filename as an auto-backup — auto-notes.txt renders with an 'auto: ?' badge and sorts out of the primary list
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+merged: 1
+PR merged developing-today/code#810
+closed: 1
+issue developing-today/code#809
+Fleet unification slice 5: local coordination replica for database-down resilience
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+⚠ board: in-review · project: Todo
+merged: 2
+PR merged developing-today/code#12692
+PR merged developing-today/code#13180
+queued: 1
+issue developing-today/code#8583
+Act as
+Drew
+Muse
+Orchestrator (orchestration-pass) (agent)
+Jules keeper (jules-review) (agent)
+Stewardship cycle (agent)
+Request status change to 
+Todo
+In Progress
+In Review
+Done
+Request status change
+A request, not a write — the orchestration pass (the Project's single writer) applies it on its next run.
+Derived brief (derived from the projection — not authored)
+State: Todo — open, with no orchestration reference placing it in flight. Evidence: developing-today/code#8583.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#8583.
+Last activity by dezren39 at 2026-11-23T10:10:28Z (issue_comment). Evidence: developing-today/code#8583 comment.
+Next: Pick up or schedule: not blocked and not currently in flight. Evidence: developing-today/code#8583.
+pm-console edge: its own GitHub allowance, so the core does not stop when the fleet is busy
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+⚠ board: in-review · project: Todo
+merged: 1
+PR merged developing-today/code#13570
+queued: 1
+issue developing-today/code#13489
+Act as
+Drew
+Muse
+Orchestrator (orchestration-pass) (agent)
+Jules keeper (jules-review) (agent)
+Stewardship cycle (agent)
+Request status change to 
+Todo
+In Progress
+In Review
+Done
+Request status change
+A request, not a write — the orchestration pass (the Project's single writer) applies it on its next run.
+Derived brief (derived from the projection — not authored)
+State: Todo — open, with no orchestration reference placing it in flight. Evidence: developing-today/code#13489.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#13489.
+Last activity by dezren39 at 2026-11-24T02:42:01Z (issue_comment). Evidence: developing-today/code#13489 comment.
+Next: Pick up or schedule: not blocked and not currently in flight. Evidence: developing-today/code#13489.
+design(pm-stack): PM service, Workers edition — TypeScript equivalent of aggregator/dashboard/reconcile as one hosted service
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+⚠ board: in-review · project: Todo
+merged: 1
+PR merged developing-today/code#12823
+queued: 1
+issue developing-today/code#9079
+Act as
+Drew
+Muse
+Orchestrator (orchestration-pass) (agent)
+Jules keeper (jules-review) (agent)
+Stewardship cycle (agent)
+Request status change to 
+Todo
+In Progress
+In Review
+Done
+Request status change
+A request, not a write — the orchestration pass (the Project's single writer) applies it on its next run.
+Derived brief (derived from the projection — not authored)
+State: Todo — open, with no orchestration reference placing it in flight. Evidence: developing-today/code#9079.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#9079.
+Last activity by dezren39 at 2026-11-23T03:26:18Z (issue_comment). Evidence: developing-today/code#9079 comment.
+Next: Pick up or schedule: not blocked and not currently in flight. Evidence: developing-today/code#9079.
+cold-store: atlas /dump download cut mid-transfer (curl 18) on every attempt; endpoint ignores Range so no resume is possible
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+merged: 1
+PR merged developing-today/code#13152
+queued: 1
+issue developing-today/code#13115
+Aggregator: fail loud instead of defaulting to fixtures outside dev
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+⚠ board: in-review · project: Done
+closed: 3
+PR developing-today/code#7461
+issue developing-today/code#1195
+PR developing-today/code#7255
+Act as
+Drew
+Muse
+Orchestrator (orchestration-pass) (agent)
+Jules keeper (jules-review) (agent)
+Stewardship cycle (agent)
+Request status change to 
+Todo
+In Progress
+In Review
+Done
+Request status change
+A request, not a write — the orchestration pass (the Project's single writer) applies it on its next run.
+Derived brief (derived from the projection — not authored)
+State: Done — the linked issue/PR is closed or merged. Evidence: developing-today/code#1195.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#1195.
+Last activity by dezren39 at 2026-11-03T08:24:49Z (issue_comment). Evidence: developing-today/code#1195 comment.
+Next: No action — this item is done. Evidence: developing-today/code#1195.
+Proxy service-model redesign: automatic flake services, retire proxy-supervisor ownership, restore consumer Wants
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+merged: 1
+PR merged developing-today/code#2107
+closed: 1
+issue developing-today/code#2104
+id(protocol): MetaProtocol accept is sequential with no stream deadline — one idle or trickling stream stalls every meta request on the connection
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+closed: 2
+issue developing-today/code#2086
+PR developing-today/code#7390
+Phase 4: joiner with missing pre-join control messages stalls silently
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+⚠ board: in-review · project: Done
+merged: 1
+PR merged developing-today/code#2221
+closed: 1
+issue developing-today/code#187
+Act as
+Drew
+Muse
+Orchestrator (orchestration-pass) (agent)
+Jules keeper (jules-review) (agent)
+Stewardship cycle (agent)
+Request status change to 
+Todo
+In Progress
+In Review
+Done
+Request status change
+A request, not a write — the orchestration pass (the Project's single writer) applies it on its next run.
+Derived brief (derived from the projection — not authored)
+State: Done — the linked issue/PR is closed or merged. Evidence: developing-today/code#187.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#187.
+Last activity by dezren39 at 2026-10-29T23:47:44Z (issue_comment). Evidence: developing-today/code#187 comment.
+Next: No action — this item is done. Evidence: developing-today/code#187.
+mcpx: faster CLI and exec -- no self-socket, lazy schemas, a typecheck default
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+merged: 3
+PR merged developing-today/code#2473
+PR merged developing-today/code#11161
+PR merged developing-today/code#11181
+queued: 1
+issue developing-today/code#1868
+Retroactive home for PR #2094: fix(home): drop openchamber wants on manual proxy units
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+merged: 3
+PR merged developing-today/code#10670
+PR merged developing-today/code#10833
+PR merged developing-today/code#10856
+closed: 1
+issue developing-today/code#9730
+ci(cf-container-hello): no workflow runs the #955 hardening regression suite — 11 SSRF/gate tests execute only when a human remembers
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+merged: 1
+PR merged developing-today/code#1627
+closed: 1
+issue developing-today/code#1439
+id: PoC: package tic-tac-toe as the first apps/ folder — app.toml + host discovery
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+closed: 3
+issue developing-today/code#2324
+PR developing-today/code#7409
+PR developing-today/code#7229
+OpenCode 2: validate .opencode config against the v2 schema and port the v1 plugins
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+merged: 1
+PR merged developing-today/code#12841
+queued: 1
+issue developing-today/code#730
+main CI failure: developing-today/code — scripts-test workflow (run 45246696770)
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+merged: 1
+PR merged developing-today/code#13718
+queued: 1
+issue developing-today/code#13674
+closed: 1
+PR developing-today/code#14003
+id: design: ESP32 hardware platform line — boards, provisioning, firmware lifecycle, OTA, power
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+merged: 1
+PR merged developing-today/code#8001
+queued: 1
+issue developing-today/code#5783
+id: research: image/video conversion tooling — kitty graphics protocol and video-to-ASCII
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+merged: 2
+PR merged developing-today/code#13633
+PR merged developing-today/code#13621
+queued: 1
+issue developing-today/code#5971
+SOPS decryption key not recoverable
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+merged: 1
+PR merged developing-today/code#12949
+queued: 1
+issue developing-today/code#10295
+id: block content follow-on — projections (outline, journal, database views) + note-granularity read-authority (from #8218)
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+merged: 1
+PR merged developing-today/code#12912
+queued: 1
+issue developing-today/code#12751
+id: implement program update channels + update flow into worlds (from #6293)
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+merged: 1
+PR merged developing-today/code#11725
+queued: 1
+issue developing-today/code#8546
+needs-drew: close the alert incident when the question is answered
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+merged: 1
+PR merged developing-today/code#11289
+queued: 1
+issue developing-today/code#8605
+closed: 1
+PR developing-today/code#11273
+impl(fleet-hosted): queue front door — broker protocol over hosted transports on the existing fleet-queue Turso DB
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+⚠ board: in-review · project: Todo
+merged: 1
+PR merged developing-today/code#12904
+queued: 1
+issue developing-today/code#12589
+Act as
+Drew
+Muse
+Orchestrator (orchestration-pass) (agent)
+Jules keeper (jules-review) (agent)
+Stewardship cycle (agent)
+Request status change to 
+Todo
+In Progress
+In Review
+Done
+Request status change
+A request, not a write — the orchestration pass (the Project's single writer) applies it on its next run.
+Derived brief (derived from the projection — not authored)
+State: Todo — open, with no orchestration reference placing it in flight. Evidence: developing-today/code#12589.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#12589.
+Last activity by dezren39 at 2026-11-23T04:48:45Z (issue_comment). Evidence: developing-today/code#12589 comment.
+Next: Pick up or schedule: not blocked and not currently in flight. Evidence: developing-today/code#12589.
+impl(observability): attribution rollups per job/model/session (#2072 slice 4)
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+merged: 2
+PR merged developing-today/code#13065
+PR merged developing-today/code#13022
+queued: 1
+issue developing-today/code#10910
+fleet-stalling: Drew's expedite set has no active worker
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+merged: 1
+PR merged developing-today/code#12464
+queued: 1
+issue developing-today/code#7030
+atlas(classification): enforce source-boundary-safe embed classification
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+⚠ board: in-review · project: Todo
+merged: 1
+PR merged developing-today/code#12625
+queued: 1
+issue developing-today/code#12403
+Act as
+Drew
+Muse
+Orchestrator (orchestration-pass) (agent)
+Jules keeper (jules-review) (agent)
+Stewardship cycle (agent)
+Request status change to 
+Todo
+In Progress
+In Review
+Done
+Request status change
+A request, not a write — the orchestration pass (the Project's single writer) applies it on its next run.
+Derived brief (derived from the projection — not authored)
+State: Todo — open, with no orchestration reference placing it in flight. Evidence: developing-today/code#12403.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#12403.
+Last activity by dezren39 at 2026-11-22T18:33:15Z (issue_comment). Evidence: developing-today/code#12403 comment.
+Next: Pick up or schedule: not blocked and not currently in flight. Evidence: developing-today/code#12403.
+id(world): F12.12 many worlds per node: 1,000 idle / 100 active with a per-world memory budget
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+implementing: 1
+PR developing-today/code#12496 · draft
+merged: 4
+PR merged developing-today/code#12499
+PR merged developing-today/code#12503
+PR merged developing-today/code#12552
+PR merged developing-today/code#12746
+queued: 1
+issue developing-today/code#557
+Act as
+Drew
+Muse
+Orchestrator (orchestration-pass) (agent)
+Jules keeper (jules-review) (agent)
+Stewardship cycle (agent)
+Request status change to 
+Todo
+In Progress
+In Review
+Done
+Request status change
+A request, not a write — the orchestration pass (the Project's single writer) applies it on its next run.
+Derived brief (derived from the projection — not authored)
+State: Todo — open, with no orchestration reference placing it in flight. Evidence: developing-today/code#557.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#557.
+Last activity by dezren39 at 2026-11-23T00:58:54Z (issue_comment). Evidence: developing-today/code#557 comment.
+Next: Reconcile the disagreement: Project Status “In Review” vs derived “Todo”. Evidence: developing-today/code#557 in the Project.
+⚠ Sources disagree: the Project Status says “In Review” while the rest of the dashboard derives “Todo”. Both are shown; neither is preferred. Evidence: developing-today/code#557 in the Project.
+impl(fleet): stamp signature — sign/verify canonical provenance (stamp_sig, stamped_by, auth_subject), both editions
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+⚠ board: in-review · project: Todo
+merged: 1
+PR merged developing-today/code#12854
+queued: 1
+issue developing-today/code#12586
+Act as
+Drew
+Muse
+Orchestrator (orchestration-pass) (agent)
+Jules keeper (jules-review) (agent)
+Stewardship cycle (agent)
+Request status change to 
+Todo
+In Progress
+In Review
+Done
+Request status change
+A request, not a write — the orchestration pass (the Project's single writer) applies it on its next run.
+Derived brief (derived from the projection — not authored)
+State: Todo — open, with no orchestration reference placing it in flight. Evidence: developing-today/code#12586.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#12586.
+Last activity by dezren39 at 2026-11-23T03:47:08Z (issue_comment). Evidence: developing-today/code#12586 comment.
+Next: Pick up or schedule: not blocked and not currently in flight. Evidence: developing-today/code#12586.
+mcpx: checking, refusing and repairing a request — a graded ladder from deterministic diagnostics to rewrite-and-run
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+merged: 1
+PR merged developing-today/code#7352
+queued: 1
+issue developing-today/code#1927
+id(web): GET /api/tags silently drops the value filter without a key — ?value= returns the whole namespace, ?subject=&value= returns all the subject's tags
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+merged: 1
+PR merged developing-today/code#1786
+closed: 1
+issue developing-today/code#1607
+C4.5 — Forecast push alerts (downtime + wall predictions to push notifications)
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+merged: 1
+PR merged developing-today/code#13276
+queued: 1
+issue developing-today/code#13261
+build: nix build .#deploy wedges in mcpx check phase (go test idle, no test binary); registry build realizes every target package
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+merged: 1
+PR merged developing-today/code#12757
+queued: 1
+issue developing-today/code#12738
+Fleet queue: reconcile attempt-cap defaults and dead-in-queue recovery
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+merged: 1
+PR merged developing-today/code#12996
+queued: 1
+issue developing-today/code#12901
+id(phase-14): Creator tooling & insight — v2 — outline: cross-world creator tools
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+⚠ board: in-review · project: Todo
+merged: 1
+PR merged developing-today/code#13749
+queued: 1
+issue developing-today/code#6309
+Act as
+Drew
+Muse
+Orchestrator (orchestration-pass) (agent)
+Jules keeper (jules-review) (agent)
+Stewardship cycle (agent)
+Request status change to 
+Todo
+In Progress
+In Review
+Done
+Request status change
+A request, not a write — the orchestration pass (the Project's single writer) applies it on its next run.
+Derived brief (derived from the projection — not authored)
+State: Todo — open, with no orchestration reference placing it in flight. Evidence: developing-today/code#6309.
+Blocker: Not blocked — every recorded blocker (developing-today/code#6308) is closed or merged. Evidence: developing-today/code#6309.
+Last activity by dezren39 at 2026-11-24T01:36:55Z (issue_comment). Evidence: developing-today/code#6309 comment.
+Next: Pick up or schedule: not blocked and not currently in flight. Evidence: developing-today/code#6309.
+id: add immutable jurisdiction and migration metadata to hosted directory
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+implementing: 1
+PR developing-today/code#13407 · draft
+merged: 1
+PR merged developing-today/code#13325
+queued: 1
+issue developing-today/code#3399
+id(web): SaveRateLimiter's per-file map grows without bound — entries expire after the 5s cooldown but are never evicted
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+merged: 1
+PR merged developing-today/code#1718
+closed: 1
+issue developing-today/code#1713
+impl(fleet-hosted): service skeleton — Worker route modules, RP-token auth validation, tenancy mapping, health/capabilities
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+⚠ board: in-review · project: Todo
+merged: 1
+PR merged developing-today/code#12822
+queued: 1
+issue developing-today/code#12583
+Act as
+Drew
+Muse
+Orchestrator (orchestration-pass) (agent)
+Jules keeper (jules-review) (agent)
+Stewardship cycle (agent)
+Request status change to 
+Todo
+In Progress
+In Review
+Done
+Request status change
+A request, not a write — the orchestration pass (the Project's single writer) applies it on its next run.
+Derived brief (derived from the projection — not authored)
+State: Todo — open, with no orchestration reference placing it in flight. Evidence: developing-today/code#12583.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#12583.
+Last activity by dezren39 at 2026-11-23T03:24:33Z (issue_comment). Evidence: developing-today/code#12583 comment.
+Next: Pick up or schedule: not blocked and not currently in flight. Evidence: developing-today/code#12583.
+ci(fleet-smoke): raw gh test hits Text file busy under build sandbox
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+merged: 1
+PR merged developing-today/code#11897
+queued: 1
+issue developing-today/code#11834
+Fleet unification slice 3: fleet verb contract v2 — routes and degraded modes in the tool
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+review: 1
+PR developing-today/code#12756
+merged: 2
+PR merged developing-today/code#13309
+PR merged developing-today/code#12706
+queued: 1
+issue developing-today/code#8581
+Act as
+Drew
+Muse
+Orchestrator (orchestration-pass) (agent)
+Jules keeper (jules-review) (agent)
+Stewardship cycle (agent)
+Request status change to 
+Todo
+In Progress
+In Review
+Done
+Request status change
+A request, not a write — the orchestration pass (the Project's single writer) applies it on its next run.
+Derived brief (derived from the projection — not authored)
+State: Todo — open, with no orchestration reference placing it in flight. Evidence: developing-today/code#8581.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#8581.
+Last activity by dezren39 at 2026-11-23T13:44:57Z (issue_comment). Evidence: developing-today/code#8581 comment.
+Next: Reconcile the disagreement: Project Status “In Review” vs derived “Todo”. Evidence: developing-today/code#8581 in the Project.
+⚠ Sources disagree: the Project Status says “In Review” while the rest of the dashboard derives “Todo”. Both are shown; neither is preferred. Evidence: developing-today/code#8581 in the Project.
+production line guard red on main: world_caps.rs, world.rs, world_session/mod.rs over the 2500 limit
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+review: 1
+PR developing-today/code#14042
+merged: 1
+PR merged developing-today/code#13783
+queued: 1
+issue developing-today/code#13057
+design(pm-orchestration): Typed edge model, canonical direction, and JSON/error contract
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+⚠ board: in-review · project: Todo
+review: 1
+PR developing-today/code#14036
+queued: 1
+issue developing-today/code#9503
+Act as
+Drew
+Muse
+Orchestrator (orchestration-pass) (agent)
+Jules keeper (jules-review) (agent)
+Stewardship cycle (agent)
+Request status change to 
+Todo
+In Progress
+In Review
+Done
+Request status change
+A request, not a write — the orchestration pass (the Project's single writer) applies it on its next run.
+Derived brief (derived from the projection — not authored)
+State: Todo — open, with no orchestration reference placing it in flight. Evidence: developing-today/code#9503.
+Blocker: Blocked by developing-today/code#9434. Evidence: developing-today/code#9434.
+Last activity by dezren39 at 2026-11-22T12:39:23Z (issue_comment). Evidence: developing-today/code#9503 comment.
+Next: Resolve the blocker first: developing-today/code#9434. Evidence: developing-today/code#9434.
+id(web): Find panel match count goes stale when the document is edited — highlights update, the count does not
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+merged: 1
+PR merged developing-today/code#1777
+closed: 1
+issue developing-today/code#1402
+fleet actions exec: live short-lived exec sessions inside Actions runners, coordinator-handed-off
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+merged: 2
+PR merged developing-today/code#13800
+PR merged developing-today/code#13817
+queued: 1
+issue developing-today/code#13774
+design(pm-stack): chaos/rotation drills — scheduled game-days (kill collector, age the feed, drop a service) verifying banners, watchdogs, and self-healing fire
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+⚠ board: in-review · project: In Progress
+merged: 1
+PR merged developing-today/code#1823
+queued: 1
+issue developing-today/code#1283
+Act as
+Drew
+Muse
+Orchestrator (orchestration-pass) (agent)
+Jules keeper (jules-review) (agent)
+Stewardship cycle (agent)
+Request status change to 
+Todo
+In Progress
+In Review
+Done
+Request status change
+A request, not a write — the orchestration pass (the Project's single writer) applies it on its next run.
+Derived brief (derived from the projection — not authored)
+State: Todo — open, with no orchestration reference placing it in flight. Evidence: developing-today/code#1283.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#1283.
+Last activity by dezren39 at 2026-11-17T07:04:54Z (issue_comment). Evidence: developing-today/code#1283 comment.
+Next: Reconcile the disagreement: Project Status “In Progress” vs derived “Todo”. Evidence: developing-today/code#1283 in the Project.
+⚠ Sources disagree: the Project Status says “In Progress” while the rest of the dashboard derives “Todo”. Both are shown; neither is preferred. Evidence: developing-today/code#1283 in the Project.
+fleet program: full investigation, next-steps design & build-out prompt
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+merged: 1
+PR merged developing-today/code#13274
+queued: 1
+issue developing-today/code#13272
+id(worlds): load and play the Sketch guest, with Fleet verification (Sketch slice 2)
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+merged: 1
+PR merged developing-today/code#13776
+queued: 1
+issue developing-today/code#13656
+id: implement fenced jurisdiction migration control plane
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+merged: 2
+PR merged developing-today/code#13275
+PR merged developing-today/code#13347
+queued: 1
+issue developing-today/code#3404
+impl(atlas/fleet): backup mesh — all-Turso 14d restic-zstd to R2, R2/laptop/Drive mesh, D1+laptop DBs into Turso
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+⚠ board: in-review · project: Todo
+merged: 2
+PR merged developing-today/code#10988
+PR merged developing-today/code#13467
+queued: 1
+issue developing-today/code#9093
+Act as
+Drew
+Muse
+Orchestrator (orchestration-pass) (agent)
+Jules keeper (jules-review) (agent)
+Stewardship cycle (agent)
+Request status change to 
+Todo
+In Progress
+In Review
+Done
+Request status change
+A request, not a write — the orchestration pass (the Project's single writer) applies it on its next run.
+Derived brief (derived from the projection — not authored)
+State: Todo — open, with no orchestration reference placing it in flight. Evidence: developing-today/code#9093.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#9093.
+Last activity by dezren39 at 2026-11-23T16:39:13Z (issue_comment). Evidence: developing-today/code#9093 comment.
+Next: Pick up or schedule: not blocked and not currently in flight. Evidence: developing-today/code#9093.
+feat(usage-hub): v3 charges auto-matching — Plaid + Gmail alerts to services
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+⚠ board: in-review · project: Done
+merged: 3
+PR merged developing-today/code#2113
+PR merged developing-today/code#2149
+PR merged developing-today/code#2467
+closed: 3
+PR developing-today/code#7157
+PR developing-today/code#2182
+issue developing-today/code#1057
+Act as
+Drew
+Muse
+Orchestrator (orchestration-pass) (agent)
+Jules keeper (jules-review) (agent)
+Stewardship cycle (agent)
+Request status change to 
+Todo
+In Progress
+In Review
+Done
+Request status change
+A request, not a write — the orchestration pass (the Project's single writer) applies it on its next run.
+Derived brief (derived from the projection — not authored)
+State: Done — the linked issue/PR is closed or merged. Evidence: developing-today/code#1057.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#1057.
+Last activity by dezren39 at 2026-11-03T12:50:29Z (issue_comment). Evidence: developing-today/code#1057 comment.
+Next: No action — this item is done. Evidence: developing-today/code#1057.
+id: implement board subscription, discovery & feed integration (from design #5862)
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+merged: 1
+PR merged developing-today/code#13428
+queued: 1
+issue developing-today/code#7585
+atlas(#6666 slice 3): persistent embedded replicas for internal/public (libsql local-copy, design 5.5)
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+⚠ board: in-review · project: Todo
+merged: 1
+PR merged developing-today/code#12868
+queued: 1
+issue developing-today/code#11213
+Act as
+Drew
+Muse
+Orchestrator (orchestration-pass) (agent)
+Jules keeper (jules-review) (agent)
+Stewardship cycle (agent)
+Request status change to 
+Todo
+In Progress
+In Review
+Done
+Request status change
+A request, not a write — the orchestration pass (the Project's single writer) applies it on its next run.
+Derived brief (derived from the projection — not authored)
+State: Todo — open, with no orchestration reference placing it in flight. Evidence: developing-today/code#11213.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#11213.
+Last activity by dezren39 at 2026-11-23T04:07:55Z (issue_comment). Evidence: developing-today/code#11213 comment.
+Next: Pick up or schedule: not blocked and not currently in flight. Evidence: developing-today/code#11213.
+id(world): open PR #1715 carries a stray agent-scratch file at the repo root (get_plan.py) and no tests for its new admin metrics endpoint
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+closed: 2
+PR developing-today/code#7265
+issue developing-today/code#2464
+id(phase-14): hosted worlds v1 P1 — host mode in the id binary (supervisor + data root)
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+merged: 1
+PR merged developing-today/code#13841
+queued: 1
+issue developing-today/code#10693
+id(phase-14): Scale & performance hardening — v1 — first-iteration design
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+⚠ board: in-review · project: Todo
+merged: 1
+PR merged developing-today/code#13090
+queued: 1
+issue developing-today/code#6304
+Act as
+Drew
+Muse
+Orchestrator (orchestration-pass) (agent)
+Jules keeper (jules-review) (agent)
+Stewardship cycle (agent)
+Request status change to 
+Todo
+In Progress
+In Review
+Done
+Request status change
+A request, not a write — the orchestration pass (the Project's single writer) applies it on its next run.
+Derived brief (derived from the projection — not authored)
+State: Todo — open, with no orchestration reference placing it in flight. Evidence: developing-today/code#6304.
+Blocker: Blocked by developing-today/code#6281. Evidence: developing-today/code#6281.
+Last activity by dezren39 at 2026-11-23T09:45:53Z (issue_comment). Evidence: developing-today/code#6304 comment.
+Next: Resolve the blocker first: developing-today/code#6281. Evidence: developing-today/code#6281.
+mcpx docs interface pages B: MCP and /v1 (http-api) prose pages (split of #1851)
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+merged: 1
+PR merged developing-today/code#2484
+closed: 1
+issue developing-today/code#2109
+Connection perf: multiplexed persistent streams over one tunnel (replace HTTP-per-call + pool of 50)
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+merged: 2
+PR merged developing-today/code#10686
+PR merged developing-today/code#13330
+queued: 1
+issue developing-today/code#5756
+eval(dashboard): actions/comments stores — JSON files vs SQLite
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+⚠ board: in-review · project: Done
+merged: 1
+PR merged developing-today/code#2099
+closed: 1
+issue developing-today/code#1452
+Act as
+Drew
+Muse
+Orchestrator (orchestration-pass) (agent)
+Jules keeper (jules-review) (agent)
+Stewardship cycle (agent)
+Request status change to 
+Todo
+In Progress
+In Review
+Done
+Request status change
+A request, not a write — the orchestration pass (the Project's single writer) applies it on its next run.
+Derived brief (derived from the projection — not authored)
+State: Done — the linked issue/PR is closed or merged. Evidence: developing-today/code#1452.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#1452.
+Last activity by dezren39 at 2026-10-29T03:49:48Z (issue_comment). Evidence: developing-today/code#1452 comment.
+Next: No action — this item is done. Evidence: developing-today/code#1452.
+Attribution: declarative auditd for signal syscalls on the laptop (follow-up to #8777)
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+merged: 1
+PR merged developing-today/code#11285
+queued: 1
+issue developing-today/code#8787
+explore(saas): quic.cloud — adoption investigation for simple fleet compute (from #1059)
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+merged: 1
+PR merged developing-today/code#11444
+queued: 1
+issue developing-today/code#9413
+id/atlas: define and verify visibility of derived graph and search results per reader profile
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+merged: 1
+PR merged developing-today/code#13781
+queued: 1
+issue developing-today/code#13583
+cold-store-reaper: nightly-backup status step spuriously FAILED when status prints >20 lines — head closes the pipe, SIGPIPE + pipefail fail a healthy run
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+merged: 1
+PR merged developing-today/code#1774
+closed: 1
+issue developing-today/code#1430
+mcpx docs: overview, quick start, install page and 'now what'
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+review: 1
+PR developing-today/code#13372
+merged: 1
+PR merged developing-today/code#2502
+closed: 1
+issue developing-today/code#1878
+epic: decisions system — P2 design family (tracking home)
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+review: 1
+PR developing-today/code#13988
+queued: 1
+issue developing-today/code#12951
+Act as
+Drew
+Muse
+Orchestrator (orchestration-pass) (agent)
+Jules keeper (jules-review) (agent)
+Stewardship cycle (agent)
+Request status change to 
+Todo
+In Progress
+In Review
+Done
+Request status change
+A request, not a write — the orchestration pass (the Project's single writer) applies it on its next run.
+Derived brief (derived from the projection — not authored)
+State: Todo — open, with no orchestration reference placing it in flight. Evidence: developing-today/code#12951.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#12951.
+Last activity by dezren39 at 2026-11-24T01:35:08Z (issue_comment). Evidence: developing-today/code#12951 comment.
+Next: Reconcile the disagreement: Project Status “In Review” vs derived “Todo”. Evidence: developing-today/code#12951 in the Project.
+⚠ Sources disagree: the Project Status says “In Review” while the rest of the dashboard derives “Todo”. Both are shown; neither is preferred. Evidence: developing-today/code#12951 in the Project.
+Dependency Dashboard
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+merged: 2
+PR merged developing-today/code#12685
+PR merged developing-today/code#6793
+queued: 1
+issue developing-today/code#24
+impl(orchestrator/project): Area-unset pool items (17) are invisible to per-project pages - triage pass + taxonomy check
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+⚠ board: in-review · project: Done
+merged: 1
+PR merged developing-today/code#2423
+closed: 1
+issue developing-today/code#1143
+Act as
+Drew
+Muse
+Orchestrator (orchestration-pass) (agent)
+Jules keeper (jules-review) (agent)
+Stewardship cycle (agent)
+Request status change to 
+Todo
+In Progress
+In Review
+Done
+Request status change
+A request, not a write — the orchestration pass (the Project's single writer) applies it on its next run.
+Derived brief (derived from the projection — not authored)
+State: Done — the linked issue/PR is closed or merged. Evidence: developing-today/code#1143.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#1143.
+Last activity by dezren39 at 2026-10-29T23:09:39Z (issue_comment). Evidence: developing-today/code#1143 comment.
+Next: No action — this item is done. Evidence: developing-today/code#1143.
+fleet-agent: registered_lane_worker has no mapping for oc-* lanes — oc-code-02 queue claims rejected (lane belongs to repo-worker-code)
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+review: 1
+PR developing-today/code#13113
+queued: 1
+issue developing-today/code#13073
+Act as
+Drew
+Muse
+Orchestrator (orchestration-pass) (agent)
+Jules keeper (jules-review) (agent)
+Stewardship cycle (agent)
+Request status change to 
+Todo
+In Progress
+In Review
+Done
+Request status change
+A request, not a write — the orchestration pass (the Project's single writer) applies it on its next run.
+Derived brief (derived from the projection — not authored)
+State: Todo — open, with no orchestration reference placing it in flight. Evidence: developing-today/code#13073.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#13073.
+Last activity by dezren39 at 2026-11-23T08:24:03Z (issue_comment). Evidence: developing-today/code#13073 comment.
+Next: Reconcile the disagreement: Project Status “In Review” vs derived “Todo”. Evidence: developing-today/code#13073 in the Project.
+⚠ Sources disagree: the Project Status says “In Review” while the rest of the dashboard derives “Todo”. Both are shown; neither is preferred. Evidence: developing-today/code#13073 in the Project.
+deploy: register the PM-stack services (aggregator, projector, tunnel, ready-for-agent) as deploy targets
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+merged: 1
+PR merged developing-today/code#12944
+queued: 1
+issue developing-today/code#12768
+id: decide whether program-run history belongs in the world journal
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+review: 1
+PR developing-today/code#14006
+queued: 1
+issue developing-today/code#12215
+Phase 2: create of an existing group is first-arrival-wins, not fold-based
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+closed: 2
+PR developing-today/code#7378
+issue developing-today/code#165
+Phase 3: sync data phase batches are bounded by count, not bytes
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+⚠ board: in-review · project: Done
+merged: 2
+PR merged developing-today/code#2215
+PR merged developing-today/code#2365
+closed: 1
+issue developing-today/code#180
+Act as
+Drew
+Muse
+Orchestrator (orchestration-pass) (agent)
+Jules keeper (jules-review) (agent)
+Stewardship cycle (agent)
+Request status change to 
+Todo
+In Progress
+In Review
+Done
+Request status change
+A request, not a write — the orchestration pass (the Project's single writer) applies it on its next run.
+Derived brief (derived from the projection — not authored)
+State: Done — the linked issue/PR is closed or merged. Evidence: developing-today/code#180.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#180.
+Last activity by dezren39 at 2026-10-29T15:35:58Z (issue_comment). Evidence: developing-today/code#180 comment.
+Next: No action — this item is done. Evidence: developing-today/code#180.
+main CI failure: developing-today/code — id hosted-worker tests workflow (run 45246964369)
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+review: 1
+PR developing-today/code#13738
+queued: 1
+issue developing-today/code#13680
+AUDIT-7 Lane 4 — MERGED-PR-AUDIT: merged PRs since 2026-10-23 vs their spawning issues
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+merged: 1
+PR merged developing-today/code#13976
+queued: 1
+issue developing-today/code#13879
+design(pm-orchestration): Per-source incremental activity revisions and tombstones
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+⚠ board: in-review · project: Todo
+merged: 1
+PR merged developing-today/code#13663
+queued: 1
+issue developing-today/code#9508
+Act as
+Drew
+Muse
+Orchestrator (orchestration-pass) (agent)
+Jules keeper (jules-review) (agent)
+Stewardship cycle (agent)
+Request status change to 
+Todo
+In Progress
+In Review
+Done
+Request status change
+A request, not a write — the orchestration pass (the Project's single writer) applies it on its next run.
+Derived brief (derived from the projection — not authored)
+State: Todo — open, with no orchestration reference placing it in flight. Evidence: developing-today/code#9508.
+Blocker: Blocked by developing-today/code#9502, developing-today/code#9507. Evidence: developing-today/code#9502.
+Last activity by dezren39 at 2026-11-23T20:29:09Z (issue_comment). Evidence: developing-today/code#9508 comment.
+Next: Resolve the blocker first: developing-today/code#9502. Evidence: developing-today/code#9502.
+[fixture #10140-5b] Kaneo Done move should close this issue — throwaway
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+merged: 1
+PR merged developing-today/code#10316
+queued: 1
+issue developing-today/code#10308
+impl(pm-stack): model data pipeline Phase 2 slice 4 — Explorer switch to new views (#1248)
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+merged: 1
+PR merged developing-today/code#12221
+queued: 1
+issue developing-today/code#10042
+impl(backups): mesh leg — Turso platform DBs (fleet-queue, fleet-platform, atlas) → R2 restic deltas
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+merged: 1
+PR merged developing-today/code#13476
+queued: 1
+issue developing-today/code#13455
+fix(atlas): enforce first-party repository scope on explicit GitHub comment targets
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+merged: 1
+PR merged developing-today/code#13580
+queued: 1
+issue developing-today/code#13560
+fix(aggregator): navigation coherence - 10-item nav overflows on mobile, sub-pages undiscoverable
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+⚠ board: in-review · project: Done
+merged: 1
+PR merged developing-today/code#2422
+closed: 1
+issue developing-today/code#1135
+Act as
+Drew
+Muse
+Orchestrator (orchestration-pass) (agent)
+Jules keeper (jules-review) (agent)
+Stewardship cycle (agent)
+Request status change to 
+Todo
+In Progress
+In Review
+Done
+Request status change
+A request, not a write — the orchestration pass (the Project's single writer) applies it on its next run.
+Derived brief (derived from the projection — not authored)
+State: Done — the linked issue/PR is closed or merged. Evidence: developing-today/code#1135.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#1135.
+Last activity by dezren39 at 2026-10-29T20:47:59Z (issue_comment). Evidence: developing-today/code#1135 comment.
+Next: No action — this item is done. Evidence: developing-today/code#1135.
+mcpx: resolve a script's import graph statically and prepare missing dependencies
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+merged: 4
+PR merged developing-today/code#13171
+PR merged developing-today/code#12992
+PR merged developing-today/code#13013
+PR merged developing-today/code#12998
+queued: 1
+issue developing-today/code#1915
+opencode config: one-flip provider switchboard — disabled_providers as the single switch, definitions always in place
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+merged: 1
+PR merged developing-today/code#1465
+closed: 1
+issue developing-today/code#1460
+impl(backups): mesh leg — D1 exports → Turso backup home (fleet-queue-backup D1 first)
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+merged: 1
+PR merged developing-today/code#13539
+queued: 1
+issue developing-today/code#13458
+id(phase-14): shells v1 slice 1 — PWA offline read model + catch-up in the browser shell (#6296)
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+review: 1
+PR developing-today/code#12814
+queued: 1
+issue developing-today/code#10927
+id: guardian social recovery — threshold approvals + delayed, cancellable key rotation
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+merged: 8
+PR merged developing-today/code#11745
+PR merged developing-today/code#11765
+PR merged developing-today/code#11763
+PR merged developing-today/code#10682
+PR merged developing-today/code#11768
+PR merged developing-today/code#11767
+PR merged developing-today/code#11766
+PR merged developing-today/code#11747
+queued: 1
+issue developing-today/code#2382
+design(pm-stack): content-addressed media/data plane — R2 dedup, reference-based access, GC when the last reference drops
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+⚠ board: in-review · project: Todo
+merged: 1
+PR merged developing-today/code#12811
+queued: 1
+issue developing-today/code#9084
+Act as
+Drew
+Muse
+Orchestrator (orchestration-pass) (agent)
+Jules keeper (jules-review) (agent)
+Stewardship cycle (agent)
+Request status change to 
+Todo
+In Progress
+In Review
+Done
+Request status change
+A request, not a write — the orchestration pass (the Project's single writer) applies it on its next run.
+Derived brief (derived from the projection — not authored)
+State: Todo — open, with no orchestration reference placing it in flight. Evidence: developing-today/code#9084.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#9084.
+Last activity by dezren39 at 2026-11-23T13:26:13Z (issue_comment). Evidence: developing-today/code#9084 comment.
+Next: Pick up or schedule: not blocked and not currently in flight. Evidence: developing-today/code#9084.
+impl(quota-plane): stage-3 S5 — anomaly detectors: burn spike, adapter schema drift, vendor plan change
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+merged: 1
+PR merged developing-today/code#12754
+queued: 1
+issue developing-today/code#12699
+C4 — Quota forecasting: exhaustion, downtime, and reset-duration predictions, tracked until accurate
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+⚠ board: in-review · project: Todo
+merged: 1
+PR merged developing-today/code#13268
+queued: 1
+issue developing-today/code#9572
+Act as
+Drew
+Muse
+Orchestrator (orchestration-pass) (agent)
+Jules keeper (jules-review) (agent)
+Stewardship cycle (agent)
+Request status change to 
+Todo
+In Progress
+In Review
+Done
+Request status change
+A request, not a write — the orchestration pass (the Project's single writer) applies it on its next run.
+Derived brief (derived from the projection — not authored)
+State: Todo — open, with no orchestration reference placing it in flight. Evidence: developing-today/code#9572.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#9572.
+Last activity by dezren39 at 2026-11-23T13:15:38Z (issue_comment). Evidence: developing-today/code#9572 comment.
+Next: Pick up or schedule: not blocked and not currently in flight. Evidence: developing-today/code#9572.
+id(phase-14) v2 step 1: role configuration — roles as first-class world config (#6301)
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+review: 2
+PR developing-today/code#14044
+PR developing-today/code#13234
+queued: 1
+issue developing-today/code#8299
+Act as
+Drew
+Muse
+Orchestrator (orchestration-pass) (agent)
+Jules keeper (jules-review) (agent)
+Stewardship cycle (agent)
+Request status change to 
+Todo
+In Progress
+In Review
+Done
+Request status change
+A request, not a write — the orchestration pass (the Project's single writer) applies it on its next run.
+Derived brief (derived from the projection — not authored)
+State: Todo — open, with no orchestration reference placing it in flight. Evidence: developing-today/code#8299.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#8299.
+Last activity by dezren39 at 2026-11-24T03:20:54Z (issue_comment). Evidence: developing-today/code#8299 comment.
+Next: Reconcile the disagreement: Project Status “In Review” vs derived “Todo”. Evidence: developing-today/code#8299 in the Project.
+⚠ Sources disagree: the Project Status says “In Review” while the rest of the dashboard derives “Todo”. Both are shown; neither is preferred. Evidence: developing-today/code#8299 in the Project.
+Deployment hygiene: one manager for Kaneo, backups before end-state moves
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+⚠ board: in-review · project: Todo
+merged: 1
+PR merged developing-today/code#13032
+queued: 1
+issue developing-today/code#10142
+Act as
+Drew
+Muse
+Orchestrator (orchestration-pass) (agent)
+Jules keeper (jules-review) (agent)
+Stewardship cycle (agent)
+Request status change to 
+Todo
+In Progress
+In Review
+Done
+Request status change
+A request, not a write — the orchestration pass (the Project's single writer) applies it on its next run.
+Derived brief (derived from the projection — not authored)
+State: Todo — open, with no orchestration reference placing it in flight. Evidence: developing-today/code#10142.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#10142.
+Last activity by dezren39 at 2026-11-23T07:13:44Z (issue_comment). Evidence: developing-today/code#10142 comment.
+Next: Pick up or schedule: not blocked and not currently in flight. Evidence: developing-today/code#10142.
+impl(quota-plane): stage-3 S4 — live forecast-driven admission: pace_hold from projected exhaustion
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+merged: 1
+PR merged developing-today/code#13271
+queued: 1
+issue developing-today/code#12698
+id(web/auto-save): cancel() does not stop an in-flight save — its retry/follow-up runs after the editor closes and saveFile() targets the newly opened document
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+closed: 2
+issue developing-today/code#2437
+PR developing-today/code#3434
+id: implement: block content model in note revisions — block schema, anchors, journal + database views (from #5839)
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+merged: 2
+PR merged developing-today/code#12749
+PR merged developing-today/code#13832
+queued: 1
+issue developing-today/code#8218
+id: design: per-object talk page + changelog (from #5677)
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+merged: 1
+PR merged developing-today/code#13756
+queued: 1
+issue developing-today/code#5834
+design(pm-orchestration): Cross-model schema owner and migration compatibility matrix
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+⚠ board: in-review · project: Todo
+merged: 1
+PR merged developing-today/code#13341
+queued: 1
+issue developing-today/code#9434
+Act as
+Drew
+Muse
+Orchestrator (orchestration-pass) (agent)
+Jules keeper (jules-review) (agent)
+Stewardship cycle (agent)
+Request status change to 
+Todo
+In Progress
+In Review
+Done
+Request status change
+A request, not a write — the orchestration pass (the Project's single writer) applies it on its next run.
+Derived brief (derived from the projection — not authored)
+State: Todo — open, with no orchestration reference placing it in flight. Evidence: developing-today/code#9434.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#9434.
+Last activity by dezren39 at 2026-11-23T13:58:37Z (issue_comment). Evidence: developing-today/code#9434 comment.
+Next: Pick up or schedule: not blocked and not currently in flight. Evidence: developing-today/code#9434.
+design(id-apps): D3 — the ID graph layer: typed links and verbs as first-class objects
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+review: 1
+PR developing-today/code#13997
+queued: 1
+issue developing-today/code#13885
+id: design: board subscription, discovery & feed integration (from #5680)
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+merged: 1
+PR merged developing-today/code#7586
+queued: 1
+issue developing-today/code#5862
+feat(usage-hub): DeepSeek daily balance check + CNY unit in snapshot store
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+⚠ board: in-review · project: Done
+merged: 1
+PR merged developing-today/code#2370
+closed: 1
+issue developing-today/code#1052
+Act as
+Drew
+Muse
+Orchestrator (orchestration-pass) (agent)
+Jules keeper (jules-review) (agent)
+Stewardship cycle (agent)
+Request status change to 
+Todo
+In Progress
+In Review
+Done
+Request status change
+A request, not a write — the orchestration pass (the Project's single writer) applies it on its next run.
+Derived brief (derived from the projection — not authored)
+State: Done — the linked issue/PR is closed or merged. Evidence: developing-today/code#1052.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#1052.
+Last activity by dezren39 at 2026-10-29T22:05:38Z (issue_comment). Evidence: developing-today/code#1052 comment.
+Next: No action — this item is done. Evidence: developing-today/code#1052.
+Atlas CLI family consistency: exit codes, version strings, and the HOME fallback split (book survey, #13251)
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+merged: 1
+PR merged developing-today/code#13351
+queued: 1
+issue developing-today/code#13279
+id: import ingest — apply a verified export under normal admission rules with a per-entry report (§6.2 step 4; slice 4b of #2852, from #3810)
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+merged: 1
+PR merged developing-today/code#13201
+closed: 1
+issue developing-today/code#13158
+id: design: RateAuthorisation as a signed ID-graph object — schema, signing, revocation
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+merged: 1
+PR merged developing-today/code#7326
+queued: 1
+issue developing-today/code#2290
+closed: 1
+PR developing-today/code#7956
+design(pm-orchestration): Required before/after peer ordering within equal effective urgency
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+⚠ board: in-review · project: Todo
+merged: 1
+PR merged developing-today/code#13418
+queued: 1
+issue developing-today/code#9511
+Act as
+Drew
+Muse
+Orchestrator (orchestration-pass) (agent)
+Jules keeper (jules-review) (agent)
+Stewardship cycle (agent)
+Request status change to 
+Todo
+In Progress
+In Review
+Done
+Request status change
+A request, not a write — the orchestration pass (the Project's single writer) applies it on its next run.
+Derived brief (derived from the projection — not authored)
+State: Todo — open, with no orchestration reference placing it in flight. Evidence: developing-today/code#9511.
+Blocker: Blocked by developing-today/code#9479, developing-today/code#9460. Evidence: developing-today/code#9479.
+Last activity by dezren39 at 2026-11-23T20:12:10Z (issue_comment). Evidence: developing-today/code#9511 comment.
+Next: Resolve the blocker first: developing-today/code#9479. Evidence: developing-today/code#9479.
+id(repl): a non-numeric --first/--last/--lines value silently becomes a search query — 'find report --first two' searches for 'two' too, truncated to 1
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+closed: 2
+PR developing-today/code#7389
+issue developing-today/code#2009
+Retroactive home for PR #5081: chore(opencode): retire dead provider definitions (12 removed)
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+merged: 1
+PR merged developing-today/code#13301
+queued: 1
+issue developing-today/code#9886
+split(pm-stack): render.ts (8,515 lines) under the production line limit (#12671)
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+review: 1
+PR developing-today/code#13089
+queued: 1
+issue developing-today/code#13051
+id(web): collab codec cannot decode its own CursorRemove frames — CollabMessage::decode has no tag-6 branch
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+merged: 1
+PR merged developing-today/code#1785
+closed: 1
+issue developing-today/code#1783
+epic(fleet): queue fleet reliability — lane workers for every queue, certified shift reporting
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+⚠ board: in-review · project: In Progress
+merged: 1
+PR merged developing-today/code#12682
+queued: 1
+issue developing-today/code#1233
+Act as
+Drew
+Muse
+Orchestrator (orchestration-pass) (agent)
+Jules keeper (jules-review) (agent)
+Stewardship cycle (agent)
+Request status change to 
+Todo
+In Progress
+In Review
+Done
+Request status change
+A request, not a write — the orchestration pass (the Project's single writer) applies it on its next run.
+Derived brief (derived from the projection — not authored)
+State: Todo — open, with no orchestration reference placing it in flight. Evidence: developing-today/code#1233.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#1233.
+Last activity by dezren39 at 2026-11-22T22:16:04Z (issue_comment). Evidence: developing-today/code#1233 comment.
+Next: Reconcile the disagreement: Project Status “In Progress” vs derived “Todo”. Evidence: developing-today/code#1233 in the Project.
+⚠ Sources disagree: the Project Status says “In Progress” while the rest of the dashboard derives “Todo”. Both are shown; neither is preferred. Evidence: developing-today/code#1233 in the Project.
+mcpx: JSON Schema validation of tool inputs/outputs and elicitation schemas (7 conformance rows)
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+merged: 2
+PR merged developing-today/code#2190
+PR merged developing-today/code#2070
+closed: 1
+issue developing-today/code#1951
+feat(usage-hub): v2 Cloudflare live collector — hourly analytics feed + billing scope
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+⚠ board: in-review · project: Done
+merged: 1
+PR merged developing-today/code#2228
+closed: 1
+issue developing-today/code#1048
+Act as
+Drew
+Muse
+Orchestrator (orchestration-pass) (agent)
+Jules keeper (jules-review) (agent)
+Stewardship cycle (agent)
+Request status change to 
+Todo
+In Progress
+In Review
+Done
+Request status change
+A request, not a write — the orchestration pass (the Project's single writer) applies it on its next run.
+Derived brief (derived from the projection — not authored)
+State: Done — the linked issue/PR is closed or merged. Evidence: developing-today/code#1048.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#1048.
+Last activity by dezren39 at 2026-10-29T20:44:16Z (issue_comment). Evidence: developing-today/code#1048 comment.
+Next: No action — this item is done. Evidence: developing-today/code#1048.
+id: research/design: fork a Rust KDL stack for ID — universal + multiple annotations, upstream archaeology, fork-base selection (extends #5688)
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+merged: 1
+PR merged developing-today/code#10679
+queued: 1
+issue developing-today/code#5753
+epic(openchamber): session dispatch + babysitting — OpenChamber as the fleet's workhorse executor
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+⚠ board: in-review · project: Todo
+merged: 1
+PR merged developing-today/code#13082
+queued: 1
+issue developing-today/code#1234
+Act as
+Drew
+Muse
+Orchestrator (orchestration-pass) (agent)
+Jules keeper (jules-review) (agent)
+Stewardship cycle (agent)
+Request status change to 
+Todo
+In Progress
+In Review
+Done
+Request status change
+A request, not a write — the orchestration pass (the Project's single writer) applies it on its next run.
+Derived brief (derived from the projection — not authored)
+State: Todo — open, with no orchestration reference placing it in flight. Evidence: developing-today/code#1234.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#1234.
+Last activity by dezren39 at 2026-11-23T08:01:53Z (issue_comment). Evidence: developing-today/code#1234 comment.
+Next: Pick up or schedule: not blocked and not currently in flight. Evidence: developing-today/code#1234.
+C3 — Health hooks: failure-triggered checks that troubleshoot and report
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+⚠ board: in-review · project: Todo
+merged: 2
+PR merged developing-today/code#12226
+PR merged developing-today/code#12600
+queued: 1
+issue developing-today/code#9571
+Act as
+Drew
+Muse
+Orchestrator (orchestration-pass) (agent)
+Jules keeper (jules-review) (agent)
+Stewardship cycle (agent)
+Request status change to 
+Todo
+In Progress
+In Review
+Done
+Request status change
+A request, not a write — the orchestration pass (the Project's single writer) applies it on its next run.
+Derived brief (derived from the projection — not authored)
+State: Todo — open, with no orchestration reference placing it in flight. Evidence: developing-today/code#9571.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#9571.
+Last activity by dezren39 at 2026-11-22T15:05:20Z (issue_comment). Evidence: developing-today/code#9571 comment.
+Next: Pick up or schedule: not blocked and not currently in flight. Evidence: developing-today/code#9571.
+id(peers): a peer's announced name is printed raw — a newline in a gossip announcement forges extra TSV rows in id peers and the REPL
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+merged: 1
+PR merged developing-today/code#1798
+closed: 1
+issue developing-today/code#1613
+perf(opencode-claimant): cut poll.py end-to-end latency (parallelize + bound its sequential external reads)
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+review: 1
+PR developing-today/code#13210
+queued: 1
+issue developing-today/code#13135
+id(directory_mail): OutboxSink writes To/Subject into the .eml header block with none of SmtpSink's validation — a newline in either forges arbitrary headers
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+merged: 1
+PR merged developing-today/code#3423
+closed: 1
+issue developing-today/code#2404
+fleet agent: put every lane on the intake ladder (follow-ups to #12227)
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+⚠ board: in-review · project: Todo
+merged: 3
+PR merged developing-today/code#12916
+PR merged developing-today/code#12745
+PR merged developing-today/code#13020
+queued: 1
+issue developing-today/code#12236
+Act as
+Drew
+Muse
+Orchestrator (orchestration-pass) (agent)
+Jules keeper (jules-review) (agent)
+Stewardship cycle (agent)
+Request status change to 
+Todo
+In Progress
+In Review
+Done
+Request status change
+A request, not a write — the orchestration pass (the Project's single writer) applies it on its next run.
+Derived brief (derived from the projection — not authored)
+State: Todo — open, with no orchestration reference placing it in flight. Evidence: developing-today/code#12236.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#12236.
+Last activity by dezren39 at 2026-11-23T12:40:42Z (issue_comment). Evidence: developing-today/code#12236 comment.
+Next: Pick up or schedule: not blocked and not currently in flight. Evidence: developing-today/code#12236.
+impl(pm-stack): primary-parent convention + historical link semantics + crate-split backfill
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+merged: 1
+PR merged developing-today/code#13700
+queued: 1
+issue developing-today/code#9066
+Act as
+Drew
+Muse
+Orchestrator (orchestration-pass) (agent)
+Jules keeper (jules-review) (agent)
+Stewardship cycle (agent)
+Request status change to 
+Todo
+In Progress
+In Review
+Done
+Request status change
+A request, not a write — the orchestration pass (the Project's single writer) applies it on its next run.
+Derived brief (derived from the projection — not authored)
+State: Todo — open, with no orchestration reference placing it in flight. Evidence: developing-today/code#9066.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#9066.
+Last activity by dezren39 at 2026-11-24T03:24:00Z (issue_comment). Evidence: developing-today/code#9066 comment.
+Next: Reconcile the disagreement: Project Status “In Review” vs derived “Todo”. Evidence: developing-today/code#9066 in the Project.
+⚠ Sources disagree: the Project Status says “In Review” while the rest of the dashboard derives “Todo”. Both are shown; neither is preferred. Evidence: developing-today/code#9066 in the Project.
+id: build: grant service — pending-transfer grants (register/vest/void) with control-plane grant records
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+merged: 1
+PR merged developing-today/code#11196
+queued: 1
+issue developing-today/code#2294
+impl(fleet-hosted): Metadata query surface — REST + CLI filters over the metadata DB (#9074 hosted)
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+⚠ board: in-review · project: Todo
+merged: 1
+PR merged developing-today/code#12872
+queued: 1
+issue developing-today/code#12587
+Act as
+Drew
+Muse
+Orchestrator (orchestration-pass) (agent)
+Jules keeper (jules-review) (agent)
+Stewardship cycle (agent)
+Request status change to 
+Todo
+In Progress
+In Review
+Done
+Request status change
+A request, not a write — the orchestration pass (the Project's single writer) applies it on its next run.
+Derived brief (derived from the projection — not authored)
+State: Todo — open, with no orchestration reference placing it in flight. Evidence: developing-today/code#12587.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#12587.
+Last activity by dezren39 at 2026-11-23T04:10:15Z (issue_comment). Evidence: developing-today/code#12587 comment.
+Next: Pick up or schedule: not blocked and not currently in flight. Evidence: developing-today/code#12587.
+opencode handover not in effect: socket unit disabled, same-build switch darkened port ~16s and cut drain at 40ms (2026-11-16)
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+merged: 1
+PR merged developing-today/code#12781
+queued: 1
+issue developing-today/code#10639
+id: build hygiene — build-variants as a cargo artifact, justfile formatting in CI, just ci duplicated test blocks
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+closed: 2
+PR developing-today/code#7276
+issue developing-today/code#1797
+id(ci): scheduled id-check runs cancelled at ~90 min for five days — no verdict
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+merged: 1
+PR merged developing-today/code#12680
+queued: 1
+issue developing-today/code#12658
+design(atlas+pm): Metadata schema v1 + evolution doctrine — additive-only, extras, strict enums, breaking-change parking lot
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+⚠ board: in-review · project: Todo
+merged: 1
+PR merged developing-today/code#13527
+queued: 1
+issue developing-today/code#9095
+Act as
+Drew
+Muse
+Orchestrator (orchestration-pass) (agent)
+Jules keeper (jules-review) (agent)
+Stewardship cycle (agent)
+Request status change to 
+Todo
+In Progress
+In Review
+Done
+Request status change
+A request, not a write — the orchestration pass (the Project's single writer) applies it on its next run.
+Derived brief (derived from the projection — not authored)
+State: Todo — open, with no orchestration reference placing it in flight. Evidence: developing-today/code#9095.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#9095.
+Last activity by dezren39 at 2026-11-23T17:44:43Z (issue_comment). Evidence: developing-today/code#9095 comment.
+Next: Pick up or schedule: not blocked and not currently in flight. Evidence: developing-today/code#9095.
+Make Qwen configurable on mcpx/OpenCode
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+merged: 1
+PR merged developing-today/code#3405
+closed: 1
+issue developing-today/code#2218
+design: secrets plane — delta refresh, broker peer sync, dual-store puts
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+merged: 1
+PR merged developing-today/code#13969
+queued: 1
+issue developing-today/code#13948
+id(phase-14): shells v1 slice 4 — notification capability provider (F12.5) for the mobile shell (#6296)
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+merged: 2
+PR merged developing-today/code#12891
+PR merged developing-today/code#13837
+queued: 1
+issue developing-today/code#10930
+id(phase-14): shells v2 slice 2 — TUI client feature completion on the shell contract (#6297)
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+review: 1
+PR developing-today/code#13111
+queued: 1
+issue developing-today/code#12818
+Act as
+Drew
+Muse
+Orchestrator (orchestration-pass) (agent)
+Jules keeper (jules-review) (agent)
+Stewardship cycle (agent)
+Request status change to 
+Todo
+In Progress
+In Review
+Done
+Request status change
+A request, not a write — the orchestration pass (the Project's single writer) applies it on its next run.
+Derived brief (derived from the projection — not authored)
+State: Todo — open, with no orchestration reference placing it in flight. Evidence: developing-today/code#12818.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#12818.
+Last activity by dezren39 at 2026-11-23T08:17:02Z (issue_comment). Evidence: developing-today/code#12818 comment.
+Next: Reconcile the disagreement: Project Status “In Review” vs derived “Todo”. Evidence: developing-today/code#12818 in the Project.
+⚠ Sources disagree: the Project Status says “In Review” while the rest of the dashboard derives “Todo”. Both are shown; neither is preferred. Evidence: developing-today/code#12818 in the Project.
+PM aggregator /program still stalls on a cold first request
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+merged: 1
+PR merged developing-today/code#11801
+queued: 1
+issue developing-today/code#10383
+impl(backups): mesh restore-verification rotation + watchdog surface (#1841)
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+merged: 1
+PR merged developing-today/code#13671
+queued: 1
+issue developing-today/code#13463
+watchdog: reopen issues the bot wrongly closes on merges
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+⚠ board: in-review · project: Todo
+merged: 1
+PR merged developing-today/code#12915
+queued: 1
+issue developing-today/code#10105
+Act as
+Drew
+Muse
+Orchestrator (orchestration-pass) (agent)
+Jules keeper (jules-review) (agent)
+Stewardship cycle (agent)
+Request status change to 
+Todo
+In Progress
+In Review
+Done
+Request status change
+A request, not a write — the orchestration pass (the Project's single writer) applies it on its next run.
+Derived brief (derived from the projection — not authored)
+State: Todo — open, with no orchestration reference placing it in flight. Evidence: developing-today/code#10105.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#10105.
+Last activity by dezren39 at 2026-11-23T04:58:55Z (issue_comment). Evidence: developing-today/code#10105 comment.
+Next: Pick up or schedule: not blocked and not currently in flight. Evidence: developing-today/code#10105.
+Turso-to-D1 migration audit + programme
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+merged: 1
+PR merged developing-today/code#13845
+queued: 1
+issue developing-today/code#13844
+impl(fleet-hosted): ingestion receiver — GitHub webhook route + scheduled-Worker sweeper (#9076 hosted)
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+⚠ board: in-review · project: Todo
+merged: 1
+PR merged developing-today/code#12923
+queued: 1
+issue developing-today/code#12590
+Act as
+Drew
+Muse
+Orchestrator (orchestration-pass) (agent)
+Jules keeper (jules-review) (agent)
+Stewardship cycle (agent)
+Request status change to 
+Todo
+In Progress
+In Review
+Done
+Request status change
+A request, not a write — the orchestration pass (the Project's single writer) applies it on its next run.
+Derived brief (derived from the projection — not authored)
+State: Todo — open, with no orchestration reference placing it in flight. Evidence: developing-today/code#12590.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#12590.
+Last activity by dezren39 at 2026-11-23T05:09:04Z (issue_comment). Evidence: developing-today/code#12590 comment.
+Next: Pick up or schedule: not blocked and not currently in flight. Evidence: developing-today/code#12590.
+Fleet unification slice 6: backups — Turso into D1, repos to Cloudflare plus mirror plus R2
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+⚠ board: in-review · project: In Progress
+merged: 2
+PR merged developing-today/code#12686
+PR merged developing-today/code#12791
+queued: 1
+issue developing-today/code#8584
+Act as
+Drew
+Muse
+Orchestrator (orchestration-pass) (agent)
+Jules keeper (jules-review) (agent)
+Stewardship cycle (agent)
+Request status change to 
+Todo
+In Progress
+In Review
+Done
+Request status change
+A request, not a write — the orchestration pass (the Project's single writer) applies it on its next run.
+Derived brief (derived from the projection — not authored)
+State: Todo — open, with no orchestration reference placing it in flight. Evidence: developing-today/code#8584.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#8584.
+Last activity by dezren39 at 2026-11-23T15:58:09Z (issue_comment). Evidence: developing-today/code#8584 comment.
+Next: Reconcile the disagreement: Project Status “In Progress” vs derived “Todo”. Evidence: developing-today/code#8584 in the Project.
+⚠ Sources disagree: the Project Status says “In Progress” while the rest of the dashboard derives “Todo”. Both are shown; neither is preferred. Evidence: developing-today/code#8584 in the Project.
+design(pm-stack): spend rollups — token and dollar attribution per project and per epic, rendered on Projects/Roadmap
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+⚠ board: in-review · project: Done
+closed: 3
+PR developing-today/code#7260
+issue developing-today/code#1259
+PR developing-today/code#7261
+Act as
+Drew
+Muse
+Orchestrator (orchestration-pass) (agent)
+Jules keeper (jules-review) (agent)
+Stewardship cycle (agent)
+Request status change to 
+Todo
+In Progress
+In Review
+Done
+Request status change
+A request, not a write — the orchestration pass (the Project's single writer) applies it on its next run.
+Derived brief (derived from the projection — not authored)
+State: Done — the linked issue/PR is closed or merged. Evidence: developing-today/code#1259.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#1259.
+Last activity by dezren39 at 2026-11-03T10:18:56Z (issue_comment). Evidence: developing-today/code#1259 comment.
+Next: No action — this item is done. Evidence: developing-today/code#1259.
+SSO (#9077): pending-link registration — new provider sign-ins register without trust until approved from an established session
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+review: 1
+PR developing-today/code#14019
+queued: 1
+issue developing-today/code#13972
+impl(fleet): fleet gh Metadata superset — create-path stamping + DB insert (extends #9016)
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+⚠ board: in-review · project: Todo
+merged: 1
+PR merged developing-today/code#12988
+queued: 1
+issue developing-today/code#9073
+Act as
+Drew
+Muse
+Orchestrator (orchestration-pass) (agent)
+Jules keeper (jules-review) (agent)
+Stewardship cycle (agent)
+Request status change to 
+Todo
+In Progress
+In Review
+Done
+Request status change
+A request, not a write — the orchestration pass (the Project's single writer) applies it on its next run.
+Derived brief (derived from the projection — not authored)
+State: Todo — open, with no orchestration reference placing it in flight. Evidence: developing-today/code#9073.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#9073.
+Last activity by dezren39 at 2026-11-23T06:33:56Z (issue_comment). Evidence: developing-today/code#9073 comment.
+Next: Pick up or schedule: not blocked and not currently in flight. Evidence: developing-today/code#9073.
+impl: release workflow for per-app version tags — who/what cuts the tags and how 'tested' is attested (follow-on to #5790 §5)
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+merged: 1
+PR merged developing-today/code#13302
+queued: 1
+issue developing-today/code#11177
+id: impl: author tooling — linter and multi-target preview (from #5855)
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+merged: 1
+PR merged developing-today/code#12945
+queued: 1
+issue developing-today/code#7920
+impl(id): build-time defaults.json — typed parse, pair-atomic cascade, provenance (#5916 follow-on)
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+merged: 1
+PR merged developing-today/code#12096
+queued: 1
+issue developing-today/code#10345
+design(id/atlas): ID-graph publication format — Atlas objects + provenance/lineage relations as ID-graph objects
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+⚠ board: in-review · project: Todo
+merged: 1
+PR merged developing-today/code#7998
+queued: 1
+issue developing-today/code#6062
+Act as
+Drew
+Muse
+Orchestrator (orchestration-pass) (agent)
+Jules keeper (jules-review) (agent)
+Stewardship cycle (agent)
+Request status change to 
+Todo
+In Progress
+In Review
+Done
+Request status change
+A request, not a write — the orchestration pass (the Project's single writer) applies it on its next run.
+Derived brief (derived from the projection — not authored)
+State: Todo — open, with no orchestration reference placing it in flight. Evidence: developing-today/code#6062.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#6062.
+Last activity by dezren39 at 2026-11-22T00:44:05Z (issue_comment). Evidence: developing-today/code#6062 comment.
+Next: Pick up or schedule: not blocked and not currently in flight. Evidence: developing-today/code#6062.
+id(ci): nixos-integration VM test still times out silently — #896 acceptance recurrence (nightly 40457980141)
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+⚠ board: in-review · project: Todo
+merged: 2
+PR merged developing-today/code#12578
+PR merged developing-today/code#12582
+queued: 1
+issue developing-today/code#1372
+Act as
+Drew
+Muse
+Orchestrator (orchestration-pass) (agent)
+Jules keeper (jules-review) (agent)
+Stewardship cycle (agent)
+Request status change to 
+Todo
+In Progress
+In Review
+Done
+Request status change
+A request, not a write — the orchestration pass (the Project's single writer) applies it on its next run.
+Derived brief (derived from the projection — not authored)
+State: Todo — open, with no orchestration reference placing it in flight. Evidence: developing-today/code#1372.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#1372.
+Last activity by dezren39 at 2026-11-23T10:32:13Z (issue_comment). Evidence: developing-today/code#1372 comment.
+Next: Pick up or schedule: not blocked and not currently in flight. Evidence: developing-today/code#1372.
+id(worlds): ship playable Sketch guest for sketch/redo-as-new-stroke
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+merged: 1
+PR merged developing-today/code#13651
+queued: 1
+issue developing-today/code#13608
+Decisions ledger missing from backups
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+merged: 1
+PR merged developing-today/code#11795
+queued: 1
+issue developing-today/code#10293
+fleet CLI: append-only invocation ledger (subcommand use is inference-only today)
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+merged: 1
+PR merged developing-today/code#11817
+queued: 1
+issue developing-today/code#9373
+mcpx(daemon): chat-completions proxy has no upstream timeout and buffers the whole upstream response in memory — proxyToUpstream uses http.DefaultClient and an uncapped TeeReader buffer
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+⚠ board: in-review · project: Done
+merged: 1
+PR merged developing-today/code#3380
+closed: 1
+issue developing-today/code#2114
+Act as
+Drew
+Muse
+Orchestrator (orchestration-pass) (agent)
+Jules keeper (jules-review) (agent)
+Stewardship cycle (agent)
+Request status change to 
+Todo
+In Progress
+In Review
+Done
+Request status change
+A request, not a write — the orchestration pass (the Project's single writer) applies it on its next run.
+Derived brief (derived from the projection — not authored)
+State: Done — the linked issue/PR is closed or merged. Evidence: developing-today/code#2114.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#2114.
+Last activity by dezren39 at 2026-11-03T15:14:21Z (issue_comment). Evidence: developing-today/code#2114 comment.
+Next: No action — this item is done. Evidence: developing-today/code#2114.
+Fleet park + cap audit (2026-11-12): parks that can never lapse, bound-work parks on verified-stale bindings, escalation-as-park, and BATCH_CLAIM_MAX for Drew's call
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+merged: 2
+PR merged developing-today/code#10992
+PR merged developing-today/code#13692
+queued: 1
+issue developing-today/code#9179
+Design: sign only what receipt would accept — one sign-time refusal contract for pkgs/id
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+⚠ board: in-review · project: Todo
+merged: 1
+PR merged developing-today/code#11195
+queued: 1
+issue developing-today/code#6487
+Act as
+Drew
+Muse
+Orchestrator (orchestration-pass) (agent)
+Jules keeper (jules-review) (agent)
+Stewardship cycle (agent)
+Request status change to 
+Todo
+In Progress
+In Review
+Done
+Request status change
+A request, not a write — the orchestration pass (the Project's single writer) applies it on its next run.
+Derived brief (derived from the projection — not authored)
+State: Todo — open, with no orchestration reference placing it in flight. Evidence: developing-today/code#6487.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#6487.
+Last activity by dezren39 at 2026-11-22T00:43:52Z (issue_comment). Evidence: developing-today/code#6487 comment.
+Next: Pick up or schedule: not blocked and not currently in flight. Evidence: developing-today/code#6487.
+BA-W01 L2: stores, membership, roles, provisioning, display names
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+⚠ board: in-review · project: Todo
+merged: 1
+PR merged developing-today/code#11832
+queued: 1
+issue developing-today/code#11751
+Act as
+Drew
+Muse
+Orchestrator (orchestration-pass) (agent)
+Jules keeper (jules-review) (agent)
+Stewardship cycle (agent)
+Request status change to 
+Todo
+In Progress
+In Review
+Done
+Request status change
+A request, not a write — the orchestration pass (the Project's single writer) applies it on its next run.
+Derived brief (derived from the projection — not authored)
+State: Todo — open, with no orchestration reference placing it in flight. Evidence: developing-today/code#11751.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#11751.
+Last activity by dezren39 at 2026-11-22T00:41:10Z (issue_comment). Evidence: developing-today/code#11751 comment.
+Next: Pick up or schedule: not blocked and not currently in flight. Evidence: developing-today/code#11751.
+mcpx release: GHCR container channel never published — push denied on v0.1.0 run, publish path now dispatch-only
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+merged: 1
+PR merged developing-today/code#10783
+queued: 1
+issue developing-today/code#9900
+Implement ordered lifecycle hooks and fixed acceptance gate
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+⚠ board: in-review · project: In Progress
+merged: 1
+PR merged developing-today/code#13156
+queued: 1
+issue developing-today/code#10192
+Act as
+Drew
+Muse
+Orchestrator (orchestration-pass) (agent)
+Jules keeper (jules-review) (agent)
+Stewardship cycle (agent)
+Request status change to 
+Todo
+In Progress
+In Review
+Done
+Request status change
+A request, not a write — the orchestration pass (the Project's single writer) applies it on its next run.
+Derived brief (derived from the projection — not authored)
+State: Todo — open, with no orchestration reference placing it in flight. Evidence: developing-today/code#10192.
+Blocker: Not blocked — every recorded blocker (developing-today/code#10160, developing-today/code#9083, developing-today/code#10177, developing-today/code#9141) is closed or merged. Evidence: developing-today/code#10192.
+Last activity by dezren39 at 2026-11-23T20:27:47Z (issue_comment). Evidence: developing-today/code#10192 comment.
+Next: Reconcile the disagreement: Project Status “In Progress” vs derived “Todo”. Evidence: developing-today/code#10192 in the Project.
+⚠ Sources disagree: the Project Status says “In Progress” while the rest of the dashboard derives “Todo”. Both are shown; neither is preferred. Evidence: developing-today/code#10192 in the Project.
+id: implement runtime feature-object library attachment (v-next, per #6003 design note)
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+merged: 1
+PR merged developing-today/code#12896
+queued: 1
+issue developing-today/code#12640
+atlas(classification): enforce disclosure-context filters at output boundaries
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+⚠ board: in-review · project: Todo
+merged: 1
+PR merged developing-today/code#12626
+queued: 1
+issue developing-today/code#12404
+Act as
+Drew
+Muse
+Orchestrator (orchestration-pass) (agent)
+Jules keeper (jules-review) (agent)
+Stewardship cycle (agent)
+Request status change to 
+Todo
+In Progress
+In Review
+Done
+Request status change
+A request, not a write — the orchestration pass (the Project's single writer) applies it on its next run.
+Derived brief (derived from the projection — not authored)
+State: Todo — open, with no orchestration reference placing it in flight. Evidence: developing-today/code#12404.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#12404.
+Last activity by dezren39 at 2026-11-22T16:43:20Z (issue_comment). Evidence: developing-today/code#12404 comment.
+Next: Pick up or schedule: not blocked and not currently in flight. Evidence: developing-today/code#12404.
+Fleet flow report: distinguish issue collection time from the calculation clock
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+merged: 1
+PR merged developing-today/code#13596
+queued: 1
+issue developing-today/code#13586
+id: design: AI-over-notes cluster (from #5678)
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+merged: 1
+PR merged developing-today/code#8275
+queued: 1
+issue developing-today/code#5842
+fix(aggregator): board is again a completion log - 95 of 107 cards are Done; age out / collapse done by default
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+⚠ board: in-review · project: Done
+merged: 1
+PR merged developing-today/code#2430
+closed: 1
+issue developing-today/code#1146
+Act as
+Drew
+Muse
+Orchestrator (orchestration-pass) (agent)
+Jules keeper (jules-review) (agent)
+Stewardship cycle (agent)
+Request status change to 
+Todo
+In Progress
+In Review
+Done
+Request status change
+A request, not a write — the orchestration pass (the Project's single writer) applies it on its next run.
+Derived brief (derived from the projection — not authored)
+State: Done — the linked issue/PR is closed or merged. Evidence: developing-today/code#1146.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#1146.
+Last activity by dezren39 at 2026-10-30T04:23:13Z (issue_comment). Evidence: developing-today/code#1146 comment.
+Next: No action — this item is done. Evidence: developing-today/code#1146.
+S7: attachments & multimedia
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+merged: 1
+PR merged developing-today/code#13328
+queued: 1
+issue developing-today/code#10036
+fleet-ca: Rust crate, API & CLI architecture — registry, profiles, typed capabilities
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+⚠ board: in-review · project: In Progress
+merged: 1
+PR merged developing-today/code#13720
+queued: 1
+issue developing-today/code#9157
+Act as
+Drew
+Muse
+Orchestrator (orchestration-pass) (agent)
+Jules keeper (jules-review) (agent)
+Stewardship cycle (agent)
+Request status change to 
+Todo
+In Progress
+In Review
+Done
+Request status change
+A request, not a write — the orchestration pass (the Project's single writer) applies it on its next run.
+Derived brief (derived from the projection — not authored)
+State: Todo — open, with no orchestration reference placing it in flight. Evidence: developing-today/code#9157.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#9157.
+Last activity by dezren39 at 2026-11-23T21:08:24Z (issue_comment). Evidence: developing-today/code#9157 comment.
+Next: Reconcile the disagreement: Project Status “In Progress” vs derived “Todo”. Evidence: developing-today/code#9157 in the Project.
+⚠ Sources disagree: the Project Status says “In Progress” while the rest of the dashboard derives “Todo”. Both are shown; neither is preferred. Evidence: developing-today/code#9157 in the Project.
+id(phase-14): More shells (mobile, native, hardware) — v2 — outline: native & TUI completion
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+⚠ board: in-review · project: Todo
+merged: 1
+PR merged developing-today/code#12816
+queued: 1
+issue developing-today/code#6297
+Act as
+Drew
+Muse
+Orchestrator (orchestration-pass) (agent)
+Jules keeper (jules-review) (agent)
+Stewardship cycle (agent)
+Request status change to 
+Todo
+In Progress
+In Review
+Done
+Request status change
+A request, not a write — the orchestration pass (the Project's single writer) applies it on its next run.
+Derived brief (derived from the projection — not authored)
+State: Todo — open, with no orchestration reference placing it in flight. Evidence: developing-today/code#6297.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#6297.
+Last activity by dezren39 at 2026-11-23T03:26:00Z (issue_comment). Evidence: developing-today/code#6297 comment.
+Next: Pick up or schedule: not blocked and not currently in flight. Evidence: developing-today/code#6297.
+Cost Explorer ChatGPT-parity follow-ups: lane charts, chart extras, evidence cards, projection routes
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+merged: 1
+PR merged developing-today/code#7876
+queued: 1
+issue developing-today/code#1400
+Close authority: require a verified disposition when a linked draft still carries unfinished work
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+merged: 1
+PR merged developing-today/code#10616
+queued: 1
+issue developing-today/code#10611
+OpenCode scheduled tasks: migrate the Muse→OpenCode cron wrappers into OpenChamber scheduled tasks (waves, monitoring gates)
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+⚠ board: in-review · project: Todo
+merged: 2
+PR merged developing-today/code#8437
+PR merged developing-today/code#11158
+queued: 1
+issue developing-today/code#2174
+Act as
+Drew
+Muse
+Orchestrator (orchestration-pass) (agent)
+Jules keeper (jules-review) (agent)
+Stewardship cycle (agent)
+Request status change to 
+Todo
+In Progress
+In Review
+Done
+Request status change
+A request, not a write — the orchestration pass (the Project's single writer) applies it on its next run.
+Derived brief (derived from the projection — not authored)
+State: Todo — open, with no orchestration reference placing it in flight. Evidence: developing-today/code#2174.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#2174.
+Last activity by dezren39 at 2026-11-22T00:45:37Z (issue_comment). Evidence: developing-today/code#2174 comment.
+Next: Pick up or schedule: not blocked and not currently in flight. Evidence: developing-today/code#2174.
+id: F12.8/A7 third guest language — Zig SDK passing conformance with a playable example
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+merged: 3
+PR merged developing-today/code#12827
+PR merged developing-today/code#12793
+PR merged developing-today/code#12837
+queued: 1
+issue developing-today/code#12596
+id: Phase 12 exit audit and the id/v0.12.0 tag
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+⚠ board: in-review · project: Todo
+merged: 2
+PR merged developing-today/code#12594
+PR merged developing-today/code#12598
+queued: 1
+issue developing-today/code#12231
+Act as
+Drew
+Muse
+Orchestrator (orchestration-pass) (agent)
+Jules keeper (jules-review) (agent)
+Stewardship cycle (agent)
+Request status change to 
+Todo
+In Progress
+In Review
+Done
+Request status change
+A request, not a write — the orchestration pass (the Project's single writer) applies it on its next run.
+Derived brief (derived from the projection — not authored)
+State: Todo — open, with no orchestration reference placing it in flight. Evidence: developing-today/code#12231.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#12231.
+Last activity by dezren39 at 2026-11-23T07:18:17Z (issue_comment). Evidence: developing-today/code#12231 comment.
+Next: Pick up or schedule: not blocked and not currently in flight. Evidence: developing-today/code#12231.
+pm-stack: production line guard covers only .rs, so render.ts (8.5k lines) and server.ts (4.7k) are unchecked
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+queued: 1
+issue developing-today/code#12671
+closed: 1
+PR developing-today/code#12759
+aggregator: quota gatherer snapshot dedup ignores credentialId — two ok credentials of one provider interleave into one series and append an alternating noise point every tick
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+merged: 1
+PR merged developing-today/code#1775
+closed: 1
+issue developing-today/code#1624
+impl(pm-stack): E7 — documentation pass: user→tenant in #3811-era docs (#9083)
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+review: 1
+PR developing-today/code#13127
+queued: 1
+issue developing-today/code#12802
+Act as
+Drew
+Muse
+Orchestrator (orchestration-pass) (agent)
+Jules keeper (jules-review) (agent)
+Stewardship cycle (agent)
+Request status change to 
+Todo
+In Progress
+In Review
+Done
+Request status change
+A request, not a write — the orchestration pass (the Project's single writer) applies it on its next run.
+Derived brief (derived from the projection — not authored)
+State: Todo — open, with no orchestration reference placing it in flight. Evidence: developing-today/code#12802.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#12802.
+Last activity by dezren39 at 2026-11-23T08:41:31Z (issue_comment). Evidence: developing-today/code#12802 comment.
+Next: Reconcile the disagreement: Project Status “In Review” vs derived “Todo”. Evidence: developing-today/code#12802 in the Project.
+⚠ Sources disagree: the Project Status says “In Review” while the rest of the dashboard derives “Todo”. Both are shown; neither is preferred. Evidence: developing-today/code#12802 in the Project.
+mcpx: Phase 3 of #1384 — supervised stdio by default + lifecycle hygiene
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+⚠ board: in-review · project: Todo
+merged: 1
+PR merged developing-today/code#10767
+queued: 1
+issue developing-today/code#9963
+Act as
+Drew
+Muse
+Orchestrator (orchestration-pass) (agent)
+Jules keeper (jules-review) (agent)
+Stewardship cycle (agent)
+Request status change to 
+Todo
+In Progress
+In Review
+Done
+Request status change
+A request, not a write — the orchestration pass (the Project's single writer) applies it on its next run.
+Derived brief (derived from the projection — not authored)
+State: Todo — open, with no orchestration reference placing it in flight. Evidence: developing-today/code#9963.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#9963.
+Last activity by dezren39 at 2026-11-23T18:08:11Z (issue_comment). Evidence: developing-today/code#9963 comment.
+Next: Pick up or schedule: not blocked and not currently in flight. Evidence: developing-today/code#9963.
+id(world): F11.7 host metrics, Prometheus endpoint and tracing spans
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+⚠ board: in-review · project: Done
+merged: 2
+PR merged developing-today/code#1715
+PR merged developing-today/code#1437
+closed: 1
+issue developing-today/code#553
+Act as
+Drew
+Muse
+Orchestrator (orchestration-pass) (agent)
+Jules keeper (jules-review) (agent)
+Stewardship cycle (agent)
+Request status change to 
+Todo
+In Progress
+In Review
+Done
+Request status change
+A request, not a write — the orchestration pass (the Project's single writer) applies it on its next run.
+Derived brief (derived from the projection — not authored)
+State: Done — the linked issue/PR is closed or merged. Evidence: developing-today/code#553.
+Blocker: Not blocked — every recorded blocker (developing-today/code#227) is closed or merged. Evidence: developing-today/code#553.
+Last activity by dezren39 at 2026-10-27T18:16:48Z (issue_comment). Evidence: developing-today/code#553 comment.
+Next: No action — this item is done. Evidence: developing-today/code#553.
+id: implement capability-change notices — client baseline store, connect-stage comparison, notice surface (#5959 design)
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+merged: 2
+PR merged developing-today/code#13079
+PR merged developing-today/code#14049
+queued: 1
+issue developing-today/code#12921
+id(web/collab): collab WebSocket has no message-size or step-count cap — a single frame can be 64 MiB and hundreds of thousands of steps, all retained and replayed to every joiner
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+closed: 2
+PR developing-today/code#7387
+issue developing-today/code#1965
+id: design: result shaping & cursor pagination (from #5675)
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+merged: 1
+PR merged developing-today/code#8009
+queued: 1
+issue developing-today/code#5821
+Code Book + Lab Book programme: whole-project book, per-book roadmap sections, lab book, Code Space
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+merged: 14
+PR merged developing-today/code#13996
+PR merged developing-today/code#13968
+PR merged developing-today/code#13945
+PR merged developing-today/code#13980
+PR merged developing-today/code#13954
+PR merged developing-today/code#13986
+PR merged developing-today/code#13947
+PR merged developing-today/code#13961
+PR merged developing-today/code#13957
+PR merged developing-today/code#13959
+PR merged developing-today/code#13989
+PR merged developing-today/code#13937
+PR merged developing-today/code#13927
+PR merged developing-today/code#13928
+queued: 1
+issue developing-today/code#13905
+SSO (#9077): first consumer integration proving the full loop (PM stack)
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+merged: 1
+PR merged developing-today/code#13799
+queued: 1
+issue developing-today/code#13416
+design(P6): Turso + Cloudflare integration — DRAFT for Drew's ratification
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+review: 1
+PR developing-today/code#13912
+queued: 1
+issue developing-today/code#8870
+Act as
+Drew
+Muse
+Orchestrator (orchestration-pass) (agent)
+Jules keeper (jules-review) (agent)
+Stewardship cycle (agent)
+Request status change to 
+Todo
+In Progress
+In Review
+Done
+Request status change
+A request, not a write — the orchestration pass (the Project's single writer) applies it on its next run.
+Derived brief (derived from the projection — not authored)
+State: Todo — open, with no orchestration reference placing it in flight. Evidence: developing-today/code#8870.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#8870.
+Last activity by dezren39 at 2026-11-24T00:48:30Z (issue_comment). Evidence: developing-today/code#8870 comment.
+Next: Reconcile the disagreement: Project Status “In Review” vs derived “Todo”. Evidence: developing-today/code#8870 in the Project.
+⚠ Sources disagree: the Project Status says “In Review” while the rest of the dashboard derives “Todo”. Both are shown; neither is preferred. Evidence: developing-today/code#8870 in the Project.
+id(currency): production currencies v1 — remainder after the graph-native fold (#5522 successor)
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+merged: 2
+PR merged developing-today/code#12902
+PR merged developing-today/code#13006
+queued: 1
+issue developing-today/code#10070
+mcpx coverage burn-down: CLI commands (running group) with no integration-test exercise
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+merged: 1
+PR merged developing-today/code#11240
+queued: 1
+issue developing-today/code#8465
+mcpx: Phase 1 of #1601 — surface ttlMs/cacheScope in mcpclient and expire the pool catalogue cache (modern era)
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+⚠ board: in-review · project: Done
+merged: 1
+PR merged developing-today/code#1608
+closed: 1
+issue developing-today/code#1602
+Act as
+Drew
+Muse
+Orchestrator (orchestration-pass) (agent)
+Jules keeper (jules-review) (agent)
+Stewardship cycle (agent)
+Request status change to 
+Todo
+In Progress
+In Review
+Done
+Request status change
+A request, not a write — the orchestration pass (the Project's single writer) applies it on its next run.
+Derived brief (derived from the projection — not authored)
+State: Done — the linked issue/PR is closed or merged. Evidence: developing-today/code#1602.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#1602.
+Last activity by dezren39 at 2026-10-28T11:26:54Z (issue_comment). Evidence: developing-today/code#1602 comment.
+Next: No action — this item is done. Evidence: developing-today/code#1602.
+id(web): world records view shows a lone stale page when an input event restarts a paginated fetch — fresh pages are silently discarded
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+merged: 1
+PR merged developing-today/code#1680
+closed: 1
+issue developing-today/code#1458
+review loop: fleet-monitor checks for verdict/packet reconciliation (design #2025 §7.3)
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+merged: 1
+PR merged developing-today/code#10676
+queued: 1
+issue developing-today/code#2312
+Atlas search improvements: parallel branches, service/result-store shape, nix-packaged binary CLI
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+merged: 1
+PR merged developing-today/code#13039
+queued: 1
+issue developing-today/code#12900
+id(web): pasting or dropping only oversized images silently swallows the paste — event claimed, nothing inserted, no feedback
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+merged: 1
+PR merged developing-today/code#1576
+closed: 1
+issue developing-today/code#1321
+Decisions page 'crash' 2026-11-11: pm-aggregator + pm-dispatch SIGTERM'd mid-session, no self-heal (Restart=on-failure treats SIGTERM as clean)
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+merged: 2
+PR merged developing-today/code#8778
+PR merged developing-today/code#8786
+queued: 1
+issue developing-today/code#8777
+fleet: ready PRs are left unmerged (20 open; the merge sweep has filed nothing since 2026-11-17)
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+⚠ board: in-review · project: In Progress
+merged: 2
+PR merged developing-today/code#12651
+PR merged developing-today/code#12649
+queued: 1
+issue developing-today/code#12280
+Act as
+Drew
+Muse
+Orchestrator (orchestration-pass) (agent)
+Jules keeper (jules-review) (agent)
+Stewardship cycle (agent)
+Request status change to 
+Todo
+In Progress
+In Review
+Done
+Request status change
+A request, not a write — the orchestration pass (the Project's single writer) applies it on its next run.
+Derived brief (derived from the projection — not authored)
+State: Todo — open, with no orchestration reference placing it in flight. Evidence: developing-today/code#12280.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#12280.
+Last activity by dezren39 at 2026-11-23T02:31:56Z (issue_comment). Evidence: developing-today/code#12280 comment.
+Next: Reconcile the disagreement: Project Status “In Progress” vs derived “Todo”. Evidence: developing-today/code#12280 in the Project.
+⚠ Sources disagree: the Project Status says “In Progress” while the rest of the dashboard derives “Todo”. Both are shown; neither is preferred. Evidence: developing-today/code#12280 in the Project.
+fleet tooling: resolve binaries by test-exec, not -x (broken Nix fleet binary passes -x, fails every exec)
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+⚠ board: in-review · project: Todo
+merged: 1
+PR merged developing-today/code#13044
+queued: 1
+issue developing-today/code#12498
+Act as
+Drew
+Muse
+Orchestrator (orchestration-pass) (agent)
+Jules keeper (jules-review) (agent)
+Stewardship cycle (agent)
+Request status change to 
+Todo
+In Progress
+In Review
+Done
+Request status change
+A request, not a write — the orchestration pass (the Project's single writer) applies it on its next run.
+Derived brief (derived from the projection — not authored)
+State: Todo — open, with no orchestration reference placing it in flight. Evidence: developing-today/code#12498.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#12498.
+Last activity by dezren39 at 2026-11-23T07:36:41Z (issue_comment). Evidence: developing-today/code#12498 comment.
+Next: Pick up or schedule: not blocked and not currently in flight. Evidence: developing-today/code#12498.
+impl(pm-stack): model data pipeline Phase 2 slices 0-1 — DB verification + live gatherer (#1248)
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+merged: 1
+PR merged developing-today/code#10735
+queued: 1
+issue developing-today/code#9999
+OpenClaw: finish setup, begin passing jobs, and review results against OpenCode
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+⚠ board: in-review · project: Todo
+merged: 1
+PR merged developing-today/code#8285
+queued: 1
+issue developing-today/code#2171
+Act as
+Drew
+Muse
+Orchestrator (orchestration-pass) (agent)
+Jules keeper (jules-review) (agent)
+Stewardship cycle (agent)
+Request status change to 
+Todo
+In Progress
+In Review
+Done
+Request status change
+A request, not a write — the orchestration pass (the Project's single writer) applies it on its next run.
+Derived brief (derived from the projection — not authored)
+State: Todo — open, with no orchestration reference placing it in flight. Evidence: developing-today/code#2171.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#2171.
+Last activity by dezren39 at 2026-11-23T08:03:42Z (issue_comment). Evidence: developing-today/code#2171 comment.
+Next: Pick up or schedule: not blocked and not currently in flight. Evidence: developing-today/code#2171.
+Stray work audit: PRs and issues not tied to a design or roadmap item
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+merged: 1
+PR merged developing-today/code#13904
+queued: 1
+issue developing-today/code#13874
+design(id): delegation + cross-signed identity ceremony
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+⚠ board: in-review · project: Todo
+merged: 1
+PR merged developing-today/code#12160
+queued: 1
+issue developing-today/code#9132
+Act as
+Drew
+Muse
+Orchestrator (orchestration-pass) (agent)
+Jules keeper (jules-review) (agent)
+Stewardship cycle (agent)
+Request status change to 
+Todo
+In Progress
+In Review
+Done
+Request status change
+A request, not a write — the orchestration pass (the Project's single writer) applies it on its next run.
+Derived brief (derived from the projection — not authored)
+State: Todo — open, with no orchestration reference placing it in flight. Evidence: developing-today/code#9132.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#9132.
+Last activity by dezren39 at 2026-11-21T04:27:47Z (issue_comment). Evidence: developing-today/code#9132 comment.
+Next: Pick up or schedule: not blocked and not currently in flight. Evidence: developing-today/code#9132.
+mcpx: full-suite health on main blocks #8465 close condition (conformance/daemon/defaults/e2e/execsvc/sdnotify)
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+merged: 1
+PR merged developing-today/code#13636
+queued: 1
+issue developing-today/code#13481
+review loop PoC (Stage A): pr-diff-review records shadow verdicts, report distribution (design #2025 §8)
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+merged: 1
+PR merged developing-today/code#12727
+queued: 1
+issue developing-today/code#2313
+design(id): implicit-trust sync — convergence toward 1:1 + conflict reports
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+review: 1
+PR developing-today/code#13921
+queued: 1
+issue developing-today/code#9142
+Act as
+Drew
+Muse
+Orchestrator (orchestration-pass) (agent)
+Jules keeper (jules-review) (agent)
+Stewardship cycle (agent)
+Request status change to 
+Todo
+In Progress
+In Review
+Done
+Request status change
+A request, not a write — the orchestration pass (the Project's single writer) applies it on its next run.
+Derived brief (derived from the projection — not authored)
+State: Todo — open, with no orchestration reference placing it in flight. Evidence: developing-today/code#9142.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#9142.
+Last activity by dezren39 at 2026-11-24T00:53:50Z (issue_comment). Evidence: developing-today/code#9142 comment.
+Next: Reconcile the disagreement: Project Status “In Review” vs derived “Todo”. Evidence: developing-today/code#9142 in the Project.
+⚠ Sources disagree: the Project Status says “In Review” while the rest of the dashboard derives “Todo”. Both are shown; neither is preferred. Evidence: developing-today/code#9142 in the Project.
+mcpx docs: runtimes.md -- compare the execution options and their features, with the capability-probe suite
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+closed: 2
+issue developing-today/code#2129
+PR developing-today/code#7273
+impl(aggregator/collector): Project pool resolves a minority of board/roadmap refs (172 fixture fallbacks) - raise coverage and publish the ratio
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+⚠ board: in-review · project: Done
+merged: 1
+PR merged developing-today/code#2425
+closed: 1
+issue developing-today/code#1141
+Act as
+Drew
+Muse
+Orchestrator (orchestration-pass) (agent)
+Jules keeper (jules-review) (agent)
+Stewardship cycle (agent)
+Request status change to 
+Todo
+In Progress
+In Review
+Done
+Request status change
+A request, not a write — the orchestration pass (the Project's single writer) applies it on its next run.
+Derived brief (derived from the projection — not authored)
+State: Done — the linked issue/PR is closed or merged. Evidence: developing-today/code#1141.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#1141.
+Last activity by dezren39 at 2026-10-30T03:28:16Z (issue_comment). Evidence: developing-today/code#1141 comment.
+Next: No action — this item is done. Evidence: developing-today/code#1141.
+PM-stack plan views: baselines, sortable tables, dominance filters, provider selection, Carbon missing
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+merged: 2
+PR merged developing-today/code#10291
+PR merged developing-today/code#10127
+queued: 1
+issue developing-today/code#9852
+task(cluster): circuit spec + electrician brief
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+⚠ board: in-review · project: Done
+merged: 1
+PR merged developing-today/code#2367
+closed: 1
+issue developing-today/code#1103
+Act as
+Drew
+Muse
+Orchestrator (orchestration-pass) (agent)
+Jules keeper (jules-review) (agent)
+Stewardship cycle (agent)
+Request status change to 
+Todo
+In Progress
+In Review
+Done
+Request status change
+A request, not a write — the orchestration pass (the Project's single writer) applies it on its next run.
+Derived brief (derived from the projection — not authored)
+State: Done — the linked issue/PR is closed or merged. Evidence: developing-today/code#1103.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#1103.
+Last activity by dezren39 at 2026-10-30T03:41:07Z (issue_comment). Evidence: developing-today/code#1103 comment.
+Next: No action — this item is done. Evidence: developing-today/code#1103.
+Design + PoC: event-driven Slack collector (Socket Mode) to replace archer-slack-review polling
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+review: 1
+PR developing-today/code#13898
+merged: 2
+PR merged developing-today/code#12763
+PR merged developing-today/code#12711
+queued: 1
+issue developing-today/code#2137
+fleet queue: pre-claim staleness check — auto-complete tasks whose linked issue is already closed / PR already merged, without burning a session
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+merged: 1
+PR merged developing-today/code#11799
+queued: 1
+issue developing-today/code#10626
+mcpx github failover: daemon call-path wiring + live activation (follow-on to #7948)
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+merged: 1
+PR merged developing-today/code#11236
+queued: 1
+issue developing-today/code#8017
+fleet orgs: Turso-backed org/App registry + list subcommand
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+review: 1
+PR developing-today/code#14023
+queued: 1
+issue developing-today/code#8884
+Act as
+Drew
+Muse
+Orchestrator (orchestration-pass) (agent)
+Jules keeper (jules-review) (agent)
+Stewardship cycle (agent)
+Request status change to 
+Todo
+In Progress
+In Review
+Done
+Request status change
+A request, not a write — the orchestration pass (the Project's single writer) applies it on its next run.
+Derived brief (derived from the projection — not authored)
+State: Todo — open, with no orchestration reference placing it in flight. Evidence: developing-today/code#8884.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#8884.
+Last activity by dezren39 at 2026-11-24T02:43:51Z (issue_comment). Evidence: developing-today/code#8884 comment.
+Next: Reconcile the disagreement: Project Status “In Review” vs derived “Todo”. Evidence: developing-today/code#8884 in the Project.
+⚠ Sources disagree: the Project Status says “In Review” while the rest of the dashboard derives “Todo”. Both are shown; neither is preferred. Evidence: developing-today/code#8884 in the Project.
+id: keyset/authorization log — device keys, revocation, bindings as signed records (identity substrate)
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+merged: 7
+PR merged developing-today/code#11733
+PR merged developing-today/code#9047
+PR merged developing-today/code#11746
+PR merged developing-today/code#8984
+PR merged developing-today/code#11737
+PR merged developing-today/code#11742
+PR merged developing-today/code#11734
+queued: 1
+issue developing-today/code#2380
+id: design: dynamic user functions — server-compiled DLLs, hot-swap into running worlds without world recompile
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+merged: 1
+PR merged developing-today/code#10746
+queued: 1
+issue developing-today/code#5964
+main CI failure: developing-today/code — scripts-test workflow (run 45246696770)
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+merged: 1
+PR merged developing-today/code#13714
+queued: 1
+issue developing-today/code#13682
+Machine pool: onboard additional machines as fleet job nodes and redesign placement around a pool
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+⚠ board: in-review · project: Todo
+merged: 4
+PR merged developing-today/code#12758
+PR merged developing-today/code#12769
+PR merged developing-today/code#12717
+PR merged developing-today/code#12815
+queued: 1
+issue developing-today/code#2179
+Act as
+Drew
+Muse
+Orchestrator (orchestration-pass) (agent)
+Jules keeper (jules-review) (agent)
+Stewardship cycle (agent)
+Request status change to 
+Todo
+In Progress
+In Review
+Done
+Request status change
+A request, not a write — the orchestration pass (the Project's single writer) applies it on its next run.
+Derived brief (derived from the projection — not authored)
+State: Todo — open, with no orchestration reference placing it in flight. Evidence: developing-today/code#2179.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#2179.
+Last activity by dezren39 at 2026-11-23T09:06:23Z (issue_comment). Evidence: developing-today/code#2179 comment.
+Next: Pick up or schedule: not blocked and not currently in flight. Evidence: developing-today/code#2179.
+mcpx docs: a custom subdomain for the site (DNS, CNAME, HTTPS)
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+merged: 2
+PR merged developing-today/code#6498
+PR merged developing-today/code#6119
+queued: 1
+issue developing-today/code#1943
+closed: 1
+PR developing-today/code#7191
+id: implement ID messaging and relay protocol v1 (design #2036)
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+merged: 2
+PR merged developing-today/code#13835
+PR merged developing-today/code#13746
+queued: 1
+issue developing-today/code#5534
+quota scrape resilience: stale-read detection, failure classification, and CDP wedge probe for console-scraped pools (Mistral first)
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+merged: 2
+PR merged developing-today/code#12965
+PR merged developing-today/code#13015
+queued: 1
+issue developing-today/code#10630
+id: design: importer design: Joplin (from #5678)
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+merged: 1
+PR merged developing-today/code#9055
+queued: 1
+issue developing-today/code#5848
+closed: 1
+PR developing-today/code#7655
+repo-queue claim prints an all-null task row instead of the claimed task (broker /claim works)
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+merged: 2
+PR merged developing-today/code#13802
+PR merged developing-today/code#6398
+queued: 1
+issue developing-today/code#5486
+id: impl: conformance corpus and golden-test harness (from #5855)
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+implementing: 1
+PR developing-today/code#12038 · draft
+queued: 1
+issue developing-today/code#7919
+claimant mode file: guard the silent-deletion single point of failure
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+merged: 1
+PR merged developing-today/code#11794
+queued: 1
+issue developing-today/code#10332
+deploy tool: Cloudflare target class — generalize the <name>-deploy apps to all Workers
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+⚠ board: in-review · project: In Progress
+implementing: 1
+PR developing-today/code#12569 · draft
+merged: 2
+PR merged developing-today/code#7592
+PR merged developing-today/code#11252
+queued: 1
+issue developing-today/code#5767
+Act as
+Drew
+Muse
+Orchestrator (orchestration-pass) (agent)
+Jules keeper (jules-review) (agent)
+Stewardship cycle (agent)
+Request status change to 
+Todo
+In Progress
+In Review
+Done
+Request status change
+A request, not a write — the orchestration pass (the Project's single writer) applies it on its next run.
+Derived brief (derived from the projection — not authored)
+State: Todo — open, with no orchestration reference placing it in flight. Evidence: developing-today/code#5767.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#5767.
+Last activity by dezren39 at 2026-11-22T02:36:28Z (issue_comment). Evidence: developing-today/code#5767 comment.
+Next: Reconcile the disagreement: Project Status “In Progress” vs derived “Todo”. Evidence: developing-today/code#5767 in the Project.
+⚠ Sources disagree: the Project Status says “In Progress” while the rest of the dashboard derives “Todo”. Both are shown; neither is preferred. Evidence: developing-today/code#5767 in the Project.
+id: F12.16 `id world doctor`
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+merged: 1
+PR merged developing-today/code#801
+closed: 1
+issue developing-today/code#559
+investigation: capability auth + p2p transport — p2panda-first, honestly compared
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+merged: 3
+PR merged developing-today/code#13848
+PR merged developing-today/code#13785
+PR merged developing-today/code#13815
+queued: 1
+issue developing-today/code#13779
+id(web): file-list pagination display still multiplies the raw page unchecked — debug panic / wrapped inverted range for page=usize::MAX (the #931 remainder in templates.rs)
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+merged: 1
+PR merged developing-today/code#1633
+closed: 1
+issue developing-today/code#1472
+ci(mcpx): e2e-host-linux-arm64 leg (tier 2)
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+merged: 1
+PR merged developing-today/code#13513
+queued: 1
+issue developing-today/code#13388
+Wire the untapped free providers: commandcode flip, SambaNova, Kilo, LongCat, NVIDIA completion, OpenAI data-sharing, EXAONE rotation, free-first pass
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+merged: 1
+PR merged developing-today/code#13691
+queued: 1
+issue developing-today/code#13677
+laptop keyring stays locked after daemon restart — Secret Service consumers (agy) blocked until manual unlock
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+merged: 1
+PR merged developing-today/code#10932
+queued: 1
+issue developing-today/code#10724
+ID program — full investigation, design completion & build-out (program tracking)
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+merged: 1
+PR merged developing-today/code#13243
+queued: 1
+issue developing-today/code#13240
+OpenClaw picker: pools listed plainly (no "(OpenCode Route pool)" suffix, no grouping), add Small pool, hide Copilot + Claude CLI
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+merged: 1
+PR merged developing-today/code#10094
+queued: 1
+issue developing-today/code#9551
+[Architecture] Decouple Web UI from Core Library
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+merged: 1
+PR merged developing-today/code#12874
+queued: 1
+issue developing-today/code#6377
+design(fleet): fleet tool, Workers/TypeScript equivalent — hosted Metadata stamping/query, session provenance, sync tools
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+review: 1
+PR developing-today/code#13913
+merged: 1
+PR merged developing-today/code#12593
+queued: 1
+issue developing-today/code#9081
+Act as
+Drew
+Muse
+Orchestrator (orchestration-pass) (agent)
+Jules keeper (jules-review) (agent)
+Stewardship cycle (agent)
+Request status change to 
+Todo
+In Progress
+In Review
+Done
+Request status change
+A request, not a write — the orchestration pass (the Project's single writer) applies it on its next run.
+Derived brief (derived from the projection — not authored)
+State: Todo — open, with no orchestration reference placing it in flight. Evidence: developing-today/code#9081.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#9081.
+Last activity by dezren39 at 2026-11-22T14:33:49Z (issue_comment). Evidence: developing-today/code#9081 comment.
+Next: Reconcile the disagreement: Project Status “In Review” vs derived “Todo”. Evidence: developing-today/code#9081 in the Project.
+⚠ Sources disagree: the Project Status says “In Review” while the rest of the dashboard derives “Todo”. Both are shown; neither is preferred. Evidence: developing-today/code#9081 in the Project.
+unify(quota-plane): one quota read path — server endpoint, CLI, and aggregator gatherer must share the direct credential-store read
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+merged: 2
+PR merged developing-today/code#3416
+PR merged developing-today/code#13130
+queued: 1
+issue developing-today/code#2490
+C2 — Event pipeline: webhook/catchup queues, threshold hook drains, cron triage
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+⚠ board: in-review · project: Todo
+merged: 1
+PR merged developing-today/code#12713
+queued: 1
+issue developing-today/code#9570
+Act as
+Drew
+Muse
+Orchestrator (orchestration-pass) (agent)
+Jules keeper (jules-review) (agent)
+Stewardship cycle (agent)
+Request status change to 
+Todo
+In Progress
+In Review
+Done
+Request status change
+A request, not a write — the orchestration pass (the Project's single writer) applies it on its next run.
+Derived brief (derived from the projection — not authored)
+State: Todo — open, with no orchestration reference placing it in flight. Evidence: developing-today/code#9570.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#9570.
+Last activity by dezren39 at 2026-11-18T01:00:25Z (issue_comment). Evidence: developing-today/code#9570 comment.
+Next: Pick up or schedule: not blocked and not currently in flight. Evidence: developing-today/code#9570.
+AUDIT-7 Lane 5: DESIGN-REVIEW — every design record, internal soundness (tracking)
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+merged: 1
+PR merged developing-today/code#13897
+queued: 1
+issue developing-today/code#13876
+Add OpenClaw to #alignment — decide one shared channel vs point-to-point
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+⚠ board: in-review · project: Todo
+merged: 1
+PR merged developing-today/code#10144
+queued: 1
+issue developing-today/code#2170
+Act as
+Drew
+Muse
+Orchestrator (orchestration-pass) (agent)
+Jules keeper (jules-review) (agent)
+Stewardship cycle (agent)
+Request status change to 
+Todo
+In Progress
+In Review
+Done
+Request status change
+A request, not a write — the orchestration pass (the Project's single writer) applies it on its next run.
+Derived brief (derived from the projection — not authored)
+State: Todo — open, with no orchestration reference placing it in flight. Evidence: developing-today/code#2170.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#2170.
+Last activity by dezren39 at 2026-11-22T00:45:43Z (issue_comment). Evidence: developing-today/code#2170 comment.
+Next: Pick up or schedule: not blocked and not currently in flight. Evidence: developing-today/code#2170.
+fleet DOC-01: check queue help commands against published reference headings
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+merged: 1
+PR merged developing-today/code#13598
+queued: 1
+issue developing-today/code#13574
+ci(id): planted-bug-check.sh (the membership/voiding mutation proof from #1395) runs nowhere — no workflow, no flake check, not in check-all, not in the test-suite registry
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+⚠ board: in-review · project: Todo
+merged: 1
+PR merged developing-today/code#11254
+queued: 1
+issue developing-today/code#8037
+Act as
+Drew
+Muse
+Orchestrator (orchestration-pass) (agent)
+Jules keeper (jules-review) (agent)
+Stewardship cycle (agent)
+Request status change to 
+Todo
+In Progress
+In Review
+Done
+Request status change
+A request, not a write — the orchestration pass (the Project's single writer) applies it on its next run.
+Derived brief (derived from the projection — not authored)
+State: Todo — open, with no orchestration reference placing it in flight. Evidence: developing-today/code#8037.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#8037.
+Last activity by dezren39 at 2026-11-24T02:21:50Z (issue_comment). Evidence: developing-today/code#8037 comment.
+Next: Pick up or schedule: not blocked and not currently in flight. Evidence: developing-today/code#8037.
+Time-of-day aware routing: peak/off-peak pool, model, and effort selection
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+merged: 1
+PR merged developing-today/code#11797
+queued: 1
+issue developing-today/code#9378
+id(web): emphasis/strong/strikethrough wrapping an image are silently dropped on save — mixed text+image spans split and leak &#32; entities
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+merged: 1
+PR merged developing-today/code#1630
+closed: 1
+issue developing-today/code#1407
+mcpx docs: choose the site generator (mdBook, MkDocs Material, Docusaurus, Starlight, Hugo)
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+closed: 2
+issue developing-today/code#1939
+PR developing-today/code#7165
+web-gen-api: restore a stable-compatible Leptos build
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+merged: 1
+PR merged developing-today/code#12362
+queued: 1
+issue developing-today/code#12344
+id(ci): crash-gate PR splits silently drop any future #[ignore]d crash test — no coverage guard for the #1310 partition
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+merged: 1
+PR merged developing-today/code#1647
+closed: 1
+issue developing-today/code#1635
+id(web/identity): a future-dated token never expires — decode_token's age check is one-sided (saturating_sub), unlike the envelope and signed-request windows
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+merged: 1
+PR merged developing-today/code#3377
+closed: 1
+issue developing-today/code#1800
+mcpx: shebang-first interpreter dispatch + script.interpreter + script.cwd (split of #1919)
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+closed: 2
+issue developing-today/code#2167
+PR developing-today/code#7163
+meta: dashboard presents one triage question through multiple answer widgets (duplicate answers)
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+closed: 2
+issue developing-today/code#1476
+PR developing-today/code#7449
+pm-stack decision sets v2: rich questions, event log, submit API + activity webhook/hook
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+implementing: 1
+PR developing-today/code#12566 · draft
+merged: 2
+PR merged developing-today/code#9343
+PR merged developing-today/code#9341
+queued: 1
+issue developing-today/code#9335
+design(pm-orchestration): Last-activity gates, duplicate webhook, post-completion policy
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+⚠ board: in-review · project: Todo
+merged: 1
+PR merged developing-today/code#10776
+queued: 1
+issue developing-today/code#9519
+Act as
+Drew
+Muse
+Orchestrator (orchestration-pass) (agent)
+Jules keeper (jules-review) (agent)
+Stewardship cycle (agent)
+Request status change to 
+Todo
+In Progress
+In Review
+Done
+Request status change
+A request, not a write — the orchestration pass (the Project's single writer) applies it on its next run.
+Derived brief (derived from the projection — not authored)
+State: Todo — open, with no orchestration reference placing it in flight. Evidence: developing-today/code#9519.
+Blocker: Blocked by developing-today/code#9518, developing-today/code#9429, developing-today/code#9513, developing-today/code#9508. Evidence: developing-today/code#9518.
+Last activity by dezren39 at 2026-11-23T03:33:57Z (issue_comment). Evidence: developing-today/code#9519 comment.
+Next: Resolve the blocker first: developing-today/code#9518. Evidence: developing-today/code#9518.
+id: research: permission-prompt precedents — Play Store, Android/iOS runtime permissions, OAuth scopes, extension permissions, TCC/portals
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+merged: 1
+PR merged developing-today/code#9031
+queued: 1
+issue developing-today/code#5961
+impl(deploy): the release verb — tag cutting, attestation, and the untagged-release refusal (#11177 implementation)
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+merged: 1
+PR merged developing-today/code#13329
+queued: 1
+issue developing-today/code#13306
+fleet queue: duplicate-task suppression at filing time on the (repo, issue, kind) work identity
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+merged: 1
+PR merged developing-today/code#11802
+queued: 1
+issue developing-today/code#10627
+fleet(queue): alert when the repo-queue broker transport is down — lanes currently starve silently at the Step 0 gate
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+⚠ board: in-review · project: Todo
+merged: 1
+PR merged developing-today/code#12006
+queued: 1
+issue developing-today/code#6369
+Act as
+Drew
+Muse
+Orchestrator (orchestration-pass) (agent)
+Jules keeper (jules-review) (agent)
+Stewardship cycle (agent)
+Request status change to 
+Todo
+In Progress
+In Review
+Done
+Request status change
+A request, not a write — the orchestration pass (the Project's single writer) applies it on its next run.
+Derived brief (derived from the projection — not authored)
+State: Todo — open, with no orchestration reference placing it in flight. Evidence: developing-today/code#6369.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#6369.
+Last activity by dezren39 at 2026-11-22T00:43:59Z (issue_comment). Evidence: developing-today/code#6369 comment.
+Next: Pick up or schedule: not blocked and not currently in flight. Evidence: developing-today/code#6369.
+C8-E: error-driven investigation evidence bundle
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+merged: 1
+PR merged developing-today/code#13010
+queued: 1
+issue developing-today/code#12962
+OpenChamber dispatch v1.1: admission control, hand-backs, stall nudges, harvesting, Workhorse-first routing
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+⚠ board: in-review · project: In Progress
+merged: 2
+PR merged developing-today/code#12688
+PR merged developing-today/code#12678
+queued: 1
+issue developing-today/code#1187
+closed: 1
+PR developing-today/code#12681
+Act as
+Drew
+Muse
+Orchestrator (orchestration-pass) (agent)
+Jules keeper (jules-review) (agent)
+Stewardship cycle (agent)
+Request status change to 
+Todo
+In Progress
+In Review
+Done
+Request status change
+A request, not a write — the orchestration pass (the Project's single writer) applies it on its next run.
+Derived brief (derived from the projection — not authored)
+State: Todo — open, with no orchestration reference placing it in flight. Evidence: developing-today/code#1187.
+Blocker: Not blocked — every recorded blocker (developing-today/code#1189, developing-today/code#1188, developing-today/code#1185) is closed or merged. Evidence: developing-today/code#1187.
+Last activity by dezren39 at 2026-11-23T06:07:22Z (issue_comment). Evidence: developing-today/code#1187 comment.
+Next: Reconcile the disagreement: Project Status “In Progress” vs derived “Todo”. Evidence: developing-today/code#1187 in the Project.
+⚠ Sources disagree: the Project Status says “In Progress” while the rest of the dashboard derives “Todo”. Both are shown; neither is preferred. Evidence: developing-today/code#1187 in the Project.
+Proof-of-concept Android app + input interface extension (touch, mouse, hover) for relaying into live apps
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+merged: 3
+PR merged developing-today/code#12877
+PR merged developing-today/code#7329
+PR merged developing-today/code#11159
+queued: 1
+issue developing-today/code#1831
+impl(backups): inventory leg for #13461 — enumerate embedding/shard stores and mesh coverage
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+review: 1
+PR developing-today/code#14047
+queued: 1
+issue developing-today/code#13824
+Renovate PR #828 bumps only p2panda-auth in spikes/shared — five sibling p2panda deps stay on the old rev, against the #643 grouping rule
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+closed: 2
+PR developing-today/code#7275
+issue developing-today/code#829
+dashboard: Path to Phase 12 panel — live #1235 step state replacing the project-config.ts narrative (#1239 split)
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+merged: 1
+PR merged developing-today/code#10117
+closed: 2
+issue developing-today/code#9922
+PR developing-today/code#10119
+fleet queue: add a repair verb for quarantined/malformed task packets (in-place payload fix)
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+merged: 2
+PR merged developing-today/code#13321
+PR merged developing-today/code#13218
+queued: 1
+issue developing-today/code#13191
+design(id): numeric registry namespaces over the byte system
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+review: 1
+PR developing-today/code#13922
+queued: 1
+issue developing-today/code#9122
+Act as
+Drew
+Muse
+Orchestrator (orchestration-pass) (agent)
+Jules keeper (jules-review) (agent)
+Stewardship cycle (agent)
+Request status change to 
+Todo
+In Progress
+In Review
+Done
+Request status change
+A request, not a write — the orchestration pass (the Project's single writer) applies it on its next run.
+Derived brief (derived from the projection — not authored)
+State: Todo — open, with no orchestration reference placing it in flight. Evidence: developing-today/code#9122.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#9122.
+Last activity by dezren39 at 2026-11-24T00:54:29Z (issue_comment). Evidence: developing-today/code#9122 comment.
+Next: Reconcile the disagreement: Project Status “In Review” vs derived “Todo”. Evidence: developing-today/code#9122 in the Project.
+⚠ Sources disagree: the Project Status says “In Review” while the rest of the dashboard derives “Todo”. Both are shown; neither is preferred. Evidence: developing-today/code#9122 in the Project.
+mcpx testing: a failing-first test for every bug, and a review of recent fixes
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+closed: 2
+PR developing-today/code#7277
+issue developing-today/code#1969
+impl(atlas): D1 hot-cache freshness evaluator — per-class watermark/TTL rules
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+review: 1
+PR developing-today/code#13133
+queued: 1
+issue developing-today/code#13101
+design(pm-orchestration): Effect-specific GitHub preconditions and readback adapter
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+⚠ board: in-review · project: Todo
+merged: 1
+PR merged developing-today/code#13247
+queued: 1
+issue developing-today/code#9516
+Act as
+Drew
+Muse
+Orchestrator (orchestration-pass) (agent)
+Jules keeper (jules-review) (agent)
+Stewardship cycle (agent)
+Request status change to 
+Todo
+In Progress
+In Review
+Done
+Request status change
+A request, not a write — the orchestration pass (the Project's single writer) applies it on its next run.
+Derived brief (derived from the projection — not authored)
+State: Todo — open, with no orchestration reference placing it in flight. Evidence: developing-today/code#9516.
+Blocker: Blocked by developing-today/code#9434, developing-today/code#9429, developing-today/code#9499, developing-today/code#9513. Evidence: developing-today/code#9434.
+Last activity by dezren39 at 2026-11-23T12:23:33Z (issue_comment). Evidence: developing-today/code#9516 comment.
+Next: Resolve the blocker first: developing-today/code#9434. Evidence: developing-today/code#9434.
+fleet gh step 2.2: Queue/GitHub sync verbs for scripted flows (dispatch, claimant, job bodies)
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+review: 1
+PR developing-today/code#13155
+queued: 1
+issue developing-today/code#10973
+mcpx: Phase 3 of #1481 — validate elicitation form answers against requestedSchema in client.answer
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+⚠ board: in-review · project: Done
+merged: 1
+PR merged developing-today/code#1606
+closed: 1
+issue developing-today/code#1484
+Act as
+Drew
+Muse
+Orchestrator (orchestration-pass) (agent)
+Jules keeper (jules-review) (agent)
+Stewardship cycle (agent)
+Request status change to 
+Todo
+In Progress
+In Review
+Done
+Request status change
+A request, not a write — the orchestration pass (the Project's single writer) applies it on its next run.
+Derived brief (derived from the projection — not authored)
+State: Done — the linked issue/PR is closed or merged. Evidence: developing-today/code#1484.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#1484.
+Last activity by dezren39 at 2026-11-03T09:42:08Z (issue_comment). Evidence: developing-today/code#1484 comment.
+Next: No action — this item is done. Evidence: developing-today/code#1484.
+Connection perf: coalesce queue claim flow to 1 round trip, cross-service batch, real file-transfer verb
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+merged: 1
+PR merged developing-today/code#12948
+queued: 1
+issue developing-today/code#5757
+Decision API + non-LLM endpoints: purpose designations, native endpoint dispatch, decision pool wiring (Jev + Google Decision free-first, Luna harness experiment)
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+merged: 3
+PR merged developing-today/code#13803
+PR merged developing-today/code#13695
+PR merged developing-today/code#13689
+queued: 1
+issue developing-today/code#13675
+id: design: world governance — per-world rules, pre-approval, moderation/report/quarantine as shared libraries
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+merged: 2
+PR merged developing-today/code#7888
+PR merged developing-today/code#7708
+closed: 1
+issue developing-today/code#5973
+Program tending: scheduled care for roadmaps, epics, projects, and stalled PRs
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+⚠ board: in-review · project: In Progress
+merged: 2
+PR merged developing-today/code#8377
+PR merged developing-today/code#11072
+queued: 1
+issue developing-today/code#1352
+Act as
+Drew
+Muse
+Orchestrator (orchestration-pass) (agent)
+Jules keeper (jules-review) (agent)
+Stewardship cycle (agent)
+Request status change to 
+Todo
+In Progress
+In Review
+Done
+Request status change
+A request, not a write — the orchestration pass (the Project's single writer) applies it on its next run.
+Derived brief (derived from the projection — not authored)
+State: Todo — open, with no orchestration reference placing it in flight. Evidence: developing-today/code#1352.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#1352.
+Last activity by dezren39 at 2026-11-22T20:10:32Z (issue_comment). Evidence: developing-today/code#1352 comment.
+Next: Reconcile the disagreement: Project Status “In Progress” vs derived “Todo”. Evidence: developing-today/code#1352 in the Project.
+⚠ Sources disagree: the Project Status says “In Progress” while the rest of the dashboard derives “Todo”. Both are shown; neither is preferred. Evidence: developing-today/code#1352 in the Project.
+fix(pm-stack): fragment watchdog emits invalid JavaScript in recovery notice
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+merged: 1
+PR merged developing-today/code#11422
+closed: 2
+issue developing-today/code#11410
+PR developing-today/code#11423
+Repo root: ~29 stale slice-1 status files and an 800 KB committed chat transcript
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+review: 2
+PR developing-today/code#13047
+PR developing-today/code#13060
+queued: 1
+issue developing-today/code#12136
+design(pm-orchestration): Pagination, API caps, and resumable durable page ingestion
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+⚠ board: in-review · project: Todo
+merged: 1
+PR merged developing-today/code#13297
+queued: 1
+issue developing-today/code#9507
+Act as
+Drew
+Muse
+Orchestrator (orchestration-pass) (agent)
+Jules keeper (jules-review) (agent)
+Stewardship cycle (agent)
+Request status change to 
+Todo
+In Progress
+In Review
+Done
+Request status change
+A request, not a write — the orchestration pass (the Project's single writer) applies it on its next run.
+Derived brief (derived from the projection — not authored)
+State: Todo — open, with no orchestration reference placing it in flight. Evidence: developing-today/code#9507.
+Blocker: Blocked by developing-today/code#9487, developing-today/code#9513, developing-today/code#9434, developing-today/code#9458. Evidence: developing-today/code#9487.
+Last activity by dezren39 at 2026-11-23T13:04:47Z (issue_comment). Evidence: developing-today/code#9507 comment.
+Next: Resolve the blocker first: developing-today/code#9487. Evidence: developing-today/code#9487.
+feat(quota-plane): daily model + route audit — latest models incorporated, route rules cover all needs
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+⚠ board: in-review · project: Todo
+merged: 1
+PR merged developing-today/code#12666
+queued: 1
+issue developing-today/code#1173
+Act as
+Drew
+Muse
+Orchestrator (orchestration-pass) (agent)
+Jules keeper (jules-review) (agent)
+Stewardship cycle (agent)
+Request status change to 
+Todo
+In Progress
+In Review
+Done
+Request status change
+A request, not a write — the orchestration pass (the Project's single writer) applies it on its next run.
+Derived brief (derived from the projection — not authored)
+State: Todo — open, with no orchestration reference placing it in flight. Evidence: developing-today/code#1173.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#1173.
+Last activity by dezren39 at 2026-11-22T20:17:20Z (issue_comment). Evidence: developing-today/code#1173 comment.
+Next: Pick up or schedule: not blocked and not currently in flight. Evidence: developing-today/code#1173.
+bin: provider-catalog-sync and record still use the pre-#2083 raw-path entry-point check — invoked via any symlink they silently no-op with exit 0
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+closed: 2
+issue developing-today/code#2235
+PR developing-today/code#7393
+id: design: capability-change notices on reconnect — expansion and sideways changes
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+review: 1
+PR developing-today/code#13951
+merged: 2
+PR merged developing-today/code#12920
+PR merged developing-today/code#13150
+queued: 1
+issue developing-today/code#5959
+id(ci): nixos-playwright-e2e VM test fails on first curl — no server readiness wait (nightly 40457980141)
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+merged: 1
+PR merged developing-today/code#12581
+queued: 1
+issue developing-today/code#1374
+closed: 1
+PR developing-today/code#12580
+Act as
+Drew
+Muse
+Orchestrator (orchestration-pass) (agent)
+Jules keeper (jules-review) (agent)
+Stewardship cycle (agent)
+Request status change to 
+Todo
+In Progress
+In Review
+Done
+Request status change
+A request, not a write — the orchestration pass (the Project's single writer) applies it on its next run.
+Derived brief (derived from the projection — not authored)
+State: Todo — open, with no orchestration reference placing it in flight. Evidence: developing-today/code#1374.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#1374.
+Last activity by dezren39 at 2026-11-23T14:20:35Z (issue_comment). Evidence: developing-today/code#1374 comment.
+Next: Reconcile the disagreement: Project Status “In Review” vs derived “Todo”. Evidence: developing-today/code#1374 in the Project.
+⚠ Sources disagree: the Project Status says “In Review” while the rest of the dashboard derives “Todo”. Both are shown; neither is preferred. Evidence: developing-today/code#1374 in the Project.
+Laptop state backup stopped running
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+merged: 1
+PR merged developing-today/code#11008
+closed: 1
+issue developing-today/code#10294
+id(web): parseWorldSeed still silently reinterprets non-decimal forms — '0x10' installs seed 16, '1e3' seed 1000 (#707 residual)
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+merged: 1
+PR merged developing-today/code#833
+closed: 1
+issue developing-today/code#832
+impl(fleet-hosted): create-path stamping endpoint — Metadata parse/stamp/DB insert, fleet App rotation server-side (#9073 hosted)
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+⚠ board: in-review · project: Todo
+merged: 1
+PR merged developing-today/code#12856
+queued: 1
+issue developing-today/code#12585
+Act as
+Drew
+Muse
+Orchestrator (orchestration-pass) (agent)
+Jules keeper (jules-review) (agent)
+Stewardship cycle (agent)
+Request status change to 
+Todo
+In Progress
+In Review
+Done
+Request status change
+A request, not a write — the orchestration pass (the Project's single writer) applies it on its next run.
+Derived brief (derived from the projection — not authored)
+State: Todo — open, with no orchestration reference placing it in flight. Evidence: developing-today/code#12585.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#12585.
+Last activity by dezren39 at 2026-11-23T03:58:30Z (issue_comment). Evidence: developing-today/code#12585 comment.
+Next: Pick up or schedule: not blocked and not currently in flight. Evidence: developing-today/code#12585.
+fleet(secrets-broker): a partial vault refresh silently evicts cached secrets — one failed bws get becomes a 404 and a 'successful' refresh
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+⚠ board: in-review · project: Todo
+merged: 2
+PR merged developing-today/code#13419
+PR merged developing-today/code#5506
+queued: 1
+issue developing-today/code#5504
+Act as
+Drew
+Muse
+Orchestrator (orchestration-pass) (agent)
+Jules keeper (jules-review) (agent)
+Stewardship cycle (agent)
+Request status change to 
+Todo
+In Progress
+In Review
+Done
+Request status change
+A request, not a write — the orchestration pass (the Project's single writer) applies it on its next run.
+Derived brief (derived from the projection — not authored)
+State: Todo — open, with no orchestration reference placing it in flight. Evidence: developing-today/code#5504.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#5504.
+No comment activity in the projection; last recorded item update at 2026-11-24T02:32:24Z (actor unknown). Evidence: developing-today/code#5504.
+Next: Triage and pick up: not blocked, not in flight, and no recorded activity yet. Evidence: developing-today/code#5504.
+C4.4 — New model / plan arrival predictions (watch-based, honesty-first)
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+merged: 1
+PR merged developing-today/code#13299
+queued: 1
+issue developing-today/code#13260
+mcpx: OAuth authorization for remote servers and for /mcp (61 conformance rows)
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+merged: 1
+PR merged developing-today/code#12869
+queued: 1
+issue developing-today/code#1950
+id(web): mixed task/plain lists cannot be saved at all — parse builds mixed lists its own placement validation rejects
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+merged: 1
+PR merged developing-today/code#1590
+closed: 1
+issue developing-today/code#1370
+feat(atlas): Phase 2 of #6228 — manifest schema + loader in atlas-core (built-in manifest parity)
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+⚠ board: in-review · project: Todo
+merged: 2
+PR merged developing-today/code#10683
+PR merged developing-today/code#10754
+queued: 1
+issue developing-today/code#6993
+Act as
+Drew
+Muse
+Orchestrator (orchestration-pass) (agent)
+Jules keeper (jules-review) (agent)
+Stewardship cycle (agent)
+Request status change to 
+Todo
+In Progress
+In Review
+Done
+Request status change
+A request, not a write — the orchestration pass (the Project's single writer) applies it on its next run.
+Derived brief (derived from the projection — not authored)
+State: Todo — open, with no orchestration reference placing it in flight. Evidence: developing-today/code#6993.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#6993.
+Last activity by dezren39 at 2026-11-22T00:43:43Z (issue_comment). Evidence: developing-today/code#6993 comment.
+Next: Pick up or schedule: not blocked and not currently in flight. Evidence: developing-today/code#6993.
+openclaw: off-box gateway-death watch — surface a dead gateway in the main chat (#6167 §5)
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+merged: 1
+PR merged developing-today/code#12705
+queued: 1
+issue developing-today/code#8427
+design(mcpx): resume upstream HTTP sessions after a cold restart — persist the resumable session state
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+⚠ board: in-review · project: Todo
+merged: 1
+PR merged developing-today/code#10755
+queued: 1
+issue developing-today/code#1414
+Act as
+Drew
+Muse
+Orchestrator (orchestration-pass) (agent)
+Jules keeper (jules-review) (agent)
+Stewardship cycle (agent)
+Request status change to 
+Todo
+In Progress
+In Review
+Done
+Request status change
+A request, not a write — the orchestration pass (the Project's single writer) applies it on its next run.
+Derived brief (derived from the projection — not authored)
+State: Todo — open, with no orchestration reference placing it in flight. Evidence: developing-today/code#1414.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#1414.
+Last activity by dezren39 at 2026-11-22T00:45:56Z (issue_comment). Evidence: developing-today/code#1414 comment.
+Next: Pick up or schedule: not blocked and not currently in flight. Evidence: developing-today/code#1414.
+id(phase-14): shells v1 slice 5 — conformance-suite packaging for v1 shells (#6296)
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+merged: 1
+PR merged developing-today/code#12937
+queued: 1
+issue developing-today/code#10931
+id: design: D1 journal fit (design + spike) (from #5681)
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+merged: 2
+PR merged developing-today/code#6350
+PR merged developing-today/code#11200
+queued: 1
+issue developing-today/code#5864
+Design: fleet proxy get/put — file transfer over the agent channel
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+merged: 2
+PR merged developing-today/code#11323
+PR merged developing-today/code#7932
+queued: 1
+issue developing-today/code#5759
+id: design: semantic cell/tag presentation model — one tagged state, many renderers
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+merged: 1
+PR merged developing-today/code#11187
+queued: 1
+issue developing-today/code#6010
+main CI failure: developing-today/code — mcpx test workflow (run 45227606720)
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+⚠ board: in-review · project: In Progress
+merged: 1
+PR merged developing-today/code#13653
+queued: 1
+issue developing-today/code#13619
+Act as
+Drew
+Muse
+Orchestrator (orchestration-pass) (agent)
+Jules keeper (jules-review) (agent)
+Stewardship cycle (agent)
+Request status change to 
+Todo
+In Progress
+In Review
+Done
+Request status change
+A request, not a write — the orchestration pass (the Project's single writer) applies it on its next run.
+Derived brief (derived from the projection — not authored)
+State: Todo — open, with no orchestration reference placing it in flight. Evidence: developing-today/code#13619.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#13619.
+Last activity by dezren39 at 2026-11-23T21:26:07Z (issue_comment). Evidence: developing-today/code#13619 comment.
+Next: Reconcile the disagreement: Project Status “In Progress” vs derived “Todo”. Evidence: developing-today/code#13619 in the Project.
+⚠ Sources disagree: the Project Status says “In Progress” while the rest of the dashboard derives “Todo”. Both are shown; neither is preferred. Evidence: developing-today/code#13619 in the Project.
+fix(quota-plane): reconcile.py fee_period vocabulary mismatch reports permanent drift
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+review: 1
+PR developing-today/code#13397
+merged: 1
+PR merged developing-today/code#13395
+queued: 1
+issue developing-today/code#13375
+id(journal): durable per-world global position covering lease entries, surviving compaction (prerequisite for #7572 failover barrier)
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+review: 1
+PR developing-today/code#13829
+queued: 1
+issue developing-today/code#13711
+fleet gh: closure records + reason-required closes (audit trail by construction)
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+merged: 1
+PR merged developing-today/code#11440
+queued: 1
+issue developing-today/code#9221
+Act as
+Drew
+Muse
+Orchestrator (orchestration-pass) (agent)
+Jules keeper (jules-review) (agent)
+Stewardship cycle (agent)
+Request status change to 
+Todo
+In Progress
+In Review
+Done
+Request status change
+A request, not a write — the orchestration pass (the Project's single writer) applies it on its next run.
+Derived brief (derived from the projection — not authored)
+State: Todo — open, with no orchestration reference placing it in flight. Evidence: developing-today/code#9221.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#9221.
+Last activity by dezren39 at 2026-11-22T00:42:14Z (issue_comment). Evidence: developing-today/code#9221 comment.
+Next: Reconcile the disagreement: Project Status “In Review” vs derived “Todo”. Evidence: developing-today/code#9221 in the Project.
+⚠ Sources disagree: the Project Status says “In Review” while the rest of the dashboard derives “Todo”. Both are shown; neither is preferred. Evidence: developing-today/code#9221 in the Project.
+design(pm-stack): one identity across the stack — SSO propagation from the public entry into every layer, roles replace asserted authorship
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+merged: 2
+PR merged developing-today/code#8351
+PR merged developing-today/code#8645
+queued: 1
+issue developing-today/code#1253
+closed: 1
+PR developing-today/code#8624
+Act as
+Drew
+Muse
+Orchestrator (orchestration-pass) (agent)
+Jules keeper (jules-review) (agent)
+Stewardship cycle (agent)
+Request status change to 
+Todo
+In Progress
+In Review
+Done
+Request status change
+A request, not a write — the orchestration pass (the Project's single writer) applies it on its next run.
+Derived brief (derived from the projection — not authored)
+State: Todo — open, with no orchestration reference placing it in flight. Evidence: developing-today/code#1253.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#1253.
+Last activity by dezren39 at 2026-11-22T00:46:02Z (issue_comment). Evidence: developing-today/code#1253 comment.
+Next: Reconcile the disagreement: Project Status “In Review” vs derived “Todo”. Evidence: developing-today/code#1253 in the Project.
+⚠ Sources disagree: the Project Status says “In Review” while the rest of the dashboard derives “Todo”. Both are shown; neither is preferred. Evidence: developing-today/code#1253 in the Project.
+AUDIT-7 Lane 2 — Closed-Issues Review (past month, since 2026-10-23)
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+merged: 1
+PR merged developing-today/code#13935
+queued: 1
+issue developing-today/code#13878
+C4.2 — Reset-duration predictions as ranges in Drew's formats
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+merged: 1
+PR merged developing-today/code#13352
+queued: 1
+issue developing-today/code#13258
+C4.3 — Day-type and spike-day adjustments for quota forecasts (data-gated)
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+merged: 1
+PR merged developing-today/code#13290
+queued: 1
+issue developing-today/code#13259
+id: wire boundary enforcement into signup/login, worlds, and federation surfaces (#5683 step 6)
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+merged: 2
+PR merged developing-today/code#13204
+PR merged developing-today/code#8850
+queued: 1
+issue developing-today/code#7787
+pm-stack: push answer write-back to the queue broker — a phone tap applies broker-sourced decides (Actions-exec extensions first)
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+review: 1
+PR developing-today/code#14046
+queued: 1
+issue developing-today/code#14043
+id: implement the note→board sharing model (decision on #5830)
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+merged: 3
+PR merged developing-today/code#13233
+PR merged developing-today/code#12206
+PR merged developing-today/code#7953
+closed: 1
+issue developing-today/code#7587
+split(pm-stack): server.ts (5,251 lines) under the production line limit (#12671)
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+review: 1
+PR developing-today/code#13093
+queued: 1
+issue developing-today/code#13052
+id(web): Tab/Shift-Tab with a selection spanning multiple blocks corrupts a paragraph and skips later code blocks
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+closed: 2
+PR developing-today/code#7206
+issue developing-today/code#1399
+id: F12.10 fair scheduling and per-account quotas
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+review: 1
+PR developing-today/code#12557
+merged: 5
+PR merged developing-today/code#12739
+PR merged developing-today/code#12615
+PR merged developing-today/code#8322
+PR merged developing-today/code#12571
+PR merged developing-today/code#12572
+queued: 1
+issue developing-today/code#1067
+Act as
+Drew
+Muse
+Orchestrator (orchestration-pass) (agent)
+Jules keeper (jules-review) (agent)
+Stewardship cycle (agent)
+Request status change to 
+Todo
+In Progress
+In Review
+Done
+Request status change
+A request, not a write — the orchestration pass (the Project's single writer) applies it on its next run.
+Derived brief (derived from the projection — not authored)
+State: Todo — open, with no orchestration reference placing it in flight. Evidence: developing-today/code#1067.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#1067.
+Last activity by dezren39 at 2026-11-24T02:28:48Z (issue_comment). Evidence: developing-today/code#1067 comment.
+Next: Reconcile the disagreement: Project Status “In Review” vs derived “Todo”. Evidence: developing-today/code#1067 in the Project.
+⚠ Sources disagree: the Project Status says “In Review” while the rest of the dashboard derives “Todo”. Both are shown; neither is preferred. Evidence: developing-today/code#1067 in the Project.
+C4.1 — Complete-downtime window prediction (all pools walled at once)
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+merged: 1
+PR merged developing-today/code#13295
+queued: 1
+issue developing-today/code#13257
+id: implement: sanctions boundary data model — ListVersion store, scope evaluation, review-queue data (from #5878)
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+merged: 1
+PR merged developing-today/code#11233
+queued: 1
+issue developing-today/code#8201
+id: investigate: cross-jurisdiction shared worlds and federation — residency semantics for multi-tenant Durable Objects
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+merged: 1
+PR merged developing-today/code#3407
+closed: 1
+issue developing-today/code#2284
+pm-projector /health stalls >=90s under load - sentinel down alerts fire while the process never restarts
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+merged: 2
+PR merged developing-today/code#10466
+PR merged developing-today/code#10084
+queued: 1
+issue developing-today/code#9850
+impl(atlas): recurring ingestion sweep runner + guardrail monitor + plan-headroom reporting (#6019)
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+⚠ board: in-review · project: In Progress
+merged: 1
+PR merged developing-today/code#11210
+queued: 1
+issue developing-today/code#7969
+Act as
+Drew
+Muse
+Orchestrator (orchestration-pass) (agent)
+Jules keeper (jules-review) (agent)
+Stewardship cycle (agent)
+Request status change to 
+Todo
+In Progress
+In Review
+Done
+Request status change
+A request, not a write — the orchestration pass (the Project's single writer) applies it on its next run.
+Derived brief (derived from the projection — not authored)
+State: Todo — open, with no orchestration reference placing it in flight. Evidence: developing-today/code#7969.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#7969.
+Last activity by dezren39 at 2026-11-22T10:01:07Z (issue_comment). Evidence: developing-today/code#7969 comment.
+Next: Reconcile the disagreement: Project Status “In Progress” vs derived “Todo”. Evidence: developing-today/code#7969 in the Project.
+⚠ Sources disagree: the Project Status says “In Progress” while the rest of the dashboard derives “Todo”. Both are shown; neither is preferred. Evidence: developing-today/code#7969 in the Project.
+mcpx: port the opencode plugin to opencode v2 (a rewrite, and several things get better)
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+merged: 2
+PR merged developing-today/code#2489
+PR merged developing-today/code#2457
+queued: 1
+issue developing-today/code#1858
+id(tag): --value-hex refuses an uppercase 0X prefix as an 'invalid hex digit' and silently accepts a doubled 0x0x prefix — hex_decode's prefix strip is lowercase-only and repeats
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+merged: 1
+PR merged developing-today/code#2103
+closed: 1
+issue developing-today/code#1804
+fleet: converge fleet-run.yml across the three fleet copies (org sync failing since 2026-11-05)
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+⚠ board: in-review · project: Todo
+merged: 1
+PR merged developing-today/code#12722
+queued: 1
+issue developing-today/code#12235
+Act as
+Drew
+Muse
+Orchestrator (orchestration-pass) (agent)
+Jules keeper (jules-review) (agent)
+Stewardship cycle (agent)
+Request status change to 
+Todo
+In Progress
+In Review
+Done
+Request status change
+A request, not a write — the orchestration pass (the Project's single writer) applies it on its next run.
+Derived brief (derived from the projection — not authored)
+State: Todo — open, with no orchestration reference placing it in flight. Evidence: developing-today/code#12235.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#12235.
+Last activity by dezren39 at 2026-11-23T12:30:25Z (issue_comment). Evidence: developing-today/code#12235 comment.
+Next: Pick up or schedule: not blocked and not currently in flight. Evidence: developing-today/code#12235.
+feat(quota-plane): browser-token adapter framework — managed credentials, fail-closed dashboard-API clients
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+⚠ board: in-review · project: Done
+merged: 1
+PR merged developing-today/code#2115
+closed: 1
+issue developing-today/code#1153
+Act as
+Drew
+Muse
+Orchestrator (orchestration-pass) (agent)
+Jules keeper (jules-review) (agent)
+Stewardship cycle (agent)
+Request status change to 
+Todo
+In Progress
+In Review
+Done
+Request status change
+A request, not a write — the orchestration pass (the Project's single writer) applies it on its next run.
+Derived brief (derived from the projection — not authored)
+State: Done — the linked issue/PR is closed or merged. Evidence: developing-today/code#1153.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#1153.
+Last activity by dezren39 at 2026-11-02T09:35:51Z (issue_comment). Evidence: developing-today/code#1153 comment.
+Next: No action — this item is done. Evidence: developing-today/code#1153.
+id(web): a ProseMirror table with no header row saves as a plain paragraph — delimiter row never emitted
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+⚠ board: in-review · project: Done
+merged: 1
+PR merged developing-today/code#1193
+closed: 1
+issue developing-today/code#1044
+Act as
+Drew
+Muse
+Orchestrator (orchestration-pass) (agent)
+Jules keeper (jules-review) (agent)
+Stewardship cycle (agent)
+Request status change to 
+Todo
+In Progress
+In Review
+Done
+Request status change
+A request, not a write — the orchestration pass (the Project's single writer) applies it on its next run.
+Derived brief (derived from the projection — not authored)
+State: Done — the linked issue/PR is closed or merged. Evidence: developing-today/code#1044.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#1044.
+Last activity by dezren39 at 2026-10-29T03:33:31Z (issue_comment). Evidence: developing-today/code#1044 comment.
+Next: No action — this item is done. Evidence: developing-today/code#1044.
+SSO for fleet services: GitHub/Google/Microsoft login gated to Drew + devtoday OIDC provider with roles + account linking
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+⚠ board: in-review · project: Todo
+merged: 1
+PR merged developing-today/code#13417
+queued: 1
+issue developing-today/code#9077
+Act as
+Drew
+Muse
+Orchestrator (orchestration-pass) (agent)
+Jules keeper (jules-review) (agent)
+Stewardship cycle (agent)
+Request status change to 
+Todo
+In Progress
+In Review
+Done
+Request status change
+A request, not a write — the orchestration pass (the Project's single writer) applies it on its next run.
+Derived brief (derived from the projection — not authored)
+State: Todo — open, with no orchestration reference placing it in flight. Evidence: developing-today/code#9077.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#9077.
+Last activity by dezren39 at 2026-11-23T15:37:23Z (issue_comment). Evidence: developing-today/code#9077 comment.
+Next: Pick up or schedule: not blocked and not currently in flight. Evidence: developing-today/code#9077.
+Self-hosted Desktop Commander MCP endpoint: Worker front door, Access gate, laptop bridge
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+merged: 6
+PR merged developing-today/code#13443
+PR merged developing-today/code#13473
+PR merged developing-today/code#13447
+PR merged developing-today/code#13453
+PR merged developing-today/code#13427
+PR merged developing-today/code#13488
+queued: 1
+issue developing-today/code#13404
+impl(atlas): D1 hot-cache measurement report for the storage-economics prototype
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+merged: 1
+PR merged developing-today/code#13381
+queued: 1
+issue developing-today/code#13107
+fix(id/serve-proxy): bound credit grants to flow-control limits
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+merged: 1
+PR merged developing-today/code#10977
+queued: 1
+issue developing-today/code#8970
+feat(bedside): BA-W01 identity, store membership and granular authorization
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+⚠ board: in-review · project: Todo
+queued: 1
+issue developing-today/code#9365
+closed: 1
+PR developing-today/code#10375
+Act as
+Drew
+Muse
+Orchestrator (orchestration-pass) (agent)
+Jules keeper (jules-review) (agent)
+Stewardship cycle (agent)
+Request status change to 
+Todo
+In Progress
+In Review
+Done
+Request status change
+A request, not a write — the orchestration pass (the Project's single writer) applies it on its next run.
+Derived brief (derived from the projection — not authored)
+State: Todo — open, with no orchestration reference placing it in flight. Evidence: developing-today/code#9365.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#9365.
+Last activity by dezren39 at 2026-11-22T00:42:08Z (issue_comment). Evidence: developing-today/code#9365 comment.
+Next: Pick up or schedule: not blocked and not currently in flight. Evidence: developing-today/code#9365.
+[Security] Identity and Delegation System Hardening
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+merged: 1
+PR merged developing-today/code#13535
+queued: 1
+issue developing-today/code#6379
+Atlas program — full investigation, next-steps design & build-out (program tracking)
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+merged: 1
+PR merged developing-today/code#13242
+queued: 1
+issue developing-today/code#13241
+id(web): a pipe inside an inline code span in a table cell splits the cell on open — code mark destroyed, phantom column, trailing fragment dropped
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+merged: 1
+PR merged developing-today/code#1688
+closed: 1
+issue developing-today/code#1424
+mcpx: take the pool's session key from the request (`_meta["ai.opencode/sessionID"]`), not the daemon's pid
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+merged: 2
+PR merged developing-today/code#2195
+PR merged developing-today/code#2183
+closed: 1
+issue developing-today/code#1932
+id(web): SaveRateLimiter check/record race — overlapping saves of one file both pass the cooldown, and the slower save wins the filename tag
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+merged: 1
+PR merged developing-today/code#10564
+closed: 1
+issue developing-today/code#2466
+id(event-store): frozen-rival arrival order can strand dependent events
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+review: 1
+PR developing-today/code#13184
+queued: 1
+issue developing-today/code#12050
+Act as
+Drew
+Muse
+Orchestrator (orchestration-pass) (agent)
+Jules keeper (jules-review) (agent)
+Stewardship cycle (agent)
+Request status change to 
+Todo
+In Progress
+In Review
+Done
+Request status change
+A request, not a write — the orchestration pass (the Project's single writer) applies it on its next run.
+Derived brief (derived from the projection — not authored)
+State: Todo — open, with no orchestration reference placing it in flight. Evidence: developing-today/code#12050.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#12050.
+Last activity by dezren39 at 2026-11-23T10:24:31Z (issue_comment). Evidence: developing-today/code#12050 comment.
+Next: Reconcile the disagreement: Project Status “In Review” vs derived “Todo”. Evidence: developing-today/code#12050 in the Project.
+⚠ Sources disagree: the Project Status says “In Review” while the rest of the dashboard derives “Todo”. Both are shown; neither is preferred. Evidence: developing-today/code#12050 in the Project.
+atlas shard consumer: serve-mode (fleet serve search role) and #5668 snapshot-id integration (follow-up of #5755 slice 1)
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+⚠ board: in-review · project: Todo
+merged: 1
+PR merged developing-today/code#11216
+queued: 1
+issue developing-today/code#6666
+Act as
+Drew
+Muse
+Orchestrator (orchestration-pass) (agent)
+Jules keeper (jules-review) (agent)
+Stewardship cycle (agent)
+Request status change to 
+Todo
+In Progress
+In Review
+Done
+Request status change
+A request, not a write — the orchestration pass (the Project's single writer) applies it on its next run.
+Derived brief (derived from the projection — not authored)
+State: Todo — open, with no orchestration reference placing it in flight. Evidence: developing-today/code#6666.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#6666.
+Last activity by dezren39 at 2026-11-23T13:46:54Z (issue_comment). Evidence: developing-today/code#6666 comment.
+Next: Pick up or schedule: not blocked and not currently in flight. Evidence: developing-today/code#6666.
+main CI failure: cargo in /doc/2026-10-11T03-44-33Z_design_groups_events_delegation/spikes/shared for rustls - Update #1725871668 (run 45287383085)
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+merged: 1
+PR merged developing-today/code#13856
+closed: 1
+issue developing-today/code#13851
+Roadmap: files for fleet and atlas, and the platform makes roadmap changes itself
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+merged: 1
+PR merged developing-today/code#13828
+queued: 1
+issue developing-today/code#13497
+design(id): modes & configuration surface — modes, link kinds, storages, tiering as config
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+⚠ board: in-review · project: Todo
+merged: 1
+PR merged developing-today/code#13759
+queued: 1
+issue developing-today/code#9111
+Act as
+Drew
+Muse
+Orchestrator (orchestration-pass) (agent)
+Jules keeper (jules-review) (agent)
+Stewardship cycle (agent)
+Request status change to 
+Todo
+In Progress
+In Review
+Done
+Request status change
+A request, not a write — the orchestration pass (the Project's single writer) applies it on its next run.
+Derived brief (derived from the projection — not authored)
+State: Todo — open, with no orchestration reference placing it in flight. Evidence: developing-today/code#9111.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#9111.
+Last activity by dezren39 at 2026-11-23T21:19:28Z (issue_comment). Evidence: developing-today/code#9111 comment.
+Next: Pick up or schedule: not blocked and not currently in flight. Evidence: developing-today/code#9111.
+id: F12.17 trust and provenance — module signatures against an admin trust list
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+⚠ board: in-review · project: Done
+closed: 3
+PR developing-today/code#7240
+issue developing-today/code#1069
+PR developing-today/code#7419
+Act as
+Drew
+Muse
+Orchestrator (orchestration-pass) (agent)
+Jules keeper (jules-review) (agent)
+Stewardship cycle (agent)
+Request status change to 
+Todo
+In Progress
+In Review
+Done
+Request status change
+A request, not a write — the orchestration pass (the Project's single writer) applies it on its next run.
+Derived brief (derived from the projection — not authored)
+State: Done — the linked issue/PR is closed or merged. Evidence: developing-today/code#1069.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#1069.
+Last activity by dezren39 at 2026-11-02T10:58:03Z (issue_comment). Evidence: developing-today/code#1069 comment.
+Next: No action — this item is done. Evidence: developing-today/code#1069.
+mcpx coverage burn-down: settings (plugin family) with no effect probe
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+merged: 13
+PR merged developing-today/code#13370
+PR merged developing-today/code#13028
+PR merged developing-today/code#13033
+PR merged developing-today/code#13345
+PR merged developing-today/code#13016
+PR merged developing-today/code#12974
+PR merged developing-today/code#12987
+PR merged developing-today/code#12999
+PR merged developing-today/code#13026
+PR merged developing-today/code#13003
+PR merged developing-today/code#13029
+PR merged developing-today/code#13035
+PR merged developing-today/code#13034
+queued: 1
+issue developing-today/code#8472
+closed: 1
+PR developing-today/code#13017
+impl(backups): mesh leg — general Turso DBs → R2 restic deltas on the 14-day rotation
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+merged: 1
+PR merged developing-today/code#13505
+queued: 1
+issue developing-today/code#13456
+pm-console Android: check the app with no connection on a device in CI
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+merged: 1
+PR merged developing-today/code#13645
+queued: 1
+issue developing-today/code#13500
+id: PoC — multi-provider chunk-range retrieval in the get path (swarm scheduler over iroh-blobs)
+💬
+
+
+developing-today/code
+
+
+Kaneo ↗
+merged: 1
+PR merged developing-today/code#10660
+queued: 1
+issue developing-today/code#2261
+fix(core): switchAgent runs no governance check — continuing a child under a new agent bypasses the new agent's model lists (PR #468)
+💬
+
+
+developing-today-forks/opencode
+
+
+Kaneo ↗
+merged: 1
+PR merged developing-today/opencode#486
+closed: 1
+issue developing-today/opencode#479
+test(cli): the mini half of the stdin-read log (PR #767) has no test — the only regression test spawns run
+💬
+
+
+developing-today-forks/opencode
+
+
+Kaneo ↗
+merged: 1
+PR merged developing-today/opencode#938
+closed: 1
+issue developing-today/opencode#936
+Benchmark the experimental file watcher vs default vs disabled — quantify runtime impact
+💬
+
+
+developing-today-forks/opencode
+
+
+Kaneo ↗
+closed: 1
+issue developing-today/opencode#195
+fix(core): ModelRouteTuning.predict quota-reset has no ceiling — a year-9999 or 100000-day provider reset benches a target for centuries, and a larger one throws RangeError
+💬
+
+
+developing-today-forks/opencode
+
+
+Kaneo ↗
+merged: 1
+PR merged developing-today/opencode#934
+closed: 1
+issue developing-today/opencode#933
+fix(ci): check:proto-reads scans only packages/core/src — packages/ai, where the class keeps biting, has no regression net
+💬
+
+
+developing-today-forks/opencode
+
+
+Kaneo ↗
+merged: 1
+PR merged developing-today/opencode#919
+closed: 1
+issue developing-today/opencode#912
+fix(core): Form validateFields still accepts two unsatisfiable definitions — a closed multiselect needing more selections than it has options, and an integer range containing no integer
+💬
+
+
+developing-today-forks/opencode
+
+
+Kaneo ↗
+merged: 1
+PR merged developing-today/opencode#704
+closed: 2
+issue developing-today/opencode#696
+PR developing-today/opencode#703
+fix(ai): SpeechStream.sampleRate reads rate=0 as a real 0 Hz rate — the zero defeats both callers' fallbacks
+💬
+
+
+developing-today-forks/opencode
+
+
+Kaneo ↗
+merged: 1
+PR merged developing-today/opencode#702
+closed: 1
+issue developing-today/opencode#697
+fix(core,ai): four download paths buffer whole response bodies with no size cap — media assets, skill files, the ripgrep archive and CodeMode fetch
+💬
+
+
+developing-today-forks/opencode
+
+
+Kaneo ↗
+merged: 1
+PR merged developing-today/opencode#926
+closed: 1
+issue developing-today/opencode#923
+fix(quota): CLI misses the local-store fallback when a live server withholds the refresh token — forward usesLocalStore through the combined source (code#2490 phase 2)
+💬
+
+
+developing-today-forks/openchamber
+
+
+Kaneo ↗
+merged: 1
+PR merged developing-today/openchamber#1142
+closed: 1
+issue developing-today/openchamber#1141
+Linear accounts from a 1Password API key reference (op://), like GitHub and GitLab
+💬
+
+
+developing-today-forks/openchamber
+
+
+Kaneo ↗
+merged: 1
+PR merged developing-today/openchamber#853
+closed: 1
+issue developing-today/openchamber#304
+refactor(github-routes): eight read handlers carry an always-true canonical flag — the retired legacy branches (incl. loose Number number parsing) are dead code
+💬
+
+
+developing-today-forks/openchamber
+
+
+Kaneo ↗
+merged: 1
+PR merged developing-today/openchamber#603
+closed: 1
+issue developing-today/openchamber#602
+Split 216c of PR #216: land project visibility flags against current main
+💬
+
+
+developing-today-forks/openchamber
+
+
+Kaneo ↗
+merged: 1
+PR merged developing-today/openchamber#1579
+closed: 1
+issue developing-today/openchamber#1574
+fix(vscode): conflict-details loses the merge message in a linked worktree — MERGE_MSG read joins .git as a directory (#648 class, bridge module)
+💬
+
+
+developing-today-forks/openchamber
+
+
+Kaneo ↗
+merged: 1
+PR merged developing-today/openchamber#658
+closed: 1
+issue developing-today/openchamber#656
+Scheduled tasks: remove the hard 30-minute run cap — configurable per task and server-wide
+💬
+
+
+developing-today-forks/openchamber
+
+
+Kaneo ↗
+merged: 1
+PR merged developing-today/openchamber#780
+closed: 1
+issue developing-today/openchamber#765
+fix(vscode): canonicalizeWorktreeState never reports rebase/cherry-pick/revert in a linked worktree — attention probes join .git as a directory (#648 sibling)
+💬
+
+
+developing-today-forks/openchamber
+
+
+Kaneo ↗
+merged: 1
+PR merged developing-today/openchamber#657
+closed: 1
+issue developing-today/openchamber#655
+Model pools: section shows Loading forever when the server has no /api/model-routes
+💬
+
+
+developing-today-forks/openchamber
+
+
+Kaneo ↗
+merged: 1
+PR merged developing-today/openchamber#473
+closed: 1
+issue developing-today/openchamber#327
+fix(clean): skip tidy purge when nested-worktree discovery fails
+💬
+
+
+dezren39/darwin-nix
+
+
+Kaneo ↗
+unresolved: dezren39/darwin-nix#1934, dezren39/darwin-nix#1863
+opencode-db-prune: preflight schema guard never checks message/part — a drifted DB is pruned first, then verification dies mid-run
+💬
+
+
+dezren39/darwin-nix
+
+
+Kaneo ↗
+merged: 1
+PR merged dezren39/nix#1059
+closed: 1
+issue dezren39/nix#1051
+unresolved: dezren39/darwin-nix#1696
+opencode-db-prune: no test proves an incomplete archive blocks deletion
+💬
+
+
+dezren39/darwin-nix
+
+
+Kaneo ↗
+unresolved: dezren39/darwin-nix#1943, dezren39/darwin-nix#2014
+Hermetic-suite inventory + shared stat double + test-harness-conformance ratchet (design #1473, phase 2)
+💬
+
+
+dezren39/darwin-nix
+
+
+Kaneo ↗
+queued: 1
+issue dezren39/nix#1475
+unresolved: dezren39/darwin-nix#2080
+agents: bound prompt, OIDC, and dispatch HTTP calls
+💬
+
+
+dezren39/darwin-nix
+
+
+Kaneo ↗
+unresolved: dezren39/darwin-nix#1997, dezren39/darwin-nix#2002
+discovery-vocabulary scripts: sibling conflict/repeat pairs still silently last-win in clean.sh, spotlight-exclude-artifacts and git-maintain-repos (left by PRs #1118/#1122/#1124)
+💬
+
+
+dezren39/darwin-nix
+
+
+Kaneo ↗
+merged: 1
+PR merged dezren39/nix#1139
+closed: 1
+issue dezren39/nix#1135
+brew-repair: a cask with a target-renamed app artifact crashes the scan — valid brew info JSON is reported as unparseable, no cask is ever verified
+💬
+
+
+dezren39/darwin-nix
+
+
+Kaneo ↗
+unresolved: dezren39/darwin-nix#1498, dezren39/darwin-nix#1497, dezren39/darwin-nix#1698
+Declare rustdesk + rd-picker-autogrant units (hand-installed on amd; from code#2775) — staged, never kill the running service
+💬
+
+
+dezren39/darwin-nix
+
+
+Kaneo ↗
+unresolved: dezren39/darwin-nix#1777, dezren39/darwin-nix#1953
+secrets-broker: SECRETS_BROKER_TTL_S is unvalidated — 0 busy-loops the vault refresh (~100 bws refreshes/sec), a typo silently falls back to 900
+💬
+
+
+dezren39/darwin-nix
+
+
+Kaneo ↗
+unresolved: dezren39/darwin-nix#1505, dezren39/darwin-nix#1700, dezren39/darwin-nix#1509
+fix(clean): fail closed when the tidy freshness scan errors
+💬
+
+
+dezren39/darwin-nix
+
+
+Kaneo ↗
+unresolved: dezren39/darwin-nix#1857, dezren39/darwin-nix#2004
+backup-zed: rollback can report a restore it did not perform and leave a mixed or deleted snapshot
+💬
+
+
+dezren39/darwin-nix
+
+
+Kaneo ↗
+unresolved: dezren39/darwin-nix#1994, dezren39/darwin-nix#1998
+reliability #1: disk space — ~/.local/share/opencode/tmp grows without bound, old DB backups never pruned
+💬
+
+
+dezren39/darwin-nix
+
+
+Kaneo ↗
+merged: 1
+PR merged dezren39/nix#1063
+queued: 1
+issue dezren39/nix#659
+unresolved: dezren39/darwin-nix#1686, dezren39/darwin-nix#1683
+mcpx: reach a daemon by identity, not by address — iroh, and the Go-binding question it forces
+💬
+
+
+dezren39/darwin-nix
+
+
+Kaneo ↗
+merged: 1
+PR merged dezren39/nix#1053
+closed: 2
+PR dezren39/nix#1052
+issue dezren39/nix#297
+unresolved: dezren39/darwin-nix#1669
+Declare meta-quota-export service + timer (hand-installed units on amd; from code#2775)
+💬
+
+
+dezren39/darwin-nix
+
+
+Kaneo ↗
+unresolved: dezren39/darwin-nix#1776, dezren39/darwin-nix#1951
+fix(browser-remote-debug): prevent Local State writes after browser starts
+💬
+
+
+dezren39/darwin-nix
+
+
+Kaneo ↗
+unresolved: dezren39/darwin-nix#2023, dezren39/darwin-nix#2022
+install-determinate-nix: the pkg download has no timeout, so a stalled connection hangs activation
+💬
+
+
+dezren39/darwin-nix
+
+
+Kaneo ↗
+unresolved: dezren39/darwin-nix#2011, dezren39/darwin-nix#1984
+opencode-db vacuum/prune: a many-line integrity_check result SIGPIPEs the | head -1 capture — silent exit 141 instead of the corruption verdict (prune post-delete site aborts after the delete, no restore guidance)
+💬
+
+
+dezren39/darwin-nix
+
+
+Kaneo ↗
+merged: 1
+PR merged dezren39/nix#1461
+closed: 1
+issue dezren39/nix#1460
+unresolved: dezren39/darwin-nix#1697
+Done recently (4264) — done in the last 7 days, collapsed by default; older done is aged off the board (GitHub is the record) — showing the 100 most recent; show all 4264
+source detail
+⌘K palette · on Needs you: j/k move · s snooze · e escalate · g delegate · x dismiss · m mark done · ? all keys · tailnet: amd-6.raptor-pumpkinseed.ts.net:4870

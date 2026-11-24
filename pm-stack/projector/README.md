@@ -132,15 +132,14 @@ row, proven by the e2e duplicate-delivery test).
 
 ### Audit dispositions (#4303)
 
-- **D-1, transferred issues.** Decided: **delete the source-repo row.** A
-  `transferred` event proves the issue left the source repo; keeping a live
-  row renders an issue that no longer exists there. Implementation is a
-  named follow-up, not done blind here: the repo holds no captured
-  `transferred` payload, and the payload's number semantics (source number
-  vs new number in `payload.issue`) are unverified — deleting on an
-  unverified key risks removing the wrong row. The follow-up captures a
-  real payload as a fixture first, then wires the branch to
-  `store.deleteItem`.
+- **D-1, transferred issues.** Decided: **delete the source-repo row**, and
+  **implemented** (#10673, PR #13750). A `transferred` event proves the
+  issue left the source repo; keeping a live row renders an issue that no
+  longer exists there. Verified against a captured `transferred` delivery:
+  `payload.repository` is the source repo, `payload.issue.number` is the
+  source number, and `changes.new_issue.number` is the destination number.
+  The branch deletes by the source ref (trimmed fixture
+  `08-issue-transferred.json`, plus unit + e2e coverage).
 - **D-2, the item row's `new Date()` created-at fallback** (and
   `commentCommon`'s, for comment kinds): **deliberately local.** GitHub
   issue/PR/comment objects always carry `created_at` and `updated_at` in

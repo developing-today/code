@@ -86,9 +86,10 @@ outputs = inputs: lib.merge [
   `neededForBoot` patch (`patches/nixpkgs/neededforboot-nixos-unstable.patch`) that only applies
   cleanly to the unstable tree — don't re-follow individual inputs back to `nixpkgs-25`
   without checking that patch still applies.
-- Root-level single-letter/word symlinks (`rebuild`, `auth`, `nvim`, `n`, `v`, `format-nix`, ...)
+- Root-level single-letter/word symlinks (`rebuild`, `auth`, `nvim`, `s`, `format-nix`, ...)
   are convenience aliases into `lib/*.sh`; `lib/` here is shell scripts, distinct from the Nix
-  `lib/default.nix` DSL described above.
+  `lib/default.nix` DSL described above. Prefix stubs (partial command names) were removed in
+  #12668; see "Root symlinks" in the root `README.md` before adding a new one.
 
 ## Other areas
 
