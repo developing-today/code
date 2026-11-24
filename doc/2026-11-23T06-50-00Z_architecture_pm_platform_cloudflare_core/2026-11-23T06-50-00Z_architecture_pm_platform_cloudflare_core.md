@@ -1426,7 +1426,7 @@ tells those six as main has them. What will be seen is the Machines
 screen saying that the laptop's list of repositories is not main's,
 and that it is on other code.
 
-## 2026-11-24T08:20Z Update: "done" on what needed the owner's hands, at the edge (#13491)
+## 2026-11-24T08:10Z Update: "done" on what needed the owner's hands, at the edge (#13491)
 
 **Done.** "I did it" on something only the owner could do was a
 machine's: with the laptop away it waited. The Worker does it itself
