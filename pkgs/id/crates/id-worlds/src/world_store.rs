@@ -181,6 +181,57 @@ fn acquire_journal_lock(path: &Path) -> Result<File> {
     }
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct JournalPartition {
+    version: u32,
+    world_id: String,
+    jurisdiction: String,
+}
+
+// Caller holds the stable journal lock. Never infer a binding for a legacy
+// journal; the sidecar is committed before the first journal bytes exist.
+fn check_journal_partition(path: &Path, world_id: &str, jurisdiction: Option<&str>) -> Result<()> {
+    let mut metadata_path = path.as_os_str().to_owned();
+    metadata_path.push(".partition.json");
+    let metadata_path = PathBuf::from(metadata_path);
+    match std::fs::symlink_metadata(&metadata_path) {
+        Ok(metadata) => {
+            ensure!(
+                metadata.file_type().is_file(),
+                "world partition unavailable"
+            );
+            let stored: JournalPartition = serde_json::from_slice(&std::fs::read(&metadata_path)?)
+                .map_err(|_| anyhow::anyhow!("world partition unavailable"))?;
+            ensure!(
+                stored.version == 1
+                    && stored.world_id == world_id
+                    && jurisdiction == Some(stored.jurisdiction.as_str()),
+                "world partition unavailable"
+            );
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            if let Some(jurisdiction) = jurisdiction {
+                ensure!(!path.try_exists()?, "world partition unavailable");
+                let record = JournalPartition {
+                    version: 1,
+                    world_id: world_id.to_owned(),
+                    jurisdiction: jurisdiction.to_owned(),
+                };
+                let parent = metadata_path.parent().unwrap_or_else(|| Path::new("."));
+                let mut file = tempfile::NamedTempFile::new_in(parent)?;
+                file.write_all(&serde_json::to_vec(&record)?)?;
+                file.as_file().sync_all()?;
+                file.persist_noclobber(&metadata_path)?;
+                #[cfg(unix)]
+                File::open(parent)?.sync_all()?;
+            }
+        }
+        Err(error) => return Err(error.into()),
+    }
+    Ok(())
+}
+
 impl FileJournal {
     /// Open (or create) a journal and return its entries.
     ///
@@ -192,7 +243,13 @@ impl FileJournal {
     ///
     /// I/O failures, or a malformed entry before the last line.
     pub fn open(path: &Path, world_id: &str) -> Result<(Self, Vec<JournalEntry>)> {
-        Self::open_impl(path, world_id, MAX_JOURNAL_BYTES, JournalAckMode::Sync)
+        Self::open_impl(
+            path,
+            world_id,
+            MAX_JOURNAL_BYTES,
+            JournalAckMode::Sync,
+            None,
+        )
     }
 
     /// Open (or create) a journal enforcing an explicit byte cap.
@@ -206,7 +263,7 @@ impl FileJournal {
         world_id: &str,
         max_bytes: u64,
     ) -> Result<(Self, Vec<JournalEntry>)> {
-        Self::open_impl(path, world_id, max_bytes, JournalAckMode::Sync)
+        Self::open_impl(path, world_id, max_bytes, JournalAckMode::Sync, None)
     }
 
     /// Open (or create) a journal running the given acknowledgement
@@ -219,7 +276,41 @@ impl FileJournal {
         world_id: &str,
         ack_mode: JournalAckMode,
     ) -> Result<(Self, Vec<JournalEntry>)> {
-        Self::open_impl(path, world_id, MAX_JOURNAL_BYTES, ack_mode)
+        Self::open_impl(path, world_id, MAX_JOURNAL_BYTES, ack_mode, None)
+    }
+
+    /// Open a journal with an immutable, explicitly supplied jurisdiction.
+    /// The caller must resolve this value from trusted account/partition
+    /// configuration, not a client-supplied header. This is a storage fence,
+    /// not account admission or proof that a partition is provisioned.
+    ///
+    /// # Errors
+    ///
+    /// Refuses invalid labels, unassigned existing journals, different stored
+    /// world/partition bindings, malformed metadata, or I/O failures. Refusal
+    /// happens before journal reads, tail repair or append access.
+    pub fn open_in_partition(
+        path: &Path,
+        world_id: &str,
+        jurisdiction: &str,
+        ack_mode: JournalAckMode,
+    ) -> Result<(Self, Vec<JournalEntry>)> {
+        // Same label syntax as hosted_migration; provisioning is caller-owned.
+        ensure!(
+            !jurisdiction.is_empty()
+                && jurisdiction.len() <= 63
+                && jurisdiction
+                    .bytes()
+                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-'),
+            "world partition unavailable"
+        );
+        Self::open_impl(
+            path,
+            world_id,
+            MAX_JOURNAL_BYTES,
+            ack_mode,
+            Some(jurisdiction),
+        )
     }
 
     fn open_impl(
@@ -227,12 +318,20 @@ impl FileJournal {
         world_id: &str,
         max_bytes: u64,
         ack_mode: JournalAckMode,
+        jurisdiction: Option<&str>,
     ) -> Result<(Self, Vec<JournalEntry>)> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)
                 .with_context(|| format!("create {}", parent.display()))?;
         }
         let lock = acquire_journal_lock(path)?;
+        if jurisdiction.is_some() {
+            ensure!(
+                !std::fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_symlink()),
+                "world partition unavailable"
+            );
+        }
+        check_journal_partition(path, world_id, jurisdiction)?;
         let mut options = OpenOptions::new();
         options.read(true).append(true).create(true);
         #[cfg(unix)]
@@ -1427,12 +1526,195 @@ mod tests {
         std::fs::write(
             dir.path().join("journal.jsonl.partition.json"),
             br#"{"version":1,"world_id":"w","jurisdiction":"eu"}"#,
-        ).unwrap();
-        OpenOptions::new().append(true).open(&path).unwrap()
-            .write_all(b"{torn").unwrap();
+        )
+        .unwrap();
+        OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap()
+            .write_all(b"{torn")
+            .unwrap();
         let before = std::fs::read(&path).unwrap();
         assert!(FileJournal::open(&path, "w").is_err());
         assert_eq!(std::fs::read(&path).unwrap(), before);
+    }
+
+    #[test]
+    fn partition_fence_matching_reopen_can_append_foreign_cannot() {
+        // Oracle: the creation binding survives handle drops and only that
+        // partition can acquire an append-capable journal.
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("journal.jsonl");
+        let (mut journal, _) =
+            FileJournal::open_in_partition(&path, "w", "eu", JournalAckMode::Sync).unwrap();
+        journal
+            .append(&JournalEntry::CapsGranted {
+                granted: vec!["a".into()],
+            })
+            .unwrap();
+        drop(journal);
+        let before = std::fs::read(&path).unwrap();
+        for world_id in ["w", "other"] {
+            assert!(
+                FileJournal::open_in_partition(&path, world_id, "us", JournalAckMode::Sync)
+                    .is_err()
+            );
+        }
+        assert!(
+            FileJournal::open_in_partition(&path, "other", "eu", JournalAckMode::Sync).is_err()
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        let (mut journal, entries) =
+            FileJournal::open_in_partition(&path, "w", "eu", JournalAckMode::Sync).unwrap();
+        assert_eq!(entries.len(), 2);
+        journal.compact(&entries).unwrap();
+        journal
+            .append(&JournalEntry::CapsGranted {
+                granted: vec!["b".into()],
+            })
+            .unwrap();
+        drop(journal);
+        let (_, entries) =
+            FileJournal::open_in_partition(&path, "w", "eu", JournalAckMode::Sync).unwrap();
+        assert_eq!(entries.len(), 3);
+    }
+
+    #[test]
+    fn partition_fence_never_adopts_legacy_or_creates_for_invalid_context() {
+        // Oracle: explicit local/unassigned history is never relabelled; bad
+        // trusted context refuses before any directory or journal side effect.
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("journal.jsonl");
+        drop(FileJournal::open(&path, "w").unwrap());
+        let before = std::fs::read(&path).unwrap();
+        assert!(FileJournal::open_in_partition(&path, "w", "eu", JournalAckMode::Sync).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        assert!(!dir.path().join("journal.jsonl.partition.json").exists());
+        FileJournal::open(&path, "w").unwrap();
+        let absent = dir.path().join("absent/journal.jsonl");
+        for invalid in ["", "EU", "../eu", "eu/us"] {
+            assert!(
+                FileJournal::open_in_partition(&absent, "w", invalid, JournalAckMode::Sync)
+                    .is_err()
+            );
+        }
+        assert!(!absent.parent().unwrap().exists());
+    }
+
+    #[test]
+    fn partition_fence_malformed_metadata_denies_without_repair() {
+        // Oracle: corrupt/unknown-version bindings never downgrade to local.
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("journal.jsonl");
+        drop(FileJournal::open_in_partition(&path, "w", "eu", JournalAckMode::Sync).unwrap());
+        let before = std::fs::read(&path).unwrap();
+        for corrupt in ["{", r#"{"version":2,"world_id":"w","jurisdiction":"eu"}"#] {
+            std::fs::write(dir.path().join("journal.jsonl.partition.json"), corrupt).unwrap();
+            assert!(FileJournal::open(&path, "w").is_err());
+            assert!(
+                FileJournal::open_in_partition(&path, "w", "eu", JournalAckMode::Sync).is_err()
+            );
+            assert_eq!(std::fs::read(&path).unwrap(), before);
+        }
+    }
+
+    #[tokio::test]
+    async fn partition_fence_production_world_open_cannot_bypass_binding() {
+        // Oracle: the production service opener inherits the same fence and
+        // never reaches restoration/directory/outbox creation for a scoped world.
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("journal.jsonl");
+        drop(FileJournal::open_in_partition(&path, "w", "eu", JournalAckMode::Sync).unwrap());
+        let result = open_world(
+            dir.path(),
+            "w",
+            WorldLimits::default(),
+            RuntimeLimits::default(),
+            |handle| WorldService::new(handle, None),
+        )
+        .await;
+        assert!(result.is_err());
+        assert!(!dir.path().join("directory.jsonl").exists());
+        assert!(!dir.path().join("outbox.jsonl").exists());
+    }
+
+    #[test]
+    fn partition_fence_concurrent_creation_has_one_binding() {
+        // Oracle: exactly one of two competing first jurisdiction assignments
+        // succeeds; the other cannot replace it, even after the lock is freed.
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("journal.jsonl");
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let tasks: Vec<_> = ["eu", "us"]
+            .into_iter()
+            .map(|jurisdiction| {
+                let path = path.clone();
+                let barrier = std::sync::Arc::clone(&barrier);
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    (
+                        jurisdiction,
+                        FileJournal::open_in_partition(
+                            &path,
+                            "w",
+                            jurisdiction,
+                            JournalAckMode::Sync,
+                        )
+                        .is_ok(),
+                    )
+                })
+            })
+            .collect();
+        let results: Vec<_> = tasks.into_iter().map(|task| task.join().unwrap()).collect();
+        assert_eq!(results.iter().filter(|(_, opened)| *opened).count(), 1);
+        for (jurisdiction, won) in results {
+            assert_eq!(
+                FileJournal::open_in_partition(&path, "w", jurisdiction, JournalAckMode::Sync)
+                    .is_ok(),
+                won
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn partition_fence_symlinks_are_not_authority() {
+        // Oracle: a symlink cannot supply a trusted creation record or make a
+        // scoped open create/mutate a journal through an alias.
+        let dir = TempDir::new().unwrap();
+        let outside = dir.path().join("outside");
+        std::fs::write(
+            &outside,
+            br#"{"version":1,"world_id":"w","jurisdiction":"eu"}"#,
+        )
+        .unwrap();
+        let path = dir.path().join("journal.jsonl");
+        std::os::unix::fs::symlink(&outside, dir.path().join("journal.jsonl.partition.json"))
+            .unwrap();
+        assert!(FileJournal::open_in_partition(&path, "w", "eu", JournalAckMode::Sync).is_err());
+        assert!(!path.exists());
+        let alias = dir.path().join("alias.jsonl");
+        std::os::unix::fs::symlink(&outside, &alias).unwrap();
+        let before = std::fs::read(&outside).unwrap();
+        assert!(FileJournal::open_in_partition(&alias, "w", "eu", JournalAckMode::Sync).is_err());
+        assert_eq!(std::fs::read(&outside).unwrap(), before);
+    }
+
+    proptest::proptest! {
+        #[test]
+        fn partition_fence_binding_is_immutable(home in "[a-z]{1,8}", foreign in "[a-z]{1,8}") {
+            // Oracle: immutable binding invariant for every distinct label pair.
+            proptest::prop_assume!(home != foreign);
+            let dir = TempDir::new().unwrap();
+            let path = dir.path().join("journal.jsonl");
+            drop(FileJournal::open_in_partition(&path, "w", &home, JournalAckMode::Sync).unwrap());
+            let metadata = dir.path().join("journal.jsonl.partition.json");
+            let before = std::fs::read(&metadata).unwrap();
+            proptest::prop_assert!(FileJournal::open_in_partition(&path, "w", &foreign, JournalAckMode::Sync).is_err());
+            proptest::prop_assert!(FileJournal::open(&path, "w").is_err());
+            proptest::prop_assert_eq!(std::fs::read(&metadata).unwrap(), before);
+            proptest::prop_assert!(FileJournal::open_in_partition(&path, "w", &home, JournalAckMode::Sync).is_ok());
+        }
     }
 
     #[test]
