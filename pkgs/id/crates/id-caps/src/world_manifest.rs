@@ -745,7 +745,7 @@ native_memory_bytes = 16777216",
     fn an_empty_manifest_drifts_nothing() {
         let manifest = WorldManifest::default();
         // A default (empty) manifest leaves a default (empty) world alone.
-        assert_eq!(plan(&manifest, &WorldState::default()), [] as [world_manifest::ApplyStep; 0]);
+        assert_eq!(plan(&manifest, &WorldState::default()), [] as [crate::world_manifest::ApplyStep; 0]);
         // And it leaves a fully populated world alone too (#817): every field
         // is unspecified, so nothing is revoked, widened, or cancelled.
         let state = WorldState {
@@ -756,7 +756,7 @@ native_memory_bytes = 16777216",
             schedules: BTreeMap::from([("round".to_owned(), 5)]),
             ..WorldState::default()
         };
-        assert_eq!(plan(&manifest, &state), [] as [world_manifest::ApplyStep; 0]);
+        assert_eq!(plan(&manifest, &state), [] as [crate::world_manifest::ApplyStep; 0]);
     }
 
     #[test]
@@ -865,7 +865,7 @@ native_memory_bytes = 16777216",
         // None — and None means the default ceiling, so nothing drifts.
         state.ceiling = fold_reported_ceiling(state.ceiling.clone().unwrap());
         assert_eq!(state.ceiling, None);
-        assert_eq!(plan(&manifest, &state), [] as [world_manifest::ApplyStep; 0]);
+        assert_eq!(plan(&manifest, &state), [] as [crate::world_manifest::ApplyStep; 0]);
         // A host report of exactly the default list (never folded by hand)
         // also converges from the start.
         let reported = WorldState {
@@ -876,7 +876,7 @@ native_memory_bytes = 16777216",
             ceiling: fold_reported_ceiling(reported.ceiling.clone().unwrap()),
             ..reported
         };
-        assert_eq!(plan(&manifest, &folded), [] as [world_manifest::ApplyStep; 0]);
+        assert_eq!(plan(&manifest, &folded), [] as [crate::world_manifest::ApplyStep; 0]);
     }
 
     #[test]
@@ -911,7 +911,7 @@ native_memory_bytes = 16777216",
             }]
         );
         let omitted = WorldManifest::default();
-        assert_eq!(plan(&omitted, &current), [] as [world_manifest::ApplyStep; 0]);
+        assert_eq!(plan(&omitted, &current), [] as [crate::world_manifest::ApplyStep; 0]);
     }
 
     #[test]
@@ -950,11 +950,11 @@ native_memory_bytes = 16777216",
         let manifest = parse(manifest_toml()).unwrap();
         let mut state = WorldState::default();
         let steps = plan(&manifest, &state);
-        assert_ne!(steps, [] as [world_manifest::ApplyStep; 0]);
+        assert_ne!(steps, [] as [crate::world_manifest::ApplyStep; 0]);
         let changed = apply(&steps, &mut state).unwrap();
         assert_eq!(changed, steps.len());
         // A second plan against the reconciled state is empty.
-        assert_eq!(plan(&manifest, &state), [] as [world_manifest::ApplyStep; 0]);
+        assert_eq!(plan(&manifest, &state), [] as [crate::world_manifest::ApplyStep; 0]);
     }
 
     #[test]
@@ -1186,7 +1186,7 @@ native_memory_bytes = 16777216",
         // Applying the step reconciles: a second plan is empty.
         let mut applied = state.clone();
         apply(&steps, &mut applied).unwrap();
-        assert_eq!(plan(&manifest, &applied), [] as [world_manifest::ApplyStep; 0]);
+        assert_eq!(plan(&manifest, &applied), [] as [crate::world_manifest::ApplyStep; 0]);
     }
 
     #[test]
@@ -1237,12 +1237,12 @@ native_memory_bytes = 16777216",
         // #1519 ruling: no installed program and none desired -- there is
         // nothing whose seed could change.
         let manifest = parse("seed = 99").unwrap();
-        assert_eq!(plan(&manifest, &WorldState::default()), [] as [world_manifest::ApplyStep; 0]);
+        assert_eq!(plan(&manifest, &WorldState::default()), [] as [crate::world_manifest::ApplyStep; 0]);
         let state = WorldState {
             seed: 7,
             ..WorldState::default()
         };
-        assert_eq!(plan(&manifest, &state), [] as [world_manifest::ApplyStep; 0]);
+        assert_eq!(plan(&manifest, &state), [] as [crate::world_manifest::ApplyStep; 0]);
     }
 
     #[test]
@@ -1254,7 +1254,7 @@ native_memory_bytes = 16777216",
             ceiling: Some(vec!["time.now".to_owned(), "chat.say".to_owned()]),
             ..WorldState::default()
         };
-        assert_eq!(plan(&manifest, &state), [] as [world_manifest::ApplyStep; 0]);
+        assert_eq!(plan(&manifest, &state), [] as [crate::world_manifest::ApplyStep; 0]);
     }
 
     #[test]

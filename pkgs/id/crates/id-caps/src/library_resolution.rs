@@ -462,7 +462,7 @@ mod tests {
         }
         assert_eq!(
             record.transitive_requirements,
-            [] as [library_manifest::PlatformRequirement; 0]
+            [] as [crate::library_manifest::PlatformRequirement; 0]
         );
     }
 
@@ -543,7 +543,7 @@ mod tests {
         assert_eq!(record.outcome, ResolutionOutcome::Resolved);
         assert_eq!(
             record.transitive_requirements,
-            [] as [library_manifest::PlatformRequirement; 0]
+            [] as [crate::library_manifest::PlatformRequirement; 0]
         );
         assert!(!record.declared_only);
     }

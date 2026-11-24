@@ -681,7 +681,7 @@ mod tests {
         let revoked = registry.revoke("participant", agent(9), OWNER, NOW + 3);
         assert_eq!(revoked.decision, Ok(()));
         assert_eq!(revoked.event.kind, EVENT_ROLE_REVOKE);
-        assert_eq!(registry.list_grants(), [] as [&role_config::RoleGrant; 0]);
+        assert_eq!(registry.list_grants(), [] as [&crate::role_config::RoleGrant; 0]);
 
         // Revoking a grant that is not held is refused and audited.
         let missing = registry.revoke("participant", agent(9), OWNER, NOW + 4);
