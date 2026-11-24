@@ -1558,6 +1558,22 @@
       "notes": "Model-based append-admission state-machine oracle for A-GRAPH-9127-02 (#10237); deletion_state_machine is the model oracle for A-GRAPH-9130-01 (requests, moderation, projection hide and server-local true deletion stay distinct; batches idempotent; retained evidence verifiable)."
     },
     {
+      "id": "id.rust.e6-persistence.unit",
+      "paths": [
+        "pkgs/id/crates/id-events/src/event_store/persistence_tests.rs",
+        "pkgs/id/crates/id-store/src/turso.rs"
+      ],
+      "invocation": "nix flake check ./pkgs/id (test-sandbox runs cargo nextest --all-features for default workspace members); targeted: cargo test -p id-events --lib event_store::persistence_tests; cargo test -p id-store --lib turso::tests",
+      "venue": {
+        "workflow": ".github/workflows/id-check.yml",
+        "job_step": "full-flake-check / Run full nix flake check",
+        "state": "active",
+        "dispatchable": true
+      },
+      "status": "mapped",
+      "notes": "Native-redb row oracle for E6 shared event/body/chain/fork persistence, generated keys/bodies and aborted partial writes; tenant protocol and row-layer tests. This is not EventStoreBackend conformance."
+    },
+    {
       "id": "id.rust.id-currency-registry.integration",
       "paths": [
         "pkgs/id/crates/id-currency-registry/tests/acceptance.rs",

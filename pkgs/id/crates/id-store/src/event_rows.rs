@@ -7,7 +7,7 @@
 use redb::{MultimapTableDefinition, ReadableTable, TableDefinition, WriteTransaction};
 
 use crate::event_types::StoreError;
-use crate::turso::{PipelineTransport, TenantStore};
+use crate::turso::{PipelineTransport, TenantStore, TursoError};
 
 /// The row operations needed by event/body/chain/fork persistence.
 pub trait RowWrite {
@@ -16,7 +16,12 @@ pub trait RowWrite {
     /// Replaces one value inside this transaction.
     fn put(&mut self, table: &'static str, key: &[u8], value: &[u8]) -> Result<(), StoreError>;
     /// Adds a value to a multimap set inside this transaction.
-    fn multi_put(&mut self, table: &'static str, key: &[u8], value: &[u8]) -> Result<(), StoreError>;
+    fn multi_put(
+        &mut self,
+        table: &'static str,
+        key: &[u8],
+        value: &[u8],
+    ) -> Result<(), StoreError>;
 }
 
 impl<R: RowWrite + ?Sized> RowWrite for &mut R {
@@ -28,7 +33,12 @@ impl<R: RowWrite + ?Sized> RowWrite for &mut R {
         (**self).put(table, key, value)
     }
 
-    fn multi_put(&mut self, table: &'static str, key: &[u8], value: &[u8]) -> Result<(), StoreError> {
+    fn multi_put(
+        &mut self,
+        table: &'static str,
+        key: &[u8],
+        value: &[u8],
+    ) -> Result<(), StoreError> {
         (**self).multi_put(table, key, value)
     }
 }
@@ -41,18 +51,36 @@ impl RowWrite for &WriteTransaction {
     }
 
     fn put(&mut self, table: &'static str, key: &[u8], value: &[u8]) -> Result<(), StoreError> {
-        self.open_table(TableDefinition::<&[u8], &[u8]>::new(table))?.insert(key, value)?;
+        self.open_table(TableDefinition::<&[u8], &[u8]>::new(table))?
+            .insert(key, value)?;
         Ok(())
     }
 
-    fn multi_put(&mut self, table: &'static str, key: &[u8], value: &[u8]) -> Result<(), StoreError> {
-        self.open_multimap_table(MultimapTableDefinition::<&[u8], &[u8]>::new(table))?.insert(key, value)?;
+    fn multi_put(
+        &mut self,
+        table: &'static str,
+        key: &[u8],
+        value: &[u8],
+    ) -> Result<(), StoreError> {
+        self.open_multimap_table(MultimapTableDefinition::<&[u8], &[u8]>::new(table))?
+            .insert(key, value)?;
         Ok(())
     }
 }
 
 /// Tenant transaction adapter. Dropping without commit rolls back all helper
 /// writes, including partial writes before a transport or storage error.
+/// Only a mutable borrow implements [`RowWrite`], so a helper cannot consume
+/// the guard and report success just before its implicit rollback.
+///
+/// ```compile_fail
+/// use id_store::event_rows::{RowWrite, TenantWrite};
+/// use id_store::turso::PipelineTransport;
+/// fn helper(_: impl RowWrite) {}
+/// fn cannot_consume<T: PipelineTransport>(txn: TenantWrite<'_, T>) {
+///     helper(txn);
+/// }
+/// ```
 #[derive(Debug)]
 pub struct TenantWrite<'a, T: PipelineTransport> {
     store: &'a mut TenantStore<T>,
@@ -62,8 +90,19 @@ pub struct TenantWrite<'a, T: PipelineTransport> {
 impl<'a, T: PipelineTransport> TenantWrite<'a, T> {
     /// Begins a transaction, refusing a nested transaction.
     pub fn begin(store: &'a mut TenantStore<T>) -> Result<Self, StoreError> {
-        store.begin()?;
-        Ok(Self { store, finished: false })
+        if let Err(error) = store.begin() {
+            // A nested transaction is rejected locally without a request. All
+            // other failures may hide a successfully executed BEGIN; no guard
+            // exists yet to retire that uncertain session on drop.
+            if !matches!(error, TursoError::Transaction(_)) {
+                let _ = store.close();
+            }
+            return Err(error.into());
+        }
+        Ok(Self {
+            store,
+            finished: false,
+        })
     }
 
     /// Commits the batch. A failed commit attempts rollback on drop.
@@ -91,7 +130,7 @@ impl<T: PipelineTransport> Drop for TenantWrite<'_, T> {
     }
 }
 
-impl<T: PipelineTransport> RowWrite for TenantWrite<'_, T> {
+impl<T: PipelineTransport> RowWrite for &mut TenantWrite<'_, T> {
     fn get(&mut self, table: &'static str, key: &[u8]) -> Result<Option<Vec<u8>>, StoreError> {
         Ok(self.store.get(table, key)?)
     }
@@ -100,7 +139,12 @@ impl<T: PipelineTransport> RowWrite for TenantWrite<'_, T> {
         Ok(self.store.put(table, key, value)?)
     }
 
-    fn multi_put(&mut self, table: &'static str, key: &[u8], value: &[u8]) -> Result<(), StoreError> {
+    fn multi_put(
+        &mut self,
+        table: &'static str,
+        key: &[u8],
+        value: &[u8],
+    ) -> Result<(), StoreError> {
         Ok(self.store.multi_put(table, key, value)?)
     }
 }
