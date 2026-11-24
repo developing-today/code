@@ -112,6 +112,7 @@ const SECTIONS: Record<string, number> = {
   priorities: 180_000,
   done: 120_000,
   agents: 75_000,
+  pipeline: 75_000,
   services: 45_000,
   more: 2 * 60 * 60_000,
 };
@@ -1549,7 +1550,9 @@ export class Edge {
         // The agents list is the bridge's: read here only while this
         // side holds the PM bridge credential (#14373). Without it a
         // machine goes on reporting the list, as it did before.
-        (name !== "agents" || this.bridgeReady()),
+        (name !== "agents" || this.bridgeReady()) &&
+        // The pipeline count is the bridge's the same way (#14377).
+        (name !== "pipeline" || this.bridgeReady()),
     );
   }
 

@@ -476,6 +476,11 @@ describe("the edge's run: the bridge through its binding", () => {
     const ops = { agents: async () => [{ name: "felix-1" }] };
     expect(await directRead("agents", ops as never, {} as never)).toEqual([{ name: "felix-1" }]);
   });
+
+  test("the pipeline section is the unread-instruction count, read the same way (#14377)", async () => {
+    const ops = { unreadInstructions: async () => ({ unreadInstructions: 2 }) };
+    expect(await directRead("pipeline", ops as never, {} as never)).toEqual({ unreadInstructions: 2 });
+  });
 });
 
 describe("the direct classes", () => {
@@ -826,6 +831,7 @@ describe("what this side notes of each call it makes", () => {
       census: ["github"],
       done: ["queue", "github"],
       agents: ["bridge"],
+      pipeline: ["bridge"],
     });
   });
 });

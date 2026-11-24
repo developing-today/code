@@ -1499,6 +1499,32 @@ export function askArgs(text, intent) {
   return { text: text.trim(), ...(kind === "task" ? {} : { intent: kind }) };
 }
 
+/** An enroll command as the provisioning form mints it, read back:
+ * the binding a shared `fleet agent enroll … --bootstrap <token>`
+ * carries (#14377). The token is opaque — it has no shape of its
+ * own — so a command is known by its flags, and anything without a
+ * bootstrap token in it is not one (null). The command as shared is
+ * what the card shows; this only picks out the fields the form
+ * below can be filled in from.
+ * @param {unknown} text */
+export function enrollCommand(text) {
+  if (typeof text !== "string" || !/\benroll\b/.test(text)) return null;
+  const flag = (name) => {
+    const m = text.match(new RegExp(`--${name}[\\s=]+("[^"]*"|'[^']*'|\\S+)`));
+    return m ? m[1].replace(/^["']|["']$/g, "") : undefined;
+  };
+  const token = flag("bootstrap");
+  if (!token) return null;
+  const groups = flag("groups");
+  return {
+    token,
+    name: flag("name"),
+    kind: flag("kind"),
+    groups: groups ? groups.split(",").map((g) => g.trim()).filter(Boolean) : [],
+    notesIdentity: flag("notes-identity"),
+  };
+}
+
 /** What he is told when it has gone.
  * @param {unknown} intent
  * @param {{ issue: number, queued?: boolean, note?: string }} result */
@@ -3674,7 +3700,7 @@ async function viewMessages() {
   ];
 }
 
-async function viewAgents() {
+async function viewAgents(sub) {
   const agents = docs.ops?.agents || [];
   const to = h("select", { "aria-label": "To" }, h("option", { value: "all" }, "Everyone"), agents.map((a) => h("option", { value: `agent:${a.name}` }, a.name)));
   const text = typed("message", { rows: 3, placeholder: "A message, or a command to act on", "aria-label": "Message" });
@@ -3974,8 +4000,67 @@ async function viewAgents() {
         : null,
     );
   };
+  // An enroll command handed over by the Android app (#14377): the
+  // app's share flow sends text carrying one here instead of to the
+  // Ask box. It arrives after the "#", which never leaves the phone,
+  // and is consumed here — shown once, on this draw, like a mint:
+  // the token in it is live until it is used or runs out, so it is
+  // never put into this screen's state, the documents or the outbox.
+  // The form below is filled in from the command's binding, so
+  // minting a fresh token for the same agent is one tap from here.
+  let handed = null;
+  if (sub?.startsWith("enroll=")) {
+    let shared = "";
+    try {
+      shared = decodeURIComponent(sub.slice(7));
+    } catch {
+      // not valid text: nothing was handed over that can be shown
+    }
+    history.replaceState(null, "", "#more/agents");
+    if (shared) {
+      const parsed = enrollCommand(shared);
+      if (parsed) {
+        if (parsed.name) pName.value = parsed.name;
+        if (parsed.kind) pKind.value = parsed.kind;
+        if (parsed.groups.length) pGroups.value = parsed.groups.join(", ");
+        if (parsed.notesIdentity) pNotes.value = parsed.notesIdentity;
+      }
+      const copyShared = (what, label) =>
+        h(
+          "button",
+          {
+            class: "small",
+            onclick: () =>
+              navigator.clipboard
+                .writeText(what)
+                .then(() => toast("Copied"))
+                .catch(() => toast("Copying failed — select the text and copy it by hand", true)),
+          },
+          label,
+        );
+      handed = card(
+        h("h3", {}, "An enroll command was shared to this phone"),
+        h(
+          "p",
+          { class: "why" },
+          parsed
+            ? `It is bound to ${parsed.name ?? "an unnamed agent"}${parsed.kind ? ` (${parsed.kind})` : ""}${parsed.groups.length ? `, in ${parsed.groups.join(", ")}` : ""}. Its token works until it is used or runs out; run the command on the new seat, or copy the token. Nothing was sent anywhere — the command came with the share, and leaving this screen takes it with it. The form below is filled in from it, if a fresh token should be minted instead.`
+            : "It does not carry a bootstrap token, so it is not a complete enroll command; it is shown as shared, and nothing was sent anywhere.",
+        ),
+        h("pre", {}, shared),
+        h(
+          "div",
+          { class: "row end" },
+          parsed ? copyShared(parsed.token, "Copy the token") : null,
+          copyShared(shared, "Copy the command"),
+          h("button", { class: "small ghost", onclick: () => handed.remove() }, "Hide it"),
+        ),
+      );
+    }
+  }
   return [
     ...notices(docs.ops, ["agents"]),
+    handed,
     compose,
     h("h2", {}, `Agents (${roster.length})`),
     directory === null ? empty("The unified directory could not be read just now; the fleet roster is shown, without credential state.") : null,
