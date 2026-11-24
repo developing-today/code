@@ -14,8 +14,8 @@
 //! unsupported classes are preserved verbatim with their children, so no
 //! content is lost and no block identity changes when slice 4 upgrades
 //! their conversion. Database notes and relation claims are slice 3
-//! (#13523); a `child_database` block already emits its reference here,
-//! with the database's note ID left for slice 3 to resolve.
+//! (#13523); a `child_database` block emits its reference here, with
+//! the database's note ID resolved from slice 3's identity pass.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -119,8 +119,9 @@ pub struct TypedReference {
     /// Notion UUID of the target page or database.
     pub target_id: String,
     /// Destination note ID when the target's identity is assigned. Pages
-    /// are assigned in the identity pass; database note IDs are slice 3,
-    /// so a child-database reference carries `None` here until then.
+    /// and databases are assigned in the identity passes; a
+    /// child-database reference carries `None` only when its database
+    /// is outside the import set.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub target_note_id: Option<String>,
     /// Block selector for block links (§3): the revision-pin slot is
@@ -598,10 +599,31 @@ impl Converter<'_> {
                     .get("title")
                     .and_then(Value::as_str)
                     .map(str::to_owned);
+                // The block's ID is the database's ID (the slice 1
+                // inventory rule); slice 3's identity pass assigns
+                // its note ID. A database in the inventory without
+                // an assigned note ID means the pass did not run —
+                // fail closed, as for child pages. A database
+                // outside the import set keeps `None`: the reference
+                // still records the target ID.
+                let target_note_id = self.manifest.database_id_to_note_id.get(&block_id).cloned();
+                if target_note_id.is_none()
+                    && self
+                        .manifest
+                        .inventory
+                        .objects
+                        .get(&block_id)
+                        .is_some_and(|object| object.kind == "database")
+                {
+                    bail!(
+                        "child database {block_id} has no assigned note id; \
+                         run assign_database_identities first"
+                    );
+                }
                 self.references.push(TypedReference {
                     from_block_id: block_id.clone(),
                     target_id: block_id.clone(),
-                    target_note_id: None,
+                    target_note_id,
                     target_block_id: None,
                     surface: ReferenceSurface::ChildDatabase,
                 });

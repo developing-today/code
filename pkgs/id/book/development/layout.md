@@ -18,9 +18,9 @@ ID lives in the `developing-today/code` monorepo, in the directory `pkgs/id/`. T
 
 There is no `src/bin/` directory and no `[[bin]]` section in any workspace `Cargo.toml`. The two binaries exist by Cargo's implicit `src/main.rs` rule: `id` from the root package, and `id-native-shell` from `crates/id-native-shell/src/main.rs`.
 
-## The 16 crates
+## The 19 crates
 
-`crates/` holds the 16 sub-crates. The workspace has 17 members in total: the root plus these 16. `default-members` lists 15 packages — the root plus 14 crates. `id-native-shell` and `id-hw-shell` are members but not default members, so a plain `cargo build` in `pkgs/id/` never builds the desktop shell or the hardware shell.
+`crates/` holds the 19 sub-crates. The workspace has 20 members in total: the root plus these 19. `default-members` lists 17 packages — the root plus 16 crates. `id-native-shell`, `id-hw-shell`, and `id-tui-shell` are members but not default members, so a plain `cargo build` in `pkgs/id/` never builds the shell crates.
 
 | Crate                  | Role in one line                                                                                                                                                                                             |
 | ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
@@ -38,10 +38,13 @@ There is no `src/bin/` directory and no `[[bin]]` section in any workspace `Carg
 | `id-currency-registry` | Currency control-plane registry: the ledger allocator, the account factory and the Postgres schema and migrations.                                                                                           |
 | `id-render`            | Rendering pipeline compiler core: parse and vocabulary validation of semantic markup. No dependents.                                                                                                         |
 | `id-import-notion`     | Notion importer manifest and inventory primitives. No dependents.                                                                                                                                            |
+| `id-client`             | Client-only Rust facade for the id native Android client v1 (slice 1 of #7938, #13403).                                                                                                                     |
+| `id-pg`                 | Postgres-over-HTTP adapter (#5805): the PostgREST query translator and collection allowlist (design §3), slice #13760. No dependents yet.                                                                   |
 | `id-native-shell`      | The Bevy native reference shell. Not a default member.                                                                                                                                                       |
 | `id-hw-shell`          | The ESP32-class hardware shell spike: one file, `src/lib.rs`, frame builders only, no binary. Not a default member.                                                                                          |
+| `id-tui-shell`          | The terminal (TUI) shell: the text-native world-session client on the F13.1 shell contract (#12818). Not a default member.                                                                                  |
 
-Dependency direction runs downward to `id-core`. Nothing in the split family depends on the facade in production code; the two shells depend on the facade, and `id-store` dev-depends on it for tests. The full per-crate surface is [The crates](../library/crates.md).
+Dependency direction runs downward to `id-core`. Nothing in the split family depends on the facade in production code; the two original shells depend on the facade, and `id-store` dev-depends on it for tests. The full per-crate surface is [The crates](../library/crates.md).
 
 Two directories sit outside the workspace: `vendor/p2panda-sync` and `vendor/p2panda-encryption` are listed in the workspace `exclude` array and are consumed as path dependencies only.
 

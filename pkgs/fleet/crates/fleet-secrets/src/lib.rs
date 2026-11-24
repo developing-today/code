@@ -183,6 +183,23 @@ pub const BROKER_RETRY_MAX_DELAY: Duration = Duration::from_secs(15);
 /// would ever run.
 pub const BROKER_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// Per-invocation ceiling on a single fallback-tier subprocess
+/// wait (`bws` / `op` through a [`CommandRunner`], and the
+/// `--version` probe in program resolution). The broker legs bound
+/// each exchange with [`BROKER_ATTEMPT_TIMEOUT`]; the fallback
+/// tiers spawn children, and `Command::output()` waits forever --
+/// a wedged `bws` or `op` child was the one remaining path by
+/// which a secrets client could still hang under the never-hang
+/// ruling (#14040 Residual B). Same discipline: one named
+/// per-attempt ceiling, in one obvious place.
+pub const SUBPROCESS_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Ceiling on the `--version` probe [`program_runs`] runs against
+/// a candidate program. A healthy candidate answers instantly, so
+/// the probe gets a shorter bound than a real invocation: a wedged
+/// candidate must fail the gate, not hang resolution.
+pub const PROGRAM_PROBE_TIMEOUT: Duration = Duration::from_secs(5);
+
 /// How a broker source retries `Unavailable` outcomes before
 /// giving up to the chain. `NotFound` (a broker 404) and
 /// `InvalidName` are definitive and never retry, at any policy.
@@ -754,14 +771,104 @@ pub trait CommandRunner {
     fn run(&self, program: &str, args: &[&str]) -> Result<String, String>;
 }
 
-pub struct ProcessRunner;
+/// Run `cmd` to completion collecting its output -- a bounded
+/// `Command::output()`. The unbounded call waits forever: a child
+/// that never exits (a `bws` wedged on a dead network, an `op`
+/// stuck on a prompt nobody can see) would block the fallback tier
+/// -- and with it the whole chain -- indefinitely. Here the child
+/// is polled and killed once `timeout` elapses, the same
+/// spawn/poll/kill shape the secrets broker's own `bws` runner
+/// uses (fleet-queue's `BwsRunner`). Stdout and stderr are drained
+/// on threads so a chatty child cannot fill a pipe and deadlock
+/// the wait. Error shapes match the runners' existing ones: spawn
+/// failures name the io error kind; a timeout names the bound.
+fn run_command_bounded(
+    cmd: &mut Command,
+    timeout: Duration,
+) -> Result<std::process::Output, String> {
+    use std::io::Read;
+    cmd.stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| format!("spawn failed: {}", e.kind()))?;
+    let mut stdout_pipe = child.stdout.take();
+    let stdout_thread = std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        if let Some(pipe) = stdout_pipe.as_mut() {
+            let _ = pipe.read_to_end(&mut buf);
+        }
+        buf
+    });
+    let mut stderr_pipe = child.stderr.take();
+    let stderr_thread = std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        if let Some(pipe) = stderr_pipe.as_mut() {
+            let _ = pipe.read_to_end(&mut buf);
+        }
+        buf
+    });
+    let started = Instant::now();
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) => {
+                if started.elapsed() >= timeout {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(format!("timed out after {}s", timeout.as_secs()));
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            Err(e) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(format!("wait failed: {}", e.kind()));
+            }
+        }
+    };
+    let stdout = stdout_thread.join().unwrap_or_default();
+    let stderr = stderr_thread.join().unwrap_or_default();
+    Ok(std::process::Output {
+        status,
+        stdout,
+        stderr,
+    })
+}
+
+pub struct ProcessRunner {
+    timeout: Duration,
+}
+
+impl ProcessRunner {
+    /// A runner with the standard per-invocation ceiling
+    /// ([`SUBPROCESS_ATTEMPT_TIMEOUT`]).
+    pub fn new() -> ProcessRunner {
+        ProcessRunner {
+            timeout: SUBPROCESS_ATTEMPT_TIMEOUT,
+        }
+    }
+
+    /// A runner with a caller-chosen ceiling -- the shape tests
+    /// use to prove a never-exiting child fails within the bound
+    /// without waiting out the production ceiling.
+    pub fn with_timeout(timeout: Duration) -> ProcessRunner {
+        ProcessRunner { timeout }
+    }
+}
+
+impl Default for ProcessRunner {
+    fn default() -> ProcessRunner {
+        ProcessRunner::new()
+    }
+}
 
 impl CommandRunner for ProcessRunner {
     fn run(&self, program: &str, args: &[&str]) -> Result<String, String> {
-        let out = Command::new(program)
-            .args(args)
-            .output()
-            .map_err(|e| format!("spawn failed: {}", e.kind()))?;
+        let mut cmd = Command::new(program);
+        cmd.args(args);
+        let out = run_command_bounded(&mut cmd, self.timeout)?;
         if !out.status.success() {
             return Err(format!("exit status {}", out.status));
         }
@@ -847,13 +954,18 @@ fn is_executable_file(p: &Path) -> bool {
 /// this host and must not shadow a working one later in the
 /// order.
 fn program_runs(p: &Path) -> bool {
-    std::process::Command::new(p)
-        .arg("--version")
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .map(|s| s.success())
+    program_runs_within(p, PROGRAM_PROBE_TIMEOUT)
+}
+
+/// [`program_runs`] with a caller-chosen bound, split out for
+/// tests: the probe is a subprocess wait like any other, and an
+/// unbounded one would hang program resolution itself on a wedged
+/// candidate (#14040 Residual B).
+fn program_runs_within(p: &Path, timeout: Duration) -> bool {
+    let mut cmd = std::process::Command::new(p);
+    cmd.arg("--version");
+    run_command_bounded(&mut cmd, timeout)
+        .map(|out| out.status.success())
         .unwrap_or(false)
 }
 
@@ -914,17 +1026,30 @@ fn resolve_bws_program_from(
 /// value cannot masquerade as a credential either.
 pub struct BwsTokenRunner {
     token: Option<String>,
+    timeout: Duration,
 }
 
 impl BwsTokenRunner {
     pub fn from_environment() -> BwsTokenRunner {
         BwsTokenRunner {
             token: bws_access_token(),
+            timeout: SUBPROCESS_ATTEMPT_TIMEOUT,
         }
     }
 
     pub fn with_token(token: Option<String>) -> BwsTokenRunner {
-        BwsTokenRunner { token }
+        BwsTokenRunner {
+            token,
+            timeout: SUBPROCESS_ATTEMPT_TIMEOUT,
+        }
+    }
+
+    /// The same runner with a caller-chosen subprocess ceiling --
+    /// the shape tests use to prove a never-exiting child fails
+    /// within the bound without waiting out the production one.
+    pub fn with_timeout(mut self, timeout: Duration) -> BwsTokenRunner {
+        self.timeout = timeout;
+        self
     }
 }
 
@@ -950,9 +1075,7 @@ impl CommandRunner for BwsTokenRunner {
                 cmd.env_remove("BWS_ACCESS_TOKEN");
             }
         }
-        let out = cmd
-            .output()
-            .map_err(|e| format!("spawn failed: {}", e.kind()))?;
+        let out = run_command_bounded(&mut cmd, self.timeout)?;
         if !out.status.success() {
             return Err(format!("exit status {}", out.status));
         }
@@ -1099,7 +1222,11 @@ impl OpSource {
     pub fn from_environment() -> Option<OpSource> {
         let vault = std::env::var(Self::VAULT_ENV).ok();
         let field = std::env::var(Self::FIELD_ENV).ok();
-        Self::from_values(vault.as_deref(), field.as_deref(), Box::new(ProcessRunner))
+        Self::from_values(
+            vault.as_deref(),
+            field.as_deref(),
+            Box::new(ProcessRunner::new()),
+        )
     }
 
     fn is_segment(s: &str) -> bool {
@@ -2104,6 +2231,74 @@ mod tests {
             "set"
         );
         assert_eq!(probe(&BwsTokenRunner::with_token(None)), "unset");
+    }
+
+    // ---- bounded subprocess waits (#14040 Residual B) ----
+    //
+    // Oracle: the never-hang ruling -- a fallback-tier child that
+    // never exits must fail its tier within the named bound
+    // instead of blocking the caller forever. Each test drives a
+    // real `sh -c "sleep 60"` child through the production code
+    // path with a short caller-chosen ceiling and asserts both the
+    // timeout error and that the elapsed time stays bounded.
+
+    #[test]
+    fn bounded_run_kills_a_never_exiting_child_within_the_bound() {
+        let mut cmd = Command::new("sh");
+        cmd.args(["-c", "sleep 60"]);
+        let started = Instant::now();
+        let err = run_command_bounded(&mut cmd, Duration::from_millis(200))
+            .expect_err("a never-exiting child must fail, not hang");
+        assert!(err.contains("timed out"), "unexpected error: {err}");
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "the bound must actually bound: {:?}",
+            started.elapsed()
+        );
+    }
+
+    #[test]
+    fn bounded_run_returns_output_and_status_for_a_quick_child() {
+        let mut cmd = Command::new("sh");
+        cmd.args(["-c", "echo hello; exit 3"]);
+        let out = run_command_bounded(&mut cmd, Duration::from_secs(10)).unwrap();
+        assert_eq!(out.status.code(), Some(3));
+        assert_eq!(String::from_utf8(out.stdout).unwrap(), "hello\n");
+    }
+
+    #[test]
+    fn process_runner_times_out_a_hanging_child() {
+        let runner = ProcessRunner::with_timeout(Duration::from_millis(200));
+        let started = Instant::now();
+        let err = runner
+            .run("sh", &["-c", "sleep 60"])
+            .expect_err("a hanging child must fail the tier");
+        assert!(err.contains("timed out"), "unexpected error: {err}");
+        assert!(started.elapsed() < Duration::from_secs(10));
+    }
+
+    #[test]
+    fn bws_token_runner_times_out_a_hanging_child() {
+        let runner = BwsTokenRunner::with_token(None).with_timeout(Duration::from_millis(200));
+        let started = Instant::now();
+        let err = runner
+            .run("sh", &["-c", "sleep 60"])
+            .expect_err("a hanging child must fail the tier");
+        assert!(err.contains("timed out"), "unexpected error: {err}");
+        assert!(started.elapsed() < Duration::from_secs(10));
+    }
+
+    #[test]
+    fn program_probe_times_out_a_hanging_candidate() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = test_temp_dir("probe-hang");
+        let script = dir.join("bws");
+        std::fs::write(&script, "#!/bin/sh\nsleep 60\n").unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let started = Instant::now();
+        assert!(!program_runs_within(&script, Duration::from_millis(200)));
+        assert!(started.elapsed() < Duration::from_secs(10));
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     // ---- op (1Password) source ----
