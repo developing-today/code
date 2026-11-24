@@ -766,6 +766,7 @@ fn proto_search_request(args: &SearchArgs) -> SearchRequest {
             client: split_csv(args.client.as_deref()),
             since: args.since.clone(),
             until: args.until.clone(),
+            dimensions: Default::default(),
         },
         ceiling: ProtoSensitivity::from_name(&args.max_sensitivity)
             .unwrap_or(ProtoSensitivity::Personal),
