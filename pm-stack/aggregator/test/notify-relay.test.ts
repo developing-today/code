@@ -11,7 +11,7 @@
 //  - everything is fail-soft: no secret, no store, or a dead
 //    edge never throws into the aggregator.
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { IncidentMirrorRow, PushSubscriptionRow } from "../src/alerts.ts";
