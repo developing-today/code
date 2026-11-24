@@ -15,6 +15,7 @@ pub mod agent_delegation;
 pub mod cap_baseline;
 pub mod cap_class;
 pub mod cap_diff;
+pub mod cap_notice;
 pub mod declaration;
 pub mod http_fetch_url;
 pub mod library_attach;
