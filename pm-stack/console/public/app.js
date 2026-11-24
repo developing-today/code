@@ -2622,6 +2622,7 @@ const REFUSED_SAID = {
   "read.census": "reading what needs you",
   "read.done": "reading what was finished",
   "read.agents": "reading the agents list",
+  "read.pipeline": "reading the unread instructions",
 };
 
 /** What the edge says of doing the core itself, read from its public

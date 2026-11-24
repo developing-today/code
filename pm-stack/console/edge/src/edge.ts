@@ -1752,11 +1752,12 @@ export class Edge {
     for (const name of DIRECT_READ_SECTIONS) {
       // The agents section is the bridge's: with no PM bridge
       // credential held there is no path here to prove, and the
-      // section is a machine's, as it was before (#14373). Every
+      // section is a machine's, as it was before (#14373). The
+      // pipeline count is the bridge's the same way (#14377). Every
       // other section is checked even while it is a machine's for
       // being refused: the check is how this side finds it can read
       // the section itself again.
-      if (name === "agents" && !this.bridgeReady()) continue;
+      if ((name === "agents" || name === "pipeline") && !this.bridgeReady()) continue;
       try {
         await directRead(name, direct.ops, direct.work);
         kinds[name] = { ok: true };
