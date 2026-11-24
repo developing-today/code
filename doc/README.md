@@ -40,6 +40,7 @@ When migrating or filing material, ask which kind it is before choosing a home: 
 ## Research packages
 
 - `2026-11-24T00-24-54Z_audit_design-gaps/` — AUDIT-7 Lane 6 DESIGN-GAPS audit: designs missing, demanded, or insufficient across the four repos, with the prioritised packet list (tracking #13873).
+-  — AUDIT-7 Lane 7 STRAY-WORK audit: census of 18,594 items across the four repos, 10 evidence-backed trends in work not tied to a design or roadmap item, 34 orphaned issues linked into maintenance/scheduled-tasks/design-register parents with labels, 3 new labels in all four repos, and the repeatable stray-work procedure (tracking #13874).
 
 This list is the workflow's request catalog (`request_catalog` in [`.agents/research-workflow.json`](../.agents/research-workflow.json)). Add one line per new package. For a package's current state, run `python3 -I scripts/research_workflow.py status --package doc/<folder>`.
 
