@@ -245,6 +245,7 @@ Two names break the pattern. They stay as they are because other documents link 
 - [docs(2036): ID messaging and relay protocol v1 design](2026-11-24T06-00-00Z_design_id_messaging_relay_protocol_v1/2026-11-24T06-00-00Z_design_id_messaging_relay_protocol_v1.md) — design record, PR #14094 (2026-11-24).
 - [Nix cache as the content store](2026-11-24T05-12-27Z_design_nix_cache_content_store/2026-11-24T05-12-27Z_design_nix_cache_content_store.md) — design record for #9521 (slice 1 under #13873): derivation-per-item + flake-per-item hypothesis, version/resolution intent, benchmark-first gate with wash/fail exit, dependency-ordered slices; no benchmarks run, no implementation authorized.
 - [Cold-store nightly backup: as-built design and operating contract](2026-11-24T05-54-02Z_design_cold-store-nightly/2026-11-24T05-54-02Z_design_cold-store-nightly.md) — nine-point as-built design for #8833: daily D1/Turso Drive backups, verified Turso reconstruction, isolated nightly stages, retention, security boundaries, acceptance evidence, and the distinction from the broader proposed R2/bundling layout.
+- [design(#9068): 9-point sufficient-design record for design-spawn backfill](2026-11-24_design_id9068_design-spawn-backfill.md) — design record, PR #14159 (2026-11-24).
 
 ## Legacy places
 
