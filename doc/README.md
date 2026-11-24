@@ -56,6 +56,8 @@ This list is the workflow's request catalog (`request_catalog` in [`.agents/rese
 
 ## Dated records
 
+- [Free models & free tokens census](2026-11-24T01-21-58Z_research_free-census/2026-11-24T01-21-58Z_research_free-census.md) — dated record of the 2026-11-23 free-provider and free-token census; the evidence base for the free-first route order (tracking #13877).
+
 Folders are named `<UTC datetime>_<kind>_<name>`. The kinds in use are `feature`, `design`, `architecture`, `phase`, `fix`, `reference`, `research` and `report`. A `report` record is the usual home for lane work product — a report or one-off with all of its gathered material in the folder; [`DOCUMENTATION_PROTOCOL.md`](DOCUMENTATION_PROTOCOL.md) gives the landing rules. Run `ls doc/` to list them all. Some starting points:
 
 - [Code Book programme — Census B merged priority list](2026-11-24T00-55-23Z_research_code-book-census-priorities/2026-11-24T00-55-23Z_research_code-book-census-priorities.md) — research record for #13905 (census 2026-11-23/24): the merged, dependency-ordered priority list for the Code Book programme — 30 items ordered execution substrate (fleet) first, then physical substrate (lab), data substrate, search intelligence (Atlas×ID), the ID platform build-out, gateway/PM/fork surfaces, and the record itself — each item with its type, status and evidence, most-related issues, and ordering rationale, plus a per-book assignment table (fleet 4 · atlas 8 · id 9 · mcpx 1 · pm 4 · lab 4), timing notes that invent no dates, and the census gaps carried forward (service-worker/offline and switches have no owning issue; the #10706/#10708 discovery blocker is unverified).
