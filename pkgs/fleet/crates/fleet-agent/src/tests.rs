@@ -1692,6 +1692,21 @@ fn a_background_cargo_build_holds_its_target_lease_until_exit() {
         .map(|log| !log.is_empty())
         .unwrap_or(false);
     std::fs::write(home.join("release"), "").unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        match child.try_wait().unwrap() {
+            Some(_) => break,
+            None if std::time::Instant::now() >= deadline => {
+                let _ = child.kill();
+                let output = child.wait_with_output().unwrap();
+                panic!(
+                    "background cargo target-lease wrapper did not exit within 10 seconds; stderr: {}",
+                    String::from_utf8_lossy(&output.stderr)
+                );
+            }
+            None => std::thread::sleep(std::time::Duration::from_millis(10)),
+        }
+    }
     let output = child.wait_with_output().unwrap();
     assert!(
         output.status.success(),
