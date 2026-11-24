@@ -256,7 +256,10 @@ export class Push {
   /** Send one notification to every subscribed device, unless its class
    * is switched off. A subscription the push service says is gone is
    * forgotten. Returns how many devices took it. */
-  async send(cls: Class | "test", message: { title: string; body: string; url: string; tag?: string }) {
+  async send(
+    cls: Class | "test",
+    message: { title: string; body: string; url: string; tag?: string; actions?: unknown[] },
+  ) {
     const s = await this.load();
     if (cls !== "test" && s.off.includes(cls)) return { sent: 0, gone: 0, failed: 0 };
     const payload = enc.encode(JSON.stringify({ ...message, class: cls }));

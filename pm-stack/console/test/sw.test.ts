@@ -13,7 +13,15 @@ import { join } from "node:path";
 
 interface Shown {
   title: string;
-  options: { body: string; tag?: string; renotify?: boolean; icon: string; badge: string; data: { url: string } };
+  options: {
+    body: string;
+    tag?: string;
+    renotify?: boolean;
+    icon: string;
+    badge: string;
+    data: { url: string; actions?: unknown[]; tag?: string };
+    actions?: { action: string; title: string; type?: string; placeholder?: string }[];
+  };
 }
 
 const ORIGIN = "https://pm.example";
@@ -174,7 +182,7 @@ test("a pushed message is shown as the notification it describes", async () => {
         renotify: true, // a second message about the same thing sounds again, in place of the first
         icon: "/icons/icon-192.png",
         badge: "/icons/icon-192.png",
-        data: { url: "/console/#ask" },
+        data: { url: "/console/#ask", tag: "ask-12501" },
       },
     },
   ]);
@@ -217,6 +225,173 @@ test("a tap opens the screen the notification is about, in the app that is alrea
   const bare = worker();
   await bare.fire("notificationclick", tap().event);
   expect(bare.did).toEqual(["open /console/"]);
+});
+
+// A notification carries what can be done about it. The oracle for the
+// message is what the platform sends (src/notify.ts: PushAction); for
+// what pressing a button does, it is what the app's own send would do
+// with the same action: one request to /console/api/act, kept on the
+// device and sent again if it cannot go now.
+const REPLY = {
+  title: "The fleet replied on #12501",
+  body: "Done. Shall I also update the docs?",
+  url: "/console/#ask",
+  tag: "ask-12501",
+  class: "replies",
+  actions: [
+    { action: "reply", title: "Reply", kind: "ask.reply", args: { issue: 12501 }, reply: true, url: "/console/#ask" },
+    { action: "close", title: "Close it", kind: "ask.close", args: { issue: 12501 } },
+  ],
+};
+type KeptEntry = { id: string; kind: string; args: Record<string, unknown>; state: string };
+/** A worker with leave to notify, a network that takes what it is
+ * sent (or does not), and somewhere to keep what it could not send. */
+function buttons(net?: Net, windows: { url: string }[] = []) {
+  const acts: { kind: string; args: Record<string, unknown>; id: string }[] = [];
+  const answer: Net =
+    net ??
+    ((url, init) => {
+      if (url.pathname !== "/console/api/act") return json({}, {}, 404);
+      const body = JSON.parse(String((init as { body?: string }).body)) as (typeof acts)[number];
+      acts.push({ kind: body.kind, args: body.args, id: body.id });
+      return json({ ok: true, result: {} });
+    });
+  const w = worker(windows, { net: answer, permission: "granted" });
+  const outbox = w.scope.PMOutbox as {
+    memoryStore: () => { all: () => Promise<KeptEntry[]>; put: (e: KeptEntry) => Promise<void> };
+    idbStore: unknown;
+  };
+  const store = outbox.memoryStore();
+  outbox.idbStore = () => store;
+  const press = async (shown: Shown, action: string, reply?: string | null) => {
+    const closed: string[] = [];
+    await w.fire("notificationclick", {
+      action,
+      ...(reply === undefined ? {} : { reply }),
+      notification: { close: () => closed.push("closed"), data: shown.options.data, tag: shown.options.tag },
+    });
+    return closed;
+  };
+  return { w, acts, store, press };
+}
+
+test("a pushed message shows its buttons: two at most, and one that takes a line of text where it asks for one", async () => {
+  const { w } = buttons();
+  await w.fire("push", pushed(JSON.stringify(REPLY)));
+  expect(w.shown[0].options.actions).toEqual([
+    { action: "reply", title: "Reply", type: "text", placeholder: "Reply" },
+    { action: "close", title: "Close it" },
+  ]);
+  // What each button does is kept with the notification, for when it is pressed.
+  expect(w.shown[0].options.data).toEqual({ url: "/console/#ask", tag: "ask-12501", actions: REPLY.actions });
+  // More than two: a phone shows two, and the first two are the most useful.
+  const three = { ...REPLY, actions: [...REPLY.actions, { action: "open", title: "Open", url: "/console/#ask" }] };
+  await w.fire("push", pushed(JSON.stringify(three)));
+  expect(w.shown[1].options.actions?.map((a) => a.action)).toEqual(["reply", "close"]);
+  // Buttons that are not buttons are left out, and the notification is still shown.
+  const odd = { ...REPLY, actions: [{ title: "No name" }, "nonsense", { action: "ok", title: 7 }, null] };
+  await w.fire("push", pushed(JSON.stringify(odd)));
+  await w.fire("push", pushed(JSON.stringify({ ...REPLY, actions: "many" })));
+  expect(w.shown.slice(2).map((s) => [s.title, s.options.actions])).toEqual([
+    [REPLY.title, undefined],
+    [REPLY.title, undefined],
+  ]);
+});
+
+test("a button that does something does it as the app would: one request, under a name, and says what became of it", async () => {
+  const { w, acts, store, press } = buttons();
+  await w.fire("push", pushed(JSON.stringify(REPLY)));
+  const closed = await press(w.shown[0], "close");
+  expect(closed).toEqual(["closed"]);
+  expect(acts.map((a) => [a.kind, a.args])).toEqual([["ask.close", { issue: 12501 }]]);
+  expect(acts[0].id).toMatch(/^[0-9a-f-]{36}$/);
+  expect((await store.all()).map((e) => [e.kind, e.state])).toEqual([["ask.close", "done"]]);
+  // No window was opened for it, and with no page open the owner is told it went.
+  expect(w.did).toEqual([]);
+  // Said once, by the button's own notification (not also as "what you did offline").
+  expect(w.shown.slice(1).map((shown) => shown.title)).toEqual(["Close it"]);
+  expect(w.shown.at(-1)).toMatchObject({ title: "Close it", options: { body: "Done.", tag: "ask-12501" } });
+});
+
+test("a reply typed on the notification is sent as the reply", async () => {
+  const { w, acts, press } = buttons();
+  await w.fire("push", pushed(JSON.stringify(REPLY)));
+  await press(w.shown[0], "reply", "  Yes, the docs too.  ");
+  expect(acts.map((a) => [a.kind, a.args])).toEqual([["ask.reply", { issue: 12501, text: "Yes, the docs too." }]]);
+  expect(w.did).toEqual([]);
+});
+
+test("a reply button pressed where no text can be typed on a notification opens the thread to type it there", async () => {
+  for (const reply of [undefined, null, "", "   "]) {
+    const { w, acts, press } = buttons();
+    await w.fire("push", pushed(JSON.stringify(REPLY)));
+    await press(w.shown[0], "reply", reply);
+    expect([reply, acts, w.did]).toEqual([reply, [], ["open /console/#ask"]]);
+  }
+});
+
+test("with no connection the button's action is kept and sent later, and the owner is told it is kept", async () => {
+  const offline: Net = () => {
+    throw new TypeError("Failed to fetch");
+  };
+  const { w, store, press } = buttons(offline);
+  await w.fire("push", pushed(JSON.stringify(REPLY)));
+  await press(w.shown[0], "close");
+  expect((await store.all()).map((e) => [e.kind, e.args, e.state])).toEqual([
+    ["ask.close", { issue: 12501 }, "waiting"],
+  ]);
+  expect(w.shown.at(-1)).toMatchObject({
+    title: "Close it",
+    options: {
+      body: "Kept on this device: it is sent when there is a connection.",
+      data: { url: "/console/#more/device" },
+    },
+  });
+});
+
+test("an action the platform turned down is said to have failed, with where to look", async () => {
+  const refused: Net = (url) =>
+    url.pathname === "/console/api/act" ? json({ error: "no such issue" }, {}, 404) : json({}, {}, 404);
+  const { w, press } = buttons(refused);
+  await w.fire("push", pushed(JSON.stringify(REPLY)));
+  await press(w.shown[0], "close");
+  expect(w.shown.at(-1)).toMatchObject({
+    title: "Close it",
+    options: { body: "That could not be done. Open the app to see why.", data: { url: "/console/#more/device" } },
+  });
+});
+
+test("a button that only goes somewhere goes there, a tap on the notification itself opens its screen, and a button nobody knows does too", async () => {
+  const HANDS = {
+    title: "Something needs you",
+    body: "Plug it in (o/r#3)",
+    url: "/console/#needs/hands",
+    tag: "hands-o/r#3",
+    actions: [
+      { action: "done", title: "I did it", kind: "hands.done", args: { ref: "o/r#3" } },
+      { action: "open", title: "Open", url: "/console/#needs/hands" },
+    ],
+  };
+  const { w, acts, press } = buttons();
+  await w.fire("push", pushed(JSON.stringify(HANDS)));
+  await press(w.shown[0], "open");
+  await press(w.shown[0], "");
+  await press(w.shown[0], "not-a-button");
+  expect(acts).toEqual([]);
+  expect(w.did).toEqual(["open /console/#needs/hands", "open /console/#needs/hands", "open /console/#needs/hands"]);
+  // And the one that does something, does it.
+  await press(w.shown[0], "done");
+  expect(acts.map((a) => [a.kind, a.args])).toEqual([["hands.done", { ref: "o/r#3" }]]);
+});
+
+test("with the app open, pressing a button tells the app, which shows what became of it itself", async () => {
+  const { w, acts, press } = buttons(undefined, [{ url: `${ORIGIN}/console/#now` }]);
+  await w.fire("push", pushed(JSON.stringify(REPLY)));
+  const before = w.shown.length;
+  await press(w.shown[0], "close");
+  expect(acts.map((a) => a.kind)).toEqual(["ask.close"]);
+  expect(w.shown.length).toBe(before);
+  expect(w.posted).toEqual([{ type: "outbox", changed: [{ state: "done" }] }]);
 });
 
 test("a new worker takes over at once, so a fix to it does not wait for every tab to close", async () => {

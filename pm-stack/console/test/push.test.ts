@@ -335,11 +335,40 @@ describe("when a notification is owed", () => {
     const out = changes(seen, later);
     expect(out.messages.map((m) => [m.cls, m.title, m.body, m.url])).toEqual([
       ["replies", "The fleet replied on #12501", "Done. #12279 is first in the queue.", "/console/#ask"],
-      ["needs", "Something needs you", "Sign the form", "/console/#needs/hands"],
+      // What to do and on what; a session waiting on him has no item to name.
+      ["needs", "Something needs you", "Sign the form (o/r#2)", "/console/#needs/hands"],
       ["needs", "Something needs you", "Log into the main account", "/console/#needs/hands"],
       ["questions", "3 new questions for you", "363 open in all.", "/console/#needs/questions"],
       ["trouble", "A unit failed", "a.service", "/console/#more/services"],
     ]);
+    // What can be done about each from the notification itself: an
+    // action of the owner's, as the app would send it, or a screen.
+    expect(
+      out.messages.map((m) =>
+        (m.actions ?? []).map((a) => [a.title, a.kind ?? a.url, a.args ?? null, a.reply ?? false]),
+      ),
+    ).toEqual([
+      [
+        ["Reply", "ask.reply", { issue: 12501 }, true],
+        ["Close it", "ask.close", { issue: 12501 }, false],
+      ],
+      [
+        ["I did it", "hands.done", { ref: "o/r#2" }, false],
+        ["Open", "/console/#needs/hands", null, false],
+      ],
+      // Not an item with a label to take off: it can only be looked at.
+      [["Open", "/console/#needs/hands", null, false]],
+      [["Look at them", "/console/#needs/questions", null, false]],
+      [
+        ["Restart it", "unit.act", { unit: "a.service", action: "restart" }, false],
+        ["Look", "/console/#more/services", null, false],
+      ],
+    ]);
+    // A button that takes text says where to go where a device cannot take it.
+    expect(out.messages[0].actions?.[0].url).toBe("/console/#ask");
+    // Every button has a name of its own within its notification.
+    for (const m of out.messages)
+      expect(new Set((m.actions ?? []).map((a) => a.action)).size).toBe((m.actions ?? []).length);
     expect(changes(out.seen, later).messages).toEqual([]);
     // His own reply is not news to him; fewer questions is not news either,
     // but it lowers the mark, so the next new one is.
