@@ -141,7 +141,7 @@ fleet laptop-agent poll JOB [--wait SECS]
 
 ### Behaviour
 
-Incremental output streaming: `GET /jobs/<job>?out_off=N&err_off=M`. The client persists per-job output offsets in a local offsets file (`<job>.json` in the laptop-agent state dir), sends them on each poll, appends only the new stdout/stderr, and saves the returned `out_next`/`err_next`. It polls every ≤3 s until the job's state is `done` — then prints `[laptop-agent] job <job> done exit=<e> duration_ms=<d>` on stderr and returns the job's exit code — or until the wait deadline passes, printing `still running` and returning **0** (still-running is not a failure). A reply without offsets is an error, exit 1.
+Incremental output streaming: `GET /jobs/<job>?out_off=N&err_off=M&wait_s=10`. The server holds the request for at most `wait_s` seconds (capped at 30), returning sooner when output changes or the job completes. The client persists per-job output offsets in a local offsets file (`<job>.json` in the laptop-agent state dir), sends them on each poll, appends only the new stdout/stderr, and saves the returned `out_next`/`err_next`. It waits for output or completion, with a maximum 10 s detection delay for quiet jobs, until the wait deadline passes, printing `still running` and returning **0** (still-running is not a failure). A reply without offsets is an error, exit 1.
 
 ### Exit codes
 
@@ -156,7 +156,7 @@ Incremental output streaming: `GET /jobs/<job>?out_off=N&err_off=M`. The client 
 $ fleet laptop-agent poll job_… --wait 600
 ```
 
-Streams new output every ≤3 s for up to 600 s, then returns the job's exit code (or 0 with "still running").
+Streams new output as soon as the server observes it (up to a 10 s quiet-job wait) for up to 600 s, then returns the job's exit code (or 0 with "still running").
 
 ## fleet laptop-agent jobs
 

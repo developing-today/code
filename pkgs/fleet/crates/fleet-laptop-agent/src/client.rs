@@ -427,7 +427,16 @@ pub fn poll(ladder: &Arc<Ladder>, job: &str, wait_s: u64) -> i32 {
     let mut polls: u32 = 0;
     loop {
         let trip = crate::new_trip();
-        let path = format!("/jobs/{job}?out_off={}&err_off={}", offs.out, offs.err);
+        // Long-poll at the existing 10 s detection-latency ceiling. New
+        // output or completion wakes the daemon request earlier.
+        let wait = deadline
+            .saturating_duration_since(Instant::now())
+            .as_secs()
+            .min(10);
+        let path = format!(
+            "/jobs/{job}?out_off={}&err_off={}&wait_s={wait}",
+            offs.out, offs.err
+        );
         let reply = match call(ladder, &trip, "GET", &path, None, true, default_deadline()) {
             Ok(reply) => reply,
             Err(e) => return fail(e),
@@ -471,12 +480,10 @@ pub fn poll(ladder: &Arc<Ladder>, job: &str, wait_s: u64) -> i32 {
             );
             return exit.as_i64().map(|v| v as i32).unwrap_or(1);
         }
-        let now = Instant::now();
-        if now >= deadline {
+        if Instant::now() >= deadline {
             eprintln!("[laptop-agent] job {job} still running");
             return 0;
         }
-        thread::sleep((deadline - now).min(poll_interval(polls)));
         polls = polls.saturating_add(1);
     }
 }

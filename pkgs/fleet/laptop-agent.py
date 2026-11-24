@@ -1651,8 +1651,9 @@ def main():
         _threading.Thread(target=_watchdog, daemon=True).start()
         try:
             while True:
+                wait_s = max(0, min(10, int(deadline - time.time())))
                 out = request(
-                    "GET", f"/jobs/{job_id}?out_off={offs['out']}&err_off={offs['err']}"
+                    "GET", f"/jobs/{job_id}?out_off={offs['out']}&err_off={offs['err']}&wait_s={wait_s}"
                 )
                 sys.stdout.write(out.get("stdout", ""))
                 sys.stdout.flush()
@@ -1672,11 +1673,6 @@ def main():
                 if time.time() >= deadline:
                     print(f"[laptop-agent] job {job_id} still running", file=sys.stderr)
                     return
-                try:
-                    time.sleep(min(3, max(0.0, deadline - time.time())))
-                except CallTimeout:
-                    _poll_cancel()
-                    _exit_timeout()
         except CallTimeout:
             _poll_cancel()
             _exit_timeout()
