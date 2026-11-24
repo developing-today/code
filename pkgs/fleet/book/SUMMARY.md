@@ -15,6 +15,7 @@
 - [The bridge: fleet messaging](concepts/bridge.md)
 - [Agents: enrolment, doctor and the intake ladder](concepts/agents.md)
 - [Proxy, sessions and recovery](concepts/proxy.md)
+- [The Commander door: Desktop Commander over MCP](concepts/commander.md)
 - [Search: the Atlas corpus](concepts/search.md)
 - [The gh passthrough](concepts/gh.md)
 - [Dispatch and dispatch-test](concepts/dispatch.md)
