@@ -55,6 +55,11 @@ instead: see "Adding it to Claude".
 | `GET /api/<token>/event-subscriptions` | ChatGPT's live event subscriptions: id, channel, callback host, created, expires; never the callback path or secret                                                                     |
 | `GET /api/<token>/wake-hooks`          | Wake hooks: address, kind, host, whether a token is set, when added; never the token or the URL's path                                                                                  |
 | `POST /api/<token>/wake-hooks`         | JSON `{"address", "url", "token"}` sets the hook for an address; `{"address", "url": null}` removes it                                                                                  |
+| `POST /notes/register`                 | Owner Bearer token: JSON `{"identity", "token", "can_send", "can_inbox"}` registers a class/name note identity; only the token's SHA-256 hash is stored                                |
+| `POST /notes/send`                     | Identity Bearer token: JSON `{"to", "note"}`; `to` is one identity or a wildcard in either segment (`muse/*`, `*/archer`, `*/*`)                                                          |
+| `GET /notes/inbox`                     | Identity Bearer token: that identity's unacknowledged notes                                                                                                                              |
+| `POST /notes/ack`                      | Identity Bearer token: JSON `{"id"}`, `{"ids": [...]}` or `{"up_to_id": N}` acknowledges its own notes                                                                                   |
+| `GET /<class>/<name>`                  | Public wake signal: one bare UUID, the same shape for registered and unregistered paths, rotating on a per-path jittered schedule                                                          |
 | `GET /healthz`                         | `ok`, `configured`, `chatgpt_configured`, `version`, `token_fingerprint`; no data                                                                                                       |
 | `POST /`, `POST /mcp`                  | The MCP server with an OAuth bearer token (channel from the approval); 401 with `resource_metadata` without one                                                                         |
 | `/.well-known/oauth-*`                 | Protected-resource and authorization-server metadata (also under `/mcp` and as `openid-configuration`)                                                                                  |
@@ -126,6 +131,67 @@ its next run. Rows carry the same fields as the `message.created` payload
 (`id`, `kind`, `sender`, `body`, `ts`), so an agent that does have an https
 endpoint can later get a `fleet.message.created` event from the same
 delivery code without a new message shape.
+
+## Class/name notes and the public wake signal
+
+Alongside the connector channels and fleet mailboxes, the bridge keeps
+a deliberately small note system (`src/notes.js`) for Drew and agents
+to leave each other notes. An identity is a class and a name —
+`muse/archer` is Archer. A registered identity has its own bearer
+token; the Worker stores only the token's SHA-256 hash, mapped to the
+identity and to what the token may do (send, use the inbox, or both).
+Token values live in the vault by name: `bridge.send-token` is Drew's
+sending token (identity `user/drew`) and `bridge.archer-token` is
+Archer's (identity `muse/archer`). Registration is the one
+administrative route: `POST /notes/register` with the owner's existing
+access token as a Bearer token and a JSON body of
+`{"identity", "token", "can_send", "can_inbox"}`.
+
+A sender posts `{"to", "note"}` to `/notes/send`. `to` names one
+identity, or uses `*` for either segment: `muse/*` reaches every
+registered Muse identity, `*/archer` every registered identity named
+Archer, and `*/*` every registered identity. One row lands in each
+matching inbox. The owner of a token reads only its own inbox with
+`GET /notes/inbox` and acknowledges with `POST /notes/ack`
+(`{"id"}`, `{"ids": [...]}`, or `{"up_to_id": N}`); acknowledging
+another identity's note does nothing.
+
+The wake side is public and content-free: `GET
+https://bridge.security.cab/<class>/<name>` returns one bare UUID —
+for every non-reserved two-segment path, registered or not. The UUID
+is derived from the path, a per-path decoy bucket (each path rotates
+every 10–40 minutes, fixed by a hash of the path) and, for a registered
+path, a counter that increments when a note is delivered to it. So a
+delivery changes the UUID at once, but bucket rotations change it
+without any delivery: a changed UUID does not prove a note arrived,
+and the response has no marker that could prove an identity is
+registered. The signal carries no note content and is not a delivery
+receipt; the inbox is the record.
+
+The `bridge` helper in this package (`bridge.mjs`, installed as
+`~/tools/bin/bridge`) wraps the three calls:
+
+```bash
+bridge send muse/archer "the note"          # Archer's token by default
+bridge inbox
+bridge ack 12
+BRIDGE_TOKEN_SECRET=bridge.send-token bridge send 'muse/*' "hello"
+bridge --token-secret bridge.send-token send '*/archer' "hello"
+```
+
+The token comes from `BRIDGE_TOKEN` when set, else from the vault
+secret named by `--token-secret` or `BRIDGE_TOKEN_SECRET`, else
+Archer's `bridge.archer-token`; it is fetched with `fleet secrets get`
+and never printed. A later direction (recorded on the build issue) is
+for this client surface to become a `fleet` subcommand family; the
+helper stays as the minimal client until then.
+
+Archer's Muse hook polls only the public signal for `muse/archer`
+(one GET and a string comparison against the last UUID it saw). A
+change wakes Archer, who fetches the inbox with the helper, reviews
+and acknowledges the notes, and surfaces or acts on them in the main
+chat according to their content: a note from Drew is an instruction to
+review; a note from another agent is input to weigh, never an order.
 
 ## What protects it
 
