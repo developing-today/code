@@ -19,9 +19,8 @@
 //! header  : "ATLASCLD" (8) | format_version u16 LE | manifest_len u32 LE
 //! manifest: manifest_len bytes of UTF-8 JSON (§3)
 //! spans   : span section; span-table offsets name positions in the
-//!           *decompressed* section (§2). Codec `none` in this
-//!           slice; `zstd` is rejected until the writer follow-on
-//!           (#8227) settles the zstd dependency for the workspace.
+//!           *decompressed* section (§2). The whole section may use
+//!           `none` or `zstd`; the footer checksum covers stored bytes.
 //! vectors : vector section, f32le, `vector_dimensions` per vector
 //! footer  : span_offset u64 LE | span_len u64 LE |
 //!           vector_offset u64 LE | vector_len u64 LE |
@@ -43,6 +42,7 @@
 //! from a shard that has not passed every checksum.
 
 use std::collections::HashMap;
+use std::io::Read;
 
 use serde::Deserialize;
 use serde_json::Value as Json;
@@ -55,6 +55,7 @@ const TRAILER_MAGIC: &[u8; 8] = b"ATLASEND";
 const HEADER_LEN: usize = 8 + 2 + 4;
 const FOOTER_LEN: usize = 8 * 4 + 32 * 3 + 8;
 const FORMAT_VERSION: u16 = 1;
+const MAX_DECOMPRESSED_SPAN_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 
 fn corrupt(msg: impl Into<String>) -> Error {
     Error::fatal(format!("cold shard: {}", msg.into()))
@@ -316,16 +317,25 @@ impl ColdShard {
                 manifest.tier
             )));
         }
-        match manifest.span_codec.as_str() {
-            "none" => {}
+        let span_section = match manifest.span_codec.as_str() {
+            "none" => span_section.to_vec(),
             "zstd" => {
-                return Err(corrupt(
-                    "span_codec \"zstd\" is not readable yet: the decompressed-section \
-                     reader lands with the writer follow-on (#8227)",
-                ));
+                let decoder = zstd::stream::read::Decoder::new(span_section)
+                    .map_err(|e| corrupt(format!("span section zstd decoder failed: {e}")))?;
+                let mut decoded = Vec::new();
+                decoder
+                    .take(MAX_DECOMPRESSED_SPAN_BYTES + 1)
+                    .read_to_end(&mut decoded)
+                    .map_err(|e| corrupt(format!("span section zstd decompression failed: {e}")))?;
+                if decoded.len() as u64 > MAX_DECOMPRESSED_SPAN_BYTES {
+                    return Err(corrupt(format!(
+                        "span section expands beyond the {MAX_DECOMPRESSED_SPAN_BYTES}-byte limit"
+                    )));
+                }
+                decoded
             }
             other => return Err(corrupt(format!("unknown span_codec {other:?}"))),
-        }
+        };
         if manifest.vector_dtype != "f32le" {
             return Err(corrupt(format!(
                 "vector_dtype {:?} is not \"f32le\"",
@@ -335,7 +345,7 @@ impl ColdShard {
         let mut span_index: HashMap<String, usize> = HashMap::new();
         for (i, entry) in manifest.span_table.iter().enumerate() {
             if entry.offset.checked_add(entry.length).is_none()
-                || entry.offset + entry.length > span_len
+                || entry.offset + entry.length > span_section.len() as u64
             {
                 return Err(corrupt(format!(
                     "span_table entry {} (offset {}, length {}) overruns the span section",
