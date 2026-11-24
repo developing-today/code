@@ -1,5 +1,7 @@
 # fleet — the multicall fleet binary
 
+[Program charter](../../doc/2026-11-23T18-00-00Z_design_fleet_program/charter.md) · [R&D book](book/research/overview.md) · [Implementation plan](book/research/roadmap.md)
+
 One Rust binary for the whole fleet surface (epic
 developing-today/code#5412; design note
 `../../doc/2026-11-04T11-45-48Z_design_fleet_multicall_binary/2026-11-04T11-45-48Z_design_fleet_multicall_binary.md`). This
