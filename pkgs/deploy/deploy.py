@@ -1557,7 +1557,6 @@ def _source_rev():
     return os.environ.get("DEPLOY_SOURCE_REV") or "working-tree"
 
 
-
 # --- Releases (issue #13306) -------------------------------------------
 #
 # Oracle: doc/2026-11-23T13-09-25Z_design_release-workflow-per-app-tags
@@ -1698,7 +1697,7 @@ def remote_tags(repo):
         sha, _, ref = line.partition("\t")
         if not ref.startswith("refs/tags/"):
             continue
-        name = ref[len("refs/tags/"):]
+        name = ref[len("refs/tags/") :]
         if name.endswith("^{}"):
             peeled[name[:-3]] = sha
         else:
@@ -1866,9 +1865,7 @@ def compose_attestation(app, version, commit, evidence_workflow, runs, actor, at
     """The release-attestation:v1 block (design §4): the record of
     authority, carried in the annotated tag message."""
     gate = (
-        f"main-gate + {evidence_workflow}"
-        if evidence_workflow
-        else "main-gate + none"
+        f"main-gate + {evidence_workflow}" if evidence_workflow else "main-gate + none"
     )
     lines = [
         ATTESTATION_HEADER,
@@ -1904,11 +1901,11 @@ def parse_attestation(message):
         return None
     fields = {}
     runs = []
-    for line in lines[start + 1:]:
+    for line in lines[start + 1 :]:
         if line.startswith("run: "):
             # "<workflow> <run-id> <conclusion> <head-sha>"; workflow
             # names contain spaces, so split from the right.
-            parts = line[len("run: "):].rsplit(" ", 3)
+            parts = line[len("run: ") :].rsplit(" ", 3)
             if len(parts) != 4:
                 return None
             runs.append(tuple(parts))
@@ -1968,9 +1965,7 @@ def app_evidence_workflow(registry, app):
             f"app {app!r} is not in the deploy registry (no definition "
             "names it or runs its binary)"
         )
-    workflows = {
-        d["evidenceWorkflow"] for d in candidates if d.get("evidenceWorkflow")
-    }
+    workflows = {d["evidenceWorkflow"] for d in candidates if d.get("evidenceWorkflow")}
     if len(workflows) > 1:
         raise ReleaseError(
             f"registry definitions for app {app!r} disagree on "
@@ -2082,7 +2077,6 @@ def format_releases(entries, tag_attestations):
     return lines
 
 
-
 def execute_release(
     app,
     registry,
@@ -2131,7 +2125,7 @@ def execute_release(
         existing = []
         for name in tags:
             if name.startswith(f"{app}/v"):
-                version = parse_version(name[len(app) + 2:])
+                version = parse_version(name[len(app) + 2 :])
                 if version is not None:
                     existing.append(version)
         requested = None
@@ -2148,8 +2142,7 @@ def execute_release(
             if requested_tag in tags:
                 if tags[requested_tag] == commit:
                     raise ReleaseError(
-                        f"{requested_tag} already exists at {commit}: "
-                        "already released"
+                        f"{requested_tag} already exists at {commit}: already released"
                     )
                 raise ReleaseError(
                     f"{requested_tag} already exists at "
@@ -2160,7 +2153,9 @@ def execute_release(
         app_tag = f"{app}/v{version_text}"
         if app_tag in tags:
             if tags[app_tag] == commit:
-                raise ReleaseError(f"{app_tag} already exists at {commit}: already released")
+                raise ReleaseError(
+                    f"{app_tag} already exists at {commit}: already released"
+                )
             raise ReleaseError(
                 f"{app_tag} already exists at {tags[app_tag]}, not at {commit}"
             )
@@ -2173,7 +2168,9 @@ def execute_release(
         # deleted on this pass (design §2); a tag the remote also has
         # was already refused above.
         for name in (app_tag, repo_tag):
-            rc, local_commit, _e = _git(repo, "rev-parse", f"refs/tags/{name}^{{commit}}")
+            rc, local_commit, _e = _git(
+                repo, "rev-parse", f"refs/tags/{name}^{{commit}}"
+            )
             if rc == 0 and name not in tags:
                 _git(repo, "tag", "-d", name)
                 lines.append(
@@ -2188,15 +2185,16 @@ def execute_release(
             )
         runs = judge_gate(slug, repo, commit, evidence)
         at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-        block = compose_attestation(app, version_text, commit, evidence, runs, actor, at)
+        block = compose_attestation(
+            app, version_text, commit, evidence, runs, actor, at
+        )
         app_message = f"{app} v{version_text}\n\n{block}\n"
-        repo_version = repo_tag[len("repo/v"):]
+        repo_version = repo_tag[len("repo/v") :]
         repo_block = compose_attestation(
             "repo", repo_version, commit, evidence, runs, actor, at
         )
         repo_message = (
-            f"repo release point {repo_version}\n\n"
-            f"app-tag: {app_tag}\n\n{repo_block}\n"
+            f"repo release point {repo_version}\n\napp-tag: {app_tag}\n\n{repo_block}\n"
         )
         verdicts = "; ".join(
             f"{run['workflow']} run {run['run_id']} success at {run['head_sha']}"
@@ -2212,17 +2210,33 @@ def execute_release(
             lines.append(f"  gate: {verdicts}")
             return 0, lines
         _git_checked(
-            repo, "tag", "-a", app_tag, "-m", app_message, commit,
+            repo,
+            "tag",
+            "-a",
+            app_tag,
+            "-m",
+            app_message,
+            commit,
             what=f"create tag {app_tag}",
         )
         created.append(app_tag)
         _git_checked(
-            repo, "tag", "-a", repo_tag, "-m", repo_message, commit,
+            repo,
+            "tag",
+            "-a",
+            repo_tag,
+            "-m",
+            repo_message,
+            commit,
             what=f"create tag {repo_tag}",
         )
         created.append(repo_tag)
         _git_checked(
-            repo, "push", "origin", f"refs/tags/{app_tag}", f"refs/tags/{repo_tag}",
+            repo,
+            "push",
+            "origin",
+            f"refs/tags/{app_tag}",
+            f"refs/tags/{repo_tag}",
             what="push the release tags",
         )
         record_release(
@@ -2374,7 +2388,7 @@ def _release_args(rest):
             continue
         if flag in options:
             return None, f"{flag} given more than once"
-        value = next(it, None) if arg == flag else arg[len(flag) + 1:]
+        value = next(it, None) if arg == flag else arg[len(flag) + 1 :]
         if not value:
             return None, f"{flag} needs a value"
         options[flag] = value
@@ -2413,6 +2427,7 @@ def cmd_status_all(registry, state, repo):
     for line in format_releases(entries, attestations):
         print(line)
     return 0
+
 
 # --- Command dispatch ------------------------------------------------------
 

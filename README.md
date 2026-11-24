@@ -6,6 +6,17 @@ Hello!
 - [`CONTRIBUTING.md`](CONTRIBUTING.md): how a change lands in this repository.
 - [Documentation catalog](doc/README.md): every dated record and topic, in one map.
 
+## Root symlinks
+
+The repo root carries a small set of convenience symlinks into `lib/`, `doc/`
+and `pkgs/`. The rebuild entry points are `./rebuild`, `./rebuild-simple` and
+`./rebuild-offline`; `./s` is the simple rebuild the `switch` recipe in
+`root.just` runs. Prefix stubs — partial command names such as `./reb` or
+`./offl`, kept only for tab completion — were removed in #12668, because a
+mistyped one-letter command at the root could start a full NixOS rebuild with
+no confirmation. Do not add a new root symlink without a reason: record it
+here or in the PR that adds the link.
+
 ## Contributing Information
 
 By submitting patches to this project you agree to allow them to be redistributed under the project's license,

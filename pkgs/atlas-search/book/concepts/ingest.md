@@ -22,13 +22,13 @@ The in-repo replacement for direct-to-core ingest starts with staging. A staging
 
 The v1 schema is exactly five tables, applied once to an empty database; re-provisioning over an existing set is an error, and a schema check asserts the version row and the exact table set:
 
-| Table | What it holds |
-|---|---|
-| `_schema_version` | One row: the schema version, 1. |
-| `items` | One row per staged item — a message, note, or document fragment — with its unit id, kind, source, text, recorded sensitivity, and an open JSON metadata bag. |
-| `chunks_raw` | The item's raw chunks: item id, position, text, and content hash. Raw and un-embedded, by design. |
-| `notes` | Free working notes against the unit, for the life of the unit. |
-| `kv` | Key/value scratch: cursors, checkpoints, producer bookkeeping. Last write wins. |
+| Table             | What it holds                                                                                                                                                |
+| ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `_schema_version` | One row: the schema version, 1.                                                                                                                              |
+| `items`           | One row per staged item — a message, note, or document fragment — with its unit id, kind, source, text, recorded sensitivity, and an open JSON metadata bag. |
+| `chunks_raw`      | The item's raw chunks: item id, position, text, and content hash. Raw and un-embedded, by design.                                                            |
+| `notes`           | Free working notes against the unit, for the life of the unit.                                                                                               |
+| `kv`              | Key/value scratch: cursors, checkpoints, producer bookkeeping. Last write wins.                                                                              |
 
 Two properties carry the design. First, a staging database never stores vectors. Embedding happens once, at promotion, so staging stays write-cheap and no producer needs the model or the runtime described in [Embeddings: Snowflake Arctic and the parity contract](embeddings.md). Second, writes are unmediated: sensitivity is recorded on each item, not enforced at write time. Enforcement belongs to classification and the promotion gate, below — staging's job is to accept work faithfully, not to judge it.
 

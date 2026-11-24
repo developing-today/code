@@ -67,7 +67,7 @@ use crate::{
 /// ```text
 /// $ id repl
 /// id repl (local-serve)
-/// commands: list, put, get, cat, gethash, help, quit
+/// commands: list, put, get, cat, gethash, delete, rename, copy, send, find, search, show, peek, tag, tags, peers, migrate-tags, help, quit
 /// input: $(...), `...`, |>, <<<, <<EOF supported
 /// > list
 /// abc123...  config.json
@@ -90,7 +90,9 @@ use crate::{
 pub async fn run_repl(target_node: Option<String>) -> Result<()> {
     let mut ctx = ReplContext::new(target_node).await?;
     println!("id repl ({})", ctx.mode_str());
-    println!("commands: list, put, get, cat, gethash, peers, help, quit");
+    println!(
+        "commands: list, put, get, cat, gethash, delete, rename, copy, send, find, search, show, peek, tag, tags, peers, migrate-tags, help, quit"
+    );
     println!("input: $(...), `...`, |>, <<<, <<EOF supported");
 
     let mut rl = DefaultEditor::new()?;
@@ -567,6 +569,9 @@ fn print_help() {
     println!("  --exclude PAT          - Exclude matches containing PAT (repeatable)");
     println!("  --dir <DIR>            - Save matches to directory");
     println!("  --file, >FILE          - Save to file");
+    println!(
+        "  --format tag|group|union - Output format (default: union; the command line defaults to tag)"
+    );
     println!();
     println!("peek flags:");
     println!("  --all                  - Peek all matches (excerpt of each)");

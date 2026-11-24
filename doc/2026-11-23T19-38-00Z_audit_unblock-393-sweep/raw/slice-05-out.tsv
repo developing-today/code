@@ -1,0 +1,39 @@
+18994	developing-today/code#9480	STILL BLOCKED	-	fresh gh 2026-11-23: #9480 OPEN, deps #9443 OPEN, #9446 OPEN	unblock when #9443 (DEP-03) and #9446 (DSP-04) close
+19007	developing-today/code#9494	STILL BLOCKED	-	fresh gh 2026-11-23: #9494 OPEN, deps #9492 OPEN, #9513 OPEN, #9493 OPEN	unblock when #9492, #9513 and #9493 close
+19020	developing-today/code#9510	STILL BLOCKED	-	fresh gh 2026-11-23: #9510 OPEN, deps #9206 OPEN, #9461 OPEN, #9508 OPEN	unblock when #9206, #9461 and #9508 close
+19034	developing-today/code#9563	STILL BLOCKED	-	fresh gh 2026-11-23: #9563 OPEN, gate #1342 OPEN	unblock when #1342 controlled A/B mechanism completes/closes
+19069	developing-today/code#9935	STILL BLOCKED	-	fresh gh 2026-11-23: #9935 OPEN, deps #3898 OPEN, #3401 OPEN	unblock when design Phases 0-2 deps #3898 and #3401 close
+19092	developing-today/code#10042	STILL BLOCKED	-	fresh gh 2026-11-23: #10042 OPEN, dep #9999 OPEN	unblock when #9999 merges or closes
+19095	developing-today/code#10050	STILL BLOCKED	-	fresh gh 2026-11-23: #10050 OPEN, dep #10049 OPEN	unblock when v3 step 1 #10049 closes
+19096	developing-today/code#10051	STILL BLOCKED	-	fresh gh 2026-11-23: #10051 OPEN, deps #10049 OPEN, #8299 OPEN, #8301 OPEN	unblock when #10049, #8299 and #8301 close
+19098	developing-today/code#10053	STILL BLOCKED	-	fresh gh 2026-11-23: #10053 OPEN, deps #10051 OPEN, #10052 OPEN, #8302 OPEN	unblock when #10051, #10052 and #8302 close
+19099	developing-today/code#10054	STILL BLOCKED	-	fresh gh 2026-11-23: #10054 OPEN, deps #10050 OPEN, #10051 OPEN, #10052 OPEN, #10053 OPEN	unblock when v3 steps 2-5 (#10050-#10053) close
+19114	developing-today/code#10154	STILL BLOCKED	-	fresh gh 2026-11-23: #10154 OPEN, #9083 CLOSED but #9092 OPEN	unblock when #9092 delivers its contract or closes
+19115	developing-today/code#10155	STILL BLOCKED	-	fresh gh 2026-11-23: #10155 OPEN, #9083 CLOSED but #9084 OPEN	unblock when #9084 closes
+19116	developing-today/code#10156	STILL BLOCKED	-	fresh gh 2026-11-23: #10156 OPEN, dep #9084 OPEN	unblock when #9084 delivers the generation fence or closes
+19139	developing-today/code#10188	DONE	cancelled; read-back status cancelled	fresh gh 2026-11-23: #10188 CLOSED/COMPLETED; deps #10153, #10164, #10165 all CLOSED	work already landed / issue closed
+19140	developing-today/code#10189	STILL BLOCKED	-	fresh gh 2026-11-23: #10189 OPEN, #10172 CLOSED but #10173 OPEN	unblock when #10173 delivers its contract/implementation or closes
+19152	developing-today/code#10213	DONE	cancelled; read-back status cancelled	fresh gh 2026-11-23: #10213 CLOSED/COMPLETED (dep #9082 still OPEN but issue itself closed)	work already landed / issue closed
+19165	developing-today/code#10229	STILL BLOCKED	-	fresh gh 2026-11-23: #10229 OPEN; packet blockers #10160, #10184, #10210 all CLOSED, but issue body hard blockers B20, B21, 9110-02 remain unreconciled per latest agent note on #10229 (2026-11-22)	unblock when the B20/B21/9110-02 body blockers are confirmed/reconciled with the packet
+19172	developing-today/code#10236	STILL BLOCKED	-	fresh gh 2026-11-23: #10236 OPEN, native blocker #10221 CLOSED, but contingent start trigger absent per #10236 preflight comment 2026-11-22	unblock when an external RDF/interoperability consumer or product requirement makes language selection actionable
+19187	developing-today/code#10252	DONE	cancelled; read-back status cancelled	fresh gh 2026-11-23: #10252 CLOSED/COMPLETED; deps #10196 CLOSED, #9127 CLOSED	work already landed / issue closed
+19191	developing-today/code#10256	DONE	cancelled; read-back status cancelled	fresh gh 2026-11-23: #10256 CLOSED/COMPLETED; deps #10226, #10250, #9083 all CLOSED	work already landed / issue closed
+19195	developing-today/code#10262	DONE	cancelled; read-back status cancelled	fresh gh 2026-11-23: #10262 CLOSED/COMPLETED; dep #10248 CLOSED	work already landed / issue closed
+19199	developing-today/code#10266	STILL BLOCKED	-	fresh gh 2026-11-23: #10266 OPEN, #10250 CLOSED but #10231 OPEN	unblock when #10231 closes
+19200	developing-today/code#10267	STILL BLOCKED	-	fresh gh 2026-11-23: #10267 OPEN; named blocker #9085 still OPEN (#10196, #10233, #10247 CLOSED)	unblock when remaining native blockers incl #9085 close
+19209	developing-today/code#10277	DONE	cancelled; read-back status cancelled	fresh gh 2026-11-23: #10277 CLOSED/COMPLETED; dep #10257 CLOSED	work already landed / issue closed
+19211	developing-today/code#10279	STILL BLOCKED	-	fresh gh 2026-11-23: #10279 OPEN, #10249 CLOSED but #10266 OPEN	unblock when #10266 closes
+19212	developing-today/code#10280	DONE	cancelled; read-back status cancelled	fresh gh 2026-11-23: #10280 CLOSED/COMPLETED; deps #10260 CLOSED, #10273 CLOSED	work already landed / issue closed
+19215	developing-today/code#10283	DONE	cancelled; read-back status cancelled	fresh gh 2026-11-23: #10283 CLOSED/COMPLETED; deps #10278 CLOSED, #9083 CLOSED	work already landed / issue closed
+19339	developing-today/code#10663	STILL BLOCKED	-	fresh gh 2026-11-23: #10663 OPEN, deps #8299 OPEN, #10049 OPEN	unblock when #8299 and #10049 close
+19340	developing-today/code#10664	STILL BLOCKED	-	fresh gh 2026-11-23: #10664 OPEN, deps #10663 OPEN, #10052 OPEN	unblock when #10663 and #10052 close
+19341	developing-today/code#10665	STILL BLOCKED	-	fresh gh 2026-11-23: #10665 OPEN, deps #10663 OPEN, #10664 OPEN, #10054 OPEN	unblock when #10663, #10664 and #10054 close
+19343	developing-today/code#10673	STALE BLOCK	unblocked; read-back status queued	decision recorded on #10673 comment 7082696278 (2026-11-22) authorized throwaway-transfer payload capture as agent work, removing the person-action block	payload capture is now part of the work itself, not a precondition
+19345	developing-today/code#10694	STILL BLOCKED	-	fresh gh 2026-11-23: #10694 OPEN, dep #10693 OPEN	unblock when P1 #10693 closes
+19346	developing-today/code#10695	STILL BLOCKED	-	fresh gh 2026-11-23: #10695 OPEN, dep #10693 OPEN	unblock when P1 #10693 closes
+19347	developing-today/code#10696	STILL BLOCKED	-	fresh gh 2026-11-23: #10696 OPEN, deps #10693 OPEN, #10694 OPEN	unblock when #10693 and #10694 close
+19348	developing-today/code#10697	STILL BLOCKED	-	fresh gh 2026-11-23: #10697 OPEN, deps #10693 OPEN, #10696 OPEN	unblock when #10693 and #10696 close
+19349	developing-today/code#10698	STILL BLOCKED	-	fresh gh 2026-11-23: #10698 OPEN, deps #10693 OPEN, #10694 OPEN	unblock when #10693 and #10694 close
+19353	developing-today/code#10708	STILL BLOCKED	-	fresh gh 2026-11-23: #10708 OPEN, dep #10706 OPEN	unblock when #10706 closes
+19354	developing-today/code#10709	STILL BLOCKED	-	fresh gh 2026-11-23: #10709 OPEN, dep #10708 OPEN	unblock when #10708 closes
+19355	developing-today/code#10712	STILL BLOCKED	-	fresh gh 2026-11-23: #10712 OPEN, #10707 CLOSED but #10709 OPEN	unblock when #10709 reaches a terminal landed state

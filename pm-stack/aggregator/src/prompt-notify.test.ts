@@ -39,15 +39,15 @@ describe("promptCompletionTransition (#10035 S6)", () => {
   });
 
   test("fires on running -> failed with the notify opt-in", () => {
-    expect(
-      promptCompletionTransition(record({ status: "running" }), record({ status: "failed", error: "boom" })),
-    ).toBe(true);
+    expect(promptCompletionTransition(record({ status: "running" }), record({ status: "failed", error: "boom" }))).toBe(
+      true,
+    );
   });
 
   test("never fires without the per-submission opt-in", () => {
-    expect(
-      promptCompletionTransition(record({ notify: false }), record({ status: "answered", notify: false })),
-    ).toBe(false);
+    expect(promptCompletionTransition(record({ notify: false }), record({ status: "answered", notify: false }))).toBe(
+      false,
+    );
   });
 
   test("never re-fires for a re-patch of a terminal record", () => {
@@ -128,12 +128,7 @@ describe("notifyPromptCompletion (#10035 S6)", () => {
       if (target.endpoint.endsWith("/gone")) return { ok: false, gone: true, status: 410, error: "gone" };
       return { ok: false, gone: false, status: 500, error: "vendor error" };
     };
-    const summary = await notifyPromptCompletion(
-      store,
-      record({ status: "answered", answer: "done" }),
-      ORIGIN,
-      send,
-    );
+    const summary = await notifyPromptCompletion(store, record({ status: "answered", answer: "done" }), ORIGIN, send);
     expect(summary).toEqual({ subscriptions: 5, eligible: 3, sent: 1, gone: 1, errors: 1 });
     expect(sends).toEqual([
       { class: "prompt", objectRef: "prompt:abc", outcome: "sent" },

@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -348,6 +349,40 @@ func TestProfileFallbackUsesProviderKeyedSettingsInOrder(t *testing.T) {
 	}
 	if firstHits != 1 || secondHits != 1 {
 		t.Fatalf("attempts first=%d second=%d, want 1 each", firstHits, secondHits)
+	}
+}
+
+func TestProfileStopsOnPaymentRequired(t *testing.T) {
+	var firstHits, secondHits atomic.Int32
+	first := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		firstHits.Add(1)
+		http.Error(w, "synthetic billing response", http.StatusPaymentRequired)
+	}))
+	defer first.Close()
+	second := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		secondHits.Add(1)
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer second.Close()
+
+	provider, err := Resolve(Config{
+		DefaultModel:         "ordered",
+		ProviderSettingsJSON: `{"first":{"baseURL":"` + first.URL + `"},"second":{"baseURL":"` + second.URL + `"}}`,
+		ProfilesJSON:         `{"ordered":{"models":["first/test","second/test"]}}`,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = provider.Generate(context.Background(), Request{Messages: []Message{{Role: "user", Content: "test"}}})
+	var paymentRequired *PaymentRequiredError
+	if !errors.As(err, &paymentRequired) || paymentRequired.Provider != "first" {
+		t.Fatalf("want payment-required error for first provider, got %v", err)
+	}
+	if firstHits.Load() != 1 || secondHits.Load() != 0 {
+		t.Fatalf("attempts first=%d second=%d, want 1 and 0", firstHits.Load(), secondHits.Load())
+	}
+	if strings.Contains(err.Error(), "synthetic billing response") {
+		t.Fatal("provider billing response appeared in the model error")
 	}
 }
 

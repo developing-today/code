@@ -12,8 +12,8 @@ pipeline, both data backends, the shard fan-out, staging and promotion,
 classification, evaluation, traces and feedback. Its crate documentation
 states the shape plainly: a `SearchBackend` — the Turso HTTPS pipeline API,
 or a local SQLite publish file — gathers a full-text pool and a vector pool
-with the caller's sensitivity ceiling and filters applied *inside the branch
-queries, before any ranking*, and `run_search` fuses the pools with
+with the caller's sensitivity ceiling and filters applied _inside the branch
+queries, before any ranking_, and `run_search` fuses the pools with
 reciprocal rank fusion under the versioned query-parameter contract.
 
 The library is synchronous. Backends are `Send + Sync` behind interior
@@ -34,71 +34,71 @@ fixtures recorded from the production Python module.
 
 ### Retrieval
 
-| Module | Job |
-|---|---|
-| `search` | Search orchestration and envelope rendering: `run_search`, `run_get_chunk`, the search options and modes |
-| `fusion` | The FTS match expression and reciprocal rank fusion over the two branch pools |
+| Module    | Job                                                                                                                                                                                 |
+| --------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `search`  | Search orchestration and envelope rendering: `run_search`, `run_get_chunk`, the search options and modes                                                                            |
+| `fusion`  | The FTS match expression and reciprocal rank fusion over the two branch pools                                                                                                       |
 | `filters` | The filter set, the sensitivity ceiling type, and the branch and detail SQL builders. The SQL strings are the contract with the database; parity fixtures record them byte for byte |
-| `join` | The span join and reconstruction assembler: assembling a paragraph of a version from its span occurrences, byte for byte, with cold and retired (tombstone) rendering |
+| `join`    | The span join and reconstruction assembler: assembling a paragraph of a version from its span occurrences, byte for byte, with cold and retired (tombstone) rendering               |
 
 ### Embedding
 
-| Module | Job |
-|---|---|
-| `embed` | Query and document embedding at the library boundary: the `query: ` prompt, truncation and renormalisation on the query side; prompt-free embedding on the document side |
+| Module        | Job                                                                                                                                                                                            |
+| ------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `embed`       | Query and document embedding at the library boundary: the `query: ` prompt, truncation and renormalisation on the query side; prompt-free embedding on the document side                       |
 | `embed_cache` | The query-embedding cache: an in-memory tier plus an optional shared Turso tier, keyed by model identity and normalised query text. See [Data stores and schemas](../reference/data-stores.md) |
 
 ### Corpus
 
-| Module | Job |
-|---|---|
-| `shards` | The core tier as a set of scan shards: discovery, naming, tiers, manifests, fan-out scan, content stores and the local-file transport (submodules `shards::scan`, `shards::content`, `shards::local`) |
-| `turso` | The Turso backend: the libsql HTTPS pipeline against the hosted DB with a read-only token. Every statement it builds is a `SELECT` |
-| `local` | The local backend: a SQLite publish file, schema-normalising temporary views, and vector side stores joined by content hash with an in-process cosine scan |
-| `backend` | The `SearchBackend` seam both backends implement: branch pools, chunk details, neighbours and message reads, with the ceiling enforced inside branch construction |
-| `manifest` | The classification manifest: schema, validation and loader for the table that declares the filterable dimensions, with the built-in manifest as fallback and validation reference |
-| `boundary` | Source-boundary-safe embed splitting: the splitter and the classifier share source offsets, every declared boundary splits, and uncertain text becomes one secret-bearing chunk |
+| Module       | Job                                                                                                                                                                                                                                        |
+| ------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `shards`     | The core tier as a set of scan shards: discovery, naming, tiers, manifests, fan-out scan, content stores and the local-file transport (submodules `shards::scan`, `shards::content`, `shards::local`)                                      |
+| `turso`      | The Turso backend: the libsql HTTPS pipeline against the hosted DB with a read-only token. Every statement it builds is a `SELECT`                                                                                                         |
+| `local`      | The local backend: a SQLite publish file, schema-normalising temporary views, and vector side stores joined by content hash with an in-process cosine scan                                                                                 |
+| `backend`    | The `SearchBackend` seam both backends implement: branch pools, chunk details, neighbours and message reads, with the ceiling enforced inside branch construction                                                                          |
+| `manifest`   | The classification manifest: schema, validation and loader for the table that declares the filterable dimensions, with the built-in manifest as fallback and validation reference                                                          |
+| `boundary`   | Source-boundary-safe embed splitting: the splitter and the classifier share source offsets, every declared boundary splits, and uncertain text becomes one secret-bearing chunk                                                            |
 | `disclosure` | Disclosure contexts: the destination-side half of the classification model. The caller ceiling and the destination context's ceiling intersect; neither widens the other, and enforcement happens at the final output boundary in `search` |
 
 ### Ingest
 
-| Module | Job |
-|---|---|
-| `stage` | Staging databases and the staging-unit registry: provisioning, staged artifacts, classified staging, and the promotion transition |
-| `gate` | The staging-shard ingest gate's durable record and state machine: five ordered stages (write, classify, dedup, provenance check, publish), enumerated reason codes, and a strike limit of 3 per reason before a batch needs review |
-| `sweep` | The source sweep: candidate filtering, guardrails, headroom, state, locking and run reporting for periodic ingest scheduling |
-| `github_comments` | GitHub comments as a corpus source: comment documents, provenance marks and watermarks |
-| `trace_ingest` | Query traces as a searchable corpus source, plus trace retention and compaction |
+| Module            | Job                                                                                                                                                                                                                                |
+| ----------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `stage`           | Staging databases and the staging-unit registry: provisioning, staged artifacts, classified staging, and the promotion transition                                                                                                  |
+| `gate`            | The staging-shard ingest gate's durable record and state machine: five ordered stages (write, classify, dedup, provenance check, publish), enumerated reason codes, and a strike limit of 3 per reason before a batch needs review |
+| `sweep`           | The source sweep: candidate filtering, guardrails, headroom, state, locking and run reporting for periodic ingest scheduling                                                                                                       |
+| `github_comments` | GitHub comments as a corpus source: comment documents, provenance marks and watermarks                                                                                                                                             |
+| `trace_ingest`    | Query traces as a searchable corpus source, plus trace retention and compaction                                                                                                                                                    |
 
 ### Classification
 
-| Module | Job |
-|---|---|
+| Module           | Job                                                                                                                                                                                                                                                                                                   |
+| ---------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `classification` | The classification record model: records, provenance, and the effective classification composed from records. Unknown, missing or malformed sensitivity fails closed to secret-bearing. The one module with no module-doc header and no `lib.rs` re-export — reach it as `atlas_core::classification` |
-| `classify` | The classification operating procedure: the unclassified-remainder sweep and schema-change review. The `atlas-classify` binary is its front end |
-| `detect` | Source detection: passes over plain trees, git trees and row stores, producing a versioned ledger of per-path and per-table verdicts |
-| `c8_fingerprint` | The C8 error-investigation fingerprint core: error-string normalisation, fingerprints, occurrence grouping and evidence bundles. Pure types and derivations; no telemetry search |
-| `c8_profile` | The C8 report and page metadata profile: source and page records, typed links and URL sanitising. Likewise seam-independent |
+| `classify`       | The classification operating procedure: the unclassified-remainder sweep and schema-change review. The `atlas-classify` binary is its front end                                                                                                                                                       |
+| `detect`         | Source detection: passes over plain trees, git trees and row stores, producing a versioned ledger of per-path and per-table verdicts                                                                                                                                                                  |
+| `c8_fingerprint` | The C8 error-investigation fingerprint core: error-string normalisation, fingerprints, occurrence grouping and evidence bundles. Pure types and derivations; no telemetry search                                                                                                                      |
+| `c8_profile`     | The C8 report and page metadata profile: source and page records, typed links and URL sanitising. Likewise seam-independent                                                                                                                                                                           |
 
 ### Quality
 
-| Module | Job |
-|---|---|
-| `eval` | The offline retrieval evaluation harness: saved rankings from any signal scored against judged qrels (nDCG@10, Recall@100, Recall@1000, MRR@10), with dev/test split discipline |
-| `feedback` | Feedback capture in the `atlas-feedback/v1` schema: votes attached to a query and chunk identity, the append-only JSONL sink, and the derived supersede view |
-| `feedback_normalise` | The normalisation pass over raw feedback: categories, summaries, self-feedback detection and requester weighting, emitted as derived records — the raw store is never rewritten |
-| `trace` | Query-trace capture in the `atlas-query-trace/v1` schema. Every executed search mints a query id and persists one trace record before the response is released; a sink failure is a search failure |
-| `trace_stats` | Trace statistics and the weekly report: windowed aggregation over traces and feedback votes, with the requester weights (the owner and users at 1.0, agents at 0.25, anonymous at 0.1) |
+| Module               | Job                                                                                                                                                                                                |
+| -------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `eval`               | The offline retrieval evaluation harness: saved rankings from any signal scored against judged qrels (nDCG@10, Recall@100, Recall@1000, MRR@10), with dev/test split discipline                    |
+| `feedback`           | Feedback capture in the `atlas-feedback/v1` schema: votes attached to a query and chunk identity, the append-only JSONL sink, and the derived supersede view                                       |
+| `feedback_normalise` | The normalisation pass over raw feedback: categories, summaries, self-feedback detection and requester weighting, emitted as derived records — the raw store is never rewritten                    |
+| `trace`              | Query-trace capture in the `atlas-query-trace/v1` schema. Every executed search mints a query id and persists one trace record before the response is released; a sink failure is a search failure |
+| `trace_stats`        | Trace statistics and the weekly report: windowed aggregation over traces and feedback votes, with the requester weights (the owner and users at 1.0, agents at 0.25, anonymous at 0.1)             |
 
 ### Support
 
-| Module | Job |
-|---|---|
-| `types` | The shared value and row model between the Turso pipeline encoding and rusqlite: values, rows, statements, branch hits and pools, chunk details, and the canonical defaults (the default model and the default vector table, `vec_snowflake_m_v2_768_f32`) |
-| `error` | The error type and the crate's `Result` alias; see the error vocabulary below |
-| `aggregate` | The staging aggregator: embed-at-promotion. It reads one staging unit, embeds every chunk document-side, writes one new core scan shard, stamps provenance and promotes the unit through the registry |
-| `owner_inventory` | The owner inventory matcher (`atlas-owner-inventory/v1`): a narrow, fail-closed component whose findings carry a class and an opaque record id, never a matched value |
-| `shingles` | Token shingles and the Jaccard rescore signal: a third signal applied only at rescore time over the fused candidate union, never a retrieval scorer. Off by default in the shipped parameters |
+| Module            | Job                                                                                                                                                                                                                                                        |
+| ----------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `types`           | The shared value and row model between the Turso pipeline encoding and rusqlite: values, rows, statements, branch hits and pools, chunk details, and the canonical defaults (the default model and the default vector table, `vec_snowflake_m_v2_768_f32`) |
+| `error`           | The error type and the crate's `Result` alias; see the error vocabulary below                                                                                                                                                                              |
+| `aggregate`       | The staging aggregator: embed-at-promotion. It reads one staging unit, embeds every chunk document-side, writes one new core scan shard, stamps provenance and promotes the unit through the registry                                                      |
+| `owner_inventory` | The owner inventory matcher (`atlas-owner-inventory/v1`): a narrow, fail-closed component whose findings carry a class and an opaque record id, never a matched value                                                                                      |
+| `shingles`        | Token shingles and the Jaccard rescore signal: a third signal applied only at rescore time over the fused candidate union, never a retrieval scorer. Off by default in the shipped parameters                                                              |
 
 Four binaries live in this crate's `src/bin/` — `atlas-classify`,
 `atlas-eval`, `atlas-github-comments` and `atlas-sweep` — each a thin front
@@ -109,20 +109,20 @@ end over the module of the same job. Three examples (`live_smoke`,
 
 The types a caller actually constructs or matches on:
 
-| Type | Module | What it is |
-|---|---|---|
-| `SearchOptions` | `search` | One search request: the query, the mode, `k` (default 10), the per-branch `pool` (default 100), grouping, `expand` (default 0), the model, the truncation width (0 = full), the vector backend (default scan), the query parameters, and the disclosure context (default `PublicSurface` — fail-closed at the library layer). Built with `SearchOptions::new(query)` |
-| `SearchMode` | `search` | `Fts`, `Vector` or `Hybrid` (the default) |
-| `Filters` | `filters` | The classification filters and the caller ceiling: kind, topic, project and client lists, the maximum sensitivity, and the since/until dates. Construction validates, with the Python's fatal texts |
-| `Sensitivity` | `filters` | The ceiling ladder `Shareable &lt; Personal &lt; LocalOnly &lt; SecretBearing`; the ordering *is* the security ordering. Default `Personal` |
-| `DisclosureContext` | `disclosure` | The destination context — `FleetInternal`, `HostedPerUser`, `PublicSurface`, `LocalOwner` — each with its own ceiling; `effective_ceiling(grant)` is the minimum of the two |
-| `SearchBackend` (trait) | `backend` | The data-source seam: `branch_pools`, `chunk_details`, `neighbors`, `message_chunks`, `message`. Implementations: `TursoBackend` and `LocalBackend` |
-| `QueryEmbedder` / `DocEmbedder` (traits), `AtlasEmbedder` | `embed` | The embedding seam. `AtlasEmbedder` wraps the `atlas-embed` embedder behind a mutex and implements both traits; fixed-vector embedders stand in for tests and fixtures |
-| `BranchPools`, `BranchHit`, `ChunkDetail` | `types` | What a backend returns: the FTS and vector pools (a vector hit carries its cosine distance; an FTS hit carries none), and the resolved detail row for a chunk, including its effective sensitivity |
-| `Error`, `Result` | `error` | The error vocabulary, below |
-| `Manifest`, `LoadedManifest` | `manifest` | The classification manifest and its loaded form, with the source it came from |
-| `Registry`, `StagingUnit` | `stage` | The staging registry handle and one unit's record |
-| `GateRecord` | `gate` | One batch's gate audit record. The gate types are public in their module but are not re-exported at the crate root |
+| Type                                                      | Module       | What it is                                                                                                                                                                                                                                                                                                                                                           |
+| --------------------------------------------------------- | ------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `SearchOptions`                                           | `search`     | One search request: the query, the mode, `k` (default 10), the per-branch `pool` (default 100), grouping, `expand` (default 0), the model, the truncation width (0 = full), the vector backend (default scan), the query parameters, and the disclosure context (default `PublicSurface` — fail-closed at the library layer). Built with `SearchOptions::new(query)` |
+| `SearchMode`                                              | `search`     | `Fts`, `Vector` or `Hybrid` (the default)                                                                                                                                                                                                                                                                                                                            |
+| `Filters`                                                 | `filters`    | The classification filters and the caller ceiling: kind, topic, project and client lists, the maximum sensitivity, and the since/until dates. Construction validates, with the Python's fatal texts                                                                                                                                                                  |
+| `Sensitivity`                                             | `filters`    | The ceiling ladder `Shareable &lt; Personal &lt; LocalOnly &lt; SecretBearing`; the ordering _is_ the security ordering. Default `Personal`                                                                                                                                                                                                                          |
+| `DisclosureContext`                                       | `disclosure` | The destination context — `FleetInternal`, `HostedPerUser`, `PublicSurface`, `LocalOwner` — each with its own ceiling; `effective_ceiling(grant)` is the minimum of the two                                                                                                                                                                                          |
+| `SearchBackend` (trait)                                   | `backend`    | The data-source seam: `branch_pools`, `chunk_details`, `neighbors`, `message_chunks`, `message`. Implementations: `TursoBackend` and `LocalBackend`                                                                                                                                                                                                                  |
+| `QueryEmbedder` / `DocEmbedder` (traits), `AtlasEmbedder` | `embed`      | The embedding seam. `AtlasEmbedder` wraps the `atlas-embed` embedder behind a mutex and implements both traits; fixed-vector embedders stand in for tests and fixtures                                                                                                                                                                                               |
+| `BranchPools`, `BranchHit`, `ChunkDetail`                 | `types`      | What a backend returns: the FTS and vector pools (a vector hit carries its cosine distance; an FTS hit carries none), and the resolved detail row for a chunk, including its effective sensitivity                                                                                                                                                                   |
+| `Error`, `Result`                                         | `error`      | The error vocabulary, below                                                                                                                                                                                                                                                                                                                                          |
+| `Manifest`, `LoadedManifest`                              | `manifest`   | The classification manifest and its loaded form, with the source it came from                                                                                                                                                                                                                                                                                        |
+| `Registry`, `StagingUnit`                                 | `stage`      | The staging registry handle and one unit's record                                                                                                                                                                                                                                                                                                                    |
+| `GateRecord`                                              | `gate`       | One batch's gate audit record. The gate types are public in their module but are not re-exported at the crate root                                                                                                                                                                                                                                                   |
 
 Most workhorse types are re-exported at the crate root (`atlas_core::run_search`,
 `atlas_core::Filters`, `atlas_core::TursoBackend` and so on). The recorded
@@ -137,11 +137,11 @@ message text cap of 50,000 characters applied to message payloads.
 
 The library has exactly three errors, in `atlas_core::Error`:
 
-| Variant | Meaning | Exit code at the `atlas-search` binary |
-|---|---|---|
-| `Error::Fatal(String)` | A fatal that mirrors a Python `die()` text: validation failures, unresolvable configuration, a missing model or token. Constructed with `Error::fatal(...)` | `2` |
-| `Error::Backend(String)` | A backend or transport failure: the pipeline request, the database, the local file. Constructed with `Error::backend(...)` | `1` |
-| `Error::Embed(String)` | An embedding failure: the model, the runtime, a zero query vector | `1` |
+| Variant                  | Meaning                                                                                                                                                     | Exit code at the `atlas-search` binary |
+| ------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------- |
+| `Error::Fatal(String)`   | A fatal that mirrors a Python `die()` text: validation failures, unresolvable configuration, a missing model or token. Constructed with `Error::fatal(...)` | `2`                                    |
+| `Error::Backend(String)` | A backend or transport failure: the pipeline request, the database, the local file. Constructed with `Error::backend(...)`                                  | `1`                                    |
+| `Error::Embed(String)`   | An embedding failure: the model, the runtime, a zero query vector                                                                                           | `1`                                    |
 
 `atlas_core::Result&lt;T&gt;` is the crate-wide alias over this error. The
 exit-code column is the binary crate's mapping, not the library's — the

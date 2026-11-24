@@ -41,9 +41,10 @@ TTL, 3 for a token-file or bind failure. The broker's own token file is
 ## The serving gate: 503 until loaded
 
 `serving` is true only once at least one refresh has _succeeded_. Before
-that, `/health` answers **503** with `ok:false, serving:false` (plus
-`refresh_error` when a refresh has failed), and `GET /secret/<name>`
-answers 503 `{error: "secrets not loaded yet", …}`. A live process whose
+that, public `/health` answers **503** with `ok:false, serving:false`.
+An authenticated `GET /secret/<name>` answers 503 with
+`error: "secrets not loaded yet"` and includes `refresh_error` when a
+refresh has failed. A live process whose
 `bws` cannot run is _not_ serving, and health says so: not-loaded is a
 distinct, diagnosable state, not a 404. Clients key on this gate.
 
@@ -76,9 +77,10 @@ during a refresh, and a failed refresh keeps the old values. One refresh is
 loudly rather than silently dropping a secret), then one `bws secret get`
 per secret, fetched **8-way parallel** (an 8-worker pool over the name
 list). Each `bws` child has a deadline, so a hung child fails its fetch
-instead of wedging the refresh — and the `refreshing` flag — forever. A
-second refresh requested while one is in progress is refused
-(`refresh already in progress`).
+instead of wedging the refresh — and the `refreshing` flag — forever. The authenticated
+`POST /refresh` acknowledges the request with 202. If a sweep is already
+running, the worker skips the overlapping sweep. Use `last_refresh_unix`
+and `refreshing` on `/health` to follow progress.
 
 A refresh installs **per secret**, not all-or-nothing: fetches that succeed
 land immediately with the batch's install time; a secret whose fetch fails

@@ -126,9 +126,9 @@ describe("aggregator outage queueing (#9608)", () => {
     // A muse claim has no Access derivation, so it can never be confirmed.
     expect(outageQueueEligible(newAction({ author: { kind: "muse", id: "muse", label: "Muse" } }))).toBe(false);
     // The aggregator-applied view verbs cannot honour their contract from a queue.
-    expect(
-      outageQueueEligible(newAction({ kind: "preference", verb: "delete-view", payload: { viewId: "v1" } })),
-    ).toBe(false);
+    expect(outageQueueEligible(newAction({ kind: "preference", verb: "delete-view", payload: { viewId: "v1" } }))).toBe(
+      false,
+    );
     expect(
       outageQueueEligible(
         newAction({ kind: "preference", verb: "save-view", payload: { viewName: "V", viewFilters: {} } }),

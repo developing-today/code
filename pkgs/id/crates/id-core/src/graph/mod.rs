@@ -13,6 +13,7 @@ pub mod comment_projection;
 pub mod cross_signing;
 pub mod cursor;
 pub mod delegation;
+pub mod feed_cursor;
 pub mod query;
 pub mod record;
 pub mod social;

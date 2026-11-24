@@ -8,10 +8,10 @@ Atlas tracks backup completion, corpus row counts and publication freshness sepa
 
 The wiring lives in **`nixos/home/laptop-backups.nix`**, with the script vendored beside it as `nixos/home/atlas-backup.sh` and packaged as `atlas-backup` (`pkgs.writeShellScriptBin`). It was migrated from a sandbox cron on 2026-10-30 under the laptop-only execution rule (#1515).
 
-| Unit | Shape |
-|---|---|
+| Unit                   | Shape                                                                                                                                                                                                             |
+| ---------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `atlas-backup.service` | systemd **user** service, `Type = oneshot`, `ExecStart` = the packaged `atlas-backup`, `TimeoutStartSec = 90m`, description `Daily atlas.db backup - local + R2 + Drive (code#1515)`. Gated on `cfg.atlas.enable` |
-| `atlas-backup.timer` | systemd **user** timer, `OnCalendar` from the option `services.laptop-backups.atlas.onCalendar`, **default `04:47`**, `Persistent = true`, `RandomizedDelaySec = 15m`, `WantedBy = [timers.target]` |
+| `atlas-backup.timer`   | systemd **user** timer, `OnCalendar` from the option `services.laptop-backups.atlas.onCalendar`, **default `04:47`**, `Persistent = true`, `RandomizedDelaySec = 15m`, `WantedBy = [timers.target]`               |
 
 The fleet schedule registry corroborates the live shape: `atlas-backup.timer` at `OnCalendar=*-*-* 04:47:00` driving `atlas-backup.service` on the laptop (user systemd), dated 2026-11-04. Because the timer is persistent, a night the laptop is asleep is caught up on wake rather than skipped. Note what this timer is not: it is the **only** laptop schedule in the Atlas story — ingest has no timer; see the census section below.
 
@@ -53,11 +53,11 @@ Issue **#3125** is the provenance and occurrence-registry issue. Its census does
 
 The October record also describes 29 topic shards of that corpus. Shard copies must be reconciled separately from the canonical count. Its sensitivity split, from the same record, cross-checks the total exactly:
 
-| Tier | Shards | Chunks |
-|---|---|---|
-| Internal | 28 | 107,001 |
-| Secret | 1 | 638 |
-| Public | 0 | 0 |
+| Tier      | Shards | Chunks      |
+| --------- | ------ | ----------- |
+| Internal  | 28     | 107,001     |
+| Secret    | 1      | 638         |
+| Public    | 0      | 0           |
 | **Total** | **29** | **107,639** |
 
 The split above belongs to the October snapshot.
