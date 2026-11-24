@@ -2077,7 +2077,9 @@ fn run_dispatch(args: &[String]) -> R<i32> {
     // path and names the fallback.
     let mut coord_path = "coordinator";
     let mut coord_error: Option<String> = None;
-    if adapter.is_none() {
+    if adapter.is_none() && dispatch {
+        // Preserve the existing dry-run decision/output: only a real dispatch
+        // consults the coordinator's true view before it enters claim flow.
         let coord = coordinator::coordinator();
         match coord.load() {
             Ok(load) => {
@@ -2238,12 +2240,7 @@ fn run_dispatch(args: &[String]) -> R<i32> {
                 out.insert("queue_position".into(), json!(pos));
             }
         }
-        (Some(ad), Some((decision, _)))
-            if matches!(
-                decision,
-                coordinator::ClaimDecision::Granted | coordinator::ClaimDecision::Unreachable
-            ) =>
-        {
+        (Some(ad), Some((decision, _))) if coordinator::dispatch_now(&decision) => {
             let granted = decision == coordinator::ClaimDecision::Granted;
             let result = match ad.dispatch(&job, &gh) {
                 Ok(r) => r,
