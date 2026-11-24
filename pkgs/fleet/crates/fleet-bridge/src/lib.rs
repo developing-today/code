@@ -54,6 +54,22 @@ const FLEET_TOKEN_LABEL: &str = "message-bridge/fleet-token/v1";
 const DEFAULT_INTERVAL_SECS: u64 = 15;
 const MAX_WAIT_SECS: u64 = 24 * 3600;
 
+/// The task-it-or-queue-it rule for instructions (design §4.6,
+/// #14372). This exact text is carried in three places that must stay
+/// verbatim-consistent: here (the work verb's help), the fleet book
+/// (pkgs/fleet/book/reference/bridge.md), and the woken-agent text the
+/// intake ladder hands out with a pushed command
+/// (fleet-agent/src/next.rs). Edit all three together.
+pub const WORK_RULE: &str = "\
+Task it or queue it. An instruction is a work item: do the work now, in \
+this session, and reply — or queue it as a repo-task/v1 packet whose \
+context_refs carry the bridge surface, the message id and the batch, and \
+reply with the task id. Record the outcome with fleet bridge work: \
+--state acted for work done in-session, --state queued --task <id> for \
+queued work, --state done when the work is finished. An instruction \
+that is neither acted on nor queued is a defect: it stays at received, \
+where the owner can see it stuck in the pipeline.";
+
 pub const USAGE: &str = "\
 usage: fleet bridge <verb> [options]
 
@@ -82,6 +98,10 @@ agent (fleet token):
         --instruction (or --kind instruction) makes it an instruction,
         which needs --to.
   ack [--agent A] (--up-to ID | ID...)        mark messages read
+  work [--agent A] --state acted|queued|done [--task ID] ID...
+        record the work-item lifecycle of your own instructions:
+        acted (handled in-session), queued (became queue task --task),
+        done. States move only forward, from received.
 
   health                       the bridge's /healthz (no token)
 
@@ -160,6 +180,22 @@ needs --to."
 usage: fleet bridge ack [--agent A] (--up-to ID | ID...)
 
 agent (fleet token). Mark messages read."
+        }
+        "work" => {
+            return Some(format!(
+                "\
+usage: fleet bridge work [--agent A] --state acted|queued|done [--task ID] ID...
+
+agent (fleet token). Record the work-item lifecycle of instructions in
+your own mailbox: acted for work handled in-session, queued for work
+that became a fleet queue task (give its id with --task), done when the
+work is finished. States move only forward, from received; a row can
+only be marked by the agent it was sent to.
+
+{WORK_RULE}
+
+{USAGE_FOOTER}"
+            ));
         }
         "health" => {
             "\
@@ -483,6 +519,8 @@ const VALUE_FLAGS: &[&str] = &[
     "--interval",
     "--reply-to",
     "--up-to",
+    "--state",
+    "--task",
 ];
 
 fn parse(args: &[String], switches: &[&str], values: &[&str]) -> R<Args> {
@@ -835,6 +873,55 @@ pub fn execute(ctx: &mut Ctx, args: &[String]) -> R<Value> {
             }
             let token = fleet_token(ctx)?;
             client_with(ctx, &token).call("POST", &format!("/fleet/{token}/ack"), Some(&payload))
+        }
+        "work" => {
+            let a = parse(rest, &[], &["--agent", "--state", "--task"])?;
+            let agent = agent_of(&a, &ctx.settings)?;
+            let state = a
+                .last("--state")
+                .ok_or_else(|| usage("work needs --state acted, queued or done"))?;
+            if !matches!(state.as_str(), "acted" | "queued" | "done") {
+                return Err(usage(format!(
+                    "--state is acted, queued or done, not '{state}'"
+                )));
+            }
+            let task = a.uint("--task")?;
+            if state == "queued" && task.is_none() {
+                return Err(usage(
+                    "queued work needs --task: the fleet queue task id it became",
+                ));
+            }
+            let ids: Vec<u64> =
+                a.positional
+                    .iter()
+                    .map(|p| {
+                        p.parse::<u64>().ok().filter(|n| *n > 0).ok_or_else(|| {
+                            usage(format!("message id '{p}' is not a positive number"))
+                        })
+                    })
+                    .collect::<R<_>>()?;
+            if ids.is_empty() {
+                return Err(usage("work needs at least one message ID"));
+            }
+            let token = fleet_token(ctx)?;
+            let client = client_with(ctx, &token);
+            let mut marked = Vec::new();
+            for id in &ids {
+                let mut payload = json!({ "agent": &agent, "id": id, "state": &state });
+                if let Some(t) = task {
+                    payload["task_id"] = json!(t);
+                }
+                marked.push(client.call(
+                    "POST",
+                    &format!("/fleet/{token}/work"),
+                    Some(&payload),
+                )?);
+            }
+            if marked.len() == 1 {
+                Ok(marked.pop().unwrap())
+            } else {
+                Ok(json!({ "marked": marked }))
+            }
         }
         "health" => {
             let a = parse(rest, &[], &[])?;

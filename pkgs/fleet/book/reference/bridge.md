@@ -13,7 +13,7 @@ Two token families, both resolved **by name** through fleet-secrets; values are 
 | Family                      | Secret name                                                               | Opens                                                                        | URL shape                    |
 | --------------------------- | ------------------------------------------------------------------------- | ---------------------------------------------------------------------------- | ---------------------------- |
 | Owner token (central verbs) | `message-bridge.access-token` (renamable via `[bridge] owner_token_name`) | `send`, `agents`, `log`                                                      | `/api/<owner-token>/fleet/…` |
-| Fleet token (agent verbs)   | `message-bridge.fleet-token`                                              | `hello`, `inbox`, `post`, `ack` — agent routes only; it cannot send commands | `/fleet/<fleet-token>/…`     |
+| Fleet token (agent verbs)   | `message-bridge.fleet-token`                                              | `hello`, `inbox`, `post`, `ack`, `work` — agent routes only; it cannot send commands | `/fleet/<fleet-token>/…`     |
 
 Tokens travel **in the URL path**, so every error string is scrubbed of token values (`<token>`) before it is printed, and a 404 is reported as "a wrong token, an old bridge without fleet mailboxes, or a wrong URL". Plain `http` URLs are accepted only to this machine; anything else must be `https`, because tokens ride the path.
 
@@ -230,6 +230,39 @@ $ fleet bridge ack --agent archer --up-to 412
 ```
 
 Marks all of `archer`'s messages up to id 412 as read.
+
+## fleet bridge work
+
+```
+fleet bridge work [--agent A] --state acted|queued|done [--task ID] ID...
+```
+
+| Flag                 | Argument              | Default                               | Meaning                                                            |
+| -------------------- | --------------------- | ------------------------------------- | ------------------------------------------------------------------ |
+| `--agent`            | `A`                   | `$FLEET_AGENT`, then `[bridge] agent` | Agent whose mailbox copy to mark.                                  |
+| `--state`            | `acted\|queued\|done` | required                              | The lifecycle state to record.                                     |
+| `--task`             | `ID`                  | —                                     | The fleet queue task the instruction became; required for `queued`. |
+| `ID...` (positional) | ids                   | required                              | The instruction rows to mark; several ids are marked one by one.   |
+
+### Behaviour
+
+Agent verb (fleet token). Records the **work-item lifecycle** of instructions in this agent's own mailbox. Route: `POST /fleet/<fleet-token>/work` with `{agent, id, state, task_id?}` per id. An instruction starts at `received`; the receiving agent moves its own copy forward — `acted` (handled in-session), `queued` (it became a fleet queue task; `--task` names it), then `done`. States move only forward (`received` → `acted` | `queued` → `done`); re-marking the current state is a no-op. Only the receiving agent can mark a row: with a per-agent credential, naming another agent or another agent's row is the bridge's plain 404. The owner sees every row's state and task id in the pipeline, so an instruction that is neither acted on nor queued stays visible at `received`. Notes instructions carry the same lifecycle on the notes surface (`POST /notes/work`, same body shape); connector-channel instructions store no lifecycle fields — their read state stands in for `acted` in the pipeline.
+
+The rule the lifecycle serves, carried verbatim by this book, the verb's help text, and the woken-agent text the intake ladder hands out with a pushed command:
+
+> Task it or queue it. An instruction is a work item: do the work now, in this session, and reply — or queue it as a repo-task/v1 packet whose context_refs carry the bridge surface, the message id and the batch, and reply with the task id. Record the outcome with fleet bridge work: --state acted for work done in-session, --state queued --task <id> for queued work, --state done when the work is finished. An instruction that is neither acted on nor queued is a defect: it stays at received, where the owner can see it stuck in the pipeline.
+
+### Exit codes
+
+`0` ok · `2` usage (including `--state queued` without `--task`) · `3` transport or credentials · `4` the bridge refused the request.
+
+### Example
+
+```console
+$ fleet bridge work --agent archer --state queued --task 23500 412
+```
+
+Records that archer queued instruction 412 as fleet queue task 23500.
 
 ## fleet bridge health
 

@@ -17,7 +17,7 @@
 // response carries no content and no registration marker.
 
 import { safeEqual, tokenConfigured } from "./auth.js";
-import { InputError, MAX_BODY } from "./messages.js";
+import { InputError, MAX_BODY, normalizeWorkMark } from "./messages.js";
 
 export const NOTE_SEGMENT = /^[a-z0-9][a-z0-9._-]{0,63}$/;
 const RESERVED_SIGNAL_CLASSES = new Set([
@@ -204,6 +204,10 @@ async function readJson(request) {
  *   POST /notes/send      identity token; {to, note}
  *   GET  /notes/inbox     identity token; pending notes for that identity
  *   POST /notes/ack       identity token; {id | ids | up_to_id}
+ *   POST /notes/work      identity token; {id, state, task_id?}: the
+ *                         work-item lifecycle of one of the identity's
+ *                         own notes (design §4.6) — state acted |
+ *                         queued | done, forward only from received
  * Returns null when the path is not this API's.
  */
 export async function handleNotes(request, env, url, getStore) {
@@ -249,6 +253,13 @@ export async function handleNotes(request, env, url, getStore) {
       if (request.method !== "POST") return new Response("Method Not Allowed", { status: 405, headers: { allow: "POST" } });
       if (!auth.can_inbox) return json({ error: "this token has no inbox" }, 403);
       return json(await store.noteAck(auth.identity, normalizeNoteAck(await readJson(request))));
+    }
+    if (what === "work") {
+      if (request.method !== "POST") return new Response("Method Not Allowed", { status: 405, headers: { allow: "POST" } });
+      if (!auth.can_inbox) return json({ error: "this token has no inbox" }, 403);
+      const out = await store.noteWork(auth.identity, normalizeWorkMark(await readJson(request)));
+      if (out && typeof out.error === "string") throw new InputError(out.error);
+      return json(out);
     }
     return notFound();
   } catch (err) {
