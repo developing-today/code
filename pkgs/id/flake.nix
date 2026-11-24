@@ -641,7 +641,13 @@
                   installWebDeps = false;
                   buildWebAssets = false;
                   compileRocWorldHost = false;
-                  extraNativeBuildInputs = [ rocCompiler ];
+                  # python3: scripts/key-parity-test.sh (run by the roc-test
+                  # recipe since #787 Slice D) hard-fails without it — the
+                  # corpus generator is a Python script.
+                  extraNativeBuildInputs = [
+                    rocCompiler
+                    pkgs.python3
+                  ];
                   justCmd = "roc-test";
                 };
                 # Rebuild all checked-in Roc examples with the pinned compiler, then
