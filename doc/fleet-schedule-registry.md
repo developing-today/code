@@ -190,6 +190,26 @@ added. The loop is a Muse-cron job created 2026-11-22 after the
 until the next full recount. This registration was owed from the
 job's creation pass and is recorded late in this amendment's PR.
 
+Registry amended 2026-11-24 by queue task 23614 (lane iw200) for
+issue #14517: Surface 2b gained the `pm-decision-events-sync.timer`
+row — the #9335 decision-events sync timer, live-verified on the
+laptop the same day (`systemctl --user show`: UnitFileState=enabled,
+TimersMonotonic OnUnitActiveUSec=5min + OnBootUSec=2min; the service's
+last run finished Result=success, exit 0) — and the Surface 2b header
+counts were recounted from the table's own rows (the header claimed
+49 rows; the table held 63 before this amendment, 64 after; the
+recount classifies rows by the section's annotation conventions and
+is not a fresh live census of the laptop). Surface 1 gained the
+`decision-set-activity-processor` row recording its verified state,
+which is NOT live: the definition survives enabled in hatch-personal
+(`interval@10m`, created 2026-11-12), but scheduler lookups by id on
+2026-11-24 found no live job, and its state file
+(`activity-processor-state.json`) records lastRunAt
+2026-11-17T04:42:30-06:00. Re-creating the job, or formally retiring
+its definition, is follow-up work outside #14517's registry-only
+scope and is filed separately. The Surface 1 header count is
+unchanged (stale until the next full recount, as above).
+
 ## Surface 1 — Muse cron (131 jobs at 2026-11-03 full count; +2 rows since — see Verification)
 
 | id                                        | title                                                                                                                                | cadence                       | state    | owner / scope                                                              | prompt/brief pointer                                                                                                                                                                                                           | budget       | kill criteria | created      | last review |
@@ -214,6 +234,7 @@ job's creation pass and is recorded late in this amendment's PR.
 | `coverage-audit-deep`                     | Coverage audit — deep review slice (Tue/Thu/Sat)                                                                                     | `weekly@Tue,Thu,Sat-06:12:00` | enabled  | goal:keep-the-four-repos-healthy                                           | `/home/hatch/workspace/goals/keep-the-four-repos-healthy/crons/weekly/coverage-audit-deep__weekly@Tue,Thu,Sat-06:12:00_user_current.md`                                                                                        | not recorded | not recorded  | not recorded | 2026-11-03  |
 | `daily-gmail-summary`                     | Daily Gmail summary                                                                                                                  | `daily@06:12:00`              | enabled  | goal:daily-gmail-summary                                                   | `/home/hatch/workspace/goals/daily-gmail-summary/crons/daily/daily-gmail-summary__daily@06:12:00_user_current.md`                                                                                                              | not recorded | not recorded  | not recorded | 2026-11-03  |
 | `daily-token-usage-checkin`               | Daily token usage check-in                                                                                                           | `daily@09:12:00`              | enabled  | goal:weekly-token-usage-review                                             | `/home/hatch/workspace/goals/weekly-token-usage-review/crons/daily/daily-token-usage-checkin__daily@09:12:00_user_current.md`                                                                                                  | not recorded | not recorded  | not recorded | 2026-11-03  |
+| `decision-set-activity-processor` | Decision-set activity processor — answers, drafts, stale sets (every 10 min) | `interval@10m` | not live | goal:pending-decisions-hourly-questions-for-drew | `/home/hatch/workspace/goals/pending-decisions-hourly-questions-for-drew/crons/minutely/decision-set-activity-processor__interval@10m.md` (definition enabled in hatch-personal; verified 2026-11-24 for issue #14517: no live job in the Muse scheduler — lookup by id not found — and last run 2026-11-17T04:42:30-06:00 per its state file; re-creation or formal retirement is separate follow-up work) | not recorded | not recorded | 2026-11-12 | 2026-11-24 |
 | `deterministic-doctor`                    |                                                                                                                                      | `interval@1h`                 | enabled  | —                                                                          | `/home/hatch/workspace/system-cron.d/hourly/deterministic-doctor__interval@1h.md`                                                                                                                                              | not recorded | not recorded  | not recorded | 2026-11-03  |
 | `dns-backup-weekly`                       | DNS backup + renewal history (weekly)                                                                                                | `weekly@Sun-09:12:00`         | enabled  | goal:stand-up-lab-cluster-talm-talos-cozystack-postgres-rustfs             | `/home/hatch/workspace/goals/stand-up-lab-cluster-talm-talos-cozystack-postgres-rustfs/crons/weekly/dns-backup-weekly__weekly@Sun-09:12:00.md`                                                                                 | not recorded | not recorded  | not recorded | 2026-11-03  |
 | `dns-spending-review-reminder`            | DNS spending review reminder (Jan 2027)                                                                                              | `runonce@2027-01-11T09:12:00` | enabled  | goal:stand-up-lab-cluster-talm-talos-cozystack-postgres-rustfs             | `/home/hatch/workspace/goals/stand-up-lab-cluster-talm-talos-cozystack-postgres-rustfs/crons/runonce/dns-spending-review-reminder__runonce@2027-01-11T09:12:00.md`                                                             | not recorded | not recorded  | not recorded | 2026-11-03  |
@@ -362,7 +383,7 @@ preserved. OpenChamber scheduled tasks remain on the configured
 `opencode-route` / `workhorse` route. The separate #3026 claimant /
 executor remains on its own protocol.
 
-### 2b. Laptop systemd user timers (49 listed: 43 enabled, 1 installed-but-disabled; 5 Nix-configured pending deployment; 1 declared in repo pending laptop install)
+### 2b. Laptop systemd user timers (64 listed: 51 enabled; 4 Nix-configured pending deployment; 5 repo-shipped pending laptop install; 1 declared in repo pending laptop install; 1 continuous service, no timer; 2 retired)
 
 The OS-timer half of surface 2. Cadence is the unit's own `OnCalendar`/`OnUnitActiveUSec` spec, read live from `systemctl --user show`. Specs are recorded **complete** — the full effective calendar expression, date **and** time components (e.g. `*-*-* *:*:00`); never truncate a spec to a date-only prefix, because a bare `*-*-*` normalizes to daily at midnight and misstates the cadence (issue #5313). Prompt/brief pointer is the unit file in `~/.config/systemd/user/` (or its Nix store target for linked units). Installed-but-disabled timer units ARE listed in this table and marked `(disabled)` after the unit name: the registry inventories what is installed on the laptop, not only what is currently scheduled, so a disabled unit stays visible until it is uninstalled (reconciled 2026-11-04, issue #5661).
 
@@ -407,6 +428,7 @@ The OS-timer half of surface 2. Cadence is the unit's own `OnCalendar`/`OnUnitAc
 | `opencode-usage-export.timer` | `OnCalendar=*-*-* *:00/15:00` | `opencode-usage-export.service` | laptop (user systemd) | not recorded | not recorded | not recorded | 2026-11-04 |
 | `pm-apps-health.timer` (Nix-configured system timer; not yet loaded) | `OnUnitActiveSec=1min,OnBootSec=2min` (not live-verified) | `pm-apps-health.service` | laptop (system systemd; NixOS pm-apps readiness probe, code#8940) | not recorded | not recorded | 2026-11-12 | 2026-11-12 |
 | `pm-dashboard-backup.timer` | `OnCalendar=*-*-* 04:30:00` | `pm-dashboard-backup.service` | laptop (user systemd) | not recorded | not recorded | not recorded | 2026-11-04 |
+| `pm-decision-events-sync.timer` | `OnUnitActiveUSec=5min,OnBootUSec=2min` | `pm-decision-events-sync.service` | laptop (user systemd; code#9335 — decision sets v2 outbox sync: runs `bun run scripts/sync-decision-events.ts` from the primary checkout, Turso + Worker/D1 legs; secrets resolved by name via `src/secrets.ts`) | not recorded | not recorded | 2026-11-12 | 2026-11-24 |
 | `pm-digest-daily.timer` | `OnCalendar=*-*-* 07:00:00` | `pm-digest-daily.service` | laptop (user systemd) | not recorded | not recorded | not recorded | 2026-11-04 |
 | `pm-console-expose.timer` | `OnUnitActiveUSec=15min,OnBootUSec=5min` | `pm-console-expose.service` | laptop (user systemd; code#12452; runs `pm-stack/console/scripts/expose.py`: keeps the public address as declared, turns Google sign-in on once its secrets exist) | not recorded | not recorded | 2026-11-22 | 2026-11-22 |
 | `pm-console-redeploy.timer` | `OnUnitActiveUSec=1min,OnBootUSec=2min` | `pm-console-redeploy.service` | laptop (user systemd; code#12505; runs `pm-stack/console/redeploy.sh`: puts merged console code into service after a self-check, and leaves out code that does not start) | not recorded | not recorded | 2026-11-22 | 2026-11-22 |
