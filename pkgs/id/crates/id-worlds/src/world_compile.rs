@@ -258,6 +258,150 @@ fn stable_arguments(target: &str) -> Vec<String> {
     arguments
 }
 
+/// Per-function compile scope (design #5964 §1.1, §2.2 steps 1–4; S1).
+///
+/// A user function is a per-function core-Wasm module compiled against a
+/// function platform the world declares — the narrowing of the
+/// whole-world [`compile`] pipeline to function scope. The request carries
+/// the capability set the world author granted *this function*, so an
+/// import outside the granted set is a compile/install rejection here,
+/// never a runtime surprise (§1.1).
+///
+/// Identity at this slice is name plus content address: the binding name
+/// (§1.2) with the module hash and the compile provenance triple. Version
+/// assignment, the interface hash, and publish/swap bookkeeping are
+/// placement concerns and arrive with the later slices.
+
+/// The world-declared function platform a user function compiles against
+/// (design #5964 §2.2 step 2): a platform tree in the same shape the world
+/// pipeline requires — `platform.roc` plus a built `wasm32` host — so a
+/// function module produced here instantiates under the same sandbox
+/// posture as a world build.
+#[derive(Clone, Debug)]
+pub struct FunctionPlatform {
+    dir: PathBuf,
+    modules: Vec<String>,
+}
+
+impl FunctionPlatform {
+    /// # Errors
+    ///
+    /// Fails when `dir` is not a function platform directory.
+    pub fn new(dir: PathBuf) -> Result<Self> {
+        ensure!(
+            dir.join("platform.roc").is_file() && dir.join("targets/wasm32/host.wasm").is_file(),
+            "{} is not a function platform directory (need platform.roc and targets/wasm32/host.wasm)",
+            dir.display()
+        );
+        let modules = platform_modules(&dir)?;
+        Ok(Self { dir, modules })
+    }
+
+    /// The platform's modules, by name: every `.roc` file but `platform.roc`.
+    #[must_use]
+    pub fn modules(&self) -> &[String] {
+        &self.modules
+    }
+}
+
+/// A per-function compile request: one function, its sources, and the
+/// capability set the world author granted this function (design #5964
+/// §1.1). Functions are Wasm modules on the tracked compiler (§2.1);
+/// native workers stay whole-world, so there is no `native` flag.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FunctionSpec {
+    /// Binding name in the per-user function mapping (#5967).
+    pub function: String,
+    /// `(file name, UTF-8 content)` pairs; the first must be `main.roc`.
+    pub files: Vec<(String, String)>,
+    /// Seed for the compiled function's `init`.
+    pub seed: u64,
+    /// Platform capabilities the world author granted this function.
+    pub granted: Vec<String>,
+}
+
+/// A function name is a binding name: one safe component, never a path.
+fn validate_function_name(function: &str) -> Result<()> {
+    ensure!(
+        !function.is_empty()
+            && function.len() <= 64
+            && function
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_'))
+            && !function.starts_with('.'),
+        "function name {function:?} is not a safe binding name"
+    );
+    Ok(())
+}
+
+/// What a successful per-function compile produces: the validated Wasm
+/// module with the §2.2 step-4 identity — module hash plus the compile
+/// provenance triple (source, platform, compiler digests) — keyed under
+/// the binding name.
+#[derive(Clone, Debug)]
+pub struct FunctionArtifact {
+    /// Binding name from the request.
+    pub function: String,
+    /// The validated Wasm module.
+    pub module: Vec<u8>,
+    /// Compiler diagnostics.
+    pub diagnostics: String,
+    /// Provenance triple plus target and arguments.
+    pub provenance: crate::world::ModuleProvenance,
+    /// BLAKE3 of the module bytes: the artifact's content address.
+    pub module_hash: String,
+}
+
+/// Compile one function against the world's declared function platform and
+/// return its module with identity. Runs the §2.2 pipeline at function
+/// scope: intake limits, compile, import check against the function's
+/// granted set, identity. The import check runs before the compiler ever
+/// spawns, so an ungranted capability is an install-time rejection with
+/// the running version untouched. S1 carries no shared cache (that is the
+/// S2 slice): the pipeline runs directly, so a function compile can
+/// neither warm nor poison world builds.
+///
+/// `granted` must be the effective list for this function (granted and
+/// within the server and world ceilings, with `*` expanded), not the raw
+/// grants — same contract as [`check_imports`].
+///
+/// # Errors
+///
+/// A bad binding name, anything outside the intake bounds, an import the
+/// function was not granted, a compiler failure (with its diagnostics),
+/// or output the sandbox refuses. Every error names the function.
+pub async fn compile_function(
+    spec: &FunctionSpec,
+    platform: &FunctionPlatform,
+    roc_bin: &str,
+    timeout: Duration,
+) -> Result<FunctionArtifact> {
+    validate_function_name(&spec.function)?;
+    let inner = CompileSpec {
+        files: spec.files.clone(),
+        seed: spec.seed,
+        native: false,
+    };
+    let compiler = Compiler {
+        platform_dir: platform.dir.clone(),
+        roc_bin: roc_bin.to_owned(),
+        modules: platform.modules.clone(),
+        cache: None,
+    };
+    let (module, diagnostics, provenance) =
+        compile_uncached(&inner, &compiler, &spec.granted, timeout)
+            .await
+            .with_context(|| format!("compile function {:?}", spec.function))?;
+    let module_hash = crate::world_cache::artifact_hash(&module);
+    Ok(FunctionArtifact {
+        function: spec.function.clone(),
+        module,
+        diagnostics,
+        provenance,
+        module_hash,
+    })
+}
+
 /// Compile `spec` and return the validated Wasm module plus compiler
 /// diagnostics. `granted` is the effective list: the platform modules the
 /// source may import, bounded by the server and world ceilings.
@@ -2259,5 +2403,166 @@ restore = |text| match U64.from_str(text) {
             format!("{error:#}").contains("main.roc imports Screen"),
             "{error:#}"
         );
+    }
+
+    fn function_spec(function: &str, files: Vec<(&str, &str)>, granted: Vec<&str>) -> FunctionSpec {
+        FunctionSpec {
+            function: function.to_owned(),
+            files: files
+                .into_iter()
+                .map(|(name, content)| (name.to_owned(), content.to_owned()))
+                .collect(),
+            seed: 1,
+            granted: granted.into_iter().map(str::to_owned).collect(),
+        }
+    }
+
+    fn staged_function_platform() -> (tempfile::TempDir, FunctionPlatform) {
+        // Oracle: a function platform is a platform tree — platform.roc,
+        // module files, and a built wasm32 host — so `FunctionPlatform`
+        // validation mirrors `Compiler::new` without invoking anything.
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("platform.roc"), "platform \"x\"\n").unwrap();
+        std::fs::write(root.path().join("Cap.roc"), "module []\n").unwrap();
+        std::fs::create_dir_all(root.path().join("targets/wasm32")).unwrap();
+        std::fs::write(root.path().join("targets/wasm32/host.wasm"), b"\0asm").unwrap();
+        let platform = FunctionPlatform::new(root.path().to_path_buf()).unwrap();
+        (root, platform)
+    }
+
+    #[test]
+    fn function_platform_names_its_modules() {
+        // Oracle: design #5964 §1.1 — the declared function platform names
+        // the modules a function may be granted, exactly the platform's
+        // `.roc` files but `platform.roc`.
+        let (_root, platform) = staged_function_platform();
+        assert_eq!(platform.modules(), &["Cap".to_owned()]);
+
+        let bare = tempfile::tempdir().unwrap();
+        assert!(FunctionPlatform::new(bare.path().to_path_buf()).is_err());
+        std::fs::write(bare.path().join("platform.roc"), "platform \"x\"\n").unwrap();
+        assert!(FunctionPlatform::new(bare.path().to_path_buf()).is_err());
+    }
+
+    #[test]
+    fn function_names_are_binding_safe() {
+        // Oracle: the function name is a binding name (#5967), never a
+        // path — the same shape rule as staged file names.
+        let long = "f".repeat(65);
+        for bad in ["", ".hidden", "../evil", "a/b", "a\\b", long.as_str()] {
+            let spec = function_spec(bad, vec![("main.roc", "app")], vec![]);
+            assert!(
+                validate_function_name(&spec.function).is_err(),
+                "{bad:?} must be refused"
+            );
+        }
+        for good in ["echo", "my-fn.v2", "strategy_7"] {
+            assert!(
+                validate_function_name(good).is_ok(),
+                "{good:?} must be accepted"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn function_compile_rejects_an_ungranted_capability_before_the_compiler_runs() {
+        // Oracle: design #5964 §1.1 — an import outside the function's
+        // granted set is an install-time rejection naming the function,
+        // decided before staging or the compiler ever run (the roc binary
+        // here does not exist, so reaching it would fail differently).
+        let (_root, platform) = staged_function_platform();
+        let main = "app [program] { pf: platform \"platform.roc\" }\nimport pf.Cap\n";
+        let spec = function_spec("echo", vec![("main.roc", main)], vec![]);
+        let error = compile_function(&spec, &platform, "/nonexistent/roc", COMPILE_TIMEOUT)
+            .await
+            .unwrap_err();
+        let text = format!("{error:#}");
+        assert!(text.contains("echo"), "{text}");
+        assert!(text.contains("main.roc imports Cap"), "{text}");
+
+        // Control: granting Cap passes the gate and proceeds past staging
+        // to the (nonexistent) compiler — the refusal above is the import
+        // check, not the missing toolchain or platform.
+        let granted = function_spec("echo", vec![("main.roc", main)], vec!["Cap"]);
+        let error = compile_function(&granted, &platform, "/nonexistent/roc", COMPILE_TIMEOUT)
+            .await
+            .unwrap_err();
+        assert!(
+            format!("{error:#}").contains("resolve Roc compiler executable"),
+            "{error:#}"
+        );
+    }
+
+    #[tokio::test]
+    async fn function_fixture_compiles_to_a_per_function_module() {
+        // Oracle: design #5964 §2.2 steps 1–4 — a fixture user source
+        // compiles against the world's declared function platform to a
+        // module carrying the §1.2 S1 identity (binding name, module
+        // hash, provenance triple), with the granted import admitted.
+        let Ok(roc_bin) = which_roc() else {
+            eprintln!("skipping: no roc binary on PATH");
+            return;
+        };
+        let Some(platform_dir) = default_platform_dir() else {
+            eprintln!(
+                "skipping: no roc-world platform with targets/wasm32/host.wasm (run examples/roc-world/build-host.sh)"
+            );
+            return;
+        };
+        let platform = FunctionPlatform::new(platform_dir).unwrap();
+        assert!(
+            platform.modules().contains(&"RocJson".to_owned()),
+            "the declared platform must provide RocJson, got {:?}",
+            platform.modules()
+        );
+        let app = r#"app [program] { pf: platform "../roc-world/platform.roc" }
+
+import pf.RocJson
+
+program = { init, update, view, layout, records, wants, snapshot, restore }
+
+Model : Str
+
+init : U64 -> Str
+init = |seed| seed.to_str()
+
+update : Str, U64, Str -> Str
+update = |model, _pid, _ev| model
+
+view : Str -> Str
+view = |model| match RocJson.decode(model) {
+	Ok(_) => "json"
+	Err(_) => "text"
+}
+
+layout : Str, U64, U64 -> Str
+layout = |model, _width, _height| view(model)
+
+records : Str -> Str
+records = |_model| "{}"
+
+wants : Str -> Str
+wants = |_model| "{\"requests\":[]}"
+
+snapshot : Str -> Str
+snapshot = |model| model
+
+restore : Str -> Str
+restore = |text| text
+"#;
+        let spec = function_spec("echo", vec![("main.roc", app)], vec!["RocJson"]);
+        let artifact = compile_function(&spec, &platform, &roc_bin, COMPILE_TIMEOUT)
+            .await
+            .unwrap();
+        assert_eq!(artifact.function, "echo");
+        assert!(!artifact.module.is_empty());
+        assert_eq!(
+            artifact.module_hash,
+            crate::world_cache::artifact_hash(&artifact.module)
+        );
+        let crate::world::ModuleProvenance::SourceBuild(build) = &artifact.provenance else {
+            panic!("a function compile records source-build provenance");
+        };
+        assert_eq!(build.target, "wasm32");
     }
 }
