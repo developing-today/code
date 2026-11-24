@@ -319,6 +319,127 @@ pub fn project_head_versions(rows: &[AtlasVersionRow]) -> Result<Vec<ProjectedHe
         .collect())
 }
 
+/// Explicit file identity binding. `note_create` is caller-attested: it may name
+/// an already-published create outside this batch, including backfill-only files.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct AtlasFileNoteBinding {
+    pub file_id: String,
+    pub note_create: AtlasVersionKey,
+    pub source_anchor: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AtlasRevisionKind {
+    Edit,
+    Rename,
+    Split,
+    Merge,
+}
+
+/// Explicit Atlas lineage, unrelated to the selected note-head predecessor.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct AtlasRevisionEdge {
+    pub newer: AtlasVersionKey,
+    pub prior: AtlasVersionKey,
+    pub edge_kind: AtlasRevisionKind,
+    pub confidence: f64,
+}
+
+/// Event namespaces stay distinct even when they share an Atlas row key.
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+pub enum ProjectedLineageRef {
+    DocumentPut(AtlasVersionKey),
+    NoteCreate(AtlasVersionKey),
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub enum ProjectedLineageValue {
+    File {
+        file_id: String,
+        source_anchor: Option<String>,
+    },
+    Specialization {
+        note: ProjectedLineageRef,
+    },
+    Revision {
+        document: ProjectedLineageRef,
+        edge_kind: AtlasRevisionKind,
+        confidence: f64,
+    },
+}
+
+/// Unsigned descriptor, not a tag payload containing fabricated event hashes.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct ProjectedLineageClaim {
+    pub subject: ProjectedLineageRef,
+    pub name: String,
+    pub value: ProjectedLineageValue,
+}
+
+impl ProjectedLineageClaim {
+    /// Materialize JSON text only after typed event references can be resolved.
+    /// The subject must separately be resolved in the same typed namespace.
+    pub fn value_json(
+        &self,
+        resolve: impl Fn(&ProjectedLineageRef) -> Option<String>,
+    ) -> Result<String> {
+        let event_id = |reference: &ProjectedLineageRef| -> Result<String> {
+            let id = resolve(reference).ok_or_else(|| refuse("unresolved lineage event"))?;
+            if id.len() != 64
+                || !id
+                    .bytes()
+                    .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+            {
+                return Err(refuse("lineage event ID must be 64 lowercase hex bytes"));
+            }
+            Ok(id)
+        };
+        let mut value = match &self.value {
+            ProjectedLineageValue::File {
+                file_id,
+                source_anchor,
+            } => {
+                let mut value = serde_json::json!({"file_id": file_id});
+                if let Some(anchor) = source_anchor {
+                    value["source_anchor"] = anchor.clone().into();
+                }
+                value
+            }
+            ProjectedLineageValue::Specialization { note } => {
+                serde_json::json!({"note": event_id(note)?})
+            }
+            ProjectedLineageValue::Revision {
+                document,
+                edge_kind,
+                confidence,
+            } => {
+                if !confidence.is_finite() || !(0.0..=1.0).contains(confidence) {
+                    return Err(refuse("confidence must be finite and in [0,1]"));
+                }
+                serde_json::json!({"document": event_id(document)?, "edge_kind": edge_kind, "confidence": confidence})
+            }
+        };
+        value["projection_version"] = PROJECTION_VERSION.into();
+        let text = serde_json::to_string(&value).map_err(refuse)?;
+        if text.len() > 512 || !is_nfc(&text) {
+            return Err(refuse("lineage JSON must be at most 512 bytes of NFC text"));
+        }
+        Ok(text)
+    }
+}
+
+/// Project only explicit relation facts; emits no note operations. All local
+/// versions require a binding, and both revision endpoints must be local rows.
+/// External note-create identities are trusted inputs, never inferred from rows.
+pub fn project_lineage_claims(
+    _rows: &[AtlasVersionRow],
+    _bindings: &[AtlasFileNoteBinding],
+    _edges: &[AtlasRevisionEdge],
+) -> Result<Vec<ProjectedLineageClaim>> {
+    Ok(Vec::new())
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
@@ -328,6 +449,126 @@ mod tests {
 
     fn fixture_rows() -> Vec<AtlasVersionRow> {
         serde_json::from_str(include_str!("../../../fixtures/id_projection_rows.json")).unwrap()
+    }
+
+    fn lineage_fixture() -> (Vec<AtlasFileNoteBinding>, Vec<AtlasRevisionEdge>) {
+        // Oracle input: explicit Atlas row-key facts carried by the fixture,
+        // not inferred from sequence, matching content, paths or selected heads.
+        let values: Vec<serde_json::Value> =
+            serde_json::from_str(include_str!("../../../fixtures/id_projection_rows.json"))
+                .unwrap();
+        let bindings = values
+            .iter()
+            .filter_map(|v| v.get("file_note_binding"))
+            .map(|v| serde_json::from_value(v.clone()).unwrap())
+            .collect();
+        let edges = values
+            .iter()
+            .filter_map(|v| v.get("revision_edges"))
+            .flat_map(|v| v.as_array().unwrap())
+            .map(|v| serde_json::from_value(v.clone()).unwrap())
+            .collect();
+        (bindings, edges)
+    }
+
+    #[test]
+    fn fixture_lineage_recomputes_from_explicit_atlas_keys() {
+        let rows = fixture_rows();
+        let (bindings, edges) = lineage_fixture();
+        let claims = project_lineage_claims(&rows, &bindings, &edges).unwrap();
+        assert_eq!(claims.len(), bindings.len() + rows.len() + edges.len());
+        // Independent set oracle: exactly the supplied binding and edge facts,
+        // plus one specialization for every immutable row, backfills included.
+        for binding in &bindings {
+            assert!(claims.contains(&ProjectedLineageClaim {
+                subject: ProjectedLineageRef::NoteCreate(binding.note_create.clone()),
+                name: "atlas.fileId".into(),
+                value: ProjectedLineageValue::File {
+                    file_id: binding.file_id.clone(),
+                    source_anchor: binding.source_anchor.clone()
+                },
+            }));
+        }
+        for row in &rows {
+            let binding = bindings.iter().find(|b| b.file_id == row.file_id).unwrap();
+            assert!(claims.contains(&ProjectedLineageClaim {
+                subject: ProjectedLineageRef::DocumentPut(AtlasVersionKey {
+                    file_id: row.file_id.clone(),
+                    version_seq: row.version_seq
+                }),
+                name: "atlas.specializationOf".into(),
+                value: ProjectedLineageValue::Specialization {
+                    note: ProjectedLineageRef::NoteCreate(binding.note_create.clone())
+                },
+            }));
+        }
+        for edge in &edges {
+            assert!(claims.contains(&ProjectedLineageClaim {
+                subject: ProjectedLineageRef::DocumentPut(edge.newer.clone()),
+                name: "atlas.wasRevisionOf".into(),
+                value: ProjectedLineageValue::Revision {
+                    document: ProjectedLineageRef::DocumentPut(edge.prior.clone()),
+                    edge_kind: edge.edge_kind.clone(),
+                    confidence: edge.confidence
+                },
+            }));
+        }
+        for claim in &claims {
+            let text = claim.value_json(|_| Some("a".repeat(64))).unwrap();
+            assert!(text.len() <= 512 && is_nfc(&text));
+        }
+    }
+
+    #[test]
+    fn lineage_rejects_invalid_facts_and_final_id_values() {
+        let rows = fixture_rows();
+        let (bindings, edges) = lineage_fixture();
+        assert!(project_lineage_claims(&rows, &[], &edges).is_err());
+        let mut duplicate = bindings.clone();
+        duplicate.push(bindings[0].clone());
+        assert!(project_lineage_claims(&rows, &duplicate, &edges).is_err());
+        let mut invalid = edges.clone();
+        invalid[0].prior.version_seq = u64::MAX;
+        assert!(project_lineage_claims(&rows, &bindings, &invalid).is_err());
+        for confidence in [f64::NAN, f64::INFINITY, -0.1, 1.1] {
+            let mut invalid = edges.clone();
+            invalid[0].confidence = confidence;
+            assert!(project_lineage_claims(&rows, &bindings, &invalid).is_err());
+        }
+        let mut invalid = edges.clone();
+        invalid[0].prior = invalid[0].newer.clone();
+        assert!(project_lineage_claims(&rows, &bindings, &invalid).is_err());
+        let mut duplicate = edges.clone();
+        duplicate.push(edges[0].clone());
+        assert!(project_lineage_claims(&rows, &bindings, &duplicate).is_err());
+        for anchor in ["x".repeat(512), "\"".repeat(250), "e\u{301}".into()] {
+            let mut invalid = bindings.clone();
+            invalid[0].source_anchor = Some(anchor);
+            assert!(project_lineage_claims(&rows, &invalid, &edges).is_err());
+        }
+        let claims = project_lineage_claims(&rows, &bindings, &edges).unwrap();
+        let specialization = claims
+            .iter()
+            .find(|c| c.name == "atlas.specializationOf")
+            .unwrap();
+        assert!(specialization.value_json(|_| None).is_err());
+        assert!(specialization.value_json(|_| Some("A".repeat(64))).is_err());
+    }
+
+    proptest! {
+        #[test]
+        fn lineage_replay_is_independent_of_content_paths_and_input_order(seed in any::<u64>()) {
+            // Oracle: explicit row-key relation set is invariant under row/edge/
+            // binding permutations, renames and blob deduplication.
+            let mut rows = fixture_rows();
+            let (mut bindings, mut edges) = lineage_fixture();
+            let expected = project_lineage_claims(&rows, &bindings, &edges).unwrap();
+            let amount = seed as usize % rows.len(); rows.rotate_left(amount);
+            rows.reverse(); bindings.reverse(); edges.reverse();
+            for row in &mut rows { row.content = "shared blob".into(); row.path = format!("renamed-{seed}"); }
+            let actual = project_lineage_claims(&rows, &bindings, &edges).unwrap();
+            prop_assert_eq!(serde_json::to_vec(&actual).unwrap(), serde_json::to_vec(&expected).unwrap());
+        }
     }
 
     fn fixture_head_keys() -> Vec<AtlasVersionKey> {
