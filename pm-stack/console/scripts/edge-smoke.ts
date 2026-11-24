@@ -234,6 +234,22 @@ const server = Bun.serve({
         return Response.json({ html_url: `https://github.com/${path.replace("repos/", "")}#made` }, { status: 201 });
       }
       if (path === "search/issues") return tagged(req, entry, { total_count: 0, items: [] });
+      if (path === "repos/developing-today/code/issues" && url.searchParams.get("labels") === "user/review") {
+        // What waits on the owner, as a repository's own list has it:
+        // one pull request he was asked to review.
+        return tagged(req, entry, [
+          {
+            number: 31,
+            title: "Smoke review",
+            body: null,
+            state: "open",
+            html_url: "https://github.com/developing-today/code/pull/31",
+            updated_at: "2026-11-23T09:00:00Z",
+            labels: [{ name: "user/review" }],
+            pull_request: { url: "https://api.github.com/repos/developing-today/code/pulls/31" },
+          },
+        ]);
+      }
       if (path.endsWith("/issues")) return tagged(req, entry, []);
       return tagged(req, entry, { message: "Not Found" }, 404);
     }
@@ -350,8 +366,8 @@ try {
     );
     const kinds = (after.selfCheck as { kinds?: Record<string, { ok: boolean; error?: string }> } | null)?.kinds ?? {};
     check(
-      "its own read of the board, the prompts, pull requests and ranked issues each came back good",
-      ["board", "asks", "prs", "priorities"].every((kind) => kinds[kind]?.ok === true),
+      "its own read of the board, the prompts, pull requests, ranked issues and what needs the owner each came back good",
+      ["board", "asks", "prs", "priorities", "census"].every((kind) => kinds[kind]?.ok === true),
       JSON.stringify(kinds),
     );
     const github = outside.filter((o) => o.to === "github");
@@ -366,7 +382,7 @@ try {
     );
     check(
       "and it told the host what it reads itself, so the host stops sending it",
-      JSON.stringify(second?.owns) === JSON.stringify(["board", "prs", "priorities", "asks"]),
+      JSON.stringify(second?.owns) === JSON.stringify(["board", "prs", "priorities", "asks", "census"]),
       JSON.stringify(second?.owns),
     );
 
@@ -690,6 +706,23 @@ try {
     // board from GitHub again, here, with nobody asking.
     const board = await asOwner("/console/api/doc/core");
     check("the state is read signed in", board.status === 200, String(board.status));
+    // What needs the owner is read by the Worker from each repository's
+    // own list of each label (never the search, and with no machine):
+    // the stand-in's one review is there, and the lists were asked for.
+    const needs = (
+      (await board.json()) as { census?: { complete?: boolean; reviews?: { ref: string; pr: boolean }[] } }
+    ).census;
+    const needsAsked = outside.filter(
+      (o) => o.to === "github" && o.method === "GET" && /^repos\/[^/]+\/[^/]+\/issues$/.test(o.path),
+    );
+    check(
+      "what needs the owner is read by the Worker itself from the repositories' lists",
+      needs?.complete === true &&
+        JSON.stringify(needs.reviews?.map((i) => [i.ref, i.pr])) ===
+          JSON.stringify([["developing-today/code#31", true]]) &&
+        needsAsked.length >= 8,
+      `${JSON.stringify(needs)}; ${needsAsked.length} list reads`,
+    );
     await new Promise((resolve) => setTimeout(resolve, 3000));
     const readsBefore = outside.filter((o) => o.to === "github").length;
     let readsAfter = readsBefore;

@@ -9,6 +9,7 @@ import {
   androidSource,
   answeredKeys,
   awayNotice,
+  censusSaid,
   awayState,
   band,
   capital,
@@ -500,12 +501,35 @@ test("the laptop being away is said differently when Cloudflare is carrying on",
   const carrying = awayNotice(true, "2 h ago");
   expect(carrying.title).toBe("The laptop is not connected");
   expect(carrying.text).toContain("Cloudflare is carrying on");
-  expect(carrying.text).toContain("as the laptop last reported them, 2 h ago");
+  expect(carrying.text).toContain("what is labelled as needing you are current");
+  expect(carrying.text).toContain("Sessions and questions are as the laptop last reported them, 2 h ago");
   const waiting = awayNotice(false, "2 h ago");
   expect(waiting.title).toBe("The laptop is out of reach");
   expect(waiting.text).toBe(
     "It last reported 2 h ago; this is the state as of then. You can keep working: what is safe to do late is held and sent when it is back.",
   );
+});
+
+test("lists of what needs the owner that are not whole say so, and name what could not be read when that is known", () => {
+  const lists = { hands: [], reviews: [], other: [] };
+  // Whole: nothing is said, with or without the word.
+  expect(censusSaid({ ...lists, complete: true, unread: [] })).toBe("");
+  expect(censusSaid(lists)).toBe("");
+  expect(censusSaid(null)).toBe("");
+  // Not whole, and the reader names what is missing.
+  expect(censusSaid({ ...lists, complete: false, unread: ["a/one"] })).toBe(
+    "Not the whole list: a/one could not be read just now.",
+  );
+  expect(censusSaid({ ...lists, complete: false, unread: ["a/one", "a/two (user/review)", "a/three"] })).toBe(
+    "Not the whole list: a/one, a/two (user/review) and a/three could not be read just now.",
+  );
+  // Not whole, from a reader that does not say what is missing (the laptop's dashboard).
+  for (const unread of [undefined, [], [""], "a/one", [3]]) {
+    expect([unread, censusSaid({ ...lists, complete: false, unread })]).toEqual([
+      unread,
+      "Not the whole list: some of it could not be read just now.",
+    ]);
+  }
 });
 
 test("text on a status colour can be read, on the dark page and the light one", () => {

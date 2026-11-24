@@ -503,7 +503,7 @@ export function awayNotice(primary, lastReport) {
   return primary
     ? {
         title: "The laptop is not connected",
-        text: `Cloudflare is carrying on: the board, your prompts, pull requests and the plan are current, and what you do there is done at once. Sessions, questions and things for your hands are as the laptop last reported them, ${lastReport}; what needs the laptop waits for it.`,
+        text: `Cloudflare is carrying on: the board, your prompts, pull requests, the plan and what is labelled as needing you are current, and what you do there is done at once. Sessions and questions are as the laptop last reported them, ${lastReport}; what needs the laptop waits for it.`,
       }
     : {
         title: "The laptop is out of reach",
@@ -1003,6 +1003,18 @@ function needCard(i, kind) {
   );
 }
 
+/** What is said above the lists of what needs the owner when they are
+ * not the whole of it: which repositories could not be read, where the
+ * reader says; nothing when the lists are whole. (An empty list that is
+ * not the whole list must not read as "nothing needs you".) */
+export function censusSaid(census) {
+  if (!census || census.complete !== false) return "";
+  const unread = Array.isArray(census.unread) ? census.unread.filter((name) => typeof name === "string" && name !== "") : [];
+  return unread.length > 0
+    ? `Not the whole list: ${listed(unread)} could not be read just now.`
+    : "Not the whole list: some of it could not be read just now.";
+}
+
 function viewNeeds(sub) {
   const counts = needCounts();
   const census = docs.core.census || { hands: [], reviews: [], other: [] };
@@ -1021,6 +1033,8 @@ function viewNeeds(sub) {
     ),
     ...notices(docs.core).slice(0, 2),
   ];
+  // The three lists read from GitHub's labels: said when they are not whole.
+  if (which !== "questions" && censusSaid(census)) out.push(h("div", { class: "card flag" }, h("p", { class: "meta" }, censusSaid(census))));
   if (which === "questions") out.push(...viewQuestions());
   else if (which === "hands") {
     const items = [...census.hands.map((i) => needCard(i, i.kind)), ...waiting.map((i) => needCard(i, "by hand"))];
@@ -2053,8 +2067,8 @@ async function viewAway() {
     ),
     h("h2", {}, "What runs where"),
     card(
-      h("p", {}, h("b", {}, "Cloudflare, by itself: "), "the board, your prompts, pull requests and their checks, ranked issues, the queue, roadmaps, bugs, intake and releases are read there; and it does these at once: ask, reply, close a prompt, comment, rank, move a task, merge, start a deploy, file a note, a bug or a change. It tells you when the fleet answers a prompt."),
-      h("p", {}, h("b", {}, "A machine (the laptop): "), "sessions, questions, things for your hands, its units and agents, messages to agents, sign-in settings; and filing a task in the queue, which Cloudflare leaves to it. What needs a machine that is out of reach is kept and done when one is back, or refused if it cannot be done late."),
+      h("p", {}, h("b", {}, "Cloudflare, by itself: "), "the board, your prompts, pull requests and their checks, ranked issues, what is labelled as needing you (things only you can do, reviews, escalations), the queue, roadmaps, bugs, intake and releases are read there; and it does these at once: ask, reply, close a prompt, comment, rank, move a task, merge, start a deploy, file a note, a bug or a change. It tells you when the fleet answers a prompt."),
+      h("p", {}, h("b", {}, "A machine (the laptop): "), "sessions (and what one of them is waiting on you for), questions, its units and agents, messages to agents, sign-in settings; and filing a task in the queue, which Cloudflare leaves to it. What needs a machine that is out of reach is kept and done when one is back, or refused if it cannot be done late."),
     ),
     h("h2", {}, s.on ? "Turn it off" : "Turn it on"),
     card(

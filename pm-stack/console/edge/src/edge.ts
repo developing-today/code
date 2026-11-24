@@ -1461,7 +1461,15 @@ export class Edge {
   private owned(cfg: EdgeConfig | null): string[] {
     if (!this.primary(cfg)) return [];
     const refused = this.refusedReads();
-    return DIRECT_READ_SECTIONS.filter((name) => !refused.includes(name));
+    return DIRECT_READ_SECTIONS.filter(
+      (name) =>
+        !refused.includes(name) &&
+        // What is labelled as needing the owner is read repository by
+        // repository: a machine that has not said which they are (one
+        // from before it did) goes on reporting the list itself. Read
+        // from no repositories it would be an empty list, and whole.
+        (name !== "census" || (cfg?.needsRepos.length ?? 0) > 0),
+    );
   }
 
   /** Sections this side's token was turned away for, and still is. */
@@ -2072,7 +2080,7 @@ export class Edge {
         const delivery = await this.push.send("trouble", {
           title: "The laptop has gone quiet",
           body: this.primary(cfg)
-            ? "It has not reported for ten minutes. Cloudflare carries on with the board, your prompts, pull requests and the plan; what needs the laptop waits for it."
+            ? "It has not reported for ten minutes. Cloudflare carries on with the board, your prompts, pull requests, the plan and what is labelled as needing you; what needs the laptop waits for it."
             : "It has not reported for ten minutes. The app still opens; what you do is held until it is back.",
           url: "/console/",
           tag: "host",
