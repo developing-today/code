@@ -19,11 +19,9 @@
 //! the only granularity this model has. Every multi-note projection
 //! takes a caller-provided `can_read` predicate and never exposes a
 //! note (or its existence metadata, including through transclusion)
-//! to a reader the predicate denies. Wiring that predicate to the
-//! #5678 resolution order (object → user default → server config →
-//! public) is the named follow-on packet on #8218, explicitly left
-//! out of this slice per its acceptance criteria — the predicate
-//! seam is the handoff point, not a silent drop.
+//! to a reader the predicate denies. The production predicate is
+//! [`crate::read_authority::read_gate`], which applies the #5678
+//! resolution order (object → user default → server config → public).
 //!
 //! Tests in this module name the #5839 design record
 //! (`doc/2026-11-10T20-12-00Z_design_id_content_model/`) as their

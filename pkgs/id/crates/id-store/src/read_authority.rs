@@ -217,6 +217,19 @@ pub fn may_read(
     role_for(owner, &resolved.access, reader, groups).is_some()
 }
 
+/// The #5678 gate for one reader, shaped as the `can_read` predicate
+/// every projection and transclusion renderer takes: each note is
+/// decided by [`may_read`] over the same log, groups and defaults.
+#[must_use]
+pub fn read_gate<'a>(
+    notes: &'a NoteCheckpoints,
+    reader: AuthorKey,
+    groups: &'a GroupRoles,
+    defaults: &'a ReadDefaults,
+) -> impl Fn(&Hash) -> bool + 'a {
+    move |note| may_read(notes, *note, reader, groups, defaults)
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
@@ -359,6 +372,32 @@ mod tests {
             resolve_for(&log, hash(10), &defaults).unwrap().level,
             ReadLevel::Object
         );
+    }
+
+    #[test]
+    fn test_read_gate_applies_the_5678_order_to_a_projection_predicate() {
+        // Oracle: #5678 ruling via #8218 slice 3. A projection's
+        // `can_read` must enforce the object -> user -> server -> public
+        // chain: a scoped note is hidden from a stranger, a public note
+        // is shown, and an unknown note stays denied.
+        let mut log = NoteCheckpoints::new();
+        log.create_with_access(
+            hash(10),
+            author(1),
+            content(b"scoped"),
+            NoteAccess::Scoped(vec![]),
+        )
+        .unwrap();
+        log.create_with_access(hash(11), author(1), content(b"open"), NoteAccess::Public)
+            .unwrap();
+        let groups = GroupRoles::none();
+        let defaults = ReadDefaults::both(NoteAccess::Public, NoteAccess::Public);
+        let gate = read_gate(&log, author(2), &groups, &defaults);
+        assert!(!gate(&hash(10)));
+        assert!(gate(&hash(11)));
+        assert!(!gate(&hash(99)));
+        let owner_gate = read_gate(&log, author(1), &groups, &defaults);
+        assert!(owner_gate(&hash(10)));
     }
 
     #[test]
