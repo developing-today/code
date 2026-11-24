@@ -110,10 +110,11 @@ describe("needs-drew census (#1226)", () => {
   });
 
   test("a full page at the cap is truncated, not complete", async () => {
-    const full = Array.from({ length: 100 }, (_, i) => item(i + 1, ["user/review"]));
-    const fetchPage = fakeFetch((repo, label) => {
+    // Each page carries distinct numbers: the census dedupes by ref, so
+    // re-answering the same page would collapse to one page of items.
+    const fetchPage = fakeFetch((repo, label, page) => {
       if (repo !== REPO || label !== "user/review") return { items: [] };
-      return { items: full };
+      return { items: Array.from({ length: 100 }, (_, i) => item((page - 1) * 100 + i + 1, ["user/review"])) };
     });
     const census = await buildNeedsDrewCensus(fetchPage, { now: NOW, repos: [REPO], labels: ["user/review"] });
     expect(census.items).toHaveLength(1000);
