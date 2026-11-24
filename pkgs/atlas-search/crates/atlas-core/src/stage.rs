@@ -260,13 +260,15 @@ pub struct ArtifactEntry {
     pub text: String,
 }
 
-/// One staged item, read back from a staging DB ([`list_staged_items`]).
+/// One staged item, read back from a staging DB ([`list_staged_items`]),
+/// with its full text and chunk count.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StagedItem {
     pub id: i64,
     pub unit_id: String,
     pub kind: String,
     pub source: Option<String>,
+    pub text: String,
     pub sensitivity: String,
     pub created_at: String,
     pub meta: Option<String>,
@@ -672,7 +674,7 @@ pub fn list_staged_items(conn: &Connection, unit_id: Option<&str>) -> Result<Vec
     check_stage_schema(conn)?;
     let mut stmt = conn
         .prepare(
-            "SELECT i.id, i.unit_id, i.kind, i.source, i.sensitivity, i.created_at, i.meta, \
+            "SELECT i.id, i.unit_id, i.kind, i.source, i.text, i.sensitivity, i.created_at, i.meta, \
              (SELECT COUNT(*) FROM chunks_raw c WHERE c.item_id = i.id) \
              FROM items i WHERE (?1 IS NULL OR i.unit_id = ?1) ORDER BY i.id",
         )
@@ -684,10 +686,11 @@ pub fn list_staged_items(conn: &Connection, unit_id: Option<&str>) -> Result<Vec
                 unit_id: r.get(1)?,
                 kind: r.get(2)?,
                 source: r.get(3)?,
-                sensitivity: r.get(4)?,
-                created_at: r.get(5)?,
-                meta: r.get(6)?,
-                chunk_count: r.get(7)?,
+                text: r.get(4)?,
+                sensitivity: r.get(5)?,
+                created_at: r.get(6)?,
+                meta: r.get(7)?,
+                chunk_count: r.get(8)?,
             })
         })
         .map_err(|e| Error::backend(format!("staging: listing items: {e}")))?;

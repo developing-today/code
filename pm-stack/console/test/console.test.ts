@@ -13,7 +13,7 @@
 // compared with literal URLs, so no spelling of a path can pass as one
 // of the public files unless the dashboard is asked for exactly that file.
 import { beforeEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { actions } from "../src/actions.ts";
@@ -29,7 +29,7 @@ import {
 import { type Config, ConfigError, type Issuer, readConfig } from "../src/config.ts";
 import { HOLDABLE } from "../src/edge-proto.ts";
 import { manageable, OpError, Ops, parseUnitFiles, parseUnits, type Run, triagePacket } from "../src/ops.ts";
-import { assetLinks, type Deps, handle } from "../src/server.ts";
+import { assetLinks, type Deps, handle, releaseSaid } from "../src/server.ts";
 
 const NOW = 1_800_000_000_000;
 const ACCESS: Issuer = {
@@ -560,6 +560,50 @@ describe("operations", () => {
     ).resolves.toEqual({ issue: 201, queued: true });
   });
 
+  // The second half of a question or a standing instruction the edge
+  // filed: the machine files the task for what it is. The oracle is the
+  // packet handed to the queue's own command.
+  test("a held prompt is queued as the kind it was sent as, and a kind that is none of them is refused", async () => {
+    type Packet = { title: string; payload: { timebox_minutes: number; issue: { title: string } } };
+    const packets: Packet[] = [];
+    // The packet is a file for as long as the queue's command runs: read then.
+    const run: Run = async (argv) => {
+      if (argv[1] === "queue" && argv[2] === "enqueue") packets.push(JSON.parse(readFileSync(argv[3], "utf8")));
+      return { code: 0, stdout: "", stderr: "" };
+    };
+    const table = actions(new Ops(CFG, run), {} as never);
+    const queuedAs = async (intent?: unknown) => {
+      await table["prompt.enqueue"].run({
+        issue: 201,
+        text: "Why did it stall?",
+        at: "2026-11-22T12:00:00Z",
+        ...(intent === undefined ? {} : { intent }),
+      });
+      const packet = packets.at(-1) as Packet;
+      return [packet.title, packet.payload.issue.title, packet.payload.timebox_minutes];
+    };
+    expect(await queuedAs("question")).toEqual([
+      "Owner question developing-today/code#201: Why did it stall?",
+      "Owner asks: Why did it stall?",
+      30,
+    ]);
+    expect(await queuedAs("directive")).toEqual([
+      "Owner directive developing-today/code#201: Why did it stall?",
+      "Owner directs: Why did it stall?",
+      60,
+    ]);
+    // From an edge that says nothing of the kind (an older one): something to do, as before.
+    expect(await queuedAs()).toEqual(await queuedAs("task"));
+    expect((await queuedAs())[0]).toBe("Owner prompt developing-today/code#201: Why did it stall?");
+    const filed = packets.length;
+    for (const intent of ["rant", "", 7, null]) {
+      await expect(
+        table["prompt.enqueue"].run({ issue: 201, text: "x", at: "2026-11-22T12:00:00Z", intent }),
+      ).rejects.toThrow(/intent: one of task, question, directive/);
+    }
+    expect(packets.length).toBe(filed);
+  });
+
   test("the queue is read with bound parameters and never written", async () => {
     const r = recorder(() => "secret-token\n");
     const sent: { url: string; body: { requests: { stmt?: { sql: string; args: unknown[] } }[] }; auth: string }[] = [];
@@ -594,6 +638,63 @@ describe("operations", () => {
     await ops.queueCounts();
     expect(r.calls.length).toBe(1); // the token is fetched once
     await expect(ops.queueList("done", "", "")).rejects.toThrow(/status/);
+  });
+
+  // Oracle: the store's own wire format (Hrana over HTTP, as Turso
+  // documents it). A whole number is sent as text marked as an integer,
+  // because the wire carries 64 bits and a JSON number does not. Seen
+  // live on 2026-11-24: an issue's number arrived as "7920", and a
+  // screen that wanted a number showed no issue at all.
+  test("a whole number comes from the store as marked text and is read as the number it is", async () => {
+    const r = recorder(() => "secret-token\n");
+    const ops = new Ops(CFG, r.run, async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        results: [
+          {
+            type: "ok",
+            response: {
+              result: {
+                cols: ["id", "big", "below", "title", "ratio", "nothing", "odd", "empty", "bare"].map((name) => ({
+                  name,
+                })),
+                rows: [
+                  [
+                    { type: "integer", value: "7920" },
+                    // One more than a number can hold exactly: it stays the text it came as.
+                    { type: "integer", value: "9007199254740993" },
+                    { type: "integer", value: "-3" },
+                    // Text that looks like a number is text.
+                    { type: "text", value: "123" },
+                    { type: "float", value: 0.5 },
+                    { type: "null" },
+                    // Marked as an integer and not one: passed on as it came, not made into nonsense.
+                    { type: "integer", value: "seven" },
+                    { type: "integer", value: "" },
+                    // Not marked at all (a stand-in, or another store): as it came.
+                    { value: "7" },
+                  ],
+                ],
+              },
+            },
+          },
+        ],
+      }),
+    }));
+    expect(await ops.sql("SELECT 1", [])).toEqual([
+      {
+        id: 7920,
+        big: "9007199254740993",
+        below: -3,
+        title: "123",
+        ratio: 0.5,
+        nothing: null,
+        odd: "seven",
+        empty: "",
+        bare: "7",
+      },
+    ]);
   });
 
   test("a rotated queue token is fetched again, once", async () => {
@@ -639,6 +740,109 @@ describe("operations", () => {
     }
     await expect(ops.send(["all"], "", false)).rejects.toThrow(/required/);
     expect(r.calls.length).toBe(2);
+  });
+
+  test("the pipeline read carries the owner's filters as the bridge's own flags, and checks them first", async () => {
+    const rows = [{ surface: "fleet", kind: "command", sender_addr: "agent:felix", receiver: "agent:archer", body: "do it" }];
+    const r = recorder(() => JSON.stringify({ messages: rows }));
+    const ops = new Ops(CFG, r.run);
+    const got = await ops.pipelineFeed(
+      new URLSearchParams({ kind: "command", sender: "felix", surface: "fleet", unread: "1", limit: "25" }),
+    );
+    expect(got).toEqual(rows);
+    expect(r.calls[0].argv).toEqual([
+      "fleet", "bridge", "pipeline", "--order", "desc",
+      "--kind", "command", "--surface", "fleet", "--sender", "felix", "--unread", "--limit", "25",
+    ]);
+    // A filter the bridge has no such value for is refused here, and
+    // nothing is run for it.
+    await expect(ops.pipelineFeed(new URLSearchParams({ kind: "shout" }))).rejects.toThrow(OpError);
+    await expect(ops.pipelineFeed(new URLSearchParams({ surface: "smoke-signal" }))).rejects.toThrow(OpError);
+    await expect(ops.pipelineFeed(new URLSearchParams({ sender: "a b" }))).rejects.toThrow(OpError);
+    expect(r.calls.length).toBe(1);
+  });
+
+  test("the directory merges credential state in, and a revocation shows on the next read", async () => {
+    // The bridge's answers, as they stand: felix's credential live.
+    // The row shape mirrors what the bridge returns: revoked_at starts
+    // null and carries a timestamp after revocation (#12521).
+    let credentialState: {
+      agent: string;
+      state: string;
+      scopes: string[];
+      addr: null;
+      credentials: number;
+      live: number;
+      created: string;
+      revoked_at: string | null;
+    }[] = [
+      { agent: "felix", state: "active", scopes: ["inbox", "send"], addr: null, credentials: 1, live: 1, created: "2026-11-24T00:00:00Z", revoked_at: null },
+    ];
+    const r = recorder((argv) => {
+      if (argv[2] === "directory") {
+        return JSON.stringify({
+          agents: [
+            { surface: "fleet", name: "felix", groups: ["muse"], presence: "last_seen", last_seen: "2026-11-24T01:00:00Z", unread: 3 },
+            { surface: "notes", name: "muse/scout", identity: "muse/scout", scopes: { can_send: true, can_inbox: false }, presence: "none", first_seen: "2026-11-24T00:00:00Z", last_seen: null },
+          ],
+        });
+      }
+      if (argv[2] === "credentials") return JSON.stringify({ credentials: credentialState });
+      if (argv[2] === "revoke") return JSON.stringify({ ok: true, revoked: 1 });
+      return "";
+    });
+    const ops = new Ops(CFG, r.run);
+    const before = (await ops.directory()) as {
+      name: string;
+      presence: string;
+      last_seen: string | null;
+      credential: {
+        state: string;
+        scopes: string[];
+        credentials: number | null;
+        created: string | null;
+        revoked_at: string | null;
+      } | null;
+    }[];
+    const felix = before.find((a) => a.name === "felix");
+    expect(felix?.credential).toEqual({
+      state: "active",
+      scopes: ["inbox", "send"],
+      credentials: 1,
+      created: "2026-11-24T00:00:00Z",
+      revoked_at: null,
+    });
+    // A notes-only identity is in the list, marked notes-only: no
+    // presence is invented for it, and its live token scopes are its
+    // credential state.
+    const scout = before.find((a) => a.name === "muse/scout");
+    expect(scout?.presence).toBe("none");
+    expect(scout?.last_seen).toBeNull();
+    expect(scout?.credential?.state).toBe("active");
+    expect(scout?.credential?.scopes).toEqual(["send"]);
+
+    // The revoke action runs the bridge's own verb, audits only the
+    // surface and the name, and the next directory read shows it.
+    const table = actions(ops, {} as never);
+    expect(table["agent.revoke"].audit({ surface: "fleet", name: "felix", secret: "x" })).toEqual({
+      surface: "fleet",
+      name: "felix",
+    });
+    const done = (await table["agent.revoke"].run({ surface: "fleet", name: "felix" })) as { revoked: number };
+    expect(done.revoked).toBe(1);
+    expect(r.calls.at(-1)?.argv).toEqual(["fleet", "bridge", "revoke", "--agent", "felix"]);
+    credentialState = [
+      { agent: "felix", state: "revoked", scopes: [], addr: null, credentials: 1, live: 0, created: "2026-11-24T00:00:00Z", revoked_at: "2026-11-24T02:00:00Z" },
+    ];
+    const after = (await ops.directory()) as { name: string; credential: { state: string } | null }[];
+    expect(after.find((a) => a.name === "felix")?.credential?.state).toBe("revoked");
+    // A notes identity is revoked by its identity, and a surface that
+    // is neither is refused before anything runs.
+    await table["agent.revoke"].run({ surface: "notes", name: "muse/scout" });
+    expect(r.calls.at(-1)?.argv).toEqual(["fleet", "bridge", "revoke", "--identity", "muse/scout"]);
+    const calls = r.calls.length;
+    await expect(table["agent.revoke"].run({ surface: "smoke-signal", name: "felix" })).rejects.toThrow(OpError);
+    expect(r.calls.length).toBe(calls);
   });
 
   test("ranking an issue adds the new rank before it removes the others", async () => {
@@ -1014,6 +1218,26 @@ describe("HTTP surface", () => {
       headers: { host: "pm.security.cab", "content-type": "application/json", ...headers },
     });
 
+  // A release laid out by redeploy.sh says which commit it is in a
+  // file beside the code. The oracle is that file's two lines as the
+  // script writes them (test/redeploy.test.ts reads the same file back).
+  test("a release says which commit it is, and anything that is not such a file says nothing", () => {
+    const commit = "0123456789abcdef0123456789abcdef01234567";
+    const tree = "89abcdef0123456789abcdef0123456789abcdef";
+    expect(releaseSaid(`commit=${commit}\ntree=${tree}\n`)).toEqual({ commit, tree });
+    expect(releaseSaid(`commit=${commit}\n`)).toEqual({ commit, tree: null });
+    for (const text of [
+      "",
+      "commit=abc\n",
+      `tree=${tree}\n`,
+      `commit=${commit}0\n`,
+      `  commit=${commit}\n`,
+      `COMMIT=${commit}\n`,
+    ]) {
+      expect([text, releaseSaid(text)]).toEqual([text, null]);
+    }
+  });
+
   test("only the asset links and the health check answer without sign-in", async () => {
     const d = deps(401);
     const links = await handle(get("/.well-known/assetlinks.json"), d);
@@ -1021,7 +1245,13 @@ describe("HTTP surface", () => {
     expect(await links.json()).toEqual(assetLinks(CFG));
     expect(assetLinks(CFG)[0]).toMatchObject({ target: { package_name: "today.developing.pmconsole" } });
     expect(assetLinks({ androidPackage: "p", androidFingerprints: [] })).toEqual([]);
-    expect(await (await handle(get("/console/health"), d)).json()).toEqual({ ok: true });
+    // The health check says which commit this console was started from,
+    // where it knows: install.sh waits for it to answer as the release
+    // it has just put into service.
+    expect(await (await handle(get("/console/health"), d)).json()).toEqual({ ok: true, version: null });
+    expect(
+      await (await handle(get("/console/health"), { ...d, self: { name: "amd", version: "0123456789ab" } })).json(),
+    ).toEqual({ ok: true, version: "0123456789ab" });
     for (const path of [
       "/console/",
       "/console/app.js",
@@ -1039,37 +1269,190 @@ describe("HTTP surface", () => {
     expect((await handle(get("/elsewhere"), alone)).status).toBe(404);
   });
 
-  test("every file the page and the worker load is served here, served by the edge, and shipped in the edge's build", async () => {
-    // Three lists name the app's files: this service's, the edge's, and
-    // what the edge's build copies. A file missing from one of them
-    // works on the laptop and is a 404 behind Cloudflare, or the other
-    // way round; and the worker cannot open the app offline without
-    // every one of them.
-    const read = (path: string) => readFileSync(join(import.meta.dir, "..", path), "utf8");
-    const page = [...read("public/index.html").matchAll(/(?:src|href)="\/console\/([^"]+)"/g)].map((m) => m[1]);
-    const worker = [
-      ...(/const FILES = \[([^\]]+)\]/.exec(read("public/sw.js"))?.[1] ?? "").matchAll(/"\/console\/([^"]+)"/g),
-    ].map((m) => m[1]);
-    const loaded = [...new Set([...page, ...worker, "sw.js"])].sort();
-    expect(loaded).toEqual(["app.css", "app.js", "icon.svg", "outbox.js", "sw.js"]);
-    // The worker keeps everything the page loads, or the page would not open offline.
-    expect([...new Set(worker)].sort()).toEqual(page.sort());
+  test("a machine answers Trends too, with the same reader, through the fleet binary; and it remembers what it read between asks", async () => {
+    // GitHub's list of issues as the fleet binary gives it: one pull request merged and one issue filed.
+    const items = [
+      {
+        number: 41,
+        title: "feat(fleet): a lane",
+        created_at: "2026-11-20T10:00:00Z",
+        updated_at: "2026-11-20T11:00:00Z",
+        closed_at: "2026-11-20T11:00:00Z",
+        state: "closed",
+        labels: [],
+        pull_request: { merged_at: "2026-11-20T11:00:00Z" },
+      },
+      {
+        number: 42,
+        title: "A bug",
+        created_at: "2026-11-21T10:00:00Z",
+        updated_at: "2026-11-21T10:00:00Z",
+        closed_at: null,
+        state: "open",
+        labels: [{ name: "kind/bug" }],
+      },
+    ];
+    const r = recorder((argv) => {
+      if (argv[1] === "gh" && argv[3].includes("/issues?state=all&sort=updated&direction=asc&since=")) {
+        // As GitHub answers: what changed at or after the time asked.
+        const since = new URL(`https://api.github.com/${argv[3]}`).searchParams.get("since") ?? "";
+        return JSON.stringify(items.filter((item) => item.updated_at >= since));
+      }
+      return argv[1] === "secrets" ? "token\n" : "{}";
+    });
+    const d = deps("owner", r);
+    const res = await handle(get("/console/api/trends?days=90"), d);
+    expect(res.status).toBe(200);
+    const doc = (await res.json()) as {
+      window: number;
+      days: string[];
+      history: { whole: boolean };
+      merged: { all: number[]; projects: Record<string, number[]> };
+      bugs: { opened: number[] };
+      features: { latest: Record<string, { number: number }[]> };
+    };
+    expect(doc.window).toBe(90);
+    const asked = () => r.calls.filter((c) => c.argv[1] === "gh" && c.argv[3].includes("since=")).length;
+    // One ask of the screen reads three pages; asked until the history is whole (the last day, six older
+    // stretches, and a look at what is new before each further go), the same reader goes on from where it was.
+    expect(asked()).toBe(3);
+    // (After the first, an ask answers from what is kept and the machine reads on behind it.)
+    let last = doc;
+    for (let i = 0; i < 200 && !last.history.whole; i++) {
+      await Bun.sleep(5);
+      last = (await (await handle(get("/console/api/trends?days=90"), d)).json()) as typeof doc;
+    }
+    expect([last.history.whole, asked()]).toEqual([true, 9]);
+    const at = (day: string) => last.days.indexOf(day);
+    // (The days end today, so these two are shown only while they are within ninety days of it.)
+    if (at("2026-11-20") >= 0) {
+      expect([last.merged.all[at("2026-11-20")], last.merged.projects.fleet[at("2026-11-20")]]).toEqual([1, 1]);
+      expect(last.bugs.opened[at("2026-11-21")]).toBe(1);
+      expect(last.features.latest.fleet.map((f) => f.number)).toEqual([41]);
+    }
+    // A window that ends on an earlier day, as a report of a week gone by asks for.
+    const earlier = (await (await handle(get("/console/api/trends?days=7&end=2026-11-21"), d)).json()) as {
+      end: string;
+      days: string[];
+    };
+    expect([earlier.end, earlier.days[earlier.days.length - 1]]).toEqual(["2026-11-21", "2026-11-21"]);
+    // Whole, and asked again at once: GitHub is not asked.
+    expect((await handle(get("/console/api/trends?days=7"), d)).status).toBe(200);
+    expect(asked()).toBe(9);
+    // Not the owner: no trends.
+    expect((await handle(get("/console/api/trends"), deps(403, r))).status).toBe(403);
+  });
+
+  test("the app's files are named in one list, and this service, the Worker's build and the page all go by it", async () => {
+    // public/files.json is the one place a file of the app is named.
+    // The oracle for "is everything there" is what the page and its
+    // style sheets and scripts actually ask for, read from their own
+    // text; the oracle for "is it served" is the file on disk.
+    const at = (path: string) => join(import.meta.dir, "..", path);
+    const read = (path: string) => readFileSync(at(path), "utf8");
+    const list = JSON.parse(read("public/files.json")) as {
+      page: string;
+      files: { path: string; type: string; kept: string }[];
+    };
+    const named = list.files.map((f) => f.path);
+    expect(new Set(named).size).toBe(named.length);
+    expect(list.page).toBe("index.html");
+    // Each is a real file with something in it, of a kind the service worker takes for the app's.
+    for (const f of list.files) {
+      expect([f.path, statSync(at(`public/${f.path}`)).size > 0]).toEqual([f.path, true]);
+      expect([f.path, /^[a-z0-9/_-]+\.(?:js|css|svg|json|woff2)$/.test(f.path)]).toEqual([f.path, true]);
+      expect([f.path, ["installed", "used", "never"].includes(f.kept)]).toEqual([f.path, true]);
+    }
+    // What the page loads, what the style sheets load, and what the
+    // scripts import: all of it is on the list.
+    const asked = new Set<string>();
+    for (const m of read("public/index.html").matchAll(/(?:src|href)="\/console\/([^"]+)"/g)) asked.add(m[1]);
+    for (const sheet of named.filter((n) => n.endsWith(".css"))) {
+      for (const m of read(`public/${sheet}`).matchAll(/url\("\/console\/([^"]+)"\)/g)) asked.add(m[1]);
+    }
+    for (const script of named.filter((n) => n.endsWith(".js"))) {
+      // What it imports is found from where it is: "./x.js" beside it, "../x.js" above.
+      for (const m of read(`public/${script}`).matchAll(
+        /(?:^import [^"\n]*|importScripts\()"(\.{1,2}\/[^"]+|\/console\/[^"]+)"/gm,
+      ))
+        asked.add(new URL(m[1], `https://pm.example/console/${script}`).pathname.replace("/console/", ""));
+    }
+    expect([...asked].filter((name) => !named.includes(name))).toEqual([]);
+    // The page asks for its style sheets, the look, the outbox and the app (and the icon).
+    for (const must of ["app.css", "themes.css", "look.css", "look.js", "outbox.js", "app.js", "icon.svg"])
+      expect([...asked]).toContain(must);
+    // And what the app's script imports, and what those import.
+    for (const must of ["ui.js", "pages/index.js", "pages/trends.js", "charts.js"]) expect([...asked]).toContain(must);
+    // A script the app imports is needed to open it: kept from the start.
+    for (const name of asked) {
+      if (name.endsWith(".js"))
+        expect([name, list.files.find((f) => f.path === name)?.kept]).toEqual([name, "installed"]);
+    }
+    // Everything the page needs to open is kept from the start; a
+    // typeface is kept when used; the worker itself never.
+    const keptWhen = Object.fromEntries(list.files.map((f) => [f.path, f.kept]));
+    for (const m of read("public/index.html").matchAll(/(?:src|href)="\/console\/([^"]+)"/g))
+      expect([m[1], keptWhen[m[1]]]).toEqual([m[1], "installed"]);
+    expect(keptWhen["files.json"]).toBe("installed");
+    expect(keptWhen["sw.js"]).toBe("never");
+    expect(
+      list.files.filter((f) => f.path.startsWith("fonts/")).every((f) => f.kept === "used" && f.type === "font/woff2"),
+    ).toBe(true);
+    expect(list.files.filter((f) => f.path.startsWith("fonts/")).length).toBe(
+      readdirSync(at("public/fonts")).filter((n) => n.endsWith(".woff2")).length,
+    );
+
+    // This service serves each as what the list says it is, byte for
+    // byte, and nothing in the folder that the list does not name.
     const d = deps("owner");
-    for (const name of loaded) expect([name, (await handle(get(`/console/${name}`), d)).status]).toEqual([name, 200]);
-    const edgeServes = [
-      ...(/const STATIC: Record<string, string> = \{([^}]+)\}/.exec(read("edge/src/edge.ts"))?.[1] ?? "").matchAll(
-        /"([^"]+)":/g,
-      ),
-    ].map((m) => m[1]);
-    expect(edgeServes.sort()).toEqual(loaded);
-    const built = [
-      ...(
-        /for \(const name of \[([^\]]+)\]\) \{\s*cpSync\(join\(here, "\.\.", "public"/.exec(
-          read("edge/build.mjs"),
-        )?.[1] ?? ""
-      ).matchAll(/"([^"]+)"/g),
-    ].map((m) => m[1]);
-    expect(built.sort()).toEqual([...loaded, "index.html"].sort());
+    for (const f of list.files) {
+      const res = await handle(get(`/console/${f.path}`), d);
+      expect([f.path, res.status, res.headers.get("content-type")]).toEqual([f.path, 200, f.type]);
+      expect([f.path, Buffer.from(await res.arrayBuffer()).equals(readFileSync(at(`public/${f.path}`)))]).toEqual([
+        f.path,
+        true,
+      ]);
+    }
+    for (const unlisted of ["index.html", "fonts/licences/inter.txt", "fonts/", "files.json.bak"]) {
+      expect([unlisted, (await handle(get(`/console/${unlisted}`), d)).status]).toEqual([unlisted, 404]);
+    }
+
+    // The Worker's build, run for real into a folder of its own: the
+    // page and every listed file, byte for byte, and nothing else.
+    const out = mkdtempSync(join(tmpdir(), "pm-build-"));
+    try {
+      const built = Bun.spawnSync([process.execPath, at("edge/build.mjs"), "--out", out], {
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      expect([built.exitCode, built.stderr.toString()]).toEqual([0, ""]);
+      const shipped: string[] = [];
+      const walk = (dir: string, under: string) => {
+        for (const entry of readdirSync(dir, { withFileTypes: true })) {
+          if (entry.isDirectory()) walk(join(dir, entry.name), `${under}${entry.name}/`);
+          else shipped.push(`${under}${entry.name}`);
+        }
+      };
+      walk(join(out, "console"), "");
+      expect(shipped.sort()).toEqual([...named, "index.html"].sort());
+      for (const name of shipped) {
+        expect([name, readFileSync(join(out, "console", name)).equals(readFileSync(at(`public/${name}`)))]).toEqual([
+          name,
+          true,
+        ]);
+      }
+      // It takes a folder to build into, and nothing else.
+      const odd = Bun.spawnSync([process.execPath, at("edge/build.mjs"), "--somewhere"], {
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      expect([odd.exitCode, odd.stderr.toString().startsWith("usage:")]).toEqual([2, true]);
+    } finally {
+      rmSync(out, { recursive: true, force: true });
+    }
+    // And the Worker serves from the same list (its own tests ask it for the files).
+    expect(read("edge/src/edge.ts")).toContain('import appFiles from "../../public/files.json";');
+    expect(read("src/server.ts")).toContain('import appFiles from "../public/files.json";');
   });
 
   test("the page and its files are served to the owner with a strict policy", async () => {

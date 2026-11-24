@@ -72,6 +72,7 @@ pub fn run(args: &[String]) -> i32 {
         "heartbeat" => cmd_heartbeat(rest),
         "checkpoint" => cmd_checkpoint(rest),
         "park" => cmd_park(rest),
+        "reprioritize" => cmd_reprioritize(rest),
         "wake" => cmd_wake(rest),
         "block" => cmd_block(rest),
         "unblock" => cmd_unblock(rest),
@@ -218,6 +219,36 @@ mod tests {
                 "cmd_timeline queries {kind} so claim displacements are visible"
             );
         }
+    }
+
+    #[test]
+    fn timeline_surfaces_staleness_autocomplete_14268() {
+        // #14268: a claim-time staleness retirement writes exactly
+        // one event, `staleness_autocomplete`, and no `claimed`
+        // event. While the history kind lists omitted it, four
+        // retired tasks read as "zero history events, no result"
+        // through every client surface and were misdiagnosed as
+        // silent completions. Both surfaces that assemble a task's
+        // history query the kind now.
+        let src = include_str!("client/commands_query.rs");
+        let timeline_seg = src
+            .split("fn cmd_timeline(")
+            .nth(1)
+            .and_then(|s| s.split("let resp = call(").next())
+            .unwrap_or("");
+        assert!(
+            timeline_seg.contains("\"staleness_autocomplete\""),
+            "cmd_timeline queries staleness_autocomplete so retirements are visible"
+        );
+        let show_seg = src
+            .split("fn cmd_show(")
+            .nth(1)
+            .and_then(|s| s.split("fn cmd_timeline(").next())
+            .unwrap_or("");
+        assert!(
+            show_seg.contains("\"staleness_autocomplete\""),
+            "cmd_show queries staleness_autocomplete so retirements are visible"
+        );
     }
 
     #[test]
@@ -2449,6 +2480,28 @@ esac
         // "default" is the server saying no variant was chosen, so
         // the session's real variant supplies effort.
         assert_eq!(derived["effort"], json!("low"));
+    }
+
+    #[test]
+    fn completion_telemetry_route_claim_model_is_the_pool_not_the_model() {
+        // A transfer-stamped claim through the route provider: its
+        // claim_model holds the route id (the pool), never a serving
+        // leaf, so the session's leaf supplies the model — and with
+        // no session record the model is an honest null rather than
+        // the route alias.
+        let claim = json!({"claim_provider": "opencode-route", "claim_model": "workhorse"});
+        let session = json!({"data": {
+            "model": {"providerID": "opencode-route", "id": "workhorse"},
+            "route_usage": {"lastServing": {
+                "providerID": "anthropic", "modelID": "claude-opus-4-1", "variant": "medium"
+            }},
+        }});
+        let derived = derive_completion_telemetry(&claim, Some(&session));
+        assert_eq!(derived["model"], json!("claude-opus-4-1"));
+        assert_eq!(derived["effort"], json!("medium"));
+        assert_eq!(derived["pool"], json!("workhorse"));
+        let derived = derive_completion_telemetry(&claim, None);
+        assert_eq!(derived["model"], Value::Null);
     }
 
     #[test]

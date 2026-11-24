@@ -4,8 +4,9 @@
 //   POST /events  (alias POST /webhook)
 //     Authenticated webhook (shared secret, Worker secret
 //     WEBHOOK_SECRET — vaulted in Bitwarden by name
-//     `cloudflare.decision-events.webhook-secret`, set with
-//     `wrangler secret put`; never in this repo). Accepts a batch of
+//     `cloudflare.decision-events.webhook-secret`, installed as a
+//     Worker secret outside the release workflow; never in this repo.
+//     Accepts a batch of
 //     decision-set events ({events: [...]}, a bare array, or one
 //     event), stores them in D1 (INSERT OR IGNORE on event_id —
 //     redelivery is a no-op), then hands each set's NEW events to that
@@ -44,6 +45,7 @@ import {
 export interface Env {
   DB: D1Database;
   SET_EVENTS: DurableObjectNamespace;
+  VERSION?: string;
   WEBHOOK_SECRET?: string;
 }
 
@@ -269,7 +271,12 @@ export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
     if (url.pathname === "/health") {
-      return Response.json({ ok: true, service: "decision-events", webhookConfigured: Boolean(env.WEBHOOK_SECRET) });
+      return Response.json({
+        ok: true,
+        service: "decision-events",
+        webhookConfigured: Boolean(env.WEBHOOK_SECRET),
+        version: env.VERSION ?? "unknown",
+      });
     }
     if ((url.pathname === "/events" || url.pathname === "/webhook") && request.method === "POST") {
       return handlePostEvents(request, env);

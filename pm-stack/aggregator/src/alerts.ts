@@ -211,11 +211,23 @@ export function mergeQuiet(input: unknown): QuietPrefs {
   return out;
 }
 
-/** Preserve existing subscription choices when new classes are added:
- * only the original incident class defaults on for old rows; new rows
- * receive the reviewed defaults from mergeClasses at creation. */
+/** Whether a subscription receives a notification class.
+ *
+ * A stored choice always wins, including an explicit opt-out. A class
+ * with no stored choice was added after the subscription was created
+ * (the stored map carries only the classes of its day, and upserts
+ * touch only the keys the caller sent — #7193), so it takes the
+ * reviewed default from NOTIFICATION_CLASS_DEFAULTS: the #13940
+ * backfill for pre-class rows. Before this, only incident defaulted
+ * on for such rows, which silently left pre-class subscriptions —
+ * e.g. rows created before the #8568 classes existed — with every
+ * later class off, even though the preferences page already rendered
+ * those classes at their defaults. A class with no reviewed default
+ * stays off. New rows receive the full reviewed defaults from
+ * mergeClasses at creation, so this fallback only ever fires for
+ * classes newer than the row. */
 export function classEnabled(sub: { classes: Record<string, boolean> }, cls: string): boolean {
-  return sub.classes?.[cls] ?? cls === "incident";
+  return sub.classes?.[cls] ?? DEFAULT_CLASSES[cls] ?? false;
 }
 
 /** Is `now` inside the quiet window (evaluated in the prefs' timezone)?

@@ -135,9 +135,18 @@ test("read through the fleet binary: the repository's list, with the last deploy
   };
   const ops = new Ops(readConfig({ HOME: "/h" }), run);
   const p = await ops.platform();
-  expect([p.checked, p.malformed, p.workers.length]).toEqual(["2026-11-23", 0, 20]);
-  // One read of the list, and one of each deploy workflow: not one per Worker.
-  expect(asked).toHaveLength(4);
+  // The oracle is the file itself, read here apart from the code under
+  // test: whoever adds a Worker to it, or gives one a deploy workflow,
+  // changes what is expected with it. (It said "20" and "4" here, and
+  // the console's own deploy stopped the first time the list changed.)
+  const listed = JSON.parse(file) as { checked: string; workers: { name: string; workflow: string | null }[] };
+  expect([p.checked, p.malformed, p.workers.length]).toEqual([listed.checked, 0, listed.workers.length]);
+  expect(p.workers.map((w) => w.name)).toEqual(listed.workers.map((w) => w.name));
+  // One read of the list, and one of each deploy workflow it names: not one per Worker, and none twice.
+  const workflows = new Set(listed.workers.map((w) => w.workflow).filter((w) => w !== null));
+  expect(workflows.size).toBeGreaterThanOrEqual(2);
+  expect(asked).toHaveLength(1 + workflows.size);
+  expect(new Set(asked).size).toBe(asked.length);
   const byName = new Map(p.workers.map((w) => [w.name, w]));
   expect(byName.get("pm-console-edge")?.run).toEqual({
     commit: "2a96e875037d",
@@ -153,7 +162,7 @@ test("read through the fleet binary: the repository's list, with the last deploy
   // Its runs cannot be read: that Worker says so, and the rest still show.
   fails.add("repos/developing-today/code/actions/workflows/pm-console-edge-deploy.yml/runs?branch=main&per_page=1");
   const partial = await ops.platform();
-  expect(partial.workers).toHaveLength(20);
+  expect(partial.workers).toHaveLength(listed.workers.length);
   expect(partial.workers.find((w) => w.name === "pm-console-edge")?.run).toEqual({
     error: expect.stringContaining("404"),
   });

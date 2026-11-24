@@ -571,7 +571,10 @@ mod tests {
         assert_ne!(without, with);
         assert_eq!(with.segments(), ["a", ""]);
         assert_eq!(with.to_string(), "id://h/ns/a/");
-        assert!(IdUri::parse("id://h/ns").unwrap().segments().is_empty());
+        assert_eq!(
+            IdUri::parse("id://h/ns").unwrap().segments(),
+            [] as [String; 0]
+        );
         assert_eq!(IdUri::parse("id://h/ns/").unwrap().segments(), [""]);
     }
 

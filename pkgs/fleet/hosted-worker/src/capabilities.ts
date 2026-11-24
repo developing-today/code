@@ -28,6 +28,14 @@
 // queue door (#12589) made the `queue` domain available, and the
 // ingestion door (#12590) and the sync door (#12591) are live —
 // every component-C door has landed, and the document says so.
+// The bridge door (#14373) then wired the `bridge` domain to the
+// message bridge over its service binding, with the PM stack's own
+// credential: the PM service API and the console's edge share that
+// one send path, and the domain reports available for it.
+// The ingestion door then gained its backfill + divergence surface
+// (#14312, the #9074 remainder): recorded backfill runs and the
+// body-vs-DB divergence report ride the same door, so the door's
+// route list names them while its filling issue stays #12590.
 
 import { SERVICE_NAME, type HostedConfig } from "./config.ts";
 
@@ -80,7 +88,13 @@ export const HOSTED_DOORS: HostedDoor[] = [
   },
   {
     id: "ingestion",
-    routes: ["POST /v1/ingestion/github", "POST /v1/ingestion/sweep"],
+    routes: [
+      "POST /v1/ingestion/github",
+      "POST /v1/ingestion/sweep",
+      "POST /v1/ingestion/backfill",
+      "GET /v1/ingestion/backfill/runs",
+      "POST /v1/ingestion/divergence",
+    ],
     fillingIssue: "#12590",
     state: "live",
   },
@@ -88,6 +102,12 @@ export const HOSTED_DOORS: HostedDoor[] = [
     id: "sync",
     routes: ["POST /v1/sync/project", "POST /v1/sync/queue-github"],
     fillingIssue: "#12591",
+    state: "live",
+  },
+  {
+    id: "bridge",
+    routes: ["POST /v1/bridge/send", "GET /v1/bridge/agents", "GET /v1/bridge/messages"],
+    fillingIssue: "#14373",
     state: "live",
   },
 ];
@@ -169,6 +189,8 @@ const NATIVE_DOMAINS: NativeDomain[] = [
     aliases: [],
     capabilities: ["bridge"],
     hosted: "already-hosted",
+    fillingIssue: "#14373",
+    available: true,
   },
   {
     name: "agent",

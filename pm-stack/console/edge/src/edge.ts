@@ -82,8 +82,10 @@ import type { Later } from "../../src/plan.ts";
 import { platformRead } from "../../src/reads.ts";
 import { Notifier, WATCHED as NOTIFIED } from "../../src/notify.ts";
 import { contact, Push } from "../../src/push.ts";
+import { goesBy, platformSettings, settingsDifferences, settingsThatDiffer } from "../../src/settings.ts";
 import type { Store } from "../../src/store.ts";
 import { timed, unread } from "../../src/timed.ts";
+import appFiles from "../../public/files.json";
 
 /** A rank set twice ends at the last one: an older held rank never
  * runs when a newer rank for the same issue is done. Anything else
@@ -108,6 +110,7 @@ const SECTIONS: Record<string, number> = {
   questions: 45_000,
   prs: 90_000,
   priorities: 180_000,
+  done: 120_000,
   agents: 75_000,
   services: 45_000,
   more: 2 * 60 * 60_000,
@@ -169,6 +172,17 @@ export const SILENT_MS = 10 * 60_000;
 /** With nobody looking, what the edge reads itself and tells the owner
  * about is read again this often. */
 const OWN_CLOCK_MS = 60_000;
+/** While somebody looks at the Trends screen, the object's own clock
+ * reads its history on: this many pages each minute until it has been
+ * read to its end, then what changed, this often. */
+const TRENDS_EVERY_MS = 30 * 60_000;
+const TRENDS_PAGES_A_WAKE = 6;
+/** It does that for this long after the screen was last asked for. */
+const TRENDS_WATCHED_MS = 24 * 60 * 60_000;
+/** While the app is connected, how often this side wakes to read again
+ * what has gone stale (each list by its own age), so that what changed
+ * is said to the app without the app asking. */
+export const LIVE_MS = 20_000;
 /** How long that read is waited for before the owner is told what there is. */
 const CLOCK_WAIT_MS = 20_000;
 /** A wake that did not get its work done is tried again this soon. */
@@ -195,13 +209,9 @@ const SELF_CHECK_EVERY_MS = 60 * 60_000;
  * usually passed, and a failure should not stand for an hour. */
 const SELF_CHECK_AGAIN_MS = 5 * 60_000;
 const KEY_FETCH_EVERY_MS = 30_000;
-const STATIC: Record<string, string> = {
-  "app.js": "text/javascript; charset=utf-8",
-  "outbox.js": "text/javascript; charset=utf-8",
-  "app.css": "text/css; charset=utf-8",
-  "icon.svg": "image/svg+xml",
-  "sw.js": "text/javascript; charset=utf-8",
-};
+/** The app's files and what each is served as: public/files.json is the
+ * one list of them, and this Worker's build ships exactly those. */
+const STATIC: Record<string, string> = Object.fromEntries(appFiles.files.map((f) => [f.path, f.type]));
 const ACT_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 /** How many actions done here under a name are remembered, for how
  * long, and how much of each answer is kept with it. A device offline
@@ -277,11 +287,34 @@ export interface EdgeOptions {
     enabled: boolean;
     githubToken?: string;
     queueToken?: string;
+    /** The PM stack's own bridge credential and the bridge Worker's
+     * service binding (#14373): with both, `message.send` and the
+     * agents/messages reads are this side's, done through the bridge
+     * as service:pm-stack. Either missing, they stay a machine's. */
+    bridgeToken?: string;
+    bridgeFetch?: unknown;
     fetchImpl?: typeof fetch;
     /** Where GitHub's API and the queue store are, when a local run
      * puts stand-ins in their place. */
     githubApi?: string;
     queueDb?: string;
+    /** Which kinds this object does itself: every one it can
+     * (DIRECT_ACTIONS) unless said. A test says, to stand for a kind
+     * only a machine can do that is about the same thing as one done
+     * here: since "done" became this side's no kind of today's is, and
+     * the rule for one (what comes after it waits behind it) has to
+     * hold for the next that is. */
+    kinds?: readonly string[];
+  };
+  /** The live connections to the app, which the platform holds (they
+   * stay open while this object is put away): take a request to be
+   * one and give the answer for it, say something to all of them, and
+   * how many there are. Absent where there are none to hold (a test
+   * that has no need of them): nobody is connected then. */
+  sockets?: {
+    accept: (req: Request) => Response;
+    send: (text: string) => number;
+    count: () => number;
   };
   /** Ask to be woken at a time: to read again what the owner is told
    * about, and to notice a machine gone quiet. */
@@ -325,6 +358,11 @@ export class Edge {
   private shown = new Set<string>();
   /** When what the owner is told about was last read by the clock. */
   private clockAt = 0;
+  /** When the history behind the Trends screen was last read on by the clock. */
+  private trendsAt = 0;
+  /** When the Trends screen was last asked for (kept, so that an
+   * object started again still knows somebody looks at it). */
+  private trendsSeen: number | null = null;
   /** This side's latest calls of GitHub and the queue store, numbered. */
   private outward: (Outward & { n: number })[] = [];
   private outwardN = 0;
@@ -372,7 +410,15 @@ export class Edge {
   private selfCheckResult: { at: number; kinds: Record<string, { ok: boolean; error?: string }> } | null = null;
   private setAlarm: (at: number) => Promise<void>;
   private getAlarm: () => Promise<number | null>;
+  private sockets: NonNullable<EdgeOptions["sockets"]> | null;
+  /** Documents that changed and have not been said to the connected yet. */
+  private changedDocs = new Set<DocName>();
+  /** When this side last read by itself for those connected. */
+  private liveAt = 0;
+  /** What this side goes by (see config()), worked out from `told`. */
   private cfg: EdgeConfig | null | undefined;
+  /** What a machine told, as it is kept; undefined until read. */
+  private told: EdgeConfig | null | undefined;
   private mirrors = new Map<string, Mirror | null>();
   private held: Held[] | null = null;
   /** Held actions already handed to a machine in a report answer and not
@@ -440,6 +486,7 @@ export class Edge {
     this.woke = this.now();
     this.fetchImpl = plain(options.fetchImpl ?? fetch) as typeof fetch;
     this.direct = options.direct;
+    this.sockets = options.sockets ?? null;
     const setAlarm = options.setAlarm ?? (async () => {});
     this.setAlarm = async (at) => {
       this.alarmFor = at;
@@ -475,10 +522,12 @@ export class Edge {
       ),
       this.now,
     );
+    // A document that has changed is said to whoever is connected.
+    this.docs.onChange = (docs) => this.changed(docs);
     this.push = new Push(
       kvStore(this.kv, "push"),
       // The contact a push service is given: the project's page.
-      () => contact(this.cfg?.repo ?? "developing-today/code"),
+      () => contact(platformSettings().repo),
       (url, init) => this.fetchImpl(url, init as RequestInit),
       this.now,
     );
@@ -740,8 +789,23 @@ export class Edge {
 
   // ---- what is kept ------------------------------------------------------
 
+  /** What a machine told, as it told it and as it is kept. */
+  private async toldConfig(): Promise<EdgeConfig | null> {
+    if (this.told === undefined) this.told = edgeConfig(await this.kv.get("cfg"));
+    return this.told;
+  }
+
+  /** What this side goes by; null until a machine has said who may
+   * sign in. Who may sign in is as the machine told it (the
+   * deployment's, until that is applied from Actions: #13495). The
+   * repository's settings are this side's own, as its deploy carries
+   * them, whatever a machine told for them; the list of repositories
+   * alone is still the machine's (src/settings.ts says why). */
   private async config(): Promise<EdgeConfig | null> {
-    if (this.cfg === undefined) this.cfg = edgeConfig(await this.kv.get("cfg"));
+    if (this.cfg === undefined) {
+      const told = await this.toldConfig();
+      this.cfg = told === null ? null : goesBy(told);
+    }
     return this.cfg;
   }
 
@@ -958,12 +1022,7 @@ export class Edge {
     for (const h of held) {
       const about = this.heldAbout(h);
       if (this.withMachine(h, handed)) waits.set(h.id, "asked");
-      else if (
-        can &&
-        (DIRECT_ACTIONS as readonly string[]).includes(h.kind) &&
-        !withMachine.has(about) &&
-        !behind.has(about)
-      ) {
+      else if (can && this.does(h.kind) && !withMachine.has(about) && !behind.has(about)) {
         waits.set(h.id, "either");
       } else {
         waits.set(h.id, "machine");
@@ -1160,7 +1219,7 @@ export class Edge {
       const about = this.heldAbout(h);
       if (seen.has(about)) continue;
       seen.add(about);
-      if ((DIRECT_ACTIONS as readonly string[]).includes(h.kind) && !withMachine.has(about)) first.push(h);
+      if (this.does(h.kind) && !withMachine.has(about)) first.push(h);
     }
     return first;
   }
@@ -1272,6 +1331,8 @@ export class Edge {
     const primary = this.primary(cfg);
     const refused = this.refusedKinds();
     const seen = this.hostSeen || null;
+    const told = await this.toldConfig();
+    const differs = told === null ? [] : settingsDifferences(told);
     return {
       served: "edge",
       platform: {
@@ -1281,7 +1342,7 @@ export class Edge {
         // less what it was turned away for and a machine does for the hour.
         actions: [
           ...Object.keys(this.table).sort(),
-          ...(primary ? (DIRECT_ACTIONS as readonly string[]).filter((kind) => !refused.includes(kind)) : []),
+          ...(primary ? this.kinds().filter((kind) => !refused.includes(kind)) : []),
         ],
         sections: primary ? this.owned(cfg) : [],
         refused: [...refused, ...this.refusedReads().map((name) => `read.${name}`)],
@@ -1298,6 +1359,7 @@ export class Edge {
                 version: this.hostVersion,
                 actions: this.machine?.actions ?? [],
                 sections: this.machine?.sections ?? [],
+                ...(differs.length > 0 ? { differs } : {}),
               },
             ],
       held: await this.heldSaid(cfg),
@@ -1429,23 +1491,38 @@ export class Edge {
 
   // ---- doing the core here ------------------------------------------------
 
+  /** Whether this side holds the PM bridge credential and the bridge
+   * binding (#14373): the two together make the bridge this side's. */
+  private bridgeReady(): boolean {
+    return Boolean(this.direct?.bridgeToken) && Boolean(this.direct?.bridgeFetch);
+  }
+
+  /** The kinds this side does itself when it does the core. A message
+   * is this side's only with the bridge held (bridgeReady): without
+   * it the kind stays a machine's, as it was before the bridge path
+   * existed, and is held for one like any other. */
+  private kinds(): readonly string[] {
+    const base = this.direct?.kinds ?? DIRECT_ACTIONS;
+    return this.bridgeReady() && !base.includes("message.send") ? [...base, "message.send"] : base;
+  }
+
+  /** A kind this side does itself when it does the core; any other is
+   * a machine's whenever one comes. */
+  private does(kind: string): boolean {
+    return this.kinds().includes(kind);
+  }
+
   /** The switch is on and both tokens are here. */
   private directCapable(): boolean {
     return this.direct?.enabled === true && Boolean(this.direct.githubToken) && Boolean(this.direct.queueToken);
   }
 
-  /** The config carries what this side needs to do the core: a config
-   * stored or reported before that existed has these empty, and the
-   * edge serves the app from the mirror without acting itself. */
-  private directConfigReady(cfg: EdgeConfig | null): boolean {
-    return cfg !== null && cfg.queueDbUrl !== "" && cfg.queueTokenName !== "" && cfg.promptLabel !== "";
-  }
-
-  /** This side does the core itself: it has the switch, the tokens, and
-   * has been told where things are. Whether a machine is reporting
-   * makes no difference to this. */
+  /** This side does the core itself: it has the switch and the tokens,
+   * and a machine has said who may sign in. Where things are it knows
+   * by itself (src/settings.ts). Whether a machine is reporting makes
+   * no difference to this. */
   private primary(cfg: EdgeConfig | null): boolean {
-    return this.directCapable() && this.directConfigReady(cfg);
+    return this.directCapable() && cfg !== null;
   }
 
   /** A section this side reads itself. */
@@ -1468,7 +1545,11 @@ export class Edge {
         // repository: a machine that has not said which they are (one
         // from before it did) goes on reporting the list itself. Read
         // from no repositories it would be an empty list, and whole.
-        (name !== "census" || (cfg?.needsRepos.length ?? 0) > 0),
+        (name !== "census" || (cfg?.needsRepos.length ?? 0) > 0) &&
+        // The agents list is the bridge's: read here only while this
+        // side holds the PM bridge credential (#14373). Without it a
+        // machine goes on reporting the list, as it did before.
+        (name !== "agents" || this.bridgeReady()),
     );
   }
 
@@ -1490,11 +1571,17 @@ export class Edge {
       const made = directClasses(cfg, {
         githubToken: this.direct?.githubToken,
         queueToken: this.direct?.queueToken,
+        bridgeToken: this.direct?.bridgeToken,
+        bridgeFetch: this.direct?.bridgeFetch as never,
         githubApi: this.direct?.githubApi,
         queueDb: this.direct?.queueDb,
         fetchImpl: this.direct?.fetchImpl as never,
         now: this.now,
         github: this.github,
+        shelf: {
+          get: async (key) => ((await this.kv.get(`trend:${key}`)) as string | undefined) ?? null,
+          put: (key, text) => this.kv.put(`trend:${key}`, text),
+        },
         seen: (call) => {
           this.outward.push({ ...call, n: ++this.outwardN });
           if (this.outward.length > OUTWARD_KEPT) this.outward.splice(0, this.outward.length - OUTWARD_KEPT);
@@ -1660,6 +1747,13 @@ export class Edge {
     }
     const kinds: Record<string, { ok: boolean; error?: string }> = {};
     for (const name of DIRECT_READ_SECTIONS) {
+      // The agents section is the bridge's: with no PM bridge
+      // credential held there is no path here to prove, and the
+      // section is a machine's, as it was before (#14373). Every
+      // other section is checked even while it is a machine's for
+      // being refused: the check is how this side finds it can read
+      // the section itself again.
+      if (name === "agents" && !this.bridgeReady()) continue;
       try {
         await directRead(name, direct.ops, direct.work);
         kinds[name] = { ok: true };
@@ -1714,7 +1808,7 @@ export class Edge {
     const entry = { id: id ?? crypto.randomUUID(), kind, at: base.at, by, note: "" };
     /** The task of a prompt: the packet carries the issue's number, and
      * the text is the owner's own. */
-    const prompt = (packet: unknown) =>
+    const prompt = (packet: unknown, intent?: string) =>
       this.holdLater(
         {
           kind: "prompt.enqueue",
@@ -1722,6 +1816,9 @@ export class Edge {
             issue: Number((packet as { payload?: { issue?: { number?: unknown } } })?.payload?.issue?.number),
             text: String(args.text ?? ""),
             at: new Date(this.now()).toISOString(),
+            // What kind of prompt it is, where it is not simply something
+            // to do: the machine files the task for that kind.
+            ...(intent !== undefined && intent !== "task" ? { intent } : {}),
           },
         },
         by,
@@ -1840,12 +1937,15 @@ export class Edge {
     await this.ready();
     const last = this.hostSeq ?? 0;
     if (msg.at <= last) return json({ error: "replay", last }, 409);
-    const cfg = edgeConfig(msg.config);
-    if (!cfg) return json({ error: "config: not one this side can use" }, 400);
-    if (JSON.stringify(cfg) !== JSON.stringify(await this.config())) {
-      await this.kv.put("cfg", cfg);
-      this.cfg = cfg;
-      // New settings may be what lets this side do the core itself.
+    const says = edgeConfig(msg.config);
+    if (!says) return json({ error: "config: not one this side can use" }, 400);
+    if (JSON.stringify(says) !== JSON.stringify(await this.toldConfig())) {
+      // Kept as told: what is gone by is worked out from it (config()),
+      // and where the machine differs is said from it.
+      await this.kv.put("cfg", says);
+      this.told = says;
+      this.cfg = undefined;
+      // Who may sign in, or the list of repositories, may have changed.
       await this.showEdge();
     }
     const settings = await this.config();
@@ -2044,6 +2144,9 @@ export class Edge {
       wakes.push(Math.max(this.hostSeen + SILENT_MS + 1000, now + ALARM_RETRY_MS));
     }
     if (await this.clockWanted(cfg)) wakes.push(Math.max(now + 1000, this.clockAt + this.ownClockMs));
+    // The app is connected: this side reads by itself what has gone
+    // stale, so there is something to say when it changes.
+    if (this.listening() > 0 && this.owned(cfg).length > 0) wakes.push(Math.max(now + 1000, this.liveAt + LIVE_MS));
     // Something the owner is told about that this side was turned away
     // for is tried again when its time is up; with nobody looking and
     // no machine reporting, only a wake would notice that it is.
@@ -2057,7 +2160,47 @@ export class Edge {
     // the first of either.
     const due = await this.heldDue(cfg);
     if (due !== null) wakes.push(Math.max(now + 1000, due));
+    // The history behind the Trends screen is read on by this side's
+    // own clock while somebody looks at that screen: a minute after
+    // its last look until it is whole, then half an hour after it was
+    // last read to its end. With nobody looking it does not wake for it.
+    const trends = (await this.trendsWatched(now)) ? this.mine(cfg)?.trends : undefined;
+    if (trends) {
+      wakes.push(Math.max(now + 1000, this.trendsAt + this.ownClockMs, await trends.dueAt(TRENDS_EVERY_MS)));
+    }
     if (wakes.length > 0) await this.setAlarm(Math.min(...wakes));
+  }
+
+  /** How many copies of the app are connected. */
+  private listening(): number {
+    return this.sockets?.count() ?? 0;
+  }
+
+  /** Documents whose content has just changed: said once to everyone
+   * connected, however many changes arrive together (a pass that reads
+   * five lists says "core" once). The app reads the document again by
+   * its tag, so a message that turns out to be about nothing new to it
+   * costs it one "not modified". */
+  private changed(docs: DocName[]): void {
+    for (const doc of docs) this.changedDocs.add(doc);
+    // Said after whatever is running now has finished changing things:
+    // the first to get there says all of it, and the rest find nothing left.
+    queueMicrotask(() => {
+      const names = DOC_NAMES.filter((doc) => this.changedDocs.has(doc));
+      this.changedDocs.clear();
+      if (names.length === 0 || this.listening() === 0) return;
+      try {
+        this.sockets?.send(JSON.stringify({ t: "changed", docs: names }));
+      } catch (error) {
+        console.error(`pm-edge: telling the app: ${(error as Error).message}`);
+      }
+    });
+  }
+
+  /** Somebody has looked at the Trends screen within the last day. */
+  private async trendsWatched(now: number): Promise<boolean> {
+    if (this.trendsSeen === null) this.trendsSeen = Number((await this.kv.get("trendsSeen")) ?? 0) || 0;
+    return this.trendsSeen > 0 && now - this.trendsSeen < TRENDS_WATCHED_MS;
   }
 
   /** This side reads something the owner is told about, and a device
@@ -2099,6 +2242,29 @@ export class Edge {
       for (let look = 0; look < 2; look++) await this.docs.current(this.ownedTold(cfg), CLOCK_WAIT_MS);
       await this.tell(cfg).catch((error) => console.error(`pm-edge: notify: ${(error as Error).message}`));
     }
+    // The history behind the Trends screen, while somebody looks at
+    // that screen (within the last day): read on a little each minute
+    // until it has been read to its end, then kept up every half hour,
+    // so the screen has it when it is next opened. No machine is asked.
+    const trends = (await this.trendsWatched(now)) ? this.mine(cfg)?.trends : undefined;
+    if (trends && now - this.trendsAt >= this.ownClockMs && (await trends.due(TRENDS_EVERY_MS))) {
+      this.trendsAt = now;
+      await trends
+        .advance(TRENDS_PAGES_A_WAKE)
+        .catch((error) => console.error(`pm-edge: trends: ${(error as Error).message}`));
+    }
+    // The app is connected: what this side reads itself and has gone
+    // stale is read again (each list by its own age; one that has not
+    // changed costs nothing), and a change is said to the app as the
+    // read ends.
+    if (this.listening() > 0 && now - this.liveAt >= LIVE_MS) {
+      this.liveAt = now;
+      const mine = this.owned(cfg);
+      if (mine.length > 0) {
+        this.docs.keepAlive();
+        await this.docs.current(mine, CLOCK_WAIT_MS);
+      }
+    }
     // What is held: the day's limit is kept with no machine reporting,
     // and what this side can now do itself, it does.
     if (await this.expireHeld(now)) await this.saveHeld();
@@ -2129,6 +2295,7 @@ export class Edge {
     // Public: nothing here says anything about the fleet.
     if (path === `${BASE}/health` && method === "GET") {
       await this.ready();
+      const told = await this.toldConfig();
       // The self-check runs when the capability is there: one direct
       // read of each kind, and how it went. Nothing here is a secret.
       await this.maybeSelfCheck(cfg);
@@ -2141,7 +2308,7 @@ export class Edge {
         githubTokenConfigured: Boolean(this.direct?.githubToken),
         queueTokenConfigured: Boolean(this.direct?.queueToken),
         // This side does the core itself: the switch and the tokens are
-        // here, and it has been told where things are. `directReady` is
+        // here, and a machine has said who may sign in. `directReady` is
         // the same thing under the name it had when this side acted
         // only while the laptop was away.
         primary: this.primary(cfg),
@@ -2186,6 +2353,15 @@ export class Edge {
         hostSeen: this.hostSeen || null,
         // The commit the host's console is running, as it last said.
         hostVersion: this.hostVersion,
+        // How many copies of the app are connected to be told of
+        // changes as they happen.
+        listening: this.listening(),
+        // In which of the platform's own settings (the repository's:
+        // src/settings.ts) the machine said it runs with others, by
+        // name and never by value; null while no machine has said any.
+        // A machine on other code than this, or with an environment of
+        // its own, shows here. This side goes by its own all the same.
+        machineSettingsDiffer: told === null ? null : settingsThatDiffer(told),
         // The copy of the Android build kept here: when it was built,
         // and whether it is the host's newest. Null if there is none.
         androidBuild: await this.apkState(),
@@ -2311,14 +2487,40 @@ export class Edge {
         if (seg.length === 1 && seg[0] === "push") return json(await this.push.status());
         if (seg.length === 1 && seg[0] === "devices") return json(await this.phones.devices.list());
         if (seg.length === 1 && seg[0] === "machines") return json(await this.machinesSaid(cfg));
-        // What needs only GitHub and the queue store is read here, by
-        // the code a machine would read it with.
+        if (seg.length === 1 && seg[0] === "events") {
+          // The app asking to be told when something changes: a
+          // connection the platform holds. Only the owner gets here.
+          if ((req.headers.get("upgrade") ?? "").toLowerCase() !== "websocket") {
+            return json({ error: "this is where the app connects to be told of changes (a WebSocket)" }, 426);
+          }
+          if (!this.sockets) return json({ error: "no live connections here" }, 404);
+          const res = this.sockets.accept(req);
+          // Someone is there to tell: this side wakes by itself to read.
+          this.docs.keepAlive();
+          await this.schedule(cfg);
+          return res;
+        }
+        // What needs only GitHub, the queue store and the bridge is
+        // read here, by the code a machine would read it with. The
+        // bridge's own reads (the message log, and the unified
+        // pipeline and directory, #14374) are attempted only while
+        // this side holds the bridge credential: without it they are
+        // a machine's to read, and the request goes to the host
+        // below as it did before.
         const mine = this.mine(cfg);
-        if (mine) {
+        const bridgeRead = seg.length === 1 && (seg[0] === "messages" || seg[0] === "pipeline" || seg[0] === "directory");
+        if (mine && !(bridgeRead && !this.bridgeReady())) {
           const from = this.outwardN;
           let read: unknown;
           try {
-            read = await platformRead(seg, url.searchParams, mine.ops, mine.plan);
+            read = await platformRead(seg, url.searchParams, mine.ops, mine.plan, mine.trends);
+            // Somebody looks at Trends: for a day after, its history is
+            // read on by this side's own clock (see `alarm`).
+            if (seg.length === 1 && seg[0] === "trends") {
+              this.trendsSeen = this.now();
+              await this.kv.put("trendsSeen", this.trendsSeen);
+              await this.schedule(cfg);
+            }
           } catch (error) {
             // Refused here: a machine has its own way in, and a read may
             // be asked twice. Anything else is said as it is; so is this,
@@ -2375,11 +2577,7 @@ export class Edge {
         const before = id === null ? null : (((await this.kv.get(`a:${id}`)) as Acted | undefined) ?? null);
         const given = before?.state === "given";
         const here =
-          before !== null
-            ? !given
-            : (DIRECT_ACTIONS as readonly string[]).includes(kind) &&
-              this.primary(cfg) &&
-              !this.refusedKinds().includes(kind);
+          before !== null ? !given : this.does(kind) && this.primary(cfg) && !this.refusedKinds().includes(kind);
         if (here) {
           // An older action held for a machine about the same thing
           // comes first. One already handed to a machine may be being
@@ -2418,7 +2616,7 @@ export class Edge {
               if (older.some((h) => this.withMachine(h, handed))) return this.keep(newer);
               // One that only a machine can do is a machine's whenever
               // one comes: the newer waits behind it too.
-              if (older.some((h) => !(DIRECT_ACTIONS as readonly string[]).includes(h.kind))) return this.keep(newer);
+              if (older.some((h) => !this.does(h.kind))) return this.keep(newer);
               const old = older[0];
               // One of the same kind where the last one wins is dropped
               // as replaced by this. (Only by its own kind: a comment

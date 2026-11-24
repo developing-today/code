@@ -37,7 +37,7 @@ id-worlds = { path = "../id-worlds", default-features = false }
 iroh = "1"
 iroh-base = "1"
 iroh-blobs = "0.103"
-redb = "=4.6.0"
+redb = "=5.0.0"
 rmp-serde = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -55,14 +55,14 @@ tower-http = { version = "0.7", features = ["fs", "cors", "compression-gzip"] }
 rust-embed = { version = "8" }
 mime_guess = { version = "2" }
 futures = { version = "0.3.32" }
-comrak = { version = "0.59", default-features = false }
+comrak = { version = "1.1", default-features = false }
 urlencoding = { version = "2" }
 aes-gcm = { version = "0.11", default-features = false, features = [
   "aes",
   "alloc",
 ] }
 hkdf = { version = "0.13" }
-qrcode = { version = "0.14.1", default-features = false }
+qrcode = { version = "0.15.0", default-features = false }
 
 [dev-dependencies]
 id-core = { path = "../id-core", default-features = false, features = [

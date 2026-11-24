@@ -14,10 +14,33 @@
 self.importScripts("/console/outbox.js");
 
 const KEPT = "pm-console-v1";
-/** The app's own files, fetched when the worker is installed so that
- * the first visit is already enough to open it offline. */
-const FILES = ["/console/", "/console/app.js", "/console/outbox.js", "/console/app.css", "/console/icon.svg"];
+/** Where the app's own files are named: one list (public/files.json)
+ * that the services, the Worker's build and this worker all read. */
+const LIST = "/console/files.json";
+const PAGE = "/console/";
 const EXTRAS = ["/manifest.webmanifest", "/icons/icon-192.png", "/icons/icon-512.png"];
+/** What one of the app's files ends in. Anything else under /console
+ * (the Android build, say, which is large and is a download) is none
+ * of this worker's business. */
+const APP_FILE = /^\/console\/[a-z0-9/_-]+\.(?:js|css|svg|json|woff2)$/;
+
+/** The files to fetch when the worker is installed, so that the first
+ * visit is already enough to open the app offline: the page, the list,
+ * and what the list says is kept from the start. A typeface is kept
+ * when it is first used instead, so nobody fetches the ones they did
+ * not choose. Without the list (it could not be fetched) it is the
+ * page alone; the rest is kept as the page next asks for it. */
+async function filesToKeep() {
+  try {
+    const res = await self.fetch(LIST, { cache: "no-store", redirect: "manual" });
+    if (!res.ok) return [PAGE];
+    const list = await res.json();
+    const named = (list.files ?? []).filter((f) => f.kept === "installed").map((f) => `/console/${f.path}`);
+    return [...new Set([PAGE, LIST, ...named])];
+  } catch {
+    return [PAGE];
+  }
+}
 /** How long the network is waited for before a copy is shown instead.
  * The network's answer still replaces the copy when it comes. */
 const PAGE_WAIT_MS = 4_000;
@@ -33,7 +56,8 @@ self.addEventListener("install", (event) => {
         const cache = await self.caches.open(KEPT);
         // Each by itself: one that cannot be fetched (not signed in,
         // say) does not stop the others, or the worker.
-        await Promise.all([...FILES, ...EXTRAS].map((path) => keep(cache, path).catch(() => {})));
+        const files = await filesToKeep();
+        await Promise.all([...files, ...EXTRAS].map((path) => keep(cache, path).catch(() => {})));
       } catch {
         // Nothing is kept this time.
       }
@@ -75,7 +99,7 @@ function kindOf(request, url) {
   if (!path.startsWith("/console")) return null;
   // The app is one page, at one address (its screens are after the #).
   if (path === "/console/" || path === "/console") return "page";
-  return FILES.includes(path) ? "file" : null;
+  return APP_FILE.test(path) && path !== "/console/sw.js" ? "file" : null;
 }
 
 /** The address a copy is kept under: what was asked, without the mark
@@ -188,8 +212,10 @@ self.addEventListener("fetch", (event) => {
 // ---- what the owner did while offline ------------------------------------
 
 /** Send what is waiting. Told to every open page, so each shows it.
- * `last`: the browser will not call again for this by itself. */
-async function send(last = false) {
+ * `last`: the browser will not call again for this by itself. `own`:
+ * an entry whose outcome the caller says itself (a button pressed on a
+ * notification), left out of what is said here. */
+async function send(last = false, own = null) {
   const store = self.PMOutbox.idbStore();
   const flush = () =>
     self.PMOutbox.flush(store, (entry) => self.PMOutbox.httpSend(entry, (url, init) => self.fetch(url, init)));
@@ -204,9 +230,10 @@ async function send(last = false) {
   for (const client of windows) client.postMessage({ type: "outbox", changed: became });
   // With no page open to show it, say what became of it.
   const open = windows.some((client) => new URL(client.url).pathname.startsWith("/console"));
-  const done = out.changed.filter((e) => e.state === "done" || e.state === "held").length;
-  const failed = out.changed.filter((e) => e.state === "failed").length;
-  const stale = out.changed.filter((e) => e.state === "stale").length;
+  const others = out.changed.filter((e) => e.id !== own);
+  const done = others.filter((e) => e.state === "done" || e.state === "held").length;
+  const failed = others.filter((e) => e.state === "failed").length;
+  const stale = others.filter((e) => e.state === "stale").length;
   // On the browser's last call for this, what still waits is not sent
   // until the app is next opened: that is said too, or it would wait
   // unseen. (What waits for a sign-in is said below.)
@@ -271,6 +298,14 @@ self.addEventListener("message", (event) => {
 
 // ---- notifications -------------------------------------------------------
 
+/** The buttons a pushed message carries that are buttons: each named,
+ * with words on it. (What each does is the platform's to say:
+ * PushAction in src/notify.ts.) */
+function pushedActions(data) {
+  const list = Array.isArray(data.actions) ? data.actions : [];
+  return list.filter((a) => a && typeof a.action === "string" && a.action !== "" && typeof a.title === "string" && a.title !== "");
+}
+
 self.addEventListener("push", (event) => {
   let data = {};
   try {
@@ -278,6 +313,15 @@ self.addEventListener("push", (event) => {
   } catch {
     data = {};
   }
+  const actions = pushedActions(data);
+  // A phone shows two buttons; the platform puts the most useful first.
+  // One that takes a line of text is typed into on the notification
+  // itself where the device can do that.
+  const shown = actions.slice(0, Number(self.Notification?.maxActions) || 2).map((a) => ({
+    action: a.action,
+    title: a.title,
+    ...(a.reply ? { type: "text", placeholder: a.title } : {}),
+  }));
   event.waitUntil(
     self.registration.showNotification(data.title || "PM", {
       body: data.body || "",
@@ -285,24 +329,78 @@ self.addEventListener("push", (event) => {
       renotify: Boolean(data.tag),
       icon: "/icons/icon-192.png",
       badge: "/icons/icon-192.png",
-      data: { url: data.url || "/console/" },
+      // What each button does is kept with the notification, for when one is pressed.
+      data: { url: data.url || "/console/", ...(data.tag ? { tag: data.tag } : {}), ...(actions.length ? { actions } : {}) },
+      ...(shown.length ? { actions: shown } : {}),
     }),
   );
 });
 
+/** Bring the app forward on a screen, or open it there. */
+async function show(url) {
+  const windows = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
+  for (const client of windows) {
+    if (new URL(client.url).pathname.startsWith("/console")) {
+      await client.focus();
+      return client.navigate ? client.navigate(url) : undefined;
+    }
+  }
+  return self.clients.openWindow(url);
+}
+
+/** A button on a notification that does something was pressed: it is
+ * done the way the app does anything, written down on the device first
+ * and sent under a name, so with no connection it is kept and sent
+ * later and never done twice. With the app open, the app says what
+ * became of it; with it closed, a notification in the same place does. */
+async function pressed(action, args, data) {
+  const store = self.PMOutbox.idbStore();
+  const entry = self.PMOutbox.make(action.kind, args, Date.now());
+  await store.put(entry);
+  // What is still waiting after this is sent when the browser next wakes the worker.
+  await send(false, entry.id).catch(() => self.registration.sync?.register("pm-outbox").catch(() => {}));
+  const windows = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
+  if (windows.some((client) => new URL(client.url).pathname.startsWith("/console"))) return;
+  if (self.Notification?.permission !== "granted") return;
+  const now = (await store.all()).find((e) => e.id === entry.id);
+  const state = now?.state ?? "waiting";
+  const went = state === "done" || state === "held";
+  await self.registration.showNotification(action.title, {
+    body:
+      state === "done"
+        ? "Done."
+        : state === "held"
+          ? "Taken. It waits to be done."
+          : state === "waiting"
+            ? "Kept on this device: it is sent when there is a connection."
+            : "That could not be done. Open the app to see why.",
+    tag: data.tag || undefined,
+    icon: "/icons/icon-192.png",
+    badge: "/icons/icon-192.png",
+    data: { url: went ? data.url || "/console/" : "/console/#more/device" },
+  });
+}
+
 self.addEventListener("notificationclick", (event) => {
   event.notification.close();
-  const url = event.notification.data?.url || "/console/";
-  event.waitUntil(
-    (async () => {
-      const windows = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
-      for (const client of windows) {
-        if (new URL(client.url).pathname.startsWith("/console")) {
-          await client.focus();
-          return client.navigate ? client.navigate(url) : undefined;
-        }
+  const data = event.notification.data || {};
+  const url = data.url || "/console/";
+  const chosen = event.action ? (Array.isArray(data.actions) ? data.actions : []).find((a) => a?.action === event.action) : null;
+  if (chosen?.kind) {
+    const args = { ...(chosen.args || {}) };
+    if (chosen.reply) {
+      // The line typed on the notification. Where the device gave none
+      // (it cannot take text there), the thread is opened to type it.
+      const text = typeof event.reply === "string" ? event.reply.trim() : "";
+      if (text === "") {
+        event.waitUntil(show(chosen.url || url));
+        return;
       }
-      return self.clients.openWindow(url);
-    })(),
-  );
+      args.text = text;
+    }
+    event.waitUntil(pressed(chosen, args, data));
+    return;
+  }
+  // The notification itself, a button that only goes somewhere, or one this worker does not know.
+  event.waitUntil(show(chosen?.url || url));
 });

@@ -124,6 +124,9 @@ fn compiled_capabilities() -> CapabilitySet {
     if cfg!(feature = "dispatch") {
         caps.insert(Capability::Dispatch);
     }
+    if cfg!(feature = "orgs") {
+        caps.insert(Capability::Orgs);
+    }
     if cfg!(feature = "dispatch-test") {
         caps.insert(Capability::DispatchTest);
     }
@@ -1067,9 +1070,13 @@ fn run_domain_with_initializer(
             if d.name == "gh" {
                 return gh::run(&surface.config, args);
             }
+            #[cfg(feature = "orgs")]
+            if d.name == "orgs" {
+                return fleet_orgs::run(&surface.config, args);
+            }
             // The bridge domain runs for real: fleet mailboxes on the
-            // message bridge (central send/agents/log; agent
-            // hello/inbox/post/ack).
+            // message bridge (central send/agents/log/pipeline/
+            // directory/credentials/revoke; agent hello/inbox/post/ack).
             #[cfg(feature = "bridge")]
             if d.name == "bridge" {
                 return fleet_bridge::run(&surface.config, args);

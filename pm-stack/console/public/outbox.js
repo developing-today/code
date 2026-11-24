@@ -27,6 +27,8 @@
     "issue.rank",
     "task.move",
     "message.send",
+    // A revocation done late is still the right act (#14374).
+    "agent.revoke",
     "intake.send",
   ]);
   /** Actions on something that may have changed by the time they are
@@ -83,6 +85,11 @@
         return of("pr", a.pr);
       case "unit.act":
         return of("unit", a.unit);
+      case "agent.revoke": {
+        const surface = typeof a.surface === "string" ? a.surface : "";
+        const name = typeof a.name === "string" ? a.name : "";
+        return surface === "" || name === "" ? null : `agent:${surface}:${name}`;
+      }
       default:
         return null;
     }
@@ -104,7 +111,8 @@
     const quoted = (text) => (short(text) ? `: “${short(text)}”` : "");
     switch (kind) {
       case "ask.send":
-        return `Prompt${quoted(a.text)}`;
+        // A question and a standing instruction are said as what they are.
+        return `${a.intent === "question" ? "Question" : a.intent === "directive" ? "Standing instruction" : "Prompt"}${quoted(a.text)}`;
       case "ask.reply":
         return `Reply on #${a.issue}${quoted(a.text)}`;
       case "ask.close":
@@ -139,6 +147,8 @@
         return "Accept the recommended answers";
       case "message.send":
         return `Message to ${Array.isArray(a.to) ? a.to.join(", ") : a.to}${quoted(a.text)}`;
+      case "agent.revoke":
+        return `Revoke ${a.name ?? "an agent"}'s ${a.surface === "notes" ? "notes tokens" : "bridge credentials"}`;
       case "unit.act":
         return `${a.action} ${a.unit}`;
       // The platform's own second half of something it filed itself:

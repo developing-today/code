@@ -104,9 +104,11 @@ import {
   type NeedsDrewQuestion,
 } from "./needs-drew.ts";
 import {
+  decisionSetAging,
   decisionSetOpenState,
   decisionSetProgress,
   deferWithSubmissions,
+  dismissDecisionSets,
   getDecisionDrafts,
   getDecisionSet,
   isDeferLean,
@@ -119,6 +121,7 @@ import {
   refreshDecisionSet,
   recordResolutions,
   requestInfoOpenQuestions,
+  sweepDecisionSets,
   upsertDecisionDrafts,
   validateDecisionDraftUpsert,
   validateDecisionSet,
@@ -1447,10 +1450,14 @@ ${decisionsDraftScript(set.setId)}
 </main></body></html>`;
 }
 
-/** Render GET /decisions — the decision-sets index (#8867). Lists every
+/** Render GET /decisions — the decision-sets index (#8867, aging #14064). Lists every
  * set in the store with counts live from decisionSetSummary (the same
- * numbers the set page itself reports), in today / this-week / all
- * views with an open-only toggle, newest first. Each row links to the
+ * numbers the set page itself reports), in today / this-week / recent
+ * (last 7 days, rolling — the index default, so the landing view is
+ * the current workload, not the backlog) / all views with an
+ * open-only toggle, newest first. Sets idle past the abandonment
+ * window collapse under an "abandoned" fold on the all view with a
+ * pointer at the bulk-dismiss operator endpoint. Each row links to the
  * set's own token-carrying page; the index carries no token of its own
  * and sits behind the same access as every other aggregator page
  * (tailnet origin / Cloudflare Access on pm.security.cab) — no new
@@ -1469,6 +1476,8 @@ function renderDecisionsIndex(allSets: DecisionSet[], view: DecisionSetView, ope
   const inView = decisionSetsForView(allSets, view);
   const visible = openOnly ? inView.filter((s) => decisionSetSummary(s).openQuestions > 0) : inView;
   const totalOpen = inView.reduce((n, s) => n + decisionSetSummary(s).openQuestions, 0);
+  const abandoned = view === "all" ? inView.filter((s) => decisionSetAging(s) === "abandoned") : [];
+  const abandonedIds = abandoned.map((s) => s.setId);
   const viewTab = (v: DecisionSetView, label: string): string =>
     v === view
       ? `<strong>${label}</strong>`
@@ -1482,10 +1491,12 @@ function renderDecisionsIndex(allSets: DecisionSet[], view: DecisionSetView, ope
       const stamp = Number.isFinite(Date.parse(s.createdAt))
         ? CHICAGO_STAMP.format(new Date(s.createdAt))
         : s.createdAt;
+      const aging = decisionSetAging(set);
+      const agingChip = aging === "abandoned" ? ` · abandoned` : aging === "settled" ? ` · settled` : "";
       const breakdown = `${s.answered} answered · ${s.deferred} deferred · ${s.infoRequested} sent back for more info`;
       const state = s.fullyResolved ? `all settled — ${breakdown}` : `${s.openQuestions} open · ${breakdown}`;
       return `<div class="item"><h2><a href="${esc(decisionsPageUrl(set))}">${esc(s.title)}</a></h2>
-<p class="context">Raised ${esc(stamp)} · ${s.items} item${s.items === 1 ? "" : "s"} · ${s.questions} question${s.questions === 1 ? "" : "s"} · ${state}</p>
+<p class="context">Raised ${esc(stamp)} · ${s.items} item${s.items === 1 ? "" : "s"} · ${s.questions} question${s.questions === 1 ? "" : "s"} · ${state}${esc(agingChip)}</p>
 <p class="context">Set <code>${esc(s.setId)}</code></p></div>`;
     })
     .join("");
@@ -1493,12 +1504,17 @@ function renderDecisionsIndex(allSets: DecisionSet[], view: DecisionSetView, ope
     allSets.length === 0
       ? `<p class="context">No decision sets have been raised yet.</p>`
       : `<p class="context">No sets in this view${openOnly ? " with open questions" : ""}.</p>`;
+  const abandonedFold = abandonedIds.length
+    ? `<details><summary>${abandonedIds.length} abandoned — idle over 7 days with open questions (bulk-dismiss via POST /api/decisions/dismiss)</summary>
+<p class="context">${abandonedIds.map((id) => `<code>${esc(id)}</code>`).join(" ")}</p></details>`
+    : "";
   return `<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1"><title>Decision sets — PM Stack</title>${DECISIONS_PAGE_STYLE}</head>
 <body><main><h1>Decision sets</h1>
 <p class="context">${inView.length} set${inView.length === 1 ? "" : "s"} · ${totalOpen} question${totalOpen === 1 ? "" : "s"} open. Newest first. Each set opens its own page — the same link its push notification carried.</p>
-<p class="context">${viewTab("today", "New today")} · ${viewTab("week", "This week")} · ${viewTab("all", "All")} &nbsp;|&nbsp; ${toggle}</p>
+<p class="context">${viewTab("today", "New today")} · ${viewTab("week", "This week")} · ${viewTab("recent", "Recent (7d)")} · ${viewTab("all", "All")} &nbsp;|&nbsp; ${toggle}</p>
 ${visible.length ? rows : empty}
+${abandonedFold}
 </main></body></html>`;
 }
 
@@ -4572,7 +4588,7 @@ async function handler(req: Request, remoteAddress?: string): Promise<Response> 
         const v = validateNeedsDrew(ext.needsDrew);
         if (!v.ok) return json({ error: v.error }, 400);
         try {
-          const item = await raiseNeedsDrew(cfg.needsDrewFile, v.value, parsed.value.source);
+          const item = await raiseNeedsDrew(cfg.needsDrewFile, v.value, parsed.value.source, parsed.value.key);
           requestAlertTick();
           return json(
             { incident, created, needsDrew: { ledgerId: item.ledgerId, answerUrl: needsDrewAnswerUrl(item) } },
@@ -4864,7 +4880,9 @@ async function handler(req: Request, remoteAddress?: string): Promise<Response> 
   if (req.method === "GET" && path === "/decisions") {
     const sets = await listDecisionSets(cfg.decisionsFile).catch(() => [] as DecisionSet[]);
     const viewParam = url.searchParams.get("view");
-    const view: DecisionSetView = isDecisionSetView(viewParam) ? viewParam : "all";
+    // Default is the rolling last-7-days window (#14064): the landing
+    // view is the current workload, with all-time behind the toggle.
+    const view: DecisionSetView = isDecisionSetView(viewParam) ? viewParam : "recent";
     return html(renderDecisionsIndex(sets, view, url.searchParams.get("open") === "1"));
   }
   const decisionsPageMatch = /^\/decisions\/([^/]+)$/.exec(path);
@@ -5040,6 +5058,48 @@ async function handler(req: Request, remoteAddress?: string): Promise<Response> 
     return json({ requestedCount: result.requestedCount, ...decisionSetOpenState(result.set) });
   }
 
+  // --- Decision-set aging operators (#14064) ---------------------------
+  // Dismiss and sweep sit behind the alerts-intake bearer (operator
+  // surface, same as the alert writes): they close questions without
+  // a per-set token, so no token path may reach them.
+  if (req.method === "POST" && path === "/api/decisions/dismiss") {
+    if (!(await alertsIntakeAuthorized(req))) return json({ error: "unauthorized" }, 401);
+    let body: { setIds?: unknown };
+    try {
+      body = (await readJsonBody(req)) as typeof body;
+    } catch {
+      return json({ error: "invalid dismiss body" }, 400);
+    }
+    if (!Array.isArray(body.setIds) || body.setIds.length > 512) {
+      return json({ error: "setIds must be an array of up to 512 set ids" }, 400);
+    }
+    const setIds = body.setIds.filter((x): x is string => typeof x === "string" && x.length > 0);
+    const result = await dismissDecisionSets(cfg.decisionsFile, setIds);
+    return json(result);
+  }
+  if (req.method === "POST" && path === "/api/decisions/sweep") {
+    if (!(await alertsIntakeAuthorized(req))) return json({ error: "unauthorized" }, 401);
+    let body: { answeredElsewhere?: unknown };
+    try {
+      body = (await readJsonBody(req)) as typeof body;
+    } catch {
+      return json({ error: "invalid sweep body" }, 400);
+    }
+    if (!Array.isArray(body.answeredElsewhere) || body.answeredElsewhere.length > 1024) {
+      return json({ error: "answeredElsewhere must be an array of up to 1024 entries" }, 400);
+    }
+    const answeredElsewhere = (body.answeredElsewhere as Array<Record<string, unknown>>)
+      .filter((e) => e && typeof e === "object" && typeof e.qid === "string" && e.qid)
+      .map((e) => ({
+        qid: e.qid as string,
+        ...(typeof e.optionId === "string" ? { optionId: e.optionId } : {}),
+        ...(typeof e.optionLabel === "string" ? { optionLabel: e.optionLabel } : {}),
+        ...(typeof e.freeText === "string" ? { freeText: e.freeText } : {}),
+        ...(typeof e.comment === "string" ? { comment: e.comment } : {}),
+      }));
+    const result = await sweepDecisionSets(cfg.decisionsFile, answeredElsewhere);
+    return json(result);
+  }
   const decisionsDraftsMatch = /^\/api\/decisions\/([^/]+)\/drafts$/.exec(path);
   if ((req.method === "GET" || req.method === "POST") && decisionsDraftsMatch) {
     const setId = decodePathSegment(decisionsDraftsMatch[1]);
