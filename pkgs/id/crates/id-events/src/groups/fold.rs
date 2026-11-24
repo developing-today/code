@@ -695,6 +695,7 @@ impl Engine {
                     redelegate: delegate.can_redelegate,
                     retained: false,
                     target,
+                    expires_at: delegate.expires_at,
                 };
                 self.grants.insert(event.id, grant);
             }

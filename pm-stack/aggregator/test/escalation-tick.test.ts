@@ -68,10 +68,7 @@ describe("escalation tick (#9991, design §4 wiring)", () => {
     expect(result.decisions.map((d) => d.facet)).toEqual(["pad", "grist"]);
     expect(result.delivered).toHaveLength(2);
     expect(captured.journal.map((e) => e.facet)).toEqual(["pad", "grist"]);
-    expect(captured.pages.map((p) => p.title)).toEqual([
-      "PM stack: pad needs you",
-      "PM stack: grist needs you",
-    ]);
+    expect(captured.pages.map((p) => p.title)).toEqual(["PM stack: pad needs you", "PM stack: grist needs you"]);
     expect(captured.feed).toHaveLength(0);
   });
 
@@ -127,16 +124,12 @@ describe("escalation tick (#9991, design §4 wiring)", () => {
 
   test("a failed delivery is retried on the next tick, not marked delivered", async () => {
     const captured: Captured = { journal: [], feed: [], pages: [] };
-    const ticker = tickerFor(
-      () => [summary({ id: "pad-grist-up" })],
-      captured,
-      { ok: false, error: "push endpoint down" },
-    );
+    const ticker = tickerFor(() => [summary({ id: "pad-grist-up" })], captured, {
+      ok: false,
+      error: "push endpoint down",
+    });
     const first = await ticker.tick();
-    expect(first.delivered.map((d) => d.error)).toEqual([
-      "push: push endpoint down",
-      "push: push endpoint down",
-    ]);
+    expect(first.delivered.map((d) => d.error)).toEqual(["push: push endpoint down", "push: push endpoint down"]);
     const second = await ticker.tick();
     expect(second.delivered).toHaveLength(2);
     expect(captured.pages).toHaveLength(4);
@@ -201,12 +194,8 @@ describe("escalation journal + feed shapes (#9991, design §3)", () => {
       push: false,
       maxRemediationAttempts: null,
     };
-    expect(escalationDecisionKey(base)).not.toBe(
-      escalationDecisionKey({ ...base, route: "page", push: true }),
-    );
-    expect(escalationDecisionKey(base)).not.toBe(
-      escalationDecisionKey({ ...base, maxRemediationAttempts: 1 }),
-    );
+    expect(escalationDecisionKey(base)).not.toBe(escalationDecisionKey({ ...base, route: "page", push: true }));
+    expect(escalationDecisionKey(base)).not.toBe(escalationDecisionKey({ ...base, maxRemediationAttempts: 1 }));
     expect(escalationDecisionKey(base)).toBe(escalationDecisionKey({ ...base }));
   });
 });

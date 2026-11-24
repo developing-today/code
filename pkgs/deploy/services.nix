@@ -52,6 +52,11 @@
     ports = [ 4801 ];
     restart = "on-failure";
     healthCheck = "http://100.99.113.103:4801/healthz";
+    # Release attestation (release-workflow design §3 part 2,
+    # #13306): the fleet app's own test workflow sits outside the
+    # main-gate watched set, so the release verb requires it as
+    # per-app evidence.
+    evidenceWorkflow = "fleet-rust-tests";
     targets = [ "laptop" ];
     class = "systemd";
   };
@@ -71,6 +76,11 @@
     ports = [ 4800 ];
     restart = "on-failure";
     healthCheck = "http://100.99.113.103:4800/health";
+    # Release attestation (release-workflow design §3 part 2,
+    # #13306): the fleet app's own test workflow sits outside the
+    # main-gate watched set, so the release verb requires it as
+    # per-app evidence.
+    evidenceWorkflow = "fleet-rust-tests";
     targets = [ "laptop" ];
     class = "systemd";
   };
@@ -96,7 +106,10 @@
     # daemon token (401 without it), which the deploy probe cannot
     # present, so healthCheck stays null (the session-proxy/mcpx
     # shape) and health is verified through the authenticated client
-    # (laptop-agent.py health) after activation - issue #5769.
+    # (pkgs/fleet/laptop-agent.py, `laptop-agent.py health`) after
+    # activation - issue #5769. That script is the client only; the
+    # daemon deployed here is the laptopAgent package above
+    # (pkgs/laptop-agent, the reconciled source of #10131).
     healthCheck = null;
     targets = [ "laptop" ];
     class = "systemd";

@@ -41,7 +41,7 @@ jobs:
           fetch-depth: 1
           persist-credentials: false
 
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24.22.0
           cache: npm
@@ -70,13 +70,13 @@ jobs:
       - name: Build the fixed disabled smoke artifact
         working-directory: pm-stack/private-laptop-bridge
         env:
-          CLOUDFLARE_CI_OVERRIDE_WORKER_NAME: ''
-          CF_WORKER_NAME: ''
-          CLOUDFLARE_WORKER_NAME: ''
-          WRANGLER_WORKER_NAME: ''
-          CF_MODE: ''
-          CLOUDFLARE_ENV: ''
-          WRANGLER_ENV: ''
+          CLOUDFLARE_CI_OVERRIDE_WORKER_NAME: ""
+          CF_WORKER_NAME: ""
+          CLOUDFLARE_WORKER_NAME: ""
+          WRANGLER_WORKER_NAME: ""
+          CF_MODE: ""
+          CLOUDFLARE_ENV: ""
+          WRANGLER_ENV: ""
         run: npx --no-install cf build
 
       - name: Verify the effective Build Output is the fixed private smoke config
@@ -87,13 +87,13 @@ jobs:
         working-directory: pm-stack/private-laptop-bridge
         env:
           DRY_RUN_OUTPUT: ${{ runner.temp }}/cf-version-dry-run.txt
-          CLOUDFLARE_CI_OVERRIDE_WORKER_NAME: ''
-          CF_WORKER_NAME: ''
-          CLOUDFLARE_WORKER_NAME: ''
-          WRANGLER_WORKER_NAME: ''
-          CF_MODE: ''
-          CLOUDFLARE_ENV: ''
-          WRANGLER_ENV: ''
+          CLOUDFLARE_CI_OVERRIDE_WORKER_NAME: ""
+          CF_WORKER_NAME: ""
+          CLOUDFLARE_WORKER_NAME: ""
+          WRANGLER_WORKER_NAME: ""
+          CF_MODE: ""
+          CLOUDFLARE_ENV: ""
+          WRANGLER_ENV: ""
         run: |
           set -euo pipefail
           args=(workers versions create --worker private-laptop-bridge-smoke --tag "$GITHUB_SHA" --message "offline smoke validation" --prebuilt --dry-run)
@@ -101,7 +101,7 @@ jobs:
           node smoke-upload.mjs dry-run "$DRY_RUN_OUTPUT"
 
       - name: Download the receipt from the selected init run
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: private-laptop-smoke-init-${{ inputs.init_run_id }}
           path: ${{ runner.temp }}/init
@@ -149,13 +149,13 @@ jobs:
           CF_ACCOUNT_ID: ${{ secrets.CF_SMOKE_UPLOAD_ACCOUNT_ID }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CF_SMOKE_UPLOAD_ACCOUNT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CF_SMOKE_UPLOAD_API_TOKEN }}
-          CLOUDFLARE_CI_OVERRIDE_WORKER_NAME: ''
-          CF_WORKER_NAME: ''
-          CLOUDFLARE_WORKER_NAME: ''
-          WRANGLER_WORKER_NAME: ''
-          CF_MODE: ''
-          CLOUDFLARE_ENV: ''
-          WRANGLER_ENV: ''
+          CLOUDFLARE_CI_OVERRIDE_WORKER_NAME: ""
+          CF_WORKER_NAME: ""
+          CLOUDFLARE_WORKER_NAME: ""
+          WRANGLER_WORKER_NAME: ""
+          CF_MODE: ""
+          CLOUDFLARE_ENV: ""
+          WRANGLER_ENV: ""
           INIT_RECEIPT_DIGEST: ${{ steps.init.outputs.receipt_digest }}
           WRANGLER_OUTPUT_FILE_PATH: ${{ runner.temp }}/cf-version-response.json
         run: |

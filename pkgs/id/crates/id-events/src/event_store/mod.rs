@@ -5,7 +5,8 @@
 //!
 //! - `events`: an author's `(author, seq)` position to the event's bytes. Every
 //!   accepted event is here, including events past a fork point, which are kept
-//!   but not applied.
+//!   but not applied — until compaction reclaims the bytes of an applied
+//!   live-class event (see `compacted`).
 //! - `hashes`: an event's ID to its position.
 //! - `bodies`: an event's ID to its body bytes, for the events whose headers commit to a
 //!   body (see [`EventStore::event_body`]). A header-only event has no row.
@@ -23,6 +24,11 @@
 //!   dependency to the rows that wait for it. The `waiting_rows` module describes them, and
 //!   the waiting pool in memory mirrors them.
 //! - `meta`: the store's format.
+//! - `compacted`: the residue of each event compaction reclaimed (#3797), keyed
+//!   by position: its ID and its causal edges. The event's `hashes` and `applied`
+//!   rows stay, so a compacted event is still present and still applies; only its
+//!   bytes are gone. A store created before the table existed gains it on the
+//!   first compaction, so it needs no format change.
 //! - `blocks`: the operator block list (see `Block`): one row per blocked peer
 //!   key, IP, or topic tag. A block changes serving and subscribing only; it
 //!   never rejects already-signed objects at ingest.
@@ -68,6 +74,7 @@ mod anchors;
 mod author_events;
 mod chat;
 mod claims;
+mod compaction;
 mod documents;
 mod ingest;
 pub mod range;
@@ -78,6 +85,7 @@ mod waiting_rows;
 mod writer_set;
 
 pub use author_events::{AuthorEvent, CandidateQuery, Candidates};
+pub use compaction::CompactionPolicy;
 use id_core::waiting::{AuthorKey, WaitRefusal, WaitingLimits, WaitingPool};
 pub use id_store::event_types::{
     Block, BlockKind, BlockList, BlockLookup, BlockLookupFailure, Chain, FILE_NAME, StoreError,
@@ -256,6 +264,13 @@ const BODIES: TableDefinition<'static, &'static [u8], &'static [u8]> =
 /// no format change is needed.
 const TAG_FOLD: TableDefinition<'static, &'static [u8], &'static [u8]> =
     TableDefinition::new("tag_fold");
+
+/// The residue of each compacted event (#3797), keyed by position: the event's
+/// ID and its causal edges, as the `compaction` module encodes them. Written by
+/// compaction itself; a store created before the table existed gains it on the
+/// first compaction, so no format change is needed.
+const COMPACTED: TableDefinition<'static, &'static [u8], &'static [u8]> =
+    TableDefinition::new("compacted");
 
 /// Bytes in a position key: the author, then the sequence number.
 const POSITION_LEN: usize = 40;
@@ -561,7 +576,8 @@ impl EventStore {
             let proof_headers = txn.open_table(PROOF_HEADERS)?;
             resolve::load(&events, &actions, &device_ops, &forks, &proof_headers)?
         };
-        let resolved = resolve::resolve(&stored, &forks, &headers)?;
+        let residue = compaction::load_residue_read(&txn)?;
+        let resolved = resolve::resolve(&stored, &forks, &headers, &residue)?;
         Ok(resolve::roster_of(&resolved, group))
     }
 
@@ -658,9 +674,17 @@ impl EventStore {
     /// Pruned events are removed from event storage (events, hashes, groups, actions, applied)
     /// while keeping chain and index consistency and avoiding corrupting active backlink walks.
     ///
+    /// A store that holds compacted residue (#3797) is refused, changing nothing:
+    /// prune erases presence and compaction preserves it, and the two are not
+    /// composed yet (#13401). The walks and the chain rewrite below are built
+    /// from stored events only, so over residue a prune would silently
+    /// under-erase and drop chain rows below live residue positions.
+    ///
     /// # Errors
     ///
-    /// Returns a redb error if the write transaction fails, or [`StoreError::Corrupt`].
+    /// Returns [`StoreError::PruneOverResidue`] if the store holds any compacted
+    /// residue, a redb error if the write transaction fails, or
+    /// [`StoreError::Corrupt`].
     pub fn prune_behind_cut(
         &mut self,
         cut: &[Hash],
@@ -671,6 +695,16 @@ impl EventStore {
         }
         if cut.is_empty() {
             return Ok(0);
+        }
+
+        // The composition guard (#13401): refuse a store that holds any
+        // compacted residue, before anything is written. See the doc above.
+        {
+            let read = self.db.begin_read()?;
+            let residue = compaction::load_residue_read(&read)?;
+            if !residue.is_empty() {
+                return Err(StoreError::PruneOverResidue(residue.len()));
+            }
         }
 
         let txn = self.db.begin_write()?;
@@ -876,9 +910,10 @@ impl EventStore {
     }
 
     /// Checks the store's own rows against each other: every applied sequence is
-    /// stored, every head matches its event, every index points at a stored
-    /// event, and each frozen chain has a matching fork proof. The waiting rows
-    /// agree with the pool, the dependency index, and the applied state.
+    /// stored or compacted, every head matches its event, every index points at a
+    /// stored event or a residue, and each frozen chain has a matching fork proof.
+    /// The waiting rows agree with the pool, the dependency index, and the applied
+    /// state.
     ///
     /// # Errors
     ///
@@ -893,6 +928,11 @@ impl EventStore {
         let groups = txn.open_multimap_table(GROUPS)?;
         let proof_ids = txn.open_table(PROOF_IDS)?;
         let proof_headers = txn.open_table(PROOF_HEADERS)?;
+        let residue = compaction::load_residue_read(&txn)?;
+        let compacted: HashMap<Vec<u8>, &compaction::Residue> = residue
+            .iter()
+            .map(|item| (position_key(&item.author, item.seq).to_vec(), item))
+            .collect();
 
         for row in events.iter()? {
             let (position, bytes) = row?;
@@ -918,11 +958,23 @@ impl EventStore {
 
         for row in hashes.iter()? {
             let (id, position) = row?;
-            let stored = events
-                .get(position.value())?
-                .ok_or_else(|| corrupt("an ID points at no stored event"))?;
-            if Hash::digest(stored.value()) != hash_of(id.value())? {
-                return Err(corrupt("an ID does not match the event it points at"));
+            match events.get(position.value())? {
+                Some(stored) => {
+                    if Hash::digest(stored.value()) != hash_of(id.value())? {
+                        return Err(corrupt("an ID does not match the event it points at"));
+                    }
+                }
+                None => {
+                    // A compacted event's ID still points at its position; the
+                    // residue there must name the same ID (#3797).
+                    let id_hash = hash_of(id.value())?;
+                    let found = compacted
+                        .get(position.value())
+                        .is_some_and(|residue| residue.id == id_hash);
+                    if !found {
+                        return Err(corrupt("an ID points at no stored event"));
+                    }
+                }
             }
         }
 
@@ -939,23 +991,36 @@ impl EventStore {
                 ));
             }
             for seq in 0..chain.next_seq {
-                let stored = events
-                    .get(position_key(&author, seq).as_slice())?
-                    .ok_or_else(|| corrupt(format!("applied sequence {seq} is not stored")))?;
-                for dep in decode_stored(stored.value())?.header.extensions.after {
-                    if !present_in(&hashes, &proof_ids, &dep)? {
-                        return Err(corrupt(
-                            "an applied event rests on an event that is not present",
-                        ));
+                let key = position_key(&author, seq);
+                if let Some(stored) = events.get(key.as_slice())? {
+                    for dep in decode_stored(stored.value())?.header.extensions.after {
+                        if !present_in(&hashes, &proof_ids, &dep)? {
+                            return Err(corrupt(
+                                "an applied event rests on an event that is not present",
+                            ));
+                        }
                     }
+                } else if !compacted.contains_key(key.as_slice()) {
+                    // A compacted position counts as stored: the residue is
+                    // the record that the event stood there and applied (#3797).
+                    return Err(corrupt(format!("applied sequence {seq} is not stored")));
                 }
             }
             if let Some(head) = chain.head {
                 let last = chain.next_seq.saturating_sub(1);
-                let stored = events
-                    .get(position_key(&author, last).as_slice())?
-                    .ok_or_else(|| corrupt("the head of a chain is not stored"))?;
-                if Hash::digest(stored.value()) != head {
+                let key = position_key(&author, last);
+                // The head may be a compacted position: its residue names the
+                // head's ID (#3797).
+                let matches = match events.get(key.as_slice())? {
+                    Some(stored) => Hash::digest(stored.value()) == head,
+                    None => match compacted.get(key.as_slice()) {
+                        Some(residue) => residue.id == head,
+                        None => {
+                            return Err(corrupt("the head of a chain is not stored"));
+                        }
+                    },
+                };
+                if !matches {
                     return Err(corrupt("the head of a chain does not match its event"));
                 }
             }
@@ -998,6 +1063,16 @@ impl EventStore {
                 }
             }
         }
+        for (position, residue) in &compacted {
+            if events.get(position.as_slice())?.is_some() {
+                return Err(corrupt("a position is both stored and compacted"));
+            }
+            let indexed = hashes.get(residue.id.as_bytes().as_slice())?;
+            if indexed.map(|row| row.value().to_vec()) != Some(position.clone()) {
+                return Err(corrupt("a compacted event is not indexed under its ID"));
+            }
+        }
+
         self.check_waiting()
     }
 
@@ -1267,6 +1342,7 @@ fn initialize(db: &Database) -> Result<(), StoreError> {
     txn.open_table(APPLIED)?;
     txn.open_table(BODIES)?;
     txn.open_table(TAG_FOLD)?;
+    txn.open_table(COMPACTED)?;
     txn.open_table(BLOCKS)?;
     let mut meta = txn.open_table(META)?;
     meta.insert(FORMAT_KEY, FORMAT)?;

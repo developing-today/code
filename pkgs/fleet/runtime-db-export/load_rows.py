@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Generic loader: read a JSON spec from stdin, build upsert SQL, and run
 it against the Turso DB `fleet-mirror` (repointed 2026-11-06 from
-muse-dev2 Supabase; the PG version is kept alongside as load_rows_pg.py
-for reference/rollback, and run_sql_pg.py / schema.sql document the old
-landing side). Used by the runtime-db-export job for every unit.
+muse-dev2 Supabase; the PG loader was removed 2026-11-23 under code#13245
+once the muse-dev2 project itself was gone, and schema.sql remains as the
+record of the old landing side). Used by the runtime-db-export job for
+every unit.
 
 Spec (JSON on stdin) — unchanged from the PG loader:
 {
@@ -38,6 +39,7 @@ Exit 0 on success (prints "loaded N rows into <table>"), 1 on failure.
 A failed call changes nothing else. Transport details (token by name,
 pipeline, staging mode): see turso_client.py.
 """
+
 import hashlib
 import json
 import sys
@@ -62,8 +64,10 @@ def epoch_text(v, mult):
 
 def main():
     spec = json.load(sys.stdin)
-    rows = [{k: v for k, v in r.items() if not k.startswith("_")}
-            for r in (spec.get("rows") or [])]
+    rows = [
+        {k: v for k, v in r.items() if not k.startswith("_")}
+        for r in (spec.get("rows") or [])
+    ]
     table_spec = spec["table"]
     table = turso_client.physical_name(table_spec)
     if not rows:
@@ -119,7 +123,9 @@ def main():
     all_cols = cols + extra
 
     stmts = []
-    stmts += turso_client.ensure_tables_sql([table] + ([hist_phys] if hist_phys else []))
+    stmts += turso_client.ensure_tables_sql(
+        [table] + ([hist_phys] if hist_phys else [])
+    )
     collist = ", ".join(all_cols)
     ph = ", ".join("?" for _ in all_cols)
     if hist_phys:
@@ -130,14 +136,22 @@ def main():
         stmts.append((f"CREATE TEMP TABLE rde_incoming ({collist})", []))
         stmts.append(("DELETE FROM rde_incoming", []))
         for vals in prepared:
-            stmts.append((f"INSERT INTO rde_incoming ({collist}) VALUES ({ph})",
-                          [vals.get(c) for c in all_cols]))
+            stmts.append(
+                (
+                    f"INSERT INTO rde_incoming ({collist}) VALUES ({ph})",
+                    [vals.get(c) for c in all_cols],
+                )
+            )
         on = " AND ".join(f"m.{k} = i.{k}" for k in conflict)
-        stmts.append((
-            f"INSERT INTO {hist_phys} ({', '.join(conflict)}, payload, payload_hash, valid_from, valid_to) "
-            f"SELECT {', '.join('m.' + k for k in conflict)}, m.payload, m.payload_hash, m.exported_at, ? "
-            f"FROM {table} m JOIN rde_incoming i ON {on} "
-            f"WHERE m.payload_hash <> i.payload_hash", [now]))
+        stmts.append(
+            (
+                f"INSERT INTO {hist_phys} ({', '.join(conflict)}, payload, payload_hash, valid_from, valid_to) "
+                f"SELECT {', '.join('m.' + k for k in conflict)}, m.payload, m.payload_hash, m.exported_at, ? "
+                f"FROM {table} m JOIN rde_incoming i ON {on} "
+                f"WHERE m.payload_hash <> i.payload_hash",
+                [now],
+            )
+        )
     values_sql = ", ".join(f"({ph})" for _ in prepared)
     values_args = []
     for vals in prepared:
@@ -146,8 +160,10 @@ def main():
     if hist_phys:
         set_cols = [c for c in all_cols if c not in conflict]
         sets = ", ".join(f"{c} = excluded.{c}" for c in set_cols)
-        insert += (f" ON CONFLICT ({', '.join(conflict)}) DO UPDATE SET {sets}"
-                   f" WHERE {table}.payload_hash <> excluded.payload_hash")
+        insert += (
+            f" ON CONFLICT ({', '.join(conflict)}) DO UPDATE SET {sets}"
+            f" WHERE {table}.payload_hash <> excluded.payload_hash"
+        )
     elif mode == "nothing":
         insert += " ON CONFLICT DO NOTHING"
     else:

@@ -47,14 +47,14 @@ jobs:
     env:
       CF_SEND_TELEMETRY: "false"
       WRANGLER_SEND_METRICS: "false"
-      CLOUDFLARE_CI_OVERRIDE_WORKER_NAME: ''
-      WRANGLER_CI_OVERRIDE_NAME: ''
-      CF_WORKER_NAME: ''
-      CLOUDFLARE_WORKER_NAME: ''
-      WRANGLER_WORKER_NAME: ''
-      CF_MODE: ''
-      CLOUDFLARE_ENV: ''
-      WRANGLER_ENV: ''
+      CLOUDFLARE_CI_OVERRIDE_WORKER_NAME: ""
+      WRANGLER_CI_OVERRIDE_NAME: ""
+      CF_WORKER_NAME: ""
+      CLOUDFLARE_WORKER_NAME: ""
+      WRANGLER_WORKER_NAME: ""
+      CF_MODE: ""
+      CLOUDFLARE_ENV: ""
+      WRANGLER_ENV: ""
       CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -101,7 +101,7 @@ jobs:
           VOICE_LINE_UPLOAD_RECEIPT: ${{ runner.temp }}/voice-line-upload-receipt.json
 
       - name: Save the exact structured upload receipt
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: voice-line-upload-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/voice-line-upload-receipt.json

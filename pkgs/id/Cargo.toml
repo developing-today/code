@@ -3,7 +3,7 @@ name = "id"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.96"
-description = "A peer-to-peer file sharing CLI built with Iroh"
+description = "Peer-to-peer platform and Rust facade built with Iroh"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/developing-today/code"
 keywords = ["p2p", "file-sharing", "iroh", "cli"]
@@ -33,6 +33,7 @@ members = [
   "crates/id-hw-shell",
   "crates/id-cli",
   "crates/id-import-notion",
+  "crates/id-client",
 ]
 # The vendored crates stay OUT of the workspace: as path dependencies inside
 # this directory Cargo would otherwise treat them as members, and a member's
@@ -56,6 +57,7 @@ default-members = [
   "crates/id-render",
   "crates/id-cli",
   "crates/id-import-notion",
+  "crates/id-client",
 ]
 
 # =============================================================================
@@ -71,10 +73,10 @@ sandbox = [
   "id-worlds/sandbox",
   "id-cli/sandbox",
 ]
-world = ["id-core/world", "id-cli/world"]
+world = ["id-core/world", "id-cli/world", "dep:num-bigint"]
 ssh = ["world", "id-worlds/ssh", "id-cli/ssh"]
 web = ["world", "dep:id-web", "id-core/web", "id-cli/web"]
-# Mainline DHT address lookup (P7.3, decision 15). Off in the default build; src/dht.rs decides per server.
+# Mainline DHT address lookup (P7.3, decision 15). Off in the default build; the implementation is in id-sync and the command wiring is in id-cli.
 dht = ["id-sync/dht", "id-cli/dht"]
 # Live-cluster binding for the currency PoC (#2289): the official TigerBeetle
 # Rust client, pinned to the harness server version (harness.rs). Off by
@@ -82,6 +84,7 @@ dht = ["id-sync/dht", "id-cli/dht"]
 currency-poc-tb = ["dep:tigerbeetle"]
 
 [dependencies]
+num-bigint = { version = "0.4.8", optional = true }
 # Foundation leaf modules extracted in Phase 1 of the crate split (#3447).
 # Features are forwarded explicitly (see [features]); the crate's modules
 # are re-exported at their historical crate:: paths in src/lib.rs.
@@ -239,6 +242,10 @@ proptest = "1.12"
 dcbor = "=0.25.2"
 # Local relay server for the startup-wait tests (iroh's test-utils feature). Dev only.
 iroh = { version = "1", features = ["test-utils"] }
+# In-memory blob store for the MCP bridge end-to-end test's world host
+# (tests/mcp_bridge_e2e.rs, #7914). Dev only; already in the lock via the
+# root package's own iroh-blobs dependency.
+iroh-blobs = "0.103"
 # Parses the relay kit's configs in tests/relay_ops.rs. Dev only.
 toml = "1"
 # Local mainline DHT testnet for tests/dht_testnet.rs (P7.3). Dev only; already in the lock via the `dht` feature.

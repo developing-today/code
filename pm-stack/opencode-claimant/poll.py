@@ -256,6 +256,24 @@ def is_stale_binding(row, binding):
     return bool(binding.get("session_id"))
 
 
+_POLL_DEADLINE = None
+
+
+def _poll_timeout(default):
+    if _POLL_DEADLINE is None:
+        return default
+    remaining = _POLL_DEADLINE - time.monotonic()
+    if remaining <= 0:
+        raise TimeoutError("poll budget exhausted")
+    return min(default, remaining)
+
+
+def _poll_phase(name):
+    if _POLL_DEADLINE is not None:
+        print(f"claimant-poll-phase:{name}", file=sys.stderr, flush=True)
+        _poll_timeout(30)
+
+
 def fetch_ledger_bindings(task_ids):
     """task id -> lane-ledger dict for the given tasks, read-only.
 
@@ -289,7 +307,7 @@ def fetch_ledger_bindings(task_ids):
                 [sys.executable, str(TURSO_EXEC), LEDGER_DB, sql_path],
                 capture_output=True,
                 text=True,
-                timeout=60,
+                timeout=_poll_timeout(60),
             )
         finally:
             os.unlink(sql_path)
@@ -570,7 +588,7 @@ def _server_get(path, *, include_envelope=False, raise_http_errors=False):
     token = base64.b64encode(f"opencode:{credential}".encode()).decode()
     req.add_header("Authorization", f"Basic {token}")
     try:
-        with urllib.request.urlopen(req, timeout=15) as res:
+        with urllib.request.urlopen(req, timeout=_poll_timeout(15)) as res:
             data = json.loads(res.read() or "null")
     except urllib.error.HTTPError:
         if raise_http_errors:
@@ -597,6 +615,7 @@ def fetch_sessions():
     represented by None, matching the other optional server reads."""
     sessions = []
     cursor = None
+    seen_cursors = set()
     while True:
         query = {"limit": SESSION_FETCH_LIMIT}
         if cursor:
@@ -610,6 +629,9 @@ def fetch_sessions():
         cursor = page_cursor.get("next") if isinstance(page_cursor, dict) else None
         if not cursor:
             return sessions
+        if not isinstance(cursor, str) or cursor in seen_cursors:
+            return None
+        seen_cursors.add(cursor)
 
 
 def fetch_active_ids():
@@ -662,7 +684,7 @@ def _broker_post(path, body):
     if url.startswith("unix://"):
         # Same HTTP API/auth as TCP, but the URL suffix is a literal socket
         # path, not an HTTP base URL. Never append /list to that filename.
-        conn = _UnixHTTPConnection(url[len("unix://") :], timeout=30)
+        conn = _UnixHTTPConnection(url[len("unix://") :], timeout=_poll_timeout(30))
         try:
             conn.request("POST", path, body=payload, headers=headers)
             with conn.getresponse() as res:
@@ -685,7 +707,7 @@ def _broker_post(path, body):
             headers=headers,
             method="POST",
         )
-        with urllib.request.urlopen(req, timeout=30) as res:
+        with urllib.request.urlopen(req, timeout=_poll_timeout(30)) as res:
             data = json.loads(res.read() or "null")
     if isinstance(data, dict) and data.get("ok") is False:
         raise RuntimeError(f"broker {path} failed: {str(data.get('error'))[:200]}")
@@ -732,10 +754,14 @@ def _fetch_rows(queue, status):
         print(f"Warning: Could not poll queue {queue}: {e}", file=sys.stderr)
         _READ_ERRORS[(queue, status)] = str(e)[:200]
         return []
+    total = data.get("total") if isinstance(data, dict) else None
     if isinstance(data, dict):
-        data = data.get("rows") or []
+        data = data.get("rows")
     if not isinstance(data, list):
         _READ_ERRORS[(queue, status)] = "unexpected broker response shape"
+        return []
+    if len(data) >= LIST_LIMIT or (type(total) is int and total > len(data)):
+        _READ_ERRORS[(queue, status)] = "broker page may be incomplete"
         return []
     rows = []
     for row in data:
@@ -946,11 +972,20 @@ def get_active_root_session_count():
 
 
 def main():
+    global _POLL_DEADLINE
+    raw_budget = os.environ.get("OPENCODE_CLAIMANT_POLL_SECONDS")
+    _POLL_DEADLINE = (
+        time.monotonic() + min(300.0, max(0.0, float(raw_budget)))
+        if raw_budget
+        else None
+    )
+    _poll_phase("session_census")
     now_ms = int(time.time() * 1000)
     # Sessions first: stuck-bound classification (#4758) needs the
     # session list and the server's active set, and the cap summary
     # below reuses the same two reads.
     sessions = fetch_sessions()
+    _poll_phase("active_sessions")
     active_ids = fetch_active_ids() if sessions is not None else None
     session_by_id = {}
     if sessions:
@@ -963,6 +998,7 @@ def main():
     # for the whole poll (#5508): candidate-shaped rows from claimed
     # and handed_off rows alike are decided against the same ledger
     # snapshot.
+    _poll_phase("broker_reads")
     per_queue = {}
     shaped_ids = []
     for q in QUEUES:
@@ -971,7 +1007,9 @@ def main():
         shaped = get_candidates(rows) + get_handed_off_candidates(handed_off_rows)
         per_queue[q] = (rows, handed_off_rows, shaped)
         shaped_ids.extend(r.get("id") for r in shaped)
+    _poll_phase("ledger_read")
     bindings = fetch_ledger_bindings(shaped_ids)
+    _poll_phase("snapshot")
     out["ledger_readable"] = bindings is not None
     for q in QUEUES:
         rows, handed_off_rows, shaped = per_queue[q]

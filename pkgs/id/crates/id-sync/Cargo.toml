@@ -15,7 +15,7 @@ license = "MIT OR Apache-2.0"
 # `connectivity` already live in id-core (landed drift from the design
 # map, which had them here). Composition stays in the facade: the
 # `MetaClient` enum (remote-or-local) and the `LocalNode`-backed tests
-# remain there until step 7.
+# are composed by id-cli (split step 7b); only the request/response plumbing lives here.
 
 [features]
 default = []
@@ -55,6 +55,9 @@ tokio-tungstenite = "0.30"
 tracing = "0.1"
 
 [dev-dependencies]
+# Signing keys for the relay PoC harness (#2249): the chained-envelope
+# oracle signs with the same crate the production envelope path uses.
+ed25519-dalek = { version = "3", features = ["rand_core"] }
 iroh-docs = "0.101"
 iroh-gossip = { version = "0.101", features = ["net"] }
 p2panda-auth = { git = "https://github.com/p2panda/p2panda", rev = "da80c05b95269926bf58121cf6a2d3dd5ca41dfc", features = [

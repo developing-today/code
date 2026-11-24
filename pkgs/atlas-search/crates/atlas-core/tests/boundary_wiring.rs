@@ -63,12 +63,10 @@ fn staged_chunks(db: &Path, item_id: i64) -> Vec<String> {
     let mut stmt = conn
         .prepare("SELECT text FROM chunks_raw WHERE item_id = ?1 ORDER BY idx")
         .unwrap();
-    let rows = stmt
-        .query_map([item_id], |r| r.get::<_, String>(0))
+    stmt.query_map([item_id], |r| r.get::<_, String>(0))
         .unwrap()
         .collect::<std::result::Result<Vec<_>, _>>()
-        .unwrap();
-    rows
+        .unwrap()
 }
 
 fn classifications(db: &Path, item_id: i64) -> Vec<ChunkClassification> {

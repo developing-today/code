@@ -375,8 +375,6 @@ class TestFleetBootstrap(unittest.TestCase):
         self.assertEqual(res.returncode, 0, res.stderr)
         self.assertIn("Phases", res.stdout)
 
-
-
     def test_fleet_agent_env_default_and_no_rungs_fails(self):
         server, _, url = serve_bytes(self.payload)
         try:

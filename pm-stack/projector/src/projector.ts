@@ -279,9 +279,11 @@ export async function applyEvent(
   switch (event) {
     case "issues": {
       const issue = payload.issue;
-      if (issue && payload.action === "deleted") {
+      if (issue && (payload.action === "deleted" || payload.action === "transferred")) {
         // A deleted issue must leave the read model, not be re-upserted
-        // by its own deletion event (#4210).
+        // by its own deletion event (#4210). A transferred issue left this
+        // repo (D-1, #4303): payload.issue.number is the source number
+        // (fixtures/08-issue-transferred.json, #10673).
         const ref = itemRef(repo, issue.number);
         await store.deleteItem(ref, iso(issue.updated_at) ?? iso(issue.created_at) ?? undefined);
         addRef(ref);

@@ -4,7 +4,7 @@
 
 There is ONE fleet queue (one broker, one tasks table); the per-repo
 values in the `queue` column are stream labels inside it, not separate
-queues. The matching model (Drew, 2026-11-10; #8097):
+queues. The matching model (the user, 2026-11-10; #8097):
 
 - **Default claim is unfiltered.** A lane claims with no stream and no
   filter and receives the highest-priority available item it is
@@ -66,20 +66,20 @@ just the import.
 ## Who holds an issue (assignee is not a hold)
 
 Every open issue and PR here used to be auto-assigned to `dezren39`
-(Drew) by a sweeper workflow, so the assignee says nothing about
-ownership. Lanes read it as "Drew-owned" and parked work for an
+(the user) by a sweeper workflow, so the assignee says nothing about
+ownership. Lanes read it as "user-owned" and parked work for an
 "explicit ownership release" that never comes (#7616 collected 50+
 park notes in two days). The rule:
 
 - An issue or PR is **held for a human only** when it carries a hold
   label: `held`, `user/owned` or `do-not-auto-edit`. `do-not-merge`
-  blocks merging, not working. "Drew-owned" in any runbook means one of
+  blocks merging, not working. "User-owned" in any runbook means one of
   these labels, nothing else.
 - **Assignees never hold work**, whoever they are, and neither does a
   `work/assigned` label. Which worker holds a task is the queue's
   atomic claim, not a label or an assignee. Never park, and never wait
   for a "release" or "handoff", because of an assignee.
-- **A PR or branch authored by `dezren39` is not Drew's either.** Fleet
+- **A PR or branch authored by `dezren39` is not the user's either.** Fleet
   agents push and open PRs under that account, so authorship is fleet
   work product, not a hold. A PR is someone else's only if a live queue
   claim holds it or it carries a hold label.

@@ -4,7 +4,14 @@
 //! with Bevy's window/render/UI plugin set (`DefaultPlugins` over the
 //! crate's selected features) and the shell's own render plugin
 //! ([`id_native_shell::render::ShellRenderPlugin`]), which presents
-//! the latest host view as a UI node tree.
+//! the latest host view as a UI node tree, plus the scene renderer
+//! ([`id_native_shell::scene::SceneRenderPlugin`]), which presents a
+//! view's validated `scene/1` surface as 3D entities, plus the audio
+//! renderer ([`id_native_shell::audio::AudioRenderPlugin`]), which
+//! presents a view's validated `audio/1` surface as scheduled cue
+//! entities, plus the widget renderer
+//! ([`id_native_shell::widget::WidgetRenderPlugin`]), which presents
+//! a view's validated `widget/1` surface as placed control entities.
 //!
 //! With `--node <id> --capability <cap>` the binary also runs the live
 //! session: [`id_native_shell::run_session`] joins the world on a
@@ -21,7 +28,10 @@ use std::sync::Mutex;
 
 use anyhow::{Context, Result, bail};
 use bevy::prelude::{App, DefaultPlugins, Res, ResMut, Resource, Startup, Update};
+use id_native_shell::audio::AudioRenderPlugin;
 use id_native_shell::render::{PresentedForm, PresentedView, ShellRenderPlugin};
+use id_native_shell::scene::SceneRenderPlugin;
+use id_native_shell::widget::WidgetRenderPlugin;
 use id_native_shell::{
     CONTRACT_NAME, CONTRACT_VERSION, LocalBounds, ProviderAdapter, SessionView,
     run_session_with_providers,
@@ -276,6 +286,9 @@ fn main() {
     let mut app = App::new();
     app.add_plugins(DefaultPlugins)
         .add_plugins(ShellRenderPlugin)
+        .add_plugins(SceneRenderPlugin)
+        .add_plugins(AudioRenderPlugin)
+        .add_plugins(WidgetRenderPlugin)
         .add_systems(Startup, announce);
     if args.node.is_some() {
         match spawn_session(&args) {

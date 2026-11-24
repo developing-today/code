@@ -67,11 +67,7 @@ async function githubWebhook(req: Request, _ctx: CallerContext | null, deps: Aut
   const rawBody = await req.text();
   await verifyWebhookSignature(secret, rawBody, req.headers.get("x-hub-signature-256"));
 
-  const parsed = parseWebhookDelivery(
-    req.headers.get("x-github-event"),
-    req.headers.get("x-github-delivery"),
-    rawBody,
-  );
+  const parsed = parseWebhookDelivery(req.headers.get("x-github-event"), req.headers.get("x-github-delivery"), rawBody);
   if ("ignored" in parsed) {
     return json({ outcome: "ignored", reason: parsed.ignored });
   }

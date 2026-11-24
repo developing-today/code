@@ -7,11 +7,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { FailClosed } from "../src/errors.ts";
-import {
-  parseFlowSyncCliArgs,
-  parseProjectSyncCliArgs,
-  renderSyncResponse,
-} from "../src/sync-cli.ts";
+import { parseFlowSyncCliArgs, parseProjectSyncCliArgs, renderSyncResponse } from "../src/sync-cli.ts";
 
 function refusal(fn: () => unknown): FailClosed {
   try {
@@ -25,11 +21,16 @@ function refusal(fn: () => unknown): FailClosed {
 
 test("sync project args build the door's request document, ops in argv order", () => {
   const request = parseProjectSyncCliArgs([
-    "--owner", "developing-today",
-    "--project", "3",
-    "--add-issue", "developing-today/code#42",
-    "--set-status", "developing-today/code#7=Done",
-    "--set-item-status", "PVTI_fixture_9=In Review",
+    "--owner",
+    "developing-today",
+    "--project",
+    "3",
+    "--add-issue",
+    "developing-today/code#42",
+    "--set-status",
+    "developing-today/code#7=Done",
+    "--set-item-status",
+    "PVTI_fixture_9=In Review",
   ]);
   assert.deepEqual(request, {
     project: { owner: "developing-today", number: 3 },
@@ -62,10 +63,14 @@ test("sync project args build the door's request document, ops in argv order", (
 
 test("--add-status names the initial status every add carries", () => {
   const request = parseProjectSyncCliArgs([
-    "--owner", "o",
-    "--project", "1",
-    "--add-issue", "o/r#5",
-    "--add-status", "In Progress",
+    "--owner",
+    "o",
+    "--project",
+    "1",
+    "--add-issue",
+    "o/r#5",
+    "--add-status",
+    "In Progress",
   ]);
   const first = request.ops[0];
   assert.equal(first.op, "add-issue");
@@ -74,47 +79,43 @@ test("--add-status names the initial status every add carries", () => {
 
 test("sync project arg refusals are named 400s", () => {
   assert.equal(refusal(() => parseProjectSyncCliArgs(["--owner", "o"])).code, "invalid_sync");
+  assert.equal(refusal(() => parseProjectSyncCliArgs(["--owner", "o", "--project", "1"])).code, "invalid_sync");
   assert.equal(
-    refusal(() => parseProjectSyncCliArgs(["--owner", "o", "--project", "1"])).code,
+    refusal(() => parseProjectSyncCliArgs(["--owner", "o", "--project", "1", "--set-status", "o/r#5"])).code,
     "invalid_sync",
   );
   assert.equal(
-    refusal(() =>
-      parseProjectSyncCliArgs(["--owner", "o", "--project", "1", "--set-status", "o/r#5"]),
-    ).code,
+    refusal(() => parseProjectSyncCliArgs(["--owner", "o", "--project", "1", "--add-issue", "o/r5"])).code,
     "invalid_sync",
   );
   assert.equal(
-    refusal(() =>
-      parseProjectSyncCliArgs(["--owner", "o", "--project", "1", "--add-issue", "o/r5"]),
-    ).code,
-    "invalid_sync",
-  );
-  assert.equal(
-    refusal(() =>
-      parseProjectSyncCliArgs(["--owner", "o", "--project", "1", "--bogus", "x"]),
-    ).code,
+    refusal(() => parseProjectSyncCliArgs(["--owner", "o", "--project", "1", "--bogus", "x"])).code,
     "invalid_sync",
   );
   // A shape the CLI builds but the door refuses refuses identically
   // (one validation path): a non-numeric project number.
   assert.equal(
-    refusal(() =>
-      parseProjectSyncCliArgs(["--owner", "o", "--project", "x", "--add-issue", "o/r#5"]),
-    ).code,
+    refusal(() => parseProjectSyncCliArgs(["--owner", "o", "--project", "x", "--add-issue", "o/r#5"])).code,
     "invalid_body",
   );
 });
 
 test("sync flow args build the door's request document", () => {
   const request = parseFlowSyncCliArgs([
-    "--flow", "verdict",
-    "--repo", "developing-today/code",
-    "--number", "7",
-    "--marker", "stewardship-cycle-566",
-    "--body", "Stewardship verdict: accept.",
-    "--add-label", "review/accepted",
-    "--remove-label", "review/pending",
+    "--flow",
+    "verdict",
+    "--repo",
+    "developing-today/code",
+    "--number",
+    "7",
+    "--marker",
+    "stewardship-cycle-566",
+    "--body",
+    "Stewardship verdict: accept.",
+    "--add-label",
+    "review/accepted",
+    "--remove-label",
+    "review/pending",
   ]);
   assert.deepEqual(request, {
     flow: "verdict",
@@ -128,19 +129,22 @@ test("sync flow args build the door's request document", () => {
 });
 
 test("sync flow requires its named fields and refuses unknown flags", () => {
-  assert.equal(
-    refusal(() => parseFlowSyncCliArgs(["--flow", "verdict", "--repo", "o/r"])).code,
-    "invalid_sync",
-  );
+  assert.equal(refusal(() => parseFlowSyncCliArgs(["--flow", "verdict", "--repo", "o/r"])).code, "invalid_sync");
   assert.equal(
     refusal(() =>
       parseFlowSyncCliArgs([
-        "--flow", "verdict",
-        "--repo", "o/r",
-        "--number", "7",
-        "--marker", "m1",
-        "--body", "b",
-        "--bogus", "x",
+        "--flow",
+        "verdict",
+        "--repo",
+        "o/r",
+        "--number",
+        "7",
+        "--marker",
+        "m1",
+        "--body",
+        "b",
+        "--bogus",
+        "x",
       ]),
     ).code,
     "invalid_sync",

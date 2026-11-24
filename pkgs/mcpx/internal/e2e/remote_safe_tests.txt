@@ -1,0 +1,12 @@
+# The remote-safe e2e subset (#13386): one test name per line.
+#
+# A test named here claims it can run against a shared daemon it did not
+# start, reached over MCPX_DAEMON_ENDPOINT: it needs no host-local server
+# binary (the FAKE fixture path does not exist on the daemon's host), does
+# not stop or restart the daemon, and does not depend on a per-test daemon
+# config file. A test that needs a server on the daemon adds it with
+# addRemoteServer (POST /v1/servers, per-test suffixed name, removed in
+# cleanup). Selection fails closed: a test that is not listed here is
+# never run remotely — the CI leg builds its -run pattern from this file
+# and newEnv skips unlisted tests when remote mode is on.
+TestExecOnTheDaemonRunsWhereTheDaemonIs

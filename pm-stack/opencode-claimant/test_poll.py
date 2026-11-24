@@ -961,5 +961,37 @@ class TestFetchRowsReadErrors(unittest.TestCase):
         self.assertIn("claimed", poll.queue_read_errors("repo-health-code-pilot"))
 
 
+class TestPollCompleteness(unittest.TestCase):
+    def test_shorter_than_total_missing_rows_and_capped_are_unknown(self):
+        for response in (
+            {"total": 2, "rows": [{"id": 1}]},
+            {"total": 0},
+            [{"id": i} for i in range(poll.LIST_LIMIT)],
+        ):
+            with (
+                self.subTest(size=len(response)),
+                patch.object(poll, "_broker_post", return_value=response),
+            ):
+                poll._READ_ERRORS.clear()
+                self.assertEqual(poll.fetch_claimed_rows("fixture"), [])
+                self.assertIn("claimed", poll.queue_read_errors("fixture"))
+        poll._READ_ERRORS.clear()
+
+    def test_child_timeout_uses_remaining_budget(self):
+        with (
+            patch.object(poll, "_POLL_DEADLINE", 44.0),
+            patch.object(poll.time, "monotonic", side_effect=[41.0, 45.0]),
+        ):
+            self.assertEqual(poll._poll_timeout(30), 3.0)
+            with self.assertRaises(TimeoutError):
+                poll._poll_timeout(30)
+
+    def test_repeated_census_cursor_is_incomplete(self):
+        page = {"data": [], "cursor": {"next": "same"}}
+        with patch.object(poll, "_server_get", return_value=page) as request:
+            self.assertIsNone(poll.fetch_sessions())
+        self.assertEqual(request.call_count, 2)
+
+
 if __name__ == "__main__":
     unittest.main()

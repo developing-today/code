@@ -30,7 +30,11 @@ const PAGE_LIMIT: usize = 50;
 /// Resolve the base URL: flag, then `ATLAS_SEARCH_URL`, then the
 /// default.
 pub fn base_url(flag: Option<&str>) -> String {
-    if let Some(u) = flag {
+    // An empty flag value counts as absent: since --service-url
+    // gained a clap env binding (#13278), a set-but-empty
+    // ATLAS_SEARCH_URL arrives here as a value, and the hand-rolled
+    // env read it replaced ignored empty values.
+    if let Some(u) = flag.filter(|u| !u.is_empty()) {
         return u.trim_end_matches('/').to_string();
     }
     if let Ok(u) = std::env::var("ATLAS_SEARCH_URL")
