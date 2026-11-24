@@ -14,7 +14,7 @@
 //! close, so leave/rejoin cycles and host restarts never reset a
 //! budget.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
@@ -186,6 +186,34 @@ pub fn spend_by_role(ledgers: &mut [AgentQuotaLedger], now: u64) -> BTreeMap<Str
     totals
 }
 
+/// A second `open` was attempted while the ledger for the
+/// (agent, world) pair is still checked out.
+///
+/// The store enforces single-outstanding-open: at most one live
+/// handle per pair. A rejoin must [`QuotaLedgerStore::close`] the
+/// old handle before opening again; a duplicate join while the
+/// first session is live is refused with this error instead of
+/// granting a second full budget.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LedgerAlreadyCheckedOut {
+    /// The agent the refused open named.
+    pub agent_key: [u8; 32],
+    /// The world the refused open named.
+    pub world: String,
+}
+
+impl std::fmt::Display for LedgerAlreadyCheckedOut {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "quota ledger for this agent in world {} is already checked out",
+            self.world
+        )
+    }
+}
+
+impl std::error::Error for LedgerAlreadyCheckedOut {}
+
 /// The host-side home of per-(agent, world) quota ledgers (#8301).
 ///
 /// The policy point owns one ledger per live session; the store owns
@@ -198,6 +226,11 @@ pub fn spend_by_role(ledgers: &mut [AgentQuotaLedger], now: u64) -> BTreeMap<Str
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct QuotaLedgerStore {
     ledgers: BTreeMap<([u8; 32], String), AgentQuotaLedger>,
+    /// (agent, world) pairs with a live handle out. Transient host
+    /// state, never part of a snapshot: a restored store starts with
+    /// no handles out.
+    #[serde(skip)]
+    checked_out: BTreeSet<([u8; 32], String)>,
 }
 
 impl QuotaLedgerStore {
@@ -213,6 +246,16 @@ impl QuotaLedgerStore {
     /// later open reopens the persisted ledger, keeping its spend
     /// and adopting the role's current budget and cadence, so a
     /// role edit moves the budget without resetting spend.
+    ///
+    /// At most one handle per (agent, world) pair is out at a time:
+    /// the handle must be handed back with [`Self::close`] before
+    /// the pair can be opened again.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LedgerAlreadyCheckedOut`] when a second open arrives
+    /// while a handle for the pair is still live — a double join would
+    /// otherwise grant the same budget to both handles.
     pub fn open(
         &mut self,
         agent_key: [u8; 32],
@@ -220,23 +263,30 @@ impl QuotaLedgerStore {
         role: impl Into<String>,
         class: QuotaClass,
         now: u64,
-    ) -> AgentQuotaLedger {
+    ) -> Result<AgentQuotaLedger, LedgerAlreadyCheckedOut> {
         let world = world.into();
-        match self.ledgers.get_mut(&(agent_key, world.clone())) {
+        let key = (agent_key, world.clone());
+        if !self.checked_out.insert(key.clone()) {
+            return Err(LedgerAlreadyCheckedOut { agent_key, world });
+        }
+        Ok(match self.ledgers.get_mut(&key) {
             Some(ledger) => {
                 ledger.reopen(role, class, now);
                 ledger.clone()
             }
-            None => AgentQuotaLedger::open(agent_key, world, role, class, now),
-        }
+            None => AgentQuotaLedger::open(key.0, world, role, class, now),
+        })
     }
 
     /// Hand a session's ledger back to the store, e.g. on leave.
     /// Upserts by the ledger's own agent and world, so a close
     /// after a role edit keeps the ledger under its new role.
+    /// A close for a pair never checked out is a no-op upsert
+    /// (e.g. restoring a snapshot does this).
     pub fn close(&mut self, ledger: AgentQuotaLedger) {
-        self.ledgers
-            .insert((*ledger.agent_key(), ledger.world().to_owned()), ledger);
+        let key = (*ledger.agent_key(), ledger.world().to_owned());
+        self.checked_out.remove(&key);
+        self.ledgers.insert(key, ledger);
     }
 
     /// Every ledger the store holds, for snapshots. The host
@@ -261,8 +311,7 @@ impl QuotaLedgerStore {
         store
     }
 
-    /// The ledger held for an agent in a world, if any.
-    #[must_use]
+    /// The ledger held for an agent in a world, if any.    #[must_use]
     pub fn get(&self, agent_key: &[u8; 32], world: &str) -> Option<&AgentQuotaLedger> {
         self.ledgers.get(&(*agent_key, world.to_owned()))
     }
@@ -408,12 +457,16 @@ mod tests {
     #[test]
     fn store_reopen_keeps_spend_across_leave_and_rejoin() {
         let mut store = QuotaLedgerStore::new();
-        let mut first = store.open(AGENT, "w", "archivist", class(2, None), 0);
+        let mut first = store
+            .open(AGENT, "w", "archivist", class(2, None), 0)
+            .unwrap();
         first.charge(0, call()).unwrap();
         first.charge(1, call()).unwrap();
         store.close(first);
 
-        let mut second = store.open(AGENT, "w", "archivist", class(2, None), 2);
+        let mut second = store
+            .open(AGENT, "w", "archivist", class(2, None), 2)
+            .unwrap();
         assert_eq!(second.spend_at(2).tool_calls, 2);
         let refusal = second.charge(2, call()).unwrap_err();
         assert_eq!(refusal.axis, "tool_calls");
@@ -423,14 +476,18 @@ mod tests {
     #[test]
     fn store_snapshot_survives_a_host_restart() {
         let mut store = QuotaLedgerStore::new();
-        let mut ledger = store.open(AGENT, "w", "archivist", class(2, None), 0);
+        let mut ledger = store
+            .open(AGENT, "w", "archivist", class(2, None), 0)
+            .unwrap();
         ledger.charge(0, call()).unwrap();
         store.close(ledger);
 
         let snapshot = serde_json::to_string(&store.ledgers()).unwrap();
         let mut restored = QuotaLedgerStore::restore(serde_json::from_str(&snapshot).unwrap());
 
-        let mut rejoined = restored.open(AGENT, "w", "archivist", class(2, None), 1);
+        let mut rejoined = restored
+            .open(AGENT, "w", "archivist", class(2, None), 1)
+            .unwrap();
         // Rejoining never grants a fresh budget: the one spent call
         // is still spent, and one more charge exhausts the budget.
         assert_eq!(rejoined.spend_at(1).tool_calls, 1);
@@ -441,12 +498,16 @@ mod tests {
     #[test]
     fn store_reopen_adopts_an_edited_role_without_resetting_spend() {
         let mut store = QuotaLedgerStore::new();
-        let mut first = store.open(AGENT, "w", "archivist", class(5, None), 0);
+        let mut first = store
+            .open(AGENT, "w", "archivist", class(5, None), 0)
+            .unwrap();
         first.charge(0, call()).unwrap();
         first.charge(0, call()).unwrap();
         store.close(first);
 
-        let mut second = store.open(AGENT, "w", "senior-archivist", class(2, None), 1);
+        let mut second = store
+            .open(AGENT, "w", "senior-archivist", class(2, None), 1)
+            .unwrap();
         assert_eq!(second.role(), "senior-archivist");
         assert_eq!(second.budget().tool_calls, 2);
         // Two calls were already spent under the old budget; the
@@ -457,9 +518,15 @@ mod tests {
     #[test]
     fn store_owner_views_read_per_agent_and_per_role() {
         let mut store = QuotaLedgerStore::new();
-        let mut a = store.open([1; 32], "w", "archivist", class(9, None), 0);
-        let mut b = store.open([2; 32], "w", "archivist", class(9, None), 0);
-        let mut c = store.open([3; 32], "w", "courier", class(9, None), 0);
+        let mut a = store
+            .open([1; 32], "w", "archivist", class(9, None), 0)
+            .unwrap();
+        let mut b = store
+            .open([2; 32], "w", "archivist", class(9, None), 0)
+            .unwrap();
+        let mut c = store
+            .open([3; 32], "w", "courier", class(9, None), 0)
+            .unwrap();
         a.charge(0, call()).unwrap();
         b.charge(0, call()).unwrap();
         b.charge(0, call()).unwrap();
@@ -483,7 +550,9 @@ mod tests {
     #[test]
     fn store_owner_reads_never_advance_replenishment() {
         let mut store = QuotaLedgerStore::new();
-        let mut ledger = store.open(AGENT, "w", "archivist", class(2, Some((60, 1))), 0);
+        let mut ledger = store
+            .open(AGENT, "w", "archivist", class(2, Some((60, 1))), 0)
+            .unwrap();
         ledger.charge(0, call()).unwrap();
         ledger.charge(0, call()).unwrap();
         store.close(ledger);
@@ -498,8 +567,114 @@ mod tests {
         let tick = store.get(&AGENT, "w").unwrap().spend_at(119);
         assert_eq!(tick.tool_calls, 1);
 
-        let mut rejoined = store.open(AGENT, "w", "archivist", class(2, Some((60, 1))), 119);
+        let mut rejoined = store
+            .open(AGENT, "w", "archivist", class(2, Some((60, 1))), 119)
+            .unwrap();
         rejoined.charge(119, call()).unwrap();
         assert_eq!(rejoined.spend_at(119).tool_calls, 2);
+    }
+
+    #[test]
+    fn second_open_while_checked_out_is_refused() {
+        let mut store = QuotaLedgerStore::new();
+        let first = store
+            .open(AGENT, "w", "archivist", class(2, None), 0)
+            .unwrap();
+        let first_spend = first.spend_at(0);
+
+        let refusal = store
+            .open(AGENT, "w", "archivist", class(2, None), 0)
+            .unwrap_err();
+        assert_eq!(
+            refusal,
+            LedgerAlreadyCheckedOut {
+                agent_key: AGENT,
+                world: "w".to_owned(),
+            }
+        );
+
+        // Only one handle's charges can ever be admitted, and the
+        // refused open granted no second budget: the live handle
+        // still exhausts at 2.
+        let mut first = first;
+        first.charge(0, call()).unwrap();
+        first.charge(0, call()).unwrap();
+        assert!(first.charge(0, call()).is_err());
+        assert_eq!(first.spend_at(0).tool_calls, 2);
+        assert_eq!(first.spend_at(0).tool_calls, first_spend.tool_calls + 2);
+
+        // The pair opens again once the handle is handed back, and
+        // the spend carried by that handle is not lost.
+        store.close(first);
+        let mut second = store
+            .open(AGENT, "w", "archivist", class(2, None), 1)
+            .unwrap();
+        assert_eq!(second.spend_at(1).tool_calls, 2);
+        assert!(second.charge(1, call()).is_err());
+    }
+
+    #[test]
+    fn a_refused_open_does_not_consume_the_checkout() {
+        let mut store = QuotaLedgerStore::new();
+        let ledger = store
+            .open(AGENT, "w", "archivist", class(2, None), 0)
+            .unwrap();
+        store.close(ledger);
+
+        // After a refused open, the live handle can still be closed
+        // normally, and the pair reopens with its spend intact.
+        let first = store
+            .open(AGENT, "w", "archivist", class(2, None), 1)
+            .unwrap();
+        assert!(
+            store
+                .open(AGENT, "w", "archivist", class(2, None), 1)
+                .is_err()
+        );
+        let mut first = first;
+        first.charge(1, call()).unwrap();
+        store.close(first);
+        let mut second = store
+            .open(AGENT, "w", "archivist", class(2, None), 2)
+            .unwrap();
+        assert_eq!(second.spend_at(2).tool_calls, 1);
+    }
+
+    #[test]
+    fn a_restored_snapshot_holds_no_checkouts() {
+        let mut store = QuotaLedgerStore::new();
+        let ledger = store
+            .open(AGENT, "w", "archivist", class(2, None), 0)
+            .unwrap();
+        store.close(ledger);
+        // Even a snapshot taken while a handle was live restores as
+        // a store with no handles out: a restarted host opens anew.
+        let live = store
+            .open(AGENT, "w", "archivist", class(2, None), 1)
+            .unwrap();
+        let snapshot = serde_json::to_string(&store.ledgers()).unwrap();
+        let mut restored = QuotaLedgerStore::restore(serde_json::from_str(&snapshot).unwrap());
+        let _live_kept = live;
+        restored
+            .open(AGENT, "w", "archivist", class(2, None), 1)
+            .unwrap();
+    }
+
+    #[test]
+    fn a_double_open_cannot_admit_more_than_the_budget() {
+        let mut store = QuotaLedgerStore::new();
+        let mut first = store
+            .open(AGENT, "w", "archivist", class(2, None), 0)
+            .unwrap();
+        // The #14526 repro: a second live open would each grant a full
+        // budget, and four charges would be admitted against two.
+        assert!(
+            store
+                .open(AGENT, "w", "archivist", class(2, None), 0)
+                .is_err()
+        );
+        first.charge(0, call()).unwrap();
+        first.charge(0, call()).unwrap();
+        assert!(first.charge(0, call()).is_err());
     }
 }
