@@ -1425,3 +1425,34 @@ were each caught.
 tells those six as main has them. What will be seen is the Machines
 screen saying that the laptop's list of repositories is not main's,
 and that it is on other code.
+
+## 2026-11-24T08:20Z Update: "done" on what needed the owner's hands, at the edge (#13491)
+
+**Done.** "I did it" on something only the owner could do was a
+machine's: with the laptop away it waited. The Worker does it itself
+now, as it does a reply. It is two things asked of GitHub, and the
+order was changed for both sides: the label is taken off first, then
+the fleet is told. Taking a label off twice is the same as once
+(GitHub answers "Label does not exist", read from GitHub itself on
+2026-11-24), and saying "done" twice is two comments. So a failure
+part-way is tried again from the start, by the owner or by whoever
+holds the action for him, and it is said once. Any other failure to
+take the label off stops it there with nothing said. The list of what
+needs the owner is read again before the answer goes back.
+
+**A rule with no kind of today's to apply to.** What comes after
+something only a machine can do, about the same thing, waits behind
+it. "Done" was the one kind of that sort that shares what it is about
+with something the Worker does (a reply). The rule is kept for the
+next such kind, and its test stands one in by telling the Worker under
+test not to do "done" (`direct.kinds`).
+
+**Found on the way.** The app had no words for the Worker being turned
+away for reading what needs the owner: it would have shown
+`read.census`. A test now holds the app's words to the Worker's own
+lists of what it does and reads.
+
+**Checked.** In the real Worker runtime: the label off, then the
+comment, each with the Worker's token and once, no machine asked, and
+the item gone from the next look. Nine faults planted one at a time
+under bun, each caught.

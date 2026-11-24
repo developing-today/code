@@ -35,6 +35,7 @@ export const DIRECT_ACTIONS = [
   "ask.close",
   "issue.comment",
   "need.comment",
+  "hands.done",
   "issue.rank",
   "task.move",
   "pr.merge",

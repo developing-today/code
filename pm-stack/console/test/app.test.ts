@@ -43,6 +43,7 @@ import {
   whySaid,
   workerSaid,
 } from "../public/app.js";
+import { DIRECT_ACTIONS, DIRECT_READ_SECTIONS } from "../edge/src/direct.ts";
 import { androidRelease } from "../src/edge-proto.ts";
 import { contact, endpointMark as serverMark } from "../src/push.ts";
 
@@ -951,6 +952,18 @@ test("the Machines screen is drawn again when what it shows has changed, and not
   expect(machinesMark(quiet, now + 60_000)).not.toBe(machinesMark(quiet, now));
   // An answer that is not one is not a crash.
   expect(machinesMark(null, now)).toBe(machinesMark({}, now));
+});
+
+// The oracle is the Worker's own lists: whatever it does or reads
+// itself it can be turned away for, and then the app says so. A kind
+// with no words of its own is shown by its name ("hands.done").
+test("everything Cloudflare does or reads itself has words for being turned away for it", () => {
+  const kinds = [...DIRECT_ACTIONS, ...DIRECT_READ_SECTIONS.map((name) => `read.${name}`)];
+  const said = awayState({ edge: true, directEnabled: true, primary: true, refused: kinds }).refused ?? [];
+  expect(said).toHaveLength(kinds.length);
+  expect(kinds.filter((kind, i) => said[i] === kind)).toEqual([]);
+  // Each in words of its own.
+  expect(new Set(said).size).toBe(kinds.length);
 });
 
 test("a setting a machine runs with another value of is said in a sentence: what it says, what main says, and which Cloudflare goes by", () => {

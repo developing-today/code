@@ -283,6 +283,13 @@ export interface EdgeOptions {
      * puts stand-ins in their place. */
     githubApi?: string;
     queueDb?: string;
+    /** Which kinds this object does itself: every one it can
+     * (DIRECT_ACTIONS) unless said. A test says, to stand for a kind
+     * only a machine can do that is about the same thing as one done
+     * here: since "done" became this side's no kind of today's is, and
+     * the rule for one (what comes after it waits behind it) has to
+     * hold for the next that is. */
+    kinds?: readonly string[];
   };
   /** Ask to be woken at a time: to read again what the owner is told
    * about, and to notice a machine gone quiet. */
@@ -977,12 +984,7 @@ export class Edge {
     for (const h of held) {
       const about = this.heldAbout(h);
       if (this.withMachine(h, handed)) waits.set(h.id, "asked");
-      else if (
-        can &&
-        (DIRECT_ACTIONS as readonly string[]).includes(h.kind) &&
-        !withMachine.has(about) &&
-        !behind.has(about)
-      ) {
+      else if (can && this.does(h.kind) && !withMachine.has(about) && !behind.has(about)) {
         waits.set(h.id, "either");
       } else {
         waits.set(h.id, "machine");
@@ -1179,7 +1181,7 @@ export class Edge {
       const about = this.heldAbout(h);
       if (seen.has(about)) continue;
       seen.add(about);
-      if ((DIRECT_ACTIONS as readonly string[]).includes(h.kind) && !withMachine.has(about)) first.push(h);
+      if (this.does(h.kind) && !withMachine.has(about)) first.push(h);
     }
     return first;
   }
@@ -1302,7 +1304,7 @@ export class Edge {
         // less what it was turned away for and a machine does for the hour.
         actions: [
           ...Object.keys(this.table).sort(),
-          ...(primary ? (DIRECT_ACTIONS as readonly string[]).filter((kind) => !refused.includes(kind)) : []),
+          ...(primary ? this.kinds().filter((kind) => !refused.includes(kind)) : []),
         ],
         sections: primary ? this.owned(cfg) : [],
         refused: [...refused, ...this.refusedReads().map((name) => `read.${name}`)],
@@ -1450,6 +1452,17 @@ export class Edge {
   }
 
   // ---- doing the core here ------------------------------------------------
+
+  /** The kinds this side does itself when it does the core. */
+  private kinds(): readonly string[] {
+    return this.direct?.kinds ?? DIRECT_ACTIONS;
+  }
+
+  /** A kind this side does itself when it does the core; any other is
+   * a machine's whenever one comes. */
+  private does(kind: string): boolean {
+    return this.kinds().includes(kind);
+  }
 
   /** The switch is on and both tokens are here. */
   private directCapable(): boolean {
@@ -2401,11 +2414,7 @@ export class Edge {
         const before = id === null ? null : (((await this.kv.get(`a:${id}`)) as Acted | undefined) ?? null);
         const given = before?.state === "given";
         const here =
-          before !== null
-            ? !given
-            : (DIRECT_ACTIONS as readonly string[]).includes(kind) &&
-              this.primary(cfg) &&
-              !this.refusedKinds().includes(kind);
+          before !== null ? !given : this.does(kind) && this.primary(cfg) && !this.refusedKinds().includes(kind);
         if (here) {
           // An older action held for a machine about the same thing
           // comes first. One already handed to a machine may be being
@@ -2444,7 +2453,7 @@ export class Edge {
               if (older.some((h) => this.withMachine(h, handed))) return this.keep(newer);
               // One that only a machine can do is a machine's whenever
               // one comes: the newer waits behind it too.
-              if (older.some((h) => !(DIRECT_ACTIONS as readonly string[]).includes(h.kind))) return this.keep(newer);
+              if (older.some((h) => !this.does(h.kind))) return this.keep(newer);
               const old = older[0];
               // One of the same kind where the last one wins is dropped
               // as replaced by this. (Only by its own kind: a comment

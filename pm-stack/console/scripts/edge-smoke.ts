@@ -165,6 +165,9 @@ const outside: {
   /** How GitHub was asked: a read, or something written. */
   method?: string;
 }[] = [];
+/** The one thing in the stand-in that needs the owner's hands, and
+ * whether it still carries the label that says so. */
+const hands = { labelled: true };
 /** GitHub turning every call away as one too many, until this second
  * (as it says it: nothing left of the allowance, and when it is back). */
 const spent = { until: 0 };
@@ -269,6 +272,37 @@ const server = Bun.serve({
             pull_request: { url: "https://api.github.com/repos/developing-today/code/pulls/31" },
           },
         ]);
+      }
+      if (path === "repos/developing-today/code/issues" && url.searchParams.get("labels") === "user/escalated") {
+        // Something only the owner's hands can do, for as long as it carries the label.
+        return tagged(
+          req,
+          entry,
+          hands.labelled
+            ? [
+                {
+                  number: 32,
+                  title: "Smoke hands",
+                  body: 'A person is needed.\n<!-- hands:v1 kind=physical action="Plug it in." -->',
+                  state: "open",
+                  html_url: "https://github.com/developing-today/code/issues/32",
+                  updated_at: "2026-11-23T09:30:00Z",
+                  labels: [{ name: "user/escalated" }],
+                },
+              ]
+            : [],
+        );
+      }
+      if (req.method === "DELETE" && path === "repos/developing-today/code/issues/32/labels/user%2Fescalated") {
+        // The label taken off, as GitHub answers it: what is left on the
+        // issue, or that the label was not there.
+        if (!hands.labelled) {
+          entry.status = 404;
+          return Response.json({ message: "Label does not exist", status: "404" }, { status: 404 });
+        }
+        hands.labelled = false;
+        entry.status = 200;
+        return Response.json([]);
       }
       if (path.endsWith("/issues")) return tagged(req, entry, []);
       return tagged(req, entry, { message: "Not Found" }, 404);
@@ -766,6 +800,41 @@ try {
           JSON.stringify([["developing-today/code#31", true]]) &&
         needsAsked.length >= 8,
       `${JSON.stringify(needs)}; ${needsAsked.length} list reads`,
+    );
+    // "Done" on what needed his hands, by the Worker itself: the label
+    // taken off, then the fleet told, and the list read again so the
+    // item is gone from the next look.
+    const handsBefore = (
+      (await (await asOwner("/console/api/doc/core")).json()) as { census?: { hands?: { ref: string }[] } }
+    ).census?.hands?.map((i) => i.ref);
+    const wroteFrom = outside.length;
+    const askedHostFrom = seen.length;
+    const handsDone = (await (
+      await actAsOwner("hands.done", { ref: "developing-today/code#32", note: "smoke" })
+    ).json()) as {
+      ok?: boolean;
+      result?: { done?: boolean };
+    };
+    const handsWrote = outside
+      .slice(wroteFrom)
+      .filter((o) => o.to === "github" && o.method !== "GET")
+      .map((o) => `${o.method} ${o.path} ${o.status} ${o.auth === "Bearer smoke-github"}`);
+    const handsAfter = (
+      (await (await asOwner("/console/api/doc/core")).json()) as { census?: { hands?: { ref: string }[] } }
+    ).census?.hands?.map((i) => i.ref);
+    check(
+      "done on what needed the owner's hands is done by the Worker: the label off, then the fleet told, and it leaves the list",
+      JSON.stringify(handsBefore) === JSON.stringify(["developing-today/code#32"]) &&
+        handsDone.ok === true &&
+        handsDone.result?.done === true &&
+        JSON.stringify(handsWrote) ===
+          JSON.stringify([
+            "DELETE repos/developing-today/code/issues/32/labels/user%2Fescalated 200 true",
+            "POST repos/developing-today/code/issues/32/comments 201 true",
+          ]) &&
+        JSON.stringify(handsAfter) === JSON.stringify([]) &&
+        !seen.slice(askedHostFrom).some((s) => s.includes("/console/api/act")),
+      `before ${JSON.stringify(handsBefore)}, did ${JSON.stringify(handsDone)}, wrote ${JSON.stringify(handsWrote)}, after ${JSON.stringify(handsAfter)}`,
     );
     await new Promise((resolve) => setTimeout(resolve, 3000));
     const readsBefore = outside.filter((o) => o.to === "github").length;

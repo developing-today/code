@@ -1942,6 +1942,7 @@ const REFUSED_SAID = {
   "ask.close": "closing a prompt",
   "issue.comment": "commenting on an issue",
   "need.comment": "commenting on something that needs you",
+  "hands.done": "marking something for your hands done",
   "issue.rank": "ranking an issue",
   "task.move": "moving a task",
   "pr.merge": "merging",
@@ -1951,6 +1952,7 @@ const REFUSED_SAID = {
   "read.prs": "reading the pull requests",
   "read.priorities": "reading the ranked issues",
   "read.asks": "reading your prompts",
+  "read.census": "reading what needs you",
 };
 
 /** What the edge says of doing the core itself, read from its public
