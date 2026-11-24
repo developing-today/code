@@ -20,6 +20,7 @@ case "$cmd" in
     dest=${@: -1}
     mkdir -p "$dest/kaneo" "$dest/grist/docs" "$dest/pad"
     touch "$dest/kaneo/globals.sql" "$dest/kaneo/kaneo.dump" "$dest/grist/home.sqlite3" "$dest/pad/pad.db"
+    [[ $SCENARIO != grist-docs-missing ]] || rmdir "$dest/grist/docs"
     ;;
   sqlite3)
     store=grist; [[ $* == *pad-check* ]] && store=pad
@@ -74,6 +75,7 @@ run_case() {
 run_case healthy success 2026-11-24
 run_case default-day success
 for scenario in restore pg-ready pg-start grist-start pad-start kaneo-start \
+  grist-docs-missing \
   grist-sql-error grist-sql-bad pad-sql-error pad-sql-bad \
   grist-http-error grist-http-bad pad-http-error pad-http-bad kaneo-http-error kaneo-http-bad; do
   run_case "$scenario" failure 2026-11-24

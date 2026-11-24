@@ -106,7 +106,9 @@ elapsed "kaneo" "$T"
 say "grist integrity + boot"
 T=$(date +%s)
 integrity_check "$SRC/grist/home.sqlite3"
-echo "grist doc files: $(ls "$SRC/grist/docs" | wc -l)"
+[[ -d "$SRC/grist/docs" ]] || fail "GRIST DOCS MISSING: $SRC/grist/docs"
+DOC_COUNT=$(ls "$SRC/grist/docs" | wc -l) || fail "GRIST DOCS COUNT FAILED"
+echo "grist doc files: $DOC_COUNT"
 docker rm -f rehearsal-grist >/dev/null 2>&1 || true
 docker run -d --name rehearsal-grist -e GRIST_DATA_DIR=/persist -p 127.0.0.1:8488:8484 -v "$SRC/grist":/persist gristlabs/grist-oss:latest >/dev/null || fail "GRIST START FAILED"
 http_ready grist 45 http://127.0.0.1:8488/ yes
