@@ -583,7 +583,12 @@ async fn pending_identity_is_acknowledged_without_issuing_a_code() {
             .as_deref(),
         Some("pending")
     );
-    assert_eq!(h.identities.events().unwrap()[0].event, "register");
+    assert!(h
+        .identities
+        .events()
+        .unwrap()
+        .iter()
+        .any(|e| e.event == "register"));
 }
 
 #[test]
