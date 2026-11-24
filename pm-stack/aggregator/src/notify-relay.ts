@@ -52,7 +52,14 @@ export interface MirroredEvent {
 /** Stable across alert ticks and retries for one candidate state. */
 export function notificationMirrorId(event: Pick<MirroredEvent, "objectRef" | "transition" | "payload">): string {
   return createHash("sha256")
-    .update(JSON.stringify([event.objectRef, event.transition, event.payload.stateFingerprint ?? null]))
+    .update(
+      JSON.stringify([
+        event.payload.class ?? null,
+        event.objectRef,
+        event.transition,
+        event.payload.stateFingerprint ?? null,
+      ]),
+    )
     .digest("hex");
 }
 

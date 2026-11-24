@@ -201,24 +201,46 @@ describe("the client's contact discipline", () => {
       return okHandler(call);
     });
     await client.start();
-    const event = {
-      mirrorId: "stable-event-id",
-      objectRef: "quota:pool-a",
-      transition: "raised",
-      raisedAt: "2026-11-23T12:00:00.000Z",
-      payload: { class: "quota-wall", stateFingerprint: "walled" },
-    };
+    const sourceEvents = [
+      {
+        mirrorId: "incident-event-id",
+        objectRef: "incident:42",
+        transition: "opened",
+        raisedAt: "2026-11-23T12:00:00.000Z",
+        payload: { class: "incident", title: "Fixture incident" },
+      },
+      {
+        mirrorId: "needs-drew-event-id",
+        objectRef: "item:task-7",
+        transition: "raised",
+        raisedAt: "2026-11-23T12:01:00.000Z",
+        payload: { class: "needs-drew", title: "Fixture question" },
+      },
+      {
+        mirrorId: "quota-wall-event-id",
+        objectRef: "quota:pool-a",
+        transition: "raised",
+        raisedAt: "2026-11-23T12:02:00.000Z",
+        payload: { class: "quota-wall", stateFingerprint: "walled" },
+      },
+    ];
 
-    await client.mirrorEvent(event);
-    expect(JSON.parse(await readFile(stateFile, "utf8")).pendingEvents).toEqual([event]);
+    await client.mirrorEvent(sourceEvents[0]!);
+    expect(JSON.parse(await readFile(stateFile, "utf8")).pendingEvents).toEqual([sourceEvents[0]]);
+    await client.beat();
+    await client.beat(); // the next beat retries if the first overlapped the missed acknowledgment
+    await client.mirrorEvent(sourceEvents[1]!);
+    await client.mirrorEvent(sourceEvents[2]!);
+    await client.beat();
     await client.beat();
 
     const eventCalls = calls.filter((call) => call.url.endsWith("/mirror/event"));
-    expect(eventCalls.map((call) => call.body?.mirrorId)).toEqual([event.mirrorId, event.mirrorId]);
-    expect(serverMirror.size).toBe(1);
+    expect(eventCalls.map((call) => call.body?.mirrorId)).toContain(sourceEvents[0]!.mirrorId);
+    expect(eventCalls.filter((call) => call.body?.mirrorId === sourceEvents[0]!.mirrorId)).toHaveLength(2);
+    expect([...serverMirror.values()]).toEqual(sourceEvents);
     expect(JSON.parse(await readFile(stateFile, "utf8")).pendingEvents).toEqual([]);
-    await client.mirrorEvent(event);
-    expect(calls.filter((call) => call.url.endsWith("/mirror/event"))).toHaveLength(2);
+    for (const event of sourceEvents) await client.mirrorEvent(event);
+    expect(calls.filter((call) => call.url.endsWith("/mirror/event"))).toHaveLength(eventCalls.length);
   });
 });
 

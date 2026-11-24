@@ -1222,7 +1222,7 @@ export async function runAlertTick(
     const event = {
       objectRef: payload.objectRef,
       transition,
-      raisedAt: transition === "escalated" ? incident.delivered_at ?? incident.first_seen_at : incident.first_seen_at,
+      raisedAt: transition === "escalated" ? new Date(options.now ?? Date.now()).toISOString() : incident.first_seen_at,
       payload: { ...payload },
     };
     await requestNotifyRelayEventMirror({ ...event, mirrorId: notificationMirrorId(event) });
