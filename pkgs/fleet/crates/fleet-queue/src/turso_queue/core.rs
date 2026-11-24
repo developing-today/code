@@ -1401,7 +1401,7 @@ pub(crate) fn verb_meta(t: &TursoBackend, req: &Value) -> Value {
         );
     }
     let Some(id) = req_i64(req, "task_id") else {
-        return fail(2, "meta: task_id is required".into());
+        return fail(2, "meta: task_id is required");
     };
     let work = (|| -> Result<Value, String> {
         let row = get_task(t, id)
