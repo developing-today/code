@@ -9,8 +9,15 @@
 //! `allows_effect` reads the provider registry in
 //! [`crate::world_caps`], this crate's own catalog module.
 
+use serde::{Deserialize, Serialize};
+
 /// Permission scopes granted by a world capability.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+///
+/// Serde round-trips the raw bits (as journaled); [`WorldScopes::from_bits`]
+/// stays the validating boundary for values a host did not read back from
+/// its own journal or configuration — role definitions in
+/// [`crate::role_config`] validate their ceiling through it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorldScopes(u8);
 
 impl WorldScopes {
