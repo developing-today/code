@@ -9,8 +9,8 @@ use tracing::Instrument;
 
 use crate::world_caps::{CapsReport, Decision, Subscription};
 
-mod execution;
 mod command;
+mod execution;
 
 pub(crate) use command::WorldCommand;
 
@@ -75,12 +75,10 @@ fn authority_identity(authority: &Authority) -> String {
     }
 }
 
-
 /// The most unsigned inputs one group-commit batch may stage (#8239):
 /// bounding the drain bounds how long the actor loop spends staging
 /// before it persists, and how much one sync must cover.
 const MAX_INPUT_BATCH: usize = 64;
-
 
 /// Trim `journal` behind a verified snapshot of `program`. `Ok(false)` means
 /// the program cannot snapshot.
