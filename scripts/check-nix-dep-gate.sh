@@ -27,7 +27,7 @@
 #     this gate blocks stale merges, it does not rewrite them.
 #   * #14315 id-store adaptation: tracked separately, not this slice.
 #
-# Venue: push-to-main path-filtered runs + nightly + workflow_dispatch
+# Venue: nightly schedule + workflow_dispatch
 # (see .github/workflows/nix-dep-gate.yml). Repo CI doctrine is
 # nightly-main, not PR-tier (see .github/ci-policy.md), so pre-merge
 # gating is left to local invocation: run this script with

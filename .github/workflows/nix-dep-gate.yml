@@ -11,47 +11,41 @@ name: nix dep gate
 # the same diff. See scripts/check-nix-dep-gate.sh for the covered
 # derivation table and deliberate exclusions.
 #
-# Venue is push-to-main path-filtered + nightly + workflow_dispatch, not
-# pull_request: repo CI doctrine is nightly-main (ci-policy.md), so
-# pre-merge gating is left to local invocation of the script against the
-# PR diff (documented in the script header). The push venue catches a
-# stale merge at the narrowest change instead of at the next laptop
-# rebuild; the nightly run is the backstop.
+# Venue is nightly schedule + workflow_dispatch, not push or
+# pull_request: repo CI doctrine is nightly-main (ci-policy.md; Drew
+# ruling 2026-11-16 — the only push triggers left are deploys, and the
+# agreement checker enforces the canonical inline `branches: [main]`
+# form, which a new gate has no reason to carry). Pre-merge gating is
+# left to local invocation of the script against the PR diff
+# (documented in the script header); the nightly run is the backstop
+# that keeps the script and its contract tests green.
 #
 # No merge_group trigger: main has no merge queue (Drew ruling,
 # 2026-11-08; see .github/ci-policy.md).
 on:
-  push:
-    branches:
-      - main
-    paths:
-      - "pkgs/**/go.mod"
-      - "pkgs/**/go.sum"
-      - "pkgs/**/package.json"
-      - "pkgs/**/package-lock.json"
-      - "pkgs/**/Cargo.toml"
-      - "pkgs/**/Cargo.lock"
-      - "pkgs/**/flake.nix"
-      - "pkgs/**/flake.lock"
-      - "pkgs/**/package.nix"
-      - "pkgs/**/default.nix"
-      - "scripts/check-nix-dep-gate.sh"
-      - "scripts/tests/test_check_nix_dep_gate.py"
-      - ".github/workflows/nix-dep-gate.yml"
   schedule:
     # Nightly instead of on every push to main (Drew, 2026-11-16; see
     # .github/ci-policy.md "Nightly main CI").
     - cron: "37 7 * * *"
   workflow_dispatch:
+    inputs:
+      base:
+        description: "Diff base ref for the gate (default: HEAD~1)"
+        required: false
+        default: "HEAD~1"
+      head:
+        description: "Diff head ref for the gate (default: HEAD)"
+        required: false
+        default: "HEAD"
 
 permissions:
   contents: read
 
-# Same concurrency contract as research-workflow.yml: push-to-main runs
-# are keyed by run_id so every merged tree gets its own completed run;
-# dispatch/schedule runs share a per-ref group.
+# Same concurrency contract as research-workflow.yml: nightly runs
+# are keyed by run_id so every scheduled tree gets its own completed
+# run; dispatch runs share a per-ref group.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event_name == 'push' && github.run_id || github.ref }}
+  group: ${{ github.workflow }}-${{ github.event_name == 'schedule' && github.run_id || github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -63,14 +57,14 @@ jobs:
       - uses: actions/checkout@v7
         with:
           # The gate diffs base..head; a shallow checkout may not carry
-          # the base SHA (push events) or any history at all.
+          # the base SHA, and dispatch inputs may name any ref.
           fetch-depth: 0
       - name: Run Nix dependency-bump gate (#14195)
         run: |
-          base='${{ github.event.before }}'
-          if [ -z "$base" ] || [ "$base" = "0000000000000000000000000000000000000000" ]; then
-            base='HEAD~1'
-          fi
-          scripts/check-nix-dep-gate.sh --base "$base" --head HEAD
+          base='${{ inputs.base }}'
+          head='${{ inputs.head }}'
+          [ -n "$base" ] || base='HEAD~1'
+          [ -n "$head" ] || head='HEAD'
+          scripts/check-nix-dep-gate.sh --base "$base" --head "$head"
       - name: Run gate contract tests (#14195)
         run: python3 -m unittest discover -s scripts/tests -p 'test_check_nix_dep_gate.py' -v

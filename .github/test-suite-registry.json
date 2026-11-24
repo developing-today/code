@@ -1244,7 +1244,7 @@
       },
       "status": "mapped",
       "related_issues": [14195],
-      "reason": "Wired by #14195 slice 1: the gate script and its contract tests run in the dedicated nix-dep-gate workflow (push-to-main path-filtered + nightly + workflow_dispatch)."
+      "reason": "Wired by #14195 slice 1: the gate script and its contract tests run in the dedicated nix-dep-gate workflow (nightly + workflow_dispatch)."
     },
     {
       "id": "scripts.provider-retirement-gate",
