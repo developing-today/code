@@ -189,7 +189,7 @@ pub(super) fn cmd_enqueue(rest: &[String]) -> i32 {
     let args = parse_verb_args(
         "enqueue",
         &rest,
-        &["queue", "platform"],
+        &["queue", "platform", "meta"],
         &["dry-run", "shadow-intent"],
     );
     reject_extra_pos("enqueue", &args, 1);
@@ -385,6 +385,7 @@ pub(super) fn cmd_list(rest: &[String]) -> i32 {
             "lane",
             "worker",
             "task",
+            "meta",
         ],
         &["json"],
     );
