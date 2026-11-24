@@ -288,3 +288,26 @@ python3 $GB/bin/manifest.py   # refresh totals after any manual change
 gh api rate_limit --jq '.resources.core'   # personal-token pool (sweep)
 python3 $GB/bin/app_setup.py install-report  # App installations
 ```
+
+## 12. Five-copy freshness probe (#8584)
+
+`github-backup-freshness.timer` (daily 04:10 + delay, after the copy
+jobs) runs `bin/freshness_probe.py` via `systemd/run-freshness.sh`. The
+probe verifies all five #8584 copies — the Turso→D1 export (via the D1
+export meta record), the D1 copy (same record: the export succeeds
+only after D1 read-back counts match), the plain mirrors and the R2
+bundles (HEAD equality against the local backup mirrors), and the
+Cloudflare rehost (no surface yet; always unverified — see
+`docs/CLOUDFLARE-REHOST-EVALUATION.md`) — rewrites
+`~/backups/github/freshness-status.json`, and judges it with
+`bin/freshness_readout.py`. A copy behind its 26h target keeps exactly
+one alert issue open in developing-today/code (title prefix
+`Backup freshness:`); the probe updates it while copies stay behind
+and closes it on recovery. A failed check never refreshes a copy's
+stamp: the previous `last_success` carries forward and ages out.
+
+Read the current state at any time:
+
+```sh
+python3 $GB/bin/freshness_readout.py --status-json ~/backups/github/freshness-status.json
+```
