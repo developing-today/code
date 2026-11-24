@@ -90,6 +90,50 @@ impl CollectionAllowlist {
         self.max_limit.unwrap_or(DEFAULT_MAX_LIMIT)
     }
 
+    /// Check that every name this allowlist would hand to the
+    /// translator is safe to interpolate into a PostgREST request.
+    ///
+    /// Rejected, with the reason named:
+    ///
+    /// - a relation that is not a plain identifier — the relation is
+    ///   interpolated raw into the request path (`/{relation}`);
+    /// - a declared column name that is not a usable field name (not
+    ///   a plain identifier, or a reserved PostgREST parameter name
+    ///   such as `or` or `select`) — declared names are joined raw
+    ///   into the `select` value, and filter/order columns also
+    ///   become query-parameter keys, so a name containing `,`, `(`,
+    ///   `)`, `"`, or whitespace would change the shape of the
+    ///   `select` list the source parses;
+    /// - a `unique_key` entry that is not one of the declared
+    ///   columns — the key is appended to every ordering and rendered
+    ///   into the `order` parameter and the keyset `or` group.
+    ///
+    /// Registration (#13758) calls this when an allowlist is built,
+    /// so a bad configuration is refused at construction and never
+    /// reaches a request.
+    pub fn validate(&self) -> Result<(), String> {
+        if !is_plain_identifier(&self.relation) {
+            return Err(format!(
+                "relation {:?} is not a plain identifier",
+                self.relation
+            ));
+        }
+        for column in &self.columns {
+            if !is_usable_field_name(&column.name) {
+                return Err(format!(
+                    "declared column {:?} is not a usable field name",
+                    column.name
+                ));
+            }
+        }
+        for key in &self.unique_key {
+            if !self.is_declared(key) {
+                return Err(format!("unique_key entry {key:?} is not a declared column"));
+            }
+        }
+        Ok(())
+    }
+
     /// Look up a declared column by name.
     pub fn column(&self, name: &str) -> Option<&ColumnDecl> {
         self.columns.iter().find(|c| c.name == name)
@@ -113,5 +157,73 @@ impl CollectionAllowlist {
     /// The declared column names, in declaration order.
     pub fn declared_column_names(&self) -> Vec<&str> {
         self.columns.iter().map(|c| c.name.as_str()).collect()
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod tests {
+    use super::*;
+
+    fn collection() -> CollectionAllowlist {
+        CollectionAllowlist {
+            schema: "public".to_string(),
+            relation: "items".to_string(),
+            columns: vec![
+                ColumnDecl {
+                    name: "id".to_string(),
+                    filterable: true,
+                    orderable: true,
+                },
+                ColumnDecl {
+                    name: "title".to_string(),
+                    filterable: true,
+                    orderable: true,
+                },
+            ],
+            unique_key: vec!["id".to_string()],
+            max_limit: None,
+        }
+    }
+
+    fn with_column(name: &str) -> CollectionAllowlist {
+        let mut collection = collection();
+        collection.columns.push(ColumnDecl {
+            name: name.to_string(),
+            filterable: true,
+            orderable: true,
+        });
+        collection
+    }
+
+    #[test]
+    fn validate_accepts_plain_declared_columns() {
+        assert_eq!(collection().validate(), Ok(()));
+    }
+
+    #[test]
+    fn validate_refuses_column_with_comma() {
+        let collection = with_column("a,b");
+        assert!(collection.validate().unwrap_err().contains("a,b"));
+    }
+
+    #[test]
+    fn validate_refuses_reserved_column_name() {
+        let collection = with_column("or");
+        assert!(collection.validate().unwrap_err().contains("\"or\""));
+    }
+
+    #[test]
+    fn validate_refuses_non_identifier_relation() {
+        let mut collection = collection();
+        collection.relation = "items/x".to_string();
+        assert!(collection.validate().is_err());
+    }
+
+    #[test]
+    fn validate_refuses_undeclared_unique_key_entry() {
+        let mut collection = collection();
+        collection.unique_key = vec!["missing".to_string()];
+        assert!(collection.validate().unwrap_err().contains("missing"));
     }
 }

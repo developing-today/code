@@ -45,8 +45,29 @@ impl Translator {
     /// Build a translator over the owner's allowlist of collections.
     /// The adapter exposes exactly these collections; a query naming
     /// any other relation is `not_available`.
+    ///
+    /// This constructor trusts that the collections were validated
+    /// when they were built (registration, #13758); `translate`
+    /// still refuses any declared name that is not a usable field
+    /// name before it can reach a request. Prefer
+    /// [`Translator::try_new`] when the allowlists come straight
+    /// from configuration.
     pub fn new(collections: Vec<CollectionAllowlist>) -> Self {
         Translator { collections }
+    }
+
+    /// Build a translator, refusing the whole set when any
+    /// collection's allowlist fails
+    /// [`CollectionAllowlist::validate`]: a relation that is not a
+    /// plain identifier, a declared column that is not a usable
+    /// field name, or a unique-key entry that is not declared. A bad
+    /// configuration is refused here, at construction, so it never
+    /// reaches a request.
+    pub fn try_new(collections: Vec<CollectionAllowlist>) -> Result<Self, String> {
+        for collection in &collections {
+            collection.validate()?;
+        }
+        Ok(Translator { collections })
     }
 
     /// Translate one query. Every §3.2 refusal is returned before any
@@ -106,6 +127,15 @@ impl Translator {
         }
         for key in &query.order {
             if !collection.is_orderable(&key.column) || !is_usable_field_name(&key.column) {
+                return Err(Refusal::shape(Feature::FieldUnsupported));
+            }
+        }
+        // The unique key is appended to every ordering by
+        // `effective_ordering`, unchecked by the loops above; a key
+        // column that is not a usable field name would be rendered
+        // raw into the `order` parameter and the keyset `or` group.
+        for key in &collection.unique_key {
+            if !is_usable_field_name(key) {
                 return Err(Refusal::shape(Feature::FieldUnsupported));
             }
         }
@@ -205,6 +235,21 @@ fn declared_columns(collection: &CollectionAllowlist) -> Vec<String> {
         .collect()
 }
 
+/// Expand a star (or empty) projection to the declared columns,
+/// refusing when any declared name is not a usable field name: the
+/// names are joined raw into the `select` value, so a declared
+/// column such as `a,b` or `x(y)` would change the shape of the
+/// select list the source parses. Defense in depth behind
+/// [`CollectionAllowlist::validate`], for allowlists that were
+/// never validated at construction.
+fn expand_declared(collection: &CollectionAllowlist) -> Result<Vec<String>, Refusal> {
+    let columns = declared_columns(collection);
+    if columns.iter().any(|name| !is_usable_field_name(name)) {
+        return Err(Refusal::shape(Feature::FieldUnsupported));
+    }
+    Ok(columns)
+}
+
 /// Resolve the projection to the declared column list to send.
 ///
 /// An empty projection, or one containing `All`, expands to the
@@ -217,13 +262,13 @@ fn resolve_projection(
     select: &[SelectItem],
 ) -> Result<Vec<String>, Refusal> {
     if select.is_empty() || select.iter().any(|item| matches!(item, SelectItem::All)) {
-        return Ok(declared_columns(collection));
+        return expand_declared(collection);
     }
     let mut columns: Vec<String> = Vec::new();
     for item in select {
         match item {
             SelectItem::Column(name) => {
-                if !collection.is_declared(name) {
+                if !collection.is_declared(name) || !is_usable_field_name(name) {
                     return Err(Refusal::shape(Feature::FieldUnsupported));
                 }
                 if !columns.contains(name) {
@@ -237,7 +282,7 @@ fn resolve_projection(
             }
             // Handled by the early return above; expand again rather
             // than assume.
-            SelectItem::All => return Ok(declared_columns(collection)),
+            SelectItem::All => return expand_declared(collection),
         }
     }
     Ok(columns)
@@ -486,6 +531,38 @@ mod tests {
     fn plain_filter_column_still_translates() {
         let request = translator().translate(&leaf_query("title")).unwrap();
         assert_eq!(param(&request, "title"), Some("eq.1"));
+    }
+
+    #[test]
+    fn star_projection_refuses_unsafe_declared_column() {
+        let translator = collection_with_columns(&["id", "x(y)"]);
+        let refusal = translator.translate(&Query::read("items")).unwrap_err();
+        assert_eq!(refusal, Refusal::shape(Feature::FieldUnsupported));
+    }
+
+    #[test]
+    fn explicit_projection_refuses_unsafe_declared_column() {
+        let translator = collection_with_columns(&["id", "x(y)"]);
+        let mut query = Query::read("items");
+        query.select = vec![SelectItem::Column("x(y)".to_string())];
+        let refusal = translator.translate(&query).unwrap_err();
+        assert_eq!(refusal, Refusal::shape(Feature::FieldUnsupported));
+    }
+
+    #[test]
+    fn try_new_refuses_unvalidated_allowlist() {
+        let mut raw = collection();
+        raw.columns = vec![ColumnDecl {
+            name: "a,b".to_string(),
+            filterable: true,
+            orderable: true,
+        }];
+        assert!(Translator::try_new(vec![raw]).is_err());
+    }
+
+    #[test]
+    fn try_new_accepts_valid_allowlist() {
+        assert!(Translator::try_new(vec![collection()]).is_ok());
     }
 
     #[test]
