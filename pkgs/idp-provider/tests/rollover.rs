@@ -137,6 +137,7 @@ fn from_keys_rejects_bad_sets() {
 
 fn app_with_signer(signer: TokenSigner, jwks: Jwks) -> axum::Router {
     let registry = ProviderConfig {
+        saml_sps: vec![],
         account: Account {
             account_id: "drew".to_string(),
             display_name: "Drew".to_string(),
