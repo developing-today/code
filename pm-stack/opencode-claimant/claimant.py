@@ -1289,10 +1289,10 @@ def _collect_handed_offs(queue: str, want: int, *, diagnostic=None) -> Dict[int,
         row = data if isinstance(data, dict) else None
         claimed_id = row.get("id") if isinstance(row, dict) else None
         if claimed_id is None:
-            if result.returncode != 0:
-                outcome = "cli_nonzero"
-            elif row is not None and "task" in row and row["task"] is None:
+            if row is not None and "task" in row and row["task"] is None:
                 outcome = "no_match"
+            elif result.returncode != 0:
+                outcome = "cli_nonzero"
             else:
                 outcome = "missing_claim_row"
             break
