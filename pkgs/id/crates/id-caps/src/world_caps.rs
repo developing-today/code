@@ -3038,7 +3038,7 @@ mod tests {
             records.push(entry.clone());
             used += entry_bytes;
         }
-        assert!(!records.is_empty());
+        assert_ne!(records, [] as [serde_json::Value; 0]);
         // 256 raw key bytes (128 backslash+quote pairs), the longest a
         // record key may be, and the worst case for JSON escaping.
         let next_after: String = (0..128)

@@ -110,6 +110,24 @@ their mailbox, mark what they handled, and post replies and reports back
 | `POST /api/<token>/fleet/credentials/mint` | owner | `{agent, scopes?, addr?}`: mint a credential for an agent or a service (below); the value is returned once, only its hash stored |
 | `GET /fleet/<credential>/agents`  | credential (`read`) | the agents list, as the owner's                                                          |
 | `GET /fleet/<credential>/messages` | credential (`read`) | the fleet message log, as the owner's (`agent`, `direction`, `kind`, `since_id`, `before_id`, `limit`, `order`) |
+| `POST /api/<token>/fleet/offer`   | owner | `{body, to, kind?, slots, sender?, ttl_seconds?}`: post an offer (below)                   |
+| `GET /api/<token>/fleet/offers`   | owner | every offer with its claims (agent, time, delivered row)                                  |
+| `POST /fleet/<fleet token>/offer` | fleet | `{agent, body, to, kind?, slots, ttl_seconds?}`: an agent posts an offer                  |
+| `GET /fleet/<fleet token>/offers` | fleet | `agent`, `groups`: the open offers this agent may claim (also in the inbox response)      |
+| `POST /fleet/<fleet token>/claim` | fleet | `{agent, offer_id}`: claim an offer; past the last slot the answer is `filled`            |
+
+An **offer** is claim-style distribution: instead of fanning a row out
+to every match, a sender posts the work once with a slot count (`slots:
+2`, addressed to a name, glob, group or `all`), and the next N eligible
+agents who claim it are delivered a normal mailbox row on the offer's
+batch — so a claimant's reply threads onto the batch, and the owner
+reads the offer, its claims and the replies together (the offers list
+above, or the pipeline filtered by that batch). Eligibility is matched
+against the registry at claim time; a claim is one atomic store op, so
+racing claims cannot oversubscribe the slots. An offer may carry a
+`ttl_seconds`, after which claims answer `expired`. A claimed command
+names no sender, like every command; the poster never claims its own
+offer.
 
 The **fleet token** opens only `/fleet/...`. It is derived from the access
 token (HMAC-SHA256 of `ACCESS_TOKEN` over the label
