@@ -38,7 +38,12 @@ let
   # fleet-build container); it is used in shells only — the web
   # package builds keep their own pkgs.bun (see pkgs/id/flake.nix).
   # Bump version + hashes together, deliberately, never by a lock
-  # update alone.
+  # update alone. Shells only, strictly: the pristine binary cannot
+  # execute in the nix build sandbox (no /lib64/ld-linux there), so
+  # putting it in the shared nativeBuildInputs broke every check
+  # that runs bun (~35 exit-127 failures in nix flake check,
+  # #13751). The shared set carries the patchelf'd pkgs.bun;
+  # shellNativeBuildInputs swaps it for bunPinned.
   bunPinned =
     let
       zips = {
@@ -155,7 +160,11 @@ let
       hyperfine
 
       # Web development tools
-      bunPinned # JavaScript bundler and runtime (required for web builds); pinned 1.4.5, see the let binding (#13337)
+      # bun, not bunPinned: sandbox derivations need the patchelf'd
+      # nixpkgs build — the pristine binary cannot execute without
+      # the system loader, which the sandbox lacks (#13751). Shells
+      # get bunPinned via shellNativeBuildInputs (#13337).
+      bun # JavaScript bundler and runtime (required for web builds)
       typescript # TypeScript for type checking # nodepackages remoed 2026-04-03
       wrangler # Cloudflare Worker CLI (worker-poc dev, #2271)
 
@@ -167,12 +176,19 @@ let
       # Manual linters (not in treefmt, run manually)
       deadnix
     ]);
+
+  # Dev-shell inputs: the shared set with the pristine bun (#13337)
+  # swapped in for the nixpkgs bun. Shells run on fleet hosts, where
+  # the system loader exists and the repacked bun segfaults vitest;
+  # sandbox derivations must never see bunPinned (#13751).
+  shellNativeBuildInputs = map (p: if p == pkgs.bun then bunPinned else p) nativeBuildInputs;
 in
 {
   inherit
     rustToolchain
     fmtBins
     nativeBuildInputs
+    shellNativeBuildInputs
     rocCompiler
     buildWasmHost
     ;
@@ -200,8 +216,8 @@ in
   # (just recipes and nix fmt use explicit --config-file/--tree-root instead)
   TREEFMT_TREE_ROOT_CMD = "pwd";
 
-  # Packages for shell.nix / nix develop (nativeBuildInputs = all tools)
-  packages = nativeBuildInputs;
+  # Packages for shell.nix / nix develop (shell inputs = all tools)
+  packages = shellNativeBuildInputs;
 
   # OpenSSL environment variables
   opensslEnv = {
