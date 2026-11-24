@@ -513,6 +513,20 @@ fn query(pairs: &[(&str, Option<String>)]) -> String {
     }
 }
 
+/// The headers every bridge request carries, plus the Bearer token
+/// when a route authenticates by header (the notes routes). Generic
+/// over the builder's typestate: `get` starts WithoutBody, `post`
+/// starts WithBody, and headers are settable in either.
+fn with_auth<State>(req: ureq::RequestBuilder<State>, bearer: Option<&str>) -> ureq::RequestBuilder<State> {
+    let req = req
+        .header("Accept", "application/json")
+        .header("User-Agent", "fleet-bridge");
+    match bearer {
+        Some(t) => req.header("Authorization", format!("Bearer {t}")),
+        None => req,
+    }
+}
+
 pub struct Client {
     agent: ureq::Agent,
     base: String,
@@ -566,18 +580,9 @@ impl Client {
 
     fn call_req(&self, method: &str, path: &str, body: Option<&Value>, bearer: Option<&str>) -> R<Value> {
         let url = format!("{}{}", self.base, path);
-        let with_auth = |req: ureq::RequestBuilder<ureq::typestate::WithoutBody>| {
-            let req = req
-                .header("Accept", "application/json")
-                .header("User-Agent", "fleet-bridge");
-            match bearer {
-                Some(t) => req.header("Authorization", format!("Bearer {t}")),
-                None => req,
-            }
-        };
         let result = match body {
-            None => with_auth(self.agent.get(&url)).call(),
-            Some(b) => with_auth(self.agent.post(&url))
+            None => with_auth(self.agent.get(&url), bearer).call(),
+            Some(b) => with_auth(self.agent.post(&url), bearer)
                 .header("Content-Type", "application/json")
                 .send(b.to_string().as_bytes()),
         };
