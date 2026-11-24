@@ -1,7 +1,7 @@
 # Supplement 2 — Dictated-name research: agent sandbox / dev-environment space
 
-*Research lane note, 2026-11-23, web only. Vendor claims labelled as
-such; pricing from the vendors' own pages/docs as crawled that day.*
+_Research lane note, 2026-11-23, web only. Vendor claims labelled as
+such; pricing from the vendors' own pages/docs as crawled that day._
 
 ## 1. "Freestyle.sh"
 
@@ -43,7 +43,7 @@ such; pricing from the vendors' own pages/docs as crawled that day.*
   Paid VMs can run indefinitely with idle timeout disabled.
 - **Self-hostable?** No evidence of it. Proprietary hosted service; not
   open source, self-host/BYOC "not documented" in independent
-  comparisons. Only the npm SDK/CLI is MIT. (Its open-source *Adorable*
+  comparisons. Only the npm SDK/CLI is MIT. (Its open-source _Adorable_
   app builder, MIT, runs on top of Freestyle VMs — that is not a
   self-hosted Freestyle.)
 
@@ -61,9 +61,9 @@ product. This was not a misdictation.**
   REST API (`https://boat.dev/api/v1`).
   - https://boat.dev/
   - https://docs.boat.dev/llms.txt
-  - https://boat.dev/compare/boat-vs-exe-dev *(vendor's own comparison
+  - https://boat.dev/compare/boat-vs-exe-dev _(vendor's own comparison
     site — boat also built battleships.dev, so treat rankings as
-    marketing)*
+    marketing)_
 - **Company / maturity:** Paris-based, 3-person team, Y Combinator Fall
   2026; founders Anicet Nougaret (CEO) and Kirill Makarov (CTO). **It was
   previously ASCII's "Box" (box.ascii.dev) — renamed Box → boat on 15
@@ -107,12 +107,12 @@ Literal matches, all context mismatches:
   VM/code execution, no API/SDK or pricing found; early-access/waitlist
   stage.
 - **ChAI Systems LLC — https://chai-systems.ai/** — Philadelphia-area AI
-  *consulting* firm: quantitative modelling, risk/credit evaluation,
+  _consulting_ firm: quantitative modelling, risk/credit evaluation,
   healthcare/lab analytics, AI training/governance. Not a product
   platform.
 - **CHAI™ by CloudHedge — https://www.cloudhedge.io/events/aws-reinvent-2026/**
-  — a patented agentic-AI platform for *enterprise application
-  modernisation*. Agentic, but not sandboxes or dev environments.
+  — a patented agentic-AI platform for _enterprise application
+  modernisation_. Agentic, but not sandboxes or dev environments.
 - **Chai Discovery** — the largest "Chai" AI company, but it's AI drug
   discovery, not infrastructure.
 
@@ -142,8 +142,9 @@ discussion, **shai** is the most plausible intended product.
 Do not merge them.**
 
 ### 4a. boxer.dev itself — Dan Phillips' Wasm compute project
-- https://boxer.dev/ is a sparse teaser: *"Boxer: A new compute
-  primitive for the next era — Much more info coming Fall 2026,"* linking
+
+- https://boxer.dev/ is a sparse teaser: _"Boxer: A new compute
+  primitive for the next era — Much more info coming Fall 2026,"_ linking
   to **Weave** (github.com/dphilla/weave — universal live-migration and
   snapshot/restore for WebAssembly across runtimes/hosts).
 - Its documented 2025 incarnation (FOSDEM 2025, "Moving Beyond Containers
@@ -158,6 +159,7 @@ Do not merge them.**
   isolation, snapshot/restore), but **not** a hosted agent dev-environment.
 
 ### 4b. The in-space namesake: BarakChamo/boxer (not boxer.dev)
+
 - **"Parallel coding agents, each in its own sandbox."** One sandbox per
   git worktree (smolvm microVM with its own kernel + network allowlist
   by default, or Docker/Podman/Apple Container), with per-worktree
@@ -171,6 +173,7 @@ Do not merge them.**
   - https://barakchamo.github.io/boxer/docs/quickstart
 
 ### 4c. Boxlite — the requested check: real, and distinct from both Boxers
+
 - **BoxLite (boxlite-ai) — IDENTIFIED:** an embeddable micro-VM runtime
   for AI agents. A "Box" is a hardware-isolated micro-VM (KVM /
   Hypervisor.framework) that runs any OCI image and persists.
@@ -185,6 +188,7 @@ Do not merge them.**
   - https://docs.boxlite.ai/manage-sandbox/sandbox-types
 
 ### 4d. Other near-names that could be the dictation source
+
 - **Boxes.dev** (YC Fall 2026; Nick Bushak & Drew Regitsky, ex-Gem):
   every Claude Code/Codex agent gets its own cloud Linux computer cloned
   from a snapshot of your dev setup (Firecracker VMs, on E2B

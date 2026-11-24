@@ -36,10 +36,10 @@ A record missing any per-arm measurement cannot support a verdict
 
 ## Measurements (per arm)
 
-| Arm | Completion | Wall-clock | Tokens (in+out, context-inclusive) | Stalls/nudges | Rework within 48h |
-| --- | --- | --- | --- | --- | --- |
-| Candidate | | | | | |
-| Incumbent | | | | | |
+| Arm       | Completion | Wall-clock | Tokens (in+out, context-inclusive) | Stalls/nudges | Rework within 48h |
+| --------- | ---------- | ---------- | ---------------------------------- | ------------- | ----------------- |
+| Candidate |            |            |                                    |               |                   |
+| Incumbent |            |            |                                    |               |                   |
 
 ## Verdict
 

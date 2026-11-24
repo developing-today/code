@@ -1,7 +1,7 @@
 # Supplement 3 — Agent sandbox / agent dev-environment field survey
 
-*Research lane note, as of late 2026 (sources checked Nov 2026, mostly
-verified 2026-11-14). Web research only.*
+_Research lane note, as of late 2026 (sources checked Nov 2026, mostly
+verified 2026-11-14). Web research only._
 
 > **Method / caveats:** Most cross-vendor numbers come from secondary
 > aggregators that state they verified vendor docs/pricing on 2026-11-14
@@ -16,6 +16,7 @@ verified 2026-11-14). Web research only.*
 > could not source from a primary vendor page in this pass.**
 
 ## 1. E2B — e2b.dev
+
 - **Isolation / state:** Firecracker microVM, own kernel per sandbox.
   Pause/resume preserves FS + memory/processes; snapshots of running
   sandboxes, FS-only snapshots, forking from snapshot (up to 20/call per
@@ -43,6 +44,7 @@ verified 2026-11-14). Web research only.*
   SDK downloads (secondary).
 
 ## 2. Modal — modal.com (Sandboxes)
+
 - **Isolation / state:** gVisor by default, or VM runtime with own kernel
   (Modal chooses if unset); GPU sandboxes gVisor-only. FS snapshots,
   directory snapshots, memory snapshots (alpha, incl. GPU memory snapshot
@@ -55,18 +57,19 @@ verified 2026-11-14). Web research only.*
   beyond that via snapshots / Volumes.
 - **Self-hostable:** **No.** Proprietary, managed only.
 - **Pricing:** Sandbox rate $0.00003942/physical-core-s (1 core = 2 vCPU)
-  + $0.00000667/GiB-s — ~3× the standard Function CPU rate quoted in many
-  comparisons. Starter $0 + $30/mo credits, 100 containers; Team $250/mo
-  + $100 credits, 5,000 containers. GPUs per-second: T4 ~$0.59/hr, H100
-  ~$3.95/hr, up to B200/B300.
+  - $0.00000667/GiB-s — ~3× the standard Function CPU rate quoted in many
+    comparisons. Starter $0 + $30/mo credits, 100 containers; Team $250/mo
+  - $100 credits, 5,000 containers. GPUs per-second: T4 ~$0.59/hr, H100
+    ~$3.95/hr, up to B200/B300.
 - **Agent features:** Python primary, JS/TS + Go SDKs; Sandboxes API with
   tunnels, secrets, images defined in Python code; tested scheduler claim
-  >1M concurrent sandboxes (vendor).
+  > 1M concurrent sandboxes (vendor).
 - **Maturity:** Largest funded here. Secondary sources cite a $355M
   Series C at $4.65B (2026-05-21) and a further $750M round Oct 2026 —
   flagged: conflicting tracker data, verify before quoting valuation.
 
 ## 3. Daytona — daytona.io
+
 - **Isolation / state:** Linux containers by default (namespaces,
   resource limits); Linux VM / Windows sandboxes are full VMs with own
   kernel — only VM tier gets pause/resume/fork/hot snapshots. Also macOS,
@@ -92,6 +95,7 @@ verified 2026-11-14). Web research only.*
   reported Oct 2026 in tracker data — flagged: tracker-only.
 
 ## 4. Fly.io Sprites — fly.io/sprites
+
 - **Isolation / state:** Firecracker microVM, own kernel, persistent ext4
   FS. Checkpoints = copy-on-write FS snapshots (~1s, restorable, forkable
   into new Sprites); memory preserved only on warm suspend, lost on cold
@@ -112,6 +116,7 @@ verified 2026-11-14). Web research only.*
 - **Maturity:** Launched Jan 2026 on mature Fly.io Machines platform.
 
 ## 5. Vercel Sandbox — vercel.com
+
 - **Isolation / state:** Firecracker microVM, dedicated kernel,
   root/system privileges (Docker-in-sandbox, FUSE work).
 - **Cold start:** Vendor: "start in milliseconds" — **no published
@@ -133,6 +138,7 @@ verified 2026-11-14). Web research only.*
 - **Maturity:** GA 2026-01-30.
 
 ## 6. Cloudflare Sandbox SDK / Containers
+
 - **Isolation / state:** Each Container instance is a microVM with own
   kernel/network (hypervisor not named by Cloudflare); paired with a
   Durable Object per sandbox. JS-only alternative: Dynamic Workers (V8
@@ -158,6 +164,7 @@ verified 2026-11-14). Web research only.*
 - **Maturity:** Containers + Sandboxes GA 2026-04-13.
 
 ## 7. Runloop — runloop.ai — ⚠️ WINDING DOWN
+
 - **Isolation / state:** Dedicated microVMs, full root, own kernels.
 - **Cold start:** <2s for 10 GB images (vendor); sub-second resume from
   pre-warmed snapshot pools (secondary). Independent burst median 0.89s /
@@ -178,8 +185,9 @@ verified 2026-11-14). Web research only.*
   Tensorlake / Modal / Freestyle** (verified 2026-09-30).
 
 ## 8. Morph (Morph Cloud) — morphllm / cloud.morph.so
+
 - **Isolation / state:** Full VMs, hypervisor not named. Core primitive
-  **Infinibranch**: snapshot a *running* VM — memory + processes + disk —
+  **Infinibranch**: snapshot a _running_ VM — memory + processes + disk —
   and branch many copies from that exact state.
 - **Cold start:** Vendor: snapshot/branch/restore **<250ms**. Fresh-boot
   figure not published — flagged.
@@ -196,6 +204,7 @@ verified 2026-11-14). Web research only.*
   Funding/users not sourced in this pass — flagged.
 
 ## 9. CodeSandbox → Together Code Sandbox
+
 - **Isolation / state:** Firecracker microVMs. Memory + FS checkpointing,
   hibernation, live cloning/forking.
 - **Cold start:** Vendor claims: 2.7s P95 cold from template; ~500ms P95
@@ -215,6 +224,7 @@ verified 2026-11-14). Web research only.*
   Together AI Dec 2024, relaunched as Together Code Sandbox.
 
 ## 10. Ona (formerly Gitpod) — ona.com
+
 - **Isolation / state:** Ephemeral, production-like environments from
   `devcontainer.json`; environment is the unit, not a low-level sandbox
   API. Isolation tech not published in sources found — flagged.
@@ -237,6 +247,7 @@ verified 2026-11-14). Web research only.*
   2026-08-10, now inside Codex team (secondary, checked 2026-11-20).
 
 ## 11. Blaxel — blaxel.ai — acquired by Baseten
+
 - **Isolation / state:** Hardware-isolated microVM per sandbox, own
   kernel, root FS held in memory; hypervisor not named.
 - **Cold/warm:** Vendor: resume from standby **<25ms** with memory
@@ -260,6 +271,7 @@ verified 2026-11-14). Web research only.*
   primitives.**
 
 ## 12. Northflank — northflank.com
+
 - **Isolation / state:** CPU sandboxes: microVMs via **Kata Containers +
   Cloud Hypervisor** primary; Firecracker and gVisor where supported.
   GPU sandboxes: gVisor. Not a sandbox-only product — full app platform
@@ -286,6 +298,7 @@ verified 2026-11-14). Web research only.*
   orchestration since 2021 (vendor).
 
 ## 13. microsandbox — github.com/superradcompany/microsandbox
+
 - **Isolation / state:** Hardware-virtualised microVMs on **libkrun**;
   each sandbox own kernel; runs OCI images. Requires KVM (Linux), Apple
   Silicon/HVF (macOS), or Windows Hypervisor Platform.
@@ -305,11 +318,11 @@ verified 2026-11-14). Web research only.*
 
 ## Isolation layer — brief notes
 
-| Primitive | What it isolates | Overhead shape | Notes |
-|---|---|---|---|
-| **Firecracker** (AWS, Rust VMM) | Hardware virtualisation via KVM: own guest kernel per microVM; minimal virtio device model; VMM process itself jailed | ~125ms boot, <5 MiB VMM overhead/VM, up to 150 microVMs/s/host; snapshot restore ~125ms (AWS/vendor figures) | A building block, not a platform: you supply kernel, rootfs, lifecycle, networking. No GPU/VFIO passthrough. Powers Lambda/Fargate, E2B, Vercel, Sprites, CodeSandbox |
-| **gVisor** (Google, Go) | No VM: user-space kernel (`Sentry`, `runsc` OCI runtime) intercepts app syscalls; host sees only ~50 vetted syscalls from Sentry | Start <200ms on GKE (secondary); **syscall/I/O tax is the cost** — 10-30% on I/O-heavy workloads in secondary sources, minimal on compute | Runs without KVM/nested virt; incomplete syscall coverage (~290/352 amd64 syscalls); GPU via `nvproxy`. Powers Modal, GKE Sandbox, Google Agent Sandbox |
-| **Kata Containers** | OCI runtime that boots a real VM **per pod**: container UX, guest kernel per pod; hypervisor pluggable — QEMU, Cloud Hypervisor, Firecracker, Dragonball | Heaviest of the three: ~1-2s start, fixed ~250 mCPU + 130 MiB per pod (GKE figures, secondary) | Best K8s fit (`RuntimeClass`); near-full Linux compatibility; GPU + confidential computing (TDX/SEV-SNP) via QEMU |
+| Primitive                       | What it isolates                                                                                                                                         | Overhead shape                                                                                                                            | Notes                                                                                                                                                                 |
+| ------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Firecracker** (AWS, Rust VMM) | Hardware virtualisation via KVM: own guest kernel per microVM; minimal virtio device model; VMM process itself jailed                                    | ~125ms boot, <5 MiB VMM overhead/VM, up to 150 microVMs/s/host; snapshot restore ~125ms (AWS/vendor figures)                              | A building block, not a platform: you supply kernel, rootfs, lifecycle, networking. No GPU/VFIO passthrough. Powers Lambda/Fargate, E2B, Vercel, Sprites, CodeSandbox |
+| **gVisor** (Google, Go)         | No VM: user-space kernel (`Sentry`, `runsc` OCI runtime) intercepts app syscalls; host sees only ~50 vetted syscalls from Sentry                         | Start <200ms on GKE (secondary); **syscall/I/O tax is the cost** — 10-30% on I/O-heavy workloads in secondary sources, minimal on compute | Runs without KVM/nested virt; incomplete syscall coverage (~290/352 amd64 syscalls); GPU via `nvproxy`. Powers Modal, GKE Sandbox, Google Agent Sandbox               |
+| **Kata Containers**             | OCI runtime that boots a real VM **per pod**: container UX, guest kernel per pod; hypervisor pluggable — QEMU, Cloud Hypervisor, Firecracker, Dragonball | Heaviest of the three: ~1-2s start, fixed ~250 mCPU + 130 MiB per pod (GKE figures, secondary)                                            | Best K8s fit (`RuntimeClass`); near-full Linux compatibility; GPU + confidential computing (TDX/SEV-SNP) via QEMU                                                     |
 
 Rule of thumb from sources: boundary choice is VM-with-own-kernel (Kata /
 raw Firecracker) vs user-space kernel (gVisor); plain runc containers
@@ -318,6 +331,7 @@ agent code in 2026 consensus sources, and egress control is repeatedly
 rated higher-value than the isolation tier alone.
 
 ## Other credible entrants (one line each)
+
 - **BoxLite** — Apache-2.0 self-hostable KVM/HVF microVM runtime + BoxLite
   Cloud; closest microsandbox analogue.
 - **Baseten Sandboxes** — launched 2026-11-05 on acquired Blaxel
@@ -331,20 +345,20 @@ rated higher-value than the isolation tier alone.
   Firecracker restored from snapshot with suspend/resume.
 - **Google / Kubernetes Agent Sandbox** — K8s-native, gVisor/Kata
   pluggable `RuntimeClass`, GKE Pod Snapshots, sub-second startup claim;
-  self-host (K8s) shape. *(Distinct from Agent Substrate — see
-  supplement 1.)*
+  self-host (K8s) shape. _(Distinct from Agent Substrate — see
+  supplement 1.)_
 - **Azure Container Apps dynamic sessions** — Hyper-V-isolated sessions;
   model-API code-interpreter shape rather than general sandbox SDK.
 - **Tensorlake Sandboxes** — microVMs with memory snapshots,
   copy-on-the-fly cloning, warm pools, versioned FS + hosted Git,
   Apache-2.0 runtime, BYOC on AWS; named Runloop migration target.
 - **Freestyle** — full-VM/KVM sandboxes with memory-surviving pause; also
-  a Runloop migration target. *(See supplement 2.)*
+  a Runloop migration target. _(See supplement 2.)_
 - **Upstash Box** — hardened-container (not microVM) persistent per-user
   agent computer with built-in coding agent, git-to-PR, browser, cron,
   MCP; active-CPU billing.
 - **Prime Intellect Sandboxes** — RL-focused; launch rates $0.02/vCPU-hr
-  + $0.0125/GiB-hr + disk (valid through 2026-12-22 per Fly comparison).
+  - $0.0125/GiB-hr + disk (valid through 2026-12-22 per Fly comparison).
 - **Beam, Koyeb, Namespace, HopX, Leap0, Cube Sandbox (Tencent,
   E2B-compatible API, Apache-2.0), Docker Sandboxes, Smithery** — Beam =
   gVisor, BYOC, GPU; Koyeb/Namespace = microVM compute platforms;
@@ -355,6 +369,7 @@ rated higher-value than the isolation tier alone.
   registry/gateway, adjacent tooling only.**
 
 ## Sources
+
 - https://agentsandboxes.org/sandboxes/ (per-system pages: e2b, modal,
   vercel-sandbox, cloudflare-sandbox, fly-sprites, morph, codesandbox,
   blaxel, microsandbox) and

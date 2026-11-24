@@ -196,6 +196,7 @@ Run `repo-queue <verb> --help` for flags:\n\
   bind <task-id> [--worker <id>] --session-id <id> [--launched-by <who>] [--model-provider <p>] [--model-id <id>] [--model-variant <v>]\n\
   heartbeat <task-id> [--worker <id>] [--lane <id>] [--extend-seconds <n>] [--progress <p>] [--progress-file <f>]\n\
   checkpoint <task-id> [--worker <id>] [--lane <id>] --stage <s> [--progress <p>] [--progress-file <f>]\n\
+  reprioritize <task-id> <priority> [--worker <id>] [--reason <text>]\n\
   park <task-id> [--worker <id>] [--lane <id>] --reason <text> [--delay-seconds <n>] [--not-before <ts>] [--progress <p>] [--progress-file <f>] [--ready-condition <c>] [--execution <id>] [--required-budget-minutes <n>] [--hands <kind> --action <text>]\n\
   wake <task-id> [--worker <id>] [--reason <text>]\n\
   block <task-id> [--worker <id>] [--lane <id>] --reason-class <c> --blocker <b> [--progress <p>] [--progress-file <f>] [--ledger-id <id>] [--question <text>] [--context <text>] [--options-json <json>] [--links-json <json>] [--blocked-by-pr <n>] [--blocked-by-issue <n>] [--blocked-by-task <id>] [--blocked-by-ci <ref>] [--dep-recheck-seconds <n>] [--dep-max-ttl-seconds <n>] [--hands <kind> --action <text>]\n\
@@ -250,6 +251,9 @@ pub(crate) fn usage(verb: &str) -> &'static str {
         }
         "checkpoint" => {
             "usage: repo-queue checkpoint <task-id> [--worker <id>] [--lane <id>] --stage <s> [--progress <p>] [--progress-file <f>]\n\nRecords a progress checkpoint."
+        }
+        "reprioritize" => {
+            "usage: repo-queue reprioritize <task-id> <priority> [--worker <id>] [--reason <text>]\n\nChanges a live task priority (one of 10, 20, 30, 40, 50, 70, 90) and synchronizes its linked issue category."
         }
         "park" => {
             "usage: repo-queue park <task-id> [--worker <id>] [--lane <id>] --reason <text> [--delay-seconds <n>] [--not-before <ts>] [--progress <p>] [--progress-file <f>] [--ready-condition <c>] [--execution <id>] [--required-budget-minutes <n>] [--hands <kind> --action <text>]\n\nParks a task. A park that waits on a person is refused unless it is a hands item (FDR-0013): --hands physical|interactive-login|payment|signature with --action, one sentence a person can do in five minutes."
@@ -459,6 +463,9 @@ pub(super) fn parse_args_inner(
 }
 
 impl Args {
+    pub(super) fn pos(&self, idx: usize) -> Option<String> {
+        self.pos.get(idx).cloned()
+    }
     pub(super) fn get(&self, name: &str) -> Option<String> {
         self.opts
             .get(name)

@@ -7,6 +7,107 @@
 
 use super::*;
 
+/// Change a live task's priority without changing any lifecycle/claim
+/// fields. The row priority is authoritative; the packet mirror is
+/// updated in the same SQL statement when it exists, and the event
+/// records the snapshot used by the compare-and-swap guard.
+pub(crate) fn verb_reprioritize(t: &TursoBackend, req: &Value) -> Value {
+    let id = req_i64(req, "task_id")
+        .or_else(|| req_i64(req, "id"))
+        .unwrap_or(0);
+    // Authenticated caller identity (#14100: the event's actor): the
+    // worker id presented over the broker's authenticated channel,
+    // exactly like the other lifecycle verbs. A legacy `actor`
+    // string is honored only when no worker is present (old
+    // clients); it is never trusted over the worker.
+    let actor = req_str(req, "worker")
+        .filter(|s| !s.trim().is_empty())
+        .or_else(|| req_str(req, "actor"))
+        .unwrap_or("fleet-queue-cli");
+    let reason = req_str(req, "reason")
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    let raw = req.get("priority").cloned().unwrap_or(Value::Null);
+    let to = match crate::validate::resolve_priority(&raw, "priority") {
+        Ok(n) => n,
+        Err(e) => return fail(2, e),
+    };
+    let work = (|| -> Result<Value, String> {
+        let row = get_task(t, id)
+            .map_err(|e| e)?
+            .ok_or_else(|| format!("reprioritize_task: task {id} does not exist"))?;
+        let status = row.get("status").and_then(Value::as_str).unwrap_or("");
+        if !["queued", "claimed", "parked", "blocked"].contains(&status) {
+            return Err(format!(
+                "reprioritize_task: task {id} is terminal ({status})"
+            ));
+        }
+        let from = row.get("priority").and_then(Value::as_i64).unwrap_or(90);
+        if from == to {
+            return Ok(row);
+        }
+        let payload = row.get("payload").cloned().unwrap_or(json!({}));
+        let payload_text = if payload.get("priority").is_some() {
+            let mut p = payload;
+            p["priority"] = json!(to);
+            Some(p.to_string())
+        } else {
+            None
+        };
+        let category = crate::validate::category_for_priority(to).unwrap_or("unknown");
+        let issue = row
+            .get("payload")
+            .and_then(|p| p.get("issue"))
+            .cloned()
+            .unwrap_or(Value::Null);
+        let repo = row
+            .get("payload")
+            .and_then(|p| p.get("repo"))
+            .and_then(Value::as_str)
+            .filter(|r| !r.is_empty());
+        let issue_number = issue
+            .get("number")
+            .and_then(Value::as_i64)
+            .filter(|n| *n > 0);
+        // Queue-only tasks (no linked issue) note that explicitly;
+        // linked tasks note the sync intent the broker will fulfill.
+        let sync_note = if repo.is_some() && issue_number.is_some() {
+            "github-pending"
+        } else {
+            "no issue linked"
+        };
+        let detail = with_marks(
+            &json!({"from": from, "to": to, "category": category, "issue": issue, "actor": actor, "reason": reason, "sync": sync_note}),
+            &row,
+        );
+        // One Turso pipeline transaction couples the guarded task
+        // mutation, packet mirror, and history event. The conditional
+        // event insert is gated by changes() from the CAS UPDATE.
+        let update = t.exec_batch(&[
+            ("BEGIN IMMEDIATE", vec![]),
+            ("UPDATE tasks SET priority = ?, payload = CASE WHEN ? IS NULL THEN payload ELSE ? END, progress = CASE WHEN ? IS NOT NULL AND ? > 0 THEN json_set(COALESCE(progress, '{}'), '$.reprioritize_sync_pending', true) ELSE progress END, updated_at = ? WHERE id = ? AND priority = ? AND status IN ('queued','claimed','parked','blocked')", vec![Arg::Int(to), payload_text.clone().map(Arg::Text).unwrap_or(Arg::Null), payload_text.map(Arg::Text).unwrap_or(Arg::Null), repo.map(|s| Arg::Text(s.to_owned())).unwrap_or(Arg::Null), issue_number.map(Arg::Int).unwrap_or(Arg::Null), Arg::Text(now_iso()), Arg::Int(id), Arg::Int(from)]),
+            ("INSERT INTO events (worker_id, task_id, kind, detail, created_at) SELECT ?, ?, 'reprioritized', ?, ? WHERE changes() = 1", vec![Arg::Text(actor.to_string()), Arg::Int(id), Arg::Text(detail.to_string()), Arg::Text(now_iso())]),
+            // Persist the external side-effect intent in the same
+            // transaction. Queue-only tasks have no linked issue and
+            // intentionally produce no sync row.
+            ("INSERT INTO reprioritize_sync_outbox (task_id, repo, issue, category, label, state, attempts, available_at, created_at, updated_at) SELECT ?, ?, ?, ?, ?, 'pending', 0, ?, ?, ? WHERE changes() = 1 AND ? IS NOT NULL AND ? > 0", vec![Arg::Int(id), repo.map(|s| Arg::Text(s.to_owned())).unwrap_or(Arg::Null), issue_number.map(Arg::Int).unwrap_or(Arg::Null), Arg::Text(category.to_owned()), Arg::Text(crate::validate::label_for_priority(to).unwrap_or("priority/unknown").to_owned()), Arg::Text(now_iso()), Arg::Text(now_iso()), Arg::Text(now_iso()), repo.map(|s| Arg::Text(s.to_owned())).unwrap_or(Arg::Null), issue_number.map(Arg::Int).unwrap_or(Arg::Null)]),
+            ("COMMIT", vec![]),
+        ]).map_err(|e| e)?;
+        if update.get(1).map(|r| r.affected).unwrap_or(0) != 1 {
+            return Err(format!(
+                "reprioritize_task: task {id} priority changed concurrently; retry"
+            ));
+        }
+        get_task(t, id)
+            .map_err(|e| e)?
+            .ok_or_else(|| format!("reprioritize_task: task {id} disappeared"))
+    })();
+    match work {
+        Ok(row) => ok(json!({"row": row})),
+        Err(e) => fail(2, e),
+    }
+}
+
 /// The session a lane row is *live*-bound to (#8368): the ledger
 /// session_id, unless the broker itself cleared that exact binding
 /// (progress.session_cleared.session_id, stamped by clear_binding
@@ -1575,34 +1676,36 @@ pub(crate) fn verb_heartbeat(t: &TursoBackend, req: &Value) -> Value {
         &row.get("progress").cloned().unwrap_or(json!({})),
         &req.get("progress").cloned().unwrap_or(json!({})),
     );
-    let lease_until = after_iso(extend);
-    let work = (|| -> Result<Value, TErr> {
-        t.exec(
-            "UPDATE tasks SET lease_until = ?, progress = ?, updated_at = ? WHERE id = ?",
-            &[
-                Arg::Text(lease_until.clone()),
-                Arg::Text(progress.to_string()),
-                Arg::Text(now_iso()),
-                Arg::Int(task_id),
-            ],
-        )?;
-        t.exec(
-            "INSERT INTO leases (task_id, worker_id, lease_until, heartbeat_at) \
-             VALUES (?, ?, ?, ?) \
-             ON CONFLICT(task_id) DO UPDATE SET lease_until = excluded.lease_until, \
-               heartbeat_at = excluded.heartbeat_at",
-            &[
-                Arg::Int(task_id),
-                Arg::Text(worker.clone()),
-                Arg::Text(lease_until),
-                Arg::Text(now_iso()),
-            ],
-        )?;
-        touch_worker(t, &worker, Some(task_id))?;
-        get_task(t, task_id).map(|r| r.unwrap_or(Value::Null))
-    })();
-    match work {
-        Ok(row) => ok(json!({"row": row})),
+    // Compare against the deadline in the row at write time. The trigger
+    // installed with the schema mirrors the effective deadline in this same
+    // statement, including on an early heartbeat that only updates progress.
+    let sql = format!("{} RETURNING {TASK_COLS}", include_str!("heartbeat.sql"));
+    let result = t.query_objs(
+        &sql,
+        &[
+            Arg::Text(after_iso(extend)),
+            Arg::Text(progress.to_string()),
+            Arg::Text(now_iso()),
+            Arg::Int(task_id),
+            Arg::Text(worker.clone()),
+            arg_str(row["claimed_at"].as_str()),
+            arg_str(row["lane_id"].as_str()),
+            Arg::Int(row["attempts"].as_i64().unwrap_or(0)),
+        ],
+        &TASK_JSON_COLS,
+    );
+    let mut rows = match result {
+        Ok(rows) => rows,
+        Err(e) => return terr(e),
+    };
+    let Some(updated) = rows.pop() else {
+        return fail(
+            5,
+            format!("heartbeat_task: claim for task {task_id} changed"),
+        );
+    };
+    match touch_worker(t, &worker, Some(task_id)) {
+        Ok(()) => ok(json!({"row": updated})),
         Err(e) => terr(e),
     }
 }
@@ -2076,5 +2179,471 @@ pub(crate) fn verb_wake(t: &TursoBackend, req: &Value) -> Value {
         Ok(_) => fail(5, format!("wake_task: task {task_id} does not exist")),
         Err(e) if e.starts_with("wake_task:") => fail(5, e),
         Err(e) => terr(e),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tests (#14100): reprioritize T1–T7 against a rusqlite-backed fake of
+// the Turso pipeline endpoint (the actions_exec proof-bar pattern —
+// real SQL semantics, so the guarded CAS UPDATE, the claim order,
+// and the lease/worker/attempts invariance are exercised, not
+// mimicked). GitHub itself is not touched: the sync leg's contract
+// (queue-first, priority/*-only labels, durable outbox + visible
+// pending marker) is covered through the rows the verb commits
+// atomically and the broker source pins in queue_broker.rs.
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod reprioritize_tests {
+    use super::*;
+    use std::io::{BufRead, BufReader, Read, Write};
+    use std::sync::{Arc, Mutex};
+
+    fn fake_backend() -> (TursoBackend, Arc<Mutex<rusqlite::Connection>>) {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        for ddl in SCHEMA {
+            conn.execute_batch(ddl).unwrap();
+        }
+        let db = Arc::new(Mutex::new(conn));
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let base = format!("http://{addr}");
+        let db_thread = db.clone();
+        std::thread::spawn(move || {
+            for sock in listener.incoming() {
+                let Ok(sock) = sock else { return };
+                let db_conn = db_thread.clone();
+                std::thread::spawn(move || handle_conn(sock, db_conn));
+            }
+        });
+        (
+            TursoBackend::new(base, "test".to_string(), ureq::agent()),
+            db,
+        )
+    }
+
+    fn handle_conn(mut sock: std::net::TcpStream, db: Arc<Mutex<rusqlite::Connection>>) {
+        let mut reader = BufReader::new(sock.try_clone().unwrap());
+        loop {
+            let mut request_line = String::new();
+            if reader.read_line(&mut request_line).unwrap_or(0) == 0 {
+                return;
+            }
+            let mut content_length = 0usize;
+            loop {
+                let mut line = String::new();
+                if reader.read_line(&mut line).unwrap_or(0) == 0 {
+                    return;
+                }
+                let trimmed = line.trim();
+                if trimmed.is_empty() {
+                    break;
+                }
+                if let Some((name, value)) = trimmed.split_once(':') {
+                    if name.trim().eq_ignore_ascii_case("content-length") {
+                        content_length = value.trim().parse().unwrap_or(0);
+                    }
+                }
+            }
+            let mut body = vec![0u8; content_length];
+            if reader.read_exact(&mut body).is_err() {
+                return;
+            }
+            let payload = run_pipeline(&db, &body);
+            let text = payload.to_string();
+            let resp = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\
+                 Content-Length: {}\r\n\r\n{}",
+                text.len(),
+                text
+            );
+            if sock.write_all(resp.as_bytes()).is_err() {
+                return;
+            }
+        }
+    }
+
+    fn run_pipeline(db: &Arc<Mutex<rusqlite::Connection>>, body: &[u8]) -> Value {
+        let req: Value = serde_json::from_slice(body).unwrap_or(Value::Null);
+        let conn = db.lock().unwrap();
+        let mut results = Vec::new();
+        for r in req
+            .get("requests")
+            .and_then(|v| v.as_array())
+            .cloned()
+            .unwrap_or_default()
+        {
+            match r.get("type").and_then(|v| v.as_str()) {
+                Some("close") => {
+                    results.push(json!({"type": "ok", "response": {"type": "close"}}));
+                }
+                Some("execute") => {
+                    let stmt = r.get("stmt").cloned().unwrap_or(Value::Null);
+                    let sql = stmt.get("sql").and_then(|v| v.as_str()).unwrap_or("");
+                    let mut params: Vec<rusqlite::types::Value> = Vec::new();
+                    if let Some(args) = stmt.get("args").and_then(|v| v.as_array()) {
+                        for a in args {
+                            params.push(match a.get("type").and_then(|v| v.as_str()) {
+                                Some("text") => rusqlite::types::Value::Text(
+                                    a.get("value")
+                                        .and_then(|v| v.as_str())
+                                        .unwrap_or("")
+                                        .to_string(),
+                                ),
+                                Some("integer") => rusqlite::types::Value::Integer(
+                                    a.get("value")
+                                        .and_then(|v| v.as_str())
+                                        .and_then(|s| s.parse().ok())
+                                        .unwrap_or(0),
+                                ),
+                                _ => rusqlite::types::Value::Null,
+                            });
+                        }
+                    }
+                    results.push(execute_sql(&conn, sql, &params));
+                }
+                _ => {}
+            }
+        }
+        json!({"results": results, "baton": null})
+    }
+
+    fn cell_json(v: rusqlite::types::ValueRef) -> Value {
+        use rusqlite::types::ValueRef::*;
+        match v {
+            Null => json!({"type": "null"}),
+            Integer(i) => json!({"type": "integer", "value": i.to_string()}),
+            Real(f) => json!({"type": "float", "value": f}),
+            Text(s) => json!({"type": "text", "value": String::from_utf8_lossy(s)}),
+            Blob(b) => json!({"type": "blob", "value": hex_encode(b)}),
+        }
+    }
+
+    fn hex_encode(data: &[u8]) -> String {
+        data.iter().map(|b| format!("{b:02x}")).collect()
+    }
+
+    fn execute_sql(
+        conn: &rusqlite::Connection,
+        sql: &str,
+        params: &[rusqlite::types::Value],
+    ) -> Value {
+        let is_query = sql.trim_start().to_ascii_uppercase().starts_with("SELECT");
+        // BEGIN/COMMIT are connection state, not preparable statements.
+        if !is_query {
+            let head = sql.trim_start().to_ascii_uppercase();
+            if head.starts_with("BEGIN") {
+                return match conn.execute_batch(sql) {
+                    Ok(()) => json!({"type": "ok", "response": {"type": "execute", "result": {
+                        "cols": [], "rows": [], "affected_row_count": 0, "last_insert_rowid": null}}}),
+                    Err(e) => {
+                        json!({"type": "error", "error": {"message": e.to_string(), "code": "SQLITE"}})
+                    }
+                };
+            }
+            if head.starts_with("COMMIT") || head.starts_with("ROLLBACK") {
+                return match conn.execute_batch(sql) {
+                    Ok(()) => json!({"type": "ok", "response": {"type": "execute", "result": {
+                        "cols": [], "rows": [], "affected_row_count": 0, "last_insert_rowid": null}}}),
+                    Err(e) => {
+                        json!({"type": "error", "error": {"message": e.to_string(), "code": "SQLITE"}})
+                    }
+                };
+            }
+        }
+        let mut stmt = match conn.prepare(sql) {
+            Ok(s) => s,
+            Err(e) => {
+                return json!({"type": "error", "error": {"message": e.to_string(), "code": "SQLITE"}});
+            }
+        };
+        if is_query {
+            let cols: Vec<String> = stmt.column_names().map(|s| s.to_string()).collect();
+            let mut rows_out = Vec::new();
+            match stmt.query(rusqlite::params_from_iter(params.iter())) {
+                Ok(mut rows) => loop {
+                    match rows.next() {
+                        Ok(Some(row)) => {
+                            let mut cells = Vec::new();
+                            for i in 0..cols.len() {
+                                cells.push(cell_json(row.get_ref(i).unwrap()));
+                            }
+                            rows_out.push(Value::Array(cells));
+                        }
+                        Ok(None) => break,
+                        Err(e) => {
+                            return json!({"type": "error", "error": {"message": e.to_string(), "code": "SQLITE"}});
+                        }
+                    }
+                },
+                Err(e) => {
+                    return json!({"type": "error", "error": {"message": e.to_string(), "code": "SQLITE"}});
+                }
+            }
+            json!({"type": "ok", "response": {"type": "execute", "result": {
+                "cols": cols.iter().map(|c| json!({"name": c, "decltype": null})).collect::<Vec<_>>(),
+                "rows": rows_out, "affected_row_count": 0, "last_insert_rowid": null}}})
+        } else {
+            match stmt.execute(rusqlite::params_from_iter(params.iter())) {
+                Ok(changed) => json!({"type": "ok", "response": {"type": "execute", "result": {
+                    "cols": [], "rows": [], "affected_row_count": changed,
+                    "last_insert_rowid": conn.last_insert_rowid().to_string()}}}),
+                Err(e) => {
+                    json!({"type": "error", "error": {"message": e.to_string(), "code": "SQLITE"}})
+                }
+            }
+        }
+    }
+
+    /// Seed one live task row; returns its id.
+    fn seed_task(
+        t: &TursoBackend,
+        status: &str,
+        priority: i64,
+        payload: Value,
+        worker: Option<&str>,
+    ) -> i64 {
+        let payload_text = payload.to_string();
+        let r = t
+            .exec(
+                "INSERT INTO tasks (queue, title, payload, priority, status, worker_id, lease_until, attempts, progress, created_at, updated_at) \
+                 VALUES ('repo-health-code-pilot', 't', ?, ?, ?, ?, ?, 0, '{}', ?, ?)",
+                &[
+                    Arg::Text(payload_text),
+                    Arg::Int(priority),
+                    Arg::Text(status.to_string()),
+                    worker.map(|w| Arg::Text(w.to_string())).unwrap_or(Arg::Null),
+                    if worker.is_some() {
+                        Arg::Text("2026-11-24T02:00:00Z".to_string())
+                    } else {
+                        Arg::Null
+                    },
+                    Arg::Text("2026-11-24T01:00:00Z".to_string()),
+                    Arg::Text("2026-11-24T01:00:00Z".to_string()),
+                ],
+            )
+            .unwrap();
+        r.last_insert_rowid.unwrap()
+    }
+
+    fn events_for(t: &TursoBackend, task_id: i64, kind: &str) -> Vec<Value> {
+        t.query_objs(
+            "SELECT id, worker_id, task_id, kind, detail, created_at FROM events WHERE task_id = ? AND kind = ? ORDER BY id",
+            &[Arg::Int(task_id), Arg::Text(kind.to_string())],
+            &[],
+        )
+        .unwrap()
+    }
+
+    /// T6a: terminal states are refused.
+    #[test]
+    fn terminal_tasks_are_refused() {
+        let (t, _) = fake_backend();
+        for status in ["done", "failed", "cancelled"] {
+            let id = seed_task(&t, status, 90, json!({}), None);
+            let out = verb_reprioritize(&t, &json!({"task_id": id, "priority": 20, "worker": "w"}));
+            assert_eq!(out["ok"], false, "{status}: {out}");
+            assert!(
+                out["error"].as_str().unwrap_or("").contains("terminal"),
+                "{status}: {out}"
+            );
+            assert!(events_for(&t, id, "reprioritized").is_empty());
+        }
+    }
+
+    /// T6b: off-scale targets are refused with the scale error.
+    #[test]
+    fn off_scale_targets_are_refused() {
+        let (t, _) = fake_backend();
+        let id = seed_task(&t, "queued", 90, json!({}), None);
+        for bad in [json!(15), json!(25), json!(5), json!(99), json!("high")] {
+            let out =
+                verb_reprioritize(&t, &json!({"task_id": id, "priority": bad, "worker": "w"}));
+            assert_eq!(out["ok"], false, "{bad}: {out}");
+            assert!(
+                out["error"].as_str().unwrap_or("").contains("design scale"),
+                "{bad}: {out}"
+            );
+        }
+        // The row is untouched by every refusal.
+        let row = get_task(&t, id).unwrap().unwrap();
+        assert_eq!(row["priority"], 90);
+        assert!(events_for(&t, id, "reprioritized").is_empty());
+    }
+
+    /// T2: the reprioritized event carries from/to/category/actor and
+    /// lands in the same transaction as the row change.
+    #[test]
+    fn history_event_carries_from_to_category_actor() {
+        let (t, _) = fake_backend();
+        let id = seed_task(
+            &t,
+            "queued",
+            90,
+            json!({"repo": "developing-today/code", "issue": {"number": 1}}),
+            None,
+        );
+        let out = verb_reprioritize(
+            &t,
+            &json!({"task_id": id, "priority": 20, "worker": "conductor", "reason": "hot"}),
+        );
+        assert_eq!(out["ok"], true, "{out}");
+        let evs = events_for(&t, id, "reprioritized");
+        assert_eq!(evs.len(), 1, "{evs:?}");
+        let detail: Value = serde_json::from_str(evs[0]["detail"].as_str().unwrap()).unwrap();
+        assert_eq!(detail["from"], 90);
+        assert_eq!(detail["to"], 20);
+        assert_eq!(detail["category"], "high");
+        assert_eq!(detail["actor"], "conductor");
+        assert_eq!(detail["reason"], "hot");
+        assert_eq!(detail["task_id"], id);
+        assert_eq!(detail["sync"], "github-pending");
+    }
+
+    /// T5: a claimed task changes priority only — lease, worker and
+    /// attempts are byte-identical before and after.
+    #[test]
+    fn claimed_task_changes_priority_only() {
+        let (t, _) = fake_backend();
+        let id = seed_task(&t, "claimed", 90, json!({}), Some("holder-1"));
+        t.exec(
+            "UPDATE tasks SET attempts = 3 WHERE id = ?",
+            &[Arg::Int(id)],
+        )
+        .unwrap();
+        let before = get_task(&t, id).unwrap().unwrap();
+        let out = verb_reprioritize(
+            &t,
+            &json!({"task_id": id, "priority": 30, "worker": "conductor"}),
+        );
+        assert_eq!(out["ok"], true, "{out}");
+        let after = get_task(&t, id).unwrap().unwrap();
+        assert_eq!(after["priority"], 30);
+        for k in ["worker_id", "lease_until", "attempts", "status"] {
+            assert_eq!(after[k], before[k], "column {k} moved");
+        }
+    }
+
+    /// T7: the stored packet's payload.priority copy moves with the
+    /// row, and the row still passes claim-guard revalidation.
+    #[test]
+    fn packet_copy_moves_with_row() {
+        let (t, _) = fake_backend();
+        let id = seed_task(
+            &t,
+            "queued",
+            90,
+            json!({"priority": 90, "repo": "developing-today/code", "issue": {"number": 2}}),
+            None,
+        );
+        let out = verb_reprioritize(&t, &json!({"task_id": id, "priority": 40, "worker": "w"}));
+        assert_eq!(out["ok"], true, "{out}");
+        let row = get_task(&t, id).unwrap().unwrap();
+        assert_eq!(row["priority"], 40);
+        assert_eq!(row["payload"]["priority"], 40);
+        // Claim-guard revalidation: the row priority is on-scale and
+        // the packet mirror agrees.
+        assert!(crate::validate::PRIORITY_SCALE.contains(&row["priority"].as_i64().unwrap()));
+        // A task without a stored priority copy leaves payload alone.
+        let bare = seed_task(
+            &t,
+            "parked",
+            90,
+            json!({"repo": "developing-today/code"}),
+            None,
+        );
+        let out = verb_reprioritize(&t, &json!({"task_id": bare, "priority": 20, "worker": "w"}));
+        assert_eq!(out["ok"], true, "{out}");
+        let row = get_task(&t, bare).unwrap().unwrap();
+        assert_eq!(row["priority"], 20);
+        assert!(row["payload"].get("priority").is_none());
+        // Queue-only change notes that no issue is linked.
+        let evs = events_for(&t, bare, "reprioritized");
+        assert_eq!(evs.len(), 1);
+        let detail: Value = serde_json::from_str(evs[0]["detail"].as_str().unwrap()).unwrap();
+        assert_eq!(detail["sync"], "no issue linked");
+    }
+
+    /// T1: reprioritizing the later task above the earlier one flips
+    /// the next-claim order (claims read priority ASC).
+    #[test]
+    fn reprioritize_flips_claim_order() {
+        let (t, _) = fake_backend();
+        let early = seed_task(&t, "queued", 70, json!({}), None);
+        let late = seed_task(&t, "queued", 90, json!({}), None);
+        let first_before: Vec<Value> = t
+            .query_objs(
+                "SELECT id FROM tasks WHERE status = 'queued' ORDER BY priority ASC, id ASC LIMIT 1",
+                &[],
+                &[],
+            )
+            .unwrap();
+        assert_eq!(first_before[0]["id"], early);
+        let out = verb_reprioritize(&t, &json!({"task_id": late, "priority": 20, "worker": "w"}));
+        assert_eq!(out["ok"], true, "{out}");
+        let first_after: Vec<Value> = t
+            .query_objs(
+                "SELECT id FROM tasks WHERE status = 'queued' ORDER BY priority ASC, id ASC LIMIT 1",
+                &[],
+                &[],
+            )
+            .unwrap();
+        assert_eq!(first_after[0]["id"], late);
+    }
+
+    /// T4: the queue change commits its durable sync intent in the
+    /// same transaction and marks the row visibly pending — so a
+    /// GitHub-leg failure can never silently drop the sync.
+    #[test]
+    fn sync_intent_is_atomic_and_visible() {
+        let (t, _) = fake_backend();
+        let id = seed_task(
+            &t,
+            "blocked",
+            90,
+            json!({"priority": 90, "repo": "developing-today/code", "issue": {"number": 14100}}),
+            None,
+        );
+        let out = verb_reprioritize(&t, &json!({"task_id": id, "priority": 10, "worker": "w"}));
+        assert_eq!(out["ok"], true, "{out}");
+        // The row carries the visible pending marker fleet queue show reads.
+        // (json_set stores the boolean as 1 — the production readback shape.)
+        let row = get_task(&t, id).unwrap().unwrap();
+        assert_eq!(row["priority"], 10);
+        assert!(
+            row["progress"]["reprioritize_sync_pending"] == json!(1)
+                || row["progress"]["reprioritize_sync_pending"] == json!(true),
+            "pending marker missing: {}",
+            row["progress"]
+        );
+        // The durable outbox intent for the mapped category+label.
+        let rows = t
+            .query_objs(
+                "SELECT task_id, repo, issue, category, label, state FROM reprioritize_sync_outbox WHERE task_id = ?",
+                &[Arg::Int(id)],
+                &[],
+            )
+            .unwrap();
+        assert_eq!(rows.len(), 1, "{rows:?}");
+        assert_eq!(rows[0]["repo"], "developing-today/code");
+        assert_eq!(rows[0]["issue"], 14100);
+        assert_eq!(rows[0]["category"], "critical");
+        assert_eq!(rows[0]["label"], "priority/critical");
+        assert_eq!(rows[0]["state"], "pending");
+        // Queue-only tasks produce no sync row and no pending marker.
+        let bare = seed_task(&t, "queued", 90, json!({}), None);
+        let out = verb_reprioritize(&t, &json!({"task_id": bare, "priority": 20, "worker": "w"}));
+        assert_eq!(out["ok"], true, "{out}");
+        let row = get_task(&t, bare).unwrap().unwrap();
+        assert!(row["progress"].get("reprioritize_sync_pending").is_none());
+        let rows = t
+            .query_objs(
+                "SELECT task_id FROM reprioritize_sync_outbox WHERE task_id = ?",
+                &[Arg::Int(bare)],
+                &[],
+            )
+            .unwrap();
+        assert!(rows.is_empty());
     }
 }

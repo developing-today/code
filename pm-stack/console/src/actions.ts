@@ -154,7 +154,8 @@ export function actions(
       touch: ["questions", "questionCount"],
       audit: ids("set"),
     },
-    "hands.done": { run: (a) => work.handsDone(a), touch: [], audit: ids("ref") },
+    // The item leaves what needs the owner: that list is read again.
+    "hands.done": { run: (a) => work.handsDone(a), touch: ["census"], audit: ids("ref") },
     "need.comment": { run: (a) => work.needComment(a), touch: [], audit: ids("ref") },
     "task.move": { run: (a) => work.moveTask(a), touch: ["board"], audit: ids("task", "to") },
     "task.unblock": {

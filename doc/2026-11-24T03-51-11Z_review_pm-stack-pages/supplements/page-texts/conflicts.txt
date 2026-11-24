@@ -1,0 +1,604 @@
+OVERVIEW
+Overview
+Today
+Needs you
+Decision sets
+Roadmap
+WORK
+Program status
+Queue
+OPS
+Usage & billing
+Health
+Alerts
+Pages ▾
+Overview — The stack front door (#1134): needs-you, projects, quotas, and health at a glance.
+Today — The day's top objectives + per-project momentum.
+Digest — The scheduled PM digest (#1278): moved / blocked / needs Drew / done / quota outlook from the canonical projection, archived per day at /digest?date=<date>.
+Needs you — NEEDS USER vs NEEDS ORCHESTRATOR, and every live session.
+Decision sets — Every raised decision set (#8867): new today, this week, or all — with open-question counts. Each row opens the set's own page.
+Board — The curated cross-repo WIP board.
+Roadmap — The program roadmap at every grain.
+Reports — Review report versions and resolve prose conflicts without overwriting stored text.
+Source conflicts — One read-only queue of every live source disagreement, with both values and its age.
+Sessions — The agent/session identity registry: who ran what, tokens, task links.
+Search — Search board, roadmap, registry sessions, DNS, services, and tier items by title or linked issue/PR ref.
+Events — The cross-stack chronological stream of dashboard actions, orchestration publishes, and session outcomes.
+Comments queue — Dashboard comments still waiting on a loop (#1210): messages awaiting triage and GitHub comments pending or failed to post, with kind/state counts and each failed item's last error.
+Program status — The projects hub: every project's status, roadmap, and tracked work, one page per project under /program/<id> — fed from the project registry, the tracked issues, and the Project pool.
+Queue — In progress, blocked, recently completed, and next-up work across projects.
+Usage & billing — Token quotas, PAYG dollars, and every SaaS service's usage vs its limits.
+DNS register — Every domain: next renewal, unused, earmarked. (#902's register)
+Cost Explorer — Two tabs over the fleet's cost data: AA Explorer (Artificial Analysis measurements, frontier charts, plan/API/per-task efficiency) and Model Explorer (every model in the fleet's catalogs, its pool seats, plan, and measured value).
+Health — Service & page health (#1147): live probes for every stack service, feed section ages, last job runs, this dashboard's render history — and the services & ports topology (#1137).
+Alerts — The alert throat (#3676): sentinel incidents, Web Push delivery + one escalation, ack/close, the Turso ledger.
+Notifications — Notification measurement (#3319): the weekly sent-vs-acted-on roll-up over the alert throat's send ledger, with display-only default-off proposals under 10%.
+All pages — This manifest as a page — every registered view in one place.
+Search
+◐
+Dark
+items · live · 5m old
+usage · live · 5m old
+Source conflicts
+
+Every live disagreement the facets already report, in one queue: 77 entries across 2 classes · oldest at least 34 days · assembled 2026-11-24 03:31:56Z. Machine-first: /api/conflicts.json. This page projects; it does not resolve — trust rulings are slice 2 of #1282, so nothing here changes what a render shows.
+
+Conflicts
+
+77 live
+Project Status vs derived state
+
+74 live
+Quota records vs recorded reads
+
+3 live
+Oldest disagreement
+
+at least 34 days
+
+Age is a floor, not an exact birthday: it is measured from the newest timestamp the source carries for the pair (a Project item's updatedAt, a service's measuredAt), so the values have disagreed for at least that long — an item edited yesterday for another reason can carry a much older clash.
+
+Project Status vs derived state (74)
+Project Status vs derived state — item, sources, both values, age
+Item	Sources	Both values	Disagreeing for	Records
+id: idea — native TUI client (ratatui) on the shell contract
+developing-today/code#1071	GitHub Project Status
+vs
+dashboard-derived state	In Review
+vs
+Todo	at least 0 days (floor)
+2026-11-23 20:58:31Z · project-item-updated-at	records →
+id: F12.10 fair scheduling and per-account quotas
+developing-today/code#1067	GitHub Project Status
+vs
+dashboard-derived state	In Review
+vs
+Todo	at least 0 days (floor)
+2026-11-24 02:28:49Z · project-item-updated-at	records →
+id: F12.11 delta and binary frames (screen patches, resume tokens)
+developing-today/code#805	GitHub Project Status
+vs
+dashboard-derived state	In Review
+vs
+Todo	at least 0 days (floor)
+2026-11-23 14:23:38Z · project-item-updated-at	records →
+id(world): F12.12 many worlds per node: 1,000 idle / 100 active with a per-world memory budget
+developing-today/code#557	GitHub Project Status
+vs
+dashboard-derived state	In Review
+vs
+Todo	at least 1 day (floor)
+2026-11-23 00:58:54Z · project-item-updated-at	records →
+epic(quota-plane): Stage 2 — 15-minute quota gathering in the PM stack, token adapters, automated pool decisions
+developing-today/code#1149	GitHub Project Status
+vs
+dashboard-derived state	In Progress
+vs
+Todo	at least 0 days (floor)
+2026-11-24 02:31:13Z · project-item-updated-at	records →
+design(pm-stack): one identity across the stack — SSO propagation from the public entry into every layer, roles replace asserted authorship
+developing-today/code#1253	GitHub Project Status
+vs
+dashboard-derived state	In Review
+vs
+Todo	at least 2 days (floor)
+2026-11-22 00:46:03Z · project-item-updated-at	records →
+feat(quota-plane): plan-store / tracker / measured reconciliation diff (daily)
+developing-today/code#1270	GitHub Project Status
+vs
+dashboard-derived state	In Review
+vs
+Todo	at least 0 days (floor)
+2026-11-23 15:25:22Z · project-item-updated-at	records →
+design(pm-stack): chaos/rotation drills — scheduled game-days (kill collector, age the feed, drop a service) verifying banners, watchdogs, and self-healing fire
+developing-today/code#1283	GitHub Project Status
+vs
+dashboard-derived state	In Progress
+vs
+Todo	at least 4 days (floor)
+2026-11-20 00:41:30Z · project-item-updated-at	records →
+OpenChamber dispatch v1.1: admission control, hand-backs, stall nudges, harvesting, Workhorse-first routing
+developing-today/code#1187	GitHub Project Status
+vs
+dashboard-derived state	In Progress
+vs
+Todo	at least 0 days (floor)
+2026-11-24 01:00:58Z · project-item-updated-at	records →
+epic(fleet): queue fleet reliability — lane workers for every queue, certified shift reporting
+developing-today/code#1233	GitHub Project Status
+vs
+dashboard-derived state	In Progress
+vs
+Todo	at least 0 days (floor)
+2026-11-24 02:31:15Z · project-item-updated-at	records →
+id(ci): nixos-playwright-e2e VM test fails on first curl — no server readiness wait (nightly 40457980141)
+developing-today/code#1374	GitHub Project Status
+vs
+dashboard-derived state	In Review
+vs
+Todo	at least 0 days (floor)
+2026-11-23 14:20:35Z · project-item-updated-at	records →
+nixos: bring Grist, Kaneo, Pad, ready-for-agent in as flake services — the last hand-run PM servers
+developing-today/code#1752	GitHub Project Status
+vs
+dashboard-derived state	In Progress
+vs
+Todo	at least 0 days (floor)
+2026-11-23 03:55:55Z · project-item-updated-at	records →
+epic: fleet expansion & placement program (2026-10-28 directive, LIST 1–5)
+developing-today/code#2055	GitHub Project Status
+vs
+dashboard-derived state	In Progress
+vs
+Todo	at least 0 days (floor)
+2026-11-24 01:01:25Z · project-item-updated-at	records →
+epic: ID platform expansion — apps, comms, currency, hosting, boards (2026-10-28 directive, LIST 6–15)
+developing-today/code#2056	GitHub Project Status
+vs
+dashboard-derived state	In Review
+vs
+Todo	at least 0 days (floor)
+2026-11-24 03:04:34Z · project-item-updated-at	records →
+id(phase-14): Agents in worlds (MCP bridge) — v2 — outline: agents as citizens
+developing-today/code#6301	GitHub Project Status
+vs
+dashboard-derived state	In Review
+vs
+Todo	at least 4 days (floor)
+2026-11-20 00:42:26Z · project-item-updated-at	records →
+Hermetic-suite inventory + shared stat double + test-harness-conformance ratchet (design #1473, phase 2)
+dezren39/darwin-nix#1475	GitHub Project Status
+vs
+dashboard-derived state	In Review
+vs
+Todo	at least 0 days (floor)
+2026-11-24 02:15:47Z · project-item-updated-at	records →
+id(phase-14) v2 step 1: role configuration — roles as first-class world config (#6301)
+developing-today/code#8299	GitHub Project Status
+vs
+dashboard-derived state	In Review
+vs
+Todo	at least 0 days (floor)
+2026-11-24 03:20:54Z · project-item-updated-at	records →
+Cloudflare credential architecture — scoped tokens + Bitwarden backup (shipped — tracking home)
+developing-today/code#8820	GitHub Project Status
+vs
+dashboard-derived state	In Progress
+vs
+Todo	at least 4 days (floor)
+2026-11-20 00:42:43Z · project-item-updated-at	records →
+nix-cache — Nix binary cache on Cloudflare (shipped — tracking home)
+developing-today/nix-cache#8	GitHub Project Status
+vs
+dashboard-derived state	In Progress
+vs
+Todo	at least 11 days (floor)
+2026-11-12 07:09:53Z · project-item-updated-at	records →
+Grounded search plane: AI Gateway billing decision — load ~$10 credits vs BYOK vs hold
+developing-today/code#8807	GitHub Project Status
+vs
+dashboard-derived state	In Progress
+vs
+Todo	at least 0 days (floor)
+2026-11-24 02:31:24Z · project-item-updated-at	records →
+One-command local agent CLI via this VM's mcpx — needs Drew's OS / call-method / auth answers
+developing-today/code#8810	GitHub Project Status
+vs
+dashboard-derived state	In Progress
+vs
+Todo	at least 1 day (floor)
+2026-11-22 14:49:46Z · project-item-updated-at	records →
+design(P6): Turso + Cloudflare integration — DRAFT for Drew's ratification
+developing-today/code#8870	GitHub Project Status
+vs
+dashboard-derived state	In Review
+vs
+Todo	at least 0 days (floor)
+2026-11-24 02:31:07Z · project-item-updated-at	records →
+epic(fleet): pool & routing intelligence — lanes everywhere, live dispatch + babysitting, quota stewardship, reviewer oversight, AA + measured-speed model
+developing-today/code#1334	GitHub Project Status
+vs
+dashboard-derived state	In Progress
+vs
+Todo	at least 0 days (floor)
+2026-11-23 22:33:56Z · project-item-updated-at	records →
+Controlled pool tests: A/B real task batches before any pool change lands
+developing-today/code#1342	GitHub Project Status
+vs
+dashboard-derived state	In Review
+vs
+Todo	at least 0 days (floor)
+2026-11-23 15:43:40Z · project-item-updated-at	records →
+Program tending: scheduled care for roadmaps, epics, projects, and stalled PRs
+developing-today/code#1352	GitHub Project Status
+vs
+dashboard-derived state	In Progress
+vs
+Todo	at least 0 days (floor)
+2026-11-24 02:31:17Z · project-item-updated-at	records →
+atlas: provenance registry (chunk occurrences), content-addressed extracts, multi-DB vector resolution
+developing-today/code#3125	GitHub Project Status
+vs
+dashboard-derived state	In Review
+vs
+Todo	at least 0 days (floor)
+2026-11-24 02:55:10Z · project-item-updated-at	records →
+design: move ci.events webhook ledger from Supabase to Turso staging
+developing-today/code#5693	GitHub Project Status
+vs
+dashboard-derived state	In Review
+vs
+Todo	at least 0 days (floor)
+2026-11-24 02:31:05Z · project-item-updated-at	records →
+Design: one door, one home per fact — the fleet tool owns every route and every fallback
+developing-today/code#8575	GitHub Project Status
+vs
+dashboard-derived state	In Review
+vs
+Todo	at least 4 days (floor)
+2026-11-20 00:42:14Z · project-item-updated-at	records →
+Fleet unification slice 3: fleet verb contract v2 — routes and degraded modes in the tool
+developing-today/code#8581	GitHub Project Status
+vs
+dashboard-derived state	In Review
+vs
+Todo	at least 0 days (floor)
+2026-11-23 13:44:57Z · project-item-updated-at	records →
+Fleet unification slice 6: backups — Turso into D1, repos to Cloudflare plus mirror plus R2
+developing-today/code#8584	GitHub Project Status
+vs
+dashboard-derived state	In Progress
+vs
+Todo	at least 0 days (floor)
+2026-11-24 02:31:22Z · project-item-updated-at	records →
+atlas memory slice 1: corpus registry + memory-lancedb connector into Atlas staging (#8567)
+developing-today/code#8622	GitHub Project Status
+vs
+dashboard-derived state	In Review
+vs
+Todo	at least 0 days (floor)
+2026-11-24 03:05:09Z · project-item-updated-at	records →
+Atlas cold tier: cold-roundtrip-verify tool — #6042 follow-on 4
+developing-today/code#8230	GitHub Project Status
+vs
+dashboard-derived state	In Progress
+vs
+Todo	at least 0 days (floor)
+2026-11-23 04:05:45Z · project-item-updated-at	records →
+Atlas cold tier: shard writer (exporter) — #6042 follow-on 1
+developing-today/code#8227	GitHub Project Status
+vs
+dashboard-derived state	In Progress
+vs
+Todo	at least 1 day (floor)
+2026-11-23 00:19:18Z · project-item-updated-at	records →
+impl(atlas): recurring ingestion sweep runner + guardrail monitor + plan-headroom reporting (#6019)
+developing-today/code#7969	GitHub Project Status
+vs
+dashboard-derived state	In Progress
+vs
+Todo	at least 1 day (floor)
+2026-11-22 10:01:22Z · project-item-updated-at	records →
+epic: design register — every design tracked, boarded, and monitored
+developing-today/code#8986	GitHub Project Status
+vs
+dashboard-derived state	In Review
+vs
+Todo	at least 0 days (floor)
+2026-11-24 02:31:08Z · project-item-updated-at	records →
+deploy tool: Cloudflare target class — generalize the <name>-deploy apps to all Workers
+developing-today/code#5767	GitHub Project Status
+vs
+dashboard-derived state	In Progress
+vs
+Todo	at least 2 days (floor)
+2026-11-22 02:36:29Z · project-item-updated-at	records →
+fleet orgs: Turso-backed org/App registry + list subcommand
+developing-today/code#8884	GitHub Project Status
+vs
+dashboard-derived state	In Review
+vs
+Todo	at least 0 days (floor)
+2026-11-24 02:43:51Z · project-item-updated-at	records →
+Upgrade without dropped sessions: supervisor that owns the listener and the managed OpenCode children
+developing-today-forks/openchamber#81	GitHub Project Status
+vs
+dashboard-derived state	In Progress
+vs
+Todo	at least 1 day (floor)
+2026-11-22 16:48:19Z · project-item-updated-at	records →
+epic: hosted editions — PM service, ID service, and fleet tool as workable Cloudflare Workers equivalents (multi-tenant Turso/R2 architecture)
+developing-today/code#9078	GitHub Project Status
+vs
+dashboard-derived state	In Review
+vs
+Todo	at least 4 days (floor)
+2026-11-20 00:39:06Z · project-item-updated-at	records →
+design(fleet): fleet tool, Workers/TypeScript equivalent — hosted Metadata stamping/query, session provenance, sync tools
+developing-today/code#9081	GitHub Project Status
+vs
+dashboard-derived state	In Review
+vs
+Todo	at least 0 days (floor)
+2026-11-24 02:31:10Z · project-item-updated-at	records →
+design(atlas): Atlas v1 build-out — design-mill starter (proto design → full design set)
+developing-today/code#9091	GitHub Project Status
+vs
+dashboard-derived state	In Progress
+vs
+Todo	at least 4 days (floor)
+2026-11-20 00:39:35Z · project-item-updated-at	records →
+epic: ID/Atlas extensible primitives, federation, namespaces — major design iteration (2026-11-12 directive)
+developing-today/code#9106	GitHub Project Status
+vs
+dashboard-derived state	In Review
+vs
+Todo	at least 4 days (floor)
+2026-11-20 00:40:03Z · project-item-updated-at	records →
+design(id): ID-shape registry + dispatch; content-addressed hash no-map rule
+developing-today/code#9113	GitHub Project Status
+vs
+dashboard-derived state	In Progress
+vs
+Todo	at least 4 days (floor)
+2026-11-20 00:40:15Z · project-item-updated-at	records →
+design(id): numeric registry namespaces over the byte system
+developing-today/code#9122	GitHub Project Status
+vs
+dashboard-derived state	In Review
+vs
+Todo	at least 0 days (floor)
+2026-11-24 02:31:11Z · project-item-updated-at	records →
+design(atlas): recommendation objects, search history, retention classes
+developing-today/code#9140	GitHub Project Status
+vs
+dashboard-derived state	In Review
+vs
+Todo	at least 0 days (floor)
+2026-11-24 01:00:31Z · project-item-updated-at	records →
+design(id): implicit-trust sync — convergence toward 1:1 + conflict reports
+developing-today/code#9142	GitHub Project Status
+vs
+dashboard-derived state	In Review
+vs
+Todo	at least 0 days (floor)
+2026-11-24 00:53:50Z · project-item-updated-at	records →
+Fleet CA, credentials & secrets — v0.3 design mill (Summit build-out)
+developing-today/code#9155	GitHub Project Status
+vs
+dashboard-derived state	In Progress
+vs
+Todo	at least 0 days (floor)
+2026-11-24 00:11:39Z · project-item-updated-at	records →
+fleet-ca: repository census & v0.3 requirements traceability
+developing-today/code#9156	GitHub Project Status
+vs
+dashboard-derived state	In Progress
+vs
+Todo	at least 0 days (floor)
+2026-11-23 22:37:45Z · project-item-updated-at	records →
+fleet-ca: Rust crate, API & CLI architecture — registry, profiles, typed capabilities
+developing-today/code#9157	GitHub Project Status
+vs
+dashboard-derived state	In Progress
+vs
+Todo	at least 0 days (floor)
+2026-11-23 22:37:47Z · project-item-updated-at	records →
+fleet-ca: PKI root bundle, cross-signing graph & root-key custody
+developing-today/code#9163	GitHub Project Status
+vs
+dashboard-derived state	In Progress
+vs
+Todo	at least 0 days (floor)
+2026-11-23 23:20:49Z · project-item-updated-at	records →
+fleet gh: closure records + reason-required closes (audit trail by construction)
+developing-today/code#9221	GitHub Project Status
+vs
+dashboard-derived state	In Review
+vs
+Todo	at least 2 days (floor)
+2026-11-22 00:42:15Z · project-item-updated-at	records →
+impl(pm-stack): stack-token minting + agent token-exchange; layer verification in Kaneo/Pad/Grist (#1253 split 3)
+developing-today/code#9605	GitHub Project Status
+vs
+dashboard-derived state	In Review
+vs
+Todo	at least 0 days (floor)
+2026-11-23 07:50:18Z · project-item-updated-at	records →
+Implement ordered lifecycle hooks and fixed acceptance gate
+developing-today/code#10192	GitHub Project Status
+vs
+dashboard-derived state	In Progress
+vs
+Todo	at least 0 days (floor)
+2026-11-23 20:27:47Z · project-item-updated-at	records →
+Pin legacy Iroh and artifact identity compatibility vectors
+developing-today/code#10225	GitHub Project Status
+vs
+dashboard-derived state	In Progress
+vs
+Todo	at least 2 days (floor)
+2026-11-22 02:58:39Z · project-item-updated-at	records →
+pm stack: multi-board hierarchy + full task genealogy
+developing-today/code#9060	GitHub Project Status
+vs
+dashboard-derived state	In Review
+vs
+Todo	at least 0 days (floor)
+2026-11-23 21:03:32Z · project-item-updated-at	records →
+impl(pm-stack): primary-parent convention + historical link semantics + crate-split backfill
+developing-today/code#9066	GitHub Project Status
+vs
+dashboard-derived state	In Review
+vs
+Todo	at least 0 days (floor)
+2026-11-24 03:24:00Z · project-item-updated-at	records →
+spec(bedside-and-away): run the initial design mill before implementation landing
+developing-today/code#9359	GitHub Project Status
+vs
+dashboard-derived state	In Progress
+vs
+Todo	at least 4 days (floor)
+2026-11-20 00:42:34Z · project-item-updated-at	records →
+feat(bedside): BA-W07 backend integration, private release and operational evidence
+developing-today/code#9371	GitHub Project Status
+vs
+dashboard-derived state	In Progress
+vs
+Todo	at least 4 days (floor)
+2026-11-20 00:43:04Z · project-item-updated-at	records →
+fleet: ready PRs are left unmerged (20 open; the merge sweep has filed nothing since 2026-11-17)
+developing-today/code#12280	GitHub Project Status
+vs
+dashboard-derived state	In Progress
+vs
+Todo	at least 1 day (floor)
+2026-11-23 02:31:56Z · project-item-updated-at	records →
+atlas(classification): remediate secret-bearing monolith chunks
+developing-today/code#12406	GitHub Project Status
+vs
+dashboard-derived state	In Progress
+vs
+Todo	at least 0 days (floor)
+2026-11-23 22:44:29Z · project-item-updated-at	records →
+impl(pm-stack): E1 — tenancy schema + migration baseline (#9083)
+developing-today/code#12796	GitHub Project Status
+vs
+dashboard-derived state	In Review
+vs
+Todo	at least 0 days (floor)
+2026-11-23 07:34:59Z · project-item-updated-at	records →
+impl(pm-stack): E3 — SyncCoord + hosted sync ingress (#9083)
+developing-today/code#12798	GitHub Project Status
+vs
+dashboard-derived state	In Progress
+vs
+Todo	at least 0 days (floor)
+2026-11-23 11:51:31Z · project-item-updated-at	records →
+impl(pm-stack): E6 — tenant DB store adapter in id-store (#9083)
+developing-today/code#12801	GitHub Project Status
+vs
+dashboard-derived state	In Progress
+vs
+Todo	at least 0 days (floor)
+2026-11-23 08:50:09Z · project-item-updated-at	records →
+impl(pm-stack): E7 — documentation pass: user→tenant in #3811-era docs (#9083)
+developing-today/code#12802	GitHub Project Status
+vs
+dashboard-derived state	In Review
+vs
+Todo	at least 0 days (floor)
+2026-11-23 08:41:31Z · project-item-updated-at	records →
+id(phase-14): shells v2 slice 2 — TUI client feature completion on the shell contract (#6297)
+developing-today/code#12818	GitHub Project Status
+vs
+dashboard-derived state	In Review
+vs
+Todo	at least 0 days (floor)
+2026-11-23 08:17:02Z · project-item-updated-at	records →
+impl(pm-stack): hosted collector — registry-driven multi-board ingest on Cron Triggers + IngestDO (component A slice 2, from #9079)
+developing-today/code#12826	GitHub Project Status
+vs
+dashboard-derived state	In Progress
+vs
+Todo	at least 0 days (floor)
+2026-11-23 07:53:28Z · project-item-updated-at	records →
+impl(pm-stack): hosted read API parity — projects/item/roadmap/releases per #9060 §6 (component A slice 3, from #9079)
+developing-today/code#12828	GitHub Project Status
+vs
+dashboard-derived state	In Review
+vs
+Todo	at least 0 days (floor)
+2026-11-23 08:10:13Z · project-item-updated-at	records →
+epic: decisions system — P2 design family (tracking home)
+developing-today/code#12951	GitHub Project Status
+vs
+dashboard-derived state	In Review
+vs
+Todo	at least 0 days (floor)
+2026-11-24 02:31:01Z · project-item-updated-at	records →
+Queue: file, cancel and unblock a task from Cloudflare with no machine
+developing-today/code#13490	GitHub Project Status
+vs
+dashboard-derived state	In Progress
+vs
+Todo	at least 0 days (floor)
+2026-11-23 20:18:40Z · project-item-updated-at	records →
+Questions, what needs you, and sessions: readable and answerable with no machine
+developing-today/code#13491	GitHub Project Status
+vs
+dashboard-derived state	In Progress
+vs
+Todo	at least 0 days (floor)
+2026-11-23 20:18:44Z · project-item-updated-at	records →
+main CI failure: developing-today/code — mcpx test workflow (run 45227606720)
+developing-today/code#13619	GitHub Project Status
+vs
+dashboard-derived state	In Progress
+vs
+Todo	at least 0 days (floor)
+2026-11-24 02:31:19Z · project-item-updated-at	records →
+id(event-store): frozen-rival arrival order can strand dependent events
+developing-today/code#12050	GitHub Project Status
+vs
+dashboard-derived state	In Review
+vs
+Todo	at least 0 days (floor)
+2026-11-24 02:30:59Z · project-item-updated-at	records →
+fleet-agent: registered_lane_worker has no mapping for oc-* lanes — oc-code-02 queue claims rejected (lane belongs to repo-worker-code)
+developing-today/code#13073	GitHub Project Status
+vs
+dashboard-derived state	In Review
+vs
+Todo	at least 0 days (floor)
+2026-11-24 02:31:03Z · project-item-updated-at	records →
+Storage pools: RAID10 HDD tier for RustFS + striped/mirrored NVMe tiers with LINSTOR/DRBD
+developing-today/code#1813	GitHub Project Status
+vs
+dashboard-derived state	Done
+vs
+Todo	at least 0 days (floor)
+2026-11-24 02:19:38Z · project-item-updated-at	records →
+Quota records vs recorded reads (3)
+Quota records vs recorded reads — item, sources, both values, age
+Item	Sources	Both values	Disagreeing for	Records
+Cloudflare	Cloudflare u2014 Workers platform
+vs
+freshest dated read	Plan / price: Tracker and Memory: Workers Paid $5/mo + R2 Paid $0 base, verified 2026-10-20. Conflict/stale earlier evidence: CF reports subscription endpoint 403 and presumed $0/free; Infra says total stack $0. Preserve those earlier statements; neither establishes current free status.
+vs
+Dated update (2026-10-29, code#1048 live collector): GraphQL analytics permissions ARE established for the day-to-day token — the laptop collector `pm-stack/cloudflare-export/` (15-min tick, file-export convention) now reads Workers/KV/D1/Queues/R2/Workers-AI current-cycle usage live (first read 2026-10-29T10:04Z: Workers 75,312 req / 126,527 CPU-ms of 10M/30M; R2 storage 25.14 GB across 5 buckets	at least 0 days
+2026-11-24 00:00:00Z · service-measured-at	records →
+OCI Always Free	OCI Always Free
+vs
+freshest dated read	Usage / dates: Signup blocked on Drew per Tracker/Infra; status discrepancy: Free places OCI under “Already in use” without account evidence. Usage and pace unknown; monthly, exact reset unknown.
+vs
+Last checked: 2026-10-20 plan; 2026-10-21 conflicting list placement.	at least 34 days
+2026-10-21 00:00:00Z · service-measured-at	records →
+OCI Always Free	OCI Always Free
+vs
+freshest dated read	Last checked: 2026-10-20 plan; 2026-10-21 conflicting list placement.
+vs
+Last checked: 2026-10-20 plan; 2026-10-21 conflicting list placement.	at least 34 days
+2026-10-21 00:00:00Z · service-measured-at	records →
+source detail
+⌘K palette · on Needs you: j/k move · s snooze · e escalate · g delegate · x dismiss · m mark done · ? all keys · tailnet: amd-6.raptor-pumpkinseed.ts.net:4870

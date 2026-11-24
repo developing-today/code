@@ -9,13 +9,13 @@ completed after the main research pass).
 seaweedfs/seaweedfs:
 
 ```json
-{"created":"2014-07-14T16:41:37Z","forks":3129,"license":"Apache-2.0","open_issues":715,"stars":36219}
+{ "created": "2014-07-14T16:41:37Z", "forks": 3129, "license": "Apache-2.0", "open_issues": 715, "stars": 36219 }
 ```
 
 rustfs/rustfs:
 
 ```json
-{"created":"2023-11-23T13:45:10Z","forks":1686,"license":"Apache-2.0","open_issues":73,"stars":36435}
+{ "created": "2023-11-23T13:45:10Z", "forks": 1686, "license": "Apache-2.0", "open_issues": 73, "stars": 36435 }
 ```
 
 ## Contributors (top 10, commit counts)

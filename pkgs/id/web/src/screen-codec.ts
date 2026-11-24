@@ -12,6 +12,16 @@ import type { ScreenPatch } from "./world-surface";
  * this decoder is deliberately as strict as the Rust one
  * (deny-unknown-fields, one exact value, bounded size): anything
  * else returns null and the caller falls back to a full view.
+ *
+ * F12.11 phase 4 (#805) adds codec version 2 for compressed frames:
+ * `{version: 2, compression, payload}`, where `compression` 1 means
+ * the payload is the raw-DEFLATE (RFC 1951) of a version-1 frame and
+ * 0 means the payload is the version-1 frame as-is. The host sends
+ * version 2 only to a session that also offered `screen_compress`,
+ * and only when the complete compressed frame is smaller. Inflating
+ * needs `DecompressionStream`, so version-2 frames decode through
+ * the async `decodeViewPatchAsync`; the sync `decodeViewPatch`
+ * still handles version 1 only and returns null for version 2.
  */
 
 export interface ViewPatchFrame {
@@ -23,6 +33,11 @@ export interface ViewPatchFrame {
 }
 
 const SCREEN_CODEC_VERSION = 1;
+/** Version of the compressed screen-patch envelope (F12.11 phase 4). */
+const SCREEN_CODEC_VERSION_COMPRESSED = 2;
+/** Version-2 compression ids (id-core screen_codec). */
+const COMPRESSION_NONE = 0;
+const COMPRESSION_DEFLATE = 1;
 /** The shared session frame limit, matching the Rust codec. */
 const MAX_SCREEN_FRAME_BYTES = 1024 * 1024;
 /** StyleToken's serialized names (id-core world_presentation). */
@@ -99,6 +114,9 @@ function decodePatch(value: unknown): ScreenPatch | null {
  * Decode one binary view-patch frame. Returns null for anything
  * that is not exactly one well-formed, supported-version frame —
  * the caller treats null as "ask for a full view", never as data.
+ * This sync entry handles version-1 frames only; compressed
+ * version-2 frames return null here and decode through
+ * `decodeViewPatchAsync`.
  */
 export function decodeViewPatch(bytes: Uint8Array): ViewPatchFrame | null {
   if (bytes.length === 0 || bytes.length > MAX_SCREEN_FRAME_BYTES) return null;
@@ -112,7 +130,82 @@ export function decodeViewPatch(bytes: Uint8Array): ViewPatchFrame | null {
   const envelope = values[0];
   if (!isRecord(envelope) || !hasExactlyKeys(envelope, ["version", "frame"])) return null;
   if (envelope.version !== SCREEN_CODEC_VERSION) return null;
-  const frame = envelope.frame;
+  return decodeFrame(envelope.frame);
+}
+
+/**
+ * Inflate raw-DEFLATE (RFC 1951) bytes, refusing output past the
+ * shared frame limit instead of buffering an unbounded stream.
+ */
+async function inflateRaw(bytes: Uint8Array): Promise<Uint8Array | null> {
+  let stream: ReadableStream<Uint8Array>;
+  try {
+    stream = new Blob([bytes as BlobPart])
+      .stream()
+      .pipeThrough(new DecompressionStream("deflate-raw"));
+  } catch {
+    return null;
+  }
+  const reader = stream.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (value === undefined) continue;
+      total += value.length;
+      if (total > MAX_SCREEN_FRAME_BYTES) return null;
+      chunks.push(value);
+    }
+  } catch {
+    return null;
+  } finally {
+    reader.releaseLock();
+  }
+  const out = new Uint8Array(total);
+  let at = 0;
+  for (const chunk of chunks) {
+    out.set(chunk, at);
+    at += chunk.length;
+  }
+  return out;
+}
+
+/**
+ * Decode one binary view-patch frame, plain (version 1) or
+ * compressed (version 2). Returns null for anything that is not
+ * exactly one well-formed frame — the caller treats null as "ask
+ * for a full view", never as data.
+ */
+export async function decodeViewPatchAsync(bytes: Uint8Array): Promise<ViewPatchFrame | null> {
+  if (bytes.length === 0 || bytes.length > MAX_SCREEN_FRAME_BYTES) return null;
+  let values: unknown[];
+  try {
+    values = unpackr.unpackMultiple(bytes);
+  } catch {
+    return null;
+  }
+  if (values.length !== 1) return null;
+  const envelope = values[0];
+  if (!isRecord(envelope)) return null;
+  if (envelope.version === SCREEN_CODEC_VERSION) return decodeViewPatch(bytes);
+  if (envelope.version !== SCREEN_CODEC_VERSION_COMPRESSED) return null;
+  if (!hasExactlyKeys(envelope, ["version", "compression", "payload"])) return null;
+  if (envelope.compression !== COMPRESSION_NONE && envelope.compression !== COMPRESSION_DEFLATE) {
+    return null;
+  }
+  if (!(envelope.payload instanceof Uint8Array)) return null;
+  if (envelope.payload.length > MAX_SCREEN_FRAME_BYTES) return null;
+  const inner =
+    envelope.compression === COMPRESSION_NONE
+      ? envelope.payload
+      : await inflateRaw(envelope.payload);
+  if (!inner) return null;
+  return decodeViewPatch(inner);
+}
+
+function decodeFrame(frame: unknown): ViewPatchFrame | null {
   if (
     !isRecord(frame) ||
     !hasExactlyKeys(frame, ["sequence", "view_revision", "base_view_revision", "resume_token", "patch"])
