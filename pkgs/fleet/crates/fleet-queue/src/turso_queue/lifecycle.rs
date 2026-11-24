@@ -2780,7 +2780,18 @@ mod task_history_tests {
         let queue = "repo-health-code-pilot";
         let enq = verb_enqueue(
             &t,
-            &json!({"queue": queue, "task": {"title": "oracle", "payload": {"kind": "ungated"}, "priority": 90}}),
+            &json!({"queue": queue, "packet": {
+                "title": "oracle", "priority": 90,
+                "dedupe_key": "repo-health:v1:fix:developing-today/code:issue:14170",
+                "payload": {
+                    "schema": "repo-task/v1", "kind": "small_fix",
+                    "repo": "developing-today/code", "problem": "p", "priority_reason": "r",
+                    "evidence": ["e"], "acceptance": ["a"], "tests": ["t"], "context_refs": [],
+                    "scope": {"include": ["x"], "exclude": ["y"]}, "risk": {"level": "low", "flags": []},
+                    "timebox_minutes": 45, "issue": {"number": 14170},
+                    "dedupe": {"checked_at": "2026-11-14T00:00:00Z", "basis": "test"}
+                }
+            }}),
         );
         assert_eq!(enq["ok"], true, "{enq}");
         let id = enq["task"]["id"].as_i64().expect("enqueued task id");
@@ -2842,7 +2853,7 @@ mod task_history_tests {
 
         let c3 = claim(&t);
         assert_eq!(c3["ok"], true, "{c3}");
-        let done = verb_complete(&t, &json!({"task_id": id, "worker": "oracle-w", "result": {"note": "oracle"}}));
+        let done = verb_complete(&t, &json!({"task_id": id, "worker": "oracle-w", "result": {"evidence": "https://github.com/developing-today/code/pull/14249"}}));
         assert_eq!(done["ok"], true, "{done}");
         assert_eq!(last_to(&t), "done");
         assert_eq!(last_to(&t), status_of(&t));
