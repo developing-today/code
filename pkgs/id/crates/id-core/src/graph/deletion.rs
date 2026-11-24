@@ -224,7 +224,7 @@ impl DeletionStateMachine {
         match action {
             DeletionAction::Request { request_id, reason } => {
                 checked_label(&reason)?;
-                match self.state {
+                match self.state.clone() {
                     DeletionState::Available => {
                         self.state = DeletionState::DeleteRequested {
                             request_id,
