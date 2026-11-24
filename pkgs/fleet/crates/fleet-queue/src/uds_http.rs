@@ -41,7 +41,27 @@ pub(crate) const MAX_BODY_BYTES: usize = 16 * 1024 * 1024;
 pub(crate) const READ_TIMEOUT: Duration = Duration::from_secs(30);
 /// Bound on simultaneous UDS connections (#6515, thread 4492609760):
 /// past this, new connections are dropped until a slot frees.
-const MAX_CONNECTIONS: usize = 128;
+pub(crate) const MAX_CONNECTIONS: usize = 128;
+
+/// One slot of the in-flight connection cap. Acquired on the accept
+/// loop before a worker thread is spawned; released when it drops.
+pub(crate) struct InFlightSlot(Arc<AtomicUsize>);
+
+impl InFlightSlot {
+    pub(crate) fn try_acquire(in_flight: &Arc<AtomicUsize>) -> Option<Self> {
+        if in_flight.fetch_add(1, Ordering::SeqCst) >= MAX_CONNECTIONS {
+            in_flight.fetch_sub(1, Ordering::SeqCst);
+            return None;
+        }
+        Some(Self(Arc::clone(in_flight)))
+    }
+}
+
+impl Drop for InFlightSlot {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
+    }
+}
 /// How long the stale-socket probe waits for a connect to resolve
 /// before assuming a live owner (#6515, thread 4492609644). A unix
 /// connect to a live listener completes immediately; a full backlog
@@ -382,10 +402,25 @@ fn serve_inner<F>(
 
 #[cfg(test)]
 mod tests {
-    use super::{bind_socket, serve, serve_with_precheck};
+    use super::{InFlightSlot, MAX_CONNECTIONS, bind_socket, serve, serve_with_precheck};
     use std::io::{Read, Write};
     use std::os::unix::fs::PermissionsExt;
     use std::os::unix::net::UnixStream;
+    use std::sync::Arc;
+    use std::sync::atomic::AtomicUsize;
+
+    #[test]
+    fn in_flight_slots_stop_at_the_cap_and_free_on_drop() {
+        let in_flight = Arc::new(AtomicUsize::new(0));
+        let held: Vec<InFlightSlot> = (0..MAX_CONNECTIONS)
+            .map(|_| InFlightSlot::try_acquire(&in_flight).expect("under cap"))
+            .collect();
+        assert!(InFlightSlot::try_acquire(&in_flight).is_none());
+        assert_eq!(in_flight.load(std::sync::atomic::Ordering::SeqCst), MAX_CONNECTIONS);
+        drop(held);
+        assert_eq!(in_flight.load(std::sync::atomic::Ordering::SeqCst), 0);
+        assert!(InFlightSlot::try_acquire(&in_flight).is_some());
+    }
 
     fn temp_socket(tag: &str) -> std::path::PathBuf {
         let dir =

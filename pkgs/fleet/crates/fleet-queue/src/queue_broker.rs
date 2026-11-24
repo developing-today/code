@@ -1184,10 +1184,19 @@ pub fn run() -> i32 {
         ),
     }
 
+    let in_flight = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     for mut req in server.incoming_requests() {
+        let Some(slot) = crate::uds_http::InFlightSlot::try_acquire(&in_flight) else {
+            let _ = req.respond(json_response(
+                503,
+                json!({"error": "too many concurrent requests"}),
+            ));
+            continue;
+        };
         let state = Arc::clone(&state);
         let token = token.clone();
         std::thread::spawn(move || {
+            let _slot = slot;
             let method = req.method().as_str().to_string();
             let target = req.url().to_string();
             let provided = req
