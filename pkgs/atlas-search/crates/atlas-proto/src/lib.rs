@@ -11,6 +11,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value as Json;
 use sha2::{Digest, Sha256};
+use std::collections::BTreeMap;
 use std::sync::OnceLock;
 
 /// The sensitivity ladder, least to most restricted. The ordering
@@ -136,6 +137,57 @@ pub struct FilterSpec {
     pub since: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub until: Option<String>,
+    /// Generic dimensions (#6228 Phase 3): values for dimensions
+    /// beyond the named fields, keyed by dimension name as declared
+    /// in the effective manifest surface. The named fields above
+    /// are aliases for the `kind`/`topic`/`project`/`client`
+    /// dimensions for one release: reads through
+    /// [`FilterSpec::dimension_values`] resolve the named field
+    /// first, and writes through [`FilterSpec::set_dimension`] to a
+    /// named dimension land in the named field, so existing
+    /// named-field behaviour is unchanged.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub dimensions: BTreeMap<String, Vec<String>>,
+}
+
+/// The dimension names carried by [`FilterSpec`]'s named fields.
+/// These stay the wire aliases for the same-named manifest
+/// dimensions (#6228 Phase 3).
+pub const NAMED_DIMENSIONS: [&str; 4] = ["kind", "topic", "project", "client"];
+
+impl FilterSpec {
+    /// Whether `name` is one of the named-field dimensions.
+    pub fn is_named_dimension(name: &str) -> bool {
+        NAMED_DIMENSIONS.contains(&name)
+    }
+
+    /// The values requested for dimension `name`: the named field
+    /// for a named dimension, otherwise the generic dimension map.
+    /// `None` means the request does not constrain that dimension.
+    pub fn dimension_values(&self, name: &str) -> Option<&[String]> {
+        match name {
+            "kind" => Some(&self.kind),
+            "topic" => Some(&self.topic),
+            "project" => Some(&self.project),
+            "client" => Some(&self.client),
+            _ => self.dimensions.get(name).map(Vec::as_slice),
+        }
+    }
+
+    /// Set the values for dimension `name`. A named dimension
+    /// writes its named field (the alias), keeping the generic map
+    /// free of duplicates of the named fields.
+    pub fn set_dimension(&mut self, name: &str, values: Vec<String>) {
+        match name {
+            "kind" => self.kind = values,
+            "topic" => self.topic = values,
+            "project" => self.project = values,
+            "client" => self.client = values,
+            _ => {
+                self.dimensions.insert(name.to_string(), values);
+            }
+        }
+    }
 }
 
 fn default_k() -> usize {
@@ -1032,5 +1084,40 @@ mod tests {
             q.raw_mode = modes[(raw_mode_idx + 1) % 3];
             proptest::prop_assert_ne!(&k1, &q.result_cache_key("q", "s", "personal", expand, group, false));
         }
+    }
+
+    #[test]
+    fn filter_spec_dimensions_roundtrip_and_alias() {
+        // #6228 Phase 3, oracle: the wire contract. A generic
+        // dimension round-trips through JSON; a named dimension
+        // written via set_dimension lands in (and reads back from)
+        // its named field, never the generic map, so named-field
+        // behaviour is unchanged.
+        let mut filters = FilterSpec::default();
+        filters.set_dimension("source-app", vec!["mail".to_string()]);
+        filters.set_dimension("kind", vec!["message".to_string()]);
+        assert_eq!(
+            filters.dimension_values("source-app"),
+            Some(&["mail".to_string()][..])
+        );
+        assert_eq!(
+            filters.dimension_values("kind"),
+            Some(&["message".to_string()][..])
+        );
+        assert!(filters.dimensions.get("kind").is_none());
+        assert_eq!(filters.dimension_values("absent"), None);
+        let wire = serde_json::to_value(&filters).unwrap();
+        assert_eq!(wire["dimensions"]["source-app"], serde_json::json!(["mail"]));
+        assert_eq!(wire["kind"], serde_json::json!(["message"]));
+        let back: FilterSpec = serde_json::from_value(wire).unwrap();
+        assert_eq!(back, filters);
+        // Pre-Phase-3 payloads (no `dimensions` key) still parse,
+        // with an empty map.
+        let legacy: FilterSpec = serde_json::from_str(r#"{"kind":["message"]}"#).unwrap();
+        assert!(legacy.dimensions.is_empty());
+        assert_eq!(
+            legacy.dimension_values("kind"),
+            Some(&["message".to_string()][..])
+        );
     }
 }
