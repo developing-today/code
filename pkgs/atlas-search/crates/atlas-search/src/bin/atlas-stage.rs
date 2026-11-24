@@ -3,7 +3,7 @@
 //! versioned schema, provisioning tool and registry; design
 //! `doc/2026-11-04T21-27-34Z_design_atlas_scaler_revision` section 4.1).
 //!
-//! Six verbs:
+//! Nine verbs:
 //! * `atlas-stage provision --db <path> --unit <id> --owner <o>
 //!   [--sensitivity internal] --registry <path>` — create the unit's
 //!   staging DB, apply the v1 schema, and register the unit as `open`.
@@ -47,12 +47,21 @@
 //!   through the registry's M6 gate. Needs the embedding model +
 //!   ONNX runtime (ATLAS_MODEL_DIR / ATLAS_ORT_LIB, the same
 //!   resolution the atlas-search binary uses).
+//! * `atlas-stage rebuild-memory --export <memories.json>
+//!   --registry <path> --dir <dir> --shard-dir <dir>` — rebuild
+//!   the agent-memory Atlas index from its sources (#14039): the
+//!   provision-corpora + ingest-memory + promote steps in one
+//!   command, into a fresh registry/dir (the staging area is
+//!   disposable and promotion closes it). Prints the rebuild
+//!   report: shard, items, chunks, staged-changed count, and
+//!   fingerprint count. Needs the embedding model + ONNX runtime,
+//!   like `promote`.
 //!
-//! Five of the six are offline: a staging DB is a local libSQL/SQLite
+//! Seven of the nine are offline: a staging DB is a local libSQL/SQLite
 //! file today; hosted Turso creation is the aggregator slice's
-//! deployment surface, not this foundation. `promote` is the
-//! exception: it needs the embedding model + ONNX runtime, as its
-//! entry above states.
+//! deployment surface, not this foundation. `promote` and
+//! `rebuild-memory` are the exceptions: they need the embedding
+//! model + ONNX runtime, as their entries above state.
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -199,6 +208,25 @@ enum Command {
         /// Shard topic for the promoted entries.
         #[arg(long, default_value = "codeconfig")]
         topic: String,
+    },
+    /// Rebuild the agent-memory Atlas index from its sources
+    /// (#14039): provision-corpora + ingest-memory + promote in one
+    /// command, into a fresh registry/dir. Needs the embedding
+    /// model + ONNX runtime, like `promote`.
+    RebuildMemory {
+        /// The read-only JSON export of the memory-lancedb store.
+        #[arg(long)]
+        export: PathBuf,
+        /// The registry store file (created if missing).
+        #[arg(long)]
+        registry: PathBuf,
+        /// Directory each corpus unit's staging DB is provisioned in.
+        #[arg(long)]
+        dir: PathBuf,
+        /// Directory the new core scan shard is written into
+        /// (created if missing).
+        #[arg(long)]
+        shard_dir: PathBuf,
     },
     /// List units in a lifecycle state (open|closing|merged).
     Units {
@@ -475,6 +503,40 @@ fn run(cli: Cli) -> Result<(), String> {
             for u in &units {
                 println!("{}", unit_json(u));
             }
+            Ok(())
+        }
+        Command::RebuildMemory {
+            export,
+            registry,
+            dir,
+            shard_dir,
+        } => {
+            let raw = std::fs::read_to_string(&export)
+                .map_err(|e| format!("reading {}: {e}", export.display()))?;
+            let entries =
+                atlas_core::memory::parse_memory_export(&raw).map_err(|e| e.to_string())?;
+            let registry = Registry::open(&registry).map_err(|e| e.to_string())?;
+            let embedder = load_doc_embedder()?;
+            let report = atlas_core::memory::rebuild_agent_memory_index(
+                &registry,
+                &dir,
+                &entries,
+                &shard_dir,
+                &embedder,
+                &now_utc(),
+            )
+            .map_err(|e| e.to_string())?;
+            println!(
+                "{{\"unit\":{},\"shard\":{},\"shard_path\":{},\"items\":{},\"chunks\":{},\"dims\":{},\"staged_changed\":{},\"fingerprints\":{}}}",
+                json_str(&report.unit_id),
+                json_str(&report.shard_name),
+                json_str(&report.shard_path.display().to_string()),
+                report.items,
+                report.chunks,
+                report.dims,
+                report.staged_changed.len(),
+                report.fingerprints.len(),
+            );
             Ok(())
         }
     }

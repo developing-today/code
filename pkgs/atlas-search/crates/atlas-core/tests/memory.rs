@@ -14,8 +14,8 @@ use atlas_core::embed::DocEmbedder;
 use atlas_core::error::Result;
 use atlas_core::filters::Filters;
 use atlas_core::memory::{
-    AGENT_MEMORY_UNIT, MEMORY_CORPORA, parse_memory_export, register_memory_corpora,
-    stage_memory_export_in_db,
+    AGENT_MEMORY_UNIT, MEMORY_CORPORA, MemoryEntry, parse_memory_export,
+    rebuild_agent_memory_index, register_memory_corpora, stage_memory_export_in_db,
 };
 use atlas_core::shards::scan::{FanoutQuery, fanout_scan};
 use atlas_core::shards::{Tier, TierCeiling, open_from_spec};
@@ -248,12 +248,140 @@ fn a_new_memory_revision_replaces_the_existing_staged_item() {
     assert_eq!(items[0].text, "A corrected transcript of the same memory.");
 }
 
-/// Oracle: the slice's acceptance — after promotion through the
-/// aggregator (embed-at-promotion under the mandated model gate),
-/// the production fan-out returns the agent-memory hit for a
-/// matching query, the shard chunk carries the memory's
-/// source-of-truth pointer, and the unit ends merged with its
-/// merge manifest recorded.
+/// Rebuild the agent-memory index from a source export into a
+/// fresh staging area and return the report plus the fan-out
+/// ranking for a transcript-shaped query vector.
+fn rebuild_and_rank(
+    dir: &Path,
+    entries: &[MemoryEntry],
+) -> (atlas_core::memory::RebuildReport, Vec<(i64, f64)>) {
+    let registry = Registry::open(&dir.join("registry.db")).unwrap();
+    let report = rebuild_agent_memory_index(
+        &registry,
+        dir,
+        entries,
+        &dir.join("shards"),
+        &KeywordEmbedder,
+        NOW,
+    )
+    .unwrap();
+    (report, fanout_ranking(&dir.join("shards")))
+}
+
+/// The fan-out ranking for a transcript-shaped query over one shard
+/// dir: (chunk id, distance) in rank order.
+fn fanout_ranking(shard_dir: &Path) -> Vec<(i64, f64)> {
+    let set = open_from_spec(
+        &format!("dir:{}", shard_dir.display()),
+        TierCeiling(Tier::Internal),
+        atlas_core::DEFAULT_VEC_TABLE,
+    )
+    .unwrap();
+    let filters = Filters::new(vec![], vec![], vec![], vec![], "personal", None, None).unwrap();
+    fanout_scan(
+        &set,
+        &FanoutQuery {
+            qvec: &[1.0, 0.0, 0.0],
+            shard_top_k: 10,
+            global_top_k: 10,
+            filters: &filters,
+            topics: None,
+            ceiling: TierCeiling(Tier::Internal),
+        },
+    )
+    .unwrap()
+    .hits
+    .iter()
+    .map(|h| (h.chunk_id, h.dist))
+    .collect()
+}
+
+/// Oracle: the rebuild proof (design section 2 — the index is
+/// disposable, the corpora never are). Two builds from the same
+/// source, each into its own fresh staging area, produce the same
+/// shard name, the same chunk fingerprints, and the same fan-out
+/// ranking for a matching query: the rebuilt index is the same
+/// index.
+#[test]
+fn rebuilt_agent_memory_index_matches_the_first_build() {
+    let entries = parse_memory_export(EXPORT).unwrap();
+    let (first, first_ranking) = rebuild_and_rank(&temp_dir("rebuild-first"), &entries);
+    let (second, second_ranking) = rebuild_and_rank(&temp_dir("rebuild-second"), &entries);
+
+    assert_eq!(first.items, 2);
+    assert_eq!(first.chunks, 2);
+    assert_eq!(first.staged_changed.len(), 2, "fresh area stages all rows");
+    assert_eq!(first.shard_name, second.shard_name);
+    assert_eq!(first.items, second.items);
+    assert_eq!(first.chunks, second.chunks);
+    assert_eq!(first.dims, second.dims);
+    assert_eq!(
+        first.fingerprints, second.fingerprints,
+        "same source rebuilds to the same shard content"
+    );
+    assert_eq!(
+        first
+            .fingerprints
+            .iter()
+            .map(|(source, _)| source.as_str())
+            .collect::<Vec<_>>(),
+        ["memory-lancedb:mem-transcript", "memory-lancedb:mem-deploy"],
+        "fingerprints name each row's source-of-truth pointer"
+    );
+    assert_eq!(
+        first_ranking, second_ranking,
+        "the rebuilt index ranks the same hits in the same order"
+    );
+    assert_eq!(first_ranking.len(), 2);
+    assert_eq!(first_ranking[0].0, 1, "the transcript memory ranks first");
+}
+
+/// Oracle: a rebuild from a revised source converges to the current
+/// source. The revised export edits one memory and drops the other;
+/// the rebuilt shard carries the revised text under the same source
+/// pointer, with a new content hash, and no longer contains the
+/// dropped row at all. (Incremental staging never deletes on a
+/// partial export — that guard stays; deletion converges at
+/// rebuild, when the staging area is fresh.)
+#[test]
+fn rebuild_after_a_source_revision_carries_only_the_current_source() {
+    let entries = parse_memory_export(EXPORT).unwrap();
+    let (first, _) = rebuild_and_rank(&temp_dir("rebuild-rev-first"), &entries);
+
+    let mut revised = entries[0].clone();
+    revised.text = "A corrected transcript of the same memory.".to_string();
+    revised.created_at_ms = Some(revised.created_at_ms.unwrap() + 60_000.0);
+    let (second, second_ranking) =
+        rebuild_and_rank(&temp_dir("rebuild-rev-second"), std::slice::from_ref(&revised));
+
+    assert_eq!(second.items, 1);
+    assert_eq!(second.chunks, 1);
+    assert_eq!(second.fingerprints.len(), 1);
+    assert_eq!(
+        second.fingerprints[0].0, "memory-lancedb:mem-transcript",
+        "the revised row keeps its source identity"
+    );
+    assert_ne!(
+        first.fingerprints[0].1, second.fingerprints[0].1,
+        "the revised text hashes differently"
+    );
+    assert!(
+        !second
+            .fingerprints
+            .iter()
+            .any(|(source, _)| source.contains("mem-deploy")),
+        "a row the source dropped is absent from the rebuilt index"
+    );
+    assert_eq!(second_ranking.len(), 1);
+    assert_eq!(second_ranking[0].0, 1);
+
+    // The rebuilt shard's stored text is the revised text.
+    let conn = rusqlite::Connection::open(&second.shard_path).unwrap();
+    let text: String = conn
+        .query_row("SELECT text FROM chunks ORDER BY id", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(text, "A corrected transcript of the same memory.");
+}
 #[test]
 fn promoted_agent_memory_is_searchable_by_the_fanout() {
     let dir = temp_dir("search");
