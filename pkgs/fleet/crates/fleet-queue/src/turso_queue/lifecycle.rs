@@ -87,6 +87,7 @@ pub(crate) fn verb_reprioritize(t: &TursoBackend, req: &Value) -> Value {
             ("BEGIN IMMEDIATE", vec![]),
             ("UPDATE tasks SET priority = ?, payload = CASE WHEN ? IS NULL THEN payload ELSE ? END, progress = CASE WHEN ? IS NOT NULL AND ? > 0 THEN json_set(COALESCE(progress, '{}'), '$.reprioritize_sync_pending', true) ELSE progress END, updated_at = ? WHERE id = ? AND priority = ? AND status IN ('queued','claimed','parked','blocked')", vec![Arg::Int(to), payload_text.clone().map(Arg::Text).unwrap_or(Arg::Null), payload_text.map(Arg::Text).unwrap_or(Arg::Null), repo.map(|s| Arg::Text(s.to_owned())).unwrap_or(Arg::Null), issue_number.map(Arg::Int).unwrap_or(Arg::Null), Arg::Text(now_iso()), Arg::Int(id), Arg::Int(from)]),
             ("INSERT INTO events (worker_id, task_id, kind, detail, created_at) SELECT ?, ?, 'reprioritized', ?, ? WHERE changes() = 1", vec![Arg::Text(actor.to_string()), Arg::Int(id), Arg::Text(detail.to_string()), Arg::Text(now_iso())]),
+            (HISTORY_INSERT_SQL, vec![Arg::Null, Arg::Null]),
             // Persist the external side-effect intent in the same
             // transaction. Queue-only tasks have no linked issue and
             // intentionally produce no sync row.
@@ -2305,7 +2306,7 @@ mod reprioritize_tests {
     use std::io::{BufRead, BufReader, Read, Write};
     use std::sync::{Arc, Mutex};
 
-    fn fake_backend() -> (TursoBackend, Arc<Mutex<rusqlite::Connection>>) {
+    pub(super) fn fake_backend() -> (TursoBackend, Arc<Mutex<rusqlite::Connection>>) {
         let conn = rusqlite::Connection::open_in_memory().unwrap();
         for ddl in SCHEMA {
             conn.execute_batch(ddl).unwrap();
@@ -2532,7 +2533,7 @@ mod reprioritize_tests {
         r.last_insert_rowid.unwrap()
     }
 
-    fn events_for(t: &TursoBackend, task_id: i64, kind: &str) -> Vec<Value> {
+    pub(super) fn events_for(t: &TursoBackend, task_id: i64, kind: &str) -> Vec<Value> {
         t.query_objs(
             "SELECT id, worker_id, task_id, kind, detail, created_at FROM events WHERE task_id = ? AND kind = ? ORDER BY id",
             &[Arg::Int(task_id), Arg::Text(kind.to_string())],
@@ -2750,5 +2751,179 @@ mod reprioritize_tests {
             )
             .unwrap();
         assert!(rows.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod task_history_tests {
+    use super::reprioritize_tests::{events_for, fake_backend};
+    use super::*;
+
+    fn history_rows(t: &TursoBackend, task_id: i64) -> Vec<Value> {
+        t.query_objs(
+            "SELECT event_id, kind, from_status, to_status, from_priority, to_priority, actor, session_id, model_id \
+             FROM task_history WHERE task_id = ? ORDER BY id",
+            &[Arg::Int(task_id)],
+            &[],
+        )
+        .unwrap()
+    }
+
+    /// Oracle (#14170 Q1): a scripted lifecycle through the real verbs
+    /// writes exactly one task_history row per mapped event, in order,
+    /// and each row's to_status equals the task's actual status right
+    /// after that verb. from/to, actor, session and model are asserted
+    /// on the rows the claim, park, block and complete verbs wrote.
+    #[test]
+    fn scripted_lifecycle_history_is_one_to_one_with_transitions() {
+        let (t, _) = fake_backend();
+        let queue = "repo-health-code-pilot";
+        let enq = verb_enqueue(
+            &t,
+            &json!({"queue": queue, "packet": {
+                "title": "oracle", "priority": 90,
+                "dedupe_key": "repo-health:v1:fix:developing-today/code:issue:14170",
+                "payload": {
+                    "schema": "repo-task/v1", "kind": "small_fix",
+                    "repo": "developing-today/code", "problem": "p", "priority_reason": "r",
+                    "evidence": ["e"], "acceptance": ["a"], "tests": ["t"], "context_refs": [],
+                    "scope": {"include": ["x"], "exclude": ["y"]}, "risk": {"level": "low", "flags": []},
+                    "timebox_minutes": 45, "issue": {"number": 14170},
+                    "dedupe": {"checked_at": "2026-11-14T00:00:00Z", "basis": "test"}
+                }
+            }}),
+        );
+        assert_eq!(enq["ok"], true, "{enq}");
+        let id = enq["row"]["id"].as_i64().expect("enqueued task id");
+        let status_of = |t: &TursoBackend| {
+            get_task(t, id).unwrap().unwrap()["status"]
+                .as_str()
+                .unwrap()
+                .to_string()
+        };
+        let last_to = |t: &TursoBackend| {
+            history_rows(t, id)
+                .last()
+                .map(|r| r["to_status"].as_str().unwrap_or("").to_string())
+                .unwrap_or_default()
+        };
+        assert_eq!(history_rows(&t, id).len(), 1, "enqueued row");
+        assert_eq!(last_to(&t), status_of(&t));
+
+        let claim = |t: &TursoBackend| {
+            verb_claim(
+                t,
+                &json!({"worker": "oracle-w", "queue": queue, "lane": "code-oracle",
+                        "session_id": "ses_oracle", "model_provider": "anthropic",
+                        "model_id": "claude-haiku-5-5", "model_variant": "default"}),
+            )
+        };
+        let c = claim(&t);
+        assert_eq!(c["ok"], true, "{c}");
+        assert_eq!(last_to(&t), "claimed");
+        assert_eq!(last_to(&t), status_of(&t));
+
+        let p = verb_park(&t, &json!({"task_id": id, "worker": "oracle-w", "reason": "wait", "delay_seconds": 60}));
+        assert_eq!(p["ok"], true, "{p}");
+        assert_eq!(last_to(&t), "parked");
+        assert_eq!(last_to(&t), status_of(&t));
+
+        let w = verb_wake(&t, &json!({"task_id": id, "worker": "oracle-w", "reason": "ready"}));
+        assert_eq!(w["ok"], true, "{w}");
+        assert_eq!(last_to(&t), "queued", "wake returns the task to the queue");
+        assert_eq!(last_to(&t), status_of(&t));
+
+        let c2 = claim(&t);
+        assert_eq!(c2["ok"], true, "{c2}");
+        assert_eq!(last_to(&t), "claimed");
+        let b = verb_block(&t, &json!({"task_id": id, "worker": "oracle-w", "reason_class": "external", "blocker": "oracle"}));
+        assert_eq!(b["ok"], true, "{b}");
+        assert_eq!(last_to(&t), "blocked");
+        assert_eq!(last_to(&t), status_of(&t));
+
+        let u = verb_unblock(&t, &json!({"task_id": id, "worker": "oracle-w", "reason": "clear"}));
+        assert_eq!(u["ok"], true, "{u}");
+        assert_eq!(last_to(&t), status_of(&t));
+
+        let r = verb_reprioritize(&t, &json!({"task_id": id, "priority": 20, "worker": "oracle-w", "reason": "hot"}));
+        assert_eq!(r["ok"], true, "{r}");
+        let rp = history_rows(&t, id).last().unwrap().clone();
+        assert_eq!(rp["kind"], "reprioritized");
+        assert_eq!((rp["from_priority"].as_i64(), rp["to_priority"].as_i64()), (Some(90), Some(20)));
+
+        let c3 = claim(&t);
+        assert_eq!(c3["ok"], true, "{c3}");
+        let done = verb_complete(&t, &json!({"task_id": id, "worker": "oracle-w", "result": {
+            "evidence": "https://github.com/developing-today/code/pull/14249",
+            "disposition": {
+                "checked_at": now_iso(), "source": "oracle",
+                "issue": {"number": 14170, "state": "closed", "closed_at": now_iso()},
+                "pulls": [{"number": 14249, "state": "closed", "merged_at": now_iso()}],
+                "verdict": "merged_verified"
+            }
+        }}));
+        assert_eq!(done["ok"], true, "{done}");
+        assert_eq!(last_to(&t), "done");
+        assert_eq!(last_to(&t), status_of(&t));
+
+        let rows = history_rows(&t, id);
+        let events: Vec<Value> = {
+            let mut all = Vec::new();
+            for kind in ["enqueued", "claimed", "parked", "woken", "blocked", "unblocked", "reprioritized", "completed"] {
+                all.extend(events_for(&t, id, kind));
+            }
+            all.sort_by_key(|e| e["id"].as_i64().unwrap_or(0));
+            all
+        };
+        assert_eq!(rows.len(), events.len(), "1:1 history rows and mapped events");
+        for (row, ev) in rows.iter().zip(events.iter()) {
+            assert_eq!(row["event_id"], ev["id"], "row maps to its event");
+            assert_eq!(row["kind"], ev["kind"]);
+        }
+        let claimed = rows.iter().find(|r| r["kind"] == "claimed").unwrap();
+        assert_eq!(claimed["actor"], "oracle-w");
+        assert_eq!(claimed["session_id"], "ses_oracle");
+        assert_eq!(claimed["model_id"], "claude-haiku-5-5");
+        let parked = rows.iter().find(|r| r["kind"] == "parked").unwrap();
+        assert_eq!((parked["from_status"].as_str(), parked["to_status"].as_str()), (Some("claimed"), Some("parked")));
+        let blocked = rows.iter().find(|r| r["kind"] == "blocked").unwrap();
+        assert_eq!(blocked["to_status"], "blocked");
+        assert_eq!(blocked["actor"], "oracle-w");
+    }
+
+    /// Oracle (#14170 Q1): backfill inserts one row per mapped event
+    /// that has none (source='backfill'), reports census = inserted +
+    /// skipped, is idempotent, and history-since returns the rows in
+    /// id order for the task.
+    #[test]
+    fn backfill_reconciles_to_events_census_and_is_idempotent() {
+        let (t, _) = fake_backend();
+        let mut task = |w: &str| {
+            t.exec(
+                "INSERT INTO events (worker_id, task_id, kind, detail, created_at) VALUES (?, 7, ?, '{}', '2026-11-01T00:00:00Z')",
+                &[Arg::Text(w.to_string()), Arg::Text("claimed".to_string())],
+            )
+            .unwrap();
+        };
+        task("w1");
+        task("w2");
+        t.exec(
+            "INSERT INTO events (worker_id, task_id, kind, detail, created_at) VALUES ('w3', 7, 'checkpoint', '{}', '2026-11-01T00:00:00Z')",
+            &[],
+        )
+        .unwrap();
+        let first = verb_history_backfill(&t, &json!({}));
+        assert_eq!(first["ok"], true, "{first}");
+        assert_eq!(first["census"], 2, "{first}");
+        assert_eq!(first["inserted"], 2, "{first}");
+        assert_eq!(first["skipped"], 0, "{first}");
+        let second = verb_history_backfill(&t, &json!({}));
+        assert_eq!(second["inserted"], 0, "{second}");
+        assert_eq!(second["skipped"], 2, "{second}");
+        let rows = history_rows(&t, 7);
+        assert_eq!(rows.len(), 2);
+        assert!(rows.iter().all(|r| r["from_status"] == "queued" && r["to_status"] == "claimed"));
+        let since = verb_history_since(&t, &json!({"task_id": 7}));
+        assert_eq!(since["rows"].as_array().unwrap().len(), 2, "{since}");
     }
 }

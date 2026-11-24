@@ -194,6 +194,13 @@ pub(crate) fn verb_enqueue(t: &TursoBackend, req: &Value) -> Value {
             ],
         )?;
         let id = ins.last_insert_rowid.unwrap_or(0);
+        event(
+            t,
+            Some("enqueue_repo_task"),
+            Some(id),
+            "enqueued",
+            &json!({"queue": queue, "dedupe_key": dedupe, "platform": platform}),
+        )?;
         // Revive-on-enqueue (#6838): the key's only prior row(s) are
         // terminal, so this fresh task is a revival, not a first
         // enqueue. Link it to its predecessor in progress (the audit
