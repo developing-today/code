@@ -19,12 +19,12 @@
 
 ### 1.1 Where the binary lives — three different builds in play
 
-| Location | What it is | Version evidence |
-|---|---|---|
-| `~/.local/share/hatch-recovery/bin/fleet` (sandbox seat; `~/tools/bin/fleet` symlinks here; also on PATH as `fleet`) | The seat's working binary. 9,678,656 bytes, static-pie ELF, sha256 `c689a9006ea57e66fcaa7e5b283974e7a29f29e7a026e4522a67fab661035b04` (matches the sibling `fleet.sha256`). Byte-identical in size/timestamp to the sibling file `fleet-static-3cb241a` in the same directory. | `fleet version`: `fleet 0.1.0`, derived `0.1.0-dev+g044a6bd`, **source rev `044a6bda94bdd2fead70566816a3e4cfcc2e3d5a`** |
-| `~/.local/share/deploy/profiles/queue-broker/current/bin/fleet` on the laptop → `/nix/store/0ymw7b3zl2hxij9npmzal6h5fq2g4cp3-fleet-0.1.0` | The deployed queue-broker build (see §3.5). | `fleet version` on the laptop: derived `0.1.0-dev+gb8bbcc0`, **source rev `b8bbcc0c49564ab31db8d58b026b67532db9491e`** — this is the "b8bbcc0 binary" the book's surface describes |
-| `~/tools/fleet` (sandbox) | An older 7,632,520-byte copy (2026-11-22 restore). **It does not execute from the sandbox**: `cannot execute: required file not found` (its interpreter is absent — the known `~/tools/fleet` exec defect recorded in MEMORY.md). Do not cite it as a working binary. | n/a (not runnable) |
-| Laptop checkout source, `~/git/code` HEAD | The source of truth the next rollout will build. HEAD moved during this pass: `a66148f7393f86658cbcb75a9237924dd2c3d33f` at first read, `cafdfdc5c9c33839dc8e5e126f62b6487d358a98` at last `git log` read. | `git rev-parse HEAD` via laptop-ssh |
+| Location                                                                                                                                  | What it is                                                                                                                                                                                                                                                                     | Version evidence                                                                                                                                                                   |
+| ----------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `~/.local/share/hatch-recovery/bin/fleet` (sandbox seat; `~/tools/bin/fleet` symlinks here; also on PATH as `fleet`)                      | The seat's working binary. 9,678,656 bytes, static-pie ELF, sha256 `c689a9006ea57e66fcaa7e5b283974e7a29f29e7a026e4522a67fab661035b04` (matches the sibling `fleet.sha256`). Byte-identical in size/timestamp to the sibling file `fleet-static-3cb241a` in the same directory. | `fleet version`: `fleet 0.1.0`, derived `0.1.0-dev+g044a6bd`, **source rev `044a6bda94bdd2fead70566816a3e4cfcc2e3d5a`**                                                            |
+| `~/.local/share/deploy/profiles/queue-broker/current/bin/fleet` on the laptop → `/nix/store/0ymw7b3zl2hxij9npmzal6h5fq2g4cp3-fleet-0.1.0` | The deployed queue-broker build (see §3.5).                                                                                                                                                                                                                                    | `fleet version` on the laptop: derived `0.1.0-dev+gb8bbcc0`, **source rev `b8bbcc0c49564ab31db8d58b026b67532db9491e`** — this is the "b8bbcc0 binary" the book's surface describes |
+| `~/tools/fleet` (sandbox)                                                                                                                 | An older 7,632,520-byte copy (2026-11-22 restore). **It does not execute from the sandbox**: `cannot execute: required file not found` (its interpreter is absent — the known `~/tools/fleet` exec defect recorded in MEMORY.md). Do not cite it as a working binary.          | n/a (not runnable)                                                                                                                                                                 |
+| Laptop checkout source, `~/git/code` HEAD                                                                                                 | The source of truth the next rollout will build. HEAD moved during this pass: `a66148f7393f86658cbcb75a9237924dd2c3d33f` at first read, `cafdfdc5c9c33839dc8e5e126f62b6487d358a98` at last `git log` read.                                                                     | `git rev-parse HEAD` via laptop-ssh                                                                                                                                                |
 
 Other staged builds in `~/.local/share/hatch-recovery/bin/`: `fleet-src-d26fa16`,
 `fleet-static-7bdd04a`, `fleet-static-b8bbcc0` (the last cannot be invoked under its
@@ -43,8 +43,8 @@ From `fleet version` / `fleet capabilities` (sandbox binary, verbatim facts):
 - Version `0.1.0`; derived version `0.1.0-dev+g044a6bd`; build name `fleet`.
 - 15 capabilities, all enabled in this build (usable set = compiled set):
   `proxy-connect, proxy-serve, proxy-raw-splice, queue, queue-broker, secrets-broker,
-  search, search-serve, dispatch, dispatch-test, laptop-agent, secrets, gh, bridge,
-  agent`. There is no `shell` capability atom — the `shell` domain rides on `agent`
+search, search-serve, dispatch, dispatch-test, laptop-agent, secrets, gh, bridge,
+agent`. There is no `shell` capability atom — the `shell` domain rides on `agent`
   (also stated in book `getting-started/shape.md`).
 - Multicall shape: behaviour is selected by argv0, then by the first argument.
   Aliases: `queue`←`repo-queue`; `serve`←`queue-broker`, `secrets-broker`;
@@ -64,47 +64,47 @@ Purposes are the binary's own one-liners / usage text, condensed. Flags are list
 only where they carry meaning beyond the obvious; full flag tables are in the book's
 reference chapters (§2).
 
-**`fleet queue`** — *Repo work queue: enqueue, claim, and complete tasks through the
-queue broker.* Alias argv0: `repo-queue`. 31 top-level verbs in the domain help
+**`fleet queue`** — _Repo work queue: enqueue, claim, and complete tasks through the
+queue broker._ Alias argv0: `repo-queue`. 31 top-level verbs in the domain help
 listing, three of which are groups (`fallback`, `outbox`, `stack`) and one a combined
 listing entry (`dispatch|session|surfaces`):
 
-| Verb | Purpose (from `--help`) |
-|---|---|
-| `validate <packet-path>` | Validates a task packet without enqueuing it. |
-| `enqueue <packet-path> [--queue] [--platform] [--dry-run] [--shadow-intent]` | Enqueues a task packet. |
-| `list [--queue] [--status] [--limit] [--not-before] [--lane] [--worker] [--task]` | Lists tasks; bare `list` = broker default ordering (newest terminal rows first); `--status queued\|parked\|claimed\|blocked` for actionable work. |
-| `claim [--queue] [--worker] [--lease-seconds] [--lane] [--task] [--count] [--from-session] [--platform] [--session-id] [--model-provider/--model-id/--model-variant] [--filter] [--pool] [--launched-by] [--remaining-budget-minutes] [--handoff] [--bind]` | Claims the highest-priority eligible task. |
-| `release <task-id> [--worker] [--lane] [--reason]` | Releases a held claim. (Domain help listing omits `--lane`; the verb's own `--help` includes it — a listing/help skew in the binary itself.) |
-| `lane <task-id> [--worker] [--exclusion-reason] [--opencode-reason] [--limit-platform/--limit-reason/--clear-platform-limit]` | Reports lane progress on a task. |
-| `bind <task-id> --session-id <id> [--worker] [--launched-by] [--model-*]` | Binds a worker/session to a task. |
-| `heartbeat <task-id> [--extend-seconds] [--progress/--progress-file]` | Refreshes a claim lease. |
-| `checkpoint <task-id> [--stage] [--progress/--progress-file]` | Records a progress checkpoint. |
-| `park <task-id> --reason <text> [--delay-seconds] [--not-before] [--ready-condition] [--execution] [--required-budget-minutes] [--hands <kind> --action <text>]` | Parks a task. A park that waits on a person is refused unless it is a hands item (FDR-0013): `--hands physical\|interactive-login\|payment\|signature` with a five-minute `--action`. |
-| `wake <task-id> [--reason]` | Wakes a parked task. |
-| `block <task-id> --reason-class <c> --blocker <b> [--blocked-by-pr/--blocked-by-issue/--blocked-by-task/--blocked-by-ci] [--dep-recheck-seconds] [--dep-max-ttl-seconds] [--hands …]` | Marks a task blocked; same FDR-0013 hands rule as `park`. |
-| `unblock <task-id> [--reason] [--drop-dep <list>]` | Clears blocked state; `--drop-dep` drops only named `kind:ref` dep entries (`issue:`/`pr:`/`ci:`/`task:`), releasing the task only when the last dep is dropped. |
-| `dep-recheck [--task] [--limit]` | Rechecks task dependencies. |
-| `quarantine-recheck [--task] [--limit]` | Rechecks quarantined tasks (diagnose/release only — it cannot fix a still-malformed packet; see §3.4, §4.2). |
-| `cancel <task-id> [--reason]` | Cancels a task. |
-| `revive <task-id> [--reason] [--not-before]` | Revives a terminal task. |
-| `fail <task-id> [--error] [--reason-class] [--execution]` | Fails a task. |
-| `complete <task-id> [--result/--result-file] [--telemetry] [--execution]` | Completes a task. |
-| `verify-disposition <issue> --repo <owner/name> [--pr …] [--follow-up-task/--follow-up-issue/--follow-up-pr] [--staleness-seconds] [--json]` | Reads the issue and linked PRs back from GitHub and prints the disposition a terminal completion must carry (#10611); exits 1 when the broker's gate would reject it. |
-| `timeline <task-id> [--json]` / `history` (alias) | Shows a task's event timeline. |
-| `show <task-id> [--limit] [--json]` | Shows one task's current details and recent history. |
-| `models [--days] [--json]` | Rolls up serving-model stamps. |
-| `health [--queue]` | Broker health (live output observed in this pass: per-queue counts incl. `queued/claimed/parked/malformed_parked/handed_off/blocked/dep_blocked/done/cancelled/failed`). |
-| `signal [--queue] [--reason]` | Sends a queue signal. |
-| `fallback <scan\|status\|claim\|heartbeat\|release\|complete\|unblock> …` | GitHub-backed queue used when the primary broker is down; issue comments carry the claims. `scan` lists live/stale claims across fallback repos; `claim` posts a claim-marker comment (races detected on read-back). Note: the domain listing says `fallback <scan\|status\|claim\|heartbeat\|release\|unblock>` while the verb's own help adds `complete` — another listing/help skew. |
-| `dispatch --repo <owner/name> --command '<cmd>' [--ref] [--runner auto\|github\|blacksmith] [--platform linux\|macos] [--container] [--surface] [--followup] [--push-nix-cache] [--actions-cache …] [--allow-paid-blacksmith] [--laptop-busy] [--dispatch] [--json] [--registry]` | Placement dispatch (absorbed `fleet-place`): dry-run unless `--dispatch`; prints the placement decision / session handle. |
-| `session <status\|result\|list> [HANDLE\|OWNER/REPO#RUN_ID] [--mine] [--json] [--registry]` | Placement-session inspection. Verified live in this pass: `session list` returned 6 local records (`fp_…` handles in states dispatched/queued/succeeded/running). |
-| `surfaces [--registry]` | Prints the resolved placement registry verbatim as JSON. Verified live: registry version 2, owners `developing-today` (cap 20, macOS 5, free-org), `developing-today-forks` (20/5), `dezren39` (40/5, pro); surfaces `fleet-personal`, `fleet-org`, `fleet-forks` (active, github-actions), `org-run` (standby), `fleet-org-blacksmith` (blacksmith, 3,000 free min/mo, paid cap 0), `codespace-overflow` (pending-scope, max 3 live), `laptop` (handoff-only). |
-| `outbox <enqueue\|list\|metrics\|claim\|resolve\|drain>` | Creation-outbox (GitHub issue/PR creation requests): `enqueue [--repo] [--kind] [--dedup-key] [--producer] [--payload/--payload-file]`; `resolve <id> [--outcome done\|rate_limited\|uncertain\|failed] [--github-number/--github-url] [--retry-after] [--error]`; `drain [--owner] [--max]`. |
-| `stack <record\|list\|transition\|restack\|replay>` | PR-stack intents: `record --stack --repo --branch [--base-branch] [--head-sha] [--issue] [--pr] --lane`; `transition --stack --position --to [--pr] [--conflict-detail]`; `restack --stack --position --base`; `replay [--stack] [--repo-dir] [--dry-run]`. |
-| **`repair` — ABSENT** | `fleet queue repair --help` on both the sandbox binary (044a6bd) and the deployed laptop binary (b8bbcc0) answers `repo-queue: unknown command "repair"` (exit 2) and prints the verb list without it. The verb exists only in `main` source (§3.4, §4.2). |
+| Verb                                                                                                                                                                                                                                                                              | Purpose (from `--help`)                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `validate <packet-path>`                                                                                                                                                                                                                                                          | Validates a task packet without enqueuing it.                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| `enqueue <packet-path> [--queue] [--platform] [--dry-run] [--shadow-intent]`                                                                                                                                                                                                      | Enqueues a task packet.                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| `list [--queue] [--status] [--limit] [--not-before] [--lane] [--worker] [--task]`                                                                                                                                                                                                 | Lists tasks; bare `list` = broker default ordering (newest terminal rows first); `--status queued\|parked\|claimed\|blocked` for actionable work.                                                                                                                                                                                                                                                                                                               |
+| `claim [--queue] [--worker] [--lease-seconds] [--lane] [--task] [--count] [--from-session] [--platform] [--session-id] [--model-provider/--model-id/--model-variant] [--filter] [--pool] [--launched-by] [--remaining-budget-minutes] [--handoff] [--bind]`                       | Claims the highest-priority eligible task.                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| `release <task-id> [--worker] [--lane] [--reason]`                                                                                                                                                                                                                                | Releases a held claim. (Domain help listing omits `--lane`; the verb's own `--help` includes it — a listing/help skew in the binary itself.)                                                                                                                                                                                                                                                                                                                    |
+| `lane <task-id> [--worker] [--exclusion-reason] [--opencode-reason] [--limit-platform/--limit-reason/--clear-platform-limit]`                                                                                                                                                     | Reports lane progress on a task.                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| `bind <task-id> --session-id <id> [--worker] [--launched-by] [--model-*]`                                                                                                                                                                                                         | Binds a worker/session to a task.                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| `heartbeat <task-id> [--extend-seconds] [--progress/--progress-file]`                                                                                                                                                                                                             | Refreshes a claim lease.                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| `checkpoint <task-id> [--stage] [--progress/--progress-file]`                                                                                                                                                                                                                     | Records a progress checkpoint.                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| `park <task-id> --reason <text> [--delay-seconds] [--not-before] [--ready-condition] [--execution] [--required-budget-minutes] [--hands <kind> --action <text>]`                                                                                                                  | Parks a task. A park that waits on a person is refused unless it is a hands item (FDR-0013): `--hands physical\|interactive-login\|payment\|signature` with a five-minute `--action`.                                                                                                                                                                                                                                                                           |
+| `wake <task-id> [--reason]`                                                                                                                                                                                                                                                       | Wakes a parked task.                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| `block <task-id> --reason-class <c> --blocker <b> [--blocked-by-pr/--blocked-by-issue/--blocked-by-task/--blocked-by-ci] [--dep-recheck-seconds] [--dep-max-ttl-seconds] [--hands …]`                                                                                             | Marks a task blocked; same FDR-0013 hands rule as `park`.                                                                                                                                                                                                                                                                                                                                                                                                       |
+| `unblock <task-id> [--reason] [--drop-dep <list>]`                                                                                                                                                                                                                                | Clears blocked state; `--drop-dep` drops only named `kind:ref` dep entries (`issue:`/`pr:`/`ci:`/`task:`), releasing the task only when the last dep is dropped.                                                                                                                                                                                                                                                                                                |
+| `dep-recheck [--task] [--limit]`                                                                                                                                                                                                                                                  | Rechecks task dependencies.                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| `quarantine-recheck [--task] [--limit]`                                                                                                                                                                                                                                           | Rechecks quarantined tasks (diagnose/release only — it cannot fix a still-malformed packet; see §3.4, §4.2).                                                                                                                                                                                                                                                                                                                                                    |
+| `cancel <task-id> [--reason]`                                                                                                                                                                                                                                                     | Cancels a task.                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| `revive <task-id> [--reason] [--not-before]`                                                                                                                                                                                                                                      | Revives a terminal task.                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| `fail <task-id> [--error] [--reason-class] [--execution]`                                                                                                                                                                                                                         | Fails a task.                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| `complete <task-id> [--result/--result-file] [--telemetry] [--execution]`                                                                                                                                                                                                         | Completes a task.                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| `verify-disposition <issue> --repo <owner/name> [--pr …] [--follow-up-task/--follow-up-issue/--follow-up-pr] [--staleness-seconds] [--json]`                                                                                                                                      | Reads the issue and linked PRs back from GitHub and prints the disposition a terminal completion must carry (#10611); exits 1 when the broker's gate would reject it.                                                                                                                                                                                                                                                                                           |
+| `timeline <task-id> [--json]` / `history` (alias)                                                                                                                                                                                                                                 | Shows a task's event timeline.                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| `show <task-id> [--limit] [--json]`                                                                                                                                                                                                                                               | Shows one task's current details and recent history.                                                                                                                                                                                                                                                                                                                                                                                                            |
+| `models [--days] [--json]`                                                                                                                                                                                                                                                        | Rolls up serving-model stamps.                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| `health [--queue]`                                                                                                                                                                                                                                                                | Broker health (live output observed in this pass: per-queue counts incl. `queued/claimed/parked/malformed_parked/handed_off/blocked/dep_blocked/done/cancelled/failed`).                                                                                                                                                                                                                                                                                        |
+| `signal [--queue] [--reason]`                                                                                                                                                                                                                                                     | Sends a queue signal.                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| `fallback <scan\|status\|claim\|heartbeat\|release\|complete\|unblock> …`                                                                                                                                                                                                         | GitHub-backed queue used when the primary broker is down; issue comments carry the claims. `scan` lists live/stale claims across fallback repos; `claim` posts a claim-marker comment (races detected on read-back). Note: the domain listing says `fallback <scan\|status\|claim\|heartbeat\|release\|unblock>` while the verb's own help adds `complete` — another listing/help skew.                                                                         |
+| `dispatch --repo <owner/name> --command '<cmd>' [--ref] [--runner auto\|github\|blacksmith] [--platform linux\|macos] [--container] [--surface] [--followup] [--push-nix-cache] [--actions-cache …] [--allow-paid-blacksmith] [--laptop-busy] [--dispatch] [--json] [--registry]` | Placement dispatch (absorbed `fleet-place`): dry-run unless `--dispatch`; prints the placement decision / session handle.                                                                                                                                                                                                                                                                                                                                       |
+| `session <status\|result\|list> [HANDLE\|OWNER/REPO#RUN_ID] [--mine] [--json] [--registry]`                                                                                                                                                                                       | Placement-session inspection. Verified live in this pass: `session list` returned 6 local records (`fp_…` handles in states dispatched/queued/succeeded/running).                                                                                                                                                                                                                                                                                               |
+| `surfaces [--registry]`                                                                                                                                                                                                                                                           | Prints the resolved placement registry verbatim as JSON. Verified live: registry version 2, owners `developing-today` (cap 20, macOS 5, free-org), `developing-today-forks` (20/5), `dezren39` (40/5, pro); surfaces `fleet-personal`, `fleet-org`, `fleet-forks` (active, github-actions), `org-run` (standby), `fleet-org-blacksmith` (blacksmith, 3,000 free min/mo, paid cap 0), `codespace-overflow` (pending-scope, max 3 live), `laptop` (handoff-only). |
+| `outbox <enqueue\|list\|metrics\|claim\|resolve\|drain>`                                                                                                                                                                                                                          | Creation-outbox (GitHub issue/PR creation requests): `enqueue [--repo] [--kind] [--dedup-key] [--producer] [--payload/--payload-file]`; `resolve <id> [--outcome done\|rate_limited\|uncertain\|failed] [--github-number/--github-url] [--retry-after] [--error]`; `drain [--owner] [--max]`.                                                                                                                                                                   |
+| `stack <record\|list\|transition\|restack\|replay>`                                                                                                                                                                                                                               | PR-stack intents: `record --stack --repo --branch [--base-branch] [--head-sha] [--issue] [--pr] --lane`; `transition --stack --position --to [--pr] [--conflict-detail]`; `restack --stack --position --base`; `replay [--stack] [--repo-dir] [--dry-run]`.                                                                                                                                                                                                     |
+| **`repair` — ABSENT**                                                                                                                                                                                                                                                             | `fleet queue repair --help` on both the sandbox binary (044a6bd) and the deployed laptop binary (b8bbcc0) answers `repo-queue: unknown command "repair"` (exit 2) and prints the verb list without it. The verb exists only in `main` source (§3.4, §4.2).                                                                                                                                                                                                      |
 
-**`fleet serve`** — *Run a fleet daemon role in the foreground.* Aliases argv0:
+**`fleet serve`** — _Run a fleet daemon role in the foreground._ Aliases argv0:
 `queue-broker`, `secrets-broker`. Verbs: `queue-broker`, `secrets-broker`, `search`,
 `proxy`. Only `serve search` and `serve proxy` have their own `--help` text
 (`serve search [--config] [--listen] [--job-ttl-ms] [--hard-ttl-ms]` — the Atlas
@@ -113,7 +113,7 @@ read-only Turso backend, rehomed in #5604; `serve proxy` = `fleet proxy serve`).
 `serve queue-broker --help` / `serve secrets-broker --help` fall back to the domain
 help (verified first-hand).
 
-**`fleet proxy`** — *The session proxy.* Alias argv0: `laptop-agent-broker`. Verbs:
+**`fleet proxy`** — _The session proxy._ Alias argv0: `laptop-agent-broker`. Verbs:
 `serve` (bind the broker socket from fleet config), `connect [--print-path] [--stdio]
 [--request METHOD PATH …]` (ensure a broker answers, sync PATH shims, optionally
 issue one request), `init` (same as `fleet init`), `ssh -- [ssh args…]` (system
@@ -124,7 +124,7 @@ RustDesk direct-access service), `get [--mode] [--no-resume] <laptop-path>
 #5759 v1; SHA-256 verified before atomic rename; exit codes 2 usage / 3 transport /
 69 capability-unavailable).
 
-**`fleet dispatch`** — *Thin client over pm-stack dispatch.* Verbs: `status`
+**`fleet dispatch`** — _Thin client over pm-stack dispatch._ Verbs: `status`
 (GET /health on pm-dispatch), `launch --repo --prompt [--prompt-file] [--title]
 [--model] [--directory] [--priority 10-90|critical|high|normal|low] [--issue/--no-issue]
 [--wait/--no-wait]` (POST /v1/sessions: creates tracking issue + queue task, starts
@@ -132,18 +132,18 @@ an OpenCode session on the laptop, assigns the task), `enqueue --repo --title
 --prompt [--kind triage|small_fix|pr_shepherd|ci_investigation] [--dedupe-key] …`
 (POST /v1/tasks, no session).
 
-**`fleet dispatch-test`** — *Explicit-dispatch CI test.* Verbs: `scan [--threshold N]
+**`fleet dispatch-test`** — _Explicit-dispatch CI test._ Verbs: `scan [--threshold N]
 [--json]` (count active Actions jobs per discovered fleet-repo copy — the fleet repo
 plus its fork network — and name the first eligible copy), `submit --submodule NAME
 [--repo] [--ref] [--name] [--commands/--commands-file]` (store a job in the Turso
 jobs store, dispatch `fleet-dispatch-test.yml`, mark dispatched only on success,
 #6598), `status <job-id>` (print the stored row; unknown id exits 4).
 
-**`fleet secrets`** — *Resolve secrets by name: laptop secrets-broker first,
-Bitwarden as fallback.* Verbs: `get <name>` (value to stdout and nowhere else),
+**`fleet secrets`** — _Resolve secrets by name: laptop secrets-broker first,
+Bitwarden as fallback._ Verbs: `get <name>` (value to stdout and nowhere else),
 `list` (names in the broker's cache, never values).
 
-**`fleet gh`** — *The real `gh` CLI passed through under a rotating fleet token*
+**`fleet gh`** — _The real `gh` CLI passed through under a rotating fleet token_
 (personal, then the developing.today App's installations; rate-limit/permission
 failures fail over). Domain help lists four shadow subcommands — `tiers`,
 `cache-serve`, `cache-status`, `closures` — and notes the implementation "lands in
@@ -154,7 +154,7 @@ code#10742; default bind 127.0.0.1:4802; memory-only, single-flight minting) and
 help; `gh tiers --help` errors `unexpected argument '--help'` and `gh closures
 --help` prints nothing — the passthrough/shadow boundary is uneven in this build.
 
-**`fleet bridge`** — *Fleet messaging through the message bridge.* Verbs: `send`,
+**`fleet bridge`** — _Fleet messaging through the message bridge._ Verbs: `send`,
 `agents`, `log`, `hello`, `inbox`, `post`, `ack`, `health`. All verbs share one
 usage text (verified: every `bridge <verb> --help` prints the same page). Central
 (owner token): `send --to <agent:<name>|group:<name>|all> [--command] [--sender]
@@ -166,7 +166,7 @@ usage text (verified: every `bridge <verb> --help` prints the same page). Centra
 `https://bridge.security.cab`. Exits: 0 ok, 2 usage, 3 transport/credentials,
 4 bridge refused.
 
-**`fleet agent`** — *The agent's front door.* Verbs: `kinds`, `enroll`, `doctor`,
+**`fleet agent`** — _The agent's front door._ Verbs: `kinds`, `enroll`, `doctor`,
 `next`, `shortlist`. All verbs share one usage page. `enroll --kind K --name N
 [--groups] [--dry-run] [--profile]` registers an agent and saves its profile;
 `doctor [--agent N]` reports which legs answer from this seat; `next [--agent]
@@ -180,7 +180,7 @@ status|take|clear`, `shortlist add --issue N --title T …`, `shortlist fill
 `fleet doctor` or `fleet enroll` — both answer `error: unrecognized subcommand`
 (verified); they exist only under `fleet agent`.
 
-**`fleet shell`** — *Run a command, or open a shell, where builds belong.*
+**`fleet shell`** — _Run a command, or open a shell, where builds belong._
 Only subcommand in the registry listing is `targets`, but the domain's own usage
 is flag-driven: `fleet shell [--target auto|laptop|codespace|actions|local]
 [--codespace NAME] [--repo] [--cwd] [--build] [--timeout SECS] [--detach]
@@ -189,8 +189,8 @@ seat is the laptop, then the laptop, then a codespace, then here — never actio
 The actions target dispatches through placement (`fleet queue dispatch`) and waits
 for the session result.
 
-**`fleet search`** — *Atlas corpus search over the session history (Snowflake
-hybrid, via atlas-search).* Alias argv0: `atlas-search`. Verbs: `search` (also the
+**`fleet search`** — _Atlas corpus search over the session history (Snowflake
+hybrid, via atlas-search)._ Alias argv0: `atlas-search`. Verbs: `search` (also the
 default: `fleet search <query> [options]`), `get-chunk <chunk-id> [--neighbors N]
 [--text]`, `serve`. Search options include `--k` (default 10), `--pool` (1..=400,
 default 100), `--mode hybrid|fts|vector`, `--kind/--topic/--project/--client`
@@ -204,7 +204,7 @@ scan|index-fill|index-fixed`, `--via-service/--standalone`, `--service-url`
 with a loud standalone fallback; the laptop seat defaults to standalone;
 `get-chunk` always runs standalone.
 
-**`fleet laptop-agent`** — *Client for the laptop-agent daemon.* Alias argv0:
+**`fleet laptop-agent`** — _Client for the laptop-agent daemon._ Alias argv0:
 `laptop-agent`. Verbs per domain help: `health`, `jobs`, `kill`, `exec`, `run`,
 `poll`, `fetch`. Caveat verified first-hand: in this build the domain is a partial
 surface — `laptop-agent health --help` and `jobs --help` answer
@@ -224,7 +224,8 @@ running; unknown location exits 69), `fleet session bind [--session-id ID]`
 
 **Counts:** 12 domains, 15 capabilities, 5 built-ins. Queue alone: 31 listed
 top-level entries expanding to 31 + 6 (`fallback`) + 6 (`outbox`) + 5 (`stack`)
-+ 3 (`session`) leaf verbs.
+
+- 3 (`session`) leaf verbs.
 
 ---
 
@@ -263,16 +264,16 @@ tracking issue #13165 as CLOSED).
 `SUMMARY.md` is 243 — so **98,651 words of chapter text**. Per-file counts from
 `wc -w` on the laptop:
 
-| Section | Chapters | Words | What each covers |
-|---|---|---|---|
-| (root) | `index.md` — 1,290 | 1,290 | "fleet": introduction and the domain map. |
-| Getting started | `installation.md` 1,253; `quickstart.md` 1,155; `shape.md` 1,370 | 3,778 | Installation/bootstrap (incl. the b8bbcc0 release pin, §2.3); quickstart; the shape of the binary (argv0 personalities, registry, capabilities, build variants). |
-| Concepts (10) | `architecture.md` 1,875; `queue.md` 3,164; `placement.md` 2,281; `secrets.md` 1,532; `bridge.md` 943; `agents.md` 1,948; `proxy.md` 1,709; `search.md` 1,161; `gh.md` 1,274; `dispatch.md` 1,760 | 16,647 | One concept chapter per subsystem: architecture; the queue (tasks, lanes, leases — the largest concept chapter); placement and remote dispatch; secrets and the secrets broker; the bridge; agents (enrolment, doctor, intake ladder); proxy/sessions/recovery; Atlas search; the gh passthrough; dispatch and dispatch-test. |
-| Reference (17) | `builtins.md` 2,118; `queue-core.md` 4,522; `queue-lifecycle.md` 5,718; `queue-fallback.md` 2,588; `queue-dispatch.md` 1,565; `queue-admin.md` 3,182; `serve.md` 1,849; `proxy.md` 2,109; `dispatch.md` 1,208; `dispatch-test.md` 1,301; `secrets.md` 930; `gh.md` 1,592; `bridge.md` 1,790; `agent.md` 3,047; `shell.md` 1,536; `search.md` 1,194; `laptop-agent.md` 1,621 | 32,870 | Per-domain verb references with flag tables, behaviour and exit codes. Queue gets five chapters (core / lifecycle / fallback / dispatch-and-sessions / inspection-and-admin); `queue-lifecycle.md` is the book's largest chapter. |
-| Tutorials (6) | `enrol-a-seat.md` 2,085; `claim-and-complete.md` 2,250; `dispatch-a-build.md` 2,133; `resolve-a-secret.md` 1,782; `bridge-messaging.md` 1,606; `run-the-brokers.md` 1,841 | 11,697 | Task tutorials: enrol a seat; claim and complete a queue task; dispatch a build remotely; resolve a secret; bridge messaging; run the brokers. |
-| Library (4) | `crates.md` 1,922; `queue-client.md` 1,960; `placement.md` 2,778; `registry-and-config.md` 2,088 | 8,748 | The crates; the queue client; placement and surfaces as data; registry, config and capabilities. |
-| Development (8) | `layout.md` 1,174; `building.md` 1,269; `testing.md` 1,391; `add-a-subcommand.md` 1,234; `add-a-flag.md` 1,137; `register-a-domain.md` 1,634; `release-and-rollout.md` 1,719; `keeping-this-book-current.md` 1,017 | 10,575 | Repository layout; building; testing; how to add a subcommand / a flag / register a domain or capability; release and rollout; keeping the book current. |
-| Operations (6) | `services.md` 1,093; `health-and-healing.md` 1,275; `troubleshooting.md` 1,790; `deploying-this-book.md` 875; `faq.md` 1,110; `glossary.md` 903 | 7,046 | Running the brokers as services; health checks and the heal stack; troubleshooting; deploying the book; FAQ; glossary. |
+| Section         | Chapters                                                                                                                                                                                                                                                                                                                                                                    | Words  | What each covers                                                                                                                                                                                                                                                                                                              |
+| --------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| (root)          | `index.md` — 1,290                                                                                                                                                                                                                                                                                                                                                          | 1,290  | "fleet": introduction and the domain map.                                                                                                                                                                                                                                                                                     |
+| Getting started | `installation.md` 1,253; `quickstart.md` 1,155; `shape.md` 1,370                                                                                                                                                                                                                                                                                                            | 3,778  | Installation/bootstrap (incl. the b8bbcc0 release pin, §2.3); quickstart; the shape of the binary (argv0 personalities, registry, capabilities, build variants).                                                                                                                                                              |
+| Concepts (10)   | `architecture.md` 1,875; `queue.md` 3,164; `placement.md` 2,281; `secrets.md` 1,532; `bridge.md` 943; `agents.md` 1,948; `proxy.md` 1,709; `search.md` 1,161; `gh.md` 1,274; `dispatch.md` 1,760                                                                                                                                                                            | 16,647 | One concept chapter per subsystem: architecture; the queue (tasks, lanes, leases — the largest concept chapter); placement and remote dispatch; secrets and the secrets broker; the bridge; agents (enrolment, doctor, intake ladder); proxy/sessions/recovery; Atlas search; the gh passthrough; dispatch and dispatch-test. |
+| Reference (17)  | `builtins.md` 2,118; `queue-core.md` 4,522; `queue-lifecycle.md` 5,718; `queue-fallback.md` 2,588; `queue-dispatch.md` 1,565; `queue-admin.md` 3,182; `serve.md` 1,849; `proxy.md` 2,109; `dispatch.md` 1,208; `dispatch-test.md` 1,301; `secrets.md` 930; `gh.md` 1,592; `bridge.md` 1,790; `agent.md` 3,047; `shell.md` 1,536; `search.md` 1,194; `laptop-agent.md` 1,621 | 32,870 | Per-domain verb references with flag tables, behaviour and exit codes. Queue gets five chapters (core / lifecycle / fallback / dispatch-and-sessions / inspection-and-admin); `queue-lifecycle.md` is the book's largest chapter.                                                                                             |
+| Tutorials (6)   | `enrol-a-seat.md` 2,085; `claim-and-complete.md` 2,250; `dispatch-a-build.md` 2,133; `resolve-a-secret.md` 1,782; `bridge-messaging.md` 1,606; `run-the-brokers.md` 1,841                                                                                                                                                                                                   | 11,697 | Task tutorials: enrol a seat; claim and complete a queue task; dispatch a build remotely; resolve a secret; bridge messaging; run the brokers.                                                                                                                                                                                |
+| Library (4)     | `crates.md` 1,922; `queue-client.md` 1,960; `placement.md` 2,778; `registry-and-config.md` 2,088                                                                                                                                                                                                                                                                            | 8,748  | The crates; the queue client; placement and surfaces as data; registry, config and capabilities.                                                                                                                                                                                                                              |
+| Development (8) | `layout.md` 1,174; `building.md` 1,269; `testing.md` 1,391; `add-a-subcommand.md` 1,234; `add-a-flag.md` 1,137; `register-a-domain.md` 1,634; `release-and-rollout.md` 1,719; `keeping-this-book-current.md` 1,017                                                                                                                                                          | 10,575 | Repository layout; building; testing; how to add a subcommand / a flag / register a domain or capability; release and rollout; keeping the book current.                                                                                                                                                                      |
+| Operations (6)  | `services.md` 1,093; `health-and-healing.md` 1,275; `troubleshooting.md` 1,790; `deploying-this-book.md` 875; `faq.md` 1,110; `glossary.md` 903                                                                                                                                                                                                                             | 7,046  | Running the brokers as services; health checks and the heal stack; troubleshooting; deploying the book; FAQ; glossary.                                                                                                                                                                                                        |
 
 (Section word sums are from the per-file `wc -w` output; they total 98,894 with
 `index.md` and `SUMMARY.md` included.)
@@ -316,9 +317,9 @@ not to b8bbcc0):**
    `main` source + `docs/verbs.md` have it.
 2. **Placement sessions are described as a stopgap that has since landed.**
    `reference/queue-dispatch.md` §"fleet queue session status", Behaviour:
-   *"Session records are a labeled **STOPGAP**: a local JSON store at
+   _"Session records are a labeled **STOPGAP**: a local JSON store at
    `~/.local/state/fleet-place/sessions.json` … so records migrate when the
-   designed placement-sessions table lands."* The table **has** landed on `main`
+   designed placement-sessions table lands."_ The table **has** landed on `main`
    (#13146 slice 1, PR #13169: `placement_sessions` in the Turso backend + client
    mirror, §3.4/§4.3). The chapter's session list/status behaviour ("Lists all
    session records in the local store") likewise predates the backend union/mirror
@@ -352,8 +353,8 @@ anything cited here).
 
 ### 3.1 Crate shape
 
-`fleet-queue` (Cargo.toml): *"The fleet queue domain: the repo-queue client surface
-plus the queue-broker and secrets-broker server roles (epic #5412, step 2 #5430)."*
+`fleet-queue` (Cargo.toml): _"The fleet queue domain: the repo-queue client surface
+plus the queue-broker and secrets-broker server roles (epic #5412, step 2 #5430)."_
 Three Cargo features select the surfaces: `client`, `queue-broker` (adds
 `tiny_http`, `rusqlite` bundled), `secrets-broker`. It also builds the standalone
 rollback artifacts under their historical names: `[[bin]] repo-queue` (client),
@@ -418,18 +419,18 @@ From the header of `src/turso_queue.rs` (verbatim facts):
 Schema: `SCHEMA: [&str; 19]` in `turso_queue/core.rs`, applied with
 `CREATE TABLE IF NOT EXISTS` by `ensure_schema` on broker start. Tables:
 
-| Table | Shape (columns of note) |
-|---|---|
-| `tasks` | `id` PK autoincrement; `queue, title, body, payload (TEXT JSON, default '{}'), dedupe_key, priority, status (default 'queued'), not_before, worker_id, claimed_at, lease_until, lane_id, platform, attempts (default 0), max_attempts (default 1000), claim_provider/claim_model/claim_variant/claim_session_id, progress (JSON), result (JSON), last_error, park_kind, wait_kind, ready_condition, required_budget_minutes, last_checked_at, check_outcome, created_at, updated_at, completed_at, blocked_deps, dep_next_recheck_at, dep_blocked_until, dep_recheck_seconds`. Indexes: `tasks_queue_dedupe` on `(queue, dedupe_key)` — deliberately **not unique** (pre-enforcement PG data carries duplicate pairs; enqueue dedupe is a read-then-insert check) — and `tasks_claim_scan` on `(queue, status, priority, created_at)`. |
-| `leases` | `task_id` PK, `worker_id`, `lease_until`, `heartbeat_at`. |
-| `lanes` | `lane_id` PK, `worker_id`, `queue`, `enabled`. |
-| `workers` | `worker_id` PK, `role`, `display_name`, `status`, `last_heartbeat_at`, `created_at`. |
-| `checkpoints` | `(worker_id, key)` PK, `value`, `updated_at`. |
-| `repo_task_lane_ledger` | one row per task (`task_id` UNIQUE): assigned/executed lane, exclusion/opencode reasons, platform limit, session_id, fallback reason, timestamps. |
-| `events` | `id` PK, `worker_id, task_id, kind, detail (JSON), created_at` — the timeline store (§3.3); indexes on `(task_id, id)`, `(kind, created_at)`, `(created_at)`. |
-| `creation_outbox` + `creation_outbox_circuit` | GitHub creation outbox: `id` PK, `repo, kind, payload, dedup_key, payload_hash, producer, state (default 'pending'), available_at, attempt_count (max 8), last_error_class, lease_owner/lease_until, github_number/github_url, completed_at`; unique index on `(repo, dedup_key)`; circuit-breaker singleton row for consecutive rate limits. |
-| merge-intent table | DDL of record in `merge_intent.rs` (`MERGE_INTENT_DDL`, #8582 increment 2) — backs `queue stack`. |
-| `placement_sessions` | §3.4. |
+| Table                                         | Shape (columns of note)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| --------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `tasks`                                       | `id` PK autoincrement; `queue, title, body, payload (TEXT JSON, default '{}'), dedupe_key, priority, status (default 'queued'), not_before, worker_id, claimed_at, lease_until, lane_id, platform, attempts (default 0), max_attempts (default 1000), claim_provider/claim_model/claim_variant/claim_session_id, progress (JSON), result (JSON), last_error, park_kind, wait_kind, ready_condition, required_budget_minutes, last_checked_at, check_outcome, created_at, updated_at, completed_at, blocked_deps, dep_next_recheck_at, dep_blocked_until, dep_recheck_seconds`. Indexes: `tasks_queue_dedupe` on `(queue, dedupe_key)` — deliberately **not unique** (pre-enforcement PG data carries duplicate pairs; enqueue dedupe is a read-then-insert check) — and `tasks_claim_scan` on `(queue, status, priority, created_at)`. |
+| `leases`                                      | `task_id` PK, `worker_id`, `lease_until`, `heartbeat_at`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| `lanes`                                       | `lane_id` PK, `worker_id`, `queue`, `enabled`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| `workers`                                     | `worker_id` PK, `role`, `display_name`, `status`, `last_heartbeat_at`, `created_at`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| `checkpoints`                                 | `(worker_id, key)` PK, `value`, `updated_at`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| `repo_task_lane_ledger`                       | one row per task (`task_id` UNIQUE): assigned/executed lane, exclusion/opencode reasons, platform limit, session_id, fallback reason, timestamps.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| `events`                                      | `id` PK, `worker_id, task_id, kind, detail (JSON), created_at` — the timeline store (§3.3); indexes on `(task_id, id)`, `(kind, created_at)`, `(created_at)`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| `creation_outbox` + `creation_outbox_circuit` | GitHub creation outbox: `id` PK, `repo, kind, payload, dedup_key, payload_hash, producer, state (default 'pending'), available_at, attempt_count (max 8), last_error_class, lease_owner/lease_until, github_number/github_url, completed_at`; unique index on `(repo, dedup_key)`; circuit-breaker singleton row for consecutive rate limits.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| merge-intent table                            | DDL of record in `merge_intent.rs` (`MERGE_INTENT_DDL`, #8582 increment 2) — backs `queue stack`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| `placement_sessions`                          | §3.4.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 
 ### 3.3 Task states, lifecycle, timeline
 
@@ -558,7 +559,7 @@ Verified via laptop-ssh in this pass:
 - The profile's binary reports source rev **b8bbcc0c49564ab31db8d58b026b67532db9491e**
   (derived `0.1.0-dev+gb8bbcc0`) — i.e. the running broker predates both the
   #13091 fix merge (10:04Z) and the #13191/#13146 merges (11:04–11:14Z) in
-  *client* terms; note however §4.1: the #13091 fix is broker-side code, and the
+  _client_ terms; note however §4.1: the #13091 fix is broker-side code, and the
   coordinator's census records this generation as "gen 5 / b8bbcc0" carrying the
   `unblock` / evidence-gated `complete` verbs. Whether the b8bbcc0 broker build
   contains the #13091 broker-side fix is determined by its commit date relative
@@ -583,8 +584,8 @@ pass (2026-11-23, after 12:35 CST / 18:35Z the coordinator's census used a
 
 ### 4.1 code#13091 — double-serve defect + fix PR #13143
 
-- **Issue:** #13091 *"fix(queue): broker re-serves parked and completed tasks
-  (double-serve)"* — **state: closed**, labels `[status:done]`, created
+- **Issue:** #13091 _"fix(queue): broker re-serves parked and completed tasks
+  (double-serve)"_ — **state: closed**, labels `[status:done]`, created
   2026-11-23T08:05:53Z, updated 2026-11-23T10:12:41Z.
 - **Defect as filed:** at least five re-serves on 2026-11-23 — task 21099 served
   to two lanes in parallel (#10246); task 21120 served after PR #12899 merged;
@@ -596,14 +597,14 @@ pass (2026-11-23, after 12:35 CST / 18:35Z the coordinator's census used a
   dispatcher recorded it **cancelled** (the lane's park attempt was answered
   "task 21302 is not claimed by archer: it is cancelled"), and task 20671 served
   again while its issue carried `queue/parked` + `status/parked`.
-- **Fix PR #13143:** *"fix(queue): broker never re-serves condition parks or
-  completed work (#13091)"* — **state: closed, merged: true, merged_at
+- **Fix PR #13143:** _"fix(queue): broker never re-serves condition parks or
+  completed work (#13091)"_ — **state: closed, merged: true, merged_at
   2026-11-23T10:04:34Z**, head `xaltha/13091-broker-double-serve` @
   **`f7f45d67925e37149416b4a04d72be01475a80d5`**, base `main`.
 - **Root cause / fix shape** (from the fix comment on #13091, 2026-11-23T09:09:38Z,
   and the merged code's comments in `turso_queue/claim.rs` / `work_identity.rs`):
   (1) `verb_park` stamps a default `not_before` (+1200 s) on every park and the
-  default pick released *every* park on that timer — including condition parks
+  default pick released _every_ park on that timer — including condition parks
   owned by the park-revalidation sweeper (`task_terminal`/`task_status`/
   `event_seen`) and person parks owned by `/wake` (`person_answer`); task 21123's
   ~23-minute re-serve cycle matches the timer. Fix: a `PARKED_TERM_EXCLUSION`
@@ -624,8 +625,8 @@ pass (2026-11-23, after 12:35 CST / 18:35Z the coordinator's census used a
 
 ### 4.2 code#13191 — the packet-repair verb: NOT still in flight; merged, not deployed
 
-- **Issue:** #13191 *"fleet queue: add a repair verb for quarantined/malformed
-  task packets (in-place payload fix)"* — **state: closed**, labels
+- **Issue:** #13191 _"fleet queue: add a repair verb for quarantined/malformed
+  task packets (in-place payload fix)"_ — **state: closed**, labels
   `[status:done, kind/feature, app/fleet]`, created 2026-11-23T10:30:57Z,
   updated 2026-11-23T11:14:32Z. (The task brief asked whether it is "still in
   flight" — it is not; it closed the same morning it was filed.)
@@ -636,8 +637,8 @@ pass (2026-11-23, after 12:35 CST / 18:35Z the coordinator's census used a
   disposition was cancel-with-disposition (done 2026-11-23, recorded on #13091).
   Task 18533's cancelled state was explicitly left standing by the issue.
 - **PR:** search `repo:developing-today/code 13191 type:pr` returns exactly one:
-  **PR #13218** *"fleet queue: add repair verb for quarantined/malformed task
-  packets"* — **state: closed, merged: true, merged_at 2026-11-23T11:14:22Z**,
+  **PR #13218** _"fleet queue: add repair verb for quarantined/malformed task
+  packets"_ — **state: closed, merged: true, merged_at 2026-11-23T11:14:22Z**,
   head `lane-repair-13191` @ `b8abe089efbad7ce2608ab1ead7fdf057b92576a`; merge
   commit on main `ab10437c6b7` ("Merge pull request #13218"), implementation
   commit `2aaadb82aa6` (both from laptop `git log`). The PR body records the
@@ -647,7 +648,7 @@ pass (2026-11-23, after 12:35 CST / 18:35Z the coordinator's census used a
   source assertion; #13215 is itself now closed per `gh api`).
 - **Rollout gap (the live finding):** the verb is merged but **absent from every
   shipped binary checked**: sandbox seat binary 044a6bd — `unknown command
-  "repair"` (first-hand, this pass; the coordinator's census independently found
+"repair"` (first-hand, this pass; the coordinator's census independently found
   the same on `fleet-static-3cb241a`); deployed laptop broker binary b8bbcc0 —
   `unknown command "repair"` (first-hand via a correctly-named symlink to the
   profile binary, this pass). The book also lacks it (§2.3). The pending step is
@@ -656,16 +657,16 @@ pass (2026-11-23, after 12:35 CST / 18:35Z the coordinator's census used a
 
 ### 4.3 code#13146 — placement improvement: criterion 1 still pending
 
-- **Issue:** #13146 *"impl(fleet): placement sessions to the queue backend
+- **Issue:** #13146 _"impl(fleet): placement sessions to the queue backend
   (placement_sessions) — centralize decision state, keep placement
-  decentralized"* — **state: open**, labels `[status:in-review]`, created
+  decentralized"_ — **state: open**, labels `[status:in-review]`, created
   2026-11-23T09:14:24Z, updated 2026-11-23T11:05:27Z. Drew's directive as filed:
   dispatch stays decentralized (each seat's binary decides locally); only the
   decision state (the `fp_…` session records, today only in per-seat
   `~/.local/state/fleet-place/sessions.json`) is centralized into the Turso
   queue backend.
-- **Slice 1 landed:** PR #13169 *"feat(fleet): mirror placement sessions to the
-  queue backend (placement_sessions) — #13146 slice 1"* — **closed, merged:
+- **Slice 1 landed:** PR #13169 _"feat(fleet): mirror placement sessions to the
+  queue backend (placement_sessions) — #13146 slice 1"_ — **closed, merged:
   true, merged_at 2026-11-23T11:04:50Z**, head `lane-placement-sessions` @
   `eca57d1b5ea7471930e1ffd687548398fd797a73`, merge commit `15b2ac834b0d`.
   Shipped: the `placement_sessions` table + four broker verbs, the bounded
@@ -675,12 +676,12 @@ pass (2026-11-23, after 12:35 CST / 18:35Z the coordinator's census used a
   remote dispatch route was unusable for Rust (fleet-build image has no cargo)
   — filed as #13170.
 - **Criterion 1 status — PENDING (the reason the issue stays open).** Acceptance
-  criterion 1 reads: *"Dispatch on seat A; `fleet queue session status <fp_
-  handle>` on seat B (empty local store) returns the session."* The slice-1
-  comment on #13146 (2026-11-23T11:05:27Z) records it verbatim as: *"Cross-seat
+  criterion 1 reads: _"Dispatch on seat A; `fleet queue session status <fp_
+handle>` on seat B (empty local store) returns the session."_ The slice-1
+  comment on #13146 (2026-11-23T11:05:27Z) records it verbatim as: _"Cross-seat
   status by handle — PENDING the normal binary rollout (broker gains the verbs
   and seats gain the client from main …). This issue stays open for that
-  record."* Criteria 2 (broker down = today's behaviour), 3 (migration never
+  record."_ Criteria 2 (broker down = today's behaviour), 3 (migration never
   overwrites), 4 (decisions unchanged) and 5 (named-oracle tests) are recorded
   as covered by tests in the same comment. Next slices, in order: live
   cross-seat verification once the rollout lands; then the conditional
@@ -695,10 +696,10 @@ labelled **[unverified / not located]**. Searches performed (all `gh api`
 search/issues on developing-today/code): `malformed packet`, `quarantined
 packet`, `"dedupe" "checked_at"`, `"quarantined by claim path"`, `packet
 validator`. None returns an issue enumerating ~30 malformed-packet tasks/issues.
-What *is* recorded, and should not be conflated with the missing list:
+What _is_ recorded, and should not be conflated with the missing list:
 
-1. **code#9609 (closed)** — the largest documented quarantine census: *"279 tasks
-   quarantined at claim"* (fresh DB read 2026-11-13 ~23:10Z), split **270 rows**
+1. **code#9609 (closed)** — the largest documented quarantine census: _"279 tasks
+   quarantined at claim"_ (fresh DB read 2026-11-13 ~23:10Z), split **270 rows**
    `packet.max_attempts: must be an integer between 1 and 100` (every row
    carrying `max_attempts=1000` from the #8973 bulk raise, against the #6448
    validator cap of 100) and **9 rows** `payload.schema: must be 'repo-task/v1'`
@@ -707,8 +708,8 @@ What *is* recorded, and should not be conflated with the missing list:
    quarantine recheck, closed), #10886 (separate quarantine budget / recheck
    window rotation, closed).
 2. **code#13191 (closed)** — the dedupe-stamp subclass: the worked example is
-   task 18533 (#7709), and the issue states only qualitatively that *"the
-   blocked pool likely contains more rows in this class"* — no enumeration.
+   task 18533 (#7709), and the issue states only qualitatively that _"the
+   blocked pool likely contains more rows in this class"_ — no enumeration.
 3. **code#13091 cleanup comment (2026-11-23T10:10:41Z)** — a disposition table of
    **ten** stale blocked tasks (15977/#9451, 16048/#9501, 17396 + 17397/#10412,
    18533/#7709, plus 16081, 19158, 19174, 19207, 20502, 21101, 21143 named in the
@@ -743,7 +744,7 @@ validator-safe": a live dry-run packet rejected for an unrecognized
    still describes placement sessions as a local-JSON stopgap.
 3. **`fleet queue repair` (#13191) is merged (PR #13218, 2026-11-23T11:14:22Z)
    but deployed nowhere** — both shipped binaries answer `unknown command
-   "repair"`. Same rollout gates #13146 criterion 1 (cross-seat session
+"repair"`. Same rollout gates #13146 criterion 1 (cross-seat session
    status), which is the stated reason #13146 remains open
    (`status:in-review`).
 4. **#13091 is closed with PR #13143 merged** (head `f7f45d67925e`), but on

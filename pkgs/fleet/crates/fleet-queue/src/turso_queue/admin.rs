@@ -1731,12 +1731,14 @@ pub(crate) fn verb_health(t: &TursoBackend, req: &Value) -> Value {
              (e.kind = 'failed' \
               AND COALESCE(json_extract(e.detail, '$.requeued'), 0) = 0 \
               AND COALESCE(json_extract(e.detail, '$.reason_class'), '') <> 'blocked'))";
-        let mut tsql = format!("SELECT t.queue AS queue, COUNT(*) AS n7, \
+        let mut tsql = format!(
+            "SELECT t.queue AS queue, COUNT(*) AS n7, \
                SUM(CASE WHEN e.created_at > ? THEN 1 ELSE 0 END) AS n24, \
                SUM(CASE WHEN {failed_terminal} THEN 1 ELSE 0 END) AS f7, \
                SUM(CASE WHEN {failed_terminal} AND e.created_at > ? THEN 1 ELSE 0 END) AS f24 \
              FROM events e JOIN tasks t ON t.id = e.task_id \
-             WHERE e.kind IN ('completed', 'failed', 'lease_expired_at_cap') AND e.created_at > ?");
+             WHERE e.kind IN ('completed', 'failed', 'lease_expired_at_cap') AND e.created_at > ?"
+        );
         let mut targs: Vec<Arg> = vec![
             Arg::Text(iso(now_unix() - 86_400)),
             Arg::Text(iso(now_unix() - 86_400)),

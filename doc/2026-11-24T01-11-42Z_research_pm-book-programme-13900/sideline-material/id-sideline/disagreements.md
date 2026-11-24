@@ -30,7 +30,7 @@ coordinator (PM-BOOK) owns any follow-up filing.
   DEPLOYMENT.md's first paragraph says is "unchanged") acts on the list: its
   header says it "retires old Workers", and the deploy sequence retires each
   `config.retire` entry (`id-mail`) via the Cloudflare API + `wrangler
-  delete --force` BEFORE `wrangler deploy`, because a hostname can belong to
+delete --force` BEFORE `wrangler deploy`, because a hostname can belong to
   only one Worker.
 - Reconciliation: both statements are true of different paths — the GitHub
   publish/promote workflows never retire; the operator command does.

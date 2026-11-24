@@ -1,6 +1,5 @@
 # Consumer, cache and recommendation acceptance
 
-
 The request adapter authenticates the calling principal. Each hop binds the downstream request to that principal and operation using a trusted channel or replay-limited signed assertion; the origin verifies the assertion. Derive effective scope inside the retrieval core by intersecting the identity grant with the transport ceiling, eligible corpora, requested restrictions, and current policy manifest. If a hop loses the identity, return a bounded authorization error. Treat absent scope details and unknown classification as denied. For HTTP MCP authorization, require the token's audience to be this service and use separate credentials for downstream APIs. [MCP authorization](https://modelcontextprotocol.io/specification/2025-11-25/basic/authorization)
 
 Every retrieval branch receives the same authorized source and tier selection before scanning, counting, sampling, hydrating or computing similarity. The reference resolves to an occurrence, revision and chunk. Identical bytes in two sources do not grant access to both provenances. Derived artifacts inherit the restrictions of every input, including the seed, co-occurrence edge, profile, graph path and feedback. Choose serving partitions already inside the ceiling, or compute an eligible subset before ranking. A global top-K followed by a row filter leaks information through results and can starve an authorized branch. A status tool only counts accessible material; an explanation names eligible signal types and rank contributions without disclosing private source names or query text.
@@ -11,13 +10,13 @@ Keep an authority-owned publication token for the immutable index snapshot and s
 
 Extend the existing schema additively, reserve a new major for incompatible semantics, and expose a negotiated capabilities record for optional operators. Each adapter maps into typed core operations. Validate max page size, bounded UTF-8 snippet bytes, allowed sort, dates, filters and unknown modes before expensive work. Preserve existing CLI bytes and exit codes with frozen fixtures. Delay optional field emission for legacy output; use a versioned JSON representation for new fields. Keep the current names and representations from the checked-in seed and parity fixtures when wiring these proposals.
 
-| Core operation | Request and reply | Acceptance oracle |
-|---|---|---|
-| Search | Query, optional context and explicit filters, requested page size and optional explain; return an ordered page of opaque refs, safe snippets, scope-bound cursor, and scoped publication marker. | Frozen synthetic fixture returns the same references and order across REST, MCP and both CLIs. The release oracle also checks legacy output bytes. |
-| Read | One ref plus bounded window. Check current grant, revision, tombstone and occurrence before loading content. | Unknown, withdrawn and out-of-scope refs share the same result shape. Replaying a higher-ceiling ref on a lower route yields no content. |
-| Related / recommend | Related uses one eligible seed. Feed uses the principal's scoped profile. Both return search-shaped pages plus approved reason codes. | Restricting a hidden item, edge or signal leaves the lower-ceiling candidate set and explanations invariant. |
-| Corpus status | Return accessible publication marker, count as-of, source watermark ages, last successful reconciliation and measured lag when available. Each count has unit and coverage. | Adding an inaccessible partition leaves the response invariant. Missing measurements remain unknown. |
-| Batch search | One principal and deadline per request, bounded list and per-item size, request IDs, ordered result or per-item error, stable per-item scope and version. | A retry of an item yields the same authorized refs at the pinned snapshot. Missing/expired snapshots give an explicit restart response. |
+| Core operation      | Request and reply                                                                                                                                                                                | Acceptance oracle                                                                                                                                  |
+| ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Search              | Query, optional context and explicit filters, requested page size and optional explain; return an ordered page of opaque refs, safe snippets, scope-bound cursor, and scoped publication marker. | Frozen synthetic fixture returns the same references and order across REST, MCP and both CLIs. The release oracle also checks legacy output bytes. |
+| Read                | One ref plus bounded window. Check current grant, revision, tombstone and occurrence before loading content.                                                                                     | Unknown, withdrawn and out-of-scope refs share the same result shape. Replaying a higher-ceiling ref on a lower route yields no content.           |
+| Related / recommend | Related uses one eligible seed. Feed uses the principal's scoped profile. Both return search-shaped pages plus approved reason codes.                                                            | Restricting a hidden item, edge or signal leaves the lower-ceiling candidate set and explanations invariant.                                       |
+| Corpus status       | Return accessible publication marker, count as-of, source watermark ages, last successful reconciliation and measured lag when available. Each count has unit and coverage.                      | Adding an inaccessible partition leaves the response invariant. Missing measurements remain unknown.                                               |
+| Batch search        | One principal and deadline per request, bounded list and per-item size, request IDs, ordered result or per-item error, stable per-item scope and version.                                        | A retry of an item yields the same authorized refs at the pinned snapshot. Missing/expired snapshots give an explicit restart response.            |
 
 MCP tools can declare an output schema, return structured content, and include the equivalent authorized serialized JSON for older clients. Result references may be tool arguments. Emit MCP resource links only when their read path is implemented and authorized; no corpus-wide enumeration is required. Keep the tools read-only and treat retrieved text as corpus data in each adapter. [MCP tools and resource links](https://modelcontextprotocol.io/specification/2025-11-25/server/tools)
 
@@ -39,13 +38,13 @@ Priority test: two principals query the same text concurrently. Warm both caches
 
 Maintain an independent feature set per eligible privacy/source partition and model/index generation. Retain occurrence IDs and profile contribution references locally so deletion/reclassification can subtract the old contributions, or rebuild the affected profile and block that generation until rebuilt. Cross-tier pair counts must also be retired when an input disappears. Keep personalized query suggestions out of a shared cache.
 
-| Generator | Input, weighting and bounds | First use |
-|---|---|---|
-| Similar items | Seed vector; nearest authorized occurrences in its model space. A profile uses the L2-normalized sum of positive item vectors times event weight and exponential half-life decay. Dedupe event IDs and cap repeated actions per session. An empty or zero-norm profile falls back to authorized recency. | More-like-this; feed candidates |
-| Session co-occurrence | Deduplicate opens or selections per session, maintain unordered item pairs in a finite time window, cap distinct items/session, dampen large generic sessions, shrink low-support pairs. Respect time and tier at event creation and retrieval. | Related results; sparse profile fallback |
-| Provenance graph | Enumerate bounded 1-hop typed edges whose source, target and relationship all pass policy; bound per-edge-type degree. | Linked notes, objects and project neighbors |
-| Recency / frequency | Decay locally scoped events, cap per-item contribution. Suppress recently seen items per surface and honor explicit dismissals. | Cold start and resurface |
-| Query suggestions | Begin with curated eligible metadata terms. Personal query history requires local classification, deletion propagation and a purpose-specific policy before promotion. | Suggestions without leaking query history |
+| Generator             | Input, weighting and bounds                                                                                                                                                                                                                                                                              | First use                                   |
+| --------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------- |
+| Similar items         | Seed vector; nearest authorized occurrences in its model space. A profile uses the L2-normalized sum of positive item vectors times event weight and exponential half-life decay. Dedupe event IDs and cap repeated actions per session. An empty or zero-norm profile falls back to authorized recency. | More-like-this; feed candidates             |
+| Session co-occurrence | Deduplicate opens or selections per session, maintain unordered item pairs in a finite time window, cap distinct items/session, dampen large generic sessions, shrink low-support pairs. Respect time and tier at event creation and retrieval.                                                          | Related results; sparse profile fallback    |
+| Provenance graph      | Enumerate bounded 1-hop typed edges whose source, target and relationship all pass policy; bound per-edge-type degree.                                                                                                                                                                                   | Linked notes, objects and project neighbors |
+| Recency / frequency   | Decay locally scoped events, cap per-item contribution. Suppress recently seen items per surface and honor explicit dismissals.                                                                                                                                                                          | Cold start and resurface                    |
+| Query suggestions     | Begin with curated eligible metadata terms. Personal query history requires local classification, deletion propagation and a purpose-specific policy before promotion.                                                                                                                                   | Suggestions without leaking query history   |
 
 Union with source budgets, dedupe by logical item while retaining eligible occurrence attribution, then combine calibrated features or rank-based fusion. Compare against recency-only, similarity-only and prior successful-item baselines. Over the fused pool select the next item by λ × relevance minus (1 − λ) × highest similarity to an already selected item; clamp both component scales and break ties on a stable partition-local identifier. Add bounded freshness or exploration only as a reproducible seeded treatment. Record inclusion reason locally and evaluate exploration separately. [Carbonell and Goldstein, MMR](https://www.cs.cmu.edu/afs/cs/Web/People/jgc/publication/MMR_DiversityBased_Reranking_SIGIR_1998.pdf)
 
@@ -61,17 +60,17 @@ For the separate ID → Atlas vectorization adapter, #9138 has two confirmed ope
 
 For the ID → Atlas vectorization adapter, reconcile with the design's hook/adapter contract. A proposed input envelope for a fixture contains schema version, publisher, opaque object identity, revision plus ordering semantics, object kind, operation, event ID, source cursor, event time, restricted provenance locator, content reference/hash, declared policy, and typed edges subject to their own visibility. Local staging resolves a trusted allowlisted origin pointer under bounded reads, recomputes the content hash, verifies publisher authority and policy, then classifies content before promotion. Use the existing ID identifier and revision types once verified. The cursor must include a deterministic tie-break or immutable event sequence; timestamps alone lose records. Persist a unique receipt on (publisher, event ID). Equal event IDs with different envelopes raise an integrity conflict. An older upsert cannot resurrect a tombstoned revision. Retain denied events in a properly restricted, bounded review path; advance durable intake and promotion watermarks separately. Graph query results recheck each traversed edge, intermediate node and hydrated endpoint.
 
-| Stage | Handoff and oracle |
-|---|---|
-| [#11182](https://github.com/developing-today/code/issues/11182), Atlas → ID objects | Apply #6062's landed §§2.1–2.3, 3 and #6022 placement. Emit version/file/relation claims and note/revision chains. Exact oracle is independent recomputation from Atlas rows; correction clears only superseded claims. |
-| [#11183](https://github.com/developing-today/code/issues/11183), Atlas → ID attestations | Map batch statements, refusals and chains using §2.4 and §8.1. Compare one attestation claim per digest against recomputation from Atlas rows. |
-| [#11184](https://github.com/developing-today/code/issues/11184), projector operations | Persist input pins and historical coverage; replay from pins reproduces the same emission set, including §6.4 ordering and atomicity. |
-| [#11185](https://github.com/developing-today/code/issues/11185), ID view presets | Reuse #5545 views for heads-only, attested-only and full history. Compare each with the intended fixture subset. |
-| [#11186](https://github.com/developing-today/code/issues/11186), conformance | Audit complete projection units, independently recomputable claims, exact correction clearing and remove+tombstone retirement. Link failures to the producing projector. |
-| ID → Atlas intake | Agree a bounded revision feed with ID, keyed to #9138 and its implementation slices. Replaying or reordering two revisions converges on one eligible latest object. A full snapshot declares its coverage before inferring removals. Preserve distinct source and projection namespaces to prevent re-ingesting Atlas-derived ID output as a new origin. |
-| Vectorization | Address each representation by occurrence/chunk identity, parser version, model ID and dimension. Reuse only identical approved bytes under the applicable policy. Index Snowflake and any challenger in separate generations with observed coverage and explicit fallback evidence. Promote the challenger only after the retrieval evaluation. |
-| ID query caller | Use the same authenticated core route as the other clients; apply ID-namespace and graph filters before candidates. Resolve returned IDs at the specified revision and authorize again on read. Compare CLI and API on synthetic nodes, forbidden intermediates, reclassifications and tombstones. |
-| Economics | Measure projected bytes, edge explosion, read amplification by hop and eligible partition, events/day, CPU for incremental vectorization and replica transfer. Shadow under existing plan limits, leaving optional hosted writes disabled. |
+| Stage                                                                                    | Handoff and oracle                                                                                                                                                                                                                                                                                                                                       |
+| ---------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| [#11182](https://github.com/developing-today/code/issues/11182), Atlas → ID objects      | Apply #6062's landed §§2.1–2.3, 3 and #6022 placement. Emit version/file/relation claims and note/revision chains. Exact oracle is independent recomputation from Atlas rows; correction clears only superseded claims.                                                                                                                                  |
+| [#11183](https://github.com/developing-today/code/issues/11183), Atlas → ID attestations | Map batch statements, refusals and chains using §2.4 and §8.1. Compare one attestation claim per digest against recomputation from Atlas rows.                                                                                                                                                                                                           |
+| [#11184](https://github.com/developing-today/code/issues/11184), projector operations    | Persist input pins and historical coverage; replay from pins reproduces the same emission set, including §6.4 ordering and atomicity.                                                                                                                                                                                                                    |
+| [#11185](https://github.com/developing-today/code/issues/11185), ID view presets         | Reuse #5545 views for heads-only, attested-only and full history. Compare each with the intended fixture subset.                                                                                                                                                                                                                                         |
+| [#11186](https://github.com/developing-today/code/issues/11186), conformance             | Audit complete projection units, independently recomputable claims, exact correction clearing and remove+tombstone retirement. Link failures to the producing projector.                                                                                                                                                                                 |
+| ID → Atlas intake                                                                        | Agree a bounded revision feed with ID, keyed to #9138 and its implementation slices. Replaying or reordering two revisions converges on one eligible latest object. A full snapshot declares its coverage before inferring removals. Preserve distinct source and projection namespaces to prevent re-ingesting Atlas-derived ID output as a new origin. |
+| Vectorization                                                                            | Address each representation by occurrence/chunk identity, parser version, model ID and dimension. Reuse only identical approved bytes under the applicable policy. Index Snowflake and any challenger in separate generations with observed coverage and explicit fallback evidence. Promote the challenger only after the retrieval evaluation.         |
+| ID query caller                                                                          | Use the same authenticated core route as the other clients; apply ID-namespace and graph filters before candidates. Resolve returned IDs at the specified revision and authorize again on read. Compare CLI and API on synthetic nodes, forbidden intermediates, reclassifications and tombstones.                                                       |
+| Economics                                                                                | Measure projected bytes, edge explosion, read amplification by hop and eligible partition, events/day, CPU for incremental vectorization and replica transfer. Shadow under existing plan limits, leaving optional hosted writes disabled.                                                                                                               |
 
 The merged #12266 fixture treats Atlas chunk hashes as opaque to ID; preserve typed namespaces and verify each hash by its own producer before interpreting it. [ID profile fixture](https://github.com/developing-today/code/pull/12266)
 
@@ -79,12 +78,12 @@ Minimize duplication by keeping canonical ID bytes in the system of record or ap
 
 ## Product decision reserved to the owner (#12900 thread 2)
 
-| Choice | Practical consequence | Next proof |
-|---|---|---|
-| Personal CLI and current synchronous gateway | Retains existing CLI/Worker while omitting a temporary fan-out result service. Lowest operational cost and a useful latency baseline. | Capture synchronized requests per lane, queue delay, origin latency and bytes by result class. |
-| One owner, managed clients | Fleet, ID, and each harness are the owner's clients. Identity, route ceilings, scope and audit already matter. Use a worker pool or short-lived result store only if measured concurrency or deep queries exceed the synchronous path's budget. | Demonstrate independent acceptance receipts and a negative boundary fixture for each deployed client. |
-| One owner, delegated private clients | Introduces separate onboarding, explicit corpus grants, revocation, quotas and per-client acceptance. | Demonstrate revocation over cache, graph, offline lease and read before enabling a delegate. |
-| Multiple owners with isolated corpora | Requires owner-bound namespaces through ingest, scoped derived models, data deletion/export, admin roles, cost ownership and a distinct incident/recovery model. | A separate funded-by-quota product decision plus independent isolation and erasure review. |
+| Choice                                       | Practical consequence                                                                                                                                                                                                                           | Next proof                                                                                            |
+| -------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------- |
+| Personal CLI and current synchronous gateway | Retains existing CLI/Worker while omitting a temporary fan-out result service. Lowest operational cost and a useful latency baseline.                                                                                                           | Capture synchronized requests per lane, queue delay, origin latency and bytes by result class.        |
+| One owner, managed clients                   | Fleet, ID, and each harness are the owner's clients. Identity, route ceilings, scope and audit already matter. Use a worker pool or short-lived result store only if measured concurrency or deep queries exceed the synchronous path's budget. | Demonstrate independent acceptance receipts and a negative boundary fixture for each deployed client. |
+| One owner, delegated private clients         | Introduces separate onboarding, explicit corpus grants, revocation, quotas and per-client acceptance.                                                                                                                                           | Demonstrate revocation over cache, graph, offline lease and read before enabling a delegate.          |
+| Multiple owners with isolated corpora        | Requires owner-bound namespaces through ingest, scoped derived models, data deletion/export, admin roles, cost ownership and a distinct incident/recovery model.                                                                                | A separate funded-by-quota product decision plus independent isolation and erasure review.            |
 
 The existing decision asks specifically whether standing multi-client load warrants fetch-to-fill streaming and a temporary result store. Active identity-bearing clients and separate human owners are distinct questions. Recommendation: use the managed-client acceptance and core contracts to fix the owner's observed surfaces; retain option two as a specific delegation proposal when a named consumer needs it. No tenant provisioning or cross-owner personalization should be built on the basis of this recommendation. Record the owner's decision once on the existing thread when external posting is approved.
 
@@ -108,35 +107,35 @@ This is a proposed synthetic core-contract fixture. Reference strings are determ
     "policy_epoch": 3
   },
   "catalog_metadata": [
-    {"ref": "fixture:occ-41.rev-2.chunk-1", "corpus": "garden", "tier": "internal", "allowed_context": true},
-    {"ref": "fixture:occ-41.rev-2.chunk-2", "corpus": "garden", "tier": "secret", "allowed_context": false},
-    {"ref": "fixture:occ-92.rev-2.chunk-1", "corpus": "other", "tier": "internal", "allowed_context": false}
+    { "ref": "fixture:occ-41.rev-2.chunk-1", "corpus": "garden", "tier": "internal", "allowed_context": true },
+    { "ref": "fixture:occ-41.rev-2.chunk-2", "corpus": "garden", "tier": "secret", "allowed_context": false },
+    { "ref": "fixture:occ-92.rev-2.chunk-1", "corpus": "other", "tier": "internal", "allowed_context": false }
   ],
   "cases": [
     {
       "operation": "search",
-      "arguments": {"query": "turnip planting", "k": 3},
-      "expect": {"index_version": "fixture-index-07", "hits": [{"ref": "fixture:occ-41.rev-2.chunk-1", "snippet": "Turnip planting notes."}]}
+      "arguments": { "query": "turnip planting", "k": 3 },
+      "expect": { "index_version": "fixture-index-07", "hits": [{ "ref": "fixture:occ-41.rev-2.chunk-1", "snippet": "Turnip planting notes." }] }
     },
     {
       "operation": "read",
-      "arguments": {"ref": "fixture:occ-41.rev-2.chunk-1"},
-      "expect": {"index_version": "fixture-index-07", "ref": "fixture:occ-41.rev-2.chunk-1", "text": "Turnip planting notes."}
+      "arguments": { "ref": "fixture:occ-41.rev-2.chunk-1" },
+      "expect": { "index_version": "fixture-index-07", "ref": "fixture:occ-41.rev-2.chunk-1", "text": "Turnip planting notes." }
     },
     {
       "operation": "read",
-      "arguments": {"ref": "fixture:occ-41.rev-2.chunk-2"},
-      "expect_error": {"code": "not_found"}
+      "arguments": { "ref": "fixture:occ-41.rev-2.chunk-2" },
+      "expect_error": { "code": "not_found" }
     },
     {
       "operation": "read",
-      "arguments": {"ref": "fixture:occ-92.rev-2.chunk-1"},
-      "expect_error": {"code": "not_found"}
+      "arguments": { "ref": "fixture:occ-92.rev-2.chunk-1" },
+      "expect_error": { "code": "not_found" }
     },
     {
       "operation": "read",
-      "arguments": {"ref": "fixture:missing"},
-      "expect_error": {"code": "not_found"}
+      "arguments": { "ref": "fixture:missing" },
+      "expect_error": { "code": "not_found" }
     }
   ]
 }
@@ -146,11 +145,11 @@ Run with and without the two restricted occurrences, varying their lexical, vect
 
 For each cell below, publish only pass/fail, software version, timestamp and an opaque audit receipt. Keep credentials, corpus contents, search text and real hit refs out of the acceptance ledger. A single shared gate token cannot provide independent actor evidence. The current book confirms the hosted identity; each live client remains unverified by this pass.
 
-| Harness | Positive proof on that harness | Negative proof through the same route | Observed |
-|---|---|---|---|
-| OpenClaw | Initialize; tools/list; synthetic search and scoped read; audit resolves to its assigned identity alias | Disallowed sibling, out-of-corpus ref, cross-client replay | Unverified |
-| OpenCode session | Same operations from the session's configured mcpx endpoint; separate audit receipt | Same cases after warming through OpenClaw | Unverified |
-| OpenChamber | Same operations from a real OpenChamber session; separate audit receipt | Same cases and denied cursor following fixture revocation | Unverified |
-| Muse lane | Same operations from a real lane; separate audit receipt | Same cases, including an attempt to raise scope by client argument | Unverified |
+| Harness          | Positive proof on that harness                                                                          | Negative proof through the same route                              | Observed   |
+| ---------------- | ------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------ | ---------- |
+| OpenClaw         | Initialize; tools/list; synthetic search and scoped read; audit resolves to its assigned identity alias | Disallowed sibling, out-of-corpus ref, cross-client replay         | Unverified |
+| OpenCode session | Same operations from the session's configured mcpx endpoint; separate audit receipt                     | Same cases after warming through OpenClaw                          | Unverified |
+| OpenChamber      | Same operations from a real OpenChamber session; separate audit receipt                                 | Same cases and denied cursor following fixture revocation          | Unverified |
+| Muse lane        | Same operations from a real lane; separate audit receipt                                                | Same cases, including an attempt to raise scope by client argument | Unverified |
 
 First parity comparison: normalized query, requested depth, authorized refs and ordering, and equality of MCP text-decoded versus structured payloads. Compare error semantics and accessible content across adapters. Transport envelopes, cache timing and JSON-RPC request IDs have independent contracts. The hosted search envelope currently echoes query text and the cache key, so telemetry must use a metadata allowlist; copying whole responses to a log would defeat the privacy boundary.

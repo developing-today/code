@@ -255,7 +255,9 @@ export function collectPrimaryParentViolations(
     labels,
   };
 
-  const unresolved = labels.filter((label) => !epicSlugs.has(label.slice("primary-parent/".length).trim().toLowerCase()));
+  const unresolved = labels.filter(
+    (label) => !epicSlugs.has(label.slice("primary-parent/".length).trim().toLowerCase()),
+  );
   if (unresolved.length > 0) {
     violations.push({
       ...base,

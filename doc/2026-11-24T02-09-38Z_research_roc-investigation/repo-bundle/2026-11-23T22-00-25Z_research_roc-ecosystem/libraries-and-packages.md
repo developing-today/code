@@ -69,7 +69,7 @@ joy-html.
 
 ## Tooling
 
-- **[roc-syntax-mcp](https://github.com/Karakatiza666/roc-syntax-mcp)** (Karakatiza666, on npm) — an MCP server that teaches coding agents Roc: it indexes the language reference, builtins, basic-cli, basic-webserver, roc-parser, roc-random, and third-party platforms such as roc-ray; every topic app passes `roc check` against its pinned release. A sign of the times: the ecosystem is already building tooling *for AI agents* writing Roc.
+- **[roc-syntax-mcp](https://github.com/Karakatiza666/roc-syntax-mcp)** (Karakatiza666, on npm) — an MCP server that teaches coding agents Roc: it indexes the language reference, builtins, basic-cli, basic-webserver, roc-parser, roc-random, and third-party platforms such as roc-ray; every topic app passes `roc check` against its pinned release. A sign of the times: the ecosystem is already building tooling _for AI agents_ writing Roc.
 - **[tree-sitter-roc](https://github.com/faldor20/tree-sitter-roc)** (faldor20) — grammar updated for the new syntax; powers Helix/Neovim.
 - **[zed-roc](https://github.com/h2000/zed-roc)**, **[roc-vscode](https://github.com/roc-lang/roc-vscode)** — editor support. The **official VS Code extension** was announced Nov 5 (see the digest page): syntax highlighting (including Roc in doc comments/Markdown), diagnostics as you type, formatting, hover with inferred types.
 - **[setup-roc](https://github.com/roc-lang/setup-roc)** (roc-lang) — GitHub Action; **[release-package](https://github.com/roc-lang/release-package)** (roc-lang) — package publishing workflow.

@@ -8,12 +8,12 @@ The shape, in one line: the aggregator on the laptop is the only detector and de
 
 Pick the event class first. The class decides which detector produced the candidate.
 
-| Event | Detector | File |
-|---|---|---|
-| A stack service fails its probe | Stack sentinel, watchdog, health hooks | `aggregator/scripts/stack-sentinel.ts`; `aggregator/src/watchdog*.ts`; `aggregator/src/stack-health.ts`; `aggregator/src/host-health.ts`; `pm-stack/host-health-collector.py`; `pm-stack/health-hooks/run.py` |
-| State changes on attention, quota, or health snapshots | Notification candidate builder | `aggregator/src/notifications.ts`, `buildNotificationCandidates` |
-| An external producer files an incident | Alert throat | `POST /api/alerts` in `aggregator/src/server.ts`; store in `aggregator/src/alerts.ts` |
-| A prompt is answered or fails | Prompt lifecycle | `aggregator/src/prompts.ts` and the `prompt` class, #10035 |
+| Event                                                  | Detector                               | File                                                                                                                                                                                                          |
+| ------------------------------------------------------ | -------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| A stack service fails its probe                        | Stack sentinel, watchdog, health hooks | `aggregator/scripts/stack-sentinel.ts`; `aggregator/src/watchdog*.ts`; `aggregator/src/stack-health.ts`; `aggregator/src/host-health.ts`; `pm-stack/host-health-collector.py`; `pm-stack/health-hooks/run.py` |
+| State changes on attention, quota, or health snapshots | Notification candidate builder         | `aggregator/src/notifications.ts`, `buildNotificationCandidates`                                                                                                                                              |
+| An external producer files an incident                 | Alert throat                           | `POST /api/alerts` in `aggregator/src/server.ts`; store in `aggregator/src/alerts.ts`                                                                                                                         |
+| A prompt is answered or fails                          | Prompt lifecycle                       | `aggregator/src/prompts.ts` and the `prompt` class, #10035                                                                                                                                                    |
 
 The candidate builder constructs six classes: `needs-drew`, `blocked-age`, `quota-wall`, `quota-near-wall`, `section-risk`, `stack-health`. The classes `incident` and `prompt` arrive through their own producers, not through the snapshot builder.
 

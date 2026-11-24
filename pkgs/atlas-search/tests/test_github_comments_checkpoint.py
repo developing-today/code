@@ -1,4 +1,5 @@
 """Offline CLI oracle: stable cutoff, independent review cursor, and handled-error recovery."""
+
 import json
 import os
 from pathlib import Path
@@ -48,28 +49,53 @@ def exercise(directory, cli):
     state.write_text(initial)
     output.write_text("")
     env = dict(os.environ, PATH=f"{directory}:{os.environ['PATH']}")
-    cmd = [str(cli), "--repo", REPO, "--state", str(state), "--out", str(output),
-           "--observed-date", "2026-01-02"]
+    cmd = [
+        str(cli),
+        "--repo",
+        REPO,
+        "--state",
+        str(state),
+        "--out",
+        str(output),
+        "--observed-date",
+        "2026-01-02",
+    ]
 
     def ids():
-        return [json.loads(line)["comment_id"] for line in output.read_text().splitlines()]
+        return [
+            json.loads(line)["comment_id"] for line in output.read_text().splitlines()
+        ]
 
     # Explicit targets must fail before creating output or using the fake gh.
     scratch = directory / "forbidden-output"
-    for target in ("outside-fixture/name", "dezren39/../repos", "dezren39/%2e%2e",
-                   "developing-today/name?query=1", "developing-today-forks/.."):
-        invalid = subprocess.run([str(cli), "--repo", target, "--state", str(state),
-                                  "--out", str(scratch)], env=env, capture_output=True)
+    for target in (
+        "outside-fixture/name",
+        "dezren39/../repos",
+        "dezren39/%2e%2e",
+        "developing-today/name?query=1",
+        "developing-today-forks/..",
+    ):
+        invalid = subprocess.run(
+            [str(cli), "--repo", target, "--state", str(state), "--out", str(scratch)],
+            env=env,
+            capture_output=True,
+        )
         assert invalid.returncode == 1 and b"permitted" in invalid.stderr
         assert not scratch.exists()
     # A transfer reflected in the canonical repository URL must fail closed.
-    transfer = subprocess.run(cmd, env=dict(env, FIXTURE_TRANSFER="1"), capture_output=True)
-    assert transfer.returncode == 1 and b"unexpected GitHub repository" in transfer.stderr
+    transfer = subprocess.run(
+        cmd, env=dict(env, FIXTURE_TRANSFER="1"), capture_output=True
+    )
+    assert (
+        transfer.returncode == 1 and b"unexpected GitHub repository" in transfer.stderr
+    )
     assert state.read_text() == initial and ids() == []
 
     # Independent oracle: an unsuccessful last stream leaves the entire prior
     # checkpoint and append unchanged. Successful retry emits every eligible ID.
-    failure = subprocess.run(cmd, env=dict(env, FIXTURE_FAILURE="1"), capture_output=True)
+    failure = subprocess.run(
+        cmd, env=dict(env, FIXTURE_FAILURE="1"), capture_output=True
+    )
     assert failure.returncode == 1 and b"rerun resumes" in failure.stderr
     assert state.read_text() == initial and ids() == []
     subprocess.run(cmd + ["--skip-reviews"], env=env, check=True)

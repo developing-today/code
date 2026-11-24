@@ -91,7 +91,7 @@ marked **design intent**, not inventory.
   the register records both figures); eight are still in the
   box, uninstalled, with no SMART or baseline data captured.
   **Flagged, not reconciled:** Drew's 2026-11-23 direction for
-  this pass named a *Seagate* helium HDD bulk tier. The register
+  this pass named a _Seagate_ helium HDD bulk tier. The register
   — this book's hardware source — records Western Digital.
   This chapter follows the register and flags the difference;
   the per-drive inventory

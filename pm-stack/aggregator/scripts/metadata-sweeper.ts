@@ -332,10 +332,7 @@ interface SweepCounts {
 /** Ancestor chain of a native parent, as `repo#number` keys, for the
  * primary-parent ancestor rule (design §3). Returns null when the chain
  * could not be read: an unreadable chain never manufactures a finding. */
-async function fetchAncestorRefs(
-  repo: string,
-  parent: { repo: string; number: number },
-): Promise<Set<string> | null> {
+async function fetchAncestorRefs(repo: string, parent: { repo: string; number: number }): Promise<Set<string> | null> {
   const refs = new Set<string>();
   let cursor = { repo: parent.repo, number: parent.number };
   try {
@@ -451,10 +448,7 @@ async function main(): Promise<void> {
                 const parent = await fetchNativeParent(repo, item.number);
                 if (parent) {
                   checked = { ...item, nativeParent: parent };
-                  outcome = runMetadataCheck(
-                    checked,
-                    { epicSlugs, ingestedBy: "metadata-sweeper" },
-                  );
+                  outcome = runMetadataCheck(checked, { epicSlugs, ingestedBy: "metadata-sweeper" });
                 } else if (parent === undefined) {
                   counts.errors++;
                   console.error(

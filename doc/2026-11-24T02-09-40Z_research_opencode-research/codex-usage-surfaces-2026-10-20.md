@@ -29,7 +29,7 @@ In the pool:
 
 - **Codex local** (CLI, IDE extension, desktop app) and **Codex Cloud** tasks —
   "Local messages and cloud chats share your plan's usage allowance" (pricing
-  page). Cloud tasks can draw *more* per task than local messages.
+  page). Cloud tasks can draw _more_ per task than local messages.
 - **ChatGPT Work** — the agent surface for longer, multi-step, deliverable-producing
   work (launched July 9, 2026). Same allowance, same credit rates, same windows as
   Codex. Work is not a separate plan or a separate meter.
@@ -123,7 +123,7 @@ Ultrafast (https://www.metirai.com/blog/openai-devday-2026-dots-agents-private-i
 - **Eligibility [reported, conflicting]:** Pro (100/200/500), Business Premium,
   and admin-enabled Enterprise/Edu/Healthcare; adults only; **not** in the EEA,
   UK or Switzerland at launch; gradual rollout. One report (BGR) said the $100
-  Pro tier was *not* included yet while others list all Pro tiers — treat
+  Pro tier was _not_ included yet while others list all Pro tiers — treat
   Pro 100 eligibility as unconfirmed until it appears in your account.
 - **Cost/usage:** your **first Dot is included** in the plan; extra Dots are
   planned but **unpriced** as of this writing. Critically: **conversations
@@ -143,12 +143,12 @@ Ultrafast (https://www.metirai.com/blog/openai-devday-2026-dots-agents-private-i
 **GPT-6 Astra is a model — the flagship of the GPT-6 family** (GPT-6 launched
 September 3, 2026). The family ladder:
 
-| Model | Role | API price (Standard, ≤272K ctx) | Codex credit rate (in / cached / out per 1M) |
-|---|---|---|---|
-| GPT-6 **Astra** | Flagship; strongest reasoning + computer use | **$10 in / $50 out** (cached $1, cache-write $12.50) | 250 / 25 / 1,250 |
-| GPT-6.1 **Sol** | Near-Astra quality, built for coding/computer use/office work (Sep 29, 2026) | **$2 / $10** (cached $0.10) | 50 / 2.5 / 250 |
-| GPT-6 **Sol** | Previous-gen mid tier | $2 / $10 class | 50 / 5 / 250 |
-| GPT-6 **Luna** | Cheap/fast volume model | ~$0.25–$1 class (credit rate 2.5/0.25/12.5) | 2.5 / 0.25 / 12.5 |
+| Model           | Role                                                                         | API price (Standard, ≤272K ctx)                      | Codex credit rate (in / cached / out per 1M) |
+| --------------- | ---------------------------------------------------------------------------- | ---------------------------------------------------- | -------------------------------------------- |
+| GPT-6 **Astra** | Flagship; strongest reasoning + computer use                                 | **$10 in / $50 out** (cached $1, cache-write $12.50) | 250 / 25 / 1,250                             |
+| GPT-6.1 **Sol** | Near-Astra quality, built for coding/computer use/office work (Sep 29, 2026) | **$2 / $10** (cached $0.10)                          | 50 / 2.5 / 250                               |
+| GPT-6 **Sol**   | Previous-gen mid tier                                                        | $2 / $10 class                                       | 50 / 5 / 250                                 |
+| GPT-6 **Luna**  | Cheap/fast volume model                                                      | ~$0.25–$1 class (credit rate 2.5/0.25/12.5)          | 2.5 / 0.25 / 12.5                            |
 
 API prices: OpenAI pricing page as checked Oct 13, 2026 by
 https://astrapricingcalculator.com/ and corroborated by VentureBeat-cited
@@ -218,10 +218,10 @@ the Astra tier (https://vallettasoftware.com/blog/post/chatgpt-pro-max).
 In the API — **6× the model's Standard price** (OpenAI pricing page figures,
 corroborated by multiple trackers):
 
-| Model | Standard (in / out per 1M) | Ultrafast (in / cached / cache-write / out per 1M) |
-|---|---|---|
-| GPT-6 Astra | $10 / $50 | **$60 / $6 / $75 / $300** |
-| GPT-6.1 Sol | $2 / $10 | **$12 / $0.60 / $15 / $60** |
+| Model       | Standard (in / out per 1M) | Ultrafast (in / cached / cache-write / out per 1M) |
+| ----------- | -------------------------- | -------------------------------------------------- |
+| GPT-6 Astra | $10 / $50                  | **$60 / $6 / $75 / $300**                          |
+| GPT-6.1 Sol | $2 / $10                   | **$12 / $0.60 / $15 / $60**                        |
 
 - Long-context (>272K input tokens) Astra Ultrafast: $120 / $12 / $150 / $450.
 - API access: available to all API users at **low rate limits** (Astra:
@@ -238,13 +238,13 @@ Inside a subscription (OpenAI pricing page, fetched directly):
 - **In ChatGPT Work/Codex it is available ONLY on Pro 500 ($500/mo) and
   eligible Enterprise/Edu plans.** Pro 100 and Pro 200 cannot unlock it — not
   even by buying credits (Help Center / pricing page feature matrix).
-- For comparison, **Fast mode** — which your Pro 100 *does* include — burns
+- For comparison, **Fast mode** — which your Pro 100 _does_ include — burns
   included usage at **2.5×** and credits at **2×**, for roughly 2× speed.
 
 ### What would make it worth it
 
 The honest arithmetic (https://www.orcarouter.ai/blog/gpt-6-1-sol-ultrafast-rollout):
-you pay 6× per token to remove up to 7/8 of the *generation* time. That pays
+you pay 6× per token to remove up to 7/8 of the _generation_ time. That pays
 only when **someone or something is blocked waiting on the tokens**:
 
 - Interactive pair-programming / tight steer-fix loops where the human is the
@@ -254,7 +254,7 @@ only when **someone or something is blocked waiting on the tokens**:
 
 It does **not** pay for: batch/background jobs, overnight runs, CI, bulk
 refactors nobody watches — there the half-price Batch/Flex lanes are the
-correct answer, and note that 8× *token generation* ≠ 8× *task completion*:
+correct answer, and note that 8× _token generation_ ≠ 8× _task completion_:
 tool calls, test runs, file I/O and approvals don't speed up
 (https://aistify.com/openai-devday-2026-biggest-announcements/). On a
 subscription it is doubly expensive: the 8× allowance burn means a Pro 500's
@@ -268,7 +268,7 @@ the reviewer pool is small. What exists:
 
 - **Skeptical on delivered speed:** a forum user measuring Astra Ultrafast in
   real use reported **~70 tok/s** rather than the 300 headline, with others
-  noting the figure depends heavily on context length and that OpenAI's *Fast*
+  noting the figure depends heavily on context length and that OpenAI's _Fast_
   mode often benchmarks slower than competitors' standard modes
   (https://vibingtalk.com/index.php?threads/ultrafast-mode-for-astra-6-is-70tps-for-300-m-output.1586591/).
   Single-thread anecdote, unverified methodology — but it's the only
@@ -332,7 +332,7 @@ review/Slack. For unattended bulk work use Batch/Flex at 0.5× Standard.
   Plus allowance plus a speed tier whose real-world delivery is unverified
   (~70 tok/s in the only user measurement found vs 300 claimed) and which
   burns that allowance at 8×. It becomes defensible only if you are
-  *routinely* exhausting Pro 100's allowance AND your bottleneck is your own
+  _routinely_ exhausting Pro 100's allowance AND your bottleneck is your own
   waiting time on interactive frontier-model work.
 - **API Ultrafast has a narrow defensible case:** latency-critical interactive
   loops (e.g. a live coding session or demo on Sol Ultrafast at $12/$60) where

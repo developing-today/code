@@ -1,10 +1,6 @@
 {
   "version": 1,
-  "families": [
-    "noul",
-    "choice",
-    "score"
-  ],
+  "families": ["noul", "choice", "score"],
   "items": [
     {
       "id": "n01",

@@ -1226,15 +1226,20 @@ mod tests {
         // whole cache; a cached name absent from the list is evicted
         // (the list is authoritative for existence, #6568) and the
         // successful-refresh watermark advances.
-        let state = seeded_state(&[
-            ("alpha", "old-alpha", 100),
-            ("gamma", "old-gamma", 100),
-        ]);
+        let state = seeded_state(&[("alpha", "old-alpha", 100), ("gamma", "old-gamma", 100)]);
         let n = install_list_refresh(
             &state,
             &[
-                ("id-a".to_string(), "alpha".to_string(), "new-alpha".to_string()),
-                ("id-d".to_string(), "delta".to_string(), "fresh-delta".to_string()),
+                (
+                    "id-a".to_string(),
+                    "alpha".to_string(),
+                    "new-alpha".to_string(),
+                ),
+                (
+                    "id-d".to_string(),
+                    "delta".to_string(),
+                    "fresh-delta".to_string(),
+                ),
             ],
             200,
         );
