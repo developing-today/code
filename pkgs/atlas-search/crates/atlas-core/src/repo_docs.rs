@@ -13,7 +13,7 @@ pub const OWN_REPOS: [&str; 4] = [
     "developing-today/code",
     "developing-today-forks/opencode",
     "developing-today-forks/openchamber",
-    "dezren39/fleet",
+    "dezren39/darwin-nix",
 ];
 
 /// An explicit local checkout; no remote discovery or fetching is performed.

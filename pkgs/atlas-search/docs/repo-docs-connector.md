@@ -14,7 +14,7 @@ atlas-stage ingest-repo-docs --db staging/repo-docs.db --roots roots.json --agen
   {"repo":"developing-today/code","root":"/workspace/code"},
   {"repo":"developing-today-forks/opencode","root":"/workspace/opencode"},
   {"repo":"developing-today-forks/openchamber","root":"/workspace/openchamber"},
-  {"repo":"dezren39/fleet","root":"/workspace/fleet"}
+  {"repo":"dezren39/darwin-nix","root":"/workspace/darwin-nix"}
 ]
 ```
 

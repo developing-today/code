@@ -6,6 +6,20 @@ use rusqlite::Connection;
 use std::path::{Path, PathBuf};
 
 const NOW: &str = "2026-11-24T00:00:00Z";
+
+#[test]
+fn approved_repo_ids_match_fleet_inventory_oracle() {
+    assert_eq!(
+        OWN_REPOS,
+        [
+            "developing-today/code",
+            "developing-today-forks/opencode",
+            "developing-today-forks/openchamber",
+            "dezren39/darwin-nix",
+        ]
+    );
+}
+
 struct Fixture(PathBuf);
 impl Fixture {
     fn new(tag: &str) -> Self {
