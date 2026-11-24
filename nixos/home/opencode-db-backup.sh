@@ -32,6 +32,29 @@
 # retention/listing). On success the run writes a completion record
 # (~/backups/restic/.opencode-db-last-run.json) and a success-epoch
 # marker the laptop-backups watchdog reads (#1841 coverage).
+#
+# ZSTD FAST-RESTORE LEG (code#14515, research #9094 scheme (b)):
+# after the restic legs, the staged opencode.db image is ALSO
+# published as one dated zstd -3 full copy -- locally at
+# ~/backups/opencode-db-zstd/<date>/ and on Google Drive at
+# rclone:drive:Cloud/cold-store/db-backups/opencode/<date>/ (the
+# per-DB dated layout the openclaw-backup pattern uses) -- with a
+# sha256 manifest, and the Drive copy verified by re-reading it
+# before success is recorded. Retention applies to the dated zstd
+# directories only, on both targets, with restic's GFS semantics
+# over calendar dates: keep-daily 7, keep-weekly 4, keep-monthly 12.
+# The leg writes its own success-epoch marker
+# (.opencode-db-zstd-last-success-epoch) only after both copies
+# verify and retention has run, and the watchdog checks that marker
+# separately: a successful restic run must not mask a failed or
+# stale zstd leg. Measured economics (#9094): 31.03 GiB -> 5.22 GiB
+# in 44 s; restore = download + ~56 s decompress + integrity_check,
+# with no restic/rclone stack needed. Drive upload throughput is
+# the weak point (a direct single-file rclone upload measured
+# ~56 KiB/s on 2026-11-24 vs ~1.5-2 MiB/s for restic's chunked
+# traffic), so the leg's freshness SLO budgets a >=1-day
+# off-laptop lag until re-measured; same-day off-laptop coverage
+# is NOT promised.
 # Runs unattended via the opencode-db-backup systemd user timer
 # (nixos/home/laptop-backups.nix). Any failure exits non-zero with a
 # loud FAILED line; success ends with one OK line.
@@ -48,15 +71,28 @@ DRIVE_REPO="rclone:drive:Cloud/backups/restic-opencode-db"
 MARKER="$ROOT/.opencode-db-last-success-epoch"
 RECORD="$ROOT/.opencode-db-last-run.json"
 LOCK="$ROOT/.opencode-db-backup.lock"
+ZSTD_ROOT="$HOME/backups/opencode-db-zstd"
+ZSTD_DRIVE_DIR="Cloud/cold-store/db-backups/opencode"
+ZSTD_MARKER="$ROOT/.opencode-db-zstd-last-success-epoch"
 
 log() { echo "opencode-db-backup: $*"; }
 fail() {
   echo "opencode-db-backup: FAILED $*" >&2
   exit 1
 }
-trap 'rc=$?; if [ $rc -ne 0 ]; then echo "opencode-db-backup: FAILED exit=$rc" >&2; fi' EXIT
+ZSTD_TMP=""
+trap 'rc=$?; if [ -n "$ZSTD_TMP" ]; then rm -f "$ZSTD_TMP"; fi; if [ $rc -ne 0 ]; then echo "opencode-db-backup: FAILED exit=$rc" >&2; fi' EXIT
 
 mkdir -p "$ROOT"
+
+# The zstd leg's artifact date. OPENCODE_DB_BACKUP_DATE overrides it
+# for the test suite (a fixed historical date makes the retention
+# expectations deterministic); the systemd timer never sets it.
+RUN_DATE="${OPENCODE_DB_BACKUP_DATE:-$(date +%F)}"
+if [[ ! $RUN_DATE =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] ||
+  [ "$(date -d "$RUN_DATE" +%F 2>/dev/null)" != "$RUN_DATE" ]; then
+  fail "invalid RUN_DATE '$RUN_DATE' - expected a real calendar date as YYYY-MM-DD"
+fi
 
 # --- single instance ---
 exec 9>"$LOCK"
@@ -81,6 +117,7 @@ resolve_tool() { # $1 name; prints path or fails
 RESTIC="$(resolve_tool restic)"
 BWS="$(resolve_tool bws)"
 SQLITE="$(resolve_tool sqlite3)"
+ZSTD="$(resolve_tool zstd)"
 if ! command -v rclone >/dev/null 2>&1; then
   RCLONE_BIN="$(resolve_tool rclone)"
   mkdir -p "$ROOT/.bin"
@@ -161,12 +198,152 @@ backup_backend() { # $1 label, $2 repo
   log "retention applied: $label (keep-last 7, keep-daily 7, keep-weekly 4, keep-monthly 12)"
 }
 
+# --- zstd fast-restore leg (code#14515) -------------------------------------
+# GFS retention over calendar dates (restic's keep-daily/keep-weekly/
+# keep-monthly semantics, one artifact per day): keep the 7 newest
+# days, the latest day of each of the 4 newest ISO weeks present, and
+# the latest day of each of the 12 newest months present; the run
+# date is always kept. Reads: $1 run date, $2 space-separated
+# candidate dates (trailing slashes tolerated). Prints the dates to
+# prune, one per line.
+zstd_retention_prune() {
+  python3 - "$1" "$2" <<'PYEOF'
+import sys
+from datetime import date
+
+today = date.fromisoformat(sys.argv[1])
+dates = []
+for tok in sys.argv[2].split():
+    try:
+        dates.append(date.fromisoformat(tok.strip("/")))
+    except ValueError:
+        continue  # not a dated artifact dir; never pruned by this leg
+dates = sorted(set(dates))
+keep = set(dates[-7:])
+weeks = {}
+for d in dates:
+    weeks.setdefault(d.isocalendar()[:2], []).append(d)
+for w in sorted(weeks)[-4:]:
+    keep.add(max(weeks[w]))
+months = {}
+for d in dates:
+    months.setdefault((d.year, d.month), []).append(d)
+for m in sorted(months)[-12:]:
+    keep.add(max(months[m]))
+keep.add(today)
+for d in dates:
+    if d not in keep:
+        print(d.isoformat())
+PYEOF
+}
+
+zstd_retention_local() {
+  local candidates="" d prune day
+  for d in "$ZSTD_ROOT"/20??-??-??; do
+    [ -d "$d" ] || continue
+    candidates+="$(basename "$d") "
+  done
+  prune="$(zstd_retention_prune "$RUN_DATE" "$candidates")"
+  while IFS= read -r day; do
+    [ -n "$day" ] || continue
+    rm -rf "${ZSTD_ROOT:?}/$day"
+    log "zstd retention: pruned local $day"
+  done <<<"$prune"
+}
+
+zstd_retention_drive() {
+  local listing prune day
+  # A failed listing fails the run (the openclaw-backup #1035
+  # lesson): an unreachable Drive must not read as an empty remote
+  # with nothing to prune while the run reports success.
+  listing="$(rclone lsf --dirs-only "drive:$ZSTD_DRIVE_DIR/")" ||
+    fail "zstd retention: Drive listing failed"
+  prune="$(zstd_retention_prune "$RUN_DATE" "$(printf '%s' "$listing" | tr '\n' ' ')")"
+  while IFS= read -r day; do
+    [ -n "$day" ] || continue
+    rclone purge "drive:$ZSTD_DRIVE_DIR/$day" ||
+      fail "zstd retention: Drive prune failed for $day"
+    log "zstd retention: pruned Drive $day"
+  done <<<"$prune"
+}
+
+zstd_leg() {
+  local src="$STAGE/opencode.db"
+  local artifact="opencode-db-$RUN_DATE.db.zst"
+  local outdir="$ZSTD_ROOT/$RUN_DATE"
+  local drive_dir="drive:$ZSTD_DRIVE_DIR/$RUN_DATE"
+  local src_sha src_bytes zst_sha zst_bytes dec_sha got
+  mkdir -p "$outdir"
+  src_sha="$(sha256sum "$src" | cut -d' ' -f1)"
+  src_bytes="$(stat -c%s "$src")"
+  ZSTD_TMP="$outdir/.tmp-$artifact"
+  rm -f "$ZSTD_TMP"
+  "$ZSTD" -3 -q -f -o "$ZSTD_TMP" "$src" || fail "zstd compression failed for $src"
+  # Verify BEFORE publish: the compressed bytes must decompress to
+  # exactly the staged image (sha256 over the decompressed stream),
+  # so a torn compression can never become the dated artifact.
+  dec_sha="$("$ZSTD" -dc "$ZSTD_TMP" | sha256sum | cut -d' ' -f1)"
+  [ "$dec_sha" = "$src_sha" ] ||
+    fail "zstd verify failed: decompressed sha256 $dec_sha != staged image $src_sha"
+  zst_sha="$(sha256sum "$ZSTD_TMP" | cut -d' ' -f1)"
+  zst_bytes="$(stat -c%s "$ZSTD_TMP")"
+  mv "$ZSTD_TMP" "$outdir/$artifact"
+  ZSTD_TMP=""
+  ZSTD_DATE="$RUN_DATE" ZSTD_CREATED="$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    ZSTD_FILE="$artifact" ZSTD_SHA256="$zst_sha" ZSTD_BYTES="$zst_bytes" \
+    ZSTD_SRC_SHA256="$src_sha" ZSTD_SRC_BYTES="$src_bytes" \
+    python3 - "$outdir/manifest.json" <<'PYEOF' || fail "zstd manifest generation failed"
+import json, os, sys
+
+manifest = {
+    "archive": f"opencode-db-{os.environ['ZSTD_DATE']}",
+    "created_at": os.environ["ZSTD_CREATED"],
+    "host": os.uname().nodename,
+    "scope": "laptop",
+    "source_db": "opencode.db",
+    "uncompressed_sha256": os.environ["ZSTD_SRC_SHA256"],
+    "uncompressed_size": int(os.environ["ZSTD_SRC_BYTES"]),
+    "files": [{
+        "path": os.environ["ZSTD_FILE"],
+        "sha256": os.environ["ZSTD_SHA256"],
+        "size": int(os.environ["ZSTD_BYTES"]),
+    }],
+}
+with open(sys.argv[1], "w") as fh:
+    json.dump(manifest, fh, indent=2)
+PYEOF
+  log "zstd local OK $outdir/$artifact ($zst_bytes bytes, sha256 $zst_sha)"
+  rclone copyto "$outdir/$artifact" "$drive_dir/$artifact" ||
+    fail "zstd Drive upload failed ($artifact)"
+  rclone copyto "$outdir/manifest.json" "$drive_dir/manifest.json" ||
+    fail "zstd Drive upload failed (manifest.json)"
+  # || got="": a failed cat must surface as the sha mismatch fail
+  # below (clear message), not as a bare pipefail abort.
+  got="$(rclone cat "$drive_dir/$artifact" 2>/dev/null | sha256sum | cut -d' ' -f1)" || got=""
+  [ "$got" = "$zst_sha" ] || fail "zstd Drive copy sha256 mismatch (got $got)"
+  log "zstd Drive OK sha256 verified ($drive_dir/$artifact)"
+  zstd_retention_local
+  zstd_retention_drive
+  # The zstd success marker advances ONLY now: both copies verified
+  # and retention applied. The watchdog reads it separately from the
+  # restic marker, so neither leg can mask the other (#14515).
+  date +%s >"$ZSTD_MARKER"
+  export ZSTD_DATE="$RUN_DATE" ZSTD_FILE="$artifact" ZSTD_SHA256="$zst_sha" ZSTD_BYTES="$zst_bytes"
+}
+
 backup_backend "local" "$LOCAL_REPO"
 backup_backend "r2" "$R2_REPO"
 backup_backend "drive" "$DRIVE_REPO"
 
-# --- completion evidence: success marker + run record (watchdog) ---
+# The restic success marker is written as soon as the restic legs
+# are verified, BEFORE the zstd leg: a zstd failure must not make a
+# successful restic run look stale (and the zstd leg's own marker,
+# written at its end, keeps the reverse true).
 date +%s >"$MARKER"
+
+zstd_leg
+
+# --- completion evidence: run record (the watchdog reads the markers) ---
 python3 - "$RECORD" "${DBS[@]}" <<'PYEOF'
 import json, os, sys
 from datetime import datetime, timezone
@@ -187,8 +364,18 @@ record = {
     "backends": ["local", "r2", "drive"],
     "tag": "opencode-db-daily",
 }
+zstd_file = os.environ.get("ZSTD_FILE")
+if zstd_file:
+    record["zstd"] = {
+        "date": os.environ.get("ZSTD_DATE", ""),
+        "file": zstd_file,
+        "bytes": int(os.environ.get("ZSTD_BYTES", "0")),
+        "sha256": os.environ.get("ZSTD_SHA256", ""),
+        "drive_dir": "Cloud/cold-store/db-backups/opencode/"
+        + os.environ.get("ZSTD_DATE", ""),
+    }
 with open(record_path, "w") as fh:
     json.dump(record, fh, indent=1)
 PYEOF
 rm -rf "$STAGE"
-log "OK opencode session DB backed up to local + R2 + Drive (restic dedup; record $RECORD)"
+log "OK opencode session DB backed up to local + R2 + Drive (restic dedup) + zstd fast-restore leg ($ZSTD_FILE); record $RECORD"
