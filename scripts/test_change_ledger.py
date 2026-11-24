@@ -70,8 +70,11 @@ class CheckTests(unittest.TestCase):
 
     def test_pr_link_match_passes(self):
         write(self.changes, json.dumps(changes_doc([change(pr=13838)])))
-        write(self.ledger, json.dumps(event(
-            "https://github.com/developing-today/code/pull/13838")) + "\n")
+        write(
+            self.ledger,
+            json.dumps(event("https://github.com/developing-today/code/pull/13838"))
+            + "\n",
+        )
         report = self.run_check()
         self.assertEqual(report["matched"], 1)
         self.assertEqual(report["unmatched"], [])
@@ -79,19 +82,29 @@ class CheckTests(unittest.TestCase):
         self.assertEqual(report["exit_code"], 0)
 
     def test_hash_ref_and_pull_path_match(self):
-        write(self.changes, json.dumps(changes_doc(
-            [change(pr=13838), change(pr=13784)])))
-        write(self.ledger, "\n".join([
-            json.dumps(event("PR #13838")),
-            json.dumps(event("https://github.com/developing-today/code/pull/13784")),
-        ]) + "\n")
+        write(
+            self.changes, json.dumps(changes_doc([change(pr=13838), change(pr=13784)]))
+        )
+        write(
+            self.ledger,
+            "\n".join(
+                [
+                    json.dumps(event("PR #13838")),
+                    json.dumps(
+                        event("https://github.com/developing-today/code/pull/13784")
+                    ),
+                ]
+            )
+            + "\n",
+        )
         report = self.run_check()
         self.assertEqual(report["matched"], 2)
         self.assertEqual(report["exit_code"], 0)
 
     def test_unmatched_change_is_a_defect(self):
-        write(self.changes, json.dumps(changes_doc(
-            [change(pr=13838), change(pr=13784)])))
+        write(
+            self.changes, json.dumps(changes_doc([change(pr=13838), change(pr=13784)]))
+        )
         write(self.ledger, json.dumps(event("PR #13838")) + "\n")
         report = self.run_check()
         self.assertEqual(report["matched"], 1)
@@ -101,11 +114,22 @@ class CheckTests(unittest.TestCase):
 
     def test_duplicate_events_match_once(self):
         write(self.changes, json.dumps(changes_doc([change(pr=13838)])))
-        write(self.ledger, "\n".join([
-            json.dumps(event("PR #13838")),
-            json.dumps(event("PR #13838", timestamp="2026-11-21T01:00:00Z",
-                             outcome="burn shifted as expected")),
-        ]) + "\n")
+        write(
+            self.ledger,
+            "\n".join(
+                [
+                    json.dumps(event("PR #13838")),
+                    json.dumps(
+                        event(
+                            "PR #13838",
+                            timestamp="2026-11-21T01:00:00Z",
+                            outcome="burn shifted as expected",
+                        )
+                    ),
+                ]
+            )
+            + "\n",
+        )
         report = self.run_check()
         self.assertEqual(report["matched"], 1)
         self.assertEqual(report["exit_code"], 0)
@@ -117,17 +141,18 @@ class CheckTests(unittest.TestCase):
         write(self.ledger, json.dumps(bad) + "\n")
         report = self.run_check()
         self.assertEqual(report["exit_code"], 1)
-        self.assertTrue(any(
-            d["kind"] == "missing_before_snapshot" for d in report["defects"]))
+        self.assertTrue(
+            any(d["kind"] == "missing_before_snapshot" for d in report["defects"])
+        )
 
     def test_event_with_empty_before_snapshot_is_a_defect(self):
         write(self.changes, json.dumps(changes_doc([change(pr=13838)])))
-        write(self.ledger, json.dumps(event(
-            "PR #13838", before_snapshot={})) + "\n")
+        write(self.ledger, json.dumps(event("PR #13838", before_snapshot={})) + "\n")
         report = self.run_check()
         self.assertEqual(report["exit_code"], 1)
-        self.assertTrue(any(
-            d["kind"] == "missing_before_snapshot" for d in report["defects"]))
+        self.assertTrue(
+            any(d["kind"] == "missing_before_snapshot" for d in report["defects"])
+        )
 
     def test_event_missing_expected_effect_is_a_defect(self):
         bad = event("PR #13838")
@@ -136,20 +161,21 @@ class CheckTests(unittest.TestCase):
         write(self.ledger, json.dumps(bad) + "\n")
         report = self.run_check()
         self.assertEqual(report["exit_code"], 1)
-        self.assertTrue(any(
-            d["kind"] == "missing_expected_effect" for d in report["defects"]))
+        self.assertTrue(
+            any(d["kind"] == "missing_expected_effect" for d in report["defects"])
+        )
 
     def test_malformed_ledger_line_is_a_defect(self):
         write(self.changes, json.dumps(changes_doc([change(pr=13838)])))
         write(self.ledger, json.dumps(event("PR #13838")) + "\n{not json\n")
         report = self.run_check()
         self.assertEqual(report["exit_code"], 1)
-        self.assertTrue(any(
-            d["kind"] == "malformed_event" for d in report["defects"]))
+        self.assertTrue(any(d["kind"] == "malformed_event" for d in report["defects"]))
 
     def test_missing_ledger_file_means_zero_matched(self):
-        write(self.changes, json.dumps(changes_doc(
-            [change(pr=13838), change(pr=13784)])))
+        write(
+            self.changes, json.dumps(changes_doc([change(pr=13838), change(pr=13784)]))
+        )
         # No ledger file written at all: the ledger does not exist yet.
         report = self.run_check()
         self.assertTrue(report["ledger"]["missing"])
@@ -159,10 +185,16 @@ class CheckTests(unittest.TestCase):
 
     def test_event_for_pr_outside_window_is_noted_not_a_defect(self):
         write(self.changes, json.dumps(changes_doc([change(pr=13838)])))
-        write(self.ledger, "\n".join([
-            json.dumps(event("PR #13838")),
-            json.dumps(event("PR #13700")),
-        ]) + "\n")
+        write(
+            self.ledger,
+            "\n".join(
+                [
+                    json.dumps(event("PR #13838")),
+                    json.dumps(event("PR #13700")),
+                ]
+            )
+            + "\n",
+        )
         report = self.run_check()
         self.assertEqual(report["exit_code"], 0)
         self.assertEqual(len(report["outside_window_events"]), 1)
@@ -185,10 +217,21 @@ class CheckTests(unittest.TestCase):
 class CliTests(unittest.TestCase):
     def test_unknown_flag_is_usage_error(self):
         proc = subprocess.run(
-            [sys.executable, "-I", "scripts/change_ledger.py",
-             "check", "--ledger", "x", "--changes", "y", "--nope"],
+            [
+                sys.executable,
+                "-I",
+                "scripts/change_ledger.py",
+                "check",
+                "--ledger",
+                "x",
+                "--changes",
+                "y",
+                "--nope",
+            ],
             cwd=os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."),
-            capture_output=True, text=True)
+            capture_output=True,
+            text=True,
+        )
         self.assertEqual(proc.returncode, 2)
         self.assertIn("unexpected argument", proc.stderr)
 
@@ -196,7 +239,9 @@ class CliTests(unittest.TestCase):
         proc = subprocess.run(
             [sys.executable, "-I", "scripts/change_ledger.py", "check"],
             cwd=os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."),
-            capture_output=True, text=True)
+            capture_output=True,
+            text=True,
+        )
         self.assertEqual(proc.returncode, 2)
 
 

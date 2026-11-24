@@ -80,7 +80,12 @@ function fwindow(over: Partial<QuotaForecastWindow> = {}): QuotaForecastWindow {
 
 function fforecast(windows: QuotaForecastWindow[], generatedAtMs: number): QuotaForecastFile {
   const pool: QuotaForecastPool = { providerId: "claude", serviceId: "_claude", plan: null, windows };
-  return { version: 1, generatedAt: new Date(generatedAtMs).toISOString(), source: "gather-quota", pools: { claude: [pool] } };
+  return {
+    version: 1,
+    generatedAt: new Date(generatedAtMs).toISOString(),
+    source: "gather-quota",
+    pools: { claude: [pool] },
+  };
 }
 
 // The shared fixture: 10 days, the interval ending 07:00 Chicago
@@ -259,7 +264,9 @@ describe("renderDayTypeShadowReport", () => {
   test("the report names the methodology and both walls", () => {
     const nowMs = chi(9, 8);
     const forecast = fforecast([fwindow({ projectedWallAt: nowMs + 200 * H })], nowMs);
-    const report = renderDayTypeShadowReport(buildDayTypeShadowRecords(forecast, series(10, MORNING_DOUBLE), new Map()));
+    const report = renderDayTypeShadowReport(
+      buildDayTypeShadowRecords(forecast, series(10, MORNING_DOUBLE), new Map()),
+    );
     expect(report).toContain("c4-meth:5");
     expect(report).toContain("claude");
     expect(report).toContain("daypart:morning");

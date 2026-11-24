@@ -248,10 +248,10 @@ the Cloudflare worker surface (pkgs/atlas-search/worker) forwards to it.
 
 ## `orgs` — GitHub organization registry
 
-| Command | Purpose |
-| --- | --- |
+| Command           | Purpose                                                                                                                          |
+| ----------------- | -------------------------------------------------------------------------------------------------------------------------------- |
 | `fleet orgs list` | List the locally stored org/App/installation snapshot as a table or JSON; supports `--app`, `--org`, and `--permission` filters. |
-| `fleet orgs sync` | Refresh the Turso registry from each configured GitHub App's own installation listing. |
+| `fleet orgs sync` | Refresh the Turso registry from each configured GitHub App's own installation listing.                                           |
 
 The registry only makes coverage claims from `GET /app/installations` authenticated
 with that App's JWT and follows every Link page. OAuth-token

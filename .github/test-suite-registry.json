@@ -760,9 +760,7 @@
     },
     {
       "id": "pm-service.collector",
-      "paths": [
-        "pm-stack/pm-service/test/collector.test.ts"
-      ],
+      "paths": ["pm-stack/pm-service/test/collector.test.ts"],
       "invocation": "cd pm-stack/pm-service && bun test",
       "venue": {
         "workflow": ".github/workflows/pm-stack-tests.yml",
@@ -775,9 +773,7 @@
     },
     {
       "id": "pm-service.read-api",
-      "paths": [
-        "pm-stack/pm-service/test/read-api.test.ts"
-      ],
+      "paths": ["pm-stack/pm-service/test/read-api.test.ts"],
       "invocation": "cd pm-stack/pm-service && bun test",
       "venue": {
         "workflow": ".github/workflows/pm-stack-tests.yml",

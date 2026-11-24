@@ -55,10 +55,10 @@ machines:
       # scripts/fleet-machine-watchdog.py; never hand-edited (the
       # validator requires the earned checks record below).
       source: watchdog
-      last_seen: '2026-11-24T17:25:50Z'
+      last_seen: "2026-11-24T17:25:50Z"
       status: healthy
       checks:
-        reported_at: '2026-11-24T17:25:50Z'
+        reported_at: "2026-11-24T17:25:50Z"
         reachable:
           state: ok
           ssh: true
@@ -82,7 +82,7 @@ machines:
           source: openchamber attach api
         last_queue_job:
           state: ok
-          task_id: '23440'
+          task_id: "23440"
           queue: repo-health-nix-pilot
           worker: oc-code-04
-          completed_at: '2026-11-24T17:24:12Z'
+          completed_at: "2026-11-24T17:24:12Z"

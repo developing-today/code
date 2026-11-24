@@ -164,12 +164,12 @@ session_closed`, malformed ids `400 invalid_session_id`. An agent
   `metadata_inserted: false`) is healed by the first check that
   sees the item. The door's operator surface completes the
   #9074 remainder (#14312, `src/backfill.ts`): `POST
-  /v1/ingestion/backfill` runs the same sweep over a named or
+/v1/ingestion/backfill` runs the same sweep over a named or
   configured scope and records the run — counts in/out and every
   per-item failure named — in the backfill run store, read back
   via `GET /v1/ingestion/backfill/runs`; re-running over an
   unchanged store records 0 inserted / 0 refreshed. `POST
-  /v1/ingestion/divergence` is the aggregate counterpart of the
+/v1/ingestion/divergence` is the aggregate counterpart of the
   query door's per-result divergence: over the scope it compares
   every item's body block against the DB and names the
   divergences by class — `missing_row`, `stale_field` (the

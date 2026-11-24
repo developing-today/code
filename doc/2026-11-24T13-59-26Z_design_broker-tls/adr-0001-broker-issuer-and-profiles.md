@@ -36,12 +36,12 @@ broker leaves are not to be indistinguishable from generic service leaves:
    `clientAuth`; digitalSignature):
    - `broker-server` — for a broker's TCP server leg.
    - `broker-client` — for a fleet component dialling a broker.
-   Profile deltas: **90-day default validity** (spec §5.4 leaf default;
-   automated renewal is part of the profile contract), **mandatory SAN set**
-   (the component's internal DNS name(s) + its tailnet IP as an IP SAN; no
-   wildcards, no public names), and **CRL-only revocation checking** (a CDP
-   is embedded only where #9164's real-signed-CRL rule is satisfied; no OCSP
-   URL until a functional Base-set responder exists).
+     Profile deltas: **90-day default validity** (spec §5.4 leaf default;
+     automated renewal is part of the profile contract), **mandatory SAN set**
+     (the component's internal DNS name(s) + its tailnet IP as an IP SAN; no
+     wildcards, no public names), and **CRL-only revocation checking** (a CDP
+     is embedded only where #9164's real-signed-CRL rule is satisfied; no OCSP
+     URL until a functional Base-set responder exists).
 3. **Private keys are generated on the component's host** and never move;
    issuance is CSR-based against an explicitly passed signer source, per
    `fleet-cert`'s existing rail and #9163/#9158 custody.

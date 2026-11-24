@@ -1655,5 +1655,7 @@ test("words written for a Markdown file are shown as plain words", () => {
   expect(plainWords("a * b * c")).toBe("a * b * c");
   expect([plainWords(""), plainWords(null), plainWords(undefined)]).toEqual(["", "", ""]);
   // And a roadmap row's words are shown that way.
-  expect(readFileSync(new URL("../public/app.js", import.meta.url), "utf8")).toContain('h("p", {}, plainWords(r.intent))');
+  expect(readFileSync(new URL("../public/app.js", import.meta.url), "utf8")).toContain(
+    'h("p", {}, plainWords(r.intent))',
+  );
 });

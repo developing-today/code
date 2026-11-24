@@ -116,13 +116,13 @@ Shows the five most recent commands in the central log.
 fleet bridge mint-enroll --agent A [--kind K] [--groups g1,g2] [--notes-identity I] [--ttl SECS]
 ```
 
-| Flag               | Argument | Default  | Meaning                                                                                     |
-| ------------------ | -------- | -------- | ------------------------------------------------------------------------------------------- |
-| `--agent`          | `A`      | required | The new agent's name; the token is bound to it and enrolls no other.                        |
-| `--kind`           | `K`      | `agent`  | The agent kind the token is bound to.                                                       |
-| `--groups`         | `g1,g2`  | —        | Groups the mailbox registers with at exchange.                                              |
-| `--notes-identity` | `I`      | —        | A class/name notes identity to register at exchange.                                        |
-| `--ttl`            | `SECS`   | `86400`  | The token's lifetime in seconds (60 to 604800).                                             |
+| Flag               | Argument | Default  | Meaning                                                              |
+| ------------------ | -------- | -------- | -------------------------------------------------------------------- |
+| `--agent`          | `A`      | required | The new agent's name; the token is bound to it and enrolls no other. |
+| `--kind`           | `K`      | `agent`  | The agent kind the token is bound to.                                |
+| `--groups`         | `g1,g2`  | —        | Groups the mailbox registers with at exchange.                       |
+| `--notes-identity` | `I`      | —        | A class/name notes identity to register at exchange.                 |
+| `--ttl`            | `SECS`   | `86400`  | The token's lifetime in seconds (60 to 604800).                      |
 
 ### Behaviour
 
@@ -172,10 +172,10 @@ Shows which minted tokens are still outstanding, and how each closed one ended.
 fleet bridge revoke-enroll (--agent A | --token-hash H)
 ```
 
-| Flag           | Argument | Default | Meaning                                                                                          |
-| -------------- | -------- | ------- | ------------------------------------------------------------------------------------------------ |
-| `--agent`      | `A`      | —       | Take back every still-pending token minted for this agent; the answer counts them.             |
-| `--token-hash` | `H`      | —       | Revoke the one token stored under this SHA-256 hash; the answer is `{revoked: true\|false}`.   |
+| Flag           | Argument | Default | Meaning                                                                                      |
+| -------------- | -------- | ------- | -------------------------------------------------------------------------------------------- |
+| `--agent`      | `A`      | —       | Take back every still-pending token minted for this agent; the answer counts them.           |
+| `--token-hash` | `H`      | —       | Revoke the one token stored under this SHA-256 hash; the answer is `{revoked: true\|false}`. |
 
 ### Behaviour
 
@@ -199,11 +199,11 @@ Takes back every outstanding token minted for `scout-2`.
 fleet bridge mint-credential --agent A [--scopes s1,s2] [--addr service:<name>]
 ```
 
-| Flag       | Argument        | Default      | Meaning                                                                                          |
-| ---------- | --------------- | ------------ | ------------------------------------------------------------------------------------------------ |
-| `--agent`  | `A`             | required     | The agent (or service) the credential belongs to; it acts only as itself.                        |
-| `--scopes` | `s1,s2`         | see below    | Any of `inbox`, `send`, `read`. Agent mints default to `inbox, send`; service mints to `send, read`. |
-| `--addr`   | `service:<name>` | —           | Make it a service credential, bound to that address; the name must be the agent's own.           |
+| Flag       | Argument         | Default   | Meaning                                                                                              |
+| ---------- | ---------------- | --------- | ---------------------------------------------------------------------------------------------------- |
+| `--agent`  | `A`              | required  | The agent (or service) the credential belongs to; it acts only as itself.                            |
+| `--scopes` | `s1,s2`          | see below | Any of `inbox`, `send`, `read`. Agent mints default to `inbox, send`; service mints to `send, read`. |
+| `--addr`   | `service:<name>` | —         | Make it a service credential, bound to that address; the name must be the agent's own.               |
 
 ### Behaviour
 

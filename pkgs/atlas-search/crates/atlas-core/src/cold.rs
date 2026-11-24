@@ -322,7 +322,7 @@ impl ColdShard {
                 return Err(corrupt(
                     "span_codec \"zstd\" is not readable yet: the decompressed-section \
                      reader lands with the writer follow-on (#8227)",
-                ))
+                ));
             }
             other => return Err(corrupt(format!("unknown span_codec {other:?}"))),
         }
@@ -364,7 +364,7 @@ impl ColdShard {
                     return Err(corrupt(format!(
                         "vector_table entry {} (index {}) overruns the vector section",
                         entry.span_ref, entry.index
-                    )))
+                    )));
                 }
             }
             if !span_index.contains_key(&entry.span_ref) {

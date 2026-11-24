@@ -460,16 +460,8 @@ fn pipeline_directory_credentials_and_revoke_shapes() {
         &url,
         &s,
         &[
-            "pipeline",
-            "--kind",
-            "command",
-            "--sender",
-            "felix",
-            "--unread",
-            "--limit",
-            "25",
-            "--order",
-            "desc",
+            "pipeline", "--kind", "command", "--sender", "felix", "--unread", "--limit", "25",
+            "--order", "desc",
         ],
         "",
     )
@@ -481,7 +473,9 @@ fn pipeline_directory_credentials_and_revoke_shapes() {
     let seen = seen.lock().unwrap();
     assert_eq!(
         seen[0].url,
-        format!("/api/{OWNER}/pipeline?kind=command&sender=felix&unread_only=true&limit=25&order=desc")
+        format!(
+            "/api/{OWNER}/pipeline?kind=command&sender=felix&unread_only=true&limit=25&order=desc"
+        )
     );
     assert_eq!(seen[1].url, format!("/api/{OWNER}/agents"));
     assert_eq!(seen[2].url, format!("/api/{OWNER}/fleet/credentials"));
@@ -489,10 +483,7 @@ fn pipeline_directory_credentials_and_revoke_shapes() {
         seen[3].url,
         format!("/api/{OWNER}/fleet/credentials/revoke")
     );
-    assert_eq!(
-        seen[3].body.as_ref().unwrap(),
-        &json!({"agent": "felix"})
-    );
+    assert_eq!(seen[3].body.as_ref().unwrap(), &json!({"agent": "felix"}));
     assert_eq!(seen[4].url, format!("/api/{OWNER}/notes-tokens/revoke"));
     assert_eq!(
         seen[4].body.as_ref().unwrap(),
@@ -559,14 +550,8 @@ fn provisioning_verb_shapes() {
         &json!({"token_hash": "ab12"})
     );
     assert_eq!(seen[3].url, format!("/api/{OWNER}/enroll-tokens/revoke"));
-    assert_eq!(
-        seen[3].body.as_ref().unwrap(),
-        &json!({"agent": "new-1"})
-    );
-    assert_eq!(
-        seen[4].url,
-        format!("/api/{OWNER}/fleet/credentials/mint")
-    );
+    assert_eq!(seen[3].body.as_ref().unwrap(), &json!({"agent": "new-1"}));
+    assert_eq!(seen[4].url, format!("/api/{OWNER}/fleet/credentials/mint"));
     assert_eq!(
         seen[4].body.as_ref().unwrap(),
         &json!({"agent": "pm-stack", "scopes": ["send", "read"], "addr": "service:pm-stack"})

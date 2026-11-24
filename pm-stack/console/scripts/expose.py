@@ -337,8 +337,7 @@ def ensure_edge_direct(
 
     def bridge_name() -> str:
         return (
-            env_values(env).get("PM_CONSOLE_BRIDGE_TOKEN_NAME")
-            or BRIDGE_TOKEN_DEFAULT
+            env_values(env).get("PM_CONSOLE_BRIDGE_TOKEN_NAME") or BRIDGE_TOKEN_DEFAULT
         )
 
     def take_tokens_away() -> None:

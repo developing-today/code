@@ -110,10 +110,7 @@ test("a revoked PM credential stops sends at the door, with the refusal named", 
 });
 
 test("unconfigured: no bridge surface is a 503 before the body is read", async () => {
-  const res = await dispatch(
-    bearerReq("/v1/bridge/send", token, { method: "POST", body: "not json at all" }),
-    h.deps,
-  );
+  const res = await dispatch(bearerReq("/v1/bridge/send", token, { method: "POST", body: "not json at all" }), h.deps);
   assert.equal(res.status, 503);
   assert.equal(((await res.json()) as { error: string }).error, "bridge_unconfigured");
 });

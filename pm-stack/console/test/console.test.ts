@@ -743,7 +743,9 @@ describe("operations", () => {
   });
 
   test("the pipeline read carries the owner's filters as the bridge's own flags, and checks them first", async () => {
-    const rows = [{ surface: "fleet", kind: "command", sender_addr: "agent:felix", receiver: "agent:archer", body: "do it" }];
+    const rows = [
+      { surface: "fleet", kind: "command", sender_addr: "agent:felix", receiver: "agent:archer", body: "do it" },
+    ];
     const r = recorder(() => JSON.stringify({ messages: rows }));
     const ops = new Ops(CFG, r.run);
     const got = await ops.pipelineFeed(
@@ -751,8 +753,20 @@ describe("operations", () => {
     );
     expect(got).toEqual(rows);
     expect(r.calls[0].argv).toEqual([
-      "fleet", "bridge", "pipeline", "--order", "desc",
-      "--kind", "command", "--surface", "fleet", "--sender", "felix", "--unread", "--limit", "25",
+      "fleet",
+      "bridge",
+      "pipeline",
+      "--order",
+      "desc",
+      "--kind",
+      "command",
+      "--surface",
+      "fleet",
+      "--sender",
+      "felix",
+      "--unread",
+      "--limit",
+      "25",
     ]);
     // A filter the bridge has no such value for is refused here, and
     // nothing is run for it.
@@ -776,14 +790,38 @@ describe("operations", () => {
       created: string;
       revoked_at: string | null;
     }[] = [
-      { agent: "felix", state: "active", scopes: ["inbox", "send"], addr: null, credentials: 1, live: 1, created: "2026-11-24T00:00:00Z", revoked_at: null },
+      {
+        agent: "felix",
+        state: "active",
+        scopes: ["inbox", "send"],
+        addr: null,
+        credentials: 1,
+        live: 1,
+        created: "2026-11-24T00:00:00Z",
+        revoked_at: null,
+      },
     ];
     const r = recorder((argv) => {
       if (argv[2] === "directory") {
         return JSON.stringify({
           agents: [
-            { surface: "fleet", name: "felix", groups: ["muse"], presence: "last_seen", last_seen: "2026-11-24T01:00:00Z", unread: 3 },
-            { surface: "notes", name: "muse/scout", identity: "muse/scout", scopes: { can_send: true, can_inbox: false }, presence: "none", first_seen: "2026-11-24T00:00:00Z", last_seen: null },
+            {
+              surface: "fleet",
+              name: "felix",
+              groups: ["muse"],
+              presence: "last_seen",
+              last_seen: "2026-11-24T01:00:00Z",
+              unread: 3,
+            },
+            {
+              surface: "notes",
+              name: "muse/scout",
+              identity: "muse/scout",
+              scopes: { can_send: true, can_inbox: false },
+              presence: "none",
+              first_seen: "2026-11-24T00:00:00Z",
+              last_seen: null,
+            },
           ],
         });
       }
@@ -832,7 +870,16 @@ describe("operations", () => {
     expect(done.revoked).toBe(1);
     expect(r.calls.at(-1)?.argv).toEqual(["fleet", "bridge", "revoke", "--agent", "felix"]);
     credentialState = [
-      { agent: "felix", state: "revoked", scopes: [], addr: null, credentials: 1, live: 0, created: "2026-11-24T00:00:00Z", revoked_at: "2026-11-24T02:00:00Z" },
+      {
+        agent: "felix",
+        state: "revoked",
+        scopes: [],
+        addr: null,
+        credentials: 1,
+        live: 0,
+        created: "2026-11-24T00:00:00Z",
+        revoked_at: "2026-11-24T02:00:00Z",
+      },
     ];
     const after = (await ops.directory()) as { name: string; credential: { state: string } | null }[];
     expect(after.find((a) => a.name === "felix")?.credential?.state).toBe("revoked");
@@ -864,13 +911,28 @@ describe("operations", () => {
       if (argv[2] === "enroll-tokens") {
         return JSON.stringify({
           enroll_tokens: [
-            { agent: "new-1", kind: "muse", groups: ["muse"], notes_identity: "muse/new-1", created: "2026-11-24T00:00:00Z", expires_at: "2026-11-25T00:00:00Z", used_at: null, revoked_at: null, state: "pending" },
+            {
+              agent: "new-1",
+              kind: "muse",
+              groups: ["muse"],
+              notes_identity: "muse/new-1",
+              created: "2026-11-24T00:00:00Z",
+              expires_at: "2026-11-25T00:00:00Z",
+              used_at: null,
+              revoked_at: null,
+              state: "pending",
+            },
           ],
         });
       }
       if (argv[2] === "revoke-enroll") return JSON.stringify({ agent: "new-1", revoked: 1 });
       if (argv[2] === "mint-credential") {
-        return JSON.stringify({ agent: "pm-stack", scopes: ["send", "read"], addr: "service:pm-stack", credential: CRED_VALUE });
+        return JSON.stringify({
+          agent: "pm-stack",
+          scopes: ["send", "read"],
+          addr: "service:pm-stack",
+          credential: CRED_VALUE,
+        });
       }
       return "";
     });
@@ -889,8 +951,19 @@ describe("operations", () => {
     expect(mint.bootstrap_token).toBe(ENROLL_VALUE);
     expect(mint.expires_at).toBe("2026-11-25T00:00:00Z");
     expect(r.calls[0].argv).toEqual([
-      "fleet", "bridge", "mint-enroll", "--agent", "new-1", "--kind", "muse",
-      "--groups", "muse", "--notes-identity", "muse/new-1", "--ttl", "3600",
+      "fleet",
+      "bridge",
+      "mint-enroll",
+      "--agent",
+      "new-1",
+      "--kind",
+      "muse",
+      "--groups",
+      "muse",
+      "--notes-identity",
+      "muse/new-1",
+      "--ttl",
+      "3600",
     ]);
     // The audit record keeps the binding and nothing of the value,
     // even when the value is handed to it in the args.
@@ -926,15 +999,32 @@ describe("operations", () => {
     })) as { credential: string };
     expect(cred.credential).toBe(CRED_VALUE);
     expect(r.calls.at(-1)?.argv).toEqual([
-      "fleet", "bridge", "mint-credential", "--agent", "pm-stack", "--scopes", "send,read", "--addr", "service:pm-stack",
+      "fleet",
+      "bridge",
+      "mint-credential",
+      "--agent",
+      "pm-stack",
+      "--scopes",
+      "send,read",
+      "--addr",
+      "service:pm-stack",
     ]);
-    expect(table["agent.mint-credential"].audit({ agent: "pm-stack", scopes: ["send", "read"], addr: "service:pm-stack", credential: CRED_VALUE })).toEqual({
+    expect(
+      table["agent.mint-credential"].audit({
+        agent: "pm-stack",
+        scopes: ["send", "read"],
+        addr: "service:pm-stack",
+        credential: CRED_VALUE,
+      }),
+    ).toEqual({
       agent: "pm-stack",
       scopes: ["send", "read"],
       addr: "service:pm-stack",
     });
     const calls = r.calls.length;
-    await expect(table["agent.mint-credential"].run({ agent: "pm-stack", addr: "service:other" })).rejects.toThrow(OpError);
+    await expect(table["agent.mint-credential"].run({ agent: "pm-stack", addr: "service:other" })).rejects.toThrow(
+      OpError,
+    );
     await expect(table["agent.mint-credential"].run({ agent: "pm-stack", scopes: ["root"] })).rejects.toThrow(OpError);
     await expect(table["agent.mint-enroll"].run({ agent: "a b" })).rejects.toThrow(OpError);
     await expect(table["agent.mint-enroll"].run({ agent: "new-1", ttlSeconds: 30 })).rejects.toThrow(OpError);
@@ -945,7 +1035,9 @@ describe("operations", () => {
     const back = (await table["agent.revoke-enroll"].run({ agent: "new-1" })) as { revoked: number };
     expect(back.revoked).toBe(1);
     expect(r.calls.at(-1)?.argv).toEqual(["fleet", "bridge", "revoke-enroll", "--agent", "new-1"]);
-    expect(table["agent.revoke-enroll"].audit({ agent: "new-1", bootstrap_token: ENROLL_VALUE })).toEqual({ agent: "new-1" });
+    expect(table["agent.revoke-enroll"].audit({ agent: "new-1", bootstrap_token: ENROLL_VALUE })).toEqual({
+      agent: "new-1",
+    });
     expect(HOLDABLE.has("agent.revoke-enroll")).toBe(true);
     expect(subjectOf("agent.revoke-enroll", { agent: "new-1" })).toBe("enroll:new-1");
   });

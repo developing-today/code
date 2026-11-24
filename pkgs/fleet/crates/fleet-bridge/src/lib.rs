@@ -846,10 +846,7 @@ pub fn execute(ctx: &mut Ctx, args: &[String]) -> R<Value> {
                 ("receiver", a.last("--receiver")),
                 ("surface", a.last("--surface")),
                 ("batch", a.last("--batch")),
-                (
-                    "unread_only",
-                    a.has("--unread").then(|| "true".to_string()),
-                ),
+                ("unread_only", a.has("--unread").then(|| "true".to_string())),
                 ("work_state", a.last("--work-state")),
                 ("since_id", a.uint("--since-id")?.map(|n| n.to_string())),
                 ("before_id", a.uint("--before-id")?.map(|n| n.to_string())),
@@ -880,9 +877,7 @@ pub fn execute(ctx: &mut Ctx, args: &[String]) -> R<Value> {
                 (Some(agent), None) => ("fleet", agent),
                 (None, Some(identity)) => ("notes", identity),
                 _ => {
-                    return Err(usage(
-                        "revoke needs exactly one of --agent or --identity",
-                    ));
+                    return Err(usage("revoke needs exactly one of --agent or --identity"));
                 }
             };
             let token = owner_token(ctx)?;
