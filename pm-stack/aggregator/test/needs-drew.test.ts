@@ -4,6 +4,7 @@ import {
   createNeedsDrewSweeper,
   extractNeedsDrewHands,
   extractNeedsDrewReason,
+  NEEDS_DREW_LABELS,
   needsDrewOwnerItems,
   needsDrewWait,
   needsDrewWaitCounts,
@@ -13,6 +14,7 @@ import {
   type NeedsDrewFetchPage,
   shouldFetchNeedsDrewCensus,
 } from "../src/needs-drew.ts";
+import { REPOS } from "../src/model.ts";
 import { needsDrewCensusHtml } from "../src/render.ts";
 
 const NOW = new Date("2026-11-01T12:00:00Z");
@@ -150,6 +152,20 @@ describe("needs-drew census (#1226)", () => {
     expect(asked).toEqual([1, 2, 3]);
   });
 
+  // The cap is ten pages. A tenth page that is not full is the end of
+  // the list like any other: everything was read, and saying "there
+  // may be more" of it would mark a whole census as a floor.
+  test("nine full pages and a tenth that is not full: whole, and not said to be cut short", async () => {
+    const asked: number[] = [];
+    const fetchPage = fakeFetch((_repo, _label, page) => {
+      asked.push(page);
+      return Array.from({ length: page < 10 ? 100 : 7 }, (_, i) => item((page - 1) * 100 + i + 1, ["user/review"]));
+    });
+    const census = await buildNeedsDrewCensus(fetchPage, { now: NOW, repos: [REPO], labels: ["user/review"] });
+    expect([census.items.length, census.complete, census.sources[0].truncated]).toEqual([907, true, undefined]);
+    expect(asked).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+  });
+
   test("more than ten full pages: the count is a floor and the census says so", async () => {
     const asked: number[] = [];
     const fetchPage = fakeFetch((_repo, _label, page) => {
@@ -284,9 +300,13 @@ describe("needs-drew census (#1226)", () => {
 
   // The oracle is GitHub's own allowance for a caller with no token:
   // sixty requests an hour from an address. A sweep is one request for
-  // each repository and label.
+  // each repository and label the census covers, counted here from the
+  // lists themselves: a repository added to them is weighed against the
+  // allowance by this test, not found out in service. (Any interval
+  // that fits passes; ten minutes rather than eight is margin, and is
+  // not pinned.)
   test("with no token the sweep is made seldom enough to fit GitHub's hourly allowance for an address", () => {
-    const perSweep = 4 * 2;
+    const perSweep = REPOS.length * NEEDS_DREW_LABELS.length;
     const anHour = 60 * 60_000;
     expect((anHour / needsDrewSweepTtlMs(false)) * perSweep).toBeLessThan(60);
     // With a token it stays as fresh as it was.
