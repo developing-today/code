@@ -1087,7 +1087,7 @@ describe("before the host's first report", () => {
       directReady: false,
       refused: [],
       selfCheck: null,
-      github: { answers: 0, unchanged: 0, kept: 0, quiet: { core: null, search: null } },
+      github: { answers: 0, unchanged: 0, since: w.now.t, kept: 0, quiet: { core: null, search: null } },
       hostSeen: null,
       hostVersion: null,
       androidBuild: null,
@@ -1096,6 +1096,7 @@ describe("before the host's first report", () => {
       answered: 0,
       deferred: 0,
       version: "test",
+      woke: w.now.t,
       host: HOST,
     });
     // The owner's page is the host's own, reached through the edge.
@@ -4406,6 +4407,73 @@ describe("the edge does the core itself", () => {
     expect(plain.ghTags.unchanged).toBe(0);
   });
 
+  test("the object put away between two reads of a list, as Cloudflare does with an idle one: the list is still asked for by its tag, and GitHub's wait is still kept to", async () => {
+    const w = await primary();
+    const list = () => w.githubCalls.filter((c) => /\/pulls\?/.test(c.url));
+    const first = await opsDoc(w);
+    await settle(w);
+    expect([list().length, list().filter((c) => c.unchanged).length]).toEqual([1, 0]);
+    const health = async () =>
+      (await (await w.browse("/console/health", { token: null })).json()) as {
+        woke: number;
+        github: { answers: number; unchanged: number; kept: number; since: number; quiet: { core: number | null } };
+      };
+    const before = await health();
+    await settle(w);
+    // (Health's own check of each read, the first time it is asked, read the list once more.)
+    const sofar = [list().length, list().filter((c) => c.unchanged).length];
+    expect(sofar).toEqual([2, 1]);
+    // Put away, and another started in its place a minute and a half later: nothing in
+    // memory, the same storage. (Kept in memory, as this was first built, the answer was gone
+    // by now every time, and every read was a full one.)
+    w.now.t += 91_000;
+    w.edge.now = w.makeEdge();
+    await opsDoc(w);
+    await settle(w);
+    const second = await opsDoc(w);
+    await settle(w);
+    expect([list().length, list().filter((c) => c.unchanged).length]).toEqual([sofar[0] + 1, sofar[1] + 1]);
+    expect(second.prs).toEqual(first.prs);
+    const after = await health();
+    await settle(w);
+    // Another object (it says when it started), going on with the same count.
+    expect([after.woke, after.woke > before.woke, after.github.since]).toEqual([w.now.t, true, before.github.since]);
+    expect(after.github.answers).toBeGreaterThan(before.github.answers);
+    expect(after.github.unchanged).toBeGreaterThan(before.github.unchanged);
+    expect(after.github.kept).toBeGreaterThanOrEqual(before.github.kept);
+    // Turned away with the hour used up, and put away again during the wait: the next object
+    // asks GitHub for nothing counted by the hour either.
+    w.net.hostUp = false;
+    w.net.edgeUp = false;
+    w.now.t += 181_000;
+    const back = Math.floor((w.now.t + 40 * 60_000) / 1000) * 1000;
+    w.ghLimits.push((_method, url) => !url.includes("/search/"));
+    w.ghLimitSays.headers = { "x-ratelimit-remaining": "0", "x-ratelimit-reset": String(back / 1000) };
+    await opsDoc(w);
+    await w.core();
+    await settle(w);
+    const hourly = () => w.githubCalls.filter((c) => !c.url.includes("/search/")).length;
+    const asked = hourly();
+    w.ghLimits.length = 0;
+    for (let minute = 0; minute < 36; minute += 6) {
+      w.now.t += 6 * 60_000;
+      w.edge.now = w.makeEdge();
+      await opsDoc(w);
+      await w.core();
+      await settle(w);
+      expect([minute, (await health()).github.quiet.core, hourly()]).toEqual([minute, back, asked]);
+      await settle(w);
+    }
+    // The time comes: an object started after it asks again.
+    w.now.t = back + 181_000;
+    w.edge.now = w.makeEdge();
+    await opsDoc(w);
+    await w.core();
+    await settle(w);
+    expect(hourly()).toBeGreaterThan(asked);
+    expect((await health()).github.quiet.core).toBeNull();
+  });
+
   test("the hour's allowance used up: GitHub's own time is kept to, nothing that draws on it is asked until then, and the last good copy says why and when", async () => {
     const w = await primary();
     const first = { core: (await w.core()).doc, ops: await opsDoc(w) };
@@ -4942,9 +5010,7 @@ describe("the edge does the core itself", () => {
     expect((w.stored.get("held") as { id: string }[]).map((h) => h.id)).toEqual([olderId, newerId]);
     // Nothing was done here: the laptop did the older, the newer waits.
     // The only call this side made was the older one's refused try.
-    expect(
-      w.githubCalls.filter((c) => comment(c.method, c.url)).map((c) => c.body),
-    ).toEqual(['{"body":"older"}']);
+    expect(w.githubCalls.filter((c) => comment(c.method, c.url)).map((c) => c.body)).toEqual(['{"body":"older"}']);
     expect(w.ran.filter((r) => r.kind === "issue.comment")).toHaveLength(1);
   });
 
@@ -4972,9 +5038,9 @@ describe("the edge does the core itself", () => {
     const done = (await second.json()) as { ok?: boolean; held?: boolean };
     expect(done).toMatchObject({ ok: true });
     expect(done.held).toBeUndefined();
-    expect((w.stored.get("held") as { kind: string; args: Record<string, unknown> }[]).map((h) => h.args.issue)).toEqual([
-      7,
-    ]);
+    expect(
+      (w.stored.get("held") as { kind: string; args: Record<string, unknown> }[]).map((h) => h.args.issue),
+    ).toEqual([7]);
     const posted = w.githubCalls
       .filter((c) => comment(c.method, c.url))
       .map((c) => (JSON.parse(c.body ?? "{}") as { body?: string }).body);

@@ -237,17 +237,48 @@ it (the laptop's, the sign-in issuer's).
   most of what the edge asks is now free. Nothing is served from the
   kept answers without asking: GitHub decides each time whether the
   answer still stands, so what is shown is never older than it was
-  before. The answers live in the object's memory (twelve million
-  characters and two hundred answers at most, the one asked for longest
-  ago dropped first); a restart costs one full answer of each. A tag
-  belongs to the token it was given to, so after a new token the old
-  tags only get full answers. An answer whose body was cut off
-  part-way is not kept: under GitHub's tag it would have been the
-  answer every time GitHub said "not modified" after. Health counts GitHub's answers and how
-  many were "not modified" (`github.answers`, `github.unchanged`).
-  This does not give the edge an allowance of its own: when the agents
-  use the hour up, the edge is turned away with them until it turns
-  (#13489 has what would change that).
+  before. The answers are kept in the object's storage, not its
+  memory (see the next point: as first built, on 2026-11-23, they were
+  in memory, and in service every read was a full one). An answer is
+  stored in pieces of 600,000 characters, since a stored value holds
+  about two million bytes and a list of open pull requests is more
+  than that. Each piece is marked with the address and the tag it
+  belongs to, and the index that names them is written last: an answer
+  half stored when the object was put away reads as nothing kept,
+  never as an answer. At most 240 answers and thirty million
+  characters, the one longest unasked-for going first. The time GitHub
+  said to ask again is stored the same way, so an object that starts
+  during a wait keeps to it. A store that cannot be read is a memory
+  that forgot, and is not written over. A tag belongs to the token it
+  was given to, so after a new token the old tags only get full
+  answers. An answer whose body was cut off part-way is not kept:
+  under GitHub's tag it would have been the answer every time GitHub
+  said "not modified" after. Health counts GitHub's answers and how
+  many were "not modified" (`github.answers`, `github.unchanged`,
+  counted since `github.since` whichever object answered) and says how
+  many answers are kept (`github.kept`). This does not give the edge
+  an allowance of its own: when the agents use the hour up, the edge
+  is turned away with them until it turns (#13489 has what would
+  change that).
+- **The object is put away whenever it is idle.** Cloudflare takes an
+  idle object out of memory within seconds and starts another, with
+  nothing in mind, on the next request; `woke` in health is when the
+  one answering started. So nothing the edge needs later is kept only
+  in memory, and nothing it starts is left running behind a request.
+  A deadline on an outgoing request is made with `timed`
+  (`src/timed.ts`), which clears its timer when the request is over
+  (and an answer whose body will not be read is let go of with
+  `unread`):
+  `AbortSignal.timeout` leaves its timer running for the whole of the
+  deadline, and an object with a timer running is not put away. In
+  the local runtime an object that had asked GitHub one thing, with
+  twenty seconds allowed, was still in memory 26 seconds after its
+  last request; one that had left no timer was gone within 14. A test
+  follows the Worker's imports and fails if anything it runs uses
+  `AbortSignal.timeout`. The real-runtime check (`scripts/edge-smoke.ts`)
+  leaves the Worker alone until health says another object answers,
+  and only then asks whether a list is still asked for by its tag and
+  GitHub's wait still kept to.
 - **The same for what it reads.** A section the edge is refused for is
   the laptop's to read for the hour, exactly as it was before the edge
   read anything: the edge stops naming it under `owns`, the laptop's

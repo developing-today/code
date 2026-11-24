@@ -751,3 +751,140 @@ The type check that #13498 added to the deploy (by a fleet lane, while
 this was in review) caught a fourth before it could reach the deploy:
 a test passing a list where the page's function, read by the checker,
 took none.
+
+## 2026-11-24T01:45Z Correction: the kept answers were not kept
+
+**What was wrong.** The two updates above say GitHub's answers are
+kept and asked for again by their tags, so that a list that has not
+changed costs nothing of the hour's allowance. As deployed (#13570)
+that was not so. The answers, the times GitHub said to ask again and
+the count of its answers were held in the Worker object's memory, and
+the 18:10Z update gives the reason: persisting them was "considered
+and not done", because "a restart costs one full answer of each, which
+is less than the writes would". That took a restart to be rare. It is
+the ordinary case. Cloudflare takes an idle Durable Object out of
+memory after about ten seconds
+([its lifecycle](https://developers.cloudflare.com/durable-objects/concepts/durable-object-lifecycle/))
+and starts another, with nothing in memory, on the next request; this
+object's work is a read every minute or so. Every read in service was
+made by an object that had kept nothing, so every read was a full one
+and nothing was saved. What the owner was told on 2026-11-23, that an
+unchanged list no longer used the allowance, was true of the tests and
+not of the Worker.
+
+**How it was found.** By looking at the live Worker on 2026-11-24 at
+00:45Z, two hours after the deploy: health showed
+`github: {answers: 0, unchanged: 0, kept: 0}` seven minutes after a
+self-check that had made four reads, with no deploy in between. The
+local runtime showed the same when left alone: an object's memory was
+gone forty seconds after its last request.
+
+**Why nothing caught it.** Every unit test, every planted fault and
+the real-runtime check read a list twice within one object's life.
+The edge's tests have been able to start a new object over the same
+storage since they were first written (2026-11-22), and the code
+beside the memory says in three places that the object is put away
+when idle; the memory was written as if that were rare, and none of
+its tests started a new object.
+
+**What changed.**
+
+- _Kept in the object's storage._ An answer is stored in pieces of
+  600,000 characters. A stored value holds about two million bytes,
+  and the list of sixty open pull requests, as GitHub gave it on
+  2026-11-24, was 1.4 million characters of two bytes each: three
+  pieces. Each piece is marked with the address
+  and tag it belongs to; one index names the pieces and is written
+  last. An answer half stored when the object was put away, or when
+  the store failed, never reads as an answer: its pieces do not carry
+  what the index names.
+- _Bounded._ At most 240 answers and thirty million characters; the
+  one longest unasked-for goes first, never the one just kept. Places
+  are few and used again, and whoever writes to a place or empties it
+  clears whatever else is in it, so what a stopped write left behind
+  lasts only until its place is next used.
+- _One change at a time._ An object's first look reads every list side
+  by side, none of them kept before: two answers kept at once would
+  have taken the same place.
+- _GitHub's wait and the count, the same way._ An object that starts
+  during a wait keeps to it; "Try again now" is stored too. Health's
+  `github.answers` and `github.unchanged` are counted since
+  `github.since`, whichever object answered.
+- _A store in trouble._ One that cannot be written is a memory that
+  forgot. One that cannot be read is not written to (what it holds is
+  not known, and is not to be written over with less), is tried again
+  by the next to ask, and the object keeps to GitHub's wait in its own
+  mind meanwhile. What is read back is held to what could have been
+  written: a wait for no longer than one can be set for, an index line
+  for no more than an answer kept here can be.
+- _Health says when the object started_ (`woke`), so how long one
+  lasts can be seen from outside.
+- _Nothing left running._ `AbortSignal.timeout` leaves its timer
+  running for the whole of the deadline after the request is over, and
+  an object with a timer running is not put away. In the local runtime
+  an object that had asked GitHub one thing (twenty seconds allowed)
+  was still in memory 26 seconds after its last request and gone by
+  32; one that had left no timer was there at 11 seconds and gone
+  within 14. Deadlines are now made with `timed` (`src/timed.ts`), which
+  clears its timer when the request is over, for GitHub, the push
+  services, the key set, the released build and the dashboard. A test
+  follows the Worker's imports and fails if anything it runs uses
+  `AbortSignal.timeout`. An answer whose body is not going to be read
+  (a push service's, a refusal's) is let go of at once, which the old
+  deadline did only when it ran out.
+
+**How it is checked now.**
+
+- Unit tests start a new memory over the same store between reads: the
+  tag, the wait, "Try again now" and the count all carry over. With the
+  memory given no store, as first built, the edge's test of this fails.
+- A property over generated runs of keeping, asking, letting go,
+  starting again and being stopped part-way at any write (pieces as
+  small as one character, so most answers are several): what is read
+  back is an answer that was kept or nothing, each place holds its
+  first so many pieces with none missing, the places are few, no more
+  is kept than there is room for, and a change that finishes leaves
+  nothing behind it.
+- 73 single faults planted in the memory, the deadline and the edge's
+  use of them: 71 fail a test. The two that do not each remove a check
+  that another doubles (a missing index line, also caught by the catch
+  around the read; a missing piece, also caught by the answer's
+  length), and either way the read gives the same "nothing kept".
+- The real-runtime check leaves the Worker alone until health says
+  another object answers, then asks the first one's questions of it: a
+  long answer (over a million characters of two units each, one cut in
+  half by a piece's edge) is still asked for by its tag and GitHub's
+  "not modified" still stands for it, a wait GitHub set is still kept
+  to, "Try again now" lifts it, and the count goes on from the one
+  before.
+
+**What it costs.** One small write for each answer of GitHub's (the
+count), and for an answer that changed its pieces and the index. One
+hour of the object's own clock with nothing changing, in the edge's
+tests: 60 reads of GitHub, all "not modified", and 74 writes to
+storage, 60 of them the count. Storage is bounded at thirty million
+characters of answers.
+
+**Also here.** A test of the plan pages asked that the id roadmap have
+at least ten rows. The planners tidied it to eight at 00:34Z, and from
+then every run of the console's tests failed, which would have stopped
+the next deploy. The test now asks that the roadmap files have rows
+between them, and leaves how many each has to the planners.
+
+**Considered and not done.** Writing the count less often (it would
+no longer be exact, and it is how this fault was seen). Storing an
+answer's pieces and the index in one batch, which the store allows up
+to a size: it would remove the half-stored case in service, but the
+case still has to read as nothing kept, and does. Listing the store to
+sweep what stopped writes left: the list reads every value it lists.
+
+**Not yet shown, as this is written.** That the deployed Worker now
+gets "not modified" from GitHub itself. It is to be read from health
+after the deploy: `github.kept` above nought and `github.unchanged`
+growing while `woke` changes.
+
+**Next.** The same wrong assumption may sit elsewhere in the object:
+the ten-minute gate on asking for the released Android build is in
+memory, so every object that starts asks again; the queue store is
+asked with no deadline at all. #14001 has the list, to be gone through
+one by one.

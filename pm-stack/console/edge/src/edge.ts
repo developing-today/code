@@ -31,6 +31,7 @@ import {
   directClasses,
   ALLOWANCES,
   directRead,
+  type GitHubMemory,
   githubMemory,
   type Outward,
   QUIET_MOST_MS,
@@ -81,6 +82,7 @@ import { platformRead } from "../../src/reads.ts";
 import { Notifier, WATCHED as NOTIFIED } from "../../src/notify.ts";
 import { contact, Push } from "../../src/push.ts";
 import type { Store } from "../../src/store.ts";
+import { timed, unread } from "../../src/timed.ts";
 
 /** A rank set twice ends at the last one: an older held rank never
  * runs when a newer rank for the same issue is done. Anything else
@@ -284,14 +286,15 @@ export class Edge {
   private outward: (Outward & { n: number })[] = [];
   private outwardN = 0;
   /** What this side remembers of GitHub between calls: its answers by
-   * address, asked for again by their tags, and when it said to ask
-   * again. Kept while this object lives; a restart only costs one full
-   * answer of each. */
-  private github = githubMemory();
-  /** GitHub's answers since this object started: all of them, and
-   * those that were "not modified", which cost nothing of the hour's
-   * allowance. For health: it is how the saving is seen from outside. */
-  private githubAnswers = { all: 0, unchanged: 0 };
+   * address, asked for again by their tags, when it said to ask again,
+   * and how many of its answers were "not modified". All of it in the
+   * object's storage: its memory does not last from one read of a list
+   * to the next. */
+  private github: GitHubMemory;
+  /** When this object started. Cloudflare puts an idle one away within
+   * seconds and starts another: health says this, so that how long one
+   * lasts can be seen from outside. */
+  private woke: number;
   /** Actions this side's token was turned away for, and until when
    * they are left to a machine. */
   private refused = new Map<string, number>();
@@ -355,6 +358,8 @@ export class Edge {
   constructor(options: EdgeOptions) {
     this.kv = options.kv;
     this.now = options.now ?? Date.now;
+    this.github = githubMemory(options.kv, { now: this.now });
+    this.woke = this.now();
     this.fetchImpl = plain(options.fetchImpl ?? fetch) as typeof fetch;
     this.direct = options.direct;
     const setAlarm = options.setAlarm ?? (async () => {});
@@ -417,7 +422,7 @@ export class Edge {
           this.unread.clear();
           // The owner's word outweighs GitHub's "not before": if it is
           // still turned away, the first call says so again.
-          this.github.quiet = {};
+          await this.github.free();
           await this.saveAway();
           return { tried };
         },
@@ -480,13 +485,14 @@ export class Edge {
     const known = this.released;
     if (known && now - known.at < (known.asked ? RELEASE_EVERY_MS : RELEASE_RETRY_MS)) return known.found;
     try {
-      const res = await this.fetchImpl(this.releaseUrl(cfg, "version.json"), {
-        redirect: "follow",
-        signal: AbortSignal.timeout(RELEASE_ASK_MS),
+      const asked = await timed(RELEASE_ASK_MS, async (signal) => {
+        const res = await this.fetchImpl(this.releaseUrl(cfg, "version.json"), { redirect: "follow", signal });
+        if (res.ok) return { found: androidRelease(await res.json()) };
+        unread(res);
+        if (res.status === 404) return { found: null };
+        throw new Error(`GitHub answered ${res.status}`);
       });
-      if (res.status === 404) this.released = { at: now, asked: true, found: null, trouble: null };
-      else if (res.ok) this.released = { at: now, asked: true, found: androidRelease(await res.json()), trouble: null };
-      else throw new Error(`GitHub answered ${res.status}`);
+      this.released = { at: now, asked: true, found: asked.found, trouble: null };
     } catch (error) {
       // Why it could not be asked is kept, and health says it: "none
       // published" and "could not ask" are different things, and for a
@@ -511,12 +517,13 @@ export class Edge {
    * while a new build was being put up). */
   private async serveRelease(cfg: EdgeConfig, release: AndroidRelease): Promise<Response | null> {
     try {
-      const res = await this.fetchImpl(this.releaseUrl(cfg, "pm-console.apk"), {
-        redirect: "follow",
-        signal: AbortSignal.timeout(RELEASE_FETCH_MS),
+      const bytes = await timed(RELEASE_FETCH_MS, async (signal) => {
+        const res = await this.fetchImpl(this.releaseUrl(cfg, "pm-console.apk"), { redirect: "follow", signal });
+        if (res.ok) return new Uint8Array(await res.arrayBuffer());
+        unread(res);
+        return null;
       });
-      if (!res.ok) return null;
-      const bytes = new Uint8Array(await res.arrayBuffer());
+      if (!bytes) return null;
       const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", bytes));
       const sha256 = [...digest].map((b) => b.toString(16).padStart(2, "0")).join("");
       if (bytes.byteLength !== release.size || sha256 !== release.sha256) {
@@ -941,11 +948,6 @@ export class Edge {
         now: this.now,
         github: this.github,
         seen: (call) => {
-          // Counted: what GitHub answered, not what was held back here.
-          if (call.to === "github" && call.status !== 0 && !call.unsent) {
-            this.githubAnswers.all++;
-            if (call.status === 304) this.githubAnswers.unchanged++;
-          }
           this.outward.push({ ...call, n: ++this.outwardN });
           if (this.outward.length > OUTWARD_KEPT) this.outward.splice(0, this.outward.length - OUTWARD_KEPT);
         },
@@ -1543,6 +1545,7 @@ export class Edge {
       // The self-check runs when the capability is there: one direct
       // read of each kind, and how it went. Nothing here is a secret.
       await this.maybeSelfCheck(cfg);
+      const [said, quiet] = [await this.github.said(), await this.github.quiet()];
       return json({
         ok: true,
         edge: true,
@@ -1561,22 +1564,26 @@ export class Edge {
         // it could not read as `read.<section>`.
         refused: [...this.refusedKinds(), ...this.refusedReads().map((name) => `read.${name}`)],
         selfCheck: this.selfCheckResult,
-        // What GitHub answered this side since it started, how many of
+        // What GitHub answered this side since `since`, how many of
         // those were "not modified" (which cost nothing of the hour's
         // allowance), how many answers are kept to ask by, and until
         // when GitHub said not to ask, if it has: for searches, which
         // it counts apart by the minute, and for everything else.
         github: {
-          answers: this.githubAnswers.all,
-          unchanged: this.githubAnswers.unchanged,
-          kept: this.github.size(),
+          answers: said.answers,
+          unchanged: said.unchanged,
+          since: said.since,
+          kept: said.kept,
           quiet: Object.fromEntries(
             ALLOWANCES.map((allowance) => {
-              const until = this.github.quiet[allowance]?.until ?? 0;
+              const until = quiet[allowance]?.until ?? 0;
               return [allowance, until > this.now() ? until : null];
             }),
           ),
         },
+        // When this object started (Cloudflare starts another whenever
+        // one has been put away).
+        woke: this.woke,
         hostSeen: this.hostSeen || null,
         // The commit the host's console is running, as it last said.
         hostVersion: this.hostVersion,
@@ -1778,9 +1785,7 @@ export class Edge {
           // wins is dropped as replaced by the newer instead.
           const about = subjectOf(kind, args as Record<string, unknown>);
           if (about !== null) {
-            const older = (await this.heldList()).filter(
-              (h) => h.id !== id && subjectOf(h.kind, h.args) === about,
-            );
+            const older = (await this.heldList()).filter((h) => h.id !== id && subjectOf(h.kind, h.args) === about);
             if (older.length > 0) {
               const handed = await this.handedList();
               if (older.some((h) => handed.has(h.id))) {
@@ -1866,7 +1871,10 @@ export class Edge {
           // A retry under the same name is the same action, not a later
           // one: it goes back to the host, which sorts out whether it
           // already did it, instead of waiting behind itself.
-          if (about !== null && (await this.heldList()).some((h) => h.id !== id && subjectOf(h.kind, h.args) === about)) {
+          if (
+            about !== null &&
+            (await this.heldList()).some((h) => h.id !== id && subjectOf(h.kind, h.args) === about)
+          ) {
             return this.keep({ id: id ?? crypto.randomUUID(), kind, args, who: by });
           }
         }
@@ -2067,9 +2075,7 @@ export class Edge {
    * The relayed id is settled: a hold left behind by a lost answer for
    * the same name is dropped, since the host has now answered it. */
   private async relayed(req: Request): Promise<Response> {
-    const body = (await req.json().catch(() => null)) as
-      | { sections?: unknown; acts?: unknown; id?: unknown }
-      | null;
+    const body = (await req.json().catch(() => null)) as { sections?: unknown; acts?: unknown; id?: unknown } | null;
     await this.ready();
     if (typeof body?.id === "string") {
       const held = await this.heldList();
