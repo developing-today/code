@@ -62,6 +62,7 @@ pub mod join;
 pub mod local;
 pub mod manifest;
 pub mod memory;
+pub mod repo_docs;
 pub mod occurrences;
 pub mod owner_inventory;
 pub mod search;
