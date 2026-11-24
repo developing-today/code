@@ -1,0 +1,256 @@
+#!/usr/bin/env bash
+# kaneo-cutover — the gated Kaneo → Supabase cutover driver.
+#
+# Implements the Kaneo half of pm-stack/STORE-MIGRATION-PLAN-6816.md §3-§4
+# for issue #6816. Two modes:
+#
+#   presync  while live: pg_dump the source `kaneo` database, pg_restore it
+#            into the target (muse-dev2), then verify schema parity (same
+#            public table count). Row drift is expected here — the final
+#            delta lands after the writers are fenced — and is reported,
+#            not failed.
+#   promote  the gate before the DSN flip. Requires BOTH:
+#              (a) doc/pm-stack/COLD-RESTORE-RUNBOOK.md step 1: the old
+#                  writer is FENCED, proven by pm-stack/scripts/fence-check.sh
+#                  (no container running, no unit active, fail closed on
+#                  anything unreadable); and
+#              (b) final-delta parity: target table count AND exact row
+#                  count equal the source's.
+#            Only then is a cutover receipt written and PROMOTE OK printed.
+#            The script never rewrites the DSN itself: it gates the step
+#            and records the evidence, so no configuration can promote
+#            while a second writer is alive.
+#
+# Acceptance language this implements (#6816 criterion 2): "the old writer
+# is fenced before any failover promotion; no configuration permits two
+# active writers."
+#
+# Secrets: DSNs are read from files (--source-dsn-file / --target-dsn-file)
+# and never echoed, logged, or written to the receipt. Credentials resolve
+# by name through the standing secrets route; nothing here stores one.
+#
+# Argument contract (#3352): flags only, no positionals. `--opt value` and
+# `--opt=value` behave identically. Anything else is a usage error (exit 2)
+# before any subprocess runs:
+#   --mode presync|promote     required
+#   --source-dsn-file FILE     required; file holding the source DSN
+#   --target-dsn-file FILE     required; file holding the target DSN
+#   --dump-file FILE           required for presync; the dump to write
+#   --receipt FILE             write the receipt here (default: stdout only)
+#   --pg-bin-dir DIR           find pg_dump/pg_restore/psql in DIR (tests)
+#   --fence-check PATH         fence checker (default: sibling fence-check.sh)
+#   --units-dir DIR            passed to fence-check (fixture mode)
+#   --containers-file FILE     passed to fence-check (fixture mode)
+#   --unreachable              passed to fence-check: old host unreachable
+#   -h, --help                 usage, exit 0
+#
+# Exit codes: 0 pass, 2 usage, 3 not fenced (promotion refused), 4 parity
+# failure, 5 command failure.
+set -uo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+MODE=""
+SOURCE_DSN_FILE=""
+TARGET_DSN_FILE=""
+DUMP_FILE=""
+RECEIPT=""
+PG_BIN_DIR=""
+FENCE_CHECK="$SCRIPT_DIR/fence-check.sh"
+FENCE_ARGS=()
+
+# Exact counts for every public table, in one query: table count, then the
+# sum of per-table exact count(*). Exact (not pg_stat estimates) so the
+# promote gate can demand equality instead of a tolerance.
+COUNT_SQL="select count(*) || ' ' || coalesce(sum(c), 0) from (select (xpath('/row/c/text()', query_to_xml(format('select count(*) as c from %I.%I', schemaname, relname), false, true, '')))[1]::text::bigint as c from pg_stat_user_tables where schemaname = 'public') s"
+
+usage() {
+  cat <<'USAGE'
+usage: kaneo-cutover.sh --mode presync|promote --source-dsn-file FILE
+                        --target-dsn-file FILE [--dump-file FILE]
+                        [--receipt FILE] [--pg-bin-dir DIR]
+                        [--fence-check PATH] [--units-dir DIR]
+                        [--containers-file FILE] [--unreachable] [-h|--help]
+
+  presync  dump the source, restore into the target, verify schema parity.
+  promote  require the old writer FENCED and exact table/row parity, then
+           write the cutover receipt. Exit: 0 pass, 2 usage, 3 not fenced,
+           4 parity failure, 5 command failure.
+USAGE
+}
+
+fail_usage() {
+  echo "kaneo-cutover: $1" >&2
+  usage >&2
+  exit 2
+}
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    --unreachable)
+      FENCE_ARGS+=("--unreachable")
+      shift
+      ;;
+    --mode|--source-dsn-file|--target-dsn-file|--dump-file|--receipt|--pg-bin-dir|--fence-check|--units-dir|--containers-file)
+      opt="$1"
+      [ "$#" -ge 2 ] || fail_usage "$opt requires a value"
+      val="$2"
+      [ -n "$val" ] || fail_usage "$opt requires a non-empty value"
+      case "$opt" in
+        --mode) MODE="$val" ;;
+        --source-dsn-file) SOURCE_DSN_FILE="$val" ;;
+        --target-dsn-file) TARGET_DSN_FILE="$val" ;;
+        --dump-file) DUMP_FILE="$val" ;;
+        --receipt) RECEIPT="$val" ;;
+        --pg-bin-dir) PG_BIN_DIR="$val" ;;
+        --fence-check) FENCE_CHECK="$val" ;;
+        --units-dir) FENCE_ARGS+=("--units-dir" "$val") ;;
+        --containers-file) FENCE_ARGS+=("--containers-file" "$val") ;;
+      esac
+      shift 2
+      ;;
+    --mode=*|--source-dsn-file=*|--target-dsn-file=*|--dump-file=*|--receipt=*|--pg-bin-dir=*|--fence-check=*|--units-dir=*|--containers-file=*)
+      opt="${1%%=*}"
+      val="${1#*=}"
+      [ -n "$val" ] || fail_usage "$opt requires a non-empty value"
+      case "$opt" in
+        --mode) MODE="$val" ;;
+        --source-dsn-file) SOURCE_DSN_FILE="$val" ;;
+        --target-dsn-file) TARGET_DSN_FILE="$val" ;;
+        --dump-file) DUMP_FILE="$val" ;;
+        --receipt) RECEIPT="$val" ;;
+        --pg-bin-dir) PG_BIN_DIR="$val" ;;
+        --fence-check) FENCE_CHECK="$val" ;;
+        --units-dir) FENCE_ARGS+=("--units-dir" "$val") ;;
+        --containers-file) FENCE_ARGS+=("--containers-file" "$val") ;;
+      esac
+      shift
+      ;;
+    --*)
+      fail_usage "unexpected argument '$1'"
+      ;;
+    *)
+      fail_usage "unexpected argument '$1' (no positionals)"
+      ;;
+  esac
+done
+
+case "$MODE" in
+  presync|promote) ;;
+  "") fail_usage "--mode is required (presync or promote)" ;;
+  *) fail_usage "--mode must be presync or promote (got '$MODE')" ;;
+esac
+
+[ -n "$SOURCE_DSN_FILE" ] || fail_usage "--source-dsn-file is required"
+[ -n "$TARGET_DSN_FILE" ] || fail_usage "--target-dsn-file is required"
+[ -r "$SOURCE_DSN_FILE" ] || fail_usage "source DSN file '$SOURCE_DSN_FILE' is not readable"
+[ -r "$TARGET_DSN_FILE" ] || fail_usage "target DSN file '$TARGET_DSN_FILE' is not readable"
+if [ "$MODE" = "presync" ]; then
+  [ -n "$DUMP_FILE" ] || fail_usage "--dump-file is required for presync"
+fi
+
+if [ -n "$PG_BIN_DIR" ]; then
+  [ -d "$PG_BIN_DIR" ] || fail_usage "--pg-bin-dir '$PG_BIN_DIR' is not a directory"
+  PG_DUMP="$PG_BIN_DIR/pg_dump"
+  PG_RESTORE="$PG_BIN_DIR/pg_restore"
+  PSQL="$PG_BIN_DIR/psql"
+else
+  PG_DUMP="pg_dump"
+  PG_RESTORE="pg_restore"
+  PSQL="psql"
+fi
+
+[ -x "$FENCE_CHECK" ] || { echo "kaneo-cutover: fence checker '$FENCE_CHECK' is not executable — refusing to gate a promotion on an absent check" >&2; exit 5; }
+
+read_dsn() {
+  # Reads a DSN without echoing it. Trailing newline dropped.
+  local v
+  v="$(cat "$1")" || return 1
+  printf '%s' "$v"
+}
+
+counts_of() {
+  # $1 = "source"|"target" label, $2 = dsn. Prints "tables rows". Never echoes the DSN.
+  local dsn out
+  dsn="$2"
+  if ! out="$("$PSQL" -Atq -c "$COUNT_SQL" -d "$dsn" 2>&1)"; then
+    echo "kaneo-cutover: cannot read counts from the $1 database: $out" >&2
+    return 5
+  fi
+  out="$(printf '%s' "$out" | tr -s '[:space:]' ' ' | sed 's/^ //; s/ $//')"
+  case "$out" in
+    [0-9]*" "[0-9]*) printf '%s' "$out" ;;
+    *) echo "kaneo-cutover: unexpected count output from the $1 database: '$out'" >&2; return 5 ;;
+  esac
+}
+
+NOW="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+RECEIPT_BODY=""
+write_receipt() {
+  # $1 = verdict line, $2 = extra detail lines (optional)
+  RECEIPT_BODY="# Kaneo cutover receipt — mode $MODE — $NOW
+
+- Fence: ${FENCE_LINE:-not checked (presync)} 
+- Source tables/rows: ${SRC_COUNTS:-unknown}
+- Target tables/rows: ${TGT_COUNTS:-unknown}
+- Verdict: $1
+${2:-}"
+  if [ -n "$RECEIPT" ]; then
+    printf '%s\n' "$RECEIPT_BODY" >"$RECEIPT" || { echo "kaneo-cutover: cannot write receipt '$RECEIPT'" >&2; exit 5; }
+  fi
+}
+
+source_dsn="$(read_dsn "$SOURCE_DSN_FILE")" || { echo "kaneo-cutover: cannot read '$SOURCE_DSN_FILE'" >&2; exit 5; }
+target_dsn="$(read_dsn "$TARGET_DSN_FILE")" || { echo "kaneo-cutover: cannot read '$TARGET_DSN_FILE'" >&2; exit 5; }
+
+if [ "$MODE" = "presync" ]; then
+  echo "kaneo-cutover: presync — dumping source to '$DUMP_FILE'"
+  "$PG_DUMP" -Fc -f "$DUMP_FILE" -d "$source_dsn" || { echo "kaneo-cutover: pg_dump failed" >&2; exit 5; }
+  echo "kaneo-cutover: presync — restoring into the target"
+  "$PG_RESTORE" --no-owner --no-privileges -d "$target_dsn" "$DUMP_FILE" || { echo "kaneo-cutover: pg_restore failed" >&2; exit 5; }
+
+  SRC_COUNTS="$(counts_of source "$source_dsn")" || exit $?
+  TGT_COUNTS="$(counts_of target "$target_dsn")" || exit $?
+  src_tables="${SRC_COUNTS%% *}"
+  tgt_tables="${TGT_COUNTS%% *}"
+  if [ "$src_tables" != "$tgt_tables" ]; then
+    write_receipt "FAIL — schema parity: source $src_tables public tables, target $tgt_tables"
+    echo "kaneo-cutover: FAIL — schema parity: source $src_tables public tables, target $tgt_tables" >&2
+    exit 4
+  fi
+  if [ "$SRC_COUNTS" != "$TGT_COUNTS" ]; then
+    write_receipt "PASS (schema) — row drift before the final delta: source $SRC_COUNTS, target $TGT_COUNTS" "- Note: expected pre-fence drift; promote requires exact parity."
+    echo "kaneo-cutover: presync OK — $src_tables public tables; row drift until the final delta (source $SRC_COUNTS, target $TGT_COUNTS)"
+    exit 0
+  fi
+  write_receipt "PASS (schema + rows) — source and target both $SRC_COUNTS"
+  echo "kaneo-cutover: presync OK — $SRC_COUNTS on both sides"
+  exit 0
+fi
+
+# --- promote: fence first, fail closed, before anything touches the stores ---
+if ! FENCE_OUT="$("$FENCE_CHECK" ${FENCE_ARGS[@]+"${FENCE_ARGS[@]}"} 2>&1)" || [ "${FENCE_OUT%%:*}" != "FENCED" ]; then
+  FENCE_LINE="UNFENCED — ${FENCE_OUT:-fence-check produced no output}"
+  write_receipt "REFUSED — promotion requires the old writer fenced"
+  echo "kaneo-cutover: REFUSED — old writer not fenced; no promotion, no receipt of pass. $FENCE_OUT" >&2
+  exit 3
+fi
+FENCE_LINE="$FENCE_OUT"
+
+SRC_COUNTS="$(counts_of source "$source_dsn")" || exit $?
+TGT_COUNTS="$(counts_of target "$target_dsn")" || exit $?
+if [ "$SRC_COUNTS" != "$TGT_COUNTS" ]; then
+  write_receipt "FAIL — final-delta parity: source $SRC_COUNTS, target $TGT_COUNTS"
+  echo "kaneo-cutover: FAIL — final-delta parity: source $SRC_COUNTS, target $TGT_COUNTS (replay the delta before promoting)" >&2
+  exit 4
+fi
+
+write_receipt "PASS — fenced, and source and target both $SRC_COUNTS"
+echo "kaneo-cutover: PROMOTE OK — $FENCE_OUT; source and target both $SRC_COUNTS"
+if [ -z "$RECEIPT" ]; then
+  printf '\n%s\n' "$RECEIPT_BODY"
+fi

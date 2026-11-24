@@ -1,0 +1,72 @@
+{
+  "retrieved_start": "2026-11-23T12:50:30Z",
+  "retrieved_end": "2026-11-23T12:50:43Z",
+  "label_queries": {
+    "app/id": {
+      "query": "repo:developing-today/code is:issue is:open label:\"app/id\"",
+      "total": 203,
+      "pages": 3,
+      "start": "2026-11-23T12:50:30Z",
+      "end": "2026-11-23T12:50:43Z"
+    },
+    "epic/id-program": {
+      "query": "repo:developing-today/code is:issue is:open label:\"epic/id-program\"",
+      "total": 187,
+      "pages": 2,
+      "start": "2026-11-23T12:50:30Z",
+      "end": "2026-11-23T12:50:40Z"
+    },
+    "epic/id-platform": {
+      "query": "repo:developing-today/code is:issue is:open label:\"epic/id-platform\"",
+      "total": 35,
+      "pages": 1,
+      "start": "2026-11-23T12:50:30Z",
+      "end": "2026-11-23T12:50:35Z"
+    }
+  },
+  "unique_count": 218,
+  "added": [],
+  "removed": [
+    12657
+  ],
+  "label_changes": {
+    "3404": {
+      "added": [
+        "status:in-review"
+      ],
+      "removed": []
+    }
+  },
+  "issue_12657_original": true,
+  "issue_12657_current": false,
+  "verified_removed_issues": [
+    {
+      "number": 12657,
+      "state": "closed",
+      "title": "id: rich presentation surfaces \u2014 versioned scene/audio/widget contract extension + Bevy renderers (F13.6 follow-on)",
+      "closed_at": "2026-11-23T12:41:25Z",
+      "html_url": "https://github.com/developing-today/code/issues/12657"
+    }
+  ],
+  "previous_unique_count": 219,
+  "previous_label_counts": {
+    "app/id": 204,
+    "epic/id-program": 188,
+    "epic/id-platform": 35
+  },
+  "subsequent_refresh": {
+    "date_utc": "2026-11-23T13:41Z",
+    "source": "GET /repos/developing-today/code/issues per label, state=open, per_page=100; PRs excluded",
+    "union": 216,
+    "label_counts": {
+      "app/id": 201,
+      "epic/id-program": 185,
+      "epic/id-platform": 35
+    },
+    "removed": [
+      3810,
+      4767
+    ],
+    "added": []
+  }
+}

@@ -14,12 +14,15 @@ Worked examples live in `pkgs/id/examples/`. Each app is a directory holding its
 | `examples/roc-text-counter/` | The same counter on the legacy plain-text presentation, importing no platform modules. |
 | `examples/roc-chat/` | Chat over the capability protocol: `chat.say` and `chat.history` through `RocCap`. |
 | `examples/roc-grid/` | The `RocGrid` library: a 4×3 byte grid with bounds-checked reads. |
+| `examples/roc-mind-map/` | Stable IDs with duplicate labels, a typed cross-link, refused cycles, preserved positions. |
 | `examples/roc-screen/` | The `Screen` and `Key` libraries: a structured screen document instead of text. |
 | `examples/lounge/` | The capability system end to end: subscriptions, arrival greetings through `chat.say`, and refusal counting. |
 | `examples/territory/` | A complete multiplayer game: at most 8 seated players on a 16×8 grid, adjacency-only claiming, seats that persist across leave, rejoin and restart. |
 | `examples/roc-cap-demo/` | A capability-dependent Roc library plus its app, with two compile-must-fail negative tests for the library import gate. |
 | `examples/roc-import-policy/` | Not an app: the compile-fixture matrix for the import gate, executed by the `id-caps` integration test `roc_import_policy`. |
 | `examples/rust-world/`, `examples/rust-counter/` | Not Roc: the Rust twin SDK (`plaza_sdk`) and its counter example, emitting the same Plaza exports. |
+| `examples/rust-cells/` | A second Rust Plaza guest. Step a bounded 5×5 glider with `step`, edit its initial board with `toggle X Y`, or restart it with `reset`. Its Wasm oracle checks each generation, screen output and resume into a fresh instance. Build this standalone example from source. |
+| `examples/rust-sketch/` | Not Roc: the `sketch/redo-as-new-stroke` guest (#13608) on `plaza_sdk` — draft vertices stay transient, confirmed strokes are immutable, undo leaves a tombstone, and copy assigns a fresh ID with provenance. Its host load/play fixture is `tests/sketch_host_play.rs` (#13656); `just test-sketch` runs both. |
 | `apps/tic-tac-toe/` | The one packaged app, outside `examples/`: an `app.toml` plus `program/main.roc`. Packaging is an `app.toml` declaring `[program] kind = "roc-world"` and the `[interfaces.web]` binding where the app takes a web surface. |
 
 ## Scaffold a new app

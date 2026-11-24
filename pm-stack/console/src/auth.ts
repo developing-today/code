@@ -15,6 +15,7 @@
 // no edge headers) is a process on this machine and is the owner: such
 // a process already has the owner's shell.
 import type { Config, Issuer } from "./config.ts";
+import { timed, unread } from "./timed.ts";
 
 export interface Identity {
   /** Issuer name, or "loopback". */
@@ -62,15 +63,18 @@ async function jwks(uri: string, fetchImpl: FetchLike, now: number, force = fals
   if (hit && now - hit.at < (force ? JWKS_REFRESH_COOLDOWN_MS : JWKS_TTL_MS)) return hit.keys;
   const pending = jwksInFlight.get(uri);
   if (pending) return pending;
-  const request = (async () => {
-    const res = await fetchImpl(uri, { signal: AbortSignal.timeout(JWKS_FETCH_TIMEOUT_MS) });
-    if (!res.ok) throw new Error(`key set fetch failed: http ${res.status}`);
+  const request = timed(JWKS_FETCH_TIMEOUT_MS, async (signal) => {
+    const res = await fetchImpl(uri, { signal });
+    if (!res.ok) {
+      unread(res);
+      throw new Error(`key set fetch failed: http ${res.status}`);
+    }
     const body = (await res.json()) as { keys?: unknown };
     if (!Array.isArray(body.keys)) throw new Error("key set has no keys");
     const keys = body.keys as Jwk[];
     jwksCache.set(uri, { at: now, keys });
     return keys;
-  })();
+  });
   jwksInFlight.set(uri, request);
   try {
     return await request;

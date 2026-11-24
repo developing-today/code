@@ -115,15 +115,15 @@ enqueued new task 19479 (queue repo-health-code, status queued)
 usage: repo-queue list [--queue <name>] [--status <s>] [--limit <n>] [--not-before <ts>] [--lane <l>] [--worker <w>] [--task <id>] [--json]
 ```
 
-| Flag           | Argument           | Default  | Meaning                                                                                                                |
-| -------------- | ------------------ | -------- | ---------------------------------------------------------------------------------------------------------------------- |
-| `--queue`      | queue name         | unscoped | Flag → env `REPO_QUEUE_DEFAULT_QUEUE` → **no scope** (all queues). Never the shadow default.                           |
-| `--status`     | status string      | unset    | Filter by status. Help names `queued\|parked\|claimed\|blocked` as the actionable set; any status string is forwarded. |
-| `--limit`      | integer            | 20       | Range 1..=500, rejected (never clamped) outside it, exit 2 naming `--limit`.                                           |
-| `--not-before` | RFC 3339 timestamp | unset    | Filter; validated client-side with the park/revive rule, exit 2 on garbage.                                            |
-| `--lane`       | lane id            | unset    | Filter forwarded to the broker.                                                                                        |
-| `--worker`     | worker id          | unset    | Filter forwarded to the broker.                                                                                        |
-| `--task`       | task id            | unset    | Narrow to one task regardless of status ordering — the recovery path for verifying a just-completed task.              |
+| Flag           | Argument           | Default  | Meaning                                                                                                                               |
+| -------------- | ------------------ | -------- | ------------------------------------------------------------------------------------------------------------------------------------- |
+| `--queue`      | queue name         | unscoped | Flag → env `REPO_QUEUE_DEFAULT_QUEUE` → **no scope** (all queues). Never the shadow default.                                          |
+| `--status`     | status string      | unset    | Filter by status. Help names `queued\|parked\|claimed\|blocked` as the actionable set; any status string is forwarded.                |
+| `--limit`      | integer            | 20       | Range 1..=500, rejected (never clamped) outside it, exit 2 naming `--limit`.                                                          |
+| `--not-before` | RFC 3339 timestamp | unset    | Filter; validated client-side with the park/revive rule, exit 2 on garbage.                                                           |
+| `--lane`       | lane id            | unset    | Filter forwarded to the broker.                                                                                                       |
+| `--worker`     | worker id          | unset    | Filter forwarded to the broker.                                                                                                       |
+| `--task`       | task id            | unset    | Narrow to one task regardless of status ordering — the recovery path for verifying a just-completed task.                             |
 | `--json`       | —                  | off      | Exact-task status form: requires `--queue` and `--task` together; see **Exact form** below. The bulk flags do not apply in that form. |
 
 **Behaviour.** A bare `list` prints a scope note to **stderr**: it shows one queue (or every queue when unscoped) in the broker's default ordering — _newest terminal rows first_ — "not the actionable set", with pointers to `--status`, `--queue`, `--limit`. Fetching is paged at 100 rows/page with broker offsets, because a single oversized `/list` reply used to render as a silent "(no tasks)". A reply with no `rows` array is an error (exit 3), never an empty list.

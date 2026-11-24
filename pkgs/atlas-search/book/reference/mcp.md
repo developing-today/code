@@ -14,16 +14,16 @@ Content-Type: application/json
 
 ## Transport shape
 
-| Property | Behaviour |
-|---|---|
-| Session handling | **None.** No session id is issued, required or read; there is no `Mcp-Session-Id` header handling in the code. |
-| Message framing | Each HTTP request is one JSON-RPC message, or a **batch**: a JSON array of messages. The response is a plain JSON body (`Content-Type: application/json`); batch responses preserve request order and contain one response per non-notification item. |
-| Streaming | None. There is no SSE or streaming response mode, and no GET endpoint: `GET /mcp` is 405 (see [The Worker HTTP API](worker-api.md)). |
-| Notifications | A message with **no `id` property at all** is a notification: it is never executed and never answered — this explicitly includes a `tools/call` sent as a notification. A single notification, or a batch of only notifications, gets HTTP **202** with an empty body. In a mixed batch, notifications are simply omitted from the response array. |
-| The `id: null` edge | A message whose `id` property is present but null is a request, not a notification — the test is whether the property exists, not whether it is null. It is executed and answered with `id: null`. |
-| Body limit | The same 64 KiB cap as every Worker route (see the error table below for its JSON-RPC shape). |
-| Server identity | `name: "atlas-search"`, `version: "0.1.0"`. |
-| Protocol versions | Supported (`SUPPORTED_VERSIONS`): `2024-11-05`, `2025-03-26`, `2025-06-18`. Fallback when negotiation cannot echo the client's version: `2025-03-26`. The server identity (`SERVER_INFO`) is name `atlas-search`, version `0.1.0`. |
+| Property            | Behaviour                                                                                                                                                                                                                                                                                                                                          |
+| ------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Session handling    | **None.** No session id is issued, required or read; there is no `Mcp-Session-Id` header handling in the code.                                                                                                                                                                                                                                     |
+| Message framing     | Each HTTP request is one JSON-RPC message, or a **batch**: a JSON array of messages. The response is a plain JSON body (`Content-Type: application/json`); batch responses preserve request order and contain one response per non-notification item.                                                                                              |
+| Streaming           | None. There is no SSE or streaming response mode, and no GET endpoint: `GET /mcp` is 405 (see [The Worker HTTP API](worker-api.md)).                                                                                                                                                                                                               |
+| Notifications       | A message with **no `id` property at all** is a notification: it is never executed and never answered — this explicitly includes a `tools/call` sent as a notification. A single notification, or a batch of only notifications, gets HTTP **202** with an empty body. In a mixed batch, notifications are simply omitted from the response array. |
+| The `id: null` edge | A message whose `id` property is present but null is a request, not a notification — the test is whether the property exists, not whether it is null. It is executed and answered with `id: null`.                                                                                                                                                 |
+| Body limit          | The same 64 KiB cap as every Worker route (see the error table below for its JSON-RPC shape).                                                                                                                                                                                                                                                      |
+| Server identity     | `name: "atlas-search"`, `version: "0.1.0"`.                                                                                                                                                                                                                                                                                                        |
+| Protocol versions   | Supported (`SUPPORTED_VERSIONS`): `2024-11-05`, `2025-03-26`, `2025-06-18`. Fallback when negotiation cannot echo the client's version: `2025-03-26`. The server identity (`SERVER_INFO`) is name `atlas-search`, version `0.1.0`.                                                                                                                 |
 
 ## The gate and the pinned identity — read this plainly
 
@@ -35,12 +35,12 @@ There is **no per-client identity on this endpoint**. No client name, agent cred
 
 Exactly four methods are handled; everything else gets JSON-RPC error `-32601`.
 
-| Method | Behaviour and result |
-|---|---|
+| Method       | Behaviour and result                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| ------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `initialize` | Negotiates the protocol version: echoes `params.protocolVersion` if it is a string in the supported list, otherwise returns `2025-03-26`. Result: `{ protocolVersion, capabilities: { tools: {} }, serverInfo: { name: "atlas-search", version: "0.1.0" }, instructions: "Atlas search: one tool, \`search\`, over Drew's unified Atlas index at the personal ceiling. Results are cached per query; a repeat query is served from cache." }`. No client identity or capabilities from `params` are stored or used. |
-| `ping` | Result `{}`. |
-| `tools/list` | Result `{ tools: [ &lt;the search tool&gt; ] }` — exactly one tool, below. |
-| `tools/call` | Executes the `search` tool, below. |
+| `ping`       | Result `{}`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| `tools/list` | Result `{ tools: [ &lt;the search tool&gt; ] }` — exactly one tool, below.                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| `tools/call` | Executes the `search` tool, below.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 
 `params` is used only when it is a non-null object, and otherwise treated as `{}`; the same rule applies to a `tools/call` `arguments` value.
 
@@ -99,18 +99,18 @@ Deliberately **not** MCP tools: cache purge (a write) and cache inspect (an oper
 
 Framing and dispatch errors are returned as `{ "jsonrpc": "2.0", "id": &lt;id or null&gt;, "error": { "code": …, "message": … } }`.
 
-| Condition | HTTP | Code | Message |
-|---|---|---|---|
-| Body over 64 KiB | 413 | `-32600` | `body is larger than the 64 KiB limit` (id null) |
-| Body not parseable JSON | 400 | `-32700` | `parse error: body must be JSON` (id null) |
-| Body is a JSON array of length 0 | 400 | `-32600` | `invalid request: empty batch` |
-| Batch item not an object | 200, in the batch array | `-32600` | `invalid request: batch items must be objects` (that item's response id is null) |
-| Body neither object nor array (JSON `null`, a string, a number) | 400 | `-32600` | `invalid request: body must be a JSON object or batch` |
-| Message `method` not a string | 200 | `-32600` | `invalid request: method must be a string` |
-| Unknown method | 200 | `-32601` | `method not found: &lt;method&gt;` |
-| `tools/call` with an unknown tool name | 200 | `-32602` | `unknown tool: &lt;name&gt;` |
-| `tools/call` `arguments.query` not a string | 200 | `-32602` | `arguments.query must be a string` |
-| `tools/call` `arguments.query` empty after normalization | 200 | `-32602` | `arguments.query must not be empty` |
+| Condition                                                       | HTTP                    | Code     | Message                                                                          |
+| --------------------------------------------------------------- | ----------------------- | -------- | -------------------------------------------------------------------------------- |
+| Body over 64 KiB                                                | 413                     | `-32600` | `body is larger than the 64 KiB limit` (id null)                                 |
+| Body not parseable JSON                                         | 400                     | `-32700` | `parse error: body must be JSON` (id null)                                       |
+| Body is a JSON array of length 0                                | 400                     | `-32600` | `invalid request: empty batch`                                                   |
+| Batch item not an object                                        | 200, in the batch array | `-32600` | `invalid request: batch items must be objects` (that item's response id is null) |
+| Body neither object nor array (JSON `null`, a string, a number) | 400                     | `-32600` | `invalid request: body must be a JSON object or batch`                           |
+| Message `method` not a string                                   | 200                     | `-32600` | `invalid request: method must be a string`                                       |
+| Unknown method                                                  | 200                     | `-32601` | `method not found: &lt;method&gt;`                                               |
+| `tools/call` with an unknown tool name                          | 200                     | `-32602` | `unknown tool: &lt;name&gt;`                                                     |
+| `tools/call` `arguments.query` not a string                     | 200                     | `-32602` | `arguments.query must be a string`                                               |
+| `tools/call` `arguments.query` empty after normalization        | 200                     | `-32602` | `arguments.query must not be empty`                                              |
 
 In code terms: `-32700` is parse error, `-32600` is invalid request, `-32601` is method not found, and `-32602` is invalid params — the last covering both the unknown-tool and bad-`query` cases on `tools/call`.
 

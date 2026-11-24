@@ -32,7 +32,6 @@ for byte, and `mcpx openapi` adds the MCP endpoint, a REST path
 per mcpx tool (`POST /v1/tools/{tool}` is itself an operation in
 the table) and the settings index.
 
-
 In the printed document those per-tool paths are concrete — one
 `POST` path per tool mcpx itself serves: `/v1/tools/mcpx_exec`,
 `/v1/tools/mcpx_search`, `/v1/tools/mcpx_types`,

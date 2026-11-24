@@ -8,8 +8,11 @@
 //!
 //! Endpoints (header `X-Agent-Token` required except /health):
 //!   GET /health        -> {ok, serving, secrets, last_refresh_unix, refreshing,
-//!                          oldest_secret_age_seconds} | 503 while `serving`
-//!                          is false (no successful refresh yet, #10868)
+//!                          refresh_progress, oldest_secret_age_seconds}
+//!                          | 503 while `serving` is false (no successful
+//!                          refresh yet, #10868). While a refresh is in
+//!                          flight, refresh_progress is {started_unix,
+//!                          fetched, total}; it is null when idle (#13081).
 //!   GET /secrets       -> {names: [...]}
 //!   GET /secret/<name> -> {key, value, fetched_at_unix, age_seconds,
 //!                          source} | 404 | 503 (not loaded yet)
@@ -32,6 +35,22 @@
 //! to Bitwarden for that one name (single-flighted per name) and
 //! serves what it finds, so a secret minted moments ago is visible
 //! immediately instead of at the next TTL refresh (#6275).
+//!
+//! The heal contract (#13081): a supervisor that restarts this
+//! broker on a health verdict (the sandbox init-ensure prelude is
+//! the live one) must not restart it while a refresh is in flight
+//! and making progress — `refreshing` true with a present
+//! `refresh_progress` whose `fetched` count advances between
+//! probes, or a `secrets` count climbing as fetches land. A first
+//! refresh over the whole vault takes minutes (one `bws` child
+//! per secret, 8 in flight), so a fixed short patience starves
+//! it: every restart begins the refresh from zero, the broker
+//! never reaches `serving`, and the next restart lands the same
+//! way. Restart is for a broker that is absent, not refreshing
+//! and not serving, or still not serving after a patience window
+//! sized to the vault — `refresh_progress.total` fetches at the
+//! observed per-call latency, 8-way parallel — with no progress
+//! inside it.
 //!
 //! Env: SECRETS_BROKER_BIND (default 100.99.113.103:4800),
 //!      SECRETS_BROKER_SOCKET (Unix socket dual-bind, #6216; default
@@ -58,6 +77,17 @@ struct CachedSecret {
     fetched_at_unix: u64,
 }
 
+/// One in-flight refresh's progress (#13081): the unix time it
+/// started, the fetches completed so far (either outcome — a
+/// completed fetch is forward motion through the list), and the
+/// total the authoritative list carries.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct RefreshProgress {
+    started_unix: u64,
+    fetched: usize,
+    total: usize,
+}
+
 struct State {
     secrets: RwLock<HashMap<String, CachedSecret>>,
     last_refresh: RwLock<Option<u64>>,
@@ -68,6 +98,13 @@ struct State {
     /// construction (BwsRunner discipline): never vault material.
     last_refresh_error: RwLock<Option<String>>,
     refreshing: RwLock<bool>,
+    /// The in-flight refresh's progress (#13081): when it started,
+    /// how many of the vault's fetches it has completed, and how
+    /// many the authoritative list carries. Present only while a
+    /// refresh is in flight; /health publishes it so a supervising
+    /// heal can tell a slow-but-advancing refresh from a wedged
+    /// one before it reaches for a restart.
+    refresh_progress: RwLock<Option<RefreshProgress>>,
     /// In-flight read-through fetches, one gate per name (#6275):
     /// the first misser fetches from Bitwarden; concurrent missers
     /// for the same name wait on the gate instead of stampeding the
@@ -200,8 +237,57 @@ fn refresh(state: &Arc<State>) -> Result<usize, String> {
         Ok(_) => *state.last_refresh_error.write().unwrap() = None,
         Err(e) => *state.last_refresh_error.write().unwrap() = Some(e.clone()),
     }
+    end_refresh_progress(state);
     *state.refreshing.write().unwrap() = false;
     result
+}
+
+/// Open the in-flight refresh's progress record (#13081): called
+/// once the authoritative list has landed, so `total` is the real
+/// vault size a heal sizes its patience against.
+fn begin_refresh_progress(state: &Arc<State>, total: usize) {
+    *state.refresh_progress.write().unwrap() = Some(RefreshProgress {
+        started_unix: now_unix(),
+        fetched: 0,
+        total,
+    });
+}
+
+/// Count one completed fetch against the in-flight refresh
+/// (#13081). Either outcome counts: the fetch finished, so the
+/// refresh is one step further through the list. A wedged refresh
+/// is precisely one whose count stops moving.
+fn note_refresh_fetch(state: &Arc<State>) {
+    if let Some(p) = state.refresh_progress.write().unwrap().as_mut() {
+        p.fetched += 1;
+    }
+}
+
+/// Close the in-flight refresh's progress record (#13081): the
+/// record exists only while a refresh is in flight, so a heal
+/// never mistakes a finished refresh's final count for live
+/// progress.
+fn end_refresh_progress(state: &Arc<State>) {
+    *state.refresh_progress.write().unwrap() = None;
+}
+
+/// Install one just-fetched secret into the live cache (#13081),
+/// stamped with its own fetch time: a refresh's successes land as
+/// they complete — the per-secret install the module doc promises
+/// (#6767) — so /health's `secrets` count climbs during a long
+/// first refresh instead of sitting at 0 until the batch joins,
+/// and early secrets are servable while their siblings are still
+/// fetching. Eviction against the authoritative list stays with
+/// the batch-end install: absence is only known once the list is
+/// fully worked.
+fn install_fetched(state: &Arc<State>, key: &str, value: String, fetched_at_unix: u64) {
+    state.secrets.write().unwrap().insert(
+        key.to_string(),
+        CachedSecret {
+            value,
+            fetched_at_unix,
+        },
+    );
 }
 
 /// Parse the `bws secret list` entries strictly: every entry must
@@ -259,6 +345,10 @@ fn do_refresh(state: &Arc<State>) -> Result<usize, String> {
     // secret's previous value — the #5504 no-eviction rule, applied
     // per secret instead of failing the whole refresh.
     let total = items.len();
+    // The list has landed: the refresh's size is known, so its
+    // progress record opens (#13081) and each completed fetch
+    // advances it until the batch install closes the refresh.
+    begin_refresh_progress(state, total);
     let items = Arc::new(items);
     let idx = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let failed = Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -270,6 +360,7 @@ fn do_refresh(state: &Arc<State>) -> Result<usize, String> {
         let failed = Arc::clone(&failed);
         let got = Arc::clone(&got);
         let token = token.clone();
+        let state = Arc::clone(state);
         handles.push(std::thread::spawn(move || {
             loop {
                 let i = idx.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -287,12 +378,20 @@ fn do_refresh(state: &Arc<State>) -> Result<usize, String> {
                         // the batch's install time (Codex, PR #8491):
                         // a slow sibling fetch must not make this
                         // value look fresher than it is.
-                        got.write().unwrap().insert(key.clone(), (val, now_unix()));
+                        let at = now_unix();
+                        got.write().unwrap().insert(key.clone(), (val.clone(), at));
+                        // Land it in the live cache now (#13081):
+                        // the batch-end install below re-inserts
+                        // the same pair and owns eviction, so this
+                        // early landing changes only WHEN the value
+                        // becomes visible, never what installs.
+                        install_fetched(&state, key, val, at);
                     }
                     None => {
                         failed.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                     }
                 }
+                note_refresh_fetch(&state);
             }
         }));
     }
@@ -569,6 +668,17 @@ fn handle_request(
             .max();
         let last_refresh_unix = state.last_refresh.read().unwrap().clone();
         let serving = last_refresh_unix.is_some();
+        // The in-flight refresh's progress (#13081): an object
+        // while a refresh is running, null when idle, so a heal
+        // reading this body can apply the refreshing-aware
+        // patience rule instead of a bare not-serving verdict.
+        let refresh_progress = state.refresh_progress.read().unwrap().map(|p| {
+            json!({
+                "started_unix": p.started_unix,
+                "fetched": p.fetched,
+                "total": p.total,
+            })
+        });
         (
             if serving { 200 } else { 503 },
             json!({
@@ -577,6 +687,7 @@ fn handle_request(
                 "secrets": state.secrets.read().unwrap().len(),
                 "last_refresh_unix": last_refresh_unix,
                 "refreshing": *state.refreshing.read().unwrap(),
+                "refresh_progress": refresh_progress,
                 "oldest_secret_age_seconds": oldest_secret_age_seconds,
             }),
         )
@@ -746,6 +857,7 @@ pub fn run() -> i32 {
         last_refresh: RwLock::new(None),
         last_refresh_error: RwLock::new(None),
         refreshing: RwLock::new(false),
+        refresh_progress: RwLock::new(None),
         inflight: Mutex::new(HashMap::new()),
     });
 
@@ -921,8 +1033,9 @@ fn url_decode(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        CachedSecret, DEFAULT_TTL_S, MIN_TTL_S, State, fetch_through_with, handle_request,
-        install_refresh, now_unix, parse_list_entries, parse_ttl_s, pre_body_refusal,
+        CachedSecret, DEFAULT_TTL_S, MIN_TTL_S, State, begin_refresh_progress,
+        end_refresh_progress, fetch_through_with, handle_request, install_fetched, install_refresh,
+        note_refresh_fetch, now_unix, parse_list_entries, parse_ttl_s, pre_body_refusal,
         resolve_list_id, url_decode,
     };
     use std::time::Duration;
@@ -960,6 +1073,7 @@ mod tests {
             last_refresh: RwLock::new(Some(1)),
             last_refresh_error: RwLock::new(None),
             refreshing: RwLock::new(false),
+            refresh_progress: RwLock::new(None),
             inflight: Mutex::new(HashMap::new()),
         })
     }
@@ -983,6 +1097,94 @@ mod tests {
         assert_eq!(status, 200);
         assert_eq!(body["serving"], true);
         assert_eq!(body["ok"], true);
+    }
+
+    #[test]
+    fn health_publishes_refresh_progress_only_while_refreshing() {
+        // oracle (#13081): a heal deciding whether to restart a
+        // not-yet-serving broker must be able to see that a first
+        // refresh is in flight and how far through the vault it
+        // is. In flight, /health carries the progress record
+        // (start, fetched, total); idle, the field is null — a
+        // finished refresh's final count is never mistaken for
+        // live progress.
+        let state = empty_state();
+        *state.last_refresh.write().unwrap() = None;
+        let (_, body) = handle_request(&state, "tok", "GET", "/health", None);
+        assert_eq!(body["refresh_progress"], serde_json::Value::Null);
+
+        *state.refreshing.write().unwrap() = true;
+        begin_refresh_progress(&state, 221);
+        note_refresh_fetch(&state);
+        note_refresh_fetch(&state);
+        let (status, body) = handle_request(&state, "tok", "GET", "/health", None);
+        assert_eq!(status, 503);
+        assert_eq!(body["serving"], false);
+        assert_eq!(body["refreshing"], true);
+        assert_eq!(body["refresh_progress"]["total"], 221);
+        assert_eq!(body["refresh_progress"]["fetched"], 2);
+        assert!(
+            body["refresh_progress"]["started_unix"].as_u64().is_some(),
+            "progress carries its start: {body}"
+        );
+
+        end_refresh_progress(&state);
+        let (_, body) = handle_request(&state, "tok", "GET", "/health", None);
+        assert_eq!(body["refresh_progress"], serde_json::Value::Null);
+    }
+
+    #[test]
+    fn fetched_secrets_are_visible_before_the_first_refresh_completes() {
+        // oracle (#13081, and the #6767 per-secret install the
+        // module doc promises): a secret whose fetch has landed is
+        // in the cache — and counted on /health — while the first
+        // refresh is still running, instead of the whole vault
+        // sitting invisible until the batch joins. `serving` still
+        // waits for the completed refresh: visibility is not the
+        // loaded verdict.
+        let state = empty_state();
+        *state.last_refresh.write().unwrap() = None;
+        *state.refreshing.write().unwrap() = true;
+        begin_refresh_progress(&state, 2);
+        install_fetched(&state, "alpha", "fixture-value-not-a-secret".to_string(), 7);
+        note_refresh_fetch(&state);
+
+        let (status, body) = handle_request(&state, "tok", "GET", "/health", None);
+        assert_eq!(status, 503);
+        assert_eq!(body["serving"], false);
+        assert_eq!(body["secrets"], 1);
+        assert_eq!(body["refresh_progress"]["fetched"], 1);
+
+        let (status, body) = handle_request(&state, "tok", "GET", "/secret/alpha", Some("tok"));
+        assert_eq!(status, 200);
+        assert_eq!(body["value"], "fixture-value-not-a-secret");
+        assert_eq!(body["fetched_at_unix"], 7);
+        // A name the refresh has not reached yet still gets the
+        // not-loaded answer, not a premature 404.
+        let (status, _) = handle_request(&state, "tok", "GET", "/secret/beta", Some("tok"));
+        assert_eq!(status, 503);
+    }
+
+    #[test]
+    fn refresh_progress_counts_completions_and_stops_at_the_end() {
+        // oracle (#13081): the fetched count is the heal's motion
+        // signal — it advances once per completed fetch and the
+        // record closes with the refresh, so a wedged refresh
+        // (count frozen across probes) is distinguishable from a
+        // slow one (count advancing).
+        let state = empty_state();
+        begin_refresh_progress(&state, 3);
+        for want in 1..=3 {
+            note_refresh_fetch(&state);
+            let p = state.refresh_progress.read().unwrap().expect("in flight");
+            assert_eq!(p.fetched, want);
+            assert_eq!(p.total, 3);
+        }
+        end_refresh_progress(&state);
+        assert!(state.refresh_progress.read().unwrap().is_none());
+        // A stray completion outside a refresh records nothing.
+        note_refresh_fetch(&state);
+        assert!(state.refresh_progress.read().unwrap().is_none());
     }
 
     #[test]

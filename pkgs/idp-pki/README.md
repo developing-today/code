@@ -41,16 +41,21 @@ and `issued/<name>/` for leaves.
 
 ## Chosen defaults
 
-| Thing | Choice | Why |
-| --- | --- | --- |
-| Root CA | EC P-384, SHA-384, 7300 days (20 y), pathlen 1 | Long-lived trust anchor; P-384 is the modern, widely accepted CA curve |
-| Issuing CA | EC P-384, SHA-384, 3650 days (10 y), pathlen 0 | Shorter than the root so the working CA can be rotated without touching the anchor |
-| server / client leaves | EC P-256, 730 days | Fast, modern leaf keys; two-year private-CA lifetime |
-| saml-signing / oidc-signing leaves | RSA 2048, 1095 days | RS256/RSASSA is the most widely accepted signing profile in SAML and OIDC consumer stacks |
-| Key encryption | AES-256-CBC, passphrase from `IDP_CA_PASSPHRASE` | Passphrase is never taken from argv and never printed |
+| Thing                              | Choice                                           | Why                                                                                       |
+| ---------------------------------- | ------------------------------------------------ | ----------------------------------------------------------------------------------------- |
+| Root CA                            | EC P-384, SHA-384, 7300 days (20 y), pathlen 1   | Long-lived trust anchor; P-384 is the modern, widely accepted CA curve                    |
+| Issuing CA                         | EC P-384, SHA-384, 3650 days (10 y), pathlen 0   | Shorter than the root so the working CA can be rotated without touching the anchor        |
+| server / client leaves             | EC P-256, 730 days                               | Fast, modern leaf keys; two-year private-CA lifetime                                      |
+| saml-signing / oidc-signing leaves | RSA 2048, 1095 days                              | RS256/RSASSA is the most widely accepted signing profile in SAML and OIDC consumer stacks |
+| Key encryption                     | AES-256-CBC, passphrase from `IDP_CA_PASSPHRASE` | Passphrase is never taken from argv and never printed                                     |
 
 ## Key handling
 
+- Escrowing a PEM value with the `bws` CLI needs the `--`
+  separator (`bws secret create -- <KEY> <VALUE> <PROJECT>`):
+  a PEM value starts with `-` characters, and without `--` the
+  argument parser eats it as an option and echoes it back in
+  the error. Pass the value argv-direct (no shell in between).
 - Private keys are generated on the CA host only. They are **never**
   committed to git, never printed, and never leave the host except into the
   secrets vault.
@@ -60,7 +65,13 @@ and `issued/<name>/` for leaves.
   `idp.ca-passphrase`.
 - Only public material is published: `trust/` in this directory holds the
   root certificate, the issuing certificate, and the chain, exactly as
-  generated. Verify any copy against the fingerprints recorded on the story
+  generated, plus the provider signing certificates issued under Slice 2
+  of the IdP story (`oidc-signing.crt.pem`, `saml-signing.crt.pem`) —
+  plus the Slice 5 rollover successor `oidc-signing-2.crt.pem`
+  (serial 1004, SHA-256 fingerprint
+  `59:EF:0E:3D:7E:61:91:D4:97:D2:AB:58:54:41:A5:71:B8:41:25:BB:27:E7:3A:A4:C5:1C:CD:84:34:C9:59:7A`;
+  its key is escrowed as `idp.oidc-signing-2.key`) —
+  public certificates only; their private keys live in the vault, by name. Verify any copy against the fingerprints recorded on the story
   issue before trusting it.
 
 ## Verification recipe

@@ -152,10 +152,10 @@ impl Pipeline {
         // Replay validates the cached entry against the CURRENT epoch
         // and rights: a stale entry is recomputed, never served.
         let key = (caller.to_string(), query.to_string());
-        if let Some(cached) = self.cache.get(&key) {
-            if cached.epoch == world.epoch {
-                return cached.clone();
-            }
+        if let Some(cached) = self.cache.get(&key)
+            && cached.epoch == world.epoch
+        {
+            return cached.clone();
         }
         self.search(world, caller, query)
     }

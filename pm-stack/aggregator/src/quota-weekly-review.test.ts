@@ -6,12 +6,7 @@
 // projected-vs-realized, the §6 findings summary, a recorded rule
 // consequence in every report).
 import { describe, expect, test } from "bun:test";
-import {
-  buildWeeklyReview,
-  renderWeeklyReview,
-  scoreWeekFacts,
-  summarizeWeekFindings,
-} from "./quota-weekly-review.ts";
+import { buildWeeklyReview, renderWeeklyReview, scoreWeekFacts, summarizeWeekFindings } from "./quota-weekly-review.ts";
 import type { ForecastAccuracyLedger, ScoredForecast } from "./quota-forecast-accuracy.ts";
 import type { AnomalyFinding } from "./quota-anomaly.ts";
 import type { ReweightProposal, ReweightRun } from "./quota-reweight.ts";

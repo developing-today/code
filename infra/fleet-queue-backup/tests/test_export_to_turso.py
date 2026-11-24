@@ -185,9 +185,7 @@ class ExportCase(unittest.TestCase):
         export_to_turso.fq_common.LibsqlClient = lambda url, token: self.home
 
     def run_export(self):
-        return export_to_turso.export(
-            fq_common.DEFAULT_D1_NAME, "https://home.invalid"
-        )
+        return export_to_turso.export(fq_common.DEFAULT_D1_NAME, "https://home.invalid")
 
 
 class TestExport(ExportCase):

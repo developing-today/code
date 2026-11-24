@@ -51,41 +51,41 @@ in Rust.
 
 ### `search`
 
-| Flag | Argument | Default | Meaning |
-|---|---|---|---|
-| `--k` | integer | `10` | Final results |
-| `--pool` | integer | `100` | Per-branch candidates |
-| `--mode` | `hybrid`, `fts` or `vector` | `hybrid` | Which branches run |
-| `--kind` | CSV string | none | Classification kind filter |
-| `--topic` | CSV string | none | Topic filter |
-| `--project` | CSV string | none | Project filter |
-| `--client` | CSV string | none | Client filter |
-| `--since` | `YYYY-MM-DD` | none | Sessions created on or after the date (inclusive, on `sessions.created_at`) |
-| `--until` | `YYYY-MM-DD` | none | Sessions created on or before the date (inclusive) |
-| `--context` | string | `local-owner` | Disclosure context of the destination surface. Free-form and unvalidated in the Python; an unknown value fails closed inside the disclosure logic |
-| `--max-sensitivity` | ladder name | `personal` | Caller ceiling, in `shareable`, `personal`, `local-only`, `secret-bearing` order |
-| `--group-by-session` | switch | off | Roll chunk hits up to sessions |
-| `--expand` | integer | `0` | Include that many neighbouring chunks around each hit |
-| `--with-message` | switch | off | Include the parent message text |
-| `--text` | switch | off | Human-readable output instead of JSON |
-| `--backend` | `auto`, `turso` or `local` | `auto` | Data backend |
-| `--db` | path | the canonical `atlas.db` (resolution: the `ATLAS_DB` environment variable, then the turso-atlas data path, then a script-relative data path) | Local backend database |
-| `--vecdb` | comma-separated paths | none (environment fallback `ATLAS_VEC_DB`) | Local backend vector DB path(s) |
-| `--model` | string | `Snowflake/snowflake-arctic-embed-m-v2.0` (environment `ATLAS_SEARCH_MODEL`) | Embedding model |
-| `--vec-table` | string | `vec_snowflake_m_v2_768_f32` (environment `ATLAS_VEC_TABLE`) | Vector table name |
-| `--embedder` | `auto`, `fastembed` or `st` | `auto` | Query embedder: fastembed (bge) or sentence-transformers with the query prompt (Snowflake) |
-| `--trunc` | integer | `0` | Truncate query and document vectors to this many dimensions (0 = full width) |
-| `--vector-backend` | `scan`, `index-fill` or `index-fixed` | `scan` | Vector branch strategy on the Turso backend |
+| Flag                 | Argument                              | Default                                                                                                                                      | Meaning                                                                                                                                           |
+| -------------------- | ------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--k`                | integer                               | `10`                                                                                                                                         | Final results                                                                                                                                     |
+| `--pool`             | integer                               | `100`                                                                                                                                        | Per-branch candidates                                                                                                                             |
+| `--mode`             | `hybrid`, `fts` or `vector`           | `hybrid`                                                                                                                                     | Which branches run                                                                                                                                |
+| `--kind`             | CSV string                            | none                                                                                                                                         | Classification kind filter                                                                                                                        |
+| `--topic`            | CSV string                            | none                                                                                                                                         | Topic filter                                                                                                                                      |
+| `--project`          | CSV string                            | none                                                                                                                                         | Project filter                                                                                                                                    |
+| `--client`           | CSV string                            | none                                                                                                                                         | Client filter                                                                                                                                     |
+| `--since`            | `YYYY-MM-DD`                          | none                                                                                                                                         | Sessions created on or after the date (inclusive, on `sessions.created_at`)                                                                       |
+| `--until`            | `YYYY-MM-DD`                          | none                                                                                                                                         | Sessions created on or before the date (inclusive)                                                                                                |
+| `--context`          | string                                | `local-owner`                                                                                                                                | Disclosure context of the destination surface. Free-form and unvalidated in the Python; an unknown value fails closed inside the disclosure logic |
+| `--max-sensitivity`  | ladder name                           | `personal`                                                                                                                                   | Caller ceiling, in `shareable`, `personal`, `local-only`, `secret-bearing` order                                                                  |
+| `--group-by-session` | switch                                | off                                                                                                                                          | Roll chunk hits up to sessions                                                                                                                    |
+| `--expand`           | integer                               | `0`                                                                                                                                          | Include that many neighbouring chunks around each hit                                                                                             |
+| `--with-message`     | switch                                | off                                                                                                                                          | Include the parent message text                                                                                                                   |
+| `--text`             | switch                                | off                                                                                                                                          | Human-readable output instead of JSON                                                                                                             |
+| `--backend`          | `auto`, `turso` or `local`            | `auto`                                                                                                                                       | Data backend                                                                                                                                      |
+| `--db`               | path                                  | the canonical `atlas.db` (resolution: the `ATLAS_DB` environment variable, then the turso-atlas data path, then a script-relative data path) | Local backend database                                                                                                                            |
+| `--vecdb`            | comma-separated paths                 | none (environment fallback `ATLAS_VEC_DB`)                                                                                                   | Local backend vector DB path(s)                                                                                                                   |
+| `--model`            | string                                | `Snowflake/snowflake-arctic-embed-m-v2.0` (environment `ATLAS_SEARCH_MODEL`)                                                                 | Embedding model                                                                                                                                   |
+| `--vec-table`        | string                                | `vec_snowflake_m_v2_768_f32` (environment `ATLAS_VEC_TABLE`)                                                                                 | Vector table name                                                                                                                                 |
+| `--embedder`         | `auto`, `fastembed` or `st`           | `auto`                                                                                                                                       | Query embedder: fastembed (bge) or sentence-transformers with the query prompt (Snowflake)                                                        |
+| `--trunc`            | integer                               | `0`                                                                                                                                          | Truncate query and document vectors to this many dimensions (0 = full width)                                                                      |
+| `--vector-backend`   | `scan`, `index-fill` or `index-fixed` | `scan`                                                                                                                                       | Vector branch strategy on the Turso backend                                                                                                       |
 
 ### `get-chunk`
 
-| Flag | Argument | Default | Meaning |
-|---|---|---|---|
-| `--neighbors` | integer | `0` | Neighbouring chunks to include, either side in the same message |
-| `--text` | switch | off | Human-readable output instead of JSON |
-| `--context` | string | `local-owner` | Disclosure context of the destination surface |
-| `--max-sensitivity` | ladder name | `secret-bearing` | Caller ceiling for this explicit-id lookup — note the default differs from `search` |
-| `--backend`, `--db`, `--vecdb` | as `search` | as `search` | The shared backend argument group |
+| Flag                           | Argument    | Default          | Meaning                                                                             |
+| ------------------------------ | ----------- | ---------------- | ----------------------------------------------------------------------------------- |
+| `--neighbors`                  | integer     | `0`              | Neighbouring chunks to include, either side in the same message                     |
+| `--text`                       | switch      | off              | Human-readable output instead of JSON                                               |
+| `--context`                    | string      | `local-owner`    | Disclosure context of the destination surface                                       |
+| `--max-sensitivity`            | ladder name | `secret-bearing` | Caller ceiling for this explicit-id lookup — note the default differs from `search` |
+| `--backend`, `--db`, `--vecdb` | as `search` | as `search`      | The shared backend argument group                                                   |
 
 Worked example — the documented dormant fallback, which only this
 implementation can run:
@@ -154,7 +154,7 @@ named; neither side is silently corrected here.
 3. **Reciprocal rank fusion k: 60 versus 10.** The shipped Rust fuses at
    k = 10, from the versioned query-parameter contract, and the Python
    production header likewise records k = 10 for the production shape. But
-   the Python *evaluation* lineage — `eval3.py`'s hybrid, copied from the
+   the Python _evaluation_ lineage — `eval3.py`'s hybrid, copied from the
    earlier vector evaluation script, and the Jaccard gate built on it —
    fuses its top-30 branches at k = 60. Evaluation numbers from that lineage
    are therefore not measurements of the production configuration, whatever
@@ -181,11 +181,11 @@ the fact.
 
 ## Exit codes and failure shapes
 
-| Code | Meaning |
-|---|---|
-| `0` | Success |
-| `1` | `get-chunk` for a chunk that does not exist (a `die()` call with code 1); unhandled backend failures surface as tracebacks, also exit 1 |
-| `2` | Argument errors, and `die()`'s default: validation failures, token resolution failures, and backend HTTP or SQL errors raised through `die()` |
+| Code | Meaning                                                                                                                                       |
+| ---- | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| `0`  | Success                                                                                                                                       |
+| `1`  | `get-chunk` for a chunk that does not exist (a `die()` call with code 1); unhandled backend failures surface as tracebacks, also exit 1       |
+| `2`  | Argument errors, and `die()`'s default: validation failures, token resolution failures, and backend HTTP or SQL errors raised through `die()` |
 
 One shape worth knowing before scripting against either implementation: in
 the Python, `die()` calls inside worker threads raise `SystemExit` there and

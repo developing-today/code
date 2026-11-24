@@ -62,7 +62,7 @@ Two disciplines ride with the rule:
 - **Designed versus shipped.** Chapters in this book's design section
   are marked as designs, name their tracking issues, and never present
   a designed behaviour as if it works today. A spelling that is
-  designed but not shipped is documented *as contract, not surface*.
+  designed but not shipped is documented _as contract, not surface_.
 - **Source over help.** Where help text and source disagree, the book
   documents the source behaviour and calls out the discrepancy until
   the stale side is fixed. [Building and testing](building.md) carries

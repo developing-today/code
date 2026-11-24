@@ -5,9 +5,12 @@
 #
 # Split from amd-krdp.nix on purpose: KRdp is bound to the Plasma session,
 # while this host runs Hyprland (Wayland, wlroots) under SDDM on seat0.
-# Sunshine captures through KMS directly (capture = "kms"), so it works
-# under a wlroots compositor without depending on the desktop stack; the
-# nixpkgs module runs it as a systemd USER service chained to
+# This module is therefore the sanctioned Hyprland-session remote-desktop
+# route per the 2026-11-22 decision on developing-today/code#5415 (support
+# both routes: KRdp for a Plasma seat, Sunshine/Moonlight for the Hyprland
+# seat). Sunshine captures through KMS directly (capture = "kms"), so it
+# works under a wlroots compositor without depending on the desktop stack;
+# the nixpkgs module runs it as a systemd USER service chained to
 # graphical-session.target, i.e. it starts with the graphical login.
 #
 # Hardware path: the laptop GPU is a Radeon 780M iGPU (verified 2026-11-04:

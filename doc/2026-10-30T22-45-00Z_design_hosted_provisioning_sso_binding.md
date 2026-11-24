@@ -419,7 +419,7 @@ mapping between the store's object model and the export's:
   export is never silently incomplete. Blobs no exported object
   cites are not exported (§6.1 item 2, §6.2's unreferenced-blob
   rule).
-- **Object set.** The exported objects are the store's *applied*
+- **Object set.** The exported objects are the store's _applied_
   events — the graph. Waiting-pool events (dependencies unmet, not
   yet graph objects) and fork-proof headers (evidence about the
   graph) are not exported.

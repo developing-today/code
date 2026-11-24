@@ -9,7 +9,10 @@
 //! roles run for real below; step 3 (#5431) the proxy domain; step 4
 //! (#5432) the dispatch thin client; step 6 (#5554) the secrets verb;
 //! step 5 (#5433) the search client domain, with its serve role
-//! (`fleet serve search`, the Atlas service) following in #5604. A
+//! (`fleet serve search`, the Atlas service) following in #5604.
+//! The cert domain (#9157, fleet CA program #9155) landed later:
+//! `fleet cert` (alias `fleet pki`) — PKI/X.509 roots, issuers,
+//! leaves, chains and bundles over the fleet-cert library crate. A
 //! compiled-in domain that has
 //! not landed yet answers with the "not implemented yet" form of
 //! the stub — but the *surface* is complete and honest: every
@@ -48,6 +51,17 @@ mod secrets;
 #[cfg(feature = "gh")]
 mod gh;
 
+#[cfg(feature = "actions")]
+mod actions;
+#[cfg(feature = "commander")]
+mod commander;
+#[cfg(any(
+    feature = "commander",
+    feature = "http",
+    feature = "ssh",
+    feature = "laptop"
+))]
+mod forms;
 #[cfg(feature = "gh")]
 mod gh_cache;
 #[cfg(feature = "gh")]
@@ -56,8 +70,14 @@ mod gh_closure;
 mod gh_guard;
 #[cfg(feature = "gh")]
 mod gh_metadata;
+#[cfg(feature = "http")]
+mod http;
 mod invocation_ledger;
+#[cfg(feature = "laptop")]
+mod laptop;
 mod session_state;
+#[cfg(feature = "ssh")]
+mod ssh;
 
 #[allow(dead_code)]
 // the derivation runs in build.rs (which includes this module by path); the binary itself consumes only the baked FLEET_DERIVED_VERSION value, plus these unit tests
@@ -108,6 +128,18 @@ fn compiled_capabilities() -> CapabilitySet {
     if cfg!(feature = "laptop-agent") {
         caps.insert(Capability::LaptopAgent);
     }
+    if cfg!(feature = "commander") {
+        caps.insert(Capability::Commander);
+    }
+    if cfg!(feature = "http") {
+        caps.insert(Capability::LaptopHttp);
+    }
+    if cfg!(feature = "ssh") {
+        caps.insert(Capability::LaptopSsh);
+    }
+    if cfg!(feature = "laptop") {
+        caps.insert(Capability::Laptop);
+    }
     if cfg!(feature = "secrets") {
         caps.insert(Capability::Secrets);
     }
@@ -119,6 +151,12 @@ fn compiled_capabilities() -> CapabilitySet {
     }
     if cfg!(feature = "agent") {
         caps.insert(Capability::Agent);
+    }
+    if cfg!(feature = "cert") {
+        caps.insert(Capability::Cert);
+    }
+    if cfg!(feature = "actions") {
+        caps.insert(Capability::Actions);
     }
     caps
 }
@@ -407,6 +445,7 @@ fn print_domain_help(surface: &Surface, d: &Domain) {
             "search" => "included in this build (options: fleet search --help)",
             "proxy" => "included in this build",
             "bridge" => "included in this build (options: fleet bridge <command> --help)",
+            "cert" => "included in this build (options: fleet cert <command> --help)",
             "agent" => "included in this build (options: fleet agent --help)",
             "shell" => "included in this build (options: fleet shell --help)",
             "gh" => "included in this build",
@@ -425,6 +464,18 @@ fn print_domain_help(surface: &Surface, d: &Domain) {
         CapState::DisabledByConfig => "disabled by config on this host (exit 69 if invoked)",
     };
     println!("Status: {status}");
+}
+
+/// Resolve a root-level subcommand name to its domain. Canonical
+/// names come from the registry; `pki` is the cert domain's
+/// documented alias (spec §6: `fleet pki ...` ≡ `fleet cert ...`),
+/// the same name the argv0 map routes to cert.
+fn resolve_domain(name: &str) -> Option<&'static Domain> {
+    match domain(name) {
+        Some(d) => Some(d),
+        None if name == "pki" => domain("cert"),
+        None => None,
+    }
 }
 
 fn usage_error(message: &str) -> i32 {
@@ -776,6 +827,30 @@ fn run_domain_with_initializer(
         println!("{}", fleet_search::SEARCH_USAGE);
         return EXIT_OK;
     }
+    // The cert domain's own usage answers `fleet cert --help`:
+    // the registry's domain help names the verb groups but not the
+    // flags, and the cert usage is the documented surface — the
+    // same carve-out the search client gets above (#12782).
+    #[cfg(feature = "cert")]
+    if d.name == "cert"
+        && args.first().is_some_and(|a| is_help_flag(a))
+        && surface.cap_state(Capability::Cert, d.name) == CapState::Available
+    {
+        println!("{}", fleet_cert::cli::CERT_USAGE);
+        return EXIT_OK;
+    }
+    // The actions domain's own usage answers `fleet actions
+    // --help` (#13774): the registry help names the leaves but not
+    // the lease contract — the same carve-out the cert domain
+    // gets above.
+    #[cfg(feature = "actions")]
+    if d.name == "actions"
+        && args.first().is_some_and(|a| is_help_flag(a))
+        && surface.cap_state(Capability::Actions, d.name) == CapState::Available
+    {
+        println!("{}", actions::ACTIONS_USAGE);
+        return EXIT_OK;
+    }
     // The proxy role under its serve spelling has its own usage
     // (SERVE_PROXY_USAGE, #6770): `fleet serve proxy --help` asks for
     // the role's help, not the serve domain's — answer it before the
@@ -958,6 +1033,31 @@ fn run_domain_with_initializer(
             if d.name == "laptop-agent" {
                 return fleet_laptop_agent::cli::run(&surface.config, args);
             }
+            // developing-today/code#13717: the laptop route forms -
+            // T1 commander, T2 http, T3 ssh, and T0, the tiered
+            // walker (`fleet laptop`).
+            #[cfg(feature = "commander")]
+            if d.name == "commander" {
+                return commander::run(&surface.config, args);
+            }
+            #[cfg(feature = "http")]
+            if d.name == "http" {
+                return http::run(&surface.config, args);
+            }
+            #[cfg(feature = "ssh")]
+            if d.name == "ssh" {
+                return ssh::run(&surface.config, args);
+            }
+            #[cfg(feature = "laptop")]
+            if d.name == "laptop" {
+                return laptop::run(&surface.config, args);
+            }
+            // #13774: the actions domain runs for real — live exec
+            // sessions inside Actions runners (seat + agent + put).
+            #[cfg(feature = "actions")]
+            if d.name == "actions" {
+                return actions::run(&surface.config, args);
+            }
             // code#8887: the gh domain runs for real — the real
             // `gh` binary as a passthrough under the token
             // rotation (App installations, then personal last).
@@ -982,6 +1082,13 @@ fn run_domain_with_initializer(
             #[cfg(feature = "agent")]
             if d.name == "shell" {
                 return fleet_agent::run_shell(&surface.config, args);
+            }
+            // The cert domain (#9157): PKI/X.509 roots, issuers,
+            // leaves, chains and bundles — the fleet-cert library
+            // crate's CLI shell (full build only).
+            #[cfg(feature = "cert")]
+            if d.name == "cert" {
+                return fleet_cert::run(args);
             }
             // Step 5 (#5433): the search domain runs for real —
             // the atlas-search client surface over the live Atlas
@@ -1504,7 +1611,7 @@ fn run_root(surface: &Surface, args: &[String], invoked_as: &str) -> i32 {
             println!("{HELP_USAGE}");
             EXIT_OK
         }
-        Some("help") => match args.get(1).and_then(|name| domain(name)) {
+        Some("help") => match args.get(1).and_then(|name| resolve_domain(name)) {
             Some(d) => {
                 // `help` takes exactly one argument — the domain name.
                 // Anything after it is a usage error naming the first
@@ -1554,7 +1661,7 @@ fn run_root(surface: &Surface, args: &[String], invoked_as: &str) -> i32 {
         }
         Some("init") => cmd_init(surface, &args[1..], invoked_as),
         Some("session") => session_state::run(&args[1..]),
-        Some(name) => match domain(name) {
+        Some(name) => match resolve_domain(name) {
             Some(d) => run_domain(surface, d, &args[1..], invoked_as),
             None => usage_error(&format!("unrecognized subcommand '{name}'")),
         },
