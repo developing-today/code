@@ -50,9 +50,16 @@ HashiCorp tooling. Its state, component by component (Census C):
   reference only — torn down, confirmed by Drew 2026-10-26.
 - **Switches: researched, not integrated.** The dedicated-switches research
   lives in `doc/inventory/routing-and-switching.md` and `doc/hardware/`.
-  The switch make, model and count are missing from the hardware record
-  until that research is folded in, and no single GitHub issue owns the
-  switches item — the Lab programme on #13905 is its first tracker.
+  At census no single GitHub issue owned the switches item — the Lab
+  programme on #13905 was its first tracker. History note (2026-11-23):
+  the census found this item ownerless and the programme filed the
+  owning issue that day —
+  [#13920](https://github.com/developing-today/code/issues/13920) —
+  which now owns it. The inventory gap is real and stays: the
+  inventory of record enriches 21 devices with make and model, but the
+  record still lacks location and state per device; #13920's first
+  slice owns completing it, and Census C's findings are recorded on
+  #13920.
 - **ESP32 microcontrollers: a side line.** Per-device verification lives in
   the sibling `developing-today/hardware-doc` repository, which is mostly
   ESP32 boards today. The programme issue is #5783 (open, design); the
