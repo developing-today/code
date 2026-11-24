@@ -4,7 +4,7 @@
 # Deliberately age the fleet feed while the collector keeps running, and
 # verify the PM stack notices a feed that is alive but OLD — the failure
 # mode the kill-collector drill (first slice, #1823) cannot reach: there
-# the collector is dead, here it runs on schedule and the data it
+# the collector is paused, here it stays scheduled and the data it
 # presents is stale, so "everything is fine" is a lie the process tree
 # does not contradict.
 #
@@ -14,8 +14,8 @@
 #        cannot overlap this one);
 #      - the incident flag file ($PM_DRILL_INCIDENT_FLAG) must not exist —
 #        during a real incident the stack is not a drill canvas;
-#      - the collector timer must be active (this drill's premise is a
-#        running collector) and the feed must currently be FRESH. An
+#      - the legacy collector timer must be inactive (pm-core owns
+#        collection) and the feed must currently be FRESH. An
 #        already-stale feed is a real incident, not a drill.
 #   2. Saves the feed's exact bytes, then arms restore (trap on
 #      EXIT/INT/TERM) immediately BEFORE the first write, so every
@@ -23,10 +23,11 @@
 #   3. Ages the feed by rewriting its top-level generatedAt into the past
 #      (PM_DRILL_AGE_MS, default 20 min > the 15-min FEED_STALE_MS in
 #      src/health.ts + src/sources/live.ts) while leaving every other
-#      field intact. The collector keeps running on its ~5-min timer; if
+#      field intact. The in-process pm-core collector keeps its 5-min cadence; if
 #      it rewrites the feed with a fresh stamp mid-drill, the drill
 #      re-ages it, which is exactly the "collector runs, data is old"
-#      scenario.
+#      scenario. The in-process pm-core collector runs on its ~5-minute
+#      cadence throughout the drill.
 #   4. Polls /api/health until feed.ageMs crosses FEED_STALE_MS and the
 #      payload reports degraded, saving that payload as the fired-signal
 #      evidence; it also records (best effort) whether the #1148
@@ -35,7 +36,7 @@
 #      carries the stale-feed warning (#1116 item 5).
 #   5. Restores ALWAYS once the aging has happened: the saved bytes are
 #      written back atomically and the drill waits (up to
-#      PM_DRILL_RESTORE_WAIT_MIN) for the collector's next scheduled run
+#      PM_DRILL_RESTORE_WAIT_MIN) for the in-process collector's next 5-min tick
 #      to make the feed fresh again, confirming via /api/health. The
 #      restore is gated on the aging: a drill that refuses to start
 #      touches nothing.
@@ -47,8 +48,9 @@
 #
 # Where it runs: on the host that owns the feed and the aggregator —
 # the laptop, where the collector moved on 2026-10-31 (code#3362/#3363).
-# The collector/aggregator are NixOS user units, so the timer check uses
-# `systemctl --user`; nothing here needs root.
+# The aggregator is a NixOS user unit. The old collector timer is checked
+# inactive to prevent a second collector from invalidating the drill;
+# nothing here needs root.
 #
 # Scheduling: systemd/age-feed-drill.{service,timer} in this repo's
 # pm-stack/aggregator/systemd/ directory (weekly, in a quiet window that
@@ -209,8 +211,9 @@ restore() {
 trap restore EXIT INT TERM
 
 # --- preconditions ----------------------------------------------------------
-systemctl --user is-active --quiet "$COLLECTOR_TIMER" ||
-  die "$COLLECTOR_TIMER is not active; this drill's premise is a running collector, and a stopped collector outside a drill is itself a finding"
+if systemctl --user is-active --quiet "$COLLECTOR_TIMER"; then
+  die "$COLLECTOR_TIMER is still active; pm-core owns collection and the legacy timer must be retired"
+fi
 [ -r "$FEED_FILE" ] || die "cannot read the feed file $FEED_FILE"
 [ -n "$(feed_stamp)" ] || die "feed file $FEED_FILE has no readable generatedAt; refusing to drill blind"
 BASELINE="$(health_json | feed_facts)" || die "cannot read aggregator /api/health; refusing to drill blind"
@@ -218,9 +221,9 @@ BASE_AGE="${BASELINE%% *}"
 [ "$BASE_AGE" -ge 0 ] 2>/dev/null || die "cannot read aggregator /api/health; refusing to drill blind"
 [ "$BASE_AGE" -le "$STALE_MS" ] || die "feed is already stale at drill start (age ${BASE_AGE}ms > ${STALE_MS}ms): that is a real incident, not a drill"
 cp -p "$FEED_FILE" "$BACKUP_FILE" || die "cannot save the feed's original bytes to $BACKUP_FILE"
-log "preconditions ok: collector active, feed fresh (age ${BASE_AGE}ms), feed saved, no incident flag, lock held"
+log "preconditions ok: legacy timer inactive, in-process collector scheduled, feed fresh (age ${BASE_AGE}ms), feed saved, no incident flag, lock held"
 
-# --- age the feed, collector still running ------------------------------------
+# --- age the feed, in-process collector still scheduled -----------------------
 # Pin the stamp once so every re-age during the drill presents the same
 # "alive but old" feed; the collector's own rewrites are re-aged below.
 PIN_STAMP="$(python3 -c '
@@ -345,7 +348,7 @@ if [ "${PM_DRILL_NO_POST:-0}" != "1" ] && command -v gh >/dev/null 2>&1; then
   if [ "$OUTCOME" = "passed" ]; then
     gh issue comment "$ISSUE" --repo "$ISSUE_REPO" --body "✅ **Chaos drill passed — age the feed** (queue task 7919, second slice of this issue, epic #$EPIC)
 
-- Aged \`fleet-feed.json\`'s \`generatedAt\` by ${AGE_MS}ms at $STARTED_AT **while \`$COLLECTOR_TIMER\` stayed active** — the stale-but-alive feed the kill-collector drill cannot produce. Health payload at the signal moment: degraded=$DEGRADED, watchdog \`watchdog:feed\` item seen=$WATCHDOG.
+- Aged \`fleet-feed.json\`'s \`generatedAt\` by ${AGE_MS}ms at $STARTED_AT **while pm-core's in-process collector remained scheduled** — the stale-but-alive feed the kill-collector drill cannot produce. Health payload at the signal moment: degraded=$DEGRADED, watchdog \`watchdog:feed\` item seen=$WATCHDOG.
 - The aggregator's feed-age signal crossed the 15-minute \`FEED_STALE_MS\` (#1148) threshold instead of presenting old data as fine.
 - Restoration confirmed via \`/api/health\`: the original bytes were written back and the collector's next run made the feed fresh again.
 - Script: \`pm-stack/aggregator/scripts/age-feed-drill.sh\` (interlocked: flock, incident-flag refusal, refuses to start on an already-stale feed or an inactive collector; always restores via trap). Result JSON is written to \`~/.local/state/pm-drills/age-feed-result.json\` per run." >/dev/null 2>&1 &&

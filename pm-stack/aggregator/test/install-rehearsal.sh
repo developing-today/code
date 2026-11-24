@@ -156,6 +156,12 @@ grep -Fx 'WorkingDirectory=%h/git/code/pm-stack/aggregator' \
   "$HOME_TEST/.config/systemd/user/quota-gatherer.service" >/dev/null
 grep -Fx 'Environment=QUOTA_CURRENT_PATH=%h/.local/state/pm-aggregator/quota-current.json' \
   "$HOME_TEST/.config/systemd/user/quota-gatherer.service" >/dev/null
+test ! -e "$HOME_TEST/.config/systemd/user/quota-gatherer.timer"
+! grep -F 'systemctl --user enable --now quota-gatherer.timer' "$LOG" >/dev/null
+grep -F 'systemctl --user stop quota-gatherer.timer' "$LOG" >/dev/null
+RETIRE_LINE="$(grep -n -F 'systemctl --user stop quota-gatherer.timer' "$LOG" | head -n 1 | cut -d: -f1)"
+RESTART_LINE="$(grep -n -F 'systemctl --user restart pm-aggregator.service' "$LOG" | head -n 1 | cut -d: -f1)"
+test -n "$RETIRE_LINE" && test -n "$RESTART_LINE" && test "$RETIRE_LINE" -lt "$RESTART_LINE"
 
 # The old feed bridge survives; the package itself is no longer copied
 # into the state directory.

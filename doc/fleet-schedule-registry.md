@@ -379,7 +379,7 @@ The OS-timer half of surface 2. Cadence is the unit's own `OnCalendar`/`OnUnitAc
 | `cold-store-drill.timer` | `OnCalendar=*-*-01 05:12:00` | `cold-store-drill.service` | laptop (user systemd) | not recorded | not recorded | not recorded | 2026-11-04 |
 | `cold-store-nightly.timer` | `OnCalendar=*-*-* 03:12:00` | `cold-store-nightly.service` | laptop (user systemd) | not recorded | not recorded | not recorded | 2026-11-04 |
 | `dashboard-backup.timer` | `OnCalendar=*-*-* 04:30:00` | `dashboard-backup.service` | laptop (user systemd) | not recorded | not recorded | not recorded | 2026-11-04 |
-| `fleet-feed-collector.timer` | `OnUnitActiveUSec=5min,OnBootUSec=2min` | `fleet-feed-collector.service` | laptop (user systemd) | not recorded | not recorded | not recorded | 2026-11-04 |
+| `fleet-feed-collector.timer` (retirement pending deployment) | `OnUnitActiveUSec=5min,OnBootUSec=2min` | `fleet-feed-collector.service` | laptop (user systemd; source retired by #8570, live disable not verified) | not recorded | not recorded | not recorded | 2026-11-24 |
 | `git-maintenance@daily.timer` | `OnCalendar=Tue..Sun *-*-* 00:56:00` | `git-maintenance@daily.service` | laptop (user systemd) | not recorded | not recorded | not recorded | 2026-11-04 |
 | `git-maintenance@hourly.timer` | `OnCalendar=*-*-* 01..23:56:00` | `git-maintenance@hourly.service` | laptop (user systemd) | not recorded | not recorded | not recorded | 2026-11-04 |
 | `git-maintenance@weekly.timer` | `OnCalendar=Mon *-*-* 00:56:00` | `git-maintenance@weekly.service` | laptop (user systemd) | not recorded | not recorded | not recorded | 2026-11-04 |
@@ -417,7 +417,7 @@ The OS-timer half of surface 2. Cadence is the unit's own `OnCalendar`/`OnUnitAc
 | `pm-kaneo-sync-guard.timer` | `OnCalendar=*-*-* *:00:00` | `pm-kaneo-sync-guard.service` | laptop (user systemd) | not recorded | not recorded | 2026-11-14 | 2026-11-15 |
 | `pm-projector-reconcile.timer` | `OnCalendar=*-*-* *:00/15:00` | `pm-projector-reconcile.service` | laptop (user systemd) | not recorded | not recorded | not recorded | 2026-11-04 |
 | `pm-tunnel-watchdog.timer` (Nix-configured; not yet loaded) | `OnUnitActiveSec=2min,OnBootSec=2min` (not live-verified) | `pm-tunnel-watchdog.service` | laptop (user systemd) | not recorded | not recorded | 2026-11-11 | 2026-11-11 |
-| `quota-gatherer.timer` | `OnCalendar=*-*-* *:00/15:00` | `quota-gatherer.service` | laptop (user systemd) | not recorded | not recorded | not recorded | 2026-11-22 |
+| `quota-gatherer.timer` (retirement pending deployment) | `OnCalendar=*-*-* *:00/15:00` | `quota-gatherer.service` | laptop (user systemd; source retired by #8570, live disable not verified) | not recorded | not recorded | not recorded | 2026-11-24 |
 | `quota-weekly-review.timer` | `OnCalendar=Mon *-*-* 07:20:00` | `quota-weekly-review.service` | laptop (user systemd; code#12701; NixOS module `services.pm-stack`, package `pkgs/pm-aggregator` — Stage-3 S7 weekly forecast-accuracy review: posts the report to epic #12694, S6 proposal PRs only, never edits config; Nix-configured pending deployment) | not recorded | not recorded | 2026-11-23 | 2026-11-23 |
 | `repo-archive-backup.timer` | `OnCalendar=*-*-* 05:15:00` | `repo-archive-backup.service` | laptop (user systemd) | not recorded | not recorded | not recorded | 2026-11-04 |
 | `repo-universe-issue-check.timer` | `OnCalendar=*-*-* 00:00:00` | `repo-universe-issue-check.service` | laptop (user systemd) | not recorded | not recorded | not recorded | 2026-11-04 |
@@ -444,6 +444,14 @@ it targeted the retired sandbox collector. The drill script is laptop-only
 (`amd`) until a laptop-hosted schedule is deliberately installed; the live
 sandbox's installed-unit state still requires the operator audit linked from
 issue #1319.
+
+2026-11-24 #8570 timer cutover is prepared in source: pm-core retains the
+quota (15m) and fleet-feed (5m) cadences in-process; the quota and collector
+systemd timer declarations/installer activation are removed. The two rows
+above remain until deployment verifies the laptop units are inactive and
+disabled; this PR does not claim a live systemd cutover. The kill-collector
+drill now pauses the in-process feed job through its state-file gate and
+refuses to run while the legacy collector timer remains active.
 
 ### 2c. Sandbox systemd system timers (1 listed)
 
