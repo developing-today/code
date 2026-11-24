@@ -32,6 +32,9 @@
 - [The web UI: pages and HTTP API](reference/web-ui.md)
 - [WebSocket protocols](reference/websockets.md)
 - [The hosted Worker API](reference/hosted-worker.md)
+- [The mail Worker API](reference/mail-worker.md)
+- [id-worker-poc: the World Durable Object proof of concept](reference/worker-poc.md)
+- [id-d1-journal-poc: the D1 journal proof of concept](reference/d1-journal-poc.md)
 - [The MCP bridge](reference/mcp.md)
 - [Configuration and environment](reference/configuration.md)
 - [Data stores and schemas](reference/data-stores.md)
@@ -61,6 +64,7 @@
 - [Design: first apps and the ecosystem](design/first-apps.md)
 - [Design: scale, performance and adversarial hardening](design/scale-hardening.md)
 - [Roadmap, issue map and the design-record index](design/roadmap-and-issue-map.md)
+- [High-level roadmap](design/high-level-roadmap.md)
 
 - [Repository layout](development/layout.md)
 - [Building and testing](development/building.md)
