@@ -407,6 +407,16 @@ pub enum FailedPreSubmit {
         /// The version the submission-time fold stands at.
         live_version: u64,
     },
+    /// Quoted submissions (#3802): a quote under this id is
+    /// already held by this gateway and has not expired, so a
+    /// re-issuance under the same caller-supplied id is
+    /// refused rather than silently overwriting the in-flight
+    /// quote (#13822).
+    #[error("a live quote with this id is already issued (expires at {quote_expires_at})")]
+    QuoteIdInUse {
+        /// The held quote's expiry (unix seconds).
+        quote_expires_at: u64,
+    },
 }
 
 impl FailedPreSubmit {
@@ -785,6 +795,14 @@ impl ConversionVerifier {
     /// in the book, in the same caller-supplies-the-id shape
     /// as the pure layer's transfer ids — and returned.
     ///
+    /// The id's uniqueness is enforced while a quote is live:
+    /// an issuance under an id that already holds an unexpired
+    /// quote is refused (see [`FailedPreSubmit::QuoteIdInUse`])
+    /// and the held quote is left untouched, so a same-id
+    /// retry is not idempotent — the caller executes under the
+    /// quote already held, or waits for it to expire. An
+    /// expired entry may be replaced.
+    ///
     /// Issuance commits no usage: a quote is not a posting,
     /// and a conversion under it re-checks the cap in its own
     /// live-state checks at submission.
@@ -794,7 +812,9 @@ impl ConversionVerifier {
     /// Returns the typed [`FailedPreSubmit`] for the first
     /// check the submission fails, exactly as [`Self::verify`]
     /// would refuse it; no quote is stored for a refused
-    /// issuance. A conversion whose scale-aware output rounds
+    /// issuance. An id that already holds a live quote is
+    /// refused with [`FailedPreSubmit::QuoteIdInUse`]. A
+    /// conversion whose scale-aware output rounds
     /// to zero is refused as
     /// [`FailedPreSubmit::UnconvertibleAmount`], even when the
     /// unscaled rate check in verification passed.
@@ -835,6 +855,19 @@ impl ConversionVerifier {
             issued_at: submission.now,
             quote_expires_at: submission.now.saturating_add(QUOTE_LIFETIME_SECS),
         };
+        // A reused id never silently overwrites a live quote
+        // (#13822): the id is caller-supplied, so a collision —
+        // accidental or hostile — would otherwise destroy the
+        // first quoter's in-flight quote. An expired entry may
+        // be replaced: its lifetime has elapsed, so nothing
+        // executable is lost.
+        if let Some(held) = self.quotes.get(&quote_id) {
+            if !held.is_expired(submission.now) {
+                return Err(FailedPreSubmit::QuoteIdInUse {
+                    quote_expires_at: held.quote_expires_at,
+                });
+            }
+        }
         self.quotes.insert(quote_id, quote.clone());
         Ok(quote)
     }
@@ -1485,6 +1518,51 @@ mod tests {
         // committed no usage.
         assert_eq!(verifier.quote(42), Some(&quote));
         assert_eq!(verifier.usage().used_volume(&super::super::issuer_id(&lp_key()), 7), 0);
+    }
+
+    #[test]
+    fn quote_reissue_under_a_live_id_is_refused_and_the_first_quote_survives() {
+        // Oracle: #13822 — issuance under a quote_id that
+        // already holds an unexpired quote is refused with a
+        // typed error, never a silent overwrite; the first
+        // quote stays in the book and still executes.
+        let mut verifier = ConversionVerifier::new();
+        let first = issue_valid_quote(&mut verifier, 77);
+        assert_eq!(first.x, 100);
+        let mut other = valid_submission();
+        other.amount = 200;
+        let error = verifier
+            .issue_quote(&eligible_control(), &other, 77, 0, 0)
+            .expect_err("re-issuance under a live quote id must be refused");
+        assert_eq!(error.disposition(), "FAILED_PRE_SUBMIT");
+        match error {
+            FailedPreSubmit::QuoteIdInUse { quote_expires_at } => {
+                assert_eq!(quote_expires_at, first.quote_expires_at);
+            }
+            unexpected => panic!("expected QuoteIdInUse, got {unexpected:?}"),
+        }
+        assert_eq!(verifier.quote(77).unwrap().x, 100);
+        let verified = verifier
+            .verify_quoted(&eligible_control(), &valid_submission(), 77)
+            .unwrap();
+        assert_eq!(verified.quote, first);
+    }
+
+    #[test]
+    fn quote_reissue_under_an_expired_id_replaces_the_dead_entry() {
+        // Oracle: #13822's documented policy — an expired
+        // quote binds nothing executable, so its id may be
+        // reused; the new quote replaces the dead entry.
+        let mut verifier = ConversionVerifier::new();
+        let first = issue_valid_quote(&mut verifier, 78);
+        let mut later = valid_submission();
+        later.amount = 200;
+        later.now = first.quote_expires_at;
+        let second = verifier
+            .issue_quote(&eligible_control(), &later, 78, 0, 0)
+            .unwrap();
+        assert_eq!(second.x, 200);
+        assert_eq!(verifier.quote(78).unwrap().x, 200);
     }
 
     #[test]

@@ -677,6 +677,89 @@ async function setup(options: { direct?: boolean; kinds?: readonly string[]; bri
   const bridgeLog = [
     { id: 3, agent: "lane-1", direction: "inbound", kind: "message", sender: "service:pm-stack", body: "earlier" },
   ];
+  // The unified views the console's Messages and Agents screens read
+  // (#14374): one row per surface with its real sender, the unified
+  // directory (a notes-only identity included), and credential state.
+  const bridgePipeline = [
+    {
+      surface: "connector",
+      id: 11,
+      kind: "instruction",
+      sender_addr: "user:drew",
+      sender_label: "drew",
+      receiver: "claude",
+      direction: "inbound",
+      read_at: null,
+      body: "owner instruction",
+    },
+    {
+      surface: "fleet",
+      id: 12,
+      kind: "command",
+      sender_addr: "agent:lane-1",
+      sender_label: "lane-1",
+      receiver: "agent:lane-2",
+      direction: "inbound",
+      read_at: null,
+      body: "agent command",
+    },
+    {
+      surface: "notes",
+      id: 13,
+      kind: "note",
+      sender_addr: "user:drew",
+      sender_label: "drew",
+      receiver: "muse/lane-1",
+      direction: "inbound",
+      read_at: null,
+      body: "a note",
+    },
+  ];
+  const bridgeDirectory = [
+    {
+      surface: "fleet",
+      name: "lane-1",
+      groups: ["muse"],
+      presence: "last_seen",
+      first_seen: "2026-11-24T00:00:00Z",
+      last_seen: "2026-11-24T01:00:00Z",
+      unread: 1,
+    },
+    {
+      surface: "notes",
+      name: "muse/scout-1",
+      identity: "muse/scout-1",
+      scopes: { can_send: true, can_inbox: true },
+      presence: "none",
+      first_seen: "2026-11-24T00:00:00Z",
+      last_seen: null,
+    },
+  ];
+  const bridgeCredentials = [
+    {
+      agent: "lane-1",
+      state: "active",
+      scopes: ["inbox", "send"],
+      addr: null,
+      credentials: 1,
+      live: 1,
+      created: "2026-11-24T00:00:00Z",
+      revoked_at: null,
+    },
+  ];
+  const bridgeEnrollTokens = [
+    {
+      agent: "new-1",
+      kind: "muse",
+      groups: ["muse"],
+      notes_identity: null,
+      created: "2026-11-24T00:00:00Z",
+      expires_at: "2026-11-25T00:00:00Z",
+      used_at: null,
+      revoked_at: null,
+      state: "pending",
+    },
+  ];
   const bridgeRefuses = { on: false };
   const bridgeFetch = (async (
     url: string,
@@ -687,13 +770,30 @@ async function setup(options: { direct?: boolean; kinds?: readonly string[]; bri
     bridgeCalls.push({ method, url: u, body: init?.body });
     if (bridgeRefuses.on) return { ok: false, status: 404, json: async () => JSON.parse("") };
     if (method === "POST" && u.endsWith("/send")) {
-      return { ok: true, status: 201, json: async () => ({ messages: [], fleet: [{ id: 9, agent: "lane-1" }] }) };
+      // A send's answer is its match report (#14375).
+      return {
+        ok: true,
+        status: 201,
+        json: async () => ({ batch: "b1", messages: [], unregistered: [], matched: 1, delivered: 1, recipients: ["lane-1"], remaining: 0 }),
+      };
     }
     if (method === "GET" && u.endsWith("/agents")) {
       return { ok: true, status: 200, json: async () => ({ agents: bridgeAgents }) };
     }
     if (method === "GET" && u.includes("/messages")) {
       return { ok: true, status: 200, json: async () => ({ messages: bridgeLog }) };
+    }
+    if (method === "GET" && u.includes("/pipeline")) {
+      return { ok: true, status: 200, json: async () => ({ messages: bridgePipeline }) };
+    }
+    if (method === "GET" && u.endsWith("/directory")) {
+      return { ok: true, status: 200, json: async () => ({ agents: bridgeDirectory }) };
+    }
+    if (method === "GET" && u.endsWith("/credentials")) {
+      return { ok: true, status: 200, json: async () => ({ credentials: bridgeCredentials }) };
+    }
+    if (method === "GET" && u.endsWith("/enroll-tokens")) {
+      return { ok: true, status: 200, json: async () => ({ enroll_tokens: bridgeEnrollTokens }) };
     }
     throw new Error(`unexpected bridge fetch ${method} ${u}`);
   }) as never;
@@ -3813,7 +3913,10 @@ describe("the edge does the core itself", () => {
     // Every machine goes away: nothing can be relayed or held for one.
     w.net.hostUp = false;
     const sent = await w.act("message.send", { to: ["lane-1"], text: "from the edge" });
-    expect(await sent.json()).toEqual({ ok: true, result: { to: ["lane-1"], command: false } });
+    expect(await sent.json()).toEqual({
+      ok: true,
+      result: { to: ["lane-1"], command: false, batch: "b1", matched: 1, delivered: 1, recipients: ["lane-1"], remaining: 0, unregistered: [] },
+    });
     // The bridge was asked once, over its binding, as the PM stack.
     expect(w.bridgeCalls).toHaveLength(1);
     expect(w.bridgeCalls[0].method).toBe("POST");
@@ -3841,6 +3944,98 @@ describe("the edge does the core itself", () => {
       "GET https://bridge.internal/fleet/pm-cred-test/messages?limit=15&order=desc",
     ]);
     expect(w.hostSaw).not.toContain("GET /console/api/messages?limit=15");
+  });
+
+  test("the unified pipeline and directory are read at the edge, and a revoke is held for a machine, never done here", async () => {
+    const w = await setup({ direct: true, bridge: true });
+    await w.hostReads();
+    await w.link.now.once();
+    w.hostSaw.length = 0;
+    w.net.hostUp = false;
+    // The Messages screen's read: one feed over all three surfaces,
+    // the filters the owner chose carried to the bridge, and every
+    // row's real sender intact — an agent's command names the agent.
+    const feed = (await (await w.browse("/console/api/pipeline?kind=command&sender=lane-1")).json()) as {
+      surface: string;
+      sender_addr: string;
+    }[];
+    expect(feed.map((m) => [m.surface, m.sender_addr])).toEqual([
+      ["connector", "user:drew"],
+      ["fleet", "agent:lane-1"],
+      ["notes", "user:drew"],
+    ]);
+    // The Agents screen's read: the unified directory with credential
+    // state merged in — the fleet agent active, the notes-only
+    // identity present with no presence invented for it.
+    const directory = (await (await w.browse("/console/api/directory")).json()) as {
+      name: string;
+      surface: string;
+      presence: string;
+      last_seen: string | null;
+      credential: { state: string } | null;
+    }[];
+    const lane = directory.find((a) => a.name === "lane-1");
+    expect(lane?.credential?.state).toBe("active");
+    const scout = directory.find((a) => a.name === "muse/scout-1");
+    expect(scout?.surface).toBe("notes");
+    expect(scout?.presence).toBe("none");
+    expect(scout?.last_seen).toBeNull();
+    expect(scout?.credential?.state).toBe("active");
+    expect(w.bridgeCalls.map((c) => `${c.method} ${c.url}`)).toEqual([
+      "GET https://bridge.internal/fleet/pm-cred-test/pipeline?order=desc&kind=command&sender=lane-1&limit=100",
+      "GET https://bridge.internal/fleet/pm-cred-test/directory",
+      "GET https://bridge.internal/fleet/pm-cred-test/credentials",
+    ]);
+    expect(w.hostSaw).not.toContain("GET /console/api/pipeline?kind=command&sender=lane-1");
+    expect(w.hostSaw).not.toContain("GET /console/api/directory");
+    // The provisioning read (#14376): the minted enroll tokens'
+    // state, read the same way — state only, no hash, no value.
+    const enrollTokens = (await (await w.browse("/console/api/enroll-tokens")).json()) as {
+      agent: string;
+      kind: string;
+      groups: string[];
+      notes_identity: string | null;
+      created: string;
+      expires_at: string;
+      used_at: string | null;
+      revoked_at: string | null;
+      state: string;
+    }[];
+    expect(enrollTokens).toEqual([
+      {
+        agent: "new-1",
+        kind: "muse",
+        groups: ["muse"],
+        notes_identity: null,
+        created: "2026-11-24T00:00:00Z",
+        expires_at: "2026-11-25T00:00:00Z",
+        used_at: null,
+        revoked_at: null,
+        state: "pending",
+      },
+    ]);
+    expect(w.bridgeCalls.at(-1)?.method).toBe("GET");
+    expect(w.bridgeCalls.at(-1)?.url).toBe("https://bridge.internal/fleet/pm-cred-test/enroll-tokens");
+    expect(w.hostSaw).not.toContain("GET /console/api/enroll-tokens");
+    // A revoke asked here is held for a machine — the edge's
+    // credential holds the read scope only — and the bridge is not
+    // asked for one.
+    const callsBefore = w.bridgeCalls.length;
+    const held = await w.act("agent.revoke", { surface: "fleet", name: "lane-1" });
+    expect(await held.json()).toEqual({ ok: true, held: true, result: null, waits: "machine" });
+    expect(w.bridgeCalls).toHaveLength(callsBefore);
+    // Taking back unused enroll tokens is held the same way (#14376).
+    const heldEnroll = await w.act("agent.revoke-enroll", { agent: "new-1" });
+    expect(await heldEnroll.json()).toEqual({ ok: true, held: true, result: null, waits: "machine" });
+    expect(w.bridgeCalls).toHaveLength(callsBefore);
+    // A mint is never held: its answer is the secret itself, shown
+    // once on the screen that asked — with no machine answering, it
+    // is refused, and the bridge is not asked for one either.
+    const mint = await w.act("agent.mint-enroll", { agent: "new-2", kind: "muse" });
+    expect(((await mint.json()) as { held?: unknown }).held).not.toBe(true);
+    expect(w.bridgeCalls).toHaveLength(callsBefore);
+    const machines = (await (await w.browse("/console/api/machines")).json()) as MachinesAnswer;
+    expect(machines.held.map((entry) => entry.kind)).toEqual(["agent.revoke", "agent.revoke-enroll"]);
   });
 
   test("a bridge credential the bridge no longer knows stops the send here, with the reason said", async () => {

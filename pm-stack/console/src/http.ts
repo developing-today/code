@@ -93,7 +93,7 @@ export interface Phones {
 
 /** Sections the summary is built from, and how long a phone waits for
  * them to be read again. */
-const SUMMARY_SECTIONS = ["board", "sessions", "census", "asks", "questionCount"];
+const SUMMARY_SECTIONS = ["board", "sessions", "census", "asks", "questionCount", "pipeline"];
 /** Under the five seconds the phone gives a read. */
 const SUMMARY_WAIT_MS = 3_500;
 const DEVICE_BODY_LIMIT = 1024;

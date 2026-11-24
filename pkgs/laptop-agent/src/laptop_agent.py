@@ -163,6 +163,13 @@ STARTED = time.time()
 JOBS = {}  # job_id -> dict
 JOBS_LOCK = threading.Lock()
 TRIPS_FILE = STATE_DIR / "trips.jsonl"
+# Context propagation, build 1/5 (#14186, decision record for #10357
+# mechanism 1): jobs record the caller's FLEET_CTX_* environment (ids
+# and hashes only, never secrets) in the spool's meta.json so a queue
+# task's id is visible in the laptop job spool. The exact FLEET_CTX_*
+# variable list is owned by build 2/5 (#14188); the daemon carries any
+# FLEET_CTX_-prefixed string entry without enumerating names.
+FLEET_CTX_PREFIX = "FLEET_CTX_"
 EXEC_PROCS = {}  # trip -> set[Popen] currently running for /exec
 EXEC_PROCS_LOCK = threading.Lock()
 # #5759: pending chmod modes for in-flight transfers, keyed by temp path.
@@ -204,6 +211,25 @@ def tail_bytes(data: bytes, cap: int):
     if len(data) <= cap:
         return data, False
     return data[-cap:], True
+
+
+def _extract_ctx(env):
+    """Return the FLEET_CTX_* subset of an env mapping (#14186).
+
+    Only string values ride; non-strings are dropped (absence is
+    representable — a partial record, not an error). Callers must put
+    ids and hashes only in FLEET_CTX_*; the context is logged widely
+    by design (#10357 constraints).
+    """
+    if not isinstance(env, dict):
+        return {}
+    return {
+        k: v
+        for k, v in env.items()
+        if isinstance(k, str)
+        and k.startswith(FLEET_CTX_PREFIX)
+        and isinstance(v, str)
+    }
 
 
 def tail_file(path: Path, cap: int = MAX_OUT):
@@ -524,6 +550,7 @@ def _write_meta(job):
         "exit": job["exit"],
         "state": job["state"],
         "interrupted": job.get("interrupted", False),
+        "ctx": job.get("ctx") or {},
     }
     try:
         d = job_dir(job["id"])
@@ -553,7 +580,7 @@ def _write_meta(job):
 
 
 # Restore contract (design #1578, phase 1 -- issue #1579): the
-# writer is the schema. _write_meta() writes exactly the eight
+# writer is the schema. _write_meta() writes exactly the nine
 # fields in RESTORE_FIELD_TABLE; load_persisted_jobs() restores a
 # persisted entry only through _restore_persisted_job(), driven by
 # this table: for each field -- the shape the writer produces, the
@@ -615,6 +642,12 @@ RESTORE_FIELD_TABLE = (
     ),
     ("state", "'running' or 'done'", "'done'", "skip: any other present value (#1556)"),
     ("interrupted", "bool", "False", "skip: any non-boolean present value (#1556)"),
+    (
+        "ctx",
+        "dict of FLEET_CTX_* str->str (ids/hashes only, #14186)",
+        "{} (missing/null; pre-contract spools stay valid)",
+        "skip: any present non-dict, or any non-string key/value (#14186)",
+    ),
 )
 
 # The only coercions restore may perform (the table's transitions):
@@ -706,6 +739,12 @@ def _restore_persisted_job(meta, dir_name):
         return None, False, "non-string cwd in meta.json"
     if meta.get("cmd") is not None and not isinstance(meta.get("cmd"), str):
         return None, False, "non-string cmd in meta.json"
+    _raw_ctx = meta.get("ctx")
+    if _raw_ctx is not None and (
+        not isinstance(_raw_ctx, dict)
+        or any(not isinstance(k, str) or not isinstance(v, str) for k, v in _raw_ctx.items())
+    ):
+        return None, False, "non-string-map ctx in meta.json"
     state = _raw_state or "done"
     exit_code = meta.get("exit")
     ended_at = meta.get("ended_at")
@@ -739,6 +778,7 @@ def _restore_persisted_job(meta, dir_name):
         "exit": exit_code,
         "state": state,
         "interrupted": interrupted,
+        "ctx": dict(meta.get("ctx") or {}),
         "_files": (),
     }
     return job, (interrupted or stamped), None
@@ -836,6 +876,7 @@ def job_public(job, out_off=0, err_off=0):
         "cmd": job["cmd_repr"],
         "started_at": job["started_at"],
         "interrupted": job.get("interrupted", False),
+        "ctx": job.get("ctx") or {},
         "duration_ms": int(
             ((job["ended_at"] or time.time()) - job["started_at"]) * 1000
         ),
@@ -885,6 +926,7 @@ def job_summary(job):
         "cmd": job["cmd_repr"],
         "started_at": job["started_at"],
         "interrupted": job.get("interrupted", False),
+        "ctx": job.get("ctx") or {},
         "duration_ms": int(
             ((job["ended_at"] or time.time()) - job["started_at"]) * 1000
         ),
@@ -1235,6 +1277,9 @@ class Handler(BaseHTTPRequestHandler):
                 d.mkdir(parents=True, exist_ok=True)
                 env = dict(os.environ)
                 env.update(body.get("env") or {})
+                # #14186: record the FLEET_CTX_* subset (merged daemon +
+                # request env, request wins) in the spool; ids only.
+                ctx = _extract_ctx(env)
                 out_f = open(d / "stdout", "wb")
                 err_f = open(d / "stderr", "wb")
                 proc = subprocess.Popen(
@@ -1255,6 +1300,7 @@ class Handler(BaseHTTPRequestHandler):
                     "exit": None,
                     "state": "running",
                     "interrupted": False,
+                    "ctx": ctx,
                     "_files": (out_f, err_f),
                     "trip": trip,
                     "t_received": t_received_ms,

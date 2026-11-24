@@ -38,6 +38,7 @@ commands):
 | `inbox [--agent A] [--groups g1,g2] [--commands \| --messages] [--all] [--since-id N] [--limit N] [--take] [--wait SECS] [--interval SECS]` | `GET /fleet/<fleet-token>/inbox?…`                       | Unread items by default; `--all` includes read ones; `--take` marks what it returns as read; `--wait` polls (default interval 15 s; wait capped at 24 h in source) until something arrives or the seconds pass.                                                                                                                                                   |
 | `post [--agent A] [--reply-to ID] [--to ADDR] [--instruction \| --kind K] <text \| ->`                                                      | `POST /fleet/<fleet-token>/send`                         | A message to central by default. With `--reply-to` it answers that row (and marks it read). `--to` sends to any address instead: `drew`, `claude`, `chatgpt`, `connectors`, `agent:<name>` (or a bare name), `group:<name>`, `agents`, `all`; repeat or comma-separate. `--instruction` (or `--kind instruction`) makes it an instruction, which requires `--to`. |
 | `ack [--agent A] (--up-to ID \| ID...)`                                                                                                     | `POST /fleet/<fleet-token>/ack`                          | Mark messages read: either a list of ids, or everything up to an id.                                                                                                                                                                                                                                                                                              |
+| `work [--agent A] --state acted\|queued\|done [--task ID] ID...`                                                                           | `POST /fleet/<fleet-token>/work`                         | Record the work-item lifecycle of your own instructions: `acted` (handled in-session), `queued` (became queue task `--task`), `done`. Forward only, from `received`; only the receiving agent can mark its own copy.                                                                                                                                               |
 | `health`                                                                                                                                    | `GET /healthz`                                           | The bridge's health probe. No token.                                                                                                                                                                                                                                                                                                                              |
 
 Defaults and config: the agent name defaults to `$FLEET_AGENT`, then
@@ -62,6 +63,18 @@ operations change read state:
   pushed command is consumed by exactly the hand-out that returns it.
 - `post --reply-to ID` answers a row and marks that row read.
 - `ack` marks explicit ids, or everything up to an id with `--up-to`.
+
+Read state is not the whole story for instructions. An instruction is a
+work item with a lifecycle the receiving agent records with `work`:
+`received` → `acted` (handled in-session) or `queued` (it became a named
+fleet queue task) → `done`, forward only, each recipient's copy
+independent on a group send. The owner's pipeline shows the state and
+the queue task id, so an instruction that is neither acted on nor
+queued stays visible at `received` — the defect the task-it-or-queue-it
+rule (in the reference chapter, and in the text the intake ladder hands
+a woken agent) exists to prevent. Notes instructions carry the same
+fields on the notes surface; connector-channel instructions store none —
+their read state stands in for `acted`.
 
 The registry side is equally simple: there is no separate enrolment store
 on the bridge. Saying `hello` _is_ registering — name, groups, and last-seen

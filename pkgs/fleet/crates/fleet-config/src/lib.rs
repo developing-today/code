@@ -142,6 +142,10 @@ pub struct BridgeConfig {
     /// Secret name of the fleet (agent) token; default
     /// [`DEFAULT_BRIDGE_FLEET_TOKEN_NAME`].
     pub fleet_token_name: Option<String>,
+    /// Secret name of this agent's class/name notes token (#14370).
+    /// Default: the name the agent profile recorded at enrolment,
+    /// else `bridge.<agent>-token` derived from the agent name.
+    pub notes_token_name: Option<String>,
 }
 
 pub const DEFAULT_BRIDGE_URL: &str = "https://bridge.security.cab";
@@ -466,6 +470,11 @@ pub struct SecretsConfig {
     /// Path of the secrets-broker token file (handed to the session
     /// broker per request; fleet never opens it).
     pub token_file: Option<String>,
+    /// Bitwarden Secrets Manager project id that secret writes
+    /// (`fleet-secrets`' store path, used by `fleet bridge exchange`)
+    /// create into (#14370). The `FLEET_BWS_PROJECT_ID` environment
+    /// variable overrides it. Reads never need it.
+    pub bws_project_id: Option<String>,
 }
 
 /// `[<role>]` — a broker role's local transport view (#6215,
@@ -913,6 +922,8 @@ impl Config {
             (&self.bridge.agent, "[bridge] agent"),
             (&self.bridge.owner_token_name, "[bridge] owner_token_name"),
             (&self.bridge.fleet_token_name, "[bridge] fleet_token_name"),
+            (&self.bridge.notes_token_name, "[bridge] notes_token_name"),
+            (&self.secrets.bws_project_id, "[secrets] bws_project_id"),
         ] {
             if blank(value) {
                 return Err(ConfigError::Parse {
