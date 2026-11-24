@@ -54,16 +54,21 @@ test("parsePktLines rejects malformed lengths", () => {
 });
 
 test("upload-pack request: wants, haves, done; capabilities stripped", () => {
-  const body =
-    pktLine(`want ${HEAD}\0multi_ack_detailed side-band-64k\n`) +
-    pktLine(`want ${TAG_COMMIT}\n`) +
-    "0000" +
-    pktLine(`have ${OTHER}\n`) +
-    pktLine("done\n");
-  const parsed = parseUploadPackRequest(body);
-  assert.deepEqual(parsed.wants, [HEAD, TAG_COMMIT]);
-  assert.deepEqual(parsed.haves, [OTHER]);
-  assert.equal(parsed.done, true);
+  // Both capability separators occur in the wild: a space (git's HTTP
+  // transport, captured from a real clone request) and a NUL (the
+  // ssh/local form). The oid token alone must survive either.
+  for (const sep of [" ", "\0"]) {
+    const body =
+      pktLine(`want ${HEAD}${sep}multi_ack_detailed side-band-64k\n`) +
+      pktLine(`want ${TAG_COMMIT}\n`) +
+      "0000" +
+      pktLine(`have ${OTHER}\n`) +
+      pktLine("done\n");
+    const parsed = parseUploadPackRequest(body);
+    assert.deepEqual(parsed.wants, [HEAD, TAG_COMMIT]);
+    assert.deepEqual(parsed.haves, [OTHER]);
+    assert.equal(parsed.done, true);
+  }
 });
 
 test("knownOids covers tips, peeled tag targets, and HEAD", () => {

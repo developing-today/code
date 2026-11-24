@@ -65,19 +65,23 @@ export function parsePktLines(text) {
 /**
  * Parse a protocol-v0 upload-pack request body.
  * Returns {wants, haves, done}. Capabilities ride on the first want
- * line after a NUL and are stripped. deepen/shallow lines are ignored
- * by design: the pack always carries full history, so a shallow
- * request still gets a complete (working) clone.
+ * line, separated from the oid by a space (git's HTTP transport) or a
+ * NUL (the ssh/local form); both are stripped — only the oid token is
+ * kept. deepen/shallow lines are ignored by design: the pack always
+ * carries full history, so a shallow request still gets a complete
+ * (working) clone.
  */
 export function parseUploadPackRequest(text) {
   const wants = [];
   const haves = [];
   let done = false;
+  const oidOf = (line, prefix) =>
+    line.slice(prefix.length).split("\0")[0].split(" ")[0].trim();
   for (const raw of parsePktLines(text)) {
     if (raw === null) continue;
-    const line = raw.replace(/\n$/, "").split("\0")[0];
-    if (line.startsWith("want ")) wants.push(line.slice(5).trim());
-    else if (line.startsWith("have ")) haves.push(line.slice(5).trim());
+    const line = raw.replace(/\n$/, "");
+    if (line.startsWith("want ")) wants.push(oidOf(line, "want "));
+    else if (line.startsWith("have ")) haves.push(oidOf(line, "have "));
     else if (line === "done") done = true;
   }
   return { wants, haves, done };
