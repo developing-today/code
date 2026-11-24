@@ -24,6 +24,17 @@ class CoverageTests(unittest.TestCase):
         self.assertEqual(check_modules(self.rust, self.table), 2)
         self.assertEqual(check_defaults(self.defaults, self.chapter), 2)
 
+    def test_module_inventory_spans_group_tables(self):
+        """Oracle: module rows in multiple job-group tables form one exact inventory."""
+        chapter = (
+            "## The 2 public modules, grouped by job\n\n"
+            "`lib.rs` declares 2 public modules.\n\n"
+            "| Module | Job |\n|---|---|\n| `search` | Search |\n\n"
+            "### Corpus\n\n"
+            "| Module | Job |\n|---|---|\n| `source_registry` | Registry |"
+        )
+        self.assertEqual(check_modules(self.rust, chapter), 2)
+
     def test_module_drift(self):
         """Oracle: source and book inventories must match exactly, including declared counts."""
         for rust, table, diagnostic in [

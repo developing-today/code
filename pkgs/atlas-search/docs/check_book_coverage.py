@@ -40,14 +40,10 @@ def check_modules(rust, chapter):
 
     documented = []
     in_module_table = False
-    seen_module_table = False
     for line in chapter.splitlines():
         if line.startswith("|"):
             cells = [cell.strip() for cell in line.strip().strip("|").split("|")]
             if len(cells) >= 2 and cells[0] == "Module" and cells[1] == "Job":
-                if seen_module_table:
-                    raise ValueError("atlas-core.md: duplicate module table")
-                seen_module_table = True
                 in_module_table = True
                 continue
             if not in_module_table:
