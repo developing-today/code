@@ -25,13 +25,23 @@
 //!
 //! Slice 1b adds replay-safe staging keyed by the stable LanceDB row
 //! id and source update timestamp (with content/metadata comparison
-//! when the source has no timestamp). The native LanceDB reader and
-//! rebuild-from-sources proof remain follow-up work.
+//! when the source has no timestamp). The rebuild proof
+//! ([`rebuild_agent_memory_index`]) shows the Atlas index is
+//! disposable: the same source rebuilt into a fresh staging area
+//! yields the same shard fingerprints and fan-out ranking, and a
+//! rebuild from a revised source carries only the current source
+//! rows. Reading the LanceDB store directory itself (the native
+//! reader) remains follow-up work: it needs the `lancedb`/`lance`
+//! crate, an async runtime this sync workspace does not have, and a
+//! dependency tree that breaks the 30-minute `atlas-search-pr.yml`
+//! budget — a design slice of its own, not this one.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use rusqlite::{Connection, OptionalExtension, params};
 
+use crate::aggregate::embed_unit_into_shard;
+use crate::embed::DocEmbedder;
 use crate::error::{Error, Result};
 use crate::shards::Tier;
 use crate::stage::{
@@ -404,4 +414,129 @@ pub fn stage_memory_export_in_db(
 ) -> Result<Vec<i64>> {
     let conn = open(db)?;
     stage_memory_export(&conn, unit_id, entries, now)
+}
+
+/// What one rebuild-from-sources run did: the promotion report plus
+/// the staging delta and the rebuilt shard's chunk fingerprints, so
+/// two builds from the same source can be compared for equality and
+/// a build from a revised source can be compared for convergence.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RebuildReport {
+    /// The staging-unit id that was rebuilt.
+    pub unit_id: String,
+    /// The new core scan shard's file name.
+    pub shard_name: String,
+    /// The new core scan shard's path.
+    pub shard_path: PathBuf,
+    /// Staged items embedded into the shard.
+    pub items: usize,
+    /// Staged chunks embedded into the shard.
+    pub chunks: usize,
+    /// The embedding dimension the shard's vectors carry.
+    pub dims: usize,
+    /// Item ids the staging step changed in this run (new or
+    /// revised rows). In a fresh staging area this is every row;
+    /// the rebuild's convergence claim is about the shard, not
+    /// this list.
+    pub staged_changed: Vec<i64>,
+    /// The rebuilt shard's chunk fingerprints, in shard order:
+    /// (source-of-truth pointer, content hash) per shard chunk.
+    /// Two builds from the same source must produce the same list.
+    pub fingerprints: Vec<(String, String)>,
+}
+
+/// Read a core scan shard's chunk fingerprints, in shard order:
+/// (source-of-truth pointer, content hash) per `chunks` row. The
+/// fingerprint is the rebuild comparison's oracle: the hash is a
+/// pure function of the staged chunk text (and, for repeated text,
+/// its position), so equal fingerprints mean equal index content.
+pub fn shard_chunk_fingerprints(shard_db: &Path) -> Result<Vec<(String, String)>> {
+    let conn = Connection::open(shard_db).map_err(|e| {
+        Error::backend(format!(
+            "memory connector: opening shard {}: {e}",
+            shard_db.display()
+        ))
+    })?;
+    let mut stmt = conn
+        .prepare("SELECT message_id, content_hash FROM chunks ORDER BY id")
+        .map_err(|e| {
+            Error::backend(format!(
+                "memory connector: reading fingerprints from {}: {e}",
+                shard_db.display()
+            ))
+        })?;
+    let rows = stmt
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })
+        .map_err(|e| {
+            Error::backend(format!(
+                "memory connector: reading fingerprints from {}: {e}",
+                shard_db.display()
+            ))
+        })?
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(|e| {
+            Error::backend(format!(
+                "memory connector: reading fingerprints from {}: {e}",
+                shard_db.display()
+            ))
+        })?;
+    Ok(rows)
+}
+
+/// Rebuild the agent-memory Atlas index from its sources
+/// (developing-today/code#14039, remaining acceptance: the index is
+/// disposable, the corpora never are — design section 2).
+///
+/// One call, in order: register the five design corpora (idempotent),
+/// stage the source entries into the agent-memory unit through the
+/// replay-safe staging path, and promote the unit into a new core
+/// scan shard in `shard_dir` (embed-at-promotion, so the shard's
+/// vectors come from the mandated model, never from the source
+/// store's own vectors).
+///
+/// The staging area is disposable by design: promotion stamps the
+/// staging DB and closes it to further writes, and a merged unit
+/// refuses a second promotion — so a rebuild targets a fresh
+/// registry + staging dir, and the rebuilt shard is compared with
+/// the previous build's [`RebuildReport::fingerprints`], not by
+/// re-promoting into the same area. A rebuild from a revised source
+/// carries only the current source's rows: rows the source dropped
+/// are absent from the fresh staging area, so they are absent from
+/// the rebuilt shard. (Incremental staging is different by design:
+/// a partial export never deletes — see the adapter-fixtures record.
+/// Deletion converges at rebuild, never at incremental stage.)
+pub fn rebuild_agent_memory_index(
+    registry: &Registry,
+    staging_dir: &Path,
+    entries: &[MemoryEntry],
+    shard_dir: &Path,
+    embedder: &dyn DocEmbedder,
+    now: &str,
+) -> Result<RebuildReport> {
+    let units = register_memory_corpora(registry, staging_dir, now)?;
+    let agent_db = units
+        .iter()
+        .find(|u| u.unit_id == AGENT_MEMORY_UNIT)
+        .map(|u| PathBuf::from(&u.db_uri))
+        .ok_or_else(|| {
+            Error::fatal(format!(
+                "memory connector: {AGENT_MEMORY_UNIT} unit missing after registration"
+            ))
+        })?;
+    let staged_changed = stage_memory_export_in_db(&agent_db, AGENT_MEMORY_UNIT, entries, now)?;
+    let promote =
+        embed_unit_into_shard(registry, AGENT_MEMORY_UNIT, shard_dir, "agent-memory", embedder, now)?;
+    let fingerprints = shard_chunk_fingerprints(&promote.shard_path)?;
+    Ok(RebuildReport {
+        unit_id: promote.unit_id,
+        shard_name: promote.shard_name,
+        shard_path: promote.shard_path,
+        items: promote.items,
+        chunks: promote.chunks,
+        dims: promote.dims,
+        staged_changed,
+        fingerprints,
+    })
 }
