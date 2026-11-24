@@ -4,10 +4,10 @@
 //! separate complete-head-history replay that adds `note.create`/`note.revise`
 //! descriptors and explicit selection that leaves non-head backfills document-only.
 //! Explicit row-key lineage claims remain symbolic until signing.
-//! Runtime publication, tombstones, and correction clears
-//! remain later slices of the #6062 follow-on.
+//! Tombstones and exact correction clears are unsigned descriptors; runtime
+//! publication remains a later slice of the #6062 follow-on.
 
-use std::collections::{btree_map::Entry, BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, btree_map::Entry};
 
 use serde::{Deserialize, Serialize};
 use unicode_normalization::is_nfc;
@@ -120,6 +120,46 @@ pub struct ProjectedSelectedVersion {
     pub key: AtlasVersionKey,
     pub document: ProjectedVersion,
     pub note: Option<ProjectedNote>,
+}
+
+/// Explicit source deletion of one logical file after its last published head.
+/// Neither note identity nor the prior head is inferred from the supplied rows.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct AtlasTombstone {
+    pub file_id: String,
+    pub note_create: AtlasVersionKey,
+    pub prior_head: AtlasVersionKey,
+    pub trigger: String,
+    pub rule: String,
+    pub run_id: String,
+}
+
+/// Unsigned final note revision and marker document for an explicit deletion.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct ProjectedTombstone {
+    pub note: ProjectedNote,
+    pub marker: ProjectedVersion,
+}
+
+/// A corrected explicit lineage fact and the exact already-signed claims to clear.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct AtlasCorrection {
+    pub replacement: AtlasRevisionEdge,
+    pub superseded_claim_ids: Vec<String>,
+}
+
+/// Unsigned `tag.clear` descriptor. IDs are explicit claim event identities.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct ProjectedTagClear {
+    pub kind: String,
+    pub claims: Vec<String>,
+}
+
+/// One replacement claim paired with a clear of only its named predecessors.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct ProjectedCorrection {
+    pub replacement: ProjectedLineageClaim,
+    pub clear: ProjectedTagClear,
 }
 
 /// Replay immutable rows with an explicit complete set of historical head
@@ -520,6 +560,137 @@ pub fn project_lineage_claims(
     Ok(claims)
 }
 
+/// Project an explicit source deletion into a final note revision and marker.
+/// The caller supplies both stable note identity and last head; no sequence,
+/// path, content or row ordering is interpreted as a deletion or head signal.
+pub fn project_tombstone(tombstone: &AtlasTombstone) -> Result<ProjectedTombstone> {
+    if tombstone.file_id.trim().is_empty()
+        || tombstone.note_create.file_id != tombstone.file_id
+        || tombstone.note_create.version_seq == 0
+        || tombstone.prior_head.file_id != tombstone.file_id
+        || tombstone.prior_head.version_seq == 0
+        || tombstone.trigger.trim().is_empty()
+        || tombstone.rule.trim().is_empty()
+        || tombstone.run_id.trim().is_empty()
+    {
+        return Err(refuse(
+            "tombstone requires explicit file, note, prior head, trigger, rule and run",
+        ));
+    }
+
+    let marker_content = serde_json::to_string(&serde_json::json!({
+        "file_id": tombstone.file_id,
+        "version_seq": tombstone.prior_head.version_seq,
+    }))
+    .map_err(refuse)?;
+    let content = marker_content.into_bytes();
+    let content_hash = blake3::hash(&content).to_hex().to_string();
+    let tombstone_value = serde_json::to_string(&serde_json::json!({
+        "file_id": tombstone.file_id,
+        "version_seq": tombstone.prior_head.version_seq,
+        "trigger": tombstone.trigger,
+        "rule": tombstone.rule,
+        "run_id": tombstone.run_id,
+        "projection_version": PROJECTION_VERSION,
+    }))
+    .map_err(refuse)?;
+    let marker = ProjectedVersion {
+        kind: DOCUMENT_PUT_KIND.to_owned(),
+        content_hash: content_hash.clone(),
+        media_type: "text/atlas-tombstone".to_owned(),
+        size: content.len() as u64,
+        content,
+        projection_version: PROJECTION_VERSION.to_owned(),
+        claims: vec![ProjectedTag {
+            kind: "tag.set".to_owned(),
+            subject: ProjectedSubject::DocumentPut,
+            name: "atlas.tombstone".to_owned(),
+            value: tombstone_value,
+        }],
+    };
+    Ok(ProjectedTombstone {
+        note: ProjectedNote::Revise {
+            note: ProjectedNoteEventRef {
+                file_id: tombstone.note_create.file_id.clone(),
+                version_seq: tombstone.note_create.version_seq,
+            },
+            content: ProjectedDocumentRef {
+                content: content_hash,
+                media_type: marker.media_type.clone(),
+                size: marker.size,
+            },
+            parents: vec![ProjectedNoteEventRef {
+                file_id: tombstone.prior_head.file_id.clone(),
+                version_seq: tombstone.prior_head.version_seq,
+            }],
+        },
+        marker,
+    })
+}
+
+/// Project corrected lineage facts and exact `tag.clear` identities.
+/// Clear targets are never selected by matching a claim name or value.
+pub fn project_corrections(
+    rows: &[AtlasVersionRow],
+    corrections: &[AtlasCorrection],
+) -> Result<Vec<ProjectedCorrection>> {
+    project_versions(rows)?;
+    let keys: BTreeSet<_> = rows
+        .iter()
+        .map(|row| AtlasVersionKey {
+            file_id: row.file_id.clone(),
+            version_seq: row.version_seq,
+        })
+        .collect();
+    let mut seen_edges = BTreeSet::new();
+    let mut output = Vec::with_capacity(corrections.len());
+    for correction in corrections {
+        let edge = &correction.replacement;
+        if !keys.contains(&edge.newer)
+            || !keys.contains(&edge.prior)
+            || edge.newer == edge.prior
+            || !edge.confidence.is_finite()
+            || !(0.0..=1.0).contains(&edge.confidence)
+            || !seen_edges.insert((&edge.newer, &edge.prior, &edge.edge_kind))
+            || correction.superseded_claim_ids.is_empty()
+            || correction.superseded_claim_ids.len() > 256
+        {
+            return Err(refuse(
+                "unknown, duplicate or invalid correction fact/clear",
+            ));
+        }
+        let mut claim_ids = BTreeSet::new();
+        for id in &correction.superseded_claim_ids {
+            if id.len() != 64
+                || !id
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+                || !claim_ids.insert(id)
+            {
+                return Err(refuse(
+                    "correction clear IDs must be unique lowercase 64-byte hex",
+                ));
+            }
+        }
+        output.push(ProjectedCorrection {
+            replacement: ProjectedLineageClaim {
+                subject: ProjectedLineageRef::DocumentPut(edge.newer.clone()),
+                name: "atlas.wasRevisionOf".into(),
+                value: ProjectedLineageValue::Revision {
+                    document: ProjectedLineageRef::DocumentPut(edge.prior.clone()),
+                    edge_kind: edge.edge_kind.clone(),
+                    confidence: edge.confidence,
+                },
+            },
+            clear: ProjectedTagClear {
+                kind: "tag.clear".into(),
+                claims: correction.superseded_claim_ids.clone(),
+            },
+        });
+    }
+    Ok(output)
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
@@ -549,6 +720,129 @@ mod tests {
             .map(|v| serde_json::from_value(v.clone()).unwrap())
             .collect();
         (bindings, edges)
+    }
+
+    fn tombstone_fixture() -> AtlasTombstone {
+        let values: Vec<serde_json::Value> =
+            serde_json::from_str(include_str!("../../../fixtures/id_projection_rows.json"))
+                .unwrap();
+        serde_json::from_value(
+            values
+                .iter()
+                .find_map(|value| value.get("tombstone"))
+                .unwrap()
+                .clone(),
+        )
+        .unwrap()
+    }
+
+    fn correction_fixtures() -> Vec<AtlasCorrection> {
+        let values: Vec<serde_json::Value> =
+            serde_json::from_str(include_str!("../../../fixtures/id_projection_rows.json"))
+                .unwrap();
+        values
+            .iter()
+            .filter_map(|value| value.get("corrections"))
+            .flat_map(|value| value.as_array().unwrap())
+            .map(|value| serde_json::from_value(value.clone()).unwrap())
+            .collect()
+    }
+
+    #[test]
+    fn fixture_tombstone_recomputes_final_revision_and_marker_from_explicit_keys() {
+        let tombstone = tombstone_fixture();
+        let rows = fixture_rows();
+        assert!(rows.iter().any(|row| {
+            row.file_id == tombstone.prior_head.file_id
+                && row.version_seq == tombstone.prior_head.version_seq
+        }));
+        let (bindings, _) = lineage_fixture();
+        assert_eq!(
+            bindings
+                .iter()
+                .find(|binding| binding.file_id == tombstone.file_id)
+                .unwrap()
+                .note_create,
+            tombstone.note_create
+        );
+        let projected = project_tombstone(&tombstone).unwrap();
+        let marker_content = serde_json::to_vec(&serde_json::json!({
+            "file_id": tombstone.file_id,
+            "version_seq": tombstone.prior_head.version_seq,
+        }))
+        .unwrap();
+        assert_eq!(projected.marker.content, marker_content);
+        assert_eq!(projected.marker.kind, DOCUMENT_PUT_KIND);
+        assert_eq!(projected.marker.media_type, "text/atlas-tombstone");
+        assert_eq!(projected.marker.size, marker_content.len() as u64);
+        assert_eq!(
+            projected.marker.content_hash,
+            blake3::hash(&marker_content).to_hex().to_string()
+        );
+        assert_eq!(projected.marker.claims.len(), 1);
+        assert_eq!(projected.marker.claims[0].name, "atlas.tombstone");
+        let claim: serde_json::Value =
+            serde_json::from_str(&projected.marker.claims[0].value).unwrap();
+        assert_eq!(claim["file_id"], tombstone.file_id);
+        assert_eq!(claim["version_seq"], tombstone.prior_head.version_seq);
+        assert_eq!(claim["trigger"], tombstone.trigger);
+        assert_eq!(claim["rule"], tombstone.rule);
+        assert_eq!(claim["run_id"], tombstone.run_id);
+        assert_eq!(claim["projection_version"], PROJECTION_VERSION);
+        assert_eq!(
+            projected.note,
+            ProjectedNote::Revise {
+                note: ProjectedNoteEventRef {
+                    file_id: tombstone.note_create.file_id.clone(),
+                    version_seq: tombstone.note_create.version_seq,
+                },
+                content: ProjectedDocumentRef {
+                    content: projected.marker.content_hash.clone(),
+                    media_type: "text/atlas-tombstone".into(),
+                    size: marker_content.len() as u64,
+                },
+                parents: vec![ProjectedNoteEventRef {
+                    file_id: tombstone.prior_head.file_id.clone(),
+                    version_seq: tombstone.prior_head.version_seq,
+                }],
+            }
+        );
+        assert_eq!(project_tombstone(&tombstone).unwrap(), projected);
+        let mut invalid = tombstone;
+        invalid.prior_head.file_id = "other-file".into();
+        assert!(project_tombstone(&invalid).is_err());
+    }
+
+    #[test]
+    fn fixture_corrections_clear_only_explicit_claim_event_ids() {
+        let rows = fixture_rows();
+        let corrections = correction_fixtures();
+        let projected = project_corrections(&rows, &corrections).unwrap();
+        assert_eq!(projected.len(), corrections.len());
+        for (actual, source) in projected.iter().zip(&corrections) {
+            assert_eq!(
+                actual.replacement.subject,
+                ProjectedLineageRef::DocumentPut(source.replacement.newer.clone())
+            );
+            assert_eq!(actual.replacement.name, "atlas.wasRevisionOf");
+            assert_eq!(
+                actual.replacement.value,
+                ProjectedLineageValue::Revision {
+                    document: ProjectedLineageRef::DocumentPut(source.replacement.prior.clone()),
+                    edge_kind: source.replacement.edge_kind.clone(),
+                    confidence: source.replacement.confidence,
+                }
+            );
+            assert_eq!(actual.clear.kind, "tag.clear");
+            assert_eq!(actual.clear.claims, source.superseded_claim_ids);
+            assert_eq!(actual.clear.claims.len(), 2);
+        }
+        let mut invalid = corrections.clone();
+        invalid[0].superseded_claim_ids[1] = invalid[0].superseded_claim_ids[0].clone();
+        assert!(project_corrections(&rows, &invalid).is_err());
+        let mut invalid = corrections;
+        invalid[0].superseded_claim_ids[0] = "not-a-claim-id".into();
+        assert!(project_corrections(&rows, &invalid).is_err());
     }
 
     #[test]
