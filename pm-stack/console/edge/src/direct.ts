@@ -1203,6 +1203,17 @@ export function directClasses(edge: EdgeConfig, options: DirectOptions): DirectC
       if (dry.ok !== true) {
         return { code: Number(dry.exit ?? 2), stdout: "", stderr: String(dry.error ?? "queue enqueue refused") };
       }
+      const taskInput = dry.task as Record<string, unknown>;
+      const payload = taskInput.payload as Record<string, unknown>;
+      const issue = payload.issue as Record<string, unknown> | undefined;
+      // The native broker can re-probe old filing stamps (#12966), while
+      // the shared hosted verb cannot. Leave those packets to a machine.
+      // Native FILING_RECHECK_AFTER is one hour; fresh console prompts do
+      // not need that probe. Invalid/absent stamps retain native fail-open.
+      const stamp = typeof issue?.state_checked_at === "string" ? Date.parse(issue.state_checked_at) : NaN;
+      if (Number.isFinite(stamp) && now * 1000 - stamp > 3600_000) {
+        return { code: 1, stdout: "", stderr: "old filing stamp requires the native queue broker" };
+      }
       if (mirrorRef) {
         try {
           const rows = await query("SELECT labels FROM github_mirror_issues WHERE repo = ? AND number = ?", [
@@ -1224,9 +1235,6 @@ export function directClasses(edge: EdgeConfig, options: DirectOptions): DirectC
           mirrorError = error;
         }
       }
-      const taskInput = dry.task as Record<string, unknown>;
-      const payload = taskInput.payload as Record<string, unknown>;
-      const issue = payload.issue as Record<string, unknown> | undefined;
       // Include all dedupe history (newest terminal becomes the predecessor),
       // and live/done potential identity holders across queues. The verb still
       // applies repo/PR identity, exemptions, overrides and claim validation.

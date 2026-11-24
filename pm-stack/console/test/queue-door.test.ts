@@ -121,6 +121,21 @@ function harness(hooks: { beforeBatch?: () => Promise<void>; failSql?: (sql: str
 }
 
 describe("the edge queue door", () => {
+  test("native filing-recheck threshold leaves hour-old stamps to a machine", async () => {
+    const { db, direct, calls } = harness();
+    try {
+      const old = promptPacket(edge.repo, edge.queue, 456, "Please do the work", new Date(now - 3600_001).toISOString());
+      expect((await direct.queueEnqueue(old)).code).not.toBe(0);
+      expect(db.query("SELECT COUNT(*) AS n FROM tasks").get()).toEqual({ n: 0 });
+      expect(calls).toHaveLength(0);
+      const boundary = promptPacket(edge.repo, edge.queue, 456, "Please do the work", new Date(now - 3600_000).toISOString());
+      expect((await direct.queueEnqueue(boundary)).code).toBe(0);
+      expect(db.query("SELECT COUNT(*) AS n FROM tasks").get()).toEqual({ n: 1 });
+    } finally {
+      db.close();
+    }
+  });
+
   test("matches the shared engine row and deduplicates a second filing in real SQLite", async () => {
     const { db, direct, calls } = harness();
     try {

@@ -4485,6 +4485,7 @@ describe("the edge does the core itself", () => {
         "push.off",
         "push.on",
         "push.test",
+        "prompt.enqueue",
         "ask.send",
         "ask.reply",
         "ask.close",
