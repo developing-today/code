@@ -56,6 +56,7 @@
   - [Auditing the rendered book](program/publication.md)
   - [Laptop runtime and verification venues](program/runtime.md)
   - [MCPX issue map](program/issue-map.md)
+  - [High-level roadmap](program/high-level-roadmap.md)
 - [Research and incidental findings](research-and-findings.md)
 - [Script runtimes, permission profiles and presets](runtimes.md)
 - [Schema validation (`internal/schemaval`)](schema-validation.md)

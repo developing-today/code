@@ -55,6 +55,7 @@
   - [Consumer, cache and recommendation acceptance](design/consumer-acceptance.md)
 - [Design: the standing evaluation programme](design/evaluation-programme.md)
 - [Roadmap and issue map](design/roadmap-and-issue-map.md)
+- [High-level roadmap](design/high-level-roadmap.md)
 
 - [Repository layout](development/layout.md)
 - [Building and testing](development/building.md)
