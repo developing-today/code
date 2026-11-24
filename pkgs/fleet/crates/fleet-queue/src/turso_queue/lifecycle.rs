@@ -2769,6 +2769,95 @@ mod task_history_tests {
         .unwrap()
     }
 
+    fn insert_metadata_task(t: &TursoBackend, title: &str) -> i64 {
+        let now = now_iso();
+        t.exec(
+            "INSERT INTO tasks (queue, title, payload, metadata, status, created_at, updated_at) VALUES (?, ?, '{}', '{}', 'queued', ?, ?)",
+            &[Arg::Text("metadata-test".into()), Arg::Text(title.into()), Arg::Text(now.clone()), Arg::Text(now)],
+        )
+        .unwrap()
+        .last_insert_rowid
+        .unwrap()
+    }
+
+    #[test]
+    fn metadata_merge_patch_limits_filter_and_history_oracle() {
+        let (t, _) = fake_backend();
+        let first = insert_metadata_task(&t, "first");
+        let other = insert_metadata_task(&t, "other");
+
+        let set = super::super::verb_meta(
+            &t,
+            &json!({"op":"set", "task_id":first, "patch":{
+                "programme":"audit-7",
+                "tracking_issue":"developing-today/code#14170",
+                "custom.with-dot":"kept"
+            }}),
+        );
+        assert_eq!(set["ok"], true);
+
+        let patch = super::super::verb_meta(
+            &t,
+            &json!({"op":"set", "task_id":first, "patch":{
+                "programme":null,
+                "source_issue":"developing-today/code#14158"
+            }}),
+        );
+        assert_eq!(patch["ok"], true);
+        let metadata =
+            super::super::verb_meta(&t, &json!({"op":"get", "task_id":first}))["row"].clone();
+        assert!(metadata.get("programme").is_none());
+        assert_eq!(metadata["tracking_issue"], "developing-today/code#14170");
+        assert_eq!(metadata["source_issue"], "developing-today/code#14158");
+        assert_eq!(metadata["custom.with-dot"], "kept");
+
+        let filtered = super::verb_list(
+            &t,
+            &json!({"queue":"metadata-test", "meta":{
+                "tracking_issue":"developing-today/code#14170",
+                "custom.with-dot":"kept"
+            }}),
+        );
+        assert_eq!(filtered["total"], 1);
+        assert_eq!(filtered["rows"][0]["id"], first);
+
+        let too_large = Value::Object(
+            ["a", "b", "c", "d", "e"]
+                .into_iter()
+                .map(|key| (key.to_string(), Value::String("x".repeat(2000))))
+                .collect(),
+        );
+        let rejected =
+            super::super::verb_meta(&t, &json!({"op":"set", "task_id":other, "patch":too_large}));
+        assert_eq!(rejected["ok"], false);
+        assert!(rejected["error"].as_str().unwrap().contains("8192"));
+
+        let history = t
+            .query_objs(
+                "SELECT kind, detail FROM events WHERE task_id = ? AND kind = 'meta_updated' ORDER BY id",
+                &[Arg::Int(first)],
+                &["detail"],
+            )
+            .unwrap();
+        assert_eq!(history.len(), 2);
+        assert_eq!(
+            history[0]["detail"]["changed"]["programme"]["new"],
+            "audit-7"
+        );
+        assert_eq!(
+            history[1]["detail"]["changed"]["programme"]["old"],
+            "audit-7"
+        );
+        assert!(history[1]["detail"]["changed"]["programme"]["new"].is_null());
+        assert_eq!(
+            history_rows(&t, first)
+                .iter()
+                .filter(|r| r["kind"] == "meta_updated")
+                .count(),
+            2
+        );
+    }
+
     /// Oracle (#14170 Q1): a scripted lifecycle through the real verbs
     /// writes exactly one task_history row per mapped event, in order,
     /// and each row's to_status equals the task's actual status right
@@ -2823,12 +2912,18 @@ mod task_history_tests {
         assert_eq!(last_to(&t), "claimed");
         assert_eq!(last_to(&t), status_of(&t));
 
-        let p = verb_park(&t, &json!({"task_id": id, "worker": "oracle-w", "reason": "wait", "delay_seconds": 60}));
+        let p = verb_park(
+            &t,
+            &json!({"task_id": id, "worker": "oracle-w", "reason": "wait", "delay_seconds": 60}),
+        );
         assert_eq!(p["ok"], true, "{p}");
         assert_eq!(last_to(&t), "parked");
         assert_eq!(last_to(&t), status_of(&t));
 
-        let w = verb_wake(&t, &json!({"task_id": id, "worker": "oracle-w", "reason": "ready"}));
+        let w = verb_wake(
+            &t,
+            &json!({"task_id": id, "worker": "oracle-w", "reason": "ready"}),
+        );
         assert_eq!(w["ok"], true, "{w}");
         assert_eq!(last_to(&t), "queued", "wake returns the task to the queue");
         assert_eq!(last_to(&t), status_of(&t));
@@ -2836,32 +2931,47 @@ mod task_history_tests {
         let c2 = claim(&t);
         assert_eq!(c2["ok"], true, "{c2}");
         assert_eq!(last_to(&t), "claimed");
-        let b = verb_block(&t, &json!({"task_id": id, "worker": "oracle-w", "reason_class": "external", "blocker": "oracle"}));
+        let b = verb_block(
+            &t,
+            &json!({"task_id": id, "worker": "oracle-w", "reason_class": "external", "blocker": "oracle"}),
+        );
         assert_eq!(b["ok"], true, "{b}");
         assert_eq!(last_to(&t), "blocked");
         assert_eq!(last_to(&t), status_of(&t));
 
-        let u = verb_unblock(&t, &json!({"task_id": id, "worker": "oracle-w", "reason": "clear"}));
+        let u = verb_unblock(
+            &t,
+            &json!({"task_id": id, "worker": "oracle-w", "reason": "clear"}),
+        );
         assert_eq!(u["ok"], true, "{u}");
         assert_eq!(last_to(&t), status_of(&t));
 
-        let r = verb_reprioritize(&t, &json!({"task_id": id, "priority": 20, "worker": "oracle-w", "reason": "hot"}));
+        let r = verb_reprioritize(
+            &t,
+            &json!({"task_id": id, "priority": 20, "worker": "oracle-w", "reason": "hot"}),
+        );
         assert_eq!(r["ok"], true, "{r}");
         let rp = history_rows(&t, id).last().unwrap().clone();
         assert_eq!(rp["kind"], "reprioritized");
-        assert_eq!((rp["from_priority"].as_i64(), rp["to_priority"].as_i64()), (Some(90), Some(20)));
+        assert_eq!(
+            (rp["from_priority"].as_i64(), rp["to_priority"].as_i64()),
+            (Some(90), Some(20))
+        );
 
         let c3 = claim(&t);
         assert_eq!(c3["ok"], true, "{c3}");
-        let done = verb_complete(&t, &json!({"task_id": id, "worker": "oracle-w", "result": {
-            "evidence": "https://github.com/developing-today/code/pull/14249",
-            "disposition": {
-                "checked_at": now_iso(), "source": "oracle",
-                "issue": {"number": 14170, "state": "closed", "closed_at": now_iso()},
-                "pulls": [{"number": 14249, "state": "closed", "merged_at": now_iso()}],
-                "verdict": "merged_verified"
-            }
-        }}));
+        let done = verb_complete(
+            &t,
+            &json!({"task_id": id, "worker": "oracle-w", "result": {
+                "evidence": "https://github.com/developing-today/code/pull/14249",
+                "disposition": {
+                    "checked_at": now_iso(), "source": "oracle",
+                    "issue": {"number": 14170, "state": "closed", "closed_at": now_iso()},
+                    "pulls": [{"number": 14249, "state": "closed", "merged_at": now_iso()}],
+                    "verdict": "merged_verified"
+                }
+            }}),
+        );
         assert_eq!(done["ok"], true, "{done}");
         assert_eq!(last_to(&t), "done");
         assert_eq!(last_to(&t), status_of(&t));
@@ -2869,13 +2979,26 @@ mod task_history_tests {
         let rows = history_rows(&t, id);
         let events: Vec<Value> = {
             let mut all = Vec::new();
-            for kind in ["enqueued", "claimed", "parked", "woken", "blocked", "unblocked", "reprioritized", "completed"] {
+            for kind in [
+                "enqueued",
+                "claimed",
+                "parked",
+                "woken",
+                "blocked",
+                "unblocked",
+                "reprioritized",
+                "completed",
+            ] {
                 all.extend(events_for(&t, id, kind));
             }
             all.sort_by_key(|e| e["id"].as_i64().unwrap_or(0));
             all
         };
-        assert_eq!(rows.len(), events.len(), "1:1 history rows and mapped events");
+        assert_eq!(
+            rows.len(),
+            events.len(),
+            "1:1 history rows and mapped events"
+        );
         for (row, ev) in rows.iter().zip(events.iter()) {
             assert_eq!(row["event_id"], ev["id"], "row maps to its event");
             assert_eq!(row["kind"], ev["kind"]);
@@ -2885,7 +3008,10 @@ mod task_history_tests {
         assert_eq!(claimed["session_id"], "ses_oracle");
         assert_eq!(claimed["model_id"], "claude-haiku-5-5");
         let parked = rows.iter().find(|r| r["kind"] == "parked").unwrap();
-        assert_eq!((parked["from_status"].as_str(), parked["to_status"].as_str()), (Some("claimed"), Some("parked")));
+        assert_eq!(
+            (parked["from_status"].as_str(), parked["to_status"].as_str()),
+            (Some("claimed"), Some("parked"))
+        );
         let blocked = rows.iter().find(|r| r["kind"] == "blocked").unwrap();
         assert_eq!(blocked["to_status"], "blocked");
         assert_eq!(blocked["actor"], "oracle-w");
@@ -2922,7 +3048,10 @@ mod task_history_tests {
         assert_eq!(second["skipped"], 2, "{second}");
         let rows = history_rows(&t, 7);
         assert_eq!(rows.len(), 2);
-        assert!(rows.iter().all(|r| r["from_status"] == "queued" && r["to_status"] == "claimed"));
+        assert!(
+            rows.iter()
+                .all(|r| r["from_status"] == "queued" && r["to_status"] == "claimed")
+        );
         let since = verb_history_since(&t, &json!({"task_id": 7}));
         assert_eq!(since["rows"].as_array().unwrap().len(), 2, "{since}");
     }

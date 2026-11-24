@@ -10,7 +10,7 @@ use super::*;
 pub const DEFAULT_TURSO_URL: &str = "https://fleet-queue-dezren39.aws-us-east-1.turso.io";
 pub const TURSO_TOKEN_SECRET_NAME: &str = "turso.fleet-queue-rw-token";
 
-pub(crate) const TASK_COLS: &str = "id, queue, title, body, payload, dedupe_key, priority, status, \
+pub(crate) const TASK_COLS: &str = "id, queue, title, body, payload, metadata, dedupe_key, priority, status, \
     not_before, worker_id, claimed_at, lease_until, lane_id, platform, attempts, max_attempts, \
     claim_provider, claim_model, claim_variant, claim_session_id, \
     progress, result, last_error, park_kind, wait_kind, ready_condition, \
@@ -23,8 +23,9 @@ pub(crate) const LEDGER_COLS: &str = "id, queue, task_id, assigned_lane, execute
     assigned_at, executed_at, updated_at";
 /// Task columns whose stored TEXT is JSON (PG jsonb) — parsed back
 /// into values so the wire shape matches the Postgres broker's.
-pub(crate) const TASK_JSON_COLS: [&str; 5] = [
+pub(crate) const TASK_JSON_COLS: [&str; 6] = [
     "payload",
+    "metadata",
     "progress",
     "result",
     "ready_condition",
@@ -896,6 +897,7 @@ impl TursoBackend {
         // them. No backfill: existing rows read NULL, which the
         // rechecker reads as "not a dep-block" and never touches.
         for (col, ty) in [
+            ("metadata", "TEXT NOT NULL DEFAULT '{}'"),
             ("blocked_deps", "TEXT"),
             ("dep_next_recheck_at", "TEXT"),
             ("dep_blocked_until", "TEXT"),
@@ -1019,7 +1021,7 @@ pub(crate) const SCHEMA: [&str; 30] = [
     "CREATE TABLE IF NOT EXISTS tasks (\
         id INTEGER PRIMARY KEY AUTOINCREMENT, \
         queue TEXT NOT NULL, title TEXT, body TEXT, \
-        payload TEXT NOT NULL DEFAULT '{}', dedupe_key TEXT, \
+        payload TEXT NOT NULL DEFAULT '{}', metadata TEXT NOT NULL DEFAULT '{}', dedupe_key TEXT, \
         priority INTEGER, status TEXT NOT NULL DEFAULT 'queued', \
         not_before TEXT, worker_id TEXT, claimed_at TEXT, lease_until TEXT, \
         lane_id TEXT, platform TEXT, attempts INTEGER NOT NULL DEFAULT 0, \
@@ -1228,7 +1230,9 @@ pub(crate) fn with_marks(detail: &Value, task: &Value) -> Value {
 /// the priority values carried in the event detail. Kinds absent
 /// here (checkpoint, claim_refused, session_bound, lease_expired,
 /// ...) are not status transitions and get no history row.
-pub(crate) fn history_transition(kind: &str) -> Option<(Option<&'static str>, Option<&'static str>)> {
+pub(crate) fn history_transition(
+    kind: &str,
+) -> Option<(Option<&'static str>, Option<&'static str>)> {
     Some(match kind {
         "enqueued" => (None, Some("queued")),
         "task_revived" => (None, Some("queued")),
@@ -1242,6 +1246,7 @@ pub(crate) fn history_transition(kind: &str) -> Option<(Option<&'static str>, Op
         "cancelled" => (None, Some("cancelled")),
         "failed" => (None, Some("failed")),
         "reprioritized" => (None, None),
+        "meta_updated" => (None, None),
         _ => return None,
     })
 }
@@ -1265,9 +1270,20 @@ pub(crate) const HISTORY_INSERT_SQL: &str = "INSERT OR IGNORE INTO task_history 
     FROM events e WHERE e.id = (SELECT max(id) FROM events) AND changes() = 1";
 
 /// Every event kind that history_transition maps: the backfill census.
-pub(crate) const HISTORY_KINDS: [&str; 12] = [
-    "enqueued", "task_revived", "claimed", "parked", "released", "woken", "blocked",
-    "unblocked", "dep_unblocked", "completed", "cancelled", "failed",
+pub(crate) const HISTORY_KINDS: [&str; 13] = [
+    "enqueued",
+    "task_revived",
+    "claimed",
+    "parked",
+    "released",
+    "woken",
+    "blocked",
+    "unblocked",
+    "dep_unblocked",
+    "completed",
+    "cancelled",
+    "failed",
+    "meta_updated",
 ];
 
 /// Backfill: one history row per mapped events row that has none
@@ -1290,7 +1306,11 @@ fn backfill_sql() -> String {
             .collect::<Vec<_>>()
             .join(" ")
     };
-    let in_list = kinds.iter().map(|k| format!("'{k}'")).collect::<Vec<_>>().join(", ");
+    let in_list = kinds
+        .iter()
+        .map(|k| format!("'{k}'"))
+        .collect::<Vec<_>>()
+        .join(", ");
     format!(
         "INSERT OR IGNORE INTO task_history \
          (event_id, task_id, kind, from_status, to_status, from_priority, to_priority, \
@@ -1316,7 +1336,11 @@ fn backfill_sql() -> String {
 pub(crate) fn verb_history_backfill(t: &TursoBackend, _req: &Value) -> Value {
     let mut kinds: Vec<&str> = HISTORY_KINDS.to_vec();
     kinds.push("reprioritized");
-    let in_list = kinds.iter().map(|k| format!("'{k}'")).collect::<Vec<_>>().join(", ");
+    let in_list = kinds
+        .iter()
+        .map(|k| format!("'{k}'"))
+        .collect::<Vec<_>>()
+        .join(", ");
     let work = (|| -> Result<Value, TErr> {
         let census = t
             .query_objs(
@@ -1367,6 +1391,111 @@ pub(crate) fn verb_history_since(t: &TursoBackend, req: &Value) -> Value {
     }
 }
 
+/// Queue metadata read/merge-patch surface. The write and its audit row are
+/// committed together; null patch values remove keys and omitted keys stand.
+pub(crate) fn verb_meta(t: &TursoBackend, req: &Value) -> Value {
+    let op = req_str(req, "op").unwrap_or("");
+    if op == "keys" {
+        return ok(
+            json!({"row": crate::validate::METADATA_REGISTRY.iter().map(|(name, ty, meaning)| json!({"name":name,"type":ty,"meaning":meaning})).collect::<Vec<_>>()}),
+        );
+    }
+    let Some(id) = req_i64(req, "task_id") else {
+        return fail(2, "meta: task_id is required".into());
+    };
+    let work = (|| -> Result<Value, String> {
+        let row = get_task(t, id)
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| format!("meta: task {id} not found"))?;
+        let current = row.get("metadata").cloned().unwrap_or_else(|| json!({}));
+        match op {
+            "get" => {
+                let out = match req_str(req, "key") {
+                    Some(key) => current.get(&key).cloned().unwrap_or(Value::Null),
+                    None => current,
+                };
+                Ok(json!({"row": out}))
+            }
+            "keys" => unreachable!(),
+            "set" | "unset" => {
+                let mut patch = req.get("patch").cloned().unwrap_or_else(|| json!({}));
+                if op == "unset" {
+                    let key = req_str(req, "key")
+                        .ok_or_else(|| "meta unset: key is required".to_string())?;
+                    let mut object = Map::new();
+                    object.insert(key, Value::Null);
+                    patch = Value::Object(object);
+                } else if let Some(key) = req_str(req, "key") {
+                    let mut object = Map::new();
+                    object.insert(key, req.get("value").cloned().unwrap_or(Value::Null));
+                    patch = Value::Object(object);
+                }
+                if !patch.is_object() {
+                    return Err("meta set: patch must be a JSON object".into());
+                }
+                let mut next = current.as_object().cloned().unwrap_or_default();
+                let mut changed = serde_json::Map::new();
+                for (key, value) in patch.as_object().expect("checked object") {
+                    let old = next.get(key).cloned().unwrap_or(Value::Null);
+                    if value.is_null() {
+                        next.remove(key);
+                    } else {
+                        next.insert(key.clone(), value.clone());
+                    }
+                    let new = next.get(key).cloned().unwrap_or(Value::Null);
+                    if old != new {
+                        changed.insert(
+                            key.clone(),
+                            json!({"old": history_value(&old), "new": history_value(&new)}),
+                        );
+                    }
+                }
+                let next = Value::Object(next);
+                crate::validate::validate_metadata(&next)?;
+                if changed.is_empty() {
+                    return Ok(json!({"row": current, "changed": false}));
+                }
+                let changed_names: Vec<String> = changed.keys().cloned().collect();
+                let detail = with_marks(&json!({"changed": changed, "keys": changed_names}), &row);
+                let now = now_iso();
+                let updated_at = row
+                    .get("updated_at")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| format!("meta: task {id} has no updated_at timestamp"))?;
+                let results = t.exec_batch(&[
+                    ("BEGIN IMMEDIATE", vec![]),
+                    ("UPDATE tasks SET metadata = ?, updated_at = ? WHERE id = ? AND updated_at = ? AND metadata = ?", vec![Arg::Text(next.to_string()), Arg::Text(now.clone()), Arg::Int(id), Arg::Text(updated_at.to_string()), Arg::Text(current.to_string())]),
+                    ("INSERT INTO events (worker_id, task_id, kind, detail, created_at) SELECT ?, ?, 'meta_updated', ?, ? WHERE changes() = 1", vec![Arg::Text("fleet queue meta".into()), Arg::Int(id), Arg::Text(detail.to_string()), Arg::Text(now)]),
+                    (HISTORY_INSERT_SQL, vec![Arg::Null, Arg::Null]),
+                    ("COMMIT", vec![]),
+                ]).map_err(|e| e.to_string())?;
+                if results.get(1).is_none_or(|result| result.affected == 0) {
+                    return Err(format!(
+                        "meta: task {id} changed concurrently; retry the metadata update"
+                    ));
+                }
+                Ok(json!({"row": next, "changed": true}))
+            }
+            _ => Err(format!("meta: unknown operation {op:?}")),
+        }
+    })();
+    match work {
+        Ok(v) => ok(v),
+        Err(e) => fail(2, e),
+    }
+}
+
+fn history_value(value: &Value) -> Value {
+    let bytes = serde_json::to_vec(value)
+        .map(|v| v.len())
+        .unwrap_or(usize::MAX);
+    if bytes > 512 {
+        json!({"truncated": true, "bytes": bytes})
+    } else {
+        value.clone()
+    }
+}
+
 pub(crate) fn event(
     t: &TursoBackend,
     worker: Option<&str>,
@@ -1402,10 +1531,7 @@ pub(crate) fn event(
                 Arg::Text(now_iso()),
             ],
         ),
-        (
-            HISTORY_INSERT_SQL,
-            vec![arg_str(from), arg_str(to)],
-        ),
+        (HISTORY_INSERT_SQL, vec![arg_str(from), arg_str(to)]),
         ("COMMIT", vec![]),
     ])?;
     Ok(())
