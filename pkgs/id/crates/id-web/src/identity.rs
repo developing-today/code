@@ -693,15 +693,8 @@ impl IdentityDb {
             return Self::load(db, key);
         }
         let temp = creating_path(path);
-        let file = std::fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .open(&temp)
-            .with_context(|| format!("failed to create identity store {}", temp.display()))?;
         let db = Database::builder()
-            .create_file(file)
+            .create(&temp)
             .map_err(|e| store_error(&temp, e))?;
         let created = Self::load(db, key)?;
         std::fs::rename(&temp, path).with_context(|| {
