@@ -104,10 +104,13 @@ pattern:
   Item 8's miss is likewise on record: canonical counts froze at the
   2026-10-31 publish because ingestion stayed manual, and the freeze is the
   stated reason the recount procedure is an acceptance item.
-- **Gates, not dates.** Several items are paced by platform flag holds
-  (#13106, #13084, #13036, the #10237-chain close). The census records them
-  as gates with reasons, and — per standing rule — does not re-ask them as a
-  batch. Where the record has no timing, the census says "no timing in
+- **Gates, not dates.** Several items were paced at census by platform
+  flag holds (#13106, #13084, #13036, the #10237-chain close).
+  Correction (2026-11-23, re-verified against live state): those holds
+  have since cleared — #13106, #13084, #13036 and all three of the
+  #10237 → #10252 → #10269 chain closed as completed on 2026-11-23.
+  The census records them as gates with reasons, and — per standing
+  rule — does not re-ask them as a batch. Where the record has no timing, the census says "no timing in
   record"; 22 of the 30 items carry no projected date, and the list prints
   none for them. The one hard near-term date in the census is item 28's:
   the quota observation interval can first elapse 2026-11-30 at 02:30:06.420
@@ -122,6 +125,8 @@ Statuses use a fixed vocabulary — done, in flight, designed, not started —
 each with its evidence. "Designed" means a design of record exists and
 implementation has not landed; "in flight" means code or queue work is
 actively landing. Where a seed has no single owning issue, the list says so
-plainly (items 4 and 23) rather than inventing one. The re-census rule —
+plainly (items 4 and 23) rather than inventing one — both have since
+been filed (2026-11-23): #13920 owns item 4 and #13918 owns item 23.
+The re-census rule —
 when this list is next rebuilt — is in [Keeping this book
 current](../development/keeping-this-book-current.md).

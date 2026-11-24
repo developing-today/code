@@ -76,10 +76,10 @@ ticketed programme. Component by component:
 | Talos Linux (current programme) | Planned — no node installed; "no node is installed until the TALM bootstrap flow is proven" (status record 2026-10-27). Epic [#1086](https://github.com/developing-today/code/issues/1086) open. |
 | Talos (historical v1.9 test cluster) | Proven, then retired — torn down 2026-10-26. History only. |
 | TALM bootstrap flow | Proven locally (containers); planned on bare metal. See [Talos and Cozystack](talos-and-cozystack.md). |
-| Cozystack | Planned / researched-only. Install epic [#1087](https://github.com/developing-today/code/issues/1087) is "proposed/Later" in the roadmap. |
+| Cozystack | Planned — the platform is **chosen, settled by Drew 2026-11-23**; not yet installed. Install epic [#1087](https://github.com/developing-today/code/issues/1087) is "proposed/Later" in the roadmap. |
 | LINSTOR + DRBD | Planned — design only. See [Storage: LINSTOR and DRBD](storage-linstor-and-drbd.md). |
 | Postgres (CloudNativePG via Cozystack) | Planned — decision recorded in the research brief: use Cozystack's CNPG-based managed Postgres; do not deploy a second operator. |
-| RustFS (S3) | Planned, one decision open (RustFS versus Cozystack's bundled SeaweedFS); epic [#1088](https://github.com/developing-today/code/issues/1088) owns the decision. |
+| RustFS (S3) | Planned; the RustFS-versus-SeaweedFS decision is with the comparison lane (Drew's current lean: SeaweedFS, 2026-11-23); epic [#1088](https://github.com/developing-today/code/issues/1088). See [Object storage: RustFS and SeaweedFS](../platform/object-storage.md). |
 | Platform services (NATS, FluxCD, Cloudflare tunnel, Tailscale on-cluster) | Planned — the day-one list from the register; epic #1088. |
 | First workload: the ID app on FluxCD | Planned — epic [#1092](https://github.com/developing-today/code/issues/1092). Which app exactly is "the ID app" is still an open question (gap 12). |
 | Observability, backup and recovery | Planned — epic [#1090](https://github.com/developing-today/code/issues/1090), including the power-return boot order. |

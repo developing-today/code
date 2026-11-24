@@ -82,10 +82,17 @@ chapters as one-line pointers.
 - The dedicated switches from the repo's switching research are installed,
   racked and integrated, so the basement machines share a real fabric
   instead of ad-hoc links.
-- **Status:** not started (planned). Switch make, model and count are
-  missing from the hardware record until the switching research
-  (`doc/inventory/routing-and-switching.md`, `doc/hardware/`) is folded in;
-  no single GitHub issue owns this item — #13905 is its first tracker.
+- **Status:** not started (planned). At census this item had no owning
+  issue — #13905 was its first tracker. History note (2026-11-23): the
+  census found this item ownerless and the programme filed the owning
+  issue that day —
+  [#13920 — Lab: switches — complete the inventory, then integrate and
+  rack](https://github.com/developing-today/code/issues/13920) — which
+  now owns it. The inventory gap is real and stays: the inventory of
+  record (`doc/inventory/routing-and-switching.md`, `doc/hardware/`)
+  enriches 21 devices with make and model, but the record still lacks
+  location and state per device; #13920's first slice owns completing
+  it, and Census C's findings are recorded on #13920.
 - **Rationale:** first physical dependency — racking and networking precede
   servers presenting (item 5) and the cluster boot (item 6).
 
@@ -191,8 +198,10 @@ chapters as one-line pointers.
   live-verified 50-database estate. The hot-cache schema and store landed
   (#13100, closed) with the master flag off — production search does not
   touch D1 today; freshness (#13101) and admission (#13103) are open, the
-  read path (#13105) is gated on #13101, and invalidation (#13106) is held
-  under a platform flag.
+  read path (#13105) is gated on #13101, and invalidation (#13106) was
+  held under a platform flag at census. Correction (2026-11-23,
+  re-verified against live state): #13106 was flag-held at census and
+  has since closed as completed on 2026-11-23.
 - **Rationale:** placement is a near one-way-door decision that items 12,
   17 and 25 build on, and the audit existing makes this the cheapest moment
   to settle it.
@@ -225,8 +234,11 @@ chapters as one-line pointers.
   reciprocal-rank fusion over full-text and vector branches only; no learned
   reranker exists in the serving path; feedback is captured
   (`atlas-feedback/v1`) with no ranking consumer; recommendation generation
-  does not exist — only the snapshot-paging state machine is in flight
-  (#10158, PR #12873 open). The gate: a 311-query golden set (v3) plus 54
+  does not exist — only the snapshot-paging state machine was in flight
+  at census (#10158, PR #12873 open at census). Correction (2026-11-23,
+  re-verified against live state): PR #12873 has since merged and
+  #10158 closed as completed on 2026-11-23; recommendation generation
+  itself still does not exist. The gate: a 311-query golden set (v3) plus 54
   held out (#8627).
 - **Rationale:** deliberately after items 8–10 — a reranker evaluated on a
   frozen, provenance-poor corpus would bake in today's gaps.
@@ -255,9 +267,12 @@ chapters as one-line pointers.
   with stable URIs, transclusion, typed links, sneakernet bundles and a
   graph display.
 - **Status:** designed and partially in flight. Boards and feeds landed in
-  slices (for example #10237's code via PR #12932) but the chain sits open
-  on stale labels with its close held under a platform flag; the unifying
-  epic #13880 was filed 2026-11-24 during the census window.
+  slices (for example #10237's code via PR #12932) but the chain sat open
+  on stale labels with its close flag-held at census; the unifying
+  epic #13880 was filed 2026-11-24 during the census window. Correction
+  (2026-11-23, re-verified against live state): all three chain issues
+  — #10237, #10252 and #10269 — have since closed as completed on
+  2026-11-23.
 - **Rationale:** first ID-platform item because it is the user-visible
   surface the store, hosting and federation work exists to serve — its
   requirements should steer them. Trackers: #13880, #2056, #9129, #5525,
@@ -273,8 +288,11 @@ chapters as one-line pointers.
   hosted store, or a browser IndexedDB.
 - **Status:** in flight. Conformance fixtures landed (#10191, closed, PR
   #13194); lifecycle hooks' first slice landed (PR #13156). The chain's
-  only remaining foundational step is #9082's adopt/defer/reject act on the
-  IndexedDB profile.
+  only remaining foundational step at census was #9082's
+  adopt/defer/reject act on the IndexedDB profile. Correction
+  (2026-11-23, re-verified against live state): #9082 has since closed
+  as completed on 2026-11-23 — the IndexedDB request-batch profile was
+  adopted (see item 21).
 - **Rationale:** every dynamic-hosting and offline item below is written
   against this interface — the ID tier's dependency root. Trackers: #9082,
   #9110, #10192, #5805, #5814, #5681.
@@ -292,7 +310,10 @@ chapters as one-line pointers.
   all verified open with a blocked status at census, their queue tasks
   recorded as blocked until 2026-11-26; #10693 was enqueued (task 21463)
   with its ownership ruled. Both export/import code halves landed
-  2026-11-23 (PRs #13201, #13212).
+  2026-11-23 (PRs #13201, #13212). Correction (2026-11-23, re-verified
+  against live state): the hosted signed-object bridge remainder
+  (#13036, the remainder of #3818) was flag-held at census and has
+  since closed as completed on 2026-11-23.
 - **Rationale:** the seed that turns ID from a binary into a platform; it
   depends on items 3, 6 and 16. Trackers: #10693–#10698, #9078, #2852,
   #3818, #3810, #6276.
@@ -319,11 +340,17 @@ chapters as one-line pointers.
   measuring join time, replay, frame cost and memory, ending in a measured
   limits table — with Drew's doctrine as the bar: a multiplier is proven by
   benchmark, never asserted.
-- **Status:** in flight. Two of five measurement slices are closed with
-  real numbers: the generator built 10× (11,001 worlds, 200,000 events in
-  35.7 seconds, #13083) and frame cost measured flat to 1,000,000 events
-  (#13085). Join-time benches (#13084) are held under a platform flag; the
-  memory profile (#13086) is in progress. A codified wall was found:
+- **Status:** in flight. At census, two of five measurement slices were
+  closed with real numbers: the generator built 10× (11,001 worlds,
+  200,000 events in 35.7 seconds, #13083) and frame cost measured flat
+  to 1,000,000 events (#13085). Join-time benches (#13084) were held
+  under a platform flag at census; the memory profile (#13086) was in
+  progress. Correction (2026-11-23, re-verified against live state):
+  both gates have since cleared — #13084's hold was released and the
+  issue closed with the join-benchmark PR #13424 (merged 2026-11-23),
+  and #13086 closed as completed the same day — so four of the five
+  measurement slices are now closed; #13087 and #13088 remain open. A
+  codified wall was found:
   `WorldLimits` caps participants at 256 against tier targets of 320 at 10×
   and 3,200 at 100×.
 - **Rationale:** measurement before optimisation, and before currency and
@@ -348,11 +375,14 @@ chapters as one-line pointers.
 - Browser ID clients cache and work against a local IndexedDB store behind
   the same store interface (item 16), with conformance proven in a real
   browser engine.
-- **Status:** prototype done; adoption decision open. The prototype
-  (#10213, closed, PR #13219) verified, in a headless Chromium conformance
+- **Status:** prototype done; the adoption decision was open at census.
+  The prototype (#10213, closed, PR #13219) verified, in a headless
+  Chromium conformance
   suite: per-batch whole-database atomic scope, quota of about 10.7 GB, and
-  `persisted: false`. What remains is #9082's decision plus production
-  wiring.
+  `persisted: false`. Correction (2026-11-23, re-verified against live
+  state): the adoption decision has since been taken — #9082 closed as
+  completed on 2026-11-23, adopting the IndexedDB request-batch
+  profile. What remains is production wiring.
 - **Rationale:** the prototype de-risked the seed; it is the prerequisite
   half of the offline seed (item 23). Trackers: #9082, #10191, #6377.
 
@@ -380,9 +410,14 @@ chapters as one-line pointers.
   IndexedDB cache (item 21), syncing when the network returns — the web
   expression of ID's local-first principle.
 - **Status:** not started as a named item. The IndexedDB half is
-  prototyped; no service-worker work was found in the ID census. No single
-  owning issue exists — a census finding: one should be filed under the ID
-  programme (#13240) rather than left implicit.
+  prototyped; no service-worker work was found in the ID census. At
+  census time this seed had no single owning issue — a census finding:
+  one should be filed under the ID programme (#13240) rather than left
+  implicit. History note (2026-11-23): the census found this item
+  ownerless and the programme filed the owning issue that day —
+  [#13918 — ID: service-worker offline / local-first web app — design
+  and first slice](https://github.com/developing-today/code/issues/13918)
+  — which now owns it.
 - **Rationale:** last in the ID tier by dependency (it composes items 16,
   17 and 21), not by value.
 
@@ -505,15 +540,31 @@ chapters as one-line pointers.
 ## Census gaps carried forward
 
 Census B closed with gaps it refused to paper over; this chapter carries
-them forward unchanged:
+them forward, with the post-census corrections of 2026-11-23 noted in
+place:
 
-1. Item 23 (service-worker offline) has no owning issue. Recommendation of
-   record: file one under the ID programme (#13240).
-2. Item 4 (switches) has no owning issue and an incomplete inventory; the
-   Lab census (Census C) owns closing it.
+1. Item 23 (service-worker offline) had no owning issue at census.
+   Recommendation of record: file one under the ID programme (#13240).
+   History note (2026-11-23): the census found this item ownerless and
+   the programme filed the owning issue that day —
+   [#13918](https://github.com/developing-today/code/issues/13918) now
+   owns it.
+2. Item 4 (switches) had no owning issue at census and an incomplete
+   inventory; the Lab census (Census C) owns closing it. History note
+   (2026-11-23): the census found this item ownerless and the programme
+   filed the owning issue that day —
+   [#13920](https://github.com/developing-today/code/issues/13920) now
+   owns it. The inventory gap is real and stays: the record still lacks
+   location and state per device, #13920's first slice owns completing
+   it, and Census C's findings are recorded on #13920.
 3. The discovery blocker for #10706 and #10708 is unverified (item 18).
 4. Book roadmap paths differ per book by design; the merged list does not
    force one path on all books.
-5. Platform flag holds pace several items (#13106, #13084, #13036, the
-   #10237-chain close, 3 mcpx exemptions). They are recorded per item as
-   gates with reasons.
+5. Platform flag holds paced several items at census (#13106, #13084,
+   #13036, the #10237-chain close, 3 mcpx exemptions). They are recorded
+   per item as gates with reasons. Correction (2026-11-23, re-verified
+   against live state): the first four of those holds have since
+   cleared — #13106, #13084 (closed via PR #13424), #13036, and all
+   three of the #10237 → #10252 → #10269 chain closed as completed on
+   2026-11-23. No reversal is recorded for the 3 mcpx exemptions in
+   this pass.
