@@ -90,6 +90,14 @@ itself is down.
 
 ## Configuration (environment)
 
+SAML IdP metadata is served at `/saml/metadata` when
+`IDP_PROVIDER_SAML_KEY` points to the encrypted Slice 2 SAML private
+key. The passphrase comes from the existing `IDP_CA_PASSPHRASE`
+environment variable. Startup checks that the key matches the
+published SAML certificate. This metadata slice does not yet enable
+SAML sign-in; the Redirect request and POST response flow is the next
+implementation step.
+
 | Variable                                                                                | Default                                                                   | Meaning                                                                                                                                                                                                   |
 | --------------------------------------------------------------------------------------- | ------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `IDP_PROVIDER_ISSUER`                                                                   | `http://127.0.0.1:8911`                                                   | Issuer URL used in discovery and endpoint URLs.                                                                                                                                                           |
@@ -100,6 +108,8 @@ itself is down.
 | `IDP_PROVIDER_OIDC_ACTIVE_KID`                                                          | _(first certificate's kid)_                                               | Which key in the set signs new tokens; the rest still verify.                                                                                                                                             |
 | `IDP_PROVIDER_CONFIG`                                                                   | _(unset)_                                                                 | Path to the provider registry config JSON. Unset = public-only mode (discovery + JWKS; flow endpoints refuse service).                                                                                    |
 | `IDP_PROVIDER_OIDC_KEY`                                                                 | _(unset)_                                                                 | Path to the encrypted Slice 2 OIDC private key. Required when `IDP_PROVIDER_CONFIG` is set.                                                                                                               |
+| `IDP_PROVIDER_SAML_KEY`                                                                 | _(unset)_                                                                 | Path to the encrypted Slice 2 SAML private key; enables signed SAML metadata. Uses `IDP_CA_PASSPHRASE`.                                                                                                  |
+| `IDP_PROVIDER_SAML_CERT`                                                                | `pkgs/idp-pki/trust/saml-signing.crt.pem` (relative to the repo checkout) | Optional path override for the published SAML signing certificate.                                                                                                                                       |
 | `IDP_CA_PASSPHRASE`                                                                     | _(unset)_                                                                 | Passphrase for the signing key, in process memory only (vault name `idp.ca-passphrase`). Required when `IDP_PROVIDER_CONFIG` is set. Never logged, never written to disk by the provider.                 |
 | `IDP_PROVIDER_AUDIT_DB`                                                                 | _(registry config's `audit_db_path`, else in-memory)_                     | Append-only audit SQLite path override.                                                                                                                                                                   |
 | `IDP_PROVIDER_IDENTITY_DB`                                                              | _(registry config's `identity_db_path`, else in-memory)_                  | Identity store (#13415) SQLite path override.                                                                                                                                                             |
