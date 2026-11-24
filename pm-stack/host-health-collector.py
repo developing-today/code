@@ -288,9 +288,7 @@ def read_backup_record(run_record):
         "exitCode": exit_code if isinstance(exit_code, int) else None,
         "failingStep": failing if isinstance(failing, str) else None,
         "archiveSha256": sha if isinstance(sha, str) else None,
-        "destinations": {
-            str(k): str(v) for k, v in destinations.items()
-        },
+        "destinations": {str(k): str(v) for k, v in destinations.items()},
     }
 
 

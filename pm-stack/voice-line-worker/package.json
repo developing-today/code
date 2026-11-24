@@ -1,9 +1,9 @@
 {
   "description": "Basement voice line step 1 (#9800): push-to-talk WebSocket in a Durable Object, Workers AI Whisper STT + MeloTTS speech out (Cloudflare-direct), silence trim/VAD before transcription, one read-only queue-state intent, Turso session ledger.",
   "devDependencies": {
-    "@cloudflare/workers-types": "^5.20261120.1",
+    "@cloudflare/workers-types": "^5.20261121.1",
     "typescript": "^7.0.2",
-    "wrangler": "4.165.0"
+    "wrangler": "4.166.0"
   },
   "name": "voice-line-worker",
   "private": true,

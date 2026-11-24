@@ -73,10 +73,7 @@ async function runVectors(
         case "commit_batch": {
           let observation: string;
           try {
-            observation = await store.commitBatch(
-              step.op_id as string,
-              parseWrites(step),
-            );
+            observation = await store.commitBatch(step.op_id as string, parseWrites(step));
           } catch (error) {
             observation = commitObservation(error);
           }
@@ -89,28 +86,18 @@ async function runVectors(
           // accepted and the batch commits normally, exactly as the
           // Rust state machine models drop-response / drop-request
           // for the redb profile.
-          const reported = await store.commitBatch(
-            step.op_id as string,
-            parseWrites(step),
-          );
-          trace.push(
-            `reported:${reported},resolved:${resolveOutcome(reported)}`,
-          );
+          const reported = await store.commitBatch(step.op_id as string, parseWrites(step));
+          trace.push(`reported:${reported},resolved:${resolveOutcome(reported)}`);
           break;
         }
         case "get": {
-          const value = await store.get(
-            step.namespace as string,
-            step.id as string,
-          );
+          const value = await store.get(step.namespace as string, step.id as string);
           trace.push(value === undefined ? "absent" : `value:${value}`);
           break;
         }
         case "scan": {
           const entries = await store.scan(step.namespace as string);
-          trace.push(
-            `entries:${entries.map(([id, v]) => `${id}=${v}`).join(",")}`,
-          );
+          trace.push(`entries:${entries.map(([id, v]) => `${id}=${v}`).join(",")}`);
           break;
         }
         case "negotiate": {
@@ -129,8 +116,7 @@ async function runVectors(
     const finalScans: Record<string, string> = {};
     for (const namespace of namespaces) {
       const entries = await store.scan(namespace);
-      finalScans[namespace] =
-        `entries:${entries.map(([id, v]) => `${id}=${v}`).join(",")}`;
+      finalScans[namespace] = `entries:${entries.map(([id, v]) => `${id}=${v}`).join(",")}`;
     }
     return { trace, finalScans };
   } finally {
@@ -214,9 +200,7 @@ async function probeReopen(): Promise<string | undefined> {
   const dbName = "id-probe-reopen";
   await IndexedDbStore.deleteDatabase(dbName);
   let store = await IndexedDbStore.open(dbName, ["kv"]);
-  await store.commitBatch("probe-reopen-1", [
-    { namespace: "kv", id: "k", value: "persisted-value" },
-  ]);
+  await store.commitBatch("probe-reopen-1", [{ namespace: "kv", id: "k", value: "persisted-value" }]);
   store.close();
   store = await IndexedDbStore.open(dbName, ["kv"]);
   try {
@@ -234,16 +218,12 @@ async function probeUpgrade(): Promise<{
   const dbName = "id-probe-upgrade";
   await IndexedDbStore.deleteDatabase(dbName);
   let store = await IndexedDbStore.open(dbName, ["a"], 1);
-  await store.commitBatch("probe-upgrade-1", [
-    { namespace: "a", id: "k", value: "v1-data" },
-  ]);
+  await store.commitBatch("probe-upgrade-1", [{ namespace: "a", id: "k", value: "v1-data" }]);
   store.close();
   store = await IndexedDbStore.open(dbName, ["a", "b"], 2);
   try {
     const preserved = await store.get("a", "k");
-    await store.commitBatch("probe-upgrade-2", [
-      { namespace: "b", id: "k", value: "v2-data" },
-    ]);
+    await store.commitBatch("probe-upgrade-2", [{ namespace: "b", id: "k", value: "v2-data" }]);
     const newStoreValue = await store.get("b", "k");
     return { preserved, newStoreValue };
   } finally {
@@ -286,9 +266,7 @@ async function probeStorage(): Promise<{
   }
 }
 
-export async function runInBrowser(fixture: {
-  vectors: FixtureStep[];
-}): Promise<unknown> {
+export async function runInBrowser(fixture: { vectors: FixtureStep[] }): Promise<unknown> {
   const run1 = await runVectors(fixture, "run1");
   const run2 = await runVectors(fixture, "run2");
   return {

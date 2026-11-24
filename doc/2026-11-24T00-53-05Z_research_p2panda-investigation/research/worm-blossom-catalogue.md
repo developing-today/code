@@ -3,7 +3,7 @@
 Research note for the capability-auth + peer-to-peer transport investigation
 (developing-today/code#13779). Companion to `willow-meadowcap.md` in this folder,
 which covers the Willow/Meadowcap specifications in depth; this note covers the
-*people, their public diary, and everything they maintain*, from their own pages.
+_people, their public diary, and everything they maintain_, from their own pages.
 
 Compiled 2026-11-23 from primary sources only: worm-blossom.org (front page +
 the three archive pages + the All Music / All Comics index pages),
@@ -12,7 +12,7 @@ willowprotocol.org, bab-hash.org, sneakerweb.org, the Codeberg organisation
 
 ## Counting method and totals
 
-- **Blog: 59 weekly updates.** The blog *is* a weekly diary — there are no
+- **Blog: 59 weekly updates.** The blog _is_ a weekly diary — there are no
   standalone posts; every update bundles editorials, announcements, a music
   pick, link notes, and a comic. Counted as update-blocks on the site's own
   archive index (https://worm-blossom.org/archive): **2025 = 12 updates**
@@ -27,9 +27,9 @@ willowprotocol.org, bab-hash.org, sneakerweb.org, the Codeberg organisation
   the archive's block count (some weeks are near-empty); the archive count
   above is the verifiable one.
 - **Two index pages** re-collect weekly segments and are not separate posts:
-  *All Music* (the playlists pages: every weekly song, plus album playlists)
-  and *All Comics* (https://worm-blossom.org/archive/comics/ — 43 comic
-  entries: 10 from 2025, 33 from 2026, including the multi-part *Blossoquest*
+  _All Music_ (the playlists pages: every weekly song, plus album playlists)
+  and _All Comics_ (https://worm-blossom.org/archive/comics/ — 43 comic
+  entries: 10 from 2025, 33 from 2026, including the multi-part _Blossoquest_
   serial).
 - **Projects: 20 maintained by the collective** (catalogued below), plus
   **3 independent third-party implementations** of their specs (Ourcana's
@@ -64,6 +64,7 @@ design · **[eco]** ecosystem/adoption · **[—]** no direct bearing.
 ## 2025 (archive_2025_2)
 
 ### 2025-W41 · Oct 6–12, 2025 — Diary launch; first `bab_rs` release
+
 Aljoscha's launch editorial: after a quiet year accumulating Willow work and
 technical debt under grant deadlines, worm-blossom will publish minimally
 useful subsets early, clear the backlog publicly, and post joyful weekly
@@ -73,10 +74,11 @@ storage; fully generic over Bab's parameterisation, shipping **WILLIAM3** as
 the recommended default; verified-streaming features planned (funded). Sammy:
 two Willow specs renamed — Willow General Purpose Sync → **Willow
 Confidential Sync**, Sideloading Protocol → **Willow Drop Format**.
-*Relevance: [enc][store] — Bab/WILLIAM3 is the hash layer under Willow'25
-payloads and verifiable streams; everything later in the diary builds on it.*
+_Relevance: [enc][store] — Bab/WILLIAM3 is the hash layer under Willow'25
+payloads and verifiable streams; everything later in the diary builds on it._
 
 ### 2025-W42 · Oct 13–19, 2025 — Ufotofu week; Frugal Async Rust
+
 Aljoscha: heavy **Ufotofu** week (docs, tests, doc-tests toward a proper
 release) — their Rust lazy-sequences library (producers/consumers, i.e.
 streams/sinks) that "served us well for our async needs while implementing
@@ -86,11 +88,12 @@ TypeScript-embedded templating language that generates willowprotocol.org
 **Frugal Async Rust** page published and **`frugal_async` crate released** —
 simplifying assumptions for async Rust (an awaitable Mutex example;
 smol-based). Sammy's editorial is about cooking.
-*Relevance: [rust] — Ufotofu and the frugal-async discipline (no `Send`
+_Relevance: [rust] — Ufotofu and the frugal-async discipline (no `Send`
 bounds, single-threaded futures) shape every later implementation choice,
-including a real framework incompatibility in 2026-W42.*
+including a real framework incompatibility in 2026-W42._
 
 ### 2025-W43 · Oct 20–26, 2025 — willowprotocol.org mega-update
+
 Sammy: 18 months of Willow work (Apr 2024–Oct 2025, NLnet-funded) published
 at once in a 67,020-additions mega-branch: Confidential Sync reworked to be
 **MITM-resistant** (Private Interest Overlap redesigned; a threat-model
@@ -100,10 +103,11 @@ Rust section with tutorials and rustdoc integration, front page redesigned.
 Miaourt's Bab contributions landed in that week's `willow25` release.
 Announcement: Joakim's contribution reinterprets Willow timestamps as **TAI**
 (leap seconds), surfacing epoch-choice pitfalls in the Rust `hifitime` crate.
-*Relevance: [sync][auth] — the public spec surface (Confidential Sync's
-privacy design, Willow'25 parameters) dates from this drop.*
+_Relevance: [sync][auth] — the public spec surface (Confidential Sync's
+privacy design, Willow'25 parameters) dates from this drop._
 
 ### 2025-W44 · Oct 27–Nov 2, 2025 — First `willow25` crate release
+
 Announcement: first `willow25` crate — the full Willow Data Model with
 Willow'25 parameters; highlights: optimised immutable `Path` with zero-copy
 prefix creation, `Timestamp` arithmetic, the core `Entry` struct; new Rust
@@ -111,12 +115,13 @@ tutorials. Aljoscha: the past year's Rust implementations are being reworked
 and re-released over coming weeks; roadmap: Groupings → Meadowcap → storage
 traits → in-memory + persistent stores → Drop Format; then slower work on
 application ideas, E2EE, network sync; Bab, Ufotofu, Macromania on the side.
-Also part 1 of the "why *is* this website called 'worm-blossom'?" series
+Also part 1 of the "why _is_ this website called 'worm-blossom'?" series
 (French revolutionary decimal time).
-*Relevance: [store][rust] — the implementation roadmap they then actually
-followed, in order, for a year.*
+_Relevance: [store][rust] — the implementation roadmap they then actually
+followed, in order, for a year._
 
 ### 2025-W45 · Nov 3–9, 2025 — `willow25` 0.2.0 groupings; `order_theory`
+
 Announcement: `willow25` 0.2.0 adds the `groupings` module (WillowRange,
 Range3d, Area, AreaOfInterest types; a `Grouping` trait so entries can be
 checked against any grouping). Aljoscha: **`order_theory` crate** published
@@ -129,10 +134,11 @@ website**. Aljoscha's essay traces ufotofu's lineage to SSB pull-streams
 (Dominic Tarr), xstream/callbag (André Staltz), and Go SSB's streams lib —
 his rejected Onward! 2024 stream-API essay became the ufotofu site's basis;
 the library has been "simmering for almost ten years."
-*Relevance: [auth][store] — Areas/groupings are the unit Meadowcap grants
-over; order_theory is the lattice toolkit underneath.*
+_Relevance: [auth][store] — Areas/groupings are the unit Meadowcap grants
+over; order_theory is the lattice toolkit underneath._
 
 ### 2025-W46 · Nov 10–16, 2025 — "…on 'fancy' CRDTs"; ufotofu codec traits
+
 Publishing day moves Monday→Friday; the **Rummager proposal was rejected**
 ("we'll just need to build out a prototype in our spare time"). The titled
 essay **"…on 'fancy' CRDTs"** argues Willow's last-write-wins choice: fine-
@@ -140,7 +146,7 @@ grained merge CRDTs "often require lugging around a complete history of
 changes, forever," while most connected apps (microblogging, chat, forums,
 media, issue trackers) author data alone then pool it — Willow focuses on
 "merging potentially huge collections of interleaved data," a system "we
-*know* we can make efficient." Announcement: **ufotofu minor release adding
+_know_ we can make efficient." Announcement: **ufotofu minor release adding
 codec traits** — `Encodable`/`Decodable` plus **relative encodings** (encode
 relative to context shared by encoder/decoder → delta encodings); many
 Willow encodings rely on this, and ufotofu's codec traits map directly onto
@@ -148,12 +154,13 @@ Willow's (relative) encoding relations. Aljoscha details the codec axioms
 (every value has an encoding; no two values share one; no encoding is a
 prefix of another) and the `codec::proptest` module (`assert_codec`) with
 coverage-guided fuzzing, which finds counterexamples in implementations
-*and in spec encoding definitions*; Meadowcap's Rust implementation is next.
-*Relevance: [sync][rust] — the LWW-over-history argument is the core design
+_and in spec encoding definitions_; Meadowcap's Rust implementation is next.
+_Relevance: [sync][rust] — the LWW-over-history argument is the core design
 bet Willow makes against log-based systems; relative encodings recur in the
-WTP design a year later.*
+WTP design a year later._
 
 ### 2025-W47 · Nov 17–23, 2025 — Interactive Data Model; `compact_u64`; the semilattice editorial
+
 Sammy built the **Interactive Willow Data Model** (browser toy: view/add
 entries, "sync" between three peers) for willowprotocol.org. Announcement:
 **`compact_u64` crate released** — the variable-length u64 encoding used
@@ -169,11 +176,12 @@ reconciliation, CALM-theorem reflections (Willow's overwriting entry =
 deletion inside a monotone system), and **sublattices as the formal basis
 of access control and partial sync — "it is no coincidence… every Willow
 Area induces a sublattice"**; also intent-preserving lattices (Pijul).
-*Relevance: [auth][sync] — this is the theory under Meadowcap Areas and
+_Relevance: [auth][sync] — this is the theory under Meadowcap Areas and
 under range-based set reconciliation: partial sync and scoped access are
-the same sublattice operation.*
+the same sublattice operation._
 
 ### 2025-W48 · Nov 24–30, 2025 — `meadowcap` crate released; the empty-ranges bug
+
 Announcement: **`meadowcap` crate released** — Rust implementation of the
 Meadowcap spec: authorise writing entries and whether a peer may request
 entries; access scoped to arbitrary Areas; holders can delegate, optionally
@@ -183,12 +191,13 @@ broke the `EncodeAreaInArea` relative encoding during the Meadowcap port;
 normalising would violate Willow's encoding axioms (equal values ⇔ equal
 encodings), so **empty groupings were removed from the spec entirely**;
 caught by a property test; cost days of refactoring.
-*Relevance: [auth] — Meadowcap as running Rust code dates from here (the
+_Relevance: [auth] — Meadowcap as running Rust code dates from here (the
 crate was later deprecated in favour of willow25's built-in module, see
 2026-W33); the bug story is a data point on their spec↔implementation
-feedback loop actually working.*
+feedback loop actually working._
 
 ### 2025-W49 · Dec 1–7, 2025 — willow25 gains batteries-included Meadowcap
+
 Announcement: **willow25 gains batteries-included Meadowcap** (ed25519
 instantiation; `WriteCapability::new_communal` example producing authorised
 entries); "with access control in place, willow25 is ready for… persistent
@@ -196,10 +205,11 @@ entry storage." Contribution: danmw added `Path::create_slice`/
 `Path::create_suffix` to willow25 (restructured Path internals for O(1)
 instead of O(n)). Aljoscha: forking BeepBox→AbyssBox (a fork-of-forks mod)
 to build the site's **playlists page** — the origin of the weekly music.
-*Relevance: [auth] — capability issuance/verification usable from the main
-crate; the communal-namespace entry point is the one an adopter calls.*
+_Relevance: [auth] — capability issuance/verification usable from the main
+crate; the communal-namespace entry point is the one an adopter calls._
 
 ### 2025-W50 · Dec 8–14, 2025 — WebTT spec; Bab storage internals
+
 Announcement: **WebTT (Web Tooltips) spec published** — lightweight nestable
 cross-domain tooltips for any website with no server-side logic: include a
 spec-compliant JS file + CSS, mark elements with `data-tooltip-anchor`
@@ -214,11 +224,12 @@ stream with skip annotations, decoupled from backends, guiding both
 producing and consuming; next: consuming/verifying streams into storage.
 Sammy: Splintercon (Paris) on the splinternet. Contribution call: willow25
 issue #21 (the spec's well-known default keypair enabling public access).
-*Relevance: [store][enc] — Bab's storage-first API design (the trait is
+_Relevance: [store][enc] — Bab's storage-first API design (the trait is
 tiny; a filesystem backend later took Sammy "next to nothing" to write) is
-the piece that makes verifiable partial payloads practical.*
+the piece that makes verifiable partial payloads practical._
 
 ### 2025-W51 · Dec 15–21, 2025 — `willow://` URIs; Drop Format revised; the Cobweb
+
 Announcements: **`willow://` URI scheme spec published** (denotes Willow
 Entries and Areas); **Drop Format spec updated** — partial entry payloads
 supported (powered by Bab, everything stays verifiable), **drop encryption
@@ -235,11 +246,12 @@ Mastodon, TiddlyWiki, Joplin. Sammy: FOSDEM talk accepted ("Willow - A
 family of peer-to-peer storage protocols"); implemented a **filesystem
 backend for Bab** (ByteStorage over `async-fs` File). Comic: Christmas
 "revoking your friends' keys" joke.
-*Relevance: [enc][sync] — note the spec-level honesty: drop *encryption*
+_Relevance: [enc][sync] — note the spec-level honesty: drop *encryption*
 was removed from the spec rather than hand-waved; encryption is an
-application-layer choice in their stack.*
+application-layer choice in their stack._
 
 ### 2025-W52 · Dec 22–28, 2025 — Maximalism post-mortem; `willow_data_model` 0.6.1; 2026 roadmap
+
 Sammy's year-end editorial, **the maximalism post-mortem**: Confidential
 Sync's complexity "radiated onto everything" (storage needed RBSR
 fingerprint/partition APIs and push-centric APIs; ufotofu needed a menagerie
@@ -268,14 +280,15 @@ persistent subscriptions resumed by offset + set-reconciliation catch-up;
 Confidential Sync rework comes last, informed by WTP; plus benchmarking
 suites, transactional store APIs, a peer-sampling service, Willow URIs
 implementation; application ideas Rummager + Cobweb.
-*Relevance: [sync][store][auth] — the single most decision-dense post of
+_Relevance: [sync][store][auth] — the single most decision-dense post of
 2025: it admits the flagship sync protocol was over-complex, demotes it,
 and lays out the pull-based WTP + capability-scoped server direction that
-the whole of 2026 then executes (and that Pillow later funds).*
+the whole of 2026 then executes (and that Pillow later funds)._
 
 ## 2026 Part 1 (archive_2026_1)
 
 ### 2026-W01 · Dec 29, 2025–Jan 4, 2026 — Unified media formats (design)
+
 Sammy: rest week, sketching the FOSDEM talk. Aljoscha: designing **unified
 simple media formats** for Cobweb/Rummager — one format per media type
 (image/audio/video) sharing structure: channels of integer samples,
@@ -284,31 +297,35 @@ interleaving with per-channel frequencies (chroma subsampling),
 encode samples verbatim), seeking via absolute samples + anti-monotone
 binary linking forward-pointers; target ~400 lines of C per format (QOI/QOA
 as models, ruled out as-is: no combined lossy+lossless).
-*Relevance: [—] mostly; the formats work recurs at W39 (seeking schemes)
-and feeds Cobweb/sneakerweb media ambitions.*
+_Relevance: [—] mostly; the formats work recurs at W39 (seeking schemes)
+and feeds Cobweb/sneakerweb media ambitions._
 
 ### 2026-W02 · Jan 5–11, 2026 — Bab stream verification breakthrough
+
 Sammy: FOSDEM talk in "concept phase." Aljoscha: reflective editorial on a
 creativity/coding block, ending with a **breakthrough on how to elegantly
 implement verification of incoming data streams in Bab** (details promised
 the following week).
-*Relevance: [enc] — incremental verification is Bab's core promise;
-implementation detail lands over the following weeks.*
+_Relevance: [enc] — incremental verification is Bab's core promise;
+implementation detail lands over the following weeks._
 
 ### 2026-W03 · Jan 12–18, 2026 — Light week
+
 Mines/extractivism comic (the metaphorical-mines series), music picks.
 No substantial technical content.
-*Relevance: [—].*
+_Relevance: [—]._
 
 ### 2026-W04 · Jan 19–25, 2026 — Pointer week
+
 Sammy: restructuring the FOSDEM talk — not "what Willow is" (the website
 does that) but "**why** is Willow like it is? What kind of world made us
 feel such a thing was necessary?" Aljoscha's editorial is mostly a pointer
 to Bab implementation notes on bab-hash.org.
-*Relevance: [—] light; the talk framing signals their positioning:
-motivations first, mechanism second.*
+_Relevance: [—] light; the talk framing signals their positioning:
+motivations first, mechanism second._
 
 ### 2026-W05 · Jan 26–Feb 1, 2026 — Bab slice verification lands; Open Collective
+
 Sammy: train to p2p-basel (listening, not speaking); FOSDEM talk retitled
 "**Willow - protocols for an uncertain future**." Announcement: **worm-
 blossom Open Collective opened** — all work (Willow, Bab, Ufotofu,
@@ -317,19 +334,21 @@ travelled to p2p-basel with Andreas + Glyph **from p2panda**; **Bab slice
 verification is implemented**, close to a simple storage backend storing a
 single contiguous slice; the FOSDEM deadline was self-imposed and "silly";
 Pijul's Pierre expected at Basel.
-*Relevance: [eco] — the p2panda connection is personal and long-standing
-(weekly calls, shared events) well before the Pillow collaboration.*
+_Relevance: [eco] — the p2panda connection is personal and long-standing
+(weekly calls, shared events) well before the Pillow collaboration._
 
 ### 2026-W06 · Feb 2–8, 2026 — Site restructure; motto list
+
 Aljoscha runs the update solo (Sammy at FOSDEM prep) with a parody letter
 from "Samy Gwylim"; the week's **motto list** includes "being-able-to-
 cross-a-moat-full-of-crocodiles-based access control" and "gardeners
 rather than architects." Announcement: **site restructure** — front page
 now shows only the eight most recent weekly updates; a full-archive page
 plus All Music and All Comics pages launched.
-*Relevance: [—] (and provenance for this catalogue's counting method).*
+_Relevance: [—] (and provenance for this catalogue's counting method)._
 
 ### 2026-W07 · Feb 9–15, 2026 — p2p-basel sessions: delay-tolerant UIs, "lazy identity"
+
 Sammy's double report. At p2p-basel she moderated "**delay tolerant UIs**"
 (authored data arriving a week later, divorced from context; instant-
 delivery UIs don't lift) and "**zero / low identity systems**" (digital
@@ -342,11 +361,12 @@ Aljoscha; recording exists) got a glowing reception; highlights include
 Modal Collective's secure p2p-heart OS talk, seeing **adz of p2panda**,
 meeting GNOME's Tobias Bernard; Miaourt + danmw attended. Aljoscha: taking
 a break (depressive episode).
-*Relevance: [auth] — "lazy identity" is their only identity-system sketch:
+_Relevance: [auth] — "lazy identity" is their only identity-system sketch:
 deliberately minimal, owner-derived, linkability-on-demand — consistent
-with Meadowcap's "no assumptions about what an identity is."*
+with Meadowcap's "no assumptions about what an identity is."_
 
 ### 2026-W08 · Feb 16–22, 2026 — Drop Format private encodings; ufotofu error design
+
 Sammy: implementing the **prerequisite encodings for the Drop Format** —
 Willow's **private encodings** (items decodable only with a bit of common
 knowledge; justified by compactness — squeezing maximal Willow data onto
@@ -359,29 +379,31 @@ the **ufotofu error-design discussion** Dan's work triggered — some methods
 direction: error cases return the original arguments; resolution: "normal"
 APIs requiring `Copy` items + clunkier `Clone` variants; **`Copy` exempts
 types from linear typing**, matching his mathematical mental model.
-*Relevance: [rust][enc] — private encodings are a compactness (not
+_Relevance: [rust][enc] — private encodings are a compactness (not
 confidentiality) mechanism; the error-design entry is a good sample of
-their API-design rigour.*
+their API-design rigour._
 
 ### 2026-W09 · Feb 23–Mar 1, 2026 — Private encodings merged; Bab backend logic done
+
 Sammy: **private path encoding, private area encoding, and private
 authorisation token encoding merged into willow_rs `main`** — all past the
 fuzz-testing apparatus; immediate goal: save/retrieve Willow data + at
 least one exchange path (Drop Format). Aljoscha: **Bab persistent backend
 logic in place** (remaining: rearrange public API, document, more tests).
 Why-worm-blossom part 4 (Dominic Tarr/SSB lineage; Git precedent).
-*Relevance: [auth][enc] — note there is a *private authorisation token
+_Relevance: [auth][enc] — note there is a *private authorisation token
 encoding*: Meadowcap tokens have a compact shared-knowledge encoding for
-the sneakernet path.*
+the sneakernet path._
 
 ### 2026-W10 · Mar 2–8, 2026 — Rust type-system limits; "persona" not "identity"
+
 Sammy: Internet Archive Europe HQ visit; **hit a dead end in how well Rust
 accommodates Willow's generic/parameterised ambitions** in willow_rs;
 started the **Drop Format implementation** (WIP PR) using liberal `todo!`
 macros — breadth-first vs her usual depth-first. Aljoscha's editorial,
 **the Rust type-system limits piece**: the generic implementation +
 non-generic willow25 wrappers (via a `wrapper!` macro, `repr(transparent)`
-unsafe) break down for wrappers of *composite* generic types (an
+unsafe) break down for wrappers of _composite_ generic types (an
 `AuthorisedEntry` = generic Entry + generic AuthorisationToken): the
 safety of the unsafe code would depend on how generics are instantiated,
 which the compiler cannot enforce — "an unholy abomination"; **decision:
@@ -393,11 +415,12 @@ deletion impossible in SSB; Earthstar founded 2020 by dropping immutability:
 deletion/editing, subset download in any order, one keypair across devices
 = keypair represents a person, not a device; but unlinked sets lose SSB's
 easy sync — the puzzle Aljoscha's set-reconciliation answers).
-*Relevance: [rust][auth] — the genericity retreat begins here and completes
+_Relevance: [rust][auth] — the genericity retreat begins here and completes
 at W33 (generics stripped, −15k lines); the Earthstar history explains why
-deletion + subset sync are Willow's founding requirements.*
+deletion + subset sync are Willow's founding requirements._
 
 ### 2026-W11 · Mar 9–15, 2026 — Persistent store ported to Fjall; keypair UX
+
 Sammy: **new persistent store for Willow** — a port of the previous
 sled-based persistent store to **Fjall** (translation "pretty
 straightforward"); store still missing payload methods (Store trait update
@@ -411,12 +434,13 @@ verification** well-documented and nearly releasable; creating a
 **Bab-aware store trait in willow25** to unblock Sammy's persistent store +
 Drop Format; aside: Brooklyn Zelenka's **bijou64** varint spec is an
 interesting variation on his older VARU64.
-*Relevance: [store] — the shipped persistent store is Fjall-backed (an
+_Relevance: [store] — the shipped persistent store is Fjall-backed (an
 embedded LSM kv-store), not SQLite — a concrete data point for storage-fit
 comparisons. Persona-not-identity is their answer to multi-device:
-one keypair = one persona, carried across devices by the user.*
+one keypair = one persona, carried across devices by the user._
 
 ### 2026-W12 · Mar 16–22, 2026 — `bab_rs` alpha: verifiable streaming + storage
+
 Announcement: **new `bab_rs` alpha release exposing verifiable streaming
 and data storage** — create storage backends for strings of a known hash,
 feed data piece by piece; prefix data is added, non-prefix data errors and
@@ -432,11 +456,12 @@ agreed conventions — a "pattern language." Contributions: **Ben Frye**
 added ufotofu adaptors (and found a bug in built-in consumers); **danmw
 given full ufotofu repo access + crates.io publishing rights and published
 ufotofu 0.10.1 himself** ("bus_factor += 1").
-*Relevance: [enc][store] — alpha caveats stated in the release
+_Relevance: [enc][store] — alpha caveats stated in the release
 announcement itself; capability UX ("root pass" language) flagged by the
-authors as the unsolved adoption problem.*
+authors as the unsolved adoption problem._
 
 ### 2026-W13 · Mar 23–29, 2026 — Payload storage via Bab; stateless+untrusted impossibility musing
+
 Sammy: XPUB (Rotterdam experimental publishing) talk report. Technical:
 **implemented payload storage in the new Willow persistent store using Bab
 — "streaming, verified storage."** Aljoscha: admin/teaching week; filed a
@@ -447,11 +472,12 @@ stateless+untrusted quadrant resists because untrusted-peer techniques rely
 on establishing shared context and referencing it later, "an inherently
 stateful business"; even stateful-client/stateless-server eludes him;
 intuition: actually impossible (left to future Aljoscha).
-*Relevance: [sync] — a stated open problem that directly shapes WTP's
+_Relevance: [sync] — a stated open problem that directly shapes WTP's
 final shape (it ends up supporting *both* stateful and stateless operation,
-W44/W35-36).*
+W44/W35-36)._
 
 ### 2026-W14 · Mar 30–Apr 5, 2026 — "Anti-design" talk; Super Drop Format sketch
+
 Sammy: DWeb virtual meetup lightning talk — storyline: data groupings →
 extractive capitalisation → Willow as "a kind of anti-design": **devalue
 data — make it illegible, disposable, impose a half-life on it through
@@ -462,30 +488,33 @@ CRDTs** (promised write-up); nerd-sniped into a "**Super Drop Format**"
 sketch: drops storing a 3D search tree so area queries run in logarithmic
 time in total entries (or linear in area size); "extremely low priority.
 Probably."
-*Relevance: [sync] — the anti-design framing (data should decay) is the
-philosophical root of traceless deletion and expiry-by-timestamp design.*
+_Relevance: [sync] — the anti-design framing (data should decay) is the
+philosophical root of traceless deletion and expiry-by-timestamp design._
 
 ### 2026-W15 · Apr 6–12, 2026 — SSB design mantras, kept and rejected
+
 Sammy: Prague aftermath (material banked on sneakernets, p2p UIs,
 collaboration); shadow-council comic. Aljoscha: **how SSB still influences
-his design work** — mantras kept: *no global singletons* (a dependency on
+his design work** — mantras kept: _no global singletons_ (a dependency on
 any global server/network/legal entity/blockchain "is brittle and will be
-co-opted"); *against consensus* (with nuance: a minimal, clearly-labelled,
+co-opted"); _against consensus_ (with nuance: a minimal, clearly-labelled,
 eventually-retirable unchanging foundation is valuable; everywhere
-evolution is desirable, no global consensus); *free listening* (listening
+evolution is desirable, no global consensus); _free listening_ (listening
 opt-in, not opt-out). Rejected SSB patterns: **immutability-by-default**,
 the **public follow-graph** (enables spidering/surveillance — "this
 tradeoff feels inacceptable to me by now"), and SSB's general
 virality/network-effect optimisation, which makes it "unsuitable for
 vulnerable users" — Willow may be "fated to being crowded out by projects
 that emphasise virality over privacy." Note: danmw contributed nicer skip
-+ filter adaptors to ufotofu; Sammy posted a clean version of her DWeb
-lightning talk.
-*Relevance: [auth][sync] — the clearest statement of their threat model
-and non-goals: no global anything, no public social graph, privacy over
-growth. Any composition with their work inherits these constraints.*
+
+- filter adaptors to ufotofu; Sammy posted a clean version of her DWeb
+  lightning talk.
+  _Relevance: [auth][sync] — the clearest statement of their threat model
+  and non-goals: no global anything, no public social graph, privacy over
+  growth. Any composition with their work inherits these constraints._
 
 ### 2026-W16 · Apr 13–19, 2026 — `willow25` 0.5.0-alpha.1 PersistentStore; sneakernet theory
+
 Why-worm-blossom part 6 (late 2019: Bamboo append-only logs can't support
 multi-device identity; sets are dual to logs; unions of sets are easy where
 merging logs isn't; Aljoscha's **set-union algorithm** presented at
@@ -493,20 +522,21 @@ p2p-basel 2020; Earthstar needs exactly that sync for mutable unlinked
 datasets; he chose his masters-thesis topic — fleshing out the set-union
 algorithm — "as a present to Cinnamon"). Sammy: **sneakernets** (from
 Prague) — her drop model rebuilt: sneakernets as **homeostatic** (data
-pushed out + *need* for data expressed; the overlap is a "hot zone" worth
-transporting); users should be able to *query* a drop (random access — the
+pushed out + _need_ for data expressed; the overlap is a "hot zone" worth
+transporting); users should be able to _query_ a drop (random access — the
 Super Drop Format nerd-snipe); Aljoscha's framing: **sneakernets are
 congestion control without explicit feedback** (a full USB drive forces
 choices = throttling; implicit feedback = tracking what you receive from
 others to prioritise what you send). Announcement: **`willow25`
 0.5.0-alpha.1** — the `storage` module with **`PersistentStore`** for
-on-disk Willow data; "an *alpha release*: we expect the persistent store
+on-disk Willow data; "an _alpha release_: we expect the persistent store
 to be buggy."
-*Relevance: [store][sync] — persistent storage exists but is labelled
+_Relevance: [store][sync] — persistent storage exists but is labelled
 buggy-alpha by its own authors; the set-union origin story is the
-intellectual root of RBSR.*
+intellectual root of RBSR._
 
 ### 2026-W17 · Apr 20–26, 2026 — Interfaces for p2p applications
+
 Sammy: **rethinking interfaces for p2p applications** (Prague session) —
 chat interfaces presume orderly, timely delivery; p2p data may arrive long
 after authoring, out of context; every device has a different view (email
@@ -516,10 +546,11 @@ types; archival/canonicity question (are p2p systems inherently
 ahistoric?); emblems: the centralised **linear ledger** vs the p2p
 **scattered pinboard**. Also: building the **bab-hash.org website**;
 curating the **p2p tent at DWeb Camp**. Aljoscha: no code (life confluence).
-*Relevance: [—] for the protocol decision; useful signal that their UX
-thinking assumes divergent, stale views as normal.*
+_Relevance: [—] for the protocol decision; useful signal that their UX
+thinking assumes divergent, stale views as normal._
 
 ### 2026-W18 · Apr 27–May 3, 2026 — bab-hash.org launched
+
 Announcement: **bab-hash.org launched** — a dedicated Bab website ("our
 cutest website yet"); `bab_rs` framed as a "batteries-included" API going
 beyond digests to persisting Bab-annotated data to disk (as used by
@@ -533,10 +564,11 @@ that can store **multiple subslices of a single string and append to them
 concurrently** (the website promises parallel downloads from multiple
 peers, "so the implementation better catch up"); optimised Bab slice
 streaming still to test.
-*Relevance: [enc] — Bab's stated design centre: verifiable partial data
-(resume, reject malicious slices, multi-source download).*
+_Relevance: [enc] — Bab's stated design centre: verifiable partial data
+(resume, reject malicious slices, multi-source download)._
 
 ### 2026-W19 · May 4–10, 2026 — Bab fuzzing; Seasonal Clock sighting
+
 Sammy on break. Aljoscha: making the Bab high-level picture precise —
 **fuzzing the Bab implementation, finding integer overflows**,
 documenting/asserting invariants to turn low-level failures into semantic
@@ -544,28 +576,30 @@ concepts. Project sighting: the **Seasonal Clock** (seasonalclock.org) —
 "a worm-blossom project we have not really posted about here before";
 Gergely Polonkai is porting it to **Pebble e-paper watches** (via SSB) and
 seeks pixel-art help drawing its 24 emoji (commission offered).
-*Relevance: [enc] — fuzzing is finding real overflow bugs in Bab at this
-stage; maturity evidence, not a scandal — they publish it themselves.*
+_Relevance: [enc] — fuzzing is finding real overflow bugs in Bab at this
+stage; maturity evidence, not a scandal — they publish it themselves._
 
 ### 2026-W20 · May 11–17, 2026 — 3D zip-trees fiesta
+
 Aljoscha, three editorials: (1) a **visual guide to zip-trees** + the last
 missing algorithms for **3D zip-trees** (Willow's 3D data model needs 3D
 data structures; existing multidimensional structures all have problems);
 a graphical algorithm notation developed as a pseudocode replacement.
 (2) Complexity analysis: in a logarithmic-height tree, queries are
 logarithmic; **updates logarithmic on average but worst-case O(n^0.792)**
-(master theorem, 3 subproblems of size n/4) — "not *great*, but probably
+(master theorem, 3 subproblems of size n/4) — "not _great_, but probably
 good enough maybe?… R-trees and their ilk typically just hope for the
 best." Definition of **2D zip-trees** (4-ary tree; root = maximal-rank
 point; quadrants recurse). (3) **2D skip lists** defined recursively and
 shown **isomorphic to 2D zip-trees**; connectivity: a directed path exists
 between any two vertices; generalises to higher dimensions.
-*Relevance: [store] — the 3D-indexing problem that dominated their storage
+_Relevance: [store] — the 3D-indexing problem that dominated their storage
 roadmap — until Amparore's denormalisation insight (W45) dissolved it.
 The honest worst-case bound is characteristic: they publish the ugly
-number.*
+number._
 
 ### 2026-W21 · May 18–24, 2026 — Skip-list correction; G-trees generalised
+
 Sammy returns after surgery (short editorial). Aljoscha: **correction to
 W20** — the 2D skip-list's links from top-right/bottom-left sublists back
 to the pivot are **not needed**; the variant without them should be the
@@ -577,10 +611,11 @@ maintenance not logarithmic — acceptable since G-nodes are small w.h.p.);
 the same generalisation for skip lists yields **skip-skip-lists**
 (isomorphic to zip-zip-trees); musing that his PhD should be about data
 structures, not append-only-log research he "barely care[s] about anymore."
-*Relevance: [store] — public self-correction within a week; the storage
-substrate research was still unsettled mid-2026.*
+_Relevance: [store] — public self-correction within a week; the storage
+substrate research was still unsettled mid-2026._
 
 ### 2026-W22 · May 25–31, 2026 — Sneakerweb announced; Bab fuzz status
+
 Sammy: **Summer'26 edition of worm-blossom.org launched** (seasonal
 redesign); DWeb Camp p2p track planning; both will attend and talk on
 Willow, "and there's also something else we'd like to showcase…" —
@@ -600,11 +635,12 @@ at Dwebcamp!" Aljoscha: **Bab fuzz-test status** — a massive fuzz test
 optimisation options): **with all optimisations disabled it cannot find
 crashes any longer; some optimisations still don't work** and he may have
 to revisit the actual verification logic rather than fix off-by-ones.
-*Relevance: [eco][enc] — sneakerweb is the flagship Willow application;
+_Relevance: [eco][enc] — sneakerweb is the flagship Willow application;
 Bab's optimised paths were still broken at announcement time (they say
-so).*
+so)._
 
 ### 2026-W23 · Jun 1–7, 2026 — First interview: Ourcana (a Dart Willow in production); dripdrop; `bab_rs` 0.6.0
+
 Sammy: sneakerweb front page design — browsing to `sneakerweb.localhost`
 shows an overview of your collected sites; rejected a `.sneakerweb`
 metadata-file approach as dull/bureaucratic; inspired by webrings and
@@ -616,8 +652,8 @@ personality states) built after Simply Plural announced its shutdown;
 ~**9,000–10,000 users** estimated (no analytics, by privacy design;
 installs + Discord); Sarah **wrote her own Willow implementation in Dart**
 (Flutter clients on iOS/Android/Windows/Mac/Linux/web; the Rust
-implementation runs on always-on server nodes — "Rust… is a *service*.
-Flutter and Dart are for *clients*"); she matched the Rust implementation
+implementation runs on always-on server nodes — "Rust… is a _service_.
+Flutter and Dart are for _clients_"); she matched the Rust implementation
 "over the wire in a bit-perfect way" as her correctness criterion; she
 plans to **open-source the Dart Willow submodule, a client implementing
 the WTP draft spec**; design driver: communal backup — "your friends can
@@ -625,7 +661,7 @@ hold onto things for you" without being able to mutate, tamper with, or
 (if encrypted) read them; servers open-source from the start, any client
 to any number of servers. Aljoscha: **the Bab fuzz test no longer
 crashes** — left label omission was the tricky part (fixed); right label
-omission on and "everything *continued working*"; **released as `bab_rs`
+omission on and "everything _continued working_"; **released as `bab_rs`
 0.6.0**; next: a backend storing multiple non-overlapping subslices.
 Also: **Drop Format spec revised** (motivated by sneakerweb) — the old
 count-prefixed encoding breaks when the store is modified concurrently
@@ -639,13 +675,14 @@ to a TCP connection**; Aljoscha coins "**dripdrop**" for this streaming
 use — one-directional streaming sync for Willow — and notes it could let
 him **remove roughly a third of the WTP spec** (the client-push part that
 fits pull-based WTP poorly).
-*Relevance: [eco][sync] — the strongest adoption evidence in the whole
+_Relevance: [eco][sync] — the strongest adoption evidence in the whole
 diary: an independent implementer running a Willow service for ~10k users,
 bit-compatible with the Rust implementation, and her production feedback
 changing the Drop Format spec. Also: the WTP's shape was still negotiable
-mid-2026.*
+mid-2026._
 
 ### 2026-W24 · Jun 8–14, 2026 — Sneakerweb front page; `bab_rs` 0.6.1; Bab grant concludes
+
 Sammy: DWeb Camp prep; sneakerweb front page implemented with arbitrary
 `sneakerweb.html` iframes (sandboxed previews); sneakerweb spec drafting
 begun. Aljoscha: **finished `bab_rs` 0.6.1** — adds a storage backend that
@@ -656,10 +693,11 @@ External Bab activity: a **Zig implementation of Bab is in the works by
 folks involved with Spritely**; Sarah is contributing **SIMD-optimised
 assembly to `bab_rs`** (expected 2–4× hash speedup; shoutout deferred
 until merged).
-*Relevance: [enc][eco] — Bab's funded development ends here; a second
-independent implementation (Zig) appears — which matters at W26.*
+_Relevance: [enc][eco] — Bab's funded development ends here; a second
+independent implementation (Zig) appears — which matters at W26._
 
 ### 2026-W25 · Jun 15–21, 2026 — Bab project finished; ufotofu-first Drop Format
+
 Sammy's illustration celebrates finishing the funded Bab project; funding
 exhausted, grant applications in the pipeline. Sammy + Dan pairing on the
 **Ufotofu-first Willow Drop Format implementation** — drop encodings can
@@ -670,36 +708,38 @@ in memory"; a composable API someone can chain into e.g. an entry filter;
 a proper writeup of **truncated exponential golomb codes**; decided the
 residual encoding for the media formats (open: seeking mechanism, audio
 sample predictor); started drafting an introduction to p2p systems design.
-*Relevance: [rust][sync] — streaming/composable APIs are a hard requirement
+_Relevance: [rust][sync] — streaming/composable APIs are a hard requirement
 their own application imposed on the library; the Drop Format
-implementation is ufotofu-shaped.*
+implementation is ufotofu-shaped._
 
 ### 2026-W26 · Jun 22–28, 2026 — WILLIAM3 digest bugs found by the Zig implementers; ufotofu equality semantics
+
 Sammy: DWeb Camp events announced (**The Willow Skill Tree** talk,
-**Sneakerweb workshop**, demo night market); *sammy's guide to the
-sneakerweb* prepared as sneakerweb-only content (never to be published on
+**Sneakerweb workshop**, demo night market); _sammy's guide to the
+sneakerweb_ prepared as sneakerweb-only content (never to be published on
 the www); sneakerweb hardening grant writing ("whether we can harden the
 sneakerweb enough that it becomes useful in adversarial environments").
 Aljoscha: **the folks implementing Bab in Zig found a bug in `bab_rs` that
 produced incorrect WILLIAM3 digests; then he found more bugs; the
 implementation still appears to diverge from BLAKE3 in ways it shouldn't;
 no complete fixes published yet.** Also a long ufotofu semantics result
-with Dan: producer equality — slurping is *not* fully transparent (it may
+with Dan: producer equality — slurping is _not_ fully transparent (it may
 report errors item-production wouldn't), so either allow observable
 side-effects in `ProducerExt::equals` or make `slurp`/`flush` infallible
 (`()` return); infallible flush is unjustifiable (flush ≈ `fsync`; a
 silently failing fsync is absurd) → **API unchanged, mental model of
 producer equality adjusted instead** ("we are nothing if not pragmatic").
 And: two albums finished, to be distributed via sneakerweb only.
-*Relevance: [enc] — critical maturity evidence: as of June 2026 the
+_Relevance: [enc] — critical maturity evidence: as of June 2026 the
 reference WILLIAM3 implementation produced wrong digests (found by an
 independent implementer — the multi-implementation strategy working as
 intended). Fixed by 0.8.0 (W28), but any "should we use Bab" decision
-must price this history in.*
+must price this history in._
 
 ## 2026 Part 2 (archive_2026_2)
 
 ### 2026-W27 · Jun 29–Jul 5, 2026 — Sneakerweb RELEASED
+
 Announcement: **sneakerweb released** — "a small application for storing,
 browsing, and sharing static websites without relying on the internet at
 all"; install the CLI from sneakerweb.org; worm-blossom will bring
@@ -710,11 +750,12 @@ first **Willow Drop Format data exchanged and ingested** end-to-end — "I
 am storing and reading a site that Sammy created. And it all runs on our
 own protocols and software. Willow feels so very real all of a sudden!"
 (Thanks to Dan's contributions for the running software.)
-*Relevance: [eco] — the flagship application ships; Willow's stack
+_Relevance: [eco] — the flagship application ships; Willow's stack
 (data model + Meadowcap + Drop Format + Bab + Fjall store) carries a real
-product.*
+product._
 
 ### 2026-W28 · Jul 6–12, 2026 — `bab_rs` 0.8.0: WILLIAM3 verified; guest articles
+
 Aljoscha: **WILLIAM3 bug fixes** — Vivicat spotted and fixed several bugs;
 "our WILLIAM3 implementation produces the same digests as a BLAKE3
 implementation when undoing exactly the bits that differ between the two
@@ -730,12 +771,13 @@ can advertise/discover services and open direct high-bandwidth links
 but Apple/Google force a manual system pairing prompt for apps while
 exempting their own Find My/AirDrop, which "kinda make[s] our dreamed p2p
 wireless internet useless."
-*Relevance: [enc][eco] — WILLIAM3's correctness is re-established via
+_Relevance: [enc][eco] — WILLIAM3's correctness is re-established via
 cross-implementation checking (BLAKE3 modulo the spec deltas). The Wi-Fi
 Aware piece is their only transport-adjacent writing: platform gatekeeping,
-not protocol design, is the blocker they identify for proximity sync.*
+not protocol design, is the blocker they identify for proximity sync._
 
 ### 2026-W29 · Jul 13–19, 2026 — DWeb Camp report
+
 Sammy: sneakerweb at DWeb Camp — demo night market table, a workshop
 (participants claimed domains, exported `.snk` files), Aljoscha
 coordinating physical distribution by USB key; sneakerwebsites reached
@@ -747,34 +789,37 @@ Aljoscha: post-camp editorial — the politics of the space (software that
 design "is going to be far from a neutral technical document."
 Contribution call: curated good-first-issues in the sneakerweb tracker;
 help wanted with cross-compilation for Windows/macOS builds.
-*Relevance: [eco] — real-world sneakernet distribution worked socially,
-not just technically; the project has outside contributors and press.*
+_Relevance: [eco] — real-world sneakernet distribution worked socially,
+not just technically; the project has outside contributors and press._
 
 ### 2026-W30 · Jul 20–26, 2026 — Seasonal Clock icons; next phase = networked communication
+
 The Hummingcrow icon set for the **Seasonal Clock** (commissioned by
 Gergely Polonkai for the Pebble port; 24 hour-icons at 32px/48px, colour +
 1-bit versions, CC-BY-SA-4.0, in Gergely's repo) is showcased. Sammy
 (holiday editorial): "**The next phase of Willow will be about exploring
-what sits *just* above the extreme latency of the Drop Format and
+what sits _just_ above the extreme latency of the Drop Format and
 sneakerweb. So: networked communication.** My plan is to use the sneakerweb
 itself to find the limits of comfort… (this is what people call 'drinking
 your own champagne')." Guest editorial by Emmy (lino printing; a Rust
 code-joke marking her name change from Dan).
-*Relevance: [sync] — explicit sequencing: sneakernet first, internet sync
-(WTP) second, dogfooded through their own app.*
+_Relevance: [sync] — explicit sequencing: sneakernet first, internet sync
+(WTP) second, dogfooded through their own app._
 
 ### 2026-W31 · Jul 27–Aug 2, 2026 — Why-worm-blossom part 8 (Seasonal Clock origin)
+
 The series explains the Seasonal Clock's origin: Sammy's Earthstar apps
-(microblogging; *Twodays Crossing*, a roleplaying chatroom whose messages
+(microblogging; _Twodays Crossing_, a roleplaying chatroom whose messages
 fade over 48 hours) needed a "low res timestamp" that isn't a number —
 fractions of the day as symbols (a seed, a leaf, a tree, a shell);
 Cinnamon seized on the idea (spreadsheet), and in early 2021 pulled it out
 into the standalone **Seasonal Clock** app during "a golden era for the
 Earthstar community."
-*Relevance: [—] background; establishes the Seasonal Clock as Cinnamon's
-design, stewarded by the collective (see project entry).*
+_Relevance: [—] background; establishes the Seasonal Clock as Cinnamon's
+design, stewarded by the collective (see project entry)._
 
 ### 2026-W32 · Aug 3–9, 2026 — WTP spec work: keep RequestPut; Broadcast-Based Programming
+
 Aljoscha: published **Broadcast-Based Programming** (on his personal site
 aljoscha-meyer.de) — a language-design sketch structuring a PL around
 broadcasting information rather than method calls on objects (abandons
@@ -795,12 +840,13 @@ verification metadata); define `GetMany` responses; define encodings;
 sketch Rust types for all messages (enums instead of optional-field rules).
 Sammy: unified navigation ("mega bar") planned across the worm-blossom /
 Willow / Bab / sneakerweb sites.
-*Relevance: [sync][auth] — the WTP's connection-start detail matters for
+_Relevance: [sync][auth] — the WTP's connection-start detail matters for
 any capability composition: read capabilities are *presented and proven*
 at session start in the current draft; write-only flows are being
-explicitly designed for.*
+explicitly designed for._
 
 ### 2026-W33 · Aug 10–16, 2026 — Generics stripped: `willow25` 0.7.0; old crates deprecated
+
 Aljoscha: "**we stripped out all generics from our Rust Willow
 implementation.** … The pull request ends up reducing our lines-of-code by
 about 15000. We have published the new code as **`willow25` 0.7.0**, and
@@ -817,18 +863,20 @@ blockchain/IPFS library schemes: "that… seems a bit excessive"); the
 editorial notes the p2panda crew's trajectory (festival planning →
 Hoffnung3000 → p2panda → Toolkitty) as the pull-based-general-framework
 path deliberately not taken.
-*Relevance: [rust] — a major maturity signal, in both directions: the
+_Relevance: [rust] — a major maturity signal, in both directions: the
 codebase is now concrete Willow'25 only (the generic spec-parameterised
 library is abandoned), and the canonical crates going forward are
 `willow25` alone. Anyone evaluating "the Meadowcap crate" should know it
-is deprecated in favour of willow25's built-in support.*
+is deprecated in favour of willow25's built-in support._
 
 ### 2026-W34 · Aug 17–23, 2026 — Thin week
+
 Sammy with the kids (no work attempted); a music note. No technical
 content.
-*Relevance: [—].*
+_Relevance: [—]._
 
 ### 2026-W35 · Aug 24–30, 2026 — PILLOW: the p2panda × worm-blossom collaboration; WTP encoding realisations
+
 Sammy's announcement editorial: in March, at a hotel bar with **adz,
 glyph, and sam from p2panda**, they drafted a joint grant proposal hours
 before its deadline. "**Pillow is a new collaboration between p2panda and
@@ -849,7 +897,7 @@ fully self-contained — and therefore indistinguishable from eagerly pushed
 messages) vs stateful requests (request IDs + relative encodings, e.g.
 omitting the namespace from a response); **cancellation** semantics —
 no sensible cancellation for stateless requests; stateful cancellation
-must normally be confirmed before state can be freed, *but*
+must normally be confirmed before state can be freed, _but_
 length-prefixing responses lets a receiver discard an unwanted response
 and keep decoding, giving immediate non-interactive cancellation. Then the
 follow-up: `ResponseGet` and `RequestPut` carry the same information
@@ -859,15 +907,15 @@ relative encodings enables **both symmetric and asymmetric RBSR** (the old
 design was client-driven asymmetric only). Contrast drawn with
 Confidential Sync (mandatory stateful encodings, mandatory cooperative
 cancellation) — WTP is explicitly designed to do better.
-*Relevance: [sync][auth][eco] — the single most decision-relevant post of
-2026. p2panda — the project this estate is leaning toward — has itself
+_Relevance: [sync][auth][eco] — the single most decision-relevant post of 2026. p2panda — the project this estate is leaning toward — has itself
 chosen Willow peers as its availability layer, with Meadowcap as the
 permission system for oblivious storage. That is the composed stack
 (p2panda data plane + Willow support peers) being built by the two teams
 jointly, with WTP as the wire protocol. It also confirms WTP's design is
-still moving (message types merged this week).*
+still moving (message types merged this week)._
 
 ### 2026-W36 · Aug 31–Sep 6, 2026 — "Support peers are not servers"; test vectors; the big todo list
+
 Sammy's essay defending support peers against "that's just another name
 for a server": servers are high-uptime but **not fungible** (a Mastodon
 instance being down can't be substituted); peers are fungible but
@@ -892,13 +940,14 @@ Willow25 yet"**; API/implementation designs for that encryption; encrypted
 sneakerweb sites (backwards-compatible, ideally); a Willow-powered email
 alternative sketch + its encryption issues; Macromania website/macros;
 more test vectors for Willow and Bab.
-*Relevance: [enc][store][auth] — straight from the author's list:
+_Relevance: [enc][store][auth] — straight from the author's list:
 at-rest encryption for Willow'25 is *designed generically, not yet
 instantiated*; RBSR store traits are the active implementation frontier;
 ed25519 has both an open ambiguity issue and acknowledged post-quantum
-exposure.*
+exposure._
 
 ### 2026-W37 · Sep 7–13, 2026 — Test vectors catch a serious capability-verification bug; willow-ts
+
 Contribution notes: **Freckles**, scrutinising the test vectors because
 they are writing **a TypeScript implementation of Willow** (browser
 Willow), "found a rather serious missing check in our capability
@@ -909,12 +958,13 @@ without blocking them; merged into fix-all-the-things). Sammy: the
 "mega bar" navigation is live across the worm-blossom sites; **new Willow
 tutorials being written now that the Store and Drop Format APIs have been
 published** — writing them surfaces beginner-viewpoint design flaws.
-*Relevance: [auth][eco] — two-sided evidence: the capability verifier had
+_Relevance: [auth][eco] — two-sided evidence: the capability verifier had
 a serious missing check (found late 2026, by an external implementer),
 *and* their test-vector programme is exactly what caught it. A third
-implementation (TypeScript) is underway.*
+implementation (TypeScript) is underway._
 
 ### 2026-W38 · Sep 14–20, 2026 — WTP cast into Rust types; media seeking schemes
+
 Sammy: BYOW webcraft meetup report (Rotterdam). Aljoscha: media-format
 **seeking schemes** — two designs for logarithmic segment seeking with
 single-pass O(1)-memory encoding: a backwards skiplist over segments
@@ -927,18 +977,20 @@ and cast it into a single ~~specification~~ **collection of Rust types**
 for the different message types… I hope I can gather some feedback (from
 Heni in particular :3)" — i.e. the Ourcana/Dart implementer is a design
 reviewer for WTP. He hopes "the WTP design will stay mostly stable" now.
-*Relevance: [sync] — WTP exists as Rust types awaiting feedback, not yet
+_Relevance: [sync] — WTP exists as Rust types awaiting feedback, not yet
 as a wire encoding or implementation; the design review loop includes the
-one production implementer.*
+one production implementer._
 
 ### 2026-W39 · Sep 21–27, 2026 — Thin technical week
-Sammy: LLM/chat-interface editorial (Kate Bush's *Deeper Understanding*);
+
+Sammy: LLM/chat-interface editorial (Kate Bush's _Deeper Understanding_);
 contributed content from meetup attendees. Aljoscha: nothing to report
 (vacation/cold) + a programming-language design sketch (interface-only
 type system; equality from publicly observable behaviour only).
-*Relevance: [—].*
+_Relevance: [—]._
 
 ### 2026-W40 · Sep 28–Oct 4, 2026 — Sneakerweb 1.2.0 released
+
 Announcement: **sneakerweb 1.2.0** — importantly, collections can now be
 browsed from **Chromium and WebKit browsers (Chrome, Safari)**: the
 problem was the **base16 encoding previously used for domains**, which
@@ -949,11 +1001,12 @@ curating your collection"); `serve`/`publish` respect **custom collection
 locations** (independent collections; "a stopgap to more complete
 collection organisation"). Downloads at sneakerweb.org; full changelog on
 Codeberg; thanks to Emmy, slug, and interfect for contributions.
-*Relevance: [eco] — a shipped, versioned product with a changelog and
+_Relevance: [eco] — a shipped, versioned product with a changelog and
 outside contributors; the base16→base32 fix is a real-world encoding
-lesson (hostname length limits) from production use.*
+lesson (hostname length limits) from production use._
 
 ### 2026-W41 · Oct 5–11, 2026 — Store tutorial published; Pillow support-node work begins
+
 Announcement: **a new Store tutorial on willowprotocol.org** — willow25's
 storage APIs (released two months earlier; "the same APIs we use to power
 sneakerweb") now have a walkthrough: instantiate a store, insert an entry,
@@ -966,7 +1019,7 @@ with any other peer which understands WTP. You'll be able to configure
 them with capabilities (so that they know what to sync), set storage
 limits (so that your Pi with 4gb of storage can pitch in), and configure
 if it should sync with other support nodes too. So it's got to be a little
-TCP server which can field WTP requests, *and* a HTTP server which serves
+TCP server which can field WTP requests, _and_ a HTTP server which serves
 up a web UI for administration." Framework research: she likes **Rocket**'s
 shape and plans to practise by refactoring sneakerweb's (single-threaded,
 "very relaxed pace") HTTP server to Rocket first — then use it for Pillow.
@@ -978,12 +1031,13 @@ bundled with their transitive citations; sneakerweb enables the same thing;
 proposes **sneakerdep**: a `/sneakerdeps.json` per site listing depended-on
 domains, enabling transitive extraction of a self-contained collection and
 lazy/on-demand partial downloads of large "papers."
-*Relevance: [sync][auth][eco] — Pillow's support node is, in estate terms,
+_Relevance: [sync][auth][eco] — Pillow's support node is, in estate terms,
 a capability-configured always-on relay/store peer with an admin UI —
 the closest existing analogue to the "dumb relay" tier in composed-stack
-designs, and it is being built now, not vapourware-roadmapped.*
+designs, and it is being built now, not vapourware-roadmapped._
 
 ### 2026-W42 · Oct 12–18, 2026 — `ufotofu` 0.12.7 (tokio wrappers); Rocket experiment FAILS on frugal async
+
 Announcement: **ufotofu 0.12.7 released**, featuring **compatibility
 wrappers for the tokio async runtime** — "Now you can use, say, a
 tokio-provided TCP stream with ufotofu." Sammy: the Rocket experiment's
@@ -992,7 +1046,7 @@ Willow'25 working with tokio, but only with the `current_thread`
 (i.e. single-threaded) flavour of tokio. Rocket requires a multi-threaded
 environment. Ufotofu and willow25's incompatibility with a multi-threaded
 environment is due to our adherence to **Frugal Async Rust**." She wonders
-whether to be concerned "that Willow and Ufotofu *can't* work in
+whether to be concerned "that Willow and Ufotofu _can't_ work in
 multi-threaded runtimes, or whether I happened to stumble into the one
 situation (Rocket) where this was a showstopper." Pivot: **Axum** (works
 with single-threaded tokio) for sneakerweb and, by extension, the Pillow
@@ -1004,15 +1058,16 @@ moving/transformation, automatic stylesheet/script dependency injection;
 KaTeX now renders on worm-blossom.org "in a principled way").
 Why-worm-blossom penultimate instalment: Sammy inherits Earthstar
 stewardship from Cinnamon (2022); Earthstar's sync was "theoretically the
-worst possible implementation imaginable: two peers exchange *everything*
+worst possible implementation imaginable: two peers exchange _everything_
 they have"; Aljoscha recruited for set reconciliation.
-*Relevance: [rust] — a hard, named constraint for any adopter: the whole
+_Relevance: [rust] — a hard, named constraint for any adopter: the whole
 Willow/ufotofu stack is single-threaded-tokio only (`current_thread`),
 by deliberate design (no `Send` futures). Compositions must budget for
 that (e.g. a dedicated thread/runtime per peer), and the authors
-themselves flag it as an open worry.*
+themselves flag it as an open worry._
 
 ### 2026-W43 · Oct 19–25, 2026 — Emmy joins worm-blossom; first anniversary
+
 Announcement: "**Emmy Walker is officially joining as worm-blossom's third
 member.** Emmy caught our attention with their high quality contributions
 to Ufotofu, and has been a driving force behind sneakerweb. Emmy will
@@ -1030,38 +1085,40 @@ currently using the most" yet least progressed); **multidimensional
 G-trees** definition (generalising 2D zip-trees to 2D G-trees; insertion/
 deletion "left as an exercise to the reader"). Final why-worm-blossom
 instalment: the name is a Seasonal Clock time ("speak to you at
-*worm-blossom*"); the weekly p2p call circle includes Sam Andreae and
+_worm-blossom_"); the weekly p2p call circle includes Sam Andreae and
 glyph of p2panda; Sammy + Aljoscha built a TypeScript RBSR implementation
-for Earthstar (Sammy wrote a *monoid skip list*).
-*Relevance: [eco] — team of three now, with the third member assigned to
+for Earthstar (Sammy wrote a _monoid skip list_).
+_Relevance: [eco] — team of three now, with the third member assigned to
 WTP implementation for Pillow; the SummarisableStorage trait is the RBSR
-store API landing.*
+store API landing._
 
 ### 2026-W44 · Oct 26–Nov 1, 2026 — New WTP specification uploaded
+
 Announcement: "**We have uploaded a new version of the Willow Transport
 Protocol specification.** We will start implementing things based on this
 spec, so any and all feedback is highly welcome. The WTP is a protocol by
 which peers can exchange Willow data. It supports both **pull-based** (one
 peer issues a request, the other responds) and **push-based** (one peer
-issues a *long-lived* request, and the other can continuously send new
+issues a _long-lived_ request, and the other can continuously send new
 matching data over time) communication. It can **resume interrupted
 payload transfers through the power of Bab**. It can do **efficient set
 reconciliation**. It supports both **stateful or stateless operation**.
 Oh, and **it doesn't have an actual on-the-wire encoding yet.** We will
 start working on that after there's been a bit of time for feedback."
 New column launched: **Auntie Source** (agony-aunt for open source).
-*Relevance: [sync] — the definitive WTP status: spec (sans wire encoding)
+_Relevance: [sync] — the definitive WTP status: spec (sans wire encoding)
 published and declared implementable-for-feedback; push subscriptions are
 back in (as long-lived requests) despite the 2025 pull-based doctrine —
-the doctrine yielded to a cleaner formulation.*
+the doctrine yielded to a cleaner formulation._
 
 ### 2026-W45 · Nov 2–8, 2026 — Amparore's denormalisation: AreaSlices dissolve the 3D storage problem
+
 Aljoscha: an email from **Elvio Amparore** ("Some observations on Willow
 storage and RBSR," building on his 2026 papers on range-based set
 reconciliation via range-summarisable order-statistics stores) "was so
 impressive that we immediately started reworking the WTP spec and several
 pages of Willow docs. Put simply: **it is possible to efficiently answer
-arbitrary Area queries *without multidimensional data structures*.**" The
+arbitrary Area queries _without multidimensional data structures_.**" The
 idea: **denormalisation** — materialise additional one-dimensional indexes
 instead of one multidimensional structure. Per-subspace 2D trees
 (timestamp × path) plus an all-subspaces tree reduce 3D→2D; a further
@@ -1081,13 +1138,14 @@ runtimes friction again ("five hours of coding and then running face-first
 into a brick wall of inscrutable Rust compiler errors concerning the
 `Send` trait"), but reconcilable. Emmy: **SummarisableStore** work
 progressing on the Amparore clarity.
-*Relevance: [store][sync] — the estate-relevant consequence: a Willow
+_Relevance: [store][sync] — the estate-relevant consequence: a Willow
 store no longer needs an exotic 3D index; denormalised 1D/2D indexes
 (a design any SQL/kv backend can express) suffice for Area queries and
 RBSR. This materially lowers the cost of a libsql/SQLite Willow store —
-the gap the earlier research note flagged.*
+the gap the earlier research note flagged._
 
 ### 2026-W46 · Nov 9–15, 2026 — Prefix pruning vs Meadowcap scoping; LLM policy; trailing empty components
+
 Sammy's editorial (from a community report by **Alex Burdiyan**): **the
 prefix-pruning vs scoped-capability tension** — if you hold read
 permission only for `/blog/summer`, a write to `/blog` prefix-prunes your
@@ -1106,20 +1164,21 @@ convention** — store data at `/some/path/<empty>` so that adjusting
 `/blog/summer` doesn't prefix-prune `/blog/summer/assets`; writes carry a
 trailing empty component, deletions don't (empty payload), so entries
 split into two flavours: writes and deletions. Sharing signed deletions
-out-of-scope still leaks *who/when/at what prefix*, but no payload
+out-of-scope still leaks _who/when/at what prefix_, but no payload
 information — making the W46 pruning-disclosure trade-off easier to reason
 about. Aljoscha: Macromania **defref** ported with **cross-domain
 references** (via WebTT) — worm-blossom.org can now define-discuss
 AreaSlices although they're defined on willowprotocol.org.
-*Relevance: [auth] — a genuine, newly-surfaced (Nov 2026) semantic gap
+_Relevance: [auth] — a genuine, newly-surfaced (Nov 2026) semantic gap
 between deletion propagation and read scoping in Meadowcap/Willow, with
 the authors' chosen mitigation (peer-discretionary disclosure) rather than
 a protocol fix. Also note: the "Final" status of the Data Model and
 Meadowcap specs was granted on implementation, not usage — by the
 authors' own new standard, treat both as less battle-tested than the
-label suggests.*
+label suggests._
 
 ### 2026-W47 · Nov 16–22, 2026 — Sneakerweb axum release (speed + big sites); SummarisableStore done; WTP encodings nearly done
+
 Announcement: **a new sneakerweb release focused on speed and big sites**
 — sites served "as fast as locally stored content should be served";
 **very large files (video) served/scrubbed/seeked via the `video`
@@ -1128,8 +1187,8 @@ orderable by size; responsive front-page layout; progress indicator for
 `sneakerweb publish`; "made possible by **replacing our homebrew web
 server with axum**, with Emmy interfacing axum to the Willow store"
 (Emmy built **ufotofu↔axum streaming-body adapters**; a ~150 MB-per-episode
-BBC series sneakersite as the test case). Also: Aljoscha's album *Computer
-Has No Feelings* on Bandcamp (the sneakerweb version's track 4 differs — a
+BBC series sneakersite as the test case). Also: Aljoscha's album _Computer
+Has No Feelings_ on Bandcamp (the sneakerweb version's track 4 differs — a
 cover, replaced on Bandcamp for legal reasons). Emmy: **store summarising
 finished** — "These summaries are one of two ingredients we need to
 perform **region-based set reconciliation**… The remaining ingredient is
@@ -1141,7 +1200,7 @@ work (AreaSlices split "more or less by construction" thanks to Amparore);
 the wrinkle: "most recent N entries" subsets can only be reported
 best-effort, which simplified the summarising API. Sammy: sneakerweb
 site-size "weights" (green 0–10 MB, orange 10–100 MB, red >100 MB);
-*Sammy's guide to the sneakerweb* 2nd edition now a downloadable `.snk`
+_Sammy's guide to the sneakerweb_ 2nd edition now a downloadable `.snk`
 starter pack; sneakerweb funding proposals sent; two in-person workshop
 proposals accepted; the Safari 30-second-request mystery (base32 hostnames
 → localhost + connection handling); the **willowprotocol.org outage**
@@ -1153,10 +1212,10 @@ brief comment (loved Elm; lack of component-level state was fiddly; lack
 of a component model makes render diffs harder) — a shared link + comment,
 not a worm-blossom position paper. Upcoming: **sneakmeet @ v2 Rotterdam,
 13 Dec 26**.
-*Relevance: [sync][store][eco] — as of the latest update: store
+_Relevance: [sync][store][eco] — as of the latest update: store
 summarising (RBSR ingredient 1 of 2) is done, splitting is underway, WTP
 encodings are nearly designed. Internet sync is the active frontier, not
-a finished feature — plan any adoption accordingly.*
+a finished feature — plan any adoption accordingly._
 
 ---
 
@@ -1167,6 +1226,7 @@ attests. Versions/dates are as announced in the diary or shown on the
 project's own page.
 
 ## 1. Willow — the protocol family (willowprotocol.org)
+
 **What:** A family of peer-to-peer storage protocols: the **Data Model**
 (entries = subspace × path × timestamp + payload digest; state-based CRDT
 join-semilattice; last-writer-wins per (subspace, path) with prefix
@@ -1191,6 +1251,7 @@ collective's biggest mistake.
 Sync) is documented in the diary, not hidden.
 
 ## 2. Meadowcap (spec)
+
 **What:** The capability system: receiver-bound signed delegation chains
 over Areas (subspace × path-prefix × time-range), communal vs owned
 namespaces, self-certifying write tokens; read enforcement is cooperative
@@ -1208,6 +1269,7 @@ verification implementation in 2026-W37** via test vectors (fixed).
 production-hardening evidence (and caveats) the spec alone doesn't show.
 
 ## 3. willow_rs / `willow25` (Rust implementation)
+
 **What:** The reference Rust implementation of the Willow specs. Current
 shape (post-2026-W33): a single concrete crate **`willow25`** (Willow'25
 parameters only) with data model, groupings, Meadowcap, Drop Format, and
@@ -1231,6 +1293,7 @@ backend against its traits (which Amparore's denormalisation result makes
 much cheaper than it looked a year ago).
 
 ## 4. Bab / `bab_rs` (+ bab-hash.org)
+
 **What:** A **family of hash functions** inspired by BLAKE3 and Bao, with
 "judicious tweaks": APIs designed from a storage rather than a hashing
 perspective, constant-size length proofs, a parameterisable specification,
@@ -1262,6 +1325,7 @@ undone) is the right kind of evidence; there is still no independent
 audit.
 
 ## 5. Ufotofu
+
 **What:** A Rust library of abstractions for lazily producing/consuming
 sequences — **producers and consumers** (their streams/sinks), designed
 around strict producer/consumer **duality**: `Producer`/`Consumer`,
@@ -1284,32 +1348,35 @@ the lowest-risk piece — and the `Send`-lessness is the constraint that
 propagates up the whole stack (see the Rocket failure, 2026-W42).
 
 ## 6. Sneakerweb (+ sneakerweb.org)
+
 **What:** "A parallel web transported by physical media" — a p2p protocol
-+ CLI for web publishing without DNS, registrars, or hosts. Claim a domain
-(a base32-encoded key, yours forever), `publish` a static site to it,
-`export`/`import` collections as **`.snk` files (Willow drops)**,
-`block` unwanted domains, `remove` without blocking, `serve` the
-collection to an ordinary browser at `sneakerweb.localhost`. Sites merge
-and forgery is prevented by Willow/Meadowcap; a full protocol
-specification exists beyond the CLI. In design: **sneakerdep**
-(dependency lists for transitive collections) and collection roots/GC.
-**Maturity:** **Released** 2026-W27; **1.2.0** 2026-W40 (base32 domains
-fixing Chromium/WebKit hostname limits, `remove`, custom collections);
-axum-based speed/big-sites release 2026-W47 (seekable video from the
-local store). Real-world distribution demonstrated at DWeb Camp (sites
-reached 9 countries by USB key); HN/Lobsters coverage; outside
-contributors (Emmy, slug, interfect); workshops running (sneakmeet @ v2
-Rotterdam, 13 Dec 2026). Note on names: there is **no separate product
-called "sneaker world"** — Sammy uses "sneaker-world" once as a jocular
-dateline ("This week's news from sneaker-world"); the project is
-sneakerweb, its sites are sneakerwebsites, its events sneakmeets.
-**Depends on it:** — (it is the flagship application; it depends on
-Willow, Meadowcap, Drop Format, Bab, willow25, ufotofu, Fjall store).
-**Relevance:** The existence proof that the whole stack composes into a
-shipped product people enjoy using — and the dogfood that drove the Drop
-Format streaming revision, the base32 fix, and the store APIs.
+
+- CLI for web publishing without DNS, registrars, or hosts. Claim a domain
+  (a base32-encoded key, yours forever), `publish` a static site to it,
+  `export`/`import` collections as **`.snk` files (Willow drops)**,
+  `block` unwanted domains, `remove` without blocking, `serve` the
+  collection to an ordinary browser at `sneakerweb.localhost`. Sites merge
+  and forgery is prevented by Willow/Meadowcap; a full protocol
+  specification exists beyond the CLI. In design: **sneakerdep**
+  (dependency lists for transitive collections) and collection roots/GC.
+  **Maturity:** **Released** 2026-W27; **1.2.0** 2026-W40 (base32 domains
+  fixing Chromium/WebKit hostname limits, `remove`, custom collections);
+  axum-based speed/big-sites release 2026-W47 (seekable video from the
+  local store). Real-world distribution demonstrated at DWeb Camp (sites
+  reached 9 countries by USB key); HN/Lobsters coverage; outside
+  contributors (Emmy, slug, interfect); workshops running (sneakmeet @ v2
+  Rotterdam, 13 Dec 2026). Note on names: there is **no separate product
+  called "sneaker world"** — Sammy uses "sneaker-world" once as a jocular
+  dateline ("This week's news from sneaker-world"); the project is
+  sneakerweb, its sites are sneakerwebsites, its events sneakmeets.
+  **Depends on it:** — (it is the flagship application; it depends on
+  Willow, Meadowcap, Drop Format, Bab, willow25, ufotofu, Fjall store).
+  **Relevance:** The existence proof that the whole stack composes into a
+  shipped product people enjoy using — and the dogfood that drove the Drop
+  Format streaming revision, the base32 fix, and the store APIs.
 
 ## 7. Pillow (with p2panda)
+
 **What:** A joint p2panda × worm-blossom grant project: **Willow "support
 peers"** — highly available peers that store/retrieve data for p2panda
 apps without understanding p2panda data: decentralised capability-powered
@@ -1327,6 +1394,7 @@ p2panda's own availability layer is being built on Willow+Meadowcap.
 Watch this project's deliverables as the WTP's first production test.
 
 ## 8. Macromania (+ macro packages)
+
 **What:** A TypeScript-embedded, JSX-syntax templating DSL for generating
 strings — "especially good at HTML" — used to generate willowprotocol.org
 and worm-blossom.org (definitions/tooltips via **defref**, RSS, code
@@ -1347,6 +1415,7 @@ sites' unusual quality (cross-domain definition tooltips) and is a real,
 if niche, JSR-published ecosystem of 15 packages.
 
 ## 9. WebTT (Web Tooltips)
+
 **What:** A small specification for nestable **cross-domain tooltips with
 no server-side logic**: include a compliant JS file + CSS, mark elements
 with `data-tooltip-anchor`, tooltips load in an iframe on mouseover.
@@ -1357,17 +1426,19 @@ and defref's cross-domain references (2026-W46).
 spec corpus feel like one hyperlinked document.
 
 ## 10. Frugal Async Rust / `frugal_async`
+
 **What:** A set of simplifying assumptions for async Rust (documented on
 the Frugal Async Rust page) + a utility crate (e.g. an awaitable Mutex;
 smol-based): futures need not be `Send`, runtimes may be single-threaded,
 APIs get simpler and cheaper.
 **Maturity:** Page + crate released 2025-W42; the doctrine is load-bearing
 across ufotofu/willow25.
-**Relevance:** The single most consequential *constraint* in their stack
+**Relevance:** The single most consequential _constraint_ in their stack
 for an adopter: everything is `current_thread`-tokio only (Rocket
 incompatibility, 2026-W42; `Send`-bound friction with axum, 2026-W45).
 
 ## 11. `compact_u64`
+
 **What:** A Rust crate implementing the machine-friendly variable-length
 u64 encoding used throughout the Willow specs — length-up-front (contrast
 LEB128), word-at-a-time decoding, lexicographic order = numeric order.
@@ -1376,6 +1447,7 @@ LEB128), word-at-a-time decoding, lexicographic order = numeric order.
 directly useful in kv/SQLite index keys.
 
 ## 12. `order_theory`
+
 **What:** Rust traits for order theory — successors, min/max, lattices —
 born from Willow's grouping needs; generic array implementations reused
 by willow25; its property-testing utilities found errors in their earlier
@@ -1385,6 +1457,7 @@ groupings code.
 standalone borrowable crate.
 
 ## 13. Seasonal Clock (seasonalclock.org)
+
 **What:** Cinnamon's "global clock with non-numerical hours": the day is
 divided into named, symbol-bearing fractions (seed, leaf, tree, shell…)
 instead of numbers — designed to gently replace Swatch Internet Time.
@@ -1397,6 +1470,7 @@ and because the collective's name is one of its hours ("speak to you at
 worm-blossom").
 
 ## 14. Earthstar (predecessor; Sammy is steward)
+
 **What:** Cinnamon's earlier p2p storage protocol/project (TypeScript),
 from which Willow descends: Earthstar dropped SSB-style immutability
 (deletion/editing, subset download in any order, one keypair = a person
@@ -1412,16 +1486,18 @@ turned-implementer).
 deletion, subset sync, person-keypairs.
 
 ## 15. wb-box + the playlists (music tooling)
+
 **What:** Their fork of BeepBox (via AbyssBox) — a piano-roll chiptune
 player/editor whose distinguishing feature is **playlist pages**; powers
 worm-blossom.org's weekly tracks, the Weekly Tracks / Assorted Music
-playlists, and Aljoscha's albums (*Computer Has No Feelings*,
-*Circumference* — distributed via sneakerweb first).
+playlists, and Aljoscha's albums (_Computer Has No Feelings_,
+_Circumference_ — distributed via sneakerweb first).
 **Maturity:** In weekly production use since 2025-W49.
 **Relevance:** None for the decision; completes the project census (and
 explains the "Edit link" saga in the diary).
 
 ## 16. Interactive Willow Data Model (toy)
+
 **What:** A browser toy on willowprotocol.org: view/add entries and "sync"
 between three peers, to build intuition for the data model.
 **Maturity:** Released 2025-W47; Codeberg repo (org listing: "An
@@ -1430,6 +1506,7 @@ interactive toy version of the Willow Data Model," updated 2025-11-21).
 reading the specs.
 
 ## 17. Willow test vectors (repo)
+
 **What:** Inputs + expected outputs for Willow encodings and data-model
 functions (overwrite determination, path successor, capability
 verification), maintained on Codeberg; refreshed 2026-W36 after some
@@ -1440,6 +1517,7 @@ vectors had become "outdated and thus actively misleading."
 instrument for the reference implementation itself (2026-W37).
 
 ## 18. willow-tutorials (repo)
+
 **What:** A Codeberg workspace holding the runnable code for
 willowprotocol.org's Rust tutorials (data model, groupings, Store), with
 a rustdoc-JSON → site-macro pipeline keeping docs and code in sync.
@@ -1448,6 +1526,7 @@ a rustdoc-JSON → site-macro pipeline keeping docs and code in sync.
 willow25 hands-on.
 
 ## 19. Rummager (proposal only)
+
 **What:** A proposed general-purpose GUI application for "organically
 expressing your own applications through the act of nesting free-form
 data" on Willow.
@@ -1457,6 +1536,7 @@ spare time allows; no code known.
 publishing (general personal data).
 
 ## 20. Cobweb + Sufficiently Good Media Formats + Cardboard (designs)
+
 **What:** Three design-stage projects from the editorials: **Cobweb**
 (2025-W51) — a hypertext system on Willow (transclusion, Willow URIs,
 one simple image format, Bab-verified progressive media); **Sufficiently
@@ -1501,7 +1581,7 @@ data-structure depth they bring to storage, and Cobweb is the long-term
    citing Confidential Sync as a reason to adopt anything.
 3. **2026-W44 + W32 + W35/W36 (WTP design trail)** — WTP's actual status:
    spec published without a wire encoding; message model still being
-   merged/symmetrised; stateful *and* stateless operation; Bab-verified
+   merged/symmetrised; stateful _and_ stateless operation; Bab-verified
    resumable transfers; RBSR over AreaSlices.
 4. **2026-W45 (Amparore/AreaSlices)** — the 3D-storage objection to
    Willow dissolves into denormalised 1D/2D indexes; a SQL-backed store
@@ -1527,7 +1607,7 @@ data-structure depth they bring to storage, and Cobweb is the long-term
    partial sync; LWW-over-history as a deliberate, argued choice.
 10. **2026-W36 (support peers essay + todo list)** — the fungibility×
     uptime framing for relay-like peers, and the author's own list of
-    what's *not* done (Willow'25 at-rest encryption instantiation,
+    what's _not_ done (Willow'25 at-rest encryption instantiation,
     RBSR store traits, ed25519 PQ exposure).
 
 ## Surprises
@@ -1542,7 +1622,7 @@ data-structure depth they bring to storage, and Cobweb is the long-term
   promoted to Final on implementation alone; the collective changed the
   rule in Nov 2026 to require real-world usage — retroactively
   downgrading what their own Final labels certify.
-- **Encryption is the thinnest layer.** Drop encryption was *removed*
+- **Encryption is the thinnest layer.** Drop encryption was _removed_
   from the Drop Format spec (left to apps); Willow'25 at-rest encryption
   has "generic designs, but no specific instantiation yet" (2026-W36);
   encrypted sneakerweb sites are a hope, not a feature. The Encrypted

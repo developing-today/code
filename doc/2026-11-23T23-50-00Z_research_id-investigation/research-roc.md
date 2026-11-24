@@ -20,23 +20,25 @@ Boswell is a Roc core contributor (author of roc-lang/roc PR #8214, the
 platform host shim) and maintainer of the roc-awesome list. Eight posts total:
 
 ### Platforms / compiler infrastructure
+
 - **"Roc Platforms: Supporting multi-entrypoint hosts"** (30 Aug 2025) —
   https://lukewilliamboswell.github.io/roc-platforms-multi-entrypoint/
   How the new Roc CLI's pre-built interpreter shim (single generic
   entrypoint) is adapted at runtime to hosts expecting multiple entrypoints
   (`init!`, `update!`, `render!`): the CLI generates a tiny LLVM bitcode
   adapter per platform. Landed via roc-lang/roc PR #8214.
-  *Relevance to ID:* an app platform whose hosts expose several entrypoints
+  _Relevance to ID:_ an app platform whose hosts expose several entrypoints
   (init/render/update, or pure-client vs server roles) needs exactly this
   glue; it also shows the fast interpreted dev loop can coexist with
   multi-entrypoint hosts — useful for an ID app SDK.
 - Platform templates (not blog posts, but his): `roc-platform-template-zig`
   (actively maintained, release 0.6; also -rust, -go; -c/-wasi/-swift
   archived) — the canonical starting point for a new platform/host.
-  *Relevance to ID:* the template an ID platform would fork; the Rust
+  _Relevance to ID:_ the template an ID platform would fork; the Rust
   template matters if ID's host is Rust/iroh-based.
 
 ### roc-ray / graphics / games
+
 - **"Building a GUI platform — Action-State using zig and raylib"**
   (25 Jan 2024) — https://lukewilliamboswell.github.io/roc-ray-experiment/
   The original roc-ray experiment (see §4).
@@ -46,35 +48,38 @@ platform host shim) and maintainer of the roc-awesome list. Eight posts total:
   `roc-pga2d` package (2D projective geometric algebra) for the physics math
   and `roc-random` for generation. The app code shows the newer
   `init!`/`render!` effectful-function style with `Draw.*!` calls.
-  *Relevance to ID:* proof that simple real-time simulations/games
+  _Relevance to ID:_ proof that simple real-time simulations/games
   (the Dwarf-Fortress/Space-Invaders class Drew named) are expressible as
   pure Roc app logic over a drawing capability set; also a data point that
   Roc-side math packages (PGA) can carry simulation math without a BLAS.
 
 ### roc-tui
+
 - **"Building a Text Editor — Terminal UI"** (14 Mar 2024) —
   https://lukewilliamboswell.github.io/text-editor-tui
   A text-editor example (open/save/undo/redo/cursor) built on the
   `basic-cli` platform plus his `roc-ansi` package (ANSI escape helpers),
-  in the roc-ansi repo — i.e. TUI as a *package* over a CLI platform, not a
+  in the roc-ansi repo — i.e. TUI as a _package_ over a CLI platform, not a
   dedicated platform. (His separate `roc-tui` platform repo is in §5.)
-  *Relevance to ID:* text interfaces (mind-mapping, graph browsing,
+  _Relevance to ID:_ text interfaces (mind-mapping, graph browsing,
   sketching) can ride on the plain CLI capability set + a library — the
   cheapest tier of the "same app, many surfaces" story.
 
 ### Android
+
 - **"Roc platform for native Android apps"** (dated 23 Nov 2026 on the
   index — i.e. published today) —
   https://lukewilliamboswell.github.io/roc-native-android/ (see §6).
 
 ### Fullstack web (basic-webserver + htmx)
+
 - **"Fullstack Roc + htmx — Early exploration"** (15 Dec 2023)
 - **"Fullstack Roc + htmx — Events exploration"** (27 Feb 2024) —
   https://lukewilliamboswell.github.io/roc-htmx-demo-2/
   (adds a SQLite API to basic-webserver, tree views of hierarchical data,
   htmx event-driven re-rendering)
 - **"Fullstack Roc + htmx — Data Table"** (19 Jun 2024)
-  *Relevance to ID:* server-side Roc apps rendering graph-shaped data
+  _Relevance to ID:_ server-side Roc apps rendering graph-shaped data
   (tree view over a nested-set hierarchy in SQL) with the same
   platform/app split — the "server host" end of the write-once story, and
   a pattern for graph visualisation served as HTML.
@@ -98,22 +103,22 @@ Sources: official Platforms docs
 (https://www.roc-lang.org/docs/main/langref/platforms/), the roc-ray post,
 the multi-entrypoint post, roc-lang/roc DeepWiki platform summary.
 
-- **Platform/app split.** Every Roc app is built on exactly one *platform*.
+- **Platform/app split.** Every Roc app is built on exactly one _platform_.
   The platform — not a standard library — supplies **all** I/O primitives.
-  A platform = a Roc-side API (modules the app imports) + a *host* written
+  A platform = a Roc-side API (modules the app imports) + a _host_ written
   in another language (Rust, Zig, Go, C, Swift…) that implements the actual
   system operations and the `RocOps` runtime interface (alloc/realloc/
   dealloc, panic, etc.). The platform header declares `requires` (what the
   app must provide, e.g. `main!`), `exposes` (API modules for apps), and
   `provides` (entrypoints handed to the host).
 - **Pure vs effectful.** Roc functions are pure by default. In the current
-  (new-compiler) language, effectful operations are *hosted functions*
+  (new-compiler) language, effectful operations are _hosted functions_
   marked with a `!` suffix (`Stdout.line!`, `init!`, `render!`); purity is
   visible in every signature, and errors are `Result` values — no
   exceptions, no null. (The older compiler expressed the same split as
   `Task` + platform `Effect` functions, as seen in the Jan 2024 roc-ray
   post; the `Task`→`!` migration is manual per the Advent 2025 notes.)
-- **Capability definition.** Because the platform defines the *entire*
+- **Capability definition.** Because the platform defines the _entire_
   effect surface an app can touch, a platform **is** a capability set: an
   app can only do what its platform's exposed modules let it do. Define the
   Roc-side API once and implement hosts per target (desktop/Android/web/
@@ -134,7 +139,7 @@ the multi-entrypoint post, roc-lang/roc DeepWiki platform summary.
   old one — expect both dialects in the wild). Hosts are still commonly
   Rust (basic-webserver = Rust + hyper + tokio; basic-cli v0.20 as of
   2025-08). **[Status detail partially secondary-sourced.]**
-  *Relevance to ID:* the platform model is an unusually exact fit for ID's
+  _Relevance to ID:_ the platform model is an unusually exact fit for ID's
   architecture, but betting the app layer on Roc means tracking a moving,
   pre-1.0 language — the prompt should treat Roc as the leading candidate
   for the app/capability layer with the churn risk stated, not as settled.
@@ -160,11 +165,11 @@ the multi-entrypoint post, roc-lang/roc DeepWiki platform summary.
 - **Maturity:** experimental but actively released and officially
   showcased; still one maintainer's project, API paired to specific Roc
   nightlies.
-- *Relevance to ID:* the strongest existing template for an ID "2D
+- _Relevance to ID:_ the strongest existing template for an ID "2D
   surface" capability set (sprites, text, basic games, graph
   visualisation): a proven host pattern (Zig + raylib) and an app API
   simple enough to re-declare as ID capabilities. The Action-State post is
-  also the reference for structuring *plugin-like* UI components with
+  also the reference for structuring _plugin-like_ UI components with
   isolated state — relevant to ID apps embedding each other's views.
 
 ## 5. roc-tui and roc-gui
@@ -172,17 +177,17 @@ the multi-entrypoint post, roc-lang/roc DeepWiki platform summary.
 - **roc-tui** — https://github.com/lukewilliamboswell/roc-tui — "An
   experimental TUI platform for Roc" (listed under Experiments in
   roc-awesome; ~12 stars, last updated Mar 2025 per relatedrepos —
-  **[unverified]** star count/date). Distinct from the roc-ansi *package*
+  **[unverified]** star count/date). Distinct from the roc-ansi _package_
   approach in §1. Note there is also an unrelated `mdgriffith/roc-tui`
   (Matthew Griffith, of elm-ui) — **[unverified]** which is more active.
-  *Relevance to ID:* a terminal surface for graph browsing/editing is
+  _Relevance to ID:_ a terminal surface for graph browsing/editing is
   feasible at two levels — ANSI package over a CLI host (cheap, proven by
   the text-editor example) or a dedicated TUI platform (experimental).
 - **roc-gui** — https://github.com/lukewilliamboswell/roc-gui — listed in
   roc-awesome's Experiments alongside roc-tui and `roc-graphics-mach`
   (a Mach-engine graphics experiment). No blog post; maturity:
   experimental **[details unverified]**.
-  *Relevance to ID:* evidence the GUI-platform design space is still
+  _Relevance to ID:_ evidence the GUI-platform design space is still
   unsettled in Roc-land; ID should expect to define its own UI capability
   surface rather than adopt one.
 - **roc-signals** — https://github.com/lukewilliamboswell/roc-signals —
@@ -192,8 +197,8 @@ the multi-entrypoint post, roc-lang/roc DeepWiki platform summary.
   (Conduit) example; it is the engine ported to Android in §6. Maturity:
   active experiment, still shaking out compiler bugs (e.g. roc-lang/roc
   issue #10103, an optimised-wasm panic found via roc-signals, Jul 2026).
-  *Relevance to ID:* the leading candidate pattern for ID's *web/pure
-  client* UI — fine-grained reactivity over graph data, and a worked
+  _Relevance to ID:_ the leading candidate pattern for ID's _web/pure
+  client_ UI — fine-grained reactivity over graph data, and a worked
   example of one engine retargeted across hosts (browser → Android).
 
 ## 6. Roc on Android — roc-native-android
@@ -210,10 +215,10 @@ the multi-entrypoint post, roc-lang/roc DeepWiki platform summary.
 - **Limitations (author-stated):** "significant gaps in features"; enough
   for simple apps; built over a weekend, tested only in an emulator on the
   author's MacBook; not competing with mature mobile frameworks.
-- *Relevance to ID:* the existence proof for ID's Android tier — a
+- _Relevance to ID:_ the existence proof for ID's Android tier — a
   capability-defined Roc app packaged as a native APK with a thin native
   host. Also a sizing data point: one person + an LLM built the host in
-  hours, suggesting per-platform hosts for a *narrow* capability set are
+  hours, suggesting per-platform hosts for a _narrow_ capability set are
   cheap; a full ID capability set would be proportionally larger.
 
 ## 7. Falcor (Netflix) — graph data access pattern
@@ -233,8 +238,8 @@ the multi-entrypoint post, roc-lang/roc DeepWiki platform summary.
   binds a Model to a graph location so components see only a fragment).
 - **Status:** mature, open-sourced 2015, production-proven at Netflix;
   the JS ecosystem around it is quiet now **[activity level unverified]** —
-  its value today is the *design*, not the code.
-- *Relevance to ID:* a reference design for ID's client-side graph access:
+  its value today is the _design_, not the code.
+- _Relevance to ID:_ a reference design for ID's client-side graph access:
   path-based retrieval over a normalised graph, aggressive client caching
   with reference-based optimisation, batched fetching of exactly the
   missing fragments — the natural query/cache layer between ID apps and
@@ -249,6 +254,7 @@ the multi-entrypoint post, roc-lang/roc DeepWiki platform summary.
 similarity search and game/simulation math.
 
 ### Rust (host-side, mature)
+
 - **faer** — pure-Rust linear algebra (own SIMD via `pulp`, own GEMM);
   fastest Rust option for dense/sparse decompositions, credible against
   OpenBLAS/MKL; converts to/from ndarray/nalgebra via `faer-ext`. No GPU
@@ -263,24 +269,25 @@ similarity search and game/simulation math.
 - Supporting cast for embeddings specifically: **fastembed-rs** (local
   embedding generation), **qdrant** / **lancedb** (vector stores),
   **tantivy** (full-text) — the "text, embeddings and search" job is rated
-  *Ready* in Rust by the ml-rust survey
+  _Ready_ in Rust by the ml-rust survey
   (https://ml-rust.github.io/state/, dated 23 Nov 2026 — note the survey
   self-describes as AI-written; treat ratings as indicative).
   Overview source: https://www.arewelearningyet.com/scientific-computing/
-- *Relevance to ID:* host-side, this is solved: an ID host can embed
+- _Relevance to ID:_ host-side, this is solved: an ID host can embed
   faer/nalgebra for vector math and fastembed-style models for embedding
-  generation, exposing only *results* (nearest neighbours, similarity) as
+  generation, exposing only _results_ (nearest neighbours, similarity) as
   capabilities. ndarray is the safe interchange format; faer the speed
   layer; nalgebra the app/game math layer.
 
 ### Roc (app-side, early)
+
 - **Hasnep/roc-linear-algebra** and **Hasnep/roc-math** — pure-Roc math
   packages (listed in roc-awesome / the roc-packages index).
 - **mulias/roc-array2d** — 2D arrays.
 - **lukewilliamboswell/roc-pga2d** — 2D projective geometric algebra used
   for the physics demo in §1 (points/translators as multivectors) — shows
   elegant small-scale sim math in pure Roc, not a BLAS.
-- *Relevance to ID:* no Roc-side BLAS exists **[no counterexample found]**;
+- _Relevance to ID:_ no Roc-side BLAS exists **[no counterexample found]**;
   app-side numeric work in Roc today is small-scale (2D game math, PGA).
   Anything embedding-scale belongs host-side behind a capability — which
   conveniently matches ID's pure-app/impure-host split and fuel model
@@ -289,23 +296,23 @@ similarity search and game/simulation math.
 ## 9. Rust rendering/game libraries (host implementation options)
 
 - **raylib (Rust crate `raylib` / raylib-rs)** — safe bindings to raylib,
-  the same C library roc-ray wraps via Zig. *Fit:* quickest path to a
+  the same C library roc-ray wraps via Zig. _Fit:_ quickest path to a
   Rust-host 2D surface (sprites, text, input) with a proven API shape;
   parity with roc-ray's surface eases cross-checking.
 - **macroquad** — raylib-inspired, immediate-mode 2D framework on
   miniquad; same code to desktop, HTML5, Android, iOS; fast compiles.
-  *Fit:* arguably the best single target for "basic 2D game + sprites +
+  _Fit:_ arguably the best single target for "basic 2D game + sprites +
   text" ID hosts, including Android, without an ECS.
 - **miniquad** — the minimal cross-platform window/render layer under
-  macroquad. *Fit:* use directly if ID wants its own thin host surface
+  macroquad. _Fit:_ use directly if ID wants its own thin host surface
   with minimal opinions.
 - **bevy** — the large ECS-first Rust engine (wgpu renderer, huge plugin
-  ecosystem). *Fit:* the heavy tier — complex simulations needing an ECS,
+  ecosystem). _Fit:_ the heavy tier — complex simulations needing an ECS,
   exactly the split Drew described (simple surfaces via raylib-class
   hosts; Bevy hosts for ECS simulations). Cost: big API, fast churn.
 - **wgpu** — cross-platform GPU API (Vulkan/Metal/DX/WebGPU) underlying
   Bevy and most serious Rust rendering; **vello** (GPU 2D) and **lyon**
-  (tessellation) sit on it. *Fit:* the long-term rendering substrate if
+  (tessellation) sit on it. _Fit:_ the long-term rendering substrate if
   ID outgrows raylib-class hosts; too low-level as a first surface.
 
 ## 10. Roc package/platform ecosystem sources worth citing
@@ -323,7 +330,7 @@ similarity search and game/simulation math.
   platform examples: basic-cli incl. an effectful Snake game, and the
   RocRay drawing example — a useful maturity yardstick for roc-ray.)
 - **roc-wasm4** — Roc platform for the WASM-4 fantasy console; the
-  platform roc-ray's host design borrowed from. *Relevance:* another
+  platform roc-ray's host design borrowed from. _Relevance:_ another
   data point that tiny, fixed capability sets make delightful game
   platforms — a model for ID "micro-surfaces".
 

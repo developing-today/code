@@ -6,7 +6,7 @@ Placement today is a per-seat decision: `fleet queue dispatch` runs
 `decide()` in `crates/fleet-queue/src/placement.rs`, reads the load
 its own seat can see, picks the least-loaded surface, and dispatches.
 The central compile coordinator (#13765) is the designed replacement
-for the decision's *admission* half: a coordinator living in the
+for the decision's _admission_ half: a coordinator living in the
 queue broker that claims slots atomically, holds one true load view,
 enforces budgets globally, and queues jobs fairly across seats — with
 the existing singular per-seat dispatch kept, by contract, as the
@@ -42,14 +42,14 @@ named proof in the issue's proof bar:
    same least-loaded pool and both pile in. The observed case in the
    design record: 62 active org jobs against a cap of 20 — caps
    steer, they do not gate. The coordinator claims slots atomically.
-   *Proof:* two simultaneous claims for the last slot — exactly one
+   _Proof:_ two simultaneous claims for the last slot — exactly one
    wins.
 2. **One true load view.** Load is read per runner-host repo with the
    seat's own tokens; a repo the seat has no token for counts as 0
    running. (#13611 made the decision logic treat unread load as
    unknown, but the seat's view is still only its own.) The
    coordinator holds the true cross-owner load view, and admission
-   uses it. *Proof:* a seat with zero coverage for an owner is
+   uses it. _Proof:_ a seat with zero coverage for an owner is
    refused or queued when the coordinator's view shows the owner
    full, admitted when it shows room, and `/placement-load` returns
    the true counts to any seat.
@@ -58,12 +58,12 @@ named proof in the issue's proof bar:
    `paid_cap_minutes = 0`) is settled today from each seat's local
    store — a per-seat honour system. The coordinator enforces it
    fleet-wide and atomically: reserve at claim, settle at completion.
-   *Proof:* reservations past the fleet-wide free-minute budget are
+   _Proof:_ reservations past the fleet-wide free-minute budget are
    refused; settle converts a reservation to actual use.
 4. **Cross-seat visibility and queueing.** Sessions become visible to
    every seat natively, and when all pools saturate, jobs wait in a
    real queue with fairness — FIFO per owner — instead of every seat
-   dispatching into the pile. *Proof:* jobs queue, drain in fair
+   dispatching into the pile. _Proof:_ jobs queue, drain in fair
    order as slots free, and a claim or session made on one seat
    resolves from another.
 
@@ -78,11 +78,11 @@ where `placement_sessions` (#13146) already lives as a best-effort
 visibility mirror. The design adds three tables there, named in the
 #13844 Turso audit as "designed to be added to" that store:
 
-| Table | What it holds |
-| --- | --- |
+| Table                   | What it holds                                                                                                                                                                                                                                                 |
+| ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `placement_owner_state` | The coordinator's per-owner state: the true load view rows and the active-claim counters admission checks against the owner's cap (caps from the surface registry: developing-today 20 concurrent jobs, developing-today-forks 20, dezren39 40, macOS 5 each) |
-| `placement_claims` | One row per claim: the atomic admission record for a session's slot on a surface, from grant through confirm to release, including waitlisted claims waiting for capacity |
-| `placement_budgets` | The global budget ledger: reservations taken at claim time and settled to actual use at completion, per budget-bearing surface |
+| `placement_claims`      | One row per claim: the atomic admission record for a session's slot on a surface, from grant through confirm to release, including waitlisted claims waiting for capacity                                                                                     |
+| `placement_budgets`     | The global budget ledger: reservations taken at claim time and settled to actual use at completion, per budget-bearing surface                                                                                                                                |
 
 Admission is the house atomicity pattern — the single conditional
 UPDATE whose affected-row count decides the winner, the same pattern
@@ -96,13 +96,13 @@ The backend verbs are designed as a new module,
 `turso_queue/placement_coord.rs`, routed in `turso_queue::dispatch`
 beside the Actions exec verbs:
 
-| Verb | Job |
-| --- | --- |
-| `/placement-claim` | Atomic admission: conditional owner-counter UPDATE against the cap, using the coordinator's load rows plus active claims; budget reservation in the same flow |
-| `/placement-confirm` | Confirm a granted claim with its dispatched run id |
-| `/placement-release` | Release a claim, with budget settle |
-| `/placement-claim-status` | Read a claim's state — including from a different seat than the one that made it |
-| `/placement-load` | The true load view, readable by any seat |
+| Verb                      | Job                                                                                                                                                           |
+| ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `/placement-claim`        | Atomic admission: conditional owner-counter UPDATE against the cap, using the coordinator's load rows plus active claims; budget reservation in the same flow |
+| `/placement-confirm`      | Confirm a granted claim with its dispatched run id                                                                                                            |
+| `/placement-release`      | Release a claim, with budget settle                                                                                                                           |
+| `/placement-claim-status` | Read a claim's state — including from a different seat than the one that made it                                                                              |
+| `/placement-load`         | The true load view, readable by any seat                                                                                                                      |
 
 Behind the verbs, a coordinator sweep — a background thread in the
 queue broker, on the #12247 startup-thread pattern — refreshes the

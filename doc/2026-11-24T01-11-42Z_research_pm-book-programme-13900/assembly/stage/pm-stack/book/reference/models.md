@@ -21,7 +21,7 @@ The aggregator, the console, dispatch, and the projector make **no LLM calls and
 
 ## Dispatch
 
-- **What it is:** The intake service; it makes no inference of its own, and it *places* inference.
+- **What it is:** The intake service; it makes no inference of its own, and it _places_ inference.
 - **Inputs:** A caller-supplied model hint, in `"provider/model"` form or as `{providerID, id}` (`dispatch/src/validate.ts`), passed to the OpenCode server when a session is created (`dispatch/src/opencode.ts`). The README's worked example names `opencode-go/gpt-5.6-luna`.
 - **Behaviour:** The placement guard (`dispatch/src/placement-guard.ts`) maps explicit providers to quota pools — `opencode-go.drewrypope`, `opencode-go.popesdrew`, `opencode-go.developing-today-0`, `opencode-go.0x111dev`, plus ClinePass model hints — and pins the bare `opencode-go` provider to the active OpenCode Console account at launch.
 - **Failure shapes:** The guard fails pre-commit on a walled pool.

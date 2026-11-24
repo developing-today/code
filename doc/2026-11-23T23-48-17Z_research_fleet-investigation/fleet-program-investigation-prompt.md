@@ -36,9 +36,9 @@ quotas only, never funds**; **finished work is merged work** (not merged = not d
   98,894 words**, live at https://developing-today.github.io/code/fleet/, built by the
   `fleet-docs` flake package and deployed inside the mcpx-docs Pages job under `/code/fleet/`.
   The **DOC-01 contract** (`pkgs/fleet/README.md`, "Operator and contributor contract
-  (DOC-01, #10728)", machine-checked) binds every change: *any change to a command, flag,
+  (DOC-01, #10728)", machine-checked) binds every change: _any change to a command, flag,
   default, capability, surface or procedure updates the matching book chapter in the same
-  change.* The book is complete for the `b8bbcc0` surface and **already stale for main**:
+  change._ The book is complete for the `b8bbcc0` surface and **already stale for main**:
   it has no `fleet queue repair` coverage (PR #13218 updated `docs/verbs.md` but not the
   book), and its dispatch chapter still calls placement sessions a local-JSON "STOPGAP"
   after the backend table landed. The installation chapter pins the `b8bbcc0` release.
@@ -202,6 +202,7 @@ quotas only, never funds**; **finished work is merged work** (not merged = not d
 ## 2. Drew's directions (the next-steps agenda — design all of it, build what's unblocked)
 
 ### A. Queue correctness at scale
+
 The queue is the fleet's heart; make its guarantees explicit and then true. Deliverables:
 an exactly-once claim semantics spec (what the conditional UPDATE does and does not
 promise under lease expiry, heartbeat loss, broker restart, and Turso failover); a
@@ -218,6 +219,7 @@ with measurements, not vibes: claim throughput at 16+ concurrent lanes, broker l
 over the tailnet, Turso group behaviour at the current task volume and at 10×.
 
 ### B. Placement intelligence & dispatch
+
 Placement today mirrors sessions and follows static caps. Design the fully featured
 version: close #13146 criterion 1 on the rollout and then go past it — cross-seat
 session visibility as a designed surface (who may read whose sessions, with what
@@ -230,6 +232,7 @@ result caching and artifact reuse across lanes working the same repo; a placemen
 dry-run/explain surface ("why would this run go there?") that an operator can audit.
 
 ### C. Agent lifecycle & multi-seat coordination
+
 Design the seat as a first-class citizen: a seat registry whose truth is queryable
 (where does enrolment actually live — close the felix/xaltha gap the research found);
 enrolment for new kinds (the 16-kind list will grow — what does a new kind have to
@@ -246,6 +249,7 @@ handoffs as a designed protocol (the handoff tool exists — make its contract e
 single-use, 15-min, what state crosses).
 
 ### D. Secrets broker & credential distribution
+
 Make the secrets plane boring: land the #13081 heal fix shape (never restart while
 `refreshing:true`; health gates longer than a cold refresh) and design the general
 rule — every fleet health gate must be sized from the slowest legitimate operation it
@@ -261,6 +265,7 @@ class); credential redundancy (Drew's rule: a Bitwarden-stored credential also g
 private local copy) as an audited property, not a habit.
 
 ### E. Self-healing channel & broker stack
+
 The channel stack (tailscaled → relay → session broker → secrets broker → gh) already
 heals itself on a 5-min cron and cold-recovers from a script — design it as a system:
 the five legs' failure taxonomy and which layer owns each recovery; heal-vs-restart
@@ -274,6 +279,7 @@ append-only proof); observability of the stack itself (a leg's health readable
 without reading its logs).
 
 ### F. Remote build/test platform
+
 The dispatch path is how every lane verifies work; make it worthy. **#13159 and its
 evidence family are flag-held — Drew's decisions: investigate and design around them,
 never implement them.** Within that bound: design the container the family needs
@@ -288,6 +294,7 @@ org-cap scheduling across the three surfaces as one system (60+ concurrent slots
 exist across orgs — placement should see them as one pool with per-org ceilings).
 
 ### G. Repo constellation, fork sync & releases
+
 102 forks staying current is a platform feature, not a cron job. Deliverables: the
 sync-forks failure taxonomy (the #12484/#12490 todo-issue trail — what actually
 fails, how often, and what self-heals vs needs a human); #87's remainder (the
@@ -302,6 +309,7 @@ pipeline with a single "fleet is current" check that reads all four; pin hygiene
 their own staleness).
 
 ### H. Quota plane
+
 Bring the quota plane in from the cold: the doctrine currently lives in rulings and
 a goal-workspace registry while the code lives in pm-stack — design the in-repo
 home (a fleet-quota crate? a pm-stack contract fleet consumes? decide with reasons);
@@ -316,6 +324,7 @@ per-section forecasts, and the quota records flowing to Atlas as a named source 
 (new provider onboarding without a doctrine rewrite).
 
 ### I. Observability & the operator surface
+
 An operator should be able to answer "what is the fleet doing?" in one command.
 Design: a fleet status surface that unifies queue depth by status, broker
 generations vs main, seat enrolment and last-seen, shortlist health, dispatch
@@ -328,6 +337,7 @@ minutes, pool burn attribution) feeding the quota plane; Fleet Reports as a
 generated, Atlas-ingested artefact instead of hand-written notes.
 
 ### J. The fleet ↔ Atlas ↔ ID integration surface
+
 Fleet is where the three programs touch. Design the seams as contracts: **Atlas** —
 `fleet search` freshness is Atlas's ingest problem (#13241 §F), but the fleet side
 owns the client contract (result caching keyed by index version, batch search for
@@ -343,6 +353,7 @@ already proved. Every seam gets: the contract, the failure modes, and the test
 that names its oracle.
 
 ### K. Charter, book, issue map, and the living record
+
 1. **A fleet charter** — the document that does not exist: purpose, principles
    (any-agent-any-job, quotas-never-funds, merged-is-done, seats-are-one-software),
    component map, and the roadmap this program produces (short-term: the rollout
@@ -378,7 +389,7 @@ that names its oracle.
   branches, landed by PR). Never `git stash` in shared clones. Never force-push
   main.
 - Before implementing any issue: premise check (is it still true on current
-  main — and on the *deployed generation*, which is a different question) +
+  main — and on the _deployed generation_, which is a different question) +
   singular-ownership check (fresh reads; a claim comment from another agent is a
   hard stop). Re-read an issue's newest comments immediately before merging.
 - Builds/tests dispatch-first (`fleet queue dispatch`), laptop fallback; a

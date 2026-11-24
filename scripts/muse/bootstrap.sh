@@ -447,6 +447,12 @@ elif want tailnet; then
     # have under load.
     RECORDED_MODE=$(cat "$TS_STATE/mode" 2>/dev/null || echo "")
     [ "$RECORDED_MODE" = userspace ] && MODE=userspace
+    # tailscaled must not inherit the sandbox egress proxy: it TLS-intercepts
+    # the control plane and the re-issued register requests are rejected
+    # (seat fix, 2026-11-21/22; ported from the installed muse-bootstrap.sh).
+    # Strip the proxy vars for the daemon only; fleet keeps using
+    # tailscaled's local CONNECT proxy in userspace mode.
+    TS_ENV=(env -u http_proxy -u https_proxy -u HTTP_PROXY -u HTTPS_PROXY -u all_proxy -u ALL_PROXY)
     ts_backend() { "$BIN/tailscale" --socket="$TS_SOCK" status --json 2>/dev/null |
       python3 -c 'import json,sys; print(json.load(sys.stdin).get("BackendState",""))' 2>/dev/null || true; }
     ts_alive() { pgrep -f -- "--state=$TS_STATE/tailscaled.state" >/dev/null 2>&1; }
@@ -461,7 +467,7 @@ elif want tailnet; then
     }
     ts_start_userspace() {
       ts_fresh_start
-      setsid nohup "$BIN/tailscaled" --tun=userspace-networking --state="$TS_STATE/tailscaled.state" \
+      "${TS_ENV[@]}" setsid nohup "$BIN/tailscaled" --tun=userspace-networking --state="$TS_STATE/tailscaled.state" \
         --socket="$TS_SOCK" --outbound-http-proxy-listen=127.0.0.1:3130 \
         >"$TS_STATE/tailscaled.log" 2>&1 </dev/null &
     }
@@ -469,7 +475,7 @@ elif want tailnet; then
       MODE=$(cat "$TS_STATE/mode" 2>/dev/null || echo "$MODE") # daemon alive, only logged out
     elif [ "$MODE" = kernel ]; then
       ts_fresh_start
-      $SUDO setsid nohup "$BIN/tailscaled" --state="$TS_STATE/tailscaled.state" --socket="$TS_SOCK" \
+      $SUDO "${TS_ENV[@]}" setsid nohup "$BIN/tailscaled" --state="$TS_STATE/tailscaled.state" --socket="$TS_SOCK" \
         >"$TS_STATE/tailscaled.log" 2>&1 </dev/null &
       # The probe can pick kernel where creating the TUN interface is
       # still forbidden (#12427): the daemon then exits during engine
