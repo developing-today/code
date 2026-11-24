@@ -213,7 +213,10 @@ fn mapped_roles_emit_utilities_from_decision_5851_s3() {
         assert!(artefact.class_set.iter().any(|c| c == class));
     }
     assert_eq!(report.mapped.len(), 4);
-    assert_eq!(report.defaulted, [] as [id_render::lower::DefaultedAssertion; 0]);
+    assert_eq!(
+        report.defaulted,
+        [] as [id_render::lower::DefaultedAssertion; 0]
+    );
     let mut sorted = artefact.class_set.clone();
     sorted.sort();
     assert_eq!(artefact.class_set, sorted, "class set is order-normalised");
@@ -249,7 +252,10 @@ fn density_is_mapped_without_utilities_decision_5851_s3_3() {
         lower_web(&doc, &composed(vec![prop("density", "compact")])).expect("lowering succeeds");
     assert_eq!(report.mapped.len(), 1);
     assert_eq!(report.mapped[0].classes, [] as [std::string::String; 0]);
-    assert_eq!(report.defaulted, [] as [id_render::lower::DefaultedAssertion; 0]);
+    assert_eq!(
+        report.defaulted,
+        [] as [id_render::lower::DefaultedAssertion; 0]
+    );
     assert_eq!(
         find(&artefact.root, "button").expect("button").classes,
         [] as [std::string::String; 0]

@@ -175,7 +175,10 @@ fn asset_override_applies_with_per_state_assets_decision_5853_s2_2() {
     }
     assert_eq!(report.applied.len(), 1);
     assert_eq!(report.applied[0].kind, "asset");
-    assert_eq!(report.fallbacks, [] as [id_render::lower_gui::ExercisedFallback; 0]);
+    assert_eq!(
+        report.fallbacks,
+        [] as [id_render::lower_gui::ExercisedFallback; 0]
+    );
 }
 
 #[test]
@@ -303,7 +306,10 @@ fn missing_asset_exercises_the_standard_fallback_decision_5853_s2_4() {
     }
     assert_eq!(report.fallbacks.len(), 1);
     assert!(report.fallbacks[0].warning.contains("assets/gone"));
-    assert_eq!(report.applied, [] as [id_render::lower_gui::AppliedOverride; 0]);
+    assert_eq!(
+        report.applied,
+        [] as [id_render::lower_gui::AppliedOverride; 0]
+    );
 }
 
 #[test]

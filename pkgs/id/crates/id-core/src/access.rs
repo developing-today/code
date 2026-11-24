@@ -242,7 +242,10 @@ mod tests {
     #[test]
     fn load_allowed_nodes_missing_file_is_empty() {
         let dir = tempfile::TempDir::new().unwrap();
-        assert_eq!(load_allowed_nodes(dir.path()), [] as [iroh_base::PublicKey; 0]);
+        assert_eq!(
+            load_allowed_nodes(dir.path()),
+            [] as [iroh_base::PublicKey; 0]
+        );
     }
 
     #[test]

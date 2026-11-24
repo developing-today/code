@@ -269,7 +269,10 @@ fn mapped_assertions_record_platform_renderings_decision_5852_s3() {
     )
     .expect("lowering succeeds");
     assert_eq!(report.mapped.len(), 4);
-    assert_eq!(report.defaulted, [] as [id_render::lower_native::DefaultedNativeAssertion; 0]);
+    assert_eq!(
+        report.defaulted,
+        [] as [id_render::lower_native::DefaultedNativeAssertion; 0]
+    );
     let rendering = |property: &str| {
         report
             .mapped
@@ -402,7 +405,10 @@ fn raw_css_winner_is_a_platform_default_on_native_decision_5852_a3() {
         theme_value: None,
     };
     let (_, report) = lower_native(&doc, &composed("mac", vec![raw])).expect("lowering succeeds");
-    assert_eq!(report.mapped, [] as [id_render::lower_native::MappedNativeAssertion; 0]);
+    assert_eq!(
+        report.mapped,
+        [] as [id_render::lower_native::MappedNativeAssertion; 0]
+    );
     assert_eq!(report.defaulted.len(), 1);
     assert!(
         report.defaulted[0].warning.contains("rebeccapurple"),

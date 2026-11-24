@@ -669,7 +669,10 @@ mod tests {
     fn test_expiry_is_inclusive_at_max_age_and_exclusive_one_ms_before() {
         let mut pool = pool();
         pool.insert(author(1), 1, [9], "e1", 1_000).unwrap();
-        assert_eq!(pool.expire(1_000 + WEEK_MS - 1), [] as [([u8; 32], &str); 0]);
+        assert_eq!(
+            pool.expire(1_000 + WEEK_MS - 1),
+            [] as [([u8; 32], &str); 0]
+        );
         assert_eq!(pool.len(), 1);
         assert_eq!(pool.expire(1_000 + WEEK_MS), vec![(author(1), "e1")]);
         assert_eq!(pool.waiting_count(author(1)), 0);

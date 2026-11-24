@@ -2105,7 +2105,11 @@ mod budget_tests {
         .expect("unconfigured budgets never refuse");
         assert_eq!(
             eval.budget_usage(0),
-            [] as [(crate::abuse::BudgetScope, crate::abuse::BudgetLimit, crate::abuse::BudgetUsage); 0]
+            [] as [(
+                crate::abuse::BudgetScope,
+                crate::abuse::BudgetLimit,
+                crate::abuse::BudgetUsage
+            ); 0]
         );
     }
 }

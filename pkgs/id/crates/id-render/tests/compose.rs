@@ -473,9 +473,15 @@ fn target_locality_other_targets_declarations_do_not_leak_decision_5854_s2_4() {
     let composed =
         compose_document(&doc, &target("native"), &ComposeData::default()).expect("composes");
     let button = find(&composed.root, BUTTON_PATH).expect("button present");
-    assert_eq!(button.properties, [] as [id_render::compose::ResolvedProperty; 0]);
+    assert_eq!(
+        button.properties,
+        [] as [id_render::compose::ResolvedProperty; 0]
+    );
     assert_eq!(button.presentation, None);
-    assert_eq!(composed.report.warnings, [] as [id_render::compose::CompositionWarning; 0]);
+    assert_eq!(
+        composed.report.warnings,
+        [] as [id_render::compose::CompositionWarning; 0]
+    );
     assert_eq!(
         composed.report.reported_overrides,
         [] as [id_render::compose::ReportedOverride; 0]

@@ -76,7 +76,10 @@ fn edge(from: u8, to: u8) -> SucceedsEdge {
 fn dag_with(versions: &[u8], name: &str) -> VersionDag {
     let mut dag = VersionDag::new();
     for n in versions {
-        assert_eq!(dag.add_version(version(*n, name)).unwrap(), [] as [version::Resolution; 0]);
+        assert_eq!(
+            dag.add_version(version(*n, name)).unwrap(),
+            [] as [version::Resolution; 0]
+        );
     }
     dag
 }
@@ -223,7 +226,10 @@ fn branches_keep_every_head_and_only_an_owner_selection_picks_one() {
 #[test]
 fn a_version_id_cannot_change_its_object_or_schema() {
     let mut dag = dag_with(&[1], "doc");
-    assert_eq!(dag.add_version(version(1, "doc")).unwrap(), [] as [version::Resolution; 0]);
+    assert_eq!(
+        dag.add_version(version(1, "doc")).unwrap(),
+        [] as [version::Resolution; 0]
+    );
     assert_eq!(
         dag.add_version(version(1, "other")).unwrap_err().class(),
         "invalid_successor"

@@ -518,7 +518,10 @@ mod tests {
         assert!(notice.should_prompt());
         assert!(notice.uncomputable);
         assert_eq!(notice.client_side.len(), 1);
-        assert_eq!(notice.server_side, [] as [crate::cap_notice::NoticeLine; 0]);
+        assert_eq!(
+            notice.server_side,
+            [] as [crate::cap_notice::NoticeLine; 0]
+        );
         assert_eq!(notice.client_side[0].class, CLASS_UNKNOWN);
         assert_eq!(
             notice.client_side[0].message,
