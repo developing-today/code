@@ -531,7 +531,10 @@ impl WorldInstance {
             let now = std::time::Instant::now();
             budget.try_charge(now, self.limits.fuel)?;
         }
-        Ok(())    /// Name the key this guest's burns are charged to (the world id,
+        Ok(())
+    }
+
+    /// Name the key this guest's burns are charged to (the world id,
     /// where the composition layer knows it). See
     /// [`crate::guest_burn`] for how the charge is used.
     pub fn set_charge_key(&mut self, key: String) {
@@ -658,7 +661,8 @@ impl WorldInstance {
                 "guest call refused: charge account cannot be resolved"
             );
             anyhow::Error::from(error)
-        })    }
+        })
+    }
 
     /// Fuel the most recent `call` spent; zero if it has not run.
     pub const fn last_fuel(&self, call: GuestCall) -> u64 {
