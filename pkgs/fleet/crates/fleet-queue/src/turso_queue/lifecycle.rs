@@ -2853,7 +2853,15 @@ mod task_history_tests {
 
         let c3 = claim(&t);
         assert_eq!(c3["ok"], true, "{c3}");
-        let done = verb_complete(&t, &json!({"task_id": id, "worker": "oracle-w", "result": {"evidence": "https://github.com/developing-today/code/pull/14249"}}));
+        let done = verb_complete(&t, &json!({"task_id": id, "worker": "oracle-w", "result": {
+            "evidence": "https://github.com/developing-today/code/pull/14249",
+            "disposition": {
+                "checked_at": now_iso(), "source": "oracle",
+                "issue": {"number": 14170, "state": "closed", "closed_at": now_iso()},
+                "pulls": [{"number": 14249, "state": "closed", "merged_at": now_iso()}],
+                "verdict": "merged_verified"
+            }
+        }}));
         assert_eq!(done["ok"], true, "{done}");
         assert_eq!(last_to(&t), "done");
         assert_eq!(last_to(&t), status_of(&t));
