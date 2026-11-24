@@ -39,6 +39,7 @@ export const NOTIFICATION_CLASS_DEFAULTS: Record<string, boolean> = {
   "section-risk": true,
   "stack-health": true,
   "blocked-age": true,
+  prompt: true,
 };
 
 /** Notification preference classes (#3318, slice (d) of the #1254
@@ -91,6 +92,12 @@ export const NOTIFICATION_CLASSES: NotificationClassMeta[] = [
     blurb:
       "A needs-Drew item stays unacted for 24/48 hours, then weekly (digest-only except the 48-hour breakthrough).",
   },
+  {
+    id: "prompt",
+    label: "Prompt answers",
+    blurb:
+      "A prompt submitted with notifications on (#10035) reaches an answer or fails. The per-submission opt-in still applies — this class is the subscription-side gate.",
+  },
 ];
 
 /** Classes a per-class test send accepts: every preference class,
@@ -139,6 +146,8 @@ export function notificationTestLanding(
       return `${origin}/attention#test-needs-drew`;
     case "blocked-age":
       return `${origin}/attention#test-blocked-age`;
+    case "prompt":
+      return `${origin}/chat`;
     default:
       return `${origin}/alerts`;
   }

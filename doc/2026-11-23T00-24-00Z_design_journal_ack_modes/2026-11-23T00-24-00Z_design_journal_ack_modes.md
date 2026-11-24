@@ -17,7 +17,7 @@ path: the actor persists an input through `WorldJournal::append` /
 That is the documented `WorldJournal` contract — acknowledged history
 must never get ahead of durable history. The post-Fix-1 laptop profile
 shows what the contract costs: `input_ack_p50` 18.892 ms against a
-journal append mean of 25.784 ms under load — the ack essentially *is*
+journal append mean of 25.784 ms under load — the ack essentially _is_
 the sync wait.
 
 Two earlier attempts to cut that cost without touching the contract
@@ -40,7 +40,7 @@ were measured and closed:
   ephemeral are never journaled at all. Inventing a class would weaken
   designed contracts. Not pursued.
 
-What remains is the lever this document specifies: let a world *choose*
+What remains is the lever this document specifies: let a world _choose_
 to relax the ack, per configuration, with the relaxation explicit,
 bounded, and visible — instead of pretending the sync can be shared or
 the inputs reclassified.
@@ -57,7 +57,7 @@ the inputs reclassified.
    actor-level drain into `append_batch` already lands a batch with a
    single sync when a batch exists. Measured headroom: zero. Not
    implemented; `append_batch`'s one-sync-per-batch stands.
-3. **Ack timing** (this design): *when* the input is acknowledged
+3. **Ack timing** (this design): _when_ the input is acknowledged
    relative to the sync that covers it. This is the only lever that
    reduces syncs per input without sharing or reclassifying, and it is
    a durability-semantics choice — which is why it is a mode the world
@@ -70,7 +70,7 @@ The mode is a property of the journal, selected per world at open time
 directly). It is runtime configuration, not journaled state: the entry
 bytes, the journal format, and the recovery scan are identical in every
 mode, so reopening a journal under a different mode re-reads exactly
-the entries that survived — a mode can change what a *future* ack
+the entries that survived — a mode can change what a _future_ ack
 promises, never what existing bytes mean. The mode is observable:
 `WorldJournal::ack_mode()` (and `FileJournal::ack_mode()`) reports it,
 and `FileJournal::unsynced_appends()` reports how many acknowledged
@@ -101,20 +101,20 @@ completes, every append it covers is durable. A sync point (an explicit
 `WorldJournal::sync()`, a checkpoint/compaction, a transaction) flushes
 any partial batch.
 
-- **Guarantee:** acknowledged ⇒ durable, *except* a tail of at most
+- **Guarantee:** acknowledged ⇒ durable, _except_ a tail of at most
   `JOURNAL_ACK_BATCH_SIZE - 1` acknowledged appends (plus the one in
   flight) whose batch has not synced yet. Recovery after a crash sees
   a prefix of the acknowledged history: entries are lost only from the
   unsynced tail, never from the middle, and never reordered.
 - **Cost of the relaxation:** an OS crash or power loss can lose up to
-  one batch of acknowledged inputs. A *process* crash loses nothing —
+  one batch of acknowledged inputs. A _process_ crash loses nothing —
   written bytes survive in the page cache; only an OS-level failure
   drops unsynced data.
 - **Choose it** for high-rate worlds whose inputs are individually
   cheap to lose in a bounded tail (presence-like streams, rapid game
   inputs) and whose bottleneck is sync latency: it pays one sync per
   64 inputs instead of one per input. At one sequential producer the
-  win is sync *count*, not sync sharing.
+  win is sync _count_, not sync sharing.
 
 ### `async` — unbounded relaxation
 

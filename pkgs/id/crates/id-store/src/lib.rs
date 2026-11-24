@@ -27,6 +27,7 @@ pub use id_core::port;
 /// as a sibling module, so the module is re-exported at this root.
 pub use id_core::content_id;
 
+pub mod admission;
 pub mod chain;
 pub mod chat;
 pub mod chat_anchor;
@@ -37,12 +38,16 @@ pub mod graph_index;
 pub mod identity;
 pub mod issuer_rotation;
 pub mod media;
-pub mod note_checkpoints;
+pub mod namespace_registry;
 pub mod note_blocks;
+pub mod note_checkpoints;
 pub mod note_links;
+pub mod note_projections;
 pub mod notes;
+pub mod numeric_registry;
 pub mod policy;
 pub mod range;
+pub mod read_authority;
 pub mod search;
 pub mod session_checkpoint;
 pub mod store;

@@ -150,12 +150,11 @@ pub struct MergeManifest {
 /// database reports `_schema_version = 1` and exactly
 /// [`STAGE_V1_TABLES`].
 pub fn provision_staging_db(path: &Path) -> Result<()> {
-    if let Some(parent) = path.parent() {
-        if !parent.as_os_str().is_empty() {
-            std::fs::create_dir_all(parent).map_err(|e| {
-                Error::backend(format!("staging: creating {}: {e}", parent.display()))
-            })?;
-        }
+    if let Some(parent) = path.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| Error::backend(format!("staging: creating {}: {e}", parent.display())))?;
     }
     let conn = open(path)?;
     let existing = user_tables(&conn)?;
@@ -201,7 +200,11 @@ pub fn user_tables(conn: &Connection) -> Result<BTreeSet<String>> {
 
 /// Assert a database is exactly a v1 staging DB: `_schema_version = 1`
 /// and the exact [`STAGE_V1_TABLES`] table set. This is the invariant
-/// the schema oracle checks.
+/// the schema oracle checks. One deliberate consequence: a promoted
+/// unit's DB no longer satisfies it — promotion stamps a sixth
+/// table (`atlas_manifest`) into the unit DB, which is what closes
+/// it to further `stage_artifact` writes (see
+/// [`crate::aggregate`]'s step 4; #13284).
 pub fn check_stage_schema(conn: &Connection) -> Result<()> {
     let version = schema_version(conn)?;
     if version != STAGE_SCHEMA_VERSION {
@@ -327,7 +330,7 @@ pub fn chunk_artifact_text(text: &str) -> Vec<String> {
     chunks
 }
 
-fn sha256_hex(text: &str) -> String {
+pub(crate) fn sha256_hex(text: &str) -> String {
     use sha2::{Digest, Sha256};
     let digest = Sha256::digest(text.as_bytes());
     digest.iter().map(|b| format!("{b:02x}")).collect()
@@ -715,12 +718,12 @@ impl Registry {
     /// Open (creating if needed) a registry at `path` and ensure its
     /// v1 table exists.
     pub fn open(path: &Path) -> Result<Registry> {
-        if let Some(parent) = path.parent() {
-            if !parent.as_os_str().is_empty() {
-                std::fs::create_dir_all(parent).map_err(|e| {
-                    Error::backend(format!("registry: creating {}: {e}", parent.display()))
-                })?;
-            }
+        if let Some(parent) = path.parent()
+            && !parent.as_os_str().is_empty()
+        {
+            std::fs::create_dir_all(parent).map_err(|e| {
+                Error::backend(format!("registry: creating {}: {e}", parent.display()))
+            })?;
         }
         let conn = open(path)?;
         ensure_registry(&conn)?;
@@ -1216,7 +1219,7 @@ fn ensure_registry(conn: &Connection) -> Result<()> {
         .map_err(|e| Error::backend(format!("registry: applying v1 DDL: {e}")))
 }
 
-fn open(path: &Path) -> Result<Connection> {
+pub(crate) fn open(path: &Path) -> Result<Connection> {
     Connection::open(path)
         .map_err(|e| Error::backend(format!("staging: opening {}: {e}", path.display())))
 }

@@ -1,0 +1,209 @@
+name: pkarr-worker-deploy
+
+# An opt-in alternative to the existing nix run .#pkarr-deploy operator path.
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: Confirm this exact pkarr release action
+        type: boolean
+        default: false
+      operation:
+        description: Upload a candidate version or promote an existing version
+        type: choice
+        required: true
+        options: [upload, promote]
+      version_id:
+        description: Exact version ID printed by the successful upload
+        type: string
+      upload_run_id:
+        description: Run ID from the upload receipt
+        type: string
+      upload_run_attempt:
+        description: Run attempt from the upload receipt
+        type: string
+      source_sha:
+        description: Full source SHA from the upload receipt
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: pkarr-worker-production
+  cancel-in-progress: false
+
+jobs:
+  preflight:
+    if: github.event_name == 'workflow_dispatch' && github.repository == 'developing-today/code' && github.ref == 'refs/heads/main' && inputs.confirm == true
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    outputs:
+      environment: ${{ steps.protection.outputs.environment }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Require the pre-existing exactly main-only protected environment
+        id: protection
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          umask 077
+          endpoint="repos/developing-today/code/environments/pkarr-worker-production"
+          gh api "$endpoint" > "$RUNNER_TEMP/pkarr-environment.json"
+          gh api "$endpoint/deployment-branch-policies?per_page=2" > "$RUNNER_TEMP/pkarr-branches.json"
+          node pkgs/pkarr-worker/gha-publish.mjs environment \
+            "$RUNNER_TEMP/pkarr-environment.json" "$RUNNER_TEMP/pkarr-branches.json"
+          echo 'environment=pkarr-worker-production' >> "$GITHUB_OUTPUT"
+
+  deploy:
+    needs: preflight
+    if: github.event_name == 'workflow_dispatch' && github.repository == 'developing-today/code' && github.ref == 'refs/heads/main' && inputs.confirm == true
+    environment:
+      name: ${{ needs.preflight.outputs.environment }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      CLOUDFLARE_CI_OVERRIDE_WORKER_NAME: ""
+      OPERATION: ${{ inputs.operation }}
+      VERSION_ID: ${{ inputs.version_id }}
+      UPLOAD_RUN_ID: ${{ inputs.upload_run_id }}
+      UPLOAD_RUN_ATTEMPT: ${{ inputs.upload_run_attempt }}
+      UPLOAD_SOURCE_SHA: ${{ inputs.source_sha }}
+    defaults:
+      run:
+        working-directory: pkgs/pkarr-worker
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24.22.0
+      - name: Validate requested operation and offline release contracts
+        run: |
+          set -euo pipefail
+          node gha-publish.mjs input
+          node --test gha-publish.test.mjs
+      - name: Stage a credential-free build with its own locked tools
+        run: |
+          set -euo pipefail
+          umask 077
+          # Install only into the release copy, never into the operator project.
+          release="$RUNNER_TEMP/pkarr-release"
+          mkdir "$release"
+          cp -- gha-toolchain/package.json gha-toolchain/package-lock.json "$release/"
+          cp -- cloudflare.config.ts wrangler.jsonc tsconfig.json gha-publish.mjs "$release/"
+          cp -R -- src "$release/"
+          cd "$release"
+          npm ci --ignore-scripts --no-audit --no-fund
+          test "$(./node_modules/.bin/cf --version)" = 1.0.0-beta.32
+          test "$(node -p "require('./node_modules/wrangler/package.json').version")" = 4.161.0
+      - name: Build and dry-run the pinned non-preview upload without credentials
+        if: inputs.operation == 'upload'
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/pkarr-release"
+          ./node_modules/.bin/cf -q build
+          # beta.32 emits Build Output v0, not the current CLI's v1.
+          jq -e '. == {"buildContext":{"isPreview":false}}' .cloudflare/output/v0/config.json > /dev/null
+          jq -e '.name == "pkarr"' .cloudflare/output/v0/workers/default/worker.config.json > /dev/null
+          ./node_modules/.bin/cf -q workers versions create --worker pkarr --prebuilt --tag "$GITHUB_SHA" --dry-run
+      - name: Upload exact candidate and capture unchanged serving baseline
+        if: inputs.operation == 'upload'
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.PKARR_WORKER_CLOUDFLARE_API_TOKEN }}
+        run: |
+          set -euo pipefail
+          umask 077
+          cd "$RUNNER_TEMP/pkarr-release"
+          [[ "$CLOUDFLARE_ACCOUNT_ID" =~ ^[a-f0-9]{32}$ && -n "$CLOUDFLARE_API_TOKEN" ]]
+          api="https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/scripts/pkarr"
+          get() { curl --fail --silent --show-error --max-time 30 -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" "$api/$1"; }
+          beta="https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/workers"
+          get_beta() { curl --fail --silent --show-error --max-time 30 -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" "$beta/$1"; }
+          get_beta pkarr > "$RUNNER_TEMP/pkarr-worker.json"
+          VERIFIED_WORKER_ID="$(node gha-publish.mjs worker-id "$RUNNER_TEMP/pkarr-worker.json")"
+          export VERIFIED_WORKER_ID
+          get deployments > "$RUNNER_TEMP/pkarr-before.json"
+          # Refuse to upload unless the provider's prior serving state was readable.
+          node gha-publish.mjs unchanged "$RUNNER_TEMP/pkarr-before.json" "$RUNNER_TEMP/pkarr-before.json"
+          cf_receipt="$RUNNER_TEMP/pkarr-cf-upload.jsonl"
+          [[ ! -e "$cf_receipt" ]]
+          WRANGLER_OUTPUT_FILE_PATH="$cf_receipt" ./node_modules/.bin/cf -q workers versions create \
+            --worker pkarr --prebuilt --tag "$GITHUB_SHA" \
+            --message "pkarr $GITHUB_SHA run $GITHUB_RUN_ID attempt $GITHUB_RUN_ATTEMPT" > /dev/null
+          VERSION_ID="$(node gha-publish.mjs upload-id "$cf_receipt")"
+          export VERSION_ID
+          [[ "$VERSION_ID" =~ ^[a-f0-9-]{36}$ ]]
+          export UPLOAD_RUN_ID="$GITHUB_RUN_ID" UPLOAD_RUN_ATTEMPT="$GITHUB_RUN_ATTEMPT" UPLOAD_SOURCE_SHA="$GITHUB_SHA"
+          # Exact Beta version read includes annotations; the legacy version
+          # read does not document them. Legacy traffic and deployability stay unchanged.
+          get_beta "$VERIFIED_WORKER_ID/versions/$VERSION_ID" > "$RUNNER_TEMP/pkarr-version.json"
+          get deployments > "$RUNNER_TEMP/pkarr-after.json"
+          node gha-publish.mjs unchanged "$RUNNER_TEMP/pkarr-before.json" "$RUNNER_TEMP/pkarr-after.json"
+          node gha-publish.mjs receipt "$RUNNER_TEMP/pkarr-before.json" "$RUNNER_TEMP/pkarr-version.json" > "$RUNNER_TEMP/pkarr-upload.json"
+          printf 'Version ID: %s\nUpload run: %s\nUpload attempt: %s\nSource SHA: %s\n' \
+            "$VERSION_ID" "$UPLOAD_RUN_ID" "$UPLOAD_RUN_ATTEMPT" "$UPLOAD_SOURCE_SHA" >> "$GITHUB_STEP_SUMMARY"
+      - name: Save exact upload receipt
+        if: inputs.operation == 'upload'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: pkarr-upload-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/pkarr-upload.json
+          if-no-files-found: error
+          retention-days: 7
+      - name: Download the selected run attempt receipt
+        if: inputs.operation == 'promote'
+        uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16 # v4.3.0
+        with:
+          name: pkarr-upload-${{ inputs.upload_run_id }}-${{ inputs.upload_run_attempt }}
+          path: ${{ runner.temp }}/upload
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.upload_run_id }}
+      - name: Read trusted upload attempt and source ancestry
+        if: inputs.operation == 'promote'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh api "repos/developing-today/code/actions/runs/$UPLOAD_RUN_ID/attempts/$UPLOAD_RUN_ATTEMPT" > "$RUNNER_TEMP/pkarr-run.json"
+          gh api "repos/developing-today/code/compare/$UPLOAD_SOURCE_SHA...$GITHUB_SHA" > "$RUNNER_TEMP/pkarr-comparison.json"
+      - name: Promote the exact candidate only if the serving baseline still matches
+        if: inputs.operation == 'promote'
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.PKARR_WORKER_CLOUDFLARE_API_TOKEN }}
+        run: |
+          set -euo pipefail
+          umask 077
+          cd "$RUNNER_TEMP/pkarr-release"
+          [[ "$CLOUDFLARE_ACCOUNT_ID" =~ ^[a-f0-9]{32}$ && -n "$CLOUDFLARE_API_TOKEN" ]]
+          api="https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/scripts/pkarr"
+          get() { curl --fail --silent --show-error --max-time 30 -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" "$api/$1"; }
+          beta="https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/workers"
+          get_beta() { curl --fail --silent --show-error --max-time 30 -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" "$beta/$1"; }
+          get_beta pkarr > "$RUNNER_TEMP/pkarr-worker.json"
+          VERIFIED_WORKER_ID="$(node gha-publish.mjs worker-id "$RUNNER_TEMP/pkarr-worker.json")"
+          export VERIFIED_WORKER_ID
+          receipt="$RUNNER_TEMP/upload/pkarr-upload.json"
+          # Exact Beta version read includes annotations; the legacy version
+          # read does not document them. Legacy traffic and deployability stay unchanged.
+          get_beta "$VERIFIED_WORKER_ID/versions/$VERSION_ID" > "$RUNNER_TEMP/pkarr-version.json"
+          get 'versions?deployable=true' | jq -e --arg id "$VERSION_ID" '.success == true and any(.result.items[]?; .id == $id)' > /dev/null
+          get deployments > "$RUNNER_TEMP/pkarr-current.json"
+          node gha-publish.mjs authorize "$receipt" "$RUNNER_TEMP/pkarr-run.json" "$RUNNER_TEMP/pkarr-comparison.json" \
+            "$RUNNER_TEMP/pkarr-version.json" "$RUNNER_TEMP/pkarr-current.json"
+          # This is a pre-write check, not a Cloudflare CAS. Operators must not
+          # use the separate Nix/other release path during this promotion.
+          versions="$(jq -cn --arg id "$VERSION_ID" '[{version_id:$id,percentage:100}]')"
+          ./node_modules/.bin/cf -q workers deployments create --worker pkarr --strategy percentage --versions "$versions" > "$RUNNER_TEMP/pkarr-promotion.json"
+          get deployments > "$RUNNER_TEMP/pkarr-promoted.json"
+          node gha-publish.mjs verify "$RUNNER_TEMP/pkarr-promoted.json" "$receipt" "$RUNNER_TEMP/pkarr-promotion.json"
+          curl --fail --silent --show-error --max-time 15 https://pkarr.developing-today.workers.dev/healthz | grep -Fxq ok

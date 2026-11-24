@@ -2552,6 +2552,11 @@ mod tests {
 
     #[tokio::test]
     async fn accept_enforces_per_peer_connection_cap_and_releases_slots() {
+        if crate::test_transport::skip_if_no_udp_loopback(
+            "world_net::tests::accept_enforces_per_peer_connection_cap_and_releases_slots",
+        ) {
+            return;
+        }
         let host = host(Some("admin")).await;
         let peer_key = [71; 32];
         let peer_id: AbuseEndpointId = *iroh_base::SecretKey::from_bytes(&peer_key)
@@ -2750,6 +2755,11 @@ mod tests {
 
     #[tokio::test]
     async fn successful_join_switches_only_that_stream_to_authorized_limits() {
+        if crate::test_transport::skip_if_no_udp_loopback(
+            "world_net::tests::successful_join_switches_only_that_stream_to_authorized_limits",
+        ) {
+            return;
+        }
         let host = host(Some("admin")).await;
         let client_ep = endpoint().await;
         let mut inviter = WorldClient::connect(&client_ep, host.addr.clone())
@@ -2933,6 +2943,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_records_client_rejects_over_count_page() {
+        if crate::test_transport::skip_if_no_udp_loopback(
+            "world_net::tests::test_records_client_rejects_over_count_page",
+        ) {
+            return;
+        }
         let mut map = serde_json::Map::new();
         for i in 0..=crate::world::MAX_RECORDS {
             map.insert(format!("k{i:05}"), serde_json::json!(i));
@@ -2948,6 +2963,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_records_client_rejects_oversized_value() {
+        if crate::test_transport::skip_if_no_udp_loopback(
+            "world_net::tests::test_records_client_rejects_oversized_value",
+        ) {
+            return;
+        }
         let page = records_page(
             serde_json::json!({"a": "x".repeat(crate::world::MAX_RECORD_VALUE_BYTES + 1)}),
             None,
@@ -2961,6 +2981,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_records_client_rejects_control_char_key() {
+        if crate::test_transport::skip_if_no_udp_loopback(
+            "world_net::tests::test_records_client_rejects_control_char_key",
+        ) {
+            return;
+        }
         let page = records_page(serde_json::json!({"a\u{1}b": 1}), None);
         let err = rogue_records(vec![page]).await.unwrap_err();
         assert!(
@@ -2971,6 +2996,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_records_client_rejects_stuck_cursor() {
+        if crate::test_transport::skip_if_no_udp_loopback(
+            "world_net::tests::test_records_client_rejects_stuck_cursor",
+        ) {
+            return;
+        }
         // One page, repeated forever: next_after never advances past "a".
         let page = records_page(serde_json::json!({"a": 1}), Some("a"));
         let err = rogue_records(vec![page]).await.unwrap_err();
@@ -2983,6 +3013,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_records_client_rejects_duplicate_key_across_pages() {
+        if crate::test_transport::skip_if_no_udp_loopback(
+            "world_net::tests::test_records_client_rejects_duplicate_key_across_pages",
+        ) {
+            return;
+        }
         let pages = vec![
             records_page(serde_json::json!({"a": 1, "b": 2}), Some("b")),
             records_page(serde_json::json!({"b": 3}), None),
@@ -2996,6 +3031,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_records_client_rejects_out_of_order_page() {
+        if crate::test_transport::skip_if_no_udp_loopback(
+            "world_net::tests::test_records_client_rejects_out_of_order_page",
+        ) {
+            return;
+        }
         let pages = vec![
             records_page(serde_json::json!({"m": 1}), Some("m")),
             records_page(serde_json::json!({"a": 2}), None),
@@ -3009,6 +3049,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_records_client_rejects_mismatched_cursor() {
+        if crate::test_transport::skip_if_no_udp_loopback(
+            "world_net::tests::test_records_client_rejects_mismatched_cursor",
+        ) {
+            return;
+        }
         let page = records_page(serde_json::json!({"a": 1}), Some("zzz"));
         let err = rogue_records(vec![page]).await.unwrap_err();
         assert!(
@@ -3019,6 +3064,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_records_client_rejects_mistyped_cursor() {
+        if crate::test_transport::skip_if_no_udp_loopback(
+            "world_net::tests::test_records_client_rejects_mistyped_cursor",
+        ) {
+            return;
+        }
         // next_after as a number: present but mistyped must be
         // refused as malformed (#6778), never read as the final page
         // while the host may hold more records.
@@ -3037,6 +3087,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_records_client_rejects_empty_page_with_cursor() {
+        if crate::test_transport::skip_if_no_udp_loopback(
+            "world_net::tests::test_records_client_rejects_empty_page_with_cursor",
+        ) {
+            return;
+        }
         // Issue #6578, Defect E: an empty page carrying an advancing
         // cursor contributes no records, so the RecordsBudget never
         // moves and the loop never ends (the rogue host repeats the
@@ -3055,6 +3110,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_records_client_rejects_empty_first_page_with_cursor() {
+        if crate::test_transport::skip_if_no_udp_loopback(
+            "world_net::tests::test_records_client_rejects_empty_first_page_with_cursor",
+        ) {
+            return;
+        }
         // The same shape on the very first page: no prior cursor
         // exists, but an empty page with a cursor is malformed
         // regardless of position (#6578).
@@ -3068,6 +3128,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_records_client_accepts_empty_final_page() {
+        if crate::test_transport::skip_if_no_udp_loopback(
+            "world_net::tests::test_records_client_accepts_empty_final_page",
+        ) {
+            return;
+        }
         // The legitimate empty-page shape (#6578 control): a final
         // empty page whose cursor is null terminates the read.
         let pages = vec![
@@ -3081,6 +3146,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_records_client_accepts_conforming_pages() {
+        if crate::test_transport::skip_if_no_udp_loopback(
+            "world_net::tests::test_records_client_accepts_conforming_pages",
+        ) {
+            return;
+        }
         let pages = vec![
             records_page(serde_json::json!({"a": 1, "b": 2}), Some("b")),
             records_page(serde_json::json!({"c": 3}), None),
@@ -3092,6 +3162,11 @@ mod tests {
 
     #[tokio::test]
     async fn peers_invite_join_chat_and_catch_up_over_iroh() {
+        if crate::test_transport::skip_if_no_udp_loopback(
+            "world_net::tests::peers_invite_join_chat_and_catch_up_over_iroh",
+        ) {
+            return;
+        }
         let host = host(Some("admin")).await;
         let client_ep = endpoint().await;
 
@@ -3150,6 +3225,11 @@ mod tests {
 
     #[tokio::test]
     async fn caps_ceiling_is_admin_only_over_iroh_and_applies_at_once() {
+        if crate::test_transport::skip_if_no_udp_loopback(
+            "world_net::tests::caps_ceiling_is_admin_only_over_iroh_and_applies_at_once",
+        ) {
+            return;
+        }
         let host = host(Some("admin")).await;
         let client_ep = endpoint().await;
 
@@ -3554,6 +3634,11 @@ mod tests {
 
     #[tokio::test]
     async fn execution_profile_can_be_queried_and_updated_over_iroh() {
+        if crate::test_transport::skip_if_no_udp_loopback(
+            "world_net::tests::execution_profile_can_be_queried_and_updated_over_iroh",
+        ) {
+            return;
+        }
         let host = host(Some("admin")).await;
         let client_ep = endpoint().await;
 
@@ -3938,6 +4023,11 @@ mod tests {
 
     #[tokio::test]
     async fn paged_records_survive_the_iroh_frame_limit() {
+        if crate::test_transport::skip_if_no_udp_loopback(
+            "world_net::tests::paged_records_survive_the_iroh_frame_limit",
+        ) {
+            return;
+        }
         let ep = endpoint().await;
         let world = WorldHandle::spawn_with_program(
             WorldCore::new("lobby", WorldLimits::default()).unwrap(),
@@ -3977,6 +4067,11 @@ mod tests {
 
     #[tokio::test]
     async fn one_connection_reaches_many_worlds_and_many_clients_share_a_host() {
+        if crate::test_transport::skip_if_no_udp_loopback(
+            "world_net::tests::one_connection_reaches_many_worlds_and_many_clients_share_a_host",
+        ) {
+            return;
+        }
         let ep = endpoint().await;
         let opener = crate::world_hub::testing::MemoryOpener::new(false);
         let dyn_opener: Arc<dyn crate::world_hub::WorldOpener> = opener.clone();
@@ -4032,6 +4127,11 @@ mod tests {
 
     #[tokio::test]
     async fn invite_helper_returns_the_capability_or_the_hosts_reason() {
+        if crate::test_transport::skip_if_no_udp_loopback(
+            "world_net::tests::invite_helper_returns_the_capability_or_the_hosts_reason",
+        ) {
+            return;
+        }
         let host = host(Some("admin")).await;
         let client_ep = endpoint().await;
 
@@ -4062,6 +4162,11 @@ mod tests {
 
     #[tokio::test]
     async fn node_identity_alone_grants_nothing() {
+        if crate::test_transport::skip_if_no_udp_loopback(
+            "world_net::tests::node_identity_alone_grants_nothing",
+        ) {
+            return;
+        }
         let host = host(Some("admin")).await;
         let client_ep = endpoint().await;
 
@@ -4095,6 +4200,11 @@ mod tests {
 
     #[tokio::test]
     async fn oversized_and_invalid_frames_are_rejected_without_a_panic() {
+        if crate::test_transport::skip_if_no_udp_loopback(
+            "world_net::tests::oversized_and_invalid_frames_are_rejected_without_a_panic",
+        ) {
+            return;
+        }
         let host = host(None).await;
         let client_ep = endpoint().await;
 
@@ -4138,6 +4248,11 @@ mod tests {
 
     #[tokio::test]
     async fn sessions_per_connection_are_bounded() {
+        if crate::test_transport::skip_if_no_udp_loopback(
+            "world_net::tests::sessions_per_connection_are_bounded",
+        ) {
+            return;
+        }
         let host = host(None).await;
         let client_ep = endpoint().await;
         let conn = client_ep
@@ -4178,6 +4293,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_coordinator_surfaces_connection_session_limit_without_redialing() {
+        if crate::test_transport::skip_if_no_udp_loopback(
+            "world_net::tests::test_coordinator_surfaces_connection_session_limit_without_redialing",
+        ) {
+            return;
+        }
         let host = host(Some("admin")).await;
         let client_ep = endpoint().await;
         let capability = invite_for(&client_ep, &host.addr, None, "ann").await;
@@ -4272,6 +4392,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_coordinator_surfaces_world_hub_limit_without_redialing() {
+        if crate::test_transport::skip_if_no_udp_loopback(
+            "world_net::tests::test_coordinator_surfaces_world_hub_limit_without_redialing",
+        ) {
+            return;
+        }
         let (router, hub, addr, host_ep) = hub_host_with_limits(crate::world_hub::HubLimits {
             max_sessions: 1,
             ..crate::world_hub::HubLimits::default()
@@ -4375,6 +4500,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_coordinator_holds_two_worlds_on_one_endpoint_concurrently() {
+        if crate::test_transport::skip_if_no_udp_loopback(
+            "world_net::tests::test_coordinator_holds_two_worlds_on_one_endpoint_concurrently",
+        ) {
+            return;
+        }
         let (router, hub, addr, host_ep) = hub_host().await;
         let client_ep = endpoint().await;
         let cap_alpha = invite_for(&client_ep, &addr, Some("alpha"), "ann").await;
@@ -4464,6 +4594,11 @@ mod tests {
 
     #[tokio::test]
     async fn coordinator_session_cannot_lease_another_world_via_prekeyed_first_frame() {
+        if crate::test_transport::skip_if_no_udp_loopback(
+            "world_net::tests::coordinator_session_cannot_lease_another_world_via_prekeyed_first_frame",
+        ) {
+            return;
+        }
         // Issue #4576: a session the coordinator opened for world `alpha`
         // must not end up leased to `beta` because its first frame arrives
         // pre-keyed with `"world": "beta"`. The bound world wins in
@@ -4521,6 +4656,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_coordinator_keeps_same_world_sessions_independent_by_handle() {
+        if crate::test_transport::skip_if_no_udp_loopback(
+            "world_net::tests::test_coordinator_keeps_same_world_sessions_independent_by_handle",
+        ) {
+            return;
+        }
         let host = host(Some("admin")).await;
         let client_ep = endpoint().await;
         let cap_ann = invite_for(&client_ep, &host.addr, None, "ann").await;
@@ -4591,6 +4731,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_coordinator_spans_distinct_server_endpoints() {
+        if crate::test_transport::skip_if_no_udp_loopback(
+            "world_net::tests::test_coordinator_spans_distinct_server_endpoints",
+        ) {
+            return;
+        }
         let host_a = host(Some("admin")).await;
         let host_b = host(Some("admin")).await;
         let client_ep = endpoint().await;
@@ -4673,6 +4818,11 @@ mod tests {
 
     #[tokio::test]
     async fn second_join_through_coordinator_does_not_mutate_the_journal() {
+        if crate::test_transport::skip_if_no_udp_loopback(
+            "world_net::tests::second_join_through_coordinator_does_not_mutate_the_journal",
+        ) {
+            return;
+        }
         let host = host(Some("admin")).await;
         let client_ep = endpoint().await;
         let cap = invite_for(&client_ep, &host.addr, None, "ann").await;
@@ -4723,6 +4873,11 @@ mod tests {
 
     #[tokio::test]
     async fn coordinator_replaces_a_closed_root_connection_on_reopen() {
+        if crate::test_transport::skip_if_no_udp_loopback(
+            "world_net::tests::coordinator_replaces_a_closed_root_connection_on_reopen",
+        ) {
+            return;
+        }
         let host = host(Some("admin")).await;
         let client_ep = endpoint().await;
         let cap = invite_for(&client_ep, &host.addr, None, "ann").await;

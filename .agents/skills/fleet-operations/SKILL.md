@@ -35,6 +35,13 @@ description: Use when operating or documenting the Fleet CLI, selecting where a 
 - Keep build products needed by a follow-up under `target/fleet-output/`. The follow-up can download them while reusing the same repository's dependency cache. Cargo and Go caches use scoped keys plus broader restore prefixes so a new branch can restore a compatible default-branch cache.
 - Report the run ID and run URL, terminal status, selected surface, and any artifact/cache handoff result. Do not report a submitted command as successful until its run reaches a successful terminal result.
 
+## Search the Atlas corpus
+
+- Use `fleet search` for prior-work questions over the fleet's session history and notes ("have we hit this before, what did we decide"): `fleet search 'QUERY' --k 5 --text` for readable hits; the default JSON output when a tool consumes it.
+- Follow a hit with `fleet search get-chunk ID --neighbors 2 --text` for the full chunk and its provenance.
+- Results are clamped server-side to this seat's client identity ceiling (sandbox seats: personal). A miss at your ceiling is not proof nothing exists; say which ceiling you searched under.
+- Full surface (filters, routing, provisioning): `pkgs/fleet/docs/verbs.md` §search and `fleet search --help`.
+
 ## Extend the Fleet surface
 
 When adding a command, runner, container, or build target, inspect `pkgs/fleet/fleet-surfaces.json`, the workflow that implements the selected surface, and the registry adapters before changing placement. Keep Linux/macOS eligibility, owner/repository balance, capacity limits, artifact transfer, cache restore/save behavior, and failure fallback explicit. Update the registry help inventory, this CLI reference, the relevant runbook, and the skill only where the reusable procedure changes.

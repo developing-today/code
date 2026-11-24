@@ -1,4 +1,5 @@
-pub mod app;
+pub use web_gen_api_app as app;
+
 use cfg_if::cfg_if;
 
 cfg_if! {

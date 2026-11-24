@@ -24,12 +24,16 @@ mod pyjson;
 mod render;
 
 #[cfg(feature = "client")]
-pub use cli::run;
+pub use cli::{SEARCH_USAGE, run};
 
-// Verbatim copy of atlas-search's server.rs (parity-guarded): it keeps
-// that crate's whole surface (e.g. `init_service_config`, which this
-// role does not expose), so unused/visibility lints are allowed here
-// rather than editing the copy.
+// Copy of atlas-search's server.rs under the #5920 parity guard:
+// byte-identical outside the pinned parity header and the one
+// normalized binary-name diagnostic (#5640) — a maintained copy
+// under parity discipline, not a whole-file byte identity (the two
+// files differ in size). It keeps that crate's whole surface (e.g.
+// `init_service_config`, which this role does not expose), so
+// unused/visibility lints are allowed here rather than editing
+// the copy.
 #[cfg(feature = "serve")]
 pub mod serve;
 #[cfg(feature = "serve")]

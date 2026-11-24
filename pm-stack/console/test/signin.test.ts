@@ -153,6 +153,27 @@ describe("sign-in", () => {
     );
   });
 
+  test("the message log is a list whatever the fleet printed for an empty one", async () => {
+    const two = [
+      { ts: "2026-11-22T10:00:00Z", direction: "out", agent: "conductor", kind: "message", body: "one" },
+      { ts: "2026-11-22T10:01:00Z", direction: "in", agent: "muse", kind: "command", body: "two" },
+    ];
+    for (const [printed, want] of [
+      [JSON.stringify({ messages: two }), two],
+      [JSON.stringify({ messages: [] }), []],
+      // No log yet: the answer is still a list, never nothing at all (an
+      // empty answer used to stop the Agents screen from loading).
+      ["{}", []],
+      ["[]", []],
+      ["null", []],
+      [JSON.stringify({ messages: "none" }), []],
+    ] as const) {
+      const w = setup(() => ({ stdout: printed }));
+      expect(await w.ops.messages("15")).toEqual(want as unknown[]);
+      expect(w.calls[0].argv.slice(1)).toEqual(["bridge", "log", "--limit", "15", "--order", "desc"]);
+    }
+  });
+
   test("a script that fails says why, without either value even if the script printed one", async () => {
     const w = setup(() => ({
       code: 1,

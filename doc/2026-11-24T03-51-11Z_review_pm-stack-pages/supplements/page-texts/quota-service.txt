@@ -1,0 +1,114 @@
+OVERVIEW
+Overview
+Today
+Needs you
+Decision sets
+Roadmap
+WORK
+Program status
+Queue
+OPS
+Usage & billing
+Health
+Alerts
+Pages ▾
+Overview — The stack front door (#1134): needs-you, projects, quotas, and health at a glance.
+Today — The day's top objectives + per-project momentum.
+Digest — The scheduled PM digest (#1278): moved / blocked / needs Drew / done / quota outlook from the canonical projection, archived per day at /digest?date=<date>.
+Needs you — NEEDS USER vs NEEDS ORCHESTRATOR, and every live session.
+Decision sets — Every raised decision set (#8867): new today, this week, or all — with open-question counts. Each row opens the set's own page.
+Board — The curated cross-repo WIP board.
+Roadmap — The program roadmap at every grain.
+Reports — Review report versions and resolve prose conflicts without overwriting stored text.
+Source conflicts — One read-only queue of every live source disagreement, with both values and its age.
+Sessions — The agent/session identity registry: who ran what, tokens, task links.
+Search — Search board, roadmap, registry sessions, DNS, services, and tier items by title or linked issue/PR ref.
+Events — The cross-stack chronological stream of dashboard actions, orchestration publishes, and session outcomes.
+Comments queue — Dashboard comments still waiting on a loop (#1210): messages awaiting triage and GitHub comments pending or failed to post, with kind/state counts and each failed item's last error.
+Program status — The projects hub: every project's status, roadmap, and tracked work, one page per project under /program/<id> — fed from the project registry, the tracked issues, and the Project pool.
+Queue — In progress, blocked, recently completed, and next-up work across projects.
+Usage & billing — Token quotas, PAYG dollars, and every SaaS service's usage vs its limits.
+DNS register — Every domain: next renewal, unused, earmarked. (#902's register)
+Cost Explorer — Two tabs over the fleet's cost data: AA Explorer (Artificial Analysis measurements, frontier charts, plan/API/per-task efficiency) and Model Explorer (every model in the fleet's catalogs, its pool seats, plan, and measured value).
+Health — Service & page health (#1147): live probes for every stack service, feed section ages, last job runs, this dashboard's render history — and the services & ports topology (#1137).
+Alerts — The alert throat (#3676): sentinel incidents, Web Push delivery + one escalation, ack/close, the Turso ledger.
+Notifications — Notification measurement (#3319): the weekly sent-vs-acted-on roll-up over the alert throat's send ledger, with display-only default-off proposals under 10%.
+All pages — This manifest as a page — every registered view in one place.
+Search
+◐
+Dark
+quota · live · 2m old
+usage · live · 2m old
+
+← Usage & billing
+
+Cloudflare
+Workers Paid $5/mo + R2 Paid $0 base
+active
+
+
+measured 2026-11-24 · today · API read
+
+
+source: Cloudflare live collector (#1048): file-export/cloudflare, measured 2026-11-24T03:30:19.405Z; limits + plan from quota-view.md Part (b); billing invoice-only (subscriptions/billing 403 with the day-to-day token) · next: Subscription date unknown
+
+Workers Paid platform; no current read extracted.
+Sources
+quota-view section: ### Cloudflare u2014 Workers platform in quota-view.md Part (b)
+tracker row: Summary (b) — Cloudflare platform
+evidence baseline: evidence-and-interpretation-baseline-2026-10-20.md (~/workspace/ai-subscriptions/)
+All metrics
+All metrics
+Metric	Used	Limit	%	Note
+Workers requests highlight	2,806,280	10,000,000	28%	Live via cloudflare-graphql-analytics, measured 2026-11-24T03:30:19.405Z.
+Workers CPU time highlight	3,072,877	30,000,000	10%	Live via cloudflare-graphql-analytics, measured 2026-11-24T03:30:19.405Z.
+KV reads highlight	1,187,860	10,000,000	12%	Live via cloudflare-graphql-analytics, measured 2026-11-24T03:30:19.405Z.
+KV writes/deletes/lists highlight	634,790	1,000,000	64%	Live via cloudflare-graphql-analytics, measured 2026-11-24T03:30:19.405Z.
+D1 rows read highlight	237,428,505	25,000,000,000	1%	Live via cloudflare-graphql-analytics, measured 2026-11-24T03:30:19.405Z.
+D1 rows written	11,270,800	50,000,000	23%	Live via cloudflare-graphql-analytics, measured 2026-11-24T03:30:19.405Z.
+Queues operations highlight	741,979	1,000,000	74%	Live via cloudflare-graphql-analytics, measured 2026-11-24T03:30:19.405Z.
+R2 storage highlight	110.28 GB	10 GB	1103%	Live via cloudflare-graphql-analytics, measured 2026-11-24T03:30:19.405Z. max payloadSize 110279801931 bytes across the cycle window (r2StorageAdaptiveGroups)
+R2 Class A operations highlight	635,805	1,000,000	64%	Live via cloudflare-graphql-analytics, measured 2026-11-24T03:30:19.405Z.
+R2 Class B operations highlight	2,672,046	10,000,000	27%	Live via cloudflare-graphql-analytics, measured 2026-11-24T03:30:19.405Z.
+Workers AI neurons / day highlight	1	10,000	0%	Live via cloudflare-graphql-analytics, measured 2026-11-24T03:30:19.405Z. per-day average over the cycle to date; cycle total 17 neurons
+Workers logs events	not measured	20,000,000	—	
+KV storage	not measured	1 GB	—	
+D1 storage	not measured	5 GB	—	
+Durable Objects requests	not measured	1,000,000	—	
+Durable Objects duration	not measured	400,000	—	
+Workflows steps	not measured	500,000	—	
+Vectorize queried dimensions	not measured	50,000,000	—	
+Vectorize stored dimensions	not measured	10,000,000	—	
+Containers memory	not measured	25	—	
+Containers vCPU-minutes	not measured	375	—	
+Containers disk	not measured	200	—	
+PAYG estimate
+low $0.00 / high $5.20 per month — counted as used:
+$6.24
+(1.2 × high, Decision 004).
+
+low $0 / high $5.20 per month; counted as used = 1.2 × high = $6.24 per month. Basis: at the recorded footprint (~2 GB R2, 3 Workers) every meter sits inside its included allotment, so excess is $0 (Tracker/CF); the high is the recorded 2x-usage example, $10.20/mo total at 20M req and 7ms CPU (Track
+Snapshot history
+
+Latest stored snapshot: 2026-11-02 · 21d ago · 7-day expected cadence · stale
+
+r2-storage · 3 snapshots · 2026-10-20 → 2026-10-29 · dashed amber = window reset, red = limit
+gateway-accrual · 1 snapshot · 2026-11-02 → 2026-11-02 · dashed amber = window reset, red = limit
+Conflicts (shown, not resolved)
+Plan / price: Tracker and Memory: Workers Paid $5/mo + R2 Paid $0 base, verified 2026-10-20. Conflict/stale earlier evidence: CF reports subscription endpoint 403 and presumed $0/free; Infra says total stack $0. Preserve those earlier statements; neither establishes current free status.
+Dated source reads
+2026-10-29
+Dated update (2026-10-29, code#1048 live collector): GraphQL analytics permissions ARE established for the day-to-day token — the laptop collector `pm-stack/cloudflare-export/` (15-min tick, file-export convention) now reads Workers/KV/D1/Queues/R2/Workers-AI current-cycle usage live (first read 2026-10-29T10:04Z: Workers 75,312 req / 126,527 CPU-ms of 10M/30M; R2 storage 25.14 GB across 5 buckets
+2026-10-29
+Last checked: Plan/footprint 2026-10-20, token 2026-10-23; gateway observation 2026-10-25; live collector + billing probe 2026-10-29.
+2026-10-25
+Usage / pace: Tracker: small, 3 Workers, 2 R2 buckets ~2 GB, 2 D1, 2 KV, 2 Queues; far behind, mostly unused. CF traces ~2 GB to Oct 5. Free later names `supabase-backups` instead of CF's `labops-files`; inventory needs refresh. Current-cycle percentages unknown. Memory 2026-10-25 says gateway “barely gets any credits”; amount unknown, at most one session at a time. Gateway credit is not the Worke
+2026-10-23
+Last checked: Plan 2026-10-20; day-to-day token verified 2026-10-23 (Capabilities).
+2026-10-20
+Plan / price: Tracker and Memory: Workers Paid $5/mo + R2 Paid $0 base, verified 2026-10-20. Conflict/stale earlier evidence: CF reports subscription endpoint 403 and presumed $0/free; Infra says total stack $0. Preserve those earlier statements; neither establishes current free status.
+
+Machine-first: /api/quota/service.json?id=cloudflare
+
+source detail
+⌘K palette · on Needs you: j/k move · s snooze · e escalate · g delegate · x dismiss · m mark done · ? all keys · tailnet: amd-6.raptor-pumpkinseed.ts.net:4870
