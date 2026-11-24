@@ -1,0 +1,10 @@
+[Unit]
+Description=turso-mesh restic backup of atlas (weekly, Saturday — slice-1 stagger plan, mesh class A)
+
+[Timer]
+OnCalendar=Sat *-*-* 05:10:00
+Persistent=true
+RandomizedDelaySec=30m
+
+[Install]
+WantedBy=timers.target

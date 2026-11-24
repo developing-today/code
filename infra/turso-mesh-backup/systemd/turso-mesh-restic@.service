@@ -1,0 +1,21 @@
+[Unit]
+Description=turso-mesh: restic backup of one class-A Turso database (%i) to restic-turso-mesh (mesh class A, #14247)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# One database's export + snapshot; the bound leaves headroom for the
+# largest class-A database (atlas) at its measured dump size.
+TimeoutStartSec=3h
+# Configuration by name only: TURSO_MESH_RESTIC_REPOSITORY (restic
+# repository URL) and the restic password variable named by
+# TURSO_MESH_RESTIC_PASSWORD_ENV are materialized from Bitwarden into
+# the unit environment by the install step; no value lives in the repo.
+EnvironmentFile=%h/.config/turso-mesh-backup/environment
+# __EXPORT_ONE__ is substituted at install time with the per-database
+# export entry point that wraps scripts/export-turso.sh's proven path
+# (repair-filtered dump to {dump}, rebuilt SQLite file to {sqlite});
+# wiring that entry point to a live Turso export is the follow-on
+# live-first-light slice under #13455, not this code-only slice.
+ExecStart=/usr/bin/env python3 __REPO_DIR__/pkgs/cold-store-reaper/scripts/turso-mesh-restic-runner.py run --db %i --repo ${TURSO_MESH_RESTIC_REPOSITORY} --export-cmd "__EXPORT_ONE__ {db} {dump} {sqlite}" --password-env ${TURSO_MESH_RESTIC_PASSWORD_ENV}
