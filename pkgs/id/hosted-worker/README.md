@@ -33,6 +33,16 @@ First local-only vertical slice of the hosted data plane (slice 3 of
   metering and the per-user ceiling (`USER_CEILING_BYTES`) are
   implemented, not later steps.
 
+## Tenancy control plane (component E, #9083)
+
+`tenancy/` holds the central tenancy DB schema — the control plane
+above this data plane: account registry, binding pointers,
+tenant/database registry, role grants, peer policy, publish records
+and credential metadata, as numbered migrations. It holds no user
+content, no keys and no token values (design §2.3, "never central");
+`test/tenancy-schema.test.ts` fails if a content/key/token column
+ever appears. See `tenancy/README.md`.
+
 ## Local reality check (verified 2026-11-03, wrangler dev / workerd)
 
 Local workerd does **not** implement jurisdiction restrictions:
