@@ -322,6 +322,68 @@ describe("questions waiting on the owner", () => {
   });
 });
 
+describe("what needs the owner, read with no dashboard", () => {
+  const listed = (argv: string[]) => /^repos\/([^/]+\/[^/]+)\/issues\?state=open&labels=([^&]+)&/.exec(argv[3] ?? "");
+  const raw = (n: number, labels: string[], body: string | null = null) => ({
+    number: n,
+    title: `t${n}`,
+    body,
+    state: "open",
+    html_url: `https://github.com/x/y/issues/${n}`,
+    updated_at: "2026-11-20T01:02:03Z",
+    labels: labels.map((name) => ({ name })),
+  });
+
+  test("each repository's own list of each label is asked for through the fleet's gh, and makes the same three lists", async () => {
+    const w = world({
+      commands: (argv) => {
+        const m = listed(argv);
+        if (!m) return "[]";
+        // The first repository has something of each kind; the others have nothing.
+        if (m[1] !== CFG.needsRepos[0]) return "[]";
+        const label = decodeURIComponent(m[2]);
+        return JSON.stringify(
+          [
+            raw(1, ["user/escalated"], '<!-- hands:v1 kind=physical action="Power on the host." -->'),
+            raw(2, ["user/review"]),
+            raw(3, ["user/escalated"], "Reason: an agent could not choose"),
+          ].filter((i) => i.labels.some((l) => l.name === label)),
+        );
+      },
+    });
+    const c = await new Work(w.ops).censusDirect();
+    expect(c.hands.map((i) => [i.ref, i.kind, i.action])).toEqual([
+      [`${CFG.needsRepos[0]}#1`, "physical", "Power on the host."],
+    ]);
+    expect(c.reviews.map((i) => [i.ref, i.updated])).toEqual([[`${CFG.needsRepos[0]}#2`, "2026-11-20T01:02:03"]]);
+    expect(c.other.map((i) => [i.ref, i.why])).toEqual([[`${CFG.needsRepos[0]}#3`, "an agent could not choose"]]);
+    expect([c.at, c.complete, c.unread]).toEqual([null, true, []]);
+    // Asked of GitHub's REST lists, one page of each label for each repository, and never of the search.
+    const asked = w.calls.map((call) => call.argv.join(" "));
+    expect(asked).toHaveLength(CFG.needsRepos.length * 2);
+    expect(
+      asked.every((line) =>
+        /^fleet gh api repos\/\S+\/issues\?state=open&labels=user%2F(review|escalated)&per_page=100&page=1$/.test(line),
+      ),
+    ).toBe(true);
+    expect(asked.some((line) => line.includes("search/"))).toBe(false);
+  });
+
+  test("a repository the token cannot see is named, in the binary's own words for it; a failure that is not one repository's ends the read", async () => {
+    const unseen = CFG.needsRepos[1];
+    const w = world({
+      commands: (argv) => (listed(argv)?.[1] === unseen ? { code: 1, stderr: "gh: Not Found (HTTP 404)" } : "[]"),
+    });
+    const c = await new Work(w.ops).censusDirect();
+    expect([c.complete, c.unread]).toEqual([false, [unseen]]);
+    const limited = world({
+      commands: () => ({ code: 1, stderr: "gh: API rate limit exceeded for user ID 1. (HTTP 403)" }),
+    });
+    await expect(new Work(limited.ops).censusDirect()).rejects.toThrow(/rate limit exceeded/);
+    expect(limited.calls).toHaveLength(1);
+  });
+});
+
 describe("what needs the owner's hands", () => {
   test("the census is split into what only he can do, reviews, and the rest", async () => {
     const item = (n: number, labels: string[], hands?: unknown) => ({
@@ -371,6 +433,19 @@ describe("what needs the owner's hands", () => {
     ]);
     expect(c.reviews.map((i) => i.ref)).toEqual([`${REPO}#2`]);
     expect(c.other.map((i) => [i.ref, i.why])).toEqual([[`${REPO}#3`, "why"]]);
+    // When each was last touched is a time the app can read (it was once shortened like a
+    // title, with a mark at the cut, and every card then said "updated" and nothing after).
+    expect(c.reviews[0].updated).toBe("2026-11-20T01:02:03");
+    expect(Date.parse(`${c.reviews[0].updated}Z`)).toBe(Date.parse("2026-11-20T01:02:03Z"));
+    expect([c.at, c.complete, "unread" in c]).toEqual(["x", true, false]);
+    // A census the dashboard could not finish is not passed on as whole; one that does not say is.
+    const partly = (complete?: boolean) =>
+      new Work(
+        world({ dash: () => ({ fetchedAt: "x", items: [], ...(complete === undefined ? {} : { complete }) }) }).ops,
+      )
+        .census()
+        .then((census) => census.complete);
+    expect([await partly(false), await partly(true), await partly()]).toEqual([false, true, true]);
     const s = await work.sessions();
     expect(s.moving).toEqual([
       {

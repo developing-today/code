@@ -514,6 +514,7 @@ describe("what this side notes of each call it makes", () => {
       prs: ["github"],
       priorities: ["github"],
       asks: ["github", "queue"],
+      census: ["github"],
     });
   });
 });

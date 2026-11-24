@@ -1162,3 +1162,78 @@ action still out at the host does not hold back a newer one about the
 same thing that the edge can do at once (a rank sent to the host,
 then another the edge makes directly within the minute): the edge does
 not keep track of askings that are out by what they are about.
+
+## 2026-11-24T05:55Z Update: what is labelled as needing the owner, read at the edge (#13491, first part)
+
+**What it was.** "What needs you" came from the laptop's dashboard,
+which censuses two GitHub labels (`user/review`, `user/escalated`)
+across the four repositories. With the laptop away the list was as old
+as its last report, and nothing told the owner of a new thing only he
+could do.
+
+**What it does now.** The edge reads it from GitHub itself, like the
+owner's prompts: each repository's own list of open issues carrying
+each label. The three lists the app shows (what only he can do,
+reviews, the rest) are made by one function, used for both readings,
+so the app shows the same thing whoever read it. The dashboard's two
+readers of an item's body (a stated reason, the hands mark of
+FDR-0013) are copied into `src/needs.ts`, because the dashboard's
+module needs a machine's files and cannot be part of the Worker; a
+test holds each copy to the original for any body, and another holds
+the whole list read here to the list the dashboard makes of the same
+issues.
+
+**Why the lists and not the search.** The lists are on the hour's
+allowance and answer "not modified" by their tags, so eight lists that
+have not changed cost nothing; the search is counted by the minute,
+gives no tags, and lags. And the search no longer takes the question
+the way the dashboard asks it: see below.
+
+**How it fails.** A repository the token cannot see is named and the
+rest is shown, with the app saying the list is not whole. Called too
+often, out of reach, or GitHub in trouble: the read ends at the first
+such answer and nothing more is asked. No repository readable at all
+is a failed read, so the last good copy stays and says why. Refused
+for all of it, the list is left to a machine for the hour, as with
+anything else the edge reads.
+
+**Three faults found on the way, none of them in this change.**
+
+- The dashboard's census asks the search for
+  `repo:<repo> state:open label:"<label>"`. GitHub answers that 422
+  ("Query must include 'is:issue' or 'is:pull-request'"), and its
+  documentation says so of any such query. Asked from here both ways I
+  can ask, that is the answer. If the dashboard's token is answered the
+  same, its census has been empty and marked incomplete, and "What
+  needs you" has shown nothing. I cannot see the laptop to confirm it.
+  Filed as #14103 with the check to run there. With this change the
+  app's list no longer depends on it.
+- The screen never said that a list was incomplete: an empty,
+  incomplete census read as "Nothing needs your hands." It says so now,
+  and names what could not be read where the reader says.
+- Each card's "updated" time was cut like a title, with a mark at the
+  cut, which made it no time at all: every card said "updated" and
+  nothing after. It is cut to the second now.
+
+**Checked.** 458 tests pass (21 new: 13 of the reading in
+`test/needs.test.ts`, two of the console's own command for it, five at
+the edge with the machine away, one of the app's wording). At the
+edge: read from each repository's list with no machine; a repository
+that cannot be seen; none that can; by tag, with only the list that
+changed read whole and nothing written again; refused and left to the
+laptop; and a new hands item told to a subscribed device by the edge's
+own wake. In the real runtime (47 checks): the Worker's own check of
+the read comes back good, the stand-in's one review is shown, and the
+lists were asked for. 38 single faults planted in the new code: all 38
+fail a test.
+
+**One thing it costs.** When GitHub turns the edge away for the
+hour, two sections of the first screen now ask at once (the prompts
+and this), so two calls are refused before the wait is kept to, where
+it was one.
+
+**Not done.** Questions and sessions are still a machine's (#13491
+stays open). What a session is waiting on the owner for comes from the
+dashboard's own tiers, not from labels, and is still the laptop's.
+Whether the edge's token can see all four repositories has not been
+seen in service; if it cannot, the screen names the ones it cannot.

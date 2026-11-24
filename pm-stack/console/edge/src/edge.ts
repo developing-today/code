@@ -2072,7 +2072,7 @@ export class Edge {
         const delivery = await this.push.send("trouble", {
           title: "The laptop has gone quiet",
           body: this.primary(cfg)
-            ? "It has not reported for ten minutes. Cloudflare carries on with the board, your prompts, pull requests and the plan; what needs the laptop waits for it."
+            ? "It has not reported for ten minutes. Cloudflare carries on with the board, your prompts, pull requests, the plan and what is labelled as needing you; what needs the laptop waits for it."
             : "It has not reported for ten minutes. The app still opens; what you do is held until it is back.",
           url: "/console/",
           tag: "host",
