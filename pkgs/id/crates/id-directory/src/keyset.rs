@@ -141,6 +141,34 @@ impl KeysetRecord {
         })
     }
 
+    /// Assemble a record whose author signature comes from `key` and whose
+    /// countersignature was produced elsewhere (a paired device, see
+    /// [`countersign_entry`]). Fails unless the result verifies.
+    pub fn sign_paired(
+        key: &SigningKey,
+        lamport: u64,
+        prev_hash: impl Into<String>,
+        entry: KeysetEntry,
+        countersignature: String,
+    ) -> Result<Self> {
+        validate_entry(&entry)?;
+        let author = hex_encode(&key.verifying_key().to_bytes());
+        let prev_hash = prev_hash.into();
+        validate_author(&author, &entry)?;
+        let body = body_bytes(&author, lamport, &prev_hash, &entry)?;
+        let record = Self {
+            hash: hex_encode(&Sha256::digest(&body)),
+            signature: hex_encode(&key.sign(&body).to_bytes()),
+            author,
+            lamport,
+            prev_hash,
+            entry,
+            countersignature: Some(countersignature),
+        };
+        record.verify()?;
+        Ok(record)
+    }
+
     /// Merge-order position.
     #[must_use]
     pub fn key(&self) -> MergeKey {
@@ -236,6 +264,25 @@ fn countersignature_key(entry: &KeysetEntry) -> Option<&str> {
         KeysetEntry::AdminKeyRotated { new_admin_key } => Some(new_admin_key),
         _ => None,
     }
+}
+
+/// The countersignature `device` gives an enrolment or rotation body that an
+/// admin authored at `lamport` after `prev_hash`: the proof of possession a
+/// pairing payload carries back to the admin.
+pub fn countersign_entry(
+    device: &SigningKey,
+    author: &str,
+    lamport: u64,
+    prev_hash: &str,
+    entry: &KeysetEntry,
+) -> Result<String> {
+    let device_key = hex_encode(&device.verifying_key().to_bytes());
+    ensure!(
+        countersignature_key(entry) == Some(device_key.as_str()),
+        "this entry is not for the device key given"
+    );
+    let body = body_bytes(author, lamport, prev_hash, entry)?;
+    Ok(hex_encode(&device.sign(&body).to_bytes()))
 }
 
 fn validate_entry(entry: &KeysetEntry) -> Result<()> {
@@ -902,6 +949,13 @@ fn apply_entry(state: &mut KeysetState, record: &KeysetRecord) -> Result<()> {
             ensure!(
                 authorized_admin,
                 "device enrollment requires an active admin"
+            );
+            ensure!(
+                !state
+                    .devices
+                    .get(device_key)
+                    .is_some_and(|device| device.revoked),
+                "a revoked device key cannot be enrolled again"
             );
             state.devices.insert(
                 device_key.clone(),
@@ -1715,15 +1769,22 @@ mod tests {
                         Some(&key(*seed)),
                     )
                     .unwrap();
-                    self.state.devices.insert(
-                        public(*seed),
-                        DeviceState {
-                            label: format!("device-{seed}"),
-                            enrolled_at: lamport,
-                            revoked: false,
-                        },
-                    );
-                    self.emit(record, true);
+                    let valid = !self
+                        .state
+                        .devices
+                        .get(&public(*seed))
+                        .is_some_and(|device| device.revoked);
+                    if valid {
+                        self.state.devices.insert(
+                            public(*seed),
+                            DeviceState {
+                                label: format!("device-{seed}"),
+                                enrolled_at: lamport,
+                                revoked: false,
+                            },
+                        );
+                    }
+                    self.emit(record, valid);
                 }
                 HistoryOp::Revoke(seed) => {
                     let lamport = self.next_lamport();

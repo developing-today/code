@@ -29,6 +29,7 @@ use std::collections::BTreeSet;
 use crate::keyset::{
     KeysetEntry, KeysetRecord, KeysetState, Log, checkpoint_final_heads, fold_with_finality,
 };
+use crate::keyset_pairing::PairingOffer;
 
 /// The server identity's keyset log, beside [`id_core::KEY_FILE`].
 pub const KEYSET_FILE: &str = ".id-keyset.jsonl";
@@ -244,6 +245,82 @@ impl KeysetFile {
         let lamport = self.next_lamport()?;
         let record =
             KeysetRecord::sign(key, lamport, before.head_hash.clone(), entry, countersigner)?;
+        self.admit(record)
+    }
+
+    /// The enrolment of `device_key` as a pairing offer for `admin`, made
+    /// against the current head. Fails unless `admin` is an active admin
+    /// and `device_key` is not already a revoked device.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the offer would not fold.
+    pub fn offer_enrolment(
+        &self,
+        admin: &SigningKey,
+        device_key: &str,
+        label: &str,
+    ) -> Result<PairingOffer> {
+        let state = self.state()?;
+        let author = hex_encode(&admin.verifying_key().to_bytes());
+        ensure!(
+            state.is_admin(&author),
+            "{author} is not an active admin key of this identity"
+        );
+        ensure!(
+            !state
+                .devices
+                .get(device_key)
+                .is_some_and(|device| device.revoked),
+            "a revoked device key cannot be enrolled again"
+        );
+        let offer = PairingOffer {
+            author,
+            lamport: self.next_lamport()?,
+            prev_hash: state.head_hash,
+            entry: KeysetEntry::DeviceEnrolled {
+                device_key: device_key.to_owned(),
+                label: label.to_owned(),
+            },
+        };
+        offer.ensure_enrolment()?;
+        Ok(offer)
+    }
+
+    /// Admits a device enrolment the device countersigned from an offer
+    /// `admin` made. The record is written only when it folds, so an offer
+    /// whose head has moved on, or whose device was revoked since, is
+    /// refused and leaves the file unchanged.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the offer was not made by `admin`, the countersignature is
+    /// wrong, the record would not fold, or the file cannot be written.
+    pub fn admit_paired_enrolment(
+        &mut self,
+        admin: &SigningKey,
+        offer: &PairingOffer,
+        countersignature: &str,
+    ) -> Result<KeysetRecord> {
+        let author = hex_encode(&admin.verifying_key().to_bytes());
+        ensure!(
+            offer.author == author,
+            "this pairing offer was made by another admin key"
+        );
+        offer.ensure_enrolment()?;
+        let record = KeysetRecord::sign_paired(
+            admin,
+            offer.lamport,
+            offer.prev_hash.clone(),
+            offer.entry.clone(),
+            countersignature.to_owned(),
+        )?;
+        self.admit(record)
+    }
+
+    /// Writes `record` when it folds onto the current head.
+    fn admit(&mut self, record: KeysetRecord) -> Result<KeysetRecord> {
+        let before = self.state()?;
         let mut next = self.log.clone();
         next.insert(record.clone())?;
         let after = fold_with_finality(&next, &self.genesis_hash, &self.final_heads)?;
@@ -610,5 +687,97 @@ mod tests {
         assert!(file.checkpoint(&key(5)).is_err());
         assert!(file.final_heads().is_empty());
         assert_eq!(file.records().count(), 1);
+    }
+
+    #[test]
+    fn a_paired_device_enrols_through_an_offer_and_countersignature() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(KEYSET_FILE);
+        let admin = key(1);
+        let (mut file, _) = KeysetFile::open_or_migrate(&path, &admin).unwrap();
+
+        let offer = file.offer_enrolment(&admin, &public(2), "phone").unwrap();
+        let payload = offer.to_payload().unwrap();
+        let scanned = PairingOffer::from_payload(&payload).unwrap();
+        assert_eq!(scanned, offer);
+        let countersignature = scanned.countersign(&key(2)).unwrap();
+        assert!(
+            offer.countersign(&key(3)).is_err(),
+            "only the offered device key can countersign"
+        );
+
+        file.admit_paired_enrolment(&admin, &scanned, &countersignature)
+            .unwrap();
+        let state = file.state().unwrap();
+        assert!(state.is_device(&public(2)));
+        assert_eq!(state.devices[&public(2)].label, "phone");
+        assert_eq!(state.records_folded, 2);
+
+        let (reopened, migrated) = KeysetFile::open_or_migrate(&path, &admin).unwrap();
+        assert!(!migrated);
+        assert!(reopened.state().unwrap().is_device(&public(2)));
+    }
+
+    #[test]
+    fn a_replayed_paired_enrolment_after_revocation_folds_nowhere() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(KEYSET_FILE);
+        let admin = key(1);
+        let (mut file, _) = KeysetFile::open_or_migrate(&path, &admin).unwrap();
+        let offer = file.offer_enrolment(&admin, &public(2), "phone").unwrap();
+        let countersignature = offer.countersign(&key(2)).unwrap();
+        file.admit_paired_enrolment(&admin, &offer, &countersignature)
+            .unwrap();
+        file.append(
+            &admin,
+            KeysetEntry::DeviceRevoked {
+                device_key: public(2),
+                reason: "lost".to_owned(),
+            },
+            None,
+        )
+        .unwrap();
+
+        // Replaying the original offer must not resurrect the device: the
+        // head has moved, so the record cannot fold.
+        let error = file
+            .admit_paired_enrolment(&admin, &offer, &countersignature)
+            .unwrap_err();
+        assert!(error.to_string().contains("refused"), "{error}");
+
+        // Nor can a fresh offer re-enrol a revoked key.
+        assert!(file.offer_enrolment(&admin, &public(2), "again").is_err());
+        // A different, unrevoked device still enrols.
+        let fresh = file.offer_enrolment(&admin, &public(3), "tablet").unwrap();
+        let countersignature = fresh.countersign(&key(3)).unwrap();
+        file.admit_paired_enrolment(&admin, &fresh, &countersignature)
+            .unwrap();
+
+        let state = file.state().unwrap();
+        assert!(!state.is_device(&public(2)));
+        assert!(state.is_device(&public(3)));
+        let (reopened, _) = KeysetFile::open_or_migrate(&path, &admin).unwrap();
+        assert!(!reopened.state().unwrap().is_device(&public(2)));
+        assert_eq!(reopened.records().count(), 4);
+    }
+
+    #[test]
+    fn a_paired_enrolment_needs_the_offering_admin_and_a_matching_signature() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(KEYSET_FILE);
+        let admin = key(1);
+        let (mut file, _) = KeysetFile::open_or_migrate(&path, &admin).unwrap();
+        let offer = file.offer_enrolment(&admin, &public(2), "phone").unwrap();
+        let good = offer.countersign(&key(2)).unwrap();
+
+        // Another key cannot stand in for the offering admin.
+        assert!(file.admit_paired_enrolment(&key(5), &offer, &good).is_err());
+        // A wrong countersignature fails verification, not the fold.
+        assert!(file.admit_paired_enrolment(&admin, &offer, "00").is_err());
+        // A device key cannot offer an enrolment, since only admins may.
+        assert!(file.offer_enrolment(&key(2), &public(2), "phone").is_err());
+        assert_eq!(file.state().unwrap().records_folded, 1);
+
+        assert!(file.admit_paired_enrolment(&admin, &offer, &good).is_ok());
     }
 }
