@@ -102,7 +102,8 @@ fn respond(
             .read_to_end(&mut body)
             .ok()?;
         if body.len() > MAX_BODY_BYTES {
-            return Some((413, b"{\"error\":\"request body too large\"}".to_vec()));
+            // Match the prior tiny_http adapter's post-read refusal body.
+            return Some((413, b"{}".to_vec()));
         }
         head.body = body;
         head
@@ -191,13 +192,21 @@ mod tests {
                 stream
             })
             .collect();
-        let mut all_closed = true;
+        // Shed means close with no response bytes: any payload (even a
+        // 503) proves the server wrote instead of shedding the socket.
+        let mut shed_cleanly = true;
         for peer in rejected.iter_mut() {
             let mut response = Vec::new();
             match peer.read_to_end(&mut response) {
                 Ok(_) => {}
                 Err(e) if e.kind() == std::io::ErrorKind::ConnectionReset => {}
-                Err(_) => all_closed = false,
+                Err(_) => {
+                    shed_cleanly = false;
+                    continue;
+                }
+            }
+            if !response.is_empty() {
+                shed_cleanly = false;
             }
         }
         // Always release test workers even on failure, to avoid hanging the
@@ -209,8 +218,8 @@ mod tests {
             let _ = peer.shutdown(Shutdown::Both);
         }
         assert!(
-            all_closed,
-            "saturation must close without draining withheld bodies"
+            shed_cleanly,
+            "saturation must close with no response bytes, without draining withheld bodies"
         );
         assert_eq!(entered.load(Ordering::SeqCst), MAX_CONNECTIONS);
         let mut healthy = TcpStream::connect(addr).unwrap();
