@@ -562,18 +562,18 @@ duplicating its verbs, and S7 adopts #13502.
 
 | Slice | Issue | What | Depends on |
 | --- | --- | --- | --- |
-| S1 | (filed with this design) | Worker: pattern + limit addressing, match report, distributions | — |
-| S2 | " | Worker: unified pipeline + notes owner read + unified agents list | — |
-| S3 | " | Worker: per-agent fleet credentials + bootstrap enroll tokens | — |
-| S4 | " | Fleet CLI: `enroll --bootstrap` exchange, credential storage, hook setup; notes kind/reply_to client support | S3 |
-| S5 | " | Worker: offer pool + claim distribution | S1 |
-| S6 | " | Work-item lifecycle: work_state/work_task_id, `fleet bridge work`, harness instruction text | S2 |
-| S7 | " | PM stack direct bridge access at the edge (adopts #13502) | S3 |
-| S8 | " | PM console: Messages pipeline surface + Agents list | S2, S7 |
-| S9 | " | PM console: composer — pattern+limit, match report, broaden, offers | S1, S5, S8 |
-| S10 | " | PM console: provisioning screen (mint, hand-off, revoke) | S3, S8 |
-| S11 | " | Android app: Messages/provisioning in the TWA shell | S8, S10 |
-| S12 | " | Retire the standalone bridge page; OAuth approval preserved | S8 |
+| S1 | #14367 | Worker: pattern + limit addressing, match report, distributions | — |
+| S2 | #14369 | Worker: unified pipeline + notes owner read + unified agents list | — |
+| S3 | #14368 | Worker: per-agent fleet credentials + bootstrap enroll tokens | — |
+| S4 | #14370 | Fleet CLI: `enroll --bootstrap` exchange, credential storage, hook setup; notes kind/reply_to client support | S3 |
+| S5 | #14371 | Worker: offer pool + claim distribution | S1 |
+| S6 | #14372 | Work-item lifecycle: work_state/work_task_id, `fleet bridge work`, harness instruction text | S2 |
+| S7 | #14373 | PM stack direct bridge access at the edge (adopts #13502) | S3 |
+| S8 | #14374 | PM console: Messages pipeline surface + Agents list | S2, S7 |
+| S9 | #14375 | PM console: composer — pattern+limit, match report, broaden, offers | S1, S5, S8 |
+| S10 | #14376 | PM console: provisioning screen (mint, hand-off, revoke) | S3, S8 |
+| S11 | #14377 | Android app: Messages/provisioning in the TWA shell | S8, S10 |
+| S12 | #14378 | Retire the standalone bridge page; OAuth approval preserved | S8 |
 
 Enqueue note: these issues are filed by a design lane; per the repo's
 filing rule they are not enqueued in this pass — Felix dispatches lanes
