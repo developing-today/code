@@ -339,15 +339,15 @@ impl CitationAdapter for AliasingResolver {
             .records
             .iter()
             .find(|r| r.occurrence_id == req.occurrence_id);
-        if let Some(t) = target {
-            if let Some(first) = self.by_content.get(&t.content_id) {
-                let redirected = Request {
-                    occurrence_id: first.occurrence_id.clone(),
-                    version: req.version,
-                    granted: req.granted.clone(),
-                };
-                return self.inner.resolve(&redirected);
-            }
+        if let Some(t) = target
+            && let Some(first) = self.by_content.get(&t.content_id)
+        {
+            let redirected = Request {
+                occurrence_id: first.occurrence_id.clone(),
+                version: req.version,
+                granted: req.granted.clone(),
+            };
+            return self.inner.resolve(&redirected);
         }
         self.inner.resolve(req)
     }
@@ -697,7 +697,7 @@ fn fake_adapter_passes_hand_authored_corpus() {
 
 #[test]
 fn aliasing_implementation_is_rejected() {
-    let failures = run_corpus(|world| AliasingResolver::new(world));
+    let failures = run_corpus(AliasingResolver::new);
     assert!(
         failures.contains(&"same_bytes_second_location"),
         "aliasing resolver must fail the second-location case, got: {failures:?}"

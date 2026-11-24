@@ -21,6 +21,7 @@ import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
@@ -384,6 +385,37 @@ class CommandLineTest(unittest.TestCase):
         path.write_text("".join(json.dumps(row) + "\n" for row in FIXTURE))
         return path
 
+    def test_fetch_clock_survives_reporting_with_a_different_reference_time(self):
+        returned = subprocess.CompletedProcess(
+            [], 0, "\n".join(json.dumps(row) for row in FIXTURE), ""
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "issues.jsonl"
+            before_fetch = dt.datetime.now(dt.timezone.utc)
+            with patch.object(fr.subprocess, "run", return_value=returned):
+                self.assertEqual(self.run_main(["fetch", "--repo", REPO, "--out", str(path)])[0], 0)
+            after_fetch = dt.datetime.now(dt.timezone.utc)
+            stamps = {row["fetch_started_at"] for row in fr.load_rows(path)}
+            self.assertEqual(len(stamps), 1)
+            observed = fr.parse_time(stamps.pop())
+            self.assertLessEqual(before_fetch, observed)
+            self.assertLessEqual(observed, after_fetch)
+            code, out, _ = self.run_main([
+                "report", "--repo", REPO, "--issues", str(path),
+                "--now", NOW.isoformat(), "--format", "json",
+            ])
+        self.assertEqual(code, 0)
+        report = json.loads(out)
+        self.assertEqual(report["inputs"]["issues_fetch_started_at"], observed.isoformat())
+        self.assertEqual(report["issues"]["as_of"], NOW.isoformat())
+
+    def test_snapshot_needs_one_shared_timezone_aware_collection_time(self):
+        stamped = {"fetch_started_at": "2026-11-21T08:00:00Z"}
+        for other in ({}, {"fetch_started_at": "2026-11-20T08:00:00Z"}):
+            self.assertIsNone(fr.issue_fetch_started_at([stamped, other]))
+        for invalid in ({}, {"fetch_started_at": "yesterday"}, {"fetch_started_at": "2026-11-21"}):
+            self.assertIsNone(fr.issue_fetch_started_at([invalid]))
+
     def test_unknown_flag_is_a_usage_error(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = self.write_fixture(tmp)
@@ -433,6 +465,7 @@ class CommandLineTest(unittest.TestCase):
                 ]
             )
         self.assertEqual(code, 0)
+        self.assertIn("Issue collection started: unknown.", out)
         self.assertIn("Not measured: no `--git-dir` given.", out)
         self.assertIn("| `effort/l` | 3 | 2 | 33.3% |", out)
 

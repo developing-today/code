@@ -198,6 +198,14 @@ in
       description = "Port the pm-projector listens on (loopback only).";
     };
 
+    projectorBackendPort = lib.mkOption {
+      type = lib.types.port;
+      default = 17801;
+      description = "Private loopback port for pm-projector behind its socket-activated proxy.";
+    };
+
+    projectorSocketActivation = lib.mkEnableOption "the pm-projector socket-proxy listener";
+
     aggregatorPort = lib.mkOption {
       type = lib.types.port;
       default = 4870;
@@ -231,7 +239,12 @@ in
             # state dir as cwd also keeps the code's cwd-relative
             # fallback (file:data/projector.db) out of any checkout.
             WorkingDirectory = projState;
-            ExecStart = "${pmProjector}/bin/pm-projector";
+            # Bun 1.4.4 cannot adopt a systemd-passed listener. Preserve
+            # the direct public bind until the socket is explicitly
+            # enabled; the socket and backend port switch together (#1822).
+            ExecStart = "${pkgs.coreutils}/bin/env PORT=${
+              toString (if cfg.projectorSocketActivation then cfg.projectorBackendPort else cfg.projectorPort)
+            } ${pmProjector}/bin/pm-projector";
             EnvironmentFile = "${projState}/.env";
             Environment = [ "PM_AGG_FRESHNESS_URL=http://127.0.0.1:4871/publish" ];
             Restart = "on-failure";
@@ -723,14 +736,14 @@ in
         };
       };
 
-      # Socket activation for the PM HTTP services (#1822, slice 1 of
-      # task 15848): the socket units are DEFINED here but deliberately
-      # NOT enabled (no Install.WantedBy) — today each service still
-      # binds its own ports, and enabling a socket for a port the
-      # service also binds would race it. Slice 2 teaches each service
-      # to accept the systemd-passed fd (LISTEN_FDS); slice 3 enables
-      # these sockets (Install.WantedBy = [ "sockets.target" ]) and
-      # drops each service's own bind in the same switch. Listen
+      # Socket activation for the PM HTTP services (#1822, task 15848):
+      # the socket units are DEFINED here but deliberately NOT enabled by
+      # default. pm-projector's socket is enabled only by
+      # projectorSocketActivation, which also switches its app to the
+      # private backend port; this socket targets socket-proxyd because
+      # Bun 1.4.4 cannot consume LISTEN_FDS. The other sockets stay
+      # inactive until their services have a working listener adapter.
+      # Listen
       # addresses mirror the services' live binds, verified on the
       # laptop 2026-11-14: projector 127.0.0.1:7801; aggregator
       # 127.0.0.1:4870 + tailnet:4870 + 127.0.0.1:4871 (the freshness
@@ -741,8 +754,9 @@ in
           Unit.Description = "PM projector listener (#1822; inactive until slice 3)";
           Socket = {
             ListenStream = "127.0.0.1:${toString cfg.projectorPort}";
-            Service = "pm-projector.service";
+            Service = "pm-projector-proxy.service";
           };
+          Install.WantedBy = lib.optionals cfg.projectorSocketActivation [ "sockets.target" ];
         };
 
         pm-aggregator = {
@@ -768,6 +782,17 @@ in
             ];
             Service = "pm-dispatch.service";
           };
+        };
+      };
+
+      systemd.user.services.pm-projector-proxy = {
+        Unit = {
+          Description = "PM projector socket proxy (#1822)";
+          Requires = [ "pm-projector.service" ];
+          After = [ "pm-projector.service" ];
+        };
+        Service = {
+          ExecStart = "${config.systemd.package}/lib/systemd/systemd-socket-proxyd 127.0.0.1:${toString cfg.projectorBackendPort}";
         };
       };
     };

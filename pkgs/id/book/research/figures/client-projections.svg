@@ -1,0 +1,55 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="624" viewBox="0 0 1080 624" role="img" aria-labelledby="title desc"><title id="title">Territory today and a proposed Colony grid</title><desc id="desc">Left, Territory source-derived initial view showing sixteen by eight empty cells. Right, a proposed touch client for a four by three colony fixture with worker west of ore and a stockpile one cell to the west.</desc>
+<rect x="0" y="0" width="1080" height="624" rx="0" fill="#f5f5ef" stroke="none"/>
+<text x="34" y="51" font-family="Arial, sans-serif" font-weight="700" font-size="36" fill="#19342e">ID world clients</text>
+<text x="34" y="82" font-family="Arial, sans-serif" font-weight="400" font-size="21" fill="#19342e">An existing world and a proposed touch interaction</text>
+<rect x="32" y="112" width="484" height="480" rx="15" fill="#fcfcf8" stroke="#b7c8bb"/>
+<rect x="538" y="112" width="510" height="480" rx="15" fill="#fcfcf8" stroke="#b7c8bb"/>
+<text x="54" y="149" font-family="Arial, sans-serif" font-weight="700" font-size="24" fill="#19342e">Territory</text>
+<text x="54" y="177" font-family="Arial, sans-serif" font-weight="400" font-size="15" fill="#19342e">Initial screen reconstructed from the Roc guest</text>
+<rect x="54" y="203" width="441" height="328" rx="10" fill="#16302c" stroke="none"/>
+<text x="83" y="235" font-family="monospace" font-weight="400" font-size="18" fill="#d2f5d9">+-territory------+</text>
+<text x="83" y="260" font-family="monospace" font-weight="400" font-size="18" fill="#d2f5d9">|................|</text>
+<text x="83" y="285" font-family="monospace" font-weight="400" font-size="18" fill="#d2f5d9">|................|</text>
+<text x="83" y="310" font-family="monospace" font-weight="400" font-size="18" fill="#d2f5d9">|................|</text>
+<text x="83" y="335" font-family="monospace" font-weight="400" font-size="18" fill="#d2f5d9">|................|</text>
+<text x="83" y="360" font-family="monospace" font-weight="400" font-size="18" fill="#d2f5d9">|................|</text>
+<text x="83" y="385" font-family="monospace" font-weight="400" font-size="18" fill="#d2f5d9">|................|</text>
+<text x="83" y="410" font-family="monospace" font-weight="400" font-size="18" fill="#d2f5d9">|................|</text>
+<text x="83" y="435" font-family="monospace" font-weight="400" font-size="18" fill="#d2f5d9">|................|</text>
+<text x="83" y="460" font-family="monospace" font-weight="400" font-size="18" fill="#d2f5d9">+----------------+</text>
+<text x="83" y="485" font-family="monospace" font-weight="400" font-size="18" fill="#d2f5d9">free=128 [hjkl/space]</text>
+<text x="54" y="565" font-family="Arial, sans-serif" font-weight="400" font-size="16" fill="#19342e">16 columns × 8 rows  ·  No occupied seats</text>
+<text x="561" y="149" font-family="Arial, sans-serif" font-weight="700" font-size="24" fill="#19342e">Colony</text>
+<text x="561" y="177" font-family="Arial, sans-serif" font-weight="400" font-size="15" fill="#19342e">Proposed Android host  ·  Mine an adjacent ore tile</text>
+<rect x="563" y="213" width="90" height="54" rx="6" fill="#e0ebdf" stroke="none"/>
+<text x="599" y="248" font-family="monospace" font-weight="700" font-size="23" fill="#19342e">·</text>
+<rect x="660" y="213" width="90" height="54" rx="6" fill="#e0ebdf" stroke="none"/>
+<text x="696" y="248" font-family="monospace" font-weight="700" font-size="23" fill="#19342e">·</text>
+<rect x="757" y="213" width="90" height="54" rx="6" fill="#e0ebdf" stroke="none"/>
+<text x="793" y="248" font-family="monospace" font-weight="700" font-size="23" fill="#19342e">·</text>
+<rect x="854" y="213" width="90" height="54" rx="6" fill="#e0ebdf" stroke="none"/>
+<text x="890" y="248" font-family="monospace" font-weight="700" font-size="23" fill="#19342e">·</text>
+<rect x="563" y="274" width="90" height="54" rx="6" fill="#e0ebdf" stroke="none"/>
+<text x="599" y="309" font-family="monospace" font-weight="700" font-size="23" fill="#19342e">S</text>
+<rect x="660" y="274" width="90" height="54" rx="6" fill="#e0ebdf" stroke="none"/>
+<text x="696" y="309" font-family="monospace" font-weight="700" font-size="23" fill="#19342e">W</text>
+<rect x="757" y="274" width="90" height="54" rx="6" fill="#e9b26d" stroke="#435b49"/>
+<text x="793" y="309" font-family="monospace" font-weight="700" font-size="23" fill="#19342e">O</text>
+<rect x="854" y="274" width="90" height="54" rx="6" fill="#e0ebdf" stroke="none"/>
+<text x="890" y="309" font-family="monospace" font-weight="700" font-size="23" fill="#19342e">·</text>
+<rect x="563" y="335" width="90" height="54" rx="6" fill="#e0ebdf" stroke="none"/>
+<text x="599" y="370" font-family="monospace" font-weight="700" font-size="23" fill="#19342e">·</text>
+<rect x="660" y="335" width="90" height="54" rx="6" fill="#e0ebdf" stroke="none"/>
+<text x="696" y="370" font-family="monospace" font-weight="700" font-size="23" fill="#19342e">·</text>
+<rect x="757" y="335" width="90" height="54" rx="6" fill="#e0ebdf" stroke="none"/>
+<text x="793" y="370" font-family="monospace" font-weight="700" font-size="23" fill="#19342e">·</text>
+<rect x="854" y="335" width="90" height="54" rx="6" fill="#e0ebdf" stroke="none"/>
+<text x="890" y="370" font-family="monospace" font-weight="700" font-size="23" fill="#19342e">·</text>
+<text x="563" y="427" font-family="monospace" font-weight="400" font-size="17" fill="#19342e">S  Stockpile      W  Worker      O  Ore</text>
+<text x="563" y="463" font-family="Arial, sans-serif" font-weight="700" font-size="20" fill="#19342e">Selected: Ore at (2, 1)</text>
+<text x="563" y="491" font-family="Arial, sans-serif" font-weight="400" font-size="17" fill="#19342e">Worker at (1, 1)  ·  Pack empty</text>
+<rect x="563" y="511" width="200" height="48" rx="8" fill="#265446" stroke="none"/>
+<text x="582" y="542" font-family="Arial, sans-serif" font-weight="700" font-size="18" fill="#fff">Mine adjacent ore</text>
+<rect x="774" y="511" width="136" height="48" rx="8" fill="#e0ebdf" stroke="none"/>
+<text x="795" y="542" font-family="Arial, sans-serif" font-weight="400" font-size="18" fill="#19342e">Inspect tile</text>
+</svg>

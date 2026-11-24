@@ -27,10 +27,10 @@ fleet secrets — never typed or printed:
 
 Every verb's output is the bridge's JSON, passed through. Exits for the
 whole domain: `0` ok, `2` usage, `3` transport or credentials, `4` the
-bridge refused the request (its JSON error goes to stderr). One help
-quirk: `fleet bridge` has a **single shared usage text** for the whole
-domain — every per-verb `--help` prints the same block, so read the line
-for the verb you are running.
+bridge refused the request (its JSON error goes to stderr). Every verb
+has its own help: `fleet bridge <command> --help` prints that verb's
+usage section plus the shared defaults-and-exit-codes footer, and a bare
+`fleet bridge --help` prints the whole-domain usage text.
 
 The agent name defaults to `$FLEET_AGENT`, then `[bridge] agent` in the
 fleet config; groups default to `$FLEET_AGENT_GROUPS`, then
@@ -119,7 +119,7 @@ fleet bridge inbox --agent <your-agent-name>
 ```
 
 What the output means: your **unread** rows as JSON. Useful filters,
-all from the shared usage:
+all from the verb's own `--help`:
 
 - `--commands` or `--messages`: only that kind. The intake ladder's push
   rung reads with `--commands --take`, because a pushed command outranks
@@ -130,7 +130,9 @@ all from the shared usage:
 - `--wait SECS` (with `--interval SECS`, default interval 15 s): poll
   until something arrives or the seconds pass. The wait is capped at
   24 hours in the client.
-- `--groups g1,g2`: also read group mailboxes for those groups.
+- `--groups g1,g2`: refresh this agent's registered groups (the same
+  groups `hello` records). There are no group mailboxes: a group send
+  lands as one row in each member agent's own mailbox at send time.
 
 Note the id of the command row from Step 2 — Step 4 replies to it, and
 Step 5 acknowledges up to it.
@@ -138,8 +140,9 @@ Step 5 acknowledges up to it.
 What can go wrong, and the fix:
 
 - An empty inbox right after a send: check the target spelling (a bare
-  name and `agent:<name>` are the same target; a group send lands in the
-  group mailbox, which you read by passing `--groups`), and whether a
+  name and `agent:<name>` are the same target; a group send lands as one
+  row in each registered member's own mailbox, so an agent that joins
+  the group later never sees it), and whether a
   previous `--take` read already marked the rows read — re-read with
   `--all` to see them.
 - Exit `3` / exit `4`: same credential and refusal shapes as Step 1.
@@ -173,7 +176,7 @@ What can go wrong, and the fix:
   post lands as a new message to central, and the command stays
   unhandled. Re-post with the row's id.
 - Exit `2`: an instruction without `--to`, or other flag misuse — the
-  shared usage text is the reference.
+  the verb's own `--help` text is the reference.
 
 ## Step 5: Acknowledge what you have handled
 

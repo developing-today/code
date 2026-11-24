@@ -78,6 +78,18 @@ The rules for them:
 - Do not modify files after initial creation, except appending during active rollout (see above). A later finding goes in a new dated section or file that links back.
 - `transcript.txt` is never edited, not even its whitespace. Notes are immutable once written. Corrections are new files: a new note, receipt or decision.
 
+### Lane work product
+
+Work is split into lanes, and a lane's work product is a dated record like any other. Reports and one-offs — and everything gathered or generated while producing them — land in this repository as a normal, expected class of record, not as an exception and not only in a summary handed back to whoever asked.
+
+- **One dated folder per piece of work.** `doc/<UTC>_<kind>_<name>/`, named for the issue, topic or lane that produced it. The usual kind is `report`; a more specific kind (`audit`, `research`, `design`) is fine when it fits better.
+- **The folder carries everything.** The main report sits in the folder alongside all of its supplements: the data gathered, the files downloaded and the documents generated along the way, in whatever form they were gathered. A summary is never the only record — a lane's work is not thrown away into a summary.
+- **The index link lives outside the folder.** Add a line for the record to [`README.md`](README.md), or to a per-area index that `README.md` points to, in the same PR. The index is how the record is found; a folder with no index link outside it is not landed.
+- **Landing is automatic.** A lane lands its work product as a pull request as part of finishing the work. No separate request or reminder is needed, and the work is not done until its record has landed, or been handed off with the branch named.
+- **Size.** Smaller files are always fine, even hundreds of them. Large files are kept too, for now; moving large material to a separate repository with an R2 packing bucket is possible future work, not a reason to drop material today.
+- **Work in the open.** Anything that is not literally a live credential value belongs in the repository. Doubtful material that is not a live credential value is included. Revoked or never-authorised test certificates and keys may be included, with their status labelled.
+- **The one carve-out.** Live credential values — API keys, passwords, tokens and in-use private keys — are never committed. Refer to a credential by name only.
+
 ### Maintained control documents
 
 Maintained control documents are:
@@ -98,6 +110,17 @@ The rules for them:
   - A document with its own `## Change log` section gets one line there per PR.
   - Elsewhere, the PR and its commit message are the record.
 - Do not delete what a statement originally said. Mark it `clarified`, `superseded` or `retracted`: the new status goes in front with a UTC time and a short reason, and the earlier trail follows. [`planning/workflow/records.md`](../planning/workflow/records.md) defines the item trail format.
+
+## Books stay live
+
+The repository carries seven documentation books, built with mdBook and published together on the one GitHub Pages site: mcpx (`pkgs/mcpx/docs/`), fleet (`pkgs/fleet/book/`), atlas (`pkgs/atlas-search/book/`), id (`pkgs/id/book/`), Project Management (`pm-stack/book/`), the Code Book (`pkgs/code-book/book/`) and the Lab Book (`pkgs/lab/book/`). A book is a maintained control document: it states how its subject stands now, and it goes stale the moment the subject changes underneath it. Books are therefore updated live, as part of the change that moves them — not batched into a later pass.
+
+- **The trigger.** A change touches book-documented ground when it alters anything a book states: a command, flag, config key or setting; a behaviour or failure shape; a count a book prints (settings, chapters, workers, databases, seats — any number); a status (live, parked, held, landed, closed); or a design decision a book records. The test is mechanical: if the change, once merged, would make a sentence in a book false, the book is in scope for that change.
+- **The update rides with the change.** When the change is direct — its author knows exactly which statement it moves — the same PR updates the book source: the chapter that owns the topic, in the book's own voice and structure, with every count re-derived from the subject on the day, never carried forward from the book's previous text. The change is not done until the book matches it.
+- **When it cannot ride, it follows immediately.** If the book update cannot land in the same PR — the change is already merged, the owning chapter needs a wider rewrite, or a figure cannot be re-derived from inside the change — open the book-update PR immediately after, in the same working session, and link it from the change PR. A book statement known to be false is a defect: if the update cannot be written either, file the issue in the same pass, naming the stale statement.
+- **Which book owns the ground.** mcpx's ground is `pkgs/mcpx/` — and its book carries a machine-checked sync contract in the package README plus the build gate; where that contract speaks, it governs. Fleet's ground is `pkgs/fleet/` and the fleet surfaces it operates (the queue broker, placement, seats, bridges and doors). Atlas's ground is `pkgs/atlas-search/` and the Atlas stores. The id book's ground is `pkgs/id/`. The Project Management book's ground is `pm-stack/` plus the estate-wide censuses it carries (Cloudflare Workers, Turso databases, provider quotas and costs). The Code Book's ground is this repository itself and the book programme. The Lab Book's ground is the lab: Nix and NixOS, the laptop and cluster work, CI/CD. A change spanning subjects updates every book whose statements it moves.
+- **Generated text is fixed at the source.** Where a book carries generated regions — parity tables, settings inventories, protocol regions — fix the source string or registry and regenerate. Never hand-edit a generated region.
+- **The scheduled passes are the net, not the mechanism.** A weekly review aligns every book against the week's changes, and a daily spot-check covers the fast-moving books (id, fleet, atlas, mcpx) over the last 36 hours. They exist to catch what slipped. A change whose author already knows a book statement moved is updated live under the rules above, never left for a scheduled pass to find.
 
 ## Handling Superseded Features
 
@@ -130,4 +153,6 @@ docs/
 
 ## Change log
 
+- 2026-11-24: Added "Books stay live": a change that moves anything a book states carries its book update in the same PR, or as an immediate linked follow-up PR in the same session; the weekly review and daily spot-check are the catch-net, not the mechanism.
+- 2026-11-24: Added lane work product as a dated-record class: reports and one-offs land in the repository by pull request, with their gathered material in the folder, an index link outside it, the size and openness rules, and the live-credential carve-out.
 - 2026-10-21: Split dated historical records from maintained control documents. The older paths here say `docs/`, which is a symlink to `doc/`; both reach the same folders. Rules from earlier versions are unchanged.

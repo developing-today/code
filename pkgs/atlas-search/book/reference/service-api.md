@@ -2,7 +2,7 @@
 
 Source: [crates/atlas-search/src/server.rs](https://github.com/developing-today/code/blob/main/pkgs/atlas-search/crates/atlas-search/src/server.rs) and its `server/` submodules, [crates/atlas-proto/src/lib.rs](https://github.com/developing-today/code/blob/main/pkgs/atlas-search/crates/atlas-proto/src/lib.rs), [crates/atlas-core/src/feedback.rs](https://github.com/developing-today/code/blob/main/pkgs/atlas-search/crates/atlas-core/src/feedback.rs) — provenance only; this chapter is complete without following it.
 
-The service is the laptop half of Atlas: a loopback HTTP service, run by `atlas-search serve` or by its rehomed twin `fleet serve search` (see [fleet search and fleet serve search](fleet-search.md)), that holds one shared Snowflake embedder and a read-only backend and serves search as a *job protocol* — submit a search, then pull its immutable fused ranking in pages. It binds `127.0.0.1:18760` and nothing else; wider reach is a `tailscale serve` mapping in front of the loopback port, never a public listener of its own. The Cloudflare Worker described in [The Worker HTTP API](worker-api.md) is a separate, hosted surface that calls this service; the two are not the same API.
+The service is the laptop half of Atlas: a loopback HTTP service, run by `atlas-search serve` or by its rehomed twin `fleet serve search` (see [fleet search and fleet serve search](fleet-search.md)), that holds one shared Snowflake embedder and a read-only backend and serves search as a _job protocol_ — submit a search, then pull its immutable fused ranking in pages. It binds `127.0.0.1:18760` and nothing else; wider reach is a `tailscale serve` mapping in front of the loopback port, never a public listener of its own. The Cloudflare Worker described in [The Worker HTTP API](worker-api.md) is a separate, hosted surface that calls this service; the two are not the same API.
 
 ```http
 GET    /health
@@ -22,20 +22,20 @@ Every route except `GET /health` requires a per-identity bearer token (see "Iden
 
 ## Route summary
 
-| Method and path | Auth | Success | Meaning |
-|---|---|---|---|
-| `GET /health` | none | 200 | Liveness, embedder state and queue depth. No corpus data. |
-| `POST /v1/search` | client token | 200 | One-shot search: submit, wait, and return the first page in one call. |
-| `POST /v1/search/jobs` | client token | 202 | Submit a search job; returns the job handle. |
-| `GET /v1/search/jobs` | client token | 200 | List the calling identity's own jobs, metadata only. |
-| `GET /v1/search/jobs/&lt;job_id&gt;` | client token or job token | 200 | One job's status. |
-| `GET /v1/search/jobs/&lt;job_id&gt;/results` | client token or job token | 200 | One page of a job's ranking. |
-| `DELETE /v1/search/jobs/&lt;job_id&gt;` | client token or job token | 200 | Delete a job and its stored ranking. |
-| `GET /v1/search/jobs/&lt;job_id&gt;/chunk/&lt;chunk_id&gt;` | client token or job token | 200 | One chunk, scoped to an existing job. |
-| `POST /v1/embed` | client token | 200 | Embed one query text in the pinned Snowflake space. |
-| `POST /v1/feedback` | client token | 201 | Cast a feedback vote (`atlas-feedback/v1`); returns the stored record. |
-| `GET /v1/feedback` | client token | 200 | Retrieve feedback by query (and optionally chunk). |
-| any other route | — | 404 | `not_found` in the shared error envelope. |
+| Method and path                                             | Auth                      | Success | Meaning                                                                |
+| ----------------------------------------------------------- | ------------------------- | ------- | ---------------------------------------------------------------------- |
+| `GET /health`                                               | none                      | 200     | Liveness, embedder state and queue depth. No corpus data.              |
+| `POST /v1/search`                                           | client token              | 200     | One-shot search: submit, wait, and return the first page in one call.  |
+| `POST /v1/search/jobs`                                      | client token              | 202     | Submit a search job; returns the job handle.                           |
+| `GET /v1/search/jobs`                                       | client token              | 200     | List the calling identity's own jobs, metadata only.                   |
+| `GET /v1/search/jobs/&lt;job_id&gt;`                        | client token or job token | 200     | One job's status.                                                      |
+| `GET /v1/search/jobs/&lt;job_id&gt;/results`                | client token or job token | 200     | One page of a job's ranking.                                           |
+| `DELETE /v1/search/jobs/&lt;job_id&gt;`                     | client token or job token | 200     | Delete a job and its stored ranking.                                   |
+| `GET /v1/search/jobs/&lt;job_id&gt;/chunk/&lt;chunk_id&gt;` | client token or job token | 200     | One chunk, scoped to an existing job.                                  |
+| `POST /v1/embed`                                            | client token              | 200     | Embed one query text in the pinned Snowflake space.                    |
+| `POST /v1/feedback`                                         | client token              | 201     | Cast a feedback vote (`atlas-feedback/v1`); returns the stored record. |
+| `GET /v1/feedback`                                          | client token              | 200     | Retrieve feedback by query (and optionally chunk).                     |
+| any other route                                             | —                         | 404     | `not_found` in the shared error envelope.                              |
 
 `/v1/feedback` also answers at the unversioned alias `/feedback`, for both `POST` and `GET`.
 
@@ -59,14 +59,14 @@ No authentication, no parameters, no corpus data:
 
 Two kinds of token exist, and they are not interchangeable:
 
-| Token kind | Where it comes from | What it authorises |
-|---|---|---|
-| Client token | One per named identity in `service.json` (see [Configuration and environment](configuration.md)); the client presents the matching value from its own `client.json`. | Every authenticated route, for that identity only. |
-| Job token | Minted by the service and returned once, in the 202 response that creates a job. | Only that one job's status, results, chunk and delete routes. A job token cannot list jobs and cannot touch any other job. |
+| Token kind   | Where it comes from                                                                                                                                                  | What it authorises                                                                                                         |
+| ------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
+| Client token | One per named identity in `service.json` (see [Configuration and environment](configuration.md)); the client presents the matching value from its own `client.json`. | Every authenticated route, for that identity only.                                                                         |
+| Job token    | Minted by the service and returned once, in the 202 response that creates a job.                                                                                     | Only that one job's status, results, chunk and delete routes. A job token cannot list jobs and cannot touch any other job. |
 
 Presentation is the same for both: the header `Authorization: Bearer &lt;token&gt;`. Token values are never printed or logged by any tool; this book names tokens only.
 
-Each client identity carries a *ceiling cap* — the highest sensitivity ceiling that identity may ever search under. Sensitivity is a ladder, lowest to highest: `shareable` &lt; `personal` &lt; `local-only` &lt; `secret-bearing`. A search request names a requested ceiling; the service clamps it:
+Each client identity carries a _ceiling cap_ — the highest sensitivity ceiling that identity may ever search under. Sensitivity is a ladder, lowest to highest: `shareable` &lt; `personal` &lt; `local-only` &lt; `secret-bearing`. A search request names a requested ceiling; the service clamps it:
 
 ```
 effective_ceiling = min(requested_ceiling, calling identity's ceiling_cap)
@@ -76,14 +76,14 @@ The clamp is the security property: no request field, header or client-side flag
 
 The v1 client table written by `atlas-search init` is:
 
-| Identity | Ceiling cap | Intended caller |
-|---|---|---|
-| `drew-cli` | `secret-bearing` | Drew's own CLI on the laptop. |
-| `openchamber` | `personal` | OpenChamber sessions. |
-| `fork-server` | `personal` | Fork / OpenCode agents. |
-| `sandbox-scripts` | `personal` | Sandbox scripts and Muse lanes, over the tailnet. |
+| Identity          | Ceiling cap      | Intended caller                                   |
+| ----------------- | ---------------- | ------------------------------------------------- |
+| `drew-cli`        | `secret-bearing` | The user's own CLI on the laptop.                 |
+| `openchamber`     | `personal`       | OpenChamber sessions.                             |
+| `fork-server`     | `personal`       | Fork / OpenCode agents.                           |
+| `sandbox-scripts` | `personal`       | Sandbox scripts and Muse lanes, over the tailnet. |
 
-One later identity exists beyond the `init` table: `cf-worker`, cap `personal`, whose token the Cloudflare Worker presents when it calls this service (see [The Worker HTTP API](worker-api.md)). Raising any cap is a local edit to `service.json` by Drew; there is no API for it.
+One later identity exists beyond the `init` table: `cf-worker`, cap `personal`, whose token the Cloudflare Worker presents when it calls this service (see [The Worker HTTP API](worker-api.md)). Raising any cap is a local edit to `service.json` by the user; there is no API for it.
 
 A missing or invalid bearer token fails with an unauthorised error in the shared error envelope (see "Errors"), on every authenticated route, in the same shape.
 
@@ -110,23 +110,23 @@ Both search submissions — one-shot and job — take the same request body, the
 }
 ```
 
-| Field | Type | Default | Meaning |
-|---|---|---|---|
-| `query` | string | — (required) | The query text. |
-| `mode` | `hybrid` \| `fts` \| `vector` | `hybrid` | Which branches run. |
-| `filters` | object | empty | Classification filters: `kind`, `topic`, `project`, `client` (string lists) and `since`, `until` (session dates, inclusive). |
-| `ceiling` | ladder name | `personal` | The *requested* ceiling; the service clamps it to the caller's cap. |
-| `k` | integer | 10 | Final results wanted. |
-| `pool` | integer | 100 | Per-branch candidates; the service enforces the design maximum of 400. |
-| `group_by_session` | boolean | `false` | Roll chunk hits up to sessions. |
-| `expand` | integer | 0 | Neighbouring chunks to include around each hit (0–100). |
-| `with_message` | boolean | `false` | Include the parent message text. |
-| `model` | string | `Snowflake/snowflake-arctic-embed-m-v2.0` | Embedding model name; the pinned space (see below). |
-| `embedder` | string | `auto` | Embedder selection. |
-| `trunc` | integer | 0 | Truncate vectors to N dimensions; 0 = full width. |
-| `vector_backend` | `scan` \| `index-fixed` \| `index-fill` | `scan` | Vector branch strategy. |
-| `page_limit` | integer or null | null | One-shot endpoint only: page size for the first page. |
-| `context` | string or null | null | Disclosure context spelling: `fleet-internal`, `hosted-per-user`, `public-surface` or `local-owner`. Absent or unknown values fail closed under the receiving surface's rule; the context intersects the ceiling and neither widens the other. |
+| Field              | Type                                    | Default                                   | Meaning                                                                                                                                                                                                                                        |
+| ------------------ | --------------------------------------- | ----------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `query`            | string                                  | — (required)                              | The query text.                                                                                                                                                                                                                                |
+| `mode`             | `hybrid` \| `fts` \| `vector`           | `hybrid`                                  | Which branches run.                                                                                                                                                                                                                            |
+| `filters`          | object                                  | empty                                     | Classification filters: `kind`, `topic`, `project`, `client` (string lists) and `since`, `until` (session dates, inclusive).                                                                                                                   |
+| `ceiling`          | ladder name                             | `personal`                                | The _requested_ ceiling; the service clamps it to the caller's cap.                                                                                                                                                                            |
+| `k`                | integer                                 | 10                                        | Final results wanted.                                                                                                                                                                                                                          |
+| `pool`             | integer                                 | 100                                       | Per-branch candidates; the service enforces the design maximum of 400.                                                                                                                                                                         |
+| `group_by_session` | boolean                                 | `false`                                   | Roll chunk hits up to sessions.                                                                                                                                                                                                                |
+| `expand`           | integer                                 | 0                                         | Neighbouring chunks to include around each hit (0–100).                                                                                                                                                                                        |
+| `with_message`     | boolean                                 | `false`                                   | Include the parent message text.                                                                                                                                                                                                               |
+| `model`            | string                                  | `Snowflake/snowflake-arctic-embed-m-v2.0` | Embedding model name; the pinned space (see below).                                                                                                                                                                                            |
+| `embedder`         | string                                  | `auto`                                    | Embedder selection.                                                                                                                                                                                                                            |
+| `trunc`            | integer                                 | 0                                         | Truncate vectors to N dimensions; 0 = full width.                                                                                                                                                                                              |
+| `vector_backend`   | `scan` \| `index-fixed` \| `index-fill` | `scan`                                    | Vector branch strategy.                                                                                                                                                                                                                        |
+| `page_limit`       | integer or null                         | null                                      | One-shot endpoint only: page size for the first page.                                                                                                                                                                                          |
+| `context`          | string or null                          | null                                      | Disclosure context spelling: `fleet-internal`, `hosted-per-user`, `public-surface` or `local-owner`. Absent or unknown values fail closed under the receiving surface's rule; the context intersects the ceiling and neither widens the other. |
 
 Flattened onto the same object are the versioned query parameters (`parameters_version`, `shard_top_k`, `global_top_k`, `fts_weight`, `vector_weight`, `jaccard_depth`, `jaccard_threshold`, `rrf_k`, `planner_enabled`, `spell_enabled`, `query_class_hint`, `variant`, `raw`, `no_cache`, `wait`, `hydrate`, `raw_mode`), whose defaults are the contract in `query-parameters-v1.json` — see [Configuration and environment](configuration.md). Two of them steer the protocol itself: `wait` (protocol default `false`; the one-shot CLI sets it unless told not to) and `no_cache` (bypass the service's result-cache reads; the fresh result still lands in the cache).
 
@@ -157,26 +157,26 @@ Keep both halves of the handle: `job_id` names the job in every later path, and 
 
 Job statuses are `queued`, `running`, `done`, `failed` and `expired`. The status response reports both branches separately — `branch_states` holds an `fts` and a `vector` state, each `pending`, `running`, `done`, `failed` or `skipped` — because a filtered vector scan is seconds of server-side work and the branches do not finish together.
 
-| Field | Meaning |
-|---|---|
-| `job_id`, `status` | The job and its lifecycle state. |
-| `branch_states` | `{ "fts": &lt;state&gt;, "vector": &lt;state&gt; }`. |
-| `effective_ceiling` | The clamped ceiling the job runs under. |
-| `pool` | The per-branch candidate depth in force. |
-| `queue_depth`, `queue_position` | Backlog at the time of the call; `queue_position` is null once running. |
-| `notes` | Strings the service attached while running the job (fallbacks, cache notes, degradations). |
-| `error` | The failure message when `status` is `failed`; otherwise null. |
-| `result_count` | Total results in the fused ranking once known; otherwise null. |
-| `submitted_at_ms`, `started_at_ms`, `completed_at_ms`, `expires_at_ms` | Millisecond timestamps; start and completion are null until they happen. |
+| Field                                                                  | Meaning                                                                                    |
+| ---------------------------------------------------------------------- | ------------------------------------------------------------------------------------------ |
+| `job_id`, `status`                                                     | The job and its lifecycle state.                                                           |
+| `branch_states`                                                        | `{ "fts": &lt;state&gt;, "vector": &lt;state&gt; }`.                                       |
+| `effective_ceiling`                                                    | The clamped ceiling the job runs under.                                                    |
+| `pool`                                                                 | The per-branch candidate depth in force.                                                   |
+| `queue_depth`, `queue_position`                                        | Backlog at the time of the call; `queue_position` is null once running.                    |
+| `notes`                                                                | Strings the service attached while running the job (fallbacks, cache notes, degradations). |
+| `error`                                                                | The failure message when `status` is `failed`; otherwise null.                             |
+| `result_count`                                                         | Total results in the fused ranking once known; otherwise null.                             |
+| `submitted_at_ms`, `started_at_ms`, `completed_at_ms`, `expires_at_ms` | Millisecond timestamps; start and completion are null until they happen.                   |
 
 ### Results: `GET /v1/search/jobs/&lt;job_id&gt;/results?cursor=&lt;cursor&gt;&amp;limit=&lt;n&gt;`
 
-Results are pulled, not pushed — *pull-until-satisfied*. The ranking is computed once, fused once, and is immutable for the life of the job; paging never re-runs ranking, and fetch-to-fill depth escalation lives inside the job's vector branch, never in client paging.
+Results are pulled, not pushed — _pull-until-satisfied_. The ranking is computed once, fused once, and is immutable for the life of the job; paging never re-runs ranking, and fetch-to-fill depth escalation lives inside the job's vector branch, never in client paging.
 
-| Parameter | Default | Meaning |
-|---|---|---|
-| `cursor` | — (first page) | The previous page's `next_cursor`, passed back verbatim. Cursors are opaque: do not parse, construct or store them beyond the life of the job. |
-| `limit` | 100 | Page size. |
+| Parameter | Default        | Meaning                                                                                                                                        |
+| --------- | -------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| `cursor`  | — (first page) | The previous page's `next_cursor`, passed back verbatim. Cursors are opaque: do not parse, construct or store them beyond the life of the job. |
+| `limit`   | 100            | Page size.                                                                                                                                     |
 
 ```json
 {
@@ -237,15 +237,15 @@ Submission (`POST`, returns 201 with the stored record):
 }
 ```
 
-| Field | Rule |
-|---|---|
-| `query_id` | Required, non-empty. |
-| `chunk_id` | A chunk id, or null for a per-query vote. |
-| `vote` | Exactly `up` or `down`. |
-| `comment` | Optional, stored verbatim, at most 256 KiB. |
+| Field            | Rule                                                                  |
+| ---------------- | --------------------------------------------------------------------- |
+| `query_id`       | Required, non-empty.                                                  |
+| `chunk_id`       | A chunk id, or null for a per-query vote.                             |
+| `vote`           | Exactly `up` or `down`.                                               |
+| `comment`        | Optional, stored verbatim, at most 256 KiB.                           |
 | `requester.kind` | One of `drew`, `agent`, `user`, `anonymous`; empty means `anonymous`. |
-| `requester.id` | Stable requester id; may be empty for anonymous. |
-| `opened` | Whether the result was opened or expanded before the vote. |
+| `requester.id`   | Stable requester id; may be empty for anonymous.                      |
+| `opened`         | Whether the result was opened or expanded before the vote.            |
 
 The stored record adds `schema` (`atlas-feedback/v1`), a minted `feedback_id`, and `ts` (RFC 3339, UTC). Records are append-only and never mutated; a later vote from the same requester on the same `(query_id, chunk_id)` supersedes the earlier one in the derived view, never by rewriting it.
 
@@ -255,10 +255,10 @@ The client token is this surface's credential — the requester named in the bod
 
 Job results live in an **in-memory** temp store inside the service process. Two lifetimes bound every job, both overridable at serve time (see [Configuration and environment](configuration.md)):
 
-| Lifetime | Default | Meaning |
-|---|---|---|
-| Completed-job TTL | 600000 ms (10 minutes) | How long a completed job's ranking stays pageable after completion. `expires_at_ms` on the handle and status is this deadline. |
-| Submit hard cap | 3600000 ms (60 minutes) | The outer bound from submission, however the job's run goes. |
+| Lifetime          | Default                 | Meaning                                                                                                                        |
+| ----------------- | ----------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| Completed-job TTL | 600000 ms (10 minutes)  | How long a completed job's ranking stays pageable after completion. `expires_at_ms` on the handle and status is this deadline. |
+| Submit hard cap   | 3600000 ms (60 minutes) | The outer bound from submission, however the job's run goes.                                                                   |
 
 Nothing in the temp store survives a service restart, by requirement: job results hold ceiling-gated snippets, and persistence would be a liability, not a feature. A durable-store design (a scratch database) was rejected on exactly that ground, and on the evidence of the corpus writer's stall behaviour. When a job passes its deadline its status reads `expired` and its pages are gone; re-running the search is the recovery, and the service's result cache may make that cheap.
 
@@ -274,12 +274,12 @@ Every error uses the shared envelope — the same shape the Worker uses, defined
 
 The envelope may also carry `retry_after_seconds` and `queue_depth` when the code is `rate_limited`; both are absent otherwise.
 
-| Status | Code | When |
-|---|---|---|
-| 200 / 201 / 202 | — | Success: reads and one-shot search (200), feedback submission (201), job submission (202). |
-| 401 | `unauthorized` | Missing or invalid bearer token, client or job, on any authenticated route. One shape for every route, so a caller cannot probe which token kind a route expected. (Status and code verified in `crates/atlas-search/src/server.rs`: `ServerError::unauthorized` is HTTP 401 with code `unauthorized`.) |
-| 404 | `not_found` | Unknown route. A chunk the caller may not see — or that does not exist — is also 404, with code `chunk_not_found`; an expired or unknown job is 404 with code `job_expired_or_unknown`, and a job that expired before its results were read is 410 with code `job_expired`. |
-| 429 | `rate_limited` | Saturation: the error carries `retry_after_seconds` and `queue_depth`; wait the stated interval rather than retrying immediately. |
+| Status          | Code           | When                                                                                                                                                                                                                                                                                                    |
+| --------------- | -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 200 / 201 / 202 | —              | Success: reads and one-shot search (200), feedback submission (201), job submission (202).                                                                                                                                                                                                              |
+| 401             | `unauthorized` | Missing or invalid bearer token, client or job, on any authenticated route. One shape for every route, so a caller cannot probe which token kind a route expected. (Status and code verified in `crates/atlas-search/src/server.rs`: `ServerError::unauthorized` is HTTP 401 with code `unauthorized`.) |
+| 404             | `not_found`    | Unknown route. A chunk the caller may not see — or that does not exist — is also 404, with code `chunk_not_found`; an expired or unknown job is 404 with code `job_expired_or_unknown`, and a job that expired before its results were read is 410 with code `job_expired`.                             |
+| 429             | `rate_limited` | Saturation: the error carries `retry_after_seconds` and `queue_depth`; wait the stated interval rather than retrying immediately.                                                                                                                                                                       |
 
 ## Worked example
 

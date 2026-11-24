@@ -187,7 +187,7 @@ Three places, in descending order of authority:
    the disagreement is itself reported.
 3. **The artifact** — the release build is made from the tag, and
    the built binary must report the clean version (`Derived
-   version: X.Y.Z`; fleet README procedure step 3). A release
+version: X.Y.Z`; fleet README procedure step 3). A release
    whose artifact reports a `-dev` string is a failed release,
    recorded as such in the ledger, not quietly re-tagged.
 
@@ -256,7 +256,7 @@ tool against a `main` commit whose gate is green at cutting time.
 
 One grandfathering note: `mcpx/v0.1.0` already exists, cut under
 decision 0005's pipeline before this workflow. It stands as
-mcpx's `0.1.0`; mcpx's *next* release follows this workflow, and
+mcpx's `0.1.0`; mcpx's _next_ release follows this workflow, and
 the mcpx pipeline's tag-consumption (build and publish from the
 tag, gate-checked) is already compatible with it.
 

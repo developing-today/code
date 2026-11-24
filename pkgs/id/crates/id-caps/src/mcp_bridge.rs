@@ -46,6 +46,12 @@ impl ToolDefinition {
 }
 
 /// The eight approved v1 MCP tools, in their pinned wire order.
+///
+/// One entry is pinned but can never succeed: `presence.set` is refused
+/// unconditionally by [`BridgeSession::tool_action`] with
+/// [`BridgeError::NoFrameMapping`], because presence is the join itself
+/// and no presence frame exists. A v1 client must treat `presence.set`
+/// as a tool that always fails.
 #[must_use]
 pub fn v1_tool_definitions() -> Vec<ToolDefinition> {
     vec![

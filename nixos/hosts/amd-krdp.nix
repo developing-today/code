@@ -30,6 +30,13 @@
   # WantedBy below only once a RemoteDesktop-capable portal backend
   # exists for the Hyprland session.
   #
+  # Settled 2026-11-22 on issue #5415: the fleet supports BOTH remote
+  # routes rather than picking one. KRdp stays the Plasma-session route
+  # (this file, unchanged); the Hyprland-session route is Sunshine in
+  # ./amd-sunshine.nix (KMS capture, no portal backend needed), verified
+  # live under the Hyprland seat session with Moonlight client sessions.
+  # So KRdp not running under Hyprland is by design, not a defect.
+  #
   # No secrets in this repo, by design:
   # - RDP usernames/passwords are NOT passed on the command line (they
   #   would land in the world-readable Nix store and process list). They

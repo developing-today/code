@@ -170,7 +170,7 @@ Failures: a non-Admin author is refused, exit `1`, and the refused event stays i
 
 ### `group join`
 
-Parses an invitation ticket, then always fails. Group admission and network joining are not implemented: no group membership is ever recorded by this command. This is the source behaviour, and it contradicts the top-level help, which lists `join` among the things `group` can do (disagreement CLI-9). The subcommand's own help states the truth in its first line: `Unavailable: group admission and network joining are not implemented yet`.
+Parses an invitation ticket, then always fails. Group admission and network joining are not implemented: no group membership is ever recorded by this command. This is the source behaviour; the top-level help once listed `join` among the things `group` can do (disagreement CLI-9, resolved — it no longer does). The subcommand's own help states the truth in its first line: `Unavailable: group admission and network joining are not implemented yet`.
 
 ```
 id group join <INVITE>

@@ -199,6 +199,117 @@ function toRecord(item: IngestionItem, parsed: ParsedPmMetadata): PmMetadataReco
   };
 }
 
+/** Canonical `repo#number` key for cross-repo ancestor comparisons. */
+export function itemRefKey(ref: { repo: string; number: number }): string {
+  return `${ref.repo.toLowerCase()}#${ref.number}`;
+}
+
+/** `primary-parent/<slug>` labels carried by an item, in label order. */
+export function primaryParentLabels(labels: string[]): string[] {
+  return labels.filter((label) => label.startsWith("primary-parent/"));
+}
+
+export type PrimaryParentViolationKind =
+  /** More than one `primary-parent/*` label names a parent. */
+  | "multiple-primary-parent-labels"
+  /** The label and the native sub-issue parent name different parents, and
+   * the label is not an ancestor of the native parent (program-level label). */
+  | "label-native-disagreement"
+  /** A `primary-parent/<slug>` label whose slug resolves to no epic. */
+  | "unresolved-primary-parent-label";
+
+export interface PrimaryParentViolation {
+  kind: PrimaryParentViolationKind;
+  /** Human-readable finding, as it should appear in audit output. */
+  message: string;
+  item: { repo: string; number: number; kind: "issue" | "pr" };
+  labels: string[];
+  labelParents: ResolvedParent[];
+  nativeParent: ResolvedParent | null;
+}
+
+/**
+ * Collector-side validation of the primary-parent convention (design §3):
+ * at most one `primary-parent/<slug>` per issue, and when a native
+ * sub-issue parent exists the label must either agree with it or name one
+ * of its ancestors (the program-level parent).
+ *
+ * `ancestorRefs` is the native parent's ancestor chain as
+ * {@link itemRefKey} values. Pass it when known; pass `undefined` when the
+ * chain could not be read, in which case only direct agreement is checked
+ * (an unreadable chain must not manufacture a disagreement finding).
+ *
+ * This never resolves a violation: it reports it, exactly as the design
+ * requires. Resolution stays a human/reconcile decision.
+ */
+export function collectPrimaryParentViolations(
+  item: IngestionItem,
+  epicSlugs: EpicSlugMap,
+  ancestorRefs?: ReadonlySet<string>,
+): PrimaryParentViolation[] {
+  const labels = primaryParentLabels(item.labels);
+  if (labels.length === 0) return [];
+  const violations: PrimaryParentViolation[] = [];
+  const base = {
+    item: { repo: item.repo, number: item.number, kind: item.kind },
+    labels,
+  };
+
+  const unresolved = labels.filter((label) => !epicSlugs.has(label.slice("primary-parent/".length).trim().toLowerCase()));
+  if (unresolved.length > 0) {
+    violations.push({
+      ...base,
+      kind: "unresolved-primary-parent-label",
+      message: `primary-parent label(s) name no known epic: ${unresolved.join(", ")}`,
+      labelParents: [],
+      nativeParent: item.nativeParent ?? null,
+    });
+  }
+
+  const labelParents: ResolvedParent[] = [];
+  for (const label of labels) {
+    const slug = label.slice("primary-parent/".length).trim().toLowerCase();
+    const epic = epicSlugs.get(slug);
+    if (!epic) continue;
+    if (!labelParents.some((parent) => parent.repo === epic.repo && parent.number === epic.number)) {
+      labelParents.push({ repo: epic.repo, number: epic.number, kind: "epic" });
+    }
+  }
+
+  const distinct = new Set(labelParents.map((parent) => itemRefKey(parent)));
+  if (labels.length > 1) {
+    violations.push({
+      ...base,
+      kind: "multiple-primary-parent-labels",
+      message:
+        distinct.size > 1
+          ? `${labels.length} primary-parent labels name ${distinct.size} distinct parents (${[...distinct].join(", ")})`
+          : `${labels.length} primary-parent labels present; at most one is allowed`,
+      labelParents,
+      nativeParent: item.nativeParent ?? null,
+    });
+  }
+
+  const nativeParent = item.nativeParent ?? null;
+  if (nativeParent && labelParents.length > 0 && ancestorRefs !== undefined) {
+    const agrees = labelParents.some((parent) => itemRefKey(parent) === itemRefKey(nativeParent));
+    const ancestorAgrees = labelParents.some((parent) => ancestorRefs.has(itemRefKey(parent)));
+    if (!agrees && !ancestorAgrees) {
+      violations.push({
+        ...base,
+        kind: "label-native-disagreement",
+        message:
+          `primary-parent label names ${labelParents.map((parent) => itemRefKey(parent)).join(", ")} but the native parent is ` +
+          `${itemRefKey(nativeParent)} and the label is not one of its ancestors`,
+        labelParents,
+        nativeParent,
+      });
+    }
+  }
+
+  return violations;
+}
+
 function triageEvidence(
   item: IngestionItem,
   reasons: string[],
@@ -262,7 +373,12 @@ export function runMetadataCheck(item: IngestionItem, context: MetadataCheckCont
     const { candidateSlugs } = resolveAscertainedParent(item, context.epicSlugs);
     return {
       kind: "needs-triage",
-      evidence: triageEvidence(item, ["existing metadata block is unparseable; ascertainment insufficient"], candidateSlugs, true),
+      evidence: triageEvidence(
+        item,
+        ["existing metadata block is unparseable; ascertainment insufficient"],
+        candidateSlugs,
+        true,
+      ),
     };
   }
 
@@ -324,11 +440,7 @@ function ascertain(
  * fields the broker validates (schema, kind, problem, priority_reason,
  * non-empty evidence/acceptance/tests, scope, risk, timebox, attempts).
  */
-export function buildTriagePacket(
-  evidence: TriageEvidence,
-  ingestedBy: string,
-  at: string,
-): Record<string, unknown> {
+export function buildTriagePacket(evidence: TriageEvidence, ingestedBy: string, at: string): Record<string, unknown> {
   const problem = [
     `Dual ingestion (${ingestedBy}) could not ascertain sufficient Metadata for ${evidence.repo}#${evidence.number} (${evidence.kind}):`,
     ...evidence.reasons.map((reason) => `- ${reason}`),
@@ -374,7 +486,10 @@ export function buildTriagePacket(
         "Dual-ingestion forward: item lacks an ascertainable Metadata parent, so full triage owns it (resolved to 30 on the queue design scale).",
       timebox_minutes: 20,
       max_attempts: 1000,
-      dedupe: { checked_at: at, basis: `Dual-ingestion forward for ${evidence.repo}#${evidence.number}; canonical triage key anchors to the item.` },
+      dedupe: {
+        checked_at: at,
+        basis: `Dual-ingestion forward for ${evidence.repo}#${evidence.number}; canonical triage key anchors to the item.`,
+      },
     },
   };
 }

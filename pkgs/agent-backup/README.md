@@ -2,7 +2,7 @@
 
 Periodic export of the Muse runtime records DB into the Turso DB
 `muse-mirror` (`agent_mirror_*` tables). Built 2026-10-29, approved by
-Drew 2026-10-28. Runs as an agent cron job `runtime-db-export` every 6 hours
+the user 2026-10-28. Runs as an agent cron job `runtime-db-export` every 6 hours
 (America/Chicago) — it must be an agent job because scripts cannot reach the
 runtime DB (per-exec mount namespaces hide the socket); the only source
 route is the `muse.db` tool inside an agent run.
@@ -120,7 +120,7 @@ every run.)
   (`turso db shell muse-mirror`) or `state.json` (last_status / last_error
   per unit; failures are isolated per unit and named in the run's report
   line).
-- Manual run: `cron.run runtime-db-export`. Cadence changes need Drew.
+- Manual run: `cron.run runtime-db-export`. Cadence changes need the user.
 - Steady-state cost (measured on the inaugural run, 2026-10-29):
   50,772,671 input tokens / 199,890 output across the run's 6-agent tree
   (worker root + live worker + 4 subagents), 3,067s wall. Usage rows post
@@ -131,4 +131,4 @@ every run.)
   cadence it projects to ~200M input tokens/day. If that burn is
   unwanted, levers are: longer cadence, narrower recompute windows, or a
   leaner run agent (fewer inline pages in context). Cadence changes need
-  Drew.
+  the user.

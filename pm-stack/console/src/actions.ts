@@ -181,7 +181,7 @@ export function actions(
       audit: ids("issue", "rank"),
     },
     "issue.comment": { run: (a) => ops.comment(a.issue, a.text), touch: [], audit: ids("issue") },
-    "pr.merge": { run: (a) => ops.mergePr(a.pr), touch: ["prs"], audit: ids("pr") },
+    "pr.merge": { run: (a) => ops.mergePr(a.pr, a.head), touch: ["prs"], audit: ids("pr") },
     // Start the site's deploy or the app's build again. Never held to
     // be done late: a deploy that starts hours after it was asked for
     // is a surprise.

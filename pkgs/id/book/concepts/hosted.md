@@ -70,6 +70,8 @@ Its worker (`src/worker.ts`) exposes a `WorldObject` Durable Object (binding `WO
 
 A subfolder, `d1-journal-poc/`, is a second, local-only fit probe for D1: `GET /health`, `POST /append`, `GET /snapshot`, `GET /tail`, with journal header version 1 entries `created` and `caps_granted`, a placeholder database ID, and always `--local`. Its own note records that a D1 bookmark is not a stream cursor.
 
+Both proofs of concept have their own chapters: [id-worker-poc: the World Durable Object proof of concept](../reference/worker-poc.md) and [id-d1-journal-poc: the D1 journal proof of concept](../reference/d1-journal-poc.md).
+
 ## Where the rest lives
 
 The design for a deployed hosted edition — provisioning and SSO binding, per-user stores, storage contracts, self-hosted tier adapters and the media plane — is carried by the design chapter hosted and serverless editions (30 records in the survey's mapping). The shipped scaffold above is the ground that design stands on, and this chapter's claim is only the scaffold's: implemented locally, gated, and not running anywhere.

@@ -1,6 +1,6 @@
 # atlas-search
 
-Atlas is a unified search index over every corpus Drew produces:
+Atlas is a unified search index over every corpus the user produces:
 provenance-first storage, tiered sensitivity, and hybrid (full-text +
 vector) retrieval. This package is the whole system in one workspace —
 the retrieval engine, the command-line tools, the laptop service, and

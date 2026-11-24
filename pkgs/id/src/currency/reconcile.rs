@@ -35,6 +35,7 @@
 //! own blindness would read as a match over no evidence.
 
 use id_currency_registry::{AccountKind, CurrencyRecord, PLATFORM_OWNER_ID, account_spec};
+use num_bigint::BigInt;
 use serde::{Deserialize, Serialize};
 
 use crate::currency::gateway_poc::GraphLog;
@@ -55,6 +56,15 @@ pub struct SupplyAudit {
 }
 
 impl SupplyAudit {
+    // Published numeric reports guarantee that both totals and their
+    // difference fit the existing signed minor-unit API.
+    fn from_totals(issued: &BigInt, accounted: &BigInt) -> Option<Self> {
+        let issued = i128::try_from(issued).ok()?;
+        let accounted = i128::try_from(accounted).ok()?;
+        issued.checked_sub(accounted)?;
+        Some(Self { issued, accounted })
+    }
+
     /// Whether the two sides agree exactly.
     #[must_use]
     pub fn matches(&self) -> bool {
@@ -84,6 +94,21 @@ pub enum ReconFinding {
         issued: i128,
         /// Supply accounted for by holder + fee + burn balances.
         accounted: i128,
+    },
+    /// The ledger reads succeeded but the exact supply totals or their
+    /// difference exceed the signed numeric report range. Decimal strings
+    /// preserve the complete evidence for an operator or a wide reader.
+    SupplyOutsideReportRange {
+        /// The currency being audited.
+        currency_id: String,
+        /// The currency's ledger.
+        ledger_id: u32,
+        /// Exact net supply that left the issuer.
+        issued: String,
+        /// Exact supply held in audited accounts.
+        accounted: String,
+        /// Exact signed issued minus accounted.
+        difference: String,
     },
     /// A transfer carries a non-zero `user_data_128` stamp that
     /// resolves to no graph object (section 7.2: graph object
@@ -136,7 +161,7 @@ pub struct CurrencyRecon {
     pub currency_id: String,
     /// The currency's ledger.
     pub ledger_id: u32,
-    /// The supply audit, or `None` when its reads failed (the
+    /// The supply audit, or `None` when reads or numeric representation failed (the
     /// failure itself is in the report's findings).
     pub supply: Option<SupplyAudit>,
     /// How many recent transfers the linkage check examined.
@@ -183,14 +208,10 @@ pub fn graph_amount(body: &[u8]) -> Option<u128> {
     None
 }
 
-/// A balance as a signed net: credits posted minus debits
-/// posted. Amounts beyond `i128` saturate; ledger amounts are
-/// minor units and nowhere near that range in practice.
-fn net(balance: AccountBalance) -> i128 {
-    fn as_i128(amount: u128) -> i128 {
-        i128::try_from(amount).unwrap_or(i128::MAX)
-    }
-    as_i128(balance.credits_posted) - as_i128(balance.debits_posted)
+/// Lifetime counters can be individually large even when the net balance
+/// is small. Keep the exact net through aggregation across all accounts.
+fn net(balance: AccountBalance) -> BigInt {
+    BigInt::from(balance.credits_posted) - BigInt::from(balance.debits_posted)
 }
 
 /// The posted balance of one account, or zero when the account
@@ -240,7 +261,7 @@ pub fn audit_currency<B: LedgerBackend>(
             let issuer = account_spec(ledger_id, AccountKind::Issuer, &record.issuer_id, "");
             let fee = account_spec(ledger_id, AccountKind::Fee, PLATFORM_OWNER_ID, "");
             let burn = account_spec(ledger_id, AccountKind::Burn, PLATFORM_OWNER_ID, "");
-            let supply = (|| -> Result<SupplyAudit, String> {
+            let supply = (|| -> Result<(BigInt, BigInt), String> {
                 let issued = -net(balance_of(backend, issuer.id)?);
                 let mut accounted =
                     net(balance_of(backend, fee.id)?) + net(balance_of(backend, burn.id)?);
@@ -249,19 +270,29 @@ pub fn audit_currency<B: LedgerBackend>(
                         accounted += net(balance_of(backend, account.id)?);
                     }
                 }
-                Ok(SupplyAudit { issued, accounted })
+                Ok((issued, accounted))
             })();
             match supply {
-                Ok(supply) => {
-                    if !supply.matches() {
-                        findings.push(ReconFinding::SupplyMismatch {
+                Ok((issued, accounted)) => {
+                    if let Some(supply) = SupplyAudit::from_totals(&issued, &accounted) {
+                        if !supply.matches() {
+                            findings.push(ReconFinding::SupplyMismatch {
+                                currency_id: currency_id.clone(),
+                                ledger_id,
+                                issued: supply.issued,
+                                accounted: supply.accounted,
+                            });
+                        }
+                        recon.supply = Some(supply);
+                    } else {
+                        findings.push(ReconFinding::SupplyOutsideReportRange {
                             currency_id: currency_id.clone(),
                             ledger_id,
-                            issued: supply.issued,
-                            accounted: supply.accounted,
+                            issued: issued.to_string(),
+                            accounted: accounted.to_string(),
+                            difference: (issued - accounted).to_string(),
                         });
                     }
-                    recon.supply = Some(supply);
                 }
                 Err(detail) => findings.push(ReconFinding::LedgerReadFailed {
                     currency_id: currency_id.clone(),

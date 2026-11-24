@@ -14,7 +14,7 @@ The per-batch ingest record (#6045): an in-toto-shaped statement binding a batch
 
 ### ceiling
 
-Short for sensitivity ceiling: the highest sensitivity a caller may be shown, enforced **before ranking**, never after. The ladder is `shareable &lt; personal &lt; local-only &lt; secret-bearing`. A search's effective ceiling is a minimum of independent caps — the caller's grant, the client token's cap on the service, and the disclosure context's ceiling — and neither side can widen the other. Content above the ceiling is absent from results, not down-ranked. The full model is in [Sensitivity tiers and client ceilings](../concepts/sensitivity.md).
+Short for sensitivity ceiling: the highest sensitivity a caller may be shown, enforced **before ranking**, never after. The ladder's canonical names are `public &lt; internal &lt; private &lt; sensitive`; in code the rungs are still spelled `shareable &lt; personal &lt; local-only &lt; secret-bearing` (rename: #13506). A search's effective ceiling is a minimum of independent caps — the caller's grant, the client token's cap on the service, and the disclosure context's ceiling — and neither side can widen the other. Content above the ceiling is absent from results, not down-ranked. The full model is in [Sensitivity tiers and client ceilings](../concepts/sensitivity.md).
 
 ### chunk
 
@@ -26,7 +26,7 @@ The chunk identity every store shares: a hash of the chunk's content, `UNIQUE NO
 
 ### corpus tier
 
-The **physical** sensitivity vocabulary: `public` / `internal` / `secret` — the tiers shards, staging registries, and gate records are labelled with. It is a different vocabulary from the ceiling ladder (`shareable` / `personal` / `local-only` / `secret-bearing`), and the two are two namings of one ladder by prose, not by any schema-encoded mapping. The working correspondence: `shareable` → public; `personal` and `local-only` → internal; `secret-bearing` → secret. At the frozen census the corpus held 28 internal shards, 1 secret shard, and zero public shards.
+The **physical** sensitivity vocabulary: `public` / `internal` / `secret` — the tiers shards, staging registries, and gate records are labelled with. It is a different vocabulary from the ceiling ladder (canonically `public` / `internal` / `private` / `sensitive`, spelled in code `shareable` / `personal` / `local-only` / `secret-bearing`), and the two are two namings of one ladder by prose, not by any schema-encoded mapping. The working correspondence, in canonical names: public → public; internal and private → internal; sensitive → secret (in code spellings: `shareable` → public; `personal` and `local-only` → internal; `secret-bearing` → secret). At the frozen census the corpus held 28 internal shards, 1 secret shard, and zero public shards.
 
 ### delta DB
 
@@ -94,7 +94,7 @@ One unit of work's staging database, registered in the staging registry: a queue
 
 ### sweep
 
-Two related uses, kept apart by context. The **source sweep** is the periodic ingest pass over candidate sources — candidate filtering, guardrails, headroom checks, locking, and run reporting — whose machinery is the `atlas-sweep` binary; the standing *recurring runner* for it (#7969) is unbuilt, which is why ingest today is still manual. The **note promotion sweep** (`tools/note_promotion_sweep.py`) is a different, smaller tool: it moves agent notes to their new homes on next touch, leaving pointer stubs behind. When an Atlas chapter says "the sweep" about ingest, it means the first.
+Two related uses, kept apart by context. The **source sweep** is the periodic ingest pass over candidate sources — candidate filtering, guardrails, headroom checks, locking, and run reporting — whose machinery is the `atlas-sweep` binary; the standing _recurring runner_ for it (#7969) is unbuilt, which is why ingest today is still manual. The **note promotion sweep** (`tools/note_promotion_sweep.py`) is a different, smaller tool: it moves agent notes to their new homes on next touch, leaving pointer stubs behind. When an Atlas chapter says "the sweep" about ingest, it means the first.
 
 ### tombstone
 

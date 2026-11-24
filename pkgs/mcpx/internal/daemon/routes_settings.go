@@ -260,6 +260,16 @@ func (s *Server) handleSettingsSet(w http.ResponseWriter, r *http.Request) {
 			s.refused(w, http.StatusBadRequest, err, file)
 			return
 		}
+		if strings.HasPrefix(decl.Path, "embeddings.") {
+			if err := s.reg.SwapEmbedder(s.set); err != nil {
+				s.restoreRuntime(decl.Path, prev, had)
+				s.refused(w, http.StatusInternalServerError, reloadFailed(decl.Path, err), file)
+				return
+			}
+			out["applied"] = true
+			writeJSON(w, http.StatusOK, out)
+			return
+		}
 		if err := s.applyPoolRuntime(decl.Path); err != nil {
 			s.restoreRuntime(decl.Path, prev, had)
 			s.refused(w, http.StatusInternalServerError, reloadFailed(decl.Path, err), file)
