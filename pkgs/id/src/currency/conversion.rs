@@ -66,7 +66,14 @@
 //! a quote pays exactly the quoted `computed_y` and fee.
 //! Issuance commits no usage: a quote is not a posting, and
 //! the cap is re-checked by the submission's own live-state
-//! checks.
+//! checks. Quotes are intentionally multi-use within their
+//! lifetime (#13864): each execution re-checks the cap, so
+//! one `quote_id` backing repeated executions is bounded by
+//! the 60-second lifetime and the authorisation cap. Expired
+//! quotes never accumulate: every entry past
+//! `quote_expires_at` is evicted on
+//! [`ConversionVerifier::issue_quote`] and
+//! [`ConversionVerifier::verify_quoted`].
 //!
 //! Scope boundary: this module verifies and quotes; it does
 //! not settle. Composing the verified conversion into the
@@ -606,6 +613,13 @@ impl ConversionVerifier {
         self.quotes.get(&quote_id)
     }
 
+    /// Drop every quote past its expiry at `now`
+    /// (#13864): the book holds only live quotes, so a
+    /// long-lived gateway cannot accumulate dead weight.
+    fn evict_expired(&mut self, now: u64) {
+        self.quotes.retain(|_, quote| !quote.is_expired(now));
+    }
+
     /// Commit posted volume (execution layer only; see
     /// [`ConversionUsage::record_posted`]).
     pub fn record_posted(&mut self, issuer: &IssuerId, authorisation_id: u128, amount: u128) {
@@ -806,6 +820,9 @@ impl ConversionVerifier {
         source_scale: u32,
         dest_scale: u32,
     ) -> Result<ConversionQuote, FailedPreSubmit> {
+        // #13864: sweep dead entries first — even a refused
+        // issuance leaves no expired weight behind.
+        self.evict_expired(submission.now);
         let folded = self.verify_folded(control, submission)?;
         let authorisation = &folded.verified.authorisation;
         let computed_y = convert_amount(
@@ -852,26 +869,42 @@ impl ConversionVerifier {
     /// pins. The returned conversion executes with exactly
     /// the quoted `computed_y` and fee.
     ///
+    /// Expired quotes never accumulate (#13864): every entry
+    /// past `quote_expires_at` is evicted, and an expired
+    /// quote under verification is evicted as it is refused
+    /// — the typed [`FailedPreSubmit::QuoteExpired`] keeps
+    /// its contract. Takes `&mut self` for that eviction;
+    /// verification itself still never commits usage.
+    ///
     /// # Errors
     ///
     /// Returns the typed [`FailedPreSubmit`] for the first
     /// check the submission fails; every variant is a
     /// pre-flight refusal with zero ledger writes.
     pub fn verify_quoted(
-        &self,
+        &mut self,
         control: &impl ConversionControl,
         submission: &ConversionSubmission,
         quote_id: u128,
     ) -> Result<VerifiedQuotedConversion, FailedPreSubmit> {
+        // #13864: remember whether the quote under
+        // verification is already dead, sweep the book,
+        // then refuse the dead quote with the typed expiry
+        // error — evicted as refused, contract preserved.
+        let expired_at = match self.quotes.get(&quote_id) {
+            Some(quote) if quote.is_expired(submission.now) => Some(quote.quote_expires_at),
+            _ => None,
+        };
+        self.evict_expired(submission.now);
+        if let Some(quote_expires_at) = expired_at {
+            return Err(FailedPreSubmit::QuoteExpired { quote_expires_at });
+        }
         let quote = self
             .quotes
             .get(&quote_id)
             .ok_or(FailedPreSubmit::UnknownQuote)?;
-        if quote.is_expired(submission.now) {
-            return Err(FailedPreSubmit::QuoteExpired {
-                quote_expires_at: quote.quote_expires_at,
-            });
-        }
+        // The sweep above removed every expired entry, so a
+        // quote found here is live by construction.
         if quote.authorisation_id != submission.authorisation_id || quote.x != submission.amount {
             return Err(FailedPreSubmit::QuoteMismatch);
         }
@@ -1418,7 +1451,7 @@ mod tests {
     /// variant, FAILED_PRE_SUBMIT disposition, usage
     /// untouched, and zero ledger writes.
     fn assert_quoted_pre_submit(
-        verifier: &ConversionVerifier,
+        verifier: &mut ConversionVerifier,
         control: &impl ConversionControl,
         submission: &ConversionSubmission,
         quote_id: u128,
@@ -1541,7 +1574,7 @@ mod tests {
         let mut submission = valid_submission();
         submission.now = quote.quote_expires_at;
         assert_quoted_pre_submit(
-            &verifier,
+            &mut verifier,
             &eligible_control(),
             &submission,
             44,
@@ -1567,7 +1600,7 @@ mod tests {
             reason: None,
         })];
         assert_quoted_pre_submit(
-            &verifier,
+            &mut verifier,
             &eligible_control(),
             &submission,
             45,
@@ -1598,7 +1631,7 @@ mod tests {
         let mut submission = valid_submission();
         submission.authorisations = vec![v1, v2_event];
         assert_quoted_pre_submit(
-            &verifier,
+            &mut verifier,
             &eligible_control(),
             &submission,
             46,
@@ -1615,7 +1648,7 @@ mod tests {
         // reference an issued quote; an id this gateway never
         // issued binds to nothing.
         assert_quoted_pre_submit(
-            &ConversionVerifier::new(),
+            &mut ConversionVerifier::new(),
             &eligible_control(),
             &valid_submission(),
             999,
@@ -1633,7 +1666,7 @@ mod tests {
         let mut submission = valid_submission();
         submission.amount = 200;
         assert_quoted_pre_submit(
-            &verifier,
+            &mut verifier,
             &eligible_control(),
             &submission,
             48,
@@ -1666,5 +1699,48 @@ mod tests {
         assert_eq!(executed.remaining_volume, 1_000_000 - 100);
         // Execution verification alone commits no usage.
         assert_eq!(verifier.usage().used_volume(&super::super::issuer_id(&lp_key()), 7), 0);
+    }
+
+    #[test]
+    fn expired_quotes_are_evicted_on_issuance_not_accumulated() {
+        // Oracle: #13864 acceptance — expired quotes must
+        // not accumulate: issuing past their expiry sweeps
+        // the dead entries, so the book holds only the new
+        // live quote.
+        let mut verifier = ConversionVerifier::new();
+        issue_valid_quote(&mut verifier, 60);
+        issue_valid_quote(&mut verifier, 61);
+        assert_eq!(verifier.quotes.len(), 2);
+        let mut submission = valid_submission();
+        submission.now += QUOTE_LIFETIME_SECS;
+        let quote = verifier
+            .issue_quote(&eligible_control(), &submission, 62, 0, 0)
+            .unwrap();
+        assert_eq!(verifier.quote(60), None);
+        assert_eq!(verifier.quote(61), None);
+        assert_eq!(verifier.quote(62), Some(&quote));
+        assert_eq!(verifier.quotes.len(), 1);
+    }
+
+    #[test]
+    fn expired_quote_is_evicted_as_it_is_refused() {
+        // Oracle: #13864 acceptance — verifying under an
+        // expired quote keeps the typed QuoteExpired refusal
+        // and evicts the dead entry instead of leaving it in
+        // the book.
+        let mut verifier = ConversionVerifier::new();
+        let quote = issue_valid_quote(&mut verifier, 63);
+        let mut submission = valid_submission();
+        submission.now = quote.quote_expires_at;
+        assert_quoted_pre_submit(
+            &mut verifier,
+            &eligible_control(),
+            &submission,
+            63,
+            &FailedPreSubmit::QuoteExpired {
+                quote_expires_at: quote.quote_expires_at,
+            },
+        );
+        assert_eq!(verifier.quote(63), None);
     }
 }
