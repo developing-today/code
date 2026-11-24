@@ -78,6 +78,18 @@ The rules for them:
 - Do not modify files after initial creation, except appending during active rollout (see above). A later finding goes in a new dated section or file that links back.
 - `transcript.txt` is never edited, not even its whitespace. Notes are immutable once written. Corrections are new files: a new note, receipt or decision.
 
+### Lane work product
+
+Work is split into lanes, and a lane's work product is a dated record like any other. Reports and one-offs — and everything gathered or generated while producing them — land in this repository as a normal, expected class of record, not as an exception and not only in a summary handed back to whoever asked.
+
+- **One dated folder per piece of work.** `doc/<UTC>_<kind>_<name>/`, named for the issue, topic or lane that produced it. The usual kind is `report`; a more specific kind (`audit`, `research`, `design`) is fine when it fits better.
+- **The folder carries everything.** The main report sits in the folder alongside all of its supplements: the data gathered, the files downloaded and the documents generated along the way, in whatever form they were gathered. A summary is never the only record — a lane's work is not thrown away into a summary.
+- **The index link lives outside the folder.** Add a line for the record to [`README.md`](README.md), or to a per-area index that `README.md` points to, in the same PR. The index is how the record is found; a folder with no index link outside it is not landed.
+- **Landing is automatic.** A lane lands its work product as a pull request as part of finishing the work. No separate request or reminder is needed, and the work is not done until its record has landed, or been handed off with the branch named.
+- **Size.** Smaller files are always fine, even hundreds of them. Large files are kept too, for now; moving large material to a separate repository with an R2 packing bucket is possible future work, not a reason to drop material today.
+- **Work in the open.** Anything that is not literally a live credential value belongs in the repository. Doubtful material that is not a live credential value is included. Revoked or never-authorised test certificates and keys may be included, with their status labelled.
+- **The one carve-out.** Live credential values — API keys, passwords, tokens and in-use private keys — are never committed. Refer to a credential by name only.
+
 ### Maintained control documents
 
 Maintained control documents are:
@@ -130,4 +142,5 @@ docs/
 
 ## Change log
 
+- 2026-11-24: Added lane work product as a dated-record class: reports and one-offs land in the repository by pull request, with their gathered material in the folder, an index link outside it, the size and openness rules, and the live-credential carve-out.
 - 2026-10-21: Split dated historical records from maintained control documents. The older paths here say `docs/`, which is a symlink to `doc/`; both reach the same folders. Rules from earlier versions are unchanged.
