@@ -4359,15 +4359,23 @@ describe("the edge does the core itself", () => {
       ((await (await w.browse("/console/health", { token: null })).json()) as { refused: string[] }).refused;
     w.stored.set("away", {
       kinds: { "pr.merge": w.now.t + 10 * 60_000, "ask.send": w.now.t - 1, "issue.rank": "soon" },
-      reads: { prs: w.now.t + 365 * 24 * 3600_000, board: w.now.t - 1 },
+      // A year was written down for one, and the longest there can be for another.
+      reads: { prs: w.now.t + 365 * 24 * 3600_000, priorities: w.now.t + 65 * 60_000, board: w.now.t - 1 },
     });
-    w.edge.now = w.makeEdge();
-    expect(await health()).toEqual(["pr.merge", "read.prs"]);
+    // Each time by an object that has just started, as in service. The year is not believed
+    // by any of them: one that cut it down to the longest would cut it down afresh each time,
+    // and it would never come.
+    const fresh = async () => {
+      w.edge.now = w.makeEdge();
+      return health();
+    };
+    expect(await fresh()).toEqual(["pr.merge", "read.priorities"]);
     w.now.t += 11 * 60_000;
-    expect(await health()).toEqual(["read.prs"]);
-    // A year was written down; an hour is the longest it can stand.
-    w.now.t += 50 * 60_000;
-    expect(await health()).toEqual([]);
+    expect(await fresh()).toEqual(["read.priorities"]);
+    w.now.t += 53 * 60_000;
+    expect(await fresh()).toEqual(["read.priorities"]);
+    w.now.t += 60_000 + 1;
+    expect(await fresh()).toEqual([]);
     // Storage that cannot keep it does not stop the hand-over itself.
     w.storeFails.add("away");
     w.ghRefuses.push((method, url) => method === "PUT" && url.includes("/merge"));

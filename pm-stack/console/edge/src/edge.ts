@@ -925,12 +925,16 @@ export class Edge {
         | { kinds?: Record<string, unknown>; reads?: Record<string, unknown> }
         | undefined;
       const now = this.now();
-      // Only what still stands, and never for longer than it could
-      // have been set for.
+      // Only what still stands, and nothing further off than it could
+      // have been set for (the longest is GitHub's own wait): a time
+      // like that is not one this side wrote, and is not believed at
+      // all. (Cut down to the longest instead, as it once was, it was
+      // cut down afresh by every object that started, each from its
+      // own now, and never came.)
       const still = (from: Record<string, unknown> | undefined, into: Map<string, number>) => {
         for (const [name, until] of Object.entries(from ?? {})) {
-          if (typeof until === "number" && until > now && !into.has(name)) {
-            into.set(name, Math.min(until, now + REFUSED_FOR_MS));
+          if (typeof until === "number" && until > now && until <= now + QUIET_MOST_MS && !into.has(name)) {
+            into.set(name, until);
           }
         }
       };

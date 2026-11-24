@@ -931,8 +931,16 @@ off than GitHub can set is not kept to at all. Both are tested across
 several objects, which is what the first test of the wait's bound did
 not do.
 
+The same fault had been in the edge since step 3, in what it reads
+back of being turned away (which actions and which lists are a
+machine's for now): a time further off than could have been set was
+cut down to an hour from now, and its test asked one object and then
+moved the clock. Asked of a new object each time, as in service, a
+year written down stood for a year. It is not believed at all now, and
+the test starts a new object for every look.
+
 **Checked.** The release's test is run again with a new object for
-every request; 18 more single faults planted (the gate, the queue
-store's deadline, the clock in health, the wait's bound), all failing
-a test; the real-runtime check passes with the clock said by health
+every request; 20 more single faults planted (the gate, the queue
+store's deadline, the clock in health, the two bounds), all failing a
+test; the real-runtime check passes with the clock said by health
 (42 checks).
