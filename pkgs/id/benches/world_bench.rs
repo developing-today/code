@@ -54,7 +54,9 @@
 //!   and the victim key's admissions and waits); setting
 //!   `ID_BENCH_GUEST_BURN_CONCURRENCY` runs the workload's guests on a
 //!   dedicated budget of that size instead of the shared default, for
-//!   sizing experiments.
+//!   sizing experiments. Setting `ID_BENCH_PERSISTENT_SPINNERS=1` instead
+//!   runs bounded, returning guest updates in persistent spinner worlds,
+//!   separating burn/runtime contention from spawn/shutdown churn.
 //! - `stress_gen` — the #6304 scale & performance stress program's
 //!   seeded world generator (#13083): materializes a world directory
 //!   set for a scale tier (quick smoke, 1x, 10x, 100x — the design's
@@ -724,6 +726,34 @@ const FUEL_SPIN_WAT: &str = r#"
       (func (export "plaza_out_len") (result i32) (i32.const 0)))
 "#;
 
+/// Persistent-profile guest: each update burns a bounded amount of fuel and
+/// returns normally, so the same instance can spin repeatedly without the
+/// spawn/shutdown cycle required by the trapping fixture.
+fn persistent_fuel_spin_wat(fuel: u64) -> String {
+    // The loop body costs several Wasm instructions. Leave ample headroom so
+    // this diagnostic fixture returns on engines with slightly different
+    // fuel accounting rather than turning the instance into a one-shot trap.
+    let iterations = (fuel / 16).max(1);
+    format!(
+        r#"(module
+          (memory (export "memory") 1 1)
+          (func (export "plaza_alloc") (param i32) (result i32) (i32.const 0))
+          (func (export "plaza_free") (param i32 i32))
+          (func (export "plaza_init") (param i64) (result i32) (i32.const 0))
+          (func (export "plaza_update") (param i32 i32 i32 i32) (result i32)
+            (local $left i64)
+            (i64.const {iterations}) (local.set $left)
+            (block $done
+              (loop $again
+                (local.get $left) (i64.eqz) (br_if $done)
+                (local.get $left) (i64.const 1) (i64.sub) (local.set $left)
+                (br $again)))
+            (i32.const 0))
+          (func (export "plaza_view") (param i32) (result i32) (i32.const 0))
+          (func (export "plaza_out_len") (result i32) (i32.const 0)))"#
+    )
+}
+
 #[derive(Clone, Copy)]
 struct FuelSpinConfig {
     /// Duration of each phase (calm, then spinning).
@@ -734,6 +764,8 @@ struct FuelSpinConfig {
     spinners: usize,
     /// Wasm fuel one hostile update may spend before it traps.
     spin_fuel: u64,
+    /// Reuse one spinner instance per worker to remove world lifecycle churn.
+    persistent_spinners: bool,
 }
 
 impl FuelSpinConfig {
@@ -745,6 +777,7 @@ impl FuelSpinConfig {
             // thread is occupied by a fuel-limited guest call.
             spinners: worker_threads.saturating_sub(1).max(1),
             spin_fuel: 20_000_000,
+            persistent_spinners: std::env::var_os("ID_BENCH_PERSISTENT_SPINNERS").is_some(),
         }
     }
 
@@ -754,6 +787,7 @@ impl FuelSpinConfig {
             commands_per_second: 100,
             spinners: worker_threads.saturating_sub(1).clamp(1, 4),
             spin_fuel: 2_000_000,
+            persistent_spinners: std::env::var_os("ID_BENCH_PERSISTENT_SPINNERS").is_some(),
         }
     }
 
@@ -891,6 +925,38 @@ async fn spin_worlds(
     Ok(spins)
 }
 
+/// Reuse one actor and guest per worker. Unlike `spin_worlds`, each bounded
+/// update returns normally, separating burn/runtime contention from the
+/// spawn/shutdown churn of the trapping workload.
+async fn spin_persistent_world(
+    sandbox: Sandbox,
+    stop: Arc<AtomicBool>,
+    hard_deadline: Instant,
+    worker: usize,
+) -> Result<u64> {
+    let mut guest = sandbox.instantiate(0)?;
+    guest.set_charge_key(format!("fuel-spin-{worker}"));
+    if let Some(budget) = bench_burn_budget() {
+        guest.set_burn_budget(budget);
+    }
+    let world = spawn_guest_world(
+        &format!("fuel-spin-persistent-{worker}"),
+        "bench-spinner",
+        Box::new(guest),
+    )?;
+    let mut spins = 0u64;
+    while !stop.load(Ordering::Relaxed) && Instant::now() < hard_deadline {
+        world
+            .handle
+            .input(world.token.clone(), b"bounded persistent spin".to_vec())
+            .await
+            .context("persistent fuel-spin guest update failed")?;
+        spins += 1;
+    }
+    let _ = world.handle.shutdown().await;
+    Ok(spins)
+}
+
 /// Submit `ticks` victim inputs on absolute deadlines. Each sample is the
 /// triple the `many_worlds` driver records — (deadline-to-acknowledgement,
 /// wake lateness, input acknowledgement wait) — so a late acknowledgement
@@ -934,7 +1000,20 @@ async fn run_spinning_phase(
     victim: &BenchWorld,
     config: FuelSpinConfig,
 ) -> Result<(Vec<(Duration, Duration, Duration)>, u64)> {
-    let sandbox = fuel_spin_sandbox(config.spin_fuel)?;
+    let sandbox = if config.persistent_spinners {
+        let wasm = wat::parse_str(&persistent_fuel_spin_wat(config.spin_fuel))
+            .context("parse persistent fuel-spin WAT fixture")?;
+        Sandbox::compile(
+            &wasm,
+            SandboxLimits {
+                fuel: config.spin_fuel,
+                ..SandboxLimits::default()
+            },
+        )
+        .context("compile persistent fuel-spin guest")?
+    } else {
+        fuel_spin_sandbox(config.spin_fuel)?
+    };
     let stop = Arc::new(AtomicBool::new(false));
     let phase = Duration::from_millis(config.phase_millis);
     // The stop flag ends a healthy run; the hard deadline only bounds a
@@ -944,7 +1023,11 @@ async fn run_spinning_phase(
     for worker in 0..config.spinners {
         let sandbox = sandbox.clone();
         let stop = Arc::clone(&stop);
-        spinners.spawn(spin_worlds(sandbox, stop, hard_deadline, worker));
+        if config.persistent_spinners {
+            spinners.spawn(spin_persistent_world(sandbox, stop, hard_deadline, worker));
+        } else {
+            spinners.spawn(spin_worlds(sandbox, stop, hard_deadline, worker));
+        }
     }
 
     let start = Instant::now() + Duration::from_millis(100);
@@ -1046,7 +1129,8 @@ async fn bench_fuel_spin_isolation(worker_threads: usize, quick: bool) -> Result
     };
     let target_met = ratio <= TARGET_P99_RATIO;
     println!(
-        "bench fuel_spin_isolation unit=ms_per_command median={spinning_p50:.3} min={spinning_min:.3} reps=1 victim_p99_ms_calm={calm_p99:.3} victim_p99_ms_spinning={spinning_p99:.3} ratio={ratio:.3} target_ratio=1.10 target_met={target_met} calm_samples={} spinning_samples={} spins={spins} spinners={} phase_ms={} commands_per_second={} spin_fuel={} calm_elapsed_secs={calm_elapsed:.3} spinning_elapsed_secs={spinning_elapsed:.3}",
+        "bench fuel_spin_isolation unit=ms_per_command median={spinning_p50:.3} min={spinning_min:.3} reps=1 victim_p99_ms_calm={calm_p99:.3} victim_p99_ms_spinning={spinning_p99:.3} ratio={ratio:.3} target_ratio=1.10 target_met={target_met} persistent_spinners={} calm_samples={} spinning_samples={} spins={spins} spinners={} phase_ms={} commands_per_second={} spin_fuel={} calm_elapsed_secs={calm_elapsed:.3} spinning_elapsed_secs={spinning_elapsed:.3}",
+        config.persistent_spinners,
         calm.len(),
         spinning.len(),
         config.spinners,
@@ -1076,7 +1160,8 @@ async fn bench_fuel_spin_isolation(worker_threads: usize, quick: bool) -> Result
     // calls ever had to wait for a burn permit.
     let burn_snapshot = report_burn_budget().snapshot();
     println!(
-        "profile fuel_spin_isolation calm_wake_p99_ms={:.3} calm_input_ack_p99_ms={:.3} spinning_wake_p99_ms={:.3} spinning_input_ack_p99_ms={:.3} calm_journal_appends={} calm_journal_append_mean_us={} calm_journal_append_p99_us={} spinning_journal_appends={} spinning_journal_append_mean_us={} spinning_journal_append_p99_us={} calm_command_mean_us={} calm_command_p99_us={} spinning_command_mean_us={} spinning_command_p99_us={} victim_queue_depth_max={} victim_checkpoints={} guest_burn_max_concurrent={} guest_burn_in_flight_max={} victim_burn_admitted={} victim_burn_waits={}",
+        "profile fuel_spin_isolation persistent_spinners={} calm_wake_p99_ms={:.3} calm_input_ack_p99_ms={:.3} spinning_wake_p99_ms={:.3} spinning_input_ack_p99_ms={:.3} calm_journal_appends={} calm_journal_append_mean_us={} calm_journal_append_p99_us={} spinning_journal_appends={} spinning_journal_append_mean_us={} spinning_journal_append_p99_us={} calm_command_mean_us={} calm_command_p99_us={} spinning_command_mean_us={} spinning_command_p99_us={} victim_queue_depth_max={} victim_checkpoints={} guest_burn_max_concurrent={} guest_burn_in_flight_max={} victim_burn_admitted={} victim_burn_waits={}",
+        config.persistent_spinners,
         percentile(&calm_wake, 0.99),
         percentile(&calm_ack, 0.99),
         percentile(&spinning_wake, 0.99),
