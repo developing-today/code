@@ -20,6 +20,13 @@
 - [The gh passthrough](concepts/gh.md)
 - [Dispatch and dispatch-test](concepts/dispatch.md)
 
+- [The hosted edition: fleet-hosted](concepts/fleet-hosted.md)
+- [The queue watchdog: queue-transport-alert](concepts/queue-transport-alert.md)
+- [The dispatch-test jobs store: fleet-dispatch-jobs](concepts/dispatch-jobs-store.md)
+- [Temporary builds and custom connections](concepts/temporary-builds.md)
+- [The central compile coordinator](concepts/compile-coordinator.md)
+- [Cross-links: automation, Cloudflare pipes and DNS](concepts/lab-cross-links.md)
+
 - [Built-in commands](reference/builtins.md)
 - [fleet queue: core verbs](reference/queue-core.md)
 - [fleet queue: lifecycle verbs](reference/queue-lifecycle.md)
