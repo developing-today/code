@@ -29,6 +29,11 @@
     "message.send",
     // A revocation done late is still the right act (#14374).
     "agent.revoke",
+    // Taking back unused enroll tokens, the same (#14376). The
+    // provisioning mints are NOT here: their answer is a secret shown
+    // once, so they are "now" — done with a connection or not at all,
+    // never kept on this device to be done late.
+    "agent.revoke-enroll",
     "intake.send",
   ]);
   /** Actions on something that may have changed by the time they are
@@ -90,6 +95,8 @@
         const name = typeof a.name === "string" ? a.name : "";
         return surface === "" || name === "" ? null : `agent:${surface}:${name}`;
       }
+      case "agent.revoke-enroll":
+        return of("enroll", a.agent);
       default:
         return null;
     }
@@ -149,6 +156,12 @@
         return `Message to ${Array.isArray(a.to) ? a.to.join(", ") : a.to}${quoted(a.text)}`;
       case "agent.revoke":
         return `Revoke ${a.name ?? "an agent"}'s ${a.surface === "notes" ? "notes tokens" : "bridge credentials"}`;
+      case "agent.revoke-enroll":
+        return `Take back ${a.agent ?? "an agent"}'s unused enroll tokens`;
+      case "agent.mint-enroll":
+        return `Mint an enroll token for ${a.agent ?? "a new agent"}`;
+      case "agent.mint-credential":
+        return `Mint a credential for ${a.agent ?? "an agent"}`;
       case "unit.act":
         return `${a.action} ${a.unit}`;
       // The platform's own second half of something it filed itself:

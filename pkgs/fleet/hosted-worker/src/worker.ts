@@ -80,8 +80,7 @@ function buildDeps(env: HostedEnv): AuthDeps {
   // and credential the console's edge Worker uses, so the PM service
   // API and the console share one send path. Absent the binding or
   // the credential, the door fails closed (503) per request.
-  const bridge =
-    config.bridge && env.BRIDGE ? new BindingBridgeSurface(env.BRIDGE, config.bridge.token) : undefined;
+  const bridge = config.bridge && env.BRIDGE ? new BindingBridgeSurface(env.BRIDGE, config.bridge.token) : undefined;
   return {
     config,
     sessions,

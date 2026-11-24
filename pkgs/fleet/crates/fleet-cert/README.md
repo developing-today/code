@@ -25,8 +25,8 @@ Implements the fleet architecture spec v0.3
 - `fleet cert ocsp sign|inspect|test` — RFC 6960 responses from
   issuer bundles: direct issuer signing or a delegated responder
   certificate (leaf profile `ocsp-responder`: EKU id-kp-OCSPSigning
-  + NoCheck, 30d default), verified against the crate chain code.
-  This is the §4.3 functional responder core; it embeds no OCSP URL.
+  - NoCheck, 30d default), verified against the crate chain code.
+    This is the §4.3 functional responder core; it embeds no OCSP URL.
 - `fleet cert bundle inspect`, `profile list|show`,
   `algorithms list|describe`, `explain`, `doctor`.
 - Text and `--json` output; fleet exit-code contract (0/2/1).

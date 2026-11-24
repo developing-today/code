@@ -27,7 +27,7 @@ import {
   verifyJwt,
 } from "../src/auth.ts";
 import { type Config, ConfigError, type Issuer, readConfig } from "../src/config.ts";
-import { HOLDABLE } from "../src/edge-proto.ts";
+import { HOLDABLE, subjectOf } from "../src/edge-proto.ts";
 import { manageable, OpError, Ops, parseUnitFiles, parseUnits, type Run, triagePacket } from "../src/ops.ts";
 import { assetLinks, type Deps, handle, releaseSaid } from "../src/server.ts";
 
@@ -743,7 +743,9 @@ describe("operations", () => {
   });
 
   test("the pipeline read carries the owner's filters as the bridge's own flags, and checks them first", async () => {
-    const rows = [{ surface: "fleet", kind: "command", sender_addr: "agent:felix", receiver: "agent:archer", body: "do it" }];
+    const rows = [
+      { surface: "fleet", kind: "command", sender_addr: "agent:felix", receiver: "agent:archer", body: "do it" },
+    ];
     const r = recorder(() => JSON.stringify({ messages: rows }));
     const ops = new Ops(CFG, r.run);
     const got = await ops.pipelineFeed(
@@ -751,8 +753,20 @@ describe("operations", () => {
     );
     expect(got).toEqual(rows);
     expect(r.calls[0].argv).toEqual([
-      "fleet", "bridge", "pipeline", "--order", "desc",
-      "--kind", "command", "--surface", "fleet", "--sender", "felix", "--unread", "--limit", "25",
+      "fleet",
+      "bridge",
+      "pipeline",
+      "--order",
+      "desc",
+      "--kind",
+      "command",
+      "--surface",
+      "fleet",
+      "--sender",
+      "felix",
+      "--unread",
+      "--limit",
+      "25",
     ]);
     // A filter the bridge has no such value for is refused here, and
     // nothing is run for it.
@@ -776,14 +790,38 @@ describe("operations", () => {
       created: string;
       revoked_at: string | null;
     }[] = [
-      { agent: "felix", state: "active", scopes: ["inbox", "send"], addr: null, credentials: 1, live: 1, created: "2026-11-24T00:00:00Z", revoked_at: null },
+      {
+        agent: "felix",
+        state: "active",
+        scopes: ["inbox", "send"],
+        addr: null,
+        credentials: 1,
+        live: 1,
+        created: "2026-11-24T00:00:00Z",
+        revoked_at: null,
+      },
     ];
     const r = recorder((argv) => {
       if (argv[2] === "directory") {
         return JSON.stringify({
           agents: [
-            { surface: "fleet", name: "felix", groups: ["muse"], presence: "last_seen", last_seen: "2026-11-24T01:00:00Z", unread: 3 },
-            { surface: "notes", name: "muse/scout", identity: "muse/scout", scopes: { can_send: true, can_inbox: false }, presence: "none", first_seen: "2026-11-24T00:00:00Z", last_seen: null },
+            {
+              surface: "fleet",
+              name: "felix",
+              groups: ["muse"],
+              presence: "last_seen",
+              last_seen: "2026-11-24T01:00:00Z",
+              unread: 3,
+            },
+            {
+              surface: "notes",
+              name: "muse/scout",
+              identity: "muse/scout",
+              scopes: { can_send: true, can_inbox: false },
+              presence: "none",
+              first_seen: "2026-11-24T00:00:00Z",
+              last_seen: null,
+            },
           ],
         });
       }
@@ -832,7 +870,16 @@ describe("operations", () => {
     expect(done.revoked).toBe(1);
     expect(r.calls.at(-1)?.argv).toEqual(["fleet", "bridge", "revoke", "--agent", "felix"]);
     credentialState = [
-      { agent: "felix", state: "revoked", scopes: [], addr: null, credentials: 1, live: 0, created: "2026-11-24T00:00:00Z", revoked_at: "2026-11-24T02:00:00Z" },
+      {
+        agent: "felix",
+        state: "revoked",
+        scopes: [],
+        addr: null,
+        credentials: 1,
+        live: 0,
+        created: "2026-11-24T00:00:00Z",
+        revoked_at: "2026-11-24T02:00:00Z",
+      },
     ];
     const after = (await ops.directory()) as { name: string; credential: { state: string } | null }[];
     expect(after.find((a) => a.name === "felix")?.credential?.state).toBe("revoked");
@@ -843,6 +890,156 @@ describe("operations", () => {
     const calls = r.calls.length;
     await expect(table["agent.revoke"].run({ surface: "smoke-signal", name: "felix" })).rejects.toThrow(OpError);
     expect(r.calls.length).toBe(calls);
+  });
+
+  test("provisioning: a mint's value reaches the caller once and is kept nowhere", async () => {
+    // The bridge's answers, as fixtures: the values below are made up
+    // for this test, as everywhere in this suite.
+    const ENROLL_VALUE = "enroll-token-value-fixture";
+    const CRED_VALUE = "credential-value-fixture";
+    const r = recorder((argv) => {
+      if (argv[2] === "mint-enroll") {
+        return JSON.stringify({
+          agent: "new-1",
+          kind: "muse",
+          groups: ["muse"],
+          notes_identity: "muse/new-1",
+          expires_at: "2026-11-25T00:00:00Z",
+          bootstrap_token: ENROLL_VALUE,
+        });
+      }
+      if (argv[2] === "enroll-tokens") {
+        return JSON.stringify({
+          enroll_tokens: [
+            {
+              agent: "new-1",
+              kind: "muse",
+              groups: ["muse"],
+              notes_identity: "muse/new-1",
+              created: "2026-11-24T00:00:00Z",
+              expires_at: "2026-11-25T00:00:00Z",
+              used_at: null,
+              revoked_at: null,
+              state: "pending",
+            },
+          ],
+        });
+      }
+      if (argv[2] === "revoke-enroll") return JSON.stringify({ agent: "new-1", revoked: 1 });
+      if (argv[2] === "mint-credential") {
+        return JSON.stringify({
+          agent: "pm-stack",
+          scopes: ["send", "read"],
+          addr: "service:pm-stack",
+          credential: CRED_VALUE,
+        });
+      }
+      return "";
+    });
+    const ops = new Ops(CFG, r.run);
+    const table = actions(ops, {} as never);
+
+    // The enroll mint: the binding travels as flags, and the value
+    // comes back to the caller — the one screen that shows it.
+    const mint = (await table["agent.mint-enroll"].run({
+      agent: "new-1",
+      kind: "muse",
+      groups: ["muse"],
+      notesIdentity: "muse/new-1",
+      ttlSeconds: 3600,
+    })) as { bootstrap_token: string; expires_at: string };
+    expect(mint.bootstrap_token).toBe(ENROLL_VALUE);
+    expect(mint.expires_at).toBe("2026-11-25T00:00:00Z");
+    expect(r.calls[0].argv).toEqual([
+      "fleet",
+      "bridge",
+      "mint-enroll",
+      "--agent",
+      "new-1",
+      "--kind",
+      "muse",
+      "--groups",
+      "muse",
+      "--notes-identity",
+      "muse/new-1",
+      "--ttl",
+      "3600",
+    ]);
+    // The audit record keeps the binding and nothing of the value,
+    // even when the value is handed to it in the args.
+    expect(
+      table["agent.mint-enroll"].audit({
+        agent: "new-1",
+        kind: "muse",
+        groups: ["muse"],
+        notesIdentity: "muse/new-1",
+        ttlSeconds: 3600,
+        bootstrap_token: ENROLL_VALUE,
+      }),
+    ).toEqual({ agent: "new-1", kind: "muse", groups: ["muse"], notesIdentity: "muse/new-1", ttlSeconds: 3600 });
+    // A mint is never held to be done late: its answer is the secret.
+    expect(HOLDABLE.has("agent.mint-enroll")).toBe(false);
+    expect(HOLDABLE.has("agent.mint-credential")).toBe(false);
+
+    // After the mint, nothing the console can read holds the value:
+    // the state list is state only, and no call ever carried it.
+    const listed = await ops.enrollTokens();
+    expect(JSON.stringify(listed)).not.toContain(ENROLL_VALUE);
+    for (const call of r.calls) {
+      expect(JSON.stringify(call.argv)).not.toContain(ENROLL_VALUE);
+      expect(call.stdin ?? "").not.toContain(ENROLL_VALUE);
+    }
+
+    // The credential mint: same shape, scopes and the service binding
+    // checked here first.
+    const cred = (await table["agent.mint-credential"].run({
+      agent: "pm-stack",
+      scopes: ["send", "read"],
+      addr: "service:pm-stack",
+    })) as { credential: string };
+    expect(cred.credential).toBe(CRED_VALUE);
+    expect(r.calls.at(-1)?.argv).toEqual([
+      "fleet",
+      "bridge",
+      "mint-credential",
+      "--agent",
+      "pm-stack",
+      "--scopes",
+      "send,read",
+      "--addr",
+      "service:pm-stack",
+    ]);
+    expect(
+      table["agent.mint-credential"].audit({
+        agent: "pm-stack",
+        scopes: ["send", "read"],
+        addr: "service:pm-stack",
+        credential: CRED_VALUE,
+      }),
+    ).toEqual({
+      agent: "pm-stack",
+      scopes: ["send", "read"],
+      addr: "service:pm-stack",
+    });
+    const calls = r.calls.length;
+    await expect(table["agent.mint-credential"].run({ agent: "pm-stack", addr: "service:other" })).rejects.toThrow(
+      OpError,
+    );
+    await expect(table["agent.mint-credential"].run({ agent: "pm-stack", scopes: ["root"] })).rejects.toThrow(OpError);
+    await expect(table["agent.mint-enroll"].run({ agent: "a b" })).rejects.toThrow(OpError);
+    await expect(table["agent.mint-enroll"].run({ agent: "new-1", ttlSeconds: 30 })).rejects.toThrow(OpError);
+    expect(r.calls.length).toBe(calls);
+
+    // Taking tokens back is by agent name, carries no value, and —
+    // done late it is still the right act — is held for a machine.
+    const back = (await table["agent.revoke-enroll"].run({ agent: "new-1" })) as { revoked: number };
+    expect(back.revoked).toBe(1);
+    expect(r.calls.at(-1)?.argv).toEqual(["fleet", "bridge", "revoke-enroll", "--agent", "new-1"]);
+    expect(table["agent.revoke-enroll"].audit({ agent: "new-1", bootstrap_token: ENROLL_VALUE })).toEqual({
+      agent: "new-1",
+    });
+    expect(HOLDABLE.has("agent.revoke-enroll")).toBe(true);
+    expect(subjectOf("agent.revoke-enroll", { agent: "new-1" })).toBe("enroll:new-1");
   });
 
   test("ranking an issue adds the new rank before it removes the others", async () => {

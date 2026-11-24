@@ -4,6 +4,7 @@
 [global]
 excludes = [
   "pkgs/id/**",                                       # has its own treefmt/formatter
+  "infra/cluster/basement/templates/**",              # Helm templates are Go templates, not standalone YAML; Prettier cannot parse them
   "pkgs/dht/**",                                      # WIP package with syntax errors
   ".opencode/**",                                     # managed by opencode, may have permission issues
   "**/package-lock.json",                             # npm-generated; biome ignores it by default, so passing it in fails the run

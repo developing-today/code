@@ -2508,7 +2508,9 @@ export class Edge {
         // a machine's to read, and the request goes to the host
         // below as it did before.
         const mine = this.mine(cfg);
-        const bridgeRead = seg.length === 1 && (seg[0] === "messages" || seg[0] === "pipeline" || seg[0] === "directory");
+        const bridgeRead =
+          seg.length === 1 &&
+          (seg[0] === "messages" || seg[0] === "pipeline" || seg[0] === "directory" || seg[0] === "enroll-tokens");
         if (mine && !(bridgeRead && !this.bridgeReady())) {
           const from = this.outwardN;
           let read: unknown;

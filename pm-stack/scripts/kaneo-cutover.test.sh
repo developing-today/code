@@ -215,8 +215,8 @@ if out="$(run --mode rollback --dump-file "$TMP/k9.dump" --receipt "$TMP/r9.md" 
     fail "rollback dumps the target then replays into the source (log: $(cat "$TMP/fx/log" | tr '\n' ' '))"
   fi
   case "$out" in
-    *'ROLLBACK OK'*FENCED*) pass 'rollback passes when fenced and parity holds' ;;
-    *) fail "rollback passes when fenced and parity holds (got: $out)" ;;
+  *'ROLLBACK OK'*FENCED*) pass 'rollback passes when fenced and parity holds' ;;
+  *) fail "rollback passes when fenced and parity holds (got: $out)" ;;
   esac
   if grep -q 'ROLLBACK OK' "$TMP/r9.md" && grep -q '45 90500' "$TMP/r9.md" && ! grep -q 'target-db\|source-db' "$TMP/r9.md"; then
     pass 'rollback receipt records the fence, the counts, and no DSN'
