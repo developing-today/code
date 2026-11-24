@@ -19,7 +19,17 @@
 #   ~/.local/share/android-sdk/ndk/27.0.12077973); cc-rs derives
 #   `aarch64-linux-android<api>-clang` from it. Without it the target
 #   check fails at C compilation, not at Rust resolution.
+# Argument contract (#3352): this gate takes no arguments. Any
+# argument is a usage error naming the offender (exit 2), checked
+# before any subprocess, network, or file write.
 set -euo pipefail
+
+if [ "$#" -gt 0 ]; then
+  echo "usage: check-android.sh (takes no arguments)" >&2
+  echo "check-android.sh: usage error: unexpected argument: $1" >&2
+  exit 2
+fi
+
 cd "$(dirname "$0")/.."
 
 TOOLCHAIN="${RUSTUP_TOOLCHAIN:-1.99.1}"
