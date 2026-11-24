@@ -236,6 +236,9 @@ class ResearchWorkflowTests(unittest.TestCase):
         package = self.init()
         renamed = package.with_name("nonstandard-package")
         package.rename(renamed)
+        state = self.state(renamed)
+        state["id"] = renamed.name
+        self.write_state(renamed, state)
         result = self.cli("check", "--repo-root", self.root)
         self.assertEqual(
             [p["package"] for p in json.loads(result.stdout)["packages"]],
