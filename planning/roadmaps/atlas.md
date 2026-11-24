@@ -23,7 +23,7 @@ Written on 2026-11-23 from the programme's epics. A row's status is read from it
 
 | Title                                                      | Status  | Intent                                                                                                                       | Links                          |
 | ---------------------------------------------------------- | ------- | ---------------------------------------------------------------------------------------------------------------------------- | ------------------------------ |
-| Memory slice 1: a corpus registry and the memory connector | planned | Agent memory enters staging through a connector like any other corpus.                                                       | #8622                          |
+| Memory slice 1: a corpus registry and the memory connector | shipped | Agent memory enters staging through a connector like any other corpus.                                                       | #8622                          |
 | Memory slice 3: the query surface over MCP                 | planned | Agents query the one index through the mcpx namespace.                                                                       | #8625                          |
 | The projector for id                                       | planned | Versions, files and relations, then attestations and ingest runs, its operations, and view presets for publishing the graph. | #11182, #11183, #11184, #11185 |
 | Provenance registry                                        | planned | Where each chunk occurs, extracts addressed by their content, and vectors resolved across databases.                         | #3125                          |
