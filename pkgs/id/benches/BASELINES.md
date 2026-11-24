@@ -683,3 +683,53 @@ The deciding run for the criterion remains what it was: the
 unloaded laptop re-run of the many-worlds harness, still
 outstanding; a loaded number is not substituted for it.
 `baseline.txt` is untouched.
+
+## Journal ack modes, one full F11.8 run per mode (2026-11-24, slice #557)
+
+Command per mode (from `pkgs/id/`, via `~/tools/fleet-build-lock`):
+
+```sh
+cargo bench --bench world_bench -- --only many_worlds            # sync (default, no env var)
+ID_BENCH_MW_JOURNAL_ACK_MODE=batched cargo bench --bench world_bench -- --only many_worlds
+ID_BENCH_MW_JOURNAL_ACK_MODE=async cargo bench --bench world_bench -- --only many_worlds
+```
+
+Code state: branch `lane/code-i/22182-many-worlds-ack-modes` at
+`19ff780de3c` (bench-only selector `ID_BENCH_MW_JOURNAL_ACK_MODE` +
+`journal_ack_mode=` result token; no production default or durability
+change). Selector unit tests: `cargo test -p id --lib bench_ack_mode`,
+4/4 pass. `cargo clippy -p id --all-targets` fails on this venue for
+pre-existing reasons (rustc 1.99.0 rmeta vs clippy-driver 1.99.1
+E0514 across `id-core`; same failure with an isolated target dir);
+no new clippy signal from this slice.
+
+Venue honesty: the laptop was NOT idle — load average 9–13 across
+the three runs (shared fleet load). Per-mode conditions are stamped
+below. These numbers stand as the first per-mode reference under
+load, not the unloaded deciding run the criterion calls for.
+
+- sync (start load avg 12.33; end 11.07):
+
+```text
+bench many_worlds unit=ms_per_command median=8.507 min=3.900 reps=1 journal_ack_mode=sync p50_ms=8.507 p95_ms=11.072 p99_ms=12.055 wake_p50_ms=0.782 wake_p95_ms=1.486 wake_p99_ms=1.601 input_ack_p50_ms=7.776 input_ack_p95_ms=10.161 input_ack_p99_ms=11.087 target_p99_ms=50 target_met=true idle_worlds=1000 active_worlds=100 events_per_second=20 duration_secs=10 commands=20000 load_elapsed_secs=10.005 completed_events_per_second=1999.1 checkpoint_triggers=100 checkpoints=100 evicted=100 reopened=100
+```
+
+- batched (start load avg 11.07; end 9.24):
+
+```text
+bench many_worlds unit=ms_per_command median=1.304 min=0.495 reps=1 journal_ack_mode=batched p50_ms=1.304 p95_ms=2.015 p99_ms=8.220 wake_p50_ms=1.225 wake_p95_ms=1.919 wake_p99_ms=2.027 input_ack_p50_ms=0.064 input_ack_p95_ms=0.103 input_ack_p99_ms=6.940 target_p99_ms=50 target_met=true idle_worlds=1000 active_worlds=100 events_per_second=20 duration_secs=10 commands=20000 load_elapsed_secs=10.000 completed_events_per_second=2000.0 checkpoint_triggers=100 checkpoints=100 evicted=100 reopened=100
+```
+
+- async (start load avg 9.24; end 12.93):
+
+```text
+bench many_worlds unit=ms_per_command median=1.278 min=0.448 reps=1 journal_ack_mode=async p50_ms=1.278 p95_ms=2.014 p99_ms=3.178 wake_p50_ms=1.198 wake_p95_ms=1.904 wake_p99_ms=2.440 input_ack_p50_ms=0.064 input_ack_p95_ms=0.242 input_ack_p99_ms=1.142 target_p99_ms=50 target_met=true idle_worlds=1000 active_worlds=100 events_per_second=20 duration_secs=10 commands=20000 load_elapsed_secs=10.001 completed_events_per_second=1999.8 checkpoint_triggers=100 checkpoints=100 evicted=100 reopened=100
+```
+
+Verdict vs `target_met` (p99 <= 50 ms): all three modes
+`target_met=true` under the loaded venue. The relaxed modes cut the
+ack wait as expected (input_ack_p50 7.776 ms sync vs 0.064 ms
+batched/async); the remaining p99 in batched mode (8.220 ms) is the
+per-64 sync tail, in async mode (3.178 ms) scheduling/wake.
+`baseline.txt` is untouched — the deciding comparison stays the
+unloaded-laptop re-run.
