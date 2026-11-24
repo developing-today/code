@@ -61,7 +61,7 @@ function makeDO(env: Record<string, unknown> = {}) {
     storage: { sql: fakeSql() },
     blockConcurrencyWhile: async <T>(fn: () => Promise<T>): Promise<T> => fn(),
   };
-  return { doA: new UserDO(state as never, { BLOBS: bucket, ...env } as never), bucket };
+  return { doA: new UserDO(state as never, { BLOBS_US: bucket, ...env } as never), bucket };
 }
 
 function routed(path: string, init: RequestInit = {}): Request {

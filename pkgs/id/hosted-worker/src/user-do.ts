@@ -27,8 +27,8 @@ import {
   blobsBindingFor,
   parseBindingId,
   parseJurisdiction,
+  type BlobsEnv,
   type Jurisdiction,
-  type R2BucketLike,
 } from "./routing.ts";
 import { issueNonce, verifyProof, type AuthContext } from "./bridge-auth.ts";
 import { BRIDGE_SCHEMA, BridgeStore, DEFAULT_WAITING_LIMITS, type WaitingLimits } from "./bridge-store.ts";
@@ -63,8 +63,7 @@ interface DOState {
   storage: { sql: SqlStorage };
   blockConcurrencyWhile<T>(fn: () => Promise<T>): Promise<T>;
 }
-interface Env {
-  BLOBS?: R2BucketLike;
+interface Env extends BlobsEnv {
   /** Slice B (#9955): per-user storage ceiling in bytes, as a
    * string var. Absent/empty = no ceiling. A malformed value
    * fails writes closed (see ceilingBytes). */

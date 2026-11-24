@@ -25,9 +25,20 @@ new_sqlite_classes = ["UserDO"]
 tag = "v2"
 new_sqlite_classes = ["TenantOpsDO"]
 
-# Slice A of #3811 (#9954): content-addressed blob bytes. Local
-# emulation only — no production bucket is provisioned by this
-# config (account gates #2285 / #3403 stay untouched).
+# Slice A of #3811 (#9954) + #3401: content-addressed blob bytes,
+# one immutable bucket per supported jurisdiction. Local emulation
+# only — no production bucket is provisioned by this config (account
+# gates #2285 / #3403 stay untouched). The routing module picks the
+# binding strictly from the authoritative jurisdiction; a missing
+# binding fails closed.
 [[r2_buckets]]
-binding = "BLOBS"
-bucket_name = "id-hosted-blobs"
+binding = "BLOBS_US"
+bucket_name = "id-hosted-blobs-us"
+
+[[r2_buckets]]
+binding = "BLOBS_EU"
+bucket_name = "id-hosted-blobs-eu"
+
+[[r2_buckets]]
+binding = "BLOBS_FEDRAMP"
+bucket_name = "id-hosted-blobs-fedramp"
