@@ -40,6 +40,11 @@ and caches the result **indefinitely** (no TTL/eviction in v1).
   zero; estimated Turso cost avoided; D1 bytes per tenant vs
   quota) rendered as a report for #9098's economics prototype.
   Pure accumulator + renderer, fed by the read path (follow-on 4).
+- `src/admission.ts` — the D1 hot-cache admission policy (#13103,
+  #9134 design §3/§5): heat counters, heavy-query immediate
+  admission, per-tenant quotas (tier weights 1:4:16, 5% floor),
+  entry size cap, negative-result TTL, and the LRU eviction sweep.
+  Pure policy, not yet wired into the read path (follow-on 4).
 - `src/freshness.ts` — the D1 hot-cache freshness evaluator
   (#13101; design #9134 §1): pure per-class watermark/TTL rules
   with fail-safe degradation, plus the tenant watermark read seam.
