@@ -39,6 +39,7 @@ fleet-agent = { workspace = true, optional = true }
 # The cert domain (code#9157): PKI/X.509 roots, issuers, leaves,
 # chains and bundles over the fleet-cert library crate.
 fleet-cert = { workspace = true, optional = true }
+fleet-orgs = { workspace = true, optional = true }
 serde_json = { workspace = true }
 # The OpenCode session liveness probe (session_state.rs) only;
 # optional so the connect variant stays under the D7 size gate.
@@ -96,6 +97,7 @@ full = [
   "agent",
   "cert",
   "actions",
+  "orgs",
   "opencode-probe",
 ]
 # The serve variant's set, as one feature for the nix build.
@@ -177,6 +179,7 @@ agent = ["dep:fleet-agent"]
 # The cert domain: a working-seat PKI client surface, so full only —
 # never in serve (no daemon role) or connect (size gate).
 cert = ["dep:fleet-cert"]
+orgs = ["dep:fleet-orgs"]
 
 [dev-dependencies]
 # Property tests for the gh read classifier (AGENTS.md testing
