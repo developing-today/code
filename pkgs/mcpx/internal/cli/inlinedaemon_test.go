@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -159,6 +160,9 @@ func TestInlineDaemonNeverAnswersStillTimesOut(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "the in-process daemon did not answer") {
 		t.Fatalf("inlineDaemon(never answers) = %v, want the did-not-answer timeout error", err)
 	}
+	if !strings.Contains(err.Error(), "readiness probes") {
+		t.Fatalf("inlineDaemon timeout = %v, want the readiness probe count", err)
+	}
 	if elapsed := time.Since(start); elapsed < 700*time.Millisecond {
 		t.Fatalf("inlineDaemon gave up after %v, before the 800ms start timeout", elapsed)
 	}
@@ -167,6 +171,47 @@ func TestInlineDaemonNeverAnswersStillTimesOut(t *testing.T) {
 			_ = os.RemoveAll(dir)
 			t.Fatalf("inlineDaemon left its in-process daemon's directory %s behind after the timeout", dir)
 		}
+	}
+}
+
+// At an equal start budget, the poll interval controls how many readiness
+// probes run, and a long interval's final wait is capped by the remaining
+// budget rather than extending the timeout by the whole interval.
+func TestInlineDaemonPollIntervalChangesProbeCountAndBoundsLastWait(t *testing.T) {
+	counts := make([]int, 0, 2)
+	for _, interval := range []string{"100ms", "400ms"} {
+		t.Run(interval, func(t *testing.T) {
+			var probes int
+			orig := inlineDaemonPing
+			inlineDaemonPing = func(*Client, context.Context) bool {
+				probes++
+				return false
+			}
+			t.Cleanup(func() { inlineDaemonPing = orig })
+			a := inlineDaemonApp(t)
+			if err := a.Settings().SetRuntime("daemon.inlineStartTimeout", "800ms"); err != nil {
+				t.Fatal(err)
+			}
+			if err := a.Settings().SetRuntime("daemon.inlineStartPoll", interval); err != nil {
+				t.Fatal(err)
+			}
+			start := time.Now()
+			_, err := a.inlineDaemon(context.Background())
+			elapsed := time.Since(start)
+			if err == nil || !strings.Contains(err.Error(), fmt.Sprintf("after %d readiness probes", probes)) {
+				t.Fatalf("inlineDaemon() = %v after %d probes, want timeout diagnostic with that count", err, probes)
+			}
+			if elapsed > 1500*time.Millisecond {
+				t.Fatalf("inlineDaemon took %v with an 800ms start budget; final wait exceeded the deadline by too much", elapsed)
+			}
+			counts = append(counts, probes)
+		})
+	}
+	if len(counts) != 2 {
+		t.Fatalf("got probe counts %v, want both poll interval cases", counts)
+	}
+	if counts[0] <= counts[1] {
+		t.Fatalf("probe counts at equal start budget: 100ms=%d, 400ms=%d; shorter poll should run more probes", counts[0], counts[1])
 	}
 }
 

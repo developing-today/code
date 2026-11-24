@@ -198,6 +198,7 @@ var implementedEffectProbes = map[string]string{
 	"autostart.logTail":                  "TestAutostartLogTailBoundsTheFailureExcerptFromTheEnvironment",
 	"daemon.watchConfig":                 "TestDaemonWatchConfigPicksUpAHandEditFromTheEnvironment",
 	"daemon.inlineStartTimeout":          "TestDaemonInlineStartTimeoutBoundsTheInProcessStartFromTheEnvironment",
+	"daemon.inlineStartPoll":             "TestDaemonInlineStartPollIsAppliedToTheInlineReadinessLoop",
 	"daemon.probeTimeout":                "TestDaemonProbeTimeoutDecidesWhetherASiblingDaemonIsReportedFromTheEnvironment",
 	"daemon.warmTimeout":                 "TestDaemonWarmTimeoutBoundsTheStartupWarm",
 	"autostart.connectTimeout":           "TestAutostartConnectTimeoutBoundsTheWaitForADaemon",
@@ -440,6 +441,7 @@ var effectProbeFuncs = map[string]func(*testing.T){
 	"TestAutostartLogTailBoundsTheFailureExcerptFromTheEnvironment":                  TestAutostartLogTailBoundsTheFailureExcerptFromTheEnvironment,
 	"TestDaemonWatchConfigPicksUpAHandEditFromTheEnvironment":                        TestDaemonWatchConfigPicksUpAHandEditFromTheEnvironment,
 	"TestDaemonInlineStartTimeoutBoundsTheInProcessStartFromTheEnvironment":          TestDaemonInlineStartTimeoutBoundsTheInProcessStartFromTheEnvironment,
+	"TestDaemonInlineStartPollIsAppliedToTheInlineReadinessLoop":                     TestDaemonInlineStartPollIsAppliedToTheInlineReadinessLoop,
 	"TestDaemonProbeTimeoutDecidesWhetherASiblingDaemonIsReportedFromTheEnvironment": TestDaemonProbeTimeoutDecidesWhetherASiblingDaemonIsReportedFromTheEnvironment,
 	"TestDaemonWarmTimeoutBoundsTheStartupWarm":                                      TestDaemonWarmTimeoutBoundsTheStartupWarm,
 	"TestAutostartConnectTimeoutBoundsTheWaitForADaemon":                             TestAutostartConnectTimeoutBoundsTheWaitForADaemon,
@@ -3516,6 +3518,26 @@ func TestDaemonInlineStartTimeoutBoundsTheInProcessStartFromTheEnvironment(t *te
 	}
 	if !strings.Contains(out, "the in-process daemon did not answer") {
 		t.Fatalf("the failure should be the inline rung's expired start, got:\n%s", out)
+	}
+	if !strings.Contains(out, "readiness probes") {
+		t.Fatalf("the timeout diagnostic should include the readiness probe count, got:\n%s", out)
+	}
+}
+
+// TestDaemonInlineStartPollIsAppliedToTheInlineReadinessLoop is the named
+// effect probe for daemon.inlineStartPoll. The e2e path selects inline mode
+// and supplies the poll setting through the public environment interface;
+// the deterministic probe-count sensitivity at equal budgets is covered by
+// the CLI unit test, where readiness can be held false without timing races.
+func TestDaemonInlineStartPollIsAppliedToTheInlineReadinessLoop(t *testing.T) {
+	e := newEnv(t, oneServer)
+	e.setenv("MCPX_DAEMON_INLINE=always", "MCPX_DAEMON_INLINE_START_TIMEOUT=1ns", "MCPX_DAEMON_INLINE_START_POLL=1s")
+	out, err := e.try("ls")
+	if err == nil {
+		t.Fatalf("oracle: the 1ns inline start budget should expire before readiness; got:\n%s", out)
+	}
+	if !strings.Contains(out, "the in-process daemon did not answer after 0 readiness probes") {
+		t.Fatalf("inline start timeout should report the zero readiness probes before the deadline, got:\n%s", out)
 	}
 }
 
