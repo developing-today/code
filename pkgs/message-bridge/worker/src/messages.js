@@ -171,6 +171,17 @@ export const OAUTH_PENDING_GRACE = 600;
 // source can't keep the registry full; a real client registers once or twice.
 export const OAUTH_REG_PER_SOURCE = 10;
 
+/**
+ * What an inbox reader sees of one note row (design §4.4, #14370): an
+ * instruction is projected sender-free — the store keeps the sender,
+ * the recipient never sees it — while a plain note keeps its sender.
+ * kind and reply_to ride along so a reply can thread onto the row
+ * without naming its sender.
+ */
+export function noteForInbox({ id, sender, note, ts, kind, reply_to, work_state = null, work_task_id = null }) {
+  return { id, from: kind === "instruction" ? null : sender, note, ts, kind, reply_to: reply_to ?? null, work_state, work_task_id };
+}
+
 export class MemoryStore {
   constructor(now = () => new Date().toISOString()) {
     this.rows = [];
@@ -327,14 +338,14 @@ export class MemoryStore {
   async noteIdentities() {
     return [...this.noteCounters.keys()].sort();
   }
-  async noteDeliver({ from, recipients, note, batch = null, pattern = null, limit_n = null, matched = null }) {
+  async noteDeliver({ from, recipients, note, kind = "note", reply_to = null, batch = null, pattern = null, limit_n = null, matched = null }) {
     const notes = [];
     for (const recipient of recipients) {
       if (!this.noteCounters.has(recipient)) continue;
-      const row = { id: this.noteNextId++, ts: this.now(), recipient, from, note, batch, ack_at: null, work_state: null, work_task_id: null };
+      const row = { id: this.noteNextId++, ts: this.now(), recipient, from, note, ack_at: null, kind, reply_to, batch, work_state: null, work_task_id: null };
       this.noteRows.push(row);
       this.noteCounters.set(recipient, this.noteCounters.get(recipient) + 1);
-      notes.push({ id: row.id, recipient, from, note, ts: row.ts, batch });
+      notes.push({ id: row.id, recipient, from, note, ts: row.ts, kind, reply_to, batch });
     }
     if (batch) {
       this.distributions.set(batch, {
@@ -348,6 +359,10 @@ export class MemoryStore {
       });
     }
     return { delivered: notes.length, recipients: notes.map((n) => n.recipient), notes };
+  }
+  async noteOrigin(identity, id) {
+    const row = this.noteRows.find((r) => r.id === id && r.recipient === identity);
+    return row ? row.from : null;
   }
   // Broadening a notes distribution (notes.js), same semantics as the
   // Durable Object: only the original sender, only the remainder. The
@@ -365,7 +380,7 @@ export class MemoryStore {
     const notes = [];
     for (const recipient of recipients) {
       if (!this.noteCounters.has(recipient)) continue;
-      const row = { id: this.noteNextId++, ts: this.now(), recipient, from: sample.from, note: sample.note, batch, ack_at: null };
+      const row = { id: this.noteNextId++, ts: this.now(), recipient, from: sample.from, note: sample.note, batch, ack_at: null, kind: "note", reply_to: null };
       this.noteRows.push(row);
       this.noteCounters.set(recipient, this.noteCounters.get(recipient) + 1);
       deliveredSet.add(recipient);
@@ -392,7 +407,7 @@ export class MemoryStore {
   async noteInbox(identity) {
     return this.noteRows
       .filter((r) => r.recipient === identity && r.ack_at === null)
-      .map((r) => ({ id: r.id, from: r.from, note: r.note, ts: r.ts, work_state: r.work_state, work_task_id: r.work_task_id }));
+      .map((r) => noteForInbox({ id: r.id, sender: r.from, note: r.note, ts: r.ts, kind: r.kind, reply_to: r.reply_to, work_state: r.work_state, work_task_id: r.work_task_id }));
   }
   // Work-item lifecycle (design §4.6): the receiving identity moves its
   // own note forward; another identity's note is simply not found.
