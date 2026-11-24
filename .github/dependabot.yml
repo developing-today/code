@@ -78,6 +78,10 @@ updates:
       - "/pkgs/tea"
     schedule:
       interval: "weekly"
+    # charmbracelet/ssh moved to charm.land/ssh upstream; Dependabot fails the
+    # whole run on the path mismatch. Skip it until the code migrates.
+    ignore:
+      - dependency-name: "github.com/charmbracelet/ssh"
     groups:
       gomod:
         patterns: ["*"]
