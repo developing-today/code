@@ -1172,6 +1172,148 @@ impl SecretSource for BwsSource {
     }
 }
 
+/// Finds the id of the secret keyed `name` in a `bws secret list`
+/// reply, with [`BwsSource`]'s discipline: a listing that is not a
+/// JSON array is a source failure, and a malformed id on the matching
+/// entry is malformed, never absent. Entries for other names are not
+/// inspected.
+fn bws_listed_id(list_raw: &str, name: &str) -> Result<Option<String>, SecretError> {
+    let unavailable = |detail: &str| SecretError::Unavailable {
+        source: "bws",
+        name: name.to_string(),
+        detail: detail.to_string(),
+    };
+    let list: serde_json::Value =
+        serde_json::from_str(list_raw).map_err(|_| unavailable("bws secret list: output is not JSON"))?;
+    let items = list
+        .as_array()
+        .ok_or_else(|| unavailable("bws secret list: output is not a JSON array"))?;
+    for item in items {
+        if item.get("key").and_then(|k| k.as_str()) == Some(name) {
+            let raw_id = item.get("id").and_then(|i| i.as_str()).ok_or_else(|| {
+                unavailable("bws secret list: entry for the requested key has a missing or non-string id")
+            })?;
+            return Ok(Some(raw_id.to_string()));
+        }
+    }
+    Ok(None)
+}
+
+/// Which project a secret write lands in: the environment value
+/// wins, the config value is the fallback, a blank value counts as
+/// absent (the #6405 misspelling class).
+fn bws_project_id_from(env_value: Option<&str>, config_value: Option<&str>) -> Option<String> {
+    let clean = |v: Option<&str>| v.map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+    clean(env_value).or_else(|| clean(config_value))
+}
+
+/// The write counterpart of [`BwsSource`] (#14370): stores a value
+/// under a name in one Bitwarden Secrets Manager project, through the
+/// same `bws` CLI and runner. This is the vault write path
+/// `fleet bridge exchange` uses to put a freshly minted per-agent
+/// credential under its name (`bridge.<agent>-fleet-token`,
+/// `bridge.<agent>-token`).
+///
+/// bws has no stdin or file input for values, so the value passes
+/// through the `bws` child's argv — transiently, the exposure the
+/// house backup script already accepts (pkgs/agent-backup) — and
+/// nowhere else: never in this process's argv, a file, output or an
+/// error (runner errors carry exit status only, and the `--`
+/// separator before the positionals keeps bws's own parser from
+/// echoing the value on a usage error). Storing over an existing
+/// name replaces it (delete, then create), so re-enrolment rotates
+/// the credential. The store verifies its work by reading the name
+/// back and comparing in memory; a mismatch is a loud failure.
+pub struct BwsStore {
+    runner: Box<dyn CommandRunner>,
+    project_id: String,
+}
+
+impl BwsStore {
+    /// The environment variable that names the write project when the
+    /// config does not (the [`OpSource`] env-first pattern).
+    pub const PROJECT_ID_ENV: &'static str = "FLEET_BWS_PROJECT_ID";
+
+    pub fn new(project_id: String) -> BwsStore {
+        BwsStore {
+            runner: Box::new(BwsTokenRunner::from_environment()),
+            project_id,
+        }
+    }
+
+    pub fn with_runner(runner: Box<dyn CommandRunner>, project_id: String) -> BwsStore {
+        BwsStore { runner, project_id }
+    }
+
+    /// The store for a config: the project id from
+    /// $FLEET_BWS_PROJECT_ID, else `[secrets] bws_project_id`. None
+    /// when neither names one — reads are unaffected, only writes
+    /// are impossible.
+    pub fn from_config(config: &fleet_config::Config) -> Option<BwsStore> {
+        let project_id = bws_project_id_from(
+            std::env::var(Self::PROJECT_ID_ENV).ok().as_deref(),
+            config.secrets.bws_project_id.as_deref(),
+        )?;
+        Some(BwsStore::new(project_id))
+    }
+
+    /// Store `value` under `name`, replacing any existing secret of
+    /// that name in the project. Errors are value-free.
+    pub fn store(&self, name: &str, value: &str) -> Result<(), SecretError> {
+        validate_name(name)?;
+        let unavailable = |detail: String| SecretError::Unavailable {
+            source: "bws",
+            name: name.to_string(),
+            detail,
+        };
+        if value.is_empty() {
+            return Err(unavailable("refusing to store an empty value".to_string()));
+        }
+        let list_raw = self
+            .runner
+            .run("bws", &["secret", "list", "-o", "json"])
+            .map_err(|d| unavailable(format!("bws secret list: {d}")))?;
+        if let Some(old_id) = bws_listed_id(&list_raw, name)? {
+            self.runner
+                .run("bws", &["secret", "delete", &old_id, "-o", "json"])
+                .map_err(|d| unavailable(format!("bws secret delete: {d}")))?;
+        }
+        // Options first, then `--`, then the positionals: a value
+        // starting with '-' must never be parsed as a flag (bws's
+        // parser echoes the offending value in its error otherwise).
+        self.runner
+            .run(
+                "bws",
+                &["secret", "create", "-o", "json", "--", name, value, &self.project_id],
+            )
+            .map_err(|d| unavailable(format!("bws secret create: {d}")))?;
+        // Verify by reading the name back; the comparison happens in
+        // memory and the value is never printed either way.
+        let list_raw = self
+            .runner
+            .run("bws", &["secret", "list", "-o", "json"])
+            .map_err(|d| unavailable(format!("bws secret list: {d}")))?;
+        let id = bws_listed_id(&list_raw, name)?.ok_or_else(|| {
+            unavailable("bws secret create: the name is absent from the listing afterwards".to_string())
+        })?;
+        let got_raw = self
+            .runner
+            .run("bws", &["secret", "get", &id, "-o", "json"])
+            .map_err(|d| unavailable(format!("bws secret get: {d}")))?;
+        let got: serde_json::Value = serde_json::from_str(&got_raw)
+            .map_err(|_| unavailable("bws secret get: output is not JSON".to_string()))?;
+        let stored = got.get("value").and_then(|v| v.as_str()).ok_or_else(|| {
+            unavailable("bws secret get: no string \"value\" field".to_string())
+        })?;
+        if stored != value {
+            return Err(unavailable(
+                "bws secret create: the value read back does not match what was stored".to_string(),
+            ));
+        }
+        Ok(())
+    }
+}
+
 /// Source 3, opt-in: the 1Password CLI. One read per name:
 /// `op read --no-newline op://<vault>/<name>/<field>`, so the item
 /// title in the vault is the fleet secret name. It joins the default
@@ -1429,6 +1571,175 @@ mod tests {
             }
             other => panic!("expected Unavailable, got {other:?}"),
         }
+    }
+
+    /// An in-memory `bws` for the store tests: entries keyed by id,
+    /// every call recorded so the argv shape itself is assertable.
+    struct FakeBws {
+        entries: std::cell::RefCell<Vec<(String, String, String)>>, // (id, key, value)
+        calls: std::cell::RefCell<Vec<Vec<String>>>,
+        fail_create: bool,
+    }
+
+    impl FakeBws {
+        fn new(entries: Vec<(&str, &str, &str)>) -> FakeBws {
+            FakeBws {
+                entries: std::cell::RefCell::new(
+                    entries
+                        .into_iter()
+                        .map(|(i, k, v)| (i.to_string(), k.to_string(), v.to_string()))
+                        .collect(),
+                ),
+                calls: std::cell::RefCell::new(Vec::new()),
+                fail_create: false,
+            }
+        }
+        fn value_of(&self, key: &str) -> Option<String> {
+            self.entries
+                .borrow()
+                .iter()
+                .find(|(_, k, _)| k == key)
+                .map(|(_, _, v)| v.clone())
+        }
+    }
+
+    impl CommandRunner for FakeBws {
+        fn run(&self, program: &str, args: &[&str]) -> Result<String, String> {
+            assert_eq!(program, "bws");
+            self.calls
+                .borrow_mut()
+                .push(args.iter().map(|a| a.to_string()).collect());
+            match args {
+                ["secret", "list", "-o", "json"] => {
+                    let items: Vec<serde_json::Value> = self
+                        .entries
+                        .borrow()
+                        .iter()
+                        .map(|(id, key, _)| serde_json::json!({"id": id, "key": key}))
+                        .collect();
+                    Ok(serde_json::Value::Array(items).to_string())
+                }
+                ["secret", "get", id, "-o", "json"] => {
+                    let entries = self.entries.borrow();
+                    let (id, key, value) = entries
+                        .iter()
+                        .find(|(i, _, _)| i == id)
+                        .ok_or("exit status 1")?;
+                    Ok(serde_json::json!({"id": id, "key": key, "value": value}).to_string())
+                }
+                ["secret", "delete", id, "-o", "json"] => {
+                    self.entries.borrow_mut().retain(|(i, _, _)| i != id);
+                    Ok("{}".to_string())
+                }
+                ["secret", "create", "-o", "json", "--", name, value, _project] => {
+                    if self.fail_create {
+                        return Err("exit status 1".to_string());
+                    }
+                    let id = format!("id-{}", self.entries.borrow().len() + 1);
+                    self.entries
+                        .borrow_mut()
+                        .push((id.clone(), name.to_string(), value.to_string()));
+                    Ok(serde_json::json!({"id": id}).to_string())
+                }
+                other => Err(format!("unexpected args: {other:?}")),
+            }
+        }
+    }
+
+    #[test]
+    fn bws_store_creates_with_the_house_argv_shape_and_verifies() {
+        // Drive it through a shared fake so the calls stay observable.
+        let fake = std::rc::Rc::new(FakeBws::new(vec![]));
+        struct Shared(std::rc::Rc<FakeBws>);
+        impl CommandRunner for Shared {
+            fn run(&self, program: &str, args: &[&str]) -> Result<String, String> {
+                self.0.run(program, args)
+            }
+        }
+        let store = BwsStore::with_runner(
+            Box::new(Shared(fake.clone())),
+            "proj-1".to_string(),
+        );
+        store
+            .store("bridge.new-1-token", "fixture-value-not-a-secret")
+            .unwrap();
+        assert_eq!(
+            fake.value_of("bridge.new-1-token").as_deref(),
+            Some("fixture-value-not-a-secret")
+        );
+        let calls = fake.calls.borrow();
+        let create = calls
+            .iter()
+            .find(|c| c[1] == "create")
+            .expect("a create call happened");
+        assert_eq!(
+            create,
+            &vec![
+                "secret".to_string(),
+                "create".to_string(),
+                "-o".to_string(),
+                "json".to_string(),
+                "--".to_string(),
+                "bridge.new-1-token".to_string(),
+                "fixture-value-not-a-secret".to_string(),
+                "proj-1".to_string(),
+            ],
+            "options first, -- before the positionals, project last"
+        );
+    }
+
+    #[test]
+    fn bws_store_replaces_an_existing_name() {
+        let fake = std::rc::Rc::new(FakeBws::new(vec![("id-old", "bridge.new-1-token", "old-value")]));
+        struct Shared(std::rc::Rc<FakeBws>);
+        impl CommandRunner for Shared {
+            fn run(&self, program: &str, args: &[&str]) -> Result<String, String> {
+                self.0.run(program, args)
+            }
+        }
+        let store = BwsStore::with_runner(Box::new(Shared(fake.clone())), "proj-1".to_string());
+        store.store("bridge.new-1-token", "new-value").unwrap();
+        assert_eq!(fake.value_of("bridge.new-1-token").as_deref(), Some("new-value"));
+        let calls = fake.calls.borrow();
+        let verbs: Vec<&str> = calls.iter().map(|c| c[1].as_str()).collect();
+        let delete_at = verbs.iter().position(|v| *v == "delete").expect("old entry deleted");
+        let create_at = verbs.iter().position(|v| *v == "create").expect("new entry created");
+        assert!(delete_at < create_at, "rotation deletes before it creates: {verbs:?}");
+        assert_eq!(calls[delete_at][2], "id-old");
+    }
+
+    #[test]
+    fn bws_store_errors_never_carry_the_value() {
+        let mut fake = FakeBws::new(vec![]);
+        fake.fail_create = true;
+        let store = BwsStore::with_runner(Box::new(fake), "proj-1".to_string());
+        let err = store
+            .store("bridge.new-1-token", "fixture-value-not-a-secret")
+            .unwrap_err();
+        let text = format!("{err}");
+        assert!(text.contains("bridge.new-1-token"), "error names the secret: {text}");
+        assert!(
+            !text.contains("fixture-value-not-a-secret"),
+            "error must not carry the value: {text}"
+        );
+        // An empty value and a bad name are refused before any bws call.
+        let store = BwsStore::with_runner(Box::new(FakeBws::new(vec![])), "proj-1".to_string());
+        assert!(store.store("bridge.new-1-token", "").is_err());
+        assert!(store.store("bad/name", "x").is_err());
+    }
+
+    #[test]
+    fn bws_project_id_prefers_env_then_config() {
+        assert_eq!(
+            bws_project_id_from(Some(" env-proj "), Some("cfg-proj")).as_deref(),
+            Some("env-proj")
+        );
+        assert_eq!(
+            bws_project_id_from(Some("  "), Some("cfg-proj")).as_deref(),
+            Some("cfg-proj")
+        );
+        assert_eq!(bws_project_id_from(None, None), None);
+        assert_eq!(bws_project_id_from(Some(""), Some("")), None);
     }
 
     fn bws_resolve_with_list(list: &str) -> Result<SecretValue, SecretError> {

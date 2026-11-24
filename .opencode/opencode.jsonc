@@ -2993,18 +2993,11 @@
       "options": { "tools": true, "instructions": true, "daemonTools": true }
     },
     // "@pieliesdie/opencode-antigravity-auth@2.0.0", -- disabled 2026-10-24: direct-auth/API-key agy route off; plan agy runs via the antigravity-ls proxy only
-    "opencode-working-memory@latest",
-    "opencode-scheduler@latest",
-    "@openspoon/subtask2@latest",
     "@mohak34/opencode-notifier@latest",
-    "opencode-pty@latest",
-    "opencode-devcontainers@latest",
-    "@franlol/opencode-md-table-formatter@latest",
     "opencode-cmd-provider@latest",
     "opencode-cockpit@latest",
     "opencode-models-discovery@latest",
-    "opencode-mem@latest",
-    "opencode-auto-continue@https://github.com/developing-today/opencode-auto-continue/archive/refs/tags/latest.tar.gz"
+    "opencode-mem@latest"
   ],
   // Model designations (2026-11-23, code#13675): purpose +
   // capability policy keyed by bare model id, the same

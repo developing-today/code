@@ -14,7 +14,7 @@
 //! (rules 2–4), which is [`Validity::Voided`].
 
 use p2panda_core::Hash;
-use redb::ReadableDatabase;
+use redb::{ReadableDatabase, ReadableTable};
 
 use super::{
     APPLIED, EventStore, FORKS, HASHES, PROOF_IDS, StoreError, lowest_proof, split_position,

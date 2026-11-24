@@ -61,6 +61,7 @@ use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 
 use p2panda_core::{Hash, SeqNum};
 use redb::{
@@ -87,6 +88,14 @@ mod writer_set;
 pub use author_events::{AuthorEvent, CandidateQuery, Candidates};
 pub use compaction::CompactionPolicy;
 use id_core::waiting::{AuthorKey, WaitRefusal, WaitingLimits, WaitingPool};
+
+/// Maximum number of group rosters retained by the per-generation memo.
+pub const MAX_ROSTER_CACHE_ENTRIES: usize = 128;
+/// Roster results larger than this are returned but are not memoized.
+pub const MAX_CACHED_ROSTER_AUTHORS: usize = 128;
+/// Maximum key and author payload bytes retained by the roster memo.
+pub const MAX_ROSTER_CACHE_PAYLOAD_BYTES: usize = MAX_ROSTER_CACHE_ENTRIES
+    * (std::mem::size_of::<Hash>() + MAX_CACHED_ROSTER_AUTHORS * std::mem::size_of::<AuthorKey>());
 pub use id_store::event_types::{
     Block, BlockKind, BlockList, BlockLookup, BlockLookupFailure, Chain, FILE_NAME, StoreError,
 };
@@ -408,6 +417,32 @@ pub struct EventStore {
     next_arrival: u64,
     /// Set when a write failed and the pool could not be rebuilt. Calls fail until reopen.
     unusable: bool,
+    /// The stored-state generation: bumped on every committed change to
+    /// the stored event set (an ingest that stored or applied an event,
+    /// or a prune). Memoized reads key their entries on it, so any
+    /// committed change invalidates them (#13043).
+    generation: u64,
+    /// Group rosters memoized at a store generation (#13043).
+    roster_cache: Mutex<RosterCache>,
+}
+
+/// Group rosters memoized by [`EventStore::roster`]: resolving a roster
+/// folds the whole store, so a read-heavy caller (the relay gate asks
+/// once per message) is served from here until the store's generation
+/// moves (#13043).
+#[derive(Debug, Default)]
+struct RosterCache {
+    /// The store generation `entries` were resolved at. Entries from
+    /// any other generation are dropped on sight.
+    generation: u64,
+    /// The resolved roster of each group read at `generation`.
+    entries: HashMap<Hash, Vec<AuthorKey>>,
+    /// FIFO insertion order, kept in sync with `entries` for bounded eviction.
+    order: VecDeque<Hash>,
+    /// How many full load-and-resolve runs roster reads have performed.
+    /// A diagnostic: it grows only when a roster is read at a generation
+    /// no entry covers, never per cached read.
+    resolutions: u64,
 }
 
 impl BlockList for EventStore {
@@ -493,6 +528,8 @@ impl EventStore {
             waiting: WaitingPool::new(limits),
             next_arrival: 0,
             unusable: false,
+            generation: 0,
+            roster_cache: Mutex::new(RosterCache::default()),
         };
         store.reload(now_ms)?;
         Ok(store)
@@ -563,10 +600,25 @@ impl EventStore {
     /// The keys that are members of `group` in the resolved state, sorted. A member with access
     /// at the end of the causal history is listed, and a removed member is not.
     ///
+    /// Resolving a roster folds the whole store, so the answer is
+    /// memoized per group at the store's current generation (#13043):
+    /// repeated reads — the relay gate asks once per message — are
+    /// served from the memo until the next committed ingest or prune
+    /// moves the generation, and only the first read at a new
+    /// generation pays the fold. A membership change therefore takes
+    /// effect on the first read after it is ingested, exactly as it
+    /// did when every read resolved the store. The memo retains at
+    /// most [`MAX_ROSTER_CACHE_ENTRIES`] results and skips rosters
+    /// larger than [`MAX_CACHED_ROSTER_AUTHORS`], bounding attacker-
+    /// selected negative entries and cached roster payload.
+    ///
     /// # Errors
     ///
     /// Returns a redb error if the read fails, or [`StoreError::Corrupt`].
     pub fn roster(&self, group: &Hash) -> Result<Vec<AuthorKey>, StoreError> {
+        if let Some(roster) = self.cached_roster(group) {
+            return Ok(roster);
+        }
         let txn = self.db.begin_read()?;
         let (stored, forks, headers) = {
             let events = txn.open_table(EVENTS)?;
@@ -578,7 +630,70 @@ impl EventStore {
         };
         let residue = compaction::load_residue_read(&txn)?;
         let resolved = resolve::resolve(&stored, &forks, &headers, &residue)?;
-        Ok(resolve::roster_of(&resolved, group))
+        let roster = resolve::roster_of(&resolved, group);
+        let mut cache = self.lock_roster_cache();
+        if cache.generation != self.generation {
+            cache.entries.clear();
+            cache.order.clear();
+            cache.generation = self.generation;
+        }
+        if roster.len() <= MAX_CACHED_ROSTER_AUTHORS && !cache.entries.contains_key(group) {
+            while cache.entries.len() >= MAX_ROSTER_CACHE_ENTRIES {
+                if let Some(oldest) = cache.order.pop_front() {
+                    cache.entries.remove(&oldest);
+                }
+            }
+            cache.order.push_back(*group);
+            cache.entries.insert(*group, roster.clone());
+        }
+        cache.resolutions = cache.resolutions.saturating_add(1);
+        Ok(roster)
+    }
+
+    /// The roster of `group` memoized at the store's current
+    /// generation, if a read already resolved it there (#13043).
+    fn cached_roster(&self, group: &Hash) -> Option<Vec<AuthorKey>> {
+        let cache = self.lock_roster_cache();
+        if cache.generation != self.generation {
+            return None;
+        }
+        cache.entries.get(group).cloned()
+    }
+
+    /// The roster cache, recovering a poisoned lock: the cache is a
+    /// memo over the store's own reads, so entries written before a
+    /// panic are still answers the store itself produced, and the
+    /// generation keying drops them at the next committed change.
+    fn lock_roster_cache(&self) -> std::sync::MutexGuard<'_, RosterCache> {
+        self.roster_cache
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// How many full load-and-resolve runs roster reads have performed
+    /// (#13043). Before the roster memo this grew with every read; it
+    /// now grows only on the first roster read at a new store
+    /// generation, so a caller can check that its read rate is not
+    /// turning into whole-store folds.
+    pub fn roster_resolutions(&self) -> u64 {
+        self.lock_roster_cache().resolutions
+    }
+
+    /// Number of roster results retained by the memo at the current generation.
+    pub fn roster_cache_entries(&self) -> usize {
+        self.lock_roster_cache().entries.len()
+    }
+
+    /// Key and author payload bytes retained by the memo. Allocator bookkeeping is excluded;
+    /// both the number of entries and authors per entry have fixed limits.
+    pub fn roster_cache_payload_bytes(&self) -> usize {
+        let cache = self.lock_roster_cache();
+        cache.entries.len() * std::mem::size_of::<Hash>()
+            + cache
+                .entries
+                .values()
+                .map(|roster| roster.len() * std::mem::size_of::<AuthorKey>())
+                .sum::<usize>()
     }
 
     /// The stored event at `(author, seq)`, applied or not.
@@ -906,6 +1021,9 @@ impl EventStore {
         }
 
         txn.commit()?;
+        // Pruned events leave the stored set, so memoized reads (the
+        // roster cache, #13043) must re-resolve on their next read.
+        self.generation = self.generation.wrapping_add(1);
         Ok(count)
     }
 
@@ -1216,6 +1334,10 @@ impl EventStore {
         };
         if changed {
             txn.commit()?;
+            // A committed change moves the stored-state generation, so
+            // memoized reads (the roster cache, #13043) re-resolve on
+            // their next read instead of serving a stale snapshot.
+            self.generation = self.generation.wrapping_add(1);
         } else {
             txn.abort()?;
         }
@@ -1686,6 +1808,33 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = EventStore::open(dir.path(), WaitingLimits::default(), 0).unwrap();
         (dir, store)
+    }
+
+    #[test]
+    fn unknown_group_rosters_stay_empty_and_cache_is_bounded() {
+        // Oracle: unknown group hashes have empty rosters, and querying
+        // more distinct hashes than the memo capacity cannot increase
+        // retained cache payload beyond its declared bound.
+        let (_dir, store) = open_temp();
+        for n in 0u64..(MAX_ROSTER_CACHE_ENTRIES as u64 + 64) {
+            let group = Hash::digest(n.to_be_bytes());
+            assert!(store.roster(&group).unwrap().is_empty());
+            assert!(store.roster_cache_entries() <= MAX_ROSTER_CACHE_ENTRIES);
+            assert!(store.roster_cache_payload_bytes() <= MAX_ROSTER_CACHE_PAYLOAD_BYTES);
+        }
+        assert_eq!(store.roster_cache_entries(), MAX_ROSTER_CACHE_ENTRIES);
+        assert_eq!(
+            store.roster_cache_payload_bytes(),
+            MAX_ROSTER_CACHE_ENTRIES * std::mem::size_of::<Hash>()
+        );
+        let last_group = Hash::digest((MAX_ROSTER_CACHE_ENTRIES as u64 + 63).to_be_bytes());
+        let resolutions = store.roster_resolutions();
+        assert!(store.roster(&last_group).unwrap().is_empty());
+        assert_eq!(
+            store.roster_resolutions(),
+            resolutions,
+            "a retained negative result must remain a cache hit"
+        );
     }
 
     #[test]

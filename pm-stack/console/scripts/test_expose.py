@@ -641,8 +641,14 @@ class Expose(unittest.TestCase):
         self.assertEqual(account.changes, [])
         self.assertEqual(account.order, [])
 
-    def test_direct_mode_gives_the_worker_its_bridge_token_when_the_vault_holds_one(self):
+    def test_direct_mode_gives_the_worker_its_bridge_token_when_the_vault_holds_one(
+        self,
+    ):
         account = Account()
+        # The account is set up first, as on a real machine: a first run
+        # puts the sign-in gate, apps and route in place, and only the
+        # calls after that are the direct-mode ones counted below.
+        run(account, self.home)
         marker = pathlib.Path(self.home) / ".local/state/pm-console/edge-direct"
         path = f"/accounts/acc/workers/scripts/{expose.WORKER}/secrets"
         secrets = {

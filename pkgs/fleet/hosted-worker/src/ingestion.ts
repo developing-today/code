@@ -453,16 +453,16 @@ function buildTriagePacket(item: GitHubItem, dedupeKey: string, nowIso: string):
  * recorded, never thrown — the DB heal has already landed, and a
  * retry of the delivery would fail the same way; the named gap
  * rides the check result instead. */
-function forwardToTriage(
+async function forwardToTriage(
   deps: IngestionDeps,
   item: GitHubItem,
   nowIso: string,
-): NonNullable<IngestionCheckResult["queue"]> {
+): Promise<NonNullable<IngestionCheckResult["queue"]>> {
   if (!deps.queueStore) return { action: "unavailable" };
   const dedupeKey = triageDedupeKey(item.repo, item.number);
-  const live = deps.queueStore.tasksByDedupe(TRIAGE_QUEUE, dedupeKey).find((t) => LIVE_STATUSES.includes(t.status));
+  const live = (await deps.queueStore.tasksByDedupe(TRIAGE_QUEUE, dedupeKey)).find((t) => LIVE_STATUSES.includes(t.status));
   if (live) return { action: "already_enqueued", task_id: live.id, dedupe_key: dedupeKey };
-  const resp = executeQueueVerb(
+  const resp = await executeQueueVerb(
     deps.queueStore,
     "enqueue",
     { queue: TRIAGE_QUEUE, packet: buildTriagePacket(item, dedupeKey, nowIso) },
@@ -553,7 +553,7 @@ export async function runIngestionCheck(
     outcome = "refreshed";
   }
 
-  const queue = sufficient ? { action: "not_warranted" as const } : forwardToTriage(deps, item, nowIso);
+  const queue = sufficient ? { action: "not_warranted" as const } : await forwardToTriage(deps, item, nowIso);
 
   return {
     repo: item.repo,

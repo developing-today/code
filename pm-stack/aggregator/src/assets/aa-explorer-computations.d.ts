@@ -73,6 +73,16 @@ export function applyDominanceFilters<
 export function unpricedScoredPoints<
   T extends { score?: number | null; cost?: number | null; family?: string; effort?: string | null },
 >(points: T[]): T[];
+export function costScoreOls<T extends { cost?: number | null; score?: number | null }>(
+  points: T[],
+): { slope: number; intercept: number; n: number; costMin: number; costMax: number } | null;
+export function costScoreEnvelope<T extends { cost?: number | null; score?: number | null }>(
+  points: T[],
+): Array<{ cost: number; score: number }>;
+export function costScoreTail<T extends { cost?: number | null; score?: number | null }>(
+  points: T[],
+  binCount?: number,
+): Array<{ cost: number; score: number }>;
 export function projectTask(
   model: any,
   settings: Record<string, number | string>,

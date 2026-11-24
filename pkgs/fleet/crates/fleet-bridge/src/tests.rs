@@ -7,24 +7,35 @@ const OWNER: &str = "oooooooooooooooooooo0123456789abcdefXYZ_-";
 // the same value the bridge's deriveFleetToken gives (worker/src/fleet.js).
 const OWNER_FLEET: &str = "BvfiQrmwOt0zBdk0Uy1b-eOVZhNdd1vsn3UGggDszX4";
 
-struct MapSecrets(HashMap<String, String>);
+struct MapSecrets {
+    values: HashMap<String, String>,
+    stored: std::cell::RefCell<HashMap<String, String>>,
+}
 
 impl Secrets for MapSecrets {
     fn resolve(&self, name: &str) -> Result<String, String> {
-        self.0
+        self.values
             .get(name)
             .cloned()
             .ok_or_else(|| format!("no secret named {name}"))
     }
+
+    fn store(&self, name: &str, value: &str) -> Result<(), String> {
+        self.stored
+            .borrow_mut()
+            .insert(name.to_string(), value.to_string());
+        Ok(())
+    }
 }
 
 fn secrets(pairs: &[(&str, &str)]) -> MapSecrets {
-    MapSecrets(
-        pairs
+    MapSecrets {
+        values: pairs
             .iter()
             .map(|(k, v)| (k.to_string(), v.to_string()))
             .collect(),
-    )
+        stored: std::cell::RefCell::new(HashMap::new()),
+    }
 }
 
 fn sv(xs: &[&str]) -> Vec<String> {
@@ -38,6 +49,7 @@ fn settings(url: &str) -> Settings {
         groups: None,
         owner_token_name: DEFAULT_BRIDGE_OWNER_TOKEN_NAME.to_string(),
         fleet_token_name: DEFAULT_BRIDGE_FLEET_TOKEN_NAME.to_string(),
+        notes_token_name: None,
     }
 }
 
@@ -46,6 +58,7 @@ struct Seen {
     method: String,
     url: String,
     body: Option<Value>,
+    auth: Option<String>,
 }
 
 /// A fake bridge: answers each request with `reply(method, path) -> (status, json)`.
@@ -63,11 +76,17 @@ fn fake_bridge(
             let body: Option<Value> = serde_json::from_str(&body).ok();
             let method = req.method().to_string();
             let path = req.url().to_string();
+            let auth = req
+                .headers()
+                .iter()
+                .find(|h| h.field.as_str().to_ascii_lowercase() == "authorization")
+                .map(|h| h.value.as_str().to_string());
             let (status, text) = reply(&method, &path, &body);
             log.lock().unwrap().push(Seen {
                 method,
                 url: path,
                 body,
+                auth,
             });
             let _ = req.respond(tiny_http::Response::from_string(text).with_status_code(status));
         }
@@ -158,7 +177,27 @@ fn every_verb_has_its_own_help() {
     // usage — its own usage line, the shared footer, and never the
     // whole-domain USAGE text.
     for verb in [
-        "send", "agents", "log", "hello", "inbox", "post", "ack", "health",
+        "send",
+        "offer",
+        "offers",
+        "agents",
+        "log",
+        "pipeline",
+        "directory",
+        "credentials",
+        "revoke",
+        "mint-enroll",
+        "enroll-tokens",
+        "revoke-enroll",
+        "mint-credential",
+        "hello",
+        "inbox",
+        "post",
+        "ack",
+        "work",
+        "health",
+        "exchange",
+        "notes",
     ] {
         let text = verb_usage(verb).unwrap_or_else(|| panic!("no per-verb help for {verb}"));
         assert!(
@@ -185,6 +224,12 @@ fn usage_errors_exit_2_before_any_request() {
         vec!["send", "--to", "all"],
         vec!["send", "--to"],
         vec!["send", "--nope", "x"],
+        vec!["send", "--broaden", "b1", "leftover text"],
+        vec!["send", "--limit", "many", "--to", "all", "x"],
+        vec!["offer", "--to", "all", "x"],
+        vec!["offer", "--slots", "2", "x"],
+        vec!["offer", "--to", "all", "--slots", "many", "x"],
+        vec!["offers", "extra"],
         vec!["agents", "extra"],
         vec!["inbox"],
         vec!["inbox", "--agent", "a", "--commands", "--messages"],
@@ -199,7 +244,28 @@ fn usage_errors_exit_2_before_any_request() {
         ],
         vec!["ack", "--agent", "a"],
         vec!["ack", "--agent", "a", "0"],
+        vec!["work", "--agent", "a"],
+        vec!["work", "--agent", "a", "--state", "done"],
+        vec!["work", "--agent", "a", "--state", "sideways", "3"],
+        vec!["work", "--agent", "a", "--state", "received", "3"],
+        vec!["work", "--agent", "a", "--state", "queued", "3"],
+        vec!["work", "--agent", "a", "--state", "done", "0"],
+        vec!["work", "--agent", "a", "--state", "done", "--task", "x", "3"],
         vec!["log", "--limit", "many"],
+        vec!["pipeline", "--limit", "many"],
+        vec!["pipeline", "--bogus", "x"],
+        vec!["directory", "extra"],
+        vec!["credentials", "extra"],
+        vec!["revoke"],
+        vec!["revoke", "--agent", "a", "--identity", "muse/a"],
+        vec!["revoke", "felix"],
+        vec!["mint-enroll"],
+        vec!["mint-enroll", "--agent", "a", "--ttl", "soon"],
+        vec!["mint-enroll", "--agent", "a", "extra"],
+        vec!["enroll-tokens", "extra"],
+        vec!["revoke-enroll"],
+        vec!["revoke-enroll", "--agent", "a", "--token-hash", "ab12"],
+        vec!["mint-credential"],
     ] {
         let e = run_with(url, &s, &args, "").unwrap_err();
         assert_eq!(e.exit_code(), EXIT_USAGE, "{args:?}: {e}");
@@ -264,6 +330,94 @@ fn central_send_uses_the_owner_token_and_shapes_the_body() {
             "sender": "drew"
         })
     );
+}
+
+#[test]
+fn a_pattern_send_with_a_limit_carries_both_and_returns_the_match_report() {
+    // #14375: the console composer sends agent:f* with a limit and
+    // shows the bridge's match report; the CLI carries the limit
+    // through and hands the report back untouched.
+    let (url, seen) = fake_bridge(|_, _, _| {
+        (
+            201,
+            r#"{"batch":"b9","messages":[],"unregistered":[],"matched":2,"delivered":1,"recipients":["felix-1"],"remaining":1}"#
+                .into(),
+        )
+    });
+    let s = secrets(&[(DEFAULT_BRIDGE_OWNER_TOKEN_NAME, OWNER)]);
+    let out = run_with(
+        &url,
+        &s,
+        &["send", "--to", "agent:f*", "--limit", "1", "--command", "-"],
+        "do the thing",
+    )
+    .unwrap();
+    assert_eq!(out["matched"], 2);
+    assert_eq!(out["delivered"], 1);
+    assert_eq!(out["recipients"], json!(["felix-1"]));
+    assert_eq!(out["remaining"], 1);
+    let seen = seen.lock().unwrap();
+    assert_eq!(seen[0].url, format!("/api/{OWNER}/fleet/send"));
+    assert_eq!(
+        seen[0].body.as_ref().unwrap(),
+        &json!({ "body": "do the thing", "to": ["agent:f*"], "kind": "command", "limit": 1 })
+    );
+}
+
+#[test]
+fn broaden_carries_the_batch_and_no_text() {
+    let (url, seen) = fake_bridge(|_, _, _| {
+        (
+            201,
+            r#"{"batch":"b9","messages":[],"unregistered":[],"matched":2,"delivered":1,"recipients":["felix-2"],"remaining":0}"#
+                .into(),
+        )
+    });
+    let s = secrets(&[(DEFAULT_BRIDGE_OWNER_TOKEN_NAME, OWNER)]);
+    let out = run_with(&url, &s, &["send", "--broaden", "b9"], "").unwrap();
+    assert_eq!(out["remaining"], 0);
+    let seen = seen.lock().unwrap();
+    assert_eq!(seen[0].method, "POST");
+    assert_eq!(seen[0].url, format!("/api/{OWNER}/fleet/send"));
+    assert_eq!(seen[0].body.as_ref().unwrap(), &json!({ "broaden": "b9" }));
+}
+
+#[test]
+fn offer_posts_its_slots_and_ttl_and_offers_lists() {
+    let (url, seen) = fake_bridge(|_, _, body| {
+        if body.is_some() {
+            (201, r#"{"offer":{"id":7,"state":"open","claimed":0,"remaining":2}}"#.into())
+        } else {
+            (200, r#"{"offers":[{"id":7,"state":"open","claims":[]}]}"#.into())
+        }
+    });
+    let s = secrets(&[(DEFAULT_BRIDGE_OWNER_TOKEN_NAME, OWNER)]);
+    let out = run_with(
+        &url,
+        &s,
+        &[
+            "offer", "--to", "agent:f*", "--slots", "2", "--ttl", "3600", "--command", "-",
+        ],
+        "take the next task",
+    )
+    .unwrap();
+    assert_eq!(out["offer"]["state"], "open");
+    let out = run_with(&url, &s, &["offers"], "").unwrap();
+    assert_eq!(out["offers"][0]["id"], 7);
+    let seen = seen.lock().unwrap();
+    assert_eq!(seen[0].url, format!("/api/{OWNER}/fleet/offer"));
+    assert_eq!(
+        seen[0].body.as_ref().unwrap(),
+        &json!({
+            "body": "take the next task",
+            "to": ["agent:f*"],
+            "kind": "command",
+            "slots": 2,
+            "ttl_seconds": 3600
+        })
+    );
+    assert_eq!(seen[1].method, "GET");
+    assert_eq!(seen[1].url, format!("/api/{OWNER}/fleet/offers"));
 }
 
 #[test]
@@ -422,6 +576,165 @@ fn ack_log_and_agents_shapes() {
 }
 
 #[test]
+fn work_marks_the_agents_own_rows_and_names_the_queue_task() {
+    let (url, seen) = fake_bridge(|_, _, _| {
+        (200, r#"{"message":{"id":3,"work_state":"queued","work_task_id":23500}}"#.into())
+    });
+    let s = secrets(&[(DEFAULT_BRIDGE_FLEET_TOKEN_NAME, "f".repeat(40).as_str())]);
+    let out = run_with(
+        &url,
+        &s,
+        &["work", "--agent", "muse-1", "--state", "queued", "--task", "23500", "3"],
+        "",
+    )
+    .unwrap();
+    assert_eq!(out["message"]["work_state"], "queued");
+    run_with(
+        &url,
+        &s,
+        &["work", "--agent", "muse-1", "--state", "acted", "4", "5"],
+        "",
+    )
+    .unwrap();
+    let seen = seen.lock().unwrap();
+    assert_eq!(seen[0].method, "POST");
+    assert_eq!(seen[0].url, format!("/fleet/{}/work", "f".repeat(40)));
+    assert_eq!(
+        seen[0].body.as_ref().unwrap(),
+        &json!({"agent": "muse-1", "id": 3, "state": "queued", "task_id": 23500})
+    );
+    // Several ids are one request each, in order.
+    assert_eq!(seen.len(), 3);
+    assert_eq!(
+        seen[1].body.as_ref().unwrap(),
+        &json!({"agent": "muse-1", "id": 4, "state": "acted"})
+    );
+    assert_eq!(
+        seen[2].body.as_ref().unwrap(),
+        &json!({"agent": "muse-1", "id": 5, "state": "acted"})
+    );
+}
+
+#[test]
+fn work_help_carries_the_task_it_or_queue_it_rule() {
+    // #14372 acceptance: the help text and the book carry the same
+    // rule, verbatim. The book half is pinned by the text itself
+    // (pkgs/fleet/book/reference/bridge.md quotes WORK_RULE).
+    let text = verb_usage("work").unwrap();
+    assert!(text.contains(WORK_RULE), "{text}");
+    assert!(WORK_RULE.contains("repo-task/v1"), "{WORK_RULE}");
+    assert!(WORK_RULE.contains("context_refs"), "{WORK_RULE}");
+}
+
+#[test]
+fn pipeline_directory_credentials_and_revoke_shapes() {
+    // #14374: the console's unified views and its revoke control, as
+    // owner-token calls on the bridge's own routes.
+    let (url, seen) = fake_bridge(|_, _, _| (200, r#"{"ok":true}"#.into()));
+    let s = secrets(&[(DEFAULT_BRIDGE_OWNER_TOKEN_NAME, OWNER)]);
+    run_with(
+        &url,
+        &s,
+        &[
+            "pipeline", "--kind", "command", "--sender", "felix", "--unread", "--limit", "25",
+            "--order", "desc",
+        ],
+        "",
+    )
+    .unwrap();
+    run_with(&url, &s, &["directory"], "").unwrap();
+    run_with(&url, &s, &["credentials"], "").unwrap();
+    run_with(&url, &s, &["revoke", "--agent", "felix"], "").unwrap();
+    run_with(&url, &s, &["revoke", "--identity", "muse/felix"], "").unwrap();
+    let seen = seen.lock().unwrap();
+    assert_eq!(
+        seen[0].url,
+        format!(
+            "/api/{OWNER}/pipeline?kind=command&sender=felix&unread_only=true&limit=25&order=desc"
+        )
+    );
+    assert_eq!(seen[1].url, format!("/api/{OWNER}/agents"));
+    assert_eq!(seen[2].url, format!("/api/{OWNER}/fleet/credentials"));
+    assert_eq!(
+        seen[3].url,
+        format!("/api/{OWNER}/fleet/credentials/revoke")
+    );
+    assert_eq!(seen[3].body.as_ref().unwrap(), &json!({"agent": "felix"}));
+    assert_eq!(seen[4].url, format!("/api/{OWNER}/notes-tokens/revoke"));
+    assert_eq!(
+        seen[4].body.as_ref().unwrap(),
+        &json!({"identity": "muse/felix"})
+    );
+}
+
+#[test]
+fn provisioning_verb_shapes() {
+    // #14376: the console's provisioning verbs, as owner-token calls on
+    // the bridge's own routes. The mint answers carry the values; the
+    // CLI passes them through untouched and keeps nothing.
+    let (url, seen) = fake_bridge(|_, _, _| (201, r#"{"ok":true}"#.into()));
+    let s = secrets(&[(DEFAULT_BRIDGE_OWNER_TOKEN_NAME, OWNER)]);
+    run_with(
+        &url,
+        &s,
+        &[
+            "mint-enroll",
+            "--agent",
+            "new-1",
+            "--kind",
+            "muse",
+            "--groups",
+            "muse,code-lanes",
+            "--notes-identity",
+            "muse/new-1",
+            "--ttl",
+            "3600",
+        ],
+        "",
+    )
+    .unwrap();
+    run_with(&url, &s, &["enroll-tokens"], "").unwrap();
+    run_with(&url, &s, &["revoke-enroll", "--token-hash", "ab12"], "").unwrap();
+    run_with(&url, &s, &["revoke-enroll", "--agent", "new-1"], "").unwrap();
+    run_with(
+        &url,
+        &s,
+        &[
+            "mint-credential",
+            "--agent",
+            "pm-stack",
+            "--scopes",
+            "send,read",
+            "--addr",
+            "service:pm-stack",
+        ],
+        "",
+    )
+    .unwrap();
+    let seen = seen.lock().unwrap();
+    assert_eq!(seen[0].method, "POST");
+    assert_eq!(seen[0].url, format!("/api/{OWNER}/enroll-tokens"));
+    assert_eq!(
+        seen[0].body.as_ref().unwrap(),
+        &json!({"agent": "new-1", "kind": "muse", "groups": ["muse", "code-lanes"], "notes_identity": "muse/new-1", "ttl_seconds": 3600})
+    );
+    assert_eq!(seen[1].method, "GET");
+    assert_eq!(seen[1].url, format!("/api/{OWNER}/enroll-tokens"));
+    assert_eq!(seen[2].url, format!("/api/{OWNER}/enroll-tokens/revoke"));
+    assert_eq!(
+        seen[2].body.as_ref().unwrap(),
+        &json!({"token_hash": "ab12"})
+    );
+    assert_eq!(seen[3].url, format!("/api/{OWNER}/enroll-tokens/revoke"));
+    assert_eq!(seen[3].body.as_ref().unwrap(), &json!({"agent": "new-1"}));
+    assert_eq!(seen[4].url, format!("/api/{OWNER}/fleet/credentials/mint"));
+    assert_eq!(
+        seen[4].body.as_ref().unwrap(),
+        &json!({"agent": "pm-stack", "scopes": ["send", "read"], "addr": "service:pm-stack"})
+    );
+}
+
+#[test]
 fn http_errors_exit_4_and_never_show_the_token() {
     let (url, _) = fake_bridge(|_, path, _| {
         if path.contains("/send") {
@@ -523,4 +836,212 @@ fn post_can_address_any_connector_or_agent() {
         seen[1].body.as_ref().unwrap(),
         &json!({"agent": "muse-1", "body": "done", "to": ["chatgpt"], "reply_to": 9})
     );
+}
+
+// ---- #14370: profile-recorded credential names, exchange, notes ----
+
+#[test]
+fn settings_take_credential_names_from_the_agent_profile() {
+    let dir = std::env::temp_dir().join(format!("fleet-bridge-profile-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let profile = dir.join("agent.json");
+    std::fs::write(
+        &profile,
+        r#"{"name":"new-1","kind":"muse","groups":["muse"],"fleet_token_name":"bridge.new-1-fleet-token","notes_token_name":"bridge.new-1-token"}"#,
+    )
+    .unwrap();
+    let env = |k: &str| match k {
+        "FLEET_AGENT_PROFILE" => Some(profile.to_str().unwrap().to_string()),
+        _ => None,
+    };
+    let config = Config::default();
+    let s = Settings::resolve(&config, &env).unwrap();
+    assert_eq!(s.agent.as_deref(), Some("new-1"));
+    assert_eq!(s.fleet_token_name, "bridge.new-1-fleet-token");
+    assert_eq!(s.notes_token_name.as_deref(), Some("bridge.new-1-token"));
+    // Explicit config beats the profile, and the notes name derives
+    // from the agent name when nothing records one.
+    let mut config = Config::default();
+    config.bridge.fleet_token_name = Some("custom.fleet".into());
+    let s = Settings::resolve(&config, &env).unwrap();
+    assert_eq!(s.fleet_token_name, "custom.fleet");
+    std::fs::write(&profile, r#"{"name":"new-2","kind":"muse","groups":[]}"#).unwrap();
+    let s = Settings::resolve(&Config::default(), &env).unwrap();
+    assert_eq!(s.fleet_token_name, DEFAULT_BRIDGE_FLEET_TOKEN_NAME);
+    assert_eq!(s.notes_token_name.as_deref(), Some("bridge.new-2-token"));
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+const FIXTURE_FLEET_CRED: &str = "fixtureFleetCredValue00000000000000000001";
+const FIXTURE_NOTES_TOKEN: &str = "fixtureNotesTokenValue0000000000000000002";
+const FIXTURE_BOOTSTRAP: &str = "fixtureBootstrapTokenValue00000000000003";
+
+fn exchange_bridge(status: u16) -> (String, Arc<Mutex<Vec<Seen>>>) {
+    fake_bridge(move |_, path, _| {
+        if path == "/enroll/exchange" && status == 201 {
+            (
+                201,
+                json!({
+                    "agent": "new-1",
+                    "kind": "muse",
+                    "groups": ["muse"],
+                    "notes_identity": "muse/new-1",
+                    "fleet_token": FIXTURE_FLEET_CRED,
+                    "notes_token": FIXTURE_NOTES_TOKEN,
+                })
+                .to_string(),
+            )
+        } else {
+            (status, "Not found".into())
+        }
+    })
+}
+
+#[test]
+fn exchange_stores_credentials_by_name_and_prints_no_value() {
+    let (url, seen) = exchange_bridge(201);
+    let s = secrets(&[]);
+    let out = run_with(
+        &url,
+        &s,
+        &["exchange", "--agent", "New-1", "--bootstrap", FIXTURE_BOOTSTRAP],
+        "",
+    )
+    .unwrap();
+    assert_eq!(out["agent"], "new-1");
+    assert_eq!(out["kind"], "muse");
+    assert_eq!(out["groups"], json!(["muse"]));
+    assert_eq!(out["notes_identity"], "muse/new-1");
+    assert_eq!(out["fleet_token_name"], "bridge.new-1-fleet-token");
+    assert_eq!(out["notes_token_name"], "bridge.new-1-token");
+    let printed = out.to_string();
+    for value in [FIXTURE_FLEET_CRED, FIXTURE_NOTES_TOKEN, FIXTURE_BOOTSTRAP] {
+        assert!(!printed.contains(value), "output must not carry a credential value");
+    }
+    let stored = s.stored.borrow();
+    assert_eq!(
+        stored.get("bridge.new-1-fleet-token").map(String::as_str),
+        Some(FIXTURE_FLEET_CRED)
+    );
+    assert_eq!(
+        stored.get("bridge.new-1-token").map(String::as_str),
+        Some(FIXTURE_NOTES_TOKEN)
+    );
+    let seen = seen.lock().unwrap();
+    assert_eq!(seen[0].url, "/enroll/exchange");
+    assert_eq!(
+        seen[0].body.as_ref().unwrap(),
+        &json!({ "bootstrap_token": FIXTURE_BOOTSTRAP, "agent": "new-1" })
+    );
+}
+
+#[test]
+fn exchange_refusal_stores_nothing_and_says_why() {
+    let (url, _) = exchange_bridge(404);
+    let s = secrets(&[]);
+    let e = run_with(
+        &url,
+        &s,
+        &["exchange", "--agent", "new-1", "--bootstrap", FIXTURE_BOOTSTRAP],
+        "",
+    )
+    .unwrap_err();
+    assert_eq!(e.exit_code(), EXIT_HTTP);
+    let text = e.to_string();
+    assert!(text.contains("bootstrap"), "{text}");
+    assert!(!text.contains(FIXTURE_BOOTSTRAP), "the token is scrubbed: {text}");
+    assert!(s.stored.borrow().is_empty(), "a refused exchange stores nothing");
+}
+
+#[test]
+fn notes_verbs_carry_kind_and_reply_to_under_a_bearer_token() {
+    let (url, seen) = fake_bridge(|_, _, _| (201, r#"{"delivered":1}"#.into()));
+    let s = secrets(&[("bridge.new-1-token", FIXTURE_NOTES_TOKEN)]);
+    let mut st = settings(&url);
+    st.agent = Some("new-1".into());
+    st.notes_token_name = Some("bridge.new-1-token".into());
+    let mut input: &[u8] = b"";
+    let sleep = |_: Duration| {};
+    let mut ctx = Ctx {
+        settings: st,
+        secrets: &s,
+        stdin: &mut input,
+        sleep: &sleep,
+    };
+    execute(
+        &mut ctx,
+        &sv(&[
+            "notes",
+            "send",
+            "--to",
+            "muse/*",
+            "--kind",
+            "instruction",
+            "do the thing",
+        ]),
+    )
+    .unwrap();
+    // A reply names only the note id: no --to, and no sender field
+    // anywhere in the payload — the worker routes it store-side.
+    execute(
+        &mut ctx,
+        &sv(&["notes", "send", "--reply-to", "7", "done"]),
+    )
+    .unwrap();
+    execute(&mut ctx, &sv(&["notes", "inbox"])).unwrap();
+    execute(&mut ctx, &sv(&["notes", "ack", "3", "4"])).unwrap();
+    let seen = seen.lock().unwrap();
+    assert_eq!(seen[0].url, "/notes/send");
+    assert_eq!(
+        seen[0].body.as_ref().unwrap(),
+        &json!({ "note": "do the thing", "kind": "instruction", "to": "muse/*" })
+    );
+    assert_eq!(
+        seen[1].body.as_ref().unwrap(),
+        &json!({ "note": "done", "kind": "note", "reply_to": 7 })
+    );
+    assert_eq!(seen[2].url, "/notes/inbox");
+    assert_eq!(seen[2].method, "GET");
+    assert_eq!(
+        seen[3].body.as_ref().unwrap(),
+        &json!({ "ids": [3, 4] })
+    );
+    for req in seen.iter() {
+        assert_eq!(
+            req.auth.as_deref(),
+            Some(format!("Bearer {FIXTURE_NOTES_TOKEN}").as_str()),
+            "notes calls authenticate with the identity's own token"
+        );
+    }
+}
+
+#[test]
+fn notes_verbs_name_the_missing_token() {
+    let s = secrets(&[]);
+    let mut st = settings("http://127.0.0.1:9");
+    st.agent = Some("new-1".into());
+    st.notes_token_name = Some("bridge.new-1-token".into());
+    let mut input: &[u8] = b"";
+    let sleep = |_: Duration| {};
+    let mut ctx = Ctx {
+        settings: st,
+        secrets: &s,
+        stdin: &mut input,
+        sleep: &sleep,
+    };
+    let e = execute(&mut ctx, &sv(&["notes", "inbox"])).unwrap_err();
+    assert_eq!(e.exit_code(), EXIT_TRANSPORT);
+    assert!(e.to_string().contains("bridge.new-1-token"), "{e}");
+    // Usage errors in the family exit 2 before any token is needed.
+    for args in [
+        vec!["notes"],
+        vec!["notes", "bogus"],
+        vec!["notes", "send", "x"],
+        vec!["notes", "send", "--to", "muse/x", "--kind", "shout", "x"],
+        vec!["notes", "ack"],
+        vec!["notes", "ack", "0"],
+    ] {
+        let e = execute(&mut ctx, &sv(&args)).unwrap_err();
+        assert_eq!(e.exit_code(), EXIT_USAGE, "{args:?}: {e}");
+    }
 }

@@ -50,6 +50,7 @@ mod closed_bound;
 mod core;
 mod label_enrich;
 mod lifecycle;
+mod placement_coord;
 mod placement_sessions;
 mod repair;
 mod stacks_outbox;
@@ -63,6 +64,7 @@ pub use closed_bound::*;
 pub use core::*;
 pub use label_enrich::*;
 pub use lifecycle::*;
+pub use placement_coord::*;
 pub use placement_sessions::*;
 pub use repair::*;
 pub use stacks_outbox::*;
@@ -85,6 +87,7 @@ mod tests {
             include_str!("turso_queue/claim.rs"),
             include_str!("turso_queue/label_enrich.rs"),
             include_str!("turso_queue/lifecycle.rs"),
+            include_str!("turso_queue/placement_coord.rs"),
             include_str!("turso_queue/admin.rs"),
             include_str!("turso_queue/stacks_outbox.rs"),
             include_str!("turso_queue/staleness.rs"),
@@ -891,6 +894,7 @@ mod tests {
             args.push(match a {
                 Arg::Text(s) => rusqlite::types::Value::Text(s.clone()),
                 Arg::Int(i) => rusqlite::types::Value::Integer(*i),
+                Arg::Float(f) => rusqlite::types::Value::Real(*f),
                 Arg::Null => rusqlite::types::Value::Null,
             });
         }

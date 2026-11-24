@@ -20,12 +20,17 @@ public class OpenActivity extends Activity {
         finish();
     }
 
-    /** The screen an action names; anything unknown opens Now. */
+    /** The screen an action names; anything unknown opens Now.
+     * Messages is the console's `#more/messages` (#14377): the name
+     * the shortcut carries is not the route, so it is translated. */
     static String screen(String action) {
         if (action != null && action.startsWith(PREFIX)) {
             String name = action.substring(PREFIX.length()).toLowerCase(Locale.ROOT);
             if (name.equals("ask") || name.equals("needs") || name.equals("next")) {
                 return name;
+            }
+            if (name.equals("messages")) {
+                return "more/messages";
             }
         }
         return "now";

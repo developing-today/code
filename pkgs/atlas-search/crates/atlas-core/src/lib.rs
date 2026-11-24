@@ -44,6 +44,7 @@ pub mod c8_fingerprint;
 pub mod c8_profile;
 pub mod classification;
 pub mod classify;
+pub mod cold;
 pub mod detect;
 pub mod disclosure;
 pub mod embed;
@@ -74,6 +75,7 @@ pub mod trace_ingest;
 pub mod trace_stats;
 pub mod turso;
 pub mod types;
+pub mod version_projection;
 
 /// Maximum neighbor chunks search expansion may attach to each result.
 /// Keep this aligned with the service's get-chunk neighbors ceiling.

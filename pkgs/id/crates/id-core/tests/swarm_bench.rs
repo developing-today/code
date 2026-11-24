@@ -156,7 +156,7 @@ fn drive_endgame() -> Run {
         ],
     );
     let first = sched.assignments();
-    assert!(!first.is_empty());
+    assert_ne!(first, [] as [id_core::swarm::Assignment; 0]);
     let dup = sched.assignments(); // endgame: duplicates of in-flight
     let mut duplicated_bytes = 0u64;
     let mut delivered: Vec<u64> = Vec::new();
