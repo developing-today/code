@@ -303,6 +303,24 @@ impl<S: EventStoreBackend> SharedEventStore<S> {
         op(&store)
     }
 
+    /// Runs `op` against the store under its write lock. It answers the
+    /// mutations the traits do not cover, such as the compaction pass.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TraitStoreError::Poisoned`] if another thread panicked while it held the lock, or
+    /// whatever `op` returns.
+    pub fn write<T>(
+        &self,
+        op: impl FnOnce(&mut S) -> Result<T, TraitStoreError>,
+    ) -> Result<T, TraitStoreError> {
+        let mut store = self
+            .inner
+            .write()
+            .map_err(|_err| TraitStoreError::Poisoned)?;
+        op(&mut store)
+    }
+
     /// The newest applied entry of `author`.
     fn latest_entry(&self, author: &VerifyingKey) -> Result<Option<AnyOperation>, TraitStoreError> {
         let author = *author.as_bytes();

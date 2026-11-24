@@ -278,6 +278,20 @@ impl LocalEvents {
         }
     }
 
+    /// Runs `op` against the store under its write lock. The store's own
+    /// error is preserved; a poisoned lock (a holder panicked with the
+    /// store) is reported the way the sync seam reports it.
+    fn write_store<T>(
+        &self,
+        op: impl FnOnce(&mut EventStore) -> Result<T, StoreError>,
+    ) -> Result<T> {
+        match self.store.write(|store| Ok(op(store))) {
+            Ok(Ok(value)) => Ok(value),
+            Ok(Err(error)) => Err(error.into()),
+            Err(_poisoned) => Err(anyhow!("the event store lock is poisoned")),
+        }
+    }
+
     /// The blob references in this node's event store, for the blob gate's index
     /// (`EventStore::document_references`).
     ///
@@ -352,7 +366,7 @@ impl LocalEvents {
     /// in that case the store is unchanged (the pass is one
     /// transaction).
     pub fn compact(&mut self, policy: &crate::event_store::CompactionPolicy) -> Result<usize> {
-        Ok(self.store.compact(policy)?)
+        self.write_store(|store| store.compact(policy))
     }
 
     /// Publishes this node's identity event if its log has none (#160, Option A).
@@ -2257,7 +2271,9 @@ mod chat_tests {
         let policy = crate::event_store::CompactionPolicy::default();
         assert_eq!(node.compact(&policy).unwrap(), 0);
         assert!(
-            node.store.event_by_id(&chat_ids[0]).unwrap().is_some(),
+            node.read_store(|store| store.event_by_id(&chat_ids[0]))
+                .unwrap()
+                .is_some(),
             "a chat event lost its bytes without a live-kinds declaration"
         );
 
@@ -2280,18 +2296,29 @@ mod chat_tests {
         // timeline projection needs message bodies, so it cannot
         // list compacted events; presence is the residue's promise.)
         assert!(
-            node.store.roster(&group).unwrap().contains(&author),
+            node.read_store(|store| store.roster(&group))
+                .unwrap()
+                .contains(&author),
             "the roster no longer reads through the compaction residue"
         );
         for id in &chat_ids {
             assert!(
-                node.store.validity_now(id).unwrap() == crate::event_store::Validity::Applies,
+                node.read_store(|store| store.validity_now(id)).unwrap()
+                    == crate::event_store::Validity::Applies,
                 "chat {id} changed its verdict under compaction"
             );
         }
         // Durable facts keep their bytes.
-        assert!(node.store.event_by_id(&document.id).unwrap().is_some());
-        assert!(node.store.event_by_id(&anchor).unwrap().is_some());
+        assert!(
+            node.read_store(|store| store.event_by_id(&document.id))
+                .unwrap()
+                .is_some()
+        );
+        assert!(
+            node.read_store(|store| store.event_by_id(&anchor))
+                .unwrap()
+                .is_some()
+        );
 
         // The node still writes after compaction: the chain head and
         // the backlink resolution are intact.
@@ -2312,14 +2339,16 @@ mod chat_tests {
         let reopened = LocalEvents::open(dir.path(), key(61)).unwrap();
         assert!(
             reopened
-                .store
-                .roster(&group)
+                .read_store(|store| store.roster(&group))
                 .unwrap()
                 .contains(&reopened.author()),
             "the reopened store lost the roster"
         );
         assert!(
-            reopened.store.event_by_id(&after).unwrap().is_some(),
+            reopened
+                .read_store(|store| store.event_by_id(&after))
+                .unwrap()
+                .is_some(),
             "the reopened store lost the post-compaction write"
         );
         assert!(
