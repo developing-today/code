@@ -1607,6 +1607,46 @@ mod tests {
         assert!(second.spend(TEST_NOW + 1).tool_calls > spent_after_leave.tool_calls);
     }
 
+    #[test]
+    fn stored_session_refuses_a_second_live_open_for_the_same_pair() {
+        let mut store = QuotaLedgerStore::new();
+        let first = PolicySession::open_stored(
+            grant(),
+            BridgeSession::start(&v1_tool_definitions()).unwrap(),
+            host_key(),
+            &mut store,
+            TEST_NOW,
+        )
+        .unwrap();
+
+        // A duplicate grant opening a second live session for the
+        // same (agent, world) pair is refused (#14526): two live
+        // sessions would each hold a clone of one ledger and
+        // double its budget.
+        let refusal = PolicySession::open_stored(
+            grant(),
+            BridgeSession::start(&v1_tool_definitions()).unwrap(),
+            host_key(),
+            &mut store,
+            TEST_NOW,
+        )
+        .err()
+        .expect("second live open must be refused");
+        assert_eq!(refusal.agent_key, grant().agent_key);
+        assert_eq!(refusal.world, grant().world);
+
+        // Once the first session is handed back, a rejoin opens.
+        first.close(&mut store);
+        let rejoined = PolicySession::open_stored(
+            grant(),
+            BridgeSession::start(&v1_tool_definitions()).unwrap(),
+            host_key(),
+            &mut store,
+            TEST_NOW + 1,
+        );
+        assert!(rejoined.is_ok());
+    }
+
     /// The #8301 acceptance against the #1067 (F12.10) consumed
     /// shape: v1 §9.3 keeps the bridge and audit shapes fixed while
     /// the quota system lands, so the per-agent ledger must emit

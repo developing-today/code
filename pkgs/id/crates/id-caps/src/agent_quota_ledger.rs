@@ -627,4 +627,26 @@ mod tests {
         assert!(store.is_checked_out(&AGENT, "other"));
         assert!(store.is_checked_out(&[9; 32], "w"));
     }
+
+    #[test]
+    fn store_restore_starts_with_nothing_checked_out() {
+        let mut store = QuotaLedgerStore::new();
+        let mut first = store
+            .open(AGENT, "w", "archivist", class(2, None), 0)
+            .unwrap();
+        first.charge(0, call()).unwrap();
+        store.close(first);
+        // Checked out again when the host snapshots and dies: the
+        // live handle is never handed back.
+        let _live = store
+            .open(AGENT, "w", "archivist", class(2, None), 1)
+            .unwrap();
+
+        let snapshot = serde_json::to_string(&store.ledgers()).unwrap();
+        let mut restored = QuotaLedgerStore::restore(serde_json::from_str(&snapshot).unwrap());
+        let mut rejoined = restored
+            .open(AGENT, "w", "archivist", class(2, None), 2)
+            .unwrap();
+        assert_eq!(rejoined.spend_at(2).tool_calls, 1);
+    }
 }
