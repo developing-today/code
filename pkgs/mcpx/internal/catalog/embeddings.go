@@ -267,10 +267,9 @@ func (c *CascadeEmbedder) Backend() string {
 	return c.backend
 }
 
-// WasmPath is unexported; CloseWasm lets the registry retire the replaced
-// embedder's wazero runtime after a hot swap (#13616). It blocks until an
-// in-flight Embed holding the wasm mutex finishes, and is a no-op when the
-// cascade holds no wasm module.
+// CloseWasm lets the registry retire the replaced embedder's wazero runtime
+// after a hot swap (#13616). It blocks until an in-flight Embed holding the
+// wasm mutex finishes, and is a no-op when the cascade holds no wasm module.
 func (c *CascadeEmbedder) CloseWasm(ctx context.Context) {
 	if c == nil {
 		return
