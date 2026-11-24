@@ -321,6 +321,53 @@ export class MessageStore extends DurableObject {
     return row ? { registered: true, counter: row.signal_counter } : { registered: false, counter: 0 };
   }
 
+  /** Owner read over note_message (pipeline.js); sender/receiver are exact identities. */
+  noteOwnerList(q = {}) {
+    const where = ["id > ?"];
+    const args = [q.since_id ?? 0];
+    if (q.before_id !== undefined && q.before_id !== null) {
+      where.push("id < ?");
+      args.push(q.before_id);
+    }
+    if (q.unread_only) where.push("ack_at IS NULL");
+    if (q.sender) {
+      where.push("sender = ?");
+      args.push(q.sender);
+    }
+    if (q.receiver) {
+      where.push("recipient = ?");
+      args.push(q.receiver);
+    }
+    const order = q.order === "desc" ? "DESC" : "ASC";
+    return this.sql
+      .exec(
+        `SELECT id, ts, recipient, sender, body, ack_at FROM note_message WHERE ${where.join(" AND ")} ORDER BY id ${order} LIMIT ?`,
+        ...args,
+        q.limit ?? 50,
+      )
+      .toArray()
+      .map((r) => ({ ...r }));
+  }
+
+  /** Owner directory of note identities (pipeline.js): scopes folded over each identity's tokens. */
+  noteDirectory() {
+    return this.sql
+      .exec(
+        `SELECT i.identity AS identity, i.signal_counter AS signal_counter, i.created AS created,
+           COALESCE(MAX(t.can_send), 0) AS can_send, COALESCE(MAX(t.can_inbox), 0) AS can_inbox
+         FROM note_identity i LEFT JOIN note_token t ON t.identity = i.identity
+         GROUP BY i.identity ORDER BY i.identity`,
+      )
+      .toArray()
+      .map((r) => ({
+        identity: r.identity,
+        can_send: !!r.can_send,
+        can_inbox: !!r.can_inbox,
+        signal_counter: r.signal_counter,
+        created: r.created,
+      }));
+  }
+
   eventSubGet(id) {
     const row = this.sql.exec("SELECT data FROM event_sub WHERE id = ?", id).toArray()[0];
     return row ? JSON.parse(row.data) : null;
@@ -506,6 +553,10 @@ function storeFor(env) {
     noteInbox: (identity) => stub.noteInbox(identity),
     noteAck: (identity, sel) => stub.noteAck(identity, sel),
     noteSignal: (identity) => stub.noteSignal(identity),
+    // Owner reads (pipeline.js): the query is validated in the Worker
+    // by normalizePipelineQuery before these are called, like fleet.
+    noteOwnerList: (q) => stub.noteOwnerList(q),
+    noteDirectory: () => stub.noteDirectory(),
     fleet: (op, args) => fleetCall(stub, op, args),
     fleetCredentialAuth: (token_hash) => stub.fleetCredentialAuth(token_hash),
     fleetCredentialPut: (rec) => stub.fleetCredentialPut(rec),

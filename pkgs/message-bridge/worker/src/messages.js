@@ -284,6 +284,38 @@ export class MemoryStore {
       ? { registered: true, counter: this.noteCounters.get(identity) }
       : { registered: false, counter: 0 };
   }
+  // Owner reads (pipeline.js): every note row in the table's own shape
+  // ({id, ts, recipient, sender, body, ack_at}); sender/receiver here
+  // are exact identity matches, address matching lives in pipeline.js.
+  async noteOwnerList(q = {}) {
+    let rows = this.noteRows.filter(
+      (r) =>
+        (q.since_id === undefined || q.since_id === null || r.id > q.since_id) &&
+        (q.before_id === undefined || q.before_id === null || r.id < q.before_id) &&
+        (!q.unread_only || r.ack_at === null) &&
+        (!q.sender || r.from === q.sender) &&
+        (!q.receiver || r.recipient === q.receiver),
+    );
+    rows = q.order === "desc" ? rows.slice().reverse() : rows;
+    return rows
+      .slice(0, q.limit ?? 50)
+      .map((r) => ({ id: r.id, ts: r.ts, recipient: r.recipient, sender: r.from, body: r.note, ack_at: r.ack_at }));
+  }
+  // Owner directory (pipeline.js): one row per registered identity,
+  // scopes folded over its tokens (any token granting a scope grants
+  // it), plus the wake-signal counter.
+  async noteDirectory() {
+    return [...this.noteCounters.keys()].sort().map((identity) => {
+      let can_send = false;
+      let can_inbox = false;
+      for (const t of this.noteTokens.values()) {
+        if (t.identity !== identity) continue;
+        can_send = can_send || !!t.can_send;
+        can_inbox = can_inbox || !!t.can_inbox;
+      }
+      return { identity, can_send, can_inbox, signal_counter: this.noteCounters.get(identity), created: null };
+    });
+  }
   // Wake hooks (wake.js), same semantics as the Durable Object.
   async wakeHookGet(address) {
     const h = this.hooks.get(address);
