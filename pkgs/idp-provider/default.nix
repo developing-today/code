@@ -2,15 +2,16 @@
 # #13409). Follows the repo's small-Rust-package pattern
 # (rustPlatform.buildRustPackage with cargoLock, as in the
 # fleet-brokers package in pkgs/fleet and the atlas-search monolith).
-{ lib, rustPlatform, pkg-config, xmlsec }:
+{ lib, rustPlatform, pkg-config, libclang, xmlsec }:
 
 rustPlatform.buildRustPackage {
   pname = "idp-provider";
   version = "0.1.0";
   src = ./.;
   cargoLock.lockFile = ./Cargo.lock;
-  nativeBuildInputs = [ pkg-config ];
+  nativeBuildInputs = [ pkg-config libclang ];
   buildInputs = [ xmlsec ];
+  LIBCLANG_PATH = "${libclang.lib}/lib";
 
   meta = {
     description = "Minimal OIDC provider: discovery, JWKS, authorize/token/userinfo (code + PKCE) signing with the IdP PKI key";
