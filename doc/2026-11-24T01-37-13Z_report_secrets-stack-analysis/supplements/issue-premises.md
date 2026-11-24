@@ -1,6 +1,6 @@
 # Issue premises this analysis composes with (name-only, no values)
 
-*Summarised 2026-11-24 from the issue bodies of #13948, #13893, #9155, #13658 in developing-today/code.*
+_Summarised 2026-11-24 from the issue bodies of #13948, #13893, #9155, #13658 in developing-today/code._
 
 ## #13948 — secrets plane design (the design this analysis must compose with)
 
@@ -17,7 +17,7 @@
 ## #9155 — fleet CA, credentials & secrets programme (v0.3 design mill)
 
 - Estate PKI reference: four independent roots (Ed25519, P-256, RSA, ML-DSA-44 baseline) plus the P-384 IdP CA as interim primary; root custody escrowed to exactly three destinations (encrypted laptop storage, the authorised Bitwarden project, the authorised 1Password vault) with tested restoration; SOPS/age/NixOS integration is an in-scope workstream of this programme; safety gate: design/synthetic proof only in this phase, no production CA generation or live vault writes authorised by the programme itself.
-- Relevance: §1's recommendation keeps root custody exactly here and chains SPIRE *under* it; §2's Tier A (CA material) already lives in this custody model, never in git.
+- Relevance: §1's recommendation keeps root custody exactly here and chains SPIRE _under_ it; §2's Tier A (CA material) already lives in this custody model, never in git.
 
 ## #13658 — the IdP story
 

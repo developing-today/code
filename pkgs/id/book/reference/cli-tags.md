@@ -26,10 +26,10 @@ id tag add <FILE> <KEY> [VALUE]
 
 Alias: `add`.
 
-| Flag | Argument | Default | Meaning |
-|---|---|---|---|
-| `--value-hex` | `HEX` | none | Tag value as hex-encoded raw bytes (binary-safe). Conflicts with the positional `VALUE` and with `--value-file`. |
-| `--value-file` | `PATH` | none | Read the raw tag value from `PATH`; `-` reads stdin. Conflicts with `--value-hex`. |
+| Flag           | Argument | Default | Meaning                                                                                                          |
+| -------------- | -------- | ------- | ---------------------------------------------------------------------------------------------------------------- |
+| `--value-hex`  | `HEX`    | none    | Tag value as hex-encoded raw bytes (binary-safe). Conflicts with the positional `VALUE` and with `--value-file`. |
+| `--value-file` | `PATH`   | none    | Read the raw tag value from `PATH`; `-` reads stdin. Conflicts with `--value-hex`.                               |
 
 Behaviour notes:
 
@@ -61,9 +61,9 @@ id tag del <FILE> <KEY> [VALUE]
 
 Aliases: `rm`, `remove`, `rem`, `delete`, `unset`.
 
-| Flag | Argument | Default | Meaning |
-|---|---|---|---|
-| `--value-hex` | `HEX` | none | Specific value to remove, as hex-encoded raw bytes. Conflicts with the positional `VALUE`. |
+| Flag          | Argument | Default | Meaning                                                                                    |
+| ------------- | -------- | ------- | ------------------------------------------------------------------------------------------ |
+| `--value-hex` | `HEX`    | none    | Specific value to remove, as hex-encoded raw bytes. Conflicts with the positional `VALUE`. |
 
 Behaviour notes:
 
@@ -95,11 +95,11 @@ id tag ls [FILE]
 
 Alias: `ls`.
 
-| Flag | Argument | Default | Meaning |
-|---|---|---|---|
-| `--hex` | none (switch) | off | Show non-UTF-8 values as hex (`0x...`) instead of `<binary N bytes>`. |
-| `--binary` | none (switch) | off | Show non-UTF-8 values as lossy text instead of `<binary N bytes>`. |
-| `--no-truncate` | none (switch) | off | Do not truncate long values; the display default truncates at 256 bytes. |
+| Flag            | Argument      | Default | Meaning                                                                  |
+| --------------- | ------------- | ------- | ------------------------------------------------------------------------ |
+| `--hex`         | none (switch) | off     | Show non-UTF-8 values as hex (`0x...`) instead of `<binary N bytes>`.    |
+| `--binary`      | none (switch) | off     | Show non-UTF-8 values as lossy text instead of `<binary N bytes>`.       |
+| `--no-truncate` | none (switch) | off     | Do not truncate long values; the display default truncates at 256 bytes. |
 
 Behaviour notes:
 
@@ -128,21 +128,21 @@ id tag find <QUERY>...
 
 Alias: `find`. At least one query term is required.
 
-| Flag | Argument | Default | Meaning |
-|---|---|---|---|
-| `--hex` | none (switch) | off | Show non-UTF-8 values as hex (`0x...`) instead of `<binary N bytes>`. |
-| `--binary` | none (switch) | off | Show non-UTF-8 values as lossy text instead of `<binary N bytes>`. |
-| `--no-truncate` | none (switch) | off | Do not truncate long values; the display default truncates at 256 bytes. |
+| Flag            | Argument      | Default | Meaning                                                                  |
+| --------------- | ------------- | ------- | ------------------------------------------------------------------------ |
+| `--hex`         | none (switch) | off     | Show non-UTF-8 values as hex (`0x...`) instead of `<binary N bytes>`.    |
+| `--binary`      | none (switch) | off     | Show non-UTF-8 values as lossy text instead of `<binary N bytes>`.       |
+| `--no-truncate` | none (switch) | off     | Do not truncate long values; the display default truncates at 256 bytes. |
 
 Behaviour notes — the structured query syntax. Each query term takes one of five forms:
 
-| Term form | Matches |
-|---|---|
-| `key:` | Tags whose key is `key` (any value, or key-only). |
-| `:value` | Tags whose value is `value` (any key). |
-| `key:value` | Tags with exactly that key and that value. |
+| Term form   | Matches                                                                  |
+| ----------- | ------------------------------------------------------------------------ |
+| `key:`      | Tags whose key is `key` (any value, or key-only).                        |
+| `:value`    | Tags whose value is `value` (any key).                                   |
+| `key:value` | Tags with exactly that key and that value.                               |
 | `"literal"` | Tags where the literal text occurs in any field (subject, key or value). |
-| `bare` | Case-insensitive search across subject, key and value. |
+| `bare`      | Case-insensitive search across subject, key and value.                   |
 
 - Multiple terms are ANDed: a tag must satisfy every term to be returned.
 - Quoted strings are accepted in the key and value positions of a `key:value` term: `"key:":":value"` matches the key `key:` with the value `:value`.

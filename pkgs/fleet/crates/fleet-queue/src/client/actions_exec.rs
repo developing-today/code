@@ -105,6 +105,36 @@ pub fn ae_extend_decide(handle: &str, approve: bool) -> Result<Value, (i32, Stri
     )
 }
 
+/// Record a signed applier decision on a pending extension request
+/// (S1 of #14043, broker half): the aggregator-side applier carries
+/// Drew's recorded answer with `answer_id`, `answered_at` (the
+/// house ISO `YYYY-MM-DDTHH:MM:SSZ` the broker's `iso()` produces)
+/// and `sig` — the lowercase hex HMAC-SHA256 over
+/// `handle|approve|answer_id|answered_at` with `approve` as
+/// "true"/"false", keyed by the secret the broker resolves by name
+/// (fleet-secrets; the value never travels in the repo or logs).
+/// Seat calls without `sig` keep their current behaviour; the
+/// signed form is accepted only on this verb, and an `answered_at`
+/// older than the broker's window is refused as a replay.
+pub fn ae_extend_decide_signed(
+    handle: &str,
+    approve: bool,
+    answer_id: &str,
+    answered_at: &str,
+    sig: &str,
+) -> Result<Value, (i32, String)> {
+    ae_call(
+        "/actions-exec-extend-decide",
+        json!({
+            "handle": handle,
+            "approve": approve,
+            "answer_id": answer_id,
+            "answered_at": answered_at,
+            "sig": sig,
+        }),
+    )
+}
+
 /// Close a session (seat side; the agent side closes through the
 /// OIDC door instead).
 pub fn ae_close(handle: &str) -> Result<Value, (i32, String)> {

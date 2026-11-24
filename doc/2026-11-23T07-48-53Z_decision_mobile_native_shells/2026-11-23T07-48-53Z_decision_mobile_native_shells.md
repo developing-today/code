@@ -28,11 +28,11 @@
 3. **Platform order.** The platform priority order ruled alongside
    this decision (Q1 on #6297) is **Linux → Android → Web → macOS
    → Windows**. Android ranks second overall, behind only Linux;
-   macOS is the second *desktop* native target, not the second
+   macOS is the second _desktop_ native target, not the second
    platform. The mobile platform this decision names is therefore
    **Android**. The ruling does not address iOS; this record does
    not settle an iOS shell either way.
-4. **Sequencing is the only open part.** Deferring the *start* of
+4. **Sequencing is the only open part.** Deferring the _start_ of
    the implementation is acceptable only if the mill judges it
    genuinely best; a deferred start is not the default. The
    adoption itself is not conditional on that judgement.
@@ -56,8 +56,8 @@ without addition.
   already deferred this question once, with the reason recorded
   (the PWA covered phones in v1; the native proof obligation went
   to the Linux desktop shell first). The ruling closes the
-  deferral path as a *decision*: what remains permissible is a
-  deferred *start* on a genuine-best judgement (Decision item 4),
+  deferral path as a _decision_: what remains permissible is a
+  deferred _start_ on a genuine-best judgement (Decision item 4),
   not a deferred answer.
 - **Drop (rejected).** Dropping app-store shells would leave the
   PWA as the permanent phone story; the ruling adopts native

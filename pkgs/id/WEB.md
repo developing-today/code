@@ -276,87 +276,87 @@ program-only router (one listener pinned to one world) registers 10 more.
 
 ### Pages
 
-| Route                                   | Method | Description                                               |
-| --------------------------------------- | ------ | --------------------------------------------------------- |
-| `/`                                     | GET    | Index / home: world list, tagged documents, global chat   |
-| `/.well-known/id-transport-advertisement` | GET  | Transport advertisement document                          |
-| `/files`                                | GET    | File browser page                                         |
-| `/world`                                | GET    | World page (the hosted world's adapter surface)           |
-| `/settings`                             | GET    | Settings page                                             |
-| `/peers`                                | GET    | Discovered peers (auto-refreshes)                         |
-| `/blocks`                               | GET    | Operator block-list page                                  |
-| `/groups`                               | GET    | Groups page                                               |
-| `/edit/{*name}`                         | GET    | Editor/viewer for a file by name (wildcard)               |
-| `/hash/{hash}`                          | GET    | Redirect from a content hash to its named file            |
-| `/view/{*name}`                         | GET    | Read-only view of a file by name                          |
-| `/blob/{hash}`                          | GET    | Raw blob content with Content-Type                        |
+| Route                                     | Method | Description                                             |
+| ----------------------------------------- | ------ | ------------------------------------------------------- |
+| `/`                                       | GET    | Index / home: world list, tagged documents, global chat |
+| `/.well-known/id-transport-advertisement` | GET    | Transport advertisement document                        |
+| `/files`                                  | GET    | File browser page                                       |
+| `/world`                                  | GET    | World page (the hosted world's adapter surface)         |
+| `/settings`                               | GET    | Settings page                                           |
+| `/peers`                                  | GET    | Discovered peers (auto-refreshes)                       |
+| `/blocks`                                 | GET    | Operator block-list page                                |
+| `/groups`                                 | GET    | Groups page                                             |
+| `/edit/{*name}`                           | GET    | Editor/viewer for a file by name (wildcard)             |
+| `/hash/{hash}`                            | GET    | Redirect from a content hash to its named file          |
+| `/view/{*name}`                           | GET    | Read-only view of a file by name                        |
+| `/blob/{hash}`                            | GET    | Raw blob content with Content-Type                      |
 
 ### HTTP API and partials
 
-| Route                   | Method        | Description                                               |
-| ----------------------- | ------------- | --------------------------------------------------------- |
-| `/api/files`            | GET           | File list (HTML partial)                                  |
-| `/api/home/feed`        | GET           | Home feed partial                                         |
-| `/api/peers`            | GET           | Peers partial                                             |
-| `/api/blocks`           | GET, POST     | List blocks / create a block                              |
-| `/api/blocks/remove`    | POST          | Remove a block                                            |
-| `/api/save`             | POST          | Save file content                                         |
-| `/api/new`              | POST          | Create new file                                           |
-| `/api/rename`           | POST          | Rename file (with optional archive)                       |
-| `/api/copy`             | POST          | Copy file to new name                                     |
-| `/api/files/send`       | POST          | Send file to another server (server-side transfer, #5346) |
-| `/api/download`         | POST          | Download file content                                     |
-| `/api/delete`           | POST          | Soft-delete file                                          |
-| `/api/restore`          | POST          | Restore deleted file (404 if missing, 409 if not deleted) |
-| `/api/hard-delete`      | POST          | Permanently delete file                                   |
-| `/api/upload`           | POST          | Image upload (multipart, route-scoped body limit)         |
-| `/api/images`           | GET           | Image listing, paged                                      |
-| `/api/tags`             | GET           | Get tags for a file                                       |
-| `/api/tags`             | POST          | Set a tag                                                 |
-| `/api/tags`             | DELETE        | Delete a tag                                              |
-| `/api/tags/search`      | GET           | Search tags                                               |
-| `/api/identity/register` | POST         | Register a web client identity                            |
-| `/api/identity/me`      | GET           | The current identity                                      |
-| `/api/identity/name`    | POST          | Update the identity display name                          |
-| `/api/seitan/invite`    | POST          | Seitan admission: create an invite                        |
-| `/api/seitan/admit`     | POST          | Seitan admission: admit with an invite                    |
-| `/assets/{*path}`       | GET           | Static assets                                             |
+| Route                    | Method    | Description                                               |
+| ------------------------ | --------- | --------------------------------------------------------- |
+| `/api/files`             | GET       | File list (HTML partial)                                  |
+| `/api/home/feed`         | GET       | Home feed partial                                         |
+| `/api/peers`             | GET       | Peers partial                                             |
+| `/api/blocks`            | GET, POST | List blocks / create a block                              |
+| `/api/blocks/remove`     | POST      | Remove a block                                            |
+| `/api/save`              | POST      | Save file content                                         |
+| `/api/new`               | POST      | Create new file                                           |
+| `/api/rename`            | POST      | Rename file (with optional archive)                       |
+| `/api/copy`              | POST      | Copy file to new name                                     |
+| `/api/files/send`        | POST      | Send file to another server (server-side transfer, #5346) |
+| `/api/download`          | POST      | Download file content                                     |
+| `/api/delete`            | POST      | Soft-delete file                                          |
+| `/api/restore`           | POST      | Restore deleted file (404 if missing, 409 if not deleted) |
+| `/api/hard-delete`       | POST      | Permanently delete file                                   |
+| `/api/upload`            | POST      | Image upload (multipart, route-scoped body limit)         |
+| `/api/images`            | GET       | Image listing, paged                                      |
+| `/api/tags`              | GET       | Get tags for a file                                       |
+| `/api/tags`              | POST      | Set a tag                                                 |
+| `/api/tags`              | DELETE    | Delete a tag                                              |
+| `/api/tags/search`       | GET       | Search tags                                               |
+| `/api/identity/register` | POST      | Register a web client identity                            |
+| `/api/identity/me`       | GET       | The current identity                                      |
+| `/api/identity/name`     | POST      | Update the identity display name                          |
+| `/api/seitan/invite`     | POST      | Seitan admission: create an invite                        |
+| `/api/seitan/admit`      | POST      | Seitan admission: admit with an invite                    |
+| `/assets/{*path}`        | GET       | Static assets                                             |
 
 ### World bridge
 
-| Route                   | Method    | Description                                               |
-| ----------------------- | --------- | --------------------------------------------------------- |
-| `/api/world/invite`     | POST      | Mint a world guest invite                                 |
-| `/api/world/host-view`  | GET       | Host view: snapshot, surface, and paged records           |
-| `/api/world/metrics`    | GET       | World host metrics                                        |
-| `/api/world/directory`  | GET, POST | Directory read / signed directory write action            |
-| `/explore`              | GET       | Script-free HTML directory explorer (forms only)          |
-| `/explore/login`        | POST      | Explorer login (admin token for the `id_explore` cookie)  |
-| `/explore/act`          | POST      | Explorer directory action                                 |
-| `/invite`               | GET       | Invite landing page                                       |
-| `/ws/world`             | WS        | World session bridge (default socket path)                |
+| Route                  | Method    | Description                                              |
+| ---------------------- | --------- | -------------------------------------------------------- |
+| `/api/world/invite`    | POST      | Mint a world guest invite                                |
+| `/api/world/host-view` | GET       | Host view: snapshot, surface, and paged records          |
+| `/api/world/metrics`   | GET       | World host metrics                                       |
+| `/api/world/directory` | GET, POST | Directory read / signed directory write action           |
+| `/explore`             | GET       | Script-free HTML directory explorer (forms only)         |
+| `/explore/login`       | POST      | Explorer login (admin token for the `id_explore` cookie) |
+| `/explore/act`         | POST      | Explorer directory action                                |
+| `/invite`              | GET       | Invite landing page                                      |
+| `/ws/world`            | WS        | World session bridge (default socket path)               |
 
 ### Program gallery
 
 Every gallery route answers 404 unless a gallery was wired in with
 `--gallery-dir` or `ID_GALLERY_DIR`.
 
-| Route                                 | Method | Description                                          |
-| ------------------------------------- | ------ | ---------------------------------------------------- |
-| `/api/gallery/records`                | GET    | Signed bundle records list                           |
-| `/api/gallery/bundles/{content_hash}` | GET    | Bundle bytes, immutable cache                        |
-| `/api/gallery/search`                 | GET    | Search bundles                                       |
-| `/api/gallery/authors/{author}`       | GET    | Author page by key                                   |
-| `/api/gallery/collections`            | GET    | Operator-signed featured collections                 |
-| `/api/gallery/collections/{operator}/{name}` | GET | One collection                                    |
-| `/api/gallery/transparency`           | GET    | Removals, refusals and reinstatements                |
+| Route                                        | Method | Description                           |
+| -------------------------------------------- | ------ | ------------------------------------- |
+| `/api/gallery/records`                       | GET    | Signed bundle records list            |
+| `/api/gallery/bundles/{content_hash}`        | GET    | Bundle bytes, immutable cache         |
+| `/api/gallery/search`                        | GET    | Search bundles                        |
+| `/api/gallery/authors/{author}`              | GET    | Author page by key                    |
+| `/api/gallery/collections`                   | GET    | Operator-signed featured collections  |
+| `/api/gallery/collections/{operator}/{name}` | GET    | One collection                        |
+| `/api/gallery/transparency`                  | GET    | Removals, refusals and reinstatements |
 
 ### WebSocket
 
-| Route                 | Method | Description                                               |
-| --------------------- | ------ | --------------------------------------------------------- |
-| `/ws/collab/{doc_id}` | WS     | Collaboration WebSocket                                   |
-| `/ws/tags`            | WS     | Tag change broadcast                                      |
+| Route                 | Method | Description             |
+| --------------------- | ------ | ----------------------- |
+| `/ws/collab/{doc_id}` | WS     | Collaboration WebSocket |
+| `/ws/tags`            | WS     | Tag change broadcast    |
 
 ## Configuration
 

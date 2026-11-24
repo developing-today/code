@@ -9,13 +9,13 @@ primary-checkout guard, code#10095, and was re-run split, worktree-only).
 
 ## Landing identifiers
 
-| Item | Value |
-|---|---|
-| Worktree base (origin/main at creation) | `0ecb31eef33031853569ee9548c12a211563ee39` |
-| Commit | `bb0b439c8ad3bdb9f7a5d757147345d04d378be7` — "docs(id book): cover the mail Worker and the two Worker proofs of concept (#13900)" (message via file, surgical staging: exactly the 8 files listed in book-survey-notes.md) |
-| PR | https://github.com/developing-today/code/pull/13914 |
-| Merge | MERGED 2026-11-24T00:51:24Z, merge commit `68480311fc1db8b1f71553185f4af394ff73cf37` (merge commit, via laptop `gh pr merge 13914 --merge`) |
-| Pre-merge freshness check | At merge time origin/main was `c4e2e7294b3e30cfc3d0f8af1139c748d02e42ba` (intervening merges #13906 mcpx book, #13904 audit report). `git diff HEAD origin/main -- pkgs/id/book nixos/services/id-mail pkgs/id/worker-poc` showed exactly this PR's own changes and nothing else — no surveyed source or book file had moved underneath the chapters. `gh pr view` reported MERGEABLE. |
+| Item                                    | Value                                                                                                                                                                                                                                                                                                                                                                                  |
+| --------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Worktree base (origin/main at creation) | `0ecb31eef33031853569ee9548c12a211563ee39`                                                                                                                                                                                                                                                                                                                                             |
+| Commit                                  | `bb0b439c8ad3bdb9f7a5d757147345d04d378be7` — "docs(id book): cover the mail Worker and the two Worker proofs of concept (#13900)" (message via file, surgical staging: exactly the 8 files listed in book-survey-notes.md)                                                                                                                                                             |
+| PR                                      | https://github.com/developing-today/code/pull/13914                                                                                                                                                                                                                                                                                                                                    |
+| Merge                                   | MERGED 2026-11-24T00:51:24Z, merge commit `68480311fc1db8b1f71553185f4af394ff73cf37` (merge commit, via laptop `gh pr merge 13914 --merge`)                                                                                                                                                                                                                                            |
+| Pre-merge freshness check               | At merge time origin/main was `c4e2e7294b3e30cfc3d0f8af1139c748d02e42ba` (intervening merges #13906 mcpx book, #13904 audit report). `git diff HEAD origin/main -- pkgs/id/book nixos/services/id-mail pkgs/id/worker-poc` showed exactly this PR's own changes and nothing else — no surveyed source or book file had moved underneath the chapters. `gh pr view` reported MERGEABLE. |
 
 ## Transfer integrity
 
@@ -34,6 +34,7 @@ it equals its SUMMARY text; every internal .md link resolves and its text
 equals the target chapter's title; worker-name coverage in SUMMARY.
 
 Result: `entries=106 problems=0`
+
 - coverage mail: ['The mail Worker API']
 - coverage id-worker-poc: ['id-worker-poc: the World Durable Object proof of concept']
 - coverage id-d1-journal-poc: ['id-d1-journal-poc: the D1 journal proof of concept']

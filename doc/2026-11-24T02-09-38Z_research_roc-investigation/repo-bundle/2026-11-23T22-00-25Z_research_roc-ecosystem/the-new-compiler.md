@@ -52,7 +52,7 @@ in [community and Zulip digest](community-and-zulip-digest.md)):
 - **No performance improvements at all** (compiler or runtime) until 0.1.1,
   which is planned "shortly after" 0.1.0.
 - **Bugfix bar for 0.1.0:** only bugs that (a) block real-world Roc programs
-  (hobby projects and learning materials count) *and* (b) can't be worked
+  (hobby projects and learning materials count) _and_ (b) can't be worked
   around. Everything else — even compiler crashes — defaults to 0.1.1, with a
   deliberately high bar for exceptions.
 - **Status as of 2026-11-23:** no blocker bugs reported. Feldman noted,

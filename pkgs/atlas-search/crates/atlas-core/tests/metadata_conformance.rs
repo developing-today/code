@@ -25,10 +25,14 @@ use atlas_core::stage::{list_staged_items_in_db, provision_staging_db, schema_ve
 use rusqlite::Connection;
 use serde_json::Value;
 
+// The fixture set is vendored into the package (fixtures/ beside crates/)
+// from doc/2026-11-21T17-56-24Z_design_atlas_metadata_schema_v1/fixtures/
+// so the test also runs in the Nix build sandbox, whose source tree is
+// this package only. It is a frozen v1 oracle: update both copies together.
 fn fixture_set() -> Value {
     let path = concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../../../../doc/2026-11-21T17-56-24Z_design_atlas_metadata_schema_v1/fixtures/atlas-metadata-v1.json"
+        "/../../fixtures/atlas-metadata-v1.json"
     );
     let raw = std::fs::read_to_string(path)
         .unwrap_or_else(|e| panic!("conformance fixture set unreadable at {path}: {e}"));

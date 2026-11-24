@@ -119,7 +119,12 @@ async function chainOf(key: IdKey, count: number, store?: BridgeStore): Promise<
   return events;
 }
 
-function serve(store: BridgeStore, boundKey: IdKey, transport: FrameTransport, params = DEFAULT_RANGE_PARAMS): BridgeSessionServer {
+function serve(
+  store: BridgeStore,
+  boundKey: IdKey,
+  transport: FrameTransport,
+  params = DEFAULT_RANGE_PARAMS,
+): BridgeSessionServer {
   return new BridgeSessionServer({
     store,
     bindingId: BINDING,
@@ -178,8 +183,18 @@ test("an equal-height fork is detected by proof exchange, not heights", async ()
   const clientStore = makeStore();
   const serverStore = makeStore();
   const [e0] = await chainOf(alice, 1);
-  const a1 = await signEvent(alice, { seq: 1, backlink: e0.idBytes, kind: "message", body: new TextEncoder().encode("a") });
-  const b1 = await signEvent(alice, { seq: 1, backlink: e0.idBytes, kind: "message", body: new TextEncoder().encode("b") });
+  const a1 = await signEvent(alice, {
+    seq: 1,
+    backlink: e0.idBytes,
+    kind: "message",
+    body: new TextEncoder().encode("a"),
+  });
+  const b1 = await signEvent(alice, {
+    seq: 1,
+    backlink: e0.idBytes,
+    kind: "message",
+    body: new TextEncoder().encode("b"),
+  });
   clientStore.ingestBatch([e0, a1], NOW);
   serverStore.ingestBatch([e0, b1], NOW);
   await runSession(clientStore, serverStore, bound, bound);
@@ -244,8 +259,18 @@ test("replay into empty stores yields identical tables, both directions", async 
   const alice = await importIdKey(new Uint8Array(32).fill(46));
   const source = makeStore();
   const [e0] = await chainOf(alice, 1, source);
-  const a1 = await signEvent(alice, { seq: 1, backlink: e0.idBytes, kind: "message", body: new TextEncoder().encode("a") });
-  const b1 = await signEvent(alice, { seq: 1, backlink: e0.idBytes, kind: "message", body: new TextEncoder().encode("b") });
+  const a1 = await signEvent(alice, {
+    seq: 1,
+    backlink: e0.idBytes,
+    kind: "message",
+    body: new TextEncoder().encode("a"),
+  });
+  const b1 = await signEvent(alice, {
+    seq: 1,
+    backlink: e0.idBytes,
+    kind: "message",
+    body: new TextEncoder().encode("b"),
+  });
   source.ingestBatch([a1, b1], NOW);
   // A waiting event whose dependency never arrives.
   const waiting = await signEvent(alice, { seq: 0, kind: "message", after: [new Uint8Array(32).fill(99)] });
@@ -298,7 +323,10 @@ test("a dropped session retries, resumes, and never duplicates", async () => {
   assert.deepEqual(clientStore.canonical(), serverStore.canonical());
   assert.ok(result.token);
   // Re-delivery of the whole journal is all duplicates.
-  const again = clientStore.ingestBatch(serverStore.heldEvents().map((h) => parseEvent(h.bytes)), NOW);
+  const again = clientStore.ingestBatch(
+    serverStore.heldEvents().map((h) => parseEvent(h.bytes)),
+    NOW,
+  );
   assert.ok(again.every((o) => o.kind === "duplicate"));
 });
 
@@ -345,10 +373,7 @@ test("the wrong ID key is refused at AUTH", async () => {
   const impostor = await importIdKey(new Uint8Array(32).fill(52));
   const clientStore = makeStore();
   const serverStore = makeStore();
-  await assert.rejects(
-    () => runSession(clientStore, serverStore, impostor, bound),
-    /auth_failed/,
-  );
+  await assert.rejects(() => runSession(clientStore, serverStore, impostor, bound), /auth_failed/);
 });
 
 test("a blown range budget ends the session with a named error", async () => {

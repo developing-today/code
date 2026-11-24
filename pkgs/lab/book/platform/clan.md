@@ -21,7 +21,7 @@ PR [#13959](https://github.com/developing-today/code/pull/13959)).
   second, `sara`, is commented out). Its inventory instances:
   sshd (server, all tags; host certificates disabled — the repo
   has no shared openssh-ca vars), user-root (the users module),
-  zerotier (this machine as controller *and* peer), and
+  zerotier (this machine as controller _and_ peer), and
   user-user. It exports `nixosConfigurations`, `clanInternals`
   and the clan config. A migration is already recorded in its
   comments: the instances are clanServices replacements for the
@@ -56,7 +56,7 @@ clan's plausible estate role is the NixOS machines — laptop-class
 hosts and future NixOS boxes — not the cluster. **No record found
 states that decision explicitly.** The census names the gaps
 plainly: the clan-core pin is stale; there are no real machine
-definitions; and no document explains what clan is *for* in this
+definitions; and no document explains what clan is _for_ in this
 estate against the hand-rolled hosts builder of
 [Nix and the NixOS flake](nix-and-the-flake.md).
 

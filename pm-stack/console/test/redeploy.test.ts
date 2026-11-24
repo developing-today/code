@@ -171,6 +171,38 @@ describe("redeploy.sh", () => {
     expect(events()).toHaveLength(2);
   });
 
+  test("a skip that lasts more than a few minutes fails loudly instead of staying silent", () => {
+    run();
+    const inService = state("deployed");
+    // A file changed on disk that its commit does not have yet.
+    writeFileSync(join(repo, "pm-stack/console/src/server.ts"), "// half written\n");
+    // The first skip is quiet, and records when the skipping started.
+    expect(run().code).toBe(0);
+    expect(events()).toHaveLength(2);
+    expect(state("deploy-skipped")).not.toBeNull();
+    // Still half-written past the grace period: the run fails, which
+    // the console's Services screen and its notifications show, naming
+    // what is stuck. Nothing is put into service.
+    const stale = `${Math.floor(Date.now() / 1000) - 601}\n`;
+    writeFileSync(join(home, ".local/state/pm-console/deploy-skipped"), stale);
+    const loud = run();
+    expect(loud.code).toBe(1);
+    expect(loud.err).toContain("part-way through an update");
+    expect(loud.err).toContain("server.ts");
+    expect(events()).toHaveLength(2);
+    expect(state("deployed")).toBe(inService);
+  });
+
+  test("the skip record is forgotten once the checkout is whole again", () => {
+    run();
+    writeFileSync(join(repo, "pm-stack/console/src/server.ts"), "// half written\n");
+    expect(run().code).toBe(0);
+    expect(state("deploy-skipped")).not.toBeNull();
+    git("commit", "-q", "-am", "finished");
+    expect(run().code).toBe(0);
+    expect(state("deploy-skipped")).toBeNull();
+  });
+
   test("an install that fails leaves the code marked as not in service", () => {
     writeFileSync(join(repo, "pm-stack/console/install.sh"), `echo "install" >>"${log}"\nexit 1\n`);
     git("commit", "-q", "-am", "install fails");

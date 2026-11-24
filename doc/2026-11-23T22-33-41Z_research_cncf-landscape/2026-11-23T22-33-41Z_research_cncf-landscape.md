@@ -25,15 +25,15 @@ source now (BSL) and is being routed around, not renewed.
 
 ## The landscape map
 
-| Area | Page | The short shape |
-|---|---|---|
-| Observability & operations | [observability](observability.md) | OpenTelemetry as the instrumentation contract; Prometheus as the metrics *language*, VictoriaMetrics as the store Cozystack already runs; Grafana the dashboard layer; no open-source Datadog exists |
-| Networking | [networking](networking.md) | Cilium (eBPF) as the CNI; MetalLB for LAN LoadBalancer IPs; Gateway API as the ingress standard after ingress-nginx's retirement; no service mesh yet |
-| Platform, GitOps & control planes | [platform-and-gitops](platform-and-gitops.md) | Cozystack as the tenant-cloud layer; Flux as the GitOps reconciler; Crossplane understood and declined for now |
-| Data layer | [data-layer](data-layer.md) | CloudNativePG Postgres; NATS for messaging/streaming; LINSTOR/DRBD storage; TiKV and the distributed-SQL field declined |
-| Security, identity & secrets | [security-and-identity](security-and-identity.md) | cert-manager + Kyverno + cosign + External Secrets Operator when Kubernetes lands; our CA and broker keep their jobs; Keycloak and OpenBao are different tools, neither replaces the other |
-| Runtimes & serverless | [runtimes-and-serverless](runtimes-and-serverless.md) | containerd + runc by default; KubeVirt for VMs; Wasm apps designed to the Component Model; FaaS wrappers declined |
-| Registries & builds | [registries-and-builds](registries-and-builds.md) | GHCR until friction (not price) says otherwise, then Zot; Nix + Actions already win the build/app-definition category |
+| Area                              | Page                                                  | The short shape                                                                                                                                                                                      |
+| --------------------------------- | ----------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Observability & operations        | [observability](observability.md)                     | OpenTelemetry as the instrumentation contract; Prometheus as the metrics _language_, VictoriaMetrics as the store Cozystack already runs; Grafana the dashboard layer; no open-source Datadog exists |
+| Networking                        | [networking](networking.md)                           | Cilium (eBPF) as the CNI; MetalLB for LAN LoadBalancer IPs; Gateway API as the ingress standard after ingress-nginx's retirement; no service mesh yet                                                |
+| Platform, GitOps & control planes | [platform-and-gitops](platform-and-gitops.md)         | Cozystack as the tenant-cloud layer; Flux as the GitOps reconciler; Crossplane understood and declined for now                                                                                       |
+| Data layer                        | [data-layer](data-layer.md)                           | CloudNativePG Postgres; NATS for messaging/streaming; LINSTOR/DRBD storage; TiKV and the distributed-SQL field declined                                                                              |
+| Security, identity & secrets      | [security-and-identity](security-and-identity.md)     | cert-manager + Kyverno + cosign + External Secrets Operator when Kubernetes lands; our CA and broker keep their jobs; Keycloak and OpenBao are different tools, neither replaces the other           |
+| Runtimes & serverless             | [runtimes-and-serverless](runtimes-and-serverless.md) | containerd + runc by default; KubeVirt for VMs; Wasm apps designed to the Component Model; FaaS wrappers declined                                                                                    |
+| Registries & builds               | [registries-and-builds](registries-and-builds.md)     | GHCR until friction (not price) says otherwise, then Zot; Nix + Actions already win the build/app-definition category                                                                                |
 
 ## Headline verdicts, per area
 
@@ -47,8 +47,9 @@ open-core gravity toward Grafana Cloud; Perses is the CNCF watch item).
 OTel + metrics/logs/traces stack, or SigNoz as the closest single-product
 attempt (pre-1.0, open-core). OpenTracing is finished — OpenTelemetry
 absorbed it; Jaeger v2 or Tempo for traces, chosen by UI gravity. OpenFeature
-+ flagd for feature flags. Pixie stalled; Trickster is a niche cache;
-HolmesGPT earns a bounded read-only trial only.
+
+- flagd for feature flags. Pixie stalled; Trickster is a niche cache;
+  HolmesGPT earns a bounded read-only trial only.
 
 **Networking.** **Cilium: yes** — with Cozystack it arrives whether asked or
 not (chained with Kube-OVN); hand-rolled on Talos it is the default
@@ -63,7 +64,7 @@ APISIX is a full API gateway (Apache Foundation, not CNCF) — a product
 decision, not an ingress default. **MetalLB is exactly what Drew remembers**:
 it hands LoadBalancer services real IPs from a pool carved out of the LAN and
 announces them by ARP/NDP or BGP — the thing that made the Talos cluster
-reachable at router-range addresses. Egress is a *direction* (pinning and
+reachable at router-range addresses. Egress is a _direction_ (pinning and
 allow-listing outbound traffic), not a product, and it competes with neither
 APISIX nor NATS.
 
@@ -78,14 +79,14 @@ cover its ground here; revisit when a real cloud-API surface appears. kcp is
 a watch item (control planes without workloads, for SaaS-scale API tenancy).
 K3s is the laptop/dev/CI cluster, complementing Talos rather than competing
 with it. OpenTofu is indeed the Terraform replacement (Linux Foundation;
-also a CNCF sandbox project) — the default *if* HCL is ever needed; Atlantis
+also a CNCF sandbox project) — the default _if_ HCL is ever needed; Atlantis
 is the PR front-end for an OpenTofu estate we don't have. Cadence (now CNCF
 sandbox) is durable execution inside a service — a different layer from
 fleet's queue, not a competitor. Backstage is overkill at our scale.
 
 **Data layer.** **TiKV: no.** It is a genuinely good, honestly Jepsen-tested
 system — it does not "totally fail Jepsen"; its history is the instructive
-part — but it is a *storage layer for a distributed SQL database*, not a
+part — but it is a _storage layer for a distributed SQL database_, not a
 database you adopt alone, and its SQL layer (TiDB) speaks MySQL, not
 Postgres. It cannot replace CockroachDB for us (and CockroachDB itself left
 open source in 2024). Vitess is the same shape for MySQL fleets; we are
@@ -103,12 +104,12 @@ object storage, ReadWriteMany files) appears.
 
 **Security & identity.** **Keycloak ≠ OpenBao — completely different
 things**: Keycloak is an identity provider (people logging in); OpenBao is
-Vault's MPL fork (secrets storage/delivery). Keycloak competes with *our*
+Vault's MPL fork (secrets storage/delivery). Keycloak competes with _our_
 IdP and beats it on breadth while losing on footprint and fit; OpenBao
-competes with *our secrets broker* and loses at our current shape (dynamic
+competes with _our secrets broker_ and loses at our current shape (dynamic
 secrets are its real advantage, for problems we don't yet have). **cert-manager:
 yes when Kubernetes lands** — in-cluster issuance/renewal is solved; it
-composes *under* fleet cert rather than replacing it. **OPA: management
+composes _under_ fleet cert rather than replacing it. **OPA: management
 plane only** — capabilities and workload definitions in our systems are
 cryptographic objects, not policy evaluations; in-cluster, Kyverno is the
 likelier admission-policy pick. **SPIFFE/SPIRE: the ID format and
@@ -191,14 +192,14 @@ didn't resolve as remembered. The identifications (each argued in its page):
 - **"Argonize" does not exist** as an infrastructure project; the nearest
   match is Argonaut, a hosted SaaS built on Argo CD — so the
   "Argonize vs Crossplane" comparison has no second term.
-- **"Trimmer" → Tremor** — a Rust event *processor* (formerly CNCF sandbox,
+- **"Trimmer" → Tremor** — a Rust event _processor_ (formerly CNCF sandbox,
   now archived), never a broker; it was never a Kafka/NATS rival.
 - **"Yuki" → youki** — the Rust OCI container runtime.
 - **"Percy" → Pixie** — the eBPF auto-instrumentation platform; the thing
   that was supposed to feel like Datadog without agents. It stalled.
 - **"Spiffy" → SPIFFE** — the workload-identity framework (with SPIRE as
   its implementation); it is not a tracing tool, so "SPIFFE or Jaeger" is
-  identity *and* tracing, not a choice between them.
+  identity _and_ tracing, not a choice between them.
 
 Also resolved along the way: "Cloud Native Network" is most plausibly the
 CNCF's CNF (Cloud Native Network Function) telecom initiative — documents

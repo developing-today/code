@@ -565,6 +565,7 @@ fn test_removal_by_an_agent_the_owner_authorized_marks_and_stops() {
         author: owner.author(),
         after: vec![create.id],
         group: Some(group),
+        at: None,
         body: GroupBody::Device(DeviceOp::Add {
             device: device.author(),
             scope: GroupRole::Admin,

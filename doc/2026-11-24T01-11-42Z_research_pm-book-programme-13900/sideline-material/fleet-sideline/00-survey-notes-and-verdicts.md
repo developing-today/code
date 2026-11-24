@@ -20,7 +20,7 @@ Deployed under /code/fleet/ in the combined mcpx-docs.yml Pages deploy.
 
 - No commander-door chapter existed. Only prior coverage:
   `book/reference/laptop-route-forms.md` documents the CLIENT (`fleet
-  commander`, tier T1) — kept, cross-linked, not duplicated.
+commander`, tier T1) — kept, cross-linked, not duplicated.
   `book/concepts/proxy.md` has zero commander mentions (grep-verified).
 - Chain verified hop-by-hop against: pkgs/desktop-commander/worker/
   wrangler.toml, worker/README.md, worker/src/index.ts, worker/src/oauth.ts,
@@ -37,18 +37,19 @@ book/concepts/bridge.md, book/reference/bridge.md,
 book/tutorials/bridge-messaging.md. Verified against live help dumps and
 pkgs/message-bridge/worker/src/fleet.js + worker/README.md.
 Stale/wrong items found (both in the tutorial only):
+
 1. "single shared usage text" claim — per-verb --help landed (#13213,
    #13197). Live-verified: `fleet bridge inbox --help` prints per-verb text.
 2. "group mailbox" claim — fleet.js `send` case expands group targets to
    one row per registered member at send time; `inbox` selects `agent = ?`
    only; the `groups` arg only refreshes registration via `touch()`.
    There is no group mailbox.
-Missing entirely: the #13895 notes surface — added to concepts/bridge.md
-as a marked in-flight section (design as recorded, dated 2026-11-23).
-On main at survey time there is NO notes/signal code in
-pkgs/message-bridge/worker/src/ (files: auth, events, fleet, index, mcp,
-messages, oauth, page, relay, routes, wake — no notes module), and #13895
-was filed 2026-11-24T00:18Z, after the clone's previous HEAD.
+   Missing entirely: the #13895 notes surface — added to concepts/bridge.md
+   as a marked in-flight section (design as recorded, dated 2026-11-23).
+   On main at survey time there is NO notes/signal code in
+   pkgs/message-bridge/worker/src/ (files: auth, events, fleet, index, mcp,
+   messages, oauth, page, relay, routes, wake — no notes module), and #13895
+   was filed 2026-11-24T00:18Z, after the clone's previous HEAD.
 
 ## (C) fleet bridge subcommand — verdicts
 

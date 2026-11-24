@@ -5237,6 +5237,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "id-tui-shell"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+]
+
+[[package]]
 name = "id-web"
 version = "0.1.0"
 dependencies = [
