@@ -1136,16 +1136,13 @@ func TestScriptViewCommandTimeoutKillsSpawnedWorkers(t *testing.T) {
 	t.Cleanup(func() { _ = syscall.Kill(pid, syscall.SIGKILL) })
 	deadline = time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
-		err := syscall.Kill(pid, 0)
-		if errors.Is(err, syscall.ESRCH) {
-			return // the worker has been reaped
+		// processExited, not a signal-0 probe: in a container whose PID 1
+		// does not reap orphans the killed worker stays a zombie and
+		// Kill(pid, 0) keeps succeeding on it (#13713). A zombie is gone
+		// as far as the process group is concerned.
+		if processExited(pid) {
+			return // the worker is gone: the group was terminated
 		}
-		// Linux containers may not reap orphaned workers promptly. A zombie
-		// still has a PID but has exited and cannot perform side effects.
-		if runtime.GOOS == "linux" {
-			if stat, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid)); err == nil && scriptWorkerIsZombie(string(stat)) {
-				return
-			}
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
