@@ -222,6 +222,37 @@ export function actions(
       touch: [],
       audit: ids("surface", "name"),
     },
+    // Provisioning (#14376, design §4.9). The two mints are never
+    // held anywhere to be done late (edge-proto.ts): a mint's answer
+    // IS the secret, shown once on the screen that asked — a mint
+    // done late would hand its value to nobody, and lose it. Like
+    // sso.google, their audit records nothing of the value: the mint
+    // keeps only the binding it was made under. The enroll revoke is
+    // the opposite shape — no value in it at all, and done late it is
+    // still the right act — so it is held for a machine like
+    // agent.revoke.
+    "agent.mint-enroll": {
+      run: (a) =>
+        ops.mintEnrollToken({
+          agent: a.agent,
+          kind: a.kind,
+          groups: a.groups,
+          notesIdentity: a.notesIdentity,
+          ttlSeconds: a.ttlSeconds,
+        }),
+      touch: [],
+      audit: ids("agent", "kind", "groups", "notesIdentity", "ttlSeconds"),
+    },
+    "agent.mint-credential": {
+      run: (a) => ops.mintCredential({ agent: a.agent, scopes: a.scopes, addr: a.addr }),
+      touch: [],
+      audit: ids("agent", "scopes", "addr"),
+    },
+    "agent.revoke-enroll": {
+      run: (a) => ops.revokeEnrollTokens(a.agent),
+      touch: [],
+      audit: ids("agent"),
+    },
   };
 }
 

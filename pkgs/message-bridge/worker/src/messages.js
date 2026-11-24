@@ -275,6 +275,35 @@ export class MemoryStore {
     r.revoked_at = this.now();
     return true;
   }
+  // Revokes an agent's still-pending tokens (fleet.js
+  // enrollTokenRevokeAgentSql, #14376); returns how many.
+  async enrollTokenRevokeAgent(agent) {
+    const now = this.now();
+    let n = 0;
+    for (const r of this.enrollTokens.values()) {
+      if (r.agent === agent && !r.used_at && !r.revoked_at && r.expires_at > now) {
+        r.revoked_at = now;
+        n++;
+      }
+    }
+    return n;
+  }
+  // Minted enroll tokens' state (fleet.js enrollTokenListSql, #14376):
+  // every field but the hash, newest first as the SQL orders them.
+  async enrollTokenList() {
+    return [...this.enrollTokens.values()]
+      .map((r) => ({
+        agent: r.agent,
+        kind: r.kind,
+        groups: [...r.groups],
+        notes_identity: r.notes_identity,
+        created: r.created,
+        expires_at: r.expires_at,
+        used_at: r.used_at,
+        revoked_at: r.revoked_at,
+      }))
+      .sort((a, b) => (a.created === b.created ? (a.agent < b.agent ? -1 : 1) : a.created < b.created ? 1 : -1));
+  }
   async noteRevoke(identity) {
     let n = 0;
     for (const [hash, t] of this.noteTokens) {

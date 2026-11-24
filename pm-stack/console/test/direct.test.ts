@@ -306,6 +306,17 @@ describe("the edge's run: the bridge through its binding", () => {
     await expect(h.run(["fleet", "bridge", "revoke", "--agent", "felix-1"])).rejects.toThrow(/needs a machine/);
     await expect(h.run(["fleet", "bridge", "revoke", "--identity", "muse/felix-1"])).rejects.toThrow(/needs a machine/);
     expect(h.calls).toHaveLength(3);
+    // The provisioning state list is a read of the same binding
+    // (#14376); the mints and the enroll revoke are machines' verbs,
+    // refused here like the revoke above.
+    h.answer.body = { enroll_tokens: [{ agent: "new-1", state: "pending" }] };
+    const listed = await h.run(["fleet", "bridge", "enroll-tokens"]);
+    expect(h.calls[3].url).toBe("https://bridge.internal/fleet/pm-cred-test/enroll-tokens");
+    expect(JSON.parse(listed.stdout)).toEqual({ enroll_tokens: [{ agent: "new-1", state: "pending" }] });
+    await expect(h.run(["fleet", "bridge", "mint-enroll", "--agent", "new-1"])).rejects.toThrow(/needs a machine/);
+    await expect(h.run(["fleet", "bridge", "mint-credential", "--agent", "felix-1"])).rejects.toThrow(/needs a machine/);
+    await expect(h.run(["fleet", "bridge", "revoke-enroll", "--agent", "new-1"])).rejects.toThrow(/needs a machine/);
+    expect(h.calls).toHaveLength(4);
   });
 
   test("the classes read the pipeline and the merged directory through the bridge, and cannot revoke there", async () => {
@@ -332,6 +343,13 @@ describe("the edge's run: the bridge through its binding", () => {
         return {
           credentials: [
             { agent: "felix-1", state: "active", scopes: ["inbox", "send"], addr: null, credentials: 1, live: 1, created: "2026-11-24T00:00:00Z", revoked_at: null },
+          ],
+        };
+      }
+      if (url.endsWith("/enroll-tokens")) {
+        return {
+          enroll_tokens: [
+            { agent: "new-1", kind: "muse", groups: ["muse"], notes_identity: null, created: "2026-11-24T00:00:00Z", expires_at: "2026-11-25T00:00:00Z", used_at: null, revoked_at: null, state: "pending" },
           ],
         };
       }
@@ -364,6 +382,14 @@ describe("the edge's run: the bridge through its binding", () => {
     expect(scout?.credential?.state).toBe("revoked");
     // And a revoke asked of the edge's classes is a machine's.
     await expect(ops.revokeCredential("fleet", "felix-1")).rejects.toThrow(/needs a machine/);
+    // The enroll tokens' state is read through the bridge the same
+    // way (#14376), and taking tokens back is a machine's too.
+    const enrollTokens = (await ops.enrollTokens()) as { agent: string; state: string }[];
+    expect(enrollTokens).toEqual([
+      { agent: "new-1", kind: "muse", groups: ["muse"], notes_identity: null, created: "2026-11-24T00:00:00Z", expires_at: "2026-11-25T00:00:00Z", used_at: null, revoked_at: null, state: "pending" },
+    ]);
+    await expect(ops.revokeEnrollTokens("new-1")).rejects.toThrow(/needs a machine/);
+    await expect(ops.mintEnrollToken({ agent: "new-2" })).rejects.toThrow(/needs a machine/);
   });
 
   test("the agents section is read by the class that reads it on the laptop", async () => {

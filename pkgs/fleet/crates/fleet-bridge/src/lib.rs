@@ -79,6 +79,21 @@ central (owner token):
   revoke (--agent A | --identity I)
         revoke an agent's fleet credentials, or a notes identity's
         tokens (the owner's kill switch, #14368)
+  mint-enroll --agent A [--kind K] [--groups g1,g2]
+      [--notes-identity I] [--ttl SECS]
+        mint a bootstrap enroll token bound to the agent (and kind,
+        groups, notes identity); the value is printed once, in this
+        answer only — hand it to the new seat's enroll --bootstrap
+  enroll-tokens                every minted bootstrap token's state
+        (pending, used, expired, revoked, with its closing times;
+        never a hash or a value)
+  revoke-enroll (--agent A | --token-hash H)
+        revoke unused bootstrap tokens: an agent's pending ones, or
+        one token by its stored hash (a token value is never needed,
+        and never travels)
+  mint-credential --agent A [--scopes s1,s2] [--addr service:<name>]
+        mint a per-agent credential directly; the value is printed
+        once, in this answer only
 
 agent (fleet token):
   hello [--agent A] [--groups g1,g2]          register / refresh groups
@@ -179,6 +194,51 @@ usage: fleet bridge revoke (--agent A | --identity I)
 central (owner token). Revoke every live fleet credential of an
 agent (--agent), or every notes token of an identity (--identity):
 the per-agent kill switch (#14368). Prints how many were revoked."
+        }
+        "mint-enroll" => {
+            "\
+usage: fleet bridge mint-enroll --agent A [--kind K] [--groups g1,g2]
+      [--notes-identity I] [--ttl SECS]
+
+central (owner token). Mint a bootstrap enroll token (#14368) bound
+at mint to the agent's name, kind (default: agent), groups and class
+notes identity, expiring after --ttl seconds (60 to 604800, default
+86400). The answer carries the token value once: it is stored
+hash-only and can never be shown again. Hand the value to the new
+seat: fleet agent enroll --name A --kind K --bootstrap <value>."
+        }
+        "enroll-tokens" => {
+            "\
+usage: fleet bridge enroll-tokens
+
+central (owner token). Every minted bootstrap token's state
+(#14376): pending, used by the exchange, expired, or revoked, each
+with the times that closed it. State only: no hash or value is ever
+shown — the value existed once, in the mint answer."
+        }
+        "revoke-enroll" => {
+            "\
+usage: fleet bridge revoke-enroll (--agent A | --token-hash H)
+
+central (owner token). Revoke unused bootstrap tokens (#14376):
+--agent takes back every still-pending token minted for that agent
+(the console's form — its list shows no hash); --token-hash revokes
+the one token stored under that SHA-256 hash. The hash is not a
+credential — it cannot enroll anything — so it may travel where the
+token value never may. By hash, a used or already-revoked token
+answers {revoked: false}; by agent, the answer counts what was
+taken back."
+        }
+        "mint-credential" => {
+            "\
+usage: fleet bridge mint-credential --agent A [--scopes s1,s2] [--addr service:<name>]
+
+central (owner token). Mint a per-agent credential directly
+(#14368): scopes default to inbox + send; with --addr the credential
+is a service credential bound to that address (its own name only),
+and service mints default to send + read. The answer carries the
+credential value once: it is stored hash-only and can never be shown
+again."
         }
         "hello" => {
             "\
@@ -539,6 +599,11 @@ const VALUE_FLAGS: &[&str] = &[
     "--interval",
     "--reply-to",
     "--up-to",
+    "--scopes",
+    "--ttl",
+    "--notes-identity",
+    "--token-hash",
+    "--addr",
 ];
 
 fn parse(args: &[String], switches: &[&str], values: &[&str]) -> R<Args> {
@@ -833,6 +898,87 @@ pub fn execute(ctx: &mut Ctx, args: &[String]) -> R<Value> {
                     Some(&json!({ "identity": identity })),
                 ),
             }
+        }
+        "mint-enroll" => {
+            let a = parse(
+                rest,
+                &[],
+                &["--agent", "--kind", "--groups", "--notes-identity", "--ttl"],
+            )?;
+            a.no_positional("mint-enroll")?;
+            // Checked before any credential is resolved: a usage error
+            // is a usage error even on a seat with no tokens.
+            let agent = a
+                .last("--agent")
+                .ok_or_else(|| usage("mint-enroll needs --agent NAME"))?;
+            let mut payload = json!({ "agent": agent });
+            if let Some(kind) = a.last("--kind") {
+                payload["kind"] = json!(kind);
+            }
+            if let Some(groups) = a.last("--groups") {
+                payload["groups"] = json!(split_list(groups));
+            }
+            if let Some(identity) = a.last("--notes-identity") {
+                payload["notes_identity"] = json!(identity);
+            }
+            if let Some(ttl) = a.uint("--ttl")? {
+                payload["ttl_seconds"] = json!(ttl);
+            }
+            let token = owner_token(ctx)?;
+            client_with(ctx, &token).call(
+                "POST",
+                &format!("/api/{token}/enroll-tokens"),
+                Some(&payload),
+            )
+        }
+        "enroll-tokens" => {
+            let a = parse(rest, &[], &[])?;
+            a.no_positional("enroll-tokens")?;
+            let token = owner_token(ctx)?;
+            client_with(ctx, &token).call("GET", &format!("/api/{token}/enroll-tokens"), None)
+        }
+        "revoke-enroll" => {
+            let a = parse(rest, &[], &["--agent", "--token-hash"])?;
+            a.no_positional("revoke-enroll")?;
+            // Exactly one form, checked before any credential is
+            // resolved, like every usage error here. The hash is not
+            // a credential (it cannot enroll anything), so it may
+            // ride in an argument where a token value never may.
+            let body = match (a.last("--agent"), a.last("--token-hash")) {
+                (Some(agent), None) => json!({ "agent": agent }),
+                (None, Some(hash)) => json!({ "token_hash": hash }),
+                _ => {
+                    return Err(usage(
+                        "revoke-enroll needs exactly one of --agent or --token-hash",
+                    ));
+                }
+            };
+            let token = owner_token(ctx)?;
+            client_with(ctx, &token).call(
+                "POST",
+                &format!("/api/{token}/enroll-tokens/revoke"),
+                Some(&body),
+            )
+        }
+        "mint-credential" => {
+            let a = parse(rest, &[], &["--agent", "--scopes", "--addr"])?;
+            a.no_positional("mint-credential")?;
+            let agent = a
+                .last("--agent")
+                .ok_or_else(|| usage("mint-credential needs --agent NAME"))?;
+            let mut payload = json!({ "agent": agent });
+            if let Some(scopes) = a.last("--scopes") {
+                payload["scopes"] = json!(split_list(scopes));
+            }
+            if let Some(addr) = a.last("--addr") {
+                payload["addr"] = json!(addr);
+            }
+            let token = owner_token(ctx)?;
+            client_with(ctx, &token).call(
+                "POST",
+                &format!("/api/{token}/fleet/credentials/mint"),
+                Some(&payload),
+            )
         }
         "hello" => {
             let a = parse(rest, &[], &["--agent", "--groups"])?;
