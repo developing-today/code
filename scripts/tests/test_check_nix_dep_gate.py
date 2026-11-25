@@ -42,17 +42,13 @@ def make_repo(files):
         ["git", "-C", str(repo), "config", "user.email", "gate@test"],
         check=True,
     )
-    subprocess.run(
-        ["git", "-C", str(repo), "config", "user.name", "gate"], check=True
-    )
+    subprocess.run(["git", "-C", str(repo), "config", "user.name", "gate"], check=True)
     for rel, content in files.items():
         p = repo / rel
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(content)
         subprocess.run(["git", "-C", str(repo), "add", rel], check=True)
-    subprocess.run(
-        ["git", "-C", str(repo), "commit", "-qm", "base"], check=True
-    )
+    subprocess.run(["git", "-C", str(repo), "commit", "-qm", "base"], check=True)
     # Mark the base commit so later commits on main form a diff against it.
     subprocess.run(["git", "-C", str(repo), "branch", "base"], check=True)
     return tmp, repo
@@ -70,11 +66,11 @@ BASE_FILES = {
     "pkgs/grok-cli/package.json": '{"name":"grok"}\n',
     "pkgs/grok-cli/package-lock.json": '{"lockfileVersion":3}\n',
     "pkgs/grok-cli/default.nix": '{ npmDepsHash = "sha256-old"; }\n',
-    "pkgs/id/Cargo.toml": '[package]\n',
+    "pkgs/id/Cargo.toml": "[package]\n",
     "pkgs/id/Cargo.lock": "lock\n",
     "pkgs/id/default.nix": '{ hash = "sha256-old"; }\n',
-    "pkgs/id/flake.nix": '{ inputs = {}; }\n',
-    "pkgs/id/flake.lock": '{ nodes = {}; }\n',
+    "pkgs/id/flake.nix": "{ inputs = {}; }\n",
+    "pkgs/id/flake.lock": "{ nodes = {}; }\n",
     "pkgs/cold-store-reaper/worker/package.json": '{"name":"w"}\n',
     "pkgs/cold-store-reaper/worker/package-lock.json": '{"lockfileVersion":3}\n',
     "pkgs/cold-store-reaper/worker/package.nix": '{ npmDepsHash = "sha256-old"; }\n',
@@ -151,13 +147,13 @@ class TestCheckNixDepGate(unittest.TestCase):
         """flake.nix without flake.lock fails; the pair passes."""
         tmp, repo = make_repo(BASE_FILES)
         try:
-            (repo / "pkgs/id/flake.nix").write_text('{ inputs = { x = {}; }; }\n')
+            (repo / "pkgs/id/flake.nix").write_text("{ inputs = { x = {}; }; }\n")
             commit_all(repo, "bump flake input")
             result = run_gate(["--repo", str(repo), "--base", "base"])
             self.assertEqual(result.returncode, 1, result.stdout)
             self.assertIn("flake.lock", result.stderr)
 
-            (repo / "pkgs/id/flake.lock").write_text('{ nodes = { x = {}; }; }\n')
+            (repo / "pkgs/id/flake.lock").write_text("{ nodes = { x = {}; }; }\n")
             commit_all(repo, "re-lock")
             result = run_gate(["--repo", str(repo), "--base", "base"])
             self.assertEqual(result.returncode, 0, result.stderr)

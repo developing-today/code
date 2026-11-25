@@ -234,10 +234,13 @@ class TestLaunchStep(unittest.TestCase):
             argv = [str(part) for part in cmd]
             if "repo-queue" in argv[0] and ("claim" in argv or "park" in argv):
                 return handback_fake(cmd, **kwargs)
-            if argv and argv[0] == "gh":
+            # The issue reads and notes go through the fleet gh sync
+            # verbs (code#10973): sync-labels is the step-4a2 held-label
+            # read (no labels), sync-comment posts a note.
+            if argv[1:3] == ["gh", "sync-labels"]:
+                return Result(0, "[]")
+            if argv[1:3] == ["gh", "sync-comment"]:
                 calls["gh"].append(argv)
-                if "view" in argv:
-                    return Result(0, "[]")
                 return Result(0, "")
             return base_fake(cmd, **kwargs)
 

@@ -63,30 +63,63 @@ hosted instance is the public backstop, never a requirement.
 
 ### 2.2 Hire and attach: how a hosted agent enters a world
 
-- **Hiring is a world action by the world owner** (or a role the
-  owner has delegated hiring to, where world configuration allows):
-  it names the listing, the role the agent will hold (an ordinary
-  v2 role — hiring creates no special role class), the quota class
-  and ledger the agent's actions charge (v2 §2.3, §5 question 2
-  below), and a hire term (open-ended, until a date, or until a
-  work quota is spent).
-- The hire issues the agent a **scoped delegation** in v1's terms:
-  this world, this role ceiling, this term. The agent's host
-  receives the delegation, never the owner's keys and never a
-  broader token. Attach is the lightweight form: an already-hired
-  agent is attached to an additional board or document set within
-  the same world and role — a world-configuration change, not a
-  new hire.
+- **Hire is an owner-authorized world action**: only the world owner,
+  or an authority explicitly delegated the hire action by that owner
+  under the world's configuration, may issue one. The action appends
+  an immutable hire record with these fields:
+  `hire_id`; the exact `listing_id` and immutable `listing_version`
+  selected from the registry; `world_id`; the ordinary v2 `role_id`
+  and role-configuration version (hiring creates no special role
+  class); `quota_class` and `ledger_id`; `term` (open-ended, until a
+  timestamp, or until a stated work quota is spent); `operator_id`
+  accountable for hosting this hire; and the delegation scope. The
+  record also identifies the authorizing world action and its actor,
+  so the audit chain establishes who authorized the hire. The selected
+  listing, role version, quota class, ledger, operator, and
+  term are fixed for that hire; changing them requires an audited
+  replacement hire rather than silently rewriting its record.
+  Program/build upgrades are not listing changes: they follow §2.3's
+  drain-and-replace under the same hire, with the acting program
+  version recorded in the audit for every action.
+- **Ledger selection belongs to the hiring world.** The hire charges
+  the ledger configured by that world; absent an explicit shared-ledger
+  rule in the world's configuration, it charges the world owner's
+  ledger. The hire record fixes both
+  the ledger and quota class for the hire's term. Each action spends
+  against the ledger recorded on its hire, not the agent owner's or
+  host operator's budget. This resolves v4 §5 Q1 in accordance with
+  [the decision on #10663](https://github.com/developing-today/code/issues/10663#issuecomment-7152081378).
+- **The hire action issues a scoped delegation** in v1's terms. Its
+  scope names exactly this `world_id`, the hired agent key, the role
+  ceiling and role-configuration version, the hire term, and the
+  permitted world actions. It cannot authorize another world, a role
+  escalation, or action after the term expires. The agent's host
+  receives only this delegation, never the owner's keys or a broader
+  token. Expiry or revocation ends the delegation and starts the
+  ordinary drain in §2.3; a new world requires a separate hire and
+  separately scoped delegation.
+- **Attach is not hire.** Attaching an already-hired agent to another
+  board or document set in the *same* world is an audited world-
+  configuration change referencing the existing `hire_id` and naming
+  the target board/document set and the actor authorized to change that
+  configuration. It creates neither a second hire nor a new delegation,
+  and cannot change the hire's role, quota class, ledger, operator, or
+  term. The agent's existing world-scoped delegation governs the
+  attachment; the world's ordinary board/document access rules still
+  apply. An attachment in another world is invalid and requires a
+  separate hire.
 - **Join semantics are v2's, unchanged.** The hired agent joins
   under the world's join rules, is subject to the same claim
   leases, population caps, and rate budgets as any citizen (v3
   §2.5), and its hosted-ness is visible in the world's population
   rendering: owners and visitors can always see which agents are
   hosted, and by whom. There is no stealth hosting.
-- **Multi-owner worlds inherit v3 §5 Q1.** A hosted agent serving
-  in a world owned by someone other than its own owner is the
-  general case of that question; the hire record names whose
-  configuration, ledgers, and review queue govern (§5 question 1).
+- **Multi-owner worlds follow the hiring world's authority and ledger.**
+  A hosted agent serving in a world owned by someone other than its own
+  owner is the general case: the hiring world authorizes the hire and
+  selects its ledger as resolved in §5 Q1. The world’s ordinary
+  configuration and review rules govern the hire; the agent owner and
+  host operator gain no authority from hosting it.
 
 ### 2.3 Always-on runtime contract
 
@@ -202,13 +235,13 @@ blocks the step breakdown in §6; each step issue names the
 question it depends on. Questions 1–2 are inherited from v3 §5
 where v4 makes them concrete; 3–4 are new in v4.
 
-1. **Whose ledger pays for a hosted agent (sharpens v3 §5 Q1/Q4):**
-   a hired agent's actions charge a quota ledger — the hiring
-   world owner's (the hire is a purchase of work), the agent
-   owner's (the agent spends its own budget wherever it serves),
-   or the world-configured split v3 Q4 already asks about? Hosted
-   agents make this unavoidable: the agent, its owner, the world
-   owner, and the host operator can be four different parties.
+1. **Resolved — whose ledger pays for a hosted agent (sharpens v3 §5
+   Q1/Q4):** a hire charges the ledger configured by the hiring world;
+   when there is no explicit shared-ledger rule, that is the world
+   owner's ledger. The hire record fixes its ledger and quota class for
+   the term, and same-world attach does not change either. See
+   [the #10663 decision](https://github.com/developing-today/code/issues/10663#issuecomment-7152081378)
+   and §2.2. Q2–Q4 remain open.
 2. **Is hosting itself a chargeable world resource:** does the
    _host's_ cost (compute for always-on presence) enter any
    ledger the protocol tracks, or is hosting purely an

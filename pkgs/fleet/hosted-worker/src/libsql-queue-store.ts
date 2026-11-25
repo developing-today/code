@@ -35,14 +35,7 @@
 // read back.
 
 import type { Json } from "./queue-validate.ts";
-import type {
-  EventRow,
-  LaneRow,
-  LedgerRow,
-  LeaseRow,
-  QueueStore,
-  TaskRow,
-} from "./queue-store.ts";
+import type { EventRow, LaneRow, LedgerRow, LeaseRow, QueueStore, TaskRow } from "./queue-store.ts";
 
 /** The synchronous embedded-SQL surface this store needs: the house
  *  SqlStorageLike shape (pkgs/id/hosted-worker/src/bridge-store.ts).
@@ -63,8 +56,8 @@ export type SqlParam = string | number | bigint | boolean | null;
 export const LIBSQL_QUEUE_SCHEMA: string[] = [
   `CREATE TABLE IF NOT EXISTS tasks (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    queue TEXT NOT NULL, title TEXT, body TEXT,
-    payload TEXT NOT NULL DEFAULT '{}', dedupe_key TEXT,
+    queue TEXT NOT NULL, manual_only INTEGER NOT NULL DEFAULT 0, title TEXT, body TEXT,
+    payload TEXT NOT NULL DEFAULT '{}', metadata TEXT NOT NULL DEFAULT '{}', dedupe_key TEXT,
     priority INTEGER, status TEXT NOT NULL DEFAULT 'queued',
     not_before TEXT, worker_id TEXT, claimed_at TEXT, lease_until TEXT,
     lane_id TEXT, platform TEXT, attempts INTEGER NOT NULL DEFAULT 0,
@@ -115,7 +108,7 @@ export const LIBSQL_QUEUE_SCHEMA: string[] = [
 // core.rs TASK_COLS / LEDGER_COLS order: the SELECT column order the
 // row readers below rely on.
 export const TASK_COLS =
-  "id, queue, title, body, payload, dedupe_key, priority, status, " +
+  "id, queue, manual_only, title, body, payload, metadata, dedupe_key, priority, status, " +
   "not_before, worker_id, claimed_at, lease_until, lane_id, platform, attempts, max_attempts, " +
   "claim_provider, claim_model, claim_variant, claim_session_id, " +
   "progress, result, last_error, park_kind, wait_kind, ready_condition, " +
@@ -131,7 +124,7 @@ export const LEDGER_COLS =
   "assigned_at, executed_at, updated_at";
 export const LEDGER_INSERT_COLS = LEDGER_COLS.split(", ").filter((c) => c !== "id");
 
-const TASK_JSON_COLS = new Set(["payload", "progress", "result", "ready_condition", "blocked_deps"]);
+const TASK_JSON_COLS = new Set(["payload", "metadata", "progress", "result", "ready_condition", "blocked_deps"]);
 const TASK_INT_COLS = new Set([
   "id",
   "priority",
@@ -139,6 +132,7 @@ const TASK_INT_COLS = new Set([
   "max_attempts",
   "required_budget_minutes",
   "dep_recheck_seconds",
+  "manual_only",
 ]);
 
 export function failWhere(what: string): never {
@@ -172,6 +166,7 @@ export function toStoredJson(v: Json): string | null {
 
 export function encodeTaskValue(col: string, v: unknown): SqlParam {
   if (TASK_JSON_COLS.has(col)) return toStoredJson(v as Json);
+  if (col === "manual_only") return v === true ? 1 : 0;
   if (TASK_INT_COLS.has(col)) return intOrNull(v, col);
   return textOrNull(v, col);
 }
@@ -184,9 +179,11 @@ export function readTask(r: Record<string, unknown>): TaskRow {
   return {
     id: intOrNull(need("id"), "id") ?? failWhere("task row has null id"),
     queue: textOrNull(need("queue"), "queue") ?? "",
+    manual_only: intOrNull(need("manual_only"), "manual_only") === 1,
     title: textOrNull(need("title"), "title"),
     body: textOrNull(need("body"), "body"),
     payload: jsonValue(need("payload"), "payload"),
+    metadata: jsonValue(need("metadata"), "metadata"),
     dedupe_key: textOrNull(need("dedupe_key"), "dedupe_key"),
     priority: intOrNull(need("priority"), "priority"),
     status: textOrNull(need("status"), "status") ?? "",
@@ -287,6 +284,13 @@ export class LibSQLQueueStore implements QueueStore {
     for (const stmt of LIBSQL_QUEUE_SCHEMA) {
       db.exec(stmt);
     }
+    const cols = db.exec("SELECT name FROM pragma_table_info('tasks')").toArray();
+    if (!cols.some((col) => col["name"] === "manual_only")) {
+      db.exec("ALTER TABLE tasks ADD COLUMN manual_only INTEGER NOT NULL DEFAULT 0");
+    }
+    if (!cols.some((col) => col["name"] === "metadata")) {
+      db.exec("ALTER TABLE tasks ADD COLUMN metadata TEXT NOT NULL DEFAULT '{}' ");
+    }
   }
 
   /** Rows the last statement changed (same-connection SELECT
@@ -305,9 +309,7 @@ export class LibSQLQueueStore implements QueueStore {
       `INSERT INTO tasks (${cols.join(", ")}) VALUES (${placeholders})`,
       ...cols.map((c) => encodeTaskValue(c, rec[c]) as string | number | bigint | boolean | null),
     );
-    const got = this.db
-      .exec(`SELECT ${TASK_COLS} FROM tasks WHERE id = last_insert_rowid()`)
-      .toArray();
+    const got = this.db.exec(`SELECT ${TASK_COLS} FROM tasks WHERE id = last_insert_rowid()`).toArray();
     if (got.length === 0) failWhere("insertTask lost the inserted row");
     return readTask(got[0] as Record<string, unknown>);
   }
@@ -366,11 +368,7 @@ export class LibSQLQueueStore implements QueueStore {
     const cols = Object.keys(rec);
     if (cols.length === 0) return;
     const setSql = cols.map((c) => `${c} = ?`).join(", ");
-    this.db.exec(
-      `UPDATE tasks SET ${setSql} WHERE id = ?`,
-      ...cols.map((c) => encodeTaskValue(c, rec[c])),
-      id,
-    );
+    this.db.exec(`UPDATE tasks SET ${setSql} WHERE id = ?`, ...cols.map((c) => encodeTaskValue(c, rec[c])), id);
   }
 
   async getLedger(taskId: number): Promise<LedgerRow | null> {
@@ -442,7 +440,9 @@ export class LibSQLQueueStore implements QueueStore {
   }
 
   async getLane(laneId: string): Promise<LaneRow | null> {
-    const rows = this.db.exec("SELECT lane_id, worker_id, queue, enabled FROM lanes WHERE lane_id = ?", laneId).toArray();
+    const rows = this.db
+      .exec("SELECT lane_id, worker_id, queue, enabled FROM lanes WHERE lane_id = ?", laneId)
+      .toArray();
     if (rows.length === 0) return null;
     const r = rows[0] as Record<string, unknown>;
     return {
@@ -454,7 +454,13 @@ export class LibSQLQueueStore implements QueueStore {
   }
 
   async insertLane(row: LaneRow): Promise<void> {
-    this.db.exec("INSERT INTO lanes (lane_id, worker_id, queue, enabled) VALUES (?, ?, ?, ?)", row.lane_id, row.worker_id, row.queue, row.enabled);
+    this.db.exec(
+      "INSERT INTO lanes (lane_id, worker_id, queue, enabled) VALUES (?, ?, ?, ?)",
+      row.lane_id,
+      row.worker_id,
+      row.queue,
+      row.enabled,
+    );
   }
 
   async touchWorker(workerId: string, working: boolean, nowIso: string): Promise<void> {
@@ -487,7 +493,13 @@ export class LibSQLQueueStore implements QueueStore {
     );
   }
 
-  async appendEvent(workerId: string | null, taskId: number | null, kind: string, detail: Json, createdAt: string): Promise<EventRow> {
+  async appendEvent(
+    workerId: string | null,
+    taskId: number | null,
+    kind: string,
+    detail: Json,
+    createdAt: string,
+  ): Promise<EventRow> {
     this.db.exec(
       "INSERT INTO events (worker_id, task_id, kind, detail, created_at) VALUES (?, ?, ?, ?, ?)",
       workerId,
@@ -512,7 +524,10 @@ export class LibSQLQueueStore implements QueueStore {
 
   async eventsForTask(taskId: number): Promise<EventRow[]> {
     return this.db
-      .exec("SELECT id, worker_id, task_id, kind, detail, created_at FROM events WHERE task_id = ? ORDER BY id ASC", taskId)
+      .exec(
+        "SELECT id, worker_id, task_id, kind, detail, created_at FROM events WHERE task_id = ? ORDER BY id ASC",
+        taskId,
+      )
       .toArray()
       .map((r) => readEvent(r as Record<string, unknown>));
   }
@@ -526,7 +541,9 @@ export class LibSQLQueueStore implements QueueStore {
     // github_mirror_issues is the github-ci Worker's read model, not
     // this store's table: no row → null; a failing read (no table, no
     // database) throws so the caller warns and proceeds unenriched.
-    const rows = this.db.exec("SELECT labels FROM github_mirror_issues WHERE repo = ? AND number = ?", repo, issueNumber).toArray();
+    const rows = this.db
+      .exec("SELECT labels FROM github_mirror_issues WHERE repo = ? AND number = ?", repo, issueNumber)
+      .toArray();
     if (rows.length === 0) return null;
     const parsed = jsonValue(rows[0]["labels"], "labels");
     return Array.isArray(parsed) ? parsed.filter((l): l is string => typeof l === "string") : [];

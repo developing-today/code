@@ -24,14 +24,18 @@ def check_modules(rust, chapter):
         if re.match(r"^\s*pub\s+mod\b", line):
             match = re.fullmatch(r"\s*pub\s+mod\s+(\w+)\s*;\s*(?://.*)?", line)
             if not match:
-                raise ValueError(f"atlas-core/lib.rs: unsupported module declaration: {line}")
+                raise ValueError(
+                    f"atlas-core/lib.rs: unsupported module declaration: {line}"
+                )
             modules.append(match[1])
     registered = inventory(modules, "atlas-core/lib.rs")
 
     headings = re.findall(r"(?m)^## The (\d+) public modules, grouped by job$", chapter)
     summaries = re.findall(r"(?m)^`lib\.rs` declares (\d+) public modules\.", chapter)
     if len(headings) != 1 or len(summaries) != 1:
-        raise ValueError("atlas-core.md: expected one public-module heading and count sentence")
+        raise ValueError(
+            "atlas-core.md: expected one public-module heading and count sentence"
+        )
     for count in (*headings, *summaries):
         if int(count) != len(registered):
             raise ValueError(
@@ -82,12 +86,15 @@ def check_defaults(contract, chapter):
         if "`query-parameters-v1.json`" in section.partition("\n")[0]
     ]
     if len(sections) != 1:
-        raise ValueError("atlas-proto.md: expected one query-parameters-v1.json section")
+        raise ValueError(
+            "atlas-proto.md: expected one query-parameters-v1.json section"
+        )
     examples = re.findall(r"(?ms)^```json[ \t]*\n(.*?)^```[ \t]*$", sections[0])
     if len(examples) != 1:
         raise ValueError("atlas-proto.md: expected one fenced JSON defaults example")
     expected, actual = [
-        json.loads(text, object_pairs_hook=unique_object) for text in (contract, examples[0])
+        json.loads(text, object_pairs_hook=unique_object)
+        for text in (contract, examples[0])
     ]
     if not all(isinstance(obj, dict) and obj for obj in (expected, actual)):
         raise ValueError("query defaults must be nonempty JSON objects")
@@ -98,7 +105,8 @@ def check_defaults(contract, chapter):
         for key in expected.keys() | actual.keys()
         if key not in expected
         or key not in actual
-        or json.dumps(expected[key], sort_keys=True) != json.dumps(actual[key], sort_keys=True)
+        or json.dumps(expected[key], sort_keys=True)
+        != json.dumps(actual[key], sort_keys=True)
     )
     if different:
         raise ValueError(f"atlas-proto.md: differing query default keys {different}")
@@ -122,7 +130,9 @@ def main():
         )
     except (OSError, ValueError, json.JSONDecodeError) as error:
         sys.exit(f"Atlas DOC-01: {error}")
-    print(f"Atlas DOC-01: {modules} public modules and {defaults} query defaults match the book")
+    print(
+        f"Atlas DOC-01: {modules} public modules and {defaults} query defaults match the book"
+    )
 
 
 if __name__ == "__main__":

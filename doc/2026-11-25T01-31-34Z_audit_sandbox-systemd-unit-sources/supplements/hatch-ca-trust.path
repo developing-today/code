@@ -1,0 +1,9 @@
+[Unit]
+Description=Watch the host-published Sentinel egress anchor for rotation
+
+[Path]
+PathChanged=/run/hatch/cell-anchors
+Unit=hatch-ca-trust.service
+
+[Install]
+WantedBy=default.target

@@ -360,3 +360,7 @@ All of these can wait for a future build decision. The recommended defaults are 
 - `~/workspace/supabase/muse-dev/backup/README.md` — `supabase-backups` bucket, content-addressed key, manifest, bucket-scoped credential location by name, restore flow, and historical restore verification.
 - `~/workspace/goals/supabase-muse-dev-platform-backups/GOAL.md` — ownership of the muse-dev platform and the R2 backup system.
 - `~/workspace/goals/stand-up-lab-cluster-talm-talos-cozystack-postgres-rustfs/hidden_files/cloud-ideas-log.md` — Cloudflare account inventory, including the five R2 bucket names.
+
+## Tracking
+
+Tracked in #8833 (cold-store backup design and nightly run, the tracking home for this design). The R2, laptop and Drive backup mesh that builds on it is #9093. (Pointer added 2026-11-25 for #13881.)

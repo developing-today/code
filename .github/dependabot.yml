@@ -33,13 +33,10 @@ updates:
       - "/pkgs/fleet/hosted-worker"
       - "/pkgs/github-ci/worker"
       - "/pkgs/id/browser"
-      - "/pkgs/id/e2e"
       - "/pkgs/identity/web"
       - "/pkgs/id/hosted-worker"
-      - "/pkgs/id/web"
       - "/pkgs/id/worker-poc"
       - "/pkgs/lab-ops-hub"
-      - "/pkgs/mcpx/plugin/opencode"
       - "/pkgs/mcpx/worker"
       - "/pkgs/message-bridge/worker"
       - "/pkgs/pkarr-worker"
@@ -47,15 +44,11 @@ updates:
       - "/pkgs/queue-transport-alert/worker"
       - "/pkgs/web-gen-api-axum/end2end"
       - "/pkgs/web-gen-api/end2end"
-      - "/pm-stack/aggregator"
       - "/pm-stack/console"
       - "/pm-stack/console/edge"
       - "/pm-stack/decision-events-worker"
-      - "/pm-stack/dispatch"
       - "/pm-stack/notify-relay"
-      - "/pm-stack/pm-service"
       - "/pm-stack/private-laptop-bridge"
-      - "/pm-stack/projector"
       - "/scripts/muse/handoff/worker"
     schedule:
       interval: "weekly"
@@ -83,7 +76,15 @@ updates:
       npm:
         patterns: ["*"]
   - package-ecosystem: "bun"
-    directory: "/pm-stack/voice-line-worker"
+    directories:
+      - "/pkgs/id/e2e"
+      - "/pkgs/id/web"
+      - "/pkgs/mcpx/plugin/opencode"
+      - "/pm-stack/aggregator"
+      - "/pm-stack/dispatch"
+      - "/pm-stack/pm-service"
+      - "/pm-stack/projector"
+      - "/pm-stack/voice-line-worker"
     schedule:
       interval: "weekly"
     groups:

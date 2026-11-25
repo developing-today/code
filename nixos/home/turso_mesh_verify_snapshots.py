@@ -40,10 +40,14 @@ def repositories_from_environment(environ):
     for label, variable in REPOSITORY_VARIABLES.items():
         value = environ.get(variable, "")
         if not value:
-            raise VerificationError(f"required environment variable {variable} is empty")
+            raise VerificationError(
+                f"required environment variable {variable} is empty"
+            )
         repositories[label] = value
     if len(set(repositories.values())) != len(REPOSITORY_VARIABLES):
-        raise VerificationError("R2, laptop, and Drive must name three distinct repositories")
+        raise VerificationError(
+            "R2, laptop, and Drive must name three distinct repositories"
+        )
     return repositories
 
 
@@ -55,7 +59,9 @@ def _snapshot_ids(restic, label, repository, runner):
         check=False,
     )
     if completed.returncode != 0:
-        raise VerificationError(f"{label}: restic snapshots failed (exit {completed.returncode})")
+        raise VerificationError(
+            f"{label}: restic snapshots failed (exit {completed.returncode})"
+        )
     try:
         snapshots = json.loads(completed.stdout)
     except (TypeError, json.JSONDecodeError) as exc:
@@ -79,11 +85,15 @@ def verify_snapshot_sets(restic, repositories, runner=None):
         runner = subprocess.run
     expected_labels = set(REPOSITORY_VARIABLES)
     if set(repositories) != expected_labels:
-        raise VerificationError("repository map must contain exactly r2, laptop, and drive")
+        raise VerificationError(
+            "repository map must contain exactly r2, laptop, and drive"
+        )
     if any(not isinstance(value, str) or not value for value in repositories.values()):
         raise VerificationError("repository names must be non-empty strings")
     if len(set(repositories.values())) != len(REPOSITORY_VARIABLES):
-        raise VerificationError("R2, laptop, and Drive must name three distinct repositories")
+        raise VerificationError(
+            "R2, laptop, and Drive must name three distinct repositories"
+        )
 
     snapshot_sets = {
         label: _snapshot_ids(restic, label, repositories[label], runner)
@@ -105,7 +115,9 @@ def verify_snapshot_sets(restic, repositories, runner=None):
     }
 
 
-def main(argv=None, environ=None, runner=subprocess.run, out=sys.stdout, err=sys.stderr):
+def main(
+    argv=None, environ=None, runner=subprocess.run, out=sys.stdout, err=sys.stderr
+):
     args = parse_arguments(sys.argv[1:] if argv is None else argv)
     del args  # argparse performs the strict no-argument check before any I/O.
     environment = os.environ if environ is None else environ
