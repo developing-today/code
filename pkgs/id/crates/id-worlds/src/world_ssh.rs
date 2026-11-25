@@ -1853,6 +1853,20 @@ impl SessionIo for SshIo {
                         let rendered = if raw_mode {
                             if let Some(presenter) = self.presenter.as_mut() {
                                 Some(presenter.render_screen(&screen))
+                            } else if self.display_mode == DisplayMode::Primary {
+                                // No presenter yet (the probe has not
+                                // closed, or never ran): paint with the
+                                // primary contract directly, so a primary
+                                // session never receives an alternate-style
+                                // row diff before its presenter exists.
+                                let previous = self.previous_screen.as_ref().filter(|previous| {
+                                    previous.width == screen.width
+                                        && previous.height == screen.height
+                                        && previous.version == screen.version
+                                });
+                                previous
+                                    .and_then(|previous| screen.paint_primary(previous))
+                                    .or_else(|| screen.paint_primary_full())
                             } else {
                                 self.previous_screen
                                     .as_ref()

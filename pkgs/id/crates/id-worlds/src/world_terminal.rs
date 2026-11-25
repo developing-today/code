@@ -525,12 +525,20 @@ impl TextDelta {
 /// - Tier 3 renders text only: no full-screen escapes, and after the
 ///   first view only the changed lines (a [`TextDelta`]).
 ///
+/// Under [`DisplayMode::Primary`] the cell-grid tiers paint with the
+/// primary-mode contract instead ([`ScreenSurface::paint_primary`]):
+/// no alternate screen is involved, the previous frame stays in
+/// scrollback, and each transition is cursor-addressed erase/rewrite
+/// runs over it. The mode never selects Tier 3, so the text path is
+/// unreachable for it.
+///
 /// Incremental state is committed only after a render is produced, so a
 /// caller that drops a frame can re-render the same view safely.
 #[derive(Debug)]
 pub struct TierPresenter {
     profile: TerminalProfile,
     tier: PresentationTier,
+    mode: DisplayMode,
     previous_screen: Option<ScreenSurface>,
     previous_text: Vec<String>,
     counters: PresenterCounters,
@@ -545,6 +553,7 @@ impl TierPresenter {
         Self {
             tier: profile.tier(),
             profile,
+            mode: DisplayMode::Auto,
             previous_screen: None,
             previous_text: Vec::new(),
             counters: PresenterCounters::default(),
@@ -559,6 +568,7 @@ impl TierPresenter {
         Self {
             tier: outcome.tier(),
             profile: outcome.profile,
+            mode: DisplayMode::Auto,
             previous_screen: None,
             previous_text: Vec::new(),
             counters: PresenterCounters::default(),
@@ -574,6 +584,7 @@ impl TierPresenter {
     pub fn from_outcome_for_mode(outcome: &ProbeOutcome, mode: DisplayMode) -> Self {
         let mut presenter = Self::from_outcome(outcome);
         presenter.tier = mode.tier(outcome);
+        presenter.mode = mode;
         presenter
     }
 
@@ -585,6 +596,7 @@ impl TierPresenter {
     pub fn for_mode(profile: TerminalProfile, mode: DisplayMode) -> Self {
         let mut presenter = Self::new(profile);
         presenter.tier = tier_for_mode(mode, profile, profile.tier());
+        presenter.mode = mode;
         presenter
     }
 
@@ -592,6 +604,12 @@ impl TierPresenter {
     #[must_use]
     pub fn tier(&self) -> PresentationTier {
         self.tier
+    }
+
+    /// The display mode this presenter paints for.
+    #[must_use]
+    pub fn mode(&self) -> DisplayMode {
+        self.mode
     }
 
     /// The profile this presenter was built from.
@@ -624,16 +642,37 @@ impl TierPresenter {
             };
             return self.render_lines(&lines);
         }
-        let (body, full) = match self
-            .previous_screen
-            .as_ref()
-            .and_then(|previous| screen.render_ansi_diff(previous))
-        {
-            Some(diff) => (diff, false),
-            None => match screen.render_ansi() {
-                Some(full) => (full, true),
-                None => return String::new(),
-            },
+        let (body, full) = if self.mode == DisplayMode::Primary {
+            // Primary mode paints with the slice-1 harness contract
+            // (Term.paint_primary): cursor-addressed erase/rewrite runs
+            // over the previous frame, which stays in scrollback. A
+            // dimension or version change is answered with a full
+            // repaint, per the contract's host guidance; an unchanged
+            // frame paints as the empty string.
+            let previous = self.previous_screen.as_ref().filter(|previous| {
+                previous.width == screen.width
+                    && previous.height == screen.height
+                    && previous.version == screen.version
+            });
+            match previous.and_then(|previous| screen.paint_primary(previous)) {
+                Some(diff) => (diff, false),
+                None => match screen.paint_primary_full() {
+                    Some(full) => (full, true),
+                    None => return String::new(),
+                },
+            }
+        } else {
+            match self
+                .previous_screen
+                .as_ref()
+                .and_then(|previous| screen.render_ansi_diff(previous))
+            {
+                Some(diff) => (diff, false),
+                None => match screen.render_ansi() {
+                    Some(full) => (full, true),
+                    None => return String::new(),
+                },
+            }
         };
         self.previous_screen = Some(screen.clone());
         if body.is_empty() {
@@ -1545,6 +1584,69 @@ mod tests {
             presenter.render_screen(&second),
             second.render_ansi().expect("full render")
         );
+    }
+
+    /// Slice 2 of #14861: a primary-mode presenter paints the Term
+    /// contract bytes — a full primary repaint first, then
+    /// cursor-addressed erase/rewrite transitions over the previous
+    /// frame — and never touches the alternate screen.
+    #[test]
+    fn primary_presenter_paints_the_term_contract_over_the_previous_frame() {
+        let profile = TerminalProfile {
+            cursor_position_report: true,
+            indexed_color: true,
+            ..TerminalProfile::default()
+        };
+        let mut presenter = TierPresenter::for_mode(profile, DisplayMode::Primary);
+        assert_eq!(presenter.mode(), DisplayMode::Primary);
+        assert_eq!(presenter.tier(), PresentationTier::Tier2);
+
+        let first = screen(&["abc", "def"]);
+        let second = screen(&["abc", "dXf"]);
+        // First frame: a full primary repaint (page erase + runs painted
+        // from a blank screen).
+        assert_eq!(
+            presenter.render_screen(&first),
+            first.paint_primary_full().expect("full primary paint")
+        );
+        // Transition: exactly the contract bytes over the previous frame.
+        assert_eq!(
+            presenter.render_screen(&second),
+            second.paint_primary(&first).expect("primary transition")
+        );
+        assert_eq!(
+            second.paint_primary(&first).expect("primary transition"),
+            "\x1b[2;2H\x1b[0mX\x1b[0m"
+        );
+        // An unchanged view paints nothing and records no frame.
+        assert_eq!(presenter.render_screen(&second), "");
+        assert_eq!(presenter.counters().frames, 2);
+        assert_eq!(presenter.counters().full_render_frames, 1);
+        // A resize is answered with a full repaint, per the contract's
+        // host guidance.
+        let resized = screen(&["abc"]);
+        assert_eq!(
+            presenter.render_screen(&resized),
+            resized.paint_primary_full().expect("full primary paint")
+        );
+        // Invalidation (attach) also forces a full repaint.
+        presenter.invalidate();
+        assert_eq!(
+            presenter.render_screen(&resized),
+            resized.paint_primary_full().expect("full primary paint")
+        );
+    }
+
+    #[test]
+    fn primary_presenter_never_enters_the_alternate_screen() {
+        let mut presenter =
+            TierPresenter::for_mode(TerminalProfile::default(), DisplayMode::Primary);
+        let out = presenter.render_screen(&screen(&["hi"]));
+        assert!(!out.contains("\x1b[?1049h"), "{out:?}");
+        assert!(!out.contains("\x1b[?1049l"), "{out:?}");
+        // The alternate painter's full render homes before erasing; the
+        // primary full repaint erases in place.
+        assert!(out.starts_with("\x1b[2J"), "{out:?}");
     }
 
     #[test]
