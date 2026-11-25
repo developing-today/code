@@ -169,6 +169,412 @@ describe("the edge's run: secrets and the laptop's verbs", () => {
   });
 });
 
+describe("the edge's run: the bridge through its binding", () => {
+  // The bridge Worker, standing in: every call recorded, its answer
+  // set by the test. The credential is a fixture, never a real one.
+  function bridgeHarness() {
+    const calls: { url: string; init: { method: string; headers: Record<string, string>; body?: string } }[] = [];
+    const answer: { ok: boolean; status: number; body: unknown } = {
+      ok: true,
+      status: 201,
+      body: { messages: [], fleet: [{ id: 7, agent: "felix-1" }] },
+    };
+    const bridgeFetch = (async (
+      url: string,
+      init: { method: string; headers: Record<string, string>; body?: string },
+    ) => {
+      calls.push({ url: String(url), init });
+      return { ok: answer.ok, status: answer.status, json: async () => answer.body };
+    }) as unknown as Fetch;
+    const seen: Outward[] = [];
+    const secrets = {
+      githubToken: "gh-test",
+      queueToken: "queue-test",
+      bridgeToken: "pm-cred-test",
+      bridgeFetch,
+      seen: (call: Outward) => seen.push(call),
+    };
+    const run = edgeRun(directConfig(edgeConfig), secrets, bridgeFetch);
+    return { calls, answer, run, seen, secrets, bridgeFetch };
+  }
+
+  test("a send becomes a POST to the bridge as pm-stack, the text on the body, never in the address", async () => {
+    const h = bridgeHarness();
+    const out = await h.run(["fleet", "bridge", "send", "--to", "felix-1,group:muse", "--command", "-"], {
+      stdin: "do the thing",
+    });
+    expect(h.calls).toHaveLength(1);
+    expect(h.calls[0].url).toBe("https://bridge.internal/fleet/pm-cred-test/send");
+    expect(h.calls[0].init.method).toBe("POST");
+    expect(JSON.parse(h.calls[0].init.body ?? "{}")).toEqual({
+      agent: "pm-stack",
+      to: ["felix-1", "group:muse"],
+      body: "do the thing",
+      kind: "command",
+    });
+    expect(out.code).toBe(0);
+    expect(JSON.parse(out.stdout)).toEqual({ messages: [], fleet: [{ id: 7, agent: "felix-1" }] });
+    expect(h.seen).toEqual([{ to: "bridge", write: true, status: 201 }]);
+  });
+
+  test("a send without --command is a message; agents and the log are reads of the same binding", async () => {
+    const h = bridgeHarness();
+    await h.run(["fleet", "bridge", "send", "--to", "all", "-"], { stdin: "hello" });
+    expect(JSON.parse(h.calls[0].init.body ?? "{}").kind).toBe("message");
+    h.answer.status = 200;
+    h.answer.body = { agents: [{ name: "felix-1" }] };
+    const agents = await h.run(["fleet", "bridge", "agents"]);
+    expect(h.calls[1].url).toBe("https://bridge.internal/fleet/pm-cred-test/agents");
+    expect(h.calls[1].init.method).toBe("GET");
+    expect(JSON.parse(agents.stdout)).toEqual({ agents: [{ name: "felix-1" }] });
+    h.answer.body = { messages: [{ id: 3 }] };
+    const log = await h.run(["fleet", "bridge", "log", "--limit", "30", "--order", "desc"]);
+    expect(h.calls[2].url).toBe("https://bridge.internal/fleet/pm-cred-test/messages?limit=30&order=desc");
+    expect(JSON.parse(log.stdout)).toEqual({ messages: [{ id: 3 }] });
+    expect(h.seen.map((c) => [c.to, c.write, c.status])).toEqual([
+      ["bridge", true, 201],
+      ["bridge", false, 200],
+      ["bridge", false, 200],
+    ]);
+  });
+
+  test("the composer's verbs cross the same binding: a limited send, a broaden, an offer, the offers list", async () => {
+    const h = bridgeHarness();
+    // A pattern send with a limit: the limit rides the body, and the
+    // bridge's match report comes back as the run's output.
+    h.answer.body = { batch: "b9", messages: [], unregistered: [], matched: 2, delivered: 1, recipients: ["felix-1"], remaining: 1 };
+    const sent = await h.run(["fleet", "bridge", "send", "--to", "agent:f*", "--command", "--limit", "1", "-"], {
+      stdin: "do the thing",
+    });
+    expect(JSON.parse(h.calls[0].init.body ?? "{}")).toEqual({
+      agent: "pm-stack",
+      to: ["agent:f*"],
+      body: "do the thing",
+      kind: "command",
+      limit: 1,
+    });
+    expect(JSON.parse(sent.stdout)).toMatchObject({ matched: 2, delivered: 1, remaining: 1 });
+    // A broaden names only the batch: no text, no targets.
+    h.answer.body = { batch: "b9", messages: [], unregistered: [], matched: 2, delivered: 1, recipients: ["felix-2"], remaining: 0 };
+    await h.run(["fleet", "bridge", "send", "--broaden", "b9"]);
+    expect(h.calls[1].url).toBe("https://bridge.internal/fleet/pm-cred-test/send");
+    expect(JSON.parse(h.calls[1].init.body ?? "{}")).toEqual({ agent: "pm-stack", broaden: "b9" });
+    // An offer posts to the offer route with its slots.
+    h.answer.body = { offer: { id: 7, state: "open" } };
+    await h.run(["fleet", "bridge", "offer", "--to", "agent:f*", "--slots", "2", "--command", "-"], {
+      stdin: "take the next task",
+    });
+    expect(h.calls[2].url).toBe("https://bridge.internal/fleet/pm-cred-test/offer");
+    expect(JSON.parse(h.calls[2].init.body ?? "{}")).toEqual({
+      agent: "pm-stack",
+      to: ["agent:f*"],
+      body: "take the next task",
+      kind: "command",
+      slots: 2,
+    });
+    // The offers list is a read of the same binding.
+    h.answer.status = 200;
+    h.answer.body = { offers: [{ id: 7, claims: [{ agent: "felix-1" }] }] };
+    const offers = await h.run(["fleet", "bridge", "offers"]);
+    expect(h.calls[3].url).toBe("https://bridge.internal/fleet/pm-cred-test/offers");
+    expect(h.calls[3].init.method).toBe("GET");
+    expect(JSON.parse(offers.stdout)).toEqual({ offers: [{ id: 7, claims: [{ agent: "felix-1" }] }] });
+    expect(h.seen.map((c) => [c.to, c.write, c.status])).toEqual([
+      ["bridge", true, 201],
+      ["bridge", true, 201],
+      ["bridge", true, 201],
+      ["bridge", false, 200],
+    ]);
+    // The classes run the same verbs through the same translation.
+    const { ops } = directClasses(edgeConfig, h.secrets);
+    h.answer.status = 201;
+    h.answer.body = { batch: "b9", messages: [], unregistered: [], matched: 2, delivered: 1, recipients: ["felix-2"], remaining: 0 };
+    const widened = await ops.broaden("b9");
+    expect(widened).toMatchObject({ matched: 2, delivered: 1, remaining: 0 });
+    h.answer.body = { offers: [{ id: 7, claims: [] }] };
+    expect(await ops.offers()).toEqual([{ id: 7, claims: [] }]);
+  });
+
+  test("a credential the bridge no longer knows is said plainly, as a failed call", async () => {
+    const h = bridgeHarness();
+    h.answer.ok = false;
+    h.answer.status = 404;
+    h.answer.body = null;
+    const out = await h.run(["fleet", "bridge", "send", "--to", "felix-1", "-"], { stdin: "hi" });
+    expect(out.code).toBe(1);
+    expect(out.stderr).toContain("turned the PM credential away (unknown or revoked)");
+    expect(h.seen).toEqual([{ to: "bridge", write: true, status: 404 }]);
+  });
+
+  test("without the credential, or without the binding, the bridge is still a machine's", async () => {
+    const h = bridgeHarness();
+    const noToken = edgeRun(directConfig(edgeConfig), { bridgeFetch: h.bridgeFetch }, h.bridgeFetch);
+    await expect(noToken(["fleet", "bridge", "agents"])).rejects.toThrow(/needs a machine/);
+    const noBinding = edgeRun(directConfig(edgeConfig), { bridgeToken: "pm-cred-test" }, h.bridgeFetch);
+    await expect(noBinding(["fleet", "bridge", "agents"])).rejects.toThrow(/needs a machine/);
+    // And a bridge verb this side does not carry is a machine's too.
+    await expect(h.run(["fleet", "bridge", "inbox", "--agent", "felix-1"])).rejects.toThrow(/needs a machine/);
+    expect(h.calls).toHaveLength(0);
+  });
+
+  test("the classes send and read through the bridge unchanged", async () => {
+    const h = bridgeHarness();
+    const { ops } = directClasses(edgeConfig, h.secrets);
+    // A send's answer is the bridge's match report (#14375).
+    h.answer.body = { batch: "b1", messages: [], unregistered: [], matched: 1, delivered: 1, recipients: ["felix-1"], remaining: 0 };
+    const sent = await ops.send(["agent:felix-1"], "hello there", true);
+    expect(sent).toEqual({
+      to: ["agent:felix-1"],
+      command: true,
+      batch: "b1",
+      matched: 1,
+      delivered: 1,
+      recipients: ["felix-1"],
+      remaining: 0,
+      unregistered: [],
+    });
+    expect(JSON.parse(h.calls[0].init.body ?? "{}")).toEqual({
+      agent: "pm-stack",
+      to: ["agent:felix-1"],
+      body: "hello there",
+      kind: "command",
+    });
+    h.answer.status = 200;
+    h.answer.body = { agents: [{ name: "felix-1", groups: [] }] };
+    expect(await ops.agents()).toEqual([{ name: "felix-1", groups: [] }]);
+    h.answer.body = { messages: [{ id: 1, body: "one" }] };
+    expect(await ops.messages(5)).toEqual([{ id: 1, body: "one" }]);
+    expect(h.calls[2].url).toBe("https://bridge.internal/fleet/pm-cred-test/messages?limit=5&order=desc");
+  });
+
+  test("the unified views are reads of the same binding; a revoke is a machine's", async () => {
+    const h = bridgeHarness();
+    h.answer.status = 200;
+    h.answer.body = { messages: [{ id: 1, surface: "fleet", sender_addr: "agent:felix-1" }] };
+    const feed = await h.run([
+      "fleet",
+      "bridge",
+      "pipeline",
+      "--kind",
+      "command",
+      "--sender",
+      "felix-1",
+      "--unread",
+      "--limit",
+      "25",
+      "--order",
+      "desc",
+    ]);
+    expect(h.calls[0].url).toBe(
+      "https://bridge.internal/fleet/pm-cred-test/pipeline?kind=command&sender=felix-1&unread_only=true&limit=25&order=desc",
+    );
+    expect(JSON.parse(feed.stdout)).toEqual({ messages: [{ id: 1, surface: "fleet", sender_addr: "agent:felix-1" }] });
+    await h.run(["fleet", "bridge", "directory"]);
+    expect(h.calls[1].url).toBe("https://bridge.internal/fleet/pm-cred-test/directory");
+    await h.run(["fleet", "bridge", "credentials"]);
+    expect(h.calls[2].url).toBe("https://bridge.internal/fleet/pm-cred-test/credentials");
+    expect(h.seen).toEqual([
+      { to: "bridge", write: false, status: 200 },
+      { to: "bridge", write: false, status: 200 },
+      { to: "bridge", write: false, status: 200 },
+    ]);
+    // Revoking is the owner's act through the owner token: the edge's
+    // read-scope credential never carries it, so the verb is refused
+    // here and the action is held for a machine instead.
+    await expect(h.run(["fleet", "bridge", "revoke", "--agent", "felix-1"])).rejects.toThrow(/needs a machine/);
+    await expect(h.run(["fleet", "bridge", "revoke", "--identity", "muse/felix-1"])).rejects.toThrow(/needs a machine/);
+    expect(h.calls).toHaveLength(3);
+    // The provisioning state list is a read of the same binding
+    // (#14376); the mints and the enroll revoke are machines' verbs,
+    // refused here like the revoke above.
+    h.answer.body = { enroll_tokens: [{ agent: "new-1", state: "pending" }] };
+    const listed = await h.run(["fleet", "bridge", "enroll-tokens"]);
+    expect(h.calls[3].url).toBe("https://bridge.internal/fleet/pm-cred-test/enroll-tokens");
+    expect(JSON.parse(listed.stdout)).toEqual({ enroll_tokens: [{ agent: "new-1", state: "pending" }] });
+    await expect(h.run(["fleet", "bridge", "mint-enroll", "--agent", "new-1"])).rejects.toThrow(/needs a machine/);
+    await expect(h.run(["fleet", "bridge", "mint-credential", "--agent", "felix-1"])).rejects.toThrow(
+      /needs a machine/,
+    );
+    await expect(h.run(["fleet", "bridge", "revoke-enroll", "--agent", "new-1"])).rejects.toThrow(/needs a machine/);
+    expect(h.calls).toHaveLength(4);
+    // The wake hooks' list is a read of the same binding (#14544);
+    // setting and removing are owner-token acts, refused here like
+    // the revoke above (a remove is held for a machine instead).
+    h.answer.body = { hooks: [{ address: "agent:felix-1", kind: "webhook", host: "hooks.example", has_token: true, added: "2026-11-24T00:00:00.000Z" }] };
+    const hooks = await h.run(["fleet", "bridge", "wake-hooks"]);
+    expect(h.calls[4].url).toBe("https://bridge.internal/fleet/pm-cred-test/wake-hooks");
+    expect(JSON.parse(hooks.stdout)).toEqual({
+      hooks: [{ address: "agent:felix-1", kind: "webhook", host: "hooks.example", has_token: true, added: "2026-11-24T00:00:00.000Z" }],
+    });
+    await expect(h.run(["fleet", "bridge", "wake-hooks", "--set", "-"], { stdin: "{}" })).rejects.toThrow(/needs a machine/);
+    await expect(h.run(["fleet", "bridge", "wake-hooks", "--remove", "--address", "agent:felix-1"])).rejects.toThrow(
+      /needs a machine/,
+    );
+    expect(h.calls).toHaveLength(5);
+  });
+
+  test("the classes read the pipeline and the merged directory through the bridge, and cannot revoke there", async () => {
+    // A bridge that answers each of the unified views with its own rows.
+    const byPath = (url: string) => {
+      if (url.includes("/pipeline")) {
+        return {
+          messages: [
+            {
+              surface: "connector",
+              id: 1,
+              kind: "instruction",
+              sender_addr: "user:drew",
+              receiver: "claude",
+              body: "owner instruction",
+            },
+            {
+              surface: "fleet",
+              id: 2,
+              kind: "command",
+              sender_addr: "agent:felix-1",
+              receiver: "agent:archer-1",
+              body: "agent command",
+            },
+            {
+              surface: "notes",
+              id: 3,
+              kind: "note",
+              sender_addr: "user:drew",
+              receiver: "muse/felix-1",
+              body: "a note",
+            },
+          ],
+        };
+      }
+      if (url.endsWith("/directory")) {
+        return {
+          agents: [
+            {
+              surface: "fleet",
+              name: "felix-1",
+              groups: ["muse"],
+              presence: "last_seen",
+              last_seen: "2026-11-24T01:00:00Z",
+              unread: 2,
+            },
+            {
+              surface: "notes",
+              name: "muse/scout-1",
+              identity: "muse/scout-1",
+              scopes: { can_send: false, can_inbox: false },
+              presence: "none",
+              last_seen: null,
+            },
+          ],
+        };
+      }
+      if (url.endsWith("/credentials")) {
+        return {
+          credentials: [
+            {
+              agent: "felix-1",
+              state: "active",
+              scopes: ["inbox", "send"],
+              addr: null,
+              credentials: 1,
+              live: 1,
+              created: "2026-11-24T00:00:00Z",
+              revoked_at: null,
+            },
+          ],
+        };
+      }
+      if (url.endsWith("/enroll-tokens")) {
+        return {
+          enroll_tokens: [
+            {
+              agent: "new-1",
+              kind: "muse",
+              groups: ["muse"],
+              notes_identity: null,
+              created: "2026-11-24T00:00:00Z",
+              expires_at: "2026-11-25T00:00:00Z",
+              used_at: null,
+              revoked_at: null,
+              state: "pending",
+            },
+          ],
+        };
+      }
+      throw new Error(`unexpected bridge fetch ${url}`);
+    };
+    const bridgeFetch = (async (url: string) => ({
+      ok: true,
+      status: 200,
+      json: async () => byPath(String(url)),
+    })) as unknown as Fetch;
+    const { ops } = directClasses(edgeConfig, {
+      githubToken: "gh-test",
+      queueToken: "queue-test",
+      bridgeToken: "pm-cred-test",
+      bridgeFetch,
+    } as never);
+    // The pipeline: rows from all three surfaces, real senders kept.
+    const feed = (await ops.pipelineFeed(new URLSearchParams({ kind: "command" }))) as { sender_addr: string }[];
+    expect(feed.map((m) => m.sender_addr)).toEqual(["user:drew", "agent:felix-1", "user:drew"]);
+    // The directory: the fleet row carries its credential state; the
+    // notes-only identity is present, presence none, and its revoked
+    // tokens read as a revoked credential.
+    const directory = (await ops.directory()) as {
+      name: string;
+      presence: string;
+      last_seen: string | null;
+      credential: { state: string } | null;
+    }[];
+    const felix = directory.find((a) => a.name === "felix-1");
+    expect(felix?.credential?.state).toBe("active");
+    const scout = directory.find((a) => a.name === "muse/scout-1");
+    expect(scout?.presence).toBe("none");
+    expect(scout?.last_seen).toBeNull();
+    expect(scout?.credential?.state).toBe("revoked");
+    // And a revoke asked of the edge's classes is a machine's.
+    await expect(ops.revokeCredential("fleet", "felix-1")).rejects.toThrow(/needs a machine/);
+    // The enroll tokens' state is read through the bridge the same
+    // way (#14376), and taking tokens back is a machine's too.
+    const enrollTokens = (await ops.enrollTokens()) as {
+      agent: string;
+      kind: string;
+      groups: string[];
+      notes_identity: string | null;
+      created: string;
+      expires_at: string;
+      used_at: string | null;
+      revoked_at: string | null;
+      state: string;
+    }[];
+    expect(enrollTokens).toEqual([
+      {
+        agent: "new-1",
+        kind: "muse",
+        groups: ["muse"],
+        notes_identity: null,
+        created: "2026-11-24T00:00:00Z",
+        expires_at: "2026-11-25T00:00:00Z",
+        used_at: null,
+        revoked_at: null,
+        state: "pending",
+      },
+    ]);
+    await expect(ops.revokeEnrollTokens("new-1")).rejects.toThrow(/needs a machine/);
+    await expect(ops.mintEnrollToken({ agent: "new-2" })).rejects.toThrow(/needs a machine/);
+  });
+
+  test("the agents section is read by the class that reads it on the laptop", async () => {
+    const ops = { agents: async () => [{ name: "felix-1" }] };
+    expect(await directRead("agents", ops as never, {} as never)).toEqual([{ name: "felix-1" }]);
+  });
+
+  test("the pipeline section is the unread-instruction count, read the same way (#14377)", async () => {
+    const ops = { unreadInstructions: async () => ({ unreadInstructions: 2 }) };
+    expect(await directRead("pipeline", ops as never, {} as never)).toEqual({ unreadInstructions: 2 });
+  });
+});
+
 describe("the direct classes", () => {
   test("the config the edge builds carries what the classes need and nothing it cannot use", () => {
     const config = directConfig(edgeConfig);
@@ -516,6 +922,8 @@ describe("what this side notes of each call it makes", () => {
       asks: ["github", "queue"],
       census: ["github"],
       done: ["queue", "github"],
+      agents: ["bridge"],
+      pipeline: ["bridge"],
     });
   });
 });
@@ -632,6 +1040,28 @@ describe("what the edge remembers of GitHub", () => {
     expect(g.seen.map((call) => call.status)).toEqual([200, 304, 200, 304]);
     // "Not modified" has no body, and none was asked for.
     expect(g.state.bodiless).toBe(0);
+  });
+
+  test("a question with a time in it is asked once and never the same again: its answer is not kept, and keeps nothing else out", async () => {
+    // The history behind the Trends screen asks "everything changed
+    // since <time>", a page at a time, each with a later time. Kept,
+    // a hundred such answers would push out the lists that are asked
+    // for again and again.
+    const g = tagging();
+    await g.api(PULLS);
+    const since = (time: string) =>
+      `repos/developing-today/code/issues?state=all&sort=updated&direction=asc&since=${time}&per_page=100`;
+    const first = await g.api(since("2026-11-01T00:00:00Z"));
+    expect(first.code).toBe(0);
+    await g.api(since("2026-11-02T00:00:00Z"));
+    // Asked the same again, it is asked in full: no tag was kept for it.
+    await g.api(since("2026-11-01T00:00:00Z"));
+    expect(g.calls.slice(1).map((call) => call.tag)).toEqual([null, null, null]);
+    // One answer is kept: the list that is asked for again.
+    expect((await g.memory?.said())?.kept).toBe(1);
+    expect(await g.memory?.get(at(since("2026-11-01T00:00:00Z")))).toBeUndefined();
+    await g.api(PULLS);
+    expect(g.calls[g.calls.length - 1].tag).toBe('W/"1"');
   });
 
   test("each address has its own answer, and a write is never asked for by a tag", async () => {

@@ -18,13 +18,13 @@ public, matched exactly: `/manifest.webmanifest` and the four icons under
 `/console/` is one page with five tabs. The first four are what the
 owner does every day; everything else is under More.
 
-| Tab      | What it is for                                                                                                                                                |
-| -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Now      | Tasks in progress with their next step, sessions that are moving, and what the owner did lately                                                               |
-| Next     | The queue in the order it will be claimed; move a task first, sooner or later; why tasks are blocked                                                          |
-| Needs me | Open questions (one tap to answer, undo for a few seconds), things only hands can do, reviews                                                                 |
-| Ask      | Say what you want in your own words (typed or dictated). It becomes an issue and a top-of-queue task in one pass                                              |
-| More     | The plan (roadmaps, bugs, intake), queue by state, pull requests, ranked issues, agents, services, notifications, phones, releases, and the dashboard's pages |
+| Tab      | What it is for                                                                                                                                                          |
+| -------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Now      | Tasks in progress with their next step, sessions that are moving, and what the owner did lately                                                                         |
+| Next     | The queue in the order it will be claimed; move a task first, sooner or later; why tasks are blocked                                                                    |
+| Needs me | Open questions (one tap to answer, undo for a few seconds), things only hands can do, reviews                                                                           |
+| Ask      | Say what you want in your own words (typed or dictated). It becomes an issue and a top-of-queue task in one pass                                                        |
+| More     | The plan (roadmaps, bugs, intake), queue by state, pull requests, ranked issues, agents, messages, services, notifications, phones, releases, and the dashboard's pages |
 
 The page never waits on a live fan-out. The server keeps three documents
 ready (`core`, `questions`, `ops`), each built from sections that are
@@ -132,7 +132,7 @@ late.
 
 ### Phones
 
-The Android app's home-screen widget reads a short summary (three counts
+The Android app's home-screen widget reads a short summary (four counts
 and the top line of each list) with a token of its own, since it cannot
 use the browser's sign-in. Linking passes no secret through an address:
 the phone shows the signed-in owner a hash, the owner approves it under
@@ -268,6 +268,83 @@ How it is made, for adding to it:
   and gaps through `--space`, corners through `--round`, edges through
   `--edge`. A rule that writes its own colour or a bare pixel padding
   fails a test.
+
+### Trends
+
+**More → Trends** is what got done, by day, over 7, 14, 30 or 90 days,
+each set against the same time before it:
+
+- pull requests merged, by what each is (a feature, a fix, docs, tests);
+- features merged by project (id, Fleet, Atlas, PM stack, mcpx), with
+  each project's latest features listed and linked;
+- issues opened against issues closed, and bugs reported against fixed;
+- how long a pull request waits from opened to merged (the middle one
+  of each day);
+- tasks the queue finished, by kind.
+
+Whoever serves the app reads it, and no machine is needed: Cloudflare
+asks GitHub and the queue's store itself (`src/trends.ts`).
+
+- **GitHub's history is read once and kept.** GitHub has no "merged per
+  day" to ask for; its list of issues takes a time and answers with
+  everything changed since, oldest change first. It is read newest
+  first, in stretches: the last day to the end of the list (and from
+  then on kept up by asking from where it stopped), then three days
+  back, a week, two weeks, a month, two months, ninety days. The screen
+  says from which day on the counts are whole. What is kept is small
+  (per day: the numbers of what was opened and closed, and for a merged
+  pull request what its title says it is), in the Worker's own storage.
+- **What a pull request is comes from its title**: `feat(pm-console): …`
+  is a feature of the PM stack; `id-pg: …` is counted under id but not
+  as a feature; a title that is only words is "everything else".
+- **It reads on in the background while somebody looks.** For a day
+  after the screen was last opened, Cloudflare's own clock reads the
+  history on (six pages a minute until it is whole, then what changed,
+  every half hour). After that it does not wake for it; the next
+  opening reads on at once.
+- **Tasks come from the queue's store each time**: one read of the
+  finishing events by day, by the index the Done screen uses.
+
+Days are UTC days, and today's column is drawn fainter: it is not over.
+
+### Reports
+
+**More → Reports** is the same history in words: a day, a week or thirty
+days, with what merged and how that stands against the time before,
+the features by project (the latest three of each to open), issues
+opened and closed and what that did to the backlog, bugs, and the
+queue's finished tasks (and, in a report that ends today, the queue as
+it stands). **Earlier** and **Later** step it back and forth by its own
+length, as far back as the history goes, so the report for a week gone
+by can be made at any time. **Copy** and **Share** give it as text.
+
+A report is made when it is asked for, on the device, from the Trends
+read (`public/pages/reports.js`; the read takes a day to end on). It
+needs no machine, and the service worker keeps each one asked for, so
+it opens again with no connection. A report says when its numbers are
+not whole yet. For anything these do not cover, a question on Ask is
+answered by an agent and stays there to read.
+
+### Charts, and pages of their own
+
+`public/charts.js` is a small kit any screen can use: columns stacked by
+what they are made of, lines, and the tiles a screen leads with. Its
+rules are written at its top and held by its tests: colour only says
+which series a mark is (six theme colours in a fixed order, checked for
+people who see colour differently, and never the status colours); words
+are never in a series colour; two or more series always have a legend;
+one scale to a chart; pointing at, tapping or arrowing to a day reads
+out every series for it; and every chart has its numbers as a table.
+
+A screen can be **a module of its own** in `public/pages/`: a file that
+exports its address, title, the part of More its tile goes in, and a
+`view` that returns elements. The app gives it its route, its tile and
+its offline copy, and hands it the app's own parts (reading, acting,
+moving about). **To add a page:** write `public/pages/<name>.js`, add it
+to `public/pages/index.js`, and name it in `public/files.json`; the
+tests check the three agree. Trends is the first, and the example.
+Elements are built with `h` (and `s` for drawings) from `public/ui.js`
+and the classes in `app.css`, so a new page looks like the rest.
 
 ### The app's files
 

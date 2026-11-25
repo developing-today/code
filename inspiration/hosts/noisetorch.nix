@@ -1,1 +1,0 @@
-{ programs.noisetorch.enable = true; }

@@ -60,6 +60,9 @@ usage: fleet agent <verb> [options]
   kinds                         the agent kinds this fleet can enrol
   enroll --kind K --name N      register an agent and save its profile
          [--groups a,b] [--dry-run] [--profile PATH]
+         [--bootstrap TOKEN]    provision from the owner's single-use
+                                bootstrap token instead of the shared
+                                fleet token (see fleet bridge exchange)
   doctor [--agent N]            which legs answer from this seat
   next   [--agent N]            the next piece of work, down the ladder:
          [--lane L] [--repo OWNER/NAME] [--low-water N]
@@ -96,8 +99,13 @@ The agent kinds this fleet can enrol."
         "enroll" => {
             "\
 usage: fleet agent enroll --kind K --name N [--groups a,b] [--dry-run] [--profile PATH]
+       fleet agent enroll --kind K --name N --bootstrap TOKEN
 
-Register an agent and save its profile."
+Register an agent and save its profile. With --bootstrap, the
+single-use token the owner minted for this agent is first exchanged
+for the agent's own bridge credentials (stored in the vault by name
+and recorded in the profile), and a Muse seat also gets its
+bridge wake hook written."
         }
         "doctor" => {
             "\

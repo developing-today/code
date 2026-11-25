@@ -269,7 +269,7 @@ fn decode_signature(id: &str, version: u64, hex: &str) -> Result<Signature, List
         return Err(malformed());
     }
     let mut bytes = [0u8; 64];
-    for (i, pair) in hex.as_bytes().chunks_exact(2).enumerate() {
+    for (i, pair) in hex.as_bytes().as_chunks::<2>().0.iter().enumerate() {
         let hi = char::from(pair[0]).to_digit(16).ok_or_else(&malformed)?;
         let lo = char::from(pair[1]).to_digit(16).ok_or_else(&malformed)?;
         bytes[i] = u8::try_from(hi * 16 + lo).map_err(|_| malformed())?;

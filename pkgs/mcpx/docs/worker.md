@@ -335,6 +335,77 @@ itself. The Google identity behind the `/authorize` Access application
 rests on the Access Google OAuth client recorded in
 [#12417](https://github.com/developing-today/code/issues/12417).
 
+## Disagreement rulings (register #13965, items M2–M6)
+
+Where the Worker's wording and the code disagreed, the code won.
+Each ruling below cites the evidence it rests on; M1 needed no ruling
+(it was settled: manifest registration,
+`pkgs/mcpx/docs/compendium.manifest.json:1197`).
+
+- **M2 — the laptop half of the door chain is asserted, not
+  configured. Ruling: the chapter says so, and keeps saying so.**
+  `pkgs/mcpx/worker/README.md:24-25` and `src/index.ts:18` describe a
+  bridge proxy on `127.0.0.1:8932` reached through the `sandbox-link`
+  tunnel — but no unit, service or ingress rule defining either exists
+  in `home/`, `pkgs/mcpx/modules/` or `pkgs/mcpx/daemon/` (grep for
+  `8932` across those trees is empty). The only bridge this
+  repository's home configuration defines is the Desktop Commander
+  bridge on `127.0.0.1:8931`
+  (`home/common/default.nix`, `desktop-commander-bridge`). The
+  chapter's door-chain section records the laptop legs as asserted by
+  the Worker, not as described by the deployment configuration, and
+  the Operations section treats every live statement as code behaviour
+  verified by the test suite, not a probed endpoint.
+- **M3 — "transparent" is a property of the full profile only.
+  Ruling: the chapter now says exactly that.** `src/index.ts:26` and
+  `:140` call the `/mcp` proxy "transparent", but in the conservative
+  and selected profiles the door gates request bodies
+  (`gatewayCallAllowed`, `src/filter.ts:122`) and filters responses
+  (`filterMcpResponse`); only the full profile short-circuits both
+  (`selector.mode === "full"` returns at `filter.ts:127`, and the
+  response streams through untouched). The chapter's `ns` selector
+  section names the full profile as the exception whose response
+  "streams through untouched". The source comments keep the word in
+  its narrow sense — the proxy adds no framing of its own — and the
+  code wins where the two could be read apart.
+- **M4 — the #8299 cite stands. Ruling: #8299 is related, and the
+  alignment target is #13659's own choice.** `README.md:127` says
+  daemon-side auth lands "aligned with #8299". #8299's scope is role
+  definitions as first-class world configuration whose definition
+  shape includes the capability ceiling — the same `CapabilityCeiling`
+  / `PolicySession` model the id book records as shipped
+  (`pkgs/id/book/concepts/capabilities.md:51`, `id_caps::mcp_policy`).
+  And #13659's own scope text names "#8299 and neighbors" as the work
+  the daemon auth aligns with. There is no mis-citation to repair; the
+  chapter keeps pointing at #13659, and the question of what #8299
+  delivers belongs to #13659's design record, not to this chapter.
+- **M5 — the door route lives in `config.json`, not
+  `wrangler.toml`. Ruling: recorded in the source table.** The
+  `mcpx.security.cab` route exists only in
+  `pkgs/mcpx/worker/config.json:1` (whose `routes` array names the
+  door); `wrangler.toml` defines no route — grep for `route` in that
+  file is empty. The chapter's source table describes
+  `config.json` as "the `cf` tool's view of the same deployment" and
+  `wrangler.toml` without any route claim, which matches the code.
+- **M6 — `mcpx_types` is listed but uncallable under the conservative
+  profile. Ruling: recorded as intended behaviour, with the one
+  genuinely open question named.** `mcpx_types` is in
+  `DISCOVERY_TOOLS` (`src/filter.ts:30`) so every non-full profile
+  lists it, but the call path refuses it unless the caller is
+  `selected` _and_ names an in-set namespace list (`src/filter.ts:134`;
+  the "leaks out-of-set names" comment at `:137-139` states the
+  reason). Listing-without-calling under conservative is therefore
+  deliberate, not an oversight — the same shape as catalog/search
+  metadata being visible but uncallable — and the chapter's selector
+  section already records the consequence ("the conservative profile
+  ... refuses `mcpx_types` even though it lists it"). The open
+  decision, stated here and not smuggled in: whether the conservative
+  `tools/list` _should_ advertise a tool that profile can never call
+  is undecided — no commit message, test name or review comment in the
+  Worker's history (`020967e2131` is the sole authoring commit)
+  records the intent. If that ever matters, file it as its own issue;
+  this chapter will not guess.
+
 ## Limitations, stated once
 
 - `mcpx_catalog` and `mcpx_search` responses are unfiltered metadata:

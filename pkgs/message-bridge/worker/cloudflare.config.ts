@@ -20,6 +20,7 @@ export default defineConfig({
       MESSAGES: bindings.durableObject({ worker: "message-bridge", exportName: "MessageStore" }),
       PUBLIC_URL: bindings.text("https://bridge.security.cab"),
       WORKERS_DEV_URL: bindings.text("https://message-bridge.developing-today.workers.dev"),
+      CONSOLE_URL: bindings.text("https://pm.security.cab/console/#more/messages"),
       CF_VERSION_METADATA: bindings.versionMetadata(),
     },
   },

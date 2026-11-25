@@ -59,13 +59,13 @@ The intended state is that the Postgres `ci.events` table remains read-only and 
 
 ## 5. Dependency-ordered slices and acceptance
 
-| Order | Slice | Acceptance |
-|---|---|---|
-| 1 | Inventory receiver, reader, schema, retention, and consumers | Receiver and sole evidenced live reader identified; source view/query and existing retention discrepancy recorded. |
-| 2 | Build Turso schema/receiver path and idempotency | Signed workflow payload is accepted; invalid signature is rejected; duplicate `dedupe_key` creates one row; failure-only payload policy is tested; Turso write failure is not acknowledged as success. |
-| 3 | Backfill and shadow/dual-run evidence | Source keys are represented at target; compare dedupe-key sets and record any transition gap explicitly. |
-| 4 | Flip reader and webhook producers; retire old receiver | Live readout uses Turso and freshness check; all relevant webhooks target Worker; Postgres write silence and post-retirement Turso writes are independently observed. |
-| 5 | Enforce retention and document archive gate | 90-day prune implementation exists and is runnable; first execution is non-destructive when no rows are old enough; Postgres drop remains excluded pending both gates. |
+| Order | Slice                                                        | Acceptance                                                                                                                                                                                             |
+| ----- | ------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 1     | Inventory receiver, reader, schema, retention, and consumers | Receiver and sole evidenced live reader identified; source view/query and existing retention discrepancy recorded.                                                                                     |
+| 2     | Build Turso schema/receiver path and idempotency             | Signed workflow payload is accepted; invalid signature is rejected; duplicate `dedupe_key` creates one row; failure-only payload policy is tested; Turso write failure is not acknowledged as success. |
+| 3     | Backfill and shadow/dual-run evidence                        | Source keys are represented at target; compare dedupe-key sets and record any transition gap explicitly.                                                                                               |
+| 4     | Flip reader and webhook producers; retire old receiver       | Live readout uses Turso and freshness check; all relevant webhooks target Worker; Postgres write silence and post-retirement Turso writes are independently observed.                                  |
+| 5     | Enforce retention and document archive gate                  | 90-day prune implementation exists and is runnable; first execution is non-destructive when no rows are old enough; Postgres drop remains excluded pending both gates.                                 |
 
 Slices 1–5 have been implemented/verified in the history summarized above; PR #10047 is the implementation closeout evidence. The remaining Postgres archive drop is not a sixth automatic slice: it is a later, separately approved decision after the stated date gate.
 

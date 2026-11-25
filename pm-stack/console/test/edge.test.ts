@@ -39,6 +39,7 @@ import { Ops } from "../src/ops.ts";
 import { type Deps, handle, heldRunner, marked } from "../src/server.ts";
 import { memoryStore } from "../src/store.ts";
 import { EdgeLink } from "../src/sync.ts";
+import { TASKS_BY_DAY_SQL } from "../src/trends.ts";
 import { DONE_COUNT_SQL, DONE_KINDS_SQL, DONE_TASKS_SQL } from "../src/work.ts";
 import { asThePlatformFetch, browser, signer } from "./support.ts";
 
@@ -69,7 +70,7 @@ const SECTION_NAMES = [
   "more",
 ];
 
-async function setup(options: { direct?: boolean; kinds?: readonly string[] } = {}) {
+async function setup(options: { direct?: boolean; kinds?: readonly string[]; bridge?: boolean } = {}) {
   const now = { t: START };
   const clock = () => now.t;
   const access = await signer("k1");
@@ -338,6 +339,19 @@ async function setup(options: { direct?: boolean; kinds?: readonly string[] } = 
   const queueAnswer = (sql: string, args: (string | number)[]) => {
     const cols = (names: string[]) => names.map((name) => ({ name }));
     const rows = (rs: { value: string | number | null }[][]) => rs;
+    if (sql === TASKS_BY_DAY_SQL) {
+      // Finished tasks by day, from the same finished tasks the Done screen is given.
+      const days = new Map<string, number>();
+      for (const t of queueDone) {
+        if (`${t.at}Z` >= String(args[0])) days.set(t.at.slice(0, 10), (days.get(t.at.slice(0, 10)) ?? 0) + 1);
+      }
+      return {
+        cols: cols(["day", "kind", "n"]),
+        rows: rows(
+          [...days.entries()].sort().map(([day, n]) => [{ value: day }, { value: "small fix" }, { value: n }]),
+        ),
+      };
+    }
     if (sql === DONE_TASKS_SQL) {
       return {
         cols: cols(["id", "title", "at", "lane", "model", "kind", "issue", "pr", "verdict"]),
@@ -471,6 +485,20 @@ async function setup(options: { direct?: boolean; kinds?: readonly string[] } = 
       return ok({ items: ghSearch, total_count: ghSearch.length });
     // What is closed is a list of its own.
     if (method === "GET" && path === "issues" && u.searchParams.get("state") === "closed") return ok(ghClosed);
+    // Everything changed at or after a time, oldest change first, a
+    // page at a time: what the history behind the Trends screen asks.
+    if (method === "GET" && path === "issues" && u.searchParams.get("state") === "all" && u.searchParams.has("since")) {
+      const since = u.searchParams.get("since") ?? "";
+      const per = Math.min(100, Number(u.searchParams.get("per_page") ?? 30));
+      const changed = (i: Record<string, unknown>) => String(i.updated_at ?? "");
+      return ok(
+        (ghClosed as Record<string, unknown>[])
+          .map((i): Record<string, unknown> => ({ state: "closed", created_at: i.closed_at, ...i }))
+          .filter((i) => changed(i) >= since)
+          .sort((a, b) => changed(a).localeCompare(changed(b)) || Number(a.number) - Number(b.number))
+          .slice(0, per),
+      );
+    }
     if (method === "GET" && path === "issues") {
       // GitHub lists the issues that carry the label asked for.
       const label = u.searchParams.get("labels");
@@ -638,6 +666,137 @@ async function setup(options: { direct?: boolean; kinds?: readonly string[] } = 
     }
     throw new Error(`unexpected GitHub call ${method} ${url}`);
   };
+  /** The bridge, as the edge reaches it over its service binding
+   * (#14373): every call recorded, and the agents and the message log
+   * it answers with. `bridgeRefuses` makes its next answer the plain
+   * 404 of a credential the bridge no longer knows. */
+  const bridgeCalls: { method: string; url: string; body?: string }[] = [];
+  const bridgeAgents = [
+    { name: "lane-1", groups: ["muse"], first_seen: "2026-11-24T00:00:00Z", last_seen: "2026-11-24T01:00:00Z" },
+  ];
+  const bridgeLog = [
+    { id: 3, agent: "lane-1", direction: "inbound", kind: "message", sender: "service:pm-stack", body: "earlier" },
+  ];
+  // The unified views the console's Messages and Agents screens read
+  // (#14374): one row per surface with its real sender, the unified
+  // directory (a notes-only identity included), and credential state.
+  const bridgePipeline = [
+    {
+      surface: "connector",
+      id: 11,
+      kind: "instruction",
+      sender_addr: "user:drew",
+      sender_label: "drew",
+      receiver: "claude",
+      direction: "inbound",
+      read_at: null,
+      body: "owner instruction",
+    },
+    {
+      surface: "fleet",
+      id: 12,
+      kind: "command",
+      sender_addr: "agent:lane-1",
+      sender_label: "lane-1",
+      receiver: "agent:lane-2",
+      direction: "inbound",
+      read_at: null,
+      body: "agent command",
+    },
+    {
+      surface: "notes",
+      id: 13,
+      kind: "note",
+      sender_addr: "user:drew",
+      sender_label: "drew",
+      receiver: "muse/lane-1",
+      direction: "inbound",
+      read_at: null,
+      body: "a note",
+    },
+  ];
+  const bridgeDirectory = [
+    {
+      surface: "fleet",
+      name: "lane-1",
+      groups: ["muse"],
+      presence: "last_seen",
+      first_seen: "2026-11-24T00:00:00Z",
+      last_seen: "2026-11-24T01:00:00Z",
+      unread: 1,
+    },
+    {
+      surface: "notes",
+      name: "muse/scout-1",
+      identity: "muse/scout-1",
+      scopes: { can_send: true, can_inbox: true },
+      presence: "none",
+      first_seen: "2026-11-24T00:00:00Z",
+      last_seen: null,
+    },
+  ];
+  const bridgeCredentials = [
+    {
+      agent: "lane-1",
+      state: "active",
+      scopes: ["inbox", "send"],
+      addr: null,
+      credentials: 1,
+      live: 1,
+      created: "2026-11-24T00:00:00Z",
+      revoked_at: null,
+    },
+  ];
+  const bridgeEnrollTokens = [
+    {
+      agent: "new-1",
+      kind: "muse",
+      groups: ["muse"],
+      notes_identity: null,
+      created: "2026-11-24T00:00:00Z",
+      expires_at: "2026-11-25T00:00:00Z",
+      used_at: null,
+      revoked_at: null,
+      state: "pending",
+    },
+  ];
+  const bridgeRefuses = { on: false };
+  const bridgeFetch = (async (
+    url: string,
+    init: { method?: string; headers?: Record<string, string>; body?: string },
+  ) => {
+    const u = String(url);
+    const method = init?.method ?? "GET";
+    bridgeCalls.push({ method, url: u, body: init?.body });
+    if (bridgeRefuses.on) return { ok: false, status: 404, json: async () => JSON.parse("") };
+    if (method === "POST" && u.endsWith("/send")) {
+      // A send's answer is its match report (#14375).
+      return {
+        ok: true,
+        status: 201,
+        json: async () => ({ batch: "b1", messages: [], unregistered: [], matched: 1, delivered: 1, recipients: ["lane-1"], remaining: 0 }),
+      };
+    }
+    if (method === "GET" && u.endsWith("/agents")) {
+      return { ok: true, status: 200, json: async () => ({ agents: bridgeAgents }) };
+    }
+    if (method === "GET" && u.includes("/messages")) {
+      return { ok: true, status: 200, json: async () => ({ messages: bridgeLog }) };
+    }
+    if (method === "GET" && u.includes("/pipeline")) {
+      return { ok: true, status: 200, json: async () => ({ messages: bridgePipeline }) };
+    }
+    if (method === "GET" && u.endsWith("/directory")) {
+      return { ok: true, status: 200, json: async () => ({ agents: bridgeDirectory }) };
+    }
+    if (method === "GET" && u.endsWith("/credentials")) {
+      return { ok: true, status: 200, json: async () => ({ credentials: bridgeCredentials }) };
+    }
+    if (method === "GET" && u.endsWith("/enroll-tokens")) {
+      return { ok: true, status: 200, json: async () => ({ enroll_tokens: bridgeEnrollTokens }) };
+    }
+    throw new Error(`unexpected bridge fetch ${method} ${u}`);
+  }) as never;
   /** The direct source, made to fail by a test that turns it on. */
   const directDown = { on: false };
   const directFetch = (async (
@@ -773,6 +932,7 @@ async function setup(options: { direct?: boolean; kinds?: readonly string[] } = 
             enabled: true,
             githubToken: "gh-test",
             queueToken: "queue-test",
+            ...(options.bridge ? { bridgeToken: "pm-cred-test", bridgeFetch } : {}),
             fetchImpl: asThePlatformFetch(directFetch) as typeof directFetch,
             ...(options.kinds ? { kinds: options.kinds } : {}),
           }
@@ -1197,6 +1357,10 @@ async function setup(options: { direct?: boolean; kinds?: readonly string[] } = 
     access,
     edgeConfig,
     directDown,
+    bridgeCalls,
+    bridgeAgents,
+    bridgeLog,
+    bridgeRefuses,
     githubCalls,
     queueCalls,
     strays,
@@ -3741,6 +3905,155 @@ describe("the edge does the core itself", () => {
     expect(later.doc.read.board).toBe(new Date(w.now.t).toISOString());
   });
 
+  test("a message is delivered by the edge through the bridge, with every machine away, and the agents and the log are read there", async () => {
+    const w = await setup({ direct: true, bridge: true });
+    await w.hostReads();
+    await w.link.now.once();
+    w.hostSaw.length = 0;
+    // Every machine goes away: nothing can be relayed or held for one.
+    w.net.hostUp = false;
+    const sent = await w.act("message.send", { to: ["lane-1"], text: "from the edge" });
+    expect(await sent.json()).toEqual({
+      ok: true,
+      result: { to: ["lane-1"], command: false, batch: "b1", matched: 1, delivered: 1, recipients: ["lane-1"], remaining: 0, unregistered: [] },
+    });
+    // The bridge was asked once, over its binding, as the PM stack.
+    expect(w.bridgeCalls).toHaveLength(1);
+    expect(w.bridgeCalls[0].method).toBe("POST");
+    expect(w.bridgeCalls[0].url).toBe("https://bridge.internal/fleet/pm-cred-test/send");
+    expect(JSON.parse(w.bridgeCalls[0].body ?? "{}")).toEqual({
+      agent: "pm-stack",
+      to: ["lane-1"],
+      body: "from the edge",
+      kind: "message",
+    });
+    // Nothing waits for a machine, and no machine was asked for anything.
+    const machines = (await (await w.browse("/console/api/machines")).json()) as MachinesAnswer;
+    expect(machines.held).toEqual([]);
+    expect(w.ran).toEqual([]);
+    // The agents list is the bridge's, read here: the ops document
+    // shows the agent the bridge named, not the host's empty list.
+    const ops = (await (await w.browse("/console/api/doc/ops")).json()) as { agents: { name: string }[] };
+    expect(ops.agents.map((a) => a.name)).toEqual(["lane-1"]);
+    // The message log is the bridge's too, at the address the app asks.
+    const log = (await (await w.browse("/console/api/messages?limit=15")).json()) as { body: string }[];
+    expect(log.map((m) => m.body)).toEqual(["earlier"]);
+    expect(w.bridgeCalls.map((c) => `${c.method} ${c.url}`)).toEqual([
+      "POST https://bridge.internal/fleet/pm-cred-test/send",
+      "GET https://bridge.internal/fleet/pm-cred-test/agents",
+      "GET https://bridge.internal/fleet/pm-cred-test/messages?limit=15&order=desc",
+    ]);
+    expect(w.hostSaw).not.toContain("GET /console/api/messages?limit=15");
+  });
+
+  test("the unified pipeline and directory are read at the edge, and a revoke is held for a machine, never done here", async () => {
+    const w = await setup({ direct: true, bridge: true });
+    await w.hostReads();
+    await w.link.now.once();
+    w.hostSaw.length = 0;
+    w.net.hostUp = false;
+    // The Messages screen's read: one feed over all three surfaces,
+    // the filters the owner chose carried to the bridge, and every
+    // row's real sender intact — an agent's command names the agent.
+    const feed = (await (await w.browse("/console/api/pipeline?kind=command&sender=lane-1")).json()) as {
+      surface: string;
+      sender_addr: string;
+    }[];
+    expect(feed.map((m) => [m.surface, m.sender_addr])).toEqual([
+      ["connector", "user:drew"],
+      ["fleet", "agent:lane-1"],
+      ["notes", "user:drew"],
+    ]);
+    // The Agents screen's read: the unified directory with credential
+    // state merged in — the fleet agent active, the notes-only
+    // identity present with no presence invented for it.
+    const directory = (await (await w.browse("/console/api/directory")).json()) as {
+      name: string;
+      surface: string;
+      presence: string;
+      last_seen: string | null;
+      credential: { state: string } | null;
+    }[];
+    const lane = directory.find((a) => a.name === "lane-1");
+    expect(lane?.credential?.state).toBe("active");
+    const scout = directory.find((a) => a.name === "muse/scout-1");
+    expect(scout?.surface).toBe("notes");
+    expect(scout?.presence).toBe("none");
+    expect(scout?.last_seen).toBeNull();
+    expect(scout?.credential?.state).toBe("active");
+    expect(w.bridgeCalls.map((c) => `${c.method} ${c.url}`)).toEqual([
+      "GET https://bridge.internal/fleet/pm-cred-test/pipeline?order=desc&kind=command&sender=lane-1&limit=100",
+      "GET https://bridge.internal/fleet/pm-cred-test/directory",
+      "GET https://bridge.internal/fleet/pm-cred-test/credentials",
+    ]);
+    expect(w.hostSaw).not.toContain("GET /console/api/pipeline?kind=command&sender=lane-1");
+    expect(w.hostSaw).not.toContain("GET /console/api/directory");
+    // The provisioning read (#14376): the minted enroll tokens'
+    // state, read the same way — state only, no hash, no value.
+    const enrollTokens = (await (await w.browse("/console/api/enroll-tokens")).json()) as {
+      agent: string;
+      kind: string;
+      groups: string[];
+      notes_identity: string | null;
+      created: string;
+      expires_at: string;
+      used_at: string | null;
+      revoked_at: string | null;
+      state: string;
+    }[];
+    expect(enrollTokens).toEqual([
+      {
+        agent: "new-1",
+        kind: "muse",
+        groups: ["muse"],
+        notes_identity: null,
+        created: "2026-11-24T00:00:00Z",
+        expires_at: "2026-11-25T00:00:00Z",
+        used_at: null,
+        revoked_at: null,
+        state: "pending",
+      },
+    ]);
+    expect(w.bridgeCalls.at(-1)?.method).toBe("GET");
+    expect(w.bridgeCalls.at(-1)?.url).toBe("https://bridge.internal/fleet/pm-cred-test/enroll-tokens");
+    expect(w.hostSaw).not.toContain("GET /console/api/enroll-tokens");
+    // A revoke asked here is held for a machine — the edge's
+    // credential holds the read scope only — and the bridge is not
+    // asked for one.
+    const callsBefore = w.bridgeCalls.length;
+    const held = await w.act("agent.revoke", { surface: "fleet", name: "lane-1" });
+    expect(await held.json()).toEqual({ ok: true, held: true, result: null, waits: "machine" });
+    expect(w.bridgeCalls).toHaveLength(callsBefore);
+    // Taking back unused enroll tokens is held the same way (#14376).
+    const heldEnroll = await w.act("agent.revoke-enroll", { agent: "new-1" });
+    expect(await heldEnroll.json()).toEqual({ ok: true, held: true, result: null, waits: "machine" });
+    expect(w.bridgeCalls).toHaveLength(callsBefore);
+    // A mint is never held: its answer is the secret itself, shown
+    // once on the screen that asked — with no machine answering, it
+    // is refused, and the bridge is not asked for one either.
+    const mint = await w.act("agent.mint-enroll", { agent: "new-2", kind: "muse" });
+    expect(((await mint.json()) as { held?: unknown }).held).not.toBe(true);
+    expect(w.bridgeCalls).toHaveLength(callsBefore);
+    const machines = (await (await w.browse("/console/api/machines")).json()) as MachinesAnswer;
+    expect(machines.held.map((entry) => entry.kind)).toEqual(["agent.revoke", "agent.revoke-enroll"]);
+  });
+
+  test("a bridge credential the bridge no longer knows stops the send here, with the reason said", async () => {
+    const w = await setup({ direct: true, bridge: true });
+    await w.hostReads();
+    await w.link.now.once();
+    w.net.hostUp = false;
+    w.bridgeRefuses.on = true;
+    const sent = await w.act("message.send", { to: ["lane-1"], text: "never sent" });
+    expect(sent.status).toBe(502);
+    expect(((await sent.json()) as { error: string }).error).toContain("turned the PM credential away");
+    // It was not handed to a machine either: the refusal is the
+    // credential's, and a machine's own dispatch is another matter.
+    const machines = (await (await w.browse("/console/api/machines")).json()) as MachinesAnswer;
+    expect(machines.held).toEqual([]);
+    expect(w.ran).toEqual([]);
+  });
+
   test("a section is read again when its own interval has passed, behind the answer and never in its way", async () => {
     const w = await primary();
     await w.core();
@@ -5252,6 +5565,129 @@ describe("the edge does the core itself", () => {
         },
       );
     };
+
+    test("the history behind Trends is read and kept by Cloudflare: no machine is asked, and its own clock reads on", async () => {
+      const w = await primary();
+      finish(w);
+      w.ghClosed.push({
+        number: 78,
+        title: "feat(pm-console): a screen of trends",
+        html_url: "https://github.com/developing-today/code/pull/78",
+        created_at: "2026-11-22T09:00:00Z",
+        closed_at: "2026-11-22T10:00:00Z",
+        updated_at: "2026-11-22T10:00:00Z",
+        user: { login: "lane-b" },
+        pull_request: { merged_at: "2026-11-22T10:00:00Z" },
+      });
+      // No machine: the laptop is out of reach.
+      w.net.hostUp = false;
+      const saw = w.hostSaw.length;
+      const res = await w.browse("/console/api/trends?days=7");
+      expect(res.status).toBe(200);
+      const doc = (await res.json()) as {
+        window: number;
+        days: string[];
+        history: { whole: boolean; from: string; covered: string | null };
+        merged: { all: number[]; kinds: Record<string, number[]>; projects: Record<string, number[]> };
+        features: { latest: Record<string, { number: number; title: string }[]> };
+        issues: { closed: number[] };
+        tasks: { all: number[] };
+        partial?: boolean;
+      };
+      // The last day and two older stretches are read by this first ask; the rest is still to come.
+      expect([doc.window, doc.days[doc.days.length - 1], doc.history.whole, doc.history.covered, doc.partial]).toEqual([
+        7,
+        "2026-11-22",
+        false,
+        "2026-11-15T12:00:00Z",
+        undefined,
+      ]);
+      const last = (list: number[]) => list[list.length - 1];
+      // Two pull requests merged that day (a fix and a feature), one issue closed, one task finished.
+      expect([last(doc.merged.all), last(doc.merged.kinds.feat), last(doc.merged.kinds.fix)]).toEqual([2, 1, 1]);
+      expect(last(doc.merged.projects["pm-stack"])).toBe(1);
+      expect(doc.features.latest["pm-stack"]).toEqual([
+        {
+          number: 78,
+          title: "a screen of trends",
+          at: "2026-11-22T10:00:00Z",
+          url: "https://github.com/developing-today/code/pull/78",
+        },
+      ] as never);
+      expect(last(doc.issues.closed)).toBe(1);
+      expect(last(doc.tasks.all)).toBe(1);
+      expect(w.hostSaw.length).toBe(saw);
+      // GitHub was asked for everything changed in the last day, then for two older stretches, each
+      // up to where the one after it began.
+      const history = () =>
+        w.githubCalls.filter((c) => c.url.includes("since=")).map((c) => new URL(c.url).searchParams.get("since"));
+      expect(history()).toEqual(["2026-11-21T12:00:00Z", "2026-11-19T12:00:00Z", "2026-11-15T12:00:00Z"]);
+      // What it read is in the object's own storage: where it has read to, and a day.
+      const kept = [...w.stored.keys()].filter((k) => k.startsWith("trend:")).sort();
+      expect(kept).toEqual(["trend:day:2026-11-22", "trend:meta"]);
+      const meta = () => JSON.parse(w.stored.get("trend:meta") as string) as Record<string, unknown>;
+      expect([meta().from, meta().cursor, meta().live, meta().whole]).toEqual([
+        "2026-08-24",
+        "2026-11-22T11:05:00Z",
+        true,
+        false,
+      ]);
+      // Asked for again before then, it answers from what it has: nothing is read on behind the
+      // answer, where it could be cut off part-way. Its clock does that.
+      const sooner = (await (await w.browse("/console/api/trends?days=7")).json()) as typeof doc;
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect([sooner.history.whole, history().length]).toEqual([false, 3]);
+      // The screen was asked for, so the object's own clock reads the rest on, starting at once: a
+      // look at what is new and five pages of older stretches, which is all of them.
+      expect(w.alarm.at).toBe(w.now.t + 1000);
+      w.now.t += 1000;
+      await w.edge.now.alarm();
+      expect(history().slice(3)).toEqual([
+        "2026-11-22T11:05:00Z",
+        "2026-11-08T12:00:00Z",
+        "2026-10-23T12:00:00Z",
+        "2026-09-23T12:00:00Z",
+        "2026-08-24T00:00:00Z",
+      ]);
+      expect([meta().whole, meta().back, meta().readAt]).toEqual([true, null, new Date(w.now.t).toISOString()]);
+      // Whole, it wakes for it again within half an hour (sooner if something else is due, as the
+      // laptop going quiet is here); a wake before then asks GitHub nothing of it, and neither does
+      // the screen asked for again.
+      expect(w.alarm.at).toBeLessThanOrEqual(w.now.t + 30 * 60_000);
+      w.now.t += 60_000;
+      await w.edge.now.alarm();
+      expect(history().length).toBe(8);
+      const whole = (await (await w.browse("/console/api/trends?days=7")).json()) as typeof doc;
+      expect([whole.history.whole, whole.history.covered]).toEqual([true, "2026-08-24T00:00:00Z"]);
+      expect(history().length).toBe(8);
+      // Something merges. Nobody opens the screen; half an hour on, the object's own clock reads on
+      // from where it stopped, and the screen has it when it is next opened.
+      w.ghClosed.push({
+        number: 79,
+        title: "feat(id): later",
+        html_url: "https://github.com/developing-today/code/pull/79",
+        created_at: "2026-11-22T12:10:00Z",
+        closed_at: "2026-11-22T12:20:00Z",
+        updated_at: "2026-11-22T12:20:00Z",
+        pull_request: { merged_at: "2026-11-22T12:20:00Z" },
+      });
+      w.now.t += 31 * 60_000;
+      await w.edge.now.alarm();
+      expect(history().length).toBe(9);
+      expect(history()[8]).toBe("2026-11-22T11:05:00Z");
+      const day = JSON.parse(w.stored.get("trend:day:2026-11-22") as string) as { pm: Record<string, unknown[]> };
+      expect(Object.keys(day.pm).sort()).toEqual(["77", "78", "79"]);
+      expect(day.pm["79"]).toEqual(["feat", "id", 10, "12:20", "later"]);
+      // It reads on like that only while somebody looks at the screen. A day after it was last
+      // asked for, a wake reads nothing of it: an object nobody needs is not kept awake.
+      w.now.t += 25 * 60 * 60_000;
+      await w.edge.now.alarm();
+      await w.edge.now.alarm();
+      expect(history().length).toBe(9);
+      // Opened again, it is read on at once (and by the clock again after).
+      await w.browse("/console/api/trends?days=7");
+      expect(history().length).toBe(10);
+    });
 
     test("it comes from the queue store and GitHub, laptop or no laptop", async () => {
       const w = await primary();

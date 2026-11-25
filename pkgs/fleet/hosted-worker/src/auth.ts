@@ -32,6 +32,8 @@
 //     hosted-worker posture: internal context is never
 //     client-controlled).
 
+import type { BackfillRunStore } from "./backfill.ts";
+import type { BridgeSurface } from "./bridge.ts";
 import type { HostedConfig } from "./config.ts";
 import { FailClosed } from "./errors.ts";
 import type {
@@ -112,6 +114,16 @@ export interface AuthDeps {
    * over the rotation. Absent → the project-sync route fails
    * closed with 503, like unconfigured auth. */
   githubProjects?: GitHubProjectSurface;
+  /** Bridge surface (#14373, src/bridge.ts): the bridge door's path
+   * to the message bridge over its service binding, presenting the
+   * PM credential. Absent → the bridge door fails closed with 503,
+   * like unconfigured auth. */
+  bridge?: BridgeSurface;
+  /** Backfill run store (#14312, src/backfill.ts): the record of
+   * ingestion backfill runs. Absent → the backfill routes fail
+   * closed with 503, like unconfigured auth; the sweep and the
+   * divergence report do not need it. */
+  backfillRunStore?: BackfillRunStore;
 }
 
 export async function sha256Hex(text: string): Promise<string> {

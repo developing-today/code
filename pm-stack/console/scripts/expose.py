@@ -123,6 +123,15 @@ GOOGLE_SECRET = "google.access-sso.client-secret"
 # name the console's environment file may override.
 GITHUB_TOKEN_SECRET = "github.developing-today-code-automation"
 QUEUE_TOKEN_DEFAULT = "turso.fleet-queue-rw-token"
+# The vault name of the PM stack's own bridge credential (#14373),
+# minted on the message bridge for service:pm-stack and put in the
+# vault by hand; the console's environment file may override the name,
+# like the queue token's. The edge Worker presents it to the bridge
+# over its service binding, so the owner's messages are delivered at
+# the edge. It rides along with the direct tokens: a run that cannot
+# read it leaves the bridge a machine's and says so, and never fails
+# over it — its absence is a state (not minted yet), not an error.
+BRIDGE_TOKEN_DEFAULT = "bridge.pm-stack-token"
 
 
 @contextlib.contextmanager
@@ -281,7 +290,9 @@ def ensure_edge_direct(
     check: bool,
 ) -> None:
     """Upload the two tokens the edge Worker acts with, and its switch,
-    or turn the switch off and take the tokens away again.
+    or turn the switch off and take the tokens away again. The Worker's
+    bridge token (#14373) rides along in both directions when the vault
+    holds it; it is never one of the three the mode stands on.
 
     A secret is read by name through `fleet secrets get` and sent to
     Cloudflare's API as a Worker secret; it is never printed, written to
@@ -324,10 +335,15 @@ def ensure_edge_direct(
         state.mkdir(parents=True, exist_ok=True, mode=0o700)
         marker.write_text(mode + "\n")
 
+    def bridge_name() -> str:
+        return (
+            env_values(env).get("PM_CONSOLE_BRIDGE_TOKEN_NAME") or BRIDGE_TOKEN_DEFAULT
+        )
+
     def take_tokens_away() -> None:
         """Off means the Worker holds nothing it could act with."""
         names = held()
-        for name in ("GITHUB_TOKEN", "QUEUE_TOKEN"):
+        for name in ("GITHUB_TOKEN", "QUEUE_TOKEN", "BRIDGE_TOKEN"):
             if name in names:
                 cf.change(
                     f"edge direct: take {name} away from the Worker",
@@ -350,6 +366,19 @@ def ensure_edge_direct(
             put("GITHUB_TOKEN", github)
             put("QUEUE_TOKEN", queue)
             put("EDGE_DIRECT", "on")
+            # The bridge token rides along when the vault holds it; a
+            # vault without it is a state (not minted yet), said once
+            # here, and the mode stands on the three above regardless.
+            bridge = secret(bridge_name())
+            if bridge:
+                put("BRIDGE_TOKEN", bridge)
+            else:
+                print(
+                    "note: the edge Worker was not given its bridge token: "
+                    f"{bridge_name()} is not readable here; the owner's "
+                    "messages stay a machine's until it is, and the next "
+                    "run tries again"
+                )
         except SystemExit:
             # Part-way is not on. What did get there is taken away again,
             # so a failed attempt leaves the Worker holding nothing.
@@ -374,6 +403,20 @@ def ensure_edge_direct(
             )
             if not check:
                 upload()
+            return
+        # Nothing of the three is lost. The bridge token is given when
+        # the vault holds it and the Worker does not; a vault without
+        # it is left alone in silence — not a loss, and the timer's run
+        # is not made to say so every quarter hour.
+        try:
+            if "BRIDGE_TOKEN" not in held():
+                bridge = secret(bridge_name())
+                if bridge:
+                    cf.changes.append("edge direct: give the Worker its bridge token")
+                    if not check:
+                        put("BRIDGE_TOKEN", bridge)
+        except SystemExit as error:
+            print(f"note: could not see what the Worker holds: {error}")
         return
     if wanted and choice is None:
         # Never told either way: on is how this is set up. Whether it can
