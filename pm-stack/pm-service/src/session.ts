@@ -11,7 +11,7 @@
  */
 import type { ResolvedPrincipal } from "./front-door.ts";
 
-export const SESSION_COOKIE = "pm_session";
+export const SESSION_COOKIE = "__Host-pm_session";
 
 /** Twelve hours in milliseconds: the idle-expiry budget from §4.2. */
 export const IDLE_TIMEOUT_MS = 12 * 60 * 60 * 1000;
@@ -37,7 +37,7 @@ export type ResolveLivePrincipal = (
 export type SessionDenyReason = "missing_session" | "expired_session" | "revoked_session";
 
 export type AuthenticateResult =
-  | { ok: true; principal: ResolvedPrincipal }
+  | { ok: true; principal: ResolvedPrincipal; setCookie: string }
   | { ok: false; reason: SessionDenyReason };
 
 function newSessionId(): string {
@@ -80,7 +80,7 @@ function readSessionId(req: Request): string | null {
  */
 export async function createBrowserSession(
   principal: ResolvedPrincipal,
-  opts: { store: BrowserSessionStore; now?: () => number },
+  opts: { store: BrowserSessionStore; now?: () => number; audit?: SessionAudit },
 ): Promise<string> {
   const nowMs = (opts.now ?? Date.now)();
   const session: BrowserSession = {
@@ -90,14 +90,32 @@ export async function createBrowserSession(
     lastSeenAt: nowMs,
   };
   await opts.store.put(session);
+  await opts.audit?.({
+    event: "login",
+    sessionId: session.id,
+    accountId: principal.accountId,
+    bindingId: principal.bindingId,
+    at: nowMs,
+  });
   return setCookieHeader(session.id, IDLE_TIMEOUT_MS / 1000);
 }
+
+export interface SessionAuditEvent {
+  event: "login" | "logout";
+  sessionId: string;
+  accountId: string;
+  bindingId: string;
+  at: number;
+}
+
+export type SessionAudit = (event: SessionAuditEvent) => Promise<void> | void;
 
 export interface AuthenticateOptions {
   store: BrowserSessionStore;
   now?: () => number;
   idleTimeoutMs?: number;
   resolveLivePrincipal: ResolveLivePrincipal;
+  audit?: SessionAudit;
 }
 
 /**
@@ -122,8 +140,18 @@ export async function authenticateBrowserSession(
   }
   await opts.store.touch(session.id, nowMs);
   const live = await opts.resolveLivePrincipal({ ...session });
-  if (live === null) return { ok: false, reason: "revoked_session" };
-  return { ok: true, principal: live };
+  if (live === null) {
+    await opts.store.delete(session.id);
+    return { ok: false, reason: "revoked_session" };
+  }
+  return {
+    ok: true,
+    principal: live,
+    // Refresh the browser's cookie expiry on every accepted request so its
+    // max-age tracks the server-side 12h idle timeout rather than becoming
+    // an absolute lifetime from initial login.
+    setCookie: setCookieHeader(session.id, idleTimeoutMs / 1000),
+  };
 }
 
 /**
@@ -132,9 +160,21 @@ export async function authenticateBrowserSession(
  */
 export async function logoutBrowserSession(
   req: Request,
-  opts: { store: BrowserSessionStore; now?: () => number },
+  opts: { store: BrowserSessionStore; now?: () => number; audit?: SessionAudit },
 ): Promise<string> {
   const sessionId = readSessionId(req);
-  if (sessionId !== null) await opts.store.delete(sessionId);
+  if (sessionId !== null) {
+    const session = await opts.store.get(sessionId);
+    await opts.store.delete(sessionId);
+    if (session !== null) {
+      await opts.audit?.({
+        event: "logout",
+        sessionId: session.id,
+        accountId: session.principal.accountId,
+        bindingId: session.principal.bindingId,
+        at: (opts.now ?? Date.now)(),
+      });
+    }
+  }
   return setCookieHeader("", 0);
 }

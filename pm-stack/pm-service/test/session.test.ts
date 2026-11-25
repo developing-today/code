@@ -46,11 +46,17 @@ function request(cookie?: string): Request {
 describe("browser sessions (H3)", () => {
   test("issues an opaque secure cookie and re-resolves live roles on every request", async () => {
     const store = new MemorySessions();
-    const setCookie = await createBrowserSession(PRINCIPAL, { store, now: () => NOW });
+    const audit: string[] = [];
+    const setCookie = await createBrowserSession(PRINCIPAL, {
+      store,
+      now: () => NOW,
+      audit: (event) => audit.push(event.event),
+    });
     expect(setCookie).toContain("HttpOnly");
     expect(setCookie).toContain("Secure");
     expect(setCookie).toContain("SameSite=Lax");
     expect(setCookie).toContain("Path=/");
+    expect(setCookie).toContain("__Host-pm_session=");
     expect(setCookie).toContain("Max-Age=43200");
     expect(setCookie).not.toContain("provider-jti-1");
     expect(setCookie).not.toContain("github|user-1");
@@ -66,8 +72,16 @@ describe("browser sessions (H3)", () => {
         return { ...PRINCIPAL, roles: ["read-only"] };
       },
     });
-    expect(auth).toEqual({ ok: true, principal: { ...PRINCIPAL, roles: ["read-only"] } });
+    expect(auth).toMatchObject({
+      ok: true,
+      principal: { ...PRINCIPAL, roles: ["read-only"] },
+    });
+    if (auth.ok) {
+      expect(auth.setCookie.split(";")[0]).toBe(cookie);
+      expect(auth.setCookie).toContain("Max-Age=43200");
+    }
     expect(roleLookups).toBe(1);
+    expect(audit).toEqual(["login"]);
   });
 
   test("rejects missing, idle-expired, and revoked sessions", async () => {
@@ -98,13 +112,16 @@ describe("browser sessions (H3)", () => {
     const store = new MemorySessions();
     const setCookie = await createBrowserSession(PRINCIPAL, { store, now: () => NOW });
     const cookie = setCookie.split(";")[0]!;
+    const events: string[] = [];
     const cleared = await logoutBrowserSession(request(cookie), {
       store,
       now: () => NOW + 1_000,
+      audit: (event) => events.push(event.event),
     });
     expect(cleared).toContain("Max-Age=0");
     expect(cleared).toContain("HttpOnly");
     expect(cleared).toContain("Secure");
     expect(store.sessions.size).toBe(0);
+    expect(events).toEqual(["logout"]);
   });
 });
