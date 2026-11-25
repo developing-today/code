@@ -815,6 +815,42 @@ fn test_native_redb_oracle_partial_fork_preserves_committed_rows() {
     check_retained_fork(&mut txn, &events);
 }
 
+/// The native redb database is the oracle for the transaction-owned backend
+/// seam: reads see committed rows, and a failed write leaves no partial row.
+#[test]
+fn tenant_backend_transaction_round_trip_and_abort_match_native() {
+    fn exercise<B: EventStoreStorage>(backend: &B) -> Option<Vec<u8>> {
+        backend
+            .with_write(|rows| {
+                rows.put("meta", b"driver-key", b"committed")?;
+                Ok(((), true))
+            })
+            .unwrap();
+        assert!(
+            backend
+                .with_write(|rows| {
+                    rows.put("meta", b"rollback-key", b"partial")?;
+                    Err(corrupt("forced transaction abort"))
+                })
+                .is_err()
+        );
+        assert_eq!(
+            backend.with_read(|rows| rows.get("meta", b"rollback-key")).unwrap(),
+            None,
+            "a failed batch must leave no partial row"
+        );
+        backend
+            .with_read(|rows| rows.get("meta", b"driver-key"))
+            .unwrap()
+    }
+
+    let dir = tempfile::tempdir().unwrap();
+    let native = Database::create(dir.path().join("driver.redb")).unwrap();
+    let tenant = TenantBackend::open(SqliteEndpoint::new()).unwrap();
+
+    assert_eq!(exercise(&tenant), exercise(&native));
+}
+
 /// The native EventStore is the oracle: the tenant-backed public backend must
 /// expose the same applied result and observable read/sync surface for the same
 /// signed event.
