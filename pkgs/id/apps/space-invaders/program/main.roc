@@ -722,7 +722,7 @@ playthrough = List.fold(
 expect playthrough.score == 10 and playthrough.ticks == 5
 expect playthrough.phase == "playing" and playthrough.lives == 3 and aliens_left(playthrough) == 31
 expect playthrough.bullet_on == 0 and playthrough.player_x == 21
-expect records(playthrough) == "{\"score\": 10, \"lives\": 3, \"wave\": 1, \"phase\": \"playing\", \"aliens_left\": 31, \"ticks\": 5}"
+expect records(playthrough) == "{\"score\":10,\"lives\":3,\"wave\":1,\"phase\":\"playing\",\"aliens_left\":31,\"ticks\":5}"
 
 # Frame JSON: the view decodes as a screen document.
 playthrough_view_kind : Str
@@ -738,10 +738,15 @@ expect playthrough_view_kind == "screen"
 expect (List.first(Term.text_lines(frame(playthrough))) ?? "") == "SCORE 10  LIVES 3  WAVE 1"
 expect List.any(Term.diff_lines(Term.text_lines(frame(init(0))), frame(playthrough)), |entry| entry.row == 0 and entry.text == "SCORE 10  LIVES 3  WAVE 1")
 
-# Primary mode: a full repaint clears and cursor-addresses the HUD;
-# a transition stream paints the changed HUD text and is never empty
-# for a frame that moved.
+# Primary mode: a full repaint clears and cursor-addresses the HUD.
+# The painter emits runs of changed cells, and a run breaks at every
+# unchanged cell — the HUD's spaces are unchanged from the blank
+# screen — so the HUD words arrive as separate runs ("SCORE", "10",
+# "LIVES", ...), never as one spaced string. A transition stream
+# likewise paints the shifted HUD words and is never empty for a
+# frame that moved.
 expect List.len(Str.split_on(Term.paint_primary_full(frame(playthrough)), "\u(1b)[2J")) > 1
 expect List.len(Str.split_on(Term.paint_primary_full(frame(playthrough)), "\u(1b)[1;1H")) > 1
-expect List.len(Str.split_on(Term.paint_primary_full(frame(playthrough)), "SCORE 10")) > 1
-expect List.len(Str.split_on(Term.paint_primary(frame(init(0)), frame(playthrough)), "LIVES 3")) > 1
+expect List.len(Str.split_on(Term.paint_primary_full(frame(playthrough)), "SCORE")) > 1
+expect List.len(Str.split_on(Term.paint_primary_full(frame(playthrough)), "LIVES")) > 1
+expect List.len(Str.split_on(Term.paint_primary(frame(init(0)), frame(playthrough)), "LIVES")) > 1

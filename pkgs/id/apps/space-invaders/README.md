@@ -26,8 +26,8 @@ the shell paints it in whichever presentation mode the session
 negotiated — alternate screen, primary, or low-write text
 (#14936/#14937). The game never changes when the mode does.
 
-Records are published as JSON: `{"score": 120, "lives": 3,
-"wave": 1, "phase": "playing", "aliens_left": 17, "ticks": 42}`,
+Records are published as JSON: `{"score":120,"lives":3,
+"wave":1,"phase":"playing","aliens_left":17,"ticks":42}`,
 so `id world records` and `id world mirror` show the game state
 and can replicate it peer-to-peer. Snapshots are the same model as
 one JSON object; `restore` reads it back with per-field defaults
