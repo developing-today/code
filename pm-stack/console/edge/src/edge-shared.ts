@@ -5,6 +5,7 @@
 // moves only, no behaviour change.
 import { type Held, type HeldFor, subjectOf, type SyncSection } from "../../src/edge-proto.ts";
 import type { Store } from "../../src/store.ts";
+import type { CommentsSurface } from "./comments-surface.ts";
 
 /** A rank set twice ends at the last one: an older held rank never
  * runs when a newer rank for the same issue is done. Anything else
@@ -180,6 +181,9 @@ export interface EdgeOptions {
   now?: () => number;
   /** Reaches the sign-in issuer's keys and the push services. */
   fetchImpl?: typeof fetch;
+  /** The hosted comments page at /comments, default off to preserve
+   * route precedence: without it, the path keeps its previous relay. */
+  comments?: CommentsSurface | null;
   /** What the edge does itself: the switch, the two tokens, and the
    * fetch its own reads and writes use. */
   direct?: {

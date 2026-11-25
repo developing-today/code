@@ -23,6 +23,9 @@ interface Env {
   GITHUB_TOKEN?: string;
   QUEUE_TOKEN?: string;
   EDGE_DIRECT?: string;
+  /** CF-5b staged read surface: off until authenticated live validation. */
+  HOSTED_COMMENTS?: string;
+  COMMENTS_TURSO_READ_TOKEN?: string;
   /** The message bridge, by service binding (#14373), and the PM
    * stack's own bridge credential: a Worker secret like the two
    * tokens, put there by scripts/expose.py --edge-direct from the
@@ -83,6 +86,10 @@ export class PmEdge extends DurableObject<Env> {
     const bridge = env.BRIDGE;
     this.edge = new Edge({
       fetchImpl: keysFetch(env),
+      comments: {
+        enabled: env.HOSTED_COMMENTS === "on",
+        token: env.COMMENTS_TURSO_READ_TOKEN,
+      },
       kv: {
         get: (key) => ctx.storage.get(key),
         put: (key, value) => ctx.storage.put(key, value),

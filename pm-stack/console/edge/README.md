@@ -34,6 +34,24 @@ With the switch off, or a token missing, the edge reads and does
 nothing itself: every section is the laptop's last report, and every
 action is the laptop's, relayed at once or held.
 
+### Hosted `/comments` (staged, default off)
+
+The owner-gated `GET /comments` page reads at most 100 rows from the
+fleet-platform Turso `shared_comments` ledger. It uses the separate
+`COMMENTS_TURSO_READ_TOKEN` Worker secret; that credential must be minted
+with read-only permissions. The page reports its query time and states
+that producer freshness is unknown. It must stay disabled until a live
+request with a verified owner sign-in succeeds and is recorded on #14968.
+
+Enablement path after that verification: create a read-only Turso token
+for the fleet-platform database; set the Worker secret with
+`wrangler secret put COMMENTS_TURSO_READ_TOKEN --config pm-stack/console/edge/wrangler.jsonc`;
+change `HOSTED_COMMENTS` from `off` to `on` in that config and deploy a new
+version using `.github/workflows/pm-console-edge-deploy.yml`. Verify the
+owner page and a non-owner/no-token request before treating the surface as
+live. Roll back by restoring `HOSTED_COMMENTS` to `off` and deploying a
+new version. No Access application or route exception is added.
+
 The list of actions that may be done late is `HOLDABLE` in
 `../src/edge-proto.ts`.
 

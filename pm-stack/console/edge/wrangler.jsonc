@@ -17,7 +17,9 @@
   "workers_dev": true,
   "preview_urls": false,
   "observability": { "enabled": true },
-  "vars": { "PUBLIC_HOST": "pm.security.cab" },
+  // The hosted comments route remains disabled until an authenticated
+  // live verification is recorded; its Turso token is a Worker secret.
+  "vars": { "PUBLIC_HOST": "pm.security.cab", "HOSTED_COMMENTS": "off" },
   // The app's files, put together by build.mjs. Every request reaches
   // the Worker first; it serves a file only after checking who asks.
   "assets": {

@@ -24,6 +24,7 @@
 // whoever holds a token this service issued.
 import { actions, type Action, ownActions } from "../../src/actions.ts";
 import { AuthError, type Identity, identify } from "../../src/auth.ts";
+import { commentsSurface } from "./comments-surface.ts";
 import {
   DIRECT_ACTIONS,
   DIRECT_READ_SECTIONS,
@@ -141,6 +142,7 @@ export class Edge {
   private now: () => number;
   private fetchImpl: typeof fetch;
   private direct?: EdgeOptions["direct"];
+  private comments?: EdgeOptions["comments"];
   /** The console's own classes, wired for the edge and kept for as long
    * as the settings they were made for stand. */
   private kept: (DirectClasses & { cfg: EdgeConfig; table: Record<string, Action>; recalled: boolean }) | null = null;
@@ -289,6 +291,7 @@ export class Edge {
     this.takenRecords = new StoredRecords(this.kv, "taken", (id) => `taken:${id}`);
     this.actRecords = new StoredRecords(this.kv, "acts", (id) => `act:${id}`);
     this.direct = options.direct;
+    this.comments = options.comments;
     this.sockets = options.sockets ?? null;
     const setAlarm = options.setAlarm ?? (async () => {});
     this.setAlarm = async (at) => {
@@ -1986,6 +1989,12 @@ export class Edge {
       return next("relay", { mode: "page" });
     }
     const by = who.email ?? who.certName ?? who.sub ?? who.via;
+    // identify() above verifies the owner's issuer claims, not Access
+    // transport headers. Disabled leaves the existing host route intact.
+    const comments = this.comments;
+    if (path === "/comments" && comments?.enabled) {
+      return commentsSurface(req, comments, this.now);
+    }
     const ours = path === BASE || path.startsWith(`${BASE}/`);
     if (!ours) {
       // The front door is the app; every other page is the host's.
