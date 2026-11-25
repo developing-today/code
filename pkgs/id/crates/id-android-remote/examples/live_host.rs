@@ -28,7 +28,8 @@ async fn main() -> anyhow::Result<()> {
             7,
             &module_hash(TIC_TAC_TOE),
         )
-        .await?;
+        .await
+        .map_err(|error| anyhow::anyhow!("could not install guest wasm: {error:?}"))?;
     let (_, capability) = world.issue("android-poc", WorldScopes::GUEST).await?;
 
     let host = Endpoint::builder(presets::Minimal)
