@@ -111,7 +111,7 @@ impl Statement {
     /// A statement bound to the leading arguments it numbers: SQLite counts
     /// a statement's parameters up to its highest `?N`, so the shared
     /// argument list is cut to that length.
-    fn numbered(sql: &str, args: &[Value]) -> Self {
+    pub(crate) fn numbered(sql: &str, args: &[Value]) -> Self {
         let highest = highest_parameter(sql);
         Self {
             sql: sql.to_string(),
@@ -324,13 +324,14 @@ impl SqlitePrimary {
 
 impl Pipeline for SqlitePrimary {
     fn transaction(&self, statements: &[Statement]) -> Result<Vec<Rows>> {
-        #[cfg(test)]
-        for statement in statements {
-            assert!(
-                crate::catalog::is_known(&statement.sql),
-                "a statement the hosted kv door would refuse, missing from catalog.rs: {}",
-                statement.sql
-            );
+        if cfg!(test) {
+            for statement in statements {
+                assert!(
+                    crate::catalog::is_known(&statement.sql),
+                    "a statement the hosted kv door would refuse, missing from catalog.rs: {}",
+                    statement.sql
+                );
+            }
         }
         self.run(statements)
     }
