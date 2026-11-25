@@ -35,6 +35,19 @@ func runOutClock(d time.Duration) {
 	synctest.Wait()
 }
 
+// newTestStore is a store whose retention cannot delete the task
+// mid-test: the built-in TTL is ten minutes from the terminal
+// transition, so over a two-hour virtual window a cancelled task
+// would be retention-deleted before the test reads it back. The
+// knobs are the store's own exported configuration; nothing about
+// the timers under test changes.
+func newTestStore() *tasks.Store {
+	st := tasks.New()
+	st.Configure(24*time.Hour, 24*time.Hour)
+	st.MaxTTL = 24 * time.Hour
+	return st
+}
+
 // terminalAfter runs the clock out and returns the task's snapshot,
 // failing unless it reached a terminal status.
 func terminalAfter(t *testing.T, st *tasks.Store, id string, d time.Duration) tasks.Task {
@@ -52,7 +65,7 @@ func terminalAfter(t *testing.T, st *tasks.Store, id string, d time.Duration) ta
 
 func TestCancelGraceExpiresDeterministicallyInSynctest(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		st := tasks.New()
+		st := newTestStore()
 		st.CancelGrace = time.Hour // virtual: the grace is an hour, the test is not
 		release := make(chan struct{})
 		defer close(release) // let the work goroutine out at the end
@@ -81,7 +94,7 @@ func TestCancelGraceExpiresDeterministicallyInSynctest(t *testing.T) {
 
 func TestDeadlineCancelsDeterministicallyInSynctest(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		st := tasks.New()
+		st := newTestStore()
 		// Pinned so the timer chain is fully determined by this test:
 		// the deadline fires at 30 minutes and starts a one-hour
 		// grace; the cancel lands when the grace expires.
