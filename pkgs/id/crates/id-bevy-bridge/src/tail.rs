@@ -22,7 +22,7 @@ use crate::projection::{AppliedPosition, ProjectionError, applied_position, appl
 use crate::schema::BridgeSchema;
 
 /// Every delta the journal recorded at one position.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct PositionBatch {
     /// The journal position.
     pub position: u64,

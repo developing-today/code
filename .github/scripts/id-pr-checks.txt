@@ -29,12 +29,14 @@ taplo-check
 justfmt-check
 clippy-lint
 clippy-native-shell
+clippy-bevy-bridge
 web-lint
 cargo-check
 prod-lines-check
 test-unit
 test-crate-integration
 test-native-shell
+test-bevy-bridge
 test-tui-shell
 test-hw-shell
 test-rust-examples

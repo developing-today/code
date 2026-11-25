@@ -1,8 +1,10 @@
 //! Static journal fixture used to prove the bridge's schema and mapping
 //! rules without a running world host (design §1, Q4).
 
-/// A fixture delta at one journal position.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// A fixture delta at one journal position. Serialized with an `op`
+/// tag, so a recorded journal reads as `{"op": "upsert", ...}`.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "op", rename_all = "snake_case")]
 pub enum JournalDelta {
     /// Create or update a journal entity with its predicate values.
     Upsert {
@@ -111,6 +113,12 @@ impl HostedWorldFixture {
     /// delta is restamped with the new position.
     pub fn append(&self, deltas: Vec<JournalDelta>) -> u64 {
         append_locked(&mut self.state(), deltas)
+    }
+
+    /// A copy of the whole journal, as recorded so far.
+    #[must_use]
+    pub fn journal(&self) -> Vec<crate::tail::PositionBatch> {
+        self.state().journal.clone()
     }
 
     /// Journal a batch exactly as given, position and all, to model a

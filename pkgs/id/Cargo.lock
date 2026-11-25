@@ -4929,6 +4929,7 @@ name = "id-bevy-bridge"
 version = "0.1.0"
 dependencies = [
  "bevy_ecs",
+ "proptest",
  "serde",
  "serde_json",
  "thiserror 2.0.21",

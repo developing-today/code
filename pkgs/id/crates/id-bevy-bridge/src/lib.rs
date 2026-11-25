@@ -1,4 +1,5 @@
-//! Bevy projection bridge for ID worlds, slices 1 and 2 (#13702, #13703).
+//! Bevy projection bridge for ID worlds, slices 1 to 3 (#13702, #13703,
+//! #13704).
 //!
 //! Design of record: `doc/2026-11-08_design_id5781.md` (adopted on #5781),
 //! §1 state mapping, §2 event flow, and answers Q1 (separate bridge crate,
@@ -30,10 +31,19 @@
 //!   with presentation-class prediction that snaps back on rejection.
 //! - [`fixture::HostedWorldFixture`]: an in-memory hosted world (journal
 //!   plus append gate) that the acceptance tests run against.
+//!
+//! Slice 3, the replay oracle:
+//!
+//! - [`oracle::check_replay`]: a recorded journal replayed from an empty
+//!   world must match the live world's canonical state at the same
+//!   position. It is the acceptance gate for a `bevy_ecs` version bump
+//!   (design Q2); `tests/replay_oracle.rs` runs it over a recorded
+//!   corpus with golden states, generated streams, and fault injection.
 
 pub mod fixture;
 pub mod intent;
 pub mod map;
+pub mod oracle;
 pub mod projection;
 pub mod schema;
 pub mod tail;
@@ -44,6 +54,10 @@ pub use intent::{
     PredictedPosition, Proposal, presented_position,
 };
 pub use map::{IdEntityMap, LocalOnly, WorldName, WorldPosition};
+pub use oracle::{
+    CanonicalEntity, CanonicalPosition, CanonicalState, Divergence, canonical_state, check_replay,
+    compare, replay,
+};
 pub use projection::{AppliedPosition, applied_position, apply_position, project_fixture};
 pub use schema::{BridgeSchema, ComponentRule, DataClass, PredicateRule};
 pub use tail::{
