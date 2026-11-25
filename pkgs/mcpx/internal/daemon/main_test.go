@@ -26,8 +26,16 @@ func TestMain(m *testing.M) {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
-	os.Setenv("XDG_STATE_HOME", dir)
-	os.Unsetenv("MCPX_STATE_DIR")
+	if err := os.Setenv("XDG_STATE_HOME", dir); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		_ = os.RemoveAll(dir)
+		os.Exit(1)
+	}
+	if err := os.Unsetenv("MCPX_STATE_DIR"); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		_ = os.RemoveAll(dir)
+		os.Exit(1)
+	}
 	code := testsupport.MainWithSweep(m)
 	_ = os.RemoveAll(dir)
 	os.Exit(code)
