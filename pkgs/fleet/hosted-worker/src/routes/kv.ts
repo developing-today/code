@@ -8,6 +8,7 @@
 
 import type { AuthDeps, CallerContext } from "../auth.ts";
 import { FailClosed } from "../errors.ts";
+import { handleKvBlobPut } from "../kv-blobs.ts";
 import { handleKvPipeline } from "../kv-door.ts";
 import type { RouteDef } from "../router.ts";
 
@@ -24,5 +25,13 @@ export const routes: RouteDef[] = [
     path: "/v1/kv/v2/pipeline",
     door: "kv",
     handler: (req: Request, ctx: CallerContext | null, deps: AuthDeps) => handleKvPipeline(req, caller(ctx), deps),
+  },
+  // The blob upload door (#13318, src/kv-blobs.ts): service tokens need
+  // the `kv-upload` door in their route scope.
+  {
+    method: "PUT",
+    path: "/v1/kv/blobs",
+    door: "kv-upload",
+    handler: (req: Request, ctx: CallerContext | null, deps: AuthDeps) => handleKvBlobPut(req, caller(ctx), deps),
   },
 ];

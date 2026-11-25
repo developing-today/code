@@ -21,6 +21,7 @@ import { ingestionDepsFrom, runIngestionSweep } from "./ingestion.ts";
 import { LibSQLQueueStore, type SyncSqlDb } from "./libsql-queue-store.ts";
 import { openHranaQueueStore } from "./libsql-hrana-queue-store.ts";
 import { openD1QueueStore } from "./d1-queue-store.ts";
+import { r2KvBlobBucket } from "./kv-blobs.ts";
 import { HttpKvPrimary, type KvPrimary } from "./kv-door.ts";
 import { FixtureQueueStore, type QueueStore } from "./queue-store.ts";
 import { StoreQueueRecordSource } from "./queue-records.ts";
@@ -144,6 +145,7 @@ export function buildDeps(env: HostedEnv, opener?: QueueSqlOpener): AuthDeps {
     backfillRunStore: backfillRuns,
     ...(bridge ? { bridge } : {}),
     ...(kvPrimary ? { kvPrimary } : {}),
+    ...(env.KV_BLOBS ? { kvBlobs: r2KvBlobBucket(env.KV_BLOBS) } : {}),
   };
 }
 

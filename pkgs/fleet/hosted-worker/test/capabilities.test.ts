@@ -25,7 +25,7 @@ test("health answers publicly with the hosted door's identity", async () => {
   };
   assert.equal(body.status, "ok");
   assert.equal(body.service, "fleet-hosted");
-  assert.deepEqual(body.doors, ["stamping", "query", "queue", "ingestion", "sync", "bridge", "kv"]);
+  assert.deepEqual(body.doors, ["stamping", "query", "queue", "ingestion", "sync", "bridge", "kv", "kv-upload"]);
   assert.deepEqual(body.auth, { rp_configured: true, tenancy_configured: true });
 });
 
@@ -106,6 +106,7 @@ test("capabilities mirrors the native shape with hosted values", async () => {
       ["sync", "#12591"],
       ["bridge", "#14373"],
       ["kv", "#13316"],
+      ["kv-upload", "#13318"],
     ],
   );
   const doorById = new Map(doc.doors.map((d) => [d.id, d]));
@@ -118,4 +119,6 @@ test("capabilities mirrors the native shape with hosted values", async () => {
   assert.equal(doorById.get("bridge")?.state, "live");
   // #13316 added the fleet-kv door after them.
   assert.equal(doorById.get("kv")?.state, "live");
+  // #13318 added the kv blob upload door.
+  assert.equal(doorById.get("kv-upload")?.state, "live");
 });

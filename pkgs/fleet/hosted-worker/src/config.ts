@@ -20,6 +20,7 @@
 import type { RpValidationConfig } from "./jwt.ts";
 import { parseTenancyFixture, type TenancyDirectory } from "./tenancy.ts";
 import type { D1DatabaseLike } from "./d1-queue-store.ts";
+import type { R2BucketLike } from "./kv-blobs.ts";
 
 export const HOSTED_VERSION = "0.1.0";
 export const SERVICE_NAME = "fleet-hosted";
@@ -111,6 +112,9 @@ export interface HostedEnv {
    *  signal, and it takes precedence over the Turso/libSQL queue
    *  backends in buildDeps. Absent \u2192 those backends, unchanged. */
   QUEUE_D1?: D1DatabaseLike;
+  /** The kv blob bucket (#13318): an R2 binding for the blob upload
+   * door. Absent → that door fails closed (503). */
+  KV_BLOBS?: R2BucketLike;
   /** The message bridge, by service binding (#14373): the bridge
    * door calls it with the PM credential below. A binding, not a
    * value: present when the deployed shape carries it (wrangler.toml

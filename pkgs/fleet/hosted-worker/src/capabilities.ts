@@ -116,6 +116,12 @@ export const HOSTED_DOORS: HostedDoor[] = [
     fillingIssue: "#13316",
     state: "live",
   },
+  {
+    id: "kv-upload",
+    routes: ["PUT /v1/kv/blobs"],
+    fillingIssue: "#13318",
+    state: "live",
+  },
 ];
 
 interface NativeDomain {
