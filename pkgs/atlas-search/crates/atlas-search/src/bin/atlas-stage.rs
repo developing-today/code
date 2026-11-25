@@ -41,6 +41,13 @@
 //!   an edited file re-stages exactly its chunks.
 //! * `atlas-stage items --db <path> [--unit <id>]` — list the
 //!   items staged in a unit's DB, with chunk counts.
+//! * `atlas-stage ingest-notes --db <path> --unit <id>
+//!   --dir <vault>` — scan a Zettelkasten/Emanote notes vault and
+//!   stage its markdown notes into the zettelkasten unit (#8626
+//!   slice 4): one `items` row plus its `chunks_raw` per note,
+//!   carrying the design's provenance set with the file's mtime as
+//!   `updated_at`. Re-scanning an unchanged vault stages zero;
+//!   an edited note re-stages exactly its chunks.
 //!
 //! * `atlas-stage promote --registry <path> --unit <id>
 //!   --shard-dir <dir> [--topic codeconfig]` — the aggregator's
@@ -232,6 +239,20 @@ enum Command {
         state: String,
         #[arg(long)]
         registry: PathBuf,
+    },
+    /// Scan a Zettelkasten/Emanote notes vault and stage its markdown
+    /// notes into the zettelkasten unit (#8626 slice 4).
+    IngestNotes {
+        /// The unit's staging database file (already provisioned).
+        #[arg(long)]
+        db: PathBuf,
+        /// The staging-unit id the notes belong to.
+        #[arg(long)]
+        unit: String,
+        /// The notes vault root to scan (every `*.md` file under this
+        /// directory).
+        #[arg(long)]
+        dir: PathBuf,
     },
 }
 
@@ -534,6 +555,18 @@ fn run(cli: Cli) -> Result<(), String> {
             for u in &units {
                 println!("{}", unit_json(u));
             }
+            Ok(())
+        }
+        Command::IngestNotes { db, unit, dir } => {
+            let item_ids =
+                atlas_core::notes::scan_and_stage_note_files_in_db(&db, &unit, &dir, &now_utc())
+                    .map_err(|e| e.to_string())?;
+            println!(
+                "{{\"unit\":{},\"items_staged\":{},\"item_ids\":{}}}",
+                json_str(&unit),
+                item_ids.len(),
+                serde_json::to_string(&item_ids).unwrap_or_else(|_| "[]".to_string()),
+            );
             Ok(())
         }
     }
