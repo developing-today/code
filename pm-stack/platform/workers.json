@@ -168,7 +168,7 @@
       "deploy": "by hand",
       "workflow": null,
       "address": "https://atlas-search.developing-today.workers.dev",
-      "next": "Deployed from Actions, stood up, checked and rolled back the way the PM console is; listed here with its last deploy.",
+      "next": "Stays deployed by hand on purpose: the Atlas project is a named exception to the Cloudflare-first move (issue 14866), so its deploys belong to the Atlas programme, not the shared versions release.",
       "lastDeployedCommit": null
     },
     {
