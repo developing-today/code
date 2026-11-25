@@ -1,7 +1,9 @@
 //! Public-world safety reports: the signed report fact and its scoped
-//! intake (#14464; creator public-world safety v3 outline,
+//! intake (#14464).
+//!
+//! Design: creator public-world safety v3 outline,
 //! `doc/2026-11-24T16-12-00Z_design_id6310_creator_public_world_safety_v3_outline.md`,
-//! sections 1, 2, 4 and 6 item 1).
+//! sections 1, 2, 4 and 6 item 1.
 //!
 //! A report is a signed, timestamped fact naming the target, the
 //! reason class and the reporter. It is **not a verdict**: filing one
@@ -283,7 +285,7 @@ impl SignedReport {
             .ok_or(ReportError::Signature)?;
         reporter
             .verify_strict(&report_message(&self.report), &signature)
-            .map_err(|_| ReportError::Signature)?;
+            .map_err(|_signature_error| ReportError::Signature)?;
         Ok(report)
     }
 
@@ -755,7 +757,9 @@ mod tests {
         );
         assert_eq!(report.detail, "seen in the lobby");
         // The id is the content address: stable for the same document.
-        assert_eq!(signed.id(), signed.clone().id());
+        let again: SignedReport =
+            serde_json::from_str(&serde_json::to_string(&signed).unwrap()).unwrap();
+        assert_eq!(signed.id(), again.id());
         assert_eq!(signed.id().len(), 64);
     }
 
