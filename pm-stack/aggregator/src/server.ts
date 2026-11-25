@@ -8,12 +8,12 @@
 // apply actions; the dashboard only records them.
 import { execFile } from "node:child_process";
 import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
-import { homedir, tmpdir } from "node:os";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Database } from "bun:sqlite";
 import { createQuotaRefresher, systemdTrigger } from "./quota-refresh.ts";
-import { startPmCoreJobs } from "./pm-core-jobs.ts";
 import { buildQuotaAnalytics, primeAttemptAggregates, type QuotaAnalytics } from "./analytics-store.ts";
+import { readRouteApiTarget } from "./route-rollup.ts";
 import { decodePathSegment } from "./path-segment.ts";
 import { errorBoundaryResponse, notFoundResponse } from "./error-boundary.ts";
 import { ACTION_STATES, ActionsStore, validateNewAction, type DashAction, type NewAction } from "./actions.ts";
@@ -104,9 +104,23 @@ import {
   type NeedsDrewQuestion,
 } from "./needs-drew.ts";
 import {
+  buildNeedsUserList,
+  onQuestionAnswered,
+  onQuestionRaised,
+  parseBlockedByCount,
+  parsePriority,
+  questionOptions,
+  setQuestionBlockedByCount,
+  setQuestionPriority,
+  stageRowsFor,
+  type NeedsUserListItem,
+} from "./needs-user.ts";
+import {
+  decisionSetAging,
   decisionSetOpenState,
   decisionSetProgress,
   deferWithSubmissions,
+  dismissDecisionSets,
   getDecisionDrafts,
   getDecisionSet,
   isDeferLean,
@@ -119,6 +133,7 @@ import {
   refreshDecisionSet,
   recordResolutions,
   requestInfoOpenQuestions,
+  sweepDecisionSets,
   upsertDecisionDrafts,
   validateDecisionDraftUpsert,
   validateDecisionSet,
@@ -300,6 +315,7 @@ import {
   subjectForecastContracts,
   type ForecastContract,
 } from "./forecast-contract.ts";
+import { requireHome } from "./home.ts";
 
 // Cap `t` at `max` UTF-16 code units, but never leave half of a surrogate
 // pair at the cut (#7740, mirroring the #7694-family capUnits guard): an
@@ -848,6 +864,50 @@ const ANSWER_PAGE_STYLE = `<style>
   .confirm { border: 1px solid #238636; border-radius: 0.5rem; padding: 1rem; }
 </style>`;
 
+/** Render GET /needs-user: open questions in answering order, each
+ * with its blocked-by count and a priority setting. */
+function renderNeedsUserPage(items: NeedsUserListItem[], stagesAvailable: boolean): string {
+  const priorityOptions = (current: number | null) =>
+    [`<option value=""${current === null ? " selected" : ""}>No priority</option>`]
+      .concat(
+        [1, 2, 3, 4, 5].map((p) => `<option value="${p}"${current === p ? " selected" : ""}>P${p}</option>`),
+      )
+      .join("");
+  const rows = items
+    .map(
+      (i) => `<li class="item"><p class="q">${esc(i.question)}</p>
+<p class="context">Raised ${esc(i.raisedAt)} by ${esc(i.source)} · <strong>${i.blockedByCount}</strong> ${
+        i.blockedByCount === 1 ? "issue waits" : "issues wait"
+      } on this answer</p>
+<label>Priority <select data-ledger="${esc(i.ledgerId)}"${stagesAvailable ? "" : " disabled"}>${priorityOptions(
+        i.priority,
+      )}</select></label></li>`,
+    )
+    .join("");
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1"><title>Needs user — PM Stack</title>${ANSWER_PAGE_STYLE}
+<style>ol { padding-left: 1.2rem; } .item { margin: 0 0 1.2rem; } .q { margin: 0 0 0.3rem; font-size: 1.05rem; }
+select { background: #161b22; color: #e6edf3; border: 1px solid #30363d; border-radius: 0.4rem; padding: 0.3rem; }</style></head>
+<body><main><h1>Needs user (${items.length})</h1>
+${stagesAvailable ? "" : `<p class="context">The stage store is unavailable, so priorities can't be set right now.</p>`}
+${items.length ? `<ol>${rows}</ol>` : `<p class="context">Nothing is waiting on you.</p>`}
+<p id="status" class="context"></p>
+<script>
+document.querySelectorAll('select[data-ledger]').forEach((sel) => {
+  sel.addEventListener('change', async () => {
+    const status = document.getElementById('status');
+    const priority = sel.value === '' ? null : Number(sel.value);
+    try {
+      const res = await fetch('/api/needs-user/' + encodeURIComponent(sel.dataset.ledger) + '/priority', {
+        method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ priority }) });
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      status.textContent = 'Priority saved.';
+    } catch { status.textContent = 'Saving the priority failed. Please try again.'; }
+  });
+});
+</script></main></body></html>`;
+}
+
 /** Render GET /answer/<ledgerId>. The caller has already verified the
  * token; the 403 shape renders nothing about the question. */
 function renderAnswerPage(item: NeedsDrewQuestion): string {
@@ -857,7 +917,7 @@ function renderAnswerPage(item: NeedsDrewQuestion): string {
     .join("");
   if (item.answer) {
     const chosen = item.answer.optionId
-      ? (item.options.find((o) => o.id === item.answer?.optionId)?.label ?? item.answer.optionId)
+      ? (questionOptions(item).find((o) => o.id === item.answer?.optionId)?.label ?? item.answer.optionId)
       : null;
     return `<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1"><title>Answered — PM Stack</title>${ANSWER_PAGE_STYLE}</head>
@@ -867,7 +927,7 @@ ${item.answer.freeText ? `<p>${esc(item.answer.freeText)}</p>` : ""}
 <p class="context">Recorded at ${esc(item.answer.at)} — the fleet worker has been unblocked.</p></div>
 </main></body></html>`;
   }
-  const buttons = item.options
+  const buttons = questionOptions(item)
     .map((o) => `<button class="option" type="button" data-option="${esc(o.id)}">${esc(o.label)}</button>`)
     .join("");
   return `<!doctype html><html lang="en"><head><meta charset="utf-8">
@@ -1447,10 +1507,14 @@ ${decisionsDraftScript(set.setId)}
 </main></body></html>`;
 }
 
-/** Render GET /decisions — the decision-sets index (#8867). Lists every
+/** Render GET /decisions — the decision-sets index (#8867, aging #14064). Lists every
  * set in the store with counts live from decisionSetSummary (the same
- * numbers the set page itself reports), in today / this-week / all
- * views with an open-only toggle, newest first. Each row links to the
+ * numbers the set page itself reports), in today / this-week / recent
+ * (last 7 days, rolling — the index default, so the landing view is
+ * the current workload, not the backlog) / all views with an
+ * open-only toggle, newest first. Sets idle past the abandonment
+ * window collapse under an "abandoned" fold on the all view with a
+ * pointer at the bulk-dismiss operator endpoint. Each row links to the
  * set's own token-carrying page; the index carries no token of its own
  * and sits behind the same access as every other aggregator page
  * (tailnet origin / Cloudflare Access on pm.security.cab) — no new
@@ -1469,6 +1533,8 @@ function renderDecisionsIndex(allSets: DecisionSet[], view: DecisionSetView, ope
   const inView = decisionSetsForView(allSets, view);
   const visible = openOnly ? inView.filter((s) => decisionSetSummary(s).openQuestions > 0) : inView;
   const totalOpen = inView.reduce((n, s) => n + decisionSetSummary(s).openQuestions, 0);
+  const abandoned = view === "all" ? inView.filter((s) => decisionSetAging(s) === "abandoned") : [];
+  const abandonedIds = abandoned.map((s) => s.setId);
   const viewTab = (v: DecisionSetView, label: string): string =>
     v === view
       ? `<strong>${label}</strong>`
@@ -1482,10 +1548,12 @@ function renderDecisionsIndex(allSets: DecisionSet[], view: DecisionSetView, ope
       const stamp = Number.isFinite(Date.parse(s.createdAt))
         ? CHICAGO_STAMP.format(new Date(s.createdAt))
         : s.createdAt;
+      const aging = decisionSetAging(set);
+      const agingChip = aging === "abandoned" ? ` · abandoned` : aging === "settled" ? ` · settled` : "";
       const breakdown = `${s.answered} answered · ${s.deferred} deferred · ${s.infoRequested} sent back for more info`;
       const state = s.fullyResolved ? `all settled — ${breakdown}` : `${s.openQuestions} open · ${breakdown}`;
       return `<div class="item"><h2><a href="${esc(decisionsPageUrl(set))}">${esc(s.title)}</a></h2>
-<p class="context">Raised ${esc(stamp)} · ${s.items} item${s.items === 1 ? "" : "s"} · ${s.questions} question${s.questions === 1 ? "" : "s"} · ${state}</p>
+<p class="context">Raised ${esc(stamp)} · ${s.items} item${s.items === 1 ? "" : "s"} · ${s.questions} question${s.questions === 1 ? "" : "s"} · ${state}${esc(agingChip)}</p>
 <p class="context">Set <code>${esc(s.setId)}</code></p></div>`;
     })
     .join("");
@@ -1493,12 +1561,17 @@ function renderDecisionsIndex(allSets: DecisionSet[], view: DecisionSetView, ope
     allSets.length === 0
       ? `<p class="context">No decision sets have been raised yet.</p>`
       : `<p class="context">No sets in this view${openOnly ? " with open questions" : ""}.</p>`;
+  const abandonedFold = abandonedIds.length
+    ? `<details><summary>${abandonedIds.length} abandoned — idle over 7 days with open questions (bulk-dismiss via POST /api/decisions/dismiss)</summary>
+<p class="context">${abandonedIds.map((id) => `<code>${esc(id)}</code>`).join(" ")}</p></details>`
+    : "";
   return `<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1"><title>Decision sets — PM Stack</title>${DECISIONS_PAGE_STYLE}</head>
 <body><main><h1>Decision sets</h1>
 <p class="context">${inView.length} set${inView.length === 1 ? "" : "s"} · ${totalOpen} question${totalOpen === 1 ? "" : "s"} open. Newest first. Each set opens its own page — the same link its push notification carried.</p>
-<p class="context">${viewTab("today", "New today")} · ${viewTab("week", "This week")} · ${viewTab("all", "All")} &nbsp;|&nbsp; ${toggle}</p>
+<p class="context">${viewTab("today", "New today")} · ${viewTab("week", "This week")} · ${viewTab("recent", "Recent (7d)")} · ${viewTab("all", "All")} &nbsp;|&nbsp; ${toggle}</p>
 ${visible.length ? rows : empty}
+${abandonedFold}
 </main></body></html>`;
 }
 
@@ -2248,7 +2321,7 @@ async function withMetadataTempFile<T>(prefix: string, content: string, run: (pa
 }
 
 const metadataDbPath =
-  process.env.PM_METADATA_DB_PATH ?? join(homedir(), ".local/state/pm-aggregator/pm-metadata.sqlite");
+  process.env.PM_METADATA_DB_PATH ?? join(requireHome("PM_METADATA_DB_PATH"), ".local/state/pm-aggregator/pm-metadata.sqlite");
 const metadataDb = openMetadataStore(metadataDbPath, (path) => new Database(path));
 const metadataWebhookHandler = createMetadataWebhookHandler({
   secret: () => resolveBwsSecret("pm-aggregator.github-webhook-secret"),
@@ -3724,6 +3797,7 @@ async function handler(req: Request, remoteAddress?: string): Promise<Response> 
           quota,
           usage,
           quotaCurrentPath: cfg.quotaCurrentFile,
+          routeApi: readRouteApiTarget(cfg.opencodeServerStateFile),
           mcpxCallLedgerDir: cfg.mcpxCallLedgerDir,
           fleetInvocationLedgerFile: cfg.fleetInvocationLedgerFile,
         }),
@@ -3749,6 +3823,7 @@ async function handler(req: Request, remoteAddress?: string): Promise<Response> 
         quota,
         usage,
         quotaCurrentPath: cfg.quotaCurrentFile,
+        routeApi: readRouteApiTarget(cfg.opencodeServerStateFile),
         mcpxCallLedgerDir: cfg.mcpxCallLedgerDir,
         fleetInvocationLedgerFile: cfg.fleetInvocationLedgerFile,
       });
@@ -4573,6 +4648,14 @@ async function handler(req: Request, remoteAddress?: string): Promise<Response> 
         if (!v.ok) return json({ error: v.error }, 400);
         try {
           const item = await raiseNeedsDrew(cfg.needsDrewFile, v.value, parsed.value.source, parsed.value.key);
+          // #14084 S1: the question enters the staged pipeline at
+          // needs-user. Best-effort: a store failure never fails the raise.
+          try {
+            const store = await getAlertsStore();
+            if (store) await onQuestionRaised(store.itemStages(), item);
+          } catch (err) {
+            console.error(`alerts intake: needs-user stage failed (${err instanceof Error ? err.message : "error"})`);
+          }
           requestAlertTick();
           return json(
             { incident, created, needsDrew: { ledgerId: item.ledgerId, answerUrl: needsDrewAnswerUrl(item) } },
@@ -4667,7 +4750,7 @@ async function handler(req: Request, remoteAddress?: string): Promise<Response> 
       return json({ error: "unknown question or bad token" }, 403);
     }
     const optionId = typeof body.optionId === "string" ? body.optionId : undefined;
-    if (optionId !== undefined && !item.options.some((o) => o.id === optionId)) {
+    if (optionId !== undefined && !questionOptions(item).some((o) => o.id === optionId)) {
       return json({ error: "optionId is not one of the question options" }, 400);
     }
     const freeText = typeof body.freeText === "string" ? body.freeText : undefined;
@@ -4697,6 +4780,14 @@ async function handler(req: Request, remoteAddress?: string): Promise<Response> 
     } catch (err) {
       console.error(`needs-drew answer: incident close failed (${err instanceof Error ? err.message : "error"})`);
     }
+    // #14084 S1: "Send back" returns the item to review; any other
+    // answer resolves it. Keyed on the recorded (first) answer.
+    try {
+      const store = await getAlertsStore();
+      if (store) await onQuestionAnswered(store.itemStages(), ledgerId, updated.answer.optionId);
+    } catch (err) {
+      console.error(`needs-drew answer: stage update failed (${err instanceof Error ? err.message : "error"})`);
+    }
     return json({
       ledgerId,
       answered: true,
@@ -4707,6 +4798,61 @@ async function handler(req: Request, remoteAddress?: string): Promise<Response> 
         via: updated.answer.via,
       },
     });
+  }
+  // --- Needs-user list (#14084 S1) ------------------------------------
+  // Open ledger questions in answering order (priority, then issues
+  // waiting on the answer, then age). Answer tokens never appear here.
+  if (path === "/api/needs-user" || path === "/needs-user") {
+    if (req.method !== "GET") return json({ error: "method not allowed" }, 405);
+    const store = await getAlertsStore();
+    const questions = await listOpenNeedsDrew(cfg.needsDrewFile).catch(() => []);
+    let items: NeedsUserListItem[];
+    let stagesAvailable = true;
+    try {
+      items = buildNeedsUserList(questions, store ? await stageRowsFor(store.itemStages(), questions) : new Map());
+      if (!store) stagesAvailable = false;
+    } catch (err) {
+      console.error(`needs-user list: stage read failed (${err instanceof Error ? err.message : "error"})`);
+      items = buildNeedsUserList(questions, new Map());
+      stagesAvailable = false;
+    }
+    if (path === "/needs-user") return html(renderNeedsUserPage(items, stagesAvailable));
+    return json({ items, stagesAvailable });
+  }
+  const needsUserSetMatch = /^\/api\/needs-user\/([^/]+)\/(priority|blocked-by)$/.exec(path);
+  if (needsUserSetMatch) {
+    if (req.method !== "POST") return json({ error: "method not allowed" }, 405);
+    const ledgerId = decodePathSegment(needsUserSetMatch[1]);
+    if (ledgerId === null) return json({ error: "bad ledgerId" }, 400);
+    const field = needsUserSetMatch[2];
+    // The blocked-by count is the fleet's to report (intake bearer);
+    // priority is set from the list, like the push preferences.
+    if (field === "blocked-by" && !(await alertsIntakeAuthorized(req))) {
+      return json({ error: "unauthorized" }, 401);
+    }
+    let body: { priority?: unknown; count?: unknown };
+    try {
+      body = (await readJsonBody(req)) as typeof body;
+    } catch {
+      return json({ error: "invalid body" }, 400);
+    }
+    const item = await getNeedsDrew(cfg.needsDrewFile, ledgerId).catch(() => null);
+    if (!item) return json({ error: "unknown question" }, 404);
+    if (item.answer) return json({ error: "question already answered" }, 409);
+    const store = await getAlertsStore();
+    if (!store) return json({ error: "alerts store unavailable" }, 503);
+    if (field === "priority") {
+      const p = parsePriority(body.priority);
+      if (!p.ok) return json({ error: p.error }, 400);
+      const row = await setQuestionPriority(store.itemStages(), ledgerId, p.value);
+      if (!row) return json({ error: "priority not recorded" }, 500);
+      return json({ ledgerId, priority: row.priority === null ? null : Number(row.priority) });
+    }
+    const c = parseBlockedByCount(body.count);
+    if (!c.ok) return json({ error: c.error }, 400);
+    const row = await setQuestionBlockedByCount(store.itemStages(), ledgerId, c.value);
+    if (!row) return json({ error: "count not recorded" }, 500);
+    return json({ ledgerId, blockedByCount: Number(row.blocked_by_count) });
   }
   const answerPageMatch = /^\/answer\/([^/]+)$/.exec(path);
   if (req.method === "GET" && answerPageMatch) {
@@ -4864,7 +5010,9 @@ async function handler(req: Request, remoteAddress?: string): Promise<Response> 
   if (req.method === "GET" && path === "/decisions") {
     const sets = await listDecisionSets(cfg.decisionsFile).catch(() => [] as DecisionSet[]);
     const viewParam = url.searchParams.get("view");
-    const view: DecisionSetView = isDecisionSetView(viewParam) ? viewParam : "all";
+    // Default is the rolling last-7-days window (#14064): the landing
+    // view is the current workload, with all-time behind the toggle.
+    const view: DecisionSetView = isDecisionSetView(viewParam) ? viewParam : "recent";
     return html(renderDecisionsIndex(sets, view, url.searchParams.get("open") === "1"));
   }
   const decisionsPageMatch = /^\/decisions\/([^/]+)$/.exec(path);
@@ -5040,6 +5188,48 @@ async function handler(req: Request, remoteAddress?: string): Promise<Response> 
     return json({ requestedCount: result.requestedCount, ...decisionSetOpenState(result.set) });
   }
 
+  // --- Decision-set aging operators (#14064) ---------------------------
+  // Dismiss and sweep sit behind the alerts-intake bearer (operator
+  // surface, same as the alert writes): they close questions without
+  // a per-set token, so no token path may reach them.
+  if (req.method === "POST" && path === "/api/decisions/dismiss") {
+    if (!(await alertsIntakeAuthorized(req))) return json({ error: "unauthorized" }, 401);
+    let body: { setIds?: unknown };
+    try {
+      body = (await readJsonBody(req)) as typeof body;
+    } catch {
+      return json({ error: "invalid dismiss body" }, 400);
+    }
+    if (!Array.isArray(body.setIds) || body.setIds.length > 512) {
+      return json({ error: "setIds must be an array of up to 512 set ids" }, 400);
+    }
+    const setIds = body.setIds.filter((x): x is string => typeof x === "string" && x.length > 0);
+    const result = await dismissDecisionSets(cfg.decisionsFile, setIds);
+    return json(result);
+  }
+  if (req.method === "POST" && path === "/api/decisions/sweep") {
+    if (!(await alertsIntakeAuthorized(req))) return json({ error: "unauthorized" }, 401);
+    let body: { answeredElsewhere?: unknown };
+    try {
+      body = (await readJsonBody(req)) as typeof body;
+    } catch {
+      return json({ error: "invalid sweep body" }, 400);
+    }
+    if (!Array.isArray(body.answeredElsewhere) || body.answeredElsewhere.length > 1024) {
+      return json({ error: "answeredElsewhere must be an array of up to 1024 entries" }, 400);
+    }
+    const answeredElsewhere = (body.answeredElsewhere as Array<Record<string, unknown>>)
+      .filter((e) => e && typeof e === "object" && typeof e.qid === "string" && e.qid)
+      .map((e) => ({
+        qid: e.qid as string,
+        ...(typeof e.optionId === "string" ? { optionId: e.optionId } : {}),
+        ...(typeof e.optionLabel === "string" ? { optionLabel: e.optionLabel } : {}),
+        ...(typeof e.freeText === "string" ? { freeText: e.freeText } : {}),
+        ...(typeof e.comment === "string" ? { comment: e.comment } : {}),
+      }));
+    const result = await sweepDecisionSets(cfg.decisionsFile, answeredElsewhere);
+    return json(result);
+  }
   const decisionsDraftsMatch = /^\/api\/decisions\/([^/]+)\/drafts$/.exec(path);
   if ((req.method === "GET" || req.method === "POST") && decisionsDraftsMatch) {
     const setId = decodePathSegment(decisionsDraftsMatch[1]);
@@ -5478,9 +5668,10 @@ for (const server of servers) {
 // restart measured 26.4 s against ~0.03 s warm (2026-11-13
 // follow-up). primeAttemptAggregates fills the same cache through
 // the day-sliced stale-while-revalidate refresh instead, so the loop
-// stays responsive; later builds ride that cache as before, and a
-// /quota request landing before the prime settles still pays the
-// synchronous cold build on its own path (unchanged semantics).
+// stays responsive; later builds ride that cache as before. Since
+// #2795 the aggregates come from the OpenCode server's rollup API, so
+// there is no synchronous cold build at all: a /quota request landing
+// before the prime settles shows the section as unavailable.
 // programSources joins the warmed assemblies in the same follow-up:
 // it was the one major assembly left out, so /program's first
 // post-restart request always paid its cold fan-out on the request
@@ -5488,7 +5679,7 @@ for (const server of servers) {
 setTimeout(() => {
   void (async () => {
     try {
-      primeAttemptAggregates();
+      primeAttemptAggregates(readRouteApiTarget(cfg.opencodeServerStateFile));
       await Promise.allSettled([
         boardContext(),
         overviewContext(),
@@ -5518,19 +5709,6 @@ const freshnessIpcServer = Bun.serve({
   fetch: createFreshnessIpcHandler(freshnessStore),
 });
 console.log(`freshness publisher listening on http://${freshnessIpcServer.hostname}:${freshnessIpcServer.port}`);
-
-// #8570: in live mode the aggregator process owns the quota gatherer and
-// fleet-feed collector schedules. Their output files remain audit/debug
-// products; request freshness is held by the in-process stores/caches.
-if (cfg.source === "live") {
-  void startPmCoreJobs({
-    warn: (message) => console.log(`[pm-core] ${message}`),
-  }).catch((error) => {
-    console.error(
-      `[pm-core] failed to start scheduled jobs: ${error instanceof Error ? error.message : String(error)}`,
-    );
-  });
-}
 
 // #3976: start the anti-entropy loop in live mode — one pass now,
 // then the 5-minute cadence. Fixtures mode has no journal to reconcile.

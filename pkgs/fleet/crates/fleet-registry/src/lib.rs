@@ -279,6 +279,7 @@ pub const DOMAINS: &[Domain] = &[
             "bind",
             "heartbeat",
             "checkpoint",
+            "reprioritize",
             "park",
             "wake",
             "block",

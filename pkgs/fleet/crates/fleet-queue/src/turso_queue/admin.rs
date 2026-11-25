@@ -810,31 +810,121 @@ pub(crate) fn verb_unblock(t: &TursoBackend, req: &Value) -> Value {
     }
 }
 
+/// #14170 Q2: infer only terminal resolutions that the old record
+/// proves. The updates are idempotent and leave every ambiguous legacy
+/// row NULL; the returned census is the baseline to record on #14170.
+pub(crate) fn verb_resolution_backfill(t: &TursoBackend, _req: &Value) -> Value {
+    let count = |sql: &str| -> Result<i64, TErr> {
+        Ok(t.query_objs(sql, &[], &[])?
+            .first()
+            .and_then(|r| r.get("n"))
+            .and_then(Value::as_i64)
+            .unwrap_or(0))
+    };
+    let work = (|| -> Result<Value, TErr> {
+        let census =
+            count("SELECT count(*) AS n FROM tasks WHERE status IN ('done','cancelled','failed')")?;
+        let verified = t.exec(
+            "UPDATE tasks SET resolution = 'done', resolution_category = 'success', \
+               resolution_substatus = 'verified', resolved_by = COALESCE(worker_id, 'resolution-backfill'), \
+               resolved_at = COALESCE(completed_at, updated_at, created_at) \
+             WHERE status = 'done' AND resolution IS NULL \
+               AND json_extract(result, '$.disposition.verdict') IN ('closed_verified','merged_verified')",
+            &[],
+        )?.affected as i64;
+        let already_solved = t.exec(
+            "UPDATE tasks SET resolution = 'already_solved', resolution_category = 'success', \
+               resolution_substatus = 'premise_already_met', resolved_by = COALESCE(worker_id, 'resolution-backfill'), \
+               resolved_at = COALESCE(completed_at, updated_at, created_at) \
+             WHERE status = 'done' AND resolution IS NULL \
+               AND json_extract(result, '$.triage_outcome') = 'already_solved'",
+            &[],
+        )?.affected as i64;
+        let duplicates = t.exec(
+            "UPDATE tasks SET resolution = 'duplicate', resolution_category = 'redirection', \
+               resolution_ref = 'task:' || (SELECT twin.id FROM tasks AS twin \
+                   WHERE twin.queue = tasks.queue AND twin.dedupe_key = tasks.dedupe_key \
+                     AND twin.id <> tasks.id AND twin.status IN ('queued','claimed','parked','blocked','done') \
+                   LIMIT 1), \
+               resolution_reason = 'Uniquely identified as a duplicate of the surviving task during Q2 backfill', \
+               resolved_by = COALESCE(worker_id, 'resolution-backfill'), \
+               resolved_at = COALESCE(completed_at, updated_at, created_at) \
+             WHERE status = 'cancelled' AND resolution IS NULL AND dedupe_key IS NOT NULL \
+               AND (lower(COALESCE(json_extract(result, '$.cancel_reason'), '')) LIKE '%dedupe%' \
+                    OR lower(COALESCE(json_extract(result, '$.cancel_reason'), '')) LIKE '%duplicate%') \
+               AND (SELECT count(*) FROM tasks AS twin \
+                   WHERE twin.queue = tasks.queue AND twin.dedupe_key = tasks.dedupe_key \
+                     AND twin.id <> tasks.id AND twin.status IN ('queued','claimed','parked','blocked','done')) = 1",
+            &[],
+        )?.affected as i64;
+        let proved = verified + already_solved + duplicates;
+        Ok(json!({
+            "census": census,
+            "proved": proved,
+            "verified": verified,
+            "already_solved": already_solved,
+            "duplicates": duplicates,
+            "unresolved": census - (count("SELECT count(*) AS n FROM tasks WHERE status IN ('done','cancelled','failed') AND resolution IS NOT NULL")?),
+        }))
+    })();
+    match work {
+        Ok(row) => ok(json!({"row": row})),
+        Err(e) => terr(e),
+    }
+}
+
 pub(crate) fn verb_cancel(t: &TursoBackend, req: &Value) -> Value {
     let task_id = req_i64(req, "task_id").unwrap_or(0);
     let worker = req_str(req, "worker")
         .unwrap_or("fleet-monitor")
         .to_string();
     let reason = req_str(req, "reason").unwrap_or("").to_string();
+    let Some(row) = (match get_task(t, task_id) {
+        Ok(row) => row,
+        Err(e) => return terr(e),
+    }) else {
+        return fail(
+            5,
+            format!("cancel_repo_task: task {task_id} does not exist"),
+        );
+    };
+    if ["done", "cancelled", "failed"]
+        .contains(&row.get("status").and_then(|v| v.as_str()).unwrap_or(""))
+    {
+        return ok(json!({"row": row}));
+    }
+    let fields = match crate::validate::validate_resolution(
+        "cancelled",
+        req_str(req, "resolution"),
+        req_str(req, "substatus"),
+        req_str(req, "resolution_reason").or_else(|| req_str(req, "reason")),
+        req_str(req, "resolution_ref"),
+    ) {
+        Ok(Some(fields)) => fields,
+        Ok(None) => unreachable!("cancellation requires a resolution"),
+        Err(e) => return fail(2, format!("cancel_repo_task: {e}")),
+    };
+    let resolved_at = now_iso();
     let work = (|| -> Result<Value, TErr> {
-        let Some(row) = get_task(t, task_id)? else {
-            return Ok(Value::Null);
-        };
-        if ["done", "cancelled", "failed"]
-            .contains(&row.get("status").and_then(|v| v.as_str()).unwrap_or(""))
-        {
-            return Ok(row);
-        }
         let result = merge_obj(
             &row.get("result").cloned().unwrap_or(json!({})),
             &json!({"cancel_reason": reason}),
         );
         t.exec(
             "UPDATE tasks SET status = 'cancelled', worker_id = NULL, lease_until = NULL, \
-               result = ?, updated_at = ? WHERE id = ?",
+               result = ?, resolution = ?, resolution_category = ?, resolution_substatus = ?, \
+               resolution_reason = ?, resolution_ref = ?, resolved_by = ?, resolved_at = ?, \
+               updated_at = ? WHERE id = ?",
             &[
                 Arg::Text(result.to_string()),
-                Arg::Text(now_iso()),
+                Arg::Text(fields.resolution.clone()),
+                Arg::Text(fields.category.clone()),
+                arg_str(fields.substatus.as_deref()),
+                arg_str(fields.reason.as_deref()),
+                arg_str(fields.reference.as_deref()),
+                Arg::Text(worker.clone()),
+                Arg::Text(resolved_at.clone()),
+                Arg::Text(resolved_at.clone()),
                 Arg::Int(task_id),
             ],
         )?;
@@ -844,7 +934,12 @@ pub(crate) fn verb_cancel(t: &TursoBackend, req: &Value) -> Value {
             Some(&worker),
             Some(task_id),
             "cancelled",
-            &json!({"reason": reason, "via": "cancel_repo_task_turso"}),
+            &json!({
+                "reason": reason, "via": "cancel_repo_task_turso",
+                "resolution": fields.resolution, "resolution_category": fields.category,
+                "resolution_substatus": fields.substatus, "resolution_reason": fields.reason,
+                "resolution_ref": fields.reference,
+            }),
         )?;
         // #9046: close the binding window on the timeline (the
         // binding stays on the row up to this transition; the
@@ -1221,16 +1316,80 @@ pub(crate) fn verb_complete(t: &TursoBackend, req: &Value) -> Value {
             }
         }))
     };
-    let mut ctx = GateContext {
-        task_id,
-        expected_issue,
-        fix_follow_on: follow_on_key(&dedupe_key).is_some(),
-        lookup: &mut lookup,
+    let triage_outcome = {
+        let mut ctx = GateContext {
+            task_id,
+            expected_issue,
+            fix_follow_on: follow_on_key(&dedupe_key).is_some(),
+            lookup: &mut lookup,
+        };
+        match gate_completion(&class, &mut ctx, &gate_result) {
+            Ok(o) => o,
+            Err(e) => return fail(2, e),
+        }
     };
-    let triage_outcome = match gate_completion(&class, &mut ctx, &gate_result) {
-        Ok(o) => o,
-        Err(e) => return fail(2, e),
+    // Any supplied disposition must pass the same offline readback gate
+    // before it can stamp a resolution, even for task kinds whose normal
+    // completion does not require one.
+    let disposition = if gate_result.get("disposition").is_some() {
+        match crate::disposition::require_verified(
+            &gate_result,
+            expected_issue,
+            now_unix(),
+            task_id,
+            &mut lookup,
+        ) {
+            Ok(record) => Some(record),
+            Err(e) => return fail(2, format!("complete_task: {e}")),
+        }
+    } else {
+        None
     };
+    let disposition_resolution = disposition
+        .as_ref()
+        .and_then(crate::disposition::resolution_for_disposition);
+    let mut resolution = req_str(req, "resolution").map(str::to_string);
+    let mut substatus = req_str(req, "substatus").map(str::to_string);
+    let mut resolution_reason = req_str(req, "resolution_reason").map(str::to_string);
+    let resolution_ref = req_str(req, "resolution_ref").map(str::to_string);
+    if let Some((mapped_resolution, mapped_substatus)) = disposition_resolution {
+        if resolution
+            .as_deref()
+            .is_some_and(|v| v != mapped_resolution)
+            || substatus.as_deref().is_some_and(|v| v != mapped_substatus)
+        {
+            return fail(
+                2,
+                "complete_task: explicit resolution conflicts with the verified disposition",
+            );
+        }
+        resolution = Some(mapped_resolution.to_string());
+        substatus = Some(mapped_substatus.to_string());
+    } else if triage_outcome == Some(TriageOutcome::ExitAlreadySolved) && resolution.is_none() {
+        resolution = Some("already_solved".into());
+        substatus = Some("premise_already_met".into());
+    }
+    if disposition_resolution.is_none()
+        && resolution.as_deref() == Some("done")
+        && substatus.as_deref() == Some("verified")
+    {
+        return fail(
+            2,
+            "complete_task: substatus verified requires a verified disposition readback",
+        );
+    }
+    let fields = match crate::validate::validate_resolution(
+        "done",
+        resolution.as_deref(),
+        substatus.as_deref(),
+        resolution_reason.as_deref(),
+        resolution_ref.as_deref(),
+    ) {
+        Ok(Some(fields)) => fields,
+        Ok(None) => unreachable!("done completion always has a resolution"),
+        Err(e) => return fail(2, format!("complete_task: {e}")),
+    };
+    let resolved_at = now_iso();
     // Terminal transitions keep the session binding (migration 0023
     // header): on a done row it is the execution record.
     let result = merge_obj(
@@ -1240,11 +1399,20 @@ pub(crate) fn verb_complete(t: &TursoBackend, req: &Value) -> Value {
     let work = (|| -> Result<Value, TErr> {
         t.exec(
             "UPDATE tasks SET status = 'done', lease_until = NULL, result = ?, \
+               resolution = ?, resolution_category = ?, resolution_substatus = ?, \
+               resolution_reason = ?, resolution_ref = ?, resolved_by = ?, resolved_at = ?, \
                completed_at = ?, updated_at = ? WHERE id = ?",
             &[
                 Arg::Text(result.to_string()),
-                Arg::Text(now_iso()),
-                Arg::Text(now_iso()),
+                Arg::Text(fields.resolution.clone()),
+                Arg::Text(fields.category.clone()),
+                arg_str(fields.substatus.as_deref()),
+                arg_str(fields.reason.as_deref()),
+                arg_str(fields.reference.as_deref()),
+                Arg::Text(worker.clone()),
+                Arg::Text(resolved_at.clone()),
+                Arg::Text(resolved_at.clone()),
+                Arg::Text(resolved_at.clone()),
                 Arg::Int(task_id),
             ],
         )?;
@@ -1255,7 +1423,17 @@ pub(crate) fn verb_complete(t: &TursoBackend, req: &Value) -> Value {
             Some(&worker),
             Some(task_id),
             "completed",
-            &with_marks(&json!({"via": "complete_task_turso"}), &row),
+            &with_marks(
+                &json!({
+                    "via": "complete_task_turso",
+                    "resolution": fields.resolution,
+                    "resolution_category": fields.category,
+                    "resolution_substatus": fields.substatus,
+                    "resolution_reason": fields.reason,
+                    "resolution_ref": fields.reference,
+                }),
+                &row,
+            ),
         )?;
         // #9046: close the binding window on the timeline. The
         // binding itself stays on the row as the execution record
@@ -1432,7 +1610,7 @@ pub(crate) fn verb_list(t: &TursoBackend, req: &Value) -> Value {
         "id, queue, title, priority, status, dedupe_key, created_at, not_before, \
          worker_id, claimed_at, lease_until, lane_id, platform, attempts, max_attempts, \
          claim_provider, claim_model, claim_variant, claim_session_id, progress, payload, \
-         blocked_deps, dep_next_recheck_at, dep_blocked_until"
+         blocked_deps, dep_next_recheck_at, dep_blocked_until, labels, labels_synced_at"
     } else {
         "id, queue, title, priority, status, dedupe_key, created_at, not_before, platform"
     };
@@ -1477,12 +1655,21 @@ pub(crate) fn verb_list(t: &TursoBackend, req: &Value) -> Value {
         conds += " AND dedupe_key = ?";
         args.push(Arg::Text(d.to_string()));
     }
+    // #14170 Q5: --label narrows to tasks whose cached label set
+    // holds that label; a trailing `*` matches a prefix (`user/*`).
+    // The cache is refreshed at every transition and by the hourly
+    // sweep; `labels_synced_at` on the rich row shows its age.
+    if let Some(l) = req_str(req, "label").filter(|l| !l.is_empty()) {
+        let (cond, arg) = label_filter_cond(l);
+        conds += cond;
+        args.push(arg);
+    }
     let offset = crate::client::list_offset_or_default(req_i64(req, "offset"));
     let sql = format!(
         "SELECT {select} FROM tasks{conds} ORDER BY (priority IS NULL), priority ASC, created_at ASC, id ASC LIMIT {limit} OFFSET {offset}"
     );
     let json_cols: &[&str] = if rich {
-        &["progress", "payload", "blocked_deps"]
+        &["progress", "payload", "blocked_deps", "labels"]
     } else {
         &[]
     };

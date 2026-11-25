@@ -13,10 +13,14 @@
 // metadata DB behind the store interfaces and #12583's deploy.
 
 import type { AuthDeps } from "./auth.ts";
-import { configFromEnv, type HostedEnv } from "./config.ts";
+import { FixtureBackfillRunStore } from "./backfill.ts";
+import { BindingBridgeSurface } from "./bridge.ts";
+import { configFromEnv, type HostedConfig, type HostedEnv } from "./config.ts";
 import { AppRotationGitHubWriter, FixtureGitHubWriter } from "./github.ts";
 import { ingestionDepsFrom, runIngestionSweep } from "./ingestion.ts";
-import { FixtureQueueStore } from "./queue-store.ts";
+import { LibSQLQueueStore, type SyncSqlDb } from "./libsql-queue-store.ts";
+import { openHranaQueueStore } from "./libsql-hrana-queue-store.ts";
+import { FixtureQueueStore, type QueueStore } from "./queue-store.ts";
 import { StoreQueueRecordSource } from "./queue-records.ts";
 import { dispatch } from "./router.ts";
 import { FixtureSessionRegistry } from "./sessions.ts";
@@ -36,14 +40,53 @@ const sessions = new FixtureSessionRegistry();
 // MetadataStore interface in src/stamping.ts.
 const metadataStore = new FixtureMetadataStore();
 
+// Backfill run store seam (#14312): the ingestion door's record of
+// backfill runs, behind the BackfillRunStore interface in
+// src/backfill.ts — same fixture posture as the other seams, with
+// #9074's metadata DB as its production home.
+const backfillRuns = new FixtureBackfillRunStore();
+
 // Queue store seam (#12589): the queue door's backend, behind the
 // QueueStore interface in src/queue-store.ts. The production home
 // is the existing fleet-queue Turso DB (#6741) — the same backend
-// the native broker serves — reached through a libSQL
-// implementation of the same interface; until it lands, one
-// fixture store at module scope, with the isolate-lifetime
+// the native broker serves — reached through LibSQLQueueStore (the
+// same interface, no second queue, no schema fork); until it lands,
+// one fixture store at module scope, with the isolate-lifetime
 // semantics of the other seams.
 const queueStore = new FixtureQueueStore();
+
+/** The file → connection opener the libSQL queue door needs: it
+ *  turns QUEUE_LIBSQL_FILE into the store's SyncSqlDb (tests and
+ *  local dev inject node:sqlite here — the Worker bundle itself
+ *  never imports it, so it stays runtime-agnostic). */
+export type QueueSqlOpener = (file: string) => SyncSqlDb;
+
+/** The URL → store opener for the remote fleet-queue Turso DB
+ *  (#14592): turns QUEUE_LIBSQL_URL (+ its token) into the Hrana
+ *  queue store. The default is the real fetch transport; tests
+ *  inject a scripted peer the same way the file opener injects. */
+export type QueueHranaOpener = (url: string, authToken: string | null) => QueueStore;
+
+/** Resolve the queue backend for one configuration: the Hrana
+ *  store over the remote Turso DB when QUEUE_LIBSQL_URL is set
+ *  (the production backend — it takes precedence), else the libSQL
+ *  store over the opener's connection when QUEUE_LIBSQL_FILE is
+ *  set and an opener is injected, else the given fallback (the
+ *  module fixture by default — tests/local-dev semantics). */
+export function queueStoreFor(
+  config: Pick<HostedConfig, "queueLibsqlFile" | "queueLibsqlUrl" | "queueLibsqlAuthToken">,
+  opener?: QueueSqlOpener,
+  fallback?: QueueStore,
+  hranaOpener: QueueHranaOpener = openHranaQueueStore,
+): QueueStore {
+  if (config.queueLibsqlUrl) {
+    return hranaOpener(config.queueLibsqlUrl, config.queueLibsqlAuthToken);
+  }
+  if (config.queueLibsqlFile && opener) {
+    return new LibSQLQueueStore(opener(config.queueLibsqlFile));
+  }
+  return fallback ?? queueStore;
+}
 
 // The queue record source (#12589 wires the seam #12585 left):
 // stamps that cite a session now read the queue's own claim
@@ -52,9 +95,14 @@ const queueStore = new FixtureQueueStore();
 const queueRecords = new StoreQueueRecordSource(queueStore, sessions);
 
 /** Assemble the door deps for one invocation (fetch or scheduled),
- * exactly as the Worker wires them in production. */
-function buildDeps(env: HostedEnv): AuthDeps {
+ * exactly as the Worker wires them in production. The optional
+ * opener carries QUEUE_LIBSQL_FILE to a connection (local dev /
+ * tests); without it the fixture store stands in. */
+export function buildDeps(env: HostedEnv, opener?: QueueSqlOpener): AuthDeps {
   const config = configFromEnv(env);
+  const resolvedQueueStore = queueStoreFor(config, opener);
+  const resolvedQueueRecords =
+    resolvedQueueStore === queueStore ? queueRecords : new StoreQueueRecordSource(resolvedQueueStore, sessions);
   // The hosted rotation point (#12585): with fleet App material
   // configured, GitHub writes go through the App installation-token
   // rotation; without it, the fixture writer stands in (local/dev
@@ -67,17 +115,25 @@ function buildDeps(env: HostedEnv): AuthDeps {
   // implement GitHubItemSource, GitHubCommentSurface,
   // GitHubBodyEditor and GitHubProjectSurface over the same
   // rotation / recorded state.
+  // The bridge door's surface (#14373): the message bridge over its
+  // service binding, presenting the PM credential — the same binding
+  // and credential the console's edge Worker uses, so the PM service
+  // API and the console share one send path. Absent the binding or
+  // the credential, the door fails closed (503) per request.
+  const bridge = config.bridge && env.BRIDGE ? new BindingBridgeSurface(env.BRIDGE, config.bridge.token) : undefined;
   return {
     config,
     sessions,
     metadataStore,
     githubWriter,
     githubItems: githubWriter,
-    queueRecords,
-    queueStore,
+    queueRecords: resolvedQueueRecords,
+    queueStore: resolvedQueueStore,
     githubComments: githubWriter,
     githubEditor: githubWriter,
     githubProjects: githubWriter,
+    backfillRunStore: backfillRuns,
+    ...(bridge ? { bridge } : {}),
   };
 }
 

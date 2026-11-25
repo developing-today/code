@@ -1392,6 +1392,10 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("apps"));
     let app_discovery = crate::app_manifest::discover_apps(&apps_root);
+    // #14226: the discovered apps' run manifests, which the web
+    // surface's `POST /v1/runs` loader checks app runs against.
+    #[cfg(feature = "web")]
+    let run_apps = crate::app_manifest::run_apps(&app_discovery.apps);
     for app in app_discovery.apps {
         info!(app = %app.manifest.app.id, path = %app.path.display(), "serve: discovered app");
     }
@@ -1556,7 +1560,22 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
     #[cfg(feature = "web")]
     let blob_gate: Option<Arc<crate::blob_gate::RefreshingWorlds>> = match &event_events {
         Some(events) => {
-            let folded = build_blob_gate(events, &store_handle, &groups_log).await;
+            // A failed first build has no previous fold to keep: the gate
+            // starts empty — fail-closed, as before — and the refresh task
+            // below retries on its cadence (#13821).
+            let folded = match build_blob_gate(events, &store_handle, &groups_log).await {
+                Ok(folded) => folded,
+                Err(error) => {
+                    tracing::error!(
+                        "blob gate: initial build failed: {error:#}; \
+                         starting with an empty gate until a refresh succeeds"
+                    );
+                    crate::blob_gate::FoldedWorlds::new(
+                        crate::groups::worlds::Worlds::empty(),
+                        std::collections::HashMap::new(),
+                    )
+                }
+            };
             Some(Arc::new(crate::blob_gate::RefreshingWorlds::new(folded)))
         }
         None => None,
@@ -2210,6 +2229,7 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
                 Some(endpoint.clone()),
                 Some(std::sync::Arc::clone(&transport_ad_minter)),
                 gallery,
+                Some(run_apps),
             )
             .await?;
             publication_surface = Some(surface);
@@ -2431,8 +2451,15 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
                 interval.tick().await;
                 loop {
                     interval.tick().await;
-                    let folded = build_blob_gate(&events, &store, &groups_log).await;
-                    gate.refresh(folded);
+                    // A failed rebuild keeps the previous fold (#13821):
+                    // a transient read error must not empty the live gate.
+                    if let Err(error) =
+                        gate.try_refresh(build_blob_gate(&events, &store, &groups_log).await)
+                    {
+                        tracing::error!(
+                            "blob gate: refresh failed: {error:#}; keeping the previous fold"
+                        );
+                    }
                 }
             }))
         }

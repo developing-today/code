@@ -28,9 +28,9 @@ JSON shapes, field order, note placement and fatal messages mirror the
 Python, and the parity tests diff rendered envelopes and SQL strings against
 fixtures recorded from the production Python module.
 
-## The 33 public modules, grouped by job
+## The 40 public modules, grouped by job
 
-`lib.rs` declares 33 public modules. Grouped by the job they do:
+`lib.rs` declares 40 public modules. Grouped by the job they do:
 
 ### Retrieval
 
@@ -50,25 +50,32 @@ fixtures recorded from the production Python module.
 
 ### Corpus
 
-| Module       | Job                                                                                                                                                                                                                                        |
-| ------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `shards`     | The core tier as a set of scan shards: discovery, naming, tiers, manifests, fan-out scan, content stores and the local-file transport (submodules `shards::scan`, `shards::content`, `shards::local`)                                      |
-| `turso`      | The Turso backend: the libsql HTTPS pipeline against the hosted DB with a read-only token. Every statement it builds is a `SELECT`                                                                                                         |
-| `local`      | The local backend: a SQLite publish file, schema-normalising temporary views, and vector side stores joined by content hash with an in-process cosine scan                                                                                 |
-| `backend`    | The `SearchBackend` seam both backends implement: branch pools, chunk details, neighbours and message reads, with the ceiling enforced inside branch construction                                                                          |
-| `manifest`   | The classification manifest: schema, validation and loader for the table that declares the filterable dimensions, with the built-in manifest as fallback and validation reference                                                          |
-| `boundary`   | Source-boundary-safe embed splitting: the splitter and the classifier share source offsets, every declared boundary splits, and uncertain text becomes one secret-bearing chunk                                                            |
-| `disclosure` | Disclosure contexts: the destination-side half of the classification model. The caller ceiling and the destination context's ceiling intersect; neither widens the other, and enforcement happens at the final output boundary in `search` |
+| Module            | Job                                                                                                                                                                                                                                        |
+| ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `shards`          | The core tier as a set of scan shards: discovery, naming, tiers, manifests, fan-out scan, content stores and the local-file transport (submodules `shards::scan`, `shards::content`, `shards::local`)                                      |
+| `turso`           | The Turso backend: the libsql HTTPS pipeline against the hosted DB with a read-only token. Every statement it builds is a `SELECT`                                                                                                         |
+| `local`           | The local backend: a SQLite publish file, schema-normalising temporary views, and vector side stores joined by content hash with an in-process cosine scan                                                                                 |
+| `backend`         | The `SearchBackend` seam both backends implement: branch pools, chunk details, neighbours and message reads, with the ceiling enforced inside branch construction                                                                          |
+| `manifest`        | The classification manifest: schema, validation and loader for the table that declares the filterable dimensions, with the built-in manifest as fallback and validation reference                                                          |
+| `occurrences`     | Resolves a canonical content hash back to its chunk occurrences across the shards visible at a caller's sensitivity ceiling                                                                                                                |
+| `cold`            | Verifies a fetched cold-tier shard and reconstructs version bytes from its manifest and occurrence lists                                                                                                                                   |
+| `memory`          | Registers memory corpora as staging units and parses their read-only exports for Atlas ingestion                                                                                                                                           |
+| `source_registry` | The provenance source registry (#3125): stable source-root and source-locator registration. The read side is `occurrences`, which resolves chunk occurrences by canonical hash back to every place the content was found                   |
+| `boundary`        | Source-boundary-safe embed splitting: the splitter and the classifier share source offsets, every declared boundary splits, and uncertain text becomes one secret-bearing chunk                                                            |
+| `disclosure`      | Disclosure contexts: the destination-side half of the classification model. The caller ceiling and the destination context's ceiling intersect; neither widens the other, and enforcement happens at the final output boundary in `search` |
 
 ### Ingest
 
-| Module            | Job                                                                                                                                                                                                                                |
-| ----------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `stage`           | Staging databases and the staging-unit registry: provisioning, staged artifacts, classified staging, and the promotion transition                                                                                                  |
-| `gate`            | The staging-shard ingest gate's durable record and state machine: five ordered stages (write, classify, dedup, provenance check, publish), enumerated reason codes, and a strike limit of 3 per reason before a batch needs review |
-| `sweep`           | The source sweep: candidate filtering, guardrails, headroom, state, locking and run reporting for periodic ingest scheduling                                                                                                       |
-| `github_comments` | GitHub comments as a corpus source: comment documents, provenance marks and watermarks                                                                                                                                             |
-| `trace_ingest`    | Query traces as a searchable corpus source, plus trace retention and compaction                                                                                                                                                    |
+| Module               | Job                                                                                                                                                                                                                                |
+| -------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `stage`              | Staging databases and the staging-unit registry: provisioning, staged artifacts, classified staging, and the promotion transition                                                                                                  |
+| `gate`               | The staging-shard ingest gate's durable record and state machine: five ordered stages (write, classify, dedup, provenance check, publish), enumerated reason codes, and a strike limit of 3 per reason before a batch needs review |
+| `attestation`        | One in-toto-shaped attestation statement per ingest batch (#6045): the statement bytes are embedded verbatim as the claim body, with the statement hash as the claim's subject — no transcoding                                    |
+| `id_projection`      | The Atlas-to-ID attestation projector (#11183): one `attestation.claim` per batch digest, projecting ingest attestations and batch runs to ID                                                                                      |
+| `version_projection` | Deterministically projects immutable Atlas version rows into ID document and version/batch claim descriptors; publication remains a later slice                                                                                    |
+| `sweep`              | The source sweep: candidate filtering, guardrails, headroom, state, locking and run reporting for periodic ingest scheduling                                                                                                       |
+| `github_comments`    | GitHub comments as a corpus source: comment documents, provenance marks and watermarks                                                                                                                                             |
+| `trace_ingest`       | Query traces as a searchable corpus source, plus trace retention and compaction                                                                                                                                                    |
 
 ### Classification
 

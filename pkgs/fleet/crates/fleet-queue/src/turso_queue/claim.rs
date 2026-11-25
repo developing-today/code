@@ -194,6 +194,13 @@ pub(crate) fn verb_enqueue(t: &TursoBackend, req: &Value) -> Value {
             ],
         )?;
         let id = ins.last_insert_rowid.unwrap_or(0);
+        event(
+            t,
+            Some("enqueue_repo_task"),
+            Some(id),
+            "enqueued",
+            &json!({"queue": queue, "dedupe_key": dedupe, "platform": platform}),
+        )?;
         // Revive-on-enqueue (#6838): the key's only prior row(s) are
         // terminal, so this fresh task is a revival, not a first
         // enqueue. Link it to its predecessor in progress (the audit
@@ -344,9 +351,25 @@ pub(crate) fn verb_revive(t: &TursoBackend, req: &Value) -> Value {
             .unwrap_or(crate::validate::TASK_DEFAULT_MAX_ATTEMPTS as i64);
         revive_eligible(&status, attempts, max_attempts)
             .map_err(|e| format!("revive_task: task {task_id}: {e}"))?;
+        let resolution_cleared = row
+            .get("resolution")
+            .and_then(|v| v.as_str())
+            .map(|resolution| {
+                json!({
+                    "resolution": resolution,
+                    "category": row.get("resolution_category").cloned().unwrap_or(Value::Null),
+                    "substatus": row.get("resolution_substatus").cloned().unwrap_or(Value::Null),
+                    "reason": row.get("resolution_reason").cloned().unwrap_or(Value::Null),
+                    "reference": row.get("resolution_ref").cloned().unwrap_or(Value::Null),
+                    "resolved_by": row.get("resolved_by").cloned().unwrap_or(Value::Null),
+                    "resolved_at": row.get("resolved_at").cloned().unwrap_or(Value::Null),
+                })
+            });
         t.exec(
             "UPDATE tasks SET status = 'queued', attempts = 0, last_error = NULL, \
                not_before = ?, worker_id = NULL, lease_until = NULL, \
+               resolution = NULL, resolution_category = NULL, resolution_substatus = NULL, \
+               resolution_reason = NULL, resolution_ref = NULL, resolved_by = NULL, resolved_at = NULL, \
                updated_at = ? WHERE id = ?",
             &[
                 Arg::Text(not_before.clone()),
@@ -363,6 +386,7 @@ pub(crate) fn verb_revive(t: &TursoBackend, req: &Value) -> Value {
             &json!({
                 "reason": reason, "previous_status": status,
                 "previous_attempts": attempts, "not_before": not_before,
+                "resolution_cleared": resolution_cleared,
                 "via": "revive_task_turso",
             }),
         )

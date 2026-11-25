@@ -8,17 +8,17 @@
 
 ## 9-point mapping
 
-| # | Standard point | Base-design coverage | This amendment |
-|---|---|---|---|
-| 1 | Problem + context, with evidence | V1 baseline + §architectural choice; B26 reputation-abuse research | — (covered) |
-| 2 | Goals + explicit non-goals | Goals in §V4 + main.md ownership; non-goals implicit | Non-goals stated explicitly below |
-| 3 | Alternatives incl. do-nothing, honest tradeoffs | Partial (CRDT "adopt none") | Filled below |
-| 4 | Chosen approach (interfaces, data model, security) | `Claim`/`Reply` schema, evidence classes, thresholds, rate limits | — (covered) |
-| 5 | Dependency-ordered slices w/ acceptance | 32-slice manifest + filed issues | Per-slice gates restated below |
-| 6 | Rollout + rollback | Migration/compatibility; rollback unstated | Filled below |
-| 7 | Verification plan | Executable invariants + test oracles, `verification.md` | One addition below |
-| 8 | Open questions, each with a named decider | Questions + defaults (§120); deciders mostly unnamed | Deciders assigned below |
-| 9 | Dated doc + tracking + queue item | This file; #9147; task 21568 | — (this record) |
+| #   | Standard point                                     | Base-design coverage                                               | This amendment                    |
+| --- | -------------------------------------------------- | ------------------------------------------------------------------ | --------------------------------- |
+| 1   | Problem + context, with evidence                   | V1 baseline + §architectural choice; B26 reputation-abuse research | — (covered)                       |
+| 2   | Goals + explicit non-goals                         | Goals in §V4 + main.md ownership; non-goals implicit               | Non-goals stated explicitly below |
+| 3   | Alternatives incl. do-nothing, honest tradeoffs    | Partial (CRDT "adopt none")                                        | Filled below                      |
+| 4   | Chosen approach (interfaces, data model, security) | `Claim`/`Reply` schema, evidence classes, thresholds, rate limits  | — (covered)                       |
+| 5   | Dependency-ordered slices w/ acceptance            | 32-slice manifest + filed issues                                   | Per-slice gates restated below    |
+| 6   | Rollout + rollback                                 | Migration/compatibility; rollback unstated                         | Filled below                      |
+| 7   | Verification plan                                  | Executable invariants + test oracles, `verification.md`            | One addition below                |
+| 8   | Open questions, each with a named decider          | Questions + defaults (§120); deciders mostly unnamed               | Deciders assigned below           |
+| 9   | Dated doc + tracking + queue item                  | This file; #9147; task 21568                                       | — (this record)                   |
 
 ## Non-goals (explicit)
 
@@ -44,15 +44,15 @@ Order: #10185 (ratings model + thresholds as proposed starting defaults) → #10
 
 ## Open questions — named deciders
 
-| Question (base §120 + §V4) | Default (unchanged) | Decider |
-|---|---|---|
-| Exact historical revocation policy | Quarantine affected interval, preserve bytes; signer wall-clock proves nothing | Drew (product/policy) on #9147; #9111 owner for the config shape |
-| Dedup TTL/capacity | Finite config, bounded hard maximum, request-binding tombstone through origin expiry | #9111 design owner |
-| Whether complete responses are allowed | Opt-in | #9111 design owner |
-| #9084 transfer/retention boundary | Only digests/references until agreed | #9084 owner; Drew breaks ties |
-| Threshold tuning (quarantine/review triggers, decay bands, 3/10-min and 3-of-5/5-consecutive values) | Proposed starting defaults, not universal weights | Drew, on measured evidence from #10185's simulation + first live window |
-| Evidence-class weights and per-identity contribution caps | Capped, decayed, separated by class | Drew, same venue |
-| Original Part B candidate provenance | See source log (`inventory-live/candidate-provenance.md`) | Design-mill record; informational only |
+| Question (base §120 + §V4)                                                                           | Default (unchanged)                                                                  | Decider                                                                 |
+| ---------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------ | ----------------------------------------------------------------------- |
+| Exact historical revocation policy                                                                   | Quarantine affected interval, preserve bytes; signer wall-clock proves nothing       | Drew (product/policy) on #9147; #9111 owner for the config shape        |
+| Dedup TTL/capacity                                                                                   | Finite config, bounded hard maximum, request-binding tombstone through origin expiry | #9111 design owner                                                      |
+| Whether complete responses are allowed                                                               | Opt-in                                                                               | #9111 design owner                                                      |
+| #9084 transfer/retention boundary                                                                    | Only digests/references until agreed                                                 | #9084 owner; Drew breaks ties                                           |
+| Threshold tuning (quarantine/review triggers, decay bands, 3/10-min and 3-of-5/5-consecutive values) | Proposed starting defaults, not universal weights                                    | Drew, on measured evidence from #10185's simulation + first live window |
+| Evidence-class weights and per-identity contribution caps                                            | Capped, decayed, separated by class                                                  | Drew, same venue                                                        |
+| Original Part B candidate provenance                                                                 | See source log (`inventory-live/candidate-provenance.md`)                            | Design-mill record; informational only                                  |
 
 No question blocks #10185/#10231 starting under the defaults; threshold/weight choices are revisited with live data, never silently.
 

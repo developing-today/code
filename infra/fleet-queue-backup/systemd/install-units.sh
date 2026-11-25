@@ -11,6 +11,16 @@ if [[ $# -ne 0 ]]; then
 fi
 set -euo pipefail
 FQ_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+if ! GIT_DIR="$(git -C "$FQ_DIR" rev-parse --git-dir 2>/dev/null)" ||
+  ! GIT_COMMON_DIR="$(git -C "$FQ_DIR" rev-parse --git-common-dir 2>/dev/null)"; then
+  echo "fleet-queue-backup: refusing to install from a directory that is not a Git checkout: $FQ_DIR" >&2
+  exit 1
+fi
+if [[ $GIT_DIR != "$GIT_COMMON_DIR" ]]; then
+  echo "fleet-queue-backup: refusing to install from a Git worktree: $FQ_DIR" >&2
+  echo "Install from a dedicated checkout instead; unit paths must not depend on a removable lane worktree." >&2
+  exit 1
+fi
 UNIT_DIR="$HOME/.config/systemd/user"
 mkdir -p "$UNIT_DIR"
 for u in fleet-queue-backup-export.service fleet-queue-backup-export.timer \

@@ -37,6 +37,7 @@ import {
   decodeBatch,
   decodeEntries,
   encodeBatch,
+  encodedEventBytes,
   DEFAULT_BRIDGE_LIMITS,
   type FrameTransport,
 } from "./bridge-session.ts";
@@ -486,17 +487,31 @@ export class UserDO {
           .filter((e) => e.seq >= (positions.get(e.author) ?? 0))
           .sort((a, b) => (a.author < b.author ? -1 : a.author > b.author ? 1 : a.seq - b.seq));
         const batch: Uint8Array[] = [];
-        let batchBytes = 0;
+        let batchBytes = 4; // the encoded count prefix encodeBatch writes
         let more = false;
         for (const entry of entries) {
           const held = store.heldEvent(entry.id);
           if (!held) continue;
-          if (batch.length >= maxEvents || batchBytes + held.bytes.length > DEFAULT_BRIDGE_LIMITS.maxBatchBytes) {
+          if (
+            batch.length >= maxEvents ||
+            batchBytes + encodedEventBytes(held.bytes) > DEFAULT_BRIDGE_LIMITS.maxBatchBytes
+          ) {
+            if (batch.length === 0) {
+              // The first event alone cannot fit any batch under
+              // the bound: refuse by name rather than answer with
+              // an empty batch the caller would retry forever
+              // (#14644).
+              throw new FailClosed(
+                413,
+                "event_too_large",
+                `event of ${held.bytes.length} bytes cannot fit the ${DEFAULT_BRIDGE_LIMITS.maxBatchBytes}-byte batch bound`,
+              );
+            }
             more = true;
             break;
           }
           batch.push(held.bytes);
-          batchBytes += held.bytes.length;
+          batchBytes += encodedEventBytes(held.bytes);
         }
         return new Response(encodeBatch(batch), {
           status: 200,

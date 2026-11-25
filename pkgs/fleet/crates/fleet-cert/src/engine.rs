@@ -77,6 +77,37 @@ impl MlDsa44Signer {
             .to_vec();
         Ok(MlDsa44Signer { key, public_key })
     }
+
+    pub fn public_key(&self) -> &[u8] {
+        &self.public_key
+    }
+}
+
+/// Parse a PKCS#8 key using the explicitly named algorithm and return
+/// only its public key bytes. Private material is never part of the
+/// result, which is the metadata boundary used by `key inspect`.
+pub fn inspect_key(algo: AlgorithmId, pkcs8: &[u8]) -> Result<Vec<u8>> {
+    match algo {
+        AlgorithmId::MlDsa44 => Ok(MlDsa44Signer::from_pkcs8(pkcs8)?.public_key().to_vec()),
+        AlgorithmId::Ed25519 => Ok(KeyPair::from_pkcs8_der_and_sign_algo(
+            &rustls_pki_types::PrivatePkcs8KeyDer::from(pkcs8.to_vec()),
+            &PKCS_ED25519,
+        )?
+        .public_key_raw()
+        .to_vec()),
+        AlgorithmId::P256 => Ok(KeyPair::from_pkcs8_der_and_sign_algo(
+            &rustls_pki_types::PrivatePkcs8KeyDer::from(pkcs8.to_vec()),
+            &PKCS_ECDSA_P256_SHA256,
+        )?
+        .public_key_raw()
+        .to_vec()),
+        AlgorithmId::Rsa4096 | AlgorithmId::Rsa2048 => Ok(KeyPair::from_pkcs8_der_and_sign_algo(
+            &rustls_pki_types::PrivatePkcs8KeyDer::from(pkcs8.to_vec()),
+            &PKCS_RSA_SHA256,
+        )?
+        .public_key_raw()
+        .to_vec()),
+    }
 }
 
 impl rcgen::PublicKeyData for MlDsa44Signer {

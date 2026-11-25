@@ -25,6 +25,14 @@
 //!   granted view schema, and returns identical results for not-found and
 //!   not-granted (an empty row set), including through its error classes:
 //!   server response bodies are never copied into errors.
+//! - Public reads of published Turso collections (decision record #5802
+//!   D4) go through [`LibsqlAdapter::query_public`]: the publication
+//!   record's explicit collection set ([`PublicationScope`]) gates the
+//!   read before any fetch, each collection is served in its declared
+//!   mode (live, or a materialized public replica store), and readers
+//!   see only the two named outcomes of [`PublicReadError`] — refused
+//!   or unavailable — never a credential, a locator, or stale data
+//!   served as current.
 //! - A slow or dead foreign store never blocks native ID operations:
 //!   calls are isolated behind per-alias circuit breakers with bounded
 //!   retries for reads only; auth failure is fatal and never retried.
@@ -441,6 +449,13 @@ const WRITE_KEYWORDS: [&str; 12] = [
     "PRAGMA", "VACUUM", "TRUNCATE",
 ];
 
+/// Write keywords that also name SQLite scalar functions. A token match on
+/// one of these is a function call — not a write statement — only when the
+/// token is immediately followed (modulo whitespace) by an argument list
+/// opener. Every other shape, e.g. `REPLACE INTO ...`, stays refused
+/// (#13896).
+const FUNCTION_KEYWORDS: [&str; 1] = ["REPLACE"];
+
 fn is_identifier(text: &str) -> bool {
     let mut chars = text.chars();
     match chars.next() {
@@ -453,15 +468,35 @@ fn is_identifier(text: &str) -> bool {
 /// A predicate fragment must be a single boolean expression: no statement
 /// separators, no comment openers, no write keywords, and exactly as many
 /// `?` placeholders as supplied arguments.
+///
+/// The keyword scan is position-aware: a write keyword that also names a
+/// SQLite scalar function (see [`FUNCTION_KEYWORDS`]) is accepted when it
+/// opens a call — `replace(label, '-', '')` — and refused in every other
+/// shape, so `REPLACE INTO ...` stays refused (#13896).
 fn validate_fragment(fragment: &str, arg_count: usize) -> Result<(), AdapterError> {
     if fragment.contains(';') || fragment.contains("--") || fragment.contains("/*") {
         return Err(AdapterError::QueryRefused(
             "predicate fragment is not a single expression".to_owned(),
         ));
     }
-    for word in fragment.split(|c: char| !c.is_ascii_alphanumeric() && c != '_') {
-        if WRITE_KEYWORDS.contains(&word.to_ascii_uppercase().as_str()) {
-            return Err(AdapterError::WriteRefused);
+    let bytes = fragment.as_bytes();
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index].is_ascii_alphanumeric() || bytes[index] == b'_' {
+            let start = index;
+            while index < bytes.len()
+                && (bytes[index].is_ascii_alphanumeric() || bytes[index] == b'_')
+            {
+                index += 1;
+            }
+            let word = &fragment[start..index];
+            if WRITE_KEYWORDS.contains(&word.to_ascii_uppercase().as_str())
+                && !is_function_call(fragment, word, index)
+            {
+                return Err(AdapterError::WriteRefused);
+            }
+        } else {
+            index += 1;
         }
     }
     if fragment.matches('?').count() != arg_count {
@@ -470,6 +505,18 @@ fn validate_fragment(fragment: &str, arg_count: usize) -> Result<(), AdapterErro
         ));
     }
     Ok(())
+}
+
+/// True when the keyword token `word`, ending at byte `end`, opens a scalar
+/// function call: the token names a real SQLite function and the next
+/// non-whitespace character is `(`.
+fn is_function_call(fragment: &str, word: &str, end: usize) -> bool {
+    if !FUNCTION_KEYWORDS.contains(&word.to_ascii_uppercase().as_str()) {
+        return false;
+    }
+    fragment[end..]
+        .trim_start_matches(|c: char| c.is_whitespace())
+        .starts_with('(')
 }
 
 impl GrantedQuery {
@@ -539,6 +586,231 @@ impl GrantedQuery {
             args.push(value.encode(max_blob_bytes)?);
         }
         Ok((sql, args))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Public reads: published Turso collections (decision record #5802 D4)
+// ---------------------------------------------------------------------------
+
+/// How one published collection is served (decision record #5802, D4):
+/// live through the adapter's read path, or from a materialized public
+/// replica the owner's side maintains. The mode is the owner's declared
+/// choice per collection; it is never inferred, and a live collection
+/// never falls back to a replica (or to any stale snapshot) when its
+/// live read fails.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PublicServingMode {
+    /// Live reads against the source store. The credential the adapter
+    /// resolves for the alias is a read-only credential held on the
+    /// serving side; it never reaches the reader (invariant 5).
+    Live,
+    /// Reads against a materialized public replica store, named by its
+    /// own alias in [`ForeignConfig`]. The replica holds only published
+    /// collections; its maintenance, and its deletion on unpublish, are
+    /// the owner's side's work, driven by the publish/unpublish actions
+    /// (the record's slice, #14781) — this adapter only reads it.
+    MaterializedReplica,
+}
+
+/// One collection named by a publication record, with its declared
+/// serving mode (decision record #5802, D4).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PublishedCollection {
+    /// Collection (table) name, exactly as the publication record
+    /// names it.
+    pub name: String,
+    /// The owner's declared serving mode for this collection.
+    pub mode: PublicServingMode,
+    /// Alias of the materialized replica store. Required when `mode`
+    /// is [`PublicServingMode::MaterializedReplica`]; must be absent
+    /// for [`PublicServingMode::Live`].
+    pub replica_alias: Option<String>,
+}
+
+/// The published set of one foreign store: exactly the collections a
+/// publication record names, each with its declared serving mode
+/// (decision record #5802, D4). The serving layer builds this from the
+/// publication record; the adapter treats it as complete and closed —
+/// a collection outside the set is not published, and a table created
+/// after publication is never added implicitly. Unpublish is expressed
+/// by the serving layer no longer presenting the collection in the
+/// scope (the public grant revoked with it), so an unpublished
+/// collection reads exactly like a never-published one here: refused.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PublicationScope {
+    collections: BTreeMap<String, PublishedCollection>,
+}
+
+impl PublicationScope {
+    /// Build a scope from an explicit enumeration of published
+    /// collections. Names must be bare SQL identifiers (the same rule
+    /// the query builder enforces), a replica-served collection must
+    /// name its replica alias, a live-served collection must not, and
+    /// a name may appear only once: a malformed scope is a config
+    /// error, refused loudly rather than partially applied
+    /// (invariant 8).
+    pub fn new(
+        collections: impl IntoIterator<Item = PublishedCollection>,
+    ) -> Result<Self, AdapterError> {
+        let mut map = BTreeMap::new();
+        for collection in collections {
+            if !is_identifier(&collection.name) {
+                return Err(AdapterError::Config(format!(
+                    "published collection name is not a bare identifier: {}",
+                    collection.name
+                )));
+            }
+            match (collection.mode, &collection.replica_alias) {
+                (PublicServingMode::MaterializedReplica, None) => {
+                    return Err(AdapterError::Config(format!(
+                        "published collection {} is replica-served but names no replica alias",
+                        collection.name
+                    )));
+                }
+                (PublicServingMode::Live, Some(_)) => {
+                    return Err(AdapterError::Config(format!(
+                        "published collection {} is live-served but names a replica alias",
+                        collection.name
+                    )));
+                }
+                _ => {}
+            }
+            if map.contains_key(&collection.name) {
+                return Err(AdapterError::Config(format!(
+                    "published collection named twice: {}",
+                    collection.name
+                )));
+            }
+            map.insert(collection.name.clone(), collection);
+        }
+        Ok(Self { collections: map })
+    }
+
+    /// The published collection named `name`, if the record names it.
+    #[must_use]
+    pub fn collection(&self, name: &str) -> Option<&PublishedCollection> {
+        self.collections.get(name)
+    }
+
+    /// Whether the record names `name` as published.
+    #[must_use]
+    pub fn is_published(&self, name: &str) -> bool {
+        self.collections.contains_key(name)
+    }
+}
+
+/// Why a public read did not serve rows. The public outcome vocabulary
+/// (decision record #5802, D4 and invariant 8): two stable, named
+/// outcomes and nothing else. Neither variant carries a credential, a
+/// credential reference, a resolved URL, a server response body, or
+/// any adapter-internal detail, so the value is safe to surface in any
+/// public artifact, error, or log (invariant 5). The serving layer
+/// keeps the adapter's own classified error for its operator side and
+/// exposes only this outcome to readers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum PublicReadError {
+    /// The query names a collection the publication record does not
+    /// name, or its predicate fragments reach beyond the one named
+    /// collection (a subquery or join shape), or it attempts a write:
+    /// refused at the source, before any fetch. "Not published" and
+    /// "no such collection" are this same outcome (invariant 3).
+    #[error("public read refused")]
+    Refused,
+    /// The declared source could not be read. A failed live read is
+    /// unavailable, never a stale snapshot served as current; a
+    /// replica-served collection whose replica cannot be read is
+    /// unavailable rather than silently served from the live source.
+    #[error("public read unavailable")]
+    Unavailable,
+}
+
+/// Fragment keywords that would let a predicate reach beyond the
+/// single collection a public query names: a subquery (`SELECT` /
+/// `FROM` / `WITH`), a join, or a set operation. The public read
+/// surface is the adapter's structured single-collection read; the
+/// adapter cannot enumerate the tables an arbitrary subquery touches,
+/// so the shape is refused rather than fetched wide and filtered
+/// afterwards (decision record #5802, D4).
+const PUBLIC_FRAGMENT_FORBIDDEN: [&str; 7] = [
+    "SELECT",
+    "FROM",
+    "JOIN",
+    "UNION",
+    "EXCEPT",
+    "INTERSECT",
+    "WITH",
+];
+
+/// A predicate fragment on the public path must stay inside the one
+/// named collection: no subquery, join, or set-operation keyword as a
+/// whole word. The scan is lexical, matching the base fragment rules —
+/// a forbidden word inside a string literal is refused too, which is
+/// conservative and the safe direction. (The base rules — no statement
+/// separators, no write keywords — are enforced again by statement
+/// construction.)
+fn validate_public_fragment(fragment: &str) -> Result<(), PublicReadError> {
+    let bytes = fragment.as_bytes();
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index].is_ascii_alphanumeric() || bytes[index] == b'_' {
+            let start = index;
+            while index < bytes.len()
+                && (bytes[index].is_ascii_alphanumeric() || bytes[index] == b'_')
+            {
+                index += 1;
+            }
+            let word = &fragment[start..index];
+            if PUBLIC_FRAGMENT_FORBIDDEN.contains(&word.to_ascii_uppercase().as_str()) {
+                return Err(PublicReadError::Refused);
+            }
+        } else {
+            index += 1;
+        }
+    }
+    Ok(())
+}
+
+impl<T: Transport, C: CredentialResolver> LibsqlAdapter<T, C> {
+    /// Serve one public read of a published Turso collection
+    /// (decision record #5802, D4; issue #14784).
+    ///
+    /// The read is scoped twice at the source: `scope` — the published
+    /// set from the publication record — decides whether the named
+    /// collection may be served at all and from where, and the
+    /// [`GrantedQuery`]'s grant predicate is pushed into the single
+    /// SELECT exactly as on the private path (invariant 1). A query
+    /// naming an unpublished collection, or reaching beyond it through
+    /// a fragment subquery or join, is refused before any fetch. The
+    /// outcome vocabulary is [`PublicReadError`]: a failed read is
+    /// `Unavailable`, never stale data served as current.
+    pub async fn query_public(
+        &self,
+        alias: &str,
+        scope: &PublicationScope,
+        query: &GrantedQuery,
+    ) -> Result<Vec<Row>, PublicReadError> {
+        let published = scope
+            .collection(&query.table)
+            .ok_or(PublicReadError::Refused)?;
+        validate_public_fragment(&query.grant_sql)?;
+        if let Some(filter) = &query.filter_sql {
+            validate_public_fragment(filter)?;
+        }
+        let target_alias = match published.mode {
+            PublicServingMode::Live => alias,
+            PublicServingMode::MaterializedReplica => published
+                .replica_alias
+                .as_deref()
+                .ok_or(PublicReadError::Unavailable)?,
+        };
+        match self.query(target_alias, query).await {
+            Ok(rows) => Ok(rows),
+            Err(AdapterError::QueryRefused(_)) | Err(AdapterError::WriteRefused) => {
+                Err(PublicReadError::Refused)
+            }
+            Err(_) => Err(PublicReadError::Unavailable),
+        }
     }
 }
 
@@ -1721,6 +1993,47 @@ mod tests {
         ));
     }
 
+    /// Oracle: #13896 — a `replace()` call in a read predicate is a
+    /// scalar function call, not a write statement: it is accepted and
+    /// its arguments stay parameterized, while `REPLACE INTO ...`
+    /// (write-shaped, no argument list) is still refused.
+    #[test]
+    fn test_replace_function_call_is_accepted_and_replace_into_is_refused() {
+        let mut query = sample_query();
+        query.filter_sql = Some("replace(label, '-', '') = ?".to_owned());
+        query.filter_args = vec![IdValue::Text("report".to_owned())];
+        let (sql, args) = query.build_statement(MAX_BLOB_BYTES).unwrap();
+        assert_eq!(
+            sql,
+            "SELECT \"id\", \"digest\", \"label\", \"visible\" FROM \"objects\" \
+             WHERE (grantee = ?) AND (replace(label, '-', '') = ?) LIMIT 10"
+        );
+        assert_eq!(
+            args,
+            vec![
+                WireValue::Text("alice".to_owned()),
+                WireValue::Text("report".to_owned()),
+            ]
+        );
+
+        let mut query = sample_query();
+        query.filter_sql = Some("REPLACE INTO objects (label) VALUES ('x')".to_owned());
+        query.filter_args = vec![];
+        assert!(matches!(
+            query.build_statement(MAX_BLOB_BYTES),
+            Err(AdapterError::WriteRefused)
+        ));
+
+        let mut query = sample_query();
+        query.filter_sql = Some("label = replace".to_owned());
+        query.filter_args = vec![];
+        // A bare keyword with no call opener is not a function call.
+        assert!(matches!(
+            query.build_statement(MAX_BLOB_BYTES),
+            Err(AdapterError::WriteRefused)
+        ));
+    }
+
     /// Oracle: record item 8 — the grant predicate is pushed into the
     /// remote query, first in the WHERE, ahead of the caller filter,
     /// with arguments in grant-then-filter order.
@@ -2169,5 +2482,282 @@ mod tests {
         assert_eq!(rows[0].get("id"), Some(&IdValue::Unsigned(3)));
         assert_eq!(rows[0].get("digest"), Some(&IdValue::Blob(b"hi".to_vec())));
         server.await.unwrap();
+    }
+
+    fn public_scope() -> PublicationScope {
+        PublicationScope::new([PublishedCollection {
+            name: "objects".to_owned(),
+            mode: PublicServingMode::Live,
+            replica_alias: None,
+        }])
+        .unwrap()
+    }
+
+    /// Oracle: #14784 done check — a published collection is served
+    /// live through the adapter's read path, grant predicate pushed
+    /// into the single SELECT as on the private path.
+    #[tokio::test]
+    async fn test_public_read_serves_published_collection_live() {
+        let transport = ScriptTransport::default();
+        let row = format!(
+            "[{{\"type\":\"integer\",\"value\":\"7\"}},{{\"type\":\"blob\",\"value\":\"{}\"}},\
+             {{\"type\":\"text\",\"value\":\"report\"}},{{\"type\":\"integer\",\"value\":\"1\"}}]",
+            base64_encode(b"hash")
+        );
+        transport.push(Ok(TransportResponse {
+            status: 200,
+            body: ok_pipeline_body(&row),
+        }));
+        let adapter = scripted_adapter(transport);
+        let rows = adapter
+            .query_public("main", &public_scope(), &sample_query())
+            .await
+            .unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].get("id"), Some(&IdValue::Unsigned(7)));
+        assert_eq!(
+            rows[0].get("label"),
+            Some(&IdValue::Text("report".to_owned()))
+        );
+    }
+
+    /// Oracle: #14784 done check — a query for an unpublished table is
+    /// refused before any fetch, not fetched wide and filtered after
+    /// the fact.
+    #[tokio::test]
+    async fn test_public_read_refuses_unpublished_collection_before_any_fetch() {
+        let transport = ScriptTransport::default();
+        let adapter = scripted_adapter(transport);
+        let mut query = sample_query();
+        query.table = "secrets".to_owned();
+        let error = adapter
+            .query_public("main", &public_scope(), &query)
+            .await
+            .unwrap_err();
+        assert_eq!(error, PublicReadError::Refused);
+        assert_eq!(adapter.transport.attempts(), 0);
+    }
+
+    /// Oracle: #14784 done check — reaching beyond the named
+    /// collection through a subquery or join shape in a predicate
+    /// fragment is refused before any fetch, even when the subquery
+    /// names only the published table (the adapter cannot scope an
+    /// arbitrary subquery, so the shape is refused, per D4).
+    #[tokio::test]
+    async fn test_public_read_refuses_fragment_reach_through() {
+        for fragment in [
+            "id IN (SELECT id FROM secrets)",
+            "id IN (SELECT id FROM objects)",
+            "visible = 1 JOIN secrets ON secrets.id = objects.id",
+        ] {
+            let transport = ScriptTransport::default();
+            let adapter = scripted_adapter(transport);
+            let mut query = sample_query();
+            query.filter_sql = Some(fragment.to_owned());
+            query.filter_args = Vec::new();
+            let error = adapter
+                .query_public("main", &public_scope(), &query)
+                .await
+                .unwrap_err();
+            assert_eq!(error, PublicReadError::Refused, "fragment: {fragment}");
+            assert_eq!(adapter.transport.attempts(), 0, "fragment: {fragment}");
+        }
+        // The grant fragment is held to the same rule.
+        let transport = ScriptTransport::default();
+        let adapter = scripted_adapter(transport);
+        let mut query = sample_query();
+        query.grant_sql = "grantee IN (SELECT name FROM secrets)".to_owned();
+        query.grant_args = Vec::new();
+        let error = adapter
+            .query_public("main", &public_scope(), &query)
+            .await
+            .unwrap_err();
+        assert_eq!(error, PublicReadError::Refused);
+        assert_eq!(adapter.transport.attempts(), 0);
+    }
+
+    /// Oracle: #14784 / D4 — a write keyword in a fragment reaches the
+    /// adapter's own refusal during statement construction and maps to
+    /// the public `Refused` outcome; nothing is executed.
+    #[tokio::test]
+    async fn test_public_read_maps_adapter_refusals_to_refused() {
+        let transport = ScriptTransport::default();
+        let adapter = scripted_adapter(transport);
+        let mut query = sample_query();
+        query.filter_sql = Some("label = ? OR DELETE".to_owned());
+        query.filter_args = vec![IdValue::Text("report".to_owned())];
+        let error = adapter
+            .query_public("main", &public_scope(), &query)
+            .await
+            .unwrap_err();
+        assert_eq!(error, PublicReadError::Refused);
+        assert_eq!(adapter.transport.attempts(), 0);
+    }
+
+    /// Oracle: #14784 done check — a failed live read is the
+    /// `Unavailable` outcome; no stale rows are served as current.
+    #[tokio::test]
+    async fn test_public_read_failed_live_read_is_unavailable() {
+        // No scripted outcomes: the scripted transport answers 500,
+        // which the adapter retries and then exhausts as transient.
+        let transport = ScriptTransport::default();
+        let adapter = scripted_adapter(transport);
+        let error = adapter
+            .query_public("main", &public_scope(), &sample_query())
+            .await
+            .unwrap_err();
+        assert_eq!(error, PublicReadError::Unavailable);
+        assert!(adapter.transport.attempts() > 0);
+    }
+
+    /// Oracle: #14784 / D4 — a collection the owner declared
+    /// replica-served is read from the replica store's alias, not from
+    /// the live source.
+    #[tokio::test]
+    async fn test_public_read_replica_mode_reads_the_replica_store() {
+        let mut aliases = BTreeMap::new();
+        for (alias, url) in [
+            ("main", "https://live.example.invalid"),
+            ("replica", "https://replica.example.invalid"),
+        ] {
+            aliases.insert(
+                alias.to_owned(),
+                AliasConfig {
+                    url: url.to_owned(),
+                    credential_ref: "env:TEST_LIBSQL_TOKEN".to_owned(),
+                    statement_timeout: Duration::from_secs(5),
+                    max_blob_bytes: MAX_BLOB_BYTES,
+                },
+            );
+        }
+        let mut adapter = LibsqlAdapter::with_parts(
+            ForeignConfig { aliases },
+            ScriptTransport::default(),
+            StaticCredentials,
+        );
+        adapter.set_retry_backoff(Duration::ZERO);
+        let row = format!(
+            "[{{\"type\":\"integer\",\"value\":\"7\"}},{{\"type\":\"blob\",\"value\":\"{}\"}},\
+             {{\"type\":\"text\",\"value\":\"report\"}},{{\"type\":\"integer\",\"value\":\"1\"}}]",
+            base64_encode(b"hash")
+        );
+        adapter.transport.push(Ok(TransportResponse {
+            status: 200,
+            body: ok_pipeline_body(&row),
+        }));
+        let scope = PublicationScope::new([PublishedCollection {
+            name: "objects".to_owned(),
+            mode: PublicServingMode::MaterializedReplica,
+            replica_alias: Some("replica".to_owned()),
+        }])
+        .unwrap();
+        let rows = adapter
+            .query_public("main", &scope, &sample_query())
+            .await
+            .unwrap();
+        assert_eq!(rows.len(), 1);
+        let captured = adapter.transport.captured.lock().unwrap();
+        assert_eq!(captured.len(), 1);
+        assert_eq!(captured[0].0, "https://replica.example.invalid");
+    }
+
+    /// Oracle: D4 + invariant 8 — a replica-served collection whose
+    /// replica store is not configured fails loudly as `Unavailable`;
+    /// it is never silently served from the live source instead.
+    #[tokio::test]
+    async fn test_public_read_missing_replica_store_is_unavailable_not_live() {
+        let transport = ScriptTransport::default();
+        // Script a success: if the read fell through to the live alias
+        // it would serve rows; the outcome must be Unavailable instead.
+        transport.push(Ok(TransportResponse {
+            status: 200,
+            body: ok_pipeline_body(""),
+        }));
+        let adapter = scripted_adapter(transport);
+        let scope = PublicationScope::new([PublishedCollection {
+            name: "objects".to_owned(),
+            mode: PublicServingMode::MaterializedReplica,
+            replica_alias: Some("replica".to_owned()),
+        }])
+        .unwrap();
+        let error = adapter
+            .query_public("main", &scope, &sample_query())
+            .await
+            .unwrap_err();
+        assert_eq!(error, PublicReadError::Unavailable);
+        assert_eq!(adapter.transport.attempts(), 0);
+    }
+
+    /// Oracle: #14784 done check / invariant 5 — the public outcome
+    /// text names no credential, credential reference, token, or URL,
+    /// even when the underlying failure is an auth failure against a
+    /// configured alias.
+    #[tokio::test]
+    async fn test_public_read_outcomes_name_no_credential_or_locator() {
+        let transport = ScriptTransport::default();
+        transport.push(Ok(TransportResponse {
+            status: 401,
+            body: "unauthorized".to_owned(),
+        }));
+        let adapter = scripted_adapter(transport);
+        let error = adapter
+            .query_public("main", &public_scope(), &sample_query())
+            .await
+            .unwrap_err();
+        assert_eq!(error, PublicReadError::Unavailable);
+        let text = error.to_string();
+        assert!(
+            !text.contains("TEST_LIBSQL_TOKEN"),
+            "outcome leaked a credential reference: {text}"
+        );
+        assert!(
+            !text.contains("test-token-value"),
+            "outcome leaked a token: {text}"
+        );
+        assert!(
+            !text.contains("example.invalid"),
+            "outcome leaked a locator: {text}"
+        );
+    }
+
+    /// Oracle: D4 + invariant 8 — a malformed published set is a
+    /// config error at construction: replica-served without a replica
+    /// alias, live-served with one, a duplicate name, or a name that
+    /// is not a bare identifier.
+    #[test]
+    fn test_publication_scope_rejects_malformed_sets() {
+        let live = |name: &str| PublishedCollection {
+            name: name.to_owned(),
+            mode: PublicServingMode::Live,
+            replica_alias: None,
+        };
+        assert!(matches!(
+            PublicationScope::new([PublishedCollection {
+                name: "objects".to_owned(),
+                mode: PublicServingMode::MaterializedReplica,
+                replica_alias: None,
+            }]),
+            Err(AdapterError::Config(_))
+        ));
+        assert!(matches!(
+            PublicationScope::new([PublishedCollection {
+                name: "objects".to_owned(),
+                mode: PublicServingMode::Live,
+                replica_alias: Some("replica".to_owned()),
+            }]),
+            Err(AdapterError::Config(_))
+        ));
+        assert!(matches!(
+            PublicationScope::new([live("objects"), live("objects")]),
+            Err(AdapterError::Config(_))
+        ));
+        assert!(matches!(
+            PublicationScope::new([live("not a table")]),
+            Err(AdapterError::Config(_))
+        ));
+        let scope = PublicationScope::new([live("objects")]).unwrap();
+        assert!(scope.is_published("objects"));
+        assert!(!scope.is_published("secrets"));
+        assert_eq!(scope.collection("objects"), Some(&live("objects")));
     }
 }

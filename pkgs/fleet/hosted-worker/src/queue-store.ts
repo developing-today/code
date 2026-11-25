@@ -12,10 +12,12 @@
 // FixtureQueueStore is the in-memory implementation for tests and
 // local development; the production implementation is a libSQL
 // store over the existing fleet-queue Turso DB (#6741) behind this
-// same interface — no second queue, no schema fork. Its methods are
-// synchronous by design: in this runtime a synchronous
-// check-and-set cannot interleave, which is the same guarantee the
-// production store gets from one conditional UPDATE statement.
+// same interface — no second queue, no schema fork. The boundary
+// is asynchronous (#14592): a remote Turso DB answers over Hrana,
+// which no synchronous interface can serve, and the hosted runtime
+// cannot block on I/O. Atomicity never came from synchronicity —
+// it is the one conditional UPDATE, atomic at the DB under async
+// execution exactly as it was under sync execution.
 //
 // Row shapes are the native wire rows (turso_queue TASK_COLS /
 // LEDGER_COLS / events): JSON columns (payload, progress, result,
@@ -133,41 +135,47 @@ export const NO_DEP_PROBE: QueueDepProbe = {
 
 export interface QueueStore {
   /** Insert a task row; returns the stored row (id assigned). */
-  insertTask(row: Omit<TaskRow, "id">): TaskRow;
-  getTask(id: number): TaskRow | null;
+  insertTask(row: Omit<TaskRow, "id">): Promise<TaskRow>;
+  getTask(id: number): Promise<TaskRow | null>;
   /** Rows in one queue with this dedupe key, id ASC (enqueue dedupe). */
-  tasksByDedupe(queue: string, dedupeKey: string): TaskRow[];
+  tasksByDedupe(queue: string, dedupeKey: string): Promise<TaskRow[]>;
   /** Every task row, id ASC (claim scans, health, identity checks). */
-  allTasks(): TaskRow[];
+  allTasks(): Promise<TaskRow[]>;
   /**
    * THE conditional update: apply `set` to task `id` only if every
    * `guard` field still equals its expected value; returns whether
    * a row was updated. This is the claim atomicity primitive.
    */
-  conditionalUpdateTask(id: number, guard: Partial<TaskRow>, set: Partial<TaskRow>): boolean;
+  conditionalUpdateTask(id: number, guard: Partial<TaskRow>, set: Partial<TaskRow>): Promise<boolean>;
   /** Unconditional field update (post-claim fixups, lifecycle verbs). */
-  updateTask(id: number, set: Partial<TaskRow>): void;
+  updateTask(id: number, set: Partial<TaskRow>): Promise<void>;
 
-  getLedger(taskId: number): LedgerRow | null;
-  insertLedger(row: Omit<LedgerRow, "id">): LedgerRow;
-  updateLedger(taskId: number, set: Partial<LedgerRow>): void;
+  getLedger(taskId: number): Promise<LedgerRow | null>;
+  insertLedger(row: Omit<LedgerRow, "id">): Promise<LedgerRow>;
+  updateLedger(taskId: number, set: Partial<LedgerRow>): Promise<void>;
 
-  upsertLease(row: LeaseRow, opts: { keepWorker: boolean }): void;
-  deleteLease(taskId: number): void;
-  deleteExpiredLeases(nowIso: string): void;
+  upsertLease(row: LeaseRow, opts: { keepWorker: boolean }): Promise<void>;
+  deleteLease(taskId: number): Promise<void>;
+  deleteExpiredLeases(nowIso: string): Promise<void>;
 
-  getLane(laneId: string): LaneRow | null;
-  insertLane(row: LaneRow): void;
+  getLane(laneId: string): Promise<LaneRow | null>;
+  insertLane(row: LaneRow): Promise<void>;
 
   /** workers upsert (touch_worker): status working/idle + heartbeat. */
-  touchWorker(workerId: string, working: boolean, nowIso: string): void;
+  touchWorker(workerId: string, working: boolean, nowIso: string): Promise<void>;
   /** checkpoints upsert keyed (worker_id, key). */
-  upsertCheckpoint(workerId: string, key: string, value: Json): void;
+  upsertCheckpoint(workerId: string, key: string, value: Json): Promise<void>;
 
-  appendEvent(workerId: string | null, taskId: number | null, kind: string, detail: Json, createdAt: string): EventRow;
-  allEvents(): EventRow[];
-  eventsForTask(taskId: number): EventRow[];
-  deleteEventsBefore(cutoffIso: string): number;
+  appendEvent(
+    workerId: string | null,
+    taskId: number | null,
+    kind: string,
+    detail: Json,
+    createdAt: string,
+  ): Promise<EventRow>;
+  allEvents(): Promise<EventRow[]>;
+  eventsForTask(taskId: number): Promise<EventRow[]>;
+  deleteEventsBefore(cutoffIso: string): Promise<number>;
 
   /**
    * The GitHub mirror's labels for an issue (#12744 enrichment):
@@ -175,10 +183,10 @@ export interface QueueStore {
    * Throws on lookup failure — the caller turns that into a
    * warning, never a gate.
    */
-  mirrorLabels(repo: string, issueNumber: number): string[] | null;
+  mirrorLabels(repo: string, issueNumber: number): Promise<string[] | null>;
 
   /** What the health verb reports about this backend. */
-  describe(): { backend: string; projectSource: string; netloc: string | null };
+  describe(): Promise<{ backend: string; projectSource: string; netloc: string | null }>;
 }
 
 function clone<T>(v: T): T {
@@ -225,26 +233,26 @@ export class FixtureQueueStore implements QueueStore {
 
   // --- QueueStore ---
 
-  insertTask(row: Omit<TaskRow, "id">): TaskRow {
+  async insertTask(row: Omit<TaskRow, "id">): Promise<TaskRow> {
     const stored: TaskRow = { ...clone(row), id: this.nextTaskId++ };
     this.tasks.set(stored.id, stored);
     return clone(stored);
   }
 
-  getTask(id: number): TaskRow | null {
+  async getTask(id: number): Promise<TaskRow | null> {
     const t = this.tasks.get(id);
     return t ? clone(t) : null;
   }
 
-  tasksByDedupe(queue: string, dedupeKey: string): TaskRow[] {
-    return this.allTasks().filter((t) => t.queue === queue && t.dedupe_key === dedupeKey);
+  async tasksByDedupe(queue: string, dedupeKey: string): Promise<TaskRow[]> {
+    return (await this.allTasks()).filter((t) => t.queue === queue && t.dedupe_key === dedupeKey);
   }
 
-  allTasks(): TaskRow[] {
+  async allTasks(): Promise<TaskRow[]> {
     return [...this.tasks.values()].sort((a, b) => a.id - b.id).map((t) => clone(t));
   }
 
-  conditionalUpdateTask(id: number, guard: Partial<TaskRow>, set: Partial<TaskRow>): boolean {
+  async conditionalUpdateTask(id: number, guard: Partial<TaskRow>, set: Partial<TaskRow>): Promise<boolean> {
     const t = this.tasks.get(id);
     if (!t) return false;
     for (const [k, v] of Object.entries(guard)) {
@@ -256,28 +264,28 @@ export class FixtureQueueStore implements QueueStore {
     return true;
   }
 
-  updateTask(id: number, set: Partial<TaskRow>): void {
+  async updateTask(id: number, set: Partial<TaskRow>): Promise<void> {
     const t = this.tasks.get(id);
     if (t) Object.assign(t, clone(set));
   }
 
-  getLedger(taskId: number): LedgerRow | null {
+  async getLedger(taskId: number): Promise<LedgerRow | null> {
     const l = this.ledgers.get(taskId);
     return l ? clone(l) : null;
   }
 
-  insertLedger(row: Omit<LedgerRow, "id">): LedgerRow {
+  async insertLedger(row: Omit<LedgerRow, "id">): Promise<LedgerRow> {
     const stored: LedgerRow = { ...clone(row), id: this.nextLedgerId++ };
     this.ledgers.set(stored.task_id, stored);
     return clone(stored);
   }
 
-  updateLedger(taskId: number, set: Partial<LedgerRow>): void {
+  async updateLedger(taskId: number, set: Partial<LedgerRow>): Promise<void> {
     const l = this.ledgers.get(taskId);
     if (l) Object.assign(l, clone(set));
   }
 
-  upsertLease(row: LeaseRow, opts: { keepWorker: boolean }): void {
+  async upsertLease(row: LeaseRow, opts: { keepWorker: boolean }): Promise<void> {
     const existing = this.leases.get(row.task_id);
     if (existing && opts.keepWorker) {
       existing.lease_until = row.lease_until;
@@ -287,26 +295,26 @@ export class FixtureQueueStore implements QueueStore {
     this.leases.set(row.task_id, clone(row));
   }
 
-  deleteLease(taskId: number): void {
+  async deleteLease(taskId: number): Promise<void> {
     this.leases.delete(taskId);
   }
 
-  deleteExpiredLeases(nowIso: string): void {
+  async deleteExpiredLeases(nowIso: string): Promise<void> {
     for (const [id, l] of this.leases) {
       if (l.lease_until < nowIso) this.leases.delete(id);
     }
   }
 
-  getLane(laneId: string): LaneRow | null {
+  async getLane(laneId: string): Promise<LaneRow | null> {
     const l = this.lanes.get(laneId);
     return l ? clone(l) : null;
   }
 
-  insertLane(row: LaneRow): void {
+  async insertLane(row: LaneRow): Promise<void> {
     this.lanes.set(row.lane_id, clone(row));
   }
 
-  touchWorker(workerId: string, working: boolean, nowIso: string): void {
+  async touchWorker(workerId: string, working: boolean, nowIso: string): Promise<void> {
     const existing = this.workers.get(workerId);
     this.workers.set(workerId, {
       worker_id: workerId,
@@ -318,11 +326,17 @@ export class FixtureQueueStore implements QueueStore {
     });
   }
 
-  upsertCheckpoint(workerId: string, key: string, value: Json): void {
+  async upsertCheckpoint(workerId: string, key: string, value: Json): Promise<void> {
     this.checkpoints.set(`${workerId} ${key}`, clone(value));
   }
 
-  appendEvent(workerId: string | null, taskId: number | null, kind: string, detail: Json, createdAt: string): EventRow {
+  async appendEvent(
+    workerId: string | null,
+    taskId: number | null,
+    kind: string,
+    detail: Json,
+    createdAt: string,
+  ): Promise<EventRow> {
     const row: EventRow = {
       id: this.nextEventId++,
       worker_id: workerId,
@@ -335,26 +349,26 @@ export class FixtureQueueStore implements QueueStore {
     return clone(row);
   }
 
-  allEvents(): EventRow[] {
+  async allEvents(): Promise<EventRow[]> {
     return this.events.map((e) => clone(e));
   }
 
-  eventsForTask(taskId: number): EventRow[] {
+  async eventsForTask(taskId: number): Promise<EventRow[]> {
     return this.events.filter((e) => e.task_id === taskId).map((e) => clone(e));
   }
 
-  deleteEventsBefore(cutoffIso: string): number {
+  async deleteEventsBefore(cutoffIso: string): Promise<number> {
     const before = this.events.length;
     this.events = this.events.filter((e) => !(e.created_at < cutoffIso));
     return before - this.events.length;
   }
 
-  mirrorLabels(repo: string, issueNumber: number): string[] | null {
+  async mirrorLabels(repo: string, issueNumber: number): Promise<string[] | null> {
     const labels = this.mirror.get(`${repo}#${issueNumber}`);
     return labels ? [...labels] : null;
   }
 
-  describe(): { backend: string; projectSource: string; netloc: string | null } {
+  async describe(): Promise<{ backend: string; projectSource: string; netloc: string | null }> {
     return { backend: "hosted-fixture", projectSource: "hosted-fixture", netloc: null };
   }
 }

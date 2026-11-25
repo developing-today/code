@@ -1134,14 +1134,17 @@ fn tail(bytes: &[u8], max: usize) -> String {
 /// Safety: runs between fork and exec; only async-signal-safe calls
 /// (`setrlimit`) are made.
 fn apply_rlimits() -> std::io::Result<()> {
-    let cap = |resource: u32, limit: libc::rlim_t| {
+    let cap = |resource: libc::c_int, limit: libc::rlim_t| {
         let limits = libc::rlimit {
             rlim_cur: limit,
             rlim_max: limit,
         };
         // Safety: between fork and exec; `setrlimit` is async-signal-safe.
         #[allow(unsafe_code)]
-        if unsafe { libc::setrlimit(resource, &raw const limits) } != 0 {
+        // Linux declares the first argument unsigned while BSD-derived
+        // targets such as macOS declare it as c_int; let the platform ABI
+        // choose the destination type at this FFI boundary.
+        if unsafe { libc::setrlimit(resource as _, &raw const limits) } != 0 {
             return Err(std::io::Error::last_os_error());
         }
         Ok(())
@@ -1149,9 +1152,9 @@ fn apply_rlimits() -> std::io::Result<()> {
     // No process limit: RLIMIT_NPROC counts the user's whole process table
     // (threads included), so a low soft limit would starve the compiler's
     // worker threads for reasons unrelated to this job.
-    cap(libc::RLIMIT_CPU, 120)?;
-    cap(libc::RLIMIT_AS, 8 * 1024 * 1024 * 1024)?;
-    cap(libc::RLIMIT_FSIZE, 256 * 1024 * 1024)?;
+    cap(libc::RLIMIT_CPU as libc::c_int, 120)?;
+    cap(libc::RLIMIT_AS as libc::c_int, 8 * 1024 * 1024 * 1024)?;
+    cap(libc::RLIMIT_FSIZE as libc::c_int, 256 * 1024 * 1024)?;
     Ok(())
 }
 

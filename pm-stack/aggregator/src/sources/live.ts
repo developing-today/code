@@ -347,18 +347,29 @@ async function gristRoadmap(cfg: Config): Promise<RoadmapRow[]> {
  * Enrich board items / roadmap rows with their cross-repo registry links.
  * This is the first-class requirement Kaneo cannot provide: the registry is
  * where a `code` task's link to an `opencode` PR lives.
+ *
+ * A failed registry read never throws and never blocks the board: the
+ * entry keeps its own links and the result reports `linksDegraded` so the
+ * caller can say so in its provenance (#8570) instead of claiming links
+ * it did not fetch.
  */
 async function enrichWithRegistryLinks<T extends { links: Link[] }>(
   baseUrl: string,
   entries: T[],
   subjectOf: (entry: T) => string,
-): Promise<T[]> {
-  return Promise.all(
+): Promise<{ entries: T[]; linksDegraded: boolean }> {
+  let linksDegraded = false;
+  const enriched = await Promise.all(
     entries.map(async (entry) => {
       const extra = await projectorLinks(baseUrl, subjectOf(entry));
+      if (extra === null) {
+        linksDegraded = true;
+        return entry;
+      }
       return extra.length ? { ...entry, links: mergeLinks(entry.links, extra) } : entry;
     }),
   );
+  return { entries: enriched, linksDegraded };
 }
 
 // --- Orchestrator in-flight lane -------------------------------------------
@@ -1374,9 +1385,14 @@ export function liveSource(
         provenance.board = "live (Kaneo; done aged out after 7 days, retired ROADMAP Done-table cards filtered)";
         let merged = board;
         if (cfg.projector.baseUrl) {
-          merged = await enrichWithRegistryLinks(cfg.projector.baseUrl, board, (b) => b.id);
-          provenance.board =
-            "live (Kaneo + projector links; done aged out after 7 days, retired ROADMAP Done-table cards filtered)";
+          const { entries, linksDegraded } = await enrichWithRegistryLinks(cfg.projector.baseUrl, board, (b) => b.id);
+          merged = entries;
+          // #8570: a dead registry degrades the links visibly — the board
+          // stays up on the Kaneo cards, and the chip names the outage
+          // instead of claiming "+ projector links" for links not fetched.
+          provenance.board = linksDegraded
+            ? "live (Kaneo + projector links unavailable (registry unreachable); done aged out after 7 days, retired ROADMAP Done-table cards filtered)"
+            : "live (Kaneo + projector links; done aged out after 7 days, retired ROADMAP Done-table cards filtered)";
         }
         // In-flight lane (see inFlightBoardItems above): synthetic
         // entries from the fleet feed's orchestration section — the
@@ -1409,8 +1425,16 @@ export function liveSource(
           let merged = rows;
           let label = "live (Grist)";
           if (cfg.projector.baseUrl) {
-            merged = await enrichWithRegistryLinks(cfg.projector.baseUrl, rows, (r) => r.subject);
-            label = "live (Grist + projector links)";
+            const { entries, linksDegraded } = await enrichWithRegistryLinks(
+              cfg.projector.baseUrl,
+              rows,
+              (r) => r.subject,
+            );
+            merged = entries;
+            // #8570: same degraded-links honesty as the board path above.
+            label = linksDegraded
+              ? "live (Grist + projector links unavailable (registry unreachable))"
+              : "live (Grist + projector links)";
           }
           // #1738: merge the repos' own roadmap files in alongside the
           // Grist rows. The repo-file read never throws (its failures

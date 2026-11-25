@@ -7,7 +7,7 @@
       "title": "PM console",
       "group": "platform",
       "path": "pm-stack/console/edge",
-      "does": "Serves the PM app, does the core itself (the board, prompts, pull requests, ranked issues, the plan) and holds what waits for a machine.",
+      "does": "Serves the PM app, does the core itself (the board, prompts, pull requests, ranked issues, the plan), sends messages to agents itself through the message bridge on a service binding (as service:pm-stack), reads the bridge's unified message pipeline, agents directory and credential state there too, and holds what waits for a machine.",
       "state": "in service",
       "deploy": "actions",
       "workflow": "pm-console-edge-deploy.yml",
@@ -170,6 +170,18 @@
       "workflow": null,
       "address": "https://developing-today-backup.developing-today.workers.dev",
       "next": "Deployed from Actions, stood up, checked and rolled back the way the PM console is; listed here with its last deploy."
+    },
+    {
+      "name": "fleet-git-rehost",
+      "title": "Git rehost",
+      "group": "data",
+      "path": "infra/github-backup/rehost/worker",
+      "does": "Serves read-only git clones of the four fleet repos from the backup copy in R2, so the code can still be cloned when GitHub and the backup laptop are both down.",
+      "state": "in service",
+      "deploy": "by hand",
+      "workflow": null,
+      "address": "https://git.security.cab",
+      "next": "Deployed by hand with its deploy.sh; the backup laptop's publisher refreshes what it serves (#8584)."
     },
     {
       "name": "pkarr",

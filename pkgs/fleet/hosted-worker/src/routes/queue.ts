@@ -107,7 +107,7 @@ function verbHandler(verb: string): RouteDef["handler"] {
       depProbe: deps.queueDepProbe ?? NO_DEP_PROBE,
       bindingId: me.bindingId,
     };
-    return json(executeQueueVerb(store, verb, body, env));
+    return json(await executeQueueVerb(store, verb, body, env));
   };
 }
 

@@ -91,6 +91,7 @@ def ready_pr(
 
 class StubFleet:
     """A `fleet` binary that records each enqueue and exits 0."""
+
     def __init__(self, tmp: Path):
         self.dir = tmp
         self.log = tmp / "enqueues.jsonl"
@@ -324,9 +325,7 @@ class OpenPrCoverageTest(unittest.TestCase):
         self.assertEqual(packet["payload"]["kind"], "pr_shepherd")
         self.assertEqual(packet["payload"]["pr"]["number"], 900)
         self.assertEqual(packet["payload"]["prs"][0]["number"], 900)
-        self.assertEqual(
-            packet["dedupe_key"], f"repo-health:v1:pr:{REPO}:pr:900"
-        )
+        self.assertEqual(packet["dedupe_key"], f"repo-health:v1:pr:{REPO}:pr:900")
         self.assertEqual(packet["payload"]["max_attempts"], 1000)
 
     def test_each_open_pr_for_one_issue_gets_its_own_merge_watch(self):

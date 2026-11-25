@@ -226,6 +226,19 @@ func (c *Client) withMeta(ctx context.Context, params json.RawMessage, version s
 	if level != "" {
 		set(MetaLogLevel, level)
 	}
+	// Fleet context (build 4/5, #14190): the originating queue task id
+	// rides every modern request's _meta, set-if-absent so a caller's
+	// deliberate value is never overwritten. Absent context stamps
+	// nothing (partial record, not an error). Env is the fallback when
+	// ctx carries none (stdio/no-header path, #14188 contract).
+	for k, v := range fleetMetaOf(fleetCtxOf(ctx)) {
+		if _, ok := meta[k]; !ok {
+			var rv any
+			if json.Unmarshal(v, &rv) == nil {
+				meta[k] = rv
+			}
+		}
+	}
 	b, err := json.Marshal(meta)
 	if err != nil {
 		return nil, err

@@ -146,6 +146,25 @@ converge on one database row and at most one triage task, and a create
 that reported `metadata_inserted: false` at the stamping door is
 healed by the first check that sees the item.
 
+Two operator surfaces complete the #9074 remainder (#14312). A
+**backfill** (`POST /v1/ingestion/backfill`) is the sweeper's whole-
+scope pass with a recorded run: the run record — scope, the check's
+counts in/out, and every per-item failure named — is stored as the
+sweep completes and read back via `GET /v1/ingestion/backfill/runs`,
+so a re-run over an unchanged store is a recorded no-op (0 inserted /
+0 refreshed), not a claim. A **divergence report** (`POST
+/v1/ingestion/divergence`) is the aggregate counterpart of the query
+door's per-result divergence finding: over the scope it compares
+every item's body block against the database and names three classes
+with counts — `missing_row` (an item with no row), `stale_field` (a
+row whose body block differs, naming the top-level fields, or
+`pm_meta_block` when the block was removed or no longer parses), and
+`orphan_row` (a row whose item is gone from GitHub, visible only
+through the store's cross-tenancy repo seam). The report heals
+nothing; the backfill is the heal. The CLI reaches both as
+`fleet-hosted backfill [--repo <owner/name>]...`, `backfill runs`,
+and `divergence [--repo <owner/name>]...`.
+
 ### Sync
 
 The sync door (#12591) answers `POST /v1/sync/project` and

@@ -83,10 +83,12 @@ pub fn run(args: &[String]) -> i32 {
         "revive" => cmd_revive(rest),
         "fail" => cmd_fail(rest),
         "complete" => cmd_complete(rest),
+        "resolution-backfill" => cmd_resolution_backfill(rest),
         "verify-disposition" => cmd_verify_disposition(rest),
         "timeline" => cmd_timeline("timeline", rest),
         "history" => cmd_timeline("history", rest),
         "show" => cmd_show(rest),
+        "note" => cmd_note(rest),
         "models" => cmd_models(rest),
         "health" => cmd_health(rest),
         "signal" => cmd_signal(rest),
@@ -446,6 +448,52 @@ mod tests {
     fn iso_utc_formats_the_store_shape() {
         assert_eq!(iso_utc(0), "1970-01-01T00:00:00Z");
         assert_eq!(iso_utc(1_794_676_389), "2026-11-14T17:13:09Z");
+    }
+
+    #[test]
+    fn timeline_interleaves_notes_into_one_story_14170_q4() {
+        // #14170 Q4 oracle: notes and events render as one
+        // chronological story; each keeps its own order, and a
+        // same-second tie puts the event first.
+        let ev = |id: i64, us: i64| TimelineEvent {
+            id,
+            kind: "claimed".to_string(),
+            session_id: None,
+            provider: None,
+            model: None,
+            variant: None,
+            trigger: None,
+            created_at: format!("e{id}"),
+            created_us: us,
+        };
+        let note = |id: i64, us: i64| TimelineNote {
+            id,
+            author: "w".to_string(),
+            author_kind: "agent".to_string(),
+            session_id: None,
+            provider: None,
+            model: None,
+            variant: None,
+            body: format!("n{id}\nsecond line"),
+            created_at: format!("n{id}"),
+            created_us: us,
+            edited_at: None,
+            deleted_at: None,
+        };
+        let events = [ev(1, 10), ev(2, 20), ev(3, 40)];
+        let notes = [note(7, 5), note(8, 20), note(9, 30), note(10, 50)];
+        let story: Vec<String> = interleave_notes(&events, &notes)
+            .iter()
+            .map(|e| match e {
+                TimelineEntry::Event(ev) => ev.created_at.clone(),
+                TimelineEntry::Note(n) => n.created_at.clone(),
+            })
+            .collect();
+        assert_eq!(story, ["n7", "e1", "e2", "n8", "n9", "e3", "n10"]);
+        let line = format_timeline_note(&note(7, 5));
+        assert!(line.starts_with("n7  note #7  by w"), "{line}");
+        assert!(line.ends_with("\n    n7\n    second line"), "{line}");
+        assert!(interleave_notes(&[], &[]).is_empty());
     }
 
     #[test]
