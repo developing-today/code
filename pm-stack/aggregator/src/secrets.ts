@@ -15,10 +15,11 @@
 // bws per call.
 import { execFile } from "node:child_process";
 import { access, readFile } from "node:fs/promises";
-import { homedir } from "node:os";
 import { join } from "node:path";
+import { requireHome } from "./home.ts";
 
-const HOME = homedir();
+// Resolved when a secret is first looked up, not at import (#8220).
+const home = (): string => requireHome("the bws binary and access-token paths");
 const CACHE_TTL_MS = 5 * 60_000;
 export type BwsSecretLookup = { status: "found"; value: string } | { status: "missing" } | { status: "unavailable" };
 
@@ -38,10 +39,10 @@ async function firstReadable(paths: string[]): Promise<string | null> {
 
 async function resolveBwsSecretUncached(key: string): Promise<BwsSecretLookup> {
   const bwsBin =
-    process.env.BWS_BIN ?? (await firstReadable([join("/run/current-system/sw/bin/bws"), join(HOME, "tools/bin/bws")]));
+    process.env.BWS_BIN ?? (await firstReadable([join("/run/current-system/sw/bin/bws"), join(home(), "tools/bin/bws")]));
   const accessTokenFile =
     process.env.BWS_ACCESS_TOKEN_FILE ??
-    (await firstReadable([join(HOME, ".config/bws/access-token"), join(HOME, ".config/bitwarden/access-token")]));
+    (await firstReadable([join(home(), ".config/bws/access-token"), join(home(), ".config/bitwarden/access-token")]));
   if (!bwsBin || !accessTokenFile) return { status: "unavailable" };
   try {
     const accessToken = (await readFile(accessTokenFile, "utf8")).trim();

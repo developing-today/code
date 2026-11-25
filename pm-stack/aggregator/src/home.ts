@@ -5,13 +5,16 @@
 // a set HOME is returned unchanged, so every derived path stays the same.
 
 export class HomeUnresolvedError extends Error {
-  /** The setting whose default needed HOME, e.g. PM_AGG_FRESHNESS_FILE. */
+  /** The setting whose default needed HOME: its override variable, e.g. PM_AGG_FRESHNESS_FILE, or a description. */
   readonly setting: string;
 
   constructor(setting: string, home: string | undefined) {
+    // A setting named by its override variable says how to avoid HOME; a
+    // described path ("the OpenCode database path") has no override.
+    const remedy = /^[A-Z][A-Z0-9_]*$/.test(setting) ? `set HOME or set ${setting}` : "set HOME";
     super(
       `HOME is ${home === undefined ? "unset" : "empty"}, so the default for ${setting} cannot be derived; ` +
-        `set HOME or set ${setting} (home-resolution contract #5762: no passwd fallback)`,
+        `${remedy} (home-resolution contract #5762: no passwd fallback)`,
     );
     this.name = "HomeUnresolvedError";
     this.setting = setting;

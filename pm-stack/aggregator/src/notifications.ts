@@ -33,7 +33,7 @@ import { SENTINEL_SERVICE_IDS, type StackHealthRecord } from "./stack-health.ts"
 
 export const NOTIFICATION_CLASS_DEFAULTS: Record<string, boolean> = {
   incident: true,
-  "needs-drew": true,
+  "needs-user": true,
   "quota-wall": true,
   "quota-near-wall": true,
   "section-risk": true,
@@ -61,9 +61,10 @@ export const NOTIFICATION_CLASSES: NotificationClassMeta[] = [
     blurb: "A watchdog reports something down. Always immediate — quiet hours never hold an incident.",
   },
   {
-    id: "needs-drew",
-    label: "Needs Drew",
-    blurb: "An item enters the needs-Drew tier on the attention page.",
+    id: "needs-user",
+    label: "Needs user",
+    blurb:
+      "An item escalates to the needs-user stage: it was reviewed first and only you can decide it. Answerable from the notification.",
   },
   {
     id: "quota-wall",
@@ -90,7 +91,7 @@ export const NOTIFICATION_CLASSES: NotificationClassMeta[] = [
     id: "blocked-age",
     label: "Blocked-age reminders",
     blurb:
-      "A needs-Drew item stays unacted for 24/48 hours, then weekly (digest-only except the 48-hour breakthrough).",
+      "A needs-user item stays unacted for 24/48 hours, then weekly (digest-only except the 48-hour breakthrough).",
   },
   {
     id: "prompt",
@@ -141,9 +142,9 @@ export function notificationTestLanding(
     case "stack-health":
       return `${origin}/health`;
     case "digest":
-      return `${origin}/attention?refs=${encodeURIComponent("test:needs-drew,test:blocked-age")}`;
-    case "needs-drew":
-      return `${origin}/attention#test-needs-drew`;
+      return `${origin}/attention?refs=${encodeURIComponent("test:needs-user,test:blocked-age")}`;
+    case "needs-user":
+      return `${origin}/attention#test-needs-user`;
     case "blocked-age":
       return `${origin}/attention#test-blocked-age`;
     case "prompt":
@@ -159,7 +160,7 @@ export const BLOCKED_AGE_BREAKTHROUGH_MS = 48 * 60 * 60_000;
 export const QUOTA_WELL_BEFORE_RESET_MS = 24 * 60 * 60_000;
 
 export interface NotificationCandidate {
-  class: "needs-drew" | "blocked-age" | "quota-wall" | "quota-near-wall" | "section-risk" | "stack-health";
+  class: "needs-user" | "blocked-age" | "quota-wall" | "quota-near-wall" | "section-risk" | "stack-health";
   objectRef: string;
   stateFingerprint: string;
   title: string;
@@ -337,10 +338,10 @@ function tierItemCandidate(item: TierItem | TieredEntry, now: number): Notificat
     : (item.tierSince ?? item.lastActivityAt ?? item.createdAt ?? new Date(now).toISOString());
   const actedRefs = [objectRef, ...(itemId ? [`orch:${itemId}`] : []), ...(itemRef ? [`gh:${itemRef}`] : [])];
   const entry = candidate({
-    class: "needs-drew",
+    class: "needs-user",
     objectRef,
-    title: item.title ?? itemId ?? "Needs-Drew item",
-    body: "This item entered the needs-Drew tier.",
+    title: item.title ?? itemId ?? "Needs-user item",
+    body: "This item escalated to needs-user.",
     url,
     observedAt,
     actedRefs,
@@ -359,7 +360,7 @@ function tierItemCandidate(item: TierItem | TieredEntry, now: number): Notificat
       class: "blocked-age",
       objectRef,
       title: step === 48 ? `Blocked for 48 hours: ${item.title ?? itemId}` : `Needs attention: ${item.title ?? itemId}`,
-      body: "This needs-Drew item remains unacted.",
+      body: "This needs-user item remains unacted.",
       url,
       observedAt,
       actedRefs,
@@ -377,7 +378,7 @@ function tierItemCandidate(item: TierItem | TieredEntry, now: number): Notificat
           class: "blocked-age",
           objectRef,
           title: `Weekly reminder: ${item.title ?? itemId}`,
-          body: `This needs-Drew item remains unacted (week ${week} after the 48-hour breakthrough).`,
+          body: `This needs-user item remains unacted (week ${week} after the 48-hour breakthrough).`,
           url,
           observedAt,
           actedRefs,
@@ -654,7 +655,7 @@ export function buildNotificationCandidates(snapshot: NotificationSnapshot, now 
   for (const item of snapshot.needsDrewRaised ?? []) {
     candidates.push(
       candidate({
-        class: "needs-drew",
+        class: "needs-user",
         objectRef: `needs-drew:${item.ledgerId}`,
         title: item.question,
         body: item.context ?? "A fleet worker is blocked on your answer.",
@@ -676,7 +677,7 @@ export function buildNotificationCandidates(snapshot: NotificationSnapshot, now 
     const progress = decisionSetProgress(set);
     candidates.push(
       candidate({
-        class: "needs-drew",
+        class: "needs-user",
         objectRef: `decision-set:${set.setId}`,
         title: `${progress.openItems} decision${progress.openItems === 1 ? "" : "s"} waiting for you`,
         body: `${set.title} — ${progress.openQuestions} question${progress.openQuestions === 1 ? "" : "s"} open. Tap to open the decisions page.`,
