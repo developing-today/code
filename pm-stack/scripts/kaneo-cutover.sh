@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
-# kaneo-cutover — the gated Kaneo → Supabase cutover driver.
+# kaneo-cutover — the gated Kaneo → cluster-postgres cutover driver.
 #
 # Implements the Kaneo half of pm-stack/STORE-MIGRATION-PLAN-6816.md §3-§5
-# for issue #6816. Three modes:
+# for issue #6816. Four modes:
+#
+#   preflight offline target identity check only; no PG/fence calls or writes.
 #
 #   presync  while live: pg_dump the source `kaneo` database, pg_restore it
-#            into the target (muse-dev2), then verify schema parity (same
+#            into the explicitly declared cluster target, then verify schema parity (same
 #            public table count). Row drift is expected here — the final
 #            delta lands after the writers are fenced — and is reported,
 #            not failed.
@@ -47,7 +49,12 @@
 # Argument contract (#3352): flags only, no positionals. `--opt value` and
 # `--opt=value` behave identically. Anything else is a usage error (exit 2)
 # before any subprocess runs:
-#   --mode presync|promote|rollback required
+#   --mode preflight|presync|promote|rollback required
+#   --target-home cluster-postgres required; Supabase is not a supported target
+#   --target-host HOST         required; must match target URI's TCP host
+# URI-only DSNs: explicit host/database, postgres or postgresql scheme. Only
+# sslmode, connect_timeout and application_name query options are supported.
+# No service/endpoint overrides, sockets, multi-host or general conninfo.
 #   --source-dsn-file FILE     required; file holding the source DSN
 #   --target-dsn-file FILE     required; file holding the target DSN
 #   --dump-file FILE           required for presync and rollback; the dump to write
@@ -68,15 +75,15 @@
 # 4 parity failure, 5 command failure.
 set -uo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-
 MODE=""
+TARGET_HOME=""
+TARGET_HOST=""
 SOURCE_DSN_FILE=""
 TARGET_DSN_FILE=""
 DUMP_FILE=""
 RECEIPT=""
 PG_BIN_DIR=""
-FENCE_CHECK="$SCRIPT_DIR/fence-check.sh"
+FENCE_CHECK=""
 UNREACHABLE_FLAG=0
 FENCE_ARGS=()
 BACKUP_RECORD_FILE=""
@@ -89,14 +96,20 @@ COUNT_SQL="select count(*) || ' ' || coalesce(sum(c), 0) from (select (xpath('/r
 
 usage() {
   cat <<'USAGE'
-usage: kaneo-cutover.sh --mode presync|promote|rollback --source-dsn-file FILE
-                        --target-dsn-file FILE [--dump-file FILE]
+usage: kaneo-cutover.sh --mode preflight|presync|promote|rollback --source-dsn-file FILE
+                        --target-dsn-file FILE --target-home cluster-postgres
+                        --target-host HOST [--dump-file FILE]
                         [--receipt FILE] [--pg-bin-dir DIR]
                         [--fence-check PATH] [--units-dir DIR]
                         [--containers-file FILE] [--unreachable]
                         [--backup-record-file FILE]
                         [--max-backup-age-hours N] [-h|--help]
 
+  preflight offline URI identity validation only; no backups/fence/dump/receipt
+            required, no database calls or file writes. All modes require the
+            same distinct source and declared cluster-postgres target identity.
+            Only explicit single TCP host postgres/postgresql URIs supported;
+            no Supabase endpoints, muse-dev2 identifiers or endpoint overrides.
   presync  dump the source, restore into the target, verify schema parity.
   promote  require a fresh complete backup, the old writer FENCED, and exact
            table/row parity, then write the cutover receipt. Exit: 0 pass,
@@ -124,13 +137,15 @@ while [ "$#" -gt 0 ]; do
     UNREACHABLE_FLAG=1
     shift
     ;;
-  --mode | --source-dsn-file | --target-dsn-file | --dump-file | --receipt | --pg-bin-dir | --fence-check | --units-dir | --containers-file | --backup-record-file | --max-backup-age-hours)
+  --mode | --target-home | --target-host | --source-dsn-file | --target-dsn-file | --dump-file | --receipt | --pg-bin-dir | --fence-check | --units-dir | --containers-file | --backup-record-file | --max-backup-age-hours)
     opt="$1"
     [ "$#" -ge 2 ] || fail_usage "$opt requires a value"
     val="$2"
     [ -n "$val" ] || fail_usage "$opt requires a non-empty value"
     case "$opt" in
     --mode) MODE="$val" ;;
+    --target-home) TARGET_HOME="$val" ;;
+    --target-host) TARGET_HOST="$val" ;;
     --source-dsn-file) SOURCE_DSN_FILE="$val" ;;
     --target-dsn-file) TARGET_DSN_FILE="$val" ;;
     --dump-file) DUMP_FILE="$val" ;;
@@ -144,12 +159,14 @@ while [ "$#" -gt 0 ]; do
     esac
     shift 2
     ;;
-  --mode=* | --source-dsn-file=* | --target-dsn-file=* | --dump-file=* | --receipt=* | --pg-bin-dir=* | --fence-check=* | --units-dir=* | --containers-file=* | --backup-record-file=* | --max-backup-age-hours=*)
+  --mode=* | --target-home=* | --target-host=* | --source-dsn-file=* | --target-dsn-file=* | --dump-file=* | --receipt=* | --pg-bin-dir=* | --fence-check=* | --units-dir=* | --containers-file=* | --backup-record-file=* | --max-backup-age-hours=*)
     opt="${1%%=*}"
     val="${1#*=}"
     [ -n "$val" ] || fail_usage "$opt requires a non-empty value"
     case "$opt" in
     --mode) MODE="$val" ;;
+    --target-home) TARGET_HOME="$val" ;;
+    --target-host) TARGET_HOST="$val" ;;
     --source-dsn-file) SOURCE_DSN_FILE="$val" ;;
     --target-dsn-file) TARGET_DSN_FILE="$val" ;;
     --dump-file) DUMP_FILE="$val" ;;
@@ -173,11 +190,13 @@ while [ "$#" -gt 0 ]; do
 done
 
 case "$MODE" in
-presync | promote | rollback) ;;
-"") fail_usage "--mode is required (presync, promote or rollback)" ;;
-*) fail_usage "--mode must be presync, promote or rollback (got '$MODE')" ;;
+preflight | presync | promote | rollback) ;;
+"") fail_usage "--mode is required (preflight, presync, promote or rollback)" ;;
+*) fail_usage "--mode must be preflight, presync, promote or rollback (got '$MODE')" ;;
 esac
 
+[ "$TARGET_HOME" = cluster-postgres ] || fail_usage "--target-home cluster-postgres is required"
+[ -n "$TARGET_HOST" ] || fail_usage "--target-host is required"
 [ -n "$SOURCE_DSN_FILE" ] || fail_usage "--source-dsn-file is required"
 [ -n "$TARGET_DSN_FILE" ] || fail_usage "--target-dsn-file is required"
 [ -r "$SOURCE_DSN_FILE" ] || fail_usage "source DSN file '$SOURCE_DSN_FILE' is not readable"
@@ -197,6 +216,16 @@ if [ "$MODE" = "rollback" ]; then
   [ -n "$DUMP_FILE" ] || fail_usage "--dump-file is required for rollback"
   [ "$UNREACHABLE_FLAG" -eq 0 ] || fail_usage "--unreachable is for failover promote only; rollback fences the local promoted writer"
 fi
+
+# Argument validation above must finish before any helper subprocess. This
+# check only reads the DSN files; preflight returns before operational gates.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [ "$MODE" = preflight ]; then
+  python3 -I "$SCRIPT_DIR/kaneo-target-preflight.py" "$SOURCE_DSN_FILE" "$TARGET_DSN_FILE" "$TARGET_HOST" || exit $?
+  exit 0
+fi
+python3 -I "$SCRIPT_DIR/kaneo-target-preflight.py" "$SOURCE_DSN_FILE" "$TARGET_DSN_FILE" "$TARGET_HOST" || exit $?
+[ -n "$FENCE_CHECK" ] || FENCE_CHECK="$SCRIPT_DIR/fence-check.sh"
 
 if [ -n "$PG_BIN_DIR" ]; then
   [ -d "$PG_BIN_DIR" ] || fail_usage "--pg-bin-dir '$PG_BIN_DIR' is not a directory"
