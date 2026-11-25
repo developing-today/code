@@ -14,6 +14,13 @@
 export const SUPPORTED_JURISDICTIONS = ["us", "eu", "fedramp"] as const;
 export type Jurisdiction = (typeof SUPPORTED_JURISDICTIONS)[number];
 
+/** Required production R2 binding for each jurisdiction (#3401). */
+export const BLOBS_BINDING_FOR_JURISDICTION = {
+  us: "BLOBS_US",
+  eu: "BLOBS_EU",
+  fedramp: "BLOBS_FEDRAMP",
+} as const satisfies Record<Jurisdiction, string>;
+
 const BINDING_ID_RE = /^[0-9a-f]{32}$/;
 
 export class FailClosed extends Error {

@@ -22,7 +22,7 @@
 // a deployment by itself — it returns the exact plan a deployment may
 // enable, or refuses with an explicit diagnostic.
 
-import { FailClosed, SUPPORTED_JURISDICTIONS, type Jurisdiction } from "./routing.ts";
+import { BLOBS_BINDING_FOR_JURISDICTION, FailClosed, SUPPORTED_JURISDICTIONS, type Jurisdiction } from "./routing.ts";
 
 /** What the deployed-account evidence says about one capability:
  * "supported" only when the canary / API read-back proved it on the
@@ -63,15 +63,6 @@ export interface BucketConfig {
    * Checked for consistency only; never verification (#2285). */
   declaredJurisdiction?: string;
 }
-
-/** Required jurisdiction-specific R2 bindings (#3401). The current local
- * router still uses a shared binding; production routing must switch to
- * this same mapping before jurisdiction isolation can be enabled. */
-export const BLOBS_BINDING_FOR_JURISDICTION = {
-  us: "BLOBS_US",
-  eu: "BLOBS_EU",
-  fedramp: "BLOBS_FEDRAMP",
-} as const satisfies Record<Jurisdiction, string>;
 
 /** A request to enable hosted production signup/migration for one
  * configured jurisdiction. Every field is a claim to be validated;
