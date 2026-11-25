@@ -54,6 +54,7 @@ pub mod creation_outbox;
 #[cfg(any(feature = "client", feature = "queue-broker"))]
 pub mod disposition;
 mod home;
+pub mod live_overlay;
 pub mod log;
 pub mod merge_intent;
 pub mod token_file;
