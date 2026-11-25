@@ -23,6 +23,12 @@ argon2 = "0.6"
 chacha20poly1305 = "0.11"
 # Signed transport advertisements (transport_advertisement.rs, #8214).
 ed25519-dalek = { version = "3", features = ["rand_core"] }
+# OPAQUE (RFC 9807) password login over a client-held ID key
+# (opaque_login.rs, #13710). opaque-ke 4 pins the digest 0.10 / rand_core
+# 0.6 generation, so its SHA-512 and OS RNG come from those versions.
+opaque-ke = { version = "4.0.1", default-features = false, features = ["ristretto255", "argon2"] }
+rand_core_06 = { package = "rand_core", version = "0.6", features = ["getrandom"] }
+sha2_010 = { package = "sha2", version = "0.10" }
 rand = "0.10"
 sha2 = "0.11"
 zeroize = "1"
