@@ -67,7 +67,7 @@ Term := {}.{
             if extends {
                 { out: acc.out, open: Bool.True, x: acc.x, y: acc.y, len: acc.len + 1, text: Str.concat(acc.text, cell.ch), spaces: acc.spaces and cell.ch == " ", fg: acc.fg, bg: acc.bg, bold: acc.bold }
             } else {
-                { out: Str.concat(acc.out, emit_run(acc, width)), open: Bool.True, x: cell.x, y: cell.y, len: 1, text: cell.ch, spaces: cell.ch == " ", fg: cell.fg, bg: cell.bg, bold: cell.bold }
+                { out: Str.concat(acc.out, emit_run(acc.open, acc.x, acc.y, acc.len, acc.text, acc.spaces, acc.fg, acc.bg, acc.bold, width)), open: Bool.True, x: cell.x, y: cell.y, len: 1, text: cell.ch, spaces: cell.ch == " ", fg: cell.fg, bg: cell.bg, bold: cell.bold }
             }
         })
         out = Str.concat(folded.out, emit_run(folded, width))
