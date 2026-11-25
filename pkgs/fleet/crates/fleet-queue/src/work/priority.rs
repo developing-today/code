@@ -56,6 +56,12 @@
 //!   the item returns to its own value and stays in the searchable
 //!   backlog instead of being buried. The protected owner set and the
 //!   ratified bands are never boosted.
+//! * **Hysteresis resists churn, never authority.**
+//!   [`evaluate_hysteresis`] (PRI-05c, #9483) suppresses low-confidence,
+//!   too-soon, multi-step or drifting automatic moves with an
+//!   `hysteresis_suppressed` hint. An authorised manual change or a
+//!   verified deadline/incident bypasses the resistance, but never the
+//!   owner gate or the capability check.
 //!
 //! The module is pure: no I/O, no queue, no persisted state. It
 //! changes no live priority and authorises no schema change — later
@@ -89,6 +95,11 @@ pub const NEXT_UP_VALUE: i64 = 25;
 pub const OPPORTUNITY_BOOST_SCHEMA_VERSION: &str = "fleet.priority-opportunity-boost/v1";
 /// The most scale steps one opportunity boost may move an item.
 pub const MAX_BOOST_STEPS: u8 = 2;
+
+/// Wire schema identifier of a hysteresis policy.
+pub const HYSTERESIS_POLICY_SCHEMA_VERSION: &str = "fleet.priority-hysteresis-policy/v1";
+/// The capability a manual priority change requires.
+pub const PRIORITY_WRITE_CAPABILITY: &str = "priority.write";
 
 /// Evidence for the ratified bands: the #7030 ratification comment
 /// and the broker readback comment cited by the design.
@@ -1440,6 +1451,321 @@ pub fn evaluate_boost_expiry(
     }
 }
 
+/// A versioned hysteresis policy (PRI-05c): a bounded buffer around
+/// every scale edge for automatic moves.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HysteresisPolicy {
+    /// `fleet.priority-hysteresis-policy/v1`.
+    pub schema_version: String,
+    /// The reference decisions cite.
+    pub policy_ref: String,
+    /// Policy version (canonical decimal string).
+    pub version: String,
+    /// Automatic moves below this confidence (0–100) are suppressed.
+    pub min_confidence_pct: u8,
+    /// No automatic move within this many seconds of the item's last
+    /// applied move (manual or automatic).
+    pub cooldown_secs: i64,
+    /// The window over which automatic drift is bounded.
+    pub drift_window_secs: i64,
+    /// Most net automatic scale steps allowed inside the window.
+    pub max_drift_steps: u8,
+}
+
+impl HysteresisPolicy {
+    /// Validate the policy document.
+    pub fn validate(&self) -> Result<(), PriorityError> {
+        if self.schema_version != HYSTERESIS_POLICY_SCHEMA_VERSION {
+            return Err(PriorityError::UnsupportedVersion {
+                schema_version: self.schema_version.clone(),
+            });
+        }
+        let invalid = |detail: String| Err(PriorityError::InvalidProfile { detail });
+        if self.policy_ref.trim().is_empty() {
+            return invalid("hysteresis policy_ref must not be empty".to_string());
+        }
+        if !is_canonical_decimal(&self.version) {
+            return invalid(format!(
+                "hysteresis policy version is not a canonical decimal string: {:?}",
+                self.version
+            ));
+        }
+        if self.min_confidence_pct > 100 {
+            return invalid("min_confidence_pct must be 0..=100".to_string());
+        }
+        if self.cooldown_secs <= 0 || self.drift_window_secs <= 0 || self.max_drift_steps == 0 {
+            return invalid("hysteresis windows and drift bound must be positive".to_string());
+        }
+        Ok(())
+    }
+}
+
+/// Where a proposed move comes from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MoveOrigin {
+    /// Automatic triage (aging, refinement, pressure).
+    Automatic,
+    /// A manual change by an authenticated principal holding
+    /// `priority.write`.
+    Manual,
+    /// The authenticated owner acting as the owner.
+    OwnerAction,
+    /// A verified deadline.
+    VerifiedDeadline,
+    /// A verified incident.
+    VerifiedIncident,
+}
+
+/// Which resistance-bypass let a move through.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HysteresisBypass {
+    /// Authorised manual or owner action.
+    Manual,
+    /// Verified deadline evidence.
+    Deadline,
+    /// Verified incident evidence.
+    Incident,
+}
+
+/// Why an automatic move was held back.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HysteresisHold {
+    /// Confidence below the policy threshold.
+    LowConfidence,
+    /// Inside the cooldown after the item's last applied move.
+    Cooldown,
+    /// More than one scale step in one automatic move.
+    OneStepOnly,
+    /// Would exceed the net drift bound inside the window.
+    DriftBound,
+}
+
+/// A move that was applied earlier, as the hysteresis check reads it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AppliedMove {
+    /// Target work.
+    pub work: WorkRef,
+    /// Value before.
+    pub from: PriorityValue,
+    /// Value after.
+    pub to: PriorityValue,
+    /// Where it came from.
+    pub origin: MoveOrigin,
+    /// When it was applied.
+    pub applied_at: i64,
+}
+
+/// A proposed intrinsic-urgency move.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProposedMove {
+    /// Target work.
+    pub work: WorkRef,
+    /// Current value.
+    pub from: PriorityValue,
+    /// Proposed value.
+    pub to: PriorityValue,
+    /// Where it comes from.
+    pub origin: MoveOrigin,
+    /// Producer confidence, 0–100.
+    pub confidence_pct: u8,
+    /// Evidence; required for a verified deadline or incident.
+    pub evidence_ref: Option<String>,
+    /// The owner-policy reference the producer checked.
+    pub owner_policy_ref: Option<String>,
+    /// When the move is proposed.
+    pub proposed_at: i64,
+}
+
+/// The hysteresis decision for one proposed move.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HysteresisDecision {
+    /// The move may proceed (still subject to the caller's atomic
+    /// work-version check).
+    Allow {
+        /// The bypass that skipped resistance, if any.
+        bypass: Option<HysteresisBypass>,
+    },
+    /// The move is held back; a `hysteresis_suppressed` hint, no
+    /// mutation.
+    Suppress {
+        /// Always `hysteresis_suppressed`.
+        reason_code: String,
+        /// Why.
+        hold: HysteresisHold,
+        /// When an automatic retry may succeed.
+        retry_after: i64,
+    },
+}
+
+fn scale_index(profile: &PriorityProfile, value: i64) -> Option<usize> {
+    profile
+        .entries
+        .iter()
+        .filter(|e| e.kind == EntryKind::Scale)
+        .position(|e| e.value == value)
+}
+
+/// Signed scale-step distance (negative raises urgency). A ratified
+/// band sits between its neighbours, so it is measured from the next
+/// less urgent scale value.
+fn scale_steps(profile: &PriorityProfile, from: i64, to: i64) -> i64 {
+    let position = |value: i64| -> i64 {
+        scale_index(profile, value).map_or_else(
+            || {
+                profile
+                    .entries
+                    .iter()
+                    .filter(|e| e.kind == EntryKind::Scale && e.value > value)
+                    .filter_map(|e| scale_index(profile, e.value))
+                    .min()
+                    .map_or(0, |i| i as i64)
+            },
+            |i| i as i64,
+        )
+    };
+    position(to) - position(from)
+}
+
+/// Decide whether a proposed move passes hysteresis (PRI-05c).
+///
+/// Order, fail-closed:
+/// 1. profile, policy and both values are valid; a no-op is refused;
+/// 2. a manual move needs an authenticated principal with
+///    `priority.write`; a verified deadline/incident needs evidence;
+/// 3. the protected-owner gate runs for every origin — no bypass
+///    skips it;
+/// 4. manual, owner and verified moves bypass the resistance;
+/// 5. an automatic move must be one scale step to a scale value, at
+///    or above the confidence threshold, outside the cooldown since
+///    the item's last applied move, and within the net drift bound.
+pub fn evaluate_hysteresis(
+    profile: &PriorityProfile,
+    policy: &HysteresisPolicy,
+    proposed: &ProposedMove,
+    history: &[AppliedMove],
+    owner_policy: Option<&OwnerPriorityPolicy>,
+    membership: Option<&ProtectedMembership>,
+    principal: Option<&AuthenticatedPrincipal>,
+) -> Result<HysteresisDecision, PriorityError> {
+    profile.validate()?;
+    policy.validate()?;
+    profile.check(&proposed.from)?;
+    profile.check(&proposed.to)?;
+    if proposed.from.value == proposed.to.value {
+        return Err(PriorityError::InvalidProfile {
+            detail: "a hysteresis move must change the value".to_string(),
+        });
+    }
+    if proposed.confidence_pct > 100 {
+        return Err(PriorityError::InvalidProfile {
+            detail: "confidence must be 0..=100".to_string(),
+        });
+    }
+
+    let source = match proposed.origin {
+        MoveOrigin::Automatic => WriteSource::Aging,
+        MoveOrigin::Manual => WriteSource::ManualWrite,
+        MoveOrigin::OwnerAction => WriteSource::OwnerAction,
+        MoveOrigin::VerifiedDeadline | MoveOrigin::VerifiedIncident => {
+            WriteSource::HysteresisBypass
+        }
+    };
+    if matches!(
+        proposed.origin,
+        MoveOrigin::Manual | MoveOrigin::OwnerAction
+    ) {
+        let authorized = principal.is_some_and(|p| {
+            p.capabilities
+                .iter()
+                .any(|c| c == PRIORITY_WRITE_CAPABILITY)
+        });
+        if !authorized {
+            return Err(ContractError::UnauthorizedInput.into());
+        }
+    }
+    if matches!(
+        proposed.origin,
+        MoveOrigin::VerifiedDeadline | MoveOrigin::VerifiedIncident
+    ) && proposed
+        .evidence_ref
+        .as_deref()
+        .is_none_or(|e| e.trim().is_empty())
+    {
+        return Err(ContractError::UnauthorizedInput.into());
+    }
+    let gate = PriorityWrite {
+        work: proposed.work.clone(),
+        owner_policy_ref: proposed.owner_policy_ref.clone(),
+        source,
+        field: PriorityField::IntrinsicUrgency,
+    };
+    check_priority_write(&gate, owner_policy, membership, principal)?;
+
+    let bypass = match proposed.origin {
+        MoveOrigin::Manual | MoveOrigin::OwnerAction => Some(HysteresisBypass::Manual),
+        MoveOrigin::VerifiedDeadline => Some(HysteresisBypass::Deadline),
+        MoveOrigin::VerifiedIncident => Some(HysteresisBypass::Incident),
+        MoveOrigin::Automatic => None,
+    };
+    if bypass.is_some() {
+        return Ok(HysteresisDecision::Allow { bypass });
+    }
+
+    let reason = super::contracts::ReasonCode::HysteresisSuppressed;
+    reason.check_field_effect(super::contracts::FieldEffectKind::Hint)?;
+    let suppress = |hold: HysteresisHold, retry_after: i64| {
+        Ok(HysteresisDecision::Suppress {
+            reason_code: reason.as_str().to_string(),
+            hold,
+            retry_after,
+        })
+    };
+    let now = proposed.proposed_at;
+    let steps = scale_steps(profile, proposed.from.value, proposed.to.value);
+    if scale_index(profile, proposed.to.value).is_none() || steps.abs() != 1 {
+        return suppress(HysteresisHold::OneStepOnly, now);
+    }
+    if proposed.confidence_pct < policy.min_confidence_pct {
+        return suppress(
+            HysteresisHold::LowConfidence,
+            now.saturating_add(policy.cooldown_secs),
+        );
+    }
+    let mine: Vec<&AppliedMove> = history
+        .iter()
+        .filter(|m| m.work == proposed.work && m.applied_at <= now)
+        .collect();
+    if let Some(last) = mine.iter().map(|m| m.applied_at).max() {
+        let ready_at = last.saturating_add(policy.cooldown_secs);
+        if now < ready_at {
+            return suppress(HysteresisHold::Cooldown, ready_at);
+        }
+    }
+    let window_start = now.saturating_sub(policy.drift_window_secs);
+    let in_window: Vec<&&AppliedMove> = mine
+        .iter()
+        .filter(|m| m.origin == MoveOrigin::Automatic && m.applied_at > window_start)
+        .collect();
+    let drift: i64 = in_window
+        .iter()
+        .map(|m| scale_steps(profile, m.from.value, m.to.value))
+        .sum::<i64>()
+        + steps;
+    if drift.unsigned_abs() > u64::from(policy.max_drift_steps) {
+        let retry_after = in_window
+            .iter()
+            .map(|m| m.applied_at)
+            .min()
+            .unwrap_or(now)
+            .saturating_add(policy.drift_window_secs);
+        return suppress(HysteresisHold::DriftBound, retry_after);
+    }
+    Ok(HysteresisDecision::Allow { bypass: None })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2474,6 +2800,274 @@ mod tests {
                 NOW,
                 Some(&policy()),
                 Some(&foreign)
+            )
+            .unwrap_err()
+            .code(),
+            "owner_policy_unavailable"
+        );
+    }
+
+    fn hysteresis_policy() -> HysteresisPolicy {
+        HysteresisPolicy {
+            schema_version: HYSTERESIS_POLICY_SCHEMA_VERSION.to_string(),
+            policy_ref: "hysteresis:1".to_string(),
+            version: "1".to_string(),
+            min_confidence_pct: 70,
+            cooldown_secs: DAY,
+            drift_window_secs: 30 * DAY,
+            max_drift_steps: 2,
+        }
+    }
+
+    fn proposed(id: &str, from: i64, to: i64, origin: MoveOrigin, confidence: u8) -> ProposedMove {
+        ProposedMove {
+            work: work(id),
+            from: queue().validate_value(from).unwrap(),
+            to: queue().validate_value(to).unwrap(),
+            origin,
+            confidence_pct: confidence,
+            evidence_ref: None,
+            owner_policy_ref: Some("owner-policy:7".to_string()),
+            proposed_at: NOW,
+        }
+    }
+
+    fn applied(id: &str, from: i64, to: i64, origin: MoveOrigin, at: i64) -> AppliedMove {
+        AppliedMove {
+            work: work(id),
+            from: queue().validate_value(from).unwrap(),
+            to: queue().validate_value(to).unwrap(),
+            origin,
+            applied_at: at,
+        }
+    }
+
+    fn decide(
+        mv: &ProposedMove,
+        history: &[AppliedMove],
+        who: Option<&AuthenticatedPrincipal>,
+    ) -> Result<HysteresisDecision, PriorityError> {
+        evaluate_hysteresis(
+            &queue(),
+            &hysteresis_policy(),
+            mv,
+            history,
+            Some(&policy()),
+            Some(&membership()),
+            who,
+        )
+    }
+
+    fn hold_of(decision: HysteresisDecision) -> (HysteresisHold, i64) {
+        match decision {
+            HysteresisDecision::Suppress {
+                reason_code,
+                hold,
+                retry_after,
+            } => {
+                assert_eq!(reason_code, "hysteresis_suppressed");
+                (hold, retry_after)
+            }
+            other => panic!("expected suppression, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn pmo_priority_hysteresis_cooldown_bounded_with_authorized_bypass() {
+        let allow = HysteresisDecision::Allow { bypass: None };
+        let agent = principal("principal:agent");
+
+        // A confident one-step automatic move with no history passes.
+        let step = proposed("700", 40, 30, MoveOrigin::Automatic, 80);
+        assert_eq!(decide(&step, &[], None).unwrap(), allow);
+
+        // Low confidence is held for one cooldown.
+        let weak = proposed("700", 40, 30, MoveOrigin::Automatic, 50);
+        assert_eq!(
+            hold_of(decide(&weak, &[], None).unwrap()),
+            (HysteresisHold::LowConfidence, NOW + DAY)
+        );
+
+        // Multi-step or band-targeting automatic moves are refused.
+        let jump = proposed("700", 70, 40, MoveOrigin::Automatic, 95);
+        assert_eq!(
+            hold_of(decide(&jump, &[], None).unwrap()).0,
+            HysteresisHold::OneStepOnly
+        );
+        let to_band = proposed("700", 30, NEXT_UP_VALUE, MoveOrigin::Automatic, 95);
+        assert_eq!(
+            hold_of(decide(&to_band, &[], None).unwrap()).0,
+            HysteresisHold::OneStepOnly
+        );
+
+        // Cooldown after any applied move — including a manual one, so
+        // automation cannot immediately undo a person's decision.
+        let recent_manual = applied("700", 30, 40, MoveOrigin::Manual, NOW - DAY / 2);
+        assert_eq!(
+            hold_of(decide(&step, std::slice::from_ref(&recent_manual), None).unwrap()),
+            (HysteresisHold::Cooldown, NOW + DAY / 2)
+        );
+        // Another item's history does not cool this one down.
+        let other = applied("701", 30, 40, MoveOrigin::Automatic, NOW - 1);
+        assert_eq!(decide(&step, &[other], None).unwrap(), allow);
+
+        // Net drift is bounded: two automatic raises in the window
+        // already, a third is held until the oldest leaves the window.
+        let drift = [
+            applied("700", 70, 50, MoveOrigin::Automatic, NOW - 20 * DAY),
+            applied("700", 50, 40, MoveOrigin::Automatic, NOW - 10 * DAY),
+        ];
+        assert_eq!(
+            hold_of(decide(&step, &drift, None).unwrap()),
+            (HysteresisHold::DriftBound, NOW + 10 * DAY)
+        );
+        // Oscillation nets out: a raise then a lower is no drift.
+        let wobble = [
+            applied("700", 50, 40, MoveOrigin::Automatic, NOW - 20 * DAY),
+            applied("700", 40, 50, MoveOrigin::Automatic, NOW - 10 * DAY),
+        ];
+        let lower = proposed("700", 50, 40, MoveOrigin::Automatic, 90);
+        assert_eq!(decide(&lower, &wobble, None).unwrap(), allow);
+        // Moves outside the window no longer count.
+        let old = [
+            applied("700", 70, 50, MoveOrigin::Automatic, NOW - 40 * DAY),
+            applied("700", 50, 40, MoveOrigin::Automatic, NOW - 35 * DAY),
+        ];
+        assert_eq!(decide(&step, &old, None).unwrap(), allow);
+        // Manual moves are not automatic drift.
+        let manual_history = [
+            applied("700", 70, 50, MoveOrigin::Manual, NOW - 20 * DAY),
+            applied("700", 50, 40, MoveOrigin::Manual, NOW - 10 * DAY),
+        ];
+        assert_eq!(decide(&step, &manual_history, None).unwrap(), allow);
+
+        // An authorised manual move bypasses every resistance.
+        let mut manual = proposed("700", 70, 20, MoveOrigin::Manual, 0);
+        assert_eq!(
+            decide(&manual, &drift, Some(&agent)).unwrap(),
+            HysteresisDecision::Allow {
+                bypass: Some(HysteresisBypass::Manual)
+            }
+        );
+        // … but not authorisation: no principal or no capability fails.
+        assert_eq!(
+            decide(&manual, &drift, None).unwrap_err().code(),
+            "unauthorized_input"
+        );
+        let reader = AuthenticatedPrincipal {
+            principal_ref: "principal:reader".to_string(),
+            capabilities: vec!["priority.read".to_string()],
+        };
+        assert_eq!(
+            decide(&manual, &drift, Some(&reader)).unwrap_err().code(),
+            "unauthorized_input"
+        );
+
+        // A verified deadline or incident bypasses resistance only with
+        // evidence.
+        let mut deadline = proposed("700", 40, 20, MoveOrigin::VerifiedDeadline, 10);
+        assert_eq!(
+            decide(&deadline, &drift, None).unwrap_err().code(),
+            "unauthorized_input"
+        );
+        deadline.evidence_ref = Some("deadline:release".to_string());
+        assert_eq!(
+            decide(&deadline, &drift, None).unwrap(),
+            HysteresisDecision::Allow {
+                bypass: Some(HysteresisBypass::Deadline)
+            }
+        );
+        let mut incident = proposed("700", 40, 10, MoveOrigin::VerifiedIncident, 10);
+        incident.evidence_ref = Some("incident:sev1".to_string());
+        assert_eq!(
+            decide(&incident, &[recent_manual.clone()], None).unwrap(),
+            HysteresisDecision::Allow {
+                bypass: Some(HysteresisBypass::Incident)
+            }
+        );
+
+        // Malformed inputs and policies are refused.
+        manual.to = manual.from.clone();
+        assert_eq!(
+            decide(&manual, &[], Some(&agent)).unwrap_err().code(),
+            "invalid_profile"
+        );
+        let mut bad = hysteresis_policy();
+        bad.cooldown_secs = 0;
+        assert_eq!(bad.validate().unwrap_err().code(), "invalid_profile");
+        bad = hysteresis_policy();
+        bad.min_confidence_pct = 101;
+        assert_eq!(bad.validate().unwrap_err().code(), "invalid_profile");
+        bad = hysteresis_policy();
+        bad.schema_version = "fleet.priority-hysteresis-policy/v2".to_string();
+        assert_eq!(bad.validate().unwrap_err().code(), "unsupported_version");
+    }
+
+    #[test]
+    fn pmo_priority_hysteresis_cannot_bypass_owner_policy() {
+        let agent = principal("principal:agent");
+        let drew = principal("principal:drew");
+
+        // No bypass reaches a protected item: manual, verified deadline,
+        // verified incident and automatic all deny.
+        let mut deadline = proposed("3447", EXPEDITE_VALUE, 10, MoveOrigin::VerifiedDeadline, 99);
+        deadline.evidence_ref = Some("deadline:x".to_string());
+        let mut incident = proposed("3447", EXPEDITE_VALUE, 10, MoveOrigin::VerifiedIncident, 99);
+        incident.evidence_ref = Some("incident:x".to_string());
+        let manual = proposed("3447", EXPEDITE_VALUE, 40, MoveOrigin::Manual, 99);
+        let automatic = proposed("3447", EXPEDITE_VALUE, 20, MoveOrigin::Automatic, 99);
+        for (mv, who) in [
+            (&deadline, Some(&drew)),
+            (&incident, Some(&drew)),
+            (&manual, Some(&drew)),
+            (&manual, Some(&agent)),
+            (&automatic, None),
+        ] {
+            assert_eq!(
+                decide(mv, &[], who).unwrap_err().code(),
+                "OWNER_POLICY_PROTECTED",
+                "{:?} must not bypass the owner policy",
+                mv.origin
+            );
+        }
+
+        // Only the authenticated owner acting as owner may move it.
+        let owner = proposed("3447", EXPEDITE_VALUE, 40, MoveOrigin::OwnerAction, 0);
+        assert_eq!(
+            decide(&owner, &[], Some(&drew)).unwrap(),
+            HysteresisDecision::Allow {
+                bypass: Some(HysteresisBypass::Manual)
+            }
+        );
+        assert_eq!(
+            decide(&owner, &[], Some(&agent)).unwrap_err().code(),
+            "OWNER_POLICY_PROTECTED"
+        );
+
+        // Stale, missing and unverifiable policy all fail closed, even
+        // for a verified bypass on ordinary work.
+        let mut ordinary = proposed("700", 40, 20, MoveOrigin::VerifiedIncident, 99);
+        ordinary.evidence_ref = Some("incident:y".to_string());
+        ordinary.owner_policy_ref = Some("owner-policy:6".to_string());
+        assert_eq!(
+            decide(&ordinary, &[], None).unwrap_err().code(),
+            "OWNER_POLICY_VERSION_CONFLICT"
+        );
+        ordinary.owner_policy_ref = None;
+        assert_eq!(
+            decide(&ordinary, &[], None).unwrap_err().code(),
+            "owner_policy_ref_missing"
+        );
+        ordinary.owner_policy_ref = Some("owner-policy:7".to_string());
+        assert_eq!(
+            evaluate_hysteresis(
+                &queue(),
+                &hysteresis_policy(),
+                &ordinary,
+                &[],
+                None,
+                Some(&membership()),
+                None
             )
             .unwrap_err()
             .code(),
