@@ -10,7 +10,8 @@ Status: proposal. Slice 1 of 5. Slices 2 (collections), 3 (failure matrix), 4
 (carriers and hints) and 5 (display forms) follow; this record reserves room for them
 and sketches only what the grammar needs from them. Slice 2 has landed as
 `slice-2-collection-form.md` in this folder: it fills `set/` and closes R1 rows 3, 8
-and 16.
+and 16. Slice 5 has landed as `slice-5-display-forms.md`: angle
+brackets in plain text, short labels and state words.
 
 Executable reference: `graph_uri_reference.py` in this folder
 (`python3 -I graph_uri_reference.py self-test`, stdlib only). It holds the golden
@@ -212,9 +213,10 @@ Everything else in this record is the designer's call and can be changed by revi
   starting from §7.
 - Slice 4 adds per-carrier hint rules, hint-kind extensibility, resolver privacy and
   `mailto:`, with one worked URI per carrier.
-- Slice 5 hands D5 the display rules: angle-bracket delimiting in plain text (RFC 3986
-  Appendix C), elision of the digest middle, and the "edited / removed" badges the
-  head form makes possible.
+- Slice 5 (landed, `slice-5-display-forms.md`) hands D5 the display rules: angle
+  brackets in plain text (RFC 3986 Appendix C), labels with the digest middle elided,
+  and the `edited`, `removed`, `stale` and other state words the head form makes
+  possible.
 - The core-app PoC (#14037) has a "collect" action with no D3 verb yet. Slice 2
   recommends a `nest` projection, not a new verb: the collection is
   `set/obj/<collection>/verbs=nest/dir=in/depth=1`.
