@@ -371,14 +371,26 @@ dependencies = [
 
 [[package]]
 name = "argon2"
+version = "0.5.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3c3610892ee6e0cbce8ae2700349fcf8f98adb0dbfbee85aec3c9179d29cc072"
+dependencies = [
+ "base64ct",
+ "blake2 0.10.6",
+ "cpufeatures 0.2.17",
+ "password-hash 0.5.0",
+]
+
+[[package]]
+name = "argon2"
 version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "134c52ddac6d63c576bef8168db10c83c49c26444ecbc68060fef078925a901c"
 dependencies = [
  "base64ct",
- "blake2",
+ "blake2 0.11.0",
  "cpufeatures 0.3.1",
- "password-hash",
+ "password-hash 0.6.1",
 ]
 
 [[package]]
@@ -1917,6 +1929,15 @@ dependencies = [
 
 [[package]]
 name = "blake2"
+version = "0.10.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "46502ad458c9a52b69d4d4d32775c788b7a1b85e8bc9d482d92250fc0e3f8efe"
+dependencies = [
+ "digest 0.10.7",
+]
+
+[[package]]
+name = "blake2"
 version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5b5d4d889834ee8ecfc0f8426ad30faf7cdcb10f741a8e6d7224d95325479f6f"
@@ -2970,6 +2991,7 @@ dependencies = [
  "curve25519-dalek-derive",
  "digest 0.10.7",
  "fiat-crypto 0.2.9",
+ "rand_core 0.6.4",
  "rustc_version",
  "subtle",
  "zeroize",
@@ -3109,6 +3131,17 @@ name = "deranged"
 version = "0.5.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7cd812cc2bc1d69d4764bd80df88b4317eaef9e773c75226407d9bc0876b211c"
+
+[[package]]
+name = "derive-where"
+version = "1.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2e2b94854e8576378ccda7c8de8a66ed8b4e8acbd2c50ec3418ea6c8aaf4b567"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 3.0.10",
+]
 
 [[package]]
 name = "derive_more"
@@ -4819,7 +4852,7 @@ name = "id"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "argon2",
+ "argon2 0.6.0",
  "base64 0.23.1",
  "blake3",
  "cbor-core",
@@ -4982,7 +5015,7 @@ name = "id-core"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "argon2",
+ "argon2 0.6.0",
  "base64 0.23.1",
  "blake3",
  "cbor-core",
@@ -4994,17 +5027,21 @@ dependencies = [
  "iroh",
  "iroh-base",
  "iroh-blobs",
+ "opaque-ke",
  "p2panda-auth",
  "p2panda-core",
  "postcard",
  "proptest",
  "qrcode",
  "rand 0.10.4",
+ "rand_core 0.6.4",
+ "ring",
  "rmp-serde",
  "rqrr",
  "serde",
  "serde_bytes",
  "serde_json",
+ "sha2 0.10.9",
  "sha2 0.11.1",
  "tempfile",
  "thiserror 2.0.21",
@@ -7283,6 +7320,27 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c08d65885ee38876c4f86fa503fb49d7b507c2b62552df7c70b2fce627e06381"
 
 [[package]]
+name = "opaque-ke"
+version = "4.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ded22991b43cd15561b62b2e1cf9ace1344a8534eebec96202d5c96a77a6616a"
+dependencies = [
+ "argon2 0.5.3",
+ "curve25519-dalek 4.1.3",
+ "derive-where",
+ "digest 0.10.7",
+ "displaydoc",
+ "elliptic-curve 0.13.8",
+ "generic-array 0.14.7",
+ "hkdf 0.12.4",
+ "hmac 0.12.1",
+ "rand 0.8.8",
+ "subtle",
+ "voprf",
+ "zeroize",
+]
+
+[[package]]
 name = "openssl-probe"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7552,6 +7610,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "19ab9ace3fad1b9ed603ddac5b595e69931fc50263d7e04e4055015b77b02da5"
 dependencies = [
  "icu_properties",
+]
+
+[[package]]
+name = "password-hash"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "346f04948ba92c43e8469c1ee6736c7563d71012b17d40745260fe106aac2166"
+dependencies = [
+ "base64ct",
+ "rand_core 0.6.4",
+ "subtle",
 ]
 
 [[package]]
@@ -9815,7 +9884,7 @@ version = "0.7.0-rc.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0701b552e6bd8f13a6e07bde25307c32d7daad80a79b65832d110c0416e7b638"
 dependencies = [
- "argon2",
+ "argon2 0.6.0",
  "bcrypt-pbkdf",
  "ctutils",
  "ed25519-dalek 3.0.0",
@@ -10808,6 +10877,24 @@ name = "version_check"
 version = "0.9.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
+
+[[package]]
+name = "voprf"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "28f59c30c76e2fea54cdece6a054e2662feffa7ab19658a7887524265ee39470"
+dependencies = [
+ "curve25519-dalek 4.1.3",
+ "derive-where",
+ "digest 0.10.7",
+ "displaydoc",
+ "elliptic-curve 0.13.8",
+ "generic-array 0.14.7",
+ "rand_core 0.6.4",
+ "sha2 0.10.9",
+ "subtle",
+ "zeroize",
+]
 
 [[package]]
 name = "vt100"
