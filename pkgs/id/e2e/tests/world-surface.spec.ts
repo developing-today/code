@@ -48,12 +48,18 @@ async function screenText(page: Page): Promise<string> {
   return (await page.locator("[data-world-view] .id-world-screen span").allTextContents()).join("");
 }
 
-/** The current fixture counter rendered in the screen cells. */
-async function screenCount(page: Page): Promise<number> {
-  const text = await screenText(page);
-  const match = /count=(\d+)/.exec(text);
-  if (!match) throw new Error(`no count=N in world view: ${JSON.stringify(text)}`);
+/** The fixture counter from the world program's records channel. */
+async function recordsCount(page: Page): Promise<number> {
+  const view = page.locator("[data-world-records]");
+  await expect(view).toContainText(/"count":\s*\d+/, { timeout: 15_000 });
+  const text = await view.innerText();
+  const match = /"count":\s*(\d+)/.exec(text);
+  if (!match) throw new Error(`no count in world records: ${JSON.stringify(text)}`);
   return Number(match[1]);
+}
+
+async function refreshRecords(page: Page): Promise<void> {
+  await page.locator("[data-world-records-refresh]").click();
 }
 
 test.describe("World surface", () => {
@@ -67,8 +73,10 @@ test.describe("World surface", () => {
     await expect(screen).toBeVisible({ timeout: 15_000 });
     await expect(view.locator('[role="img"]')).toHaveAttribute("aria-label", /World screen, \d+ columns by \d+ rows/);
     await expect(view).not.toContainText("Waiting for a world view");
-    // The roc-screen fixture renders its counter through Screen cells.
-    await expect.poll(() => screenText(page), { timeout: 15_000 }).toMatch(/count=\d+/);
+    // Cell text follows the visible grid rows; the records channel retains
+    // the counter even when the CI viewport clips the screen to one row.
+    await expect.poll(() => screenText(page), { timeout: 15_000 }).toMatch(/counter/);
+    await expect(page.locator("[data-world-records]")).toContainText(/"count":\s*\d+/, { timeout: 15_000 });
     // The join is journaled in the event log.
     await expect(page.locator("[data-world-log]")).toContainText(/Connected to lobby at event \d+/);
   });
@@ -78,16 +86,18 @@ test.describe("World surface", () => {
     const surface = page.locator("[data-world-view] .id-world-screen");
     await expect(surface).toBeVisible({ timeout: 15_000 });
 
-    const before = await screenCount(page);
+    const before = await recordsCount(page);
     // The view is focusable (tabindex=0): a printable key becomes an input frame.
     await page.locator("[data-world-view]").click();
     await page.keyboard.press("+");
-    // The roc-screen fixture counts "+" presses: the surface re-renders with +1.
-    await expect.poll(() => screenCount(page), { timeout: 15_000 }).toBe(before + 1);
+    // The roc-screen fixture counts "+" presses; read the program record
+    // after the input event so the assertion is independent of clipped rows.
     // The input event frame arrived back over the live channel.
     await expect(page.locator("[data-world-log]")).toContainText(/input #\d+ from player/, {
       timeout: 15_000,
     });
+    await refreshRecords(page);
+    await expect.poll(() => recordsCount(page), { timeout: 15_000 }).toBe(before + 1);
   });
 
   test("a paste sends a paste frame and the view updates", async ({ page }) => {
@@ -95,7 +105,7 @@ test.describe("World surface", () => {
     const surface = page.locator("[data-world-view] .id-world-screen");
     await expect(surface).toBeVisible({ timeout: 15_000 });
 
-    const before = await screenCount(page);
+    const before = await recordsCount(page);
     // Load the OS clipboard the way a user does: type into the game input,
     // select all, copy. No clipboard permission APIs involved.
     const gameInput = page.locator("[data-world-input]");
@@ -106,10 +116,11 @@ test.describe("World surface", () => {
     await page.locator("[data-world-view]").click();
     await page.locator("[data-world-view]").press("ControlOrMeta+v");
     // The pasted "++" is two "+" presses for the fixture: +2.
-    await expect.poll(() => screenCount(page), { timeout: 15_000 }).toBe(before + 2);
     await expect(page.locator("[data-world-log]")).toContainText(/input #\d+ from player/, {
       timeout: 15_000,
     });
+    await refreshRecords(page);
+    await expect.poll(() => recordsCount(page), { timeout: 15_000 }).toBe(before + 2);
   });
 
   test("records readback pages with the after cursor, both pages render", async ({ page }) => {
@@ -216,7 +227,7 @@ test.describe("World surface", () => {
     await expect(screen).toHaveAttribute("aria-label", /World screen, 30 columns by \d+ rows/, {
       timeout: 15_000,
     });
-    await expect.poll(() => screenText(page), { timeout: 15_000 }).toMatch(/count=\d+/);
+    await expect.poll(() => screenText(page), { timeout: 15_000 }).toMatch(/counter/);
 
     // Narrow the browser window: the client reports a smaller viewport over
     // the live channel (#811: resize stays session-local) and the fixture
@@ -226,7 +237,7 @@ test.describe("World surface", () => {
       timeout: 15_000,
     });
     // The reflowed surface still renders the program state, not an error.
-    await expect.poll(() => screenText(page), { timeout: 15_000 }).toMatch(/count=\d+/);
+    await expect.poll(() => screenText(page), { timeout: 15_000 }).toMatch(/counter/);
 
     // Widen again: the surface re-renders back at 30 columns.
     await page.setViewportSize({ width: 1280, height: 720 });
