@@ -1,4 +1,4 @@
-//! Range sync over the event store, on `/id-range-sync/1`.
+//! Range sync over the event store, on `/id-range-sync/2`.
 //!
 //! The ALPN is this protocol's alone (#179). Range sessions used to share `/id-sync/1`
 //! with the `LogSync` handshake sessions in `id::log_sync`, whose first frame is a
@@ -9,7 +9,7 @@
 //! [`sync_on_streams`]), over the store-access seam ([`RangeStore`]) that lets
 //! `log_sync`'s shared store lend one step at a time.
 //! Both the dialer and the acceptor take the ALPN from [`ALPN`], so the two sides move
-//! together; a peer running an older build does not serve `/id-range-sync/1`, its dial
+//! together; a peer running an older build does not serve `/id-range-sync/2`, its dial
 //! fails, and `serve` retries on its next interval.
 //!
 //! The sync set is every stored event and every fork proof header, one key each: the author,
@@ -62,10 +62,11 @@ use id_store::store_traits::SharedEventStore;
 /// step 2b so the range sessions below can implement over it.
 type Shared = SharedEventStore<super::EventStore>;
 
-/// The protocol ID. The wire version only; K and T are not in it. Distinct from
+/// The protocol ID. Version 2 adds body-presence framing to data records; K and T
+/// are not in it. Distinct from
 /// `log_sync`'s `/id-sync/1` since #179 (see the module docs): the two session shapes
 /// no longer share an ALPN.
-pub const ALPN: &[u8] = b"/id-range-sync/1";
+pub const ALPN: &[u8] = b"/id-range-sync/2";
 
 /// The most messages one side writes in reconciliation before it gives up.
 const MAX_FLIGHTS: u32 = 10_000;
@@ -479,17 +480,19 @@ fn sync_key(position: &[u8], id: &Id) -> Result<Key, StoreError> {
     Ok(key)
 }
 
-/// One data-phase record: the event's bytes, then its body when the sender holds one.
-/// The event length prefixes the record, so the body is the rest; an absent body is an
-/// empty rest. The header commits to the body by hash and size, and the receiver checks
-/// the body against that commitment before storing it, so a body can never be attached
-/// to the wrong event.
+/// One data-phase record: the event's bytes, then a body-presence byte, then its body
+/// when present. The event length prefixes the event and the presence byte distinguishes
+/// an absent body from a present empty one. The header commits to a present body by hash
+/// and size, and the receiver checks that commitment before storing it.
 fn encode_record(event: &[u8], body: Option<&[u8]>) -> Result<Vec<u8>> {
-    let mut record = Vec::with_capacity(4 + event.len() + body.map_or(0, <[u8]>::len));
+    let mut record = Vec::with_capacity(5 + event.len() + body.map_or(0, <[u8]>::len));
     record.extend_from_slice(&u32::try_from(event.len())?.to_be_bytes());
     record.extend_from_slice(event);
     if let Some(body) = body {
+        record.push(1);
         record.extend_from_slice(body);
+    } else {
+        record.push(0);
     }
     Ok(record)
 }
@@ -505,13 +508,21 @@ fn decode_record(record: &[u8]) -> Result<(Vec<u8>, Option<Vec<u8>>)> {
         .get(4..4 + len)
         .context("a record names more event bytes than it holds")?
         .to_vec();
-    let body = &record[4 + len..];
+    let body = record
+        .get(4 + len..)
+        .context("a record has no body-presence marker")?;
+    let (present, body) = body
+        .split_first()
+        .context("a record has no body-presence marker")?;
     Ok((
         event,
-        if body.is_empty() {
-            None
-        } else {
-            Some(body.to_vec())
+        match present {
+            0 => {
+                ensure!(body.is_empty(), "a body-less record carries body bytes");
+                None
+            }
+            1 => Some(body.to_vec()),
+            _ => bail!("a record has an invalid body-presence marker"),
         },
     ))
 }
@@ -937,6 +948,35 @@ mod tests {
     use std::net::Ipv4Addr;
 
     const NOW: u64 = 1_000_000_000;
+
+    #[test]
+    fn test_record_encoding_preserves_all_body_states_and_rejects_ambiguous_records() {
+        let event = b"signed event";
+        for body in [None, Some(&[][..]), Some(&b"payload"[..])] {
+            let encoded = encode_record(event, body).unwrap();
+            assert_eq!(
+                decode_record(&encoded).unwrap(),
+                (event.to_vec(), body.map(<[u8]>::to_vec))
+            );
+        }
+
+        // The old header-only layout ended immediately after the event. It must not
+        // silently decode as an absent body under the V2 framing.
+        let mut header_only_legacy = u32::try_from(event.len()).unwrap().to_be_bytes().to_vec();
+        header_only_legacy.extend_from_slice(event);
+        assert!(decode_record(&header_only_legacy).is_err());
+
+        let absent_with_bytes = encode_record(event, None).unwrap();
+        let mut absent_with_bytes = absent_with_bytes;
+        absent_with_bytes.push(0x41);
+        assert!(decode_record(&absent_with_bytes).is_err());
+
+        let mut invalid_marker = u32::try_from(event.len()).unwrap().to_be_bytes().to_vec();
+        invalid_marker.extend_from_slice(event);
+        invalid_marker.push(2);
+        assert!(decode_record(&invalid_marker).is_err());
+    }
+
     /// An endpoint on localhost, with no relay and no address lookup. Dialed by address only.
     async fn endpoint(alpns: Vec<Vec<u8>>) -> Result<Endpoint> {
         Ok(Endpoint::builder(presets::Minimal)
@@ -1263,6 +1303,121 @@ mod tests {
         for event in &events {
             assert_eq!(b.event_body(&event.id).unwrap(), body.as_slice());
         }
+    }
+
+    /// Range sync preserves all three body states: BLAKE3(empty) with size zero is a
+    /// present empty payload, distinct from a header-only event, and non-empty bytes
+    /// remain byte-identical.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_range_sync_round_trips_absent_empty_and_non_empty_bodies() {
+        let (_da, mut a) = open();
+        let (_db, mut b) = open();
+        let empty = [];
+        let non_empty = b"non-empty body";
+        let events = [
+            chain::sign(
+                &signer(81),
+                0,
+                None,
+                None,
+                ChainExt {
+                    kind: "message".to_owned(),
+                    group: None,
+                    after: Vec::new(),
+                    tag: None,
+                    document: None,
+                    removes: None,
+                    note: None,
+                    link: None,
+                    checkpoint: None,
+                    rotation: None,
+                    chat: None,
+                    anchor: None,
+                },
+            )
+            .unwrap(),
+            chain::sign(
+                &signer(82),
+                0,
+                None,
+                Some(&empty),
+                ChainExt {
+                    kind: "message".to_owned(),
+                    group: None,
+                    after: Vec::new(),
+                    tag: None,
+                    document: None,
+                    removes: None,
+                    note: None,
+                    link: None,
+                    checkpoint: None,
+                    rotation: None,
+                    chat: None,
+                    anchor: None,
+                },
+            )
+            .unwrap(),
+            chain::sign(
+                &signer(83),
+                0,
+                None,
+                Some(non_empty),
+                ChainExt {
+                    kind: "message".to_owned(),
+                    group: None,
+                    after: Vec::new(),
+                    tag: None,
+                    document: None,
+                    removes: None,
+                    note: None,
+                    link: None,
+                    checkpoint: None,
+                    rotation: None,
+                    chat: None,
+                    anchor: None,
+                },
+            )
+            .unwrap(),
+        ];
+        assert_eq!(events[1].header.payload_hash, Some(Hash::digest(empty)));
+        assert_eq!(events[1].header.payload_size, 0);
+        for (event, body) in
+            events
+                .iter()
+                .zip([None, Some(empty.as_slice()), Some(non_empty.as_slice())])
+        {
+            assert!(matches!(
+                a.ingest_with_body(&event.bytes, body, NOW).unwrap(),
+                Ingest::Accepted { .. }
+            ));
+        }
+
+        let (dialer, acceptor) = loopback(
+            &mut a,
+            &mut b,
+            Params::default(),
+            Params::default(),
+            Cut::Never,
+        )
+        .await
+        .unwrap();
+        dialer.unwrap();
+        acceptor.unwrap();
+
+        assert!(
+            b.event_body(&events[0].id).is_err(),
+            "header-only event stays body-less"
+        );
+        assert_eq!(
+            b.event_body(&events[1].id).unwrap(),
+            Vec::<u8>::new(),
+            "present empty body reads back empty"
+        );
+        assert_eq!(
+            b.event_body(&events[2].id).unwrap(),
+            non_empty,
+            "non-empty body stays byte-identical"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread")]
