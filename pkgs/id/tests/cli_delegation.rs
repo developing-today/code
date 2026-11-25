@@ -410,3 +410,43 @@ fn test_delegate_prints_the_expiry_bound_and_refuses_a_past_one() {
     assert!(stderr.contains("not after now"), "{stderr}");
     assert_eq!(GroupLog::open(&log).unwrap().events().len(), before);
 }
+
+/// A grant refused after a `--mode` change records no mode change: the pair takes effect as a
+/// whole or the group's mode is left as it was (#14877). A self-grant is refused as
+/// `BadGrantee`, so the owner's `--mode keep_prior` must not stick.
+#[test]
+fn test_a_refused_grant_leaves_the_delegation_mode_unchanged() {
+    let root = TempDir::new().unwrap();
+    let log = root.path().join("groups.jsonl");
+    let owner = node(root.path(), "owner", &log);
+    let ann = node(root.path(), "ann", &log);
+    let group = group_with_reader(&owner, &ann);
+    let before = GroupLog::open(&log).unwrap().events().len();
+
+    let refused = owner.run(&[
+        "delegate",
+        &group,
+        &owner.key(),
+        "--scope",
+        "read",
+        "--mode",
+        "keep_prior",
+    ]);
+    assert!(!refused.status.success(), "a self-grant was accepted");
+
+    let event = last_event_by(&log, &key_bytes(&owner.key()));
+    assert_eq!(
+        projection(&log).outcome(&event.id),
+        Some(&Outcome::Refused(Refusal::BadGrantee)),
+        "the refused grant is the owner's last event"
+    );
+    assert_eq!(
+        GroupLog::open(&log).unwrap().events().len(),
+        before + 1,
+        "only the refused grant is recorded, not the mode change"
+    );
+    assert_eq!(
+        group_view(&log, &group).policy.delegation_mode(),
+        Delegation::Cascade
+    );
+}

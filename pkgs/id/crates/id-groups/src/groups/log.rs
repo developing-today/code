@@ -124,21 +124,7 @@ impl GroupLog {
     /// Fails if the events cannot be folded, or the file cannot be written. Nothing is written when
     /// the fold fails.
     pub fn record(&mut self, author: Key, group: Option<Hash>, body: Body) -> Result<Recorded> {
-        let at = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .ok();
-        let mut event = Event {
-            id: Hash::from_bytes([0; 32]),
-            author,
-            after: self.heads(),
-            group,
-            at,
-            body,
-        };
-        // The ID is the hash of the event with a placeholder ID. Each event names every event before
-        // it, so two events never serialize alike, and the ID is unique.
-        event.id = Hash::digest(serde_json::to_vec(&event)?);
+        let event = form(author, group, body, self.heads())?;
         let id = event.id;
         let mut next = self.events.clone();
         next.push(event);
@@ -151,6 +137,34 @@ impl GroupLog {
         }
         self.events = next;
         Ok(Recorded { event: id, outcome })
+    }
+
+    /// What `author`'s events would do if recorded now, in order, each after the one before it.
+    /// Nothing is written and the log is unchanged, so a caller can check that a sequence takes
+    /// effect as a whole before recording any of it (#14877).
+    ///
+    /// # Errors
+    ///
+    /// Fails if the events cannot be folded.
+    pub fn preview(&self, author: Key, steps: Vec<(Option<Hash>, Body)>) -> Result<Vec<Outcome>> {
+        let mut next = self.events.clone();
+        let mut ids = Vec::with_capacity(steps.len());
+        let mut after = self.heads();
+        for (group, body) in steps {
+            let event = form(author, group, body, after)?;
+            after = vec![event.id];
+            ids.push(event.id);
+            next.push(event);
+        }
+        let projection = fold(&next)?;
+        ids.iter()
+            .map(|id| {
+                projection
+                    .outcome(id)
+                    .cloned()
+                    .context("the fold did not decide the event")
+            })
+            .collect()
     }
 
     /// Records an event that was already formed elsewhere, keeping its
@@ -227,6 +241,31 @@ pub fn key_from_hex(text: &str) -> Result<Key> {
 /// Fails if the text is not 64 hex characters.
 pub fn hash_from_hex(text: &str) -> Result<Hash> {
     Hash::from_str(text.trim()).with_context(|| format!("`{text}` is not 64 hex characters"))
+}
+
+/// Forms an event by `author`, in `group` if it names one, after `after`, stamped with the
+/// current time.
+///
+/// # Errors
+///
+/// Fails if the event cannot be serialized for its ID.
+fn form(author: Key, group: Option<Hash>, body: Body, after: Vec<Hash>) -> Result<Event> {
+    let at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .ok();
+    let mut event = Event {
+        id: Hash::from_bytes([0; 32]),
+        author,
+        after,
+        group,
+        at,
+        body,
+    };
+    // The ID is the hash of the event with a placeholder ID. Each event names every event before
+    // it, so two events never serialize alike, and the ID is unique.
+    event.id = Hash::digest(serde_json::to_vec(&event)?);
+    Ok(event)
 }
 
 #[cfg(test)]

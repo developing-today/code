@@ -199,7 +199,9 @@ impl GroupLog {
     }
 
     /// Grants `delegate` its scope in `group`. With `mode`, the group's delegation mode is set first,
-    /// if it differs. A refused mode change ends the call: no grant is recorded after it.
+    /// if it differs. A refused mode change ends the call: no grant is recorded after it. A grant
+    /// that would be refused after the mode change records no mode change, so the pair takes
+    /// effect as a whole or the mode is left as it was (#14877).
     ///
     /// # Errors
     ///
@@ -211,9 +213,26 @@ impl GroupLog {
         delegate: Delegate,
         mode: Option<Delegation>,
     ) -> Result<Delegated> {
+        let view = self.view(group)?;
         let mode_change = match mode {
-            Some(mode) if self.view(group)?.policy.delegation_mode() != mode => {
-                Some(self.set_delegation(author, group, mode)?)
+            Some(mode) if view.policy.delegation_mode() != mode => {
+                let policy = Body::Policy(Policy {
+                    delegation: Some(mode),
+                    ..view.policy
+                });
+                let steps = vec![
+                    (Some(group), policy),
+                    (Some(group), Body::Delegate(delegate)),
+                ];
+                let grant_refused = matches!(
+                    self.preview(author, steps)?.as_slice(),
+                    [Outcome::Applied, Outcome::Refused(_)]
+                );
+                if grant_refused {
+                    None
+                } else {
+                    Some(self.set_delegation(author, group, mode)?)
+                }
             }
             _ => None,
         };
