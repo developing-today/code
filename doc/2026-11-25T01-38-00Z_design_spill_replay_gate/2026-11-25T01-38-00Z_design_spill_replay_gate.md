@@ -45,3 +45,24 @@ and cursors while renewing the term and appending rejection audits. The red chec
 confirmation, not evidence of a passing test. The first dispatch failed checkout
 because the abbreviated SHA was treated as a branch name; a full-SHA retry was
 submitted. Synthetic unit-test timing is not a game-day measurement.
+
+---
+
+## 2026-11-25 Controller update: authenticated cursor delivery (task 23727)
+
+The admission slice above had no production caller. `world/spill_controller.rs`
+is now the sanctioned host/controller path, with a fixed order and no bypass:
+(1) the deployment's host adapter (`CursorAuthenticator`, the same seam that
+establishes roster authentication in `spill_pool`) verifies the presented proof
+for the exact `(holder, epoch, replayed_position)` triple — only a verified
+triple can become an `AuthenticatedReplayCursor`, whose fields are private and
+whose only constructor is the authentication check; (2) the residency evaluator
+must allow the spill path; (3) `WorldHandle::dispatch_spill_copy` re-checks the
+live holder, epoch, term, and grant/handoff replay boundary on the serialized
+actor immediately before releasing bytes. Only actor-released bytes are sent,
+exactly once; every refusal (unauthenticated, residency, actor admission) sends
+zero bytes. An end-to-end controller test in `world/tests.rs` proves the forged,
+stale, wrong-epoch, residency-denied, boundary-success, and post-handback cases
+against a live actor. Still outside this slice: a concrete transport
+authenticator for a real deployment, the remaining design §7 oracle cases, and
+the Q2 failover measurements. The 30s/10s defaults are unchanged.
