@@ -1719,9 +1719,11 @@ fn plan_replica_schema(
     let mut index_ddls = Vec::new();
     for row in &schema.rows {
         let (kind, obj_name, sql) = match row.as_slice() {
-            [WireValue::Text(kind), WireValue::Text(obj_name), WireValue::Text(sql)] => {
-                (kind.as_str(), obj_name.as_str(), sql.as_str())
-            }
+            [
+                WireValue::Text(kind),
+                WireValue::Text(obj_name),
+                WireValue::Text(sql),
+            ] => (kind.as_str(), obj_name.as_str(), sql.as_str()),
             _ => return Err(AdapterError::MalformedResponse),
         };
         match kind {
@@ -1926,7 +1928,7 @@ mod replica_tests {
     use std::sync::{Arc, Mutex as StdMutex};
     use std::time::Duration;
 
-    use serde_json::{json, Value as Json};
+    use serde_json::{Value as Json, json};
 
     use super::*;
 
@@ -2342,10 +2344,12 @@ mod replica_tests {
         );
         transport.push(REPLICA_URL, empty_execs(2));
         let maintainer = maintainer(transport.clone());
-        assert!(maintainer
-            .delete_replica(&replica_collection())
-            .await
-            .unwrap());
+        assert!(
+            maintainer
+                .delete_replica(&replica_collection())
+                .await
+                .unwrap()
+        );
         assert_eq!(
             transport.sql_sent_to(REPLICA_URL)[1..],
             [
@@ -2367,10 +2371,12 @@ mod replica_tests {
         );
         transport.push(REPLICA_URL, empty_execs(2));
         let maintainer = maintainer(transport.clone());
-        assert!(!maintainer
-            .delete_replica(&replica_collection())
-            .await
-            .unwrap());
+        assert!(
+            !maintainer
+                .delete_replica(&replica_collection())
+                .await
+                .unwrap()
+        );
     }
 
     /// Oracle: D4/D5 drivers — publish materializes only the
@@ -2411,14 +2417,18 @@ mod replica_tests {
         let deleted = maintainer.unpublish_effects(&scope).await.unwrap();
         assert_eq!(deleted, vec!["objects".to_owned()]);
         // No statement ever named the live-served collection.
-        assert!(!transport
-            .sql_sent_to(REPLICA_URL)
-            .iter()
-            .any(|sql| sql.contains("notes")));
-        assert!(!transport
-            .sql_sent_to(SOURCE_URL)
-            .iter()
-            .any(|sql| sql.contains("notes")));
+        assert!(
+            !transport
+                .sql_sent_to(REPLICA_URL)
+                .iter()
+                .any(|sql| sql.contains("notes"))
+        );
+        assert!(
+            !transport
+                .sql_sent_to(SOURCE_URL)
+                .iter()
+                .any(|sql| sql.contains("notes"))
+        );
     }
 
     /// Oracle: the DDL rename is verified, never guessed — a CREATE
@@ -2463,14 +2473,16 @@ mod replica_tests {
             .unwrap(),
             "CREATE UNIQUE INDEX \"shadow__idx\" ON \"shadow\" (label)"
         );
-        assert!(rename_index_ddl(
-            "CREATE INDEX idx ON other (label)",
-            "idx",
-            "shadow__idx",
-            "objects",
-            "shadow",
-        )
-        .is_err());
+        assert!(
+            rename_index_ddl(
+                "CREATE INDEX idx ON other (label)",
+                "idx",
+                "shadow__idx",
+                "objects",
+                "shadow",
+            )
+            .is_err()
+        );
     }
 }
 
