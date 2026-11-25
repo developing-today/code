@@ -110,6 +110,28 @@ function initWorld(): void {
   const grantPageRefresh = element<HTMLButtonElement>(root, "[data-world-grant-page-refresh]");
   const grantPageStatus = element<HTMLElement>(root, "[data-world-grant-page-status]");
   const grantPageList = element<HTMLElement>(root, "[data-world-grant-page-list]");
+  // Until this client can verify a world's signed release manifest, a
+  // connection is treated as an unknown capability change. Keep the
+  // decision surface in the page and require an explicit, per-session
+  // choice before constructing the join socket.
+  const connectNotice = document.createElement("section");
+  connectNotice.hidden = true;
+  connectNotice.dataset.worldConnectNotice = "unknown";
+  connectNotice.setAttribute("role", "alertdialog");
+  connectNotice.setAttribute("aria-labelledby", "world-connect-notice-title");
+  connectNotice.className = "card border border-warning bg-base-100 p-4 space-y-3";
+  connectNotice.innerHTML = `
+    <h2 id="world-connect-notice-title" tabindex="-1" class="font-bold">World capabilities could not be verified</h2>
+    <p>This version of the app cannot describe what this world may do. No world connection has been opened.</p>
+    <ul><li>Do something this version of the app cannot describe.</li></ul>
+    <p>The app cannot verify whether this world may ask for more while you are connected.</p>
+    <div class="flex gap-2">
+      <button type="button" data-world-connect-once class="btn btn-primary">Connect once</button>
+      <button type="button" data-world-connect-decline class="btn btn-ghost">Don't connect</button>
+    </div>`;
+  root.prepend(connectNotice);
+  const connectOnceButton = element<HTMLButtonElement>(connectNotice, "[data-world-connect-once]");
+  const declineConnectButton = element<HTMLButtonElement>(connectNotice, "[data-world-connect-decline]");
   // The host controls (admin token, invite minting, module install,
   // host view) are optional: the program-only surface (#2146 phase 2)
   // renders a guest page without them, and their wiring below is
@@ -159,6 +181,8 @@ function initWorld(): void {
   const storageKey = `id-world-capability:${window.location.host}`;
   capability.value = sessionStorage.getItem(storageKey) ?? "";
   let socket: WebSocket | null = null;
+  let connectConsent: { token: string; world: string | null } | null = null;
+  let connectPending = false;
   let cursor = 0;
   let renderedSurface: ScreenSurface | null = null;
   let renderedViewRevision: number | null = null;
@@ -809,6 +833,17 @@ function initWorld(): void {
       setStatus("Create or paste a guest capability first", "error");
       return;
     }
+    const world = selectedWorld();
+    if (connectConsent?.token !== token || connectConsent.world !== world) {
+      if (!connectPending) {
+        connectPending = true;
+        connectNotice.hidden = false;
+        element<HTMLElement>(connectNotice, "#world-connect-notice-title")?.focus();
+        setStatus("Review the capability notice before connecting");
+      }
+      return;
+    }
+    connectNotice.hidden = true;
     intentionalClose = false;
     // #10927: joining a world other than the one the accumulated
     // snapshot belongs to restores that world's stored snapshot first
@@ -883,6 +918,17 @@ function initWorld(): void {
       }, wait);
     });
   };
+
+  connectOnceButton?.addEventListener("click", () => {
+    connectConsent = { token: capability.value.trim(), world: selectedWorld() };
+    connectPending = false;
+    connect();
+  });
+  declineConnectButton?.addEventListener("click", () => {
+    connectPending = false;
+    connectNotice.hidden = true;
+    setStatus("Not connected", "idle");
+  });
 
   inviteButton?.addEventListener("click", async () => {
     if (!admin || !inviteButton) return;
@@ -1161,6 +1207,9 @@ function initWorld(): void {
       retired.close();
     }
     intentionalClose = false;
+    // A button press is a new user initiated connection. The previous
+    // one-time choice only covers its own live session and reconnects.
+    connectConsent = null;
     connect();
   });
 
