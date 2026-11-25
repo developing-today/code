@@ -80,3 +80,25 @@ writes plus backend-owned begin/commit/abort, while retaining one shared
 semantic implementation. Remote verification #45521245212 is still running;
 the laptop and Codespace are unreachable. E6 acceptance remains unmet, PR
 #14642 remains draft, and #12801 remains open.
+
+## 2026-11-25T01:10:00Z Update: backend blockers and bounded scans
+
+The focused transaction-driver test was dispatched as
+`developing-today-forks/fleet#45525854255`. An earlier dispatch exists as
+`#45521245212`, but its status lookup returned HTTP 403. The PR still targets
+`19335d25195` and is draft.
+
+A fresh code map confirms the transaction driver alone does not make
+`EventStoreBackend` portable: `EventStore` owns a concrete redb `Database`,
+most ingest helpers take `&WriteTransaction`, and tenant row reads currently
+require mutable access. Also, `RowRead::scan_all` lets the tenant implementation
+materialize an entire table with an effectively unbounded limit, which conflicts
+with the native recovery path's bounded-memory behavior. The next small storage
+seam is a cursor-based `scan_page(table, after_key, limit)` operation. Existing
+`scan_all` remains a convenience API; consumers with large tables must move to
+pages before claiming bounded-memory parity. The backend ownership/read-session
+shape remains a separate architectural decision and blocks full parity.
+
+The laptop and Codespace remain unreachable. This update does not change E6
+acceptance: the tenant backend and shared native/tenant conformance suite are
+still unimplemented; PR #14642 and issue #12801 remain open.

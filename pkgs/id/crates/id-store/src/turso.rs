@@ -1105,10 +1105,12 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     use redb::{
-        Database, MultimapTableDefinition, ReadableDatabase, ReadableMultimapTable,
-        ReadableTable, TableDefinition,
+        Database, MultimapTableDefinition, ReadableDatabase, ReadableMultimapTable, ReadableTable,
+        TableDefinition,
     };
     use rusqlite::types::Value as SqliteValue;
+
+    use crate::event_rows::{RowRead, TenantWrite};
 
     use super::*;
 
@@ -1495,6 +1497,41 @@ mod tests {
                 .collect::<Vec<_>>(),
         );
         assert_eq!(store.scan("events", .., 2).unwrap().len(), 2);
+
+        // The row adapter exposes matching bounded pages and uses an
+        // exclusive continuation key, including for an empty key.
+        let mut native_scan = db.begin_read().unwrap();
+        let mut native_rows = Vec::new();
+        let mut after_key: Option<Vec<u8>> = None;
+        loop {
+            let page =
+                RowRead::scan_page(&mut native_scan, "events", after_key.as_deref(), 2).unwrap();
+            let page_len = page.len();
+            if let Some((key, _)) = page.last() {
+                after_key = Some(key.clone());
+            }
+            native_rows.extend(page);
+            if page_len < 2 {
+                break;
+            }
+        }
+        let mut tenant_txn = TenantWrite::begin(&mut store).unwrap();
+        let mut tenant_rows = Vec::new();
+        let mut after_key: Option<Vec<u8>> = None;
+        loop {
+            let page = RowRead::scan_page(&mut &mut tenant_txn, "events", after_key.as_deref(), 2)
+                .unwrap();
+            let page_len = page.len();
+            if let Some((key, _)) = page.last() {
+                after_key = Some(key.clone());
+            }
+            tenant_rows.extend(page);
+            if page_len < 2 {
+                break;
+            }
+        }
+        assert_eq!(tenant_rows, native_rows);
+        tenant_txn.rollback().unwrap();
 
         // Multimap: a set of values per key, in value order.
         {

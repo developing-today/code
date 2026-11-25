@@ -4,6 +4,8 @@
 //! own ingest policy: the caller commits the whole batch or aborts it on error.
 //! Reads return owned bytes so no backend's row guards leak into event logic.
 
+use std::ops::Bound;
+
 use redb::{
     MultimapTableDefinition, ReadTransaction, ReadableMultimapTable, ReadableTable,
     TableDefinition, WriteTransaction,
@@ -20,8 +22,34 @@ pub trait RowRead {
     /// Reads all values under one multimap key in byte order.
     fn multi_values(&mut self, table: &'static str, key: &[u8])
     -> Result<Vec<Vec<u8>>, StoreError>;
-    /// Reads every row of a single-value table in key order.
-    fn scan_all(&mut self, table: &'static str) -> Result<Vec<(Vec<u8>, Vec<u8>)>, StoreError>;
+    /// Reads at most `limit` rows after `after_key`, in key order. Passing
+    /// `None` starts at the first row; subsequent pages pass the last key from
+    /// the previous page. A zero limit returns an empty page.
+    fn scan_page(
+        &mut self,
+        table: &'static str,
+        after_key: Option<&[u8]>,
+        limit: usize,
+    ) -> Result<Vec<(Vec<u8>, Vec<u8>)>, StoreError>;
+
+    /// Reads every row of a single-value table in key order. Consumers that
+    /// need bounded memory should use [`RowRead::scan_page`] directly.
+    fn scan_all(&mut self, table: &'static str) -> Result<Vec<(Vec<u8>, Vec<u8>)>, StoreError> {
+        const PAGE_SIZE: usize = 256;
+        let mut rows = Vec::new();
+        let mut after_key: Option<Vec<u8>> = None;
+        loop {
+            let page = self.scan_page(table, after_key.as_deref(), PAGE_SIZE)?;
+            let page_len = page.len();
+            if let Some((last_key, _)) = page.last() {
+                after_key = Some(last_key.clone());
+            }
+            rows.extend(page);
+            if page_len < PAGE_SIZE {
+                return Ok(rows);
+            }
+        }
+    }
 }
 
 /// Read/write operations needed by event-store persistence helpers.
@@ -104,8 +132,13 @@ impl<R: RowRead + ?Sized> RowRead for &mut R {
         (**self).multi_values(table, key)
     }
 
-    fn scan_all(&mut self, table: &'static str) -> Result<Vec<(Vec<u8>, Vec<u8>)>, StoreError> {
-        (**self).scan_all(table)
+    fn scan_page(
+        &mut self,
+        table: &'static str,
+        after_key: Option<&[u8]>,
+        limit: usize,
+    ) -> Result<Vec<(Vec<u8>, Vec<u8>)>, StoreError> {
+        (**self).scan_page(table, after_key, limit)
     }
 }
 
@@ -158,10 +191,22 @@ impl RowRead for ReadTransaction {
             .map_err(Into::into)
     }
 
-    fn scan_all(&mut self, table: &'static str) -> Result<Vec<(Vec<u8>, Vec<u8>)>, StoreError> {
+    fn scan_page(
+        &mut self,
+        table: &'static str,
+        after_key: Option<&[u8]>,
+        limit: usize,
+    ) -> Result<Vec<(Vec<u8>, Vec<u8>)>, StoreError> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
         let table = self.open_table(TableDefinition::<&[u8], &[u8]>::new(table))?;
         table
-            .iter()?
+            .range::<&[u8]>(match after_key {
+                Some(key) => (Bound::Excluded(key), Bound::Unbounded),
+                None => (Bound::Unbounded, Bound::Unbounded),
+            })?
+            .take(limit)
             .map(|row| {
                 let (key, value) = row?;
                 Ok((key.value().to_vec(), value.value().to_vec()))
@@ -191,10 +236,22 @@ impl RowRead for WriteTransaction {
             .map_err(Into::into)
     }
 
-    fn scan_all(&mut self, table: &'static str) -> Result<Vec<(Vec<u8>, Vec<u8>)>, StoreError> {
+    fn scan_page(
+        &mut self,
+        table: &'static str,
+        after_key: Option<&[u8]>,
+        limit: usize,
+    ) -> Result<Vec<(Vec<u8>, Vec<u8>)>, StoreError> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
         let table = self.open_table(TableDefinition::<&[u8], &[u8]>::new(table))?;
         table
-            .iter()?
+            .range::<&[u8]>(match after_key {
+                Some(key) => (Bound::Excluded(key), Bound::Unbounded),
+                None => (Bound::Unbounded, Bound::Unbounded),
+            })?
+            .take(limit)
             .map(|row| {
                 let (key, value) = row?;
                 Ok((key.value().to_vec(), value.value().to_vec()))
@@ -281,10 +338,22 @@ impl RowRead for &WriteTransaction {
             .map_err(Into::into)
     }
 
-    fn scan_all(&mut self, table: &'static str) -> Result<Vec<(Vec<u8>, Vec<u8>)>, StoreError> {
+    fn scan_page(
+        &mut self,
+        table: &'static str,
+        after_key: Option<&[u8]>,
+        limit: usize,
+    ) -> Result<Vec<(Vec<u8>, Vec<u8>)>, StoreError> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
         let table = self.open_table(TableDefinition::<&[u8], &[u8]>::new(table))?;
         table
-            .iter()?
+            .range::<&[u8]>(match after_key {
+                Some(key) => (Bound::Excluded(key), Bound::Unbounded),
+                None => (Bound::Unbounded, Bound::Unbounded),
+            })?
+            .take(limit)
             .map(|row| {
                 let (key, value) = row?;
                 Ok((key.value().to_vec(), value.value().to_vec()))
@@ -423,8 +492,16 @@ impl<T: PipelineTransport> RowRead for &mut TenantWrite<'_, T> {
         Ok(self.store.multi_values(table, key)?)
     }
 
-    fn scan_all(&mut self, table: &'static str) -> Result<Vec<(Vec<u8>, Vec<u8>)>, StoreError> {
-        Ok(self.store.scan(table, Vec::<u8>::new().., usize::MAX)?)
+    fn scan_page(
+        &mut self,
+        table: &'static str,
+        after_key: Option<&[u8]>,
+        limit: usize,
+    ) -> Result<Vec<(Vec<u8>, Vec<u8>)>, StoreError> {
+        let start = after_key
+            .map(|key| Bound::Excluded(key.to_vec()))
+            .unwrap_or(Bound::Unbounded);
+        Ok(self.store.scan(table, (start, Bound::Unbounded), limit)?)
     }
 }
 
