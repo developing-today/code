@@ -18,6 +18,9 @@
 //! - [`creator_announcements`]: scheduled creator announcements — the
 //!   durable local schedule and its evaluator, which fires late after
 //!   downtime and records the lateness (#13743).
+//! - [`creator_index`]: the author-scoped local index over the author's
+//!   own worlds and programs, rebuilt from journals and records, with
+//!   build time and staleness (#13741).
 //! - [`program_bundle`]: the signed single-file program bundle (#8280,
 //!   design D1-D3): export, verify and fork, fully offline.
 //! - [`program_publish_state`]: draft / published journal facts per
@@ -58,6 +61,7 @@ pub mod account_charge;
 pub mod blob_gate;
 pub mod chat_anchor_render;
 pub mod creator_announcements;
+pub mod creator_index;
 pub mod groups;
 pub mod guest_burn;
 pub mod host;
