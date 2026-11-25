@@ -91,7 +91,7 @@ def env(name: str) -> str:
     return os.environ.get(name, "")
 
 
-def ensure_worker_direct(cf: expose.Cloudflare, account: str, worker: dict, check: bool) -> None:
+def ensure_worker_direct(cf: expose.Cloudflare, account: str, worker: dict, check: bool, refresh_tokens: bool = False) -> None:
     """The Worker's secrets, as declared: present when direct is on,
     gone when it is off. Values are never readable back, so presence
     is enforced, never content; a run that changes nothing uploads
@@ -102,11 +102,11 @@ def ensure_worker_direct(cf: expose.Cloudflare, account: str, worker: dict, chec
     held = {s.get("name") for s in cf.get(path)}
     names = ("GITHUB_TOKEN", "QUEUE_TOKEN")
     if worker["direct"] == "off":
-        for secret in (*names, "BRIDGE_TOKEN"):
+        # Removing the opt-in first disables actions before credentials are
+        # removed, and presence alone can then reconcile a later re-enable.
+        for secret in ("EDGE_DIRECT", *names, "BRIDGE_TOKEN"):
             if secret in held:
                 cf.change(f"edge direct: take {secret} away from the Worker", "DELETE", f"{path}/{secret}", None)
-        if "EDGE_DIRECT" in held:
-            cf.call("PUT", path, {"name": "EDGE_DIRECT", "text": "off", "type": "secret_text"})
         return
     # The bridge token rides along when the state holds it and the
     # Worker does not; a state without it is left alone in silence,
@@ -114,6 +114,20 @@ def ensure_worker_direct(cf: expose.Cloudflare, account: str, worker: dict, chec
     # three the mode stands on.
     bridge = env(worker["bridge_token_env"])
     bridge_missing = bool(bridge) and "BRIDGE_TOKEN" not in held
+    if refresh_tokens:
+        cf.changes.append("edge direct: refresh the Worker's repository tokens")
+        if check:
+            return
+        values = {
+            "GITHUB_TOKEN": env(worker["github_token_env"]),
+            "QUEUE_TOKEN": env(worker["queue_token_env"]),
+            "EDGE_DIRECT": "on",
+        }
+        for secret, value in values.items():
+            cf.call("PUT", path, {"name": secret, "text": value, "type": "secret_text"})
+        if bridge:
+            cf.call("PUT", path, {"name": "BRIDGE_TOKEN", "text": bridge, "type": "secret_text"})
+        return
     lost = sorted(set([*names, "EDGE_DIRECT"]) - held)
     if lost:
         if set(lost) == {*names, "EDGE_DIRECT"}:
@@ -137,7 +151,7 @@ def ensure_worker_direct(cf: expose.Cloudflare, account: str, worker: dict, chec
         cf.call("PUT", path, {"name": "BRIDGE_TOKEN", "text": bridge, "type": "secret_text"})
 
 
-def apply(state: dict, check: bool) -> list[str]:
+def apply(state: dict, check: bool, refresh_tokens: bool = False) -> list[str]:
     token = env("PMCF_CLOUDFLARE_TOKEN")
     if not token:
         raise SystemExit("secret PMCF_CLOUDFLARE_TOKEN is not readable here")
@@ -191,7 +205,7 @@ def apply(state: dict, check: bool) -> list[str]:
     if state["worker"]["route"] and not edge:
         print(f"note: the edge Worker {state['worker']['name']} is not deployed, does not answer, or is not built for {host}; the hostname goes straight to this host")
     expose.ensure_edge_route(cf, zone, host, edge)
-    ensure_worker_direct(cf, account, state["worker"], check)
+    ensure_worker_direct(cf, account, state["worker"], check, refresh_tokens)
     return cf.changes
 
 
@@ -199,12 +213,17 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--check", action="store_true", help="report what would change and exit 1 if anything would; changes nothing")
     parser.add_argument("--apply", action="store_true", help="make the changes")
+    parser.add_argument("--refresh-tokens", action="store_true", help="upload current repository token values even when names already exist")
     parser.add_argument("--state", default=str(pathlib.Path(__file__).parent / "state.json"))
     args = parser.parse_args(argv)
     if args.check and args.apply:
         raise SystemExit("choose one of --check and --apply")
     state = read_state(pathlib.Path(args.state))
-    changes = apply(state, check=not args.apply)
+    if args.refresh_tokens and not args.apply:
+        raise SystemExit("--refresh-tokens requires --apply")
+    if args.refresh_tokens and state["worker"]["direct"] != "on":
+        raise SystemExit("--refresh-tokens requires worker.direct to be on")
+    changes = apply(state, check=not args.apply, refresh_tokens=args.refresh_tokens)
     for change in changes:
         print(("would change: " if not args.apply else "changed: ") + change)
     if not changes:
