@@ -87,7 +87,7 @@ done
 # parse fails and every screen reads as empty.
 # The screen as the emulator sees it, one text per line.
 screen_text() {
-  adb exec-out uiautomator dump /dev/tty 2>/dev/null | python3 -c '
+  timeout 120 adb exec-out uiautomator dump /dev/tty 2>/dev/null | python3 -c '
 import sys, xml.etree.ElementTree as ET
 raw = sys.stdin.buffer.read()
 start = raw.find(b"<hierarchy")
@@ -105,7 +105,7 @@ for node in root.iter("node"):
 # The centre of the first element whose text is exactly the needle,
 # or nothing.
 tap_xy() {
-  adb exec-out uiautomator dump /dev/tty 2>/dev/null | python3 -c '
+  timeout 120 adb exec-out uiautomator dump /dev/tty 2>/dev/null | python3 -c '
 import sys, xml.etree.ElementTree as ET
 needle = sys.argv[1]
 raw = sys.stdin.buffer.read()
@@ -115,7 +115,7 @@ if start < 0:
 end = raw.find(b"</hierarchy>", start)
 root = ET.fromstring(raw[start:end + len(b"</hierarchy>") if end >= 0 else None].decode("utf-8", "replace"))
 for node in root.iter("node"):
-    if (node.get("text") or "") == needle:
+    if (node.get("text") or node.get("content-desc") or "").startswith(needle):
         bounds = node.get("bounds") or ""
         nums = bounds.replace("[", " ").replace("]", " ").replace(",", " ").split()
         if len(nums) == 4:
@@ -126,6 +126,10 @@ sys.exit(1)
 ' "$1"
 }
 
+# The device reads here and in the screen helpers carry timeouts:
+# in run 45568729971 the check failed in its second minute and the
+# dump's own read then hung on the wedged emulator for forty, until
+# the run was cancelled — a diagnostic must never hold the run.
 dump_for_log() {
   # A system dialog — the launcher's "isn't responding", under this
   # emulator's load — may be all that covers the app at the moment
@@ -140,12 +144,12 @@ dump_for_log() {
   echo "--- screen ---" >&2
   screen_text >&2 || true
   echo "--- end screen ---" >&2
-  echo "--- foreground: $(adb shell dumpsys activity activities 2>/dev/null | grep -m 1 'topResumedActivity' | tr -d '[:space:]') ---" >&2
+  echo "--- foreground: $(timeout 60 adb shell dumpsys activity activities 2>/dev/null | grep -m 1 'topResumedActivity' | tr -d '[:space:]') ---" >&2
   echo "--- logcat (app, launcher and activity lines) ---" >&2
-  adb logcat -d -t 8000 2>/dev/null | grep -aE 'FATAL EXCEPTION|pmconsole|LauncherActivity|TwaLauncher|CustomTabs|ActivityTaskManager' | grep -avE 'uiautomator|tachyon' | tail -40 >&2 || true
+  timeout 60 adb logcat -d -t 8000 2>/dev/null | grep -aE 'FATAL EXCEPTION|pmconsole|LauncherActivity|TwaLauncher|CustomTabs|ActivityTaskManager' | grep -avE 'uiautomator|tachyon' | tail -40 >&2 || true
   echo "--- end logcat ---" >&2
   echo "--- activity events for the app ---" >&2
-  adb logcat -b events -d 2>/dev/null | grep -aE 'am_create_activity|am_finish_activity|am_destroy_activity|am_proc_died|am_crash|am_anr' | grep -a 'pmconsole' | tail -20 >&2 || true
+  timeout 60 adb logcat -b events -d 2>/dev/null | grep -aE 'am_create_activity|am_finish_activity|am_destroy_activity|am_proc_died|am_crash|am_anr' | grep -a 'pmconsole' | tail -20 >&2 || true
   echo "--- end activity events ---" >&2
 }
 
@@ -313,7 +317,7 @@ adb shell input keyevent KEYCODE_APP_SWITCH
 sleep 2
 adb shell input swipe 540 1300 540 200 300
 sleep 2
-if adb shell dumpsys activity activities 2>/dev/null | grep -q "$PKG"; then
+if timeout 60 adb shell dumpsys activity activities 2>/dev/null | grep -q "$PKG"; then
   adb shell am force-stop "$PKG" 2>/dev/null || true
   sleep 2
 fi
