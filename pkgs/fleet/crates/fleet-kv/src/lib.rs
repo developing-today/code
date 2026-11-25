@@ -16,6 +16,8 @@
 pub mod backup;
 pub mod central;
 pub mod cli;
+#[cfg(feature = "http")]
+pub mod http;
 pub mod launch;
 pub mod sweep;
 pub mod working;

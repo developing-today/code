@@ -812,6 +812,8 @@ dependencies = [
  "libc",
  "proptest",
  "rusqlite",
+ "serde_json",
+ "ureq",
 ]
 
 [[package]]

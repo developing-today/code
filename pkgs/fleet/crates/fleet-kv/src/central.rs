@@ -165,6 +165,11 @@ pub enum CentralError {
         registry_id: String,
         namespace: String,
     },
+    /// No central endpoint, or no usable credential for it, is configured.
+    NotConfigured(String),
+    /// The endpoint refused the request (`unauthorized`, `forbidden`,
+    /// `data_plane_credential_refused`, or `central_refused`).
+    Refused { code: &'static str, message: String },
 }
 
 impl CentralError {
@@ -174,8 +179,10 @@ impl CentralError {
             Self::Unavailable(_) => "unavailable",
             Self::Store(_) => "central_store",
             Self::IdempotencyKeyReuse { .. } => "idempotency_key_reuse",
-            Self::Malformed(code) => code,
+            Self::Malformed(code) => *code,
             Self::UnknownNamespace { .. } => "unknown_namespace",
+            Self::NotConfigured(_) => "central_not_configured",
+            Self::Refused { code, .. } => *code,
         }
     }
 
@@ -203,6 +210,8 @@ impl std::fmt::Display for CentralError {
                 registry_id,
                 namespace,
             } => write!(f, "unknown namespace {namespace} in registry {registry_id}"),
+            Self::NotConfigured(message) => write!(f, "central plane not configured: {message}"),
+            Self::Refused { code, message } => write!(f, "{code}: {message}"),
         }
     }
 }
