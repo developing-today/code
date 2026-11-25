@@ -44,15 +44,12 @@ const browserTypes: Record<string, BrowserType> = { chromium, firefox, webkit };
 // - A fresh browser process connects instantly every time
 //
 // FIX:
-// Override Playwright's `browser` fixture to launch a FRESH browser instance
-// for each test. A fresh browser for the file is not enough: this spec has
+// Launch a fresh `testBrowser` for each test and make the built-in `context`
+// fixture use it. A fresh browser for the file is not enough: this spec has
 // enough tests to reproduce the same networking degradation partway through.
-// The built-in `context` and `page` fixtures automatically inherit from our
-// fresh browser, so NO test code changes are needed — tests keep using
-// `{ page }`, `{ browser, baseURL }`, etc. exactly as before.
 //
 // COST:
-// ~1-2s of browser launch overhead per worker, which eliminates the 30s+
+// ~1-2s of browser launch overhead per test, which eliminates the 30s+
 // timeout-and-retry cycle that made these tests flaky in Firefox.
 // Chromium is unaffected by the bug but also benefits (no downside).
 // ---------------------------------------------------------------------------
@@ -73,16 +70,18 @@ const CHROMIUM_NIX_ARGS =
       ]
     : [];
 
-const test = base.extend<Record<string, never>, { browser: Browser }>({
-  browser: [
-    async ({ browserName }, use) => {
-      const args = browserName === "chromium" ? CHROMIUM_NIX_ARGS : [];
-      const browser = await browserTypes[browserName].launch(args.length > 0 ? { args } : undefined);
-      await use(browser);
-      await browser.close();
-    },
-    { scope: "test" },
-  ],
+const test = base.extend<{ testBrowser: Browser }>({
+  testBrowser: async ({ browserName }, use) => {
+    const args = browserName === "chromium" ? CHROMIUM_NIX_ARGS : [];
+    const testBrowser = await browserTypes[browserName].launch(args.length > 0 ? { args } : undefined);
+    await use(testBrowser);
+    await testBrowser.close();
+  },
+  context: async ({ testBrowser, contextOptions }, use) => {
+    const context = await testBrowser.newContext(contextOptions);
+    await use(context);
+    await context.close();
+  },
 });
 
 // WebSocket tests need more headroom than basic tests because Firefox's WS
@@ -641,8 +640,8 @@ test.describe("Multi-User Collab", () => {
     return { context1, context2, page1, page2, fileName };
   }
 
-  test("two tabs can open the same file simultaneously", async ({ browser, baseURL }) => {
-    const { context1, context2, page1, page2 } = await setupCollabPair(browser, baseURL!);
+  test("two tabs can open the same file simultaneously", async ({ testBrowser, baseURL }) => {
+    const { context1, context2, page1, page2 } = await setupCollabPair(testBrowser, baseURL!);
 
     try {
       // Both editors should be connected
@@ -654,8 +653,8 @@ test.describe("Multi-User Collab", () => {
     }
   });
 
-  test("edits from one user appear in other user's editor", async ({ browser, baseURL }) => {
-    const { context1, context2, page1, page2 } = await setupCollabPair(browser, baseURL!);
+  test("edits from one user appear in other user's editor", async ({ testBrowser, baseURL }) => {
+    const { context1, context2, page1, page2 } = await setupCollabPair(testBrowser, baseURL!);
 
     try {
       // User 1 types something — use programmatic API to bypass Firefox keyboard flakiness
@@ -673,8 +672,8 @@ test.describe("Multi-User Collab", () => {
     }
   });
 
-  test("bidirectional editing works", async ({ browser, baseURL }) => {
-    const { context1, context2, page1, page2 } = await setupCollabPair(browser, baseURL!);
+  test("bidirectional editing works", async ({ testBrowser, baseURL }) => {
+    const { context1, context2, page1, page2 } = await setupCollabPair(testBrowser, baseURL!);
 
     try {
       // User 1 types first (slow enough for collab to sync each step)
@@ -710,8 +709,8 @@ test.describe("Multi-User Collab", () => {
     }
   });
 
-  test("collab persists across save — both clients stay connected", async ({ browser, baseURL }) => {
-    const { context1, context2, page1, page2, fileName } = await setupCollabPair(browser, baseURL!);
+  test("collab persists across save — both clients stay connected", async ({ testBrowser, baseURL }) => {
+    const { context1, context2, page1, page2, fileName } = await setupCollabPair(testBrowser, baseURL!);
 
     try {
       // User 1 types content
