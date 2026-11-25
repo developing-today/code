@@ -28,8 +28,16 @@ verbs:
   clear-override --namespace NS KEY            drop the local overlay row
   revert         --namespace NS KEY --to V     append a copy of version V
 
---global addresses the central store, which is not built yet; it is refused
-with unimplemented_central_in_phase1.
+Keys are scoped to this session's launch identity (owner, context and
+session). With no trusted launch-identity record every verb but help
+refuses with identity_unavailable (exit 69).
+
+--global (central store) and --force-blob (blob placement) belong to the
+central plane, which is not built yet: both are refused with
+unimplemented_central_in_phase1 (exit 69).
+
+Exit codes: 0 ok, 1 typed refusal (malformed_key, not_found, ...),
+2 usage error, 69 unavailable.
 ";
 
 const GET_USAGE: &str = "usage: fleet kv get --namespace NS KEY\n\nPrint the value's bytes exactly. A missing or masked key exits 1 with not_found.\n";
@@ -128,7 +136,7 @@ impl Command {
 #[derive(Debug, PartialEq, Eq)]
 enum ParseError {
     Usage(String),
-    Global,
+    Central(&'static str),
 }
 
 fn usage(message: impl Into<String>) -> ParseError {
@@ -142,8 +150,10 @@ fn parse(args: &[String]) -> Result<Command, ParseError> {
     if matches!(first.as_str(), "-h" | "--help" | "help") {
         return Ok(Command::Help(USAGE));
     }
-    if args.iter().any(|arg| arg == "--global") {
-        return Err(ParseError::Global);
+    for flag in ["--global", "--force-blob"] {
+        if args.iter().any(|arg| arg == flag) {
+            return Err(ParseError::Central(flag));
+        }
     }
     let verb = Verb::parse(first).ok_or_else(|| usage(format!("unknown verb `{first}`")))?;
 
@@ -276,6 +286,75 @@ fn refuse(err: &mut dyn Write, error: &KvError) -> i32 {
     EXIT_REFUSED
 }
 
+fn report_parse_error(error: ParseError, err: &mut dyn Write) -> i32 {
+    match error {
+        ParseError::Central(flag) => {
+            let _ = writeln!(
+                err,
+                "error: unimplemented_central_in_phase1: {flag} needs the central store, which is not built yet"
+            );
+            EXIT_UNAVAILABLE
+        }
+        ParseError::Usage(message) => {
+            let _ = writeln!(err, "error: usage: {message}\n\n{USAGE}");
+            EXIT_USAGE
+        }
+    }
+}
+
+/// What opening the store yields: the store and the caller's identity, or a
+/// typed refusal code and message.
+pub type Opened = Result<(LocalStore, crate::launch::LaunchIdentity), (&'static str, String)>;
+
+/// Validate a whole command line without touching anything. Returns the
+/// exit code when the invocation is already answered (help, a usage error
+/// or the `--global` refusal) and `None` when it needs the store.
+pub fn preflight(args: &[String], out: &mut dyn Write, err: &mut dyn Write) -> Option<i32> {
+    match parse(args) {
+        Ok(Command::Help(text)) => Some(match out.write_all(text.as_bytes()) {
+            Ok(()) => EXIT_OK,
+            Err(_) => EXIT_REFUSED,
+        }),
+        Ok(_) => None,
+        Err(error) => Some(report_parse_error(error, err)),
+    }
+}
+
+/// Run one invocation, opening the store and identity only once the whole
+/// command line has parsed. An open failure is reported as
+/// `error: <code>: <message>` and exits 69.
+pub fn run_opening(
+    args: &[String],
+    open: impl FnOnce() -> Opened,
+    stdin: &mut dyn Read,
+    out: &mut dyn Write,
+    err: &mut dyn Write,
+) -> i32 {
+    let command = match parse(args) {
+        Ok(command) => command,
+        Err(error) => return report_parse_error(error, err),
+    };
+    if let Command::Help(text) = command {
+        return finish(out.write_all(text.as_bytes()), err);
+    }
+    let (store, launch) = match open() {
+        Ok(opened) => opened,
+        Err((code, message)) => {
+            let _ = writeln!(err, "error: {code}: {message}");
+            return EXIT_UNAVAILABLE;
+        }
+    };
+    execute(
+        command,
+        &store,
+        &launch.identity(),
+        stdin,
+        out,
+        err,
+        &fleet_config::ctx::Ctx::from_env(),
+    )
+}
+
 /// Run one `fleet kv` invocation against `store` as `identity`.
 pub fn run(
     args: &[String],
@@ -305,20 +384,31 @@ fn run_with_context(
     err: &mut dyn Write,
     ctx: &fleet_config::ctx::Ctx,
 ) -> i32 {
-    let command = match parse(args) {
-        Ok(command) => command,
-        Err(ParseError::Global) => {
-            let _ = writeln!(
-                err,
-                "error: unimplemented_central_in_phase1: --global addresses the central store, which is not built yet"
-            );
-            return EXIT_UNAVAILABLE;
+    match parse(args) {
+        Ok(command) => execute(command, store, identity, stdin, out, err, ctx),
+        Err(error) => report_parse_error(error, err),
+    }
+}
+
+fn finish(written: std::io::Result<()>, err: &mut dyn Write) -> i32 {
+    match written {
+        Ok(()) => EXIT_OK,
+        Err(error) => {
+            let _ = writeln!(err, "error: output_failed: {error}");
+            EXIT_REFUSED
         }
-        Err(ParseError::Usage(message)) => {
-            let _ = writeln!(err, "error: usage: {message}\n\n{USAGE}");
-            return EXIT_USAGE;
-        }
-    };
+    }
+}
+
+fn execute(
+    command: Command,
+    store: &LocalStore,
+    identity: &Identity<'_>,
+    stdin: &mut dyn Read,
+    out: &mut dyn Write,
+    err: &mut dyn Write,
+    ctx: &fleet_config::ctx::Ctx,
+) -> i32 {
     if let (Some(operation), Some(ctx_id)) = (command.operation(), ctx.id()) {
         // Log only the propagated join key and operation. KV values,
         // namespaces, keys, and the store's separate scope identity can
@@ -392,13 +482,7 @@ fn run_with_context(
             }
         }
     };
-    match written {
-        Ok(()) => EXIT_OK,
-        Err(error) => {
-            let _ = writeln!(err, "error: output_failed: {error}");
-            EXIT_REFUSED
-        }
-    }
+    finish(written, err)
 }
 
 #[cfg(test)]
@@ -560,6 +644,7 @@ mod tests {
             &["get", "--global", "--namespace", "notes", "k"][..],
             &["set", "--namespace", "notes", "--global", "k", "v"][..],
             &["--global", "list", "--namespace", "notes"][..],
+            &["set", "--namespace", "notes", "--force-blob", "k", "v"][..],
         ] {
             let outcome = invoke(&store, words, b"");
             assert_eq!(outcome.code, EXIT_UNAVAILABLE);
@@ -582,7 +667,6 @@ mod tests {
             &["set", "notes", "k", "v"][..],
             &["set", "--namespace", "notes", "k"][..],
             &["set", "--namespace", "notes", "k", "v", "extra"][..],
-            &["set", "--namespace", "notes", "--force-blob", "k", "v"][..],
             &[
                 "set",
                 "--namespace",
@@ -672,5 +756,80 @@ mod tests {
         let store = LocalStore::in_memory().expect("store");
         assert!(text(&invoke(&store, &[], b"")).contains("usage: fleet kv"));
         assert!(text(&invoke(&store, &["revert", "--help"], b"")).contains("--to VERSION"));
+    }
+
+    #[test]
+    fn preflight_answers_help_usage_and_global_without_the_store() {
+        let mut out = Vec::new();
+        let mut err = Vec::new();
+        assert_eq!(
+            preflight(&args(&["--help"]), &mut out, &mut err),
+            Some(EXIT_OK)
+        );
+        assert_eq!(
+            preflight(&args(&["get", "k"]), &mut out, &mut err),
+            Some(EXIT_USAGE)
+        );
+        assert_eq!(
+            preflight(
+                &args(&["list", "--global", "--namespace", "n"]),
+                &mut out,
+                &mut err
+            ),
+            Some(EXIT_UNAVAILABLE)
+        );
+        assert_eq!(
+            preflight(&args(&["list", "--namespace", "n"]), &mut out, &mut err),
+            None
+        );
+    }
+
+    #[test]
+    fn run_opening_never_opens_for_bad_arguments_and_fails_closed() {
+        let mut out = Vec::new();
+        let mut err = Vec::new();
+        let mut input: &[u8] = b"";
+        let code = run_opening(
+            &args(&["get", "--namespace", "n", "k", "extra"]),
+            || panic!("must not open on a usage error"),
+            &mut input,
+            &mut out,
+            &mut err,
+        );
+        assert_eq!(code, EXIT_USAGE);
+
+        let mut err = Vec::new();
+        let code = run_opening(
+            &args(&["get", "--namespace", "n", "k"]),
+            || Err(("identity_unavailable", "no record".into())),
+            &mut input,
+            &mut out,
+            &mut err,
+        );
+        assert_eq!(code, EXIT_UNAVAILABLE);
+        assert_eq!(
+            String::from_utf8(err).expect("utf8"),
+            "error: identity_unavailable: no record\n"
+        );
+
+        let mut out = Vec::new();
+        let code = run_opening(
+            &args(&["set", "--namespace", "n", "k", "v"]),
+            || {
+                Ok((
+                    LocalStore::in_memory().expect("store"),
+                    crate::launch::LaunchIdentity {
+                        owner_user_id: "o".into(),
+                        context_id: "c".into(),
+                        partition_id: "ses_p".into(),
+                    },
+                ))
+            },
+            &mut input,
+            &mut out,
+            &mut Vec::new(),
+        );
+        assert_eq!(code, EXIT_OK);
+        assert_eq!(out, b"1\n");
     }
 }

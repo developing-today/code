@@ -14,6 +14,7 @@
 //! delete-related states from the fleet-kv design (D005) and stay distinct.
 
 pub mod cli;
+pub mod launch;
 
 use rusqlite::{Connection, ErrorCode, OptionalExtension, Transaction, params};
 

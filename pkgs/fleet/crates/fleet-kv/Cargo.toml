@@ -10,5 +10,10 @@ description = "Identity-scoped local SQLite storage for fleet-kv."
 fleet-config = { workspace = true }
 rusqlite = { version = "0.43", features = ["bundled"] }
 
+# geteuid for the launch-identity ownership check; already in the
+# workspace lockfile through the fleet binary.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [dev-dependencies]
 proptest = "1.12"

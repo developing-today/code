@@ -719,6 +719,7 @@ dependencies = [
  "fleet-config",
  "fleet-dispatch",
  "fleet-dispatch-test",
+ "fleet-kv",
  "fleet-laptop-agent",
  "fleet-orgs",
  "fleet-proxy",
@@ -807,6 +808,7 @@ name = "fleet-kv"
 version = "0.1.0"
 dependencies = [
  "fleet-config",
+ "libc",
  "proptest",
  "rusqlite",
 ]

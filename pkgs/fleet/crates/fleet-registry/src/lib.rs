@@ -89,6 +89,9 @@ pub enum Capability {
     Actions,
     /// `fleet orgs …` — the Turso-backed GitHub org/App registry.
     Orgs,
+    /// `fleet kv …` — identity-scoped key/value bytes in the host-local
+    /// store (code#13314). A working-seat client surface, so full only.
+    Kv,
 }
 
 impl Capability {
@@ -118,6 +121,7 @@ impl Capability {
             Capability::Cert => "cert",
             Capability::Actions => "actions",
             Capability::Orgs => "orgs",
+            Capability::Kv => "kv",
         }
     }
 
@@ -146,6 +150,7 @@ impl Capability {
         Capability::Cert,
         Capability::Actions,
         Capability::Orgs,
+        Capability::Kv,
     ];
 }
 
@@ -395,6 +400,14 @@ pub const DOMAINS: &[Domain] = &[
         primary: Capability::Orgs,
         aliases: &[],
         subcommands: &["list", "sync"],
+    },
+    Domain {
+        name: "kv",
+        summary: "Key/value bytes for this session in the host-local store: get, set, list, delete (masking tombstone), clear-override and revert, per --namespace. --global is not built yet.",
+        capabilities: &[Capability::Kv],
+        primary: Capability::Kv,
+        aliases: &[],
+        subcommands: &["get", "set", "list", "delete", "clear-override", "revert"],
     },
     Domain {
         name: "agent",
