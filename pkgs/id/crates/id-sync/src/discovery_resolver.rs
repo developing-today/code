@@ -389,7 +389,7 @@ mod tests {
         fn request(
             &mut self,
             _request: HttpRequest,
-        ) -> impl std::future::Future<Output = Result<HttpResponse>> + Send {
+        ) -> impl Future<Output = Result<HttpResponse>> + Send {
             std::future::ready(Ok(match &self.0 {
                 Some(body) => HttpResponse {
                     status: 200,
