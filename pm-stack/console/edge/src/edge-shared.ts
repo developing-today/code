@@ -205,6 +205,12 @@ export interface EdgeOptions {
      * hold for the next that is. */
     kinds?: readonly string[];
   };
+  /** The hosted M4 ledger surfaces (#14968, CF-5b): the fleet-platform
+   * ledger's address and credential, present only when the Worker's
+   * LEDGER_PAGES flag reads `on`. With it, this side serves /alerts,
+   * /notifications and /comments (and their /api twins) itself from
+   * the ledger; without it, those pages stay the host's. */
+  ledgerPages?: { url: string; token?: string };
   /** The live connections to the app, which the platform holds (they
    * stay open while this object is put away): take a request to be
    * one and give the answer for it, say something to all of them, and
