@@ -18,12 +18,12 @@ digest rule, size ceilings, the bundle ID, and how a reader rejects.
 
 Leaves to later slices, with the manifest slot already reserved:
 
-| Slice | Topic                                                                     | Slot or hook in slice 1                                                                                                                         |
-| ----- | ------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
-| 2     | Bundle grants and broker renewal                                          | tag `0x08 grants`; slice-1 readers reject a bundle that has it                                                                                  |
-| 3     | Import order, creator binding against fleet CA / IdP, rejection catalogue | tag `0x04 creator_binding` is carried and signed; slice 1 reports it as `unbound` or `present-unchecked`. Done: `slice-3-import-and-binding.md` |
-| 4     | Merge on contact                                                          | none needed: contents are plain content-addressed objects                                                                                       |
-| 5     | Carrier profiles (media, email, QR)                                       | §5 format ceilings; carriers only tighten them. Done: `slice-5-carrier-profiles.md`                                                             |
+| Slice | Topic                                                                     | Slot or hook in slice 1                                                                                                                           |
+| ----- | ------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 2     | Bundle grants and broker renewal                                          | tag `0x08 grants`; slice-1 readers reject a bundle that has it                                                                                    |
+| 3     | Import order, creator binding against fleet CA / IdP, rejection catalogue | tag `0x04 creator_binding` is carried and signed; slice 1 reports it as `unbound` or `present-unchecked`. Done: `slice-3-import-and-binding.md`   |
+| 4     | Merge on contact                                                          | none foreseen; slice 4 adds manifest kind 4 (the envelope), which a slice-1 reader rejects as `unknown_kind`. Done: `slice-4-merge-on-contact.md` |
+| 5     | Carrier profiles (media, email, QR)                                       | §5 format ceilings; carriers only tighten them. Done: `slice-5-carrier-profiles.md`                                                               |
 
 Bearer versus recipient-bound grants is Drew's decision (#13889 open question
 1). This record does not settle it. §7 puts the options in plain words.
@@ -88,6 +88,10 @@ entry = alg_len:u8 alg digest_len:u8 digest size:u64 kind:u8
 - `kind` is 1 content object, 2 link object, or 3 blob. A blob is the media
   bytes that a D3 media body `{digest, size, mime}` points at; on a carrier
   with no network, inline is the out-of-band path.
+  Slice 4 adds kind 4, the envelope: the data-plane operation that placed an
+  object in its area, with the author's capability. See
+  `slice-4-merge-on-contact.md`. A slice-1 reader rejects it as
+  `unknown_kind`.
 - Entries are strictly ascending by digest bytes, so a duplicate object is
   impossible and two writers of the same set produce the same manifest bytes.
 - `size` is the exact object length; the reader knows the total length before
