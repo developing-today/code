@@ -314,6 +314,7 @@ it is — a valid world capability, minted by the host's admin with
 | `revoke`       |                                | Revoke a delegation by its grant event ID               |
 | `doc`          |                                | Publish documents; list events/frontier/history         |
 | `claim`        |                                | Tag claims on any subject (set, clear, search)          |
+| `compact`      |                                | Reclaim live-class event bytes (one retention pass)     |
 | `writer-sets`  |                                | Writer sets in the event store (show, expand, discover) |
 
 ### Tag Subcommands

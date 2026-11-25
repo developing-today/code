@@ -1493,6 +1493,7 @@ pub enum Command {
     /// frontier, keeping durable kinds, checkpoints and each author's most recent events.
     /// A compacted event keeps its presence, applied verdict and causal edges as a
     /// residue. Fails clearly while `id serve` holds the single-opener store.
+    /// This is node-wide across all channels and permanently removes eligible message bytes.
     ///
     /// # Examples
     ///

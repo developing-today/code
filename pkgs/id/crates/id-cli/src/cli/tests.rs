@@ -135,6 +135,33 @@ fn test_cli_parse_no_args() {
     assert!(cli.log_level.is_none());
 }
 
+/// Oracle: the CLI contract maps retention and store flags without accepting
+/// values outside the store's unsigned 32-bit retention window.
+#[test]
+fn test_cli_parse_compact_retention() {
+    std::thread::Builder::new()
+        .stack_size(32 * 1024 * 1024)
+        .spawn(|| {
+            let cli = Cli::try_parse_from(["id", "compact"]).unwrap();
+            assert!(matches!(
+                cli.command,
+                Some(Command::Compact { json: false, retain_recent })
+                    if retain_recent == crate::commands::compact::DEFAULT_RETAIN_RECENT
+            ));
+            let cli = Cli::try_parse_from([
+                "id", "--event-store", "events", "compact", "--retain-recent", "0", "--json",
+            ]).unwrap();
+            assert_eq!(cli.event_store, Some(std::path::PathBuf::from("events")));
+            assert!(matches!(cli.command, Some(Command::Compact { json: true, retain_recent: 0 })));
+            for invalid in ["-1", "not-a-number", "4294967296"] {
+                assert!(Cli::try_parse_from(["id", "compact", "--retain-recent", invalid]).is_err());
+            }
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+}
+
 /// Parse via `normalize_args` on a big-stack thread: building this
 /// CLI's clap tree is deep enough to overflow the default test
 /// thread stack (the #3059 parse tests below spawn a thread for the
