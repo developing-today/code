@@ -17,7 +17,11 @@
 //           git dir (so the tree stays clean).
 //   remove  removes a scratch worktree only when the caller presents the
 //           token `add` printed and the tree is clean; never --force. It
-//           prints what it removed.
+//           prints what it removed. A tree whose only untracked file is
+//           the fleet-owned `.fleet-session-id` marker counts as clean
+//           (#14309): the fleet writes that marker into session
+//           worktrees, and repos that do not ignore it would otherwise
+//           make every scratch tree unremovable by this tool.
 //
 // Usage:
 //   node bin/scratch-worktree.mjs add --repo <checkout> --prefix <name>
@@ -119,6 +123,19 @@ export const add = ({ repo, prefix, root, base = 'origin/main', fetch = true, no
   return { path: target, token, base, head };
 };
 
+// The fleet session marker: written by the fleet into the worktree a
+// session runs in, never part of the tree's own work. Only the exact
+// untracked root entry is excused — a tracked or modified marker, a
+// marker in a subdirectory, or any other untracked file still blocks
+// removal (#14309).
+export const FLEET_SESSION_MARKER = '.fleet-session-id';
+
+export const blockingChanges = (status) =>
+  status
+    .split('\n')
+    .filter((line) => line !== '' && line !== `?? ${FLEET_SESSION_MARKER}`)
+    .join('\n');
+
 export const remove = ({ path: target, token }) => {
   if (!target) throw new ScratchError(2, '--path is required');
   if (!token) throw new ScratchError(2, '--token is required');
@@ -133,7 +150,7 @@ export const remove = ({ path: target, token }) => {
   if (recorded !== token) {
     throw new ScratchError(3, `refusing to remove ${target}: it belongs to another run`);
   }
-  const status = git(['status', '--porcelain', '--untracked-files=all'], target);
+  const status = blockingChanges(git(['status', '--porcelain', '--untracked-files=all'], target));
   if (status !== '') {
     throw new ScratchError(3, `refusing to remove ${target}: it has uncommitted changes:\n${status}`);
   }
