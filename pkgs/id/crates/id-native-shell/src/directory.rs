@@ -948,28 +948,21 @@ mod tests {
             .resource_mut::<DirectoryApp>()
             .set_listing("lobby", &listing());
         app.update();
-        let mut query = app
-            .world_mut()
-            .query::<(&DirectoryRow, &Text)>();
+        let mut query = app.world_mut().query::<(&DirectoryRow, &Text)>();
         let rows: Vec<String> = query
             .iter(app.world())
             .map(|(_, text)| text.0.clone())
             .collect();
         // Oracle: the graphical rows are exactly the accessible
         // table's lines, in order.
-        let table = app
-            .world()
-            .resource::<DirectoryApp>()
-            .text_table();
+        let table = app.world().resource::<DirectoryApp>().text_table();
         assert_eq!(rows, table.lines().map(str::to_string).collect::<Vec<_>>());
         // Entering a session hides the directory rows.
         app.world_mut()
             .resource_mut::<DirectoryApp>()
             .handle_key(DirectoryKey::Activate);
         app.update();
-        let mut query = app
-            .world_mut()
-            .query::<(&DirectoryRow, &Text)>();
+        let mut query = app.world_mut().query::<(&DirectoryRow, &Text)>();
         assert_eq!(query.iter(app.world()).count(), 0);
     }
 }

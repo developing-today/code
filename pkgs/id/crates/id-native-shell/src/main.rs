@@ -508,10 +508,7 @@ fn main() {
 }
 
 /// Announce the shell and the contract it speaks, once, at startup.
-fn announce(
-    bridge: Option<Res<'_, SessionBridge>>,
-    directory: Option<Res<'_, DirectoryBridge>>,
-) {
+fn announce(bridge: Option<Res<'_, SessionBridge>>, directory: Option<Res<'_, DirectoryBridge>>) {
     let session_line = if bridge.is_some() {
         "live WorldClient session running; host views feed the renderer"
     } else if directory.is_some() {
