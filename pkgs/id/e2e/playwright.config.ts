@@ -1,4 +1,5 @@
 import { defineConfig, devices } from "@playwright/test";
+import path from "node:path";
 
 /**
  * Playwright E2E test configuration for the id web UI.
@@ -36,6 +37,10 @@ import { defineConfig, devices } from "@playwright/test";
 // argument) does NOT have per-spec isolation.
 const CHROMIUM_PORT = Number(process.env.TEST_PORT) || 4173;
 const FIREFOX_PORT = CHROMIUM_PORT + 1;
+const E2E_ROOT = process.cwd();
+const SERVER_CWD = process.env.ID_E2E_SERVER_CWD ?? E2E_ROOT;
+const ID_SERVER_BIN = path.resolve(E2E_ROOT, "../target/debug/id");
+const WORLD_MODULE = path.resolve(E2E_ROOT, "fixtures/roc-screen.wasm");
 
 // In nix sandbox builds, disable P2P networking (no UDP sockets available).
 // E2E tests only exercise the web UI, not P2P features.
@@ -99,10 +104,11 @@ const projects = IS_NIX_BUILD && !IS_VM_TEST ? [firefoxProject] : [chromiumProje
 // nix/tests/playwright-e2e-test.nix); override with ID_E2E_WORLD_ADMIN_TOKEN
 // in all three places at once.
 const WORLD_ADMIN_TOKEN = process.env.ID_E2E_WORLD_ADMIN_TOKEN ?? "e2e-world-admin-token";
-const WORLD_FLAGS = `--world --world-admin-token ${WORLD_ADMIN_TOKEN} --world-module fixtures/roc-screen.wasm`;
+const WORLD_FLAGS = `--world --world-admin-token ${WORLD_ADMIN_TOKEN} --world-module "${WORLD_MODULE}"`;
 
 const chromiumServer = {
-  command: `../target/debug/id serve --web --port ${CHROMIUM_PORT} --ephemeral${OFFLINE_FLAGS} ${WORLD_FLAGS}`,
+  command: `"${ID_SERVER_BIN}" serve --web --port ${CHROMIUM_PORT} --ephemeral${OFFLINE_FLAGS} ${WORLD_FLAGS}`,
+  cwd: SERVER_CWD,
   port: CHROMIUM_PORT,
   reuseExistingServer: !process.env.CI && !IS_NIX_BUILD,
   timeout: 60_000,
@@ -111,7 +117,8 @@ const chromiumServer = {
 };
 
 const firefoxServer = {
-  command: `../target/debug/id serve --web --port ${FIREFOX_PORT} --ephemeral${OFFLINE_FLAGS} ${WORLD_FLAGS}`,
+  command: `"${ID_SERVER_BIN}" serve --web --port ${FIREFOX_PORT} --ephemeral${OFFLINE_FLAGS} ${WORLD_FLAGS}`,
+  cwd: SERVER_CWD,
   port: FIREFOX_PORT,
   reuseExistingServer: !process.env.CI && !IS_NIX_BUILD,
   timeout: 60_000,
