@@ -41,6 +41,7 @@
 //!   revoke       Revoke a delegation by its grant's event ID
 //!   doc          Documents: publish a file, fetch its bytes; list events, frontier, history
 //!   claim        Tag claims on any subject (set, clear, list, search)
+//!   talk         Talk pages: post on and list an object's discussion
 //!   writer-sets  Writer sets in the event store (show, expand, discover)
 //!   migrate-tags Migrate existing files to name/file auto-tags (alias: migrate)
 //! ```
@@ -225,7 +226,7 @@ pub struct Cli {
     #[arg(long, global = true, value_name = "FILE")]
     pub groups_log: Option<PathBuf>,
 
-    /// The event store that `doc` and `claim` read and append to.
+    /// The event store that `doc`, `claim` and `talk` read and append to.
     ///
     /// Defaults to `events` in the data directory. A relative path is relative to the data
     /// directory, so a store shared by several nodes is best given as an absolute path.
