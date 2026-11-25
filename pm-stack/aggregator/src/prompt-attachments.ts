@@ -214,7 +214,7 @@ export async function readMultipartForm(req: Request): Promise<FormData> {
   return reparsed.formData();
 }
 
-const SUBMISSION_FIELDS = ["scope", "target", "mode", "page", "sectionRef", "prompt", "replyTo"] as const;
+const SUBMISSION_FIELDS = ["scope", "target", "mode", "page", "sectionRef", "prompt", "replyTo", "variant"] as const;
 
 /** Shape a multipart form's text fields into the JSON body
  *  validateNewPrompt already accepts, so multipart and JSON submissions
