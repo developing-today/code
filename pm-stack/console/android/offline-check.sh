@@ -139,9 +139,17 @@ fail() {
 }
 
 wait_text() {
-  local needle="$1" timeout="${2:-60}" i=0
+  local needle="$1" timeout="${2:-60}" i=0 screen=""
   while [ "$i" -lt "$timeout" ]; do
-    if screen_text | grep -qF "$needle"; then return 0; fi
+    screen="$(screen_text)"
+    if printf '%s' "$screen" | grep -qF "$needle"; then return 0; fi
+    # A system "isn't responding" dialog — the launcher's, under a
+    # loaded emulator — is scenery standing between the check and
+    # the app, not the app itself: tell it to wait and keep waiting
+    # for the app's own text, which is what decides.
+    if printf '%s' "$screen" | grep -qF "isn't responding"; then
+      tap_text "Wait" || true
+    fi
     sleep 2
     i=$((i + 2))
   done

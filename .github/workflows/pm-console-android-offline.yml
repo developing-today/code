@@ -89,6 +89,11 @@ jobs:
         uses: reactivecircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d # v2
         with:
           api-level: 34
+          # The action's default two cores starve the system UI under
+          # software rendering on these four-core runners: the
+          # launcher itself went unresponsive in run 45556776868 and
+          # its system dialog covered the screen for the whole check.
+          cores: 4
           target: google_apis
           arch: x86_64
           profile: pixel_7
