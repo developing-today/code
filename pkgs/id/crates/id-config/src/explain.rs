@@ -87,6 +87,7 @@ pub fn explain(input: &str) -> Result<Explanation, ConfigError> {
     gates(&resolved, &mut entries);
     behavior(&resolved, &mut entries)?;
     fanout(&written, &resolved, &mut entries);
+    peers(&written, &resolved, &mut entries)?;
     extensions(&resolved, &mut entries)?;
     Ok(Explanation { entries, digest })
 }
@@ -267,6 +268,45 @@ fn fanout(written: &Value, resolved: &ResolvedConfig, entries: &mut Vec<ExplainE
         fanout.peer_breadth.to_string(),
         source("peer_breadth"),
     );
+}
+
+/// Each peer's fields under `peers[<peer_id>]`, in `peer_id` order; a
+/// field the entry did not write shows its default.
+fn peers(
+    written: &Value,
+    resolved: &ResolvedConfig,
+    entries: &mut Vec<ExplainEntry>,
+) -> Result<(), ConfigError> {
+    let written_peers = written.get("peers").and_then(Value::as_array);
+    for peer in &resolved.peers {
+        let entry = written_peers.and_then(|list| {
+            list.iter()
+                .find(|item| item.get("peer_id").and_then(Value::as_str) == Some(&peer.peer_id))
+        });
+        let source = |key: &str| {
+            if entry.and_then(|e| e.get(key)).is_some() {
+                SOURCE_DOCUMENT
+            } else {
+                SOURCE_DEFAULT
+            }
+        };
+        let prefix = format!("peers[{}]", json(&peer.peer_id)?);
+        let fields = [
+            ("class", json(&peer.class)?),
+            ("operations", json(&peer.operations)?),
+            ("relay_granted", peer.relay_granted.to_string()),
+            ("scope", json(&peer.scope)?),
+            ("policy_version", peer.policy_version.to_string()),
+            ("valid_from", json(&peer.valid_from)?),
+            ("expires_at", json(&peer.expires_at)?),
+            ("timeout_ms", json(&peer.timeout_ms)?),
+            ("priority", json(&peer.priority)?),
+        ];
+        for (key, value) in fields {
+            push(entries, &format!("{prefix}.{key}"), value, source(key));
+        }
+    }
+    Ok(())
 }
 
 fn extensions(
