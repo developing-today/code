@@ -1074,6 +1074,17 @@ fn pre_body_refusal(
     None
 }
 
+/// #14191: attribute every queue event this request writes to the
+/// context id its `X-Fleet-Ctx-*` headers carry (none: no change).
+fn request_ctx_scope(
+    req: &crate::uds_http::HttpRequest,
+) -> crate::turso_queue::ctx_scope::CtxScope {
+    let ctx = fleet_config::ctx::Ctx::from_headers(
+        req.headers.iter().map(|(k, v)| (k.as_str(), v.as_str())),
+    );
+    crate::turso_queue::ctx_scope::enter(ctx.id())
+}
+
 /// Transport-agnostic request handling (#6216): the TCP loop adapts
 /// tiny_http requests to this function and the UDS loop adapts
 /// Unix-socket requests; routes and auth are identical on both
@@ -1323,6 +1334,7 @@ pub fn run() -> i32 {
                         })
                     },
                     move |req| {
+                        let _ctx = request_ctx_scope(req);
                         let (status, value) = handle_request(
                             &st,
                             &tok,
@@ -1373,6 +1385,7 @@ pub fn run() -> i32 {
             })
         },
         move |req| {
+            let _ctx = request_ctx_scope(req);
             let (status, value) = handle_request(
                 &state,
                 &token,

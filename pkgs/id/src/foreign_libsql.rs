@@ -37,13 +37,17 @@
 //!   calls are isolated behind per-alias circuit breakers with bounded
 //!   retries for reads only; auth failure is fatal and never retried.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use id_grants::{PublicationRecord, Scope};
+use id_sync::serving_limits::{
+    FetchCap, OwnerAggregateLimits, ServingGate, ServingRefusal, ShareServingLimits,
+};
 use serde_json::{Value as Json, json};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -687,6 +691,90 @@ impl PublicationScope {
         Ok(Self { collections: map })
     }
 
+    /// Build the scope from the real publication record (#14781,
+    /// [`PublicationRecord`]) plus the serving side's per-collection
+    /// serving declarations.
+    ///
+    /// The record is the authority for WHAT is published: its scope's
+    /// collection units are exactly the published set (D4). The
+    /// declarations are the authority for HOW each collection is
+    /// served — the owner's per-collection live/materialized choice
+    /// (#5803), which the record does not carry — so the serving side
+    /// supplies them here, as [`PublishedCollection`] entries.
+    ///
+    /// The two must agree exactly, and every disagreement is a config
+    /// error, refused loudly rather than partially applied
+    /// (invariant 8):
+    ///
+    /// - a retired record (`unpublished_at` set) builds no scope:
+    ///   unpublish retires the whole share at once (D5);
+    /// - a record unit that is an object, not a collection, is
+    ///   refused: this read path serves collections, and silently
+    ///   dropping part of the published set would serve less than
+    ///   the record promises with nobody told;
+    /// - a collection the record names with no serving declaration,
+    ///   and a declaration naming a collection the record does not
+    ///   name, are both refused: the scope is never wider or narrower
+    ///   than the record, and a table the record does not name (one
+    ///   created later, say) is not published.
+    ///
+    /// The caller passes a record that is live at build time — the
+    /// grants layer's liveness check (grant lineage, via
+    /// `Publications::resolve`) is what vouches for that. The scope
+    /// is then a snapshot of the published set; unpublish is
+    /// expressed by the serving layer no longer presenting it, as
+    /// [`PublicationScope`] documents.
+    pub fn from_record(
+        record: &PublicationRecord,
+        declared: impl IntoIterator<Item = PublishedCollection>,
+    ) -> Result<Self, AdapterError> {
+        if record.unpublished_at.is_some() {
+            return Err(AdapterError::Config(format!(
+                "publication record for share {} is retired; a retired share has no public scope",
+                record.share
+            )));
+        }
+        let mut named = BTreeSet::new();
+        for unit in &record.scope {
+            match unit {
+                Scope::Collection(name) => {
+                    named.insert(name.as_str());
+                }
+                Scope::Object(id) => {
+                    return Err(AdapterError::Config(format!(
+                        "publication record for share {} names object {id}, which the \
+                         adapter's collection read path cannot serve",
+                        record.share
+                    )));
+                }
+            }
+        }
+        let declared: Vec<PublishedCollection> = declared.into_iter().collect();
+        let declared_names: BTreeSet<&str> = declared
+            .iter()
+            .map(|collection| collection.name.as_str())
+            .collect();
+        for name in &named {
+            if !declared_names.contains(name) {
+                return Err(AdapterError::Config(format!(
+                    "publication record for share {} publishes collection {name}, \
+                     which has no serving declaration",
+                    record.share
+                )));
+            }
+        }
+        for collection in &declared {
+            if !named.contains(collection.name.as_str()) {
+                return Err(AdapterError::Config(format!(
+                    "serving declaration names collection {}, which the publication \
+                     record for share {} does not publish",
+                    collection.name, record.share
+                )));
+            }
+        }
+        Self::new(declared)
+    }
+
     /// The published collection named `name`, if the record names it.
     #[must_use]
     pub fn collection(&self, name: &str) -> Option<&PublishedCollection> {
@@ -811,6 +899,222 @@ impl<T: Transport, C: CredentialResolver> LibsqlAdapter<T, C> {
             }
             Err(_) => Err(PublicReadError::Unavailable),
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Serving limits at the public-read boundary (#5802 D3 item 4, #14783)
+// ---------------------------------------------------------------------------
+
+/// Why a served public read did not serve rows: the serving layer's
+/// outcome vocabulary. The adapter's two outcomes
+/// ([`PublicReadError`]) are preserved as the first two variants; a
+/// fetch stopped by the share's serving limits names the limit
+/// instead — the stable serving-limit outcome the #5802 record
+/// requires (D3 item 4, invariant 8: caps fail loudly). Like
+/// [`PublicReadError`], no variant carries a credential, a credential
+/// reference, a resolved URL, a server response body, or any
+/// adapter-internal detail.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum PublicServingError {
+    /// The read was refused at the source — unpublished collection,
+    /// reach-through fragment, or write shape — before any fetch.
+    #[error("public read refused")]
+    Refused,
+    /// The declared source could not be read. Never stale data
+    /// served as current.
+    #[error("public read unavailable")]
+    Unavailable,
+    /// A serving limit refused the fetch: the reader is over the
+    /// share's request-rate cap, or the owner's aggregate budget or
+    /// concurrent-fetch ceiling is spent. The refusal's stable wire
+    /// name is [`ServingRefusal::name`].
+    #[error("public read refused by a serving limit")]
+    Limit(ServingRefusal),
+    /// The fetched rows crossed a per-fetch serving cap (objects or
+    /// bytes) and were not served. This boundary serves a fetch
+    /// whole or not at all: the [`GrantedQuery`] surface carries a
+    /// literal `LIMIT` but no offset, so there is no resume position
+    /// to hand back, and serving the partial result as if complete
+    /// would be the silent truncation invariant 8 forbids.
+    /// Page-and-resume under #5800's chunk-resume rule binds where
+    /// snapshot fetches are served. The cap's stable wire name is
+    /// [`FetchCap::name`].
+    #[error("public read crossed a per-fetch serving cap")]
+    Capped(FetchCap),
+}
+
+impl PublicServingError {
+    /// The stable name of this outcome: the refusal's or cap's own
+    /// wire name for the limit outcomes.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Refused => "refused",
+            Self::Unavailable => "unavailable",
+            Self::Limit(refusal) => refusal.name(),
+            Self::Capped(FetchCap::Objects) => "fetch_capped_objects",
+            Self::Capped(FetchCap::Bytes) => "fetch_capped_bytes",
+        }
+    }
+}
+
+impl From<PublicReadError> for PublicServingError {
+    fn from(error: PublicReadError) -> Self {
+        match error {
+            PublicReadError::Refused => Self::Refused,
+            PublicReadError::Unavailable => Self::Unavailable,
+        }
+    }
+}
+
+/// The serving context of one public read: the opaque ids the gate
+/// keys on, the owner's tuned limits for the share, and the
+/// caller's clock.
+#[derive(Debug, Clone, Copy)]
+pub struct PublicReadContext<'a> {
+    /// The share's owner (the aggregate budget and the concurrency
+    /// ceiling are charged to the owner, across all their shares).
+    pub owner: &'a str,
+    /// The share being read (the rate window is per share and
+    /// reader).
+    pub share: &'a str,
+    /// The reader, by identity-or-address.
+    pub reader: &'a str,
+    /// The owner's tuned limits for this share, if any; the limits
+    /// in force clamp these to the platform ceilings.
+    pub owner_tuned_limits: Option<&'a ShareServingLimits>,
+    /// Milliseconds on the caller's monotonic clock, as in the gate.
+    pub now_ms: u64,
+}
+
+/// The bytes one fetched row is charged as on the serving layers:
+/// the payload bytes of its values — text and blob payloads at
+/// their length, fixed-width values at their width. Column names
+/// are contract, not payload, and are not charged.
+fn row_serving_bytes(row: &Row) -> u64 {
+    row.values
+        .iter()
+        .map(|value| match value {
+            IdValue::Null => 0,
+            IdValue::Bool(_) => 1,
+            IdValue::Integer(_)
+            | IdValue::Unsigned(_)
+            | IdValue::Real(_)
+            | IdValue::TimestampMicros(_) => 8,
+            IdValue::Text(text) => u64::try_from(text.len()).unwrap_or(u64::MAX),
+            IdValue::Blob(blob) => u64::try_from(blob.len()).unwrap_or(u64::MAX),
+        })
+        .fold(0u64, u64::saturating_add)
+}
+
+/// The serving layer for public reads: one [`ServingGate`] held
+/// across calls, wiring the mandatory serving limits of the #5802
+/// record (D3 item 4) into the adapter's public-read path
+/// ([`LibsqlAdapter::query_public`], #14784). The serving layer
+/// that presents public shares owns one `PublicServing`: the gate's
+/// rate windows, aggregate budgets, and concurrency counts are
+/// meaningful only held across reads, so they live here, not in
+/// the stateless adapter.
+///
+/// This is the one public-read boundary that exists today. The
+/// #5800 snapshot fetch path — share snapshots served to readers
+/// with page-and-resume — does not exist yet; when a slice builds
+/// it, it calls the same gate per reader fetch, as the gate's own
+/// docs prescribe.
+#[derive(Debug)]
+pub struct PublicServing {
+    gate: Mutex<ServingGate>,
+    platform_ceilings: ShareServingLimits,
+}
+
+impl PublicServing {
+    /// A serving layer enforcing the deployment's per-owner
+    /// aggregate limits under the platform's per-share ceilings.
+    #[must_use]
+    pub fn new(owner_limits: OwnerAggregateLimits, platform_ceilings: ShareServingLimits) -> Self {
+        Self {
+            gate: Mutex::new(ServingGate::new(owner_limits)),
+            platform_ceilings,
+        }
+    }
+
+    /// Serve one public read of a published collection under the
+    /// share's serving limits.
+    ///
+    /// The layers run in the gate's own order, around the adapter
+    /// read: the owner's concurrency slot is taken first and held
+    /// across the read; the fetched rows then run through
+    /// [`ServingGate::serve_fetch`] — rate check, per-fetch cap
+    /// plan over the rows' sizes, aggregate charge. At this
+    /// boundary the row sizes exist only once the read returns, so
+    /// the gate runs on the fetched result: a fetch the gate
+    /// refuses, and a fetch whose rows cross a per-fetch cap, serve
+    /// nothing to the reader. The aggregate charge stands for a
+    /// capped fetch — the source read happened and the owner's
+    /// serving path bore it; what the cap withholds is delivery,
+    /// not the read.
+    pub async fn query_public<T: Transport, C: CredentialResolver>(
+        &self,
+        adapter: &LibsqlAdapter<T, C>,
+        alias: &str,
+        scope: &PublicationScope,
+        query: &GrantedQuery,
+        context: &PublicReadContext<'_>,
+    ) -> Result<Vec<Row>, PublicServingError> {
+        let limits =
+            ShareServingLimits::effective(context.owner_tuned_limits, &self.platform_ceilings);
+        {
+            let mut gate = self.gate.lock().unwrap_or_else(|p| p.into_inner());
+            if let Err(refusal) = gate.begin_owner_fetch(context.owner) {
+                return Err(PublicServingError::Limit(refusal));
+            }
+        }
+        let result = self
+            .serve_gated(adapter, alias, scope, query, context, &limits)
+            .await;
+        {
+            let mut gate = self.gate.lock().unwrap_or_else(|p| p.into_inner());
+            gate.end_owner_fetch(context.owner);
+        }
+        result
+    }
+
+    async fn serve_gated<T: Transport, C: CredentialResolver>(
+        &self,
+        adapter: &LibsqlAdapter<T, C>,
+        alias: &str,
+        scope: &PublicationScope,
+        query: &GrantedQuery,
+        context: &PublicReadContext<'_>,
+        limits: &ShareServingLimits,
+    ) -> Result<Vec<Row>, PublicServingError> {
+        let rows = adapter.query_public(alias, scope, query).await?;
+        let sizes: Vec<u64> = rows.iter().map(row_serving_bytes).collect();
+        let page = {
+            let mut gate = self.gate.lock().unwrap_or_else(|p| p.into_inner());
+            gate.serve_fetch(
+                context.owner,
+                context.share,
+                context.reader,
+                &sizes,
+                0,
+                limits,
+                context.now_ms,
+            )
+        }
+        .map_err(PublicServingError::Limit)?;
+        if let Some(cap) = page.capped_by {
+            return Err(PublicServingError::Capped(cap));
+        }
+        Ok(rows)
+    }
+
+    /// Prune expired rate and aggregate windows. This bounds
+    /// retained state and changes no admission decision.
+    pub fn prune(&self, now_ms: u64) {
+        let mut gate = self.gate.lock().unwrap_or_else(|p| p.into_inner());
+        gate.prune(now_ms);
     }
 }
 
@@ -2720,6 +3024,273 @@ mod tests {
         );
     }
 
+    /// One scripted served row: values 7 / "hash" / "report" / 1,
+    /// charged as 8 + 4 + 6 + 1 = 19 serving bytes.
+    fn served_row_json() -> String {
+        format!(
+            "[{{\"type\":\"integer\",\"value\":\"7\"}},{{\"type\":\"blob\",\"value\":\"{}\"}},\
+             {{\"type\":\"text\",\"value\":\"report\"}},{{\"type\":\"integer\",\"value\":\"1\"}}]",
+            base64_encode(b"hash")
+        )
+    }
+
+    fn push_served_rows(transport: &ScriptTransport, rows: usize) {
+        let row = served_row_json();
+        let body = ok_pipeline_body(&vec![row; rows].join(", "));
+        transport.push(Ok(TransportResponse { status: 200, body }));
+    }
+
+    fn generous_owner_limits() -> OwnerAggregateLimits {
+        OwnerAggregateLimits {
+            max_objects_per_window: 1_000_000,
+            max_bytes_per_window: 1_000_000_000,
+            window_ms: 60_000,
+            max_concurrent_fetches: 16,
+        }
+    }
+
+    fn read_context<'a>(
+        owner_tuned_limits: Option<&'a ShareServingLimits>,
+        now_ms: u64,
+    ) -> PublicReadContext<'a> {
+        PublicReadContext {
+            owner: "owner-1",
+            share: "share-1",
+            reader: "reader-1",
+            owner_tuned_limits,
+            now_ms,
+        }
+    }
+
+    /// Oracle: #14783 wiring — a public read inside every limit is
+    /// served through the gate unchanged.
+    #[tokio::test]
+    async fn test_served_public_read_within_limits_serves_rows() {
+        let transport = ScriptTransport::default();
+        push_served_rows(&transport, 1);
+        let adapter = scripted_adapter(transport);
+        let serving =
+            PublicServing::new(generous_owner_limits(), ShareServingLimits::v1_defaults());
+        let rows = serving
+            .query_public(
+                &adapter,
+                "main",
+                &public_scope(),
+                &sample_query(),
+                &read_context(None, 0),
+            )
+            .await
+            .unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].get("id"), Some(&IdValue::Unsigned(7)));
+    }
+
+    /// Oracle: #14783 done check at the wired boundary — the
+    /// (share, reader) rate cap refuses with the gate's stable
+    /// named outcome once the reader's window is spent.
+    #[tokio::test]
+    async fn test_served_public_read_rate_cap_refuses_with_named_outcome() {
+        let tuned = ShareServingLimits {
+            max_objects_per_fetch: 10_000,
+            max_bytes_per_fetch: 100 * 1024 * 1024,
+            max_requests_per_minute: 1,
+        };
+        let transport = ScriptTransport::default();
+        push_served_rows(&transport, 1);
+        push_served_rows(&transport, 1);
+        let adapter = scripted_adapter(transport);
+        let serving =
+            PublicServing::new(generous_owner_limits(), ShareServingLimits::v1_defaults());
+        serving
+            .query_public(
+                &adapter,
+                "main",
+                &public_scope(),
+                &sample_query(),
+                &read_context(Some(&tuned), 0),
+            )
+            .await
+            .unwrap();
+        let error = serving
+            .query_public(
+                &adapter,
+                "main",
+                &public_scope(),
+                &sample_query(),
+                &read_context(Some(&tuned), 1_000),
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            PublicServingError::Limit(ServingRefusal::RateLimited { .. })
+        ));
+        assert_eq!(error.name(), "rate_limited");
+    }
+
+    /// Oracle: #14783 done check at the wired boundary — a fetch
+    /// whose rows cross the per-fetch object cap serves nothing and
+    /// names the cap; it is never silently truncated to the cap.
+    #[tokio::test]
+    async fn test_served_public_read_over_object_cap_serves_nothing() {
+        let tuned = ShareServingLimits {
+            max_objects_per_fetch: 1,
+            max_bytes_per_fetch: 100 * 1024 * 1024,
+            max_requests_per_minute: 60,
+        };
+        let transport = ScriptTransport::default();
+        push_served_rows(&transport, 2);
+        let adapter = scripted_adapter(transport);
+        let serving =
+            PublicServing::new(generous_owner_limits(), ShareServingLimits::v1_defaults());
+        let error = serving
+            .query_public(
+                &adapter,
+                "main",
+                &public_scope(),
+                &sample_query(),
+                &read_context(Some(&tuned), 0),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(error, PublicServingError::Capped(FetchCap::Objects));
+        assert_eq!(error.name(), "fetch_capped_objects");
+    }
+
+    /// Oracle: #14783 done check at the wired boundary — the
+    /// per-fetch byte cap is charged on the rows' payload bytes
+    /// (one served row is 19 bytes; a second identical row crosses
+    /// a 19-byte cap).
+    #[tokio::test]
+    async fn test_served_public_read_over_byte_cap_serves_nothing() {
+        let tuned = ShareServingLimits {
+            max_objects_per_fetch: 10_000,
+            max_bytes_per_fetch: 19,
+            max_requests_per_minute: 60,
+        };
+        let transport = ScriptTransport::default();
+        push_served_rows(&transport, 2);
+        let adapter = scripted_adapter(transport);
+        let serving =
+            PublicServing::new(generous_owner_limits(), ShareServingLimits::v1_defaults());
+        let error = serving
+            .query_public(
+                &adapter,
+                "main",
+                &public_scope(),
+                &sample_query(),
+                &read_context(Some(&tuned), 0),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(error, PublicServingError::Capped(FetchCap::Bytes));
+        assert_eq!(error.name(), "fetch_capped_bytes");
+    }
+
+    /// Oracle: #14783 wiring — the owner's aggregate budget is
+    /// charged across reads: a budget of one row refuses the second
+    /// read with the aggregate outcome, applying nothing.
+    #[tokio::test]
+    async fn test_served_public_read_owner_aggregate_budget_binds_across_reads() {
+        let owner_limits = OwnerAggregateLimits {
+            max_objects_per_window: 1,
+            max_bytes_per_window: 1_000_000_000,
+            window_ms: 60_000,
+            max_concurrent_fetches: 16,
+        };
+        let transport = ScriptTransport::default();
+        push_served_rows(&transport, 1);
+        push_served_rows(&transport, 1);
+        let adapter = scripted_adapter(transport);
+        let serving = PublicServing::new(owner_limits, ShareServingLimits::v1_defaults());
+        serving
+            .query_public(
+                &adapter,
+                "main",
+                &public_scope(),
+                &sample_query(),
+                &read_context(None, 0),
+            )
+            .await
+            .unwrap();
+        let error = serving
+            .query_public(
+                &adapter,
+                "main",
+                &public_scope(),
+                &sample_query(),
+                &read_context(None, 1_000),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(
+            error,
+            PublicServingError::Limit(ServingRefusal::OwnerAggregateExceeded)
+        );
+        assert_eq!(error.name(), "owner_aggregate_exceeded");
+    }
+
+    /// Oracle: #14783 wiring — the adapter's own outcomes pass
+    /// through the serving layer unchanged in kind: an unpublished
+    /// collection is refused before any fetch, limits or not.
+    #[tokio::test]
+    async fn test_served_public_read_unpublished_collection_is_refused() {
+        let transport = ScriptTransport::default();
+        let adapter = scripted_adapter(transport);
+        let serving =
+            PublicServing::new(generous_owner_limits(), ShareServingLimits::v1_defaults());
+        let mut query = sample_query();
+        query.table = "secrets".to_owned();
+        let error = serving
+            .query_public(
+                &adapter,
+                "main",
+                &public_scope(),
+                &query,
+                &read_context(None, 0),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(error, PublicServingError::Refused);
+        assert_eq!(adapter.transport.attempts(), 0);
+    }
+
+    /// Oracle: invariant 5 at the wired boundary — the serving
+    /// layer's outcomes name no credential, credential reference,
+    /// or locator either.
+    #[tokio::test]
+    async fn test_served_public_read_outcomes_name_no_credential_or_locator() {
+        let transport = ScriptTransport::default();
+        transport.push(Ok(TransportResponse {
+            status: 401,
+            body: "unauthorized".to_owned(),
+        }));
+        let adapter = scripted_adapter(transport);
+        let serving =
+            PublicServing::new(generous_owner_limits(), ShareServingLimits::v1_defaults());
+        let error = serving
+            .query_public(
+                &adapter,
+                "main",
+                &public_scope(),
+                &sample_query(),
+                &read_context(None, 0),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(error, PublicServingError::Unavailable);
+        let text = error.to_string();
+        assert!(
+            !text.contains("TEST_LIBSQL_TOKEN"),
+            "leaked a credential reference: {text}"
+        );
+        assert!(!text.contains("test-token-value"), "leaked a token: {text}");
+        assert!(
+            !text.contains("example.invalid"),
+            "leaked a locator: {text}"
+        );
+    }
+
     /// Oracle: D4 + invariant 8 — a malformed published set is a
     /// config error at construction: replica-served without a replica
     /// alias, live-served with one, a duplicate name, or a name that
@@ -2759,5 +3330,135 @@ mod tests {
         assert!(scope.is_published("objects"));
         assert!(!scope.is_published("secrets"));
         assert_eq!(scope.collection("objects"), Some(&live("objects")));
+    }
+
+    /// Build a real publication record through the real publish
+    /// action (#14781), over the named collection units.
+    fn published_record(collections: &[&str]) -> PublicationRecord {
+        use id_grants::{
+            ClassLevel, DiscoveryMode, Duration as GrantDuration, GrantSet, Publications,
+            PublishRequest, ShareId,
+        };
+        let mut grants = GrantSet::new();
+        let mut book = Publications::new("owner");
+        let request = PublishRequest {
+            scope: collections
+                .iter()
+                .map(|name| (Scope::Collection((*name).to_owned()), ClassLevel(0)))
+                .collect::<BTreeMap<_, _>>(),
+            subscribe: false,
+            duration: GrantDuration::Standing,
+            discovery: DiscoveryMode::Listed,
+            ceiling: ClassLevel(1),
+            owner_ceiling: ClassLevel(2),
+            title: "Published tables".to_owned(),
+            description: "Tables the owner published".to_owned(),
+            now: 1_800_000_000,
+        };
+        book.publish(&mut grants, ShareId::mint([7; 32]), request)
+            .unwrap()
+            .clone()
+    }
+
+    fn live(name: &str) -> PublishedCollection {
+        PublishedCollection {
+            name: name.to_owned(),
+            mode: PublicServingMode::Live,
+            replica_alias: None,
+        }
+    }
+
+    /// Oracle: #14784 checkpoint — the scope built from the real
+    /// publication record names exactly the record's collections,
+    /// each in its declared mode; a table created later (absent from
+    /// the record) is not published.
+    #[test]
+    fn test_publication_scope_from_record_matches_the_record() {
+        let record = published_record(&["objects", "events"]);
+        let scope = PublicationScope::from_record(
+            &record,
+            [
+                live("objects"),
+                PublishedCollection {
+                    name: "events".to_owned(),
+                    mode: PublicServingMode::MaterializedReplica,
+                    replica_alias: Some("events-replica".to_owned()),
+                },
+            ],
+        )
+        .unwrap();
+        assert!(scope.is_published("objects"));
+        assert!(scope.is_published("events"));
+        assert_eq!(
+            scope.collection("events").map(|c| c.mode),
+            Some(PublicServingMode::MaterializedReplica)
+        );
+        assert!(!scope.is_published("created-later"));
+    }
+
+    /// Oracle: #14784 checkpoint — a scope built from the real
+    /// record serves through the public read path like a hand-built
+    /// one (the record's live collection answers; the record's set
+    /// is the gate).
+    #[tokio::test]
+    async fn test_public_read_serves_scope_built_from_record() {
+        let record = published_record(&["objects"]);
+        let scope = PublicationScope::from_record(&record, [live("objects")]).unwrap();
+        let transport = ScriptTransport::default();
+        let row = format!(
+            "[{{\"type\":\"integer\",\"value\":\"7\"}},{{\"type\":\"blob\",\"value\":\"{}\"}},\
+             {{\"type\":\"text\",\"value\":\"report\"}},{{\"type\":\"integer\",\"value\":\"1\"}}]",
+            base64_encode(b"hash")
+        );
+        transport.push(Ok(TransportResponse {
+            status: 200,
+            body: ok_pipeline_body(&row),
+        }));
+        let adapter = scripted_adapter(transport);
+        let rows = adapter
+            .query_public("main", &scope, &sample_query())
+            .await
+            .unwrap();
+        assert_eq!(rows.len(), 1);
+    }
+
+    /// Oracle: #14784 checkpoint / invariant 8 — building from the
+    /// record refuses every disagreement loudly: a published
+    /// collection with no serving declaration, a declaration naming
+    /// a collection the record does not publish, an object unit in
+    /// the record's scope, and a retired record.
+    #[test]
+    fn test_publication_scope_from_record_refuses_disagreement() {
+        let record = published_record(&["objects", "events"]);
+        // A record collection with no serving declaration.
+        assert!(matches!(
+            PublicationScope::from_record(&record, [live("objects")]),
+            Err(AdapterError::Config(_))
+        ));
+        // A declaration wider than the record.
+        assert!(matches!(
+            PublicationScope::from_record(
+                &record,
+                [live("objects"), live("events"), live("secrets")]
+            ),
+            Err(AdapterError::Config(_))
+        ));
+        // An object unit in the record's scope: not servable on the
+        // collection read path, refused rather than dropped.
+        let mut object_record = published_record(&["objects"]);
+        object_record
+            .scope
+            .insert(Scope::Object("note-1".to_owned()));
+        assert!(matches!(
+            PublicationScope::from_record(&object_record, [live("objects")]),
+            Err(AdapterError::Config(_))
+        ));
+        // A retired record builds no scope.
+        let mut retired = published_record(&["objects"]);
+        retired.unpublished_at = Some(1_800_000_100);
+        assert!(matches!(
+            PublicationScope::from_record(&retired, [live("objects")]),
+            Err(AdapterError::Config(_))
+        ));
     }
 }

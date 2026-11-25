@@ -2781,10 +2781,11 @@
         ["cargo test --manifest-path examples/rust-world/Cargo.toml"],
         ["cargo test --manifest-path examples/rust-counter/Cargo.toml"],
         ["cargo test --manifest-path examples/rust-cells/Cargo.toml --locked"],
+        ["cargo test --manifest-path examples/rust-orbit/Cargo.toml --locked"],
         ["cargo test --manifest-path examples/rust-sketch/Cargo.toml"]
       ],
       "dependencies": [],
-      "doc": "Run the Rust example-guest unit tests (#7904, #13656): plaza-sdk (examples/rust-world, 9 tests), rust-counter (examples/rust-counter, 2 tests), rust-cells (examples/rust-cells) and rust-sketch (examples/rust-sketch; the literal-vector guest slice of #13608) are standalone crates outside the pkgs/id workspace, so the workspace test recipes never run them.",
+      "doc": "Run the Rust example-guest unit tests (#7904, #13656): plaza-sdk (examples/rust-world, 9 tests), rust-counter (examples/rust-counter, 2 tests), rust-cells (examples/rust-cells), rust-orbit (examples/rust-orbit; the #13606 Orbit Arcade guest) and rust-sketch (examples/rust-sketch; the literal-vector guest slice of #13608) are standalone crates outside the pkgs/id workspace, so the workspace test recipes never run them.",
       "name": "test-rust-examples",
       "parameters": [],
       "priors": 0,

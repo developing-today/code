@@ -60,7 +60,8 @@ impl Translator {
     /// collection's allowlist fails
     /// [`CollectionAllowlist::validate`]: a relation that is not a
     /// plain identifier, a declared column that is not a usable
-    /// field name, or a unique-key entry that is not declared. A bad
+    /// field name, an empty unique key, or a unique-key entry that
+    /// is not declared. A bad
     /// configuration is refused here, at construction, so it never
     /// reaches a request.
     pub fn try_new(collections: Vec<CollectionAllowlist>) -> Result<Self, String> {
@@ -114,6 +115,15 @@ impl Translator {
             .iter()
             .find(|c| &c.relation == relation)
             .ok_or_else(Refusal::not_available)?;
+        // 7b. A collection with an empty unique key has no total
+        // ordering, so it cannot serve a stable read: without this
+        // guard the legacy unchecked constructor path would emit an
+        // empty `order=` and an empty keyset `or=()` (#14795). The
+        // refusal collapses to `not_available`, like an unlisted
+        // relation, so no configuration detail leaks.
+        if collection.unique_key.is_empty() {
+            return Err(Refusal::not_available());
+        }
         // 8. Fields: projection, filter, and order columns must be
         // declared for the use they are put to. An undeclared column
         // and a withheld column are the same refusal (§6.1). A filter
@@ -563,6 +573,32 @@ mod tests {
     #[test]
     fn try_new_accepts_valid_allowlist() {
         assert!(Translator::try_new(vec![collection()]).is_ok());
+    }
+
+    #[test]
+    fn try_new_refuses_empty_unique_key() {
+        // Oracle: #14795 acceptance — the translator boundary refuses
+        // an allowlist whose unique key is empty.
+        let mut raw = collection();
+        raw.unique_key = vec![];
+        assert!(Translator::try_new(vec![raw]).is_err());
+    }
+
+    #[test]
+    fn empty_unique_key_never_produces_empty_order_or_keyset_or() {
+        // Oracle: #14795 acceptance — even through the legacy
+        // unchecked `Translator::new` path, a keyless collection
+        // produces no request at all (so no `order=` and no
+        // `or=()`), for both a plain read and a keyset read.
+        let mut raw = collection();
+        raw.unique_key = vec![];
+        let translator = Translator::new(vec![raw]);
+        let refusal = translator.translate(&Query::read("items")).unwrap_err();
+        assert_eq!(refusal, Refusal::not_available());
+        let mut keyset = Query::read("items");
+        keyset.pagination = Pagination::Keyset { cursor: vec![] };
+        let refusal = translator.translate(&keyset).unwrap_err();
+        assert_eq!(refusal, Refusal::not_available());
     }
 
     #[test]

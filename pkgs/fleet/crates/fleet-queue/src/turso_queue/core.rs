@@ -16,7 +16,9 @@ pub(crate) const TASK_COLS: &str = "id, queue, title, body, payload, dedupe_key,
     progress, result, last_error, park_kind, wait_kind, ready_condition, \
     required_budget_minutes, \
     last_checked_at, check_outcome, created_at, updated_at, completed_at, \
-    blocked_deps, dep_next_recheck_at, dep_blocked_until, dep_recheck_seconds";
+    blocked_deps, dep_next_recheck_at, dep_blocked_until, dep_recheck_seconds, \
+    resolution, resolution_category, resolution_substatus, resolution_reason, resolution_ref, \
+    resolved_by, resolved_at";
 pub(crate) const LEDGER_COLS: &str = "id, queue, task_id, assigned_lane, executed_lane, executed_lane_id, \
     exclusion_reason, opencode_reason, platform_limit, platform_limit_reason, \
     assigned_by, session_id, fallback_reason, \
@@ -913,6 +915,16 @@ impl TursoBackend {
             // label sweep copies them from the mirror.
             ("labels", "TEXT NOT NULL DEFAULT '[]'"),
             ("labels_synced_at", "TEXT"),
+            // #14170 Q2: additive terminal-resolution taxonomy. Old
+            // terminal rows remain NULL unless the Q2 backfill proves
+            // their verdict from an existing result or unique twin.
+            ("resolution", "TEXT"),
+            ("resolution_category", "TEXT"),
+            ("resolution_substatus", "TEXT"),
+            ("resolution_reason", "TEXT"),
+            ("resolution_ref", "TEXT"),
+            ("resolved_by", "TEXT"),
+            ("resolved_at", "TEXT"),
         ] {
             let has = cols
                 .iter()
@@ -1046,7 +1058,9 @@ pub(crate) const SCHEMA: [&str; 36] = [
         completed_at TEXT, \
         blocked_deps TEXT, dep_next_recheck_at TEXT, dep_blocked_until TEXT, \
         dep_recheck_seconds INTEGER, \
-        labels TEXT NOT NULL DEFAULT '[]', labels_synced_at TEXT)",
+        labels TEXT NOT NULL DEFAULT '[]', labels_synced_at TEXT, \
+        resolution TEXT, resolution_category TEXT, resolution_substatus TEXT, \
+        resolution_reason TEXT, resolution_ref TEXT, resolved_by TEXT, resolved_at TEXT)",
     // NOT unique: the PG data itself carries duplicate (queue, dedupe_key)
     // pairs from before dedupe was enforced, and the backup load must
     // accept them as-is; enqueue dedupe is a read-then-insert check.
@@ -1263,6 +1277,7 @@ pub(crate) fn history_transition(
     Some(match kind {
         "enqueued" => (None, Some("queued")),
         "task_revived" => (None, Some("queued")),
+        "revived" => (None, Some("queued")),
         "claimed" => (Some("queued"), Some("claimed")),
         "parked" => (Some("claimed"), Some("parked")),
         "released" => (Some("claimed"), Some("queued")),
@@ -1296,9 +1311,10 @@ pub(crate) const HISTORY_INSERT_SQL: &str = "INSERT OR IGNORE INTO task_history 
     FROM events e WHERE e.id = (SELECT max(id) FROM events) AND changes() = 1";
 
 /// Every event kind that history_transition maps: the backfill census.
-pub(crate) const HISTORY_KINDS: [&str; 12] = [
+pub(crate) const HISTORY_KINDS: [&str; 13] = [
     "enqueued",
     "task_revived",
+    "revived",
     "claimed",
     "parked",
     "released",
@@ -1423,6 +1439,9 @@ pub(crate) fn event(
     kind: &str,
     detail: &Value,
 ) -> Result<(), TErr> {
+    // #14191: rows written while serving a request that carried
+    // context name its id, so the event store joins the trip logs.
+    let detail = &super::ctx_scope::stamp(detail);
     let transition = history_transition(kind).filter(|_| task_id.is_some());
     let Some((from, to)) = transition else {
         t.exec(
@@ -1494,6 +1513,7 @@ pub(crate) fn verb_events_append(t: &TursoBackend, req: &Value) -> Value {
         Ok(v) => v,
         Err(e) => return fail(2, e),
     };
+    let detail = super::ctx_scope::stamp(&detail);
     let work = (|| -> Result<Value, TErr> {
         let now = now_iso();
         let res = t.exec(

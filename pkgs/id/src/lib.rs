@@ -262,6 +262,7 @@ pub use id_events::idset;
 pub use id_events::local_claims;
 pub use id_events::local_events;
 pub use id_store::issuer_rotation;
+pub use id_sync::admission as sync_admission;
 pub use id_sync::chained_message;
 pub use id_sync::log_sync;
 pub use id_worlds::input_framing;

@@ -1441,6 +1441,15 @@
       "reason": "Root-level device/connectivity probe has no venue; confirm whether it is a product test suite or a manual diagnostic in Phase 2."
     },
     {
+      "id": "id.android-shell.structure",
+      "paths": ["pkgs/id/android/check-android-shell.sh"],
+      "invocation": "bash pkgs/id/android/check-android-shell.sh",
+      "venue": null,
+      "status": "uncovered",
+      "phase2_issue": 6185,
+      "reason": "Structural Android shell smoke check; no CI venue is registered yet."
+    },
+    {
       "id": "deploy.flake-checks",
       "paths": ["pkgs/deploy/**", "lib/default.nix"],
       "invocation": "nix build .#checks.x86_64-linux.deploy-list .#checks.x86_64-linux.deploy-list-malformed",

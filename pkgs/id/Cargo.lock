@@ -4873,6 +4873,7 @@ dependencies = [
  "id-currency-registry",
  "id-directory",
  "id-events",
+ "id-grants",
  "id-groups",
  "id-store",
  "id-sync",
