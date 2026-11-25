@@ -490,12 +490,12 @@ impl<B: LedgerBackend, I: IntentStore> GatewayService<B, I> {
         };
         let (amounts, legs) = build_conversion_batch(&request)
             .map_err(|error| ServiceError::ConversionBatch(format!("{error:?}")))?;
-        if let Some(quoted) = &quoted {
-            if amounts.amount_out != quoted.dest_amount() || amounts.fee != quoted.fee() {
-                return Err(ServiceError::ConversionMismatch(
-                    "the chain's amounts differ from the quote's",
-                ));
-            }
+        if let Some(quoted) = &quoted
+            && (amounts.amount_out != quoted.dest_amount() || amounts.fee != quoted.fee())
+        {
+            return Err(ServiceError::ConversionMismatch(
+                "the chain's amounts differ from the quote's",
+            ));
         }
 
         let record = ConversionRecord {
@@ -618,11 +618,11 @@ impl<B: LedgerBackend, I: IntentStore> GatewayService<B, I> {
     }
 
     fn release_reservation(&mut self, intent: &GatewayIntent) {
-        if let Some(record) = &intent.conversion {
-            if let Some(lp) = decode_key(&record.lp) {
-                self.conversions
-                    .release(&lp, record.authorisation_id, record.amount_in);
-            }
+        if let Some(record) = &intent.conversion
+            && let Some(lp) = decode_key(&record.lp)
+        {
+            self.conversions
+                .release(&lp, record.authorisation_id, record.amount_in);
         }
     }
 

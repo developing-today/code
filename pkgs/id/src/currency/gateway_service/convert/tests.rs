@@ -291,7 +291,7 @@ fn present(
     auth: &RateAuthorisation,
     quote_id: Option<u128>,
 ) -> ConversionPresentation {
-    let event = sign_authorisation(&signer.account_key, 3, None, auth, vec![]).expect("signs");
+    let event = sign_authorisation(&signer.account_key, 0, None, auth, vec![]).expect("signs");
     ConversionPresentation {
         issuer: auth.issuer_id,
         authorisation_id: auth.authorisation_id,
@@ -506,7 +506,7 @@ fn refusals_write_no_intent_and_move_nothing() {
 
     // An LP that neither issues either currency nor holds both.
     let bob = actor(3, 33);
-    let mut stranger = auth.clone();
+    let mut stranger = auth;
     stranger.issuer_id = issuer_id(&bob.account_key);
     let error =
         convert(&mut fx, 13, 1_000, &present(&bob, &stranger, None)).expect_err("ineligible LP");
