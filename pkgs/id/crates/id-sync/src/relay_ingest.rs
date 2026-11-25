@@ -145,7 +145,7 @@ where
         answer_frames(&conn, move |body| {
             let gate = Arc::clone(&gate);
             let sink = sink.clone();
-            let boundary_gate = Arc::clone(&boundary_gate);
+            let boundary_gate = boundary_gate.clone();
             async move { receive_with_boundary_gate(&gate, boundary_gate.as_deref(), &sink, &body) }
         })
         .await
