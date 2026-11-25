@@ -47,6 +47,8 @@ impl WorldCommand {
             Self::SetCapsCeiling { .. } => "SetCapsCeiling",
             Self::SetExecutionProfile { .. } => "SetExecutionProfile",
             Self::ExecutionProfileInfo { .. } => "ExecutionProfileInfo",
+            Self::SetPresentationPolicy { .. } => "SetPresentationPolicy",
+            Self::PresentationPolicyInfo { .. } => "PresentationPolicyInfo",
             Self::ManifestState { .. } => "ManifestState",
             Self::AdminScheduleAt { .. } => "AdminScheduleAt",
             Self::AdminCancelSchedule { .. } => "AdminCancelSchedule",
@@ -315,6 +317,17 @@ pub(crate) enum WorldCommand {
     /// Read this world's requested runtime profile.
     ExecutionProfileInfo {
         reply: oneshot::Sender<crate::world_limits::WorldExecutionProfile>,
+    },
+    /// Admin: durably replace this world's presentation policy (#14731
+    /// slice 2b). It applies to the next presentation decision.
+    SetPresentationPolicy {
+        policy: id_core::presentation_policy::PresentationPolicy,
+        reply: oneshot::Sender<Result<id_core::presentation_policy::PresentationPolicy>>,
+    },
+    /// Read this world's presentation policy. It is public: a world
+    /// publishes it so a user can see it before joining (#5970 §5).
+    PresentationPolicyInfo {
+        reply: oneshot::Sender<id_core::presentation_policy::PresentationPolicy>,
     },
     /// Admin: read the manifest-reconciliation state — the active install
     /// seed and the pending schedules. The seed stays inside the actor and

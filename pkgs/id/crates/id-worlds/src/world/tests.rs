@@ -1739,8 +1739,9 @@ mod tests {
         // Version 12 (#11960) records join and revoke times, version
         // 13 the kv store entries, version 14 the blob store entries,
         // and version 15 the notify provider's `Notification` events
-        // (all #1062). Version 16 (#13711) stamps lease positions.
-        assert_eq!(MAX_JOURNAL_VERSION, JOURNAL_VERSION_LEASE_POSITION);
+        // (all #1062). Version 16 (#13711) stamps lease positions, and
+        // version 17 (#14731) records the presentation policy.
+        assert_eq!(MAX_JOURNAL_VERSION, JOURNAL_VERSION_PRESENTATION_POLICY);
         // A checkpoint carrying a non-bootstrap lease also requires
         // version 7; one without a lease keeps its existing version.
         // A checkpoint whose lease history carries stamped positions
@@ -12895,9 +12896,9 @@ mod schedule_tests {
             journal_version_required_by(&checkpoint),
             JOURNAL_VERSION_NOTIFY
         );
-        // Version 16 (#13711, stamped lease positions) is the newest
+        // Version 17 (#14731, the presentation policy) is the newest
         // version this binary reads.
-        assert_eq!(MAX_JOURNAL_VERSION, JOURNAL_VERSION_LEASE_POSITION);
+        assert_eq!(MAX_JOURNAL_VERSION, JOURNAL_VERSION_PRESENTATION_POLICY);
     }
 
     #[tokio::test]
@@ -15043,6 +15044,12 @@ mod audit_tests {
             let (reply, response) = tokio::sync::oneshot::channel();
             actor.handle(WorldCommand::PolicyInfo { reply }).await;
             let _policy = response.await.unwrap();
+
+            let (reply, response) = tokio::sync::oneshot::channel();
+            actor
+                .handle(WorldCommand::PresentationPolicyInfo { reply })
+                .await;
+            let _presentation = response.await.unwrap();
         });
 
         let captured = records.lock().unwrap().clone();
@@ -15445,4 +15452,235 @@ fn presence_change_refuses_a_duplicated_key() {
     // A lenient parse keeps the last "event" and reads a join (#8794).
     let duplicated = text.replacen('{', r#"{"event":"left","#, 1);
     assert_eq!(presence_change(&duplicated), None);
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod presentation_policy_tests {
+    //! The world's stored presentation policy (#14731 slice 2b): the
+    //! journal entry, its version requirement, restore and compaction,
+    //! and the actor's set and read commands.
+    use super::*;
+    use id_core::presentation_policy::{MAX_POLICY_ENTRIES, PresentationPolicy};
+
+    fn world() -> WorldCore {
+        WorldCore::new("test-world", WorldLimits::default()).unwrap()
+    }
+
+    fn opted_in() -> PresentationPolicy {
+        PresentationPolicy::from_json(
+            r#"{"assets":{"user_uploads":"deny","max_rung":"static"},
+                "filters":{"allowed":["tint@1","fx/*"],"denied":["fx/strobe"],"disguise":"allow"},
+                "shaders":{"enabled":true,"formats":["shadertoy.glsl.fragment/v1"]},
+                "fallback":{"world_glyphs":{"tree":"T"}}}"#,
+        )
+        .unwrap()
+    }
+
+    /// A policy past its size bounds, built without the parser's check.
+    fn oversized() -> PresentationPolicy {
+        let many: Vec<String> = (0..=MAX_POLICY_ENTRIES)
+            .map(|i| format!("\"f{i}\""))
+            .collect();
+        let text = format!(r#"{{"filters":{{"denied":[{}]}}}}"#, many.join(","));
+        let policy: PresentationPolicy = serde_json::from_str(&text).unwrap();
+        assert!(policy.validate().is_err());
+        policy
+    }
+
+    fn header(version: u32) -> JournalEntry {
+        JournalEntry::Created {
+            world_id: "w".to_owned(),
+            version,
+        }
+    }
+
+    #[test]
+    fn the_entry_requires_version_17_and_it_is_the_newest() {
+        for policy in [PresentationPolicy::default(), opted_in()] {
+            assert_eq!(
+                journal_version_required_by(&JournalEntry::PresentationPolicy { policy }),
+                JOURNAL_VERSION_PRESENTATION_POLICY
+            );
+        }
+        assert_eq!(JOURNAL_VERSION_PRESENTATION_POLICY, 17);
+        assert_eq!(MAX_JOURNAL_VERSION, JOURNAL_VERSION_PRESENTATION_POLICY);
+    }
+
+    #[test]
+    fn the_entry_round_trips_in_its_wire_shape() {
+        let entry = JournalEntry::PresentationPolicy { policy: opted_in() };
+        let json = serde_json::to_value(&entry).unwrap();
+        assert_eq!(json["entry"], "presentation_policy");
+        assert_eq!(json["policy"]["shaders"]["enabled"], true);
+        let back: JournalEntry = serde_json::from_value(json).unwrap();
+        assert_eq!(back, entry);
+    }
+
+    #[test]
+    fn a_new_world_holds_the_default_policy() {
+        assert_eq!(world().presentation, PresentationPolicy::default());
+        let restored = WorldCore::restore("w", WorldLimits::default(), [header(1)]).unwrap();
+        assert_eq!(restored.core.presentation, PresentationPolicy::default());
+    }
+
+    #[test]
+    fn restore_applies_the_last_entry() {
+        let entries = [
+            header(JOURNAL_VERSION_PRESENTATION_POLICY),
+            JournalEntry::PresentationPolicy { policy: opted_in() },
+            JournalEntry::PresentationPolicy {
+                policy: PresentationPolicy::default(),
+            },
+            JournalEntry::PresentationPolicy { policy: opted_in() },
+        ];
+        let restored = WorldCore::restore("w", WorldLimits::default(), entries).unwrap();
+        assert_eq!(restored.core.presentation, opted_in());
+    }
+
+    #[test]
+    fn restore_refuses_an_oversized_policy() {
+        let entries = [
+            header(JOURNAL_VERSION_PRESENTATION_POLICY),
+            JournalEntry::PresentationPolicy {
+                policy: oversized(),
+            },
+        ];
+        let error = WorldCore::restore("w", WorldLimits::default(), entries).unwrap_err();
+        assert!(
+            format!("{error:#}").contains("invalid presentation policy"),
+            "{error:#}"
+        );
+    }
+
+    #[test]
+    fn compaction_keeps_a_set_policy_and_raises_the_header() {
+        let mut core = world();
+        core.presentation = opted_in();
+        core.active_module_hash = Some("h".to_owned());
+        let entries = core.checkpoint_entries("state".to_owned()).unwrap();
+        assert!(matches!(
+            entries[0],
+            JournalEntry::Created {
+                version: JOURNAL_VERSION_PRESENTATION_POLICY,
+                ..
+            }
+        ));
+        assert_eq!(
+            entries
+                .iter()
+                .filter(|entry| matches!(entry, JournalEntry::PresentationPolicy { .. }))
+                .count(),
+            1
+        );
+        let restored = WorldCore::restore("test-world", WorldLimits::default(), entries).unwrap();
+        assert_eq!(restored.core.presentation, opted_in());
+    }
+
+    #[test]
+    fn compaction_omits_the_default_policy() {
+        let mut core = world();
+        core.active_module_hash = Some("h".to_owned());
+        let entries = core.checkpoint_entries("state".to_owned()).unwrap();
+        assert!(
+            !entries
+                .iter()
+                .any(|entry| matches!(entry, JournalEntry::PresentationPolicy { .. }))
+        );
+        let JournalEntry::Created { version, .. } = entries[0] else {
+            panic!("a checkpoint journal starts with its header");
+        };
+        assert!(version < JOURNAL_VERSION_PRESENTATION_POLICY);
+    }
+
+    #[tokio::test]
+    async fn the_actor_sets_and_reads_the_policy() {
+        let handle = WorldHandle::spawn(world());
+        assert_eq!(
+            handle.presentation_policy().await.unwrap(),
+            PresentationPolicy::default()
+        );
+        assert_eq!(
+            handle.set_presentation_policy(opted_in()).await.unwrap(),
+            opted_in()
+        );
+        assert_eq!(handle.presentation_policy().await.unwrap(), opted_in());
+    }
+
+    #[tokio::test]
+    async fn the_actor_refuses_an_oversized_policy_and_keeps_the_old_one() {
+        let handle = WorldHandle::spawn(world());
+        handle.set_presentation_policy(opted_in()).await.unwrap();
+        let error = handle
+            .set_presentation_policy(oversized())
+            .await
+            .unwrap_err();
+        assert!(
+            error.to_string().contains("invalid presentation policy"),
+            "{error:#}"
+        );
+        assert_eq!(handle.presentation_policy().await.unwrap(), opted_in());
+    }
+    /// The largest policy the parser accepts: every list and map full,
+    /// every name and key at its longest, and keys and glyphs made of
+    /// quotes so JSON escaping doubles them.
+    fn largest() -> PresentationPolicy {
+        use id_core::presentation_asset::MAX_NAME_LEN;
+        use id_core::presentation_policy::{MAX_CELL_KIND_BYTES, MAX_GLYPH_BYTES};
+        let name = |i: usize| format!("{i:03}{}", "n".repeat(MAX_NAME_LEN - 3));
+        let reference = |i: usize| format!("{}@{}", name(i), u32::MAX);
+        let refs: Vec<String> = (0..MAX_POLICY_ENTRIES).map(reference).collect();
+        let glyphs: serde_json::Map<String, serde_json::Value> = (0..MAX_POLICY_ENTRIES)
+            .map(|i| {
+                let kind = format!("{i:03}{}", "\"".repeat(MAX_CELL_KIND_BYTES - 3));
+                (kind, "\"".repeat(MAX_GLYPH_BYTES).into())
+            })
+            .collect();
+        let substitutes: serde_json::Map<String, serde_json::Value> = (0..MAX_POLICY_ENTRIES)
+            .map(|i| (name(i), reference(i).into()))
+            .collect();
+        let policy: PresentationPolicy = serde_json::from_value(serde_json::json!({
+            "filters": {"allowed": refs, "denied": refs, "disguise": "allow"},
+            "shaders": {
+                "enabled": true,
+                "formats": vec!["shadertoy.glsl.fragment/v1"; MAX_POLICY_ENTRIES],
+            },
+            "fallback": {
+                "world_glyphs": glyphs,
+                "world_substitutes": substitutes,
+                "tileset": reference(0),
+            },
+        }))
+        .unwrap();
+        policy.validate().unwrap();
+        policy
+    }
+
+    #[test]
+    fn the_largest_valid_policy_fits_one_replication_payload() {
+        let entry = JournalEntry::PresentationPolicy { policy: largest() };
+        let line = serde_json::to_vec(&entry).unwrap().len() + 1;
+        assert!(
+            line <= crate::world::replication::MAX_REPLICATION_PAYLOAD_BYTES,
+            "the largest policy's journal line is {line} bytes"
+        );
+    }
+
+    #[test]
+    fn restore_refuses_a_policy_with_an_overlong_cell_kind() {
+        let kind = "k".repeat(id_core::presentation_policy::MAX_CELL_KIND_BYTES + 1);
+        let policy: PresentationPolicy = serde_json::from_value(
+            serde_json::json!({"fallback": {"world_glyphs": {(kind): "T"}}}),
+        )
+        .unwrap();
+        let entries = [
+            header(JOURNAL_VERSION_PRESENTATION_POLICY),
+            JournalEntry::PresentationPolicy { policy },
+        ];
+        let error = WorldCore::restore("w", WorldLimits::default(), entries).unwrap_err();
+        assert!(
+            format!("{error:#}").contains("invalid presentation policy"),
+            "{error:#}"
+        );
+    }
 }

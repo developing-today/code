@@ -1645,6 +1645,44 @@ impl WorldActor {
                 // would misattribute a participant read.
                 let _ = reply.send(profile);
             }
+            WorldCommand::SetPresentationPolicy { policy, reply } => {
+                // A summary, not the whole policy: its lists and maps are
+                // bounded but can run to hundreds of entries.
+                let audit_parameters = serde_json::json!({
+                    "user_uploads": policy.assets.user_uploads,
+                    "max_rung": policy.assets.max_rung,
+                    "disguise": policy.filters.disguise,
+                    "shaders": policy.shaders.enabled,
+                });
+                let result = self
+                    .check_writable()
+                    .and_then(|()| {
+                        policy.validate().map_err(|error| {
+                            anyhow::anyhow!("invalid presentation policy: {error}")
+                        })
+                    })
+                    .and_then(|()| {
+                        self.persist(JournalEntry::PresentationPolicy {
+                            policy: policy.clone(),
+                        })
+                    })
+                    .map(|()| {
+                        self.core.presentation = policy;
+                        self.core.presentation.clone()
+                    });
+                self.audit_admin_result(
+                    "admin",
+                    "SetPresentationPolicy",
+                    audit_parameters,
+                    result.is_ok(),
+                );
+                let _ = reply.send(result);
+            }
+            WorldCommand::PresentationPolicyInfo { reply } => {
+                // No audit record: the policy is public pre-join metadata,
+                // readable without a capability (#5970 §5).
+                let _ = reply.send(self.core.presentation.clone());
+            }
             WorldCommand::ManifestState { reply } => {
                 let state = (self.core.active_seed, self.core.schedule_times());
                 // No audit record, for the same reason as Metrics below:
