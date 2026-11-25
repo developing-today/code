@@ -26,9 +26,10 @@
 //! the record's endpoint table (§3) fixes: the proxy *terminates*
 //! streams (clients originate them — the client call path is
 //! step 3, the laptop broker's stream dispatch is step 4).
-//! [`MuxSession::open_stream`] exists so tests (and step 3, when
-//! it lands) can originate against the same table/interleaving
-//! code the proxy terminates with.
+//! [`MuxSession::open_stream`] exists so the client call path
+//! (`client::mux_roundtrip`, step 3) and tests can originate
+//! against the same table/interleaving code the proxy
+//! terminates with.
 //!
 //! Nothing here changes the pooled path: `serve` advertises
 //! [`fleet_proxy_proto::mux::CAP_PROXY_MUX`] now that this code
