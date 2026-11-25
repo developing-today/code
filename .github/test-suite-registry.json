@@ -1148,7 +1148,8 @@
       "paths": [
         "pkgs/cold-store-reaper/tests/test_cold_store.py",
         "pkgs/cold-store-reaper/tests/test_nightly_backup.py",
-        "pkgs/cold-store-reaper/tests/test_export_turso.py"
+        "pkgs/cold-store-reaper/tests/test_export_turso.py",
+        "pkgs/cold-store-reaper/tests/test_turso_mesh_restore_verify.py"
       ],
       "invocation": "Python unittest discovery",
       "venue": {
