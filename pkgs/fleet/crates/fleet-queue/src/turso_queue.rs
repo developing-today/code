@@ -41,7 +41,7 @@
 
 use serde_json::{Map, Value, json};
 
-use crate::validate::{task_from_packet, validate_packet};
+use crate::validate::{route_declaration, task_from_packet, validate_packet};
 
 mod actions_exec;
 mod admin;
@@ -298,6 +298,122 @@ mod tests {
         let out = verb_enqueue(&backend, &req);
         assert_eq!(out["ok"], true, "{out}");
         assert_eq!(out["task"]["max_attempts"], 1000, "{out}");
+    }
+
+    #[test]
+    fn enqueue_route_declaration_15070() {
+        // #15070 oracle (validation + dry-run halves): a packet whose
+        // payload carries a valid structured route declaration
+        // enqueues (dry-run) with the declaration intact on the row
+        // shape; packets with a malformed declaration — unknown
+        // family, blank reason, unknown field, non-object — are
+        // refused at validation, naming payload.route. A packet
+        // without a route is untouched by all of this.
+        let backend = TursoBackend::new(
+            "http://127.0.0.1:0".to_string(),
+            "test".to_string(),
+            ureq::agent(),
+        );
+        let base = packet_12744(15070, 30);
+        let mut routed = base.clone();
+        routed["payload"]["route"] = json!({
+            "platform": "openchamber",
+            "reason": "works in the laptop checkout of openchamber"
+        });
+        let req = json!({
+            "queue": "repo-health-code-pilot",
+            "packet": routed,
+            "dry_run": true
+        });
+        let out = verb_enqueue(&backend, &req);
+        assert_eq!(out["ok"], true, "{out}");
+        assert_eq!(
+            out["task"]["payload"]["route"]["platform"], "openchamber",
+            "{out}"
+        );
+        assert_eq!(
+            crate::validate::route_declaration(&out["task"]["payload"]),
+            Some((
+                "openchamber".to_string(),
+                "works in the laptop checkout of openchamber".to_string()
+            )),
+            "{out}"
+        );
+        for bad in [
+            json!({"platform": "code-a", "reason": "r"}),
+            json!({"platform": "muse", "reason": "  "}),
+            json!({"platform": "muse"}),
+            json!({"platform": "muse", "reason": "r", "lane": "xaltha"}),
+            json!("openchamber"),
+        ] {
+            let mut packet = base.clone();
+            packet["payload"]["route"] = bad.clone();
+            let req = json!({
+                "queue": "repo-health-code-pilot",
+                "packet": packet,
+                "dry_run": true
+            });
+            let out = verb_enqueue(&backend, &req);
+            assert_eq!(out["ok"], false, "route {bad} must be refused: {out}");
+            assert!(
+                out["errors"]
+                    .as_array()
+                    .map(|errs| {
+                        errs.iter()
+                            .any(|e| e.as_str().unwrap_or("").contains("payload.route"))
+                    })
+                    .unwrap_or(false),
+                "route {bad} refusal names payload.route: {out}"
+            );
+        }
+        // No route: route_declaration reads None (unrouted, legacy).
+        assert_eq!(
+            crate::validate::route_declaration(&base["payload"]),
+            None
+        );
+    }
+
+    #[test]
+    fn enqueue_translates_route_to_ledger_platform_limit_15070() {
+        // #15070 oracle (broker half): verb_enqueue translates the
+        // declaration into the lane ledger's platform limitation at
+        // creation — the INSERT names platform_limit and
+        // platform_limit_reason and sits in verb_enqueue's own
+        // segment, after the task INSERT (the row it limits must
+        // exist first), and the translation is gated on the parsed
+        // declaration so unrouted packets create no ledger row.
+        let src = &test_source();
+        let seg = src
+            .split("pub(crate) fn verb_enqueue(")
+            .nth(1)
+            .unwrap_or("")
+            .split("\npub(crate) fn ")
+            .next()
+            .unwrap_or("");
+        assert!(
+            seg.contains("route_declaration"),
+            "verb_enqueue parses the route declaration"
+        );
+        assert!(
+            seg.contains("platform_limit_error("),
+            "verb_enqueue rechecks the declaration as a platform limitation"
+        );
+        let task_insert = seg
+            .find("INSERT INTO tasks")
+            .expect("verb_enqueue inserts the task row");
+        let ledger_insert = seg
+            .find("INSERT INTO repo_task_lane_ledger")
+            .expect("verb_enqueue inserts the ledger limitation row");
+        assert!(
+            task_insert < ledger_insert,
+            "the ledger limitation is stamped after the task row exists"
+        );
+        let ledger_seg = &seg[ledger_insert..];
+        assert!(ledger_seg.contains("platform_limit, platform_limit_reason"));
+        assert!(
+            seg.contains("\"route_declared\""),
+            "the translation leaves a route_declared audit event"
+        );
     }
 
     /// A one-shot stub of the Turso pipeline endpoint for the
