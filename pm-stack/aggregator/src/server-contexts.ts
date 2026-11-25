@@ -183,7 +183,7 @@ export async function roadmapContext() {
 
 type SearchTimings = Record<string, number>;
 
-async function withSearchTiming<T>(timings: SearchTimings, stage: string, run: () => T | Promise<T>): Promise<T> {
+export async function withSearchTiming<T>(timings: SearchTimings, stage: string, run: () => T | Promise<T>): Promise<T> {
   const started = performance.now();
   try {
     return await run();
@@ -192,7 +192,7 @@ async function withSearchTiming<T>(timings: SearchTimings, stage: string, run: (
   }
 }
 
-function withSearchTimings(response: Response, timings: SearchTimings): Response {
+export function withSearchTimings(response: Response, timings: SearchTimings): Response {
   const value = Object.entries(timings)
     .map(([stage, duration]) => `${stage};dur=${Math.max(0, duration).toFixed(2)}`)
     .join(", ");
