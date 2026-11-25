@@ -1042,11 +1042,11 @@ mod tests {
         let (records, published, _draft) = quiz_hall();
         let worlds = author_worlds(&records);
         let mut log = AnnouncementLog::new();
-        let long = "x".repeat(MAX_MESSAGE_BYTES + 1);
+        let oversized = "x".repeat(MAX_MESSAGE_BYTES + 1);
         for (message, due) in [
             ("", NOW + HOUR),
             ("   ", NOW + HOUR),
-            (long.as_str(), NOW + HOUR),
+            (oversized.as_str(), NOW + HOUR),
             ("in the past", NOW - 1),
         ] {
             assert!(matches!(
@@ -1393,7 +1393,11 @@ mod tests {
         ));
 
         // A dropped line breaks the sequence.
-        let first_line_dropped: String = good.lines().skip(1).map(|l| format!("{l}\n")).collect();
+        let first_line_dropped: String = good.lines().skip(1).fold(String::new(), |mut out, l| {
+            out.push_str(l);
+            out.push('\n');
+            out
+        });
         std::fs::write(&path, first_line_dropped).unwrap();
         assert!(AnnouncementLog::load(dir.path()).is_err());
 
