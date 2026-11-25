@@ -49,6 +49,11 @@ host store (operators):
   restore        SNAPSHOT                      restore SNAPSHOT as this host's store
   restore        --archive                     adopt this session's archived writes
 
+central namespaces (operators, need kv-admin):
+  namespace define NS (--shared SCOPE | --private)
+                                               define or update NS on central
+  namespace list                               print every central namespace
+
 Values of any size are accepted: up to 1 MiB they are stored inline, and
 larger values stream into a content-addressed working file beside the
 store (`get` streams them back and checks their hash).
@@ -85,6 +90,7 @@ const REBASE_USAGE: &str = "usage: fleet kv rebase --namespace NS KEY\n\nResolve
 const CLEAR_USAGE: &str = "usage: fleet kv clear-override --namespace NS KEY\n\nDrop the local overlay row, advance the key's fence and cancel unsent sweep\nintents. History is kept. Busy for over 5 s: clear_busy_try_again.\n";
 const SNAPSHOT_USAGE: &str = "usage: fleet kv snapshot DEST\n\nWrite a consistent one-file snapshot of this host's whole store (WAL included)\nto DEST, with a manifest row inside it. Never overwrites DEST. Prints the manifest.\n";
 const RESTORE_USAGE: &str = "usage: fleet kv restore SNAPSHOT\n       fleet kv restore --archive\n\nRestore SNAPSHOT as this host's store after checking its manifest, schema\nversion and integrity. Refuses when a store (or its WAL) already exists.\nPrints the manifest.\n\n--archive instead adopts this session's last central archive checkpoint as new\nlocal writes (queued to sweep). Keys this store already has history for keep\ntheir local rows; keys the archive holds no bytes for are listed as\nprotection_unavailable_needs_phase3. No checkpoint: archive_not_found.\n";
+const NAMESPACE_USAGE: &str = "usage: fleet kv namespace define NS (--shared SCOPE | --private) [--global-flag] [--blob-threshold BYTES]\n       fleet kv namespace list\n\nDefine a central namespace, or print them all. Needs the central store and an\nadmin credential (the hosted door's kv-admin role); the local store is not\nopened. --shared SCOPE gives every agent one shared scope; --private gives each\n(owner, context) its own. Defining NS again keeps its settings unless a flag\nchanges them, raises its policy epoch, and refuses to change shared to private\nor back (namespace_scope_change). --global-flag marks NS as global (a\ndesignation only). --blob-threshold is the inline ceiling, at most 1 MiB\n(default 256 KiB). Hosts see a change after their next `fleet kv sync`.\n\ndefine prints `namespace=NS scope=SCOPE epoch=N`; list prints one line per\nnamespace: NS<TAB>SCOPE<TAB>EPOCH<TAB>THRESHOLD<TAB>global|-, where SCOPE is\nshared:ID or private.\n";
 const REVERT_USAGE: &str = "usage: fleet kv revert --namespace NS KEY --to VERSION\n       fleet kv revert NS KEY --to VERSION\n\nAppend a new version equal to VERSION from this key's local history.\n";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -100,6 +106,7 @@ enum Verb {
     Backup,
     Snapshot,
     Restore,
+    Namespace,
 }
 
 impl Verb {
@@ -116,6 +123,7 @@ impl Verb {
             "backup" => Self::Backup,
             "snapshot" => Self::Snapshot,
             "restore" => Self::Restore,
+            "namespace" => Self::Namespace,
             _ => return None,
         })
     }
@@ -133,6 +141,7 @@ impl Verb {
             Self::Backup => BACKUP_USAGE,
             Self::Snapshot => SNAPSHOT_USAGE,
             Self::Restore => RESTORE_USAGE,
+            Self::Namespace => NAMESPACE_USAGE,
         }
     }
 
@@ -223,6 +232,15 @@ enum Command {
     Restore {
         snapshot: PathBuf,
     },
+    /// `namespace define`: write a central namespace definition.
+    NamespaceDefine {
+        namespace: String,
+        scope: Option<crate::central::Scope>,
+        global_flag: bool,
+        blob_threshold: Option<u64>,
+    },
+    /// `namespace list`: print every central namespace definition.
+    NamespaceList,
 }
 
 impl Command {
@@ -241,6 +259,8 @@ impl Command {
             Self::RestoreArchive => "restore-archive",
             Self::Snapshot { .. } => "snapshot",
             Self::Restore { .. } => "restore",
+            Self::NamespaceDefine { .. } => "namespace-define",
+            Self::NamespaceList => "namespace-list",
         })
     }
 
@@ -250,8 +270,14 @@ impl Command {
             Self::Get { global, .. } | Self::List { global, .. } => *global,
             Self::Set { global, .. } | Self::Delete { global, .. } => global.is_some(),
             Self::Sync { .. } | Self::RestoreArchive | Self::Rebase { .. } => true,
+            Self::NamespaceDefine { .. } | Self::NamespaceList => true,
             _ => false,
         }
+    }
+
+    /// Central admin commands: they never open the local store.
+    fn is_admin(&self) -> bool {
+        matches!(self, Self::NamespaceDefine { .. } | Self::NamespaceList)
     }
 }
 
@@ -286,6 +312,14 @@ fn parse(args: &[String]) -> Result<Command, ParseError> {
     };
     let skip = if global { 2 } else { 1 };
     let verb = Verb::parse(first).ok_or_else(|| usage(format!("unknown verb `{first}`")))?;
+    if verb == Verb::Namespace {
+        if global {
+            return Err(usage(
+                "--global applies to get, set, list and delete, not `kv namespace`",
+            ));
+        }
+        return parse_namespace(&args[skip..]);
+    }
 
     let mut namespace: Option<String> = None;
     let mut include_tombstones = false;
@@ -489,10 +523,119 @@ fn parse(args: &[String]) -> Result<Command, ParseError> {
                 to,
             }
         }
-        Verb::Sync | Verb::Backup | Verb::Snapshot | Verb::Restore => {
-            unreachable!("sync and host verbs returned above")
+        Verb::Sync | Verb::Backup | Verb::Snapshot | Verb::Restore | Verb::Namespace => {
+            unreachable!("sync, host and namespace verbs returned above")
         }
     })
+}
+
+/// The largest `--blob-threshold`: the local inline ceiling.
+const MAX_BLOB_THRESHOLD: u64 = crate::working::INLINE_LIMIT as u64;
+
+/// `namespace define NS (--shared SCOPE | --private) [...]` and
+/// `namespace list`.
+fn parse_namespace(args: &[String]) -> Result<Command, ParseError> {
+    let Some(action) = args.first() else {
+        return Err(usage("`kv namespace` needs `define` or `list`"));
+    };
+    if matches!(action.as_str(), "-h" | "--help" | "help") {
+        return Ok(Command::Help(NAMESPACE_USAGE));
+    }
+    let mut scope: Option<crate::central::Scope> = None;
+    let mut global_flag = false;
+    let mut blob_threshold: Option<u64> = None;
+    let mut positionals: Vec<String> = Vec::new();
+    let mut rest = args[1..].iter();
+    let mut only_positionals = false;
+    while let Some(arg) = rest.next() {
+        if only_positionals || !arg.starts_with("--") {
+            positionals.push(arg.clone());
+            continue;
+        }
+        let (flag, inline) = match arg.split_once('=') {
+            Some((flag, value)) => (flag, Some(value.to_string())),
+            None => (arg.as_str(), None),
+        };
+        let mut take_value = |name: &str| -> Result<String, ParseError> {
+            match inline.clone() {
+                Some(value) => Ok(value),
+                None => rest
+                    .next()
+                    .cloned()
+                    .ok_or_else(|| usage(format!("{name} needs a value"))),
+            }
+        };
+        let define = action == "define";
+        match flag {
+            "--" => only_positionals = true,
+            "--help" | "-h" => return Ok(Command::Help(NAMESPACE_USAGE)),
+            "--shared" if define => {
+                if scope.is_some() {
+                    return Err(usage("give one of --shared SCOPE or --private"));
+                }
+                let scope_id = take_value("--shared")?;
+                if scope_id.is_empty() || scope_id.starts_with("private:") {
+                    return Err(usage(format!(
+                        "--shared needs a scope id that does not start with `private:`, got `{scope_id}`"
+                    )));
+                }
+                scope = Some(crate::central::Scope::Shared(scope_id));
+            }
+            "--private" if define && inline.is_none() => {
+                if scope.is_some() {
+                    return Err(usage("give one of --shared SCOPE or --private"));
+                }
+                scope = Some(crate::central::Scope::Private);
+            }
+            "--global-flag" if define && inline.is_none() => global_flag = true,
+            "--blob-threshold" if define => {
+                let raw = take_value("--blob-threshold")?;
+                let bytes = raw
+                    .parse::<u64>()
+                    .ok()
+                    .filter(|bytes| (1..=MAX_BLOB_THRESHOLD).contains(bytes))
+                    .ok_or_else(|| {
+                        usage(format!(
+                            "--blob-threshold needs a byte count from 1 to {MAX_BLOB_THRESHOLD}, got `{raw}`"
+                        ))
+                    })?;
+                blob_threshold = Some(bytes);
+            }
+            _ => {
+                return Err(usage(format!(
+                    "unknown argument `{arg}` for `kv namespace {action}`"
+                )));
+            }
+        }
+    }
+    match action.as_str() {
+        "define" => {
+            if positionals.len() != 1 {
+                return Err(usage(format!(
+                    "`kv namespace define` takes 1 argument (the namespace), got {}",
+                    positionals.len()
+                )));
+            }
+            let namespace = positionals.remove(0);
+            crate::validate_namespace(&namespace)
+                .map_err(|_| usage(format!("`{namespace}` is not a valid namespace")))?;
+            Ok(Command::NamespaceDefine {
+                namespace,
+                scope,
+                global_flag,
+                blob_threshold,
+            })
+        }
+        "list" => {
+            if !positionals.is_empty() {
+                return Err(usage("`kv namespace list` takes no arguments"));
+            }
+            Ok(Command::NamespaceList)
+        }
+        other => Err(usage(format!(
+            "unknown `kv namespace` action `{other}`: use define or list"
+        ))),
+    }
 }
 
 fn refuse(err: &mut dyn Write, error: &KvError) -> i32 {
@@ -711,6 +854,13 @@ pub fn run_opening_with_central(
         && let Err(error) = central.required()
     {
         return refuse_central(err, &error);
+    }
+    if command.is_admin() {
+        log_operation(&command, err, &fleet_config::ctx::Ctx::from_env());
+        return match central.required() {
+            Ok(primary) => execute_admin(command, primary, out, err),
+            Err(error) => refuse_central(err, &error),
+        };
     }
     let (store, launch) = match open() {
         Ok(opened) => opened,
@@ -979,6 +1129,9 @@ fn execute_central(
             Ok(restored) => write_restored(out, &restored),
             Err(error) => return refuse_archive(err, &error),
         },
+        command @ (Command::NamespaceDefine { .. } | Command::NamespaceList) => {
+            return execute_admin(command, primary, out, err);
+        }
         _ => {
             let _ = writeln!(
                 err,
@@ -988,6 +1141,103 @@ fn execute_central(
         }
     };
     finish(written, err)
+}
+
+/// The central admin verbs, against an opened central plane.
+fn execute_admin(
+    command: Command,
+    primary: &dyn Pipeline,
+    out: &mut dyn Write,
+    err: &mut dyn Write,
+) -> i32 {
+    use crate::central::{self, Namespace, REGISTRY_ID, Scope};
+    let written = match command {
+        Command::NamespaceDefine {
+            namespace,
+            scope,
+            global_flag,
+            blob_threshold,
+        } => {
+            let existing = match central::namespaces(primary, REGISTRY_ID) {
+                Ok(defined) => defined
+                    .into_iter()
+                    .find(|definition| definition.namespace == namespace),
+                Err(error) => return refuse_central(err, &error),
+            };
+            let mut definition = match (existing, scope) {
+                (Some(existing), Some(scope)) => {
+                    let changes_kind = matches!(
+                        (&existing.scope, &scope),
+                        (Scope::Shared(_), Scope::Private) | (Scope::Private, Scope::Shared(_))
+                    );
+                    if changes_kind {
+                        let _ = writeln!(
+                            err,
+                            "error: namespace_scope_change: `{namespace}` is {}; changing a namespace between shared and private would strand its keys",
+                            describe_scope(&existing.scope)
+                        );
+                        return EXIT_REFUSED;
+                    }
+                    Namespace { scope, ..existing }
+                }
+                (Some(existing), None) => existing,
+                (None, Some(Scope::Shared(scope_id))) => Namespace::shared(&namespace, &scope_id),
+                (None, Some(Scope::Private)) => Namespace::private(&namespace),
+                (None, None) => {
+                    let _ = writeln!(
+                        err,
+                        "error: usage: `{namespace}` is not defined yet: give --shared SCOPE or --private"
+                    );
+                    return EXIT_USAGE;
+                }
+            };
+            definition.global_flag |= global_flag;
+            if let Some(bytes) = blob_threshold {
+                definition.blob_threshold = bytes;
+            }
+            // `define_namespace` stores one past the previous epoch, so
+            // hosts that cached the old definition see the change.
+            match central::define_namespace(primary, &definition) {
+                Ok(epoch) => writeln!(
+                    out,
+                    "namespace={} scope={} epoch={epoch}",
+                    definition.namespace,
+                    describe_scope(&definition.scope)
+                ),
+                Err(error) => return refuse_central(err, &error),
+            }
+        }
+        Command::NamespaceList => match central::namespaces(primary, REGISTRY_ID) {
+            Ok(defined) => defined.iter().try_for_each(|definition| {
+                writeln!(
+                    out,
+                    "{}\t{}\t{}\t{}\t{}",
+                    definition.namespace,
+                    describe_scope(&definition.scope),
+                    definition.policy_epoch,
+                    definition.blob_threshold,
+                    if definition.global_flag {
+                        "global"
+                    } else {
+                        "-"
+                    }
+                )
+            }),
+            Err(error) => return refuse_central(err, &error),
+        },
+        _ => {
+            let _ = writeln!(err, "error: usage: this verb is not a central admin verb");
+            return EXIT_USAGE;
+        }
+    };
+    finish(written, err)
+}
+
+fn describe_scope(scope: &crate::central::Scope) -> String {
+    match scope {
+        crate::central::Scope::Shared(scope_id) => format!("shared:{scope_id}"),
+        crate::central::Scope::Private => "private".to_string(),
+    }
 }
 
 fn refuse_archive(err: &mut dyn Write, error: &archive::ArchiveError) -> i32 {
@@ -1216,7 +1466,11 @@ fn execute(
                 Err(error) => return refuse(err, &error),
             }
         }
-        Command::Sync { .. } | Command::RestoreArchive | Command::Rebase { .. } => {
+        Command::Sync { .. }
+        | Command::RestoreArchive
+        | Command::Rebase { .. }
+        | Command::NamespaceDefine { .. }
+        | Command::NamespaceList => {
             let _ = writeln!(err, "error: usage: this verb needs the central store");
             return EXIT_USAGE;
         }
@@ -1695,6 +1949,152 @@ mod tests {
             text(&restored)
         );
         assert!(text(&restored).ends_with(" adopted=0 kept_local=0 unprotected=0\n"));
+    }
+
+    #[test]
+    fn central_cli_namespace_define_list_and_hosts_follow() {
+        let central = Central::new();
+        let store = LocalStore::in_memory().expect("store");
+        let listed = central.invoke(&store, "admin", &["namespace", "list"], b"");
+        assert_eq!(listed.code, EXIT_OK, "{}", listed.err);
+        assert_eq!(text(&listed), "status\tshared:fleet-status\t1\t262144\t-\n");
+
+        let defined = central.invoke(
+            &store,
+            "admin",
+            &[
+                "namespace",
+                "define",
+                "notes",
+                "--private",
+                "--blob-threshold",
+                "4096",
+            ],
+            b"",
+        );
+        assert_eq!(defined.code, EXIT_OK, "{}", defined.err);
+        assert_eq!(text(&defined), "namespace=notes scope=private epoch=1\n");
+
+        // Defining again keeps the scope, adds the flag and raises the epoch.
+        let flagged = central.invoke(
+            &store,
+            "admin",
+            &["namespace", "define", "status", "--global-flag"],
+            b"",
+        );
+        assert_eq!(flagged.code, EXIT_OK, "{}", flagged.err);
+        assert_eq!(
+            text(&flagged),
+            "namespace=status scope=shared:fleet-status epoch=2\n"
+        );
+        let listed = central.invoke(&store, "admin", &["namespace", "list"], b"");
+        assert_eq!(
+            text(&listed),
+            "notes\tprivate\t1\t4096\t-\nstatus\tshared:fleet-status\t2\t262144\tglobal\n"
+        );
+
+        // Shared to private would strand the shared keys.
+        let changed = central.invoke(
+            &store,
+            "admin",
+            &["namespace", "define", "status", "--private"],
+            b"",
+        );
+        assert_eq!(changed.code, EXIT_REFUSED);
+        assert!(
+            changed.err.starts_with("error: namespace_scope_change:"),
+            "{}",
+            changed.err
+        );
+        // A new namespace needs a scope.
+        let bare = central.invoke(&store, "admin", &["namespace", "define", "fresh"], b"");
+        assert_eq!(bare.code, EXIT_USAGE, "{}", bare.err);
+
+        // A host's next sync learns the new namespace.
+        let synced = central.invoke(&store, "owner", &["sync"], b"");
+        assert_eq!(synced.code, EXIT_OK, "{}", synced.err);
+        assert!(
+            text(&synced).starts_with("namespaces=2 "),
+            "{}",
+            text(&synced)
+        );
+        assert_eq!(
+            invoke(&store, &["set", "--namespace", "notes", "k", "v"], b"").code,
+            EXIT_OK
+        );
+    }
+
+    #[test]
+    fn central_cli_namespace_verbs_never_open_the_local_store() {
+        let central = Central::new();
+        let shared = SharedPrimary(central.primary.clone());
+        let opener =
+            || -> CentralOpened { Ok(Some(Box::new(shared.clone()) as Box<dyn Pipeline>)) };
+        let mut out = Vec::new();
+        let mut err = Vec::new();
+        let code = run_opening_with_central(
+            &args(&["namespace", "define", "board", "--shared", "fleet-board"]),
+            || -> Opened { panic!("namespace define opened the local store") },
+            || -> RestoreTarget { panic!("namespace define asked for a restore target") },
+            &opener,
+            &mut &b""[..],
+            &mut out,
+            &mut err,
+        );
+        assert_eq!(code, EXIT_OK, "{}", String::from_utf8_lossy(&err));
+        assert_eq!(out, b"namespace=board scope=shared:fleet-board epoch=1\n");
+        let mut out = Vec::new();
+        let code = run_opening_with_central(
+            &args(&["namespace", "list"]),
+            || -> Opened { panic!("namespace list opened the local store") },
+            || -> RestoreTarget { panic!("namespace list asked for a restore target") },
+            &|| Ok(None),
+            &mut &b""[..],
+            &mut out,
+            &mut err,
+        );
+        assert_eq!(code, EXIT_UNAVAILABLE);
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn central_cli_namespace_usage_errors_touch_nothing() {
+        let store = LocalStore::in_memory().expect("store");
+        for words in [
+            &["namespace"][..],
+            &["namespace", "drop", "x"][..],
+            &["namespace", "list", "extra"][..],
+            &["namespace", "define"][..],
+            &["namespace", "define", "x", "--shared", "a", "--private"][..],
+            &["namespace", "define", "x", "--shared", "private:abc"][..],
+            &[
+                "namespace",
+                "define",
+                "x",
+                "--private",
+                "--blob-threshold",
+                "0",
+            ][..],
+            &[
+                "namespace",
+                "define",
+                "x",
+                "--private",
+                "--blob-threshold",
+                "1048577",
+            ][..],
+            &["namespace", "list", "--private"][..],
+            &["--global", "namespace", "list"][..],
+        ] {
+            let outcome = invoke(&store, words, b"");
+            assert_eq!(outcome.code, EXIT_USAGE, "{words:?}: {}", outcome.err);
+        }
+        let help = invoke(&store, &["namespace", "--help"], b"");
+        assert_eq!(help.code, EXIT_OK);
+        assert!(text(&help).starts_with("usage: fleet kv namespace define"));
+        // Without a central store the admin verbs are unavailable.
+        let unconfigured = invoke(&store, &["namespace", "list"], b"");
+        assert_eq!(unconfigured.code, EXIT_UNAVAILABLE, "{}", unconfigured.err);
     }
 
     #[test]

@@ -41,8 +41,27 @@ A per-user Turso data-plane token is refused with
 
 Namespace definitions and grants are admin statements. They need the
 `kv-admin` role on an RP token, or a service token scoped to the `kv-admin`
-door as well as `kv`. There is no `fleet kv` verb that defines namespaces
-yet.
+door as well as `kv`.
+
+## Define namespaces
+
+A host can use a namespace only after it is defined on central. Run these
+with an admin credential in `FLEET_KV_TOKEN_FILE`. They never open a local
+store, so they work from a machine with no session.
+
+```sh
+fleet kv namespace define status --shared fleet-status
+fleet kv namespace define notes --private --blob-threshold 65536
+fleet kv namespace list
+```
+
+- `--shared SCOPE` puts every agent in one shared scope. `--private` gives
+  each owner and context its own scope.
+- Defining a namespace again keeps the settings you leave out and raises
+  its policy epoch.
+- Changing a namespace between shared and private is refused with
+  `namespace_scope_change`, because its existing keys would be stranded.
+- Hosts pick up a change on their next `fleet kv sync`.
 
 ## Check readiness
 
