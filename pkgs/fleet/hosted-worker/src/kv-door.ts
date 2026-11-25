@@ -360,7 +360,7 @@ function transactionBody(statements: { sql: string; args?: KvValue[] }[]): unkno
   return kvPipelineBody(statements.map((s) => ({ sql: s.sql, args: s.args ?? [] })));
 }
 
-async function runDoorTransaction(
+export async function runKvTransaction(
   primary: KvPrimary,
   statements: { sql: string; args?: KvValue[] }[],
 ): Promise<unknown[][][]> {
@@ -370,12 +370,12 @@ async function runDoorTransaction(
   }
   const first = okResults(res.body)[0];
   if (!isRecord(first) || first.type !== "ok" || !isRecord(first.response) || !isRecord(first.response.result)) {
-    throw new FailClosed(502, "kv_primary_failed", "the primary refused the door's migration batch");
+    throw new FailClosed(502, "kv_primary_failed", "the primary refused the door's batch");
   }
   const stepResults = first.response.result.step_results;
   const stepErrors = first.response.result.step_errors;
   if (Array.isArray(stepErrors) && stepErrors.some((e) => e !== null)) {
-    throw new FailClosed(502, "kv_primary_failed", "a migration statement failed on the primary");
+    throw new FailClosed(502, "kv_primary_failed", "a door statement failed on the primary");
   }
   if (!Array.isArray(stepResults)) return [];
   return stepResults
@@ -388,7 +388,7 @@ async function runDoorTransaction(
  * steps as central::migrate in the client crate. */
 export async function migrateKvPrimary(primary: KvPrimary, now: () => number = Date.now): Promise<number[]> {
   const { migrations } = KV_CATALOG;
-  const [, appliedRows] = await runDoorTransaction(primary, [{ sql: migrations.table }, { sql: migrations.read }]);
+  const [, appliedRows] = await runKvTransaction(primary, [{ sql: migrations.table }, { sql: migrations.read }]);
   const applied = new Set(
     (appliedRows ?? [])
       .map((row) => (isRecord(row[0]) && row[0].type === "integer" ? Number(row[0].value) : null))
@@ -397,7 +397,7 @@ export async function migrateKvPrimary(primary: KvPrimary, now: () => number = D
   const ran: number[] = [];
   for (const { version, statements } of migrations.versions) {
     if (applied.has(version)) continue;
-    await runDoorTransaction(primary, [
+    await runKvTransaction(primary, [
       ...statements.map((sql) => ({ sql })),
       {
         sql: migrations.record,

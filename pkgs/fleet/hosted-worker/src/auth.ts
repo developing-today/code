@@ -44,6 +44,7 @@ import type {
   GitHubWriter,
 } from "./github.ts";
 import { looksLikeJwt, parseJwt, validateRpToken, type JwksFetcher } from "./jwt.ts";
+import type { KvBlobBucket } from "./kv-blobs.ts";
 import type { KvPrimary } from "./kv-door.ts";
 import type { QueueDepProbe, QueueStore } from "./queue-store.ts";
 import type { SessionRegistry } from "./sessions.ts";
@@ -130,6 +131,9 @@ export interface AuthDeps {
    * Absent → the kv door fails closed with 503, like unconfigured
    * auth. */
   kvPrimary?: KvPrimary;
+  /** The kv blob bucket (#13318, src/kv-blobs.ts). Absent → the blob
+   * upload door fails closed with 503. */
+  kvBlobs?: KvBlobBucket;
 }
 
 export async function sha256Hex(text: string): Promise<string> {
