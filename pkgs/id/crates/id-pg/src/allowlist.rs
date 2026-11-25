@@ -129,7 +129,7 @@ impl CollectionAllowlist {
             }
         }
         if self.unique_key.is_empty() {
-            return Err("unique_key must contain at least one declared column".to_string());
+            return Err("unique_key must name at least one declared column".to_string());
         }
         for key in &self.unique_key {
             if !self.is_declared(key) {
