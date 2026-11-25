@@ -183,7 +183,8 @@ interface Answer {
 function publishedRows(primary: SqlitePrimary): { content_id: string; jurisdiction: string; tier: string }[] {
   return primary.db
     .prepare("SELECT jurisdiction, tier, content_id FROM kv_blobs ORDER BY jurisdiction, content_id")
-    .all() as { content_id: string; jurisdiction: string; tier: string }[];
+    .all()
+    .map((row) => ({ ...(row as { content_id: string; jurisdiction: string; tier: string }) }));
 }
 
 test("the upload door verifies, publishes and returns the reference", async () => {
