@@ -2165,6 +2165,9 @@ pub(crate) fn wake_eligible(status: &str) -> Result<(), String> {
 /// This is the dispatch failure path: an item whose sub-task
 /// session failed to launch/bind returns to the pool immediately
 /// instead of sitting claimed-idle under the dispatcher.
+/// A release may also carry a platform limitation (#14993): the
+/// route-mismatch hand-back, recorded on the lane ledger so the
+/// claim pick stops offering the task to the wrong family.
 pub(crate) fn verb_release(t: &TursoBackend, req: &Value) -> Value {
     let task_id = req_i64(req, "task_id").unwrap_or(0);
     let worker = req_str(req, "worker").unwrap_or("").to_string();
@@ -2176,6 +2179,23 @@ pub(crate) fn verb_release(t: &TursoBackend, req: &Value) -> Value {
                 .to_string(),
         );
     }
+    // #14993: a release may carry a platform limitation -- the
+    // route-mismatch hand-back. A lane that draws a task routed to
+    // a seat it is not (a laptop checkout, an opencode-only
+    // packet) records the limitation as it hands the task back,
+    // and the claim pick (PLATFORM_LIMIT_PICK_CLAUSE) then never
+    // offers the task to another family again, instead of
+    // re-offering it on every redraw. Validated exactly like the
+    // lane verb's set (#8210): a real family, and a recorded
+    // reason of its own.
+    let limit_platform = req_str(req, "platform_limit").map(str::to_string);
+    let limit_reason = req_str(req, "platform_limit_reason").map(str::to_string);
+    if let Some(e) = platform_limit_error(limit_platform.as_deref(), limit_reason.as_deref()) {
+        return fail(2, format!("release_repo_task: {e}"));
+    }
+    let limit_family = limit_platform
+        .as_deref()
+        .and_then(|l| parse_platform(Some(l)).ok().flatten());
     let row = match claimed_by(t, task_id, &worker, "release_repo_task", req) {
         Ok(r) => r,
         Err(v) => return v,
@@ -2197,6 +2217,47 @@ pub(crate) fn verb_release(t: &TursoBackend, req: &Value) -> Value {
             ],
         )?;
         t.exec("DELETE FROM leases WHERE task_id = ?", &[Arg::Int(task_id)])?;
+        // #14993: record the limitation on the task's lane ledger
+        // (the row the claim pick reads). A claimed task may have
+        // no ledger row yet -- assignment creates one, a bare claim
+        // does not -- so the write upserts: update the row when one
+        // exists, insert a minimal one carrying just the limit
+        // when none does.
+        if let Some(fam) = &limit_family {
+            let upd = t.exec(
+                "UPDATE repo_task_lane_ledger SET platform_limit = ?, \
+                   platform_limit_reason = ?, updated_at = ? \
+                 WHERE task_id = ?",
+                &[
+                    Arg::Text(fam.clone()),
+                    arg_str(limit_reason.as_deref()),
+                    Arg::Text(now_iso()),
+                    Arg::Int(task_id),
+                ],
+            )?;
+            if upd.affected == 0 {
+                let queue = row
+                    .get("queue")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let now = now_iso();
+                t.exec(
+                    "INSERT INTO repo_task_lane_ledger \
+                     (queue, task_id, platform_limit, platform_limit_reason, assigned_by, assigned_at, updated_at) \
+                     VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    &[
+                        Arg::Text(queue),
+                        Arg::Int(task_id),
+                        Arg::Text(fam.clone()),
+                        arg_str(limit_reason.as_deref()),
+                        Arg::Text(worker.clone()),
+                        Arg::Text(now.clone()),
+                        Arg::Text(now),
+                    ],
+                )?;
+            }
+        }
         touch_worker(t, &worker, Some(task_id))?;
         if let Some(old) = &cleared {
             on_binding_cleared(t, &worker, task_id, old, "release_repo_task")?;
@@ -2210,6 +2271,8 @@ pub(crate) fn verb_release(t: &TursoBackend, req: &Value) -> Value {
                 &json!({
                     "reason": reason, "via": "release_repo_task_turso",
                     "cleared_session_id": cleared,
+                    "platform_limit": limit_family,
+                    "platform_limit_reason": limit_reason,
                 }),
                 &row,
             ),

@@ -500,9 +500,17 @@ pub(super) fn claim_batch_output(resp: &Value, worker: &str, requested: i64) -> 
 /// the reason on a `released` event. Dispatch uses it for an item
 /// whose sub-task failed to launch or bind: the item goes back to
 /// the pool in the same touch instead of sitting claimed and idle
-/// until its lease expires.
+/// until its lease expires. With `--limit-platform <family>
+/// --limit-reason <text>` (#14993) the release also records a
+/// platform limitation on the task, so a task routed to a seat
+/// the releaser is not stops being offered to the wrong family.
 pub(super) fn cmd_release(rest: &[String]) -> i32 {
-    let args = parse_verb_args("release", rest, &["worker", "lane", "reason"], &[]);
+    let args = parse_verb_args(
+        "release",
+        rest,
+        &["worker", "lane", "reason", "limit-platform", "limit-reason"],
+        &[],
+    );
     reject_extra_pos("release", &args, 1);
     let Some(reason) = args.get("reason") else {
         die(
@@ -520,6 +528,8 @@ pub(super) fn cmd_release(rest: &[String]) -> i32 {
             "worker": opt_worker(&args),
             "lane": lane_arg(&args),
             "reason": reason,
+            "platform_limit": args.get("limit-platform"),
+            "platform_limit_reason": args.get("limit-reason"),
         }),
     ));
     let row = served_row(require_row(&resp, "release_repo_task"), "release");
