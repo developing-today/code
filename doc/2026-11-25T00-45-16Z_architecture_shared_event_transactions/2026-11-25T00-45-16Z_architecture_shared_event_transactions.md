@@ -158,3 +158,24 @@ borrow is now mutable, `attempt` explicitly reborrows its underlying transaction
 and the operation result is returned directly. Read-only review agrees this
 keeps commit/abort, error-drop rollback, pool reload and generation behavior.
 Runtime evidence for these corrections remains required.
+
+## 2026-11-25 transaction-driver compile follow-up
+
+The first exact-head run on `a90987e6660fc53451a3b8f343127f2cdc76134f`
+reached test compilation and found two stale fault-injection wrappers plus an
+implied `'static` lifetime from the row-handle GAT in
+`with_write_transaction`. The wrappers now forward the complete read/write
+row interfaces. The driver instead takes a higher-ranked mutable reborrow
+(`for<'a> &'a mut Tx: RowWrite`), avoiding a projected GAT while preserving
+the concrete native `WriteTransaction` borrow required by `Mirror` and the
+tenant guard's owned commit/rollback lifecycle.
+
+These corrections are commit `418677ea7b86901ac746e3a370a8a370fe61767c`.
+Fleet Actions run
+[`dezren39/fleet#45532509993`](https://github.com/dezren39/fleet/actions/runs/45532509993)
+checked out that exact SHA and reports the `Execute target command` step
+successful for row parity, persistence, and device-operation recovery tests.
+The workflow remains in post-command cleanup, so its terminal conclusion and
+full test transcript are not yet available; this is remote evidence, not
+laptop verification. Full EventStoreBackend parity and required laptop
+evidence remain outstanding.
