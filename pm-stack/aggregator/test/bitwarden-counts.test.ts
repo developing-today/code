@@ -17,11 +17,28 @@ import { recordsFromSaasServices } from "../src/snapshot-records.ts";
 const SENTINELS = ["SENTINEL-secret-name", "SENTINEL-key", "SENTINEL-value", "SENTINEL-project-name"];
 
 const SECRET_LIST_JSON = JSON.stringify([
-  { id: "00000000-0000-0000-0000-000000000001", key: "SENTINEL-key", name: "SENTINEL-secret-name", value: "SENTINEL-value" },
-  { id: "00000000-0000-0000-0000-000000000002", key: "SENTINEL-key", name: "SENTINEL-secret-name", value: "SENTINEL-value" },
-  { id: "00000000-0000-0000-0000-000000000003", key: "SENTINEL-key", name: "SENTINEL-secret-name", value: "SENTINEL-value" },
+  {
+    id: "00000000-0000-0000-0000-000000000001",
+    key: "SENTINEL-key",
+    name: "SENTINEL-secret-name",
+    value: "SENTINEL-value",
+  },
+  {
+    id: "00000000-0000-0000-0000-000000000002",
+    key: "SENTINEL-key",
+    name: "SENTINEL-secret-name",
+    value: "SENTINEL-value",
+  },
+  {
+    id: "00000000-0000-0000-0000-000000000003",
+    key: "SENTINEL-key",
+    name: "SENTINEL-secret-name",
+    value: "SENTINEL-value",
+  },
 ]);
-const PROJECT_LIST_JSON = JSON.stringify([{ id: "00000000-0000-0000-0000-00000000000p", name: "SENTINEL-project-name" }]);
+const PROJECT_LIST_JSON = JSON.stringify([
+  { id: "00000000-0000-0000-0000-00000000000p", name: "SENTINEL-project-name" },
+]);
 
 const VIEW = `# Part (b) — Subscriptions & SaaS/infrastructure
 

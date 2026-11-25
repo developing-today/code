@@ -73,10 +73,7 @@ describe("send back is a standard answer", () => {
     await onQuestionRaised(stages, a); // a duplicate raise changes nothing
     await onQuestionRaised(stages, b);
     expect((await stages.get(needsUserItemRef("a")))?.stage).toBe("needs-user");
-    expect((await stages.events(needsUserItemRef("a"))).map((e) => e.to_stage)).toEqual([
-      "needs-review",
-      "needs-user",
-    ]);
+    expect((await stages.events(needsUserItemRef("a"))).map((e) => e.to_stage)).toEqual(["needs-review", "needs-user"]);
 
     expect(await onQuestionAnswered(stages, "a", "send-back")).toBe("needs-review");
     expect(await onQuestionAnswered(stages, "b", "yes")).toBe("resolved");

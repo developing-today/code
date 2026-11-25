@@ -12,9 +12,8 @@ name: pm-console-cloudflare config
 # and policy for pm.security.cab, the tunnel route, DNS, the edge
 # Worker route, and the Worker's secrets, whose values come from the
 # repository's secrets at apply time and are never in the repo.
-# Slice 1 of #13495: until this workflow's first apply is confirmed
-# on the issue, the laptop timer's expose.py keeps enforcing the
-# same things, which the parity test holds it to.
+# Direct-mode tokens are managed only here; the laptop timer keeps
+# managing shared routing and Access settings, checked by parity tests.
 on:
   push:
     branches: [main]
@@ -33,6 +32,11 @@ on:
         default: "check"
         type: choice
         options: [check, apply]
+      refresh_tokens:
+        description: "replace the Worker's repository tokens with the current repository secrets"
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -99,9 +103,13 @@ jobs:
           PMCF_GITHUB_TOKEN: ${{ secrets.PMCF_GITHUB_TOKEN }}
           PMCF_QUEUE_TOKEN: ${{ secrets.PMCF_QUEUE_TOKEN }}
           PMCF_BRIDGE_TOKEN: ${{ secrets.PMCF_BRIDGE_TOKEN }}
+          PMCF_REFRESH_TOKENS: ${{ inputs.refresh_tokens }}
         run: |
-          # The input goes through the env, never into the script text;
-          # the script only knows --check and --apply.
-          python3 -I infra/pm-cloudflare/apply.py --apply
+          # The input goes through the env; it is never interpolated into
+          # script text. Rotation replaces unreadable secret values.
+          if [ "$PMCF_REFRESH_TOKENS" = "true" ]; then
+            python3 -I infra/pm-cloudflare/apply.py --apply --refresh-tokens
+          else
+            python3 -I infra/pm-cloudflare/apply.py --apply
+          fi
           echo "Applied the PM stack Cloudflare config from ${GITHUB_SHA}." >> "$GITHUB_STEP_SUMMARY"
-          echo "Confirm on developing-today/code#13495 before the laptop timer stops enforcing it." >> "$GITHUB_STEP_SUMMARY"

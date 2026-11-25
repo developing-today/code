@@ -206,7 +206,12 @@ pub(crate) const LABELS_REFRESH_SQL: &str = "UPDATE tasks SET \
     WHERE id = ? AND EXISTS (SELECT 1 FROM github_mirror_issues m WHERE m.repo = ? AND m.number = ?)";
 
 /// The bound arguments for LABELS_REFRESH_SQL.
-pub(crate) fn labels_refresh_args(task_id: i64, repo: &str, number: i64, synced_at: &str) -> Vec<Arg> {
+pub(crate) fn labels_refresh_args(
+    task_id: i64,
+    repo: &str,
+    number: i64,
+    synced_at: &str,
+) -> Vec<Arg> {
     vec![
         Arg::Text(repo.to_string()),
         Arg::Int(number),
@@ -242,7 +247,10 @@ pub(crate) fn refresh_task_labels(t: &TursoBackend, task_id: i64) -> Result<bool
     let Some((repo, number)) = rows.first().and_then(row_issue_ref) else {
         return Ok(false);
     };
-    t.exec(LABELS_REFRESH_SQL, &labels_refresh_args(task_id, &repo, number, &now_iso()))?;
+    t.exec(
+        LABELS_REFRESH_SQL,
+        &labels_refresh_args(task_id, &repo, number, &now_iso()),
+    )?;
     Ok(true)
 }
 
@@ -273,7 +281,11 @@ pub(crate) fn sync_task_labels(t: &TursoBackend, all: bool, page_size: i64) -> R
             &[Arg::Int(after)],
             &[],
         )?;
-        let Some(last) = rows.last().and_then(|r| r.get("id")).and_then(|v| v.as_i64()) else {
+        let Some(last) = rows
+            .last()
+            .and_then(|r| r.get("id"))
+            .and_then(|v| v.as_i64())
+        else {
             break;
         };
         after = last;
@@ -283,7 +295,10 @@ pub(crate) fn sync_task_labels(t: &TursoBackend, all: bool, page_size: i64) -> R
             .filter_map(|r| {
                 let id = r.get("id").and_then(|v| v.as_i64())?;
                 let (repo, number) = row_issue_ref(r)?;
-                Some((LABELS_REFRESH_SQL, labels_refresh_args(id, &repo, number, &synced_at)))
+                Some((
+                    LABELS_REFRESH_SQL,
+                    labels_refresh_args(id, &repo, number, &synced_at),
+                ))
             })
             .collect();
         with_ref += stmts.len() as i64;

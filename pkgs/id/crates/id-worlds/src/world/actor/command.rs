@@ -32,6 +32,7 @@ impl WorldCommand {
             Self::ImportEntity { .. } => "ImportEntity",
             Self::HandoffWriteLease { .. } => "HandoffWriteLease",
             Self::FailoverWriteLease { .. } => "FailoverWriteLease",
+            Self::DispatchSpillCopy { .. } => "DispatchSpillCopy",
             Self::Snapshot { .. } => "Snapshot",
             Self::HostView { .. } => "HostView",
             Self::EventsAfter { .. } => "EventsAfter",
@@ -216,6 +217,15 @@ pub(crate) enum WorldCommand {
         max_catch_up_lag: u64,
         term_ms: u64,
         reply: oneshot::Sender<Result<spill_pool::FailoverExecution>>,
+    },
+    /// Release copied journal bytes only after the current lease and its
+    /// grant replay barrier pass on the serialized authority actor.
+    DispatchSpillCopy {
+        holder: String,
+        epoch: u64,
+        replayed_position: u64,
+        journal_copy: Vec<u8>,
+        reply: oneshot::Sender<Result<Vec<u8>>>,
     },
     Snapshot {
         token: JoinCapability,
