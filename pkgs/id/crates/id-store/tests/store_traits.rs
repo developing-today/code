@@ -614,7 +614,7 @@ fn open() -> (tempfile::TempDir, SharedEventStore<BothBackends>) {
     (dir, SharedEventStore::new(store))
 }
 
-fn ingest_all(store: &SharedEventStore<EventStore>, events: &[Event]) {
+fn ingest_all<S: EventStoreBackend>(store: &SharedEventStore<S>, events: &[Event]) {
     for event in events {
         let outcome = store.ingest(&event.bytes, None, 0).unwrap();
         assert_eq!(
@@ -649,8 +649,8 @@ where
     entries
 }
 
-async fn entries_of(
-    store: &SharedEventStore<EventStore>,
+async fn entries_of<S: EventStoreBackend>(
+    store: &SharedEventStore<S>,
     who: &VerifyingKey,
     after: Option<SeqNum>,
     until: Option<SeqNum>,
