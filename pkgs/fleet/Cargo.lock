@@ -721,6 +721,7 @@ dependencies = [
  "fleet-dispatch-test",
  "fleet-laptop-agent",
  "fleet-orgs",
+ "fleet-pool",
  "fleet-proxy",
  "fleet-proxy-proto",
  "fleet-queue",
