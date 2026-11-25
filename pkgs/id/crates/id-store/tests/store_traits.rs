@@ -492,6 +492,22 @@ fn test_the_lock_has_no_sqlite_with_logsync_wired() {
              the shipped build (see vendor/README.md)"
         );
     }
+    // The shared tenant-backend regression fixture lives in id-events, where
+    // SQLite is permitted only as a dev-dependency. Its lockfile edge is not a
+    // shipped dependency; cargo tree below verifies the facade's active graph.
+    let events_manifest =
+        std::fs::read_to_string(format!("{root_dir}/crates/id-events/Cargo.toml")).unwrap();
+    let events = manifest_package_name(&events_manifest).unwrap();
+    let events_shipped = manifest_dep_names(&events_manifest, false);
+    for name in SQLITE {
+        assert!(
+            !events_shipped
+                .iter()
+                .any(|declared| declared.as_str() == name),
+            "{events}/Cargo.toml declares {name} outside dev-dependencies: SQLite is back in \
+             the shipped build (see vendor/README.md)"
+        );
+    }
     // Cargo.lock includes optional dependency edges. p2panda-store declares optional `sqlx`,
     // which is inactive in the shipped default-feature graph checked below.
     for (name, deps) in &packages {
@@ -501,6 +517,7 @@ fn test_the_lock_has_no_sqlite_with_logsync_wired() {
                     SQLITE.contains(&name.as_str())
                         || name == &root
                         || name == &own
+                        || name == &events
                         || (name == "p2panda-store" && dep == "sqlx")
                         // Cargo.lock records sqlx-sqlite's optional backend edge even
                         // when it is inactive; cargo tree below checks the shipped graph.
