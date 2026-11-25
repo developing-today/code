@@ -550,6 +550,7 @@ def play(host: Host, game: str, homes: dict[str, Path], timeout: float) -> dict:
 def run(args) -> int:
     root = Path(args.dir or tempfile.mkdtemp(prefix="board-games-"))
     root.mkdir(parents=True, exist_ok=True)
+    id_bin = str(Path(args.id_bin).resolve())  # joins run from other directories
     modules = {"checkers": Path(args.checkers_wasm), "chess": Path(args.chess_wasm)}
     topologies = (
         ["host-join", "central"] if args.topology == "both" else [args.topology]
@@ -564,9 +565,7 @@ def run(args) -> int:
                 log(f"== {topology} / {game}")
                 case = root / f"{topology}-{game}"
                 host_dir = case / ("ann-host" if topology == "host-join" else "server")
-                host = Host(
-                    args.id_bin, host_dir, game, modules[game], port, args.timeout
-                )
+                host = Host(id_bin, host_dir, game, modules[game], port, args.timeout)
                 port += 1
                 homes = {
                     "ann": host_dir if topology == "host-join" else case / "ann",
