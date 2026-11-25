@@ -315,6 +315,40 @@ export const HOLDABLE = new Set([
   "intake.send",
   "triage.enqueue",
 ]);
+/** Actions on something that may have changed by the time they arrive:
+ * a merge, a deploy, a task's or a unit's state. A device keeps these
+ * and sends them by itself only while they are fresh (`TIMELY` in
+ * public/outbox.js is the same list, and a test holds the two together).
+ * The platform holds every sender to the same rule (#13501). */
+export const TIMELY = new Set(["pr.merge", "deploy.start", "task.cancel", "task.unblock", "unit.act"]);
+/** How long a timely action stays fresh. */
+export const TIMELY_MS = 10 * 60_000;
+/** What a timely action that arrived too late is answered with. */
+export const STALE_ACT_ERROR =
+  "This was done more than ten minutes ago and may no longer apply. Look again, and send it with sure to do it anyway.";
+
+/** Whether an action arrives too late to be done unasked (#13501). The
+ * sender says when the owner did it (`at`, ms since the epoch) and may
+ * say what its own clock read when it sent it (`sent`). It is too late
+ * when either clock says more than ten minutes have passed: the
+ * platform's, which a device whose clock runs slow cannot talk round,
+ * or the device's own, which a device whose clock runs fast cannot hide
+ * from the platform's. One that says `sure` was looked at again by the
+ * owner and goes as it is. One that says nothing of when it was done
+ * claims to be done now, and is taken as that. */
+export function staleAct(
+  kind: string,
+  body: { at?: unknown; sent?: unknown; sure?: unknown },
+  now: number,
+): boolean {
+  if (!TIMELY.has(kind) || body.sure === true) return false;
+  const at = body.at;
+  if (typeof at !== "number" || !Number.isFinite(at)) return false;
+  if (now - at > TIMELY_MS) return true;
+  const sent = body.sent;
+  return typeof sent === "number" && Number.isFinite(sent) && sent - at > TIMELY_MS;
+}
+
 /** What an action is about, where the order of two matters: a rank set
  * twice, a task moved twice. Two about one thing are done in the order
  * the owner did them: one that may be done late goes behind an earlier
