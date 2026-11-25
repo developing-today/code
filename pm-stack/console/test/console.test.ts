@@ -1173,6 +1173,61 @@ describe("operations", () => {
     expect(subjectOf("agent.revoke-enroll", { agent: "new-1" })).toBe("enroll:new-1");
   });
 
+  test("wake hooks: listed, set from stdin JSON, and removed by address (#14544)", async () => {
+    // Oracle: the console drives `fleet bridge wake-hooks` — the list
+    // is the bridge's projection, a set's hook (token included) rides
+    // stdin and never an argument or the audit, and a remove posts
+    // the address alone. A set is never held (its token is a value);
+    // a remove is, like a revocation.
+    const r = recorder((argv) => {
+      if (argv[2] === "wake-hooks" && argv[3] === "--set") {
+        return JSON.stringify({ hook: { address: "agent:felix", kind: "webhook", host: "hooks.example", has_token: true, added: "2026-11-24T00:00:00.000Z" } });
+      }
+      if (argv[2] === "wake-hooks" && argv[3] === "--remove") return JSON.stringify({ removed: true });
+      if (argv[2] === "wake-hooks") {
+        return JSON.stringify({ hooks: [{ address: "agent:felix", kind: "webhook", host: "hooks.example", has_token: true, added: "2026-11-24T00:00:00.000Z" }] });
+      }
+      return "";
+    });
+    const ops = new Ops(CFG, r.run);
+    const table = actions(ops, {} as never);
+
+    expect(await ops.wakeHooks()).toEqual([
+      { address: "agent:felix", kind: "webhook", host: "hooks.example", has_token: true, added: "2026-11-24T00:00:00.000Z" },
+    ]);
+    expect(r.calls.at(-1)?.argv).toEqual(["fleet", "bridge", "wake-hooks"]);
+
+    const set = (await table["agent.wake-hook-set"].run({
+      address: "agent:felix",
+      url: "https://hooks.example/wake",
+      token: "hook-token-fixture",
+    })) as { hook: { address: string } };
+    expect(set.hook.address).toBe("agent:felix");
+    expect(r.calls.at(-1)?.argv).toEqual(["fleet", "bridge", "wake-hooks", "--set", "-"]);
+    expect(JSON.parse(r.calls.at(-1)?.stdin ?? "")).toEqual({
+      address: "agent:felix",
+      url: "https://hooks.example/wake",
+      token: "hook-token-fixture",
+    });
+    expect(table["agent.wake-hook-set"].audit({ address: "agent:felix", url: "https://hooks.example/wake", token: "hook-token-fixture" })).toEqual({
+      address: "agent:felix",
+    });
+    expect(HOLDABLE.has("agent.wake-hook-set")).toBe(false);
+
+    const removed = (await table["agent.wake-hook-remove"].run({ address: "agent:felix" })) as { removed: boolean };
+    expect(removed.removed).toBe(true);
+    expect(r.calls.at(-1)?.argv).toEqual(["fleet", "bridge", "wake-hooks", "--remove", "--address", "agent:felix"]);
+    expect(HOLDABLE.has("agent.wake-hook-remove")).toBe(true);
+    expect(subjectOf("agent.wake-hook-remove", { address: "agent:felix" })).toBe("wake-hook:agent:felix");
+
+    // Bad shapes are refused before anything runs.
+    const calls = r.calls.length;
+    await expect(table["agent.wake-hook-set"].run({ address: "drew", url: "https://hooks.example/wake" })).rejects.toThrow(OpError);
+    await expect(table["agent.wake-hook-set"].run({ address: "agent:felix", url: "http://hooks.example/wake" })).rejects.toThrow(OpError);
+    await expect(table["agent.wake-hook-remove"].run({ address: "no way" })).rejects.toThrow(OpError);
+    expect(r.calls.length).toBe(calls);
+  });
+
   test("ranking an issue adds the new rank before it removes the others", async () => {
     const r = recorder((argv) =>
       argv.includes("repos/developing-today/code/issues/12279")

@@ -127,6 +127,13 @@ central (owner token):
         revoke unused bootstrap tokens: an agent's pending ones, or
         one token by its stored hash (a token value is never needed,
         and never travels)
+  wake-hooks                   every wake hook (address, kind, host;
+        never the token or the path)
+  wake-hooks --set -           set one hook from a JSON object on
+        stdin: {address, url, token?} — the token, when there is
+        one, travels on stdin only, never as an argument
+  wake-hooks --remove --address A
+        remove the hook for one address
   mint-credential --agent A [--scopes s1,s2] [--addr service:<name>]
         mint a per-agent credential directly; the value is printed
         once, in this answer only
@@ -308,6 +315,18 @@ credential — it cannot enroll anything — so it may travel where the
 token value never may. By hash, a used or already-revoked token
 answers {revoked: false}; by agent, the answer counts what was
 taken back."
+        }
+        "wake-hooks" => {
+            "\
+usage: fleet bridge wake-hooks [--set - | --remove --address A]
+
+central (owner token). The bridge's wake hooks (#14544): with no
+flag, every hook — address, kind, host, and whether it holds a
+token; never the token or the URL's path. --set reads one hook as a
+JSON object {address, url, token?} from stdin (so a hook token
+never travels as an argument) and sets it; --remove takes the hook
+for one address back. Both post to the wake-hooks API the retired
+bridge page used; the PM console's Agents screen drives this verb."
         }
         "mint-credential" => {
             "\
@@ -833,6 +852,7 @@ const VALUE_FLAGS: &[&str] = &[
     "--notes-identity",
     "--token-hash",
     "--addr",
+    "--address",
 ];
 
 fn parse(args: &[String], switches: &[&str], values: &[&str]) -> R<Args> {
@@ -1392,6 +1412,51 @@ pub fn execute(ctx: &mut Ctx, args: &[String]) -> R<Value> {
             a.no_positional("enroll-tokens")?;
             let token = owner_token(ctx)?;
             client_with(ctx, &token).call("GET", &format!("/api/{token}/enroll-tokens"), None)
+        }
+        "wake-hooks" => {
+            let a = parse(rest, &["--set", "--remove"], &["--address"])?;
+            // Checked before any credential is resolved, like every
+            // usage error here. The three forms are exclusive: list,
+            // set (the hook as JSON on stdin, so a hook token never
+            // travels as an argument), or remove one address.
+            match (a.has("--set"), a.has("--remove")) {
+                (false, false) => {
+                    a.no_positional("wake-hooks")?;
+                    if a.last("--address").is_some() {
+                        return Err(usage("wake-hooks: --address goes with --remove"));
+                    }
+                    let token = owner_token(ctx)?;
+                    client_with(ctx, &token).call("GET", &format!("/api/{token}/wake-hooks"), None)
+                }
+                (true, false) => {
+                    if a.last("--address").is_some() {
+                        return Err(usage("wake-hooks --set: the address is in the JSON on stdin"));
+                    }
+                    let text = text_of(&a, ctx.stdin).map_err(|_| {
+                        usage("wake-hooks --set: give the hook as a JSON object on stdin (fleet bridge wake-hooks --set -)")
+                    })?;
+                    let payload: Value = serde_json::from_str(&text)
+                        .map_err(|e| usage(format!("wake-hooks --set: stdin is not JSON: {e}")))?;
+                    if !payload.is_object() {
+                        return Err(usage("wake-hooks --set: stdin must be a JSON object {address, url, token?}"));
+                    }
+                    let token = owner_token(ctx)?;
+                    client_with(ctx, &token).call("POST", &format!("/api/{token}/wake-hooks"), Some(&payload))
+                }
+                (false, true) => {
+                    a.no_positional("wake-hooks --remove")?;
+                    let address = a
+                        .last("--address")
+                        .ok_or_else(|| usage("wake-hooks --remove needs --address A"))?;
+                    let token = owner_token(ctx)?;
+                    client_with(ctx, &token).call(
+                        "POST",
+                        &format!("/api/{token}/wake-hooks"),
+                        Some(&json!({ "address": address })),
+                    )
+                }
+                (true, true) => Err(usage("wake-hooks: --set and --remove are different acts")),
+            }
         }
         "revoke-enroll" => {
             let a = parse(rest, &[], &["--agent", "--token-hash"])?;

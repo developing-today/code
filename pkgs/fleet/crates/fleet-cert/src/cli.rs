@@ -38,6 +38,7 @@ Groups and verbs (spec §6.1 tree; status as built):
   ocsp     sign | inspect | test
   chain    build | test
   bundle   inspect
+  inventory list | show | search | audit
   key      generate | inspect
   publish  plan | verify (apply | status deferred, production-gated)
   profile  list | show
@@ -232,6 +233,7 @@ fn run_inner(args: &[String]) -> Result<i32> {
         "ocsp" => ocsp_cmd(rest, json_out),
         "chain" => chain_cmd(rest, json_out),
         "bundle" => bundle_cmd(rest, json_out),
+        "inventory" => inventory_cmd(rest, json_out),
         "key" => key_cmd(rest, json_out),
         "publish" => publish_cmd(rest, json_out),
         "profile" => profile_cmd(rest, json_out),
@@ -240,6 +242,132 @@ fn run_inner(args: &[String]) -> Result<i32> {
         "doctor" => doctor_cmd(rest, json_out),
         other => Err(CertError::usage(format!(
             "unknown cert group '{other}' — run 'fleet cert --help' for the surface"
+        ))),
+    }
+}
+
+// ---------------------------------------------------------------- inventory (§6.1 read-only)
+
+fn inventory_scan_args(p: &Parsed) -> Result<crate::inventory::InventoryRequest> {
+    let dir = p
+        .get("dir")
+        .map(|s| s.to_string())
+        .or_else(|| p.positional(0).map(|s| s.to_string()))
+        .unwrap_or_else(|| ".".to_string());
+    let at = p
+        .get("at")
+        .map(Rfc3339::parse)
+        .transpose()?
+        .unwrap_or_else(Rfc3339::now);
+    let ca_within = p
+        .get("ca-within")
+        .map(CalendarDuration::parse)
+        .transpose()?
+        .unwrap_or(crate::inventory::DEFAULT_CA_WITHIN);
+    let leaf_within = p
+        .get("leaf-within")
+        .map(CalendarDuration::parse)
+        .transpose()?
+        .unwrap_or(crate::inventory::DEFAULT_LEAF_WITHIN);
+    Ok(crate::inventory::InventoryRequest {
+        dir: PathBuf::from(dir),
+        at,
+        ca_within,
+        leaf_within,
+    })
+}
+
+fn inventory_cmd(args: &[String], json_out: bool) -> Result<i32> {
+    let verb = args.first().map(|s| s.as_str()).unwrap_or("");
+    let rest = &args[1.min(args.len())..];
+    match verb {
+        "list" => {
+            let p = parse_args(
+                rest,
+                &["dir", "at", "ca-within", "leaf-within"],
+                &["json"],
+            )?;
+            let req = inventory_scan_args(&p)?;
+            let report = crate::inventory::audit(&req)?;
+            let (text, value) = crate::inventory::render_list(&report);
+            Ok(emit(json_out, text, value))
+        }
+        "show" => {
+            let p = parse_args(
+                rest,
+                &["bundle", "dir", "at", "ca-within", "leaf-within"],
+                &["json"],
+            )?;
+            let bundle_dir = p
+                .get("bundle")
+                .map(|s| s.to_string())
+                .or_else(|| p.positional(0).map(|s| s.to_string()))
+                .ok_or_else(|| CertError::usage("inventory show needs a bundle directory"))?;
+            let mut req = inventory_scan_args(&p)?;
+            // `list_bundles` considers the scan root itself when it is
+            // a bundle, so pointing the scan at the bundle directory
+            // audits exactly that bundle — including parseable-but-
+            // unverifiable ones.
+            req.dir = PathBuf::from(&bundle_dir);
+            let report = crate::inventory::audit(&req)?;
+            let at = report.at;
+            let found = report
+                .bundles
+                .into_iter()
+                .next()
+                .ok_or_else(|| CertError::usage(format!("{bundle_dir} is not a bundle directory")))?;
+            let (text, value) = crate::inventory::render_show(&found, at);
+            Ok(emit(json_out, text, value))
+        }
+        "search" => {
+            let p = parse_args(
+                rest,
+                &[
+                    "dir",
+                    "at",
+                    "ca-within",
+                    "leaf-within",
+                    "subject",
+                    "fingerprint",
+                    "role",
+                    "algorithm",
+                ],
+                &["expired", "json"],
+            )?;
+            let req = inventory_scan_args(&p)?;
+            let filter = crate::inventory::SearchFilter {
+                subject: p.get("subject").map(|s| s.to_string()),
+                fingerprint: p.get("fingerprint").map(|s| s.to_string()),
+                role: p.get("role").map(|s| s.to_string()),
+                algorithm: p.get("algorithm").map(|s| s.to_string()),
+                expired: p.has("expired"),
+            };
+            let hits = crate::inventory::search(
+                &req.dir,
+                req.at,
+                req.ca_within,
+                req.leaf_within,
+                &filter,
+            )?;
+            let (text, value) = crate::inventory::render_search(&hits, req.at);
+            Ok(emit(json_out, text, value))
+        }
+        "audit" => {
+            let p = parse_args(
+                rest,
+                &["dir", "at", "ca-within", "leaf-within"],
+                &["json"],
+            )?;
+            let req = inventory_scan_args(&p)?;
+            let report = crate::inventory::audit(&req)?;
+            let failed =
+                report.totals.expired > 0 || report.totals.drift_findings > 0;
+            let (text, value) = crate::inventory::render_audit(&report);
+            let code = emit(json_out, text, value);
+            Ok(if failed { 1 } else { code })
+        }
+        other => Err(CertError::usage(format!(
+            "unknown inventory verb '{other}' (list | show | search | audit)"
         ))),
     }
 }
@@ -1075,7 +1203,6 @@ const NOT_BUILT: &[(&str, &str)] = &[
         "algorithm benchmarks (spec §6.1)",
     ),
     ("batch", "batch plan/validate/apply (spec §6.5)"),
-    ("inventory", "inventory list/show/search/audit (spec §6.1)"),
     (
         "root/issuer renew/rotate/replace",
         "lifecycle verbs (spec §5.2)",
@@ -1091,7 +1218,7 @@ fn explain_cmd(args: &[String], json_out: bool) -> Result<i32> {
     let body = match topic {
         "overview" => {
             "fleet cert implements the §6.1 command tree's core: root, issuer, leaf, ocsp, \
-chain, bundle, publish (plan | verify read-only), profile, algorithms, explain, doctor. Signing is library-first (§6.4): \
+chain, bundle, inventory (list | show | search | audit, read-only), publish (plan | verify read-only), profile, algorithms, explain, doctor. Signing is library-first (§6.4): \
 the CLI is a thin shell over the fleet-cert crate. Cross-signing is policy data \
 (§§3.2/24.2), time is Gregorian calendar arithmetic (§5.4), and ML-DSA-44 is a \
 first-class algorithm with RFC 9881 identifiers. Topics: signer-source, \
@@ -1185,7 +1312,7 @@ fn doctor_cmd(_args: &[String], json_out: bool) -> Result<i32> {
         "  openssl (independent validator): {}\n",
         openssl.as_deref().unwrap_or("not found")
     ));
-    text.push_str("  built: root, issuer, leaf, key (generate/inspect), chain, bundle (inspect), publish (plan/verify read-only), profile (list/show), algorithms (list/describe), explain, doctor\n");
+    text.push_str("  built: root, issuer, leaf, key (generate/inspect), chain, bundle (inspect), inventory (list/show/search/audit read-only), publish (plan/verify read-only), profile (list/show), algorithms (list/describe), explain, doctor\n");
     text.push_str("  not built yet (tracked as child issues under #9157):\n");
     for (name, what) in NOT_BUILT {
         text.push_str(&format!("    {name} — {what}\n"));
@@ -1193,7 +1320,7 @@ fn doctor_cmd(_args: &[String], json_out: bool) -> Result<i32> {
     let value = json!({
         "engine_self_test": algo_results.iter().map(|(i, ok)| json!({"algorithm": i.name, "ok": ok})).collect::<Vec<_>>(),
         "openssl": openssl,
-        "built": ["root", "issuer", "leaf", "key-generate/inspect", "chain", "bundle-inspect", "publish-plan/verify", "profile-list/show", "algorithms-list/describe", "explain", "doctor"],
+        "built": ["root", "issuer", "leaf", "key-generate/inspect", "chain", "bundle-inspect", "inventory-list/show/search/audit", "publish-plan/verify", "profile-list/show", "algorithms-list/describe", "explain", "doctor"],
         "not_built": NOT_BUILT.iter().map(|(n, w)| json!({"surface": n, "scope": w})).collect::<Vec<_>>(),
     });
     let code = emit(json_out, text, value);
