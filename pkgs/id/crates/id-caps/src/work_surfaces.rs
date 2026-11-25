@@ -1512,10 +1512,14 @@ fn check_text(text: &str, max: usize, may_be_empty: bool) -> Result<(), SurfaceE
 }
 
 fn sha256_hex(bytes: &[u8]) -> String {
-    Sha256::digest(bytes)
-        .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect()
+    const DIGITS: &[u8; 16] = b"0123456789abcdef";
+    let digest = Sha256::digest(bytes);
+    let mut out = String::with_capacity(digest.len() * 2);
+    for byte in digest {
+        out.push(char::from(DIGITS[usize::from(byte >> 4)]));
+        out.push(char::from(DIGITS[usize::from(byte & 0x0f)]));
+    }
+    out
 }
 
 /// `read_view` on a board id always yields a board view.
@@ -1754,7 +1758,7 @@ mod tests {
             .unwrap();
 
         // Before the lease ends nothing expires.
-        assert!(s.expire_claims(T0 + 3599).is_empty());
+        assert_eq!(s.expire_claims(T0 + 3599), Vec::new());
         // At the lease end the item goes back to todo, unclaimed.
         assert_eq!(s.expire_claims(T0 + 3600), vec![("work".to_owned(), id)]);
         let back = item(&mut s, &r, id);
