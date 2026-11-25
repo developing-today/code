@@ -3956,22 +3956,7 @@ mod task_notes_tests {
     #[test]
     fn q6_link_change_emits_history_without_changing_task_status() {
         let (t, _db) = fake_backend();
-        let packet = json!({
-            "title":"Q6 link history", "priority":50,
-            "dedupe_key":"q6-link-history-fixture",
-            "payload":{"schema":"repo-task/v1", "kind":"small_fix", "repo":"developing-today/code",
-                "problem":"history", "evidence":["fixture"], "acceptance":["linked transitions are visible"],
-                "scope":{"include":["Q6"],"exclude":[]}, "tests":["history oracle"],
-                "risk":{"level":"low","flags":[]}, "priority_reason":"fixture",
-                "timebox_minutes":30,"max_attempts":2,"context_refs":[],
-                "dedupe":{"checked_at":"2026-11-25T00:00:00Z","basis":"fixture"}}
-        });
-        let enqueued = verb_enqueue(
-            &t,
-            &json!({"queue":"repo-health-code-pilot", "packet":packet}),
-        );
-        assert_eq!(enqueued["ok"], true, "{enqueued}");
-        let task_id = enqueued["row"]["id"].as_i64().unwrap();
+        let task_id = task(&t, None);
         let request = json!({"task_id":task_id,"worker":"q6-test","link_kind":"parent",
             "other_issue":{"repo":"developing-today/code","number":14170}});
         assert_eq!(verb_link_add(&t, &request)["ok"], true);
