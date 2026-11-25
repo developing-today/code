@@ -114,27 +114,46 @@ if start < 0:
     sys.exit(1)
 end = raw.find(b"</hierarchy>", start)
 root = ET.fromstring(raw[start:end + len(b"</hierarchy>") if end >= 0 else None].decode("utf-8", "replace"))
-for node in root.iter("node"):
-    if (node.get("text") or node.get("content-desc") or "").startswith(needle):
-        bounds = node.get("bounds") or ""
-        nums = bounds.replace("[", " ").replace("]", " ").replace(",", " ").split()
-        if len(nums) == 4:
-            x1, y1, x2, y2 = (int(n) for n in nums)
-            # Say what was matched and where the tap will land: the
-            # screen read holds the whole page, not just the visible
-            # part, so a match can sit off the screen — run
-            # the answer tap of run 45577554296 landed nowhere that answered.
-            print("tap_xy: %r -> text=%r bounds=%s tap=%d,%d" % (
-                needle,
-                node.get("text") or node.get("content-desc") or "",
-                bounds, (x1 + x2) // 2, (y1 + y2) // 2), file=sys.stderr)
-            print((x1 + x2) // 2, (y1 + y2) // 2)
-            sys.exit(0)
+def tap_point(node):
+    bounds = node.get("bounds") or ""
+    nums = bounds.replace("[", " ").replace("]", " ").replace(",", " ").split()
+    if len(nums) != 4:
+        return None
+    x1, y1, x2, y2 = (int(n) for n in nums)
+    if x2 <= x1 or y2 <= y1:
+        return None
+    return bounds, (x1 + x2) // 2, (y1 + y2) // 2
+
+def label_of(node):
+    return node.get("text") or node.get("content-desc") or ""
+
+# A match only counts with a real box: the screen read holds the
+# whole page, and a node off the screen reports bounds [0,0][0,0] —
+# the answer tap of run 45578833900 matched such a node and tapped
+# the corner of the screen. First pass: the label at the start of
+# the node text. Second pass: the label anywhere in it — a
+# recommended option names its button with the word RECOMMENDED in
+# front of the label, so the answer the check taps never starts
+# the text of its button.
+for mode in ("prefix", "contains"):
+    for node in root.iter("node"):
+        label = label_of(node)
+        hit = label.startswith(needle) if mode == "prefix" else needle in label
+        if not hit:
+            continue
+        got = tap_point(node)
+        if got is None:
+            continue
+        bounds, cx, cy = got
+        print("tap_xy: %r -> (%s) text=%r bounds=%s tap=%d,%d" % (
+            needle, mode, label, bounds, cx, cy), file=sys.stderr)
+        print(cx, cy)
+        sys.exit(0)
 # No tappable node matched: say what the screen did hold, so a miss
 # is diagnosable from the run log (run 45574682050 missed a tab five
 # times that the failure dump, seconds later, showed plainly).
 seen = [n.get("text") for n in root.iter("node") if n.get("text")]
-print("tap_xy: no node starts with %r; screen texts: %s" % (needle, seen[:40]), file=sys.stderr)
+print("tap_xy: no tappable node names %r; screen texts: %s" % (needle, seen[:40]), file=sys.stderr)
 sys.exit(1)
 ' "$1"
 }
