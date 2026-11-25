@@ -111,6 +111,20 @@ enum Command {
     },
 }
 
+impl Command {
+    fn operation(&self) -> Option<&'static str> {
+        Some(match self {
+            Self::Help(_) => return None,
+            Self::Get { .. } => "get",
+            Self::Set { .. } => "set",
+            Self::List { .. } => "list",
+            Self::Delete { .. } => "delete",
+            Self::ClearOverride { .. } => "clear-override",
+            Self::Revert { .. } => "revert",
+        })
+    }
+}
+
 #[derive(Debug, PartialEq, Eq)]
 enum ParseError {
     Usage(String),
@@ -289,7 +303,7 @@ fn run_with_context(
     stdin: &mut dyn Read,
     out: &mut dyn Write,
     err: &mut dyn Write,
-    _ctx: &fleet_config::ctx::Ctx,
+    ctx: &fleet_config::ctx::Ctx,
 ) -> i32 {
     let command = match parse(args) {
         Ok(command) => command,
@@ -305,6 +319,12 @@ fn run_with_context(
             return EXIT_USAGE;
         }
     };
+    if let (Some(operation), Some(ctx_id)) = (command.operation(), ctx.id()) {
+        // Log only the propagated join key and operation. KV values,
+        // namespaces, keys, and the store's separate scope identity can
+        // all carry user data and do not belong in this record.
+        let _ = writeln!(err, "fleet-kv: op={operation} FLEET_CTX_ID={ctx_id}");
+    }
     let written = match command {
         Command::Help(text) => out.write_all(text.as_bytes()),
         Command::Get { namespace, key } => match store.get(identity, &namespace, &key) {
@@ -489,11 +509,17 @@ mod tests {
         assert!(!set.err.contains("api-key"));
         assert!(!set.err.contains("secret-value"));
 
-        let no_ctx = invoke(
+        let get = invoke_with_context(
             &store,
             &["get", "--namespace", "private", "api-key"],
             b"",
+            &ctx,
         );
+        assert_eq!(get.code, EXIT_OK, "{}", get.err);
+        assert_eq!(get.out, b"secret-value");
+        assert_eq!(get.err, "fleet-kv: op=get FLEET_CTX_ID=task-22655\n");
+
+        let no_ctx = invoke(&store, &["get", "--namespace", "private", "api-key"], b"");
         assert!(no_ctx.err.is_empty(), "{}", no_ctx.err);
     }
 
