@@ -5128,21 +5128,37 @@ describe("the edge does the core itself", () => {
       malformed: number;
       workers: { name: string; group: string; state: string; deploy: string; workflow: string | null; run: unknown }[];
     };
-    expect([p.malformed, p.checked]).toEqual([0, "2026-11-23"]);
+    // The oracle for what the list says is the file itself, read here
+    // apart from the code under test (the #14290 pattern, #14297):
+    // whoever updates the repository's list — a Worker deployed, a
+    // deploy workflow renamed — changes what is expected with it.
+    const listed = JSON.parse(readFileSync(join(import.meta.dir, "..", "..", "platform", "workers.json"), "utf8")) as {
+      checked: string;
+      workers: { name: string; group: string; state: string; deploy: string; workflow: string | null }[];
+    };
+    const listedByName = new Map(listed.workers.map((w) => [w.name, w]));
+    expect([p.malformed, p.checked]).toEqual([0, listed.checked]);
+    expect(p.workers.map((x) => x.name).sort()).toEqual(listed.workers.map((w) => w.name).sort());
     // The platform first, then the rest by what they belong to.
+    const own = listedByName.get("pm-console-edge");
+    if (!own) throw new Error("pm-console-edge is not in the repository's list of Workers");
     expect(p.workers[0]).toMatchObject({
-      name: "pm-console-edge",
-      group: "platform",
-      state: "in service",
-      deploy: "actions",
-      workflow: "pm-console-edge-deploy.yml",
+      name: own.name,
+      group: own.group,
+      state: own.state,
+      deploy: own.deploy,
+      workflow: own.workflow,
       // The latest run of its deploy on main, read from GitHub here.
       run: { commit: expect.stringMatching(/^[0-9a-f]{12}$/), state: "success", at: "2026-11-22T11:50:00Z" },
     });
     const byName = new Map(p.workers.map((x) => [x.name, x]));
     // One that a machine deploys by hand has no run to show; one that is not deployed, neither.
-    expect(byName.get("message-bridge")).toMatchObject({ deploy: "by hand", workflow: null, run: null });
-    expect(byName.get("fleet-hosted")).toMatchObject({ state: "not deployed", deploy: "none", run: null });
+    const byHand = listed.workers.find((w) => w.deploy === "by hand");
+    if (!byHand) throw new Error("the repository's list has no by-hand Worker");
+    expect(byName.get(byHand.name)).toMatchObject({ deploy: "by hand", workflow: null, run: null });
+    const notDeployed = listed.workers.find((w) => w.deploy === "none");
+    if (!notDeployed) throw new Error("the repository's list has no undeployed Worker");
+    expect(byName.get(notDeployed.name)).toMatchObject({ state: notDeployed.state, deploy: "none", run: null });
     expect(p.workers.map((x) => x.group)).toEqual(
       [...p.workers.map((x) => x.group)].sort((a, b) => ORDER.indexOf(a) - ORDER.indexOf(b)),
     );

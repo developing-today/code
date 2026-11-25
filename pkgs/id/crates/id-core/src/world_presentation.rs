@@ -2036,6 +2036,116 @@ pub fn parse_surface(data: &str) -> Result<Option<WorldSurface>> {
     })))
 }
 
+/// One grapheme-addressed cell of a screen's logical grid: the unit the
+/// primary-mode painter contract (`Term.paint_primary`, #14861) diffs and
+/// paints. A wide glyph appears once, at its head cell; the stored
+/// continuation cell is presentation detail, not a logical cell.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct LogicalCell {
+    symbol: String,
+    fg: u8,
+    bg: u8,
+    bold: bool,
+}
+
+impl Default for LogicalCell {
+    fn default() -> Self {
+        Self {
+            symbol: " ".to_owned(),
+            fg: 0,
+            bg: 0,
+            bold: false,
+        }
+    }
+}
+
+/// The byte string that paints `next` over `previous` in primary mode,
+/// mirroring `Term.paint_primary` in
+/// `pkgs/id/examples/roc-world/Term.roc` exactly: the union grid is
+/// blank-padded, changed cells fold into maximal same-style runs per
+/// row, each run is cursor-addressed and either erase-in-line (a run of
+/// default-styled spaces reaching the frame's last column) or a reset
+/// plus per-attribute SGR sequences plus the run text, and a non-empty
+/// paint ends with one reset. Identical frames paint as the empty
+/// string. Both implementations are pinned to the shared fixtures in
+/// `pkgs/id/test-data/paint-primary-fixtures.json`.
+fn paint_primary_logical(previous: &[Vec<LogicalCell>], next: &[Vec<LogicalCell>]) -> String {
+    fn logical_width(grid: &[Vec<LogicalCell>]) -> usize {
+        grid.iter().map(Vec::len).max().unwrap_or(0)
+    }
+    let blank = LogicalCell::default();
+    let height = previous.len().max(next.len());
+    let union_width = logical_width(previous).max(logical_width(next));
+    let next_width = logical_width(next);
+    let mut output = String::new();
+    let mut run: Vec<&LogicalCell> = Vec::new();
+    let mut run_start = (0usize, 0usize);
+    for y in 0..height {
+        for x in 0..union_width {
+            let before = previous
+                .get(y)
+                .and_then(|row| row.get(x))
+                .unwrap_or(&blank);
+            let after = next.get(y).and_then(|row| row.get(x)).unwrap_or(&blank);
+            if before == after {
+                continue;
+            }
+            let extends = run.first().is_some_and(|first| {
+                run_start.0 == y
+                    && run_start.1 + run.len() == x
+                    && first.fg == after.fg
+                    && first.bg == after.bg
+                    && first.bold == after.bold
+            });
+            if !extends {
+                emit_primary_run(&mut output, &run, run_start, next_width);
+                run.clear();
+                run_start = (y, x);
+            }
+            run.push(after);
+        }
+    }
+    emit_primary_run(&mut output, &run, run_start, next_width);
+    if !output.is_empty() {
+        output.push_str("\x1b[0m");
+    }
+    output
+}
+
+/// Append one run of a primary-mode paint: its cursor address, then
+/// either erase-in-line or the reset/SGR/text form. Mirrors
+/// `Term.emit_run`.
+fn emit_primary_run(
+    output: &mut String,
+    run: &[&LogicalCell],
+    (y, x): (usize, usize),
+    next_width: usize,
+) {
+    let Some(first) = run.first() else {
+        return;
+    };
+    output.push_str(&format!("\x1b[{};{}H", y + 1, x + 1));
+    let default_style = first.fg == 0 && first.bg == 0 && !first.bold;
+    let all_spaces = run.iter().all(|cell| cell.symbol == " ");
+    if all_spaces && default_style && x + run.len() == next_width {
+        output.push_str("\x1b[K");
+        return;
+    }
+    output.push_str("\x1b[0m");
+    if first.bold {
+        output.push_str("\x1b[1m");
+    }
+    if first.fg != 0 {
+        output.push_str(&format!("\x1b[38;5;{}m", first.fg));
+    }
+    if first.bg != 0 {
+        output.push_str(&format!("\x1b[48;5;{}m", first.bg));
+    }
+    for cell in run {
+        output.push_str(&cell.symbol);
+    }
+}
+
 impl ScreenSurface {
     /// The screen's text projection: one line per row, cell symbols in
     /// order (wide-glyph continuation cells contribute nothing), trailing
@@ -2139,6 +2249,75 @@ impl ScreenSurface {
             write!(&mut output, "\x1b[{};{}H", height, width).ok()?;
         }
         Some(output)
+    }
+
+    /// Paint this frame over `previous` in primary mode: no alternate
+    /// screen, the previous frame stays in the terminal's scrollback,
+    /// and each transition is a sequence of cursor-addressed
+    /// erase/rewrite runs. This is the host-side implementation of the
+    /// slice-1 harness contract `Term.paint_primary`
+    /// (`pkgs/id/examples/roc-world/Term.roc`, #14861 D2); the two
+    /// implementations are pinned to the same shared frame fixtures
+    /// (`pkgs/id/test-data/paint-primary-fixtures.json`) by the tests in
+    /// this file and by `scripts/term-parity-test.sh`, so they cannot
+    /// drift.
+    ///
+    /// Frames are compared as logical grids — one cell per grapheme, a
+    /// wide glyph occupying its head cell only — because the contract's
+    /// screens are grapheme-addressed; a stored continuation cell never
+    /// paints on its own. Differing dimensions are blank-padded to the
+    /// union grid, as in `Screen.diff_cells`; hosts answer a size
+    /// change with [`ScreenSurface::paint_primary_full`] instead.
+    /// Returns `None` when either screen is invalid.
+    pub fn paint_primary(&self, previous: &Self) -> Option<String> {
+        if !self.is_valid() || !previous.is_valid() {
+            return None;
+        }
+        Some(paint_primary_logical(
+            &previous.logical_grid(),
+            &self.logical_grid(),
+        ))
+    }
+
+    /// Erase the visible page and paint this frame in primary mode from
+    /// a blank screen: the host-side `Term.paint_primary_full`. Returns
+    /// `None` when the screen is invalid.
+    pub fn paint_primary_full(&self) -> Option<String> {
+        if !self.is_valid() {
+            return None;
+        }
+        let grid = self.logical_grid();
+        // The blank screen shares the frame's logical shape row for
+        // row, so the union grid is exactly the frame's own grid.
+        let blank: Vec<Vec<LogicalCell>> = grid
+            .iter()
+            .map(|row| vec![LogicalCell::default(); row.len()])
+            .collect();
+        Some(format!("\x1b[2J{}", paint_primary_logical(&blank, &grid)))
+    }
+
+    /// This screen as a logical grid: one [`LogicalCell`] per grapheme,
+    /// wide glyphs represented by their head cell alone.
+    fn logical_grid(&self) -> Vec<Vec<LogicalCell>> {
+        let width = usize::from(self.width);
+        let mut rows = Vec::with_capacity(usize::from(self.height));
+        for y in 0..usize::from(self.height) {
+            let mut row = Vec::new();
+            for x in 0..width {
+                let cell = &self.cells[y * width + x];
+                if cell.columns == 0 {
+                    continue;
+                }
+                row.push(LogicalCell {
+                    symbol: cell.symbol.clone(),
+                    fg: cell.fg,
+                    bg: cell.bg,
+                    bold: cell.bold,
+                });
+            }
+            rows.push(row);
+        }
+        rows
     }
 
     fn is_valid(&self) -> bool {
@@ -2280,6 +2459,161 @@ mod tests {
 
     fn grid(width: usize, height: usize, fill: &str) -> ScreenSurface {
         ScreenSurface::from_cells(width, height, vec![cell(fill); width * height]).unwrap()
+    }
+
+    #[derive(Deserialize)]
+    struct PaintFixtures {
+        cases: Vec<PaintFixtureCase>,
+    }
+
+    #[derive(Deserialize)]
+    struct PaintFixtureCase {
+        name: String,
+        width: usize,
+        height: usize,
+        #[serde(default)]
+        next_width: Option<usize>,
+        #[serde(default)]
+        next_height: Option<usize>,
+        prev: Vec<PaintFixtureWrite>,
+        next: Vec<PaintFixtureWrite>,
+        paint: String,
+        full: String,
+    }
+
+    #[derive(Deserialize)]
+    struct PaintFixtureWrite {
+        x: usize,
+        y: usize,
+        text: String,
+        #[serde(default)]
+        fg: u8,
+        #[serde(default)]
+        bg: u8,
+        #[serde(default)]
+        bold: bool,
+    }
+
+    /// Build a stored screen from a fixture case: apply the put-text
+    /// writes grapheme-wise to a blank logical grid, then expand wide
+    /// graphemes into head + continuation stored cells, exactly as a
+    /// parsed guest frame stores them.
+    fn paint_fixture_screen(
+        width: usize,
+        height: usize,
+        writes: &[PaintFixtureWrite],
+    ) -> ScreenSurface {
+        let mut logical = vec![vec![LogicalCell::default(); width]; height];
+        for write in writes {
+            for (offset, grapheme) in
+                UnicodeSegmentation::graphemes(write.text.as_str(), true).enumerate()
+            {
+                let (x, y) = (write.x + offset, write.y);
+                if x < width && y < height {
+                    logical[y][x] = LogicalCell {
+                        symbol: grapheme.to_owned(),
+                        fg: write.fg,
+                        bg: write.bg,
+                        bold: write.bold,
+                    };
+                }
+            }
+        }
+        let mut stored_width = 0usize;
+        let mut rows = Vec::with_capacity(height);
+        for row in &logical {
+            let mut stored = Vec::new();
+            for logical_cell in row {
+                let columns =
+                    u8::try_from(UnicodeWidthStr::width(logical_cell.symbol.as_str()))
+                        .unwrap_or(1)
+                        .max(1);
+                stored.push(ScreenCell {
+                    symbol: logical_cell.symbol.clone(),
+                    fg: logical_cell.fg,
+                    bg: logical_cell.bg,
+                    bold: logical_cell.bold,
+                    columns,
+                    token: None,
+                });
+                for _ in 1..columns {
+                    stored.push(ScreenCell {
+                        symbol: String::new(),
+                        fg: logical_cell.fg,
+                        bg: logical_cell.bg,
+                        bold: logical_cell.bold,
+                        columns: 0,
+                        token: None,
+                    });
+                }
+            }
+            stored_width = stored_width.max(stored.len());
+            rows.push(stored);
+        }
+        let mut cells = Vec::with_capacity(stored_width * height);
+        for mut row in rows {
+            row.resize(stored_width, cell(" "));
+            cells.extend(row);
+        }
+        ScreenSurface {
+            version: 1,
+            width: u16::try_from(stored_width).unwrap(),
+            height: u16::try_from(height).unwrap(),
+            cells,
+        }
+    }
+
+    /// The primary-mode painter is the host half of the `Term.roc`
+    /// harness contract (#14861 slice 2): both implementations must
+    /// produce the exact bytes pinned in the shared fixtures, which
+    /// `scripts/term-parity-test.sh` also generates Roc expects from.
+    #[test]
+    fn paint_primary_matches_the_shared_term_fixtures() {
+        let fixtures: PaintFixtures = serde_json::from_str(include_str!(
+            "../../../test-data/paint-primary-fixtures.json"
+        ))
+        .unwrap();
+        assert!(
+            fixtures.cases.len() >= 10,
+            "paint fixture corpus shrank to {} cases",
+            fixtures.cases.len()
+        );
+        for case in &fixtures.cases {
+            let previous = paint_fixture_screen(case.width, case.height, &case.prev);
+            let next = paint_fixture_screen(
+                case.next_width.unwrap_or(case.width),
+                case.next_height.unwrap_or(case.height),
+                &case.next,
+            );
+            assert_eq!(
+                next.paint_primary(&previous).as_deref(),
+                Some(case.paint.as_str()),
+                "case {}: transition bytes",
+                case.name
+            );
+            assert_eq!(
+                next.paint_primary_full().as_deref(),
+                Some(case.full.as_str()),
+                "case {}: full repaint bytes",
+                case.name
+            );
+        }
+    }
+
+    #[test]
+    fn paint_primary_refuses_invalid_screens() {
+        let valid = grid(2, 1, " ");
+        // A stored cell count that disagrees with the declared
+        // dimensions is not a valid screen.
+        let invalid = ScreenSurface {
+            version: 1,
+            width: 2,
+            height: 1,
+            cells: vec![cell(" ")],
+        };
+        assert_eq!(valid.paint_primary(&invalid), None);
+        assert_eq!(invalid.paint_primary(&valid), None);
+        assert_eq!(invalid.paint_primary_full(), None);
     }
 
     fn codec_patch() -> ScreenPatch {
