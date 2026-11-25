@@ -137,3 +137,81 @@ Invariants pinned by `test/read-api.test.ts`:
 - **Honest absence.** A board with no snapshot serves null audit; an
   item with no chain serves empty ancestors and the chain-break
   sentence; an unknown ref 404s. Nothing is fabricated.
+
+## H4 slice — surface C agent request acceptance (#14262)
+
+`src/agent-front-door.ts` layers the component H design §§4.2/4.5
+policy on the shared H1 JWT verifier. `resolveAgentFrontDoor(token,
+tenantId, deps)` accepts only an agent-only token, with a single
+audience and `scope === binding_id === requested tenant` (never `*`).
+Its signed lifetime is at most 900 seconds. It returns only the
+`agent` role, even when the owning account has broader live roles.
+
+The injected `loadCredential(jti)` must read **live central tenancy
+metadata on every invocation**, never a cached token or secret. The
+metadata must match the resolved owner account/binding, tenant and
+audience; its lifetime is at most 30 days and contains the token's
+lifetime. Missing, revoked or inconsistent rows deny immediately.
+`resolveAccountId` and `loadRoles` remain H1's trusted live-tenancy
+adapters; the latter must reject inactive accounts/bindings and load
+tenant-scoped grants. The audience is trusted deployment configuration,
+not caller input. Every accepted request awaits an attribution audit
+(`jti`, owner account/binding, tenant); an audit failure denies.
+Actions still need their own operation/outcome audit at the API layer.
+
+This is an unwired acceptance seam, **not a production surface**.
+Remaining H4 work: authenticated owner issuance API/UI, metadata schema
+extension/adapter for agent credentials (the existing E4 credential
+table scopes are DB permissions), provider client-credentials exchange,
+and HTTP handler integration. H2's identity-link library accepts a
+resolved session; it does not itself mint a browser session.
+Provisional provider contract: `jti` names the revocable credential
+metadata handle, `scope` is the tenant binding, `roles` is `["agent"]`.
+No token/secret values are stored by this module.
+
+Focused oracle tests live in `test/front-door.test.ts` alongside H1:
+
+```sh
+cd pm-stack/pm-service && bun test test/front-door.test.ts
+```
+
+Dispatch this command remotely using Fleet; no production credentials
+are needed (tests sign ephemeral fixture tokens).
+
+## CF-5c — async serving substrate + Worker entry (#14969)
+
+The read API was born over the synchronous `SqlDb` surface, whose
+only adapter is bun:sqlite — fine for tests and local tooling, but
+a Worker cannot run it, and the tenant plane (Turso/libSQL over
+HTTP) is async. This slice adds the async twin without touching
+the synchronous path's behaviour:
+
+- `src/tenant-store/libsql-http.ts` — `AsyncSqlDb` (the one method
+  the read path needs) and `libsqlHttpDb`, its adapter over the
+  libSQL server protocol (Hrana v3 over HTTP, plain fetch). The
+  tenant DB URL/token live only in the adapter's closure, supplied
+  from Worker secrets; nothing on the read path reads, logs, or
+  persists a token (E §2.3).
+- `src/read-api/async-store.ts` — the four read loads awaited.
+  Every SQL string and row→shape mapping is imported from
+  `store.ts` / `collector/store.ts` (whose mappings were extracted
+  for exactly this sharing), so the served shapes cannot drift.
+- `src/read-api/async-api.ts` — the same four routes over the
+  async store; `test/read-api-async.test.ts` pins every route's
+  status and body byte-identical to the synchronous handler's.
+- `src/worker.ts` + `wrangler.toml` — the Worker entry. `/health`
+  reports `{ ok, service, version }` with the VERSION var the
+  deploy workflow stamps per deploy; until the
+  `PM_TENANT_DB_URL` / `PM_TENANT_DB_TOKEN` secrets are set, the
+  API routes answer a structured 503 (an unconfigured store is an
+  honest state, never invented data).
+- `.github/workflows/pm-service-deploy.yml` — the design §4
+  versions standard: test, `wrangler versions upload` stamped
+  with the full commit SHA, health gate against the version's
+  preview URL (`scripts/check-health.mjs`), `versions deploy`
+  promotion, and rollback by promoting a previous version id
+  (the `rollback_version` dispatch input).
+
+```sh
+cd pm-stack/pm-service && bun test && bun run typecheck
+```

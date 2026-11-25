@@ -7,6 +7,7 @@ license.workspace = true
 description = "Identity-scoped local SQLite storage for fleet-kv."
 
 [dependencies]
+fleet-config = { workspace = true }
 rusqlite = { version = "0.43", features = ["bundled"] }
 
 [dev-dependencies]

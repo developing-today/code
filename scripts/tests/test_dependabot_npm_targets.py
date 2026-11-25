@@ -97,13 +97,15 @@ class DependabotNpmTargetTests(unittest.TestCase):
     def test_bun_targets_are_lockfile_backed_and_not_npm_targets(self):
         text = CONFIG.read_text()
         bun_targets = {
-            path.lstrip("/")
-            for path in list_values(bun_block(text), "directories")
+            path.lstrip("/") for path in list_values(bun_block(text), "directories")
         }
         self.assertEqual(bun_targets, BUN_TARGETS)
         self.assertTrue(
             bun_targets.isdisjoint(
-                {path.lstrip("/") for path in list_values(npm_block(text), "directories")}
+                {
+                    path.lstrip("/")
+                    for path in list_values(npm_block(text), "directories")
+                }
             ),
             "Bun targets must not also be configured for npm",
         )

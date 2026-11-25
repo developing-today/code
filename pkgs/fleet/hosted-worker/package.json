@@ -13,7 +13,7 @@
     "cli": "node --experimental-transform-types cli.ts",
     "dev": "wrangler dev",
     "smoke": "node --experimental-transform-types smoke/smoke.mjs",
-    "test": "node --experimental-transform-types --test test/auth.test.ts test/tenancy.test.ts test/capabilities.test.ts test/doors.test.ts test/sessions.test.ts test/session-parity.test.ts test/stamp-sig.test.ts test/stamping.test.ts test/github.test.ts test/query.test.ts test/query-cli.test.ts test/queue.test.ts test/libsql-queue-parity.test.ts test/ingestion.test.ts test/backfill.test.ts test/backfill-cli.test.ts test/sync.test.ts test/sync-cli.test.ts test/direct-read.test.ts test/cli.test.ts test/bridge.test.ts test/libsql-hrana-parity.test.ts test/home.test.ts test/d1-queue-parity.test.ts",
+    "test": "node --experimental-transform-types --test test/auth.test.ts test/tenancy.test.ts test/capabilities.test.ts test/doors.test.ts test/sessions.test.ts test/session-parity.test.ts test/stamp-sig.test.ts test/stamping.test.ts test/github.test.ts test/query.test.ts test/query-cli.test.ts test/queue.test.ts test/libsql-queue-parity.test.ts test/ingestion.test.ts test/backfill.test.ts test/backfill-cli.test.ts test/sync.test.ts test/sync-cli.test.ts test/direct-read.test.ts test/cli.test.ts test/bridge.test.ts test/libsql-hrana-parity.test.ts test/home.test.ts test/d1-queue-parity.test.ts test/live-generation-queue-parity.test.ts",
     "typecheck": "tsc --noEmit"
   },
   "type": "module",

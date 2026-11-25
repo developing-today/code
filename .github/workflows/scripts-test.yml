@@ -40,6 +40,10 @@ jobs:
         run: |
           test -f scripts/tests/test_muse_bootstrap_check_op.py
           python3 -m unittest discover -s scripts/tests -p 'test_muse_bootstrap_check_op.py' -v
+      - name: Run fleet binary keeper contract tests (#14999)
+        run: |
+          test -f scripts/tests/test_fleet_binary_keeper.py
+          python3 -m unittest discover -s scripts/tests -p 'test_fleet_binary_keeper.py' -v
       - name: Run worker preflight contract tests (#4862)
         run: python3 -m unittest discover -s scripts/tests -p 'test_worker_preflight.py' -v
       - name: Run Dependabot npm target regression tests (#14164)

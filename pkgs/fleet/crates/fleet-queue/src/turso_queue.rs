@@ -2066,7 +2066,10 @@ mod tests {
         // Third branch: the full sink predicate, ungated.
         let sink_branch = format!("OR ({HANDOFF_SQL})");
         assert!(pred.contains(&sink_branch), "sink branch present: {pred}");
-        assert!(pred.starts_with("manual_only = 0 AND"), "automatic pick excludes manual-only: {pred}");
+        assert!(
+            pred.starts_with("manual_only = 0 AND"),
+            "automatic pick excludes manual-only: {pred}"
+        );
         assert_eq!(pred.matches("not_before <= ?").count(), 2);
         assert_eq!(
             pred.matches('?').count(),

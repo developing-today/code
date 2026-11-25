@@ -33,7 +33,15 @@ import os
 import pathlib
 import sys
 
-sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent.parent / "pm-stack" / "console" / "scripts"))
+sys.path.insert(
+    0,
+    str(
+        pathlib.Path(__file__).resolve().parent.parent.parent
+        / "pm-stack"
+        / "console"
+        / "scripts"
+    ),
+)
 import expose
 
 
@@ -59,7 +67,15 @@ def read_state(path: pathlib.Path) -> dict:
     access = state.get("access")
     if not isinstance(access, dict):
         raise SystemExit(f"{path}: access is an object")
-    aknown = {"about", "session_duration", "cookie", "owner_email_env", "google_client_id_env", "google_client_secret_env", "public_paths"}
+    aknown = {
+        "about",
+        "session_duration",
+        "cookie",
+        "owner_email_env",
+        "google_client_id_env",
+        "google_client_secret_env",
+        "public_paths",
+    }
     aunknown = sorted(set(access) - aknown)
     if aunknown:
         raise SystemExit(f"{path}: access has unknown keys: {', '.join(aunknown)}")
@@ -67,11 +83,21 @@ def read_state(path: pathlib.Path) -> dict:
         if not isinstance(access.get(key), str) or not access[key]:
             raise SystemExit(f"{path}: access.{key} names the environment variable")
     if not isinstance(access.get("public_paths"), list) or not access["public_paths"]:
-        raise SystemExit(f"{path}: access.public_paths lists the paths that bypass sign-in")
+        raise SystemExit(
+            f"{path}: access.public_paths lists the paths that bypass sign-in"
+        )
     worker = state.get("worker")
     if not isinstance(worker, dict):
         raise SystemExit(f"{path}: worker is an object")
-    wknown = {"about", "name", "route", "direct", "github_token_env", "queue_token_env", "bridge_token_env"}
+    wknown = {
+        "about",
+        "name",
+        "route",
+        "direct",
+        "github_token_env",
+        "queue_token_env",
+        "bridge_token_env",
+    }
     wunknown = sorted(set(worker) - wknown)
     if wunknown:
         raise SystemExit(f"{path}: worker has unknown keys: {', '.join(wunknown)}")
@@ -91,7 +117,13 @@ def env(name: str) -> str:
     return os.environ.get(name, "")
 
 
-def ensure_worker_direct(cf: expose.Cloudflare, account: str, worker: dict, check: bool, refresh_tokens: bool = False) -> None:
+def ensure_worker_direct(
+    cf: expose.Cloudflare,
+    account: str,
+    worker: dict,
+    check: bool,
+    refresh_tokens: bool = False,
+) -> None:
     """The Worker's secrets, as declared: present when direct is on,
     gone when it is off. Values are never readable back, so presence
     is enforced, never content; a run that changes nothing uploads
@@ -106,7 +138,12 @@ def ensure_worker_direct(cf: expose.Cloudflare, account: str, worker: dict, chec
         # removed, and presence alone can then reconcile a later re-enable.
         for secret in ("EDGE_DIRECT", *names, "BRIDGE_TOKEN"):
             if secret in held:
-                cf.change(f"edge direct: take {secret} away from the Worker", "DELETE", f"{path}/{secret}", None)
+                cf.change(
+                    f"edge direct: take {secret} away from the Worker",
+                    "DELETE",
+                    f"{path}/{secret}",
+                    None,
+                )
         return
     # The bridge token rides along when the state holds it and the
     # Worker does not; a state without it is left alone in silence,
@@ -126,29 +163,51 @@ def ensure_worker_direct(cf: expose.Cloudflare, account: str, worker: dict, chec
         for secret, value in values.items():
             cf.call("PUT", path, {"name": secret, "text": value, "type": "secret_text"})
         if bridge:
-            cf.call("PUT", path, {"name": "BRIDGE_TOKEN", "text": bridge, "type": "secret_text"})
+            cf.call(
+                "PUT",
+                path,
+                {"name": "BRIDGE_TOKEN", "text": bridge, "type": "secret_text"},
+            )
         return
     lost = sorted(set([*names, "EDGE_DIRECT"]) - held)
     if lost:
         if set(lost) == {*names, "EDGE_DIRECT"}:
             # Nothing there: the same change expose.py reports on a first run.
-            cf.changes.append("edge direct: upload the GitHub and queue tokens and turn direct actions on")
+            cf.changes.append(
+                "edge direct: upload the GitHub and queue tokens and turn direct actions on"
+            )
         else:
-            cf.changes.append(f"edge direct: give the Worker back what it has lost ({', '.join(lost)})")
+            cf.changes.append(
+                f"edge direct: give the Worker back what it has lost ({', '.join(lost)})"
+            )
         if check:
             return
-        values = {"GITHUB_TOKEN": env(worker["github_token_env"]), "QUEUE_TOKEN": env(worker["queue_token_env"]), "EDGE_DIRECT": "on"}
+        values = {
+            "GITHUB_TOKEN": env(worker["github_token_env"]),
+            "QUEUE_TOKEN": env(worker["queue_token_env"]),
+            "EDGE_DIRECT": "on",
+        }
         for secret in lost:
-            cf.call("PUT", path, {"name": secret, "text": values[secret], "type": "secret_text"})
+            cf.call(
+                "PUT",
+                path,
+                {"name": secret, "text": values[secret], "type": "secret_text"},
+            )
         if bridge_missing:
             # Rides along with the upload, said nothing of its own, as in expose.py.
-            cf.call("PUT", path, {"name": "BRIDGE_TOKEN", "text": bridge, "type": "secret_text"})
+            cf.call(
+                "PUT",
+                path,
+                {"name": "BRIDGE_TOKEN", "text": bridge, "type": "secret_text"},
+            )
         return
     if bridge_missing:
         cf.changes.append("edge direct: give the Worker its bridge token")
         if check:
             return
-        cf.call("PUT", path, {"name": "BRIDGE_TOKEN", "text": bridge, "type": "secret_text"})
+        cf.call(
+            "PUT", path, {"name": "BRIDGE_TOKEN", "text": bridge, "type": "secret_text"}
+        )
 
 
 def apply(state: dict, check: bool, refresh_tokens: bool = False) -> list[str]:
@@ -157,14 +216,18 @@ def apply(state: dict, check: bool, refresh_tokens: bool = False) -> list[str]:
         raise SystemExit("secret PMCF_CLOUDFLARE_TOKEN is not readable here")
     owner = env(state["access"]["owner_email_env"])
     if not owner:
-        raise SystemExit(f"secret {state['access']['owner_email_env']} (the owner address) is not readable here")
+        raise SystemExit(
+            f"secret {state['access']['owner_email_env']} (the owner address) is not readable here"
+        )
     # Every secret this run will need is checked here, before a single
     # call is made: a run that cannot finish changes nothing at all.
     worker = state["worker"]
     if worker["direct"] == "on":
         for key in ("github_token_env", "queue_token_env"):
             if not env(worker[key]):
-                raise SystemExit(f"secret {worker[key]} (a Worker token) is not readable here")
+                raise SystemExit(
+                    f"secret {worker[key]} (a Worker token) is not readable here"
+                )
     google_id = env(state["access"]["google_client_id_env"])
     google_secret = env(state["access"]["google_client_secret_env"])
     if bool(google_id) != bool(google_secret):
@@ -179,9 +242,13 @@ def apply(state: dict, check: bool, refresh_tokens: bool = False) -> list[str]:
     account = accounts[0]["id"]
     host = state["host"]
     if state["tunnel"] != expose.TUNNEL:
-        raise SystemExit(f"state tunnel is {state['tunnel']}; expose.py manages {expose.TUNNEL}: renaming the tunnel is its own change")
+        raise SystemExit(
+            f"state tunnel is {state['tunnel']}; expose.py manages {expose.TUNNEL}: renaming the tunnel is its own change"
+        )
     if state["worker"]["name"] != expose.WORKER:
-        raise SystemExit(f"state Worker is {state['worker']['name']}; expose.py routes {expose.WORKER}: moving the hostname is its own change")
+        raise SystemExit(
+            f"state Worker is {state['worker']['name']}; expose.py routes {expose.WORKER}: moving the hostname is its own change"
+        )
 
     # Order matters, as in expose.py: the sign-in gate is put in place
     # first and the route last, so the origin is never reachable
@@ -192,10 +259,26 @@ def apply(state: dict, check: bool, refresh_tokens: bool = False) -> list[str]:
     idps = expose.ensure_idps(cf, account, google)
     apps = cf.get(f"/accounts/{account}/access/apps?per_page=200")
     for bypass in state["access"]["public_paths"]:
-        expose.ensure_app(cf, account, apps, host + bypass, f"PM stack public file {bypass}", "bypass", [{"everyone": {}}], None)
+        expose.ensure_app(
+            cf,
+            account,
+            apps,
+            host + bypass,
+            f"PM stack public file {bypass}",
+            "bypass",
+            [{"everyone": {}}],
+            None,
+        )
     expose.ensure_app(
-        cf, account, apps, host, "PM stack", "allow",
-        [{"email": {"email": owner}}], idps, expose.APP_SETTINGS,
+        cf,
+        account,
+        apps,
+        host,
+        "PM stack",
+        "allow",
+        [{"email": {"email": owner}}],
+        idps,
+        expose.APP_SETTINGS,
     )
     expose.ensure_routes(cf, account, host, tunnel, tunnel_config, console)
     expose.ensure_dns(cf, host, tunnel, zone, dns_needed)
@@ -203,7 +286,9 @@ def apply(state: dict, check: bool, refresh_tokens: bool = False) -> list[str]:
     # for it; otherwise straight to the host, as expose.py decides.
     edge = state["worker"]["route"] and expose.worker_ready(cf, account, host)
     if state["worker"]["route"] and not edge:
-        print(f"note: the edge Worker {state['worker']['name']} is not deployed, does not answer, or is not built for {host}; the hostname goes straight to this host")
+        print(
+            f"note: the edge Worker {state['worker']['name']} is not deployed, does not answer, or is not built for {host}; the hostname goes straight to this host"
+        )
     expose.ensure_edge_route(cf, zone, host, edge)
     ensure_worker_direct(cf, account, state["worker"], check, refresh_tokens)
     return cf.changes
@@ -211,10 +296,20 @@ def apply(state: dict, check: bool, refresh_tokens: bool = False) -> list[str]:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    parser.add_argument("--check", action="store_true", help="report what would change and exit 1 if anything would; changes nothing")
+    parser.add_argument(
+        "--check",
+        action="store_true",
+        help="report what would change and exit 1 if anything would; changes nothing",
+    )
     parser.add_argument("--apply", action="store_true", help="make the changes")
-    parser.add_argument("--refresh-tokens", action="store_true", help="upload current repository token values even when names already exist")
-    parser.add_argument("--state", default=str(pathlib.Path(__file__).parent / "state.json"))
+    parser.add_argument(
+        "--refresh-tokens",
+        action="store_true",
+        help="upload current repository token values even when names already exist",
+    )
+    parser.add_argument(
+        "--state", default=str(pathlib.Path(__file__).parent / "state.json")
+    )
     args = parser.parse_args(argv)
     if args.check and args.apply:
         raise SystemExit("choose one of --check and --apply")
@@ -227,7 +322,9 @@ def main(argv: list[str] | None = None) -> int:
     for change in changes:
         print(("would change: " if not args.apply else "changed: ") + change)
     if not changes:
-        print(f"{state['host']} is as declared: route, sign-in gate and Worker settings match the repository state")
+        print(
+            f"{state['host']} is as declared: route, sign-in gate and Worker settings match the repository state"
+        )
     return 1 if not args.apply and changes else 0
 
 

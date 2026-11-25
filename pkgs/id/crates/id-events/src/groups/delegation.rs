@@ -103,13 +103,15 @@ struct Link {
 }
 
 /// A grant is expired at the action's asserted time `at` when the action is timestamped at or
-/// past the grant's bound. An untimestamped action never expires a grant (D1 limitation:
-/// the bound is judged from signed fields only, so a backdated action is an attributable
-/// log fact but not a real-time cutoff).
+/// past the grant's bound. A bounded grant fails closed: an untimestamped action is outside
+/// its bound, since an action that asserts no time cannot show it falls before the bound
+/// (#14876). An unbounded grant never expires. The bound is judged from signed fields only
+/// (D1), so a backdated action is an attributable log fact but not a real-time cutoff.
 const fn expired(expires_at: Option<u64>, at: Option<u64>) -> bool {
     match (expires_at, at) {
         (Some(bound), Some(t)) => t >= bound,
-        _ => false,
+        (Some(_), None) => true,
+        (None, _) => false,
     }
 }
 
@@ -273,8 +275,8 @@ impl Engine {
 
     /// The grants in force at the head of the events: every grant that its own link carries when
     /// every event is in the past. Each is reported once, under its own event ID. Expiry is
-    /// judged against the latest asserted timestamp in the set; untimestamped sets expire
-    /// nothing (D1).
+    /// judged against the latest asserted timestamp in the set; in a wholly untimestamped set
+    /// every bounded grant is out of force (#14876).
     pub(super) fn in_force(
         &mut self,
         by_id: &BTreeMap<Hash, &Event>,

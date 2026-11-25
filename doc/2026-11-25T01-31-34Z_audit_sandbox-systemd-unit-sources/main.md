@@ -13,11 +13,11 @@
 
 ## Verdict per unit
 
-| Unit | Live on this seat | Committed source | Verdict |
-| --- | --- | --- | --- |
-| `resource-sampler.service` | **Not installed** on the current seat incarnation (no unit file in any systemd path, not in `systemctl list-units`) | dezren39/hatch-personal `scripts/resource-sampler/` — unit, payload `resource-sampler.sh`, and `install-sampler-units.sh` | **PINNED** (repo side). Deployment gap only: see below. |
-| `hatch-execd.service` (+ `hatch-execd.socket`) | Present in `/etc/systemd/system/`, loaded, inactive; file timestamps at epoch (baked into the platform runtime-cell image, not hand-installed) | **None** in code, hatch, or hatch-personal | **UNPINNED** — remainder lives in dezren39/hatch#14 |
-| `hatch-ca-trust.service` (+ `hatch-ca-trust.path`) | Present in `/etc/systemd/system/`, enabled; `.path` active/waiting, oneshot service inactive/dead (fires on anchor change) | **None** in code, hatch, or hatch-personal | **UNPINNED** (unit files only; payload is stock binaries) — remainder lives in dezren39/hatch#14 |
+| Unit                                               | Live on this seat                                                                                                                              | Committed source                                                                                                          | Verdict                                                                                          |
+| -------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
+| `resource-sampler.service`                         | **Not installed** on the current seat incarnation (no unit file in any systemd path, not in `systemctl list-units`)                            | dezren39/hatch-personal `scripts/resource-sampler/` — unit, payload `resource-sampler.sh`, and `install-sampler-units.sh` | **PINNED** (repo side). Deployment gap only: see below.                                          |
+| `hatch-execd.service` (+ `hatch-execd.socket`)     | Present in `/etc/systemd/system/`, loaded, inactive; file timestamps at epoch (baked into the platform runtime-cell image, not hand-installed) | **None** in code, hatch, or hatch-personal                                                                                | **UNPINNED** — remainder lives in dezren39/hatch#14                                              |
+| `hatch-ca-trust.service` (+ `hatch-ca-trust.path`) | Present in `/etc/systemd/system/`, enabled; `.path` active/waiting, oneshot service inactive/dead (fires on anchor change)                     | **None** in code, hatch, or hatch-personal                                                                                | **UNPINNED** (unit files only; payload is stock binaries) — remainder lives in dezren39/hatch#14 |
 
 ## Detail
 
@@ -154,43 +154,43 @@ f5d5b0692b8f4835167807827afde7debcb88433cf7fd7c3443ed72b79940389  /home/hatch/ha
 <!-- workflow:state -->
 
 {
- "version": 1,
- "id": "2026-11-25T01-31-34Z_audit_sandbox-systemd-unit-sources",
- "created_at": "2026-11-25T01:31:34Z",
- "stage": "delivery",
- "status": "complete",
- "transcript": {
-  "path": "transcript.txt",
-  "sha256": "75b45308a862306b0fe6c3b98c6caa36c068577d8328ef2fcb9fd9a47dcd5218"
- },
- "concepts": [
-  {
-   "id": "C001",
-   "title": "Live-verified committed-source mapping for resource-sampler, hatch-execd, hatch-ca-trust (code#3235)",
-   "path": "main.md",
-   "status": "complete",
-   "source_lines": [
-    [
-     1,
-     60
-    ]
-   ]
-  }
- ],
- "dependencies": [],
- "issues": [
-  "https://github.com/developing-today/code/issues/3235"
- ],
- "prs": [],
- "tasks": [],
- "events": [
-  {
-   "at": "2026-11-25T01:31:34Z",
-   "stage": "delivery",
-   "status": "complete",
-   "reason": "Audit run from the sandbox seat itself; live systemctl/sha256 capture recorded as the transcript and the per-unit mapping written into main.md."
-  }
- ]
+"version": 1,
+"id": "2026-11-25T01-31-34Z_audit_sandbox-systemd-unit-sources",
+"created_at": "2026-11-25T01:31:34Z",
+"stage": "delivery",
+"status": "complete",
+"transcript": {
+"path": "transcript.txt",
+"sha256": "75b45308a862306b0fe6c3b98c6caa36c068577d8328ef2fcb9fd9a47dcd5218"
+},
+"concepts": [
+{
+"id": "C001",
+"title": "Live-verified committed-source mapping for resource-sampler, hatch-execd, hatch-ca-trust (code#3235)",
+"path": "main.md",
+"status": "complete",
+"source_lines": [
+[
+1,
+60
+]
+]
+}
+],
+"dependencies": [],
+"issues": [
+"https://github.com/developing-today/code/issues/3235"
+],
+"prs": [],
+"tasks": [],
+"events": [
+{
+"at": "2026-11-25T01:31:34Z",
+"stage": "delivery",
+"status": "complete",
+"reason": "Audit run from the sandbox seat itself; live systemctl/sha256 capture recorded as the transcript and the per-unit mapping written into main.md."
+}
+]
 }
 
 <!-- /workflow:state -->
