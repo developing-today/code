@@ -11,6 +11,7 @@ import {
   type StoredWorldSnapshot,
 } from "./world-snapshot-store";
 import { applyScreenPatch, renderWorldSurface, type ScreenPatch, type ScreenSurface } from "./world-surface";
+import { viewportCellsForPane } from "./world-viewport";
 
 type WorldFrame = {
   type:
@@ -633,9 +634,16 @@ function initWorld(): void {
   };
   const sendViewport = (force = false) => {
     if (hostMode || socket?.readyState !== WebSocket.OPEN) return;
-    const fontSize = Number.parseFloat(getComputedStyle(view).fontSize) || 16;
-    const width = Math.max(1, Math.min(500, Math.floor(view.clientWidth / (fontSize * 0.6))));
-    const height = Math.max(1, Math.min(200, Math.floor(view.clientHeight / fontSize)));
+    const style = getComputedStyle(view);
+    const { width, height } = viewportCellsForPane({
+      clientWidth: view.clientWidth,
+      clientHeight: view.clientHeight,
+      fontSize: Number.parseFloat(style.fontSize) || 16,
+      paddingLeft: Number.parseFloat(style.paddingLeft) || 0,
+      paddingRight: Number.parseFloat(style.paddingRight) || 0,
+      paddingTop: Number.parseFloat(style.paddingTop) || 0,
+      paddingBottom: Number.parseFloat(style.paddingBottom) || 0,
+    });
     const sameAsLast = sentViewport?.width === width && sentViewport.height === height;
     // A same-size resize resets the host's retained screen baseline.
     // Keep it out of an unchanged reconnect so the resume token can
