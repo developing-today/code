@@ -254,6 +254,21 @@ enum Command {
         #[arg(long)]
         registry: PathBuf,
     },
+    /// Stage a tree of research reports (goal files, briefs) into
+    /// the research-reports unit (#8626 slice 4). Re-running over an
+    /// unchanged tree stages nothing; an edited report re-stages
+    /// exactly its own chunks.
+    IngestReports {
+        /// The unit's staging database file (already provisioned).
+        #[arg(long)]
+        db: PathBuf,
+        /// The staging-unit id the reports belong to.
+        #[arg(long)]
+        unit: String,
+        /// The root of the research-output tree to collect `.md`
+        /// reports from, recursively.
+        #[arg(long)]
+        root: PathBuf,
     /// Scan a Zettelkasten/Emanote notes vault and stage its markdown
     /// notes into the zettelkasten unit (#8626 slice 4).
     IngestNotes {
@@ -598,6 +613,20 @@ fn run(cli: Cli) -> Result<(), String> {
             }
             Ok(())
         }
+        Command::IngestReports { db, unit, root } => {
+            let reports = atlas_core::reports::collect_research_reports(&root)
+                .map_err(|e| e.to_string())?;
+            let item_ids = atlas_core::reports::stage_research_reports_in_db(
+                &db,
+                &unit,
+                &reports,
+                &now_utc(),
+            )
+            .map_err(|e| e.to_string())?;
+            println!(
+                "{{\"unit\":{},\"reports_collected\":{},\"items_staged\":{},\"item_ids\":{}}}",
+                json_str(&unit),
+                reports.len(),
         Command::IngestNotes { db, unit, dir } => {
             let item_ids =
                 atlas_core::notes::scan_and_stage_note_files_in_db(&db, &unit, &dir, &now_utc())
