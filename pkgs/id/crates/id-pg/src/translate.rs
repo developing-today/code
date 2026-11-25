@@ -33,6 +33,13 @@ pub struct PostgrestRequest {
     /// parameter per filter leaf, the keyset `or` parameter when
     /// paging, `order`, and `limit`.
     pub params: Vec<(String, String)>,
+    /// Ordering columns the query's projection left out. They are
+    /// appended to `select` only so the reader can build the keyset
+    /// cursor from each row; the reader removes them from the rows it
+    /// returns, so the caller sees exactly the projection it asked
+    /// for (#15010). Empty for a star projection, which already
+    /// carries every declared column.
+    pub cursor_only: Vec<String>,
 }
 
 /// The query translator, holding the owner's collection allowlists.
@@ -155,14 +162,19 @@ impl Translator {
                 return Err(Refusal::shape(Feature::TextPatternUnsupported));
             }
         }
-        // 10. Values and rendering of the filter parameters.
-        let mut params: Vec<(String, String)> = vec![("select".to_string(), projection.join(","))];
+        // 10. Values and rendering of the filter parameters. The
+        // effective ordering (total by construction: see
+        // `effective_ordering`) decides which columns each row must
+        // carry for its keyset cursor; any the projection left out are
+        // fetched as cursor-only columns (#15010).
+        let ordering = effective_ordering(collection, &query.order);
+        let (sent, cursor_only) = with_cursor_columns(projection, &ordering);
+        let mut params: Vec<(String, String)> = vec![("select".to_string(), sent.join(","))];
         for leaf in &leaves {
             params.push((leaf.column.clone(), render_leaf_value(leaf)?));
         }
         // 11. Ordering and the keyset cursor over the effective
-        // ordering (total by construction: see `effective_ordering`).
-        let ordering = effective_ordering(collection, &query.order);
+        // ordering.
         if let Pagination::Keyset { cursor } = &query.pagination {
             params.push(("or".to_string(), keyset_or(&ordering, cursor)?));
         }
@@ -180,6 +192,7 @@ impl Translator {
             path: format!("/{relation}"),
             accept_profile: collection.schema.clone(),
             params,
+            cursor_only,
         })
     }
 }
@@ -205,6 +218,26 @@ pub fn effective_ordering(collection: &CollectionAllowlist, order: &[OrderKey]) 
         }
     }
     effective
+}
+
+/// The columns to send in `select`: the resolved projection, then
+/// every effective-ordering column it does not already name, in
+/// ordering order. The second list is those appended columns alone,
+/// which the reader strips from returned rows. Ordering columns are
+/// declared (checked in step 8 and by the allowlist's unique-key
+/// rule), so appending one never projects an undeclared column.
+fn with_cursor_columns(
+    mut projection: Vec<String>,
+    ordering: &[OrderKey],
+) -> (Vec<String>, Vec<String>) {
+    let mut cursor_only = Vec::new();
+    for key in ordering {
+        if !projection.contains(&key.column) {
+            projection.push(key.column.clone());
+            cursor_only.push(key.column.clone());
+        }
+    }
+    (projection, cursor_only)
 }
 
 /// Flatten a filter expression into its leaves. Only conjunctions
@@ -421,6 +454,50 @@ mod tests {
             .iter()
             .find(|(k, _)| k == key)
             .map(|(_, v)| v.as_str())
+    }
+
+    #[test]
+    fn projection_without_the_unique_key_fetches_it_cursor_only() {
+        // Oracle: #15010 — the reader builds the keyset cursor from
+        // every effective-ordering column, so a projection that leaves
+        // the unique key out still has it sent, marked cursor-only.
+        let mut query = Query::read("items");
+        query.select = vec![SelectItem::Column("title".to_string())];
+        let request = translator().translate(&query).unwrap();
+        assert_eq!(param(&request, "select"), Some("title,id"));
+        assert_eq!(param(&request, "order"), Some("id.asc"));
+        assert_eq!(request.cursor_only, vec!["id".to_string()]);
+    }
+
+    #[test]
+    fn projection_without_an_order_key_fetches_it_cursor_only() {
+        let mut query = Query::read("items");
+        query.select = vec![SelectItem::Column("body".to_string())];
+        query.order = vec![OrderKey {
+            column: "title".to_string(),
+            direction: Direction::Desc,
+        }];
+        let request = translator().translate(&query).unwrap();
+        assert_eq!(param(&request, "select"), Some("body,title,id"));
+        assert_eq!(param(&request, "order"), Some("title.desc,id.asc"));
+        assert_eq!(
+            request.cursor_only,
+            vec!["title".to_string(), "id".to_string()]
+        );
+    }
+
+    #[test]
+    fn projection_naming_every_ordering_column_has_no_cursor_only_columns() {
+        let mut query = Query::read("items");
+        query.select = vec![
+            SelectItem::Column("title".to_string()),
+            SelectItem::Column("id".to_string()),
+        ];
+        let request = translator().translate(&query).unwrap();
+        assert_eq!(param(&request, "select"), Some("title,id"));
+        assert!(request.cursor_only.is_empty());
+        let star = translator().translate(&Query::read("items")).unwrap();
+        assert!(star.cursor_only.is_empty());
     }
 
     #[test]
