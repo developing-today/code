@@ -20,7 +20,7 @@ test("index serves activity with freshness and canonical credential-free links",
   const html = await response!.text();
   expect(html).toContain("D1 decision-events");
   expect(html).toContain(stamp);
-  expect(html).toContain("1 minute ago");
+  expect(html).toContain("60 seconds");
   expect(html).toContain("https://pm.security.cab/decisions?set=set%2F%3Cscript%3E");
   expect(html).not.toContain("<script>");
   expect(html).not.toContain("server-only-secret");

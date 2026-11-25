@@ -70,7 +70,8 @@ const SECTION_NAMES = [
   "more",
 ];
 
-async function setup(options: { direct?: boolean; kinds?: readonly string[]; bridge?: boolean } = {}) {
+async function setup(options: { direct?: boolean; kinds?: readonly string[]; bridge?: boolean;
+  decisionEvents?: { secret?: string; fetch: (request: Request) => Promise<Response> } } = {}) {
   const now = { t: START };
   const clock = () => now.t;
   const access = await signer("k1");
@@ -933,6 +934,7 @@ async function setup(options: { direct?: boolean; kinds?: readonly string[]; bri
     new Edge({
       kv,
       now: clock,
+      decisionEvents: options.decisionEvents,
       // As the Worker runtime's fetch is: not to be called as a method.
       fetchImpl: asThePlatformFetch(outward) as never,
       direct: direct
@@ -1536,6 +1538,32 @@ describe("before the host's first report", () => {
 });
 
 describe("the owner, at the edge", () => {
+  test("decision activity reads only for a verified owner and does not write storage", async () => {
+    // Oracle: real sign-in verification gates upstream calls; storage writes
+    // and host relays are counted at the platform boundaries.
+    const seen: Request[] = [];
+    const w = await setup({ decisionEvents: {
+      secret: "decision-server-secret",
+      fetch: async (request) => { seen.push(request); return Response.json({ sets: [] }); },
+    } });
+    await w.hostReads();
+    await w.link.now.once();
+    w.puts.length = 0;
+    w.hostSaw.length = 0;
+    const page = await w.browse("/decisions");
+    expect(page.status).toBe(200);
+    expect(await page.text()).toContain("Decision activity");
+    expect(seen).toHaveLength(1);
+    expect(seen[0].headers.get("authorization")).toBe("Bearer decision-server-secret");
+    expect(w.puts).toEqual([]);
+    expect(w.hostSaw).toEqual([]);
+    for (const token of [null, "invalid", await w.token({ email: "stranger@example.com" })]) {
+      await w.browse("/decisions", { token });
+      expect(seen).toHaveLength(1);
+    }
+    expect(w.hostSaw).toEqual(Array(3).fill("GET /decisions"));
+  });
+
   test("the app and its state come from the edge, and only for a verified owner", async () => {
     const w = await setup();
     await w.hostReads();
