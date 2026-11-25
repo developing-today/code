@@ -16,6 +16,8 @@
 //! keys are malformed for this purpose (#5460): a misspelled `[domains]`
 //! table or `idle_exit_secs` key is a parse error, not a silent default.
 
+pub mod ctx;
+
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 

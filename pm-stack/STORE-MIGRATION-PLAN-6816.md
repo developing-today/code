@@ -1,12 +1,12 @@
-# Store migration plan — Kaneo / Grist / Pad canonical stores to Supabase-backed homes
+# Store migration plan — Kaneo / Grist / Pad cluster-native store targets
 
 Issue: #6816 (step 1 — inventory and plan only). Parent: #3989. Rulings: #1258
 (2026-11-03). Backups routine: #1514; empty-generation handling: #3869.
 
-**This step moves no data and reconfigures no service.** It inventories the
-three laptop-only canonical stores, names the Supabase `muse-dev2` target
-shape for each, and fixes the single-writer fencing, cutover sequence, and
-rollback for the later, windowed steps.
+**This plan moves no data and reconfigures no service.** The inventory is
+historical (2026-11-10), not a fresh live-host observation. The target decision
+below replaces the deleted Supabase `muse-dev2` target as of 2026-11-24;
+fencing, the cutover sequence, and rollback still precede any live move.
 
 ## 1. Inventory — verified live on the laptop (amd-6), 2026-11-10T00:32–00:36Z
 
@@ -26,27 +26,46 @@ unchanged by this plan: Kaneo at `https://kaneo.security.cab` via the
 Cloudflare Tunnel; Grist and Pad loopback + tailnet only. **The Cloudflare
 Access hostname and policy do not change in any step.**
 
-## 2. Target shapes on Supabase `muse-dev2`
+## 2. Replacement target decision — 2026-11-24
 
-- **Kaneo → Supabase Postgres, native.** Kaneo already speaks Postgres; the
-  target is a dedicated schema/database role on `muse-dev2` holding the same
-  46 tables. Kaneo's connection moves from the local container DSN to the
-  Supabase connection string (secret by name only:
-  `supabase.muse-dev2.*` via the standing secrets route — never in this repo).
-  The local `pm-stack-postgres-1` container is retired only after the
-  rollback window (§4) expires.
-- **Grist → Supabase-backed home, file-shaped.** Grist's canonical store is
-  files (SQLite + `docs/`), not a Postgres schema. Target home: the Grist
-  data directory on a Supabase-backed sync home — `home.sqlite3` and `docs/`
-  replicated to `muse-dev2` Storage with a scheduled sync, and the location +
-  sync shape recorded in the ownership map on #3989 (acceptance on #6816).
-  Grist keeps its file runtime; the _canonical, restorable copy_ stops being
-  laptop-only.
-- **Pad → Supabase-backed home, file-shaped.** Same pattern as Grist:
-  `pad.db` (SQLite, WAL) plus `encryption.key` and `config.toml` replicated
-  to `muse-dev2` Storage on the #1514 backup cadence. The encryption key is
-  additionally restorable by name from Bitwarden — a Storage copy alone is
-  not a restore if the key is lost with the host.
+**Decided by lane `any-o`, not attributed to an owner ruling:** use native
+stores on the basement cluster, with exactly one active application writer
+per store. This supersedes this plan's original Supabase target, not its
+recovery objectives. Rationale: `muse-dev2` was deleted, Turso cannot host
+Kaneo's PostgreSQL database natively, and file copies in object storage do
+not themselves provide an independent Grist/Pad runtime. See the
+[current-state reconciliation](../doc/pm-stack/current-state-reconciliation-2026-11-24.md#dead-references-this-note-supersedes-do-not-follow-without-the-re-plan).
+The [original researched native-store proposal](../doc/2026-11-01T21-12-00Z_pm-stack-durability-host-independence/2026-11-01T21-12-00Z_pm-stack-durability-host-independence.md#store-inventory-and-proposed-homes)
+provides the format-preserving alternative; this is a **new post-deletion
+decision**, not a claim that that older proposal was deployed.
+
+- **Kaneo → cluster PostgreSQL**, dedicated database `kaneo` and dedicated
+  application role, isolated from aggregator tables. Gate identity:
+  `cluster-postgres`, with an explicit endpoint matching the target DSN.
+  Do not reuse a retired Supabase secret or silently fall back to Turso.
+  Retire the local `pm-stack-postgres-1` only after the rollback window.
+- **Grist → cluster persistent storage**, mounted at the sole Grist
+  instance's `/persist`: `home.sqlite3` and `docs/` remain native files.
+  Session data is runtime state, not an independent canonical home.
+- **Pad → separate cluster persistent storage**, mounted at the sole Pad
+  instance's `/data`: preserve `pad.db`, attachments, `config.toml`, and
+  `encryption.key`. The key must also be recoverable through the secret
+  flow; a database-only restore is insufficient.
+
+These are **intended homes, not provisioned or verified endpoints**. No
+cluster storage class, volume, database endpoint, or running remote app is
+asserted here. The repo still declares laptop canonical volumes (reconciliation
+§ Current homes); the machine registry does not yet declare a basement node
+ready. Provision and verify the selected storage and runtime before a
+window; record their real identities in the ownership map, not an invented
+hostname in this plan. The preflight gate only checks configuration.
+
+Consume #1514's local + R2 + Drive backup path and retention, do not replace
+it with a second sync schedule. The 4 h core RTO, 1 h Kaneo RPO, and 24 h
+Grist/Pad RPO remain targets: a daily dump alone cannot prove 1 h Kaneo RPO.
+Provision PITR or verified hourly-or-better recovery points and measure the
+restore before claiming the RPO. Undoing this decision requires a new target
+decision, gate changes/tests, and a revised ownership map before data moves.
 
 ## 3. Single-writer fencing (explicit, per store)
 
@@ -56,7 +75,7 @@ promotion; no configuration permits two active writers.**
 - **Kaneo:** fence = stop `pm-stack-kaneo-1` (the only writer; Postgres
   itself accepts writes only through Kaneo's role in practice, and the local
   Postgres is never host-exposed). Promotion = point the Kaneo DSN at
-  Supabase and start Kaneo. The local Postgres stays read-only evidence —
+  cluster PostgreSQL and start Kaneo. The local Postgres stays read-only evidence —
   start it only with Kaneo stopped, or with its port/volume mounted
   read-only for inspection. Two Kaneo instances never run at once: the
   compose service is the single instance, and the cutover stops it before
@@ -71,17 +90,23 @@ promotion; no configuration permits two active writers.**
 
 ## 4. Cutover sequence (later windowed steps — not this task)
 
-1. Pre-sync while live: Kaneo logical dump (`pg_dump` of `kaneo`) loaded
-   into the `muse-dev2` target and row-count verified; Grist/Pad file sync
-   to Storage (everything except the final delta).
+1. Provision the §2 homes and independent runtimes first. Run the offline
+   Kaneo target preflight below, then pre-sync while live: Kaneo logical
+   dump (`pg_dump` of `kaneo`) loaded into the cluster target and schema
+   count verified; Grist/Pad file sync to their mounted persistent homes
+   (everything except the final delta). A live SQLite copy is staging only,
+   never a recovery point until a fenced final copy passes integrity checks.
 2. Announce the window; stop the writers in order Pad, Grist, Kaneo
    (smallest blast radius first, Kaneo last because it is the public UI).
 3. Final delta: Kaneo dump-diff or dump/reload (80 MB — minutes), Grist/Pad
    final file sync with checksums.
-4. Verify: Kaneo table counts + a read-only UI smoke; Grist home doc list;
-   Pad DB integrity check (`PRAGMA integrity_check`) on a copy.
-5. Promote: Kaneo DSN → Supabase, start Kaneo; Grist/Pad start against the
-   Supabase-backed home. Cloudflare Tunnel/Access untouched.
+4. Verify: Kaneo table counts + a read-only UI smoke; Grist home document
+   list plus SQLite `PRAGMA integrity_check` against the fenced final
+   `home.sqlite3` copy; Pad DB integrity check (`PRAGMA integrity_check`) on
+   a copy. A failed integrity check refuses promotion.
+5. Promote: Kaneo DSN → cluster PostgreSQL, start Kaneo; Grist/Pad start
+   against their cluster persistent homes. Cloudflare hostname and Access
+   policy stay unchanged; validate the origin route and Access separately.
 6. Rollback window: keep the laptop volumes untouched and the old config
    for 7 days (see §5).
 
@@ -90,6 +115,16 @@ promotion; no configuration permits two active writers.**
 Steps 1 and 5 run through one driver, so the rule "no configuration permits
 two active writers" is mechanical instead of advisory:
 
+- All modes require `--target-home cluster-postgres --target-host HOST`,
+  where `HOST` matches the PostgreSQL URI in `--target-dsn-file`. Start with
+  `--mode preflight --source-dsn-file FILE --target-dsn-file FILE` and those
+  identity flags. Preflight is offline: no database, fence, backup, dump,
+  or receipt operation. A pass means **configuration accepted**, not target
+  reachability, persistence, backup readiness, or permission to promote.
+  The same validation runs before each operational mode. Only the driver's
+  documented unambiguous URI subset is accepted; conninfo/service indirection
+  is not supported. Supabase endpoints are refused wholesale because the
+  deleted project's friendly name does not identify its endpoint reliably.
 - `--mode presync` (step 1, while live): `pg_dump` the source `kaneo`
   database, `pg_restore` it into the target, and require **schema parity**
   (same public table count). Row drift is reported, not failed — the final
@@ -98,22 +133,51 @@ two active writers" is mechanical instead of advisory:
   record (`--backup-record-file`) describes a complete generation with a
   valid archive identity and verified local, R2, and Drive copies, finished
   no more than 36 hours ago by default (`--max-backup-age-hours` can set a
-  stricter window); `pm-stack/scripts/fence-check.sh` reports **FENCED** (fail
+  stricter window). That 36-hour archive bound is not sufficient to claim Kaneo's 1-hour RPO: promotion additionally requires a separately verified Kaneo recovery point no older than 1 hour; otherwise promotion is refused until that recovery point is independently verified. `pm-stack/scripts/fence-check.sh` reports **FENCED** (fail
   closed on anything unreadable) **and** the target's exact table count and row
   count equal the source's. A refused promotion touches no store. Only a pass
   writes a cutover receipt (fence verdict, both counts, verdict line) with
   no DSN in it — the operator attaches it to the window record.
 
-DSNs are read from files (`--source-dsn-file`, `--target-dsn-file`), so no
-credential enters argv, logs, or the receipt. Suites:
+DSNs enter the driver through files (`--source-dsn-file`, `--target-dsn-file`)
+and are excluded from its receipt. The existing PostgreSQL subprocess calls
+still pass the DSN as `-d` argv; file input is **not** a promise that credentials
+never enter a subprocess argument. Suites:
 `pm-stack/scripts/kaneo-cutover.test.sh` (driver gates) and
 `pm-stack/scripts/fence-check.test.sh` (fencing rule), both run by
 `.github/workflows/pm-stack-tests.yml`.
 
+### The file-store driver: `pm-stack/scripts/grist-pad-sync.sh`
+
+Steps 1 and 5 run through one driver per file store (`--store grist|pad`),
+so the Grist/Pad syncs are mechanical instead of advisory:
+
+- File sets (from the §2 inventory): grist syncs `home.sqlite3` + `docs/`
+  (`grist-sessions.db` is runtime state and is never synced); pad syncs
+  `pad.db` + `encryption.key` + `config.toml` + `attachments/`.
+- `--mode presync` (step 1, while live): copies the store's file set from
+  the source dir to the target dir, then requires post-copy sha256 parity
+  of the copied set. Pre-copy drift is reported, not failed.
+- `--mode final` (step 5, the gate): refuses (exit 3, REFUSED receipt,
+  copies nothing) unless `pm-stack/scripts/fence-check.sh --store <store>`
+  reports **FENCED** — per-store, so pad can go final while grist still
+  runs, matching the Pad → Grist → Kaneo stop order — and, for pad, the
+  source `pad.db-wal` is absent or zero bytes (clean checkpoint). Then
+  copies and requires exact parity, including zero unaccounted target
+  files under the synced set (exit 4 otherwise; only the operator removes
+  them). The driver never deletes target files: target-only files are
+  preserved and counted in the receipt (presync tolerates them, final
+  refuses on them), and unrelated files elsewhere in the target (sync-tool
+  metadata, `grist-sessions.db`) are out of scope.
+- Receipts record the fence verdict, file counts, pre-copy drift, target
+  extras, and the verdict line; paths are local directory paths, no
+  secrets. Suite: `pm-stack/scripts/grist-pad-sync.test.sh`, run by
+  `.github/workflows/pm-stack-tests.yml` alongside the fencing suites.
+
 ## 5. Rollback
 
 - **Kaneo:** stop Kaneo, restore the local DSN, start the local stack. Any
-  writes made on Supabase during the window are exported (`pg_dump` of the
+  writes made on cluster PostgreSQL during the window are exported (`pg_dump` of the
   target) and replayed into the local DB before reopening, so rollback
   restores the prior writer **without losing writes** (#6816 acceptance).
   Driver: `pm-stack/scripts/kaneo-cutover.sh --mode rollback` — refuses
@@ -121,18 +185,36 @@ credential enters argv, logs, or the receipt. Suites:
   source, demands exact table/row parity, and writes a receipt with no
   DSN. The DSN flip and restarts stay window operator steps; the first
   window records a run.
-- **Grist / Pad:** stop the promoted instance, point the data directory
-  back at the untouched laptop volume, restart. Writes made in the
-  Supabase-backed home sync back before the restart — the sync is
-  bidirectional-checked by checksum at cutover and rollback alike.
+- **Grist / Pad:** stop and fence the promoted instance before touching the
+  old volume. Do not bidirectionally sync SQLite files or treat checksum
+  parity as a merge: divergent writes require a recorded, operator-reviewed
+  reconciliation. For a straightforward rollback, preserve a copy of the
+  promoted home, verify SQLite integrity (and Pad's WAL/checkpoint state),
+  restore the selected authoritative generation to the old volume, verify
+  checksums and application readability, then reopen only the single old
+  writer. The restore copy is driven by
+  `pm-stack/scripts/grist-pad-sync.sh` with the source and target dirs
+  swapped (selected generation → laptop volume), under the same
+  fence-then-exact-parity gate as the cutover final — the driver copies in
+  one direction only and never deletes target files, so it restores a
+  selected generation; it does not merge divergent writes. Where
+  reconciliation is needed, keep both writers stopped until the selected
+  data and recoverable writes are verified; neither volume is disposable
+  during this process.
 - Rollback is abandoned (volumes eligible for cleanup) only after 7 stable
   days and a recorded drill per the cold-restore runbook.
 
 ## 6. What remains after this step
 
-- Step 2 (windowed): the cutover itself, per §4 — run `presync`, then the
-  fenced writers, then `promote` (the gate in §4 names the driver and what
-  it refuses). Rollback (§5) is driven by `kaneo-cutover.sh --mode
+- Provisioning/rehearsal slice: create the selected cluster homes and
+  independent runtimes, verify actual endpoint/volume identities and backup
+  cadence, then rehearse from off-machine copies with the source fenced.
+  An offline preflight does not complete criterion 1 of #6816.
+- Step 2 (windowed): the cutover itself, per §4 — run `preflight`, `presync`, then the
+  fenced writers, then `promote` (Kaneo's gate in §4 names the driver and
+  what it refuses; Grist/Pad finals go through `grist-pad-sync.sh --mode
+  final`, per-store fenced with a clean pad WAL — §4 names that driver
+  too). Rollback (§5) is driven by `kaneo-cutover.sh --mode
 rollback` (fence-gated replay with parity receipt, stub-tested); the
   DSN flip, restarts, and the first window run remain operator steps.
 - Step 3 (windowed): the first isolated laptop-off drill, recorded per

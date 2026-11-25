@@ -78,6 +78,7 @@
 // state (see the package-root cli.ts), never from verb flags.
 
 import { parseBackfillRunsArgs, parseRepoScopeArgs } from "./backfill-cli.ts";
+import { requireHome } from "./home.ts";
 import { FailClosed } from "./errors.ts";
 import { parseMetadataBlock, renderBodyWithBlock } from "./metadata.ts";
 import { parseQueryCliArgs, renderQueryResponse } from "./query-cli.ts";
@@ -137,6 +138,18 @@ export function resolveCallerToken(sources: {
   stored?: string | null;
 }): string | null {
   return nonempty(sources.explicit) ?? nonempty(sources.env(TOKEN_ENV)) ?? nonempty(sources.stored ?? null);
+}
+
+/** The caller token file: FLEET_HOSTED_TOKEN_FILE when set, else the
+ *  default under HOME — resolved through the #5762 home-resolution
+ *  contract (#14757): an unset or empty HOME is a named
+ *  HomeUnresolvedError, never the passwd fallback os.homedir() would
+ *  silently substitute. The override never needs HOME. */
+export function callerTokenFile(env: Record<string, string | undefined>): string {
+  const override = env["FLEET_HOSTED_TOKEN_FILE"];
+  if (override !== undefined) return override;
+  const home = requireHome("FLEET_HOSTED_TOKEN_FILE", env).replace(/\/+$/, "");
+  return `${home}/.config/fleet-hosted/token`;
 }
 
 function usage(message: string): FailClosed {

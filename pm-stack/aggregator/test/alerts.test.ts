@@ -26,6 +26,9 @@ import {
   validateNewIncident,
   validateNewSubscription,
   AlertsStore,
+  SUBSCRIPTION_SELECT,
+  LEGACY_CLASS_ALIASES,
+  normalizeClassMap,
   type AlertTickOptions,
   type AlertsStore as AlertsStoreType,
   type Incident,
@@ -107,7 +110,7 @@ describe("class + quiet merges (design §1/§2)", () => {
   test("incident defaults on; explicit off survives", () => {
     expect(mergeClasses(undefined)).toEqual({
       incident: true,
-      "needs-drew": true,
+      "needs-user": true,
       "quota-wall": true,
       "quota-near-wall": true,
       "section-risk": true,
@@ -171,6 +174,54 @@ describe("class + quiet merges (design §1/§2)", () => {
     expect(classEnabled({ classes: mergeClasses(undefined) }, "needs-drew")).toBe(true);
     // A class with no reviewed default stays off.
     expect(classEnabled({ classes: {} }, "no-such-class")).toBe(false);
+  });
+  test("needs-drew reads as the needs-user class of record (#14084 ruling)", () => {
+    expect(LEGACY_CLASS_ALIASES["needs-drew"]).toBe("needs-user");
+    expect(Object.hasOwn(DEFAULT_CLASSES, "needs-drew")).toBe(false);
+    expect(DEFAULT_CLASSES["needs-user"]).toBe(true);
+    // A stored legacy key keeps its choice under the new id.
+    expect(normalizeClassMap({ incident: true, "needs-drew": false })).toEqual({ incident: true, "needs-user": false });
+    // Where both are present, the class of record wins.
+    expect(normalizeClassMap({ "needs-drew": false, "needs-user": true })).toEqual({ "needs-user": true });
+    expect(classEnabled({ classes: { "needs-drew": false } }, "needs-user")).toBe(false);
+    expect(classEnabled({ classes: { "needs-user": false } }, "needs-drew")).toBe(false);
+    // Intake never stores the old key.
+    const merged = mergeClasses({ "needs-drew": false });
+    expect(merged["needs-user"]).toBe(false);
+    expect(Object.hasOwn(merged, "needs-drew")).toBe(false);
+    const parsed = validateNewSubscription({
+      endpoint: "https://push.example/legacy",
+      keys: { p256dh: "p", auth: "a" },
+      classes: { "needs-drew": false },
+    });
+    expect(parsed.ok && parsed.value.providedClasses).toEqual({ "needs-user": false });
+  });
+  test("subscription intake takes the registry fields and rejects an unknown client", () => {
+    const app = validateNewSubscription({
+      endpoint: "https://fcm.googleapis.com/fcm/send/app",
+      keys: { p256dh: "p", auth: "a" },
+      client: "android-app",
+      deviceId: "dev-1",
+      label: "Pixel",
+      delivery: { immediate: false, rateCap: { max: 3, perMinutes: 60 }, grouping: true, groupReminderMinutes: 120 },
+    });
+    expect(app.ok).toBe(true);
+    if (app.ok) {
+      expect(app.value.client).toBe("android-app");
+      expect(app.value.deviceId).toBe("dev-1");
+      expect(app.value.label).toBe("Pixel");
+      expect(app.value.delivery).toEqual({
+        immediate: false,
+        rateCap: { max: 3, perMinutes: 60 },
+        grouping: true,
+        groupReminderMinutes: 120,
+      });
+    }
+    const plain = validateNewSubscription({ endpoint: "https://push.example/p", keys: { p256dh: "p", auth: "a" } });
+    expect(plain.ok && plain.value.delivery).toBeUndefined();
+    expect(
+      validateNewSubscription({ endpoint: "https://push.example/x", keys: { p256dh: "p", auth: "a" }, client: "fax" }).ok,
+    ).toBe(false);
   });
   test("quiet defaults 23:00–07:00 America/Chicago; partial overrides merge", () => {
     expect(mergeQuiet(undefined)).toEqual({ start: "23:00", end: "07:00", tz: "America/Chicago", enabled: true });
@@ -296,7 +347,11 @@ describe("stored subscription preference reads (#4978)", () => {
     ]);
     expect(inQuietHours(loaded[0].quiet, new Date("2026-01-15T12:00:00Z"))).toBe(true);
     expect(rawRows.map((row) => row.quiet)).toEqual([invalidQuiet, validQuiet]);
-    expect(queries).toEqual(["select * from alerts.push_subscriptions order by created_at"]);
+    // #14084 S1: the read comes from the push registry, and reading
+    // never writes (the fake answers the seed-marker probe, so the
+    // one-shot legacy seed is skipped here).
+    expect(queries.at(-1)).toBe(`${SUBSCRIPTION_SELECT} order by e.created_at, e.id`);
+    expect(queries.filter((q) => /^\s*(insert|update|delete)\b/i.test(q))).toEqual([]);
   });
 });
 
@@ -367,7 +422,7 @@ describe("validation", () => {
     if (ok.ok) {
       expect(ok.value.classes).toEqual({
         incident: true,
-        "needs-drew": true,
+        "needs-user": true,
         "quota-wall": true,
         "quota-near-wall": true,
         "section-risk": true,
@@ -617,7 +672,7 @@ describe("alert tick delivery state", () => {
     };
     let dashboardPushes = 0;
     const push: typeof successfulSend = async (_target, payload) => {
-      if ((payload as { class: string }).class === "needs-drew") dashboardPushes += 1;
+      if ((payload as { class: string }).class === "needs-user") dashboardPushes += 1;
       return successfulSend(_target, payload);
     };
     const item = {
@@ -1094,6 +1149,12 @@ describe("push subscription redaction (#3693)", () => {
       "created_at",
       "last_seen_at",
       "gone_count",
+      // #14084 S1 registry fields (additive; no key material).
+      "transport",
+      "client",
+      "device_id",
+      "label",
+      "delivery",
     ];
     for (const body of [getBody, postBody]) {
       expect(body).not.toContain(sentinelP256dh);
