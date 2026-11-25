@@ -117,7 +117,7 @@ pub struct Resolution {
 pub fn arbitrate(world_id: &[u8; 32], offers: Vec<(Layer, Offer)>, now: u64) -> Result<Resolution> {
     let mut offers = offers;
     offers.sort_by_key(|(layer, _)| *layer);
-    let mut considered = Vec::with_capacity(offers.len());
+    let mut considered: Vec<(Layer, Outcome)> = Vec::with_capacity(offers.len());
     let mut chosen: Option<(usize, SignedAnnouncement)> = None;
     for (index, (layer, offer)) in offers.into_iter().enumerate() {
         let outcome = match offer {
