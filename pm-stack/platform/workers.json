@@ -43,6 +43,19 @@
       "lastDeployedCommit": null
     },
     {
+      "name": "pm-service",
+      "title": "PM service",
+      "group": "platform",
+      "path": "pm-stack/pm-service",
+      "does": "The hosted PM service: serves the #9060 §6 read API (projects, item, roadmap, releases) from the tenant plane's Turso DB through the async store layer (CF-5c).",
+      "state": "not deployed",
+      "deploy": "actions",
+      "workflow": "pm-service-deploy.yml",
+      "address": "https://pm-service.developing-today.workers.dev",
+      "next": "Deployed from Actions by the versions standard (upload stamped with the commit SHA, preview health gate, promote). Serves real data once the PM_TENANT_DB_URL / PM_TENANT_DB_TOKEN Worker secrets are provisioned from the tenant plane.",
+      "lastDeployedCommit": null
+    },
+    {
       "name": "pm-notify",
       "title": "pm-notify relay",
       "group": "fleet",
