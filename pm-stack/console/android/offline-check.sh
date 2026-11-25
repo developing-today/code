@@ -170,7 +170,7 @@ dump_for_log() {
   # way wait_text does and read the screen again, so the dump names
   # the app's own state, not the dialog's.
   if screen_text | grep -qF "isn't responding"; then
-    tap_text "Wait" || true
+    dismiss_anr
     sleep 2
   fi
   echo "--- screen ---" >&2
@@ -191,6 +191,19 @@ fail() {
   exit 1
 }
 
+# Dismiss a system "isn't responding" dialog. Tapping Wait does not
+# clear the launcher's: in run 45580772520 five landed Wait taps left
+# it standing, the launcher wedged under the emulator's load and the
+# dialog back at once each time. Stopping the launcher clears it —
+# the system starts the launcher again when it is wanted, and the
+# check never needs it: the app is started by name, and the recents
+# screen is the system's, not the launcher's. The Wait tap stays for
+# a dialog that is some other app's.
+dismiss_anr() {
+  adb shell am force-stop com.google.android.apps.nexuslauncher >/dev/null 2>&1 || true
+  tap_text "Wait" || true
+}
+
 wait_text() {
   local needle="$1" timeout="${2:-60}" i=0 screen=""
   while [ "$i" -lt "$timeout" ]; do
@@ -201,7 +214,7 @@ wait_text() {
     # the app, not the app itself: tell it to wait and keep waiting
     # for the app's own text, which is what decides.
     if printf '%s' "$screen" | grep -qF "isn't responding"; then
-      tap_text "Wait" || true
+      dismiss_anr
     fi
     sleep 2
     i=$((i + 2))
@@ -256,7 +269,7 @@ tap_text_retry() {
     # after the dismissal in wait_text, and every tap look saw only
     # it. Dismiss it the same way and look again.
     if screen_text | grep -qF "isn't responding"; then
-      tap_text "Wait" || true
+      dismiss_anr
       sleep 2
     fi
     sleep 3
