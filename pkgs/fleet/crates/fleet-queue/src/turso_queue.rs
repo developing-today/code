@@ -989,6 +989,67 @@ mod tests {
     }
 
     #[test]
+    fn manual_only_is_excluded_before_automatic_priority_pick_9178() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE tasks (
+                id INTEGER PRIMARY KEY, queue TEXT, payload TEXT, status TEXT,
+                attempts INTEGER, max_attempts INTEGER, not_before TEXT,
+                wait_kind TEXT, ready_condition TEXT, required_budget_minutes INTEGER,
+                manual_only INTEGER NOT NULL DEFAULT 0, priority INTEGER,
+                created_at TEXT, progress TEXT
+            );",
+        )
+        .unwrap();
+        let now = "2026-11-25T03:00:00Z";
+        let insert = |id: i64, manual_only: i64, priority: i64| {
+            conn.execute(
+                "INSERT INTO tasks (
+                    id, queue, payload, status, attempts, max_attempts, not_before,
+                    wait_kind, ready_condition, required_budget_minutes, manual_only,
+                    priority, created_at, progress
+                 ) VALUES (?, 'repo-health-code-pilot', '{\"kind\":\"small_fix\"}',
+                    'queued', 0, 1000, NULL, NULL, NULL, NULL, ?, ?,
+                    '2026-11-20T00:00:00Z', '{}')",
+                rusqlite::params![id, manual_only, priority],
+            )
+            .unwrap();
+        };
+        let predicate = default_pick_predicate();
+        let args = vec![
+            rusqlite::types::Value::Text(now.to_string()),
+            rusqlite::types::Value::Text(now.to_string()),
+            rusqlite::types::Value::Null,
+            rusqlite::types::Value::Null,
+            rusqlite::types::Value::Null,
+            rusqlite::types::Value::Null,
+        ];
+        let pick = || -> Vec<i64> {
+            let sql = format!(
+                "SELECT id FROM tasks WHERE payload IS NOT NULL AND payload <> '' \
+                 AND payload <> '{{}}' AND ({predicate}) \
+                 ORDER BY (priority IS NULL), priority ASC, created_at ASC, id ASC LIMIT 1"
+            );
+            conn.prepare(&sql)
+                .unwrap()
+                .query_map(rusqlite::params_from_iter(args.clone()), |row| row.get(0))
+                .unwrap()
+                .collect::<Result<Vec<i64>, _>>()
+                .unwrap()
+        };
+
+        // FDR-0004 oracle: the highest-priority row is manual-only, so
+        // the automatic pick sees no work rather than taking that row.
+        insert(1, 1, 10);
+        assert!(pick().is_empty(), "manual-only work is never auto-claimed");
+
+        // It is removed before ordering, so an ordinary lower-priority
+        // row remains eligible instead of being blocked behind it.
+        insert(2, 0, 50);
+        assert_eq!(pick(), vec![2]);
+    }
+
+    #[test]
     fn payload_issue_ref_shapes_12744() {
         // The identity the enrichment keys on: the payload's own
         // repo first, the repo-health dedupe key as fallback, and

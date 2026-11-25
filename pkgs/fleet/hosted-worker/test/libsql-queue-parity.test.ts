@@ -206,6 +206,49 @@ test("store: a full task row round-trips every column through the shared schema"
   }
 });
 
+test("manual-only rows are skipped automatically but remain claimable by id", async () => {
+  const t = openStore();
+  try {
+    const enqueued = await enqueue(
+      t.store,
+      nativeEnv(),
+      fixPacket(917801, {}, { manual_only: true, priority: 10 }),
+    );
+    const manualId = ((enqueued["row"] as JsonObject)["id"] as number);
+
+    const automatic = await claim(t.store, nativeEnv(), { worker: "automatic", queue: "repo-health" });
+    assert.equal(automatic["row"], null, "an automatic lane must not claim a manual-only row");
+    const stored = await t.store.getTask(manualId);
+    assert.equal((stored as unknown as Record<string, unknown> | null)?.["manual_only"], true);
+
+    const explicit = await claim(t.store, nativeEnv(), {
+      worker: "manual-operator",
+      queue: "repo-health",
+      task_id: manualId,
+    });
+    assert.equal((explicit["row"] as JsonObject)["id"], manualId);
+    assert.equal((explicit["row"] as JsonObject)["manual_only"], true);
+  } finally {
+    closeOpened(t);
+  }
+});
+
+test("manual-only at the head does not block ordinary automatic work", async () => {
+  const t = openStore();
+  try {
+    const manual = await enqueue(t.store, nativeEnv(), fixPacket(917802, {}, { manual_only: true, priority: 10 }));
+    const manualId = ((manual["row"] as JsonObject)["id"] as number);
+    const ordinary = await enqueue(t.store, nativeEnv(), fixPacket(917803, {}, { priority: 50 }));
+    const ordinaryId = ((ordinary["row"] as JsonObject)["id"] as number);
+
+    const automatic = await claim(t.store, nativeEnv(), { worker: "automatic", queue: "repo-health" });
+    assert.equal((automatic["row"] as JsonObject)["id"], ordinaryId);
+    assert.equal((await t.store.getTask(manualId))?.status, "queued");
+  } finally {
+    closeOpened(t);
+  }
+});
+
 test("store: a losing conditional update reports false and leaves the row", async () => {
   const t = openStore();
   try {
