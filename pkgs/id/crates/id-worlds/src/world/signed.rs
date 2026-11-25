@@ -352,4 +352,60 @@ mod tests {
         let first = sign_move(&key(), "ttt", 0, None, b"cell-0").unwrap();
         assert!(sign_move(&key(), "ttt", 0, Some(first.id), b"cell-1").is_err());
     }
+
+    // #6487: whatever sign_move signs, the receiving world accepts. For
+    // any key, world id and run of inputs, each move signed at the
+    // chain's next position verifies (live and journaled) and advances
+    // the chain; whatever sign_move refuses lies outside the domain
+    // verify refuses too, so the two sides never disagree.
+    proptest::proptest! {
+        #[test]
+        fn every_signed_move_is_accepted_by_its_world(
+            seed in proptest::prelude::any::<[u8; 32]>(),
+            world_id in "\\PC{0,12}",
+            inputs in proptest::collection::vec(
+                proptest::collection::vec(proptest::prelude::any::<u8>(), 0..16),
+                1..6,
+            ),
+        ) {
+            let key = SigningKey::from_bytes(&seed);
+            let author = *key.verifying_key().as_bytes();
+            let mut chain = MoveChain::new();
+            for input in &inputs {
+                match sign_move(&key, &world_id, chain.next_seq, chain.frontier, input) {
+                    Ok(event) => {
+                        let journaled = chain
+                            .verify_journaled(&event.bytes, &world_id, &author)
+                            .expect("a signed move verifies on journal replay");
+                        proptest::prop_assert_eq!(journaled.id, event.id);
+                        let accepted = chain
+                            .verify_and_accept(&event.bytes, &world_id, input, &author)
+                            .expect("a signed move is accepted by its world");
+                        proptest::prop_assert_eq!(accepted.id, event.id);
+                        proptest::prop_assert_eq!(chain.frontier, Some(event.id));
+                    }
+                    Err(chain::ChainError::BlankWorldId) => {
+                        proptest::prop_assert!(world_id.trim().is_empty());
+                        let control = sign_move(&key, "ttt", chain.next_seq, chain.frontier, b"x")
+                            .expect("control move signs");
+                        proptest::prop_assert!(
+                            chain.verify(&control.bytes, &world_id, b"x", &author).is_err()
+                        );
+                    }
+                    Err(chain::ChainError::EmptyInput) => {
+                        proptest::prop_assert!(input.is_empty());
+                        proptest::prop_assert!(!world_id.trim().is_empty());
+                        let control = sign_move(&key, &world_id, chain.next_seq, chain.frontier, b"x")
+                            .expect("control move signs");
+                        proptest::prop_assert!(
+                            chain.verify(&control.bytes, &world_id, input, &author).is_err()
+                        );
+                    }
+                    Err(other) => {
+                        proptest::prop_assert!(false, "unexpected refusal at the chain's own next position: {other}");
+                    }
+                }
+            }
+        }
+    }
 }
