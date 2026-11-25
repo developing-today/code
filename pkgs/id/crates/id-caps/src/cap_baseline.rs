@@ -508,7 +508,7 @@ mod tests {
             "world-2",
             "release-a",
             set(&[CLASS_CHAT_READ, CLASS_CHAT_WRITE]),
-            1,
+            CAP_CLASS_TABLE_VERSION,
             BaselineHistoryKind::Accept,
             AT,
         );
@@ -516,7 +516,7 @@ mod tests {
             "world-1",
             "release-b",
             set(&[CLASS_CHAT_READ, CLASS_CHAT_WRITE]),
-            1,
+            CAP_CLASS_TABLE_VERSION,
             BaselineHistoryKind::Accept,
             AT,
         );
@@ -524,7 +524,7 @@ mod tests {
             "world-1",
             "release-a",
             set(&[CLASS_CHAT_READ]),
-            1,
+            CAP_CLASS_TABLE_VERSION,
             BaselineHistoryKind::Accept,
             AT,
         );
@@ -532,7 +532,7 @@ mod tests {
             "world-1",
             "release-a",
             set(&[CLASS_CHAT_READ, CLASS_CHAT_WRITE]),
-            2,
+            CAP_CLASS_TABLE_VERSION + 1,
             BaselineHistoryKind::Accept,
             AT,
         );
