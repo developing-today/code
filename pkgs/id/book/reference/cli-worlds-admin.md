@@ -539,3 +539,49 @@ $ id world journal backup ./toy-world-dir ./toy-world-journal-backup.jsonl
 ```
 
 Failures: an `<OUT>` path that already exists fails the command, exit `1`, and the existing file is not overwritten. A journal that does not check valid fails the backup, exit `1`.
+
+## `announce` and `lookup`
+
+Publishes a world's signed announcement to pkarr relays, and reads one back, so anyone holding the world id can find the node that hosts it (#10706). The encoding, timing and relay rules are in the design addendum `doc/2026-11-25T03-10-00Z_design_id10706_announcement_pkarr`. No world host is contacted: these commands talk only to the relays.
+
+```
+id world announce --key-file <PATH> --node <NODE> --name <NAME> [--description <TEXT>] [--tag <TAG>]... [--listed] [--occupancy <has_room|near_full|full>] [--relay-hint <URL>] [--relay <BASE>]... [--lifetime <DURATION>] [--watch]
+id world lookup <WORLD_ID> [--relay <BASE>]...
+```
+
+### `announce`
+
+| Flag            | Argument     | Default                    | Meaning                                                                                                              |
+| --------------- | ------------ | -------------------------- | -------------------------------------------------------------------------------------------------------------------- |
+| `--key-file`    | file path    | required                   | The world's signing key, an owner-only file created on first use. The world id is its public key.                    |
+| `--node`        | 64 hex chars | required                   | The node that hosts the world. It must not be the world key itself.                                                  |
+| `--name`        | text         | required                   | Display name, at most 64 characters.                                                                                 |
+| `--description` | text         | empty                      | At most 200 characters.                                                                                              |
+| `--tag`         | text         | none                       | Repeatable, at most 8 tags of at most 32 characters.                                                                 |
+| `--listed`      | switch       | off (unlisted)             | Lets registries include the world. An unlisted world is found only by its id.                                        |
+| `--occupancy`   | name         | `has_room`                 | Coarse occupancy: `has_room`, `near_full` or `full`.                                                                 |
+| `--relay-hint`  | URL          | none                       | A relay URL that reaches the node, never a raw IP and port.                                                          |
+| `--relay`       | base URL     | the developing-today relay | Repeatable. Each publish is `PUT <base>/<z32 world id>`.                                                             |
+| `--lifetime`    | duration     | `3h`                       | How long each announcement stays valid, at most 7 days.                                                              |
+| `--watch`       | switch       | off                        | Stay up and republish on the heartbeat (half of the lifetime or of 2 hours, whichever is shorter) until interrupted. |
+
+Behaviour: signs a fresh announcement (its `seq` is the publish time in microseconds), sends it to every relay and prints one JSON line per publish: `world_id`, `world_z32`, `seq`, `expires_at`, `published` (at least one relay accepted), `contested` (a relay holds a newer announcement, so another publisher has the key) and one `relays` entry per relay with its outcome (`accepted`, `stale`, `refused` or `unreachable`).
+
+Exit behaviour: without `--watch`, exits `1` when no relay accepted the announcement. With `--watch`, a failed publish is printed and retried at the next heartbeat, and an interrupt exits `0`.
+
+Example:
+
+```
+$ id world announce --key-file ./toy-world.key --node 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef --name harbor --tag calm
+```
+
+### `lookup`
+
+| Flag         | Argument     | Default                    | Meaning                    |
+| ------------ | ------------ | -------------------------- | -------------------------- |
+| `<WORLD_ID>` | 64 hex chars | required                   | The world id to look up.   |
+| `--relay`    | base URL     | the developing-today relay | Repeatable relay base URL. |
+
+Behaviour: fetches the world's packet from every relay, keeps only what verifies (the pkarr signature, exactly one announcement record, the world id, the announcement's own signature, a `seq` equal to the packet time, not expired) and prints the newest as one JSON object.
+
+Exit behaviour: exits `1` when no relay served a valid announcement.
