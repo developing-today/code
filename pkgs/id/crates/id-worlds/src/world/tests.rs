@@ -11511,6 +11511,68 @@ mod schedule_tests {
         );
     }
 
+    struct DenyBlobGate;
+
+    impl id_directory::directory::BoundaryGate for DenyBlobGate {
+        fn check(
+            &self,
+            point: id_core::boundary::EnforcementPoint,
+            _: &str,
+        ) -> id_core::boundary_surfaces::FrameworkOutcome {
+            if point == id_core::boundary::EnforcementPoint::BlobStorage {
+                id_core::boundary_surfaces::FrameworkOutcome::Deny {
+                    placement: Vec::new(),
+                    assurance: Vec::new(),
+                }
+            } else {
+                id_core::boundary_surfaces::FrameworkOutcome::Allow
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn blob_boundary_denial_blocks_put_get_and_delete_before_effects() {
+        // Oracle: a denied BlobStorage outcome refuses all three actor
+        // operations and leaves both the in-memory blob set and journal intact.
+        let (mut actor, _clock, token, journal) = scheduling_actor(
+            "blob-boundary-denied",
+            &["blob.put", "blob.get", "blob.delete"],
+            false,
+        );
+        let bytes = b"protected blob".to_vec();
+        let hash = blob_id(&bytes);
+        actor.core.blobs.insert(hash.clone(), bytes.clone());
+        actor.core.set_world_boundary_gate(Arc::new(DenyBlobGate));
+
+        ask(
+            &mut actor,
+            &token,
+            serde_json::json!({"requests": [
+                {"id": "put", "cap": "blob.put", "args": {"data": blob_encode(b"new blob")}},
+                {"id": "get", "cap": "blob.get", "args": {"hash": hash}},
+                {"id": "delete", "cap": "blob.delete", "args": {"hash": hash}},
+            ]}),
+        )
+        .await;
+
+        for id in ["put", "get", "delete"] {
+            assert_eq!(schedule_result(&actor, id).unwrap()["error"], "bad_args");
+        }
+        assert_eq!(actor.core.blobs.get(&hash), Some(&bytes));
+        assert_eq!(
+            journal
+                .entries()
+                .iter()
+                .filter(|entry| matches!(
+                    entry,
+                    JournalEntry::BlobStored { .. } | JournalEntry::BlobRemoved { .. }
+                ))
+                .count(),
+            0,
+            "refused blob operations have no journal effects"
+        );
+    }
+
     #[tokio::test]
     async fn an_ungranted_blob_write_is_refused_and_counted() {
         let (mut actor, _clock, token, journal) = scheduling_actor("blob-refused", &[], false);

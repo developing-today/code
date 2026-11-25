@@ -719,7 +719,10 @@ impl WorldCore {
         subject: Option<String>,
         bounds: CapabilityBounds,
     ) -> Result<(Participant, JoinCapability)> {
-        self.check_membership_boundary(subject.as_deref().unwrap_or("guest"))?;
+        self.check_world_boundary(
+            EnforcementPoint::WorldMembership,
+            subject.as_deref().unwrap_or("guest"),
+        )?;
         let active = self
             .capabilities
             .values()
@@ -768,16 +771,24 @@ impl WorldCore {
         Ok((participant, JoinCapability(token)))
     }
 
-    fn check_membership_boundary(&self, subject: &str) -> Result<()> {
-        if let Some(gate) = &self.membership_boundary_gate {
-            let outcome = gate.check(subject);
+    fn check_world_boundary(&self, point: EnforcementPoint, subject: &str) -> Result<()> {
+        if let Some(gate) = &self.world_boundary_gate {
+            let outcome = gate.check(point, subject);
             ensure!(
                 outcome.is_allow(),
-                "world membership refused by boundary ({})",
+                "world operation refused by boundary ({})",
                 outcome.name()
             );
         }
         Ok(())
+    }
+
+    pub(crate) fn check_blob_boundary_for(&self, participant: Option<u64>) -> Result<()> {
+        let subject = participant
+            .and_then(|id| self.capabilities.get(&id))
+            .and_then(|record| record.subject.as_deref())
+            .unwrap_or("guest");
+        self.check_world_boundary(EnforcementPoint::BlobStorage, subject)
     }
 
     /// Revoke a capability and every capability delegated from it. Returns
@@ -865,13 +876,13 @@ impl WorldCore {
         &mut self.directory
     }
 
-    /// Install the serving app's world-membership boundary gate. This is
-    /// runtime wiring and is not part of the world's journal.
-    pub fn set_membership_boundary_gate(
+    /// Install the serving app's world boundary gate for membership and blob
+    /// operations. This is runtime wiring and is not part of the journal.
+    pub fn set_world_boundary_gate(
         &mut self,
         gate: Arc<dyn id_directory::directory::BoundaryGate>,
     ) {
-        self.membership_boundary_gate = Some(super::MembershipBoundaryGateHandle(gate));
+        self.world_boundary_gate = Some(super::WorldBoundaryGateHandle(gate));
     }
 
     /// The directory and the private petnames, borrowed together.
