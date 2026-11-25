@@ -1434,10 +1434,28 @@ pub fn run() -> i32 {
         ),
     }
 
+    // BT-3 (#14401): Phase 1 TLS on the TCP leg, additive and
+    // default-off (design rules M1/M2). A half-configured or
+    // unusable leaf is a startup config error, never a silent
+    // plaintext fallback.
+    let broker_tls = match crate::broker_tls::BrokerTlsServer::from_env() {
+        Ok(tls) => tls,
+        Err(e) => {
+            crate::log::info("queue-broker", &e);
+            return 3;
+        }
+    };
+    if broker_tls.is_some() {
+        crate::log::info(
+            "queue-broker",
+            "TLS server authentication on the TCP leg (BT-3 Phase 1): presenting the \
+             broker-server leaf; token auth unchanged; plaintext Phase 0 connections \
+             still accepted on the same port and logged",
+        );
+    }
+
     let pre_token = token.clone();
-    crate::tcp_http::serve(
-        server,
-        move |head| {
+    let precheck = move |head: &crate::uds_http::HttpRequest| {
             pre_body_refusal(
                 &head.method,
                 &head.target,
@@ -1452,24 +1470,27 @@ pub fn run() -> i32 {
                     serde_json::to_vec(&value).unwrap_or_else(|_| b"{}".to_vec()),
                 )
             })
-        },
-        move |req| {
-            let _ctx = request_ctx_scope(req);
-            let (status, value) = handle_request(
-                &state,
-                &token,
-                &req.method,
-                &req.target,
-                req.header("X-Agent-Token"),
-                &req.body,
-            );
-            crate::uds_http::log_ctx_trip("queue-broker", req, status);
-            (
-                status,
-                serde_json::to_vec(&value).unwrap_or_else(|_| b"{}".to_vec()),
-            )
-        },
-    );
+    };
+    let handler = move |req: &crate::uds_http::HttpRequest| {
+        let _ctx = request_ctx_scope(req);
+        let (status, value) = handle_request(
+            &state,
+            &token,
+            &req.method,
+            &req.target,
+            req.header("X-Agent-Token"),
+            &req.body,
+        );
+        crate::uds_http::log_ctx_trip("queue-broker", req, status);
+        (
+            status,
+            serde_json::to_vec(&value).unwrap_or_else(|_| b"{}".to_vec()),
+        )
+    };
+    match broker_tls {
+        Some(tls) => crate::tcp_http::serve_tls(server, tls, precheck, handler),
+        None => crate::tcp_http::serve(server, precheck, handler),
+    }
     0
 }
 
