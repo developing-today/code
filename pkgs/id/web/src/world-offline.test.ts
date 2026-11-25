@@ -3,13 +3,13 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import {
-import { clickWorldJoin } from "./world-test-connect";
   loadWorldSnapshot,
   parseStoredWorldSnapshot,
   saveWorldSnapshot,
   worldSnapshotStoreKey,
   type StoredWorldSnapshot,
 } from "./world-snapshot-store";
+import { clickWorldJoin } from "./world-test-connect";
 
 /**
  * #10927 (shells v1 slice 1) behavioral tests: the browser shell's

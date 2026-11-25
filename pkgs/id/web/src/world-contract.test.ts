@@ -3,13 +3,13 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import {
-import { clickWorldJoin } from "./world-test-connect";
   Conformance,
   checkClientFrame,
   checkServerFrame,
   parseShellContract,
   type ShellContract,
 } from "./shell-contract";
+import { clickWorldJoin } from "./world-test-connect";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const contractDocument: unknown = JSON.parse(
