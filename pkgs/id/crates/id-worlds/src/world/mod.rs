@@ -47,6 +47,7 @@ mod replica;
 mod replication;
 mod replication_receiver;
 pub mod signed;
+pub mod spill_controller;
 pub mod spill_gate;
 pub mod spill_pool;
 mod upgrade;

@@ -824,7 +824,7 @@ pub fn render_settings(node_id: &str) -> String {
     html.push_str("        <p class=\"text-muted mb-4\">Your node ID is used by peers to connect to you.</p>\n");
     let _ = write!(
         html,
-        "        <code class=\"font-mono text-base-content/40 break-all\">{}</code>\n",
+        "        <code id=\"node-id\" class=\"font-mono text-base-content/40 break-all\">{}</code>\n",
         node_id_escaped
     );
     html.push_str("        \n");

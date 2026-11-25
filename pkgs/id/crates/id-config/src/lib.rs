@@ -31,10 +31,12 @@ use std::collections::BTreeSet;
 use serde::{Deserialize, Serialize};
 
 pub mod explain;
+pub mod peers;
 pub mod resolve;
 pub mod rollout;
 
 pub use explain::{ExplainEntry, Explanation, explain};
+pub use peers::{PeerClass, PeerEntry, PeerOperation};
 pub use resolve::{LayerOverride, ResolutionInput, ResolveError, ResolvedLayers, resolve};
 pub use rollout::{
     AdapterCapabilities, AdapterSet, CapabilityFailure, CapabilityValidator, ExternalEffect,
@@ -102,9 +104,10 @@ pub fn field_class(path: &str) -> Option<FieldClass> {
         // and the fixed gates are the invariant skeleton of the document.
         "schema_version" | "config_id" | "revision" | "protocol_versions" | "ceilings"
         | "gates" => Some(FieldClass::Mechanism),
-        // Mode bundles, behavioral values, scoped overrides and retained
-        // extensions are the configurable surface.
-        "mode" | "behavior" | "overrides" | "extensions" | "fanout" => {
+        // Mode bundles, behavioral values, scoped overrides, retained
+        // extensions, fan-out keys and the peer plane are the configurable
+        // surface.
+        "mode" | "behavior" | "overrides" | "extensions" | "fanout" | "peers" => {
             Some(FieldClass::Behavior)
         }
         _ => None,
@@ -281,8 +284,8 @@ const fn default_peer_breadth() -> u32 {
 /// operator sees the mistake. The hop limit is `ceilings.max_hops`, bounded
 /// by [`MAX_HOPS_LIMIT`].
 ///
-/// `fanout.remotes[]` is not here yet: it names entries of a `peers[]`
-/// plane this schema does not model (slice 9111-03).
+/// `fanout.remotes[]` is not here yet: it names entries of the `peers[]`
+/// plane ([`PeerEntry`]) and lands with a later part of slice 9111-03.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Fanout {
@@ -505,6 +508,10 @@ pub struct ConfigDocument {
     /// The fan-out keys; absent means every default. See [`Fanout`].
     #[serde(default)]
     pub fanout: Fanout,
+    /// The peer plane: one entry per peer relationship. Absent means no
+    /// configured peers, so every peer is `unknown`. See [`PeerEntry`].
+    #[serde(default)]
+    pub peers: Vec<PeerEntry>,
 }
 
 /// The deterministic result of resolving a valid [`ConfigDocument`]: the
@@ -537,6 +544,12 @@ pub struct ResolvedConfig {
     pub extensions: BTreeMap<String, serde_json::Value>,
     /// Resolved fan-out keys, per-peer timeout clamped to the deadline.
     pub fanout: Fanout,
+    /// Resolved peer plane, sorted by `peer_id` with each entry's
+    /// operations sorted. Omitted from the canonical encoding when empty,
+    /// so a document without peers keeps the digest it had before the
+    /// plane existed.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub peers: Vec<PeerEntry>,
 }
 
 impl ResolvedConfig {
@@ -627,6 +640,49 @@ pub enum ConfigError {
     /// An override names an empty scope.
     #[error("override scope must not be empty")]
     EmptyScope,
+    /// A peer entry has an empty `peer_id`.
+    #[error("peers[].peer_id must not be empty")]
+    EmptyPeerId,
+    /// Two peer entries name the same peer (record §6.3).
+    #[error("duplicate peer entry for peer_id {0:?}")]
+    DuplicatePeer(String),
+    /// A peer entry lists one operation twice.
+    #[error("peer {peer_id:?} lists operation {operation} twice")]
+    DuplicatePeerOperation {
+        /// The peer.
+        peer_id: String,
+        /// The repeated operation.
+        operation: &'static str,
+    },
+    /// A peer entry sets an empty `scope`.
+    #[error("peer {0:?} has an empty scope; omit it for the deployment default")]
+    EmptyPeerScope(String),
+    /// A peer entry grants something its class can never use (record
+    /// §6.5 step 3).
+    #[error("peer {peer_id:?} with class {class}: {rule}")]
+    PeerClassConflict {
+        /// The peer.
+        peer_id: String,
+        /// Its class.
+        class: &'static str,
+        /// The rule it breaks.
+        rule: &'static str,
+    },
+    /// A peer entry's `valid_from` or `expires_at` is not an RFC 3339
+    /// date-time.
+    #[error("peer {peer_id:?} {field} {value:?} is not an RFC 3339 date-time")]
+    InvalidPeerInstant {
+        /// The peer.
+        peer_id: String,
+        /// `valid_from` or `expires_at`.
+        field: &'static str,
+        /// The text given.
+        value: String,
+    },
+    /// A peer entry's `expires_at` is not after its `valid_from`, so the
+    /// policy would never be in force.
+    #[error("peer {0:?} expires_at must be after valid_from")]
+    EmptyPeerWindow(String),
     /// An extension key is not a valid namespace.
     #[error(
         "extension key {0:?} is not a valid namespace (expected non-empty, non-whitespace segments joined by '.' or '/' separators, e.g. 'example.com/experiment')"
@@ -733,6 +789,7 @@ impl ConfigDocument {
         if let Some(gate) = self.gates.first_disabled() {
             return Err(ConfigError::FixedGateDisabled(gate));
         }
+        peers::validate(&self.peers)?;
         for key in self.extensions.keys() {
             if !is_namespaced_extension_key(key) {
                 return Err(ConfigError::UnnamespacedExtension(key.clone()));
@@ -853,6 +910,7 @@ impl ConfigDocument {
             provenance,
             extensions: self.extensions.clone(),
             fanout: self.fanout.resolved(),
+            peers: peers::resolved(&self.peers),
         })
     }
 }

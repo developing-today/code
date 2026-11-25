@@ -75,6 +75,19 @@
   "uncovered_count_definition": "Number of suite rows whose status is uncovered or uncovered-in-fact; mapped rows do not assert the five-rule contract is fully proven.",
   "suites": [
     {
+      "id": "id.rust.id-pg.integration",
+      "paths": ["pkgs/id/crates/id-pg/tests/*.rs"],
+      "invocation": "nix develop ./pkgs/id --command bash pkgs/id/scripts/test-postgrest-contract.sh",
+      "venue": {
+        "workflow": ".github/workflows/id-pg-postgrest-contract.yml",
+        "job_step": "postgrest-contract / Run injectable and real PostgREST container contracts",
+        "state": "not yet audited",
+        "dispatchable": true
+      },
+      "status": "mapped",
+      "notes": "The script runs the offline integration tests and the ignored real-PostgREST contract target separately. Configuration is not evidence of a successful CI run."
+    },
+    {
       "id": "id.rust.unit",
       "paths": ["pkgs/id/src/**", "pkgs/id/crates/id-core/src/**"],
       "invocation": "cd pkgs/id && cargo test --all-features --lib",
@@ -1324,7 +1337,8 @@
         "nixos/home/laptop-repo-keeper.test.sh",
         "nixos/home/laptop-untracked-review.test.sh",
         "nixos/home/openclaw-backup.test.sh",
-        "nixos/home/oc-password-sync.test.sh"
+        "nixos/home/oc-password-sync.test.sh",
+        "nixos/home/stable-entrypoints.test.sh"
       ],
       "invocation": "nix flake check (make-laptop-backups-checks)",
       "venue": {
@@ -1344,6 +1358,7 @@
         "pkgs/atlas-search/crates/atlas-search/tests/cli_parity.rs",
         "pkgs/atlas-search/crates/atlas-embed/tests/gate_a.rs",
         "pkgs/atlas-search/crates/atlas-core/tests/parity.rs",
+        "pkgs/atlas-search/crates/atlas-core/tests/repo_docs.rs",
         "pkgs/atlas-search/crates/**/src/**"
       ],
       "invocation": "cd pkgs/atlas-search && cargo test --workspace --all-targets",

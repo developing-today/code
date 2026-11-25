@@ -1248,6 +1248,9 @@ export function liveSource(
   // when nothing good exists yet — never a throw into a page.
   let queueCache: { value: QueueSnapshot; at: number } | null = null;
   let queueInFlight: Promise<QueueSnapshot> | null = null;
+  // Q8: the queue history cursor is process-local and monotonic. A
+  // restart safely replays from zero because history rows are immutable.
+  let queueHistoryCursor = 0;
   async function queueSnapshot(): Promise<QueueSnapshot> {
     if (queueCache && Date.now() - queueCache.at < 60_000) {
       const v = queueCache.value;
@@ -1258,7 +1261,15 @@ export function liveSource(
         try {
           const token = await readBrokerToken(cfg.queueBrokerTokenFile);
           if (!token) throw new Error(`queue broker token file unreadable: ${cfg.queueBrokerTokenFile}`);
-          const snap = await fetchQueueSnapshot(cfg.queueBrokerUrl, token);
+          const snap = await fetchQueueSnapshot(
+            cfg.queueBrokerUrl,
+            token,
+            undefined,
+            undefined,
+            200,
+            queueHistoryCursor,
+          );
+          if (snap.history?.available) queueHistoryCursor = snap.history.cursor;
           queueCache = { value: snap, at: Date.now() };
           return snap;
         } catch (err) {

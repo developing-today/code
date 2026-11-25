@@ -1,0 +1,266 @@
+{
+  "comment": "Shared frame fixtures for the primary-mode painter contract (#14861 slice 2, issue #14936). Each case builds prev/next frames by applying put-text writes (grapheme-wise, clipped) to a blank screen of the case's width x height (next_width/next_height override for the next frame), then pins the exact byte strings of Term.paint_primary(prev, next) and Term.paint_primary_full(next) from pkgs/id/examples/roc-world/Term.roc. Consumed by: the Rust ScreenSurface::paint_primary tests in pkgs/id/crates/id-core, and scripts/term-parity-test.sh, which generates Roc expects from this same file and runs them against the actual Roc module. Change a case here and both implementations must still agree.",
+  "cases": [
+    {
+      "name": "identical-blank",
+      "width": 3,
+      "height": 1,
+      "prev": [],
+      "next": [],
+      "paint": "",
+      "full": "\u001b[2J"
+    },
+    {
+      "name": "single-cell",
+      "width": 3,
+      "height": 1,
+      "prev": [],
+      "next": [
+        {
+          "x": 1,
+          "y": 0,
+          "text": "x"
+        }
+      ],
+      "paint": "\u001b[1;2H\u001b[0mx\u001b[0m",
+      "full": "\u001b[2J\u001b[1;2H\u001b[0mx\u001b[0m"
+    },
+    {
+      "name": "clear-row",
+      "width": 3,
+      "height": 1,
+      "prev": [
+        {
+          "x": 0,
+          "y": 0,
+          "text": "abc"
+        }
+      ],
+      "next": [],
+      "paint": "\u001b[1;1H\u001b[K\u001b[0m",
+      "full": "\u001b[2J"
+    },
+    {
+      "name": "styled-cell",
+      "width": 2,
+      "height": 1,
+      "prev": [],
+      "next": [
+        {
+          "x": 0,
+          "y": 0,
+          "text": "a",
+          "fg": 196,
+          "bold": true
+        }
+      ],
+      "paint": "\u001b[1;1H\u001b[0m\u001b[1m\u001b[38;5;196ma\u001b[0m",
+      "full": "\u001b[2J\u001b[1;1H\u001b[0m\u001b[1m\u001b[38;5;196ma\u001b[0m"
+    },
+    {
+      "name": "two-runs-one-row",
+      "width": 6,
+      "height": 1,
+      "prev": [],
+      "next": [
+        {
+          "x": 0,
+          "y": 0,
+          "text": "ab"
+        },
+        {
+          "x": 4,
+          "y": 0,
+          "text": "cd"
+        }
+      ],
+      "paint": "\u001b[1;1H\u001b[0mab\u001b[1;5H\u001b[0mcd\u001b[0m",
+      "full": "\u001b[2J\u001b[1;1H\u001b[0mab\u001b[1;5H\u001b[0mcd\u001b[0m"
+    },
+    {
+      "name": "style-split-and-merge",
+      "width": 4,
+      "height": 1,
+      "prev": [],
+      "next": [
+        {
+          "x": 0,
+          "y": 0,
+          "text": "a",
+          "fg": 9
+        },
+        {
+          "x": 1,
+          "y": 0,
+          "text": "b",
+          "fg": 9
+        },
+        {
+          "x": 2,
+          "y": 0,
+          "text": "c",
+          "fg": 10
+        },
+        {
+          "x": 3,
+          "y": 0,
+          "text": "d",
+          "fg": 10,
+          "bold": true
+        }
+      ],
+      "paint": "\u001b[1;1H\u001b[0m\u001b[38;5;9mab\u001b[1;3H\u001b[0m\u001b[38;5;10mc\u001b[1;4H\u001b[0m\u001b[1m\u001b[38;5;10md\u001b[0m",
+      "full": "\u001b[2J\u001b[1;1H\u001b[0m\u001b[38;5;9mab\u001b[1;3H\u001b[0m\u001b[38;5;10mc\u001b[1;4H\u001b[0m\u001b[1m\u001b[38;5;10md\u001b[0m"
+    },
+    {
+      "name": "trailing-erase-after-text",
+      "width": 3,
+      "height": 1,
+      "prev": [
+        {
+          "x": 0,
+          "y": 0,
+          "text": "abc"
+        }
+      ],
+      "next": [
+        {
+          "x": 0,
+          "y": 0,
+          "text": "a"
+        }
+      ],
+      "paint": "\u001b[1;2H\u001b[K\u001b[0m",
+      "full": "\u001b[2J\u001b[1;1H\u001b[0ma\u001b[0m"
+    },
+    {
+      "name": "styled-spaces-to-edge",
+      "width": 3,
+      "height": 1,
+      "prev": [
+        {
+          "x": 0,
+          "y": 0,
+          "text": "abc"
+        }
+      ],
+      "next": [
+        {
+          "x": 0,
+          "y": 0,
+          "text": "a"
+        },
+        {
+          "x": 1,
+          "y": 0,
+          "text": "  ",
+          "bg": 4
+        }
+      ],
+      "paint": "\u001b[1;2H\u001b[0m\u001b[48;5;4m  \u001b[0m",
+      "full": "\u001b[2J\u001b[1;1H\u001b[0ma\u001b[1;2H\u001b[0m\u001b[48;5;4m  \u001b[0m"
+    },
+    {
+      "name": "two-rows",
+      "width": 2,
+      "height": 2,
+      "prev": [],
+      "next": [
+        {
+          "x": 0,
+          "y": 0,
+          "text": "x"
+        },
+        {
+          "x": 1,
+          "y": 1,
+          "text": "y"
+        }
+      ],
+      "paint": "\u001b[1;1H\u001b[0mx\u001b[2;2H\u001b[0my\u001b[0m",
+      "full": "\u001b[2J\u001b[1;1H\u001b[0mx\u001b[2;2H\u001b[0my\u001b[0m"
+    },
+    {
+      "name": "size-change",
+      "width": 2,
+      "height": 1,
+      "prev": [
+        {
+          "x": 0,
+          "y": 0,
+          "text": "ab"
+        }
+      ],
+      "next_width": 3,
+      "next_height": 2,
+      "next": [
+        {
+          "x": 2,
+          "y": 1,
+          "text": "c"
+        }
+      ],
+      "paint": "\u001b[1;1H\u001b[0m  \u001b[2;3H\u001b[0mc\u001b[0m",
+      "full": "\u001b[2J\u001b[2;3H\u001b[0mc\u001b[0m"
+    },
+    {
+      "name": "wide-glyph",
+      "width": 3,
+      "height": 1,
+      "prev": [],
+      "next": [
+        {
+          "x": 0,
+          "y": 0,
+          "text": "🙂x"
+        }
+      ],
+      "paint": "\u001b[1;1H\u001b[0m🙂x\u001b[0m",
+      "full": "\u001b[2J\u001b[1;1H\u001b[0m🙂x\u001b[0m"
+    },
+    {
+      "name": "full-style",
+      "width": 1,
+      "height": 1,
+      "prev": [],
+      "next": [
+        {
+          "x": 0,
+          "y": 0,
+          "text": "z",
+          "fg": 2,
+          "bg": 3,
+          "bold": true
+        }
+      ],
+      "paint": "\u001b[1;1H\u001b[0m\u001b[1m\u001b[38;5;2m\u001b[48;5;3mz\u001b[0m",
+      "full": "\u001b[2J\u001b[1;1H\u001b[0m\u001b[1m\u001b[38;5;2m\u001b[48;5;3mz\u001b[0m"
+    },
+    {
+      "name": "middle-only",
+      "width": 5,
+      "height": 1,
+      "prev": [
+        {
+          "x": 0,
+          "y": 0,
+          "text": "hello"
+        }
+      ],
+      "next": [
+        {
+          "x": 0,
+          "y": 0,
+          "text": "hello"
+        },
+        {
+          "x": 1,
+          "y": 0,
+          "text": "a"
+        }
+      ],
+      "paint": "\u001b[1;2H\u001b[0ma\u001b[0m",
+      "full": "\u001b[2J\u001b[1;1H\u001b[0mhallo\u001b[0m"
+    }
+  ]
+}

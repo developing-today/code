@@ -31,6 +31,13 @@
 //! id and source update timestamp (with content/metadata comparison
 //! when the source has no timestamp). The native LanceDB reader and
 //! rebuild-from-sources proof remain follow-up work.
+//!
+//! Slice 4's fleet-memory half stages the Muse memory tree
+//! (`MEMORY.md`, topic files, daily logs) into the `fleet-memory`
+//! unit through [`scan_memory_files`] + [`stage_memory_files`]:
+//! one `items` row plus its `chunks_raw` per markdown file, with
+//! the file's mtime as `updated_at` and replay-safe re-staging on
+//! text/mtime comparison.
 
 use std::path::Path;
 
@@ -423,4 +430,340 @@ pub fn stage_memory_export_in_db(
 ) -> Result<Vec<i64>> {
     let conn = open(db)?;
     stage_memory_export(&conn, unit_id, entries, now)
+}
+
+/// The staging-unit id of the fleet-memory-files corpus — the
+/// corpus this connector's second slice populates (design section
+/// 1: the Muse memory tree, `MEMORY.md`, topic files, daily
+/// logs).
+pub const FLEET_MEMORY_UNIT: &str = "fleet-memory";
+
+/// One memory-tree file, as scanned: its path relative to the
+/// tree root (the stable source identity, `/`-separated), its
+/// text, its modification instant as RFC 3339 UTC where known,
+/// and its physical sensitivity tier (the corpus default is the
+/// corpus's internal tier).
+#[derive(Debug, Clone, PartialEq)]
+pub struct MemoryFile {
+    /// The file's path relative to the scanned root,
+    /// `/`-separated (e.g. `MEMORY.md`, `topics/deploy.md`).
+    pub rel_path: String,
+    /// The file's full text.
+    pub text: String,
+    /// The file's modification instant as RFC 3339 UTC, where the
+    /// filesystem reports one.
+    pub updated_at: Option<String>,
+    /// The file's physical sensitivity tier.
+    pub sensitivity: Tier,
+}
+
+impl MemoryFile {
+    /// The file's source-of-truth pointer: the corpus scheme plus
+    /// its tree-relative path, carried as the staged item's
+    /// `source` and in its provenance as `source_ref`.
+    pub fn source_ref(&self) -> String {
+        format!("memory-file:{}", self.rel_path)
+    }
+}
+
+/// Format a filesystem modification instant as RFC 3339 UTC
+/// (second precision). Times before the unix epoch report `None`
+/// and let the caller fall back to the staging instant.
+fn system_time_rfc3339(mtime: std::time::SystemTime) -> Option<String> {
+    let secs = mtime.duration_since(std::time::UNIX_EPOCH).ok()?.as_secs() as i64;
+    // Days-to-civil, shared with the `atlas-stage now_utc` helper:
+    // RFC 3339 records when, not sub-second detail.
+    let days = secs.div_euclid(86_400);
+    let rem = secs.rem_euclid(86_400);
+    let (h, m, s) = (rem / 3600, (rem % 3600) / 60, rem % 60);
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = if month <= 2 { y + 1 } else { y };
+    Some(format!("{year:04}-{month:02}-{d:02}T{h:02}:{m:02}:{s:02}Z"))
+}
+
+/// Scan a memory tree root for stageable files: every `*.md`
+/// file under `root` (the tree's `MEMORY.md`, topic files, and
+/// daily logs are all markdown), in sorted tree-relative order so
+/// a scan is deterministic. Non-markdown files are not corpus
+/// content and are skipped; unreadable files and invalid UTF-8
+/// are loud errors naming the path — a partial or silently
+/// defaulted ingest is exactly what the registry's provenance
+/// discipline exists to prevent.
+pub fn scan_memory_files(root: &Path) -> Result<Vec<MemoryFile>> {
+    if !root.is_dir() {
+        return Err(Error::fatal(format!(
+            "memory connector: memory tree {} is not a directory",
+            root.display()
+        )));
+    }
+    let mut rel_paths: Vec<String> = Vec::new();
+    let mut stack: Vec<std::path::PathBuf> = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let entries = std::fs::read_dir(&dir).map_err(|e| {
+            Error::backend(format!("memory connector: listing {}: {e}", dir.display()))
+        })?;
+        for entry in entries {
+            let entry = entry.map_err(|e| {
+                Error::backend(format!("memory connector: listing {}: {e}", dir.display()))
+            })?;
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+            } else if path.is_file()
+                && path
+                    .extension()
+                    .and_then(|x| x.to_str())
+                    .is_some_and(|x| x.eq_ignore_ascii_case("md"))
+            {
+                let rel = path.strip_prefix(root).map_err(|e| {
+                    Error::backend(format!(
+                        "memory connector: relativizing {}: {e}",
+                        path.display()
+                    ))
+                })?;
+                rel_paths.push(
+                    rel.components()
+                        .map(|c| c.as_os_str().to_string_lossy())
+                        .collect::<Vec<_>>()
+                        .join("/"),
+                );
+            }
+        }
+    }
+    rel_paths.sort();
+    rel_paths
+        .iter()
+        .map(|rel| {
+            // Rebuild the filesystem path from the `/`-joined
+            // relative form (components were split on the platform
+            // separator, so this round-trips on any host).
+            let mut path = root.to_path_buf();
+            for comp in rel.split('/') {
+                path.push(comp);
+            }
+            let text = std::fs::read_to_string(&path).map_err(|e| {
+                Error::backend(format!("memory connector: reading memory file {rel}: {e}"))
+            })?;
+            let updated_at = std::fs::metadata(&path)
+                .and_then(|m| m.modified())
+                .ok()
+                .and_then(system_time_rfc3339);
+            Ok(MemoryFile {
+                rel_path: rel.clone(),
+                text,
+                updated_at,
+                sensitivity: Tier::Internal,
+            })
+        })
+        .collect()
+}
+
+/// Stage one memory-tree file into a v1 staging DB as one `items`
+/// row plus its `chunks_raw` rows, on the same write path as every
+/// staged unit: `kind` is `memory`, `source` is the file's
+/// source-of-truth pointer, and `meta` carries the design's
+/// provenance set (corpus `fleet-memory`, agent `null` — the tree
+/// records no author — source_ref, updated_at from the file's
+/// mtime, sensitivity, zone `fleet`). Returns the new item's id.
+/// The DB must already be a v1 staging DB
+/// ([`check_stage_schema`]); vectors are produced later, at
+/// promotion, as for every staged item.
+pub fn stage_memory_file(
+    conn: &Connection,
+    unit_id: &str,
+    file: &MemoryFile,
+    now: &str,
+) -> Result<i64> {
+    stage_memory_file_with_status(conn, unit_id, file, now).map(|(id, _)| id)
+}
+
+fn stage_memory_file_with_status(
+    conn: &Connection,
+    unit_id: &str,
+    file: &MemoryFile,
+    now: &str,
+) -> Result<(i64, bool)> {
+    let tx = conn.unchecked_transaction().map_err(|e| {
+        Error::backend(format!("memory connector: starting stage transaction: {e}"))
+    })?;
+    let result = stage_memory_file_in_transaction(&tx, unit_id, file, now)?;
+    tx.commit().map_err(|e| {
+        Error::backend(format!(
+            "memory connector: committing stage transaction: {e}"
+        ))
+    })?;
+    Ok(result)
+}
+
+fn stage_memory_file_in_transaction(
+    conn: &Connection,
+    unit_id: &str,
+    file: &MemoryFile,
+    now: &str,
+) -> Result<(i64, bool)> {
+    check_stage_schema(conn)?;
+    let chunks = chunk_artifact_text(&file.text);
+    let source = file.source_ref();
+    let meta = serde_json::json!({
+        "corpus": FLEET_MEMORY_UNIT,
+        "agent": Option::<String>::None,
+        "source_ref": source,
+        "updated_at": file.updated_at,
+        "sensitivity": file.sensitivity.name(),
+        "zone": "fleet",
+        "rel_path": file.rel_path,
+        "staged_at": now,
+        "chunks": chunks.len(),
+    })
+    .to_string();
+    let existing = conn
+        .query_row(
+            "SELECT id, text, sensitivity, meta FROM items \
+             WHERE unit_id = ?1 AND kind = 'memory' AND source = ?2 ORDER BY id DESC LIMIT 1",
+            params![unit_id, source],
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(|e| {
+            Error::backend(format!(
+                "memory connector: finding item for {}: {e}",
+                file.rel_path
+            ))
+        })?;
+
+    let (item_id, changed) = match existing {
+        Some((id, text, sensitivity, old_meta)) => {
+            let unchanged = text == file.text
+                && sensitivity == file.sensitivity.name()
+                && old_meta
+                    .as_deref()
+                    .and_then(|raw| serde_json::from_str::<serde_json::Value>(raw).ok())
+                    .is_some_and(|old| {
+                        let new: serde_json::Value =
+                            serde_json::from_str(&meta).unwrap_or_default();
+                        old.get("updated_at") == new.get("updated_at")
+                            && old.get("sensitivity") == new.get("sensitivity")
+                    });
+            if unchanged {
+                return Ok((id, false));
+            }
+            conn.execute(
+                "UPDATE items SET text = ?1, sensitivity = ?2, created_at = ?3, meta = ?4 WHERE id = ?5",
+                params![
+                    file.text,
+                    file.sensitivity.name(),
+                    file.updated_at.as_deref().unwrap_or(now),
+                    meta,
+                    id,
+                ],
+            )
+            .map_err(|e| Error::backend(format!("memory connector: updating item for {}: {e}", file.rel_path)))?;
+            conn.execute("DELETE FROM chunks_raw WHERE item_id = ?1", [id])
+                .map_err(|e| {
+                    Error::backend(format!(
+                        "memory connector: replacing chunks for {}: {e}",
+                        file.rel_path
+                    ))
+                })?;
+            (id, true)
+        }
+        None => {
+            conn.execute(
+                "INSERT INTO items (unit_id, kind, source, text, sensitivity, created_at, meta) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                params![
+                    unit_id,
+                    "memory",
+                    source,
+                    file.text,
+                    file.sensitivity.name(),
+                    file.updated_at.as_deref().unwrap_or(now),
+                    meta,
+                ],
+            )
+            .map_err(|e| {
+                Error::backend(format!(
+                    "memory connector: inserting item for {}: {e}",
+                    file.rel_path
+                ))
+            })?;
+            (conn.last_insert_rowid(), true)
+        }
+    };
+    for (idx, chunk) in chunks.iter().enumerate() {
+        conn.execute(
+            "INSERT INTO chunks_raw (item_id, idx, text, content_hash, created_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![item_id, idx as i64, chunk, sha256_hex(chunk), now],
+        )
+        .map_err(|e| {
+            Error::backend(format!(
+                "memory connector: inserting chunk {idx} for {}: {e}",
+                file.rel_path
+            ))
+        })?;
+    }
+    Ok((item_id, changed))
+}
+
+/// Stage whole scanned memory-tree files into a unit, in scan
+/// order. Returns the changed items' ids: an unchanged re-scan
+/// stages zero.
+pub fn stage_memory_files(
+    conn: &Connection,
+    unit_id: &str,
+    files: &[MemoryFile],
+    now: &str,
+) -> Result<Vec<i64>> {
+    files
+        .iter()
+        .map(|file| stage_memory_file_with_status(conn, unit_id, file, now))
+        .filter_map(|result| match result {
+            Ok((id, true)) => Some(Ok(id)),
+            Ok((_, false)) => None,
+            Err(error) => Some(Err(error)),
+        })
+        .collect()
+}
+
+/// [`stage_memory_files`] against a staging DB file: the form the
+/// `atlas-stage ingest-memory-files` tool calls, so the CLI needs
+/// no DB handle of its own.
+pub fn stage_memory_files_in_db(
+    db: &Path,
+    unit_id: &str,
+    files: &[MemoryFile],
+    now: &str,
+) -> Result<Vec<i64>> {
+    let conn = open(db)?;
+    stage_memory_files(&conn, unit_id, files, now)
+}
+
+/// Scan a memory tree root and stage every file found into a
+/// staging DB file: the connective form the
+/// `atlas-stage ingest-memory-files` tool calls. Returns the
+/// changed items' ids.
+pub fn scan_and_stage_memory_files_in_db(
+    db: &Path,
+    unit_id: &str,
+    root: &Path,
+    now: &str,
+) -> Result<Vec<i64>> {
+    let files = scan_memory_files(root)?;
+    stage_memory_files_in_db(db, unit_id, &files, now)
 }

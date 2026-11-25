@@ -119,6 +119,20 @@ enum Command {
     },
 }
 
+impl Command {
+    fn operation(&self) -> Option<&'static str> {
+        Some(match self {
+            Self::Help(_) => return None,
+            Self::Get { .. } => "get",
+            Self::Set { .. } => "set",
+            Self::List { .. } => "list",
+            Self::Delete { .. } => "delete",
+            Self::ClearOverride { .. } => "clear-override",
+            Self::Revert { .. } => "revert",
+        })
+    }
+}
+
 #[derive(Debug, PartialEq, Eq)]
 enum ParseError {
     Usage(String),
@@ -330,7 +344,15 @@ pub fn run_opening(
             return EXIT_UNAVAILABLE;
         }
     };
-    execute(command, &store, &launch.identity(), stdin, out, err)
+    execute(
+        command,
+        &store,
+        &launch.identity(),
+        stdin,
+        out,
+        err,
+        &fleet_config::ctx::Ctx::from_env(),
+    )
 }
 
 /// Run one `fleet kv` invocation against `store` as `identity`.
@@ -342,8 +364,28 @@ pub fn run(
     out: &mut dyn Write,
     err: &mut dyn Write,
 ) -> i32 {
+    run_with_context(
+        args,
+        store,
+        identity,
+        stdin,
+        out,
+        err,
+        &fleet_config::ctx::Ctx::from_env(),
+    )
+}
+
+fn run_with_context(
+    args: &[String],
+    store: &LocalStore,
+    identity: &Identity<'_>,
+    stdin: &mut dyn Read,
+    out: &mut dyn Write,
+    err: &mut dyn Write,
+    ctx: &fleet_config::ctx::Ctx,
+) -> i32 {
     match parse(args) {
-        Ok(command) => execute(command, store, identity, stdin, out, err),
+        Ok(command) => execute(command, store, identity, stdin, out, err, ctx),
         Err(error) => report_parse_error(error, err),
     }
 }
@@ -365,7 +407,14 @@ fn execute(
     stdin: &mut dyn Read,
     out: &mut dyn Write,
     err: &mut dyn Write,
+    ctx: &fleet_config::ctx::Ctx,
 ) -> i32 {
+    if let (Some(operation), Some(ctx_id)) = (command.operation(), ctx.id()) {
+        // Log only the propagated join key and operation. KV values,
+        // namespaces, keys, and the store's separate scope identity can
+        // all carry user data and do not belong in this record.
+        let _ = writeln!(err, "fleet-kv: op={operation} FLEET_CTX_ID={ctx_id}");
+    }
     let written = match command {
         Command::Help(text) => out.write_all(text.as_bytes()),
         Command::Get { namespace, key } => match store.get(identity, &namespace, &key) {
@@ -452,17 +501,32 @@ mod tests {
     }
 
     fn invoke(store: &LocalStore, words: &[&str], stdin: &[u8]) -> Outcome {
+        invoke_with_context(
+            store,
+            words,
+            stdin,
+            &fleet_config::ctx::Ctx::from_pairs(std::iter::empty::<(&str, &str)>()),
+        )
+    }
+
+    fn invoke_with_context(
+        store: &LocalStore,
+        words: &[&str],
+        stdin: &[u8],
+        ctx: &fleet_config::ctx::Ctx,
+    ) -> Outcome {
         let identity = Identity::new("owner", "context", "partition");
         let mut input = stdin;
         let mut out = Vec::new();
         let mut err = Vec::new();
-        let code = run(
+        let code = run_with_context(
             &args(words),
             store,
             &identity,
             &mut input,
             &mut out,
             &mut err,
+            ctx,
         );
         Outcome {
             code,
@@ -510,6 +574,37 @@ mod tests {
             )),
             "a/b\t2\tmasked\n"
         );
+    }
+
+    #[test]
+    fn operation_log_joins_origin_context_without_logging_key_or_value() {
+        let store = LocalStore::in_memory().expect("store");
+        let ctx = fleet_config::ctx::Ctx::from_pairs([("FLEET_CTX_ID", "task-22655")]);
+
+        let set = invoke_with_context(
+            &store,
+            &["set", "--namespace", "private", "api-key", "secret-value"],
+            b"",
+            &ctx,
+        );
+
+        assert_eq!(set.code, EXIT_OK, "{}", set.err);
+        assert_eq!(set.err, "fleet-kv: op=set FLEET_CTX_ID=task-22655\n");
+        assert!(!set.err.contains("api-key"));
+        assert!(!set.err.contains("secret-value"));
+
+        let get = invoke_with_context(
+            &store,
+            &["get", "--namespace", "private", "api-key"],
+            b"",
+            &ctx,
+        );
+        assert_eq!(get.code, EXIT_OK, "{}", get.err);
+        assert_eq!(get.out, b"secret-value");
+        assert_eq!(get.err, "fleet-kv: op=get FLEET_CTX_ID=task-22655\n");
+
+        let no_ctx = invoke(&store, &["get", "--namespace", "private", "api-key"], b"");
+        assert!(no_ctx.err.is_empty(), "{}", no_ctx.err);
     }
 
     #[test]

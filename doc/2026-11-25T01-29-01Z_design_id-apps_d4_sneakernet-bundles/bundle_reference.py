@@ -31,7 +31,7 @@ non-critical: unknown is ignored, but it is still covered by the signature):
 
   entry = alg_len:u8 alg digest_len:u8 digest size:u64 kind:u8
           alg "raw-blake3-256", digest 32 bytes; kind 1 content, 2 link,
-          3 blob; entries strictly ascending by (alg, digest)
+          3 blob, 4 envelope (slice 4); entries strictly ascending by (alg, digest)
 
 The bundle ID is BLAKE3-256 of manifest_body, written as the D1 portable
 object URI id://any/graph/v2/obj/raw-blake3-256.<hex>.
@@ -56,15 +56,23 @@ MAX_MANIFEST = 1 << 20
 MAX_ENTRIES = 4096
 MAX_OBJECT = 16 << 20
 DIGEST_ALG = b"raw-blake3-256"
-KINDS = {1: "content", 2: "link", 3: "blob"}
+KINDS = {1: "content", 2: "link", 3: "blob", 4: "envelope"}  # 4: slice 4
 KNOWN_TAGS = {0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x81}
 REQUIRED_TAGS = {0x01, 0x02, 0x03, 0x05, 0x07}
 EXAMPLE_SHA256 = "95f95205826df1419619663572e0698eb2a3133485fa81cc275263bf031b7e93"
 
 # ---------------------------------------------------------------- BLAKE3
 
-_IV = (0x6A09E667, 0xBB67AE85, 0x3C6EF372, 0xA54FF53A,
-       0x510E527F, 0x9B05688C, 0x1F83D9AB, 0x5BE0CD19)
+_IV = (
+    0x6A09E667,
+    0xBB67AE85,
+    0x3C6EF372,
+    0xA54FF53A,
+    0x510E527F,
+    0x9B05688C,
+    0x1F83D9AB,
+    0x5BE0CD19,
+)
 _PERM = (2, 6, 3, 10, 7, 0, 4, 13, 1, 11, 12, 5, 9, 14, 15, 8)
 _START, _END, _PARENT, _ROOT = 1, 2, 4, 8
 _M = 0xFFFFFFFF
@@ -72,23 +80,35 @@ _M = 0xFFFFFFFF
 
 def _g(s, a, b, c, d, x, y):
     s[a] = (s[a] + s[b] + x) & _M
-    s[d] ^= s[a]; s[d] = ((s[d] >> 16) | (s[d] << 16)) & _M
+    s[d] ^= s[a]
+    s[d] = ((s[d] >> 16) | (s[d] << 16)) & _M
     s[c] = (s[c] + s[d]) & _M
-    s[b] ^= s[c]; s[b] = ((s[b] >> 12) | (s[b] << 20)) & _M
+    s[b] ^= s[c]
+    s[b] = ((s[b] >> 12) | (s[b] << 20)) & _M
     s[a] = (s[a] + s[b] + y) & _M
-    s[d] ^= s[a]; s[d] = ((s[d] >> 8) | (s[d] << 24)) & _M
+    s[d] ^= s[a]
+    s[d] = ((s[d] >> 8) | (s[d] << 24)) & _M
     s[c] = (s[c] + s[d]) & _M
-    s[b] ^= s[c]; s[b] = ((s[b] >> 7) | (s[b] << 25)) & _M
+    s[b] ^= s[c]
+    s[b] = ((s[b] >> 7) | (s[b] << 25)) & _M
 
 
 def _compress(cv, words, counter, block_len, flags):
-    s = list(cv) + list(_IV[:4]) + [counter & _M, (counter >> 32) & _M, block_len, flags]
+    s = (
+        list(cv)
+        + list(_IV[:4])
+        + [counter & _M, (counter >> 32) & _M, block_len, flags]
+    )
     m = list(words)
     for r in range(7):
-        _g(s, 0, 4, 8, 12, m[0], m[1]); _g(s, 1, 5, 9, 13, m[2], m[3])
-        _g(s, 2, 6, 10, 14, m[4], m[5]); _g(s, 3, 7, 11, 15, m[6], m[7])
-        _g(s, 0, 5, 10, 15, m[8], m[9]); _g(s, 1, 6, 11, 12, m[10], m[11])
-        _g(s, 2, 7, 8, 13, m[12], m[13]); _g(s, 3, 4, 9, 14, m[14], m[15])
+        _g(s, 0, 4, 8, 12, m[0], m[1])
+        _g(s, 1, 5, 9, 13, m[2], m[3])
+        _g(s, 2, 6, 10, 14, m[4], m[5])
+        _g(s, 3, 7, 11, 15, m[6], m[7])
+        _g(s, 0, 5, 10, 15, m[8], m[9])
+        _g(s, 1, 6, 11, 12, m[10], m[11])
+        _g(s, 2, 7, 8, 13, m[12], m[13])
+        _g(s, 3, 4, 9, 14, m[14], m[15])
         if r < 6:
             m = [m[i] for i in _PERM]
     return [s[i] ^ s[i + 8] for i in range(8)] + [s[i + 8] ^ cv[i] for i in range(8)]
@@ -101,7 +121,7 @@ def _words(block: bytes):
 def _chunk(data: bytes, index: int):
     """Return the pending output (cv, words, counter, len, flags) of one chunk."""
     cv = _IV
-    blocks = [data[i:i + 64] for i in range(0, len(data), 64)] or [b""]
+    blocks = [data[i : i + 64] for i in range(0, len(data), 64)] or [b""]
     for n, block in enumerate(blocks):
         flags = (_START if n == 0 else 0) | (_END if n == len(blocks) - 1 else 0)
         if n == len(blocks) - 1:
@@ -115,21 +135,23 @@ def _subtree(data: bytes, first_chunk: int):
         return _chunk(data, first_chunk)
     chunks = (len(data) + 1023) // 1024
     left = 1 << ((chunks - 1).bit_length() - 1)
-    lcv = _compress(*_subtree(data[:left * 1024], first_chunk))[:8]
-    rcv = _compress(*_subtree(data[left * 1024:], first_chunk + left))[:8]
+    lcv = _compress(*_subtree(data[: left * 1024], first_chunk))[:8]
+    rcv = _compress(*_subtree(data[left * 1024 :], first_chunk + left))[:8]
     return (_IV, tuple(lcv) + tuple(rcv), 0, 64, _PARENT)
 
 
 def blake3_256(data: bytes) -> bytes:
     cv, words, counter, block_len, flags = _subtree(data, 0)
-    out = _compress(cv, words, 0 if flags & _PARENT else counter, block_len, flags | _ROOT)
+    out = _compress(
+        cv, words, 0 if flags & _PARENT else counter, block_len, flags | _ROOT
+    )
     return struct.pack("<8I", *out[:8])
 
 
 # -------------------------------------------------------------- Ed25519 (RFC 8032)
 
-_P = 2 ** 255 - 19
-_Q = 2 ** 252 + 27742317777372353535851937790883648493
+_P = 2**255 - 19
+_Q = 2**252 + 27742317777372353535851937790883648493
 _D = -121665 * pow(121666, _P - 2, _P) % _P
 _SQRT_M1 = pow(2, (_P - 1) // 4, _P)
 
@@ -158,7 +180,9 @@ def _mul(s, pt):
 
 
 def _eq(a, b):
-    return (a[0] * b[2] - b[0] * a[2]) % _P == 0 and (a[1] * b[2] - b[1] * a[2]) % _P == 0
+    return (a[0] * b[2] - b[0] * a[2]) % _P == 0 and (
+        a[1] * b[2] - b[1] * a[2]
+    ) % _P == 0
 
 
 def _recover_x(y, sign):
@@ -233,6 +257,7 @@ def ed25519_verify(pub: bytes, msg: bytes, sig: bytes) -> bool:
 
 # ---------------------------------------------------------------- model
 
+
 class BundleError(ValueError):
     """Rejection; the message is the stable rejection code."""
 
@@ -261,9 +286,9 @@ class Manifest:
 class Report:
     bundle_id: str
     creator_identity: str
-    binding: str          # "unbound" or "present-unchecked" in slice 1
+    binding: str  # "unbound" or "present-unchecked" in slice 1
     objects: list[tuple[str, str, int]]  # (kind, digest hex, size)
-    expiry: str           # "none", "valid", "expired" (status only in slice 1)
+    expiry: str  # "none", "valid", "expired" (status only in slice 1)
     ignored_tags: list[int]
 
 
@@ -285,22 +310,32 @@ def encode_manifest(m: Manifest) -> bytes:
     entries = sorted(m.entries, key=lambda e: e.digest)
     body = struct.pack(">I", len(entries))
     for e in entries:
-        body += bytes([len(DIGEST_ALG)]) + DIGEST_ALG + bytes([len(e.digest)]) + e.digest
+        body += (
+            bytes([len(DIGEST_ALG)]) + DIGEST_ALG + bytes([len(e.digest)]) + e.digest
+        )
         body += _u64(e.size) + bytes([e.kind])
     recs[0x07] = body
     if m.scope is not None:
         recs[0x09] = m.scope.encode("ascii")
     if m.renewal_note is not None:
         recs[0x81] = m.renewal_note.encode("utf-8")
-    return b"".join(bytes([t]) + struct.pack(">I", len(v)) + v for t, v in sorted(recs.items()))
+    return b"".join(
+        bytes([t]) + struct.pack(">I", len(v)) + v for t, v in sorted(recs.items())
+    )
 
 
 def write_bundle(m: Manifest, seed: bytes, objects: dict[bytes, bytes]) -> bytes:
     body = encode_manifest(m)
     sig = ed25519_sign(seed, DOMAIN + body)
     order = sorted(e.digest for e in m.entries)
-    return (MAGIC + struct.pack(">HI", VERSION, len(body)) + body + b"\x01" + sig
-            + b"".join(objects[d] for d in order))
+    return (
+        MAGIC
+        + struct.pack(">HI", VERSION, len(body))
+        + body
+        + b"\x01"
+        + sig
+        + b"".join(objects[d] for d in order)
+    )
 
 
 def bundle_id_uri(body: bytes) -> str:
@@ -310,10 +345,11 @@ def bundle_id_uri(body: bytes) -> str:
 # ------------------------------------------------------------- reader A
 # Structured: parse into a Manifest, then verify.
 
+
 def _take(buf: bytes, pos: int, n: int, code: str) -> tuple[bytes, int]:
     if n < 0 or pos + n > len(buf):
         raise BundleError(code)
-    return buf[pos:pos + n], pos + n
+    return buf[pos : pos + n], pos + n
 
 
 def _parse_records(body: bytes) -> dict[int, bytes]:
@@ -443,15 +479,21 @@ def read_a(blob: bytes, now: int | None = None) -> Report:
         expiry = "expired" if now >= m.expires_at else "valid"
     elif m.expires_at is not None:
         expiry = "valid"
-    return Report(bundle_id_uri(body), m.creator_identity,
-                  "unbound" if m.creator_binding is None else "present-unchecked",
-                  objects, expiry, m.ignored_tags)
+    return Report(
+        bundle_id_uri(body),
+        m.creator_identity,
+        "unbound" if m.creator_binding is None else "present-unchecked",
+        objects,
+        expiry,
+        m.ignored_tags,
+    )
 
 
 # ------------------------------------------------------------- reader B
 # Written separately from the record's §3 text, as one forward pass with no
 # Manifest object. It shares only the two primitives with reader A. Its
 # output is the triple (bundle ID, signing key, [(digest, size, kind)]).
+
 
 def read_b(blob: bytes):
     class Cur:
@@ -462,7 +504,7 @@ def read_b(blob: bytes):
             if self.i + n > len(self.b):
                 raise BundleError(code)
             self.i += n
-            return self.b[self.i - n:self.i]
+            return self.b[self.i - n : self.i]
 
         def num(self, n, code):
             return int.from_bytes(self.get(n, code), "big")
@@ -537,7 +579,7 @@ def read_b(blob: bytes):
         dg = k.get(32, "bad_contents")
         size = k.num(8, "bad_contents")
         kind = k.num(1, "bad_contents")
-        if kind not in (1, 2, 3):
+        if kind not in (1, 2, 3, 4):
             raise BundleError("unknown_kind")
         if size > (16 << 20):
             raise BundleError("object_too_large")
@@ -569,10 +611,16 @@ EXAMPLE_SEED = hashlib.sha256(b"id-bundle/1 example key, test only").digest()
 # encoding (§2.3 "field-ordered, length-prefixed"); a bundle carries whatever
 # bytes the object ID is the hash of, so the format does not depend on it.
 EXAMPLE_OBJECTS = [
-    (1, b'{"author":"ana","body":"Is the garden meetup still on Saturday?",'
-        b'"created_claim":"2026-11-24T18:00:00Z","kind":"chat.message","schema_version":1}'),
-    (1, b'{"author":"ben","body":"Yes, 10am at the north gate.",'
-        b'"created_claim":"2026-11-24T18:05:00Z","kind":"chat.message","schema_version":1}'),
+    (
+        1,
+        b'{"author":"ana","body":"Is the garden meetup still on Saturday?",'
+        b'"created_claim":"2026-11-24T18:00:00Z","kind":"chat.message","schema_version":1}',
+    ),
+    (
+        1,
+        b'{"author":"ben","body":"Yes, 10am at the north gate.",'
+        b'"created_claim":"2026-11-24T18:05:00Z","kind":"chat.message","schema_version":1}',
+    ),
     (3, bytes(range(256)) * 5),  # a 1280-byte blob: crosses a BLAKE3 chunk boundary
 ]
 
@@ -580,14 +628,27 @@ EXAMPLE_OBJECTS = [
 def build_example() -> tuple[bytes, Manifest]:
     objects = {blake3_256(b): b for _, b in EXAMPLE_OBJECTS}
     q, a = (blake3_256(b) for _, b in EXAMPLE_OBJECTS[:2])
-    link = (b'{"author":"ben","context":{"previous":["' + q.hex().encode() + b'"],"root":"'
-            + q.hex().encode() + b'"},"created_claim":"2026-11-24T18:05:00Z",'
-            b'"schema_version":1,"source":"' + a.hex().encode() + b'","target":"'
-            + q.hex().encode() + b'","verb":"reply"}')
+    link = (
+        b'{"author":"ben","context":{"previous":["'
+        + q.hex().encode()
+        + b'"],"root":"'
+        + q.hex().encode()
+        + b'"},"created_claim":"2026-11-24T18:05:00Z",'
+        b'"schema_version":1,"source":"'
+        + a.hex().encode()
+        + b'","target":"'
+        + q.hex().encode()
+        + b'","verb":"reply"}'
+    )
     # A second link points at an object this bundle does not carry: allowed (§6).
-    dangling = (b'{"author":"ben","created_claim":"2026-11-24T18:06:00Z","schema_version":1,'
-                b'"source":"' + a.hex().encode() + b'","target":"' + ("ab" * 32).encode()
-                + b'","verb":"mention"}')
+    dangling = (
+        b'{"author":"ben","created_claim":"2026-11-24T18:06:00Z","schema_version":1,'
+        b'"source":"'
+        + a.hex().encode()
+        + b'","target":"'
+        + ("ab" * 32).encode()
+        + b'","verb":"mention"}'
+    )
     for b in (link, dangling):
         objects[blake3_256(b)] = b
     kinds = {blake3_256(b): k for k, b in EXAMPLE_OBJECTS}
@@ -606,14 +667,26 @@ def build_example() -> tuple[bytes, Manifest]:
 
 # ------------------------------------------------------------- self-test
 
+
 def _mutations(good: bytes, m: Manifest):
     body_len = struct.unpack(">I", good[10:14])[0]
-    body = good[14:14 + body_len]
-    tail = good[14 + body_len + 65:]
+    body = good[14 : 14 + body_len]
+    tail = good[14 + body_len + 65 :]
 
     def rebuild(new_body, sign=True, objs=tail, alg=1):
-        sig = ed25519_sign(EXAMPLE_SEED, DOMAIN + new_body) if sign else good[15 + body_len:14 + body_len + 65]
-        return MAGIC + struct.pack(">HI", 1, len(new_body)) + new_body + bytes([alg]) + sig + objs
+        sig = (
+            ed25519_sign(EXAMPLE_SEED, DOMAIN + new_body)
+            if sign
+            else good[15 + body_len : 14 + body_len + 65]
+        )
+        return (
+            MAGIC
+            + struct.pack(">HI", 1, len(new_body))
+            + new_body
+            + bytes([alg])
+            + sig
+            + objs
+        )
 
     def with_manifest(**kw):
         mm = Manifest(**{**m.__dict__, **kw})
@@ -625,51 +698,101 @@ def _mutations(good: bytes, m: Manifest):
     yield "bad_magic", b"IDBUNDLX" + good[8:]
     yield "unknown_version", good[:8] + b"\x00\x02" + good[10:]
     yield "truncated_header", good[:10]
-    yield "manifest_too_large", good[:10] + struct.pack(">I", MAX_MANIFEST + 1) + good[14:]
-    yield "truncated_manifest", good[:14 + body_len - 1]
-    yield "truncated_signature", good[:14 + body_len + 30]
-    yield "bad_signature", good[:14 + body_len + 1] + bytes([good[15 + body_len] ^ 1]) + good[16 + body_len:]
-    yield "bad_signature", rebuild(body.replace(b"idp:example/ben", b"idp:example/bem"), sign=False)
+    yield (
+        "manifest_too_large",
+        good[:10] + struct.pack(">I", MAX_MANIFEST + 1) + good[14:],
+    )
+    yield "truncated_manifest", good[: 14 + body_len - 1]
+    yield "truncated_signature", good[: 14 + body_len + 30]
+    yield (
+        "bad_signature",
+        good[: 14 + body_len + 1]
+        + bytes([good[15 + body_len] ^ 1])
+        + good[16 + body_len :],
+    )
+    yield (
+        "bad_signature",
+        rebuild(body.replace(b"idp:example/ben", b"idp:example/bem"), sign=False),
+    )
     yield "unknown_signature_alg", rebuild(body, alg=2)
     yield "digest_mismatch", good[:-1] + bytes([good[-1] ^ 1])
     yield "truncated_objects", good[:-1]
     yield "trailing_bytes", good + b"\0"
     yield "records_not_ascending", rebuild(rec(0x02, b"x") + rec(0x01, FORMAT))
     yield "records_not_ascending", rebuild(body + rec(0x81, b"again"))
-    yield "unknown_critical_tag", rebuild(body[:-len(rec(0x81, m.renewal_note.encode()))]
-                                          + rec(0x7f, b"") + rec(0x81, m.renewal_note.encode()))
+    yield (
+        "unknown_critical_tag",
+        rebuild(
+            body[: -len(rec(0x81, m.renewal_note.encode()))]
+            + rec(0x7F, b"")
+            + rec(0x81, m.renewal_note.encode())
+        ),
+    )
     yield "missing_required_field", rebuild(rec(0x01, FORMAT))
     yield "unknown_format", rebuild(body.replace(FORMAT, b"id-bundle/2", 1))
-    yield "grants_reserved_slice_2", rebuild(body.replace(rec(0x09, m.scope.encode()),
-                                                          rec(0x08, b"") + rec(0x09, m.scope.encode())))
-    yield "bad_signing_key", rebuild(body.replace(b"\x00\x00\x00\x21\x01", b"\x00\x00\x00\x21\x02", 1))
+    yield (
+        "grants_reserved_slice_2",
+        rebuild(
+            body.replace(
+                rec(0x09, m.scope.encode()),
+                rec(0x08, b"") + rec(0x09, m.scope.encode()),
+            )
+        ),
+    )
+    yield (
+        "bad_signing_key",
+        rebuild(body.replace(b"\x00\x00\x00\x21\x01", b"\x00\x00\x00\x21\x02", 1)),
+    )
     yield "bad_creator_identity", with_manifest(creator_identity="ben\nroot")
     yield "expiry_before_creation", with_manifest(expires_at=m.created_at)
     yield "bad_scope", with_manifest(scope="https://example.com/")
     yield "bad_renewal_note", with_manifest(renewal_note="")
     yield "empty_contents", with_manifest(entries=[])
     yield "unknown_kind", with_manifest(entries=[Entry(m.entries[0].digest, 1, 9)])
-    yield "object_too_large", with_manifest(entries=[Entry(m.entries[0].digest, MAX_OBJECT + 1, 1)])
+    yield (
+        "object_too_large",
+        with_manifest(entries=[Entry(m.entries[0].digest, MAX_OBJECT + 1, 1)]),
+    )
 
 
 def self_test() -> int:
     # Primitive vectors: BLAKE3 official empty/"abc"; RFC 8032 test 1.
-    assert blake3_256(b"").hex() == "af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262"
-    assert blake3_256(b"abc").hex() == "6437b3ac38465133ffb63b75273a8db548c558465d79db03fd359c6cd5bd9d85"
-    seed = bytes.fromhex("9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60")
-    assert ed25519_public(seed).hex() == "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a"
+    assert (
+        blake3_256(b"").hex()
+        == "af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262"
+    )
+    assert (
+        blake3_256(b"abc").hex()
+        == "6437b3ac38465133ffb63b75273a8db548c558465d79db03fd359c6cd5bd9d85"
+    )
+    seed = bytes.fromhex(
+        "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60"
+    )
+    assert (
+        ed25519_public(seed).hex()
+        == "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a"
+    )
     sig = ed25519_sign(seed, b"")
-    assert sig.hex() == ("e5564300c360ac729086e2cc806e828a84877f1eb8e5d974d873e06522490155"
-                         "5fb8821590a33bacc61e39701cf9b46bd25bf5f0595bbe24655141438e7a100b")
+    assert sig.hex() == (
+        "e5564300c360ac729086e2cc806e828a84877f1eb8e5d974d873e06522490155"
+        "5fb8821590a33bacc61e39701cf9b46bd25bf5f0595bbe24655141438e7a100b"
+    )
     assert ed25519_verify(ed25519_public(seed), b"", sig)
     assert not ed25519_verify(ed25519_public(seed), b"x", sig)
 
     good, m = build_example()
-    assert hashlib.sha256(good).hexdigest() == EXAMPLE_SHA256, hashlib.sha256(good).hexdigest()
+    assert hashlib.sha256(good).hexdigest() == EXAMPLE_SHA256, hashlib.sha256(
+        good
+    ).hexdigest()
     import os
-    committed = os.path.join(os.path.dirname(os.path.abspath(__file__)), "example.idbundle")
+
+    committed = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "example.idbundle"
+    )
     if os.path.exists(committed):
-        assert open(committed, "rb").read() == good, "example.idbundle differs from build_example()"
+        assert open(committed, "rb").read() == good, (
+            "example.idbundle differs from build_example()"
+        )
     ra = read_a(good, now=1796000000)
     rb = read_b(good)
     assert ra.bundle_id == rb[0]
@@ -691,21 +814,46 @@ def self_test() -> int:
 
     # Non-critical unknown tag: both readers accept, the bundle ID changes.
     body_len = struct.unpack(">I", good[10:14])[0]
-    body = good[14:14 + body_len] + b"\xf0\x00\x00\x00\x01z"
-    extra = (MAGIC + struct.pack(">HI", 1, len(body)) + body + b"\x01"
-             + ed25519_sign(EXAMPLE_SEED, DOMAIN + body) + good[14 + body_len + 65:])
+    body = good[14 : 14 + body_len] + b"\xf0\x00\x00\x00\x01z"
+    extra = (
+        MAGIC
+        + struct.pack(">HI", 1, len(body))
+        + body
+        + b"\x01"
+        + ed25519_sign(EXAMPLE_SEED, DOMAIN + body)
+        + good[14 + body_len + 65 :]
+    )
     assert read_a(extra).ignored_tags == [0xF0] and read_b(extra)[0] != rb[0]
 
-    print(f"ok: example bundle {len(good)} bytes, {len(ra.objects)} objects, "
-          f"both readers agree on {ra.bundle_id}; {rejects} rejection cases agree")
+    print(
+        f"ok: example bundle {len(good)} bytes, {len(ra.objects)} objects, "
+        f"both readers agree on {ra.bundle_id}; {rejects} rejection cases agree"
+    )
     return 0
 
 
 def cross_check() -> int:
     import os
+
     try:
         import blake3  # type: ignore
-        for n in (0, 1, 63, 64, 65, 1023, 1024, 1025, 2048, 2049, 3072, 5000, 8193, 70000):
+
+        for n in (
+            0,
+            1,
+            63,
+            64,
+            65,
+            1023,
+            1024,
+            1025,
+            2048,
+            2049,
+            3072,
+            5000,
+            8193,
+            70000,
+        ):
             data = os.urandom(n)
             assert blake3_256(data) == blake3.blake3(data).digest(), n
         print("blake3: agrees with the blake3 package on 14 lengths")
@@ -714,11 +862,16 @@ def cross_check() -> int:
     try:
         from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
         from cryptography.hazmat.primitives import serialization
+
         for _ in range(8):
             seed, msg = os.urandom(32), os.urandom(100)
             k = Ed25519PrivateKey.from_private_bytes(seed)
-            pub = k.public_key().public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw)
-            assert pub == ed25519_public(seed) and k.sign(msg) == ed25519_sign(seed, msg)
+            pub = k.public_key().public_bytes(
+                serialization.Encoding.Raw, serialization.PublicFormat.Raw
+            )
+            assert pub == ed25519_public(seed) and k.sign(msg) == ed25519_sign(
+                seed, msg
+            )
         print("ed25519: agrees with the cryptography package on 8 keys")
     except ImportError:
         print("ed25519: package not installed, skipped")
