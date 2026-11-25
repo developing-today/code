@@ -422,7 +422,9 @@ fn fetch_page<T: Transport, D: PageDecoder>(
         None => None,
     };
     let rows = decoder.decode(&response.body)?;
-    let row_count = u64::try_from(rows.len()).map_err(|_| ReadError::MalformedPage)?;
+    let row_count = u64::try_from(rows.len())
+        .ok()
+        .ok_or(ReadError::MalformedPage)?;
     if row_count > u64::from(limit) {
         return Err(ReadError::MalformedPage);
     }
@@ -431,7 +433,9 @@ fn fetch_page<T: Transport, D: PageDecoder>(
     Ok(Page {
         rows,
         complete,
-        body_bytes: u64::try_from(response.body.len()).map_err(|_| ReadError::MalformedPage)?,
+        body_bytes: u64::try_from(response.body.len())
+            .ok()
+            .ok_or(ReadError::MalformedPage)?,
         observed_at_ms: response.observed_at_ms,
     })
 }
@@ -566,7 +570,7 @@ pub struct SnapshotCaps {
 }
 
 /// A complete materialized snapshot of one collection (§5.3).
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Snapshot<Row> {
     /// Every allowed row, in the collection's unique-key order.
     pub rows: Vec<Row>,
@@ -588,7 +592,7 @@ pub struct Snapshot<Row> {
 ///
 /// [`SnapshotStore::rebuild`] replaces it only when a whole build
 /// succeeded. A failed or oversized build leaves it untouched (§5.3).
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SnapshotStore<Row> {
     relation: String,
     current: Option<Snapshot<Row>>,
@@ -661,7 +665,9 @@ fn build_snapshot<T: Transport, D: PageDecoder>(
     loop {
         let page = fetch_page(endpoint, transport, decoder, &request, limit)?;
         pages = pages.saturating_add(1);
-        let page_rows = u64::try_from(page.rows.len()).map_err(|_| ReadError::MalformedPage)?;
+        let page_rows = u64::try_from(page.rows.len())
+            .ok()
+            .ok_or(ReadError::MalformedPage)?;
         // The caps are checked before this page's rows are copied.
         let next_rows = row_count.saturating_add(page_rows);
         let next_bytes = bytes.saturating_add(page.body_bytes);
