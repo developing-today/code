@@ -130,6 +130,7 @@ dump_for_log() {
   echo "--- screen ---" >&2
   screen_text >&2 || true
   echo "--- end screen ---" >&2
+  echo "--- foreground: $(adb shell dumpsys activity activities 2>/dev/null | grep -m 1 'topResumedActivity' | tr -d '[:space:]') ---" >&2
 }
 
 fail() {
@@ -218,6 +219,21 @@ launch_from_icon() {
   adb shell monkey -p "$PKG" -c android.intent.category.LAUNCHER 1 >/dev/null 2>&1
 }
 
+# Open the app and wait for its text, opening it again while the
+# text has not appeared: a launch fired while the launcher is still
+# settling is lost without a trace — run 45557841422 waited out its
+# whole first wait on the home screen — and one lost launch is the
+# launcher failing, not the app.
+launch_and_wait_text() {
+  local needle="$1" timeout="${2:-60}" i=0
+  while [ "$i" -lt "$timeout" ]; do
+    launch_from_icon
+    if wait_text "$needle" 20; then return 0; fi
+    i=$((i + 20))
+  done
+  return 1
+}
+
 echo "offline-check: waiting for the emulator"
 adb wait-for-device
 i=0
@@ -238,15 +254,13 @@ adb install -r -g "$APK" || fail "could not install $APK"
 adb shell am force-stop "$PKG" 2>/dev/null || true
 
 echo "offline-check: 1. the app opens against the demo edge"
-launch_from_icon
-wait_text "Needs me" 120 || fail "the app did not open to the console (no 'Needs me' tab)"
+launch_and_wait_text "Needs me" 120 || fail "the app did not open to the console (no 'Needs me' tab)"
 tap_text "Needs me" || fail "could not open the Needs me tab"
 wait_text "$QUESTION_TEXT" 60 || fail "the demo question is not shown"
 
 echo "offline-check: 2. with no connection, opened again it shows what it kept"
 airplane on || fail "could not turn aeroplane mode on"
-launch_from_icon
-wait_text "$QUESTION_TEXT" 60 || fail "opened with no connection, the app does not show the question it last saw"
+launch_and_wait_text "$QUESTION_TEXT" 60 || fail "opened with no connection, the app does not show the question it last saw"
 
 echo "offline-check: 3. answered while offline, app swiped away, network back"
 tap_text "$ANSWER_LABEL" || fail "could not tap the answer '$ANSWER_LABEL'"
@@ -283,8 +297,7 @@ while [ "$i" -lt 60 ]; do
   i=$((i + 2))
 done
 [ "$seen" = "1" ] || fail "the demo edge saw the answer $seen times, not once (log: $ACT_LOG)"
-launch_from_icon
-wait_text "Needs me" 60 || fail "the app did not reopen after the answer was sent"
+launch_and_wait_text "Needs me" 60 || fail "the app did not reopen after the answer was sent"
 tap_text "Needs me" || fail "could not open the Needs me tab again"
 wait_text "$NEXT_QUESTION_TEXT" 60 || fail "the Needs me list did not load after the answer was sent"
 if screen_text | grep -qF "$QUESTION_TEXT"; then
