@@ -33,7 +33,7 @@ Fleet remote runners, with failing-first evidence before implementation.
 
 ## References
 
-- [Directory implementation](../../hosted-worker/src/persistent-account-directory.ts)
-- [Worker entry point](../../hosted-worker/src/worker.ts)
-- [Front-door tests](../../hosted-worker/test/front-door.test.ts)
+- [Directory implementation](../../pkgs/id/hosted-worker/src/persistent-account-directory.ts)
+- [Worker entry point](../../pkgs/id/hosted-worker/src/worker.ts)
+- [Front-door tests](../../pkgs/id/hosted-worker/test/front-door.test.ts)
 - Issues #3399 (slice), #3404 (migration CAS), #2285 / #3403 (enablement)

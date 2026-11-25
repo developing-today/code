@@ -198,6 +198,8 @@ test("directory guard forwards a matching validated binding through the restrict
 for (const scenario of [
   { name: "missing row", status: 403, error: "directory_account_missing" },
   { name: "legacy-only row", status: 403, error: "legacy_subject_requires_migration" },
+  { name: "legacy subject conflict", status: 503, error: "invalid_directory_record" },
+  { name: "legacy binding conflict", status: 503, error: "invalid_directory_record" },
   { name: "jurisdiction mismatch", status: 403, error: "directory_jurisdiction_mismatch" },
   ...[
     ["pending jurisdiction", "jurisdiction_pending", "eu"],
@@ -221,6 +223,14 @@ for (const scenario of [
           // parser remains a read-time boundary even if schema checks failed.
           db.exec("PRAGMA ignore_check_constraints = ON");
           db.prepare(`UPDATE hosted_accounts SET ${scenario.column} = ?`).run(scenario.value as string | number);
+        }
+        if (scenario.name === "legacy subject conflict" || scenario.name === "legacy binding conflict") {
+          // Bypass the write API to model inconsistent persisted inventory.
+          db.prepare("INSERT INTO legacy_hosted_accounts (subject_key, binding_id, classification) VALUES (?, ?, ?)").run(
+            scenario.name === "legacy subject conflict" ? "subject" : "other-subject",
+            scenario.name === "legacy binding conflict" ? A : "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "legacy-unrestricted",
+          );
         }
       }
       const before = snapshot();
