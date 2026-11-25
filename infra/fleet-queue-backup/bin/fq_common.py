@@ -110,6 +110,8 @@ def _http_json_once(method, url, token, payload=None, timeout=HTTP_TIMEOUT_SECON
     """
     data = None if payload is None else json.dumps(payload).encode()
     req = urllib.request.Request(url, data=data, method=method)
+    # Cloudflare (d1-gateway) refuses the default Python-urllib agent.
+    req.add_header("User-Agent", "fleet-d1-client/1")
     req.add_header("Authorization", f"Bearer {token}")
     if data is not None:
         req.add_header("Content-Type", "application/json")
