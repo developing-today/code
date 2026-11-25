@@ -24,6 +24,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use p2panda_auth::traits::AuthorizationActor;
 use p2panda_core::Hash;
 
 use super::fold::{Decision, Effect, Engine, FoldError, Judged, Refusal, access_role, causal_past};
@@ -165,6 +166,7 @@ impl Engine {
             return Ok(Err(Refusal::NoChain));
         }
         Ok(Ok(Decision {
+            authorization_actor: None,
             group,
             action: None,
             effect: Effect::Delegation {
@@ -201,6 +203,7 @@ impl Engine {
         }
         if self.is_grantor_of_record(by_id, grant, author, &seen) {
             return Ok(Ok(Decision {
+                authorization_actor: None,
                 group,
                 action: None,
                 effect: Effect::Veto(grant),
@@ -224,6 +227,7 @@ impl Engine {
             return Ok(Err(Refusal::NoChain));
         }
         Ok(Ok(Decision {
+            authorization_actor: None,
             group,
             action: None,
             effect: Effect::Veto(grant),
@@ -239,16 +243,16 @@ impl Engine {
         op: MemberOp,
         decision: Decision,
     ) -> Result<Judged, FoldError> {
-        let author = match self.effective_author(by_id, decision.group, event) {
-            Some((a, _)) => a,
-            None => event.author,
+        let (author, author_role) = match self.effective_author(by_id, decision.group, event) {
+            Some(found) => found,
+            None => (event.author, Role::Pull),
         };
         if let MemberOp::Remove { member, .. } = op
             && member == author
         {
             return Ok(Ok(decision));
         }
-        let manages = self.authorized(
+        let authorized = self.authorized(
             by_id,
             decision.group,
             author,
@@ -257,7 +261,10 @@ impl Engine {
             false,
             event.at,
         )?;
-        if manages {
+        if authorized {
+            if author_role < Role::Manage {
+                decision.authorization_actor = Some(AuthorizationActor::Verified);
+            }
             Ok(Ok(decision))
         } else {
             Ok(Err(Refusal::NoChain))

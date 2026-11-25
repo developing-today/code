@@ -25,3 +25,17 @@ The action-level root may be a current manager or a re-anchored group root. Both
 - `cargo test -p p2panda-auth delegated_authorization_keeps_signer_identity_for_strong_remove` passes, and the complete `p2panda-auth` test suite passes remotely.
 - `cargo test -p id-events groups::tests::test_delegated_manage_can_add_and_remove_members` passes remotely.
 - The event-store replay test observes the same Add/Remove outcome as the group fold, while a cut chain remains refused and the Admin guards remain unchanged.
+
+---
+
+## 2026-11-25T10-20-23Z Clarification: replay boundary
+
+The verified basis is recomputed by `groups::fold` from the complete group-event set and retained in `id-core::Membership` while that fold replays events. The separate `event_store::resolve` path only bridges p2panda membership-action rows; it has no group-delegation history and continues to use the default membership author. The earlier reference to event-store replay meant the membership layer's in-memory canonical replay, not the separate persistent event-store resolver.
+
+Persistent event-store support for full delegated group events is outside issue #171's existing `groups::fold` acceptance and would require loading and retaining the complete group-event body stream through that resolver. This slice does not claim that additional integration.
+
+---
+
+## 2026-11-25T10-21-59Z Clarification: low-level event-store boundary
+
+The verified basis is carried through the group fold's `CausalEvent` and `id-core::Membership` replay history. Group-log readers recompute it from the complete signed group-event set. The separate `event_store::resolve` path bridges stored p2panda membership-action rows and has no delegation-event records; those rows keep the default `None` authorization actor. The earlier reference above to the event-store resolver recomputing a delegated basis is superseded by this clarification. Full persistence of `group.event` delegation bodies in that separate resolver is outside #171's current group-fold slice.
