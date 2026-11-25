@@ -12,7 +12,10 @@ use atlas_core::version_projection::{
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 
-const FIXTURE: &str = include_str!("../../../fixtures/id_projection_rows.json");
+const FIXTURE: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../fixtures/id_projection_rows.json"
+));
 
 struct Fixture {
     values: Vec<Value>,
@@ -237,7 +240,7 @@ fn audit(
     claims: &[ProjectedLineageClaim],
 ) -> AuditReport {
     let mut failures = BTreeSet::new();
-    let checked = vec![
+    let checked: Vec<&'static str> = vec![
         "version.key-set",
         "version.content",
         "version.hash",
@@ -318,7 +321,7 @@ fn audit(
         failures.insert("lineage.explicit-facts".into());
     }
     AuditReport {
-        failures: failures.into_iter().collect(),
+        failures: failures.into_iter().collect::<Vec<String>>(),
         checked,
     }
 }
