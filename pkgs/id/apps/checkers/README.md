@@ -23,8 +23,9 @@ are journaled like any other world input, the AI replies inside the
 same `update` that completes the human's turn, and its randomness
 comes from a xorshift PRNG carried in the model, so the journal
 replays a game exactly. `update` routes host events by their JSON
-`cap` field and everything else through `Key.parse`. The game is
-turn-based and subscribes to nothing: `wants` is `{}`.
+`cap` field and everything else through `Key.parse`. The game
+is turn-based and subscribes only to `players`: `wants` is
+`{"v":1,"subscribe":["players"],"requests":[]}`.
 
 Controls: arrow keys or WASD move the cursor (brackets; green marks
 the selected piece, yellow the cursor). Enter or Space selects a
@@ -44,18 +45,30 @@ the low-write text mode from the #14861 harness slices. The game
 never changes when the mode does.
 
 Records are published as JSON: `{"red": 11, "black": 12,
-"phase": "playing", "plies": 7}`, so `id world records` and
+"phase": "playing", "plies": 7, "turn": "black", "red_player": "ann",
+"black_player": "AI"}`, so `id world records` and
 `id world mirror` show the game state and can replicate it
 peer-to-peer. Snapshots are the whole model as one JSON object;
 `restore` reads it back with per-field defaults and clamps, and a
 board that is not exactly 64 board bytes falls back to the opening
 position instead of trapping.
 
-Later slices of #14862 build on this one: chess on the same harness,
-id-network multiplayer (one binary hosts and the other joins, or a
-centrally started server both players join), and the three-machine
-demonstration (GitHub Actions serves, Blacksmith plays red, the
-laptop plays black, one compiled artifact shared by all three).
+## Two players
+
+The world holds two seats, red and black. A participant's first
+key takes the first open seat, red before black; with both seats
+held, a third participant only watches. Turn order is enforced by the
+world program, not the screen: keys from the side not to move, from a
+watcher, or from the host change nothing, and a key that ends a turn
+ends that player's input, so the rest of one event cannot move for the
+opponent. An open seat is played by the weak AI, so one player alone
+gets the single-player game above unchanged. When a seated player
+leaves (a `players` presence event from the host), their seat opens,
+the board says so, and the AI moves for that side at once if it was
+their turn. The bottom row names who plays each side (`R:ann  B:AI`).
+
+Later slices of #14862: the scripted two-process game over the id
+network (#15111) and the three-machine demonstration.
 
 ## Build
 
