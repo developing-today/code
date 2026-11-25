@@ -112,6 +112,8 @@ mod subscription;
 pub use subscription::*;
 mod discovery;
 pub use discovery::*;
+mod feed;
+pub use feed::*;
 mod projection;
 pub use projection::*;
 mod render;
