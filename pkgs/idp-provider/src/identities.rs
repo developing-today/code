@@ -19,10 +19,43 @@
 //! The provider config's identity list is the seed: at startup each
 //! configured identity that the store has never seen is inserted as
 //! active with a `seed` event. After that the store is authoritative.
+//!
+//! Accounts (#15249): the store also holds the account rows tokens
+//! are issued for. The config account (the owner's) is seeded at
+//! startup; a never-seen allowlisted door identity that is not one
+//! of the config account's declared identities ENROLLS into a fresh
+//! account of its own whose only role is `read-only` — the design
+//! #9086 §4.4 default (read-only on no tenant) — instead of being
+//! linked to the owner's account. Role grants and re-linking to
+//! another account are explicit operator actions afterwards.
 
 use rusqlite::{Connection, OptionalExtension};
+use sha2::{Digest, Sha256};
 use std::path::Path;
 use std::sync::Mutex;
+
+/// The only role a freshly enrolled account holds (#15249): the
+/// #1253 role set's least role, with no tenant grant attached.
+pub const ENROLLED_ACCOUNT_ROLES: [&str; 1] = ["read-only"];
+
+/// One account row: the subject tokens are issued for, and the
+/// role set those tokens carry. Roles live on the account, never
+/// on a door identity.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AccountRow {
+    pub account_id: String,
+    pub display_name: String,
+    pub roles: Vec<String>,
+}
+
+/// The account id an enrolling identity lands on, derived
+/// deterministically from the identity key (`provider:subject`):
+/// the same identity always enrolls into the same account, across
+/// restarts and store rebuilds, and never into the owner's.
+pub fn enrolled_account_id(provider: &str, subject: &str) -> String {
+    let digest = Sha256::digest(format!("{provider}:{subject}").as_bytes());
+    format!("acct-{}", &crate::b64url(&digest)[..22])
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct IdentityRow {
@@ -100,7 +133,12 @@ impl IdentityStore {
             CREATE TRIGGER IF NOT EXISTS identity_events_no_delete
             BEFORE DELETE ON identity_events BEGIN
                 SELECT RAISE(ABORT, 'identity history is append-only');
-            END;",
+            END;
+            CREATE TABLE IF NOT EXISTS accounts (
+                account_id TEXT PRIMARY KEY,
+                display_name TEXT NOT NULL,
+                roles TEXT NOT NULL
+            );",
         )
         .map_err(|e| format!("failed to initialise identity schema: {e}"))?;
         // Existing runtime databases predate pending claims. Keep this
@@ -194,6 +232,121 @@ impl IdentityStore {
             }
         }
         Ok(())
+    }
+
+    /// Seed the config account row (the owner's). Insert-or-ignore:
+    /// the config is authoritative for this account at resolution
+    /// time, so the row exists for completeness of the account
+    /// table, and a restart never rewrites it.
+    pub fn seed_account(&self, account: &crate::registry::Account) -> Result<(), String> {
+        let conn = self.conn.lock().map_err(|_| "identity lock poisoned")?;
+        let roles = serde_json::to_string(&account.roles)
+            .map_err(|e| format!("account roles encode failed: {e}"))?;
+        conn.execute(
+            "INSERT OR IGNORE INTO accounts (account_id, display_name, roles)
+             VALUES (?1, ?2, ?3)",
+            rusqlite::params![account.account_id, account.display_name, roles],
+        )
+        .map_err(|e| format!("account seed insert failed: {e}"))?;
+        Ok(())
+    }
+
+    /// One account row by id: the config account is NOT read here
+    /// (callers resolve it from config first); this serves enrolled
+    /// accounts, which exist only in the store.
+    pub fn account(&self, account_id: &str) -> Result<Option<AccountRow>, String> {
+        let conn = self.conn.lock().map_err(|_| "identity lock poisoned")?;
+        let mut stmt = conn
+            .prepare("SELECT display_name, roles FROM accounts WHERE account_id = ?1")
+            .map_err(|e| format!("account query failed: {e}"))?;
+        let mut rows = stmt
+            .query(rusqlite::params![account_id])
+            .map_err(|e| format!("account query failed: {e}"))?;
+        match rows
+            .next()
+            .map_err(|e| format!("account row read failed: {e}"))?
+        {
+            Some(row) => {
+                let display_name: String = row
+                    .get(0)
+                    .map_err(|e| format!("account row read failed: {e}"))?;
+                let roles_json: String = row
+                    .get(1)
+                    .map_err(|e| format!("account row read failed: {e}"))?;
+                let roles: Vec<String> = serde_json::from_str(&roles_json)
+                    .map_err(|e| format!("account roles decode failed: {e}"))?;
+                Ok(Some(AccountRow {
+                    account_id: account_id.to_string(),
+                    display_name,
+                    roles,
+                }))
+            }
+            None => Ok(None),
+        }
+    }
+
+    /// The account an identity row currently points at, whatever
+    /// its status. `None` when the store has never seen it.
+    pub fn account_id_for(&self, provider: &str, subject: &str) -> Result<Option<String>, String> {
+        let conn = self.conn.lock().map_err(|_| "identity lock poisoned")?;
+        let mut stmt = conn
+            .prepare("SELECT account_id FROM identities WHERE provider = ?1 AND subject = ?2")
+            .map_err(|e| format!("identity account query failed: {e}"))?;
+        let mut rows = stmt
+            .query(rusqlite::params![provider, subject])
+            .map_err(|e| format!("identity account query failed: {e}"))?;
+        match rows
+            .next()
+            .map_err(|e| format!("identity row read failed: {e}"))?
+        {
+            Some(row) => Ok(Some(
+                row.get(0)
+                    .map_err(|e| format!("identity row read failed: {e}"))?,
+            )),
+            None => Ok(None),
+        }
+    }
+
+    /// Enroll a never-seen allowlisted identity (#15249): create
+    /// its own account holding only `read-only` (design #9086
+    /// §4.4's default — read-only on no tenant) and link the
+    /// identity to it, in one transaction, with the `link` event
+    /// in the identity history naming the NEW account. Returns the
+    /// new account id and the recorded event (`"link"`).
+    ///
+    /// Callers must have already established the identity is
+    /// allowlisted and unseen; enrolling an identity the store
+    /// knows is an error, never a silent re-link.
+    pub fn enroll(
+        &self,
+        provider: &str,
+        subject: &str,
+        actor: &str,
+    ) -> Result<(String, &'static str), String> {
+        let mut conn = self.conn.lock().map_err(|_| "identity lock poisoned")?;
+        let tx = conn
+            .transaction()
+            .map_err(|e| format!("identity enroll transaction failed: {e}"))?;
+        let account_id = enrolled_account_id(provider, subject);
+        let roles = serde_json::to_string(ENROLLED_ACCOUNT_ROLES)
+            .map_err(|e| format!("account roles encode failed: {e}"))?;
+        tx.execute(
+            "INSERT OR IGNORE INTO accounts (account_id, display_name, roles)
+             VALUES (?1, ?2, ?3)",
+            rusqlite::params![account_id, format!("{provider}:{subject}"), roles],
+        )
+        .map_err(|e| format!("enrolled account insert failed: {e}"))?;
+        let now = crate::registry::now_unix();
+        tx.execute(
+            "INSERT INTO identities (provider, subject, account_id, status, linked_at, unlinked_at)
+             VALUES (?1, ?2, ?3, 'active', ?4, NULL)",
+            rusqlite::params![provider, subject, account_id, now],
+        )
+        .map_err(|e| format!("enrolled identity insert failed: {e}"))?;
+        Self::record_event(&tx, "link", provider, subject, &account_id, actor)?;
+        tx.commit()
+            .map_err(|e| format!("identity enroll commit failed: {e}"))?;
+        Ok((account_id, "link"))
     }
 
     /// Current link status of an identity: `Some("active")`,
@@ -372,10 +525,16 @@ impl IdentityStore {
         let event = match existing.as_deref() {
             Some("active") => "none",
             Some(_) => {
+                // A relink names its account: this is the explicit
+                // operator grant that moves an identity (e.g. one
+                // enrolled into its own read-only account, #15249)
+                // onto the named account, so the row must move too,
+                // not just the event.
                 tx.execute(
-                    "UPDATE identities SET status = 'active', linked_at = ?1, unlinked_at = NULL
+                    "UPDATE identities SET status = 'active', linked_at = ?1, unlinked_at = NULL,
+                     account_id = ?4
                      WHERE provider = ?2 AND subject = ?3",
-                    rusqlite::params![now, provider, subject],
+                    rusqlite::params![now, provider, subject, account_id],
                 )
                 .map_err(|e| format!("identity relink failed: {e}"))?;
                 "relink"
