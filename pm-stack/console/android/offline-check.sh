@@ -132,8 +132,11 @@ dump_for_log() {
   echo "--- end screen ---" >&2
   echo "--- foreground: $(adb shell dumpsys activity activities 2>/dev/null | grep -m 1 'topResumedActivity' | tr -d '[:space:]') ---" >&2
   echo "--- logcat (app, launcher and activity lines) ---" >&2
-  adb logcat -d -t 3000 2>/dev/null | grep -aE 'AndroidRuntime|FATAL EXCEPTION|pmconsole|LauncherActivity|TwaLauncher|CustomTabs|ActivityTaskManager|ActivityManager' | tail -40 >&2 || true
+  adb logcat -d -t 8000 2>/dev/null | grep -aE 'FATAL EXCEPTION|pmconsole|LauncherActivity|TwaLauncher|CustomTabs|ActivityTaskManager' | grep -avE 'uiautomator|tachyon' | tail -40 >&2 || true
   echo "--- end logcat ---" >&2
+  echo "--- activity events for the app ---" >&2
+  adb logcat -b events -d 2>/dev/null | grep -aE 'am_create_activity|am_finish_activity|am_destroy_activity|am_proc_died|am_crash|am_anr' | grep -a 'pmconsole' | tail -20 >&2 || true
+  echo "--- end activity events ---" >&2
 }
 
 fail() {
