@@ -3021,7 +3021,10 @@ mod task_labels_tests {
                 &["labels"],
             )
             .unwrap();
-        (rows[0]["labels"].clone(), rows[0]["labels_synced_at"].clone())
+        (
+            rows[0]["labels"].clone(),
+            rows[0]["labels_synced_at"].clone(),
+        )
     }
 
     fn enqueue(t: &TursoBackend, number: i64) -> i64 {
@@ -3074,7 +3077,10 @@ mod task_labels_tests {
         let mut both = vec![held, plain];
         both.sort();
         assert_eq!(listed(&t, "priority/high"), both);
-        assert!(listed(&t, "user/hol").is_empty(), "exact names do not prefix-match");
+        assert!(
+            listed(&t, "user/hol").is_empty(),
+            "exact names do not prefix-match"
+        );
 
         // A label change on GitHub lands in the mirror only; the sweep
         // carries it into the cache without any queue transition.
@@ -3090,11 +3096,18 @@ mod task_labels_tests {
 
         // A transition refreshes too: the claim re-reads the mirror.
         set_mirror_labels(&conn, 14170, r#"["user/hold"]"#);
-        let c = verb_claim(&t, &json!({"worker": "w", "queue": QUEUE, "lane": "code-oracle",
+        let c = verb_claim(
+            &t,
+            &json!({"worker": "w", "queue": QUEUE, "lane": "code-oracle",
                     "session_id": "ses_labels", "model_provider": "anthropic",
-                    "model_id": "claude-haiku-5-5", "model_variant": "default"}));
+                    "model_id": "claude-haiku-5-5", "model_variant": "default"}),
+        );
         assert_eq!(c["ok"], true, "{c}");
-        assert_eq!(c["row"]["id"].as_i64(), Some(held), "oldest equal-priority task is claimed first: {c}");
+        assert_eq!(
+            c["row"]["id"].as_i64(),
+            Some(held),
+            "oldest equal-priority task is claimed first: {c}"
+        );
         assert_eq!(cache(&t, held).0, json!(["user/hold"]));
 
         // The rich row carries the cache and its stamp for `show`.
@@ -3113,13 +3126,19 @@ mod task_labels_tests {
         let id = enqueue(&t, 14180);
         assert_eq!(cache(&t, id), (json!([]), Value::Null));
         let s = sweep_task_labels(&t, false).expect("first pass reports");
-        assert!(s.get("error").is_some(), "missing mirror is reported, not raised: {s}");
+        assert!(
+            s.get("error").is_some(),
+            "missing mirror is reported, not raised: {s}"
+        );
 
         mirror(&conn);
         set_mirror_labels(&conn, 14180, r#"["user/hold"]"#);
         let s = sweep_task_labels(&t, false).expect("no pass recorded yet, so it runs");
         assert_eq!(s["stamped"], 1, "{s}");
-        assert!(sweep_task_labels(&t, false).is_none(), "within the hour it waits");
+        assert!(
+            sweep_task_labels(&t, false).is_none(),
+            "within the hour it waits"
+        );
         let forced = sweep_task_labels(&t, true).expect("force runs regardless");
         assert_eq!(forced["stamped"], 1, "{forced}");
         assert_eq!(cache(&t, id).0, json!(["user/hold"]));
@@ -3134,6 +3153,178 @@ mod task_labels_tests {
     }
 }
 
+#[cfg(test)]
+mod task_resolution_tests {
+    use super::super::{verb_cancel, verb_complete, verb_resolution_backfill, verb_revive};
+    use super::reprioritize_tests::fake_backend;
+    use super::*;
+
+    const QUEUE: &str = "repo-health-code-pilot";
+
+    fn packet(number: i64) -> Value {
+        json!({
+            "title": format!("resolution oracle {number}"), "priority": 50,
+            "dedupe_key": format!("repo-health:v1:fix:developing-today/code:issue:{number}"),
+            "payload": {
+                "schema": "repo-task/v1", "kind": "small_fix",
+                "repo": "developing-today/code", "problem": "p", "priority_reason": "r",
+                "evidence": ["e"], "acceptance": ["a"], "tests": ["t"], "context_refs": [],
+                "scope": {"include": ["x"], "exclude": ["y"]}, "risk": {"level": "low", "flags": []},
+                "timebox_minutes": 45, "issue": {"number": number},
+                "dedupe": {"checked_at": "2026-11-14T00:00:00Z", "basis": "test"}
+            }
+        })
+    }
+
+    fn enqueue_claim(t: &TursoBackend, number: i64) -> i64 {
+        let enq = verb_enqueue(t, &json!({"queue": QUEUE, "packet": packet(number)}));
+        assert_eq!(enq["ok"], true, "{enq}");
+        let claimed = verb_claim(
+            t,
+            &json!({
+                "worker": "resolution-worker", "queue": QUEUE, "lane": "resolution-test",
+                "session_id": "ses_resolution", "model_provider": "anthropic",
+                "model_id": "claude-haiku-5-5", "model_variant": "default"
+            }),
+        );
+        assert_eq!(claimed["ok"], true, "{claimed}");
+        enq["row"]["id"].as_i64().expect("task id")
+    }
+
+    fn row(t: &TursoBackend, id: i64) -> Value {
+        get_task(t, id).unwrap().expect("task row")
+    }
+
+    #[test]
+    fn cancel_requires_a_resolution_and_disposition_stamps_verified_done() {
+        let (t, _) = fake_backend();
+        let cancelled_id = enqueue_claim(&t, 14170);
+        let rejected = verb_cancel(
+            &t,
+            &json!({"task_id": cancelled_id, "worker": "resolution-worker", "reason": "missing label"}),
+        );
+        assert_eq!(rejected["ok"], false, "{rejected}");
+        assert_eq!(row(&t, cancelled_id)["status"], "claimed");
+
+        let cancelled = verb_cancel(
+            &t,
+            &json!({"task_id": cancelled_id, "worker": "resolution-worker", "reason": "duplicate of task 99", "resolution": "duplicate", "resolution_ref": "task:99"}),
+        );
+        assert_eq!(cancelled["ok"], true, "{cancelled}");
+        assert_eq!(cancelled["row"]["resolution"], "duplicate");
+        assert_eq!(cancelled["row"]["resolution_category"], "redirection");
+        assert_eq!(cancelled["row"]["resolution_ref"], "task:99");
+
+        let done_id = enqueue_claim(&t, 14171);
+        let now = now_iso();
+        let complete = verb_complete(
+            &t,
+            &json!({
+                "task_id": done_id, "worker": "resolution-worker",
+                "result": {
+                    "evidence": "verified closure note",
+                    "disposition": {
+                        "checked_at": now, "source": "fleet gh readback",
+                        "issue": {"number": 14171, "state": "closed", "closed_at": now},
+                        "pulls": [], "verdict": "closed_verified"
+                    }
+                }
+            }),
+        );
+        assert_eq!(complete["ok"], true, "{complete}");
+        assert_eq!(complete["row"]["resolution"], "done");
+        assert_eq!(complete["row"]["resolution_category"], "success");
+        assert_eq!(complete["row"]["resolution_substatus"], "verified");
+    }
+
+    #[test]
+    fn revive_clears_resolution_but_keeps_the_old_verdict_in_history() {
+        let (t, _) = fake_backend();
+        let enq = verb_enqueue(&t, &json!({"queue": QUEUE, "packet": packet(14172)}));
+        let id = enq["row"]["id"].as_i64().unwrap();
+        t.exec(
+            "UPDATE tasks SET status='failed', resolution='wontfix', resolution_category='rejection', \
+               resolution_substatus='out_of_scope', resolution_reason='legacy decision', \
+               resolved_by='resolution-worker', resolved_at='2026-11-24T00:00:00Z' WHERE id=?",
+            &[Arg::Int(id)],
+        )
+        .unwrap();
+        let revived = verb_revive(
+            &t,
+            &json!({"task_id": id, "worker": "resolution-worker", "reason": "scope reopened"}),
+        );
+        assert_eq!(revived["ok"], true, "{revived}");
+        assert!(row(&t, id)["resolution"].is_null());
+        let events = t
+            .query_objs(
+                "SELECT detail FROM events WHERE task_id=? AND kind='revived' ORDER BY id DESC LIMIT 1",
+                &[Arg::Int(id)],
+                &["detail"],
+            )
+            .unwrap();
+        assert_eq!(
+            events[0]["detail"]["resolution_cleared"]["resolution"],
+            "wontfix"
+        );
+        assert_eq!(
+            events[0]["detail"]["resolution_cleared"]["reason"],
+            "legacy decision"
+        );
+        let history = t
+            .query_objs(
+                "SELECT detail FROM task_history WHERE task_id=? AND kind='revived' ORDER BY id DESC LIMIT 1",
+                &[Arg::Int(id)],
+                &["detail"],
+            )
+            .unwrap();
+        assert_eq!(
+            history[0]["detail"]["resolution_cleared"]["resolution"],
+            "wontfix"
+        );
+        assert_eq!(
+            history[0]["detail"]["resolution_cleared"]["reason"],
+            "legacy decision"
+        );
+    }
+
+    #[test]
+    fn resolution_backfill_only_writes_provable_rows_and_reports_baseline() {
+        let (t, _) = fake_backend();
+        let verified = verb_enqueue(&t, &json!({"queue": QUEUE, "packet": packet(14173)}));
+        let verified_id = verified["row"]["id"].as_i64().unwrap();
+        let duplicate = verb_enqueue(&t, &json!({"queue": QUEUE, "packet": packet(14174)}));
+        let duplicate_id = duplicate["row"]["id"].as_i64().unwrap();
+        t.exec(
+            "UPDATE tasks SET status='done', result=? WHERE id=?",
+            &[
+                Arg::Text(json!({"disposition":{"verdict":"merged_verified"}}).to_string()),
+                Arg::Int(verified_id),
+            ],
+        )
+        .unwrap();
+        t.exec(
+            "UPDATE tasks SET status='cancelled', dedupe_key='repo-health:v1:fix:developing-today/code:issue:14174', result=? WHERE id=?",
+            &[Arg::Text(json!({"cancel_reason":"dedupe duplicate"}).to_string()), Arg::Int(duplicate_id)],
+        ).unwrap();
+        let surviving = verb_enqueue(&t, &json!({"queue": QUEUE, "packet": packet(14175)}));
+        let surviving_id = surviving["row"]["id"].as_i64().unwrap();
+        t.exec(
+            "UPDATE tasks SET dedupe_key='repo-health:v1:fix:developing-today/code:issue:14174' WHERE id=?",
+            &[Arg::Int(surviving_id)],
+        ).unwrap();
+        let out = verb_resolution_backfill(&t, &json!({}));
+        assert_eq!(out["ok"], true, "{out}");
+        assert_eq!(out["row"]["census"], 2, "{out}");
+        assert_eq!(out["row"]["proved"], 2, "{out}");
+        assert_eq!(row(&t, verified_id)["resolution_substatus"], "verified");
+        assert_eq!(
+            row(&t, duplicate_id)["resolution_ref"],
+            format!("task:{surviving_id}")
+        );
+        let again = verb_resolution_backfill(&t, &json!({}));
+        assert_eq!(again["row"]["proved"], 0, "idempotent: {again}");
+    }
+}
 // ---------------------------------------------------------------------------
 // Tests (#14170 Q4): the task_notes stream against the rusqlite-backed
 // fake pipeline. Oracle: two concurrent note adds both survive in
