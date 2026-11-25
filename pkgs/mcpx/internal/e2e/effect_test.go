@@ -148,6 +148,7 @@ var implementedEffectProbes = map[string]string{
 	"embeddings.apiKey":                  "TestEmbeddingsAPIKeyIsSentAsABearerToken",
 	"embeddings.model":                   "TestEmbeddingsModelNamesTheRequestedModel",
 	"embeddings.backend":                 "TestEmbeddingsBackendLocalSkipsTheRemoteEndpoint",
+	"embeddings.wasmPath":                "TestEmbeddingsWasmPathLoadsTheModel",
 	"proto.samplingPerMinute":            "TestSamplingPerMinuteRefusesAServersSecondSampling",
 	"proto.samplingSessionPerMinute":     "TestSamplingSessionPerMinuteRefusesASessionsSecondSampling",
 	"proto.elicitationPerMinute":         "TestElicitationPerMinuteRefusesAServersSecondQuestion",
@@ -391,6 +392,7 @@ var effectProbeFuncs = map[string]func(*testing.T){
 	"TestEmbeddingsAPIKeyIsSentAsABearerToken":                                       TestEmbeddingsAPIKeyIsSentAsABearerToken,
 	"TestEmbeddingsModelNamesTheRequestedModel":                                      TestEmbeddingsModelNamesTheRequestedModel,
 	"TestEmbeddingsBackendLocalSkipsTheRemoteEndpoint":                               TestEmbeddingsBackendLocalSkipsTheRemoteEndpoint,
+	"TestEmbeddingsWasmPathLoadsTheModel":                                            TestEmbeddingsWasmPathLoadsTheModel,
 	"TestSamplingPerMinuteRefusesAServersSecondSampling":                             TestSamplingPerMinuteRefusesAServersSecondSampling,
 	"TestSamplingSessionPerMinuteRefusesASessionsSecondSampling":                     TestSamplingSessionPerMinuteRefusesASessionsSecondSampling,
 	"TestElicitationPerMinuteRefusesAServersSecondQuestion":                          TestElicitationPerMinuteRefusesAServersSecondQuestion,
@@ -4997,6 +4999,50 @@ func TestEmbeddingsBackendLocalSkipsTheRemoteEndpoint(t *testing.T) {
 	before, _, _ := f.seen()
 	if n, _, _ := embeddingsSearch(t, f, []string{"--semantic", "echo"}, "MCPX_EMBEDDINGS_URL="+f.URL, "MCPX_EMBEDDINGS_BACKEND=local"); n != before {
 		t.Fatalf("with embeddings.backend=local the remote endpoint should not be asked (%d -> %d)", before, n)
+	}
+}
+
+// wasmEmbedding asks the daemon for the embedding of a fixed input with the
+// wasm backend selected and env on top, and returns the sample values the
+// CLI prints.
+func wasmEmbedding(t *testing.T, env ...string) string {
+	t.Helper()
+	e := newEnv(t, oneServer)
+	e.setenv(append([]string{"MCPX_EMBEDDINGS_BACKEND=wasm"}, env...)...)
+	out := e.run("embeddings", "test", "same input")
+	for _, line := range strings.Split(out, "\n") {
+		if strings.HasPrefix(line, "Sample Values:") {
+			return strings.TrimSpace(strings.TrimPrefix(line, "Sample Values:"))
+		}
+	}
+	t.Fatalf("no sample values in `mcpx embeddings test` output:\n%s", out)
+	return ""
+}
+
+// TestEmbeddingsWasmPathLoadsTheModel is the effect probe for
+// embeddings.wasmPath (#13575). The committed fixture models give sparse,
+// distinguishable vectors: model A starts [1, 0.25], model B [0.25, 1].
+// Oracle: with no wasm path the daemon answers with neither; with the path
+// set it answers with the named model's vector, and naming the other model
+// changes the answer.
+func TestEmbeddingsWasmPathLoadsTheModel(t *testing.T) {
+	fixture := func(name string) string {
+		p, err := filepath.Abs(filepath.Join("..", "catalog", "testdata", name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	const modelA = "[1.0000, 0.2500, 0.0000, 0.0000, 0.0000...]"
+	const modelB = "[0.2500, 1.0000, 0.0000, 0.0000, 0.0000...]"
+	if got := wasmEmbedding(t); got == modelA || got == modelB {
+		t.Fatalf("oracle: with no embeddings.wasmPath no fixture model should answer, got %s", got)
+	}
+	if got := wasmEmbedding(t, "MCPX_EMBEDDINGS_WASM_PATH="+fixture("embed_a.wasm")); got != modelA {
+		t.Fatalf("with embeddings.wasmPath naming model A the vector should be %s, got %s", modelA, got)
+	}
+	if got := wasmEmbedding(t, "MCPX_EMBEDDINGS_WASM_PATH="+fixture("embed_b.wasm")); got != modelB {
+		t.Fatalf("with embeddings.wasmPath naming model B the vector should be %s, got %s", modelB, got)
 	}
 }
 
