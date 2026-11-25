@@ -107,6 +107,8 @@ impl CollectionAllowlist {
     /// - a `unique_key` entry that is not one of the declared
     ///   columns — the key is appended to every ordering and rendered
     ///   into the `order` parameter and the keyset `or` group.
+    /// - an empty `unique_key` — every ordering needs a unique tiebreak
+    ///   for stable keyset pagination.
     ///
     /// Registration (#13758) calls this when an allowlist is built,
     /// so a bad configuration is refused at construction and never
@@ -125,6 +127,9 @@ impl CollectionAllowlist {
                     column.name
                 ));
             }
+        }
+        if self.unique_key.is_empty() {
+            return Err("unique_key must contain at least one declared column".to_string());
         }
         for key in &self.unique_key {
             if !self.is_declared(key) {
@@ -225,5 +230,12 @@ mod tests {
         let mut collection = collection();
         collection.unique_key = vec!["missing".to_string()];
         assert!(collection.validate().unwrap_err().contains("missing"));
+    }
+
+    #[test]
+    fn validate_refuses_empty_unique_key() {
+        let mut collection = collection();
+        collection.unique_key.clear();
+        assert!(collection.validate().unwrap_err().contains("unique_key"));
     }
 }

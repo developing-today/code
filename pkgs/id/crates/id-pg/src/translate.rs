@@ -114,6 +114,11 @@ impl Translator {
             .iter()
             .find(|c| &c.relation == relation)
             .ok_or_else(Refusal::not_available)?;
+        // `Translator::new` is retained for already-validated allowlists,
+        // but fail closed if an unchecked caller supplies no total-order key.
+        if collection.unique_key.is_empty() {
+            return Err(Refusal::shape(Feature::FieldUnsupported));
+        }
         // 8. Fields: projection, filter, and order columns must be
         // declared for the use they are put to. An undeclared column
         // and a withheld column are the same refusal (§6.1). A filter
@@ -558,6 +563,28 @@ mod tests {
             orderable: true,
         }];
         assert!(Translator::try_new(vec![raw]).is_err());
+    }
+
+    #[test]
+    fn try_new_refuses_empty_unique_key() {
+        let mut raw = collection();
+        raw.unique_key.clear();
+        assert!(Translator::try_new(vec![raw]).is_err());
+    }
+
+    #[test]
+    fn unchecked_keyless_allowlist_cannot_emit_empty_order_or_cursor() {
+        let mut raw = collection();
+        raw.unique_key.clear();
+        let translator = Translator::new(vec![raw]);
+
+        let plain = translator.translate(&Query::read("items")).unwrap_err();
+        assert_eq!(plain, Refusal::shape(Feature::FieldUnsupported));
+
+        let mut keyset = Query::read("items");
+        keyset.pagination = Pagination::Keyset { cursor: vec![] };
+        let refusal = translator.translate(&keyset).unwrap_err();
+        assert_eq!(refusal, Refusal::shape(Feature::FieldUnsupported));
     }
 
     #[test]
