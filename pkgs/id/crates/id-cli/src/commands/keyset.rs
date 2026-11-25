@@ -19,11 +19,11 @@ use crate::{CLIENT_KEY_FILE, KEY_FILE};
 use id_core::hex::hex_encode;
 use id_directory::keyset::{AdminKeyState, KeysetEntry, KeysetState};
 use id_directory::keyset_file::{CLIENT_KEYSET_FILE, KEYSET_FILE, KeysetFile};
-use id_events::groups::Key;
-use id_groups::encryption::DeviceSets;
 use id_directory::restored_key::{
     self, CLIENT_RESTORED_KEY_FILE, RESTORED_KEY_FILE, RestoreStatus,
 };
+use id_events::groups::Key;
+use id_groups::encryption::DeviceSets;
 use id_store::store::load_or_create_keypair;
 
 /// Run an `id keyset` subcommand against the local identity.
@@ -297,9 +297,7 @@ mod tests {
             ]),
             "the genesis device and the enrolled device, not the revoked one"
         );
-        let unmigrated = SigningKey::from_bytes(&[9; 32])
-            .verifying_key()
-            .to_bytes();
+        let unmigrated = SigningKey::from_bytes(&[9; 32]).verifying_key().to_bytes();
         assert_eq!(
             sets.devices_of(&unmigrated),
             BTreeSet::from([unmigrated]),

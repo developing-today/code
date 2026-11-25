@@ -340,11 +340,11 @@ fn test_create_rejects_a_device_outside_the_model() {
     let mut cast = Cast::new(&[1, 2]);
     let view = view_of(&std::iter::once(id(2)).collect());
     let rng = Rng::default();
-    let result = cast
-        .sessions
-        .get_mut(&id(1))
-        .expect("session")
-        .create(&view, &DeviceSets::new(), &rng);
+    let result =
+        cast.sessions
+            .get_mut(&id(1))
+            .expect("session")
+            .create(&view, &DeviceSets::new(), &rng);
     assert!(matches!(result, Err(SchemeError::NotInModel(_))));
     assert!(
         !cast.session(1).is_welcomed(),
@@ -400,11 +400,11 @@ fn test_add_rejects_a_key_the_model_does_not_list() {
 
     let view = cast.view();
     let rng = Rng::default();
-    let result = cast
-        .sessions
-        .get_mut(&id(1))
-        .expect("session")
-        .add(&view, &DeviceSets::new(), id(3), &rng);
+    let result =
+        cast.sessions
+            .get_mut(&id(1))
+            .expect("session")
+            .add(&view, &DeviceSets::new(), id(3), &rng);
     assert!(matches!(result, Err(SchemeError::NotInModel(_))));
     assert_eq!(cast.members_of(1), cast.model, "the roster is untouched");
 }
@@ -1185,11 +1185,12 @@ fn test_remove_rejects_a_member_the_model_still_lists() {
 
     let view = cast.view();
     let rng = Rng::default();
-    let result = cast
-        .sessions
-        .get_mut(&id(1))
-        .expect("session")
-        .remove(&view, &DeviceSets::new(), id(3), &rng);
+    let result = cast.sessions.get_mut(&id(1)).expect("session").remove(
+        &view,
+        &DeviceSets::new(),
+        id(3),
+        &rng,
+    );
     assert!(matches!(result, Err(SchemeError::StillInModel(_))));
 }
 
@@ -1274,7 +1275,15 @@ fn test_recovery_puts_the_device_back_and_its_compromised_copy_cannot_read() {
         .sessions
         .get_mut(&id(1))
         .expect("session")
-        .recover(&without, &DeviceSets::new(), &with, &DeviceSets::new(), id(3), id(3), &cast.rng)
+        .recover(
+            &without,
+            &DeviceSets::new(),
+            &with,
+            &DeviceSets::new(),
+            id(3),
+            id(3),
+            &cast.rng,
+        )
         .expect("recover");
     assert_eq!(recovery.epoch_before, before);
     assert_ne!(
@@ -1364,11 +1373,12 @@ fn test_an_add_outside_the_model_gives_the_voided_reason() {
     let create = cast.create(1, &[1, 2]);
     cast.deliver(&create, &[2]);
     let view = cast.view();
-    let result = cast
-        .sessions
-        .get_mut(&id(1))
-        .expect("session")
-        .add(&view, &DeviceSets::new(), id(3), &cast.rng);
+    let result = cast.sessions.get_mut(&id(1)).expect("session").add(
+        &view,
+        &DeviceSets::new(),
+        id(3),
+        &cast.rng,
+    );
     assert_eq!(reason_of(result), Some(Reason::Voided));
 }
 
@@ -1380,11 +1390,11 @@ fn test_a_roster_the_crate_does_not_match_gives_the_frozen_reason_then_the_poiso
     // is poisoned.
     let view = view_of(&[id(1), id(2), id(3), id(4)].into_iter().collect());
     let rng = Rng::default();
-    let mismatch = cast
-        .sessions
-        .get_mut(&id(1))
-        .expect("session")
-        .add(&view, &DeviceSets::new(), id(3), &rng);
+    let mismatch =
+        cast.sessions
+            .get_mut(&id(1))
+            .expect("session")
+            .add(&view, &DeviceSets::new(), id(3), &rng);
     assert_eq!(reason_of(mismatch), Some(Reason::Frozen));
     let poisoned = cast
         .sessions
@@ -1431,7 +1441,15 @@ fn test_fork_recovery_removes_the_forked_key_and_reenrols_a_new_one() {
         .sessions
         .get_mut(&id(1))
         .expect("session")
-        .recover(&without, &DeviceSets::new(), &with, &DeviceSets::new(), id(3), id(4), &cast.rng)
+        .recover(
+            &without,
+            &DeviceSets::new(),
+            &with,
+            &DeviceSets::new(),
+            id(3),
+            id(4),
+            &cast.rng,
+        )
         .expect("recover");
     assert_eq!(recovery.epoch_before, before);
     assert_ne!(
@@ -1971,11 +1989,11 @@ fn test_a_view_that_disagrees_with_the_roster_is_refused_and_poisons_the_session
     view.members.insert(id(3), Role::Admin);
     view.members.insert(id(4), Role::Admin);
     let rng = Rng::default();
-    let result = cast
-        .sessions
-        .get_mut(&id(1))
-        .expect("session")
-        .add(&view, &DeviceSets::new(), id(3), &rng);
+    let result =
+        cast.sessions
+            .get_mut(&id(1))
+            .expect("session")
+            .add(&view, &DeviceSets::new(), id(3), &rng);
     assert!(
         matches!(result, Err(SchemeError::RosterMismatch(_))),
         "a mismatch is refused: {result:?}"
@@ -2003,11 +2021,11 @@ fn test_a_view_whose_policy_names_no_scheme_is_refused_without_poisoning() {
     view.policy = Policy::default();
     view.members.insert(id(3), Role::Admin);
     let rng = Rng::default();
-    let result = cast
-        .sessions
-        .get_mut(&id(1))
-        .expect("session")
-        .add(&view, &DeviceSets::new(), id(3), &rng);
+    let result =
+        cast.sessions
+            .get_mut(&id(1))
+            .expect("session")
+            .add(&view, &DeviceSets::new(), id(3), &rng);
     assert!(matches!(result, Err(SchemeError::NoScheme)), "{result:?}");
     assert_eq!(
         cast.members_of(1),
@@ -2358,7 +2376,9 @@ fn test_a_refused_change_above_the_cap_loses_no_merge() {
     let mut view = cast.view();
     view.members.remove(&id(33));
     view.policy = Policy::default();
-    let result = cast.session_mut(1).remove(&view, &DeviceSets::new(), id(33), &rng);
+    let result = cast
+        .session_mut(1)
+        .remove(&view, &DeviceSets::new(), id(33), &rng);
     assert!(matches!(result, Err(SchemeError::NoScheme)), "{result:?}");
 
     // The merge is still member 1's to publish: its next update returns the merge and then the
@@ -2802,7 +2822,9 @@ fn measure_update_cost(members: usize, updates: usize) -> UpdateCost {
     .expect("session");
 
     let started = Instant::now();
-    let create = session.create(&view_of(&model), &DeviceSets::new(), &rng).expect("create");
+    let create = session
+        .create(&view_of(&model), &DeviceSets::new(), &rng)
+        .expect("create");
     let create_ms = started.elapsed().as_secs_f64() * 1_000.0;
     let create_bytes = wire_bytes(&create);
 

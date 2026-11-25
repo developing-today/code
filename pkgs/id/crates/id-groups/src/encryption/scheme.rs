@@ -466,11 +466,9 @@ impl Session {
         // publish would name a merge nobody received (P4.7).
         self.check_policy(view)?;
         let mut messages = self.merge_heads(rng)?;
-        messages.push(
-            self.change(view, devices, |y| {
-                EncryptionGroup::add_from_join(y, added_key, rng)
-            })?,
-        );
+        messages.push(self.change(view, devices, |y| {
+            EncryptionGroup::add_from_join(y, added_key, rng)
+        })?);
         messages.push(self.change(view, devices, |y| EncryptionGroup::update(y, rng))?);
         Ok(messages)
     }
@@ -494,9 +492,9 @@ impl Session {
         // The policy is checked before the merge, for the reason the add paths give (P4.7).
         self.check_policy(view)?;
         let mut messages = self.merge_heads(rng)?;
-        messages.push(
-            self.change(view, devices, |y| EncryptionGroup::remove(y, removed_key, rng))?,
-        );
+        messages.push(self.change(view, devices, |y| {
+            EncryptionGroup::remove(y, removed_key, rng)
+        })?);
         Ok(messages)
     }
 
