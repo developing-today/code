@@ -49,8 +49,8 @@ use serde::{Deserialize, Serialize};
 pub mod publication;
 
 pub use publication::{
-    ClassLevel, DiscoveryMode, PublicationRecord, Publications, PublishError, PublishRequest,
-    ShareId, ShareManifest, UNLISTED_LABEL, UNPUBLISH_NOTICE,
+    ClassLevel, DiscoveryMode, ListingEntry, PublicationRecord, Publications, PublishError,
+    PublishRequest, ShareId, ShareManifest, UNLISTED_LABEL, UNPUBLISH_NOTICE,
 };
 
 /// A grant's stable identifier.
@@ -506,6 +506,17 @@ impl GrantSet {
             }
         }
         None
+    }
+
+    /// Whether the grant named `id` is in the set and live at `now`:
+    /// it and every ancestor present, unrevoked, and unexpired. Whether
+    /// a `snapshot_once` grant's snapshot was served is a separate
+    /// question ([`GrantSet::authorize`] answers it per access).
+    #[must_use]
+    pub fn is_live(&self, id: &GrantId, now: u64) -> bool {
+        self.grants
+            .get(id)
+            .is_some_and(|grant| self.lineage_valid(grant, now))
     }
 
     /// Whether `grant` and every ancestor is present, unrevoked, and

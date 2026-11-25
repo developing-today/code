@@ -225,6 +225,21 @@ pub struct ShareManifest {
     pub published_at: u64,
 }
 
+/// One entry of an owner's public listing: a manifest reference (the
+/// share identifier, which [`Publications::resolve`] turns into the
+/// manifest) with the publication's title and description, and nothing
+/// else.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ListingEntry {
+    /// The share identifier.
+    pub share: ShareId,
+    /// The owner-supplied title.
+    pub title: String,
+    /// The owner-supplied description.
+    pub description: String,
+}
+
 /// The publication grant id for a share. Prefixed so it cannot collide
 /// with an id the owner chose for an ordinary grant.
 fn grant_id_for(share: &ShareId) -> GrantId {
@@ -331,15 +346,11 @@ impl Publications {
     }
 
     /// Resolves a share identifier for anyone: the manifest while the
-    /// share is live, else `None`, the same for an unpublished
-    /// identifier as for one that never existed.
+    /// share is live, else `None`, the same for an unpublished,
+    /// revoked or expired identifier as for one that never existed.
     #[must_use]
     pub fn resolve(&self, share: &ShareId, grants: &GrantSet, now: u64) -> Option<ShareManifest> {
-        let record = self.live.get(share)?;
-        let grant = grants.get(&record.grant)?;
-        if grant.is_expired(now) {
-            return None;
-        }
+        let record = self.live_record(share, grants, now)?;
         Some(ShareManifest {
             share: record.share.clone(),
             owner: self.owner.clone(),
@@ -356,13 +367,37 @@ impl Publications {
         })
     }
 
-    /// The owner's listing: manifests of live, listed shares only.
-    #[must_use]
-    pub fn listing(&self, grants: &GrantSet, now: u64) -> Vec<ShareManifest> {
+    /// The live record for `share`, re-checked against its grant at
+    /// `now`: `None` once the grant is revoked, expired or spent, even
+    /// if the record has not been retired yet.
+    fn live_record(
+        &self,
+        share: &ShareId,
+        grants: &GrantSet,
+        now: u64,
+    ) -> Option<&PublicationRecord> {
         self.live
-            .values()
+            .get(share)
+            .filter(|record| grants.is_live(&record.grant, now))
+    }
+
+    /// The owner's public listing (D2, #14782): one entry per live,
+    /// listed share, each re-checked against its grant at `now`, so an
+    /// unpublished, revoked or expired share drops out at the next
+    /// check. Unlisted shares, private grants and retired records never
+    /// appear, and the listing carries no counts or totals; there is no
+    /// listing across owners.
+    #[must_use]
+    pub fn listing(&self, grants: &GrantSet, now: u64) -> Vec<ListingEntry> {
+        self.live
+            .keys()
+            .filter_map(|share| self.live_record(share, grants, now))
             .filter(|record| record.discovery == DiscoveryMode::Listed)
-            .filter_map(|record| self.resolve(&record.share, grants, now))
+            .map(|record| ListingEntry {
+                share: record.share.clone(),
+                title: record.title.clone(),
+                description: record.description.clone(),
+            })
             .collect()
     }
 
