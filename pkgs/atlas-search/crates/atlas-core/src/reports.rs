@@ -116,7 +116,7 @@ fn collect_into(dir: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
         } else if file_type.is_file()
             && path
                 .extension()
-                .is_some_and(|ext| ext.eq_ignore_case("md"))
+                .is_some_and(|ext| ext.to_string_lossy().eq_ignore_ascii_case("md"))
         {
             out.push(path);
         }
