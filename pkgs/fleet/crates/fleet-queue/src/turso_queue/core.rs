@@ -1051,7 +1051,7 @@ impl Clone for Arg {
     }
 }
 
-pub(crate) const SCHEMA: [&str; 36] = [
+pub(crate) const SCHEMA: [&str; 45] = [
     "CREATE TABLE IF NOT EXISTS tasks (\
         id INTEGER PRIMARY KEY AUTOINCREMENT, \
         queue TEXT NOT NULL, manual_only INTEGER NOT NULL DEFAULT 0, title TEXT, body TEXT, \
@@ -1125,6 +1125,30 @@ pub(crate) const SCHEMA: [&str; 36] = [
         body TEXT NOT NULL, created_at TEXT NOT NULL, \
         edited_at TEXT, deleted_at TEXT)",
     "CREATE INDEX IF NOT EXISTS task_notes_task ON task_notes(task_id, id)",
+    // #14170 Q6: normalized task relationships and blocking edges.
+    // link_key/dep_key make the nullable reference columns idempotent
+    // on SQLite, whose UNIQUE indexes treat NULL values as distinct.
+    "CREATE TABLE IF NOT EXISTS queue_links (\
+        id INTEGER PRIMARY KEY AUTOINCREMENT, task_id INTEGER NOT NULL, \
+        other_kind TEXT NOT NULL, other_repo TEXT, other_number INTEGER, \
+        other_task_id INTEGER, link_kind TEXT NOT NULL, link_key TEXT NOT NULL, \
+        created_by TEXT NOT NULL, created_at TEXT NOT NULL, \
+        removed_at TEXT, removed_by TEXT)",
+    "CREATE INDEX IF NOT EXISTS queue_links_task ON queue_links(task_id, id)",
+    "CREATE INDEX IF NOT EXISTS queue_links_target ON queue_links(other_kind, other_repo, other_number, other_task_id)",
+    "CREATE UNIQUE INDEX IF NOT EXISTS queue_links_active_key \
+        ON queue_links(task_id, link_kind, link_key) WHERE removed_at IS NULL",
+    "CREATE TABLE IF NOT EXISTS task_deps (\
+        id INTEGER PRIMARY KEY AUTOINCREMENT, task_id INTEGER NOT NULL, \
+        dep_kind TEXT NOT NULL, dep_key TEXT NOT NULL, ref_repo TEXT, \
+        ref_number INTEGER, ref_task_id INTEGER, \
+        state TEXT NOT NULL DEFAULT 'open' CHECK(state IN ('open','cleared','malformed')), \
+        created_at TEXT NOT NULL, cleared_at TEXT, cleared_by TEXT, \
+        detail TEXT NOT NULL DEFAULT '{}', UNIQUE(task_id, dep_key))",
+    "CREATE INDEX IF NOT EXISTS task_deps_task ON task_deps(task_id, state)",
+    "CREATE INDEX IF NOT EXISTS task_deps_ref ON task_deps(ref_repo, ref_number, state)",
+    "CREATE TABLE IF NOT EXISTS queue_schema_migrations (\
+        name TEXT PRIMARY KEY, applied_at TEXT NOT NULL, detail TEXT NOT NULL DEFAULT '{}')",
     "CREATE TABLE IF NOT EXISTS creation_outbox (\
         id TEXT PRIMARY KEY, repo TEXT NOT NULL, kind TEXT NOT NULL, \
         payload TEXT NOT NULL DEFAULT '{}', dedup_key TEXT NOT NULL, \
@@ -1300,6 +1324,7 @@ pub(crate) fn history_transition(
         "failed" => (None, Some("failed")),
         "reprioritized" => (None, None),
         "meta_updated" => (None, None),
+        "linked" | "unlinked" => (None, None),
         _ => return None,
     })
 }
@@ -1323,7 +1348,7 @@ pub(crate) const HISTORY_INSERT_SQL: &str = "INSERT OR IGNORE INTO task_history 
     FROM events e WHERE e.id = (SELECT max(id) FROM events) AND changes() = 1";
 
 /// Every event kind that history_transition maps: the backfill census.
-pub(crate) const HISTORY_KINDS: [&str; 14] = [
+pub(crate) const HISTORY_KINDS: [&str; 16] = [
     "enqueued",
     "task_revived",
     "revived",
@@ -1338,6 +1363,8 @@ pub(crate) const HISTORY_KINDS: [&str; 14] = [
     "cancelled",
     "failed",
     "meta_updated",
+    "linked",
+    "unlinked",
 ];
 
 /// Backfill: one history row per mapped events row that has none

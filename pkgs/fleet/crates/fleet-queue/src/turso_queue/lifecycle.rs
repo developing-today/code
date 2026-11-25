@@ -3587,4 +3587,71 @@ mod task_notes_tests {
         assert_eq!(bodies, ["plain", "third"]);
         assert_eq!(latest["row"]["count"], 3);
     }
+
+    #[test]
+    fn q6_normalized_link_and_dependency_tables_exist() {
+        let (t, _db) = fake_backend();
+        let tables = t
+            .query_objs(
+                "SELECT name FROM sqlite_master WHERE type = 'table' \
+                 AND name IN ('queue_links', 'task_deps') ORDER BY name",
+                &[],
+                &[],
+            )
+            .expect("Q6 tables are readable from the SQL store");
+        let names: Vec<&str> = tables
+            .iter()
+            .map(|row| row["name"].as_str().expect("table name is text"))
+            .collect();
+        assert_eq!(names, ["queue_links", "task_deps"]);
+    }
+
+    #[test]
+    fn q6_enqueue_seeds_issue_and_pull_request_links() {
+        let (t, _db) = fake_backend();
+        let packet = json!({
+            "title": "Q6 link seed",
+            "priority": 50,
+            "dedupe_key": "repo-health:v1:fix:developing-today/code:issue:14181",
+            "payload": {
+                "schema": "repo-task/v1",
+                "kind": "small_fix",
+                "repo": "developing-today/code",
+                "problem": "seed links",
+                "evidence": ["fixture"],
+                "acceptance": ["issue and PR links are normalized"],
+                "scope": {"include": ["Q6"], "exclude": ["other slices"]},
+                "tests": ["SQL link seed oracle"],
+                "risk": {"level": "low", "flags": []},
+                "priority_reason": "fixture",
+                "timebox_minutes": 45,
+                "max_attempts": 6,
+                "context_refs": [],
+                "issue": {"number": 14181},
+                "pr": {"number": 14441},
+                "dedupe": {"checked_at": "2026-11-25T00:00:00Z", "basis": "fixture"}
+            }
+        });
+        let enqueued = verb_enqueue(
+            &t,
+            &json!({"queue": "repo-health-code-pilot", "packet": packet}),
+        );
+        assert_eq!(enqueued["ok"], true, "{enqueued}");
+        let task_id = enqueued["row"]["id"].as_i64().expect("task id");
+        let links = t
+            .query_objs(
+                "SELECT other_kind, other_repo, other_number, link_kind FROM queue_links \
+                 WHERE task_id = ? AND removed_at IS NULL ORDER BY other_kind",
+                &[Arg::Int(task_id)],
+                &[],
+            )
+            .expect("normalized links are readable");
+        assert_eq!(links.len(), 2, "{links:?}");
+        assert_eq!(links[0]["other_kind"], "issue");
+        assert_eq!(links[0]["other_number"], 14181);
+        assert_eq!(links[0]["link_kind"], "implements");
+        assert_eq!(links[1]["other_kind"], "pr");
+        assert_eq!(links[1]["other_number"], 14441);
+        assert_eq!(links[1]["link_kind"], "pr_for");
+    }
 }
