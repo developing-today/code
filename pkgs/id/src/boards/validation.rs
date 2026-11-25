@@ -261,7 +261,7 @@ fn validate_ascii_identifier(name: &str, value: &str, max_bytes: usize) -> Resul
     Ok(())
 }
 
-fn is_public_key(value: &str) -> bool {
+pub(super) fn is_public_key(value: &str) -> bool {
     if value.len() != 64
         || !value
             .bytes()

@@ -51,7 +51,7 @@ impl VersionProbeOutcome {
     /// The provenance string the compile path records: the reported
     /// version, or empty for every failure branch (settled design —
     /// artifact identity is pinned by `compiler_blake3`).
-    fn into_version(self) -> String {
+    pub(super) fn into_version(self) -> String {
         match self {
             VersionProbeOutcome::Reported(version) => version,
             _ => String::new(),
