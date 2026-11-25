@@ -88,6 +88,7 @@ pub fn explain(input: &str) -> Result<Explanation, ConfigError> {
     behavior(&resolved, &mut entries)?;
     fanout(&written, &resolved, &mut entries);
     peers(&written, &resolved, &mut entries)?;
+    storage(&written, &resolved, &mut entries);
     extensions(&resolved, &mut entries)?;
     Ok(Explanation { entries, digest })
 }
@@ -307,6 +308,55 @@ fn peers(
         }
     }
     Ok(())
+}
+
+fn storage(written: &Value, resolved: &ResolvedConfig, entries: &mut Vec<ExplainEntry>) {
+    // An absent key and an explicit `null` both take the default (record
+    // §6.3), so only a non-null written value is the document's.
+    let source = |store: &str, key: &str| {
+        let set = written
+            .get("storage")
+            .and_then(|s| s.get(store))
+            .and_then(|b| b.get(key))
+            .is_some_and(|v| !v.is_null());
+        if set { SOURCE_DOCUMENT } else { SOURCE_DEFAULT }
+    };
+    let storage = &resolved.storage;
+    for (store, binding) in [
+        ("local_store", &storage.local_store),
+        ("event_log", &storage.event_log),
+    ] {
+        let fields = [
+            ("adapter", binding.adapter.clone()),
+            ("durability", binding.durability.clone()),
+            (
+                "sync_participation",
+                binding.sync_participation.as_str().to_owned(),
+            ),
+        ];
+        for (key, value) in fields {
+            push(
+                entries,
+                &format!("storage.{store}.{key}"),
+                value,
+                source(store, key),
+            );
+        }
+    }
+    if let Some(object_store) = &storage.object_store {
+        push(
+            entries,
+            "storage.object_store.adapter",
+            object_store.adapter.clone(),
+            SOURCE_DOCUMENT,
+        );
+        push(
+            entries,
+            "storage.object_store.retention_class",
+            object_store.retention_class.clone(),
+            source("object_store", "retention_class"),
+        );
+    }
 }
 
 fn extensions(
