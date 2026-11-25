@@ -61,13 +61,13 @@ Term := {}.{
     paint_primary : Screen, Screen -> Str
     paint_primary = |prev, next| {
         width = Screen.dimensions(next).width
-        start = { out: "", has: Bool.False, x: 0, y: 0, len: 0, text: "", spaces: Bool.True, fg: 0, bg: 0, bold: Bool.False }
+        start = { out: "", open: Bool.False, x: 0, y: 0, len: 0, text: "", spaces: Bool.True, fg: 0, bg: 0, bold: Bool.False }
         folded = List.fold(Screen.diff_cells(prev, next), start, |acc, cell| {
-            extends = acc.has and cell.y == acc.y and cell.x == acc.x + acc.len and cell.fg == acc.fg and cell.bg == acc.bg and cell.bold == acc.bold
+            extends = acc.open and cell.y == acc.y and cell.x == acc.x + acc.len and cell.fg == acc.fg and cell.bg == acc.bg and cell.bold == acc.bold
             if extends {
-                { out: acc.out, has: Bool.True, x: acc.x, y: acc.y, len: acc.len + 1, text: Str.concat(acc.text, cell.ch), spaces: acc.spaces and cell.ch == " ", fg: acc.fg, bg: acc.bg, bold: acc.bold }
+                { out: acc.out, open: Bool.True, x: acc.x, y: acc.y, len: acc.len + 1, text: Str.concat(acc.text, cell.ch), spaces: acc.spaces and cell.ch == " ", fg: acc.fg, bg: acc.bg, bold: acc.bold }
             } else {
-                { out: Str.concat(acc.out, emit_run(acc, width)), has: Bool.True, x: cell.x, y: cell.y, len: 1, text: cell.ch, spaces: cell.ch == " ", fg: cell.fg, bg: cell.bg, bold: cell.bold }
+                { out: Str.concat(acc.out, emit_run(acc, width)), open: Bool.True, x: cell.x, y: cell.y, len: 1, text: cell.ch, spaces: cell.ch == " ", fg: cell.fg, bg: cell.bg, bold: cell.bold }
             }
         })
         out = Str.concat(folded.out, emit_run(folded, width))
@@ -87,9 +87,9 @@ Term := {}.{
         Str.concat("\u(1b)[2J", paint_primary(Screen.new(dims.width, dims.height), next))
     }
 
-    emit_run : { has : Bool, x : U64, y : U64, len : U64, text : Str, spaces : Bool, fg : U8, bg : U8, bold : Bool }, U64 -> Str
+    emit_run : { open : Bool, x : U64, y : U64, len : U64, text : Str, spaces : Bool, fg : U8, bg : U8, bold : Bool }, U64 -> Str
     emit_run = |run, width| {
-        if !run.has {
+        if !run.open {
             ""
         } else {
             cursor = "\u(1b)[${U64.to_str(run.y + 1)};${U64.to_str(run.x + 1)}H"
