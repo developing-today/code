@@ -126,7 +126,7 @@ pub enum SyncError {
         /// The method the responder answered.
         answered: SyncMethod,
     },
-    /// Range sync, the agreed [`SyncMethod::Range`], failed.
+    /// Range sync, the agreed [`SyncMethod::RangeV2`], failed.
     #[error("range sync: {0}")]
     Range(String),
     /// The event store failed.
@@ -356,7 +356,7 @@ where
 /// one frame each way, strictly in turn, so no read is ever selected against a write and
 /// a cancelled read cannot lose a frame's bytes. `LogSync` does select between reading
 /// and writing, so the `Log` arm hands the streams to [`Frames`] (whose own task reads),
-/// while the `Range` arm keeps the raw streams: a range session sends and receives at
+/// while the `RangeV2` arm keeps the raw streams: a range session sends and receives at
 /// once through its own halves, and reads each frame to its end before answering it.
 async fn run_agreed<S: EventStoreBackend>(
     store: &SharedEventStore<S>,
@@ -376,12 +376,15 @@ where
             frames.finish().await;
             Ok(outcome)
         }
-        SyncMethod::Range => {
+        SyncMethod::RangeV2 => {
             let (mut send, mut recv) = (send, recv);
             let ranged = run_range_sync(store, &mut send, &mut recv, initiator).await;
             finish_stream(&mut send, &mut recv).await;
             ranged
         }
+        // Legacy v1 is never agreed to (`LogAndRange` refuses it): reaching it means a
+        // caller bypassed the support check, so fail rather than serving v2 bytes as v1.
+        SyncMethod::Range => Err(SyncError::Refused(SyncMethod::Range)),
     }
 }
 
@@ -415,7 +418,7 @@ where
     .map_err(|error| SyncError::Range(format!("{error:#}")))?;
     let count = |n: usize| u32::try_from(n).unwrap_or(u32::MAX);
     Ok(Outcome {
-        method: SyncMethod::Range,
+        method: SyncMethod::RangeV2,
         received: Tally {
             accepted: count(ranged.accepted),
             duplicates: count(ranged.duplicates),
@@ -1239,7 +1242,7 @@ mod tests {
             difference: 0,
             last_completed_sync_ms: Some(1),
         };
-        assert_eq!(choose(&synced), SyncMethod::Range);
+        assert_eq!(choose(&synced), SyncMethod::RangeV2);
         let outcome = sync_with(
             &client,
             loopback(&server),
@@ -1252,8 +1255,8 @@ mod tests {
         .unwrap();
         let answered = results.recv().await.unwrap().unwrap();
 
-        assert_eq!(outcome.method, SyncMethod::Range);
-        assert_eq!(answered.method, SyncMethod::Range);
+        assert_eq!(outcome.method, SyncMethod::RangeV2);
+        assert_eq!(answered.method, SyncMethod::RangeV2);
         assert_eq!(
             outcome.received.voided, 1,
             "B stores the target without applying it: {:?}",
@@ -1716,7 +1719,7 @@ mod tests {
                 return Ok(());
             };
             let _ = read_frame(&mut recv).await;
-            let answer = postcard::to_allocvec(&Answer::Agree(SyncMethod::Range)).unwrap();
+            let answer = postcard::to_allocvec(&Answer::Agree(SyncMethod::RangeV2)).unwrap();
             let _ = write_frame(&mut send, &answer).await;
             std::future::pending::<()>().await;
             Ok(())
@@ -1747,7 +1750,7 @@ mod tests {
                 error,
                 SyncError::Mismatch {
                     requested: SyncMethod::Log,
-                    answered: SyncMethod::Range,
+                    answered: SyncMethod::RangeV2,
                 }
             ),
             "got {error}"
@@ -1772,7 +1775,7 @@ mod tests {
             difference: 0,
             last_completed_sync_ms: Some(1),
         };
-        assert_eq!(choose(&synced), SyncMethod::Range);
+        assert_eq!(choose(&synced), SyncMethod::RangeV2);
         let error = sync_with(
             &client,
             loopback(&server),
@@ -1786,11 +1789,11 @@ mod tests {
         let answered = results.recv().await.unwrap();
 
         assert!(
-            matches!(error, SyncError::Refused(SyncMethod::Range)),
+            matches!(error, SyncError::Refused(SyncMethod::RangeV2)),
             "got {error}"
         );
         assert!(
-            matches!(answered, Err(SyncError::Refused(SyncMethod::Range))),
+            matches!(answered, Err(SyncError::Refused(SyncMethod::RangeV2))),
             "the responder refused the same method, got {answered:?}"
         );
         assert_eq!(applied(&store_b, &[&alice], 2), before, "nothing moved");
@@ -1844,7 +1847,7 @@ mod tests {
             difference: 0,
             last_completed_sync_ms: Some(1),
         };
-        assert_eq!(choose(&synced), SyncMethod::Range);
+        assert_eq!(choose(&synced), SyncMethod::RangeV2);
         let ranged = sync_with(
             &client,
             loopback(&server),
@@ -1856,10 +1859,10 @@ mod tests {
         .await
         .unwrap();
         let ranged_answered = results.recv().await.unwrap().unwrap();
-        assert_eq!(ranged.method, SyncMethod::Range);
+        assert_eq!(ranged.method, SyncMethod::RangeV2);
         assert_eq!(
             ranged_answered.method,
-            SyncMethod::Range,
+            SyncMethod::RangeV2,
             "both sides ran Range"
         );
         assert_eq!(

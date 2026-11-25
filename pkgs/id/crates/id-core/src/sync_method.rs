@@ -8,7 +8,7 @@
 //!
 //! - **`LogSync`** when the estimated difference `D` exceeds 0.035 times the chain count `C`, or
 //!   when the peer is not yet bootstrapped (no sync with it has completed).
-//! - **Range** otherwise.
+//! - **RangeV2** otherwise.
 //!
 //! In the topic-scoped handshake, the initiator chooses and sends its choice in a [`Request`].
 //! The responder answers with an [`Answer`]: it agrees to run that method, or refuses it. It never
@@ -17,7 +17,8 @@
 //! The rule is written against [`SyncStats`]; a production group-sync initiator and its statistics
 //! source do not exist yet. The future initiator needs a stated difference estimator, or must default
 //! to Log. Local data alone cannot give the exact difference before a session. [`SyncSupport`] is
-//! the seam for the answer: [`LogAndRange`] supports both methods and [`LogSyncOnly`] refuses range.
+//! the seam for the answer: [`LogAndRange`] supports Log and RangeV2, while [`LogSyncOnly`] refuses
+//! range methods.
 
 use std::fmt::Debug;
 
@@ -29,8 +30,14 @@ use serde::{Deserialize, Serialize};
 pub enum SyncMethod {
     /// `LogSync`: each chain's latest position, then the events the other side lacks.
     Log,
-    /// Range sync (P3.1): sorted ranges of event IDs, summarized and split.
+    /// Range sync version 1 (P3.1): legacy record framing without a body-presence byte.
+    /// Kept only so its discriminant stays stable on the wire: new code never agrees to
+    /// it (`LogAndRange` refuses it) because it cannot serve the legacy framing.
     Range,
+    /// Range sync version 2, whose data records distinguish absent from empty bodies.
+    /// Kept as a new enum discriminant so older peers reject it rather than parsing the
+    /// new record framing as the legacy `Range` method.
+    RangeV2,
 }
 
 /// The `LogSync` crossover, in thousandths: `LogSync` when `1000 * D > CROSSOVER_PER_THOUSAND * C`.
@@ -54,7 +61,7 @@ pub trait SyncStats {
 
 /// The method a session with `stats` uses.
 ///
-/// `LogSync` when the peer is not bootstrapped, or when `D` is above `0.035 * C`. Range otherwise.
+/// `LogSync` when the peer is not bootstrapped, or when `D` is above `0.035 * C`. RangeV2 otherwise.
 /// The comparison is exact: at `D == 0.035 * C` the rule picks range.
 pub fn choose(stats: &impl SyncStats) -> SyncMethod {
     if stats.last_completed_sync_ms().is_none() {
@@ -65,7 +72,7 @@ pub fn choose(stats: &impl SyncStats) -> SyncMethod {
     if difference * 1000 > chains * CROSSOVER_PER_THOUSAND {
         SyncMethod::Log
     } else {
-        SyncMethod::Range
+        SyncMethod::RangeV2
     }
 }
 
@@ -104,14 +111,14 @@ pub trait SyncSupport: Debug + Send + Sync {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct LogSyncOnly;
 
-/// Runs both methods: `LogSync`, and range sync as a method of the same handshake
+/// Runs `LogSync` and RangeV2 as methods of the same handshake
 /// session (#179, wired in `log_sync::run_agreed`).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct LogAndRange;
 
 impl SyncSupport for LogAndRange {
-    fn supports(&self, _method: SyncMethod) -> bool {
-        true
+    fn supports(&self, method: SyncMethod) -> bool {
+        matches!(method, SyncMethod::Log | SyncMethod::RangeV2)
     }
 }
 
@@ -165,12 +172,12 @@ mod tests {
             // Range below the crossover, and at it: "exceeds" is strict.
             assert_eq!(
                 choose(&synced(chains, per_thousand(chains, 34))),
-                SyncMethod::Range,
+                SyncMethod::RangeV2,
                 "0.034 of {chains} chains"
             );
             assert_eq!(
                 choose(&synced(chains, per_thousand(chains, 35))),
-                SyncMethod::Range,
+                SyncMethod::RangeV2,
                 "0.035 of {chains} chains is not above the crossover"
             );
             // LogSync above it.
@@ -199,7 +206,7 @@ mod tests {
 
     #[test]
     fn test_an_empty_chain_set_is_range_only_with_no_difference() {
-        assert_eq!(choose(&synced(0, 0)), SyncMethod::Range);
+        assert_eq!(choose(&synced(0, 0)), SyncMethod::RangeV2);
         assert_eq!(choose(&synced(0, 1)), SyncMethod::Log);
     }
 
@@ -210,14 +217,14 @@ mod tests {
             SyncMethod::Log,
             "1000 * max is above 35 * max"
         );
-        assert_eq!(choose(&synced(u64::MAX, 0)), SyncMethod::Range);
+        assert_eq!(choose(&synced(u64::MAX, 0)), SyncMethod::RangeV2);
     }
 
     #[test]
     fn test_the_request_and_answer_round_trip_on_the_wire() {
         let request = Request {
             topic: Hash::digest([7_u8]),
-            method: SyncMethod::Range,
+            method: SyncMethod::RangeV2,
         };
         let bytes = postcard::to_allocvec(&request).unwrap();
         assert_eq!(postcard::from_bytes::<Request>(&bytes).unwrap(), request);
@@ -232,11 +239,13 @@ mod tests {
     fn test_log_sync_only_supports_log() {
         assert!(LogSyncOnly.supports(SyncMethod::Log));
         assert!(!LogSyncOnly.supports(SyncMethod::Range));
+        assert!(!LogSyncOnly.supports(SyncMethod::RangeV2));
     }
 
     #[test]
     fn test_log_and_range_supports_both() {
         assert!(LogAndRange.supports(SyncMethod::Log));
-        assert!(LogAndRange.supports(SyncMethod::Range));
+        assert!(!LogAndRange.supports(SyncMethod::Range));
+        assert!(LogAndRange.supports(SyncMethod::RangeV2));
     }
 }

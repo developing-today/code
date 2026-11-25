@@ -948,6 +948,35 @@ mod tests {
     use std::net::Ipv4Addr;
 
     const NOW: u64 = 1_000_000_000;
+
+    #[test]
+    fn test_record_encoding_preserves_all_body_states_and_rejects_ambiguous_records() {
+        let event = b"signed event";
+        for body in [None, Some(&[][..]), Some(&b"payload"[..])] {
+            let encoded = encode_record(event, body).unwrap();
+            assert_eq!(
+                decode_record(&encoded).unwrap(),
+                (event.to_vec(), body.map(<[u8]>::to_vec))
+            );
+        }
+
+        // The old header-only layout ended immediately after the event. It must not
+        // silently decode as an absent body under the V2 framing.
+        let mut header_only_legacy = u32::try_from(event.len()).unwrap().to_be_bytes().to_vec();
+        header_only_legacy.extend_from_slice(event);
+        assert!(decode_record(&header_only_legacy).is_err());
+
+        let absent_with_bytes = encode_record(event, None).unwrap();
+        let mut absent_with_bytes = absent_with_bytes;
+        absent_with_bytes.push(0x41);
+        assert!(decode_record(&absent_with_bytes).is_err());
+
+        let mut invalid_marker = u32::try_from(event.len()).unwrap().to_be_bytes().to_vec();
+        invalid_marker.extend_from_slice(event);
+        invalid_marker.push(2);
+        assert!(decode_record(&invalid_marker).is_err());
+    }
+
     /// An endpoint on localhost, with no relay and no address lookup. Dialed by address only.
     async fn endpoint(alpns: Vec<Vec<u8>>) -> Result<Endpoint> {
         Ok(Endpoint::builder(presets::Minimal)
