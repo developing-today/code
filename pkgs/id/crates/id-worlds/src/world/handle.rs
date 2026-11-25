@@ -1705,8 +1705,9 @@ impl WorldHandle {
     /// verified replay cursor reaches the current grant boundary. The
     /// serialized authority actor rechecks holder, epoch, term, and boundary
     /// immediately before returning the bytes; callers must authenticate the
-    /// holder and cursor before invoking this method, then send only returned
-    /// bytes. A refused copy is never released for dispatch.
+    /// holder and cursor and pass the residency gate before invoking this
+    /// method, then send only returned bytes. A refused copy is never
+    /// released for dispatch.
     pub async fn dispatch_spill_copy(
         &self,
         holder: impl Into<String>,

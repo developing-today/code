@@ -162,7 +162,6 @@ pub(crate) fn check_spill_admission(
     Ok(())
 }
 
-
 /// Move the spill's journal/event copy across the boundary — the only
 /// sanctioned way to do it. On [`SpillDecision::Allow`], `send` is
 /// called exactly once with the copy. On a denial, `send` is never

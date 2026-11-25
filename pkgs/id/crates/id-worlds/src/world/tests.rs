@@ -9357,10 +9357,20 @@ mod tests {
             .handle
             .dispatch_spill_copy("native-2", 3, 2, b"journal-copy".to_vec())
             .await;
-        assert!(stale_replay.unwrap_err().to_string().contains("ReplayPending"));
+        assert!(
+            stale_replay
+                .unwrap_err()
+                .to_string()
+                .contains("ReplayPending")
+        );
         assert_eq!(
             w.handle
-                .dispatch_spill_copy("native-2", 3, execution.grant_position(), b"journal-copy".to_vec())
+                .dispatch_spill_copy(
+                    "native-2",
+                    3,
+                    execution.grant_position(),
+                    b"journal-copy".to_vec()
+                )
                 .await
                 .unwrap(),
             b"journal-copy"
@@ -9370,11 +9380,17 @@ mod tests {
             .handoff_write_lease(DO_WRITE_LEASE_HOLDER, 4, None)
             .await
             .unwrap();
-        assert!(w
-            .handle
-            .dispatch_spill_copy("native-2", 3, execution.grant_position(), b"stale".to_vec())
-            .await
-            .is_err());
+        assert!(
+            w.handle
+                .dispatch_spill_copy(
+                    "native-2",
+                    3,
+                    execution.grant_position(),
+                    b"stale".to_vec()
+                )
+                .await
+                .is_err()
+        );
     }
 
     #[tokio::test]
