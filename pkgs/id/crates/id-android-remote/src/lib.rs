@@ -40,6 +40,7 @@ mod tests {
         let frame = json!({
             "type": "view",
             "sequence": 7,
+            "view_revision": 1,
             "data": "tic-tac-toe: X to move",
         });
         let contract = id_worlds::shell_contract::ShellContract::embedded()
