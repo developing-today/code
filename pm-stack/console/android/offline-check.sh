@@ -120,6 +120,14 @@ for node in root.iter("node"):
         nums = bounds.replace("[", " ").replace("]", " ").replace(",", " ").split()
         if len(nums) == 4:
             x1, y1, x2, y2 = (int(n) for n in nums)
+            # Say what was matched and where the tap will land: the
+            # screen read holds the whole page, not just the visible
+            # part, so a match can sit off the screen — run
+            # the answer tap of run 45577554296 landed nowhere that answered.
+            print("tap_xy: %r -> text=%r bounds=%s tap=%d,%d" % (
+                needle,
+                node.get("text") or node.get("content-desc") or "",
+                bounds, (x1 + x2) // 2, (y1 + y2) // 2), file=sys.stderr)
             print((x1 + x2) // 2, (y1 + y2) // 2)
             sys.exit(0)
 # No tappable node matched: say what the screen did hold, so a miss
