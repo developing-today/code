@@ -85,6 +85,20 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Stage changed Markdown documents from explicit fleet checkouts (#8626).
+    IngestRepoDocs {
+        /// Already-provisioned repo-docs staging database.
+        #[arg(long)]
+        db: PathBuf,
+        /// JSON array of {"repo": <fleet repo ID>, "root": <absolute local directory>}.
+        #[arg(long)]
+        roots: PathBuf,
+        /// Agent attribution, if known.
+        #[arg(long)]
+        agent: Option<String>,
+        #[arg(long, default_value = "internal")]
+        sensitivity: String,
+    },
     /// Create a staging DB, apply the v1 schema, and register the unit.
     Provision {
         /// The staging database file to create.
@@ -347,6 +361,33 @@ fn load_segments(
 
 fn run(cli: Cli) -> Result<(), String> {
     match cli.command {
+        Command::IngestRepoDocs {
+            db,
+            roots,
+            agent,
+            sensitivity,
+        } => {
+            let sensitivity = parse_tier(&sensitivity)?;
+            let raw = std::fs::read_to_string(&roots)
+                .map_err(|e| format!("reading {}: {e}", roots.display()))?;
+            let roots: Vec<atlas_core::repo_docs::RepoRoot> =
+                serde_json::from_str(&raw).map_err(|e| format!("invalid repo-docs roots: {e}"))?;
+            // Open an existing DB only: a bad path must not silently create a new store.
+            let conn = atlas_core::repo_docs::open_repo_docs_db(&db).map_err(|e| e.to_string())?;
+            let ids = atlas_core::repo_docs::ingest_repo_docs(
+                &conn,
+                &roots,
+                agent.as_deref(),
+                sensitivity,
+                &now_utc(),
+            )
+            .map_err(|e| e.to_string())?;
+            println!(
+                "{}",
+                serde_json::json!({"unit": "repo-docs", "items_staged": ids.len(), "item_ids": ids})
+            );
+            Ok(())
+        }
         Command::Provision {
             db,
             unit,
