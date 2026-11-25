@@ -1901,22 +1901,26 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
             let store = events.lock().await.shared_store();
             let frontier = GraphFrontier::new(store);
             let relay_key = ed25519_dalek::SigningKey::from_bytes(&key.to_bytes());
-            let sink =
-                ForwardingSink::fanning_out(node_id.to_string(), endpoint.clone(), Vec::new());
-            let protocol = ChainedRelayProtocol::new(RelayGate::new(&relay_key, frontier), sink);
-            let protocol = if let Some(started) = &started_server_config {
-                let boundary_gate = Arc::new(
+            let boundary_gate = started_server_config.as_ref().map(|started| {
+                Arc::new(
                     crate::boundary_gate::ServerBoundaryGate::without_hop_evidence(
                         started.config.boundaries().clone(),
                         node_id.to_string(),
                         None,
                         Arc::new(crate::boundary_evidence::AppEvidenceVerifier::default()),
                     ),
-                )
-                    as Arc<dyn id_sync::relay_ingest::RelayBoundaryGate>;
-                protocol.with_boundary_gate(boundary_gate)
-            } else {
-                protocol
+                ) as Arc<dyn id_sync::relay_ingest::RelayBoundaryGate>
+            });
+            let sink =
+                ForwardingSink::fanning_out(node_id.to_string(), endpoint.clone(), Vec::new());
+            let sink = match boundary_gate.as_ref() {
+                Some(gate) => sink.with_boundary_gate(Arc::clone(gate)),
+                None => sink,
+            };
+            let protocol = ChainedRelayProtocol::new(RelayGate::new(&relay_key, frontier), sink);
+            let protocol = match boundary_gate {
+                Some(gate) => protocol.with_boundary_gate(gate),
+                None => protocol,
             };
             router_builder.accept(CHAINED_RELAY_ALPN, protocol)
         }
