@@ -649,44 +649,49 @@ expect update(init(0), 0, " ").bullet_on == 1
 expect update(init(0), 0, "\u(1b)[D").player_x == 19
 
 # A bullet fired up a clear column leaves the field and despawns.
-expect
-    started = fire({ ..init(0), player_x: 2, ox: 20 })
-    cleared = List.fold(List.repeat(0, 8), started, |model, _| tick(model))
-    cleared.bullet_on == 0 and aliens_left(cleared) == 32
+# (The pinned compiler takes single-expression expects in app files —
+# the platform libraries' convention — so staged scenarios are named
+# defs and the expects assert over them.)
+cleared_column : Model
+cleared_column = List.fold(List.repeat(0, 8), fire({ ..init(0), player_x: 2, ox: 20 }), |model, _| tick(model))
+
+expect cleared_column.bullet_on == 0 and aliens_left(cleared_column) == 32
 
 # Marching right, the formation turns around by descending, not by
 # walking off the field.
-expect
-    marched = List.fold(List.repeat(0, 12), init(0), |model, _| tick(model))
-    marched.oy == 2 and marched.dir == 0
+marched_12 : Model
+marched_12 = List.fold(List.repeat(0, 12), init(0), |model, _| tick(model))
+
+expect marched_12.oy == 2 and marched_12.dir == 0
 
 # Killing the last alien wins the wave; Enter starts the next one.
-expect
+lone_shot : Model
+lone_shot =
     lone = { ..init(0), aliens: "10000000000000000000000000000000", score: 0 }
-    shot = collide_bullet({ ..lone, bullet_on: 1, bullet_x: lone.ox + 1, bullet_y: lone.oy })
-    shot.phase == "won" and shot.score == 30
+    collide_bullet({ ..lone, bullet_on: 1, bullet_x: lone.ox + 1, bullet_y: lone.oy })
 
-expect
-    won = { ..init(0), phase: "won", score: 500, wave: 1 }
-    next = advance_after_end(won)
-    next.phase == "playing" and next.wave == 2 and next.score == 500 and aliens_left(next) == 32
+expect lone_shot.phase == "won" and lone_shot.score == 30
+
+next_wave : Model
+next_wave = advance_after_end({ ..init(0), phase: "won", score: 500, wave: 1 })
+
+expect next_wave.phase == "playing" and next_wave.wave == 2 and next_wave.score == 500 and aliens_left(next_wave) == 32
 
 # A bomb on the ship's span costs a life and clears the sky.
-expect
-    doomed = { ..init(0), bombs: [{ x: 20, y: player_row - 1 }] }
-    hurt = move_bombs(doomed)
-    hurt.lives == 2 and List.is_empty(hurt.bombs)
+bombed : Model
+bombed = move_bombs({ ..init(0), bombs: [{ x: 20, y: player_row - 1 }] })
+
+expect bombed.lives == 2 and List.is_empty(bombed.bombs)
 
 # Losing the last life ends the game.
-expect
-    fragile = { ..init(0), lives: 1, bombs: [{ x: 20, y: player_row - 1 }] }
-    move_bombs(fragile).phase == "lost"
+expect move_bombs({ ..init(0), lives: 1, bombs: [{ x: 20, y: player_row - 1 }] }).phase == "lost"
 
 # Snapshot/restore round-trips a mid-game model exactly, and restore
 # is total on garbage.
-expect
-    mid = spawn_bomb(tick(fire({ ..init(7), player_x: 13, score: 120 })))
-    snapshot(restore(snapshot(mid))) == snapshot(mid)
+mid_game : Model
+mid_game = spawn_bomb(tick(fire({ ..init(7), player_x: 13, score: 120 })))
+
+expect snapshot(restore(snapshot(mid_game))) == snapshot(mid_game)
 
 expect restore("not json at all").phase == "playing"
 expect restore("not json at all").score == 0
