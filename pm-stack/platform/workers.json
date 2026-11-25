@@ -129,11 +129,11 @@
       "group": "fleet",
       "path": "pkgs/fleet/hosted-worker",
       "does": "The hosted fleet's doors (stamping, query, queue, ingestion, sync) behind one sign-in and tenancy layer.",
-      "state": "not deployed",
-      "deploy": "none",
+      "state": "in service",
+      "deploy": "by hand",
       "workflow": null,
-      "address": null,
-      "next": "Local only until its own issue deploys it. Its queue door is how the edge will file, cancel and unblock tasks with no machine."
+      "address": "https://fleet-hosted.developing-today.workers.dev",
+      "next": "Deployed by #14870 (2026-11-25) via Cloudflare versions with the queue door on the fleet-queue D1 database. The other doors' production wiring (RP issuer, tenancy DB, GitHub App material) is still owned elsewhere; until it lands they fail closed. Its queue door is how the edge will file, cancel and unblock tasks with no machine."
     },
     {
       "name": "atlas-search",
