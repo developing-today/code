@@ -87,11 +87,11 @@
       "path": "pkgs/github-ci/worker",
       "does": "Receives GitHub's webhooks for every fleet repository and writes them to the store; nothing else receives them.",
       "state": "in service",
-      "deploy": "by hand",
-      "workflow": null,
+      "deploy": "actions",
+      "workflow": "cf-worker-versions-release.yml",
       "address": "https://github-ci.developing-today.workers.dev",
       "next": "Deployed from Actions, stood up, checked and rolled back the way the PM console is; listed here with its last deploy.",
-      "lastDeployedCommit": null
+      "lastDeployedCommit": "df6651ee1a2f6dc4468f945872705af8e4dc9d65"
     },
     {
       "name": "voice-line",
@@ -139,11 +139,11 @@
       "path": "pkgs/fleet/hosted-worker",
       "does": "The hosted fleet's doors (stamping, query, queue, ingestion, sync) behind one sign-in and tenancy layer.",
       "state": "in service",
-      "deploy": "by hand",
-      "workflow": null,
+      "deploy": "actions",
+      "workflow": "cf-worker-versions-release.yml",
       "address": "https://fleet-hosted.developing-today.workers.dev",
       "next": "Deployed by #14870 (2026-11-25) via Cloudflare versions with the queue door on the fleet-queue D1 database. The other doors' production wiring (RP issuer, tenancy DB, GitHub App material) is still owned elsewhere; until it lands they fail closed. Its queue door is how the edge will file, cancel and unblock tasks with no machine.",
-      "lastDeployedCommit": null
+      "lastDeployedCommit": "df6651ee1a2f6dc4468f945872705af8e4dc9d65"
     },
     {
       "name": "atlas-search",
@@ -191,11 +191,11 @@
       "path": "infra/github-backup/rehost/worker",
       "does": "Serves read-only git clones of the four fleet repos from the backup copy in R2, so the code can still be cloned when GitHub and the backup laptop are both down.",
       "state": "in service",
-      "deploy": "by hand",
-      "workflow": null,
+      "deploy": "actions",
+      "workflow": "cf-worker-versions-release.yml",
       "address": "https://git.security.cab",
       "next": "Deployed by hand with its deploy.sh; the backup laptop's publisher refreshes what it serves (#8584).",
-      "lastDeployedCommit": null
+      "lastDeployedCommit": "df6651ee1a2f6dc4468f945872705af8e4dc9d65"
     },
     {
       "name": "pkarr",
@@ -253,11 +253,11 @@
       "path": "pkgs/lab-ops-hub",
       "does": "One Worker that exercises the whole paid Workers surface at personal scale, inside the plan's included amounts.",
       "state": "in service",
-      "deploy": "by hand",
-      "workflow": null,
+      "deploy": "actions",
+      "workflow": "cf-worker-versions-release.yml",
       "address": "https://lab-ops-hub.developing-today.workers.dev",
       "next": "Deployed from Actions, stood up, checked and rolled back the way the PM console is; listed here with its last deploy. Its container images are already built by Actions.",
-      "lastDeployedCommit": null
+      "lastDeployedCommit": "df6651ee1a2f6dc4468f945872705af8e4dc9d65"
     },
     {
       "name": "cf-container-hello",
