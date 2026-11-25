@@ -1425,6 +1425,19 @@
       "related_issues": [14999]
     },
     {
+      "id": "cf.record-worker-deploy",
+      "paths": ["scripts/tests/test_record_worker_deploy.py"],
+      "invocation": "python3 -m unittest discover -s scripts/tests -p 'test_record_worker_deploy.py' -v",
+      "venue": {
+        "workflow": ".github/workflows/scripts-test.yml",
+        "job_step": "Run cf worker record-deploy retry tests (#15041)",
+        "state": "active",
+        "dispatchable": true
+      },
+      "status": "mapped",
+      "related_issues": [15041]
+    },
+    {
       "id": "web-gen-api.e2e",
       "paths": ["pkgs/web-gen-api/end2end/tests/example.spec.ts"],
       "invocation": "End-to-end package runner not confirmed",
