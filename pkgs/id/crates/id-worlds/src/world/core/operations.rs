@@ -719,6 +719,7 @@ impl WorldCore {
         subject: Option<String>,
         bounds: CapabilityBounds,
     ) -> Result<(Participant, JoinCapability)> {
+        self.check_membership_boundary(subject.as_deref().unwrap_or("guest"))?;
         let active = self
             .capabilities
             .values()
@@ -765,6 +766,18 @@ impl WorldCore {
             },
         );
         Ok((participant, JoinCapability(token)))
+    }
+
+    fn check_membership_boundary(&self, subject: &str) -> Result<()> {
+        if let Some(gate) = &self.membership_boundary_gate {
+            let outcome = gate.check(subject);
+            ensure!(
+                outcome.is_allow(),
+                "world membership refused by boundary ({})",
+                outcome.name()
+            );
+        }
+        Ok(())
     }
 
     /// Revoke a capability and every capability delegated from it. Returns
@@ -850,6 +863,15 @@ impl WorldCore {
     /// The directory of accounts, groups and friends this world is held to.
     pub const fn directory_mut(&mut self) -> &mut crate::directory::Directory {
         &mut self.directory
+    }
+
+    /// Install the serving app's world-membership boundary gate. This is
+    /// runtime wiring and is not part of the world's journal.
+    pub fn set_membership_boundary_gate(
+        &mut self,
+        gate: Arc<dyn id_directory::directory::BoundaryGate>,
+    ) {
+        self.membership_boundary_gate = Some(super::MembershipBoundaryGateHandle(gate));
     }
 
     /// The directory and the private petnames, borrowed together.

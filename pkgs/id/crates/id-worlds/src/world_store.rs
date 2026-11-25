@@ -799,8 +799,8 @@ pub async fn open_world(
     open_world_inner(dir, world_id, limits, runtime, None, service).await
 }
 
-/// Open a durable world and install its runtime signup/login boundary gate
-/// before the restored core is moved into the world actor.
+/// Open a durable world and install its runtime account and world-membership
+/// boundary gate before the restored core is moved into the world actor.
 ///
 /// The gate is runtime wiring and is deliberately not journaled. Callers
 /// without an operator boundary configuration should use [`open_world`].
@@ -839,7 +839,7 @@ async fn open_world_inner(
             .await
             .context("directory open task")??;
     *restored.core.directory_mut() = directory;
-    install_directory_boundary_gate(restored.core.directory_mut(), gate);
+    install_world_boundary_gate(&mut restored.core, gate);
     let petnames_path = dir.join("petnames.jsonl");
     let petnames =
         tokio::task::spawn_blocking(move || crate::petname::Petnames::open(&petnames_path))
@@ -899,12 +899,14 @@ async fn open_world_inner(
     Ok((service, report))
 }
 
-fn install_directory_boundary_gate(
-    directory: &mut crate::directory::Directory,
+fn install_world_boundary_gate(
+    core: &mut WorldCore,
     gate: Option<std::sync::Arc<dyn id_directory::directory::BoundaryGate>>,
 ) {
     if let Some(gate) = gate {
-        directory.set_boundary_gate(gate);
+        core.directory_mut()
+            .set_boundary_gate(std::sync::Arc::clone(&gate));
+        core.set_membership_boundary_gate(gate);
     }
 }
 
@@ -2009,25 +2011,40 @@ mod tests {
         move |handle| WorldService::new(handle, admin)
     }
 
-    struct DenySignupGate;
+    struct DenyAccountAndMembershipGate;
 
-    impl BoundaryGate for DenySignupGate {
-        fn check(&self, _: EnforcementPoint, _: &str) -> FrameworkOutcome {
-            FrameworkOutcome::Deny {
-                placement: Vec::new(),
-                assurance: Vec::new(),
+    impl BoundaryGate for DenyAccountAndMembershipGate {
+        fn check(&self, point: EnforcementPoint, _: &str) -> FrameworkOutcome {
+            match point {
+                EnforcementPoint::AccountCreation | EnforcementPoint::WorldMembership => {
+                    FrameworkOutcome::Deny {
+                        placement: Vec::new(),
+                        assurance: Vec::new(),
+                    }
+                }
+                _ => FrameworkOutcome::Allow,
             }
         }
     }
 
     #[test]
-    fn world_store_gate_installer_applies_the_directory_signup_guard() {
+    fn world_store_gate_installer_applies_account_and_world_membership_guards() {
         // Oracle: id-directory's BoundaryGate contract refuses signup for a
-        // Deny outcome; this installer must preserve that guard on a restored
-        // directory before WorldCore is spawned.
-        let mut directory = crate::directory::Directory::new();
-        install_directory_boundary_gate(&mut directory, Some(Arc::new(DenySignupGate)));
-        assert!(directory.sign_up("ann").is_err());
+        // Deny outcome. The same configured gate must protect account signup
+        // and account-bound world membership before the core is spawned.
+        let mut core = WorldCore::new("lobby", WorldLimits::default()).unwrap();
+        let (credential, _) = core.directory_mut().sign_up("ann").unwrap();
+        install_world_boundary_gate(&mut core, Some(Arc::new(DenyAccountAndMembershipGate)));
+        assert!(core.directory_mut().sign_up("bo").is_err());
+        assert!(
+            core.issue_for_account(
+                &credential,
+                WorldScopes::JOIN,
+                CapabilityBounds::default(),
+                "ann",
+            )
+            .is_err()
+        );
     }
 
     #[tokio::test]
