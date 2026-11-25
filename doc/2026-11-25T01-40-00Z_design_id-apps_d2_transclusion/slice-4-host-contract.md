@@ -3,8 +3,9 @@
 Design record for #13887 (parent epic #13880), slice 4 of 4. It builds on
 slice 1 in [`note.md`](note.md), which fixed the `embed` link, live and
 snapshot modes, the six render states (§5) and the bounds (§6). Slice 2, the
-full capability matrix, is still open; nothing here depends on how it lands,
-because every rule below only narrows what a host may show.
+capability matrix ([`slice-2-capability-matrix.md`](slice-2-capability-matrix.md)),
+changes nothing here while delegated view grants stay off; if they are adopted,
+`shown` gains one optional key, `via` (slice 2 §6).
 
 Executable checklist: [`fixtures/host_contract.json`](fixtures/host_contract.json),
 run by [`fixtures/host_contract_reference.py`](fixtures/host_contract_reference.py)

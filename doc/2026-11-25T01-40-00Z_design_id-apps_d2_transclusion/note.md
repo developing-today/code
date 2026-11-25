@@ -9,9 +9,10 @@ and D1 slice 1, the `id://` URI scheme
 Status: slice 1 (embed object semantics) and slice 3 (cycles and bounds)
 are designed here and checked by a stdlib reference. Slice 4, the host
 rendering contract, is in [`slice-4-host-contract.md`](slice-4-host-contract.md)
-with its own checklist. Slice 2 (the full capability matrix and any delegated
-view) is not designed yet; §7 records the capability default this slice relies
-on and the leak case it already covers.
+with its own checklist. Slice 2, the capability matrix and the delegated
+view grant (off by default), is in
+[`slice-2-capability-matrix.md`](slice-2-capability-matrix.md); §7 here
+records the default it builds on.
 
 ## 1. Problem
 
@@ -194,9 +195,10 @@ Together these make every render finite: depth bounds the height,
   sees the document (`private-target-owner`). The attack fails by
   design, not by a host's discretion.
 
-Whether ID should also offer a delegated, scoped, read-only view through
-an embed (so public embedding of restricted content can be a deliberate,
-recorded choice) is slice 2's question and is not decided here.
+Slice 2 ([`slice-2-capability-matrix.md`](slice-2-capability-matrix.md))
+gives the full matrix and specifies a delegated, scoped, read-only view
+grant, off by default, so public embedding of restricted content can only
+ever be a deliberate, recorded choice by the target's manager.
 
 ## 8. Fixtures and the reference
 
@@ -257,9 +259,9 @@ cannot read its target.
 3. **Should a collection snapshot also badge removed members?** Answered
    by slice 4 §3.5: no. Additions only; a host shows removals from the
    nest's own history.
-4. **Delegated scoped view** (slice 2): whether an embed may ever confer
-   a read-only, possibly expiring view of a target the viewer cannot
-   otherwise read.
+4. **Delegated scoped view**: specified by slice 2 §4 as a manager-issued,
+   snapshot-only, expiring view grant and kept off by default. Whether to
+   turn it on is Drew's decision (slice 2 §7).
 
 ## 11. Compatibility
 
