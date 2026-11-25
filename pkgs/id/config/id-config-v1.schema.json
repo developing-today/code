@@ -39,8 +39,27 @@
       "properties": {
         "deadline_ms": { "default": 5000, "maximum": 60000, "minimum": 1, "type": "integer" },
         "peer_breadth": { "default": 4, "maximum": 16, "minimum": 1, "type": "integer" },
-        "per_peer_timeout_ms": { "default": 2000, "maximum": 30000, "minimum": 1, "type": "integer" }
+        "per_peer_timeout_ms": { "default": 2000, "maximum": 30000, "minimum": 1, "type": "integer" },
+        "remotes": {
+          "default": [],
+          "description": "The peers fan-out queries may ask (record section 7.1). Default [] (local-only). Resolved output is sorted by priority, ties in list order, with each remote's effective timeout_ms and scope filled in.",
+          "items": { "$ref": "#/$defs/fanout_remote" },
+          "type": "array"
+        }
       },
+      "type": "object"
+    },
+    "fanout_remote": {
+      "additionalProperties": false,
+      "description": "One fan-out remote (#9111 record sections 7.1 to 7.3). peer_id must have a peers[] entry granting query.out whose class is fully_trusted or accept_signed_from, and appears at most once. relay true needs a fully_trusted peer with relay_granted. priority is ask order only, never authority. timeout_ms overrides the peer and fan-out per-peer timeout and is capped by deadline_ms; scope defaults to the peer's scope.",
+      "properties": {
+        "peer_id": { "minLength": 1, "type": "string" },
+        "priority": { "maximum": 4294967295, "minimum": 0, "type": "integer" },
+        "relay": { "default": false, "type": "boolean" },
+        "scope": { "minLength": 1, "type": ["string", "null"] },
+        "timeout_ms": { "maximum": 30000, "minimum": 1, "type": ["integer", "null"] }
+      },
+      "required": ["peer_id", "priority"],
       "type": "object"
     },
     "fixed_gates": {

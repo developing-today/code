@@ -32,6 +32,7 @@ use serde::{Deserialize, Serialize};
 
 pub mod explain;
 pub mod peers;
+pub mod remotes;
 pub mod resolve;
 pub mod rollout;
 pub mod storage;
@@ -39,6 +40,7 @@ pub mod tiers;
 
 pub use explain::{ExplainEntry, Explanation, explain};
 pub use peers::{PeerClass, PeerEntry, PeerOperation};
+pub use remotes::FanoutRemote;
 pub use resolve::{LayerOverride, ResolutionInput, ResolveError, ResolvedLayers, resolve};
 pub use rollout::{
     AdapterCapabilities, AdapterSet, CapabilityFailure, CapabilityValidator, ExternalEffect,
@@ -294,9 +296,9 @@ const fn default_peer_breadth() -> u32 {
 /// operator sees the mistake. The hop limit is `ceilings.max_hops`, bounded
 /// by [`MAX_HOPS_LIMIT`].
 ///
-/// `fanout.remotes[]` is not here yet: it names entries of the `peers[]`
-/// plane ([`PeerEntry`]) and lands with a later part of slice 9111-03.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+/// `fanout.remotes[]` names entries of the `peers[]` plane
+/// ([`PeerEntry`]); see [`FanoutRemote`] for its rules.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Fanout {
     /// Whole fan-out query deadline in milliseconds. Default 5000.
@@ -311,6 +313,13 @@ pub struct Fanout {
     /// How many peers one query asks at once. Default 4.
     #[serde(default = "default_peer_breadth")]
     pub peer_breadth: u32,
+    /// The peers fan-out queries may ask (record §7.1). Default `[]`:
+    /// local-only. Omitted from the canonical encoding when empty, so a
+    /// document without remotes keeps the digest it had before the list
+    /// existed. The resolved list is sorted by priority and each entry
+    /// carries its effective timeout and scope.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub remotes: Vec<FanoutRemote>,
 }
 
 impl Default for Fanout {
@@ -319,6 +328,7 @@ impl Default for Fanout {
             deadline_ms: default_deadline_ms(),
             per_peer_timeout_ms: default_per_peer_timeout_ms(),
             peer_breadth: default_peer_breadth(),
+            remotes: Vec::new(),
         }
     }
 }
@@ -346,17 +356,17 @@ impl Fanout {
     /// The resolved form.
     ///
     /// The per-peer timeout is clamped to the deadline (record §7.1 and
-    /// §7.2); every other key is as written.
+    /// §7.2), and the remotes are sorted by priority with their effective
+    /// timeout and scope filled in from `peers`; every other key is as
+    /// written.
     #[must_use]
-    pub const fn resolved(self) -> Self {
-        let per_peer_timeout_ms = if self.per_peer_timeout_ms > self.deadline_ms {
-            self.deadline_ms
-        } else {
-            self.per_peer_timeout_ms
-        };
+    pub fn resolved(&self, peers: &[PeerEntry]) -> Self {
+        let per_peer_timeout_ms = self.per_peer_timeout_ms.min(self.deadline_ms);
         Self {
+            deadline_ms: self.deadline_ms,
             per_peer_timeout_ms,
-            ..self
+            peer_breadth: self.peer_breadth,
+            remotes: remotes::resolved(&self.remotes, peers, per_peer_timeout_ms, self.deadline_ms),
         }
     }
 }
@@ -736,6 +746,29 @@ pub enum ConfigError {
     /// `storage.object_store.retention_class` is empty.
     #[error("storage.object_store.retention_class must not be empty; omit it for the default")]
     EmptyRetentionClass,
+    /// A fan-out remote names a peer with no `peers[]` entry.
+    #[error("fanout.remotes[] peer_id {0:?} has no peers[] entry")]
+    UnknownRemotePeer(String),
+    /// A peer is listed twice in `fanout.remotes[]`.
+    #[error("fanout.remotes[] lists peer {0:?} more than once")]
+    DuplicateRemote(String),
+    /// A fan-out remote names a peer that can never be asked.
+    #[error("fanout.remotes[] peer {peer_id:?} can never be asked: {rule}")]
+    RemoteNotAskable {
+        /// The peer.
+        peer_id: String,
+        /// Why it can't be asked.
+        rule: &'static str,
+    },
+    /// A fan-out remote asks to relay through a peer that is not
+    /// `fully_trusted` with `relay_granted` (record §7.3).
+    #[error(
+        "fanout.remotes[] peer {0:?} has relay true but is not fully_trusted with relay_granted"
+    )]
+    RemoteRelayNotGranted(String),
+    /// A fan-out remote's `scope` is present but empty.
+    #[error("fanout.remotes[] peer {0:?} scope must not be empty; omit it for the peer's scope")]
+    EmptyRemoteScope(String),
     /// A tier identifier is empty, too long, or uses a character other
     /// than ASCII letters, digits, `-` and `_`.
     #[error("tier id {0:?} must be 1 to 64 ASCII letters, digits, '-' or '_' (record section 3.5)")]
@@ -860,6 +893,7 @@ impl ConfigDocument {
             return Err(ConfigError::FixedGateDisabled(gate));
         }
         peers::validate(&self.peers)?;
+        remotes::validate(&self.fanout.remotes, &self.peers)?;
         self.storage.validate()?;
         tiers::validate(&self.tiers, &self.storage)?;
         for key in self.extensions.keys() {
@@ -981,7 +1015,7 @@ impl ConfigDocument {
             behavior,
             provenance,
             extensions: self.extensions.clone(),
-            fanout: self.fanout.resolved(),
+            fanout: self.fanout.resolved(&self.peers),
             peers: peers::resolved(&self.peers),
             storage: self.storage.resolved(),
             tiers: tiers::resolved(&self.tiers),
