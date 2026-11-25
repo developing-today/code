@@ -130,6 +130,7 @@ import { contact, Push } from "../../src/push.ts";
 import { goesBy, platformSettings, settingsDifferences, settingsThatDiffer } from "../../src/settings.ts";
 import { timed, unread } from "../../src/timed.ts";
 import appFiles from "../../public/files.json";
+import { decisionPage } from "./decision-pages.ts";
 
 /** The app's files and what each is served as: public/files.json is the
  * one list of them, and this Worker's build ships exactly those. */
@@ -140,6 +141,7 @@ export class Edge {
   private now: () => number;
   private fetchImpl: typeof fetch;
   private direct?: EdgeOptions["direct"];
+  private decisionEvents?: EdgeOptions["decisionEvents"];
   /** The console's own classes, wired for the edge and kept for as long
    * as the settings they were made for stand. */
   private kept: (DirectClasses & { cfg: EdgeConfig; table: Record<string, Action>; recalled: boolean }) | null = null;
@@ -273,6 +275,7 @@ export class Edge {
       () => this.confirmed,
     );
     this.direct = options.direct;
+    this.decisionEvents = options.decisionEvents;
     this.sockets = options.sockets ?? null;
     const setAlarm = options.setAlarm ?? (async () => {});
     this.setAlarm = async (at) => {
@@ -1906,6 +1909,14 @@ export class Edge {
       return next("relay", { mode: "page" });
     }
     const by = who.email ?? who.certName ?? who.sub ?? who.via;
+    if (this.decisionEvents && (path === "/decisions" || path.startsWith("/decisions/"))) {
+      const response = await decisionPage(req, {
+        secret: this.decisionEvents.secret,
+        read: (upstream) => this.decisionEvents!.fetch(upstream),
+        now: this.now,
+      });
+      if (response) return response;
+    }
     const ours = path === BASE || path.startsWith(`${BASE}/`);
     if (!ours) {
       // The front door is the app; every other page is the host's.

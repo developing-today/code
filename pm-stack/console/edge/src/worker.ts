@@ -31,6 +31,9 @@ interface Env {
    * from the bridge; without either, those stay a machine's. */
   BRIDGE?: { fetch(request: Request): Promise<Response> };
   BRIDGE_TOKEN?: string;
+  /** Server-side credential for the decision-events authenticated GET routes. */
+  DECISION_EVENTS_SECRET?: string;
+  DECISION_EVENTS?: { fetch(request: Request): Promise<Response> };
   /** Local development only: where GitHub's API and the queue store
    * are, when they are stand-ins. Never set where this is deployed: the
    * Worker's tokens are sent to whatever these name. */
@@ -104,6 +107,10 @@ export class PmEdge extends DurableObject<Env> {
         queueDb: env.QUEUE_DB_ORIGIN,
         fetchImpl: fetch,
       },
+      decisionEvents: env.DECISION_EVENTS ? {
+        secret: env.DECISION_EVENTS_SECRET,
+        fetch: (request) => env.DECISION_EVENTS!.fetch(request),
+      } : undefined,
       // Live connections to the app. The platform holds them, so they
       // stay open while this object is put away between events, and it
       // is woken (by its alarm) only when there is something to read.
