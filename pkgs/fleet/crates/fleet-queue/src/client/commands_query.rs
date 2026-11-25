@@ -131,6 +131,55 @@ pub(super) fn cmd_meta(rest: &[String]) -> i32 {
     0
 }
 
+/// Stewardship staleness read (#14170 Q8): one broker call returns the
+/// actionable tasks whose last history transition is older than the
+/// threshold plus the claims near their lease cap.
+pub(super) fn cmd_staleness(rest: &[String]) -> i32 {
+    let args = parse_verb_args(
+        "staleness",
+        rest,
+        &["queue", "older-than-seconds", "lease-cap-seconds", "limit"],
+        &[],
+    );
+    reject_extra_pos("staleness", &args, 0);
+    let mut req = json!({});
+    if let Some(q) = args.get("queue") {
+        req["queue"] = json!(q);
+    }
+    if let Some(v) = args.get_i64("older-than-seconds") {
+        req["older_than_seconds"] = json!(v);
+    }
+    if let Some(v) = args.get_i64("lease-cap-seconds") {
+        req["lease_cap_seconds"] = json!(v);
+    }
+    if let Some(v) = args.get_i64("limit") {
+        req["limit"] = json!(v);
+    }
+    let resp = unwrap_ok(call("/staleness", &req));
+    print_json(&resp);
+    0
+}
+
+/// Stewardship needs-user read (#14170 Q8): blocked/parked tasks with an
+/// open `question` metadata entry, oldest first.
+pub(super) fn cmd_needs_user(rest: &[String]) -> i32 {
+    let args = parse_verb_args("needs-user", rest, &["queue", "state", "limit"], &[]);
+    reject_extra_pos("needs-user", &args, 0);
+    let mut req = json!({});
+    if let Some(q) = args.get("queue") {
+        req["queue"] = json!(q);
+    }
+    if let Some(s) = args.get("state") {
+        req["state"] = json!(s);
+    }
+    if let Some(v) = args.get_i64("limit") {
+        req["limit"] = json!(v);
+    }
+    let resp = unwrap_ok(call("/needs-user", &req));
+    print_json(&resp);
+    0
+}
+
 pub(super) fn cmd_validate(rest: &[String]) -> i32 {
     let args = parse_verb_args("validate", rest, &[], &[]);
     reject_extra_pos("validate", &args, 1);
@@ -1162,7 +1211,9 @@ pub(super) fn cmd_timeline(verb: &str, rest: &[String]) -> i32 {
     let json_out = args.has("json");
     if events.is_empty() && notes.is_empty() {
         if json_out {
-            print_json(&json!({"task_id": task_id, "events": [], "notes": [], "story": [], "served": []}));
+            print_json(
+                &json!({"task_id": task_id, "events": [], "notes": [], "story": [], "served": []}),
+            );
             return 0;
         }
         println!("task {task_id}: no timeline records");

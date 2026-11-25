@@ -13,7 +13,8 @@
       "workflow": "pm-console-edge-deploy.yml",
       "runDeploys": true,
       "address": "https://pm.security.cab",
-      "next": "The platform the others join."
+      "next": "The platform the others join.",
+      "lastDeployedCommit": null
     },
     {
       "name": "message-bridge",
@@ -22,10 +23,11 @@
       "path": "pkgs/message-bridge/worker",
       "does": "The custom connector Claude and ChatGPT use to send and receive messages, and the page that sends one and shows the history.",
       "state": "in service",
-      "deploy": "by hand",
-      "workflow": null,
+      "deploy": "actions",
+      "workflow": "message-bridge-deploy.yml",
       "address": "https://bridge.security.cab",
-      "next": "Deployed from Actions, stood up, checked and rolled back the way the PM console is; listed here with its last deploy."
+      "next": "Deployed from Actions, stood up, checked and rolled back the way the PM console is; listed here with its last deploy.",
+      "lastDeployedCommit": null
     },
     {
       "name": "decision-events",
@@ -37,7 +39,8 @@
       "deploy": "actions",
       "workflow": "decision-events-worker-deploy.yml",
       "address": "https://decision-events.developing-today.workers.dev",
-      "next": "Deployed from Actions with VERSION set to the full commit SHA and /health required to report that exact SHA. The broader PM migration will add the console's staged route-flip and rollback flow."
+      "next": "Deployed from Actions with VERSION set to the full commit SHA and /health required to report that exact SHA. The broader PM migration will add the console's staged route-flip and rollback flow.",
+      "lastDeployedCommit": null
     },
     {
       "name": "pm-notify",
@@ -61,7 +64,8 @@
       "deploy": "actions",
       "workflow": "mcpx-worker-publish.yml",
       "address": "https://mcpx.security.cab",
-      "next": "Publishes a version from Actions; promotion to live is its own workflow."
+      "next": "Publishes a version from Actions; promotion to live is its own workflow.",
+      "lastDeployedCommit": null
     },
     {
       "name": "queue-transport-alert",
@@ -73,7 +77,8 @@
       "deploy": "actions",
       "workflow": "queue-transport-alert-deploy.yml",
       "address": "https://queue-transport-alert.developing-today.workers.dev",
-      "next": "Deployed from Actions, stood up, checked and rolled back the way the PM console is; listed here with its last deploy. Its alert becomes one of the PM app's notifications."
+      "next": "Deployed from Actions, stood up, checked and rolled back the way the PM console is; listed here with its last deploy. Its alert becomes one of the PM app's notifications.",
+      "lastDeployedCommit": null
     },
     {
       "name": "github-ci",
@@ -85,7 +90,8 @@
       "deploy": "by hand",
       "workflow": null,
       "address": "https://github-ci.developing-today.workers.dev",
-      "next": "Deployed from Actions, stood up, checked and rolled back the way the PM console is; listed here with its last deploy."
+      "next": "Deployed from Actions, stood up, checked and rolled back the way the PM console is; listed here with its last deploy.",
+      "lastDeployedCommit": null
     },
     {
       "name": "voice-line",
@@ -94,10 +100,11 @@
       "path": "pm-stack/voice-line-worker",
       "does": "Talk to the fleet and hear the answer: push-to-talk over a WebSocket held in a Durable Object.",
       "state": "in service",
-      "deploy": "by hand",
-      "workflow": null,
+      "deploy": "actions",
+      "workflow": "voice-line-worker-deploy.yml",
       "address": "https://voice-line.developing-today.workers.dev",
-      "next": "Deployed from Actions, stood up, checked and rolled back the way the PM console is; listed here with its last deploy. A spoken prompt goes in as any other prompt from the app does."
+      "next": "Deployed from Actions, stood up, checked and rolled back the way the PM console is; listed here with its last deploy. A spoken prompt goes in as any other prompt from the app does.",
+      "lastDeployedCommit": null
     },
     {
       "name": "muse-agent-handoff",
@@ -106,10 +113,11 @@
       "path": "scripts/muse/handoff/worker",
       "does": "Passes a new Muse lane its two access tokens once, as ciphertext that expires in fifteen minutes and can be claimed once.",
       "state": "in service",
-      "deploy": "by hand",
-      "workflow": null,
+      "deploy": "actions",
+      "workflow": "muse-handoff-upload.yml",
       "address": "https://muse-agent-handoff.developing-today.workers.dev",
-      "next": "Deployed from Actions, stood up, checked and rolled back the way the PM console is; listed here with its last deploy."
+      "next": "Deployed from Actions, stood up, checked and rolled back the way the PM console is; listed here with its last deploy.",
+      "lastDeployedCommit": null
     },
     {
       "name": "desktop-commander",
@@ -118,10 +126,11 @@
       "path": "pkgs/desktop-commander/worker",
       "does": "The fleet's own relay for remote desktop commands, in place of the vendor's metered one.",
       "state": "in service",
-      "deploy": "by hand",
-      "workflow": null,
+      "deploy": "actions",
+      "workflow": "desktop-commander-worker-publish.yml",
       "address": "https://desktop-commander.developing-today.workers.dev",
-      "next": "Deployed from Actions, stood up, checked and rolled back the way the PM console is; listed here with its last deploy."
+      "next": "Deployed from Actions, stood up, checked and rolled back the way the PM console is; listed here with its last deploy.",
+      "lastDeployedCommit": null
     },
     {
       "name": "fleet-hosted",
@@ -129,11 +138,12 @@
       "group": "fleet",
       "path": "pkgs/fleet/hosted-worker",
       "does": "The hosted fleet's doors (stamping, query, queue, ingestion, sync) behind one sign-in and tenancy layer.",
-      "state": "not deployed",
-      "deploy": "none",
+      "state": "in service",
+      "deploy": "by hand",
       "workflow": null,
-      "address": null,
-      "next": "Local only until its own issue deploys it. Its queue door is how the edge will file, cancel and unblock tasks with no machine."
+      "address": "https://fleet-hosted.developing-today.workers.dev",
+      "next": "Deployed by #14870 (2026-11-25) via Cloudflare versions with the queue door on the fleet-queue D1 database. The other doors' production wiring (RP issuer, tenancy DB, GitHub App material) is still owned elsewhere; until it lands they fail closed. Its queue door is how the edge will file, cancel and unblock tasks with no machine.",
+      "lastDeployedCommit": null
     },
     {
       "name": "atlas-search",
@@ -145,7 +155,8 @@
       "deploy": "by hand",
       "workflow": null,
       "address": "https://atlas-search.developing-today.workers.dev",
-      "next": "Deployed from Actions, stood up, checked and rolled back the way the PM console is; listed here with its last deploy."
+      "next": "Deployed from Actions, stood up, checked and rolled back the way the PM console is; listed here with its last deploy.",
+      "lastDeployedCommit": null
     },
     {
       "name": "cold-store-rehydrator",
@@ -157,7 +168,8 @@
       "deploy": "by hand",
       "workflow": null,
       "address": "https://cold-store-rehydrator.developing-today.workers.dev",
-      "next": "Deployed from Actions, stood up, checked and rolled back the way the PM console is; listed here with its last deploy."
+      "next": "Deployed from Actions, stood up, checked and rolled back the way the PM console is; listed here with its last deploy.",
+      "lastDeployedCommit": null
     },
     {
       "name": "developing-today-backup",
@@ -166,10 +178,11 @@
       "path": "infra/github-backup/worker",
       "does": "The webhook half of the GitHub mirrors: tells the mirrors what changed so they stay fresh.",
       "state": "in service",
-      "deploy": "by hand",
-      "workflow": null,
+      "deploy": "actions",
+      "workflow": "github-backup-worker-release.yml",
       "address": "https://developing-today-backup.developing-today.workers.dev",
-      "next": "Deployed from Actions, stood up, checked and rolled back the way the PM console is; listed here with its last deploy."
+      "next": "Deployed from Actions, stood up, checked and rolled back the way the PM console is; listed here with its last deploy.",
+      "lastDeployedCommit": null
     },
     {
       "name": "fleet-git-rehost",
@@ -181,7 +194,8 @@
       "deploy": "by hand",
       "workflow": null,
       "address": "https://git.security.cab",
-      "next": "Deployed by hand with its deploy.sh; the backup laptop's publisher refreshes what it serves (#8584)."
+      "next": "Deployed by hand with its deploy.sh; the backup laptop's publisher refreshes what it serves (#8584).",
+      "lastDeployedCommit": null
     },
     {
       "name": "pkarr",
@@ -193,7 +207,8 @@
       "deploy": "actions",
       "workflow": "pkarr-worker-deploy.yml",
       "address": "https://pkarr.developing-today.workers.dev",
-      "next": "Already deployed from Actions, in two confirmed steps (upload, then promote), so a run that succeeded is not always a deploy. Listed here with its last run."
+      "next": "Already deployed from Actions, in two confirmed steps (upload, then promote), so a run that succeeded is not always a deploy. Listed here with its last run.",
+      "lastDeployedCommit": null
     },
     {
       "name": "id-hosted-worker",
@@ -241,7 +256,8 @@
       "deploy": "by hand",
       "workflow": null,
       "address": "https://lab-ops-hub.developing-today.workers.dev",
-      "next": "Deployed from Actions, stood up, checked and rolled back the way the PM console is; listed here with its last deploy. Its container images are already built by Actions."
+      "next": "Deployed from Actions, stood up, checked and rolled back the way the PM console is; listed here with its last deploy. Its container images are already built by Actions.",
+      "lastDeployedCommit": null
     },
     {
       "name": "cf-container-hello",
@@ -253,7 +269,8 @@
       "deploy": "by hand",
       "workflow": null,
       "address": "https://cf-container-hello.developing-today.workers.dev",
-      "next": "A debugging aid: taken down once the lab hub's containers start reliably, or listed with the rest."
+      "next": "A debugging aid: taken down once the lab hub's containers start reliably, or listed with the rest.",
+      "lastDeployedCommit": null
     }
   ]
 }

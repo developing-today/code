@@ -416,7 +416,7 @@ pub const DOMAINS: &[Domain] = &[
         capabilities: &[Capability::Search],
         primary: Capability::Search,
         aliases: &["atlas-search"],
-        subcommands: &["search", "get-chunk", "serve"],
+        subcommands: &["search", "get-chunk", "serve", "backup"],
     },
     Domain {
         name: "cert",
