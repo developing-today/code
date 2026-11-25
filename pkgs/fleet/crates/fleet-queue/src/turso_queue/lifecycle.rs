@@ -2939,7 +2939,7 @@ mod task_labels_tests {
 
     fn packet(number: i64) -> Value {
         json!({
-            "title": format!("labels oracle {number}"), "priority": 60,
+            "title": format!("labels oracle {number}"), "priority": 50,
             "dedupe_key": format!("repo-health:v1:fix:developing-today/code:issue:{number}"),
             "payload": {
                 "schema": "repo-task/v1", "kind": "small_fix",
@@ -3050,10 +3050,11 @@ mod task_labels_tests {
 
         // A transition refreshes too: the claim re-reads the mirror.
         set_mirror_labels(&conn, 14170, r#"["user/hold"]"#);
-        let c = verb_claim(&t, &json!({"worker": "w", "queue": QUEUE, "task_id": held, "lane": "code-oracle",
+        let c = verb_claim(&t, &json!({"worker": "w", "queue": QUEUE, "lane": "code-oracle",
                     "session_id": "ses_labels", "model_provider": "anthropic",
                     "model_id": "claude-haiku-5-5", "model_variant": "default"}));
         assert_eq!(c["ok"], true, "{c}");
+        assert_eq!(c["row"]["id"].as_i64(), Some(held), "oldest equal-priority task is claimed first: {c}");
         assert_eq!(cache(&t, held).0, json!(["user/hold"]));
 
         // The rich row carries the cache and its stamp for `show`.
@@ -3083,7 +3084,11 @@ mod task_labels_tests {
         assert_eq!(forced["stamped"], 1, "{forced}");
         assert_eq!(cache(&t, id).0, json!(["user/hold"]));
 
-        let full = verb_sweep(&t, &json!({"labels_sync_force": true}));
+        let full = verb_sweep(
+            &t,
+            &json!({"labels_sync_force": true, "dep_recheck": false,
+                    "quarantine_recheck": false, "closed_bound": false}),
+        );
         assert_eq!(full["ok"], true, "{full}");
         assert_eq!(full["row"]["labels_sync"]["scope"], "actionable", "{full}");
     }
