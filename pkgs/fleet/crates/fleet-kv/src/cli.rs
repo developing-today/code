@@ -58,7 +58,9 @@ is FLEET_KV_URL with a bearer token in the file FLEET_KV_TOKEN_FILE;
 without them --global and sync exit 69 with central_not_configured.
 
 After the first sync this host knows which namespaces exist: any other
-namespace is refused with unknown_namespace. --force-blob (blob placement)
+namespace is refused with unknown_namespace, and get and list also read
+the caller's central keys (cached for at most 1 s; --allow-stale reads an
+expired cache when central is unreachable). --force-blob (blob placement)
 arrives in Phase 3 and is refused with pending_needs_phase3 (exit 69).
 
 Exit codes: 0 ok, 1 typed refusal (malformed_key, not_found, conflict,
@@ -66,9 +68,9 @@ unknown_namespace, backup_target_exists, not_a_snapshot, ...),
 2 usage error, 69 unavailable.
 ";
 
-const GET_USAGE: &str = "usage: fleet kv get [--global] --namespace NS KEY\n\nPrint the value's bytes exactly. A missing or masked key exits 1 with not_found.\n--global reads the authoritative central head instead of this host's overlay.\n";
+const GET_USAGE: &str = "usage: fleet kv get [--global | --allow-stale] [--verbose] --namespace NS KEY\n\nPrint the value's bytes exactly: this host's overlay first, then (after a sync)\nthe central head, cached for at most 1 s. A missing or masked key exits 1 with\nnot_found. Central unreachable: unavailable, or stale for an expired cached head\n(exit 69); --allow-stale reads that head anyway. --verbose prints the source to\nstderr. --global reads the authoritative central head instead.\n";
 const SET_USAGE: &str = "usage: fleet kv set [--global [--expect VERSION]] --namespace NS KEY (VALUE | --stdin)\n\nStore bytes as a new local version and queue it for the sweep. Prints the version.\n--global writes central directly by compare-and-swap; --expect VERSION (0 for\nabsent) fails with conflict unless central is still at VERSION.\n";
-const LIST_USAGE: &str = "usage: fleet kv list [--global] --namespace NS [--include-tombstones]\n\nOne line per key: KEY<TAB>VERSION<TAB>ORIGIN (local, masked or central).\n";
+const LIST_USAGE: &str = "usage: fleet kv list [--global | --allow-stale] [--verbose] --namespace NS [--include-tombstones]\n\nOne line per key: KEY<TAB>VERSION<TAB>ORIGIN, where ORIGIN is local, central,\nboth or masked. --verbose adds each central row a local row hides\n(shadowed-by-local). --allow-stale lists local rows when central is unreachable.\n";
 const DELETE_USAGE: &str = "usage: fleet kv delete [--global [--expect VERSION]] --namespace NS KEY\n\nWrite a masking tombstone: the key reads absent here and sweeps as a mask.\n--global writes the tombstone to central directly by compare-and-swap.\n";
 const SYNC_USAGE: &str = "usage: fleet kv sync\n\nPull this host's namespace definitions from central, then sweep this session's\npending intents into central by compare-and-swap. Prints a summary line, then\none line per conflict or waiting key.\n";
 const CLEAR_USAGE: &str = "usage: fleet kv clear-override --namespace NS KEY\n\nDrop the local overlay row, advance the key's fence and cancel unsent sweep\nintents. History is kept. Busy for over 5 s: clear_busy_try_again.\n";
