@@ -246,11 +246,11 @@ fi
 if manifest_json missing-optional | python3 -c '
 import json, sys
 m = json.load(sys.stdin)
-sys.exit(0 if len(m.get("expected", [])) == 41 else 1)
+sys.exit(0 if len(m.get("expected", [])) == 46 else 1)
 '; then
-  ok "missing-optional: manifest lists all 41 expected members"
+  ok "missing-optional: manifest lists all 46 expected members"
 else
-  fail "missing-optional: manifest expected list is not the full 41-member set"
+  fail "missing-optional: manifest expected list is not the full 46-member set"
 fi
 
 # --- decisions ledger is required (#10293) -----------------------------------
