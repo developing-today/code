@@ -343,6 +343,23 @@
       "notes": "The native-shell check runs every integration target in this non-default workspace member; suite paths trued up 2026-11-17 while repairing the registry ratchet (#10329)."
     },
     {
+      "id": "id.android-remote.session",
+      "paths": [
+        "pkgs/id/crates/id-android-remote/src/lib.rs",
+        "pkgs/id/crates/id-android-remote/tests/*.rs"
+      ],
+      "invocation": "nix flake check ./pkgs/id (check test-android-remote runs cargo nextest -p id-android-remote)",
+      "venue": {
+        "workflow": ".github/workflows/id-check.yml",
+        "job_step": "check_each / test-android-remote",
+        "state": "active",
+        "dispatchable": true
+      },
+      "status": "mapped",
+      "related_issues": [1831],
+      "notes": "The Android remote-drive bridge test uses the embedded shell contract and an in-process Iroh WorldService host; the crate is a non-default workspace member and has a dedicated Nix check."
+    },
+    {
       "id": "id.tui-shell.capability-statement",
       "paths": ["pkgs/id/crates/id-tui-shell/tests/*.rs"],
       "invocation": "nix flake check ./pkgs/id (check test-tui-shell runs cargo nextest -p id-tui-shell)",

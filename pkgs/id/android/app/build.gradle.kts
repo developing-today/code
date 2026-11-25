@@ -3,6 +3,25 @@ plugins {
     id("org.jetbrains.kotlin.android")
 }
 
+val buildAndroidRemote by tasks.registering(Exec::class) {
+    workingDir = rootProject.projectDir.resolve("..")
+    commandLine(
+        "cargo",
+        "ndk",
+        "-t", "arm64-v8a",
+        "-t", "x86_64",
+        "-p", "26",
+        "-o", "android/app/src/main/jniLibs",
+        "build",
+        "--release",
+        "-p", "id-android-remote",
+    )
+}
+
+tasks.named("preBuild").configure {
+    dependsOn(buildAndroidRemote)
+}
+
 android {
     namespace = "org.developingtoday.id"
     compileSdk = 35
