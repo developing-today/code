@@ -57,6 +57,25 @@ describe("server boots from fixtures", () => {
     expect(body.source.board).toBe("fixtures");
   });
 
+  test("search routes expose in-process stage timings", async () => {
+    // Oracle: each named timing is recorded by the search path while it runs
+    // and is returned in the standard Server-Timing response header.
+    const expected = ["board", "roadmap", "registry", "dns", "usage", "orchestration", "items", "search"];
+    const json = await fetch(`http://127.0.0.1:${port}/api/search.json?q=fleet`);
+    expect(json.status).toBe(200);
+    const jsonTiming = json.headers.get("server-timing") ?? "";
+    for (const stage of [...expected, "serialize"]) {
+      expect(jsonTiming).toMatch(new RegExp(`(?:^|,\\s*)${stage};dur=\\d+(?:\\.\\d+)?`));
+    }
+
+    const page = await fetch(`http://127.0.0.1:${port}/search?q=fleet`);
+    expect(page.status).toBe(200);
+    const pageTiming = page.headers.get("server-timing") ?? "";
+    for (const stage of [...expected, "render"]) {
+      expect(pageTiming).toMatch(new RegExp(`(?:^|,\\s*)${stage};dur=\\d+(?:\\.\\d+)?`));
+    }
+  });
+
   test("item JSON exposes ready-for-agent dispatch state and provenance", async () => {
     const id = "kaneo:code/fx0dispatchtrial0000107";
     const res = await fetch(`http://127.0.0.1:${port}/api/item/${encodeURIComponent(id)}.json`);
