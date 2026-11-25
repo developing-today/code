@@ -70,6 +70,7 @@ pub fn z32_encode(bytes: &[u8]) -> String {
 fn push_name(out: &mut Vec<u8>, labels: &[&str]) {
     for label in labels {
         // Both labels are fixed-shape ASCII under 64 bytes.
+        #[allow(clippy::cast_possible_truncation)]
         out.push(label.len() as u8);
         out.extend_from_slice(label.as_bytes());
     }
@@ -111,6 +112,8 @@ pub fn dns_packet(world_key: &[u8; 32], signed: &[u8]) -> Result<Vec<u8>> {
     );
     let mut rdata = Vec::with_capacity(signed.len() + signed.len().div_ceil(255));
     for chunk in signed.chunks(255) {
+        // `chunks(255)` yields at most 255 bytes, so the length fits.
+        #[allow(clippy::cast_possible_truncation)]
         rdata.push(chunk.len() as u8);
         rdata.extend_from_slice(chunk);
     }
@@ -403,7 +406,7 @@ impl Publisher {
 
     /// When the next heartbeat is due, once anything was published.
     #[must_use]
-    pub fn next_heartbeat_at(&self) -> Option<u64> {
+    pub const fn next_heartbeat_at(&self) -> Option<u64> {
         self.next_heartbeat_at
     }
 
