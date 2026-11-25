@@ -1,4 +1,4 @@
-import { test, expect, type Page } from "@playwright/test";
+import { test as base, expect, type Page } from "@playwright/test";
 
 /**
  * Offline service worker E2E (#14774 slice 2, design #13918).
@@ -20,6 +20,26 @@ import { test, expect, type Page } from "@playwright/test";
  * - Web variant must be built first (`just build`)
  * - Server starts automatically via playwright.config.ts webServer
  */
+
+// Firefox keeps localhost reachable in offline mode unless told not to
+// (network.disable-localhost-when-offline defaults to false), and every
+// runner serves the app from localhost. Without this pref "offline" would
+// still reach the server and the spec would prove nothing. Chromium
+// ignores firefoxUserPrefs.
+const test = base.extend({
+  launchOptions: [
+    async ({ launchOptions }, use) => {
+      await use({
+        ...launchOptions,
+        firefoxUserPrefs: {
+          ...launchOptions.firefoxUserPrefs,
+          "network.disable-localhost-when-offline": true,
+        },
+      });
+    },
+    { scope: "worker" },
+  ],
+});
 
 const SHELL_PREFIX = "id-shell-";
 const PAGES_PREFIX = "id-pages-";
