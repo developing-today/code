@@ -117,7 +117,7 @@ pub use projection::*;
 mod render;
 pub use render::*;
 mod validation;
-use validation::sha256_hex;
+use validation::{is_public_key, sha256_hex};
 
 /// Signed-artifact kind used for all typed board objects in v1.
 pub const BOARD_OBJECT_KIND: &str = "board_object.v1";
