@@ -112,9 +112,9 @@ impl GalleryPkarrPointer {
         let mut hash = None;
         let mut seen_version = false;
         for part in txt.split(';') {
-            let (key, value) = part.split_once('=').ok_or_else(|| {
-                BundleError::Manifest("pkarr pointer part has no '='".to_owned())
-            })?;
+            let (key, value) = part
+                .split_once('=')
+                .ok_or_else(|| BundleError::Manifest("pkarr pointer part has no '='".to_owned()))?;
             match key {
                 "v" => {
                     if value != POINTER_ENCODING_VERSION.to_string() {
@@ -140,15 +140,18 @@ impl GalleryPkarrPointer {
             }
         }
         let pointer = Self {
-            author: author
-                .ok_or_else(|| BundleError::Manifest("pkarr pointer is missing 'author'".to_owned()))?,
-            name: name
-                .ok_or_else(|| BundleError::Manifest("pkarr pointer is missing 'name'".to_owned()))?,
+            author: author.ok_or_else(|| {
+                BundleError::Manifest("pkarr pointer is missing 'author'".to_owned())
+            })?,
+            name: name.ok_or_else(|| {
+                BundleError::Manifest("pkarr pointer is missing 'name'".to_owned())
+            })?,
             version: version.ok_or_else(|| {
                 BundleError::Manifest("pkarr pointer is missing 'version'".to_owned())
             })?,
-            content_hash: hash
-                .ok_or_else(|| BundleError::Manifest("pkarr pointer is missing 'hash'".to_owned()))?,
+            content_hash: hash.ok_or_else(|| {
+                BundleError::Manifest("pkarr pointer is missing 'hash'".to_owned())
+            })?,
         };
         if !seen_version {
             return Err(BundleError::Manifest(

@@ -406,7 +406,16 @@ async function sizedCheckpoint(
       ],
     };
     const extra: [string, CborValue][] = [
-      ["checkpoint", { kind: "map", value: [[T("header"), header], [T("segment"), segment]] }],
+      [
+        "checkpoint",
+        {
+          kind: "map",
+          value: [
+            [T("header"), header],
+            [T("segment"), segment],
+          ],
+        },
+      ],
     ];
     const candidate = await signEvent(key, {
       seq,

@@ -819,9 +819,8 @@ impl WorldActor {
     /// is anchored to it at construction), so this bound holds on
     /// either clock.
     fn note_fuel_refusal(&mut self) {
-        self.fuel_retry_not_before = Some(
-            self.core.clock().now_instant() + id_caps::account_quota::FUEL_RATE_WINDOW,
-        );
+        self.fuel_retry_not_before =
+            Some(self.core.clock().now_instant() + id_caps::account_quota::FUEL_RATE_WINDOW);
     }
 
     /// Deliver a capability result, or queue it when the account's fuel

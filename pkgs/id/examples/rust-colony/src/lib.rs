@@ -141,16 +141,82 @@ mod tests {
     fn two_deliveries_replays_the_fixture_oracle() {
         let mut state = Colony::initial();
         let steps = [
-            (Action::Mine(Dir::E), Outcome::Extracted, (1, 1), cells(&[(1, 0)]), 1, 0, Phase::Working),
-            (Action::Mine(Dir::N), Outcome::PackFull, (1, 1), cells(&[(1, 0)]), 1, 0, Phase::Working),
-            (Action::Walk(Dir::W), Outcome::Moved, (0, 1), cells(&[(1, 0)]), 1, 0, Phase::Working),
-            (Action::Deposit, Outcome::Stored, (0, 1), cells(&[(1, 0)]), 0, 1, Phase::Working),
-            (Action::Walk(Dir::E), Outcome::Moved, (1, 1), cells(&[(1, 0)]), 0, 1, Phase::Working),
-            (Action::Mine(Dir::N), Outcome::Extracted, (1, 1), cells(&[]), 1, 1, Phase::Working),
-            (Action::Walk(Dir::W), Outcome::Moved, (0, 1), cells(&[]), 1, 1, Phase::Working),
-            (Action::Deposit, Outcome::SupplyGoalMet, (0, 1), cells(&[]), 0, 2, Phase::Supplied),
+            (
+                Action::Mine(Dir::E),
+                Outcome::Extracted,
+                (1, 1),
+                cells(&[(1, 0)]),
+                1,
+                0,
+                Phase::Working,
+            ),
+            (
+                Action::Mine(Dir::N),
+                Outcome::PackFull,
+                (1, 1),
+                cells(&[(1, 0)]),
+                1,
+                0,
+                Phase::Working,
+            ),
+            (
+                Action::Walk(Dir::W),
+                Outcome::Moved,
+                (0, 1),
+                cells(&[(1, 0)]),
+                1,
+                0,
+                Phase::Working,
+            ),
+            (
+                Action::Deposit,
+                Outcome::Stored,
+                (0, 1),
+                cells(&[(1, 0)]),
+                0,
+                1,
+                Phase::Working,
+            ),
+            (
+                Action::Walk(Dir::E),
+                Outcome::Moved,
+                (1, 1),
+                cells(&[(1, 0)]),
+                0,
+                1,
+                Phase::Working,
+            ),
+            (
+                Action::Mine(Dir::N),
+                Outcome::Extracted,
+                (1, 1),
+                cells(&[]),
+                1,
+                1,
+                Phase::Working,
+            ),
+            (
+                Action::Walk(Dir::W),
+                Outcome::Moved,
+                (0, 1),
+                cells(&[]),
+                1,
+                1,
+                Phase::Working,
+            ),
+            (
+                Action::Deposit,
+                Outcome::SupplyGoalMet,
+                (0, 1),
+                cells(&[]),
+                0,
+                2,
+                Phase::Supplied,
+            ),
         ];
-        for (n, (action, outcome, worker, ore, pack, stored, phase)) in steps.into_iter().enumerate() {
+        for (n, (action, outcome, worker, ore, pack, stored, phase)) in
+            steps.into_iter().enumerate()
+        {
             let (next, got) = state.step(action);
             assert_eq!(got, outcome, "step {}", n + 1);
             assert_eq!(next.worker, worker, "step {} worker", n + 1);
@@ -165,11 +231,7 @@ mod tests {
     #[test]
     fn ore_is_conserved_across_cells_pack_and_stockpile() {
         let mut state = Colony::initial();
-        for action in [
-            Action::Mine(Dir::E),
-            Action::Walk(Dir::W),
-            Action::Deposit,
-        ] {
+        for action in [Action::Mine(Dir::E), Action::Walk(Dir::W), Action::Deposit] {
             state = state.step(action).0;
             assert_eq!(
                 state.ore_cells.len() as i64 + state.pack_ore + state.stored_ore,

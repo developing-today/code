@@ -2,11 +2,7 @@
 // adapter contract only: production binding/provisioning and signup wiring
 // remain gated separately (#2285 / #3403).
 
-import {
-  createHostedAccountRecord,
-  type HostedAccountRecord,
-  type NewHostedAccount,
-} from "./account-directory.ts";
+import { createHostedAccountRecord, type HostedAccountRecord, type NewHostedAccount } from "./account-directory.ts";
 import { FailClosed, parseBindingId, parseJurisdiction } from "./routing.ts";
 
 /** Small structural subset shared by Cloudflare D1 and the SQLite test adapter. */
@@ -29,8 +25,7 @@ type StoredAccountRow = Record<string, unknown> & {
   routing_epoch: number;
 };
 
-const COLUMNS =
-  "subject_key, binding_id, jurisdiction, jurisdiction_pending, migration_id, phase, routing_epoch";
+const COLUMNS = "subject_key, binding_id, jurisdiction, jurisdiction_pending, migration_id, phase, routing_epoch";
 
 function fromRow(row: StoredAccountRow): HostedAccountRecord {
   try {
@@ -56,11 +51,7 @@ function fromRow(row: StoredAccountRow): HostedAccountRecord {
       routingEpoch: 0,
     };
   } catch {
-    throw new FailClosed(
-      503,
-      "invalid_directory_record",
-      "stored hosted account record is invalid; failing closed",
-    );
+    throw new FailClosed(503, "invalid_directory_record", "stored hosted account record is invalid; failing closed");
   }
 }
 
@@ -118,11 +109,7 @@ export class PersistentHostedAccountDirectory {
 
       const bindingOwner = await this.getByBindingId(candidate.bindingId);
       if (bindingOwner) {
-        throw new FailClosed(
-          409,
-          "binding_conflict",
-          "binding id is already assigned to another subject",
-        );
+        throw new FailClosed(409, "binding_conflict", "binding id is already assigned to another subject");
       }
       throw error;
     }
@@ -135,11 +122,7 @@ export class PersistentHostedAccountDirectory {
 
     const bindingOwner = await this.getByBindingId(candidate.bindingId);
     if (bindingOwner) {
-      throw new FailClosed(
-        409,
-        "binding_conflict",
-        "binding id is already assigned to another subject",
-      );
+      throw new FailClosed(409, "binding_conflict", "binding id is already assigned to another subject");
     }
 
     throw new FailClosed(
@@ -149,10 +132,7 @@ export class PersistentHostedAccountDirectory {
     );
   }
 
-  private existingSubject(
-    row: HostedAccountRecord,
-    bindingId: string,
-  ): HostedAccountRecord {
+  private existingSubject(row: HostedAccountRecord, bindingId: string): HostedAccountRecord {
     if (row.bindingId !== bindingId) {
       throw new FailClosed(
         409,

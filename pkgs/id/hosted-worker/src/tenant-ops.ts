@@ -233,15 +233,11 @@ export class TenantOpsDO {
     // being silently improvised.
     this.ready = state.blockConcurrencyWhile(async () => {
       const sql = this.state.storage.sql;
-      sql.exec(
-        "CREATE TABLE IF NOT EXISTS ops_meta (name TEXT PRIMARY KEY, value TEXT NOT NULL)",
-      );
+      sql.exec("CREATE TABLE IF NOT EXISTS ops_meta (name TEXT PRIMARY KEY, value TEXT NOT NULL)");
       sql.exec(
         "CREATE TABLE IF NOT EXISTS ops_journal (seq INTEGER PRIMARY KEY AUTOINCREMENT, at TEXT NOT NULL, event TEXT NOT NULL, from_state TEXT, to_state TEXT, actor_role TEXT NOT NULL, actor_id TEXT NOT NULL, detail TEXT)",
       );
-      const found = sql
-        .exec("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'tenant_db'")
-        .toArray();
+      const found = sql.exec("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'tenant_db'").toArray();
       this.schemaPresent = found.length > 0;
     });
   }
@@ -305,9 +301,7 @@ export class TenantOpsDO {
   }
 
   private row(): TenantRow | null {
-    const rows = this.sql()
-      .exec("SELECT * FROM tenant_db WHERE tenant_id = ?", this.tenantId)
-      .toArray();
+    const rows = this.sql().exec("SELECT * FROM tenant_db WHERE tenant_id = ?", this.tenantId).toArray();
     return rows.length > 0 ? (rows[0] as unknown as TenantRow) : null;
   }
 
@@ -449,9 +443,7 @@ export class TenantOpsDO {
     const existing = this.row();
     if (existing !== null) return json(rowView(existing));
 
-    const jurisdiction = parseJurisdiction(
-      typeof body.jurisdiction === "string" ? body.jurisdiction : null,
-    );
+    const jurisdiction = parseJurisdiction(typeof body.jurisdiction === "string" ? body.jurisdiction : null);
     const participantKind = body.participantKind ?? "user_hosted";
     if (!(PARTICIPANT_KINDS as readonly unknown[]).includes(participantKind)) {
       throw new FailClosed(400, "invalid_body", `participantKind must be one of ${PARTICIPANT_KINDS.join(" | ")}`);
@@ -476,9 +468,7 @@ export class TenantOpsDO {
       request_id: provisioningRequestId(row.tenant_id),
       jurisdiction,
     });
-    const binding = this.sql()
-      .exec("SELECT status FROM binding WHERE binding_id = ?", this.tenantId)
-      .toArray();
+    const binding = this.sql().exec("SELECT status FROM binding WHERE binding_id = ?", this.tenantId).toArray();
     if (binding.length === 0 || binding[0].status !== "active") {
       const reason = binding.length === 0 ? "binding_missing" : "binding_not_active";
       row = this.setState(row, "failed");
@@ -499,7 +489,12 @@ export class TenantOpsDO {
     this.requireActor(actor, ["platform"], "database creation");
     const at = this.at(await this.body(req));
     let row = this.requireRow("database creation");
-    if (row.state === "db_ready" || row.state === "active" || row.state === "suspended" || row.state === "export_only") {
+    if (
+      row.state === "db_ready" ||
+      row.state === "active" ||
+      row.state === "suspended" ||
+      row.state === "export_only"
+    ) {
       return json(rowView(row)); // already provisioned: idempotent no-op
     }
     this.requireState(row, ["requested", "db_creating"], "database creation");

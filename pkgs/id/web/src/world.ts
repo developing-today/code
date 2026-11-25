@@ -5,11 +5,7 @@ import { advanceHostViewCursor, parseWorldHostViewPage, parseWorldInviteResponse
 import { richTerminalBytesForKey, terminalBytesForKey } from "./world-keyboard";
 import { decodeViewPatchAsync } from "./screen-codec";
 import { parseWorldSeed } from "./world-seed";
-import {
-  loadWorldSnapshot,
-  saveWorldSnapshot,
-  type StoredWorldSnapshot,
-} from "./world-snapshot-store";
+import { loadWorldSnapshot, saveWorldSnapshot, type StoredWorldSnapshot } from "./world-snapshot-store";
 import { applyScreenPatch, renderWorldSurface, type ScreenPatch, type ScreenSurface } from "./world-surface";
 
 type WorldFrame = {
@@ -210,7 +206,10 @@ function initWorld(): void {
     }
     records = { ...stored.records };
     recordsView.textContent = JSON.stringify(records, null, 2);
-    appendLine(log, `Showing ${stored.world_id} from the saved snapshot at event ${stored.sequence} (offline, read-only)`);
+    appendLine(
+      log,
+      `Showing ${stored.world_id} from the saved snapshot at event ${stored.sequence} (offline, read-only)`,
+    );
     setStatus("Offline — saved snapshot");
   };
 

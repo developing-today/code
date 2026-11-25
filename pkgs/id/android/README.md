@@ -4,7 +4,7 @@
 
 - `check-android.sh`: the slice-1 Android gate. Runs the
   `android_dependency_boundary` check, then `cargo check -p id-client
-  --target aarch64-linux-android` when the target std is installed.
+--target aarch64-linux-android` when the target std is installed.
 - This README: the build path contract for the later Kotlin shell.
 
 ## Prerequisites

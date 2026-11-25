@@ -6,7 +6,7 @@ This chapter does not replace [Roadmap, issue map and the design-record index](r
 
 The merged list is ordered across the whole project: execution substrate first (fleet), then the physical substrate (lab), then the data substrate (backups, ingest, storage placement), then search intelligence (Atlas and ID together), then the ID platform build-out, then the gateway, PM and fork surfaces, then the record itself. ID owns items 15–23 — the consumer-facing graph apps and the whole ID platform tier. Item numbers below are the merged list's numbers, kept so a reader can move between books and the Code Book without renumbering.
 
-Types used below: a *capability set* is a capability set to reach; a *problem* is a problem to solve; a *milestone* is a milestone; a *shift goal* is a goal that marks a shift. Status words are the census's: done, in flight, designed, not started — each with its evidence.
+Types used below: a _capability set_ is a capability set to reach; a _problem_ is a problem to solve; a _milestone_ is a milestone; a _shift goal_ is a goal that marks a shift. Status words are the census's: done, in flight, designed, not started — each with its evidence.
 
 ## Item 15 — ID apps on one graph: URIs, transclusion, typed links, graph display
 

@@ -1,5 +1,5 @@
 # composition manifest — schema v1 (plan §5.1 example, verbatim)
-name = "basement-store-node"        # absent for arbitrary compositions
+name = "basement-store-node"         # absent for arbitrary compositions
 target = "x86_64-unknown-linux-musl"
-profile = "basement"                # alias: resolves to `headless` before hashing
-features = ["store-turso", "dht"]   # additions / group selections
+profile = "basement"                 # alias: resolves to `headless` before hashing
+features = ["store-turso", "dht"]    # additions / group selections

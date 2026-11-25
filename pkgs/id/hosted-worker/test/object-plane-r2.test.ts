@@ -115,19 +115,38 @@ test("R2 capability matrix records the binding's honest limits", () => {
 
 test("R2 keys carry the partition prefix and partitions are isolated in one bucket", async () => {
   const backend = new MapBackend();
-  const usAdapter = new R2ObjectPlaneAdapter({ bucket: asR2Bucket(backend), partition: US_PRIVATE, capabilityKey: KEY });
-  const euAdapter = new R2ObjectPlaneAdapter({ bucket: asR2Bucket(backend), partition: EU_PRIVATE, capabilityKey: KEY });
+  const usAdapter = new R2ObjectPlaneAdapter({
+    bucket: asR2Bucket(backend),
+    partition: US_PRIVATE,
+    capabilityKey: KEY,
+  });
+  const euAdapter = new R2ObjectPlaneAdapter({
+    bucket: asR2Bucket(backend),
+    partition: EU_PRIVATE,
+    capabilityKey: KEY,
+  });
   const receipt = await usAdapter.putStaged(PAYLOAD, { now: NOW });
   await usAdapter.publish(receipt.stagingId, receipt.contentId);
-  assert.ok([...backend.objects.keys()].every((k) => k.includes("/us/tenant-private/")), "us keys stay in the us partition");
+  assert.ok(
+    [...backend.objects.keys()].every((k) => k.includes("/us/tenant-private/")),
+    "us keys stay in the us partition",
+  );
   assert.equal(await euAdapter.head(receipt.contentId), null, "eu partition sees none of it");
   // A capability minted for the eu partition is well-formed there --
   // the object simply does not exist in that partition's namespace.
-  const foreignCap = await mintReadCapability(KEY, { contentId: receipt.contentId, partition: EU_PRIVATE, expiresAt: FUTURE });
+  const foreignCap = await mintReadCapability(KEY, {
+    contentId: receipt.contentId,
+    partition: EU_PRIVATE,
+    expiresAt: FUTURE,
+  });
   await assert.rejects(() => euAdapter.read(receipt.contentId, foreignCap, { now: NOW }), /no verified replica/);
   // And a us-minted capability presented to the eu adapter is refused
   // as cross-partition before any backend read.
-  const usCap = await mintReadCapability(KEY, { contentId: receipt.contentId, partition: US_PRIVATE, expiresAt: FUTURE });
+  const usCap = await mintReadCapability(KEY, {
+    contentId: receipt.contentId,
+    partition: US_PRIVATE,
+    expiresAt: FUTURE,
+  });
   await assert.rejects(() => euAdapter.read(receipt.contentId, usCap, { now: NOW }), /different partition/);
 });
 
@@ -145,7 +164,9 @@ test("R2 publish is retry-safe after the staged copy is dropped", async () => {
 
 test("R2 fenced deletes emit audit events with the epoch", async () => {
   const events: { contentId: string; epoch: string; existed: boolean }[] = [];
-  const { adapter } = makeAdapter(US_PRIVATE, (e) => events.push(e as { contentId: string; epoch: string; existed: boolean }));
+  const { adapter } = makeAdapter(US_PRIVATE, (e) =>
+    events.push(e as { contentId: string; epoch: string; existed: boolean }),
+  );
   const receipt = await adapter.putStaged(PAYLOAD, { now: NOW });
   await adapter.publish(receipt.stagingId, receipt.contentId);
   await adapter.deleteReplica(receipt.contentId, { epoch: "epoch-7", reverifiedAt: NOW }, { now: NOW });
