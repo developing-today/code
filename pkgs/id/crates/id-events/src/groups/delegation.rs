@@ -243,7 +243,7 @@ impl Engine {
         by_id: &BTreeMap<Hash, &Event>,
         event: &Event,
         op: MemberOp,
-        decision: Decision,
+        mut decision: Decision,
     ) -> Result<Judged, FoldError> {
         let (author, author_role) = match self.effective_author(by_id, decision.group, event) {
             Some(found) => found,
