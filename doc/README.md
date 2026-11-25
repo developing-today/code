@@ -42,6 +42,8 @@ When migrating or filing material, ask which kind it is before choosing a home: 
 
 ## Research packages
 
+- `2026-11-25_design_backup-plane-hosted-recovery/` — #14964 design for moving GitHub mirror, R2 bundle, rehost publication, freshness monitoring, and fleet-queue D1 export off the laptop as required dependency; schedules remain proposals, with two implementation follow-ups enqueued.
+
 - `2026-11-25T01-31-34Z_audit_sandbox-systemd-unit-sources/` — live-verified source audit for the three sandbox systemd units in #3235, run from the sandbox seat itself: resource-sampler PINNED in dezren39/hatch-personal (but not installed on the current seat incarnation — deployment gap recorded); hatch-execd and hatch-ca-trust UNPINNED, verbatim live unit files captured as supplements for the pinning remainder in dezren39/hatch#14 (tracking #3235).
 - `2026-11-24T03-51-11Z_review_pm-stack-pages/` — PM stack pages review (Drew delegation, 2026-11-23): every PM page visited live with a screenshot — the aggregator (22 pages + 5 subroutes), the console, decision sets, Kaneo/Pad/Grist/RFA/dispatch/projector — plus the fleet feed and a per-page laptop-reliance map. Headlines: the deployed aggregator is 4,687 commits behind main; search takes 33 s; fixture fallbacks render invented data when sources die; the notifications ledger is timestamp-blind; the health SLO table contradicts itself. Fixed in-pass: PR #14058. Filed: #14059–#14066. Full review + 37 screenshots + page texts + health capture inside the record.
 - `2026-11-24T00-24-54Z_audit_design-gaps/` — AUDIT-7 Lane 6 DESIGN-GAPS audit: designs missing, demanded, or insufficient across the four repos, with the prioritised packet list (tracking #13873).
