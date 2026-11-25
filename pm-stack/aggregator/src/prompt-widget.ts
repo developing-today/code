@@ -7,6 +7,7 @@
 // default target and mode. Both selectors stay editable, so every default
 // can be overridden before sending.
 import {
+  PROMPT_EFFORTS,
   PROMPT_MODES,
   PROMPT_TARGETS,
   PROMPT_VARIANT_SPECS,
@@ -54,6 +55,10 @@ export function renderPromptWidget(opts: PromptWidgetOptions): string {
     `</textarea>` +
     `<select name="target" aria-label="Target">${targets}</select>` +
     `<select name="mode" aria-label="Mode">${modes}</select>` +
+    // #10038 S2: effort override (blank is auto) and the opt-in push on
+    // completion, which the record's notify flag carries.
+    `<select name="effort" aria-label="Effort"><option value="">auto effort</option>${options(PROMPT_EFFORTS, null)}</select>` +
+    `<label class="prompt-notify"><input type="checkbox" name="notify" value="true"> Notify me when answered</label>` +
     // #10036 S7: attachments ride the same submission as file parts;
     // the route persists them and the record carries storage refs.
     `<input type="file" name="attachments" multiple aria-label="Attachments">` +
