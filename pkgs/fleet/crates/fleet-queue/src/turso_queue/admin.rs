@@ -81,7 +81,7 @@ pub(crate) fn verb_block(t: &TursoBackend, req: &Value) -> Value {
             "UPDATE tasks SET status = 'blocked', worker_id = NULL, lease_until = NULL, \
                progress = ?, result = ?, blocked_deps = ?, dep_next_recheck_at = ?, \
                dep_blocked_until = ?, dep_recheck_seconds = ?, last_error = NULL, updated_at = ? \
-             WHERE id = ?",
+             WHERE id = ? AND status = 'claimed' AND worker_id = ?",
             vec![
                 Arg::Text(progress.to_string()),
                 Arg::Text(result.to_string()),
@@ -91,28 +91,41 @@ pub(crate) fn verb_block(t: &TursoBackend, req: &Value) -> Value {
                 dep_rs.map(Arg::Int).unwrap_or(Arg::Null),
                 Arg::Text(now_iso()),
                 Arg::Int(task_id),
+                Arg::Text(worker.clone()),
             ],
         ));
-        statements.push(super::links::clear_task_deps_statement(
-            task_id,
-            None,
-            &worker,
-            "superseded_by_new_block",
-            &iso(now_unix_v),
-        ));
-        statements.extend(dep_writes);
         if deps.is_some() {
             statements.push((
                 "UPDATE tasks SET blocked_deps = ? WHERE id = ?",
                 vec![Arg::Text(json!(cache_deps).to_string()), Arg::Int(task_id)],
             ));
         }
+        let expected_cache = deps.as_ref().map(|_| json!(cache_deps).to_string());
+        statements.push(super::links::clear_task_deps_guarded_statement(
+            task_id,
+            None,
+            &worker,
+            "superseded_by_new_block",
+            &iso(now_unix_v),
+            "blocked",
+            dep_until.as_deref(),
+            expected_cache.as_deref(),
+        ));
+        statements.extend(super::links::guard_task_dep_writes(
+            dep_writes,
+            task_id,
+            dep_until.as_deref(),
+            &cache_deps,
+        ));
         statements.push((
             "DELETE FROM leases WHERE task_id = ?",
             vec![Arg::Int(task_id)],
         ));
         statements.push(("COMMIT", Vec::new()));
-        t.exec_batch(&statements)?;
+        let results = t.exec_batch(&statements)?;
+        if results.get(1).map(|r| r.affected).unwrap_or(0) == 0 {
+            return Err("block_task: claim changed before the block committed".into());
+        }
         event(
             t,
             Some(&worker),
@@ -185,20 +198,29 @@ pub(crate) fn dep_recheck_one(
     }
     if let Some(until) = row.get("dep_blocked_until").and_then(|v| v.as_str()) {
         if until <= now.as_str() {
+            let prior_cache = json!(deps).to_string();
             let mut statements = vec![("BEGIN IMMEDIATE", Vec::new())];
             statements.push((
                 "UPDATE tasks SET status = 'queued', blocked_deps = NULL, \
                    dep_next_recheck_at = NULL, dep_blocked_until = NULL, \
                    dep_recheck_seconds = NULL, updated_at = ? \
-                 WHERE id = ? AND status = 'blocked'",
-                vec![Arg::Text(now.clone()), Arg::Int(task_id)],
+                 WHERE id = ? AND status = 'blocked' AND dep_blocked_until IS ? AND json(blocked_deps) = json(?)",
+                vec![
+                    Arg::Text(now.clone()),
+                    Arg::Int(task_id),
+                    Arg::Text(until.to_owned()),
+                    Arg::Text(prior_cache),
+                ],
             ));
-            statements.push(super::links::clear_task_deps_statement(
+            statements.push(super::links::clear_task_deps_guarded_statement(
                 task_id,
                 Some(until),
                 "dep-rechecker",
                 "ttl_expired",
                 &now,
+                "queued",
+                None,
+                None,
             ));
             statements.push(("COMMIT", Vec::new()));
             let results = t.exec_batch(&statements)?;
@@ -276,20 +298,33 @@ pub(crate) fn dep_recheck_one(
         }
     }
     if deps_all_resolved(&new_deps) {
+        let block_until = row.get("dep_blocked_until").and_then(Value::as_str);
+        let storage_block_id = super::links::task_dep_block_id(row, &deps);
+        let prior_cache = json!(deps).to_string();
         let mut statements = vec![("BEGIN IMMEDIATE", Vec::new())];
         statements.push((
             "UPDATE tasks SET status = 'queued', blocked_deps = NULL, \
                dep_next_recheck_at = NULL, dep_blocked_until = NULL, \
                dep_recheck_seconds = NULL, updated_at = ? \
-             WHERE id = ? AND status = 'blocked'",
-            vec![Arg::Text(now.clone()), Arg::Int(task_id)],
+             WHERE id = ? AND status = 'blocked' AND dep_blocked_until IS ? AND json(blocked_deps) = json(?)",
+            vec![
+                Arg::Text(now.clone()),
+                Arg::Int(task_id),
+                block_until
+                    .map(|value| Arg::Text(value.to_owned()))
+                    .unwrap_or(Arg::Null),
+                Arg::Text(prior_cache),
+            ],
         ));
-        statements.push(super::links::clear_task_deps_statement(
+        statements.push(super::links::clear_task_deps_guarded_statement(
             task_id,
-            row.get("dep_blocked_until").and_then(Value::as_str),
+            Some(&storage_block_id),
             "dep-rechecker",
             "resolved",
             &now,
+            "queued",
+            None,
+            None,
         ));
         statements.push(("COMMIT", Vec::new()));
         let results = t.exec_batch(&statements)?;
@@ -314,16 +349,15 @@ pub(crate) fn dep_recheck_one(
         )?;
         return Ok(("unblocked", failures));
     }
-    let block_id = row
-        .get("dep_blocked_until")
-        .and_then(Value::as_str)
-        .unwrap_or("");
+    let block_id = super::links::task_dep_block_id(row, &deps);
     let (cache_deps, dep_writes) =
-        super::links::prepare_task_deps(task_id, block_id, &new_deps, &now, "dep_recheck");
+        super::links::prepare_task_deps(task_id, &block_id, &new_deps, &now, "dep_recheck");
+    let prior_cache = json!(deps).to_string();
+    let block_until = row.get("dep_blocked_until").and_then(Value::as_str);
     let mut statements = vec![("BEGIN IMMEDIATE", Vec::new())];
     statements.push((
         "UPDATE tasks SET blocked_deps = ?, dep_next_recheck_at = ?, updated_at = ? \
-         WHERE id = ? AND status = 'blocked'",
+         WHERE id = ? AND status = 'blocked' AND dep_blocked_until IS ? AND json(blocked_deps) = json(?)",
         vec![
             Arg::Text(json!(cache_deps).to_string()),
             // The max TTL is a hard deadline: never schedule
@@ -339,11 +373,23 @@ pub(crate) fn dep_recheck_one(
             }),
             Arg::Text(now.clone()),
             Arg::Int(task_id),
+            block_until
+                .map(|value| Arg::Text(value.to_owned()))
+                .unwrap_or(Arg::Null),
+            Arg::Text(prior_cache),
         ],
     ));
-    statements.extend(dep_writes);
+    statements.extend(super::links::guard_task_dep_writes(
+        dep_writes,
+        task_id,
+        block_until,
+        &cache_deps,
+    ));
     statements.push(("COMMIT", Vec::new()));
-    t.exec_batch(&statements)?;
+    let results = t.exec_batch(&statements)?;
+    if results.get(1).map(|r| r.affected).unwrap_or(0) == 0 {
+        return Ok(("still_blocked", failures));
+    }
     emit_dep_transitions(t, task_id, row, &transitions)?;
     Ok(("still_blocked", failures))
 }
@@ -741,23 +787,39 @@ fn unblock_drop(
     })?;
     if remaining.is_empty() {
         let now = now_iso();
+        let block_until = row.get("dep_blocked_until").and_then(Value::as_str);
+        let storage_block_id = super::links::task_dep_block_id(row, &current);
+        let current_cache = json!(current).to_string();
         let mut statements = vec![("BEGIN IMMEDIATE", Vec::new())];
         statements.push((
             "UPDATE tasks SET status = 'queued', blocked_deps = NULL, \
                dep_next_recheck_at = NULL, dep_blocked_until = NULL, \
                dep_recheck_seconds = NULL, updated_at = ? \
-             WHERE id = ? AND status = 'blocked'",
-            vec![Arg::Text(now.clone()), Arg::Int(task_id)],
+             WHERE id = ? AND status = 'blocked' AND dep_blocked_until IS ? AND json(blocked_deps) = json(?)",
+            vec![
+                Arg::Text(now.clone()),
+                Arg::Int(task_id),
+                block_until.map(|value| Arg::Text(value.to_owned())).unwrap_or(Arg::Null),
+                Arg::Text(current_cache),
+            ],
         ));
-        statements.push(super::links::clear_task_deps_statement(
+        statements.push(super::links::clear_task_deps_guarded_statement(
             task_id,
-            row.get("dep_blocked_until").and_then(Value::as_str),
+            Some(&storage_block_id),
             worker,
             "drop_all",
             &now,
+            "queued",
+            None,
+            None,
         ));
         statements.push(("COMMIT", Vec::new()));
-        t.exec_batch(&statements)?;
+        let results = t.exec_batch(&statements)?;
+        if results.get(1).map(|r| r.affected).unwrap_or(0) == 0 {
+            return Err(format!(
+                "unblock_task: task {task_id} changed while dropping deps"
+            ));
+        }
         event(
             t,
             Some(worker),
@@ -771,30 +833,37 @@ fn unblock_drop(
         )?;
     } else {
         let now = now_iso();
-        let block_id = row
-            .get("dep_blocked_until")
-            .and_then(Value::as_str)
-            .unwrap_or("");
+        let block_id = super::links::task_dep_block_id(row, &current);
         let (cache_deps, dep_writes) =
-            super::links::prepare_task_deps(task_id, block_id, &remaining, &now, "unblock_drop");
+            super::links::prepare_task_deps(task_id, &block_id, &remaining, &now, "unblock_drop");
+        let block_until = row.get("dep_blocked_until").and_then(Value::as_str);
         let (missing_sql, missing_args) = super::links::clear_missing_task_deps_statement(
             task_id,
-            block_id,
+            &block_id,
             &cache_deps,
             worker,
             "removed_from_block",
             &now,
+            block_until,
+            &cache_deps,
         );
         let mut owned = vec![
             ("BEGIN IMMEDIATE".to_owned(), Vec::new()),
             (
-                "UPDATE tasks SET blocked_deps = ?, updated_at = ? WHERE id = ? AND status = 'blocked'".to_owned(),
-                vec![Arg::Text(json!(cache_deps).to_string()), Arg::Text(now), Arg::Int(task_id)],
+                "UPDATE tasks SET blocked_deps = ?, updated_at = ? WHERE id = ? AND status = 'blocked' \
+                 AND dep_blocked_until IS ? AND json(blocked_deps) = json(?)".to_owned(),
+                vec![
+                    Arg::Text(json!(cache_deps).to_string()),
+                    Arg::Text(now),
+                    Arg::Int(task_id),
+                    block_until.map(|value| Arg::Text(value.to_owned())).unwrap_or(Arg::Null),
+                    Arg::Text(json!(current).to_string()),
+                ],
             ),
             (missing_sql, missing_args),
         ];
         owned.extend(
-            dep_writes
+            super::links::guard_task_dep_writes(dep_writes, task_id, block_until, &cache_deps)
                 .into_iter()
                 .map(|(sql, args)| (sql.to_owned(), args)),
         );
@@ -803,7 +872,12 @@ fn unblock_drop(
             .iter()
             .map(|(sql, args)| (sql.as_str(), args.clone()))
             .collect();
-        t.exec_batch(&batch)?;
+        let results = t.exec_batch(&batch)?;
+        if results.get(1).map(|r| r.affected).unwrap_or(0) == 0 {
+            return Err(format!(
+                "unblock_task: task {task_id} changed while dropping deps"
+            ));
+        }
         event(
             t,
             Some(worker),
@@ -866,20 +940,31 @@ pub(crate) fn verb_unblock(t: &TursoBackend, req: &Value) -> Value {
         }
         let prev_deps = deps_of(&row);
         let now = now_iso();
+        let block_until = row.get("dep_blocked_until").and_then(Value::as_str);
+        let storage_block_id = super::links::task_dep_block_id(&row, &prev_deps);
+        let prior_cache = json!(prev_deps).to_string();
         let mut statements = vec![("BEGIN IMMEDIATE", Vec::new())];
         statements.push((
             "UPDATE tasks SET status = 'queued', blocked_deps = NULL, \
                dep_next_recheck_at = NULL, dep_blocked_until = NULL, \
                dep_recheck_seconds = NULL, updated_at = ? \
-             WHERE id = ? AND status = 'blocked'",
-            vec![Arg::Text(now.clone()), Arg::Int(task_id)],
+             WHERE id = ? AND status = 'blocked' AND dep_blocked_until IS ? AND json(blocked_deps) = json(?)",
+            vec![
+                Arg::Text(now.clone()),
+                Arg::Int(task_id),
+                block_until.map(|value| Arg::Text(value.to_owned())).unwrap_or(Arg::Null),
+                Arg::Text(prior_cache),
+            ],
         ));
-        statements.push(super::links::clear_task_deps_statement(
+        statements.push(super::links::clear_task_deps_guarded_statement(
             task_id,
-            row.get("dep_blocked_until").and_then(Value::as_str),
+            Some(&storage_block_id),
             &worker,
             "manual_unblock",
             &now,
+            "queued",
+            None,
+            None,
         ));
         statements.push(("COMMIT", Vec::new()));
         let results = t.exec_batch(&statements).map_err(|e| e)?;

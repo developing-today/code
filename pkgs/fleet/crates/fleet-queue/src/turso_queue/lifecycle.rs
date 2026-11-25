@@ -3849,8 +3849,14 @@ mod task_notes_tests {
         assert_eq!(links[1]["other_kind"], "pr");
         assert_eq!(links[1]["other_number"], 14441);
         assert_eq!(links[1]["link_kind"], "pr_for");
+        let removed = verb_link_remove(
+            &t,
+            &json!({"task_id":task_id,"worker":"q6-test","link_kind":"implements",
+                "other_issue":{"repo":"developing-today/code","number":14181}}),
+        );
+        assert_eq!(removed["ok"], true, "{removed}");
         t.exec(
-            "DELETE FROM queue_links WHERE task_id = ?",
+            "DELETE FROM queue_links WHERE task_id = ? AND other_kind = 'pr'",
             &[Arg::Int(task_id)],
         )
         .expect("simulate a transiently failed link seed");
@@ -3867,7 +3873,16 @@ mod task_notes_tests {
                 &[],
             )
             .expect("enqueue dedupe retry repairs missing packet links");
-        assert_eq!(repaired.len(), 2);
+        assert_eq!(repaired.len(), 1, "the removed issue link stays removed");
+        let tombstone = t
+            .query_objs(
+                "SELECT removed_at FROM queue_links WHERE task_id = ? AND other_kind = 'issue'",
+                &[Arg::Int(task_id)],
+                &[],
+            )
+            .expect("soft-removed packet link remains a tombstone");
+        assert_eq!(tombstone.len(), 1);
+        assert!(!tombstone[0]["removed_at"].is_null());
         t.exec(
             "DELETE FROM queue_schema_migrations WHERE name = 'q6-links-deps-v1'",
             &[],
@@ -3881,7 +3896,7 @@ mod task_notes_tests {
                 &[],
             )
             .expect("seeded links remain queryable");
-        assert_eq!(still_two.len(), 2, "backfill is idempotent");
+        assert_eq!(still_two.len(), 1, "backfill preserves the link tombstone");
     }
 
     #[test]
@@ -4048,6 +4063,7 @@ mod task_notes_tests {
         assert_eq!(normalized[0]["state"], "open");
         let task_row = get_task(&t, task_id).unwrap().unwrap();
         assert_eq!(task_row["blocked_deps"][0]["number"], 14170);
+        let block_id = task_row["dep_blocked_until"].as_str().unwrap().to_owned();
 
         let unblocked = verb_unblock(
             &t,
@@ -4065,5 +4081,34 @@ mod task_notes_tests {
         assert_eq!(normalized[0]["cleared_by"], "q6-worker");
         let task_row = get_task(&t, task_id).unwrap().unwrap();
         assert!(task_row["blocked_deps"].is_null());
+        let stale = json!({
+            "kind":"issue", "repo":"developing-today/code", "number":14170,
+            "state":"open", "recorded_at":"2026-11-25T00:00:00Z"
+        });
+        let (cache, writes) = super::links::prepare_task_deps(
+            task_id,
+            &block_id,
+            &[stale],
+            "2026-11-25T00:00:00Z",
+            "stale_recheck_fixture",
+        );
+        let mut statements = vec![("BEGIN IMMEDIATE", Vec::new())];
+        statements.extend(super::links::guard_task_dep_writes(
+            writes,
+            task_id,
+            Some(&block_id),
+            &cache,
+        ));
+        statements.push(("COMMIT", Vec::new()));
+        t.exec_batch(&statements)
+            .expect("a stale recheck must be a safe no-op after unblock");
+        let final_deps = t
+            .query_objs(
+                "SELECT state FROM task_deps WHERE task_id = ?",
+                &[Arg::Int(task_id)],
+                &[],
+            )
+            .expect("final normalized edge remains readable");
+        assert_eq!(final_deps[0]["state"], "cleared");
     }
 }

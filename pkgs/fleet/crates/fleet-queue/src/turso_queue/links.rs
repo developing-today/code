@@ -129,6 +129,21 @@ fn parse_json(value: Option<&Value>) -> Value {
     }
 }
 
+pub(crate) fn task_dep_block_id(row: &Value, deps: &[Value]) -> String {
+    row.get("dep_blocked_until")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .or_else(|| {
+            deps.first()
+                .and_then(|dep| dep.get("recorded_at"))
+                .and_then(Value::as_str)
+        })
+        .or_else(|| row.get("updated_at").and_then(Value::as_str))
+        .or_else(|| row.get("created_at").and_then(Value::as_str))
+        .unwrap_or("")
+        .to_owned()
+}
+
 fn dedupe_issue_ref(key: &str) -> Option<(String, i64)> {
     let rest = key.strip_prefix("repo-health:v1:")?;
     let (_, tail) = rest.split_once(':')?;
@@ -380,11 +395,18 @@ pub(crate) fn seed_task_links(
     }
     let mut statements = vec![("BEGIN IMMEDIATE", Vec::new())];
     for link in &links {
+        let mut args = link_insert_args(task_id, link, actor, created_at);
+        args.extend([
+            Arg::Int(task_id),
+            Arg::Text(link.link_kind.clone()),
+            Arg::Text(link.link_key.clone()),
+        ]);
         statements.push((
             "INSERT OR IGNORE INTO queue_links \
              (task_id, other_kind, other_repo, other_number, other_task_id, link_kind, link_key, created_by, created_at) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            link_insert_args(task_id, link, actor, created_at),
+             SELECT ?, ?, ?, ?, ?, ?, ?, ?, ? \
+             WHERE NOT EXISTS (SELECT 1 FROM queue_links WHERE task_id = ? AND link_kind = ? AND link_key = ?)",
+            args,
         ));
     }
     statements.push(("COMMIT", Vec::new()));
@@ -542,6 +564,16 @@ const BACKFILL_DEP_INSERT_SQL: &str = "INSERT INTO task_deps \
       ref_task_id=excluded.ref_task_id, state=excluded.state, cleared_at=excluded.cleared_at, \
       cleared_by=excluded.cleared_by, detail=excluded.detail";
 
+const GUARDED_DEP_INSERT_SQL: &str = "INSERT INTO task_deps \
+    (task_id, block_id, dep_kind, dep_key, ref_repo, ref_number, ref_task_id, state, created_at, cleared_at, cleared_by, detail) \
+    SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ? \
+    WHERE EXISTS (SELECT 1 FROM tasks WHERE id = ? AND status = 'blocked' \
+      AND dep_blocked_until IS ? AND blocked_deps = ?) \
+    ON CONFLICT(task_id, block_id, dep_key) DO UPDATE SET \
+      dep_kind=excluded.dep_kind, ref_repo=excluded.ref_repo, ref_number=excluded.ref_number, \
+      ref_task_id=excluded.ref_task_id, state=excluded.state, cleared_at=excluded.cleared_at, \
+      cleared_by=excluded.cleared_by, detail=excluded.detail";
+
 /// Prepare one blocked-deps cache generation for an enclosing write batch.
 pub(crate) fn prepare_task_deps(
     task_id: i64,
@@ -559,6 +591,28 @@ pub(crate) fn prepare_task_deps(
         normalized.iter().map(dependency_cache_state).collect(),
         statements,
     )
+}
+
+pub(crate) fn guard_task_dep_writes(
+    writes: Vec<(&'static str, Vec<Arg>)>,
+    task_id: i64,
+    block_id: Option<&str>,
+    expected_cache: &[Value],
+) -> Vec<(&'static str, Vec<Arg>)> {
+    let cache = json!(expected_cache).to_string();
+    writes
+        .into_iter()
+        .map(|(_, mut args)| {
+            args.extend([
+                Arg::Int(task_id),
+                block_id
+                    .map(|value| Arg::Text(value.to_owned()))
+                    .unwrap_or(Arg::Null),
+                Arg::Text(cache.clone()),
+            ]);
+            (GUARDED_DEP_INSERT_SQL, args)
+        })
+        .collect()
 }
 
 /// Standalone normalized write for migration fixtures and simple callers.
@@ -657,6 +711,41 @@ pub(crate) fn clear_task_deps_statement(
     (sql, args)
 }
 
+pub(crate) fn clear_task_deps_guarded_statement(
+    task_id: i64,
+    block_id: Option<&str>,
+    worker: &str,
+    reason: &str,
+    now: &str,
+    expected_status: &str,
+    expected_block_id: Option<&str>,
+    expected_cache: Option<&str>,
+) -> (&'static str, Vec<Arg>) {
+    let (base_sql, mut args) = clear_task_deps_statement(task_id, block_id, worker, reason, now);
+    let sql = if base_sql.ends_with("block_id = ?") {
+        "UPDATE task_deps SET state = 'cleared', cleared_at = ?, cleared_by = ?, \
+         detail = json_set(detail, '$.clear_reason', ?) WHERE task_id = ? AND state = 'open' \
+         AND block_id = ? AND EXISTS (SELECT 1 FROM tasks WHERE id = ? AND status = ? \
+           AND dep_blocked_until IS ? AND blocked_deps IS ?)"
+    } else {
+        "UPDATE task_deps SET state = 'cleared', cleared_at = ?, cleared_by = ?, \
+         detail = json_set(detail, '$.clear_reason', ?) WHERE task_id = ? AND state = 'open' \
+         AND EXISTS (SELECT 1 FROM tasks WHERE id = ? AND status = ? \
+           AND dep_blocked_until IS ? AND blocked_deps IS ?)"
+    };
+    args.extend([
+        Arg::Int(task_id),
+        Arg::Text(expected_status.to_owned()),
+        expected_block_id
+            .map(|value| Arg::Text(value.to_owned()))
+            .unwrap_or(Arg::Null),
+        expected_cache
+            .map(|value| Arg::Text(value.to_owned()))
+            .unwrap_or(Arg::Null),
+    ]);
+    (sql, args)
+}
+
 pub(crate) fn clear_missing_task_deps_statement(
     task_id: i64,
     block_id: &str,
@@ -664,6 +753,8 @@ pub(crate) fn clear_missing_task_deps_statement(
     worker: &str,
     reason: &str,
     now: &str,
+    expected_block_until: Option<&str>,
+    expected_cache: &[Value],
 ) -> (String, Vec<Arg>) {
     let keys: std::collections::HashSet<String> = deps
         .iter()
@@ -690,11 +781,20 @@ pub(crate) fn clear_missing_task_deps_statement(
         Arg::Text(block_id.to_owned()),
     ];
     args.extend(keys.into_iter().map(Arg::Text));
+    args.extend([
+        Arg::Int(task_id),
+        expected_block_until
+            .map(|value| Arg::Text(value.to_owned()))
+            .unwrap_or(Arg::Null),
+        Arg::Text(json!(expected_cache).to_string()),
+    ]);
     (
         format!(
             "UPDATE task_deps SET state = 'cleared', cleared_at = ?, cleared_by = ?, \
              detail = json_set(detail, '$.clear_reason', ?) WHERE task_id = ? \
-             AND block_id = ? AND state = 'open'{keep}"
+             AND block_id = ? AND state = 'open'{keep} \
+             AND EXISTS (SELECT 1 FROM tasks WHERE id = ? AND status = 'blocked' \
+               AND dep_blocked_until IS ? AND blocked_deps = ?)"
         ),
         args,
     )
@@ -759,19 +859,9 @@ pub(crate) fn ensure_q6_backfill(t: &TursoBackend) -> Result<(), TErr> {
             if deps.is_empty() {
                 continue;
             }
-            let block_id = row
-                .get("dep_blocked_until")
-                .and_then(Value::as_str)
-                .filter(|s| !s.is_empty())
-                .or_else(|| {
-                    deps.first()
-                        .and_then(|d| d.get("recorded_at"))
-                        .and_then(Value::as_str)
-                })
-                .or_else(|| row.get("updated_at").and_then(Value::as_str))
-                .unwrap_or(created_at);
+            let block_id = task_dep_block_id(row, &deps);
             for raw in &deps {
-                let dep = normalized_dep(raw, task_id, block_id, created_at, "backfill");
+                let dep = normalized_dep(raw, task_id, &block_id, created_at, "backfill");
                 let (_, mut args) = dep_insert_statement(&dep);
                 args.extend([
                     Arg::Int(task_id),
