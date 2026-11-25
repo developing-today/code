@@ -23,8 +23,8 @@ Controls: Left/Right arrows or A/D move, Space or Up fires, Enter
 
 The frame is data: `view`/`layout` render a `Screen` document, and
 the shell paints it in whichever presentation mode the session
-negotiated — alternate screen today, primary and low-write text
-when #14936/#14937 land. The game never changes when the mode does.
+negotiated — alternate screen, primary, or low-write text
+(#14936/#14937). The game never changes when the mode does.
 
 Records are published as JSON: `{"score": 120, "lives": 3,
 "wave": 1, "phase": "playing", "aliens_left": 17, "ticks": 42}`,
@@ -48,3 +48,16 @@ id serve --world --world-admin-token "$WORLD_ADMIN" --world-module program/space
 id world invite HOST_NODE --admin-token "$WORLD_ADMIN" --name Ada
 id world join HOST_NODE --capability TOKEN       # then: arrow keys / A/D, Space to fire
 ```
+
+## Verification + artifact
+
+The `id roc game` workflow (`.github/workflows/id-roc-game.yml`,
+#14939) builds the game with the pinned toolchain, runs the Roc
+module tests and this program's expects — including the scripted
+playthrough at the bottom of `program/main.roc` — and drives the
+built module through the plaza ABI with the same script
+(`smoke/drive.mjs`; run it after a build with `smoke/smoke.sh`).
+Each green run publishes this directory — including
+`program/space-invaders.wasm` — as the `space-invaders-<sha>`
+workflow artifact, so other machines pull the binary instead of
+rebuilding.
