@@ -157,6 +157,7 @@ fn sign_body(
             rotation: None,
             chat: None,
             anchor: None,
+            thread: None,
         },
     )?)
 }

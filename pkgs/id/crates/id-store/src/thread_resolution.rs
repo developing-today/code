@@ -245,8 +245,11 @@ pub struct ChatProposalWithdrawal {
     pub proposal: Hash,
 }
 
-/// One thread event body, tagged by the kind its event carries.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// One thread event body, tagged by the kind its event carries. In an event
+/// header it is encoded with its variant name as well, so a body never decodes
+/// as another kind's; the header's check still requires the two to agree.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
 pub enum ThreadEvent {
     /// A `chat.resolution.v1` body.
     Resolution(ChatResolution),

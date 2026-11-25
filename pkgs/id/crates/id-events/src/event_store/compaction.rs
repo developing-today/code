@@ -70,7 +70,8 @@ pub struct CompactionPolicy {
 /// Whether `kind` is durable by construction, per the class table of the
 /// #2034 investigation (§3/§7): identity and membership material, signed
 /// durable content, attestations, writer-set and device operations, media,
-/// chat anchors, talk-page posts and session checkpoints are kept forever. Checkpoint events
+/// chat anchors, thread resolutions and proposals, talk-page posts and session
+/// checkpoints are kept forever. Checkpoint events
 /// in particular are never deleted by live-data compaction (design §4.6).
 pub(super) fn is_durable_kind(kind: &str) -> bool {
     const DURABLE_EXACT: [&str; 6] = [
@@ -93,7 +94,11 @@ pub(super) fn is_durable_kind(kind: &str) -> bool {
         "device.",
         "media.",
     ];
-    DURABLE_EXACT.contains(&kind) || DURABLE_PREFIX.iter().any(|prefix| kind.starts_with(prefix))
+    DURABLE_EXACT.contains(&kind)
+        || DURABLE_PREFIX.iter().any(|prefix| kind.starts_with(prefix))
+        // Resolutions, proposals and what closed them are the audit trail of a
+        // discussion (#7849, decision record #5874 §4), so compaction keeps them.
+        || id_store::thread_resolution::is_thread_event_kind(kind)
 }
 
 /// What the store keeps of a compacted event: its ID and its causal edges.
@@ -384,6 +389,7 @@ mod tests {
             chat: (kind == "chat.message.v1")
                 .then(|| id_store::chat::ChatMessage::new("hello", Vec::new()).unwrap()),
             anchor: None,
+            thread: None,
         }
     }
 

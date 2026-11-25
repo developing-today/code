@@ -301,6 +301,7 @@ mod tests {
                 rotation: None,
                 chat: None,
                 anchor: None,
+                thread: None,
             };
             let event = sign(&self.key, self.next, self.head, None, ext).unwrap();
             assert!(
