@@ -876,6 +876,7 @@ mod tests {
         );
     }
     fn residue_count(store: &EventStore) -> usize {
+        use redb::ReadableDatabase;
         load_residue_read(&store.db.begin_read().unwrap())
             .unwrap()
             .len()
