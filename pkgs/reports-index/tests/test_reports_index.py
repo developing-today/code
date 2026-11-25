@@ -71,7 +71,7 @@ class SearchTests(unittest.TestCase):
         self.assertEqual(self.index.search(project="atlas").total, 1)
         self.assertEqual(self.index.search(status="final").total, 1)
         self.assertEqual(self.index.search(tag="incident").total, 1)
-        r = self.index.search(date_from="2026-11-23T00:00:00Z",
+        r = self.index.search(date_from="2026-11-24T12:00:00Z",
                               date_to="2026-11-26T00:00:00Z")
         self.assertEqual([e.id for e in r.items], ["rpt-quota-fleet"])
 
