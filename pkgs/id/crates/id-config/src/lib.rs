@@ -34,6 +34,7 @@ pub mod explain;
 pub mod peers;
 pub mod resolve;
 pub mod rollout;
+pub mod storage;
 
 pub use explain::{ExplainEntry, Explanation, explain};
 pub use peers::{PeerClass, PeerEntry, PeerOperation};
@@ -41,6 +42,11 @@ pub use resolve::{LayerOverride, ResolutionInput, ResolveError, ResolvedLayers, 
 pub use rollout::{
     AdapterCapabilities, AdapterSet, CapabilityFailure, CapabilityValidator, ExternalEffect,
     RevisionRecord, RollbackOutcome, Rollout, RolloutError, resolved_digest,
+};
+pub use storage::{
+    ADVERTISED_OBJECT_STORE_ADAPTERS, ADVERTISED_STORE_ADAPTERS, AdvertisedStoreAdapter,
+    ObjectStoreBinding, ResolvedObjectStoreBinding, ResolvedStorage, ResolvedStoreBinding, Storage,
+    StoreBinding, SyncParticipation,
 };
 
 /// The only `ConfigDocument` schema version this crate accepts. The schema
@@ -105,9 +111,9 @@ pub fn field_class(path: &str) -> Option<FieldClass> {
         "schema_version" | "config_id" | "revision" | "protocol_versions" | "ceilings"
         | "gates" => Some(FieldClass::Mechanism),
         // Mode bundles, behavioral values, scoped overrides, retained
-        // extensions, fan-out keys and the peer plane are the configurable
-        // surface.
-        "mode" | "behavior" | "overrides" | "extensions" | "fanout" | "peers" => {
+        // extensions, fan-out keys, the peer plane and the storage plane are
+        // the configurable surface.
+        "mode" | "behavior" | "overrides" | "extensions" | "fanout" | "peers" | "storage" => {
             Some(FieldClass::Behavior)
         }
         _ => None,
@@ -512,6 +518,10 @@ pub struct ConfigDocument {
     /// configured peers, so every peer is `unknown`. See [`PeerEntry`].
     #[serde(default)]
     pub peers: Vec<PeerEntry>,
+    /// The storage plane: which adapter backs each store. Absent means
+    /// the built-in defaults. See [`Storage`].
+    #[serde(default)]
+    pub storage: Storage,
 }
 
 /// The deterministic result of resolving a valid [`ConfigDocument`]: the
@@ -550,6 +560,11 @@ pub struct ResolvedConfig {
     /// plane existed.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub peers: Vec<PeerEntry>,
+    /// Resolved storage plane. Omitted from the canonical encoding when it
+    /// is the built-in default, so a document without `storage` keeps the
+    /// digest it had before the plane existed.
+    #[serde(default, skip_serializing_if = "ResolvedStorage::is_default")]
+    pub storage: ResolvedStorage,
 }
 
 impl ResolvedConfig {
@@ -683,6 +698,29 @@ pub enum ConfigError {
     /// policy would never be in force.
     #[error("peer {0:?} expires_at must be after valid_from")]
     EmptyPeerWindow(String),
+    /// A storage binding names an adapter this build does not advertise
+    /// (record §6.5 step 4).
+    #[error("storage.{store}.adapter {adapter:?} is not advertised by this build")]
+    UnadvertisedStorageAdapter {
+        /// `local_store`, `event_log` or `object_store`.
+        store: &'static str,
+        /// The adapter named.
+        adapter: String,
+    },
+    /// A storage binding asks for a durability its adapter does not
+    /// advertise (record §6.5 step 4).
+    #[error("storage.{store}.durability {durability:?} is not advertised by adapter {adapter:?}")]
+    UnadvertisedDurability {
+        /// `local_store` or `event_log`.
+        store: &'static str,
+        /// The adapter.
+        adapter: String,
+        /// The durability named.
+        durability: String,
+    },
+    /// `storage.object_store.retention_class` is empty.
+    #[error("storage.object_store.retention_class must not be empty; omit it for the default")]
+    EmptyRetentionClass,
     /// An extension key is not a valid namespace.
     #[error(
         "extension key {0:?} is not a valid namespace (expected non-empty, non-whitespace segments joined by '.' or '/' separators, e.g. 'example.com/experiment')"
@@ -790,6 +828,7 @@ impl ConfigDocument {
             return Err(ConfigError::FixedGateDisabled(gate));
         }
         peers::validate(&self.peers)?;
+        self.storage.validate()?;
         for key in self.extensions.keys() {
             if !is_namespaced_extension_key(key) {
                 return Err(ConfigError::UnnamespacedExtension(key.clone()));
@@ -911,6 +950,7 @@ impl ConfigDocument {
             extensions: self.extensions.clone(),
             fanout: self.fanout.resolved(),
             peers: peers::resolved(&self.peers),
+            storage: self.storage.resolved(),
         })
     }
 }

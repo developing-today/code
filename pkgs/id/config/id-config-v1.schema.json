@@ -87,6 +87,39 @@
       },
       "required": ["scope"],
       "type": "object"
+    },
+    "storage": {
+      "additionalProperties": false,
+      "description": "The storage plane (#9111 record section 3.4): which adapter family backs each store. An absent key or null takes the built-in default. Load rejects an adapter or durability this build does not advertise (record section 6.5 step 4); this build advertises redb with fsync for local_store and event_log, and no object-store adapter.",
+      "properties": {
+        "event_log": { "anyOf": [{ "$ref": "#/$defs/store_binding" }, { "type": "null" }], "description": "The event log. Default sync_participation none." },
+        "local_store": { "anyOf": [{ "$ref": "#/$defs/store_binding" }, { "type": "null" }], "description": "The local persistent store. Default sync_participation full." },
+        "object_store": {
+          "anyOf": [
+            {
+              "additionalProperties": false,
+              "properties": {
+                "adapter": { "minLength": 1, "type": "string" },
+                "retention_class": { "default": "default", "minLength": 1, "type": ["string", "null"] }
+              },
+              "required": ["adapter"],
+              "type": "object"
+            },
+            { "type": "null" }
+          ],
+          "description": "The object store. Absent or null means none."
+        }
+      },
+      "type": "object"
+    },
+    "store_binding": {
+      "additionalProperties": false,
+      "properties": {
+        "adapter": { "default": "redb", "type": ["string", "null"] },
+        "durability": { "default": "fsync", "type": ["string", "null"] },
+        "sync_participation": { "enum": ["full", "none", null], "type": ["string", "null"] }
+      },
+      "type": "object"
     }
   },
   "$id": "https://github.com/developing-today/code/pkgs/id/config/id-config-v1.schema.json",
@@ -135,7 +168,8 @@
       "const": 1,
       "description": "Schema version. Only version 1 is accepted; any other version rejects the document.",
       "type": "integer"
-    }
+    },
+    "storage": { "$ref": "#/$defs/storage" }
   },
   "required": ["schema_version", "config_id", "revision", "mode", "protocol_versions", "ceilings"],
   "title": "id ConfigDocument v1",
