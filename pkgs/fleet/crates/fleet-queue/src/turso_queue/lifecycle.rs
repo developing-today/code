@@ -3056,6 +3056,159 @@ mod task_history_tests {
         let since = verb_history_since(&t, &json!({"task_id": 7}));
         assert_eq!(since["rows"].as_array().unwrap().len(), 2, "{since}");
     }
+
+    fn seed_consumer_task(
+        t: &TursoBackend,
+        queue: &str,
+        status: &str,
+        updated_secs_ago: i64,
+    ) -> i64 {
+        let now = now_unix();
+        let updated = iso(now - updated_secs_ago);
+        t.exec(
+            "INSERT INTO tasks (queue, title, payload, metadata, status, created_at, updated_at) \
+             VALUES (?, 'consumer oracle', '{}', '{}', ?, ?, ?)",
+            &[
+                Arg::Text(queue.into()),
+                Arg::Text(status.into()),
+                Arg::Text(updated.clone()),
+                Arg::Text(updated),
+            ],
+        )
+        .unwrap()
+        .last_insert_rowid
+        .unwrap()
+    }
+
+    fn seed_history_row(t: &TursoBackend, task_id: i64, kind: &str, secs_ago: i64) {
+        let at = iso(now_unix() - secs_ago);
+        t.exec(
+            "INSERT INTO task_history (task_id, kind, from_status, to_status, actor, detail, source, created_at) \
+             VALUES (?, ?, 'queued', 'parked', 'oracle-actor', '{}', 'live', ?)",
+            &[Arg::Int(task_id), Arg::Text(kind.into()), Arg::Text(at)],
+        )
+        .unwrap();
+    }
+
+    /// Oracle (#14170 Q8, design §9): the stewardship staleness read is
+    /// one canned query — a task whose last transition is older than the
+    /// threshold is returned with that transition's kind/actor, a fresh
+    /// task is not, a terminal task is not, a history-less task falls
+    /// back to updated_at with a null last_history_id, and claims near
+    /// the lease cap come back in the same response.
+    #[test]
+    fn staleness_reads_last_transition_and_lease_cap_in_one_call() {
+        let (t, _) = fake_backend();
+        let stale = seed_consumer_task(&t, "q8-oracle", "parked", 7_200);
+        seed_history_row(&t, stale, "parked", 7_200);
+        let fresh = seed_consumer_task(&t, "q8-oracle", "queued", 60);
+        seed_history_row(&t, fresh, "enqueued", 60);
+        let near_cap = seed_consumer_task(&t, "q8-oracle", "claimed", 60);
+        seed_history_row(&t, near_cap, "claimed", 60);
+        let far_lease = seed_consumer_task(&t, "q8-oracle", "claimed", 60);
+        seed_history_row(&t, far_lease, "claimed", 60);
+        let done = seed_consumer_task(&t, "q8-oracle", "done", 7_200);
+        seed_history_row(&t, done, "completed", 7_200);
+        let no_history = seed_consumer_task(&t, "q8-oracle", "blocked", 7_000);
+        let other_queue = seed_consumer_task(&t, "q8-other", "parked", 7_200);
+        seed_history_row(&t, other_queue, "parked", 7_200);
+        let now = now_unix();
+        for (id, lease_in) in [(near_cap, 300), (far_lease, 86_400)] {
+            t.exec(
+                "UPDATE tasks SET worker_id = 'w1', claimed_at = ?, lease_until = ? WHERE id = ?",
+                &[
+                    Arg::Text(iso(now - 60)),
+                    Arg::Text(iso(now + lease_in)),
+                    Arg::Int(id),
+                ],
+            )
+            .unwrap();
+        }
+
+        let resp = verb_staleness(
+            &t,
+            &json!({"queue": "q8-oracle", "older_than_seconds": 3_600, "lease_cap_seconds": 900}),
+        );
+        assert_eq!(resp["ok"], true, "{resp}");
+        let rows = resp["rows"].as_array().unwrap();
+        let ids: Vec<i64> = rows.iter().map(|r| r["id"].as_i64().unwrap()).collect();
+        assert_eq!(ids, vec![stale, no_history], "{resp}");
+        assert_eq!(rows[0]["last_kind"], "parked", "{resp}");
+        assert_eq!(rows[0]["last_actor"], "oracle-actor", "{resp}");
+        assert!(rows[1]["last_history_id"].is_null(), "{resp}");
+        let claims = resp["claims_near_lease_cap"].as_array().unwrap();
+        assert_eq!(claims.len(), 1, "{resp}");
+        assert_eq!(claims[0]["id"], near_cap, "{resp}");
+
+        let all = verb_staleness(&t, &json!({"older_than_seconds": 3_600}));
+        let all_ids: Vec<i64> = all["rows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| r["id"].as_i64().unwrap())
+            .collect();
+        assert!(all_ids.contains(&other_queue), "{all}");
+    }
+
+    /// Oracle (#14170 Q8, design §9): the needs-user read returns only
+    /// blocked/parked tasks carrying a question metadata entry, lifts
+    /// the question object out of the metadata, and counts blocked-by
+    /// entries from the blocked_deps cache.
+    #[test]
+    fn needs_user_reads_open_questions_from_metadata() {
+        let (t, _) = fake_backend();
+        let asked = seed_consumer_task(&t, "q8-oracle", "blocked", 5_000);
+        seed_history_row(&t, asked, "blocked", 5_000);
+        let answered = seed_consumer_task(&t, "q8-oracle", "parked", 4_000);
+        let no_question = seed_consumer_task(&t, "q8-oracle", "blocked", 4_000);
+        let queued_with_question = seed_consumer_task(&t, "q8-oracle", "queued", 4_000);
+        let _ = no_question;
+        for (id, metadata, deps) in [
+            (
+                asked,
+                r#"{"question": {"ledger_id": "L-1", "state": "open"}}"#,
+                Some(r#"[{"kind":"issue","ref":"developing-today/code#1"},{"kind":"task","ref":"2"}]"#),
+            ),
+            (
+                answered,
+                r#"{"question": {"ledger_id": "L-2", "state": "answered"}}"#,
+                None,
+            ),
+            (
+                queued_with_question,
+                r#"{"question": {"ledger_id": "L-3", "state": "open"}}"#,
+                None,
+            ),
+        ] {
+            t.exec(
+                "UPDATE tasks SET metadata = ?, blocked_deps = ? WHERE id = ?",
+                &[
+                    Arg::Text(metadata.into()),
+                    match deps {
+                        Some(d) => Arg::Text(d.into()),
+                        None => Arg::Null,
+                    },
+                    Arg::Int(id),
+                ],
+            )
+            .unwrap();
+        }
+
+        let resp = verb_needs_user(&t, &json!({"queue": "q8-oracle"}));
+        assert_eq!(resp["ok"], true, "{resp}");
+        let rows = resp["rows"].as_array().unwrap();
+        let ids: Vec<i64> = rows.iter().map(|r| r["id"].as_i64().unwrap()).collect();
+        assert_eq!(ids, vec![asked, answered], "{resp}");
+        assert_eq!(rows[0]["question"]["ledger_id"], "L-1", "{resp}");
+        assert_eq!(rows[0]["question"]["state"], "open", "{resp}");
+        assert_eq!(rows[0]["blocked_by_count_cache"], 2, "{resp}");
+        assert!(rows[0]["last_transition_at"].is_string(), "{resp}");
+
+        let open_only = verb_needs_user(&t, &json!({"queue": "q8-oracle", "state": "open"}));
+        let open_rows = open_only["rows"].as_array().unwrap();
+        assert_eq!(open_rows.len(), 1, "{open_only}");
+        assert_eq!(open_rows[0]["id"], asked, "{open_only}");
+    }
 }
 
 #[cfg(test)]
