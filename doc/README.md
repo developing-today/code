@@ -60,6 +60,8 @@ This list is the workflow's request catalog (`request_catalog` in [`.agents/rese
 
 ## Dated records
 
+- [Shared event transactions for native and tenant stores](2026-11-25T00-45-16Z_architecture_shared_event_transactions/2026-11-25T00-45-16Z_architecture_shared_event_transactions.md) — initial design for a backend-neutral transaction driver that keeps id-events semantics shared across redb and Turso (#12801).
+
 - [E6 shared persistence helpers](2026-11-24T22-25-00Z_refactor_e6_persistence_helpers/2026-11-24T22-25-00Z_refactor_e6_persistence_helpers.md) — event/body/chain/fork RowWrite seam, native-redb oracle, and remaining #12801 work.
 
 - [P9 lab integration — sufficient-design record](2026-11-24T16-22-01Z_design_p9_lab-integration/2026-11-24T16-22-01Z_design_p9_lab-integration.md) — provisional fleet design for #8873: evidence/context, goals and non-goals, alternatives, placement/exposure/data/availability contracts, six dependency-ordered slices with acceptance, rollout/rollback, verification oracles, and named-decider defaults. Design only; not Drew's ratification.
