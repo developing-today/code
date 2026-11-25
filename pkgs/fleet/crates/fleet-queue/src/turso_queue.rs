@@ -629,48 +629,42 @@ mod tests {
     }
 
     /// One task row in TASK_COLS order for the #13091 stub replies.
+    /// Cells are keyed by column name and emitted in TASK_COLS
+    /// order, so a column added to TASK_COLS cannot silently shift
+    /// the row again (#14873: manual_only, metadata and the
+    /// resolution block did exactly that to the positional row).
     fn task_row_13091(id: i64, status: &str, payload: &Value, dedupe_key: &str) -> Value {
         let text = |v: &str| json!({"type": "text", "value": v});
         let int = |v: i64| json!({"type": "integer", "value": v.to_string()});
         let null = json!({"type": "null"});
-        json!([
-            int(id),
-            text("repo-health-code-pilot"),
-            text("probe"),
-            null,
-            text(&payload.to_string()),
-            text(dedupe_key),
-            int(30),
-            text(status),
-            null,
-            null,
-            null,
-            null,
-            null,
-            null,
-            int(1),
-            int(1000),
-            null,
-            null,
-            null,
-            null,
-            text("{}"),
-            text("{}"),
-            null,
-            null,
-            null,
-            null,
-            null,
-            null,
-            null,
-            text("2026-11-20T00:00:00Z"),
-            text("2026-11-21T00:00:00Z"),
-            text("2026-11-21T00:00:00Z"),
-            null,
-            null,
-            null,
-            null
-        ])
+        let mut cells: std::collections::HashMap<&str, Value> = std::collections::HashMap::new();
+        cells.insert("id", int(id));
+        cells.insert("queue", text("repo-health-code-pilot"));
+        cells.insert("manual_only", int(0));
+        cells.insert("title", text("probe"));
+        cells.insert("payload", text(&payload.to_string()));
+        cells.insert("dedupe_key", text(dedupe_key));
+        cells.insert("priority", int(30));
+        cells.insert("status", text(status));
+        cells.insert("attempts", int(1));
+        cells.insert("max_attempts", int(1000));
+        cells.insert("progress", text("{}"));
+        cells.insert("result", text("{}"));
+        cells.insert("created_at", text("2026-11-20T00:00:00Z"));
+        cells.insert("updated_at", text("2026-11-21T00:00:00Z"));
+        cells.insert("completed_at", text("2026-11-21T00:00:00Z"));
+        let cols: Vec<&str> = TASK_COLS.split(", ").map(str::trim).collect();
+        for key in cells.keys() {
+            assert!(
+                cols.iter().any(|c| c == key),
+                "stub cell {key} is not a task column"
+            );
+        }
+        Value::Array(
+            cols.iter()
+                .map(|c| cells.get(c).cloned().unwrap_or_else(|| null.clone()))
+                .collect(),
+        )
     }
 
     fn insert_ok_13091(id: i64) -> String {
@@ -877,7 +871,7 @@ mod tests {
         // its timer release, and a completed row is never servable.
         let conn = rusqlite::Connection::open_in_memory().unwrap();
         conn.execute_batch(
-            "CREATE TABLE tasks (id INTEGER PRIMARY KEY, queue TEXT, payload TEXT,
+            "CREATE TABLE tasks (id INTEGER PRIMARY KEY, queue TEXT, manual_only INTEGER NOT NULL DEFAULT 0, payload TEXT,
                status TEXT, attempts INTEGER, max_attempts INTEGER, not_before TEXT,
                wait_kind TEXT, ready_condition TEXT, required_budget_minutes INTEGER,
                priority INTEGER, created_at TEXT, progress TEXT);
@@ -986,6 +980,89 @@ mod tests {
             upd.contains("person_answer"),
             "the claim re-check carries the same exclusion: {upd}"
         );
+    }
+
+    #[test]
+    fn manual_only_is_excluded_before_automatic_priority_pick_9178() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE tasks (
+                id INTEGER PRIMARY KEY, queue TEXT, payload TEXT, status TEXT,
+                attempts INTEGER, max_attempts INTEGER, not_before TEXT,
+                wait_kind TEXT, ready_condition TEXT, required_budget_minutes INTEGER,
+                manual_only INTEGER NOT NULL DEFAULT 0, priority INTEGER,
+                created_at TEXT, progress TEXT
+            );",
+        )
+        .unwrap();
+        let now = "2026-11-25T03:00:00Z";
+        let insert = |id: i64, manual_only: i64, priority: i64| {
+            conn.execute(
+                "INSERT INTO tasks (
+                    id, queue, payload, status, attempts, max_attempts, not_before,
+                    wait_kind, ready_condition, required_budget_minutes, manual_only,
+                    priority, created_at, progress
+                 ) VALUES (?, 'repo-health-code-pilot', '{\"kind\":\"small_fix\"}',
+                    'queued', 0, 1000, NULL, NULL, NULL, NULL, ?, ?,
+                    '2026-11-20T00:00:00Z', '{}')",
+                rusqlite::params![id, manual_only, priority],
+            )
+            .unwrap();
+        };
+        let predicate = default_pick_predicate();
+        // The predicate binds four arguments (now x2 for the
+        // queued/parked branches, the declared budget x2 for the
+        // bypass + gate). This harness runs it bare — the two
+        // platform-clause arguments of the full production pick
+        // SELECT do not belong here (#14873).
+        let args = vec![
+            rusqlite::types::Value::Text(now.to_string()),
+            rusqlite::types::Value::Text(now.to_string()),
+            rusqlite::types::Value::Null,
+            rusqlite::types::Value::Null,
+        ];
+        let pick = || -> Vec<i64> {
+            let sql = format!(
+                "SELECT id FROM tasks WHERE payload IS NOT NULL AND payload <> '' \
+                 AND payload <> '{{}}' AND ({predicate}) \
+                 ORDER BY (priority IS NULL), priority ASC, created_at ASC, id ASC LIMIT 1"
+            );
+            conn.prepare(&sql)
+                .unwrap()
+                .query_map(rusqlite::params_from_iter(args.clone()), |row| row.get(0))
+                .unwrap()
+                .collect::<Result<Vec<i64>, _>>()
+                .unwrap()
+        };
+
+        // FDR-0004 oracle: the highest-priority row is manual-only, so
+        // the automatic pick sees no work rather than taking that row.
+        insert(1, 1, 10);
+        assert!(pick().is_empty(), "manual-only work is never auto-claimed");
+        conn.execute(
+            "UPDATE tasks SET status = 'handed_off', progress = '{\"lane\":\"opencode\"}' WHERE id = 1",
+            [],
+        )
+        .unwrap();
+        let handoff = conn
+            .prepare(&format!(
+                "SELECT id FROM tasks WHERE {} ORDER BY priority ASC LIMIT 1",
+                handoff_pick_predicate()
+            ))
+            .unwrap()
+            .query_map([], |row| row.get::<_, i64>(0))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert!(
+            handoff.is_empty(),
+            "handoff auto-pick also skips manual-only work"
+        );
+
+        // It is removed before ordering, so an ordinary lower-priority
+        // row remains eligible instead of being blocked behind it.
+        insert(2, 0, 50);
+        assert_eq!(pick(), vec![2]);
     }
 
     #[test]
@@ -1989,6 +2066,7 @@ mod tests {
         // Third branch: the full sink predicate, ungated.
         let sink_branch = format!("OR ({HANDOFF_SQL})");
         assert!(pred.contains(&sink_branch), "sink branch present: {pred}");
+        assert!(pred.starts_with("manual_only = 0 AND"), "automatic pick excludes manual-only: {pred}");
         assert_eq!(pred.matches("not_before <= ?").count(), 2);
         assert_eq!(
             pred.matches('?').count(),

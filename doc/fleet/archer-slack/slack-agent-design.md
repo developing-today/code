@@ -92,3 +92,7 @@ daemon — scheduled watermark puller over a few watched channels +
 posting as Archer. Phase 2 only if latency matters: add Socket Mode
 for mentions/DMs. The built-in connector stays for everything
 "as Drew".
+
+## Tracking
+
+This record came over from the hatch repo in #5978 with no tracking issue. Related work: the event-driven Slack collector that replaced the archer-slack-review polling was tracked under #2137 (closed). (Pointer added 2026-11-25 for #13881.)

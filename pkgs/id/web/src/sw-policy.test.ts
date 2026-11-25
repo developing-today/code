@@ -1,10 +1,15 @@
 import { describe, expect, it, vi } from "vitest";
 import {
+  BLOBS_CACHE_NAME,
   classifyRequest,
   createShellWorker,
+  isCacheableBlobResponse,
   isCacheablePageResponse,
+  MAX_CACHED_BLOB_BYTES,
+  MAX_CACHED_BLOBS,
   MAX_CACHED_PAGES,
   obsoleteCacheNames,
+  offlineBlobResponse,
   offlineResponse,
   pageCacheKey,
   pagesCacheName,
@@ -16,11 +21,12 @@ import {
 } from "./sw-policy";
 
 /**
- * #13918 slice 1 behavioral tests. Oracle: the design record
+ * #13918 slices 1 and 3 behavioral tests. Oracle: the design record
  * (doc/2026-11-25_design_id_service_worker_offline_13918.md §4–§5):
  * hashed shell assets cache-first, navigations network-first with a
- * per-URL offline copy, and nothing that writes or carries a
- * credential is ever intercepted.
+ * per-URL offline copy, content-addressed blobs cache-first (slice 3,
+ * #14774), and nothing that writes or carries a credential is ever
+ * intercepted.
  */
 
 const ORIGIN = "http://localhost:3000";
@@ -73,6 +79,20 @@ function html(body: string, init: ResponseInit = {}): Response {
     status: 200,
     ...init,
     headers: { "content-type": "text/html; charset=utf-8", ...(init.headers as Record<string, string>) },
+  });
+}
+
+/** What the server's `/blob/<hash>` handler sends for a whole blob. */
+function blob(body: string, init: ResponseInit = {}): Response {
+  return new Response(body, {
+    status: 200,
+    ...init,
+    headers: {
+      "content-type": "application/octet-stream",
+      "content-length": String(new TextEncoder().encode(body).length),
+      "cache-control": "public, max-age=31536000, immutable",
+      ...(init.headers as Record<string, string>),
+    },
   });
 }
 
@@ -136,7 +156,7 @@ describe("classifyRequest", () => {
   it("never intercepts writes, online-only paths, credentials or other origins", () => {
     expect(classifyRequest({ method: "POST", url: `${ORIGIN}/api/save`, mode: "cors" }, ORIGIN)).toBe("passthrough");
     expect(classifyRequest({ method: "POST", url: `${ORIGIN}/`, mode: "navigate" }, ORIGIN)).toBe("passthrough");
-    for (const path of ["/api/files", "/ws/tags", "/blob/abc", "/.well-known/id-transport-advertisement"]) {
+    for (const path of ["/api/files", "/ws/tags", "/blob/", "/blob/a/b", "/.well-known/id-transport-advertisement"]) {
       expect(classifyRequest(get(path, "navigate"), ORIGIN)).toBe("passthrough");
     }
     expect(classifyRequest(get("/?token=secret", "navigate"), ORIGIN)).toBe("passthrough");
@@ -145,6 +165,47 @@ describe("classifyRequest", () => {
       "passthrough",
     );
     expect(classifyRequest(get("/files", "cors"), ORIGIN)).toBe("passthrough");
+  });
+
+  it("serves whole content-addressed blobs cache-first", () => {
+    expect(classifyRequest(get("/blob/abc123"), ORIGIN)).toBe("blob-cache-first");
+    expect(classifyRequest(get("/blob/abc123?filename=a.png", "navigate"), ORIGIN)).toBe("blob-cache-first");
+  });
+
+  it("passes token-bearing and range blob requests through", () => {
+    expect(classifyRequest(get("/blob/abc123?token=secret"), ORIGIN)).toBe("passthrough");
+    expect(classifyRequest(get("/blob/abc123?filename=a&token=x"), ORIGIN)).toBe("passthrough");
+    const range = { ...get("/blob/abc123"), headers: new Headers({ range: "bytes=0-99" }) };
+    expect(classifyRequest(range, ORIGIN)).toBe("passthrough");
+    expect(classifyRequest({ method: "HEAD", url: `${ORIGIN}/blob/abc123`, mode: "cors" }, ORIGIN)).toBe("passthrough");
+    expect(classifyRequest({ method: "GET", url: "https://cdn.example/blob/abc123", mode: "cors" }, ORIGIN)).toBe(
+      "passthrough",
+    );
+  });
+});
+
+describe("isCacheableBlobResponse", () => {
+  it("keeps only immutable, sized 200s within the cap", () => {
+    expect(isCacheableBlobResponse(blob("abc"))).toBe(true);
+    expect(isCacheableBlobResponse(blob("x", { status: 404 }))).toBe(false);
+    expect(isCacheableBlobResponse(blob("x", { headers: { "cache-control": "public, max-age=60" } }))).toBe(false);
+    expect(isCacheableBlobResponse(blob("x", { headers: { "cache-control": "immutable, no-store" } }))).toBe(false);
+    expect(isCacheableBlobResponse(new Response("x", { headers: { "cache-control": "immutable" } }))).toBe(false);
+    expect(
+      isCacheableBlobResponse(blob("x", { headers: { "content-length": String(MAX_CACHED_BLOB_BYTES + 1) } })),
+    ).toBe(false);
+    expect(isCacheableBlobResponse(blob("x", { headers: { "content-length": String(MAX_CACHED_BLOB_BYTES) } }))).toBe(
+      true,
+    );
+    const redirected = blob("x");
+    Object.defineProperty(redirected, "redirected", { value: true });
+    expect(isCacheableBlobResponse(redirected)).toBe(false);
+  });
+
+  it("answers an unkept blob offline with an uncacheable 503", () => {
+    const response = offlineBlobResponse();
+    expect(response.status).toBe(503);
+    expect(response.headers.get("cache-control")).toBe("no-store");
   });
 });
 
@@ -182,6 +243,12 @@ describe("obsoleteCacheNames", () => {
     const names = ["id-shell-v1-old00000-old00000", shellCacheName(MANIFEST), pagesCacheName(MANIFEST), "other-app"];
     expect(obsoleteCacheNames(names, MANIFEST)).toEqual(["id-shell-v1-old00000-old00000"]);
     expect(obsoleteCacheNames(names, null)).toEqual(names.slice(0, 3));
+  });
+
+  it("keeps the blob cache across builds and drops it with the kill switch", () => {
+    const names = [BLOBS_CACHE_NAME, "id-blobs-v0", shellCacheName(MANIFEST)];
+    expect(obsoleteCacheNames(names, MANIFEST)).toEqual(["id-blobs-v0"]);
+    expect(obsoleteCacheNames(names, null)).toEqual(names);
   });
 });
 
@@ -254,17 +321,54 @@ describe("createShellWorker", () => {
     expect(pages?.entries.has(`${ORIGIN}/view/${MAX_CACHED_PAGES}`)).toBe(true);
   });
 
+  it("serves a fetched blob offline and answers an unkept one with 503", async () => {
+    let online = true;
+    const { worker, fetch } = setup(async () => {
+      if (!online) throw new TypeError("Failed to fetch");
+      return blob("blob bytes");
+    });
+    expect(await (await worker.respond(new Request(`${ORIGIN}/blob/abc123`)))?.text()).toBe("blob bytes");
+
+    online = false;
+    fetch.mockClear();
+    const kept = await worker.respond(new Request(`${ORIGIN}/blob/abc123#x`));
+    expect(kept?.status).toBe(200);
+    expect(await kept?.text()).toBe("blob bytes");
+    expect(fetch).not.toHaveBeenCalled();
+    expect((await worker.respond(new Request(`${ORIGIN}/blob/def456`)))?.status).toBe(503);
+    expect((await worker.respond(new Request(`${ORIGIN}/blob/abc123?filename=a.txt`)))?.status).toBe(503);
+  });
+
+  it("never keeps a blob the server does not mark immutable", async () => {
+    const { worker, caches } = setup(async () => blob("x", { headers: { "cache-control": "no-cache" } }));
+    expect((await worker.respond(new Request(`${ORIGIN}/blob/abc123`)))?.status).toBe(200);
+    expect((await caches.open(BLOBS_CACHE_NAME)).entries.size).toBe(0);
+  });
+
+  it("keeps at most MAX_CACHED_BLOBS blobs, dropping the least recent", async () => {
+    const { worker, caches } = setup(async () => blob("b"));
+    for (let i = 0; i <= MAX_CACHED_BLOBS; i += 1) {
+      await worker.respond(new Request(`${ORIGIN}/blob/h${i}`));
+    }
+    const blobs = caches.stores.get(BLOBS_CACHE_NAME);
+    expect(blobs?.entries.size).toBe(MAX_CACHED_BLOBS);
+    expect(blobs?.entries.has(`${ORIGIN}/blob/h0`)).toBe(false);
+    expect(blobs?.entries.has(`${ORIGIN}/blob/h${MAX_CACHED_BLOBS}`)).toBe(true);
+  });
+
   it("passes everything through with no valid manifest", async () => {
     const { worker } = setup(async () => html("x"), null);
     await worker.install();
     expect(worker.respond(navigate("/"))).toBeNull();
     expect(worker.respond(new Request(`${ORIGIN}/assets/main.ab12cd34.js`))).toBeNull();
+    expect(worker.respond(new Request(`${ORIGIN}/blob/abc123`))).toBeNull();
   });
 
   it("leaves passthrough requests to the browser", () => {
     const { worker } = setup(async () => html("x"));
     expect(worker.respond(new Request(`${ORIGIN}/api/files`))).toBeNull();
     expect(worker.respond(new Request(`${ORIGIN}/api/save`, { method: "POST", body: "{}" }))).toBeNull();
+    expect(worker.respond(new Request(`${ORIGIN}/blob/abc123`, { headers: { range: "bytes=0-9" } }))).toBeNull();
   });
 });
 

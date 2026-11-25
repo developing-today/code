@@ -300,6 +300,155 @@ pub const FLEET_REPOS: [&str; 9] = [
 ];
 const PAYLOAD_WARN_BYTES: usize = 4096;
 const PAYLOAD_MAX_BYTES: usize = 16384;
+pub const META_MAX_BYTES: usize = 8192;
+pub const META_MAX_KEYS: usize = 64;
+pub const META_MAX_KEY_BYTES: usize = 64;
+pub const META_MAX_VALUE_BYTES: usize = 2048;
+
+/// Validate queue metadata at every broker write boundary. Unknown keys are
+/// intentionally allowed; registered keys have stable shapes consumers may
+/// rely on. Returns a human-readable error naming the violated limit/key.
+pub fn validate_metadata_key(key: &str) -> Result<(), String> {
+    if key.is_empty()
+        || key.len() > META_MAX_KEY_BYTES
+        || !key.bytes().enumerate().all(|(i, b)| {
+            if i == 0 {
+                b.is_ascii_lowercase()
+            } else {
+                b.is_ascii_lowercase() || b.is_ascii_digit() || b"_.-".contains(&b)
+            }
+        })
+    {
+        return Err(format!(
+            "metadata key {key:?} violates key-name limit/pattern (lowercase [a-z][a-z0-9_.-]*, <= {META_MAX_KEY_BYTES} bytes)"
+        ));
+    }
+    Ok(())
+}
+
+fn metadata_key_value_error(key: &str, value: &Value) -> Result<(), String> {
+    // Registered keys gate their values. An unregistered key takes any JSON.
+    let shape = match key {
+        "programme" | "verification_class" | "coverage_exception" => value.is_string(),
+        "tracking_issue" | "source_issue" => value.as_str().is_some_and(|s| {
+            let Some((repo, number)) = s.rsplit_once('#') else {
+                return false;
+            };
+            repo.split_once('/')
+                .is_some_and(|(owner, name)| !owner.is_empty() && !name.is_empty())
+                && !number.is_empty()
+                && number.bytes().all(|b| b.is_ascii_digit())
+        }),
+        "held" => value.as_object().is_some_and(|v| {
+            ["by", "reason", "since"]
+                .iter()
+                .all(|k| v.get(*k).is_some_and(Value::is_string))
+        }),
+        "external_ids" => value.is_object(),
+        "question" => value.as_object().is_some_and(|v| {
+            v.get("ledger_id").is_some_and(Value::is_string)
+                && v.get("state").is_some_and(Value::is_string)
+        }),
+        "lane_hint" => value.as_object().is_some_and(|v| {
+            ["host", "lane", "session"]
+                .iter()
+                .all(|k| v.get(*k).is_none_or(Value::is_string))
+        }),
+        "estimate" => value.as_object().is_some_and(|v| {
+            ["minutes", "points"]
+                .iter()
+                .all(|k| v.get(*k).is_none_or(Value::is_number))
+        }),
+        _ => true,
+    };
+    if shape {
+        Ok(())
+    } else {
+        Err(format!("metadata key {key} has invalid type/shape"))
+    }
+}
+
+/// Validate a key-level metadata merge patch. Null values mean deletion and
+/// therefore have no registered value shape to validate.
+pub fn validate_metadata_patch(value: &Value) -> Result<(), String> {
+    let obj = value
+        .as_object()
+        .ok_or_else(|| "metadata patch must be a JSON object".to_string())?;
+    for (key, value) in obj {
+        validate_metadata_key(key)?;
+        if value.is_null() {
+            continue;
+        }
+        let encoded = serde_json::to_vec(value)
+            .map_err(|e| format!("metadata {key}: JSON encoding failed: {e}"))?;
+        if encoded.len() > META_MAX_VALUE_BYTES {
+            return Err(format!(
+                "metadata value for {key} exceeds limit ({META_MAX_VALUE_BYTES} bytes)"
+            ));
+        }
+        metadata_key_value_error(key, value)?;
+    }
+    Ok(())
+}
+
+pub fn validate_metadata(value: &Value) -> Result<(), String> {
+    let obj = value
+        .as_object()
+        .ok_or_else(|| "metadata must be a JSON object".to_string())?;
+    if obj.len() > META_MAX_KEYS {
+        return Err(format!(
+            "metadata key count exceeds limit ({META_MAX_KEYS})"
+        ));
+    }
+    for (key, value) in obj {
+        validate_metadata_key(key)?;
+        let encoded = serde_json::to_vec(value)
+            .map_err(|e| format!("metadata {key}: JSON encoding failed: {e}"))?;
+        if encoded.len() > META_MAX_VALUE_BYTES {
+            return Err(format!(
+                "metadata value for {key} exceeds limit ({META_MAX_VALUE_BYTES} bytes)"
+            ));
+        }
+        metadata_key_value_error(key, value)?;
+    }
+    let encoded =
+        serde_json::to_vec(value).map_err(|e| format!("metadata JSON encoding failed: {e}"))?;
+    if encoded.len() > META_MAX_BYTES {
+        return Err(format!(
+            "metadata object exceeds limit ({META_MAX_BYTES} bytes)"
+        ));
+    }
+    Ok(())
+}
+
+pub const METADATA_REGISTRY: [(&str, &str, &str); 10] = [
+    ("programme", "string", "Owning programme"),
+    (
+        "tracking_issue",
+        "owner/repo#n string",
+        "Programme tracking issue",
+    ),
+    (
+        "source_issue",
+        "owner/repo#n string",
+        "Issue that spawned this task",
+    ),
+    ("held", "{by,reason,since} object", "Advisory hold mark"),
+    ("verification_class", "string", "Verification risk/class"),
+    ("external_ids", "object", "Foreign identifiers"),
+    ("coverage_exception", "string", "Estate-coverage exception"),
+    (
+        "question",
+        "{ledger_id,state} object",
+        "Needs-user question",
+    ),
+    (
+        "lane_hint",
+        "{host?,lane?,session?} object",
+        "Non-binding routing hint",
+    ),
+    ("estimate", "{minutes?,points?} object", "Producer estimate"),
+];
 const BODY_WARN_WORDS: usize = 250;
 
 pub const DEDUPE_PATTERNS_DOC: &str = "fix:         repo-health:v1:fix:<repo>:issue:<n>\n\
@@ -1335,6 +1484,12 @@ pub fn validate_packet(packet: &Value) -> (Vec<String>, Vec<String>) {
     let Some(obj) = packet.as_object() else {
         return (vec!["packet: must be a JSON object".to_string()], warnings);
     };
+    if obj
+        .get("manual_only")
+        .is_some_and(|value| !value.is_boolean())
+    {
+        errors.push("packet.manual_only: must be a boolean".to_string());
+    }
     let Some(payload) = obj.get("payload").filter(|p| p.is_object()) else {
         return (
             vec!["packet.payload: required object (repo-task/v1 payload)".to_string()],
@@ -1548,6 +1703,7 @@ pub fn task_from_packet(packet: &Value, queue: &str) -> Value {
     };
     json!({
         "queue": queue,
+        "manual_only": packet.get("manual_only").and_then(Value::as_bool).unwrap_or(false),
         "title": packet.get("title").cloned().unwrap_or(Value::Null),
         "body": packet.get("body").cloned().unwrap_or(Value::Null),
         "payload": payload,

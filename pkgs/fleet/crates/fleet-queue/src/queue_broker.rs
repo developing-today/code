@@ -969,6 +969,71 @@ fn retry_reprioritize_sync(st: &State, t: &crate::turso_queue::TursoBackend) {
     }
 }
 
+/// Cursor form of `/history-since` for the PM projector. The original
+/// timestamp filter remains available to older callers; `after_id` is
+/// the monotonic resume point so equal-second history rows cannot be
+/// skipped or replayed as the feed advances.
+fn dispatch_history_since_cursor(t: &crate::turso_queue::TursoBackend, req: &Value) -> Value {
+    let Some(after_id) = req.get("after_id").and_then(Value::as_i64) else {
+        return fail(2, "history-since: after_id must be an integer");
+    };
+    if after_id < 0 {
+        return fail(2, "history-since: after_id must be non-negative");
+    }
+    let limit = req
+        .get("limit")
+        .and_then(Value::as_i64)
+        .unwrap_or(200)
+        .clamp(1, 50_000) as usize;
+    let task_id = req.get("task_id").and_then(Value::as_i64);
+    let since = req.get("since").and_then(Value::as_str);
+    let mut sql = "SELECT id, event_id, task_id, kind, from_status, to_status, from_priority, \
+                   to_priority, actor, session_id, model_provider, model_id, detail, source, created_at \
+                   FROM task_history WHERE id > ?"
+        .to_string();
+    let mut args = vec![crate::turso_queue::Arg::Int(after_id)];
+    if let Some(id) = task_id {
+        sql.push_str(" AND task_id = ?");
+        args.push(crate::turso_queue::Arg::Int(id));
+    }
+    if let Some(since) = since {
+        sql.push_str(" AND created_at >= ?");
+        args.push(crate::turso_queue::Arg::Text(since.to_string()));
+    }
+    sql.push_str(&format!(" ORDER BY id ASC LIMIT {}", limit + 1));
+    match t.query_objs(&sql, &args, &["detail"]) {
+        Ok(rows) => history_cursor_page(rows, after_id, limit, task_id),
+        Err(e) => fail(2, e),
+    }
+}
+
+fn history_cursor_page(
+    mut rows: Vec<Value>,
+    after_id: i64,
+    limit: usize,
+    task_id: Option<i64>,
+) -> Value {
+    rows.retain(|row| {
+        row.get("id")
+            .and_then(Value::as_i64)
+            .is_some_and(|id| id > after_id)
+    });
+    rows.sort_by_key(|row| row.get("id").and_then(Value::as_i64).unwrap_or(i64::MAX));
+    let has_more = rows.len() > limit;
+    rows.truncate(limit);
+    let next_cursor = rows
+        .last()
+        .and_then(|row| row.get("id"))
+        .and_then(Value::as_i64)
+        .unwrap_or(after_id);
+    ok(json!({
+        "rows": rows,
+        "task_id": task_id,
+        "next_cursor": next_cursor,
+        "has_more": has_more
+    }))
+}
+
 fn dispatch(st: &State, path: &str, req: &Value) -> Value {
     if let Err(e) = validate_durations(path, req) {
         return fail(2, e);
@@ -1017,7 +1082,11 @@ fn dispatch(st: &State, path: &str, req: &Value) -> Value {
                     }
                 }
             }
-            let resp = crate::turso_queue::dispatch(turso, path, &effective_req);
+            let resp = if path == "/history-since" && effective_req.get("after_id").is_some() {
+                dispatch_history_since_cursor(turso, &effective_req)
+            } else {
+                crate::turso_queue::dispatch(turso, path, &effective_req)
+            };
             if path == "/reprioritize" && resp.get("ok").and_then(Value::as_bool) == Some(true) {
                 sync_reprioritized(st, turso, &resp);
             }
@@ -1897,5 +1966,84 @@ mod reprioritize_sync_tests {
         );
         // The retry runs ahead of serving, from the latest task row.
         assert!(SRC.contains("retry_reprioritize_sync(st, turso)"));
+    }
+}
+
+#[cfg(test)]
+mod history_since_cursor_contract_tests {
+    use super::*;
+
+    // Oracle: the PM projector resumes from a task_history id cursor,
+    // receives rows in strictly increasing id order, and knows whether
+    // another page remains.
+    const SRC: &str = include_str!("queue_broker.rs");
+
+    #[test]
+    fn history_since_accepts_after_id_and_returns_page_cursor() {
+        let marker = ["fn dispatch_history_", "since_cursor("].concat();
+        let start = SRC
+            .find(&marker)
+            .expect("queue-broker cursor route must exist");
+        let rest = &SRC[start..];
+        let end = rest
+            .find("\nfn dispatch(")
+            .expect("cursor route must end at the next function");
+        let route = &rest[..end];
+        assert!(
+            route.contains("id > ?"),
+            "cursor excludes ids already seen: {route}"
+        );
+        assert!(
+            route.contains("ORDER BY id ASC"),
+            "pages are stable: {route}"
+        );
+        assert!(
+            route.contains("next_cursor"),
+            "the client can advance: {route}"
+        );
+        assert!(
+            route.contains("has_more"),
+            "the client can drain another page: {route}"
+        );
+        assert!(
+            SRC.contains("path == \"/history-since\" && effective_req.get(\"after_id\").is_some()"),
+            "after_id requests use the monotonic cursor route"
+        );
+    }
+
+    #[test]
+    fn cursor_pages_advance_without_replaying_seen_rows() {
+        let first = history_cursor_page(
+            vec![
+                json!({"id": 42, "task_id": 8}),
+                json!({"id": 40, "task_id": 7}),
+                json!({"id": 41, "task_id": 7}),
+            ],
+            39,
+            2,
+            None,
+        );
+        assert_eq!(
+            first["rows"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|r| r["id"].as_i64().unwrap())
+                .collect::<Vec<_>>(),
+            vec![40, 41],
+            "oracle: an ID cursor returns the next two unseen history rows in ascending order"
+        );
+        assert_eq!(first["next_cursor"], 41);
+        assert_eq!(first["has_more"], true);
+
+        let second = history_cursor_page(
+            vec![json!({"id": 40}), json!({"id": 42})],
+            first["next_cursor"].as_i64().unwrap(),
+            2,
+            None,
+        );
+        assert_eq!(second["rows"], json!([{"id": 42}]));
+        assert_eq!(second["next_cursor"], 42);
+        assert_eq!(second["has_more"], false);
     }
 }

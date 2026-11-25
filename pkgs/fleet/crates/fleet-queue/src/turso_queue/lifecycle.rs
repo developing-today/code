@@ -480,7 +480,7 @@ pub(crate) fn claim_pick_once(
         // and no timer gating — Rule 1's default collection
         // path for the claimant.
         let pick_predicate = if handoff_pick {
-            HANDOFF_SQL.to_string()
+            handoff_pick_predicate()
         } else {
             default_pick_predicate()
         };
@@ -2768,6 +2768,95 @@ mod task_history_tests {
             &[],
         )
         .unwrap()
+    }
+
+    fn insert_metadata_task(t: &TursoBackend, title: &str) -> i64 {
+        let now = now_iso();
+        t.exec(
+            "INSERT INTO tasks (queue, title, payload, metadata, status, created_at, updated_at) VALUES (?, ?, '{}', '{}', 'queued', ?, ?)",
+            &[Arg::Text("metadata-test".into()), Arg::Text(title.into()), Arg::Text(now.clone()), Arg::Text(now)],
+        )
+        .unwrap()
+        .last_insert_rowid
+        .unwrap()
+    }
+
+    #[test]
+    fn metadata_merge_patch_limits_filter_and_history_oracle() {
+        let (t, _) = fake_backend();
+        let first = insert_metadata_task(&t, "first");
+        let other = insert_metadata_task(&t, "other");
+
+        let set = super::super::verb_meta(
+            &t,
+            &json!({"op":"set", "task_id":first, "patch":{
+                "programme":"audit-7",
+                "tracking_issue":"developing-today/code#14170",
+                "custom.with-dot":"kept"
+            }}),
+        );
+        assert_eq!(set["ok"], true);
+
+        let patch = super::super::verb_meta(
+            &t,
+            &json!({"op":"set", "task_id":first, "patch":{
+                "programme":null,
+                "source_issue":"developing-today/code#14158"
+            }}),
+        );
+        assert_eq!(patch["ok"], true);
+        let metadata =
+            super::super::verb_meta(&t, &json!({"op":"get", "task_id":first}))["row"].clone();
+        assert!(metadata.get("programme").is_none());
+        assert_eq!(metadata["tracking_issue"], "developing-today/code#14170");
+        assert_eq!(metadata["source_issue"], "developing-today/code#14158");
+        assert_eq!(metadata["custom.with-dot"], "kept");
+
+        let filtered = super::verb_list(
+            &t,
+            &json!({"queue":"metadata-test", "meta":{
+                "tracking_issue":"developing-today/code#14170",
+                "custom.with-dot":"kept"
+            }}),
+        );
+        assert_eq!(filtered["total"], 1);
+        assert_eq!(filtered["rows"][0]["id"], first);
+
+        let too_large = Value::Object(
+            ["a", "b", "c", "d", "e"]
+                .into_iter()
+                .map(|key| (key.to_string(), Value::String("x".repeat(2000))))
+                .collect(),
+        );
+        let rejected =
+            super::super::verb_meta(&t, &json!({"op":"set", "task_id":other, "patch":too_large}));
+        assert_eq!(rejected["ok"], false);
+        assert!(rejected["error"].as_str().unwrap().contains("8192"));
+
+        let history = t
+            .query_objs(
+                "SELECT kind, detail FROM events WHERE task_id = ? AND kind = 'meta_updated' ORDER BY id",
+                &[Arg::Int(first)],
+                &["detail"],
+            )
+            .unwrap();
+        assert_eq!(history.len(), 2);
+        assert_eq!(
+            history[0]["detail"]["changed"]["programme"]["new"],
+            "audit-7"
+        );
+        assert_eq!(
+            history[1]["detail"]["changed"]["programme"]["old"],
+            "audit-7"
+        );
+        assert!(history[1]["detail"]["changed"]["programme"]["new"].is_null());
+        assert_eq!(
+            history_rows(&t, first)
+                .iter()
+                .filter(|r| r["kind"] == "meta_updated")
+                .count(),
+            2
+        );
     }
 
     /// Oracle (#14170 Q1): a scripted lifecycle through the real verbs

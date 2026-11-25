@@ -14,6 +14,8 @@ import type { Config } from "./config.ts";
 import { OpError } from "./errors.ts";
 import { plain } from "./plain.ts";
 import { WORKERS_FILE, workersList } from "./platform.ts";
+import { STORES_FILE, storesList } from "./stores.ts";
+import { heldTokens, jwtExpiry, type TokenExpiry, tokenExpiry } from "./tokens.ts";
 import { timed, unread } from "./timed.ts";
 
 export interface RunResult {
@@ -242,8 +244,17 @@ function matchReport(out: Record<string, unknown> | null, to: string[], command:
   };
 }
 
+/** How long what a token said of its expiry is kept before the token
+ * is fetched again: long enough that the notifier's minute does not
+ * fetch every secret every minute, short enough that a rotation shows
+ * the same hour. */
+export const TOKEN_EXPIRY_KEPT_MS = 10 * 60_000;
+
 export class Ops {
   private queueToken: string | null = null;
+  /** What each token said of when it runs out, by its name, and when
+   * that was read. Never the token itself. */
+  private expiries = new Map<string, { at: number; expiresAt: number | null | undefined }>();
 
   /** How the queue store and the dashboard are reached. Kept as a plain
    * caller: these classes also run at the edge, where the platform's
@@ -1280,6 +1291,44 @@ export class Ops {
       malformed: list.malformed,
       workers: list.workers.map((w) => ({ ...w, run: w.workflow ? (runs.get(w.workflow) ?? null) : null })),
     };
+  }
+
+  /** When each store token the platform holds runs out (#14255): the
+   * tokens the repository's list of stores names
+   * (pm-stack/platform/stores.json), each fetched by name the way the
+   * queue token is and read for its `exp` claim. Only the name and the
+   * date leave here; a token that could not be fetched says only that. */
+  async tokenExpiries(now: number = Date.now()): Promise<{ checkedAt: string; tokens: TokenExpiry[] }> {
+    const got = (await this.gh([`repos/${this.cfg.repo}/contents/${STORES_FILE}`])) as { content?: string } | null;
+    if (typeof got?.content !== "string") throw new OpError(502, "the list of stores could not be read");
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(new TextDecoder().decode(Uint8Array.from(atob(got.content), (c) => c.charCodeAt(0))));
+    } catch {
+      throw new OpError(502, "the list of stores is not valid JSON");
+    }
+    const held = heldTokens(storesList(parsed).stores);
+    const tokens = await Promise.all(
+      held.map(async (token) => {
+        const kept = this.expiries.get(token.name);
+        if (kept && now - kept.at < TOKEN_EXPIRY_KEPT_MS) return tokenExpiry(token, kept.expiresAt, now);
+        let expiresAt: number | null | undefined;
+        try {
+          const value =
+            token.name === this.cfg.queueTokenName && this.queueToken !== null
+              ? this.queueToken
+              : (await this.must([this.cfg.fleetBin, "secrets", "get", token.name])).trim();
+          expiresAt = jwtExpiry(value);
+        } catch {
+          // Why it could not be fetched is not said: what the fleet
+          // binary prints about a secret stays on the machine.
+          expiresAt = undefined;
+        }
+        this.expiries.set(token.name, { at: now, expiresAt });
+        return tokenExpiry(token, expiresAt, now);
+      }),
+    );
+    return { checkedAt: new Date(now).toISOString(), tokens };
   }
 
   async releases() {

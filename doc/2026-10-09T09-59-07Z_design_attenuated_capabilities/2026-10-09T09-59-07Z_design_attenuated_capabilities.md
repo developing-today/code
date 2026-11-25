@@ -375,3 +375,7 @@ Deviations from the doc:
 - A JOIN-only participant cannot submit input, so the JOIN-only refusal case is covered by a JOIN|INPUT participant instead.
 
 Verification run for this audit: `cargo fmt --check` clean; `cargo test --lib` 641 passed; `cargo clippy --all-targets` (default features) exits 0 with the same 143 pre-existing warnings and none on lines added in this audit. The `--all-features` (web) build was not run here. Its `web/dist` assets were not built, so `rust-embed` fails.
+
+## Tracking
+
+This record predates the tracking-issue convention. Its work was logged in place, in the dated Implementation and Audit sections above, and no issue was filed for it. Live follow-on work on world capabilities and permissions is tracked in #5955 (the worlds design program). (Pointer added 2026-11-25 for #13881.)

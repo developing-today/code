@@ -326,6 +326,11 @@ export async function handle(req: Request, deps: Deps, peer: string | null = nul
             return json(await ops.messages(query.get("limit")));
           case "services":
             return json(await ops.services());
+          // When the store tokens run out (#14255). A machine's to
+          // read: only a machine can fetch every token by name, so the
+          // edge passes this on to one.
+          case "tokens":
+            return json(await ops.tokenExpiries());
         }
       }
       // What needs only GitHub and the queue store: the same code
@@ -726,7 +731,13 @@ if (import.meta.main) {
   const docs = new Docs(loaders(ops, work, await morePages()));
   const state = dirname(cfg.auditFile);
   const push = new Push(fileStore(join(state, "push.json")), contact(cfg.repo));
-  const notifier = new Notifier(docs, push, fileStore(join(state, "notified.json")));
+  const notifier = new Notifier(
+    docs,
+    push,
+    fileStore(join(state, "notified.json")),
+    Date.now,
+    async () => (await ops.tokenExpiries()).tokens,
+  );
   const devices = new Devices(fileStore(cfg.devicesFile));
   const deps: Deps = {
     cfg,

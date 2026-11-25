@@ -371,3 +371,42 @@ fn test_a_device_may_not_grant_above_its_scope() {
         "a Read-scoped device granted Write"
     );
 }
+
+#[test]
+fn test_delegate_prints_the_expiry_bound_and_refuses_a_past_one() {
+    let root = TempDir::new().unwrap();
+    let log = root.path().join("groups.jsonl");
+    let owner = node(root.path(), "owner", &log);
+    let ann = node(root.path(), "ann", &log);
+    let group = group_with_reader(&owner, &ann);
+
+    // A future bound is recorded and shown in the confirmation (#14221 C1).
+    let line = owner.ok(&[
+        "delegate",
+        &group,
+        &ann.key(),
+        "--scope",
+        "read",
+        "--expires-at",
+        "99999999999",
+    ]);
+    assert_eq!(field(&line, "expires_at"), "99999999999");
+    let grant = hash(&field(&line, "event"));
+    assert_eq!(projection(&log).outcome(&grant), Some(&Outcome::Applied));
+
+    // A bound that has already passed is refused before anything is written (#14221 C2).
+    let before = GroupLog::open(&log).unwrap().events().len();
+    let output = owner.run(&[
+        "delegate",
+        &group,
+        &ann.key(),
+        "--scope",
+        "read",
+        "--expires-at",
+        "1",
+    ]);
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("not after now"), "{stderr}");
+    assert_eq!(GroupLog::open(&log).unwrap().events().len(), before);
+}
