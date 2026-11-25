@@ -35,6 +35,7 @@ pub mod peers;
 pub mod resolve;
 pub mod rollout;
 pub mod storage;
+pub mod tiers;
 
 pub use explain::{ExplainEntry, Explanation, explain};
 pub use peers::{PeerClass, PeerEntry, PeerOperation};
@@ -47,6 +48,10 @@ pub use storage::{
     ADVERTISED_OBJECT_STORE_ADAPTERS, ADVERTISED_STORE_ADAPTERS, AdvertisedStoreAdapter,
     ObjectStoreBinding, ResolvedObjectStoreBinding, ResolvedStorage, ResolvedStoreBinding, Storage,
     StoreBinding, SyncParticipation,
+};
+pub use tiers::{
+    DEFAULT_TIER, MAX_TIER_ID_LEN, Placement, RETENTION_INDEFINITE, ResolvedTier, ResolvedTiers,
+    TierLookup, TierPolicy,
 };
 
 /// The only `ConfigDocument` schema version this crate accepts. The schema
@@ -111,11 +116,10 @@ pub fn field_class(path: &str) -> Option<FieldClass> {
         "schema_version" | "config_id" | "revision" | "protocol_versions" | "ceilings"
         | "gates" => Some(FieldClass::Mechanism),
         // Mode bundles, behavioral values, scoped overrides, retained
-        // extensions, fan-out keys, the peer plane and the storage plane are
-        // the configurable surface.
-        "mode" | "behavior" | "overrides" | "extensions" | "fanout" | "peers" | "storage" => {
-            Some(FieldClass::Behavior)
-        }
+        // extensions, fan-out keys, the peer plane, the storage plane and the
+        // tier map are the configurable surface.
+        "mode" | "behavior" | "overrides" | "extensions" | "fanout" | "peers" | "storage"
+        | "tiers" => Some(FieldClass::Behavior),
         _ => None,
     }
 }
@@ -522,6 +526,11 @@ pub struct ConfigDocument {
     /// the built-in defaults. See [`Storage`].
     #[serde(default)]
     pub storage: Storage,
+    /// The tier map: tier identifier to placement and retention. Absent
+    /// means every record is in the built-in `default` tier. See
+    /// [`TierPolicy`].
+    #[serde(default)]
+    pub tiers: BTreeMap<String, TierPolicy>,
 }
 
 /// The deterministic result of resolving a valid [`ConfigDocument`]: the
@@ -565,6 +574,12 @@ pub struct ResolvedConfig {
     /// digest it had before the plane existed.
     #[serde(default, skip_serializing_if = "ResolvedStorage::is_default")]
     pub storage: ResolvedStorage,
+    /// Resolved tier map, always holding `default`. Omitted from the
+    /// canonical encoding when it is only the built-in `default` tier, so
+    /// a document without `tiers` keeps the digest it had before the map
+    /// existed.
+    #[serde(default, skip_serializing_if = "ResolvedTiers::is_default")]
+    pub tiers: ResolvedTiers,
 }
 
 impl ResolvedConfig {
@@ -721,6 +736,23 @@ pub enum ConfigError {
     /// `storage.object_store.retention_class` is empty.
     #[error("storage.object_store.retention_class must not be empty; omit it for the default")]
     EmptyRetentionClass,
+    /// A tier identifier is empty, too long, or uses a character other
+    /// than ASCII letters, digits, `-` and `_`.
+    #[error("tier id {0:?} must be 1 to 64 ASCII letters, digits, '-' or '_' (record section 3.5)")]
+    InvalidTierId(String),
+    /// A tier's retention is neither `indefinite` nor a whole number of
+    /// days written `<n>d` with `n` at least 1.
+    #[error("tiers.{tier}.retention {retention:?} must be \"indefinite\" or \"<n>d\" with n >= 1")]
+    InvalidTierRetention {
+        /// The tier.
+        tier: String,
+        /// The retention given.
+        retention: String,
+    },
+    /// A tier is placed in the object store but `storage.object_store` is
+    /// not bound.
+    #[error("tiers.{0}.placement is object_store but storage.object_store is not bound")]
+    TierNeedsObjectStore(String),
     /// An extension key is not a valid namespace.
     #[error(
         "extension key {0:?} is not a valid namespace (expected non-empty, non-whitespace segments joined by '.' or '/' separators, e.g. 'example.com/experiment')"
@@ -829,6 +861,7 @@ impl ConfigDocument {
         }
         peers::validate(&self.peers)?;
         self.storage.validate()?;
+        tiers::validate(&self.tiers, &self.storage)?;
         for key in self.extensions.keys() {
             if !is_namespaced_extension_key(key) {
                 return Err(ConfigError::UnnamespacedExtension(key.clone()));
@@ -951,6 +984,7 @@ impl ConfigDocument {
             fanout: self.fanout.resolved(),
             peers: peers::resolved(&self.peers),
             storage: self.storage.resolved(),
+            tiers: tiers::resolved(&self.tiers),
         })
     }
 }

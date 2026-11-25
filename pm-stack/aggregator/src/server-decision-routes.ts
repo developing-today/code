@@ -20,7 +20,7 @@ export async function handleDecisionRoutes(req: Request, url: URL, path: string)
   if (req.method === "POST" && needsDrewAnswerMatch) {
     const ledgerId = decodePathSegment(needsDrewAnswerMatch[1]);
     if (ledgerId === null) return json({ error: "bad ledgerId" }, 400);
-    let body: { token?: unknown; optionId?: unknown; freeText?: unknown };
+    let body: { token?: unknown; optionId?: unknown; optionIds?: unknown; freeText?: unknown };
     try {
       body = (await readJsonBody(req)) as typeof body;
     } catch {
@@ -35,15 +35,28 @@ export async function handleDecisionRoutes(req: Request, url: URL, path: string)
     if (optionId !== undefined && !questionOptions(item).some((o) => o.id === optionId)) {
       return json({ error: "optionId is not one of the question options" }, 400);
     }
+    // #14149: a checkbox answer ticks several options at once.
+    let optionIds: string[] | undefined;
+    if (body.optionIds !== undefined) {
+      if (!Array.isArray(body.optionIds) || body.optionIds.some((id) => typeof id !== "string")) {
+        return json({ error: "optionIds must be an array of strings" }, 400);
+      }
+      const known = new Set(questionOptions(item).map((o) => o.id));
+      if ((body.optionIds as string[]).some((id) => !known.has(id))) {
+        return json({ error: "optionIds must all be question options" }, 400);
+      }
+      optionIds = body.optionIds as string[];
+    }
     const freeText = typeof body.freeText === "string" ? body.freeText : undefined;
     if (body.freeText !== undefined && freeText === undefined) {
       return json({ error: "freeText must be a string" }, 400);
     }
-    if (optionId === undefined && !freeText?.trim()) {
-      return json({ error: "optionId or freeText required" }, 400);
+    if (optionId === undefined && !optionIds?.length && !freeText?.trim()) {
+      return json({ error: "optionId, optionIds or freeText required" }, 400);
     }
     const updated = await recordAnswer(cfg.needsDrewFile, ledgerId, {
       ...(optionId !== undefined ? { optionId } : {}),
+      ...(optionIds !== undefined ? { optionIds } : {}),
       ...(freeText !== undefined ? { freeText } : {}),
       via: "api",
     });

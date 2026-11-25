@@ -89,6 +89,7 @@ pub fn explain(input: &str) -> Result<Explanation, ConfigError> {
     fanout(&written, &resolved, &mut entries);
     peers(&written, &resolved, &mut entries)?;
     storage(&written, &resolved, &mut entries);
+    tiers(&written, &resolved, &mut entries);
     extensions(&resolved, &mut entries)?;
     Ok(Explanation { entries, digest })
 }
@@ -355,6 +356,32 @@ fn storage(written: &Value, resolved: &ResolvedConfig, entries: &mut Vec<Explain
             "storage.object_store.retention_class",
             object_store.retention_class.clone(),
             source("object_store", "retention_class"),
+        );
+    }
+}
+
+fn tiers(written: &Value, resolved: &ResolvedConfig, entries: &mut Vec<ExplainEntry>) {
+    // As in `storage`: only a non-null written value is the document's.
+    let source = |tier: &str, key: &str| {
+        let set = written
+            .get("tiers")
+            .and_then(|t| t.get(tier))
+            .and_then(|p| p.get(key))
+            .is_some_and(|v| !v.is_null());
+        if set { SOURCE_DOCUMENT } else { SOURCE_DEFAULT }
+    };
+    for (tier, policy) in &resolved.tiers.0 {
+        push(
+            entries,
+            &format!("tiers.{tier}.placement"),
+            policy.placement.as_str().to_owned(),
+            source(tier, "placement"),
+        );
+        push(
+            entries,
+            &format!("tiers.{tier}.retention"),
+            policy.retention.clone(),
+            source(tier, "retention"),
         );
     }
 }

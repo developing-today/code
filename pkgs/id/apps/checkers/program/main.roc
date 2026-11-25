@@ -37,19 +37,18 @@ import pf.Key
 # with a jump mid-chain must keep jumping. Enter (or R) starts a new
 # game after a win or a loss.
 #
-# Seats (#15111, the multiplayer slice of #14862): each colour has a
-# seat holding the participant id that plays it, 0 when open. The
-# first participant to send input takes red; another participant takes
-# black by pressing J, which retires the AI. While black's seat is
-# open the weak AI plays black exactly as in single-player. Turn
-# enforcement lives here, in `update`, not in any UI: a key from a
-# participant who does not hold the seat of the side to move — the
-# other player out of turn, or a spectator — is dropped and the model
-# is returned unchanged. The host (participant 0) never types.
+# Two players over the id network (slice 3 of #14862): the world
+# holds two seats, red and black. A participant's first key takes the
+# first open seat, red before black; with both seats held, a third
+# participant only watches. Turn order is the world's rule, not the
+# screen's: keys from the side not to move, from a watcher, or from
+# the host change nothing. An open seat is played by the weak AI, so
+# one player alone gets the single-player game unchanged, and a player
+# who leaves hands their side to the AI at once instead of stalling the
+# game. Join and leave come from the `players` subscription; a seat
+# shows the name its player joined with.
 #
-# Later slices of #15111 script the two-process game over the id
-# network (host/join and central server); #14862's three-machine
-# demonstration follows.
+# Later slices of #14862: the three-machine demonstration.
 
 Model : {
     phase : Str,
@@ -60,10 +59,24 @@ Model : {
     chain : U64,
     rng : U64,
     plies : U64,
-    turn : U64,
-    red_seat : U64,
-    black_seat : U64,
+    turn : Str,
+    red : Seat,
+    black : Seat,
+    roster : List(Seat),
+    note : Str,
 }
+
+## A seat, or a roster entry: a participant and the name they joined
+## with. Participant 0 is the host, never a player, so a seat with pid
+## 0 is open and the weak AI plays it.
+Seat : { pid : U64, name : Str }
+
+open_seat : Seat
+open_seat = { pid: 0, name: "" }
+
+## At most this many online participants are remembered for names.
+max_roster : U64
+max_roster = 32
 
 ## One full move: the path of landing squares (one for a step or a
 ## single jump, more for a multi-jump chain) and the jumped pieces.
@@ -338,25 +351,18 @@ init = |seed| {
         chain: 0,
         rng: rng,
         plies: 0,
-        turn: 0,
-        red_seat: 0,
-        black_seat: 0,
+        turn: "red",
+        red: open_seat,
+        black: open_seat,
+        roster: [],
+        note: "",
     }
 }
 
-## A new game after a win or a loss keeps everyone in their seats.
+## A new game on the same seats. If only one side has a player and the
+## other side moves first, the AI opens at once.
 restart : Model -> Model
-restart = |model| { ..init(model.rng), red_seat: model.red_seat, black_seat: model.black_seat }
-
-## The side to move: turn 0 is red, 1 is black.
-side_to_move : Model -> Str
-side_to_move = |model| if model.turn == 1 { "black" } else { "red" }
-
-other_side : Str -> Str
-other_side = |side| if side == "red" { "black" } else { "red" }
-
-owns : Str, U8 -> Bool
-owns = |side, cell| if side == "red" { is_red(cell) } else { is_black(cell) }
+restart = |model| ai_fill({ ..init(model.rng), red: model.red, black: model.black, roster: model.roster })
 
 update : Model, U64, Str -> Model
 update = |model, pid, ev|
@@ -365,7 +371,7 @@ update = |model, pid, ev|
             match RocJson.get(event, "cap") {
                 Ok(cap_value) =>
                     match RocJson.as_string(cap_value) {
-                        Ok(_name) => model
+                        Ok(name) => if pid == 0 and name == "players" { presence(model, event) } else { model }
                         Err(_) => input(model, pid, ev)
                     }
 
@@ -375,60 +381,121 @@ update = |model, pid, ev|
         Err(_) => input(model, pid, ev)
     }
 
-## Participant input: raw terminal bytes, decoded into keys. The
-## sender may first take a seat; then each key applies only while the
-## sender holds the seat of the side to move (or, after a win or a
-## loss, any seat, to start a new game). Every other key is dropped,
-## so out-of-turn and spectator input leave the model unchanged. Keys
-## are checked one at a time: a key after a turn-ending confirm in the
-## same event belongs to the other side and is dropped too.
+## Participant input: raw terminal bytes, decoded into keys. The host
+## (participant 0) never plays. A participant without a seat takes the
+## first open one; with both seats held their keys change nothing, and
+## so do keys from the side not to move. A key that ends the player's
+## turn ends their input: the rest of the event cannot move for the
+## other side.
 input : Model, U64, Str -> Model
-input = |model, pid, ev| {
-    keys = Key.parse(ev)
+input = |model, pid, ev|
     if pid == 0 {
         model
     } else {
-        List.fold(keys, take_seat(model, pid, keys), |acc, key|
-            if may_act(acc, pid) {
-                apply_key(acc, key)
-            } else {
-                acc
-            })
+        seated = claim(model, pid)
+        side = side_of(seated, pid)
+        if side == "" {
+            model
+        } else if seated.phase == "playing" and side != seated.turn {
+            seated
+        } else {
+            List.fold(Key.parse(ev), seated, |current, key|
+                if current.phase == "playing" and current.turn != side {
+                    current
+                } else {
+                    apply_key(current, key)
+                })
+        }
+    }
+
+## Seat a participant in the first open seat, red before black. A
+## participant already seated, or arriving with both seats held, leaves
+## the seats as they are.
+claim : Model, U64 -> Model
+claim = |model, pid|
+    if model.red.pid == pid or model.black.pid == pid {
+        model
+    } else if model.red.pid == 0 {
+        { ..model, red: { pid: pid, name: roster_name(model, pid) } }
+    } else if model.black.pid == 0 {
+        { ..model, black: { pid: pid, name: roster_name(model, pid) } }
+    } else {
+        model
+    }
+
+side_of : Model, U64 -> Str
+side_of = |model, pid|
+    if pid != 0 and model.red.pid == pid {
+        "red"
+    } else if pid != 0 and model.black.pid == pid {
+        "black"
+    } else {
+        ""
+    }
+
+seat_of : Model, Str -> Seat
+seat_of = |model, side| if side == "red" { model.red } else { model.black }
+
+other_side : Str -> Str
+other_side = |side| if side == "red" { "black" } else { "red" }
+
+roster_name : Model, U64 -> Str
+roster_name = |model, pid|
+    match List.first(List.keep_if(model.roster, |entry| entry.pid == pid)) {
+        Ok(entry) => entry.name
+        Err(_) => "p${pid.to_str()}"
+    }
+
+# --- presence ------------------------------------------------------------------
+
+## Host presence events from the `players` subscription:
+## `{"cap":"players","event":"joined"|"left","participant":{"id":..,"name":..}}`.
+presence = |model, event| {
+    part = field(event, "participant")
+    pid = num_field(part, "id", 0)
+    kind = string_field(event, "event")
+    if pid == 0 {
+        model
+    } else if kind == "joined" {
+        joined(model, pid, sanitize(string_field(part, "name")))
+    } else if kind == "left" {
+        left(model, pid)
+    } else {
+        model
     }
 }
 
-## A participant without a seat takes red if it is open, or black if
-## it is open and the input holds J. Anyone else stays a spectator.
-take_seat : Model, U64, List(Key) -> Model
-take_seat = |model, pid, keys|
-    if pid == model.red_seat or pid == model.black_seat {
-        model
-    } else if model.red_seat == 0 {
-        { ..model, red_seat: pid }
-    } else if model.black_seat == 0 and List.any(keys, is_join_key) {
-        { ..model, black_seat: pid }
-    } else {
-        model
+## Remember the participant's name; a seat they already hold shows it.
+joined : Model, U64, Str -> Model
+joined = |model, pid, name| {
+    shown = if name == "" { "p${pid.to_str()}" } else { name }
+    others = List.keep_if(model.roster, |entry| entry.pid != pid)
+    kept = if List.len(others) >= max_roster { List.drop_first(others, 1) } else { others }
+    {
+        ..model,
+        roster: List.append(kept, { pid: pid, name: shown }),
+        red: rename(model.red, pid, shown),
+        black: rename(model.black, pid, shown),
     }
+}
 
-is_join_key : Key -> Bool
-is_join_key = |key|
-    match key {
-        Char("j") | Char("J") => Bool.True
-        _ => Bool.False
-    }
+rename : Seat, U64, Str -> Seat
+rename = |seat, pid, name| if seat.pid == pid { { pid: pid, name: name } } else { seat }
 
-## Whether `pid` may act now: it holds the seat of the side to move, or
-## the game is over and it holds either seat.
-may_act : Model, U64 -> Bool
-may_act = |model, pid|
-    if model.phase != "playing" {
-        pid == model.red_seat or pid == model.black_seat
-    } else if model.turn == 1 {
-        pid == model.black_seat
+## A player who leaves opens their seat and says so on the board; if it
+## was their move and the other side still has a player, the AI moves
+## for them at once, so the game neither stalls nor loses its place.
+left : Model, U64 -> Model
+left = |model, pid| {
+    base = { ..model, roster: List.keep_if(model.roster, |entry| entry.pid != pid) }
+    if model.red.pid == pid {
+        ai_fill({ ..base, red: open_seat, note: "red left: AI plays red" })
+    } else if model.black.pid == pid {
+        ai_fill({ ..base, black: open_seat, note: "black left: AI plays black" })
     } else {
-        pid == model.red_seat
+        base
     }
+}
 
 apply_key : Model, Key -> Model
 apply_key = |model, key|
@@ -474,8 +541,7 @@ confirm = |model|
     if model.phase != "playing" {
         restart(model)
     } else if model.selected == 0 {
-        side = side_to_move(model)
-        if owns(side, cell_at(model.board, model.cursor)) and List.any(legal_moves(model.board, side), |move| move.from == model.cursor) {
+        if is_side(cell_at(model.board, model.cursor), model.turn) and List.any(legal_moves(model.board, model.turn), |move| move.from == model.cursor) {
             { ..model, selected: 1, sel: model.cursor }
         } else {
             model
@@ -511,8 +577,11 @@ current_options = |model|
             captured: chain.captured,
         })
     } else {
-        List.keep_if(legal_moves(model.board, side_to_move(model)), |move| move.from == model.sel)
+        List.keep_if(legal_moves(model.board, model.turn), |move| move.from == model.sel)
     }
+
+is_side : U8, Str -> Bool
+is_side = |cell, side| if side == "red" { is_red(cell) } else { is_black(cell) }
 
 first_landing : Move -> U64
 first_landing = |move|
@@ -521,32 +590,64 @@ first_landing = |move|
         Err(_) => move.from
     }
 
-## A human move is on the board. If the other side is pieceless or
-## stuck the mover wins ("won" is red's win, "lost" black's). Otherwise
-## the turn passes: to the black player if black's seat is taken, or to
-## the AI, which replies at once — and if that leaves red pieceless or
-## stuck the game is lost.
+## A player's move is on the board and the turn passes. If the side
+## now to move is pieceless or stuck, the mover wins. If that side has
+## no player, the AI replies at once. `phase` is red's result: "won"
+## when red wins, "lost" when black does.
 complete_turn : Model -> Model
 complete_turn = |model| {
-    mover = side_to_move(model)
-    other = other_side(mover)
-    winner_phase = if mover == "red" { "won" } else { "lost" }
-    next_turn = if other == "black" { 1 } else { 0 }
-    if count_side(model.board, other) == 0 or List.is_empty(legal_moves(model.board, other)) {
-        { ..model, phase: winner_phase }
-    } else if other == "red" or model.black_seat != 0 {
-        { ..model, turn: next_turn }
+    mover = model.turn
+    passed = { ..model, turn: other_side(mover), note: "" }
+    if side_beaten(passed.board, passed.turn) {
+        { ..passed, phase: win_phase(mover) }
+    } else if seat_of(passed, passed.turn).pid == 0 {
+        ai_turn(passed)
     } else {
-        choice = ai_choose(model.board, model.rng)
+        passed
+    }
+}
+
+side_beaten : Str, Str -> Bool
+side_beaten = |board, side| count_side(board, side) == 0 or List.is_empty(legal_moves(board, side))
+
+win_phase : Str -> Str
+win_phase = |side| if side == "red" { "won" } else { "lost" }
+
+## The weak AI moves for the side to move; mid-chain it must finish the
+## chain its piece started.
+ai_turn : Model -> Model
+ai_turn = |model| {
+    side = model.turn
+    moves =
+        if model.chain == 1 {
+            piece = cell_at(model.board, model.sel)
+            List.map(jump_chains(model.board, model.sel, piece), |chain| { from: model.sel, landings: chain.landings, captured: chain.captured })
+        } else {
+            legal_moves(model.board, side)
+        }
+    if List.is_empty(moves) {
+        model
+    } else {
+        choice = ai_pick(model.board, model.rng, moves)
         board_after = apply_move(model.board, choice.move)
-        settled = { ..model, board: board_after, rng: choice.rng, plies: model.plies + 1 }
-        if count_side(board_after, "red") == 0 or List.is_empty(legal_moves(board_after, "red")) {
-            { ..settled, phase: "lost" }
+        settled = { ..model, board: board_after, rng: choice.rng, plies: model.plies + 1, turn: other_side(side), selected: 0, chain: 0 }
+        if side_beaten(board_after, settled.turn) {
+            { ..settled, phase: win_phase(side) }
         } else {
             settled
         }
     }
 }
+
+## When the side to move has no player but the other side has one, the
+## AI moves now (after a leave, or opening a restarted game).
+ai_fill : Model -> Model
+ai_fill = |model|
+    if model.phase == "playing" and seat_of(model, model.turn).pid == 0 and seat_of(model, other_side(model.turn)).pid != 0 {
+        ai_turn(model)
+    } else {
+        model
+    }
 
 # --- the weak AI ---------------------------------------------------------------
 
@@ -571,18 +672,20 @@ score_move = |board, move| {
         Err(_) => move.from
     }
     crown_bonus = if is_man(piece) and king_row_for(piece, final) { 40 } else { 0 }
-    advance = if piece == 98 { (final / 8) * 2 } else { 0 }
+    advance = if piece == 98 { (final / 8) * 2 } else if piece == 114 { (7 - final / 8) * 2 } else { 0 }
     captured_value + crown_bonus + advance
 }
 
-## Pick black's move. One draw in four plays a uniformly random legal
-## move (the blunder draw). Otherwise the highest one-ply score wins,
-## with uniform jitter of 0..40 on every score — enough that the AI
-## regularly prefers a worse capture or a pointless advance, and never
-## enough to make it look ahead.
-ai_choose : Str, U64 -> { move : Move, rng : U64 }
-ai_choose = |board, rng| {
-    moves = legal_moves(board, "black")
+## Pick a move for `side`. One draw in four plays a uniformly random
+## legal move (the blunder draw). Otherwise the highest one-ply score
+## wins, with uniform jitter of 0..40 on every score — enough that the
+## AI regularly prefers a worse capture or a pointless advance, and
+## never enough to make it look ahead.
+ai_choose : Str, U64, Str -> { move : Move, rng : U64 }
+ai_choose = |board, rng, side| ai_pick(board, rng, legal_moves(board, side))
+
+ai_pick : Str, U64, List(Move) -> { move : Move, rng : U64 }
+ai_pick = |board, rng, moves| {
     fallback = { from: 0, landings: [], captured: [] }
     first_move = match List.first(moves) {
         Ok(move) => move
@@ -631,7 +734,7 @@ frame_width : U64
 frame_width = 28
 
 frame_height : U64
-frame_height = 12
+frame_height = 13
 
 plain : { fg : U8, bg : U8, bold : Bool }
 plain = { fg: 0, bg: 0, bold: Bool.False }
@@ -661,8 +764,21 @@ frame = |model| {
     marked = if model.selected == 1 { mark(cells, model.sel, 46) } else { cells }
     cursored = mark(marked, model.cursor, 226)
     status = Screen.put_text(cursored, 0, 10, status_text(model), plain)
-    Screen.put_text(status, 0, 11, help_text(model), plain)
+    hint = if model.note == "" { "arrows move, ENTER select" } else { model.note }
+    noted = Screen.put_text(status, 0, 11, hint, plain)
+    Screen.put_text(noted, 0, 12, "R:${short(seat_label(model.red))}  B:${short(seat_label(model.black))}", plain)
 }
+
+## Who plays a side: the seated player's name, or the AI.
+seat_label : Seat -> Str
+seat_label = |seat| if seat.pid == 0 { "AI" } else { seat.name }
+
+short : Str -> Str
+short = |text|
+    match Str.from_utf8(List.take_first(Str.to_utf8(text), 9)) {
+        Ok(cut) => cut
+        Err(_) => ""
+    }
 
 ## o/O are red (the human), x/X are black (the AI); capitals are
 ## kings. A dot marks an empty dark square.
@@ -702,46 +818,24 @@ mark = |screen, index, color| {
     Screen.put_text(Screen.put_text(screen, 2 + col * 3, 2 + row, "[", style), 4 + col * 3, 2 + row, "]", style)
 }
 
-## The bottom line: once red is seated and black's seat is open, it
-## tells a second participant how to take black.
-help_text : Model -> Str
-help_text = |model|
-    if model.red_seat != 0 and model.black_seat == 0 {
-        "arrows ENTER, J=join black"
-    } else {
-        "arrows move, ENTER select"
-    }
-
 status_text : Model -> Str
-status_text = |model|
-    if model.black_seat != 0 {
-        two_player_status(model)
-    } else if model.phase == "won" {
-        "YOU WIN! ENTER = new game"
+status_text = |model| {
+    versus = model.red.pid != 0 and model.black.pid != 0
+    black_solo = model.black.pid != 0 and model.red.pid == 0
+    if model.phase == "won" {
+        if versus { "RED WINS! ENTER = new game" } else if black_solo { "AI WINS - ENTER to retry" } else { "YOU WIN! ENTER = new game" }
     } else if model.phase == "lost" {
-        "AI WINS - ENTER to retry"
+        if versus { "BLACK WINS! ENTER = new game" } else if black_solo { "YOU WIN! ENTER = new game" } else { "AI WINS - ENTER to retry" }
     } else if model.chain == 1 {
         "jump again: pick a square"
     } else if model.selected == 1 {
         "selected: pick a landing"
+    } else if versus or black_solo {
+        "${model.turn} to play"
     } else {
         "your move: red to play"
     }
-
-## Two humans: name the side, not "you".
-two_player_status : Model -> Str
-two_player_status = |model|
-    if model.phase == "won" {
-        "RED WINS - ENTER = new game"
-    } else if model.phase == "lost" {
-        "BLACK WINS - ENTER new game"
-    } else if model.chain == 1 {
-        "${side_to_move(model)}: jump again"
-    } else if model.selected == 1 {
-        "${side_to_move(model)}: pick a landing"
-    } else {
-        "${side_to_move(model)} to play"
-    }
+}
 
 # --- records, wants, snapshot --------------------------------------------------
 
@@ -752,16 +846,17 @@ records = |model| encode_or_crash(
         { key: "black", value: RocJson.Number(count_side(model.board, "black").to_str()) },
         { key: "phase", value: RocJson.String(model.phase) },
         { key: "plies", value: RocJson.Number(model.plies.to_str()) },
-        { key: "turn", value: RocJson.String(side_to_move(model)) },
-        { key: "red_seat", value: RocJson.Number(model.red_seat.to_str()) },
-        { key: "black_seat", value: RocJson.Number(model.black_seat.to_str()) },
+        { key: "turn", value: RocJson.String(model.turn) },
+        { key: "red_player", value: RocJson.String(seat_label(model.red)) },
+        { key: "black_player", value: RocJson.String(seat_label(model.black)) },
     ]),
 )
 
-## Turn-based: the game wants nothing from the server — no tick, no
-## requests. Moves arrive as participant input events.
+## Turn-based: no tick and no requests. The game subscribes to
+## `players` so seats show names and a player who leaves opens their
+## seat to the AI. Moves arrive as participant input events.
 wants : Model -> Str
-wants = |_model| "{}"
+wants = |_model| "{\"v\":1,\"subscribe\":[\"players\"],\"requests\":[]}"
 
 ## The whole model as one JSON object; `restore` reads it back with
 ## per-field defaults, so a checkpoint the game cannot parse restarts
@@ -777,9 +872,11 @@ snapshot = |model| encode_or_crash(
         { key: "chain", value: RocJson.Number(model.chain.to_str()) },
         { key: "rng", value: RocJson.Number(model.rng.to_str()) },
         { key: "plies", value: RocJson.Number(model.plies.to_str()) },
-        { key: "turn", value: RocJson.Number(model.turn.to_str()) },
-        { key: "red_seat", value: RocJson.Number(model.red_seat.to_str()) },
-        { key: "black_seat", value: RocJson.Number(model.black_seat.to_str()) },
+        { key: "turn", value: RocJson.String(model.turn) },
+        { key: "red_pid", value: RocJson.Number(model.red.pid.to_str()) },
+        { key: "red_name", value: RocJson.String(model.red.name) },
+        { key: "black_pid", value: RocJson.Number(model.black.pid.to_str()) },
+        { key: "black_name", value: RocJson.String(model.black.name) },
     ]),
 )
 
@@ -799,9 +896,11 @@ restore = |text|
                 chain: if num_field(event, "chain", fresh.chain) == 1 { 1 } else { 0 },
                 rng: num_field(event, "rng", fresh.rng),
                 plies: num_field(event, "plies", fresh.plies),
-                turn: if num_field(event, "turn", fresh.turn) == 1 { 1 } else { 0 },
-                red_seat: num_field(event, "red_seat", fresh.red_seat),
-                black_seat: num_field(event, "black_seat", fresh.black_seat),
+                turn: if string_field(event, "turn") == "black" { "black" } else { "red" },
+                red: restored_seat(event, "red_pid", "red_name"),
+                black: restored_seat(event, "black_pid", "black_name"),
+                roster: [],
+                note: "",
             }
         }
     }
@@ -819,6 +918,26 @@ board_field = |event| {
         start_board
     }
 }
+
+## A restored seat keeps its participant and a sanitized name; an open
+## seat stays open whatever name the text carries.
+restored_seat = |event, pid_key, name_key| {
+    pid = num_field(event, pid_key, 0)
+    if pid == 0 { open_seat } else { { pid: pid, name: sanitize(string_field(event, name_key)) } }
+}
+
+## Names are drawn on the board and written into records, so only plain
+## name bytes survive, at most 16 of them.
+sanitize : Str -> Str
+sanitize = |name|
+    match Str.from_utf8(List.take_first(List.keep_if(Str.to_utf8(name), is_name_byte), 16)) {
+        Ok(text) => text
+        Err(_) => ""
+    }
+
+is_name_byte : U8 -> Bool
+is_name_byte = |b|
+    (b >= 48 and b <= 57) or (b >= 65 and b <= 90) or (b >= 97 and b <= 122) or b == 45 or b == 95
 
 ## Clamp a restored scalar into the range the game can render and
 ## step without underflowing; snapshots are self-produced, but
@@ -945,7 +1064,7 @@ expect cell_at(double_after, 13) == 114 and count_side(double_after, "black") ==
 
 # The same chain driven through the cursor: the first confirm jumps
 # once and locks the chain; the second completes it and wins.
-chain_start = { phase: "playing", board: double_board, cursor: 27, selected: 1, sel: 45, chain: 0, rng: 1, plies: 0, turn: 0, red_seat: 0, black_seat: 0 }
+chain_start = { ..init(1), board: double_board, cursor: 27, selected: 1, sel: 45 }
 chain_mid = confirm(chain_start)
 chain_done = confirm({ ..chain_mid, cursor: 13 })
 
@@ -954,7 +1073,7 @@ expect cell_at(chain_mid.board, 36) == empty_cell and cell_at(chain_mid.board, 2
 expect chain_done.phase == "won" and count_side(chain_done.board, "black") == 0
 
 # Capturing the last black piece through the cursor wins the game.
-win_model = { phase: "playing", board: forced_board, cursor: 13, selected: 1, sel: 27, chain: 0, rng: 1, plies: 0, turn: 0, red_seat: 0, black_seat: 0 }
+win_model = { ..init(1), board: forced_board, cursor: 13, selected: 1, sel: 27 }
 won_game = confirm(win_model)
 
 expect won_game.phase == "won" and cell_at(won_game.board, 13) == 114
@@ -1003,13 +1122,13 @@ ai_board = board_from_rows([
     "........",
 ])
 
-ai_pick = ai_choose(ai_board, 1)
+ai_pick_black = ai_choose(ai_board, 1, "black")
 
 # Forced to capture, the AI captures.
-expect ai_pick.move.captured == [29]
-expect count_side(apply_move(ai_board, ai_pick.move), "red") == 0
+expect ai_pick_black.move.captured == [29]
+expect count_side(apply_move(ai_board, ai_pick_black.move), "red") == 0
 
-ai_open = ai_choose(start_board, 7)
+ai_open = ai_choose(start_board, 7, "black")
 
 # Whatever the jitter or the blunder draw picks, it is a legal move.
 expect List.any(legal_moves(start_board, "black"), |move| move == ai_open.move)
@@ -1027,92 +1146,85 @@ expect count_side(opened.board, "red") == 12 and count_side(opened.board, "black
 
 # --- snapshot round-trip --------------------------------------------------------------
 
-mid_game = { phase: "playing", board: double_board, cursor: 13, selected: 1, sel: 27, chain: 1, rng: 12345, plies: 9, turn: 0, red_seat: 4, black_seat: 6 }
+mid_game = { ..init(12345), board: double_board, cursor: 13, selected: 1, sel: 27, chain: 1, plies: 9 }
 
 expect restore(snapshot(mid_game)) == mid_game
 expect restore("not json at all") == init(0)
 
-# --- seats and turn enforcement (#15111) ----------------------------------------------
+# --- seats and turns (slice 3 of #14862) ----------------------------------------------
 #
-# Participants 7 (red) and 9 (black) play; 11 is a spectator.
+# Participant 7 joins as ann and 9 as bo. "a" is a cursor move that
+# clamps at the left edge, so it seats a player without changing the
+# board; " " confirms; w/a/s/d move the cursor.
 
-seat_red = update(init(0), 7, "\r")
+joined_event : U64, Str -> Str
+joined_event = |pid, name| "{\"cap\":\"players\",\"event\":\"joined\",\"participant\":{\"id\":${pid.to_str()},\"name\":\"${name}\"}}"
 
-# The first participant to type takes red, and the key still applies.
-expect seat_red.red_seat == 7 and seat_red.black_seat == 0 and seat_red.selected == 1
+left_event : U64 -> Str
+left_event = |pid| "{\"cap\":\"players\",\"event\":\"left\",\"participant\":{\"id\":${pid.to_str()},\"name\":\"x\"}}"
 
-# The host never types: participant-0 input changes nothing.
-expect update(init(0), 0, "\r") == init(0)
+lobby = update(update(init(0), 0, joined_event(7, "ann")), 0, joined_event(9, "bo"))
+red_seated = update(lobby, 7, "a")
+both_seated = update(red_seated, 9, "a")
 
-# Without J, a second participant is a spectator: its input is dropped
-# and the model is unchanged.
-expect update(seat_red, 9, "\r") == seat_red
-expect update(seat_red, 9, "wd\r") == seat_red
+expect List.len(lobby.roster) == 2 and lobby.red.pid == 0
+expect red_seated.red == { pid: 7, name: "ann" } and red_seated.black.pid == 0
+expect both_seated.black == { pid: 9, name: "bo" } and both_seated.board == start_board and both_seated.turn == "red"
 
-# Single-player through `update` plays exactly as through the keys: the
-# AI still answers red's move inside the same update.
-solo = List.fold(["w", "d", "\r"], seat_red, |acc, ev| update(acc, 7, ev))
+# Out of turn, a watcher, the host and a forged presence event from a
+# participant all change nothing.
+expect update(both_seated, 9, " ") == both_seated
+expect update(both_seated, 9, "w") == both_seated
+expect update(both_seated, 11, " wd ") == both_seated
+expect update(both_seated, 0, " wd ") == both_seated
+expect update(both_seated, 9, left_event(7)) == both_seated
 
-expect solo.plies == 2 and solo.turn == 0 and solo.board == opened.board
+# Red moves 40 to 33; with black seated the AI does not reply, and the
+# rest of red's event cannot move for black.
+red_moved = update(both_seated, 7, " wd ")
+red_moved_extra = update(both_seated, 7, " wd ww sd ")
 
-# J takes the open black seat and retires the AI; nothing else changes.
-seat_both = update(seat_red, 9, "j")
+expect red_moved.turn == "black" and red_moved.plies == 1
+expect cell_at(red_moved.board, 33) == 114 and cell_at(red_moved.board, 40) == empty_cell
+expect red_moved_extra == red_moved
+expect update(red_moved, 7, " ") == red_moved
 
-expect seat_both.black_seat == 9 and { ..seat_both, black_seat: 0 } == seat_red
+# Black answers 17 to 26 and the turn comes back to red.
+black_moved = update(red_moved, 9, "ww sd ")
 
-# Red moves 40 -> 33. The turn passes to black and the AI does not
-# answer (its PRNG is untouched).
-red_moved = List.fold(["w", "d", "\r"], seat_both, |acc, ev| update(acc, 7, ev))
+expect black_moved.turn == "red" and black_moved.plies == 2
+expect cell_at(black_moved.board, 26) == 98 and cell_at(black_moved.board, 17) == empty_cell
 
-expect red_moved.turn == 1 and red_moved.plies == 1 and red_moved.rng == seat_both.rng
-expect cell_at(red_moved.board, 33) == 114 and count_side(red_moved.board, "black") == 12
+# A third participant still only watches once both seats are held.
+expect update(black_moved, 11, "a") == black_moved
 
-# Out of turn: red's keys, and a spectator's, are dropped with the
-# model unchanged.
-expect update(red_moved, 7, "\r") == red_moved
-expect update(red_moved, 7, "sa\r") == red_moved
-expect update(red_moved, 11, "j\r") == red_moved
+# Black leaves on red's move: the seat opens and the board says so;
+# nothing moves until red does, then the AI answers for black.
+black_gone = update(black_moved, 0, left_event(9))
 
-# Black moves 17 -> 24 in one event; the turn passes back to red.
-black_moved = update(red_moved, 9, "ww\rsa\r")
+expect black_gone.black == open_seat and black_gone.board == black_moved.board
+expect black_gone.note == "black left: AI plays black" and List.len(black_gone.roster) == 1
 
-expect black_moved.turn == 0 and black_moved.plies == 2
-expect cell_at(black_moved.board, 24) == 98 and cell_at(black_moved.board, 17) == empty_cell
+# Red leaves on red's move with black still seated: the AI moves for
+# red at once and the turn passes to black.
+red_gone = update(black_moved, 0, left_event(7))
 
-# A key after a turn-ending confirm in the same event belongs to the
-# other side and is dropped. Red walks the cursor 24 -> 42, moves
-# 42 -> 35, and its trailing "s" does not move the cursor off 35.
-red_then_extra = update(black_moved, 7, "ssdd\rwd\rs")
+expect red_gone.red == open_seat and red_gone.turn == "black" and red_gone.plies == 3
 
-expect red_then_extra.turn == 1 and red_then_extra.plies == 3
-expect cell_at(red_then_extra.board, 35) == 114 and red_then_extra.cursor == 35
+# A returning player takes the open seat with their first key.
+red_back = update(update(red_gone, 0, joined_event(12, "cy")), 12, "a")
 
-# Black wins by taking red's last piece; only a seated player restarts,
-# and the seats survive the new game.
-black_win_board = board_from_rows([
-    "........",
-    "........",
-    "....b...",
-    "...r....",
-    "........",
-    "........",
-    "........",
-    "........",
-])
+expect red_back.red == { pid: 12, name: "cy" } and red_back.turn == "black"
 
-black_to_win = { phase: "playing", board: black_win_board, cursor: 34, selected: 1, sel: 20, chain: 0, rng: 1, plies: 4, turn: 1, red_seat: 7, black_seat: 9 }
-black_won = update(black_to_win, 9, "\r")
+# One player alone gets the single-player game: the AI answers at once.
+solo = update(update(init(0), 7, "a"), 7, " wd ")
 
-expect update(black_to_win, 7, "\r") == black_to_win
-expect black_won.phase == "lost" and count_side(black_won.board, "red") == 0
-expect status_text(black_won) == "BLACK WINS - ENTER new game"
-expect update(black_won, 11, "\r") == black_won
+expect solo.turn == "red" and solo.plies == 2 and solo.black.pid == 0
 
-rematch = update(black_won, 7, "\r")
+# Records name the side to move and who plays each side.
+expect Str.contains(records(both_seated), "\"red_player\":\"ann\"") and Str.contains(records(both_seated), "\"black_player\":\"bo\"")
+expect Str.contains(records(solo), "\"black_player\":\"AI\"")
 
-expect rematch.phase == "playing" and rematch.turn == 0 and rematch.red_seat == 7 and rematch.black_seat == 9
-
-# A snapshot from before seats existed restores with open seats and red
-# to move.
-expect restore("{\"phase\":\"playing\",\"board\":\"${start_board}\",\"plies\":3}").turn == 0
-expect restore("{\"phase\":\"playing\",\"plies\":3}").red_seat == 0
+# Seats survive a snapshot; the roster is rebuilt from presence.
+expect restore(snapshot(black_moved)) == { ..black_moved, roster: [] }
+expect restore(snapshot({ ..both_seated, red: { pid: 7, name: "a\"b" } })).red == { pid: 7, name: "ab" }

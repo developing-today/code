@@ -26,7 +26,9 @@ inside the same `update` that completes the human's turn, and its
 randomness comes from a xorshift PRNG carried in the model, so the
 journal replays a game exactly. `update` routes host events by
 their JSON `cap` field and everything else through `Key.parse`.
-The game is turn-based and subscribes to nothing: `wants` is `{}`.
+The game
+is turn-based and subscribes only to `players`: `wants` is
+`{"v":1,"subscribe":["players"],"requests":[]}`.
 
 Controls: arrow keys or WASD move the cursor (brackets; green marks
 the selected piece, yellow the cursor). Enter or Space selects a
@@ -46,7 +48,8 @@ the low-write text mode from the #14861 harness slices. The game
 never changes when the mode does.
 
 Records are published as JSON: `{"white": 16, "black": 15,
-"phase": "playing", "plies": 7}`, so `id world records` and
+"phase": "playing", "plies": 7, "turn": "black", "white_player": "ann",
+"black_player": "AI"}`, so `id world records` and
 `id world mirror` show the game state and can replicate it
 peer-to-peer. Snapshots are the whole model as one JSON object —
 board, castling rights, and en-passant target included — and
@@ -54,24 +57,22 @@ board, castling rights, and en-passant target included — and
 that is not exactly 64 piece bytes falls back to the opening
 position instead of trapping.
 
-Two players (#15111): each colour has a seat holding the participant
-that plays it. The first participant to type takes white; a second
-participant takes black by pressing J, which retires the AI (the
-bottom line says so while black's seat is open). With black's seat
-open the AI plays black exactly as in single-player. Turn enforcement
-lives in the world program's `update`, not in the terminal: a key from
-anyone who does not hold the seat of the side to move — the other
-player out of turn, or a spectator — is dropped and the model is
-unchanged, and the expects prove it. Once the game is over either
-seated player can start a new one, and the seats carry over. Records
-add `turn`, `white_seat` and `black_seat`; snapshots from before
-seats restore with both seats open and white to move.
+## Two players
 
-Later slices of #14862 build on this one: id-network multiplayer
-(one binary hosts and the other joins, or a centrally started
-server both players join), and the three-machine demonstration
-(GitHub Actions serves, Blacksmith plays white, the laptop plays
-black, one compiled artifact shared by all three).
+The world holds two seats, white and black. A participant's first
+key takes the first open seat, white before black; with both seats
+held, a third participant only watches. Turn order is enforced by the
+world program, not the screen: keys from the side not to move, from a
+watcher, or from the host change nothing, and a key that ends a turn
+ends that player's input, so the rest of one event cannot move for the
+opponent. An open seat is played by the weak AI, so one player alone
+gets the single-player game above unchanged. When a seated player
+leaves (a `players` presence event from the host), their seat opens,
+the board says so, and the AI moves for that side at once if it was
+their turn. The bottom row names who plays each side (`W:ann  B:AI`).
+
+Later slices of #14862: the scripted two-process game over the id
+network (#15111) and the three-machine demonstration.
 
 ## Build
 
@@ -86,5 +87,4 @@ ROC=/path/to/roc ZIG=zig ./build.sh
 id serve --world --world-admin-token "$WORLD_ADMIN" --world-module program/chess.wasm
 id world invite HOST_NODE --admin-token "$WORLD_ADMIN" --name Ada
 id world join HOST_NODE --capability TOKEN       # then: arrows/WASD, Enter to select and move
-# a second player, invited the same way, joins and presses J to play black
 ```

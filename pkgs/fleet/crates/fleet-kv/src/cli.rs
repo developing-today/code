@@ -8,6 +8,9 @@
 
 use std::io::{Read, Write};
 
+use std::path::PathBuf;
+
+use crate::backup::{self, BackupError, Manifest};
 use crate::{Identity, KvError, LocalStore};
 
 pub const EXIT_OK: i32 = 0;
@@ -28,6 +31,14 @@ verbs:
   clear-override --namespace NS KEY            drop the local overlay row
   revert         --namespace NS KEY --to V     append a copy of version V
 
+host store (operators):
+  snapshot       DEST                          write a one-file snapshot to DEST
+  restore        SNAPSHOT                      restore SNAPSHOT as this host's store
+
+Values of any size are accepted: up to 1 MiB they are stored inline, and
+larger values stream into a content-addressed working file beside the
+store (`get` streams them back and checks their hash).
+
 Keys are scoped to this session's launch identity (owner, context and
 session). With no trusted launch-identity record every verb but help
 refuses with identity_unavailable (exit 69).
@@ -36,7 +47,8 @@ refuses with identity_unavailable (exit 69).
 central plane, which is not built yet: both are refused with
 unimplemented_central_in_phase1 (exit 69).
 
-Exit codes: 0 ok, 1 typed refusal (malformed_key, not_found, ...),
+Exit codes: 0 ok, 1 typed refusal (malformed_key, not_found,
+backup_target_exists, not_a_snapshot, ...),
 2 usage error, 69 unavailable.
 ";
 
@@ -45,6 +57,8 @@ const SET_USAGE: &str = "usage: fleet kv set --namespace NS KEY (VALUE | --stdin
 const LIST_USAGE: &str = "usage: fleet kv list --namespace NS [--include-tombstones]\n\nOne line per key: KEY<TAB>VERSION<TAB>ORIGIN (local or masked).\n";
 const DELETE_USAGE: &str = "usage: fleet kv delete --namespace NS KEY\n\nWrite a masking tombstone: the key reads absent here and sweeps as a mask.\n";
 const CLEAR_USAGE: &str = "usage: fleet kv clear-override --namespace NS KEY\n\nDrop the local overlay row, advance the key's fence and cancel unsent sweep\nintents. History is kept. Busy for over 5 s: clear_busy_try_again.\n";
+const SNAPSHOT_USAGE: &str = "usage: fleet kv snapshot DEST\n\nWrite a consistent one-file snapshot of this host's whole store (WAL included)\nto DEST, with a manifest row inside it. Never overwrites DEST. Prints the manifest.\n";
+const RESTORE_USAGE: &str = "usage: fleet kv restore SNAPSHOT\n\nRestore SNAPSHOT as this host's store after checking its manifest, schema\nversion and integrity. Refuses when a store (or its WAL) already exists.\nPrints the manifest.\n";
 const REVERT_USAGE: &str = "usage: fleet kv revert --namespace NS KEY --to VERSION\n       fleet kv revert NS KEY --to VERSION\n\nAppend a new version equal to VERSION from this key's local history.\n";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -55,6 +69,8 @@ enum Verb {
     Delete,
     ClearOverride,
     Revert,
+    Snapshot,
+    Restore,
 }
 
 impl Verb {
@@ -66,6 +82,8 @@ impl Verb {
             "delete" => Self::Delete,
             "clear-override" => Self::ClearOverride,
             "revert" => Self::Revert,
+            "snapshot" => Self::Snapshot,
+            "restore" => Self::Restore,
             _ => return None,
         })
     }
@@ -78,7 +96,14 @@ impl Verb {
             Self::Delete => DELETE_USAGE,
             Self::ClearOverride => CLEAR_USAGE,
             Self::Revert => REVERT_USAGE,
+            Self::Snapshot => SNAPSHOT_USAGE,
+            Self::Restore => RESTORE_USAGE,
         }
+    }
+
+    /// Host-store verbs act on the whole store, not on one namespace.
+    fn is_host(self) -> bool {
+        matches!(self, Self::Snapshot | Self::Restore)
     }
 }
 
@@ -117,6 +142,12 @@ enum Command {
         key: String,
         to: u64,
     },
+    Snapshot {
+        dest: PathBuf,
+    },
+    Restore {
+        snapshot: PathBuf,
+    },
 }
 
 impl Command {
@@ -129,6 +160,8 @@ impl Command {
             Self::Delete { .. } => "delete",
             Self::ClearOverride { .. } => "clear-override",
             Self::Revert { .. } => "revert",
+            Self::Snapshot { .. } => "snapshot",
+            Self::Restore { .. } => "restore",
         })
     }
 }
@@ -211,7 +244,6 @@ fn parse(args: &[String]) -> Result<Command, ParseError> {
     if verb == Verb::Revert && namespace.is_none() && positionals.len() == 2 {
         namespace = Some(positionals.remove(0));
     }
-    let namespace = namespace.ok_or_else(|| usage("--namespace NS is required"))?;
     let expect = |count: usize| -> Result<(), ParseError> {
         if positionals.len() == count {
             Ok(())
@@ -222,6 +254,21 @@ fn parse(args: &[String]) -> Result<Command, ParseError> {
             )))
         }
     };
+    if verb.is_host() {
+        if namespace.is_some() {
+            return Err(usage(format!(
+                "`kv {first}` acts on the whole host store and takes no --namespace"
+            )));
+        }
+        expect(1)?;
+        let path = PathBuf::from(positionals.remove(0));
+        return Ok(if verb == Verb::Snapshot {
+            Command::Snapshot { dest: path }
+        } else {
+            Command::Restore { snapshot: path }
+        });
+    }
+    let namespace = namespace.ok_or_else(|| usage("--namespace NS is required"))?;
     Ok(match verb {
         Verb::Get => {
             expect(1)?;
@@ -278,12 +325,39 @@ fn parse(args: &[String]) -> Result<Command, ParseError> {
                 to,
             }
         }
+        Verb::Snapshot | Verb::Restore => unreachable!("host verbs returned above"),
     })
 }
 
 fn refuse(err: &mut dyn Write, error: &KvError) -> i32 {
     let _ = writeln!(err, "error: {}: {error}", error.code());
     EXIT_REFUSED
+}
+
+fn refuse_backup(err: &mut dyn Write, error: &BackupError) -> i32 {
+    let _ = writeln!(err, "error: {}: {error}", error.code());
+    EXIT_REFUSED
+}
+
+fn write_manifest(out: &mut dyn Write, manifest: &Manifest) -> std::io::Result<()> {
+    writeln!(
+        out,
+        "manifest={} taken_at_ms={} schema_version={} overlay_rows={} pinned_files={}",
+        manifest.id,
+        manifest.taken_at_ms,
+        manifest.schema_version,
+        manifest.overlay_rows,
+        manifest.pinned_files.len()
+    )
+}
+
+fn log_operation(command: &Command, err: &mut dyn Write, ctx: &fleet_config::ctx::Ctx) {
+    if let (Some(operation), Some(ctx_id)) = (command.operation(), ctx.id()) {
+        // Log only the propagated join key and operation. KV values,
+        // namespaces, keys, paths, and the store's separate scope identity
+        // can all carry user data and do not belong in this record.
+        let _ = writeln!(err, "fleet-kv: op={operation} FLEET_CTX_ID={ctx_id}");
+    }
 }
 
 fn report_parse_error(error: ParseError, err: &mut dyn Write) -> i32 {
@@ -320,12 +394,19 @@ pub fn preflight(args: &[String], out: &mut dyn Write, err: &mut dyn Write) -> O
     }
 }
 
+/// Where `restore` writes: this host's store path, once the launch identity
+/// checked out; or a typed refusal code and message.
+pub type RestoreTarget = Result<PathBuf, (&'static str, String)>;
+
 /// Run one invocation, opening the store and identity only once the whole
-/// command line has parsed. An open failure is reported as
-/// `error: <code>: <message>` and exits 69.
+/// command line has parsed. `restore` never opens the store: it asks
+/// `restore_target` (which checks the launch identity) where the store
+/// belongs. An open failure is reported as `error: <code>: <message>` and
+/// exits 69.
 pub fn run_opening(
     args: &[String],
     open: impl FnOnce() -> Opened,
+    restore_target: impl FnOnce() -> RestoreTarget,
     stdin: &mut dyn Read,
     out: &mut dyn Write,
     err: &mut dyn Write,
@@ -336,6 +417,20 @@ pub fn run_opening(
     };
     if let Command::Help(text) = command {
         return finish(out.write_all(text.as_bytes()), err);
+    }
+    if let Command::Restore { snapshot } = &command {
+        let target = match restore_target() {
+            Ok(target) => target,
+            Err((code, message)) => {
+                let _ = writeln!(err, "error: {code}: {message}");
+                return EXIT_UNAVAILABLE;
+            }
+        };
+        log_operation(&command, err, &fleet_config::ctx::Ctx::from_env());
+        return match backup::restore(snapshot, &target) {
+            Ok(manifest) => finish(write_manifest(out, &manifest), err),
+            Err(error) => refuse_backup(err, &error),
+        };
     }
     let (store, launch) = match open() {
         Ok(opened) => opened,
@@ -409,17 +504,12 @@ fn execute(
     err: &mut dyn Write,
     ctx: &fleet_config::ctx::Ctx,
 ) -> i32 {
-    if let (Some(operation), Some(ctx_id)) = (command.operation(), ctx.id()) {
-        // Log only the propagated join key and operation. KV values,
-        // namespaces, keys, and the store's separate scope identity can
-        // all carry user data and do not belong in this record.
-        let _ = writeln!(err, "fleet-kv: op={operation} FLEET_CTX_ID={ctx_id}");
-    }
+    log_operation(&command, err, ctx);
     let written = match command {
         Command::Help(text) => out.write_all(text.as_bytes()),
-        Command::Get { namespace, key } => match store.get(identity, &namespace, &key) {
-            Ok(Some(value)) => out.write_all(&value),
-            Ok(None) => {
+        Command::Get { namespace, key } => match store.get_to(identity, &namespace, &key, out) {
+            Ok(true) => Ok(()),
+            Ok(false) => {
                 let _ = writeln!(
                     err,
                     "error: not_found: no live value for `{key}` in `{namespace}`"
@@ -433,19 +523,15 @@ fn execute(
             key,
             value,
         } => {
-            let bytes = match value {
-                ValueSource::Inline(value) => value.into_bytes(),
-                ValueSource::Stdin => {
-                    let mut bytes = Vec::new();
-                    if let Err(error) = stdin.read_to_end(&mut bytes) {
-                        let _ = writeln!(err, "error: stdin_unreadable: {error}");
-                        return EXIT_REFUSED;
-                    }
-                    bytes
+            let stored = match value {
+                ValueSource::Inline(value) => {
+                    store.set(identity, &namespace, &key, value.as_bytes())
                 }
+                ValueSource::Stdin => store.set_reader(identity, &namespace, &key, stdin),
             };
-            match store.set(identity, &namespace, &key, &bytes) {
+            match stored {
                 Ok(version) => writeln!(out, "{version}"),
+                // Reading stdin or writing a working file failed: io_error.
                 Err(error) => return refuse(err, &error),
             }
         }
@@ -480,6 +566,19 @@ fn execute(
                 Ok(version) => writeln!(out, "{version}"),
                 Err(error) => return refuse(err, &error),
             }
+        }
+        Command::Snapshot { dest } => match store.snapshot(&dest) {
+            Ok(manifest) => write_manifest(out, &manifest),
+            Err(error) => return refuse_backup(err, &error),
+        },
+        Command::Restore { .. } => {
+            // Restoring replaces the store, so it cannot run against one
+            // that is already open: only `run_opening` restores.
+            let _ = writeln!(
+                err,
+                "error: usage: `kv restore` runs through `fleet kv`, not against an open store"
+            );
+            return EXIT_USAGE;
         }
     };
     finish(written, err)
@@ -792,6 +891,7 @@ mod tests {
         let code = run_opening(
             &args(&["get", "--namespace", "n", "k", "extra"]),
             || panic!("must not open on a usage error"),
+            || panic!("must not resolve a restore target"),
             &mut input,
             &mut out,
             &mut err,
@@ -802,6 +902,7 @@ mod tests {
         let code = run_opening(
             &args(&["get", "--namespace", "n", "k"]),
             || Err(("identity_unavailable", "no record".into())),
+            || panic!("only restore resolves a target"),
             &mut input,
             &mut out,
             &mut err,
@@ -825,11 +926,137 @@ mod tests {
                     },
                 ))
             },
+            || panic!("only restore resolves a target"),
             &mut input,
             &mut out,
             &mut Vec::new(),
         );
         assert_eq!(code, EXIT_OK);
         assert_eq!(out, b"1\n");
+    }
+
+    fn scratch(label: &str) -> PathBuf {
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!(
+            "fleet-kv-cli-{label}-{}-{suffix}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).expect("scratch");
+        dir
+    }
+
+    fn launch_identity() -> crate::launch::LaunchIdentity {
+        crate::launch::LaunchIdentity {
+            owner_user_id: "owner".into(),
+            context_id: "context".into(),
+            partition_id: "partition".into(),
+        }
+    }
+
+    #[test]
+    fn host_verbs_parse_strictly() {
+        let store = LocalStore::in_memory().expect("store");
+        for words in [
+            &["snapshot"][..],
+            &["snapshot", "a", "b"],
+            &["snapshot", "--namespace", "n", "dest"],
+            &["restore", "--namespace=n", "snap"],
+            &["restore", "--to", "1", "snap"],
+        ] {
+            let outcome = invoke(&store, words, b"");
+            assert_eq!(outcome.code, EXIT_USAGE, "{words:?}: {}", outcome.err);
+        }
+        let help = invoke(&store, &["snapshot", "--help"], b"");
+        assert_eq!(help.code, EXIT_OK);
+        assert!(text(&help).starts_with("usage: fleet kv snapshot DEST"));
+        let restore = invoke(&store, &["restore", "snap"], b"");
+        assert_eq!(
+            restore.code, EXIT_USAGE,
+            "restore never runs on an open store"
+        );
+    }
+
+    #[test]
+    fn snapshot_then_restore_through_the_cli() {
+        let dir = scratch("host");
+        let source = dir.join("source.db");
+        let snapshot = dir.join("snap.db");
+        let target = dir.join("restored.db");
+        let store = LocalStore::open(&source).expect("open");
+        assert_eq!(
+            invoke(&store, &["set", "--namespace", "notes", "k", "v"], b"").code,
+            EXIT_OK
+        );
+        let taken = invoke(
+            &store,
+            &["snapshot", snapshot.to_str().expect("utf8 path")],
+            b"",
+        );
+        assert_eq!(taken.code, EXIT_OK, "{}", taken.err);
+        let line = text(&taken);
+        assert!(line.starts_with("manifest=1 "), "{line}");
+        assert!(line.ends_with(" overlay_rows=1 pinned_files=0\n"), "{line}");
+        let again = invoke(
+            &store,
+            &["snapshot", snapshot.to_str().expect("utf8 path")],
+            b"",
+        );
+        assert_eq!(again.code, EXIT_REFUSED);
+        assert!(
+            again.err.starts_with("error: backup_target_exists: "),
+            "{}",
+            again.err
+        );
+
+        let mut out = Vec::new();
+        let mut err = Vec::new();
+        let mut input: &[u8] = b"";
+        let code = run_opening(
+            &args(&["restore", snapshot.to_str().expect("utf8 path")]),
+            || panic!("restore must not open the store"),
+            || Ok(target.clone()),
+            &mut input,
+            &mut out,
+            &mut err,
+        );
+        assert_eq!(code, EXIT_OK, "{}", String::from_utf8_lossy(&err));
+        assert_eq!(String::from_utf8(out).expect("utf8"), line);
+        let restored = LocalStore::open(&target).expect("open restored");
+        let me = launch_identity();
+        assert_eq!(
+            restored.get(&me.identity(), "notes", "k").expect("get"),
+            Some(b"v".to_vec())
+        );
+
+        let mut err = Vec::new();
+        let code = run_opening(
+            &args(&["restore", snapshot.to_str().expect("utf8 path")]),
+            || panic!("restore must not open the store"),
+            || Ok(target.clone()),
+            &mut input,
+            &mut Vec::new(),
+            &mut err,
+        );
+        assert_eq!(code, EXIT_REFUSED);
+        assert!(
+            String::from_utf8(err)
+                .expect("utf8")
+                .starts_with("error: backup_target_exists: ")
+        );
+
+        let mut err = Vec::new();
+        let code = run_opening(
+            &args(&["restore", snapshot.to_str().expect("utf8 path")]),
+            || panic!("restore must not open the store"),
+            || Err(("identity_unavailable", "no record".into())),
+            &mut input,
+            &mut Vec::new(),
+            &mut err,
+        );
+        assert_eq!(code, EXIT_UNAVAILABLE);
+        let _ = std::fs::remove_dir_all(dir);
     }
 }
