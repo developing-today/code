@@ -97,7 +97,7 @@ fn tbs_bytes(der: &[u8]) -> Result<Vec<u8>> {
 }
 
 /// Classify a subject key from its SPKI OID (+ size for RSA).
-fn classify_subject(spki_oid: &str, spki_bytes: &[u8]) -> Option<AlgorithmId> {
+pub(crate) fn classify_subject(spki_oid: &str, spki_bytes: &[u8]) -> Option<AlgorithmId> {
     match spki_oid {
         "1.3.101.112" => Some(AlgorithmId::Ed25519),
         "1.2.840.10045.2.1" => Some(AlgorithmId::P256),

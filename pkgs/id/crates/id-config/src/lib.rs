@@ -30,9 +30,13 @@ use std::collections::BTreeSet;
 
 use serde::{Deserialize, Serialize};
 
+pub mod explain;
+pub mod peers;
 pub mod resolve;
 pub mod rollout;
 
+pub use explain::{ExplainEntry, Explanation, explain};
+pub use peers::{PeerClass, PeerEntry, PeerOperation};
 pub use resolve::{LayerOverride, ResolutionInput, ResolveError, ResolvedLayers, resolve};
 pub use rollout::{
     AdapterCapabilities, AdapterSet, CapabilityFailure, CapabilityValidator, ExternalEffect,
@@ -44,6 +48,20 @@ pub use rollout::{
 /// other version is rejected ([`ConfigError::UnsupportedSchemaVersion`])
 /// rather than silently reinterpreted.
 pub const CONFIG_SCHEMA_VERSION: u32 = 1;
+
+/// Reject boundary for `ceilings.max_hops`.
+///
+/// A document whose hop ceiling is above this does not load (#9111 record
+/// §5.2 and §5.3 item 7; #9144 §5.1). Not configurable.
+pub const MAX_HOPS_LIMIT: u32 = 8;
+/// Reject boundary for `fanout.deadline_ms` (#9111 record §5.2; #9144 Q5).
+pub const DEADLINE_MS_LIMIT: u64 = 60_000;
+/// Reject boundary for `fanout.per_peer_timeout_ms` (#9111 record §5.2;
+/// #9144 Q5).
+pub const PER_PEER_TIMEOUT_MS_LIMIT: u64 = 30_000;
+/// Reject boundary for `fanout.peer_breadth` (#9111 record §5.2; #9144
+/// §5.3).
+pub const PEER_BREADTH_LIMIT: u32 = 16;
 
 /// The fixed admission gates, by canonical ID. These are mechanism, not
 /// behavior: they are compiled into the admission pipeline (design decision
@@ -86,9 +104,12 @@ pub fn field_class(path: &str) -> Option<FieldClass> {
         // and the fixed gates are the invariant skeleton of the document.
         "schema_version" | "config_id" | "revision" | "protocol_versions" | "ceilings"
         | "gates" => Some(FieldClass::Mechanism),
-        // Mode bundles, behavioral values, scoped overrides and retained
-        // extensions are the configurable surface.
-        "mode" | "behavior" | "overrides" | "extensions" => Some(FieldClass::Behavior),
+        // Mode bundles, behavioral values, scoped overrides, retained
+        // extensions, fan-out keys and the peer plane are the configurable
+        // surface.
+        "mode" | "behavior" | "overrides" | "extensions" | "fanout" | "peers" => {
+            Some(FieldClass::Behavior)
+        }
         _ => None,
     }
 }
@@ -238,6 +259,96 @@ impl Ceilings {
 
 const fn default_true() -> bool {
     true
+}
+
+const fn default_deadline_ms() -> u64 {
+    5_000
+}
+
+const fn default_per_peer_timeout_ms() -> u64 {
+    2_000
+}
+
+const fn default_peer_breadth() -> u32 {
+    4
+}
+
+/// The fan-out keys of #9111 record §7.1.
+///
+/// They come from #9144 §8 and §11.1. Each key has a default, so an absent
+/// `fanout` section or key means the default, and each is validated
+/// against `1 ..= limit`, where the limit
+/// is fixed in this crate ([`DEADLINE_MS_LIMIT`],
+/// [`PER_PEER_TIMEOUT_MS_LIMIT`], [`PEER_BREADTH_LIMIT`]); a value above
+/// its limit rejects the document at load instead of being clamped, so an
+/// operator sees the mistake. The hop limit is `ceilings.max_hops`, bounded
+/// by [`MAX_HOPS_LIMIT`].
+///
+/// `fanout.remotes[]` is not here yet: it names entries of the `peers[]`
+/// plane ([`PeerEntry`]) and lands with a later part of slice 9111-03.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Fanout {
+    /// Whole fan-out query deadline in milliseconds. Default 5000.
+    #[serde(default = "default_deadline_ms")]
+    pub deadline_ms: u64,
+    /// Per-peer timeout in milliseconds. Default 2000.
+    ///
+    /// A value above `deadline_ms` is accepted and clamped to it in the
+    /// resolved config (record §7.1).
+    #[serde(default = "default_per_peer_timeout_ms")]
+    pub per_peer_timeout_ms: u64,
+    /// How many peers one query asks at once. Default 4.
+    #[serde(default = "default_peer_breadth")]
+    pub peer_breadth: u32,
+}
+
+impl Default for Fanout {
+    fn default() -> Self {
+        Self {
+            deadline_ms: default_deadline_ms(),
+            per_peer_timeout_ms: default_per_peer_timeout_ms(),
+            peer_breadth: default_peer_breadth(),
+        }
+    }
+}
+
+impl Fanout {
+    /// The first key outside `1 ..= limit`, as `(field, value, limit)`.
+    fn first_out_of_range(&self) -> Option<(&'static str, u64, u64)> {
+        [
+            ("fanout.deadline_ms", self.deadline_ms, DEADLINE_MS_LIMIT),
+            (
+                "fanout.per_peer_timeout_ms",
+                self.per_peer_timeout_ms,
+                PER_PEER_TIMEOUT_MS_LIMIT,
+            ),
+            (
+                "fanout.peer_breadth",
+                u64::from(self.peer_breadth),
+                u64::from(PEER_BREADTH_LIMIT),
+            ),
+        ]
+        .into_iter()
+        .find(|&(_, value, limit)| value == 0 || value > limit)
+    }
+
+    /// The resolved form.
+    ///
+    /// The per-peer timeout is clamped to the deadline (record §7.1 and
+    /// §7.2); every other key is as written.
+    #[must_use]
+    pub const fn resolved(self) -> Self {
+        let per_peer_timeout_ms = if self.per_peer_timeout_ms > self.deadline_ms {
+            self.deadline_ms
+        } else {
+            self.per_peer_timeout_ms
+        };
+        Self {
+            per_peer_timeout_ms,
+            ..self
+        }
+    }
 }
 
 /// The fixed admission gates. Every field defaults to `true` and validation
@@ -394,6 +505,13 @@ pub struct ConfigDocument {
     /// resolved output and never executed here.
     #[serde(default)]
     pub extensions: BTreeMap<String, serde_json::Value>,
+    /// The fan-out keys; absent means every default. See [`Fanout`].
+    #[serde(default)]
+    pub fanout: Fanout,
+    /// The peer plane: one entry per peer relationship. Absent means no
+    /// configured peers, so every peer is `unknown`. See [`PeerEntry`].
+    #[serde(default)]
+    pub peers: Vec<PeerEntry>,
 }
 
 /// The deterministic result of resolving a valid [`ConfigDocument`]: the
@@ -424,6 +542,14 @@ pub struct ResolvedConfig {
     pub provenance: BTreeMap<String, String>,
     /// Namespaced extensions, retained verbatim, never executed.
     pub extensions: BTreeMap<String, serde_json::Value>,
+    /// Resolved fan-out keys, per-peer timeout clamped to the deadline.
+    pub fanout: Fanout,
+    /// Resolved peer plane, sorted by `peer_id` with each entry's
+    /// operations sorted. Omitted from the canonical encoding when empty,
+    /// so a document without peers keeps the digest it had before the
+    /// plane existed.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub peers: Vec<PeerEntry>,
 }
 
 impl ResolvedConfig {
@@ -469,6 +595,18 @@ pub enum ConfigError {
     /// A ceiling field is zero.
     #[error("ceiling {0} must be at least 1")]
     ZeroCeiling(&'static str),
+    /// A value is zero or above a limit fixed in this crate.
+    ///
+    /// Never clamped: the document is rejected.
+    #[error("{field} value {value} is outside 1..={limit}")]
+    OutOfRange {
+        /// The field's dotted path.
+        field: &'static str,
+        /// The value the document gave.
+        value: u64,
+        /// The fixed upper limit.
+        limit: u64,
+    },
     /// The document tried to disable a fixed admission gate.
     #[error("fixed gate {0} cannot be disabled by configuration")]
     FixedGateDisabled(&'static str),
@@ -502,6 +640,49 @@ pub enum ConfigError {
     /// An override names an empty scope.
     #[error("override scope must not be empty")]
     EmptyScope,
+    /// A peer entry has an empty `peer_id`.
+    #[error("peers[].peer_id must not be empty")]
+    EmptyPeerId,
+    /// Two peer entries name the same peer (record §6.3).
+    #[error("duplicate peer entry for peer_id {0:?}")]
+    DuplicatePeer(String),
+    /// A peer entry lists one operation twice.
+    #[error("peer {peer_id:?} lists operation {operation} twice")]
+    DuplicatePeerOperation {
+        /// The peer.
+        peer_id: String,
+        /// The repeated operation.
+        operation: &'static str,
+    },
+    /// A peer entry sets an empty `scope`.
+    #[error("peer {0:?} has an empty scope; omit it for the deployment default")]
+    EmptyPeerScope(String),
+    /// A peer entry grants something its class can never use (record
+    /// §6.5 step 3).
+    #[error("peer {peer_id:?} with class {class}: {rule}")]
+    PeerClassConflict {
+        /// The peer.
+        peer_id: String,
+        /// Its class.
+        class: &'static str,
+        /// The rule it breaks.
+        rule: &'static str,
+    },
+    /// A peer entry's `valid_from` or `expires_at` is not an RFC 3339
+    /// date-time.
+    #[error("peer {peer_id:?} {field} {value:?} is not an RFC 3339 date-time")]
+    InvalidPeerInstant {
+        /// The peer.
+        peer_id: String,
+        /// `valid_from` or `expires_at`.
+        field: &'static str,
+        /// The text given.
+        value: String,
+    },
+    /// A peer entry's `expires_at` is not after its `valid_from`, so the
+    /// policy would never be in force.
+    #[error("peer {0:?} expires_at must be after valid_from")]
+    EmptyPeerWindow(String),
     /// An extension key is not a valid namespace.
     #[error(
         "extension key {0:?} is not a valid namespace (expected non-empty, non-whitespace segments joined by '.' or '/' separators, e.g. 'example.com/experiment')"
@@ -591,9 +772,24 @@ impl ConfigDocument {
                 return Err(ConfigError::ZeroCeiling(field));
             }
         }
+        if self.ceilings.max_hops > MAX_HOPS_LIMIT {
+            return Err(ConfigError::OutOfRange {
+                field: "ceilings.max_hops",
+                value: u64::from(self.ceilings.max_hops),
+                limit: u64::from(MAX_HOPS_LIMIT),
+            });
+        }
+        if let Some((field, value, limit)) = self.fanout.first_out_of_range() {
+            return Err(ConfigError::OutOfRange {
+                field,
+                value,
+                limit,
+            });
+        }
         if let Some(gate) = self.gates.first_disabled() {
             return Err(ConfigError::FixedGateDisabled(gate));
         }
+        peers::validate(&self.peers)?;
         for key in self.extensions.keys() {
             if !is_namespaced_extension_key(key) {
                 return Err(ConfigError::UnnamespacedExtension(key.clone()));
@@ -713,6 +909,8 @@ impl ConfigDocument {
             behavior,
             provenance,
             extensions: self.extensions.clone(),
+            fanout: self.fanout.resolved(),
+            peers: peers::resolved(&self.peers),
         })
     }
 }

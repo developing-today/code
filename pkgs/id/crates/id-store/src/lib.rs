@@ -34,6 +34,7 @@ pub mod chat_anchor;
 pub mod content_store;
 pub mod documents;
 pub mod event_types;
+pub mod grant_authority;
 pub mod graph_index;
 pub mod identity;
 pub mod issuer_rotation;
@@ -55,5 +56,7 @@ pub mod store_traits;
 pub mod tag_claims;
 pub mod tag_index;
 pub mod tags;
+pub mod talk_page;
+pub mod thread_resolution;
 
 pub use store::STORE_PATH;

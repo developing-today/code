@@ -6,7 +6,7 @@
 //! One schema, two subjects: a world announcement carries an iroh
 //! endpoint (node id + relay hint, never a raw IP/port); a program
 //! announcement replaces the endpoint with a content hash. The whole
-//! signed packet is CBOR and must fit the BEP44 budget
+//! signed packet is CBOR and must fit the pkarr packet budget
 //! ([`MAX_PACKET_BYTES`]); the field caps keep a sane packet under
 //! ~800 bytes. Signing follows the envelope machinery's pattern
 //! (#1069): the signature covers the canonical body encoding and
@@ -32,8 +32,12 @@ pub const MAX_RELAY_CHARS: usize = 200;
 /// Maximum announcement lifetime: 7 days, in seconds (design
 /// section 3 — expired announcements are void, not stale).
 pub const MAX_LIFETIME_SECONDS: u64 = 7 * 24 * 60 * 60;
-/// The BEP44 value budget for the whole signed packet, in bytes.
-pub const MAX_PACKET_BYTES: usize = 1_000;
+/// The budget for the whole signed packet, in bytes: the largest
+/// payload one pkarr DNS packet can carry (1000 bytes, less the
+/// `_ida.<z32>` TXT record framing; #10706,
+/// [`crate::announcement_pkarr`]). Anything `to_bytes` accepts can
+/// therefore be published.
+pub const MAX_PACKET_BYTES: usize = 915;
 
 /// Coarse occupancy (design section 3, Q1): exact counts are a
 /// privacy leak and the runtime does not track them.
@@ -280,7 +284,7 @@ impl SignedAnnouncement {
     }
 
     /// The signed packet: CBOR of the whole signed object, held to
-    /// the BEP44 budget.
+    /// the pkarr packet budget.
     ///
     /// # Errors
     ///
@@ -293,7 +297,7 @@ impl SignedAnnouncement {
             .encode();
         if bytes.len() > MAX_PACKET_BYTES {
             bail!(
-                "signed announcement is {} bytes, over the {MAX_PACKET_BYTES}-byte BEP44 budget",
+                "signed announcement is {} bytes, over the {MAX_PACKET_BYTES}-byte pkarr budget",
                 bytes.len()
             );
         }
@@ -311,7 +315,7 @@ impl SignedAnnouncement {
     pub fn from_bytes(bytes: &[u8]) -> Result<Self> {
         if bytes.len() > MAX_PACKET_BYTES {
             bail!(
-                "signed announcement is {} bytes, over the {MAX_PACKET_BYTES}-byte BEP44 budget",
+                "signed announcement is {} bytes, over the {MAX_PACKET_BYTES}-byte pkarr budget",
                 bytes.len()
             );
         }

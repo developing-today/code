@@ -1,0 +1,492 @@
+{
+  "comment": "D5 slice 1 fixture graphs. Object ids are short names standing in for D3 object_ids; the view model never reads meaning from an id.",
+  "areas": {
+    "notes": "public",
+    "bo-private": ["bo"],
+    "programme": "public"
+  },
+  "objects": [
+    {
+      "object_id": "n-index",
+      "kind": "note",
+      "author": "ana",
+      "area": "notes",
+      "created_claim": "2026-11-01T09:00:00Z",
+      "title": "Index: memory"
+    },
+    {
+      "object_id": "n-spaced",
+      "kind": "note",
+      "author": "ana",
+      "area": "notes",
+      "created_claim": "2026-11-02T09:00:00Z",
+      "title": "Spaced repetition"
+    },
+    {
+      "object_id": "n-forget",
+      "kind": "note",
+      "author": "ana",
+      "area": "notes",
+      "created_claim": "2026-11-03T09:00:00Z",
+      "title": "Forgetting curve"
+    },
+    {
+      "object_id": "n-forget-v2",
+      "kind": "note",
+      "author": "ana",
+      "area": "notes",
+      "created_claim": "2026-11-09T09:00:00Z",
+      "title": "Forgetting curve (Ebbinghaus, 1885)"
+    },
+    {
+      "object_id": "n-leitner",
+      "kind": "note",
+      "author": "ana",
+      "area": "notes",
+      "created_claim": "2026-11-04T09:00:00Z",
+      "title": "Leitner boxes"
+    },
+    {
+      "object_id": "n-reply-1",
+      "kind": "note",
+      "author": "bo",
+      "area": "notes",
+      "created_claim": "2026-11-05T09:00:00Z",
+      "title": "Re: spacing works for vocabulary"
+    },
+    {
+      "object_id": "n-reply-2",
+      "kind": "note",
+      "author": "ana",
+      "area": "notes",
+      "created_claim": "2026-11-06T09:00:00Z",
+      "title": "Re: and for formulas?"
+    },
+    {
+      "object_id": "n-sleep",
+      "kind": "note",
+      "author": "bo",
+      "area": "notes",
+      "created_claim": "2026-11-07T09:00:00Z",
+      "title": "Sleep consolidates memory"
+    },
+    {
+      "object_id": "n-private",
+      "kind": "note",
+      "author": "bo",
+      "area": "bo-private",
+      "created_claim": "2026-11-08T09:00:00Z",
+      "title": "Draft: my own spacing schedule"
+    },
+    {
+      "object_id": "n-photo",
+      "kind": "image",
+      "author": "ana",
+      "area": "notes",
+      "created_claim": "2026-11-04T10:00:00Z",
+      "title": "Photo of the box shelf"
+    },
+    {
+      "object_id": "n-meta",
+      "kind": "note",
+      "author": "ana",
+      "area": "notes",
+      "created_claim": "2026-11-10T09:00:00Z",
+      "title": "Why sleep belongs next to forgetting"
+    },
+    {
+      "object_id": "n-hijack",
+      "kind": "note",
+      "author": "bo",
+      "area": "notes",
+      "created_claim": "2026-11-11T09:00:00Z",
+      "title": "Index (rewritten by someone else)"
+    },
+
+    {
+      "object_id": "e-13880",
+      "kind": "epic",
+      "author": "drew",
+      "area": "programme",
+      "created_claim": "2026-11-23T00:00:00Z",
+      "title": "ID apps on one graph"
+    },
+    {
+      "object_id": "d-3",
+      "kind": "design",
+      "author": "lane-2",
+      "area": "programme",
+      "created_claim": "2026-11-24T00:00:00Z",
+      "title": "D3 graph layer"
+    },
+    {
+      "object_id": "d-1",
+      "kind": "design",
+      "author": "lane-6",
+      "area": "programme",
+      "created_claim": "2026-11-25T01:20:00Z",
+      "title": "D1 URI scheme, slice 1"
+    },
+    {
+      "object_id": "d-1-v2",
+      "kind": "design",
+      "author": "lane-6",
+      "area": "programme",
+      "created_claim": "2026-11-25T03:00:00Z",
+      "title": "D1 URI scheme, slices 1-2"
+    },
+    {
+      "object_id": "d-2",
+      "kind": "design",
+      "author": "lane-7",
+      "area": "programme",
+      "created_claim": "2026-11-25T01:40:00Z",
+      "title": "D2 transclusion"
+    },
+    {
+      "object_id": "d-4",
+      "kind": "design",
+      "author": "lane-5",
+      "area": "programme",
+      "created_claim": "2026-11-25T01:29:00Z",
+      "title": "D4 sneakernet bundles"
+    },
+    {
+      "object_id": "d-5",
+      "kind": "design",
+      "author": "lane-4",
+      "area": "programme",
+      "created_claim": "2026-11-25T02:40:00Z",
+      "title": "D5 link display"
+    },
+    {
+      "object_id": "r-1",
+      "kind": "research",
+      "author": "lane-1",
+      "area": "programme",
+      "created_claim": "2026-11-25T01:10:00Z",
+      "title": "R1 Willow URI review"
+    },
+    {
+      "object_id": "a-14037",
+      "kind": "app",
+      "author": "drew",
+      "area": "programme",
+      "created_claim": "2026-11-24T03:00:00Z",
+      "title": "Core graph app"
+    },
+    {
+      "object_id": "c-d5-triage",
+      "kind": "comment",
+      "author": "lane-3",
+      "area": "programme",
+      "created_claim": "2026-11-24T08:14:00Z",
+      "title": "Triage: waits on D1 and D3"
+    },
+    {
+      "object_id": "x-elsewhere",
+      "kind": "design",
+      "author": "lane-9",
+      "area": "programme",
+      "created_claim": "2026-11-20T00:00:00Z",
+      "title": "Unrelated design outside the epic"
+    }
+  ],
+  "links": [
+    {
+      "object_id": "l-r1-spaced",
+      "verb": "reply",
+      "source": "n-reply-1",
+      "target": "n-spaced",
+      "author": "bo",
+      "area": "notes",
+      "created_claim": "2026-11-05T09:00:00Z",
+      "context": { "root": "n-spaced", "previous": [] }
+    },
+    {
+      "object_id": "l-r2-r1",
+      "verb": "reply",
+      "source": "n-reply-2",
+      "target": "n-reply-1",
+      "author": "ana",
+      "area": "notes",
+      "created_claim": "2026-11-06T09:00:00Z",
+      "context": { "root": "n-spaced", "previous": ["n-reply-1"] }
+    },
+    {
+      "object_id": "l-private-spaced",
+      "verb": "reply",
+      "source": "n-private",
+      "target": "n-spaced",
+      "author": "bo",
+      "area": "bo-private",
+      "created_claim": "2026-11-08T09:00:00Z",
+      "context": { "root": "n-spaced", "previous": [] }
+    },
+    {
+      "object_id": "l-spaced-forget",
+      "verb": "mention",
+      "source": "n-spaced",
+      "target": "n-forget",
+      "author": "ana",
+      "area": "notes",
+      "created_claim": "2026-11-02T09:00:00Z"
+    },
+    {
+      "object_id": "l-spaced-leitner",
+      "verb": "mention",
+      "source": "n-spaced",
+      "target": "n-leitner",
+      "author": "ana",
+      "area": "notes",
+      "created_claim": "2026-11-04T09:30:00Z"
+    },
+    {
+      "object_id": "l-index-spaced",
+      "verb": "mention",
+      "source": "n-index",
+      "target": "n-spaced",
+      "author": "ana",
+      "area": "notes",
+      "created_claim": "2026-11-02T10:00:00Z"
+    },
+    {
+      "object_id": "l-leitner-photo",
+      "verb": "attach",
+      "source": "n-leitner",
+      "target": "n-photo",
+      "author": "ana",
+      "area": "notes",
+      "created_claim": "2026-11-04T10:00:00Z"
+    },
+    {
+      "object_id": "l-leitner-index",
+      "verb": "cites-v9",
+      "source": "n-leitner",
+      "target": "n-index",
+      "author": "ana",
+      "area": "notes",
+      "created_claim": "2026-11-04T11:00:00Z"
+    },
+    {
+      "object_id": "l-sleep-forget",
+      "verb": "mention",
+      "source": "n-sleep",
+      "target": "n-forget",
+      "author": "bo",
+      "area": "notes",
+      "created_claim": "2026-11-07T09:00:00Z"
+    },
+    {
+      "object_id": "l-forget-v2",
+      "verb": "supersede",
+      "source": "n-forget-v2",
+      "target": "n-forget",
+      "author": "ana",
+      "area": "notes",
+      "created_claim": "2026-11-09T09:00:00Z"
+    },
+    {
+      "object_id": "l-forget-v2-quote",
+      "verb": "quote",
+      "source": "n-forget-v2",
+      "target": "n-spaced",
+      "author": "ana",
+      "area": "notes",
+      "created_claim": "2026-11-09T09:00:00Z",
+      "snapshot": { "digest": "fixture" }
+    },
+    {
+      "object_id": "l-meta-link",
+      "verb": "reply",
+      "source": "n-meta",
+      "target": "l-sleep-forget",
+      "author": "ana",
+      "area": "notes",
+      "created_claim": "2026-11-10T09:00:00Z",
+      "context": { "root": "l-sleep-forget", "previous": [] }
+    },
+    {
+      "object_id": "l-hijack",
+      "verb": "supersede",
+      "source": "n-hijack",
+      "target": "n-index",
+      "author": "bo",
+      "area": "notes",
+      "created_claim": "2026-11-11T09:00:00Z"
+    },
+
+    {
+      "object_id": "l-d3-epic",
+      "verb": "nest",
+      "source": "d-3",
+      "target": "e-13880",
+      "author": "lane-2",
+      "area": "programme",
+      "created_claim": "2026-11-24T00:00:00Z"
+    },
+    {
+      "object_id": "l-d1-epic",
+      "verb": "nest",
+      "source": "d-1",
+      "target": "e-13880",
+      "author": "lane-6",
+      "area": "programme",
+      "created_claim": "2026-11-25T01:20:00Z"
+    },
+    {
+      "object_id": "l-d2-epic",
+      "verb": "nest",
+      "source": "d-2",
+      "target": "e-13880",
+      "author": "lane-7",
+      "area": "programme",
+      "created_claim": "2026-11-25T01:40:00Z"
+    },
+    {
+      "object_id": "l-d4-epic",
+      "verb": "nest",
+      "source": "d-4",
+      "target": "e-13880",
+      "author": "lane-5",
+      "area": "programme",
+      "created_claim": "2026-11-25T01:29:00Z"
+    },
+    {
+      "object_id": "l-d5-epic",
+      "verb": "nest",
+      "source": "d-5",
+      "target": "e-13880",
+      "author": "lane-4",
+      "area": "programme",
+      "created_claim": "2026-11-25T02:40:00Z"
+    },
+    {
+      "object_id": "l-r1-epic",
+      "verb": "nest",
+      "source": "r-1",
+      "target": "e-13880",
+      "author": "lane-1",
+      "area": "programme",
+      "created_claim": "2026-11-25T01:10:00Z"
+    },
+    {
+      "object_id": "l-d1-d3",
+      "verb": "mention",
+      "source": "d-1",
+      "target": "d-3",
+      "author": "lane-6",
+      "area": "programme",
+      "created_claim": "2026-11-25T01:20:00Z"
+    },
+    {
+      "object_id": "l-d1-r1",
+      "verb": "mention",
+      "source": "d-1",
+      "target": "r-1",
+      "author": "lane-6",
+      "area": "programme",
+      "created_claim": "2026-11-25T01:20:00Z"
+    },
+    {
+      "object_id": "l-d1-v2",
+      "verb": "supersede",
+      "source": "d-1-v2",
+      "target": "d-1",
+      "author": "lane-6",
+      "area": "programme",
+      "created_claim": "2026-11-25T03:00:00Z"
+    },
+    {
+      "object_id": "l-d2-d1",
+      "verb": "mention",
+      "source": "d-2",
+      "target": "d-1",
+      "author": "lane-7",
+      "area": "programme",
+      "created_claim": "2026-11-25T01:40:00Z"
+    },
+    {
+      "object_id": "l-d2-d3",
+      "verb": "mention",
+      "source": "d-2",
+      "target": "d-3",
+      "author": "lane-7",
+      "area": "programme",
+      "created_claim": "2026-11-25T01:40:00Z"
+    },
+    {
+      "object_id": "l-d4-d3",
+      "verb": "mention",
+      "source": "d-4",
+      "target": "d-3",
+      "author": "lane-5",
+      "area": "programme",
+      "created_claim": "2026-11-25T01:29:00Z"
+    },
+    {
+      "object_id": "l-d5-d1",
+      "verb": "mention",
+      "source": "d-5",
+      "target": "d-1",
+      "author": "lane-4",
+      "area": "programme",
+      "created_claim": "2026-11-25T02:40:00Z"
+    },
+    {
+      "object_id": "l-d5-d3",
+      "verb": "mention",
+      "source": "d-5",
+      "target": "d-3",
+      "author": "lane-4",
+      "area": "programme",
+      "created_claim": "2026-11-25T02:40:00Z"
+    },
+    {
+      "object_id": "l-d5-d2",
+      "verb": "embed",
+      "source": "d-5",
+      "target": "d-2",
+      "author": "lane-4",
+      "area": "programme",
+      "created_claim": "2026-11-25T02:40:00Z"
+    },
+    {
+      "object_id": "l-app-d5",
+      "verb": "mention",
+      "source": "a-14037",
+      "target": "d-5",
+      "author": "drew",
+      "area": "programme",
+      "created_claim": "2026-11-24T03:00:00Z"
+    },
+    {
+      "object_id": "l-app-d2",
+      "verb": "mention",
+      "source": "a-14037",
+      "target": "d-2",
+      "author": "drew",
+      "area": "programme",
+      "created_claim": "2026-11-24T03:00:00Z"
+    },
+    {
+      "object_id": "l-triage-d5",
+      "verb": "reply",
+      "source": "c-d5-triage",
+      "target": "d-5",
+      "author": "lane-3",
+      "area": "programme",
+      "created_claim": "2026-11-24T08:14:00Z",
+      "context": { "root": "d-5", "previous": [] }
+    },
+    {
+      "object_id": "l-x-d5",
+      "verb": "mention",
+      "source": "x-elsewhere",
+      "target": "d-5",
+      "author": "lane-9",
+      "area": "programme",
+      "created_claim": "2026-11-25T02:50:00Z"
+    }
+  ]
+}

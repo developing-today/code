@@ -9333,6 +9333,327 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn failover_measurements_match_the_q2_design_bounds() {
+        // Q2 measurements (design #5787 Q2, #7572): the §7
+        // holder-death walkthrough on the authority clock with the
+        // standing defaults (30 s term, 10 s renewal), measuring
+        // detection, grant, and replay-to-ready instead of only the
+        // outcome. The clock starts at 1_000; the holder's term is
+        // stamped to expire at 31_000 and the holder dies at the
+        // stamp — the worst case for detection.
+        let w = lease_world().await;
+        w.handle
+            .handoff_write_lease("native-1", 1, Some(31_000))
+            .await
+            .unwrap();
+
+        // native-2 has served as a reader at the tip for the full
+        // observation window; the grantor's tip for this grant is 2.
+        let mut pool = spill_pool::SpillPool::default();
+        pool.configure("native-2");
+        for cycle in 0..u64::from(spill_pool::READER_OBSERVATION_CYCLES) {
+            assert!(pool.observe("native-2", cycle, true, true, true, 2, 2, 0, 0));
+        }
+
+        // Detection: one millisecond before expiry the failover is
+        // still refused — no fence can exist before the term lapses,
+        // and the refused attempt journals nothing (the successful
+        // failover below still lands at positions 2 and 3). At
+        // expiry it proceeds. Measured detection latency for a death
+        // at the stamp: 31_000 - 1_000 = 30_000 ms — exactly one
+        // term, the design's stated worst-case bound.
+        w.clock.advance(29_999);
+        assert!(
+            w.handle
+                .failover_write_lease(pool.clone(), 2, 0, 30_000)
+                .await
+                .is_err()
+        );
+        w.clock.advance(1);
+        let execution = w
+            .handle
+            .failover_write_lease(pool, 2, 0, 30_000)
+            .await
+            .unwrap();
+
+        // Grant: the fence and the grant are two consecutive journal
+        // appends (positions 2 and 3) — the grant lands one append
+        // after the fence, at the same authority instant.
+        assert_eq!(execution.entries().len(), 2);
+        assert_eq!(execution.grant_position(), 3);
+        assert_eq!(execution.grant_epoch(), 3);
+
+        // Replay-to-ready: the caught-up successor, observed at
+        // position 2, replays exactly one entry — far less than a
+        // cold replay — before it may write: the grant record
+        // itself is its barrier.
+        assert!(!execution.resume_ready(2));
+        assert!(execution.resume_ready(3));
+
+        // The successor's fresh term runs a full 30 s from the
+        // failover instant.
+        assert_eq!(execution.resulting_lease().expires_at_ms, Some(61_000));
+    }
+
+    #[tokio::test]
+    async fn spill_copy_dispatch_waits_for_live_successor_replay_and_epoch() {
+        let w = lease_world().await;
+        w.handle
+            .handoff_write_lease("native-1", 1, Some(31_000))
+            .await
+            .unwrap();
+        let mut pool = spill_pool::SpillPool::default();
+        pool.configure("native-2");
+        for cycle in 0..u64::from(spill_pool::READER_OBSERVATION_CYCLES) {
+            assert!(pool.observe("native-2", cycle, true, true, true, 2, 2, 0, 0));
+        }
+        w.clock.advance(60_000);
+        let execution = w
+            .handle
+            .failover_write_lease(pool, 2, 0, 30_000)
+            .await
+            .unwrap();
+        assert_eq!(execution.successor(), "native-2");
+        assert_eq!(execution.grant_epoch(), 3);
+
+        let stale_replay = w
+            .handle
+            .dispatch_spill_copy("native-2", 3, 2, b"journal-copy".to_vec())
+            .await;
+        assert!(
+            stale_replay
+                .unwrap_err()
+                .to_string()
+                .contains("ReplayPending")
+        );
+        assert_eq!(
+            w.handle
+                .dispatch_spill_copy(
+                    "native-2",
+                    3,
+                    execution.grant_position(),
+                    b"journal-copy".to_vec()
+                )
+                .await
+                .unwrap(),
+            b"journal-copy"
+        );
+
+        w.handle
+            .handoff_write_lease(DO_WRITE_LEASE_HOLDER, 4, None)
+            .await
+            .unwrap();
+        assert!(
+            w.handle
+                .dispatch_spill_copy(
+                    "native-2",
+                    3,
+                    execution.grant_position(),
+                    b"stale".to_vec()
+                )
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn spill_controller_dispatches_only_an_authenticated_cursor_at_the_boundary() {
+        // Oracle: #7572 successor slice (design #5787 §1 step 4) — the
+        // production host/controller path must send journal bytes only
+        // for a cursor that (a) authenticates for its exact
+        // holder/epoch/position triple, (b) passes the residency gate,
+        // and (c) still passes the actor's serialized live
+        // holder/epoch/term/replay check at dispatch time. Every
+        // refusal sends zero bytes.
+        use id_core::residency::{
+            Evidence, EvidenceVerifier, Hop, Jurisdiction, Plane, Policy, ResourceId, Scope,
+        };
+        use spill_controller::{CursorAuthenticator, SpillController, SpillDispatchRefusal};
+        use std::cell::RefCell;
+
+        struct MintingAuthenticator;
+        fn minted_proof(holder: &str, epoch: u64, position: u64) -> Vec<u8> {
+            format!("proof:{holder}:{epoch}:{position}").into_bytes()
+        }
+        impl CursorAuthenticator for MintingAuthenticator {
+            fn authenticate_cursor(
+                &self,
+                holder: &str,
+                epoch: u64,
+                replayed_position: u64,
+                proof: &[u8],
+            ) -> bool {
+                proof == minted_proof(holder, epoch, replayed_position).as_slice()
+            }
+        }
+        struct AcceptingVerifier;
+        impl EvidenceVerifier for AcceptingVerifier {
+            fn signature_valid(&self, _evidence: &Evidence) -> bool {
+                true
+            }
+            fn revoked(&self, _evidence: &Evidence) -> bool {
+                false
+            }
+        }
+
+        let w = lease_world().await;
+        w.handle
+            .handoff_write_lease("native-1", 1, Some(31_000))
+            .await
+            .unwrap();
+        let mut pool = spill_pool::SpillPool::default();
+        pool.configure("native-2");
+        for cycle in 0..u64::from(spill_pool::READER_OBSERVATION_CYCLES) {
+            assert!(pool.observe("native-2", cycle, true, true, true, 2, 2, 0, 0));
+        }
+        w.clock.advance(60_000);
+        let execution = w
+            .handle
+            .failover_write_lease(pool, 2, 0, 30_000)
+            .await
+            .unwrap();
+        assert_eq!(execution.successor(), "native-2");
+        assert_eq!(execution.grant_epoch(), 3);
+        let boundary = execution.grant_position();
+
+        let controller = SpillController::new(&MintingAuthenticator);
+        let verifier = AcceptingVerifier;
+        let sent: RefCell<Vec<Vec<u8>>> = RefCell::new(Vec::new());
+        macro_rules! dispatch {
+            ($holder:expr, $epoch:expr, $position:expr, $proof:expr, $scope:expr, $hops:expr) => {
+                controller
+                    .dispatch_presented_copy(
+                        &w.handle,
+                        $scope,
+                        $hops,
+                        1_000_000,
+                        &verifier,
+                        $holder,
+                        $epoch,
+                        $position,
+                        $proof,
+                        b"journal-copy".to_vec(),
+                        |copy| sent.borrow_mut().push(copy.to_vec()),
+                    )
+                    .await
+            };
+        }
+
+        // Forged proof at the boundary position: no cursor, no bytes.
+        let forged = dispatch!(
+            "native-2",
+            3,
+            boundary,
+            b"forged".as_slice(),
+            &Scope::Unscoped,
+            &[]
+        );
+        assert!(matches!(
+            forged,
+            Err(SpillDispatchRefusal::UnauthenticatedCursor { .. })
+        ));
+        assert!(sent.borrow().is_empty());
+
+        // Authenticated but stale cursor (below the ownership
+        // boundary): the actor's final gate refuses, no bytes.
+        let stale = dispatch!(
+            "native-2",
+            3,
+            2,
+            &minted_proof("native-2", 3, 2),
+            &Scope::Unscoped,
+            &[]
+        );
+        assert!(
+            matches!(&stale, Err(SpillDispatchRefusal::Authority(reason)) if reason.contains("ReplayPending")),
+            "stale cursor must hit the replay gate, got {stale:?}"
+        );
+        assert!(sent.borrow().is_empty());
+
+        // Authenticated cursor for the wrong epoch: no bytes.
+        let wrong_epoch = dispatch!(
+            "native-2",
+            2,
+            boundary,
+            &minted_proof("native-2", 2, boundary),
+            &Scope::Unscoped,
+            &[]
+        );
+        assert!(matches!(
+            wrong_epoch,
+            Err(SpillDispatchRefusal::Authority(_))
+        ));
+        assert!(sent.borrow().is_empty());
+
+        // Authenticated cursor at the boundary, but the residency gate
+        // denies the path (expired host evidence): no bytes.
+        let policy = Policy::new(["operator-ca".to_string()])
+            .allow(Plane::Processing, &["eu"], &["spill-eu"])
+            .trust_evidence_source(Plane::Processing, "provider-control-plane");
+        let expired = Evidence {
+            issuer: "operator-ca".to_string(),
+            resource: ResourceId("spill-eu".to_string()),
+            plane: Plane::Processing,
+            jurisdiction: Jurisdiction("eu".to_string()),
+            source: "provider-control-plane".to_string(),
+            expires_at: 999_999,
+            serial: "spill-eu-1".to_string(),
+            signature: vec![1],
+        };
+        let hops = [Hop {
+            plane: Plane::Processing,
+            resource: ResourceId("spill-eu".to_string()),
+            evidence: Some(&expired),
+        }];
+        let residency = dispatch!(
+            "native-2",
+            3,
+            boundary,
+            &minted_proof("native-2", 3, boundary),
+            &Scope::Scoped(policy),
+            &hops
+        );
+        assert!(matches!(
+            residency,
+            Err(SpillDispatchRefusal::Residency(_))
+        ));
+        assert!(sent.borrow().is_empty());
+
+        // The cursor at the current ownership boundary dispatches:
+        // exactly one send, with the actor-released bytes.
+        let dispatched = dispatch!(
+            "native-2",
+            3,
+            boundary,
+            &minted_proof("native-2", 3, boundary),
+            &Scope::Unscoped,
+            &[]
+        );
+        assert_eq!(dispatched, Ok(()));
+        assert_eq!(sent.borrow().as_slice(), [b"journal-copy".to_vec()]);
+
+        // After handback, the previously valid epoch-3 cursor is stale
+        // at the actor's serialized gate: no further bytes.
+        w.handle
+            .handoff_write_lease(DO_WRITE_LEASE_HOLDER, 4, None)
+            .await
+            .unwrap();
+        let after_handback = dispatch!(
+            "native-2",
+            3,
+            boundary,
+            &minted_proof("native-2", 3, boundary),
+            &Scope::Unscoped,
+            &[]
+        );
+        assert!(matches!(
+            after_handback,
+            Err(SpillDispatchRefusal::Authority(_))
+        ));
+        assert_eq!(sent.borrow().len(), 1);
+    }
+
+    #[tokio::test]
     async fn failover_with_no_eligible_successor_recovers_to_the_do() {
         // Oracle: design #5787 §7 — no eligible successor: the DO
         // grants to itself rather than to a lagging replica, and the
@@ -11508,6 +11829,68 @@ mod schedule_tests {
                 .count(),
             1,
             "deleting an absent blob journals nothing"
+        );
+    }
+
+    struct DenyBlobGate;
+
+    impl id_directory::directory::BoundaryGate for DenyBlobGate {
+        fn check(
+            &self,
+            point: id_core::boundary::EnforcementPoint,
+            _: &str,
+        ) -> id_core::boundary_surfaces::FrameworkOutcome {
+            if point == id_core::boundary::EnforcementPoint::BlobStorage {
+                id_core::boundary_surfaces::FrameworkOutcome::Deny {
+                    placement: Vec::new(),
+                    assurance: Vec::new(),
+                }
+            } else {
+                id_core::boundary_surfaces::FrameworkOutcome::Allow
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn blob_boundary_denial_blocks_put_get_and_delete_before_effects() {
+        // Oracle: a denied BlobStorage outcome refuses all three actor
+        // operations and leaves both the in-memory blob set and journal intact.
+        let (mut actor, _clock, token, journal) = scheduling_actor(
+            "blob-boundary-denied",
+            &["blob.put", "blob.get", "blob.delete"],
+            false,
+        );
+        let bytes = b"protected blob".to_vec();
+        let hash = blob_id(&bytes);
+        actor.core.blobs.insert(hash.clone(), bytes.clone());
+        actor.core.set_world_boundary_gate(Arc::new(DenyBlobGate));
+
+        ask(
+            &mut actor,
+            &token,
+            serde_json::json!({"requests": [
+                {"id": "put", "cap": "blob.put", "args": {"data": blob_encode(b"new blob")}},
+                {"id": "get", "cap": "blob.get", "args": {"hash": hash}},
+                {"id": "delete", "cap": "blob.delete", "args": {"hash": hash}},
+            ]}),
+        )
+        .await;
+
+        for id in ["put", "get", "delete"] {
+            assert_eq!(schedule_result(&actor, id).unwrap()["error"], "bad_args");
+        }
+        assert_eq!(actor.core.blobs.get(&hash), Some(&bytes));
+        assert_eq!(
+            journal
+                .entries()
+                .iter()
+                .filter(|entry| matches!(
+                    entry,
+                    JournalEntry::BlobStored { .. } | JournalEntry::BlobRemoved { .. }
+                ))
+                .count(),
+            0,
+            "refused blob operations have no journal effects"
         );
     }
 

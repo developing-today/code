@@ -126,13 +126,13 @@ pub use petname::PetnameCommand;
 pub use tag::TagCommand;
 pub use walk::WalkCommand;
 pub use world::{
-    JournalCommand, WorldApplyArgs, WorldCapsArgs, WorldCommand, WorldCompileArgs,
-    WorldCrossWorldWriteArgs, WorldDevArgs, WorldDiffArgs, WorldDoctorArgs, WorldDownloadArgs,
-    WorldFileScopeArgs, WorldForceCrossWorldWriteArgs, WorldInstallArgs, WorldInviteArgs,
-    WorldIsolationArgs, WorldJoinArgs, WorldJournalArgs, WorldListArgs, WorldLogsArgs,
-    WorldMeasureArgs, WorldMirrorArgs, WorldProfileArgs, WorldRecordArgs, WorldRecordsArgs,
-    WorldReplayArgs, WorldReplicaArgs, WorldRuntimeArgs, WorldSshTunnelArgs, WorldStatsArgs,
-    WorldVerifyArgs, WorldVia,
+    JournalCommand, WorldAnnounceArgs, WorldApplyArgs, WorldCapsArgs, WorldCommand,
+    WorldCompileArgs, WorldCrossWorldWriteArgs, WorldDevArgs, WorldDiffArgs, WorldDoctorArgs,
+    WorldDownloadArgs, WorldFileScopeArgs, WorldForceCrossWorldWriteArgs, WorldInstallArgs,
+    WorldInviteArgs, WorldIsolationArgs, WorldJoinArgs, WorldJournalArgs, WorldListArgs,
+    WorldLogsArgs, WorldLookupArgs, WorldMeasureArgs, WorldMirrorArgs, WorldProfileArgs,
+    WorldRecordArgs, WorldRecordsArgs, WorldReplayArgs, WorldReplicaArgs, WorldRuntimeArgs,
+    WorldSshTunnelArgs, WorldStatsArgs, WorldVerifyArgs, WorldVia,
 };
 pub use writer_sets::WriterSetCommand;
 

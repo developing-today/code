@@ -59,7 +59,6 @@
  */
 import { appendFile, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { execFile } from "node:child_process";
-import { homedir } from "node:os";
 import { join } from "node:path";
 import { realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -691,6 +690,20 @@ function parseCdpPort(raw) {
   return port;
 }
 
+/** HOME for the default --out-dir, per the #5762 home-resolution contract
+ * (#8220): an unset or empty HOME is a usage error (nothing is written),
+ * never os.homedir's silent passwd fallback; a set HOME is unchanged. */
+function requireHome() {
+  const home = process.env.HOME;
+  if (home === undefined || home.trim() === "") {
+    usageError(
+      `HOME is ${home === undefined ? "unset" : "empty"}, so the default --out-dir cannot be derived; ` +
+        "set HOME or pass --out-dir (home-resolution contract #5762: no passwd fallback)",
+    );
+  }
+  return home;
+}
+
 export function parseArgs(argv) {
   const values = {};
   for (let i = 0; i < argv.length; i++) {
@@ -709,7 +722,7 @@ export function parseArgs(argv) {
     i++; // consume the value: no token is read twice
   }
   return {
-    outDir: values["--out-dir"] ?? join(homedir(), "atlas", "meta-quota-export"),
+    outDir: values["--out-dir"] ?? join(requireHome(), "atlas", "meta-quota-export"),
     cdpPort: parseCdpPort(values["--cdp-port"] ?? "19222"),
     teamId: values["--team-id"] ?? process.env.META_TEAM_ID ?? DEFAULT_TEAM_ID,
   };

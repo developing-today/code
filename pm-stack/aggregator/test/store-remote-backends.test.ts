@@ -397,6 +397,64 @@ describe("remote store row mapping", () => {
     expect(rec.seen[0].indexOf("('da-parent',")).toBeLessThan(rec.seen[0].indexOf("('da-child',"));
   });
 
+  test("actions remote ships only changed rows after the first save (#14865)", async () => {
+    const rec = recordingClient(() => []);
+    const remote = createTursoActionsRemote(async () => rec.client);
+    const first: DashAction = {
+      id: "da-1",
+      clientToken: "ct-4-abcdefgh",
+      kind: "triage",
+      verb: "acknowledge",
+      objectRef: "orch:item-1",
+      payload: {},
+      author: drew,
+      createdAt: "2026-11-01T00:00:00.000Z",
+      state: "new",
+    };
+    const second: DashAction = { ...first, id: "da-2", clientToken: "ct-5-abcdefgh", createdAt: "2026-11-01T01:00:00.000Z" };
+    await remote.saveAll([first, second]);
+    expect(rec.seen).toHaveLength(1);
+    expect(rec.seen[0].match(/\('da-/g)).toHaveLength(2);
+    // An identical re-save (the store persists its full set on every
+    // mutation) ships nothing at all.
+    await remote.saveAll([first, second]);
+    expect(rec.seen).toHaveLength(1);
+    // One state transition ships exactly that one row.
+    const applied: DashAction = { ...second, state: "applied", appliedAt: "2026-11-01T02:00:00.000Z" };
+    await remote.saveAll([first, applied]);
+    expect(rec.seen).toHaveLength(2);
+    expect(rec.seen[1].match(/\('da-/g)).toHaveLength(1);
+    expect(rec.seen[1]).toContain("('da-2',");
+    expect(rec.seen[1]).not.toContain("('da-1',");
+  });
+
+  test("actions remote does not re-ship rows it just loaded (#14865)", async () => {
+    const row = {
+      id: "da-1",
+      client_token: "ct-1-abcdefgh",
+      kind: "triage",
+      verb: "acknowledge",
+      object_ref: "orch:item-1",
+      target_ref: null,
+      session_id: null,
+      session_source: null,
+      payload: { note: "ok" },
+      author: drew,
+      created_at: "2026-11-01T00:00:00.000Z",
+      state: "new",
+      applied_at: null,
+      applied_by_run: null,
+      result_note: null,
+      supersedes_action_id: null,
+      duplicate_of_action_id: null,
+    };
+    const rec = recordingClient((sql) => (sql.startsWith("select") ? [row] : []));
+    const remote = createTursoActionsRemote(async () => rec.client);
+    const loaded = await remote.loadAll();
+    await remote.saveAll(loaded);
+    expect(rec.seen.filter((s) => s.includes("insert into"))).toHaveLength(0);
+  });
+
   test("snapshots remote inserts with on-conflict-do-nothing and counts returned rows", async () => {
     const rec = recordingClient(() => [{ snapshot_key: "k" }]);
     const remote = createTursoSnapshotsRemote(async () => rec.client);
@@ -534,6 +592,51 @@ describe("CommentsStore remote backend (#1744)", () => {
     expect(rec.seen[0]).toContain("insert into public.shared_comments");
     expect(rec.seen[0]).toContain("on conflict (id) do update");
     expect(rec.seen[0]).toContain("triage_state = excluded.triage_state");
+  });
+
+  test("comments remote ships only changed rows after the first save (#14865)", async () => {
+    const rec = recordingClient(() => []);
+    const remote = createTursoCommentsRemote(async () => rec.client);
+    const c1 = comment({ id: "dc-a" });
+    const c2 = comment({ id: "dc-b", createdAt: "2026-11-01T01:00:00.000Z" });
+    await remote.saveAll([c1, c2]);
+    expect(rec.seen).toHaveLength(1);
+    expect(rec.seen[0].match(/\('dc-/g)).toHaveLength(2);
+    // An identical re-save ships nothing at all.
+    await remote.saveAll([c1, c2]);
+    expect(rec.seen).toHaveLength(1);
+    // One triage transition ships exactly that one row.
+    const triaged: DashComment = { ...c1, kind: "message", triageState: "triaged" };
+    await remote.saveAll([triaged, c2]);
+    expect(rec.seen).toHaveLength(2);
+    expect(rec.seen[1].match(/\('dc-/g)).toHaveLength(1);
+    expect(rec.seen[1]).toContain("('dc-a',");
+    expect(rec.seen[1]).not.toContain("('dc-b',");
+  });
+
+  test("comments remote does not re-ship rows it just loaded (#14865)", async () => {
+    const row = {
+      id: "dc-seed",
+      object_ref: "orch:item-1",
+      kind: "note",
+      author: drew,
+      author_verified: false,
+      provenance: "asserted-legacy",
+      linked_identity: null,
+      body: "hello",
+      created_at: "2026-11-01T00:00:00.000Z",
+      triage_state: null,
+      github_ref: null,
+      github_state: null,
+      github_url: null,
+      github_error: null,
+      github_failed_at: null,
+    };
+    const rec = recordingClient((sql) => (sql.startsWith("select") ? [row] : []));
+    const remote = createTursoCommentsRemote(async () => rec.client);
+    const loaded = await remote.loadAll();
+    await remote.saveAll(loaded);
+    expect(rec.seen.filter((s) => s.includes("insert into"))).toHaveLength(0);
   });
 
   test("comments remote without a client fails closed instead of using a local file", async () => {

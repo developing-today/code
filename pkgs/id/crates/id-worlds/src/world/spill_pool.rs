@@ -901,4 +901,99 @@ mod tests {
         let plan = pool.plan_failover(&lease, 30_000, 50, 0).unwrap();
         assert!(plan.execute(&lease, 30_000, 0).is_err());
     }
+
+    #[test]
+    fn q2_failover_measurements_pin_the_design_bounds() {
+        // Q2 deciding evidence (design #5787 Q2, owned by #7572):
+        // measured detection, grant, and replay-to-ready under the
+        // standing defaults — 30 s term, 10 s renewal. The oracle is
+        // the design's own arithmetic: detection-plus-revoke is
+        // bounded by one term, a caught-up successor resumes in
+        // grant-plus-one-append time from the fence, and renewal
+        // costs one journaled control append per renewal.
+        const TERM_MS: u64 = 30_000;
+        const RENEWAL_MS: u64 = 10_000;
+
+        // Renewal cost: a live holder renewing every RENEWAL_MS for
+        // 300 s of authority time journals exactly 30 control
+        // appends — 0.1 appends/s per spilled world — and its epoch
+        // never moves.
+        let mut lease = WriteLease::bootstrap();
+        lease
+            .apply_handoff(DO_WRITE_LEASE_HOLDER, "holder", 1, Some(TERM_MS), 1)
+            .unwrap();
+        let mut renewals = 0_u64;
+        let mut position = 1_u64;
+        for tick in 1..=30_u64 {
+            position += 1;
+            lease
+                .apply_renew("holder", 1, tick * RENEWAL_MS + TERM_MS, position)
+                .unwrap();
+            renewals += 1;
+        }
+        assert_eq!(renewals, 30);
+        assert_eq!(lease.epoch, 1);
+        assert_eq!(lease.expires_at_ms, Some(300_000 + TERM_MS));
+
+        // Detection: this lease was last stamped at t=0 with a full
+        // term, so it expires at TERM_MS. A holder dying
+        // `death_offset` after that stamp is fenced exactly at
+        // expiry — never one millisecond earlier — so the measured
+        // detection latency is TERM_MS - death_offset: worst case
+        // exactly one term, when death follows a renewal immediately.
+        let mut pool = SpillPool::default();
+        eligible_member(&mut pool, "successor", 1, 0);
+        let mut lease = WriteLease::bootstrap();
+        lease
+            .apply_handoff(DO_WRITE_LEASE_HOLDER, "holder", 1, Some(TERM_MS), 1)
+            .unwrap();
+        for (death_offset, expected_detection) in [
+            (0_u64, 30_000_u64),
+            (10_000, 20_000),
+            (20_000, 10_000),
+            (29_999, 1),
+        ] {
+            assert_eq!(
+                pool.plan_failover(&lease, TERM_MS - 1, 1, 0),
+                Err(FailoverPlanError::TermStillLive),
+                "a death {death_offset} ms after the stamp must not be fenced before expiry"
+            );
+            assert!(pool.plan_failover(&lease, TERM_MS, 1, 0).is_ok());
+            assert_eq!(TERM_MS - death_offset, expected_detection);
+        }
+
+        // Grant: executing the plan at expiry journals the fence and
+        // the grant as two consecutive appends — the grant lands
+        // exactly one append after the fence, at epoch e+2 (the
+        // revoke consumes e+1), carrying a fresh full term.
+        let plan = pool.plan_failover(&lease, TERM_MS, 1, 0).unwrap();
+        let execution = plan.execute(&lease, TERM_MS, TERM_MS).unwrap();
+        assert_eq!(execution.successor(), "successor");
+        assert_eq!(execution.grant_epoch(), 3);
+        assert_eq!(execution.entries().len(), 2);
+        let positions: Vec<u64> = execution
+            .entries()
+            .iter()
+            .map(|entry| match entry {
+                JournalEntry::LeaseRevoked { position, .. }
+                | JournalEntry::LeaseGranted { position, .. } => *position,
+                other => panic!("failover journals only lease entries, got {other:?}"),
+            })
+            .collect();
+        assert_eq!(positions, vec![2, 3]);
+        assert_eq!(execution.grant_position(), positions[1]);
+        assert_eq!(
+            execution.resulting_lease().expires_at_ms,
+            Some(TERM_MS + TERM_MS)
+        );
+
+        // Replay-to-ready: the successor observed at the pre-failover
+        // tip (position 1) must replay the two failover entries; one
+        // that has already replayed the fence replays one; at the
+        // grant position it is ready.
+        assert!(!execution.resume_ready(1));
+        assert!(!execution.resume_ready(2));
+        assert!(execution.resume_ready(3));
+        assert_eq!(execution.grant_position() - 1, 2);
+    }
 }

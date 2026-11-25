@@ -87,3 +87,7 @@ Early exploration may show these paths aren't as useful as they seem; use anothe
 ## 10. What the store holds
 
 What's stored in Nix is just the variety of different **wrappers and programs that can be merged together to create a preset**.
+
+## Tracking
+
+Tracked in #9521 (Nix cache as the content store, design program). (Pointer added 2026-11-25 for #13881.)

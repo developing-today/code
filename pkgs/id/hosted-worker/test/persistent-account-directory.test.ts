@@ -27,6 +27,10 @@ function sqliteD1(db: DatabaseSync): HostedDirectoryDatabase {
           await Promise.resolve();
           return (db.prepare(query).get(...values) as T | undefined) ?? null;
         },
+        async all<T extends Record<string, unknown>>() {
+          await Promise.resolve();
+          return db.prepare(query).all(...values) as T[];
+        },
       };
     },
   };
@@ -34,11 +38,10 @@ function sqliteD1(db: DatabaseSync): HostedDirectoryDatabase {
 
 async function createTestDirectory() {
   const db = new DatabaseSync(":memory:");
-  const schema = await readFile(
-    new URL("../migrations/0001_hosted_accounts.sql", import.meta.url),
-    "utf8",
-  );
-  db.exec(schema);
+  for (const migration of ["0001_hosted_accounts.sql", "0002_legacy_hosted_accounts.sql"]) {
+    const schema = await readFile(new URL(`../migrations/${migration}`, import.meta.url), "utf8");
+    db.exec(schema);
+  }
   return { db, directory: new PersistentHostedAccountDirectory(sqliteD1(db)) };
 }
 
@@ -60,6 +63,50 @@ test("persistent duplicate signup returns the stored row without changing its po
       db.prepare("SELECT COUNT(*) AS count FROM hosted_accounts").get()?.count,
       1,
     );
+  } finally {
+    db.close();
+  }
+});
+
+test("read-only binding lookup returns matching stable records and leaves storage unchanged", async () => {
+  const { db, directory } = await createTestDirectory();
+  try {
+    const record = await directory.signup({
+      subjectKey: "subject-lookup",
+      bindingId: BINDING,
+      jurisdiction: "eu",
+    });
+    const before = db.prepare("SELECT * FROM hosted_accounts").all();
+    assert.deepEqual(await directory.findByBindingId(BINDING), record);
+    assert.deepEqual(db.prepare("SELECT * FROM hosted_accounts").all(), before);
+  } finally {
+    db.close();
+  }
+});
+
+test("read-only binding lookup returns missing for unknown rows", async () => {
+  const { db, directory } = await createTestDirectory();
+  try {
+    assert.equal(await directory.findByBindingId(BINDING), undefined);
+    assert.deepEqual(await directory.listLegacyInventory(), []);
+  } finally {
+    db.close();
+  }
+});
+
+test("read-only binding lookup identifies a legacy-only row without mutation", async () => {
+  const { db, directory } = await createTestDirectory();
+  try {
+    const legacy = await directory.inventoryLegacy({ subjectKey: "subject-legacy", bindingId: BINDING });
+    const before = db.prepare("SELECT * FROM legacy_hosted_accounts").all();
+    assert.equal(await directory.findByBindingId(BINDING), undefined);
+    assert.deepEqual(await directory.findLegacyByBindingId(BINDING), legacy);
+    await assert.rejects(
+      directory.signup({ subjectKey: "subject-legacy", bindingId: BINDING, jurisdiction: "us" }),
+      (error: unknown) => error instanceof FailClosed && error.code === "legacy_subject_requires_migration",
+    );
+    assert.deepEqual(db.prepare("SELECT * FROM legacy_hosted_accounts").all(), before);
+    assert.equal(db.prepare("SELECT COUNT(*) AS count FROM hosted_accounts").get()?.count, 0);
   } finally {
     db.close();
   }
@@ -143,6 +190,239 @@ test("persistent signup fails closed before creating a row for invalid jurisdict
     assert.equal(
       db.prepare("SELECT COUNT(*) AS count FROM hosted_accounts").get()?.count,
       0,
+    );
+  } finally {
+    db.close();
+  }
+});
+
+test("durable legacy inventory records a pre-existing account without a jurisdiction", async () => {
+  const { db, directory: accountDirectory } = await createTestDirectory();
+  try {
+    const entry = await accountDirectory.inventoryLegacy({
+      subjectKey: "subject-legacy",
+      bindingId: BINDING,
+    });
+    assert.deepEqual(entry, {
+      subjectKey: "subject-legacy",
+      bindingId: BINDING,
+      jurisdiction: null,
+      classification: "legacy-unrestricted",
+    });
+    assert.deepEqual(await accountDirectory.legacyInventory("subject-legacy"), entry);
+    assert.equal(await accountDirectory.legacyInventory("unknown-subject"), undefined);
+    assert.deepEqual(await accountDirectory.listLegacyInventory(), [entry]);
+    // A legacy entry is not a validated row: no signup record exists.
+    assert.equal(await accountDirectory.get("subject-legacy"), undefined);
+  } finally {
+    db.close();
+  }
+});
+
+test("durable legacy inventory refuses any asserted jurisdiction, even on repeat", async () => {
+  const { db, directory: accountDirectory } = await createTestDirectory();
+  try {
+    for (const jurisdiction of ["us", "eu", "apac"]) {
+      await assert.rejects(
+        accountDirectory.inventoryLegacy({
+          subjectKey: "subject-legacy",
+          bindingId: BINDING,
+          jurisdiction,
+        }),
+        (error: unknown) =>
+          error instanceof FailClosed && error.code === "legacy_jurisdiction_unverifiable",
+      );
+    }
+    assert.deepEqual(await accountDirectory.listLegacyInventory(), []);
+    // A relabel attempt against an already-inventoried subject still fails closed.
+    await accountDirectory.inventoryLegacy({ subjectKey: "subject-legacy", bindingId: BINDING });
+    await assert.rejects(
+      accountDirectory.inventoryLegacy({
+        subjectKey: "subject-legacy",
+        bindingId: BINDING,
+        jurisdiction: "us",
+      }),
+      (error: unknown) =>
+        error instanceof FailClosed && error.code === "legacy_jurisdiction_unverifiable",
+    );
+    assert.deepEqual(await accountDirectory.listLegacyInventory(), [
+      {
+        subjectKey: "subject-legacy",
+        bindingId: BINDING,
+        jurisdiction: null,
+        classification: "legacy-unrestricted",
+      },
+    ]);
+  } finally {
+    db.close();
+  }
+});
+
+test("duplicate durable legacy inventory returns the preserved entry; conflicting binding fails closed", async () => {
+  const { db, directory: accountDirectory } = await createTestDirectory();
+  try {
+    const first = await accountDirectory.inventoryLegacy({
+      subjectKey: "subject-legacy",
+      bindingId: BINDING,
+    });
+    const second = await accountDirectory.inventoryLegacy({
+      subjectKey: "subject-legacy",
+      bindingId: BINDING,
+    });
+    assert.deepEqual(second, first);
+    await assert.rejects(
+      accountDirectory.inventoryLegacy({
+        subjectKey: "subject-legacy",
+        bindingId: OTHER_BINDING,
+      }),
+      (error: unknown) =>
+        error instanceof FailClosed && error.code === "duplicate_subject_conflict",
+    );
+    assert.deepEqual(await accountDirectory.listLegacyInventory(), [first]);
+  } finally {
+    db.close();
+  }
+});
+
+test("durable signup for a legacy-inventoried subject fails closed without creating a validated row", async () => {
+  const { db, directory: accountDirectory } = await createTestDirectory();
+  try {
+    await accountDirectory.inventoryLegacy({
+      subjectKey: "subject-legacy",
+      bindingId: BINDING,
+    });
+    await assert.rejects(
+      accountDirectory.signup({
+        subjectKey: "subject-legacy",
+        bindingId: BINDING,
+        jurisdiction: "us",
+      }),
+      (error: unknown) =>
+        error instanceof FailClosed && error.code === "legacy_subject_requires_migration",
+    );
+    assert.equal(await accountDirectory.get("subject-legacy"), undefined);
+    assert.equal(
+      db.prepare("SELECT COUNT(*) AS count FROM hosted_accounts").get()?.count,
+      0,
+    );
+  } finally {
+    db.close();
+  }
+});
+
+test("durable inventory of an already-registered subject fails closed", async () => {
+  const { db, directory: accountDirectory } = await createTestDirectory();
+  try {
+    const record = await accountDirectory.signup({
+      subjectKey: "subject-1",
+      bindingId: BINDING,
+      jurisdiction: "eu",
+    });
+    await assert.rejects(
+      accountDirectory.inventoryLegacy({ subjectKey: "subject-1", bindingId: BINDING }),
+      (error: unknown) =>
+        error instanceof FailClosed && error.code === "legacy_subject_already_registered",
+    );
+    assert.deepEqual(
+      await accountDirectory.signup({
+        subjectKey: "subject-1",
+        bindingId: BINDING,
+        jurisdiction: "eu",
+      }),
+      record,
+    );
+    assert.deepEqual(await accountDirectory.listLegacyInventory(), []);
+  } finally {
+    db.close();
+  }
+});
+
+test("durable legacy inventory lists every entry ordered by subject key", async () => {
+  const { db, directory: accountDirectory } = await createTestDirectory();
+  try {
+    await accountDirectory.inventoryLegacy({ subjectKey: "subject-b", bindingId: BINDING });
+    await accountDirectory.inventoryLegacy({ subjectKey: "subject-a", bindingId: OTHER_BINDING });
+    assert.deepEqual(await accountDirectory.listLegacyInventory(), [
+      {
+        subjectKey: "subject-a",
+        bindingId: OTHER_BINDING,
+        jurisdiction: null,
+        classification: "legacy-unrestricted",
+      },
+      {
+        subjectKey: "subject-b",
+        bindingId: BINDING,
+        jurisdiction: null,
+        classification: "legacy-unrestricted",
+      },
+    ]);
+  } finally {
+    db.close();
+  }
+});
+
+test("legacy inventory CHECK constraints reject malformed identity and any jurisdiction label", async () => {
+  const { db } = await createTestDirectory();
+  const insert = db.prepare(
+    "INSERT INTO legacy_hosted_accounts (subject_key, binding_id, classification) VALUES (?, ?, ?)",
+  );
+
+  try {
+    assert.throws(() => insert.run("   ", BINDING, "legacy-unrestricted"), undefined, "blank subject");
+    assert.throws(
+      () => insert.run("subject", "0123456789abcdef0123456789abcde", "legacy-unrestricted"),
+      undefined,
+      "short binding id",
+    );
+    assert.throws(
+      () => insert.run("subject", "g" + BINDING.slice(1), "legacy-unrestricted"),
+      undefined,
+      "non-hex binding id",
+    );
+    assert.throws(
+      () => insert.run("subject", BINDING, "us"),
+      undefined,
+      "jurisdiction as classification",
+    );
+    assert.throws(
+      () => insert.run("subject", BINDING, "other"),
+      undefined,
+      "unknown classification",
+    );
+    assert.equal(
+      db.prepare("SELECT COUNT(*) AS count FROM legacy_hosted_accounts").get()?.count,
+      0,
+    );
+  } finally {
+    db.close();
+  }
+});
+
+test("durable legacy reads fail closed on records outside the legacy contract", async () => {
+  const { db, directory: accountDirectory } = await createTestDirectory();
+  try {
+    // Recreate the table without its CHECKs to plant rows the schema
+    // could never have produced; the read path must still fail closed.
+    db.exec("DROP TABLE legacy_hosted_accounts");
+    db.exec(
+      "CREATE TABLE legacy_hosted_accounts (subject_key TEXT PRIMARY KEY NOT NULL, binding_id TEXT NOT NULL UNIQUE, classification TEXT NOT NULL)",
+    );
+    const insert = db.prepare(
+      "INSERT INTO legacy_hosted_accounts (subject_key, binding_id, classification) VALUES (?, ?, ?)",
+    );
+    insert.run("subject-odd", BINDING, "us");
+    insert.run("subject-bad-binding", "google:sub", "legacy-unrestricted");
+    await assert.rejects(
+      accountDirectory.legacyInventory("subject-odd"),
+      (error: unknown) =>
+        error instanceof FailClosed && error.code === "invalid_legacy_inventory_record",
+      "jurisdiction-labelled legacy row",
+    );
+    await assert.rejects(
+      accountDirectory.legacyInventory("subject-bad-binding"),
+      (error: unknown) =>
+        error instanceof FailClosed && error.code === "invalid_legacy_inventory_record",
+      "malformed binding id in legacy row",
     );
   } finally {
     db.close();

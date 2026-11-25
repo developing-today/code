@@ -23,6 +23,10 @@ reconcile-YYYY-MM-DD.md  weekly sweep reports
 
 ## Design
 
+- Proposed hosted recovery home and failure/recovery analysis (#14964):
+  [Backup plane hosted recovery design](../../doc/2026-11-25_design_backup-plane-hosted-recovery/main.md).
+  This is a design record, not a claim that hosted schedules are live.
+
 - **Scope (config.json):** all non-fork repos + forks under 500 MB across
   17 owners, plus force-includes; 7 passive giants are excluded by the user's
   ruling 2026-10-31 (upstream is their backup). Edsebooks (HTTP 451) and

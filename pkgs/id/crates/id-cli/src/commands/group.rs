@@ -487,12 +487,36 @@ pub async fn cmd_group(path: Option<PathBuf>, json: bool, command: GroupCommand)
     }
 }
 
+/// Refuses an expiry bound that is not after `now` (Unix seconds).
+///
+/// The fold applies such a grant, but every action under it is already past the bound, so it
+/// carries no authority from the moment it is recorded (#14221 finding C2). Refusing it here
+/// writes nothing to the log.
+///
+/// # Errors
+///
+/// Fails when `expires_at` is at or before `now`.
+pub(crate) fn check_expiry_bound(expires_at: Option<u64>, now: u64) -> Result<()> {
+    match expires_at {
+        Some(bound) if bound <= now => bail!(
+            "--expires-at {bound} is not after now ({now}): the grant would carry no authority; \
+             nothing was recorded"
+        ),
+        _ => Ok(()),
+    }
+}
+
 /// Runs `id delegate`: sets the mode if asked, then grants the scope.
 ///
 /// # Errors
 ///
-/// Fails if an argument is malformed, the log cannot be read or written, or the action is refused.
+/// Fails if an argument is malformed, the expiry bound is not in the future, the log cannot be read
+/// or written, or the action is refused.
 pub async fn cmd_delegate(path: Option<PathBuf>, args: DelegateArgs) -> Result<()> {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |since| since.as_secs());
+    check_expiry_bound(args.expires_at, now)?;
     let mut log = GroupLog::open(&log_path(path))?;
     let group = hash_from_hex(&args.group)?;
     let grantee = key_from_hex(&args.grantee)?;
@@ -512,11 +536,15 @@ pub async fn cmd_delegate(path: Option<PathBuf>, args: DelegateArgs) -> Result<(
         )?;
     }
     if let Some(grant) = &delegated.grant {
-        let fields = vec![
+        let mut fields = vec![
             ("grantee", json!(hex(&grantee))),
             ("scope", json!(name_of(&args.scope))),
             ("redelegate", json!(args.redelegate)),
         ];
+        // The signed bound, so the confirmation shows what was recorded (#14221 finding C1).
+        if let Some(bound) = args.expires_at {
+            fields.push(("expires_at", json!(bound)));
+        }
         print_action(args.json, "delegate", fields, grant)?;
     }
     Ok(())
@@ -709,6 +737,15 @@ mod tests {
                 value
             );
         }
+    }
+
+    #[test]
+    fn test_expiry_bound_must_be_after_now() {
+        assert!(check_expiry_bound(None, 100).is_ok());
+        assert!(check_expiry_bound(Some(101), 100).is_ok());
+        let at_now = check_expiry_bound(Some(100), 100).unwrap_err().to_string();
+        assert!(at_now.contains("not after now"), "{at_now}");
+        assert!(check_expiry_bound(Some(1), 100).is_err());
     }
 
     #[test]

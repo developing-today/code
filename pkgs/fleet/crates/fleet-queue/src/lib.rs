@@ -72,6 +72,8 @@ pub mod placement;
 pub mod queue_broker;
 #[cfg(feature = "secrets-broker")]
 pub mod secrets_broker;
+#[cfg(any(feature = "queue-broker", feature = "secrets-broker"))]
+mod tcp_http;
 #[cfg(feature = "queue-broker")]
 pub mod turso_queue;
 #[cfg(any(feature = "queue-broker", feature = "secrets-broker"))]

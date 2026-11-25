@@ -140,6 +140,12 @@
 //                                      GET /api/<owner>/fleet/offers
 //                                      (#14375: the console composer's
 //                                      offer rows read through this)
+//   GET  /fleet/<credential>/wake-hooks  the wake hooks' owner view,
+//                                      as the owner's own
+//                                      GET /api/<owner>/wake-hooks
+//                                      (#14544: the console's Agents
+//                                      screen reads through this;
+//                                      setting one stays the owner's)
 //
 // Enroll-minted agent credentials never carry "read" (the exchange
 // mints CREDENTIAL_SCOPES only): the pipeline stays the owner's and
@@ -182,6 +188,7 @@ import { InputError, MAX_BODY, MAX_SENDER, normalizeWorkMark, workTransitionErro
 import { normalizeNoteIdentity, noteTokenHash } from "./notes.js";
 import { pipelineFeed, unifiedAgents } from "./pipeline.js";
 import { relay, replyAddress } from "./relay.js";
+import { showHook } from "./wake.js";
 
 export const FLEET_KINDS = ["message", "command"];
 export const FLEET_DIRECTIONS = ["inbound", "outbound"];
@@ -1773,7 +1780,8 @@ async function agentRoute(request, store, what, url, delivered, cred = null) {
     what === "pipeline" ||
     what === "directory" ||
     what === "credentials" ||
-    what === "enroll-tokens"
+    what === "enroll-tokens" ||
+    what === "wake-hooks"
   ) {
     if (request.method !== "GET") return notAllowed("GET");
     if (!cred || !scoped("read")) return notFound();
@@ -1782,6 +1790,11 @@ async function agentRoute(request, store, what, url, delivered, cred = null) {
     if (what === "pipeline") return json(await pipelineFeed(store, Object.fromEntries(url.searchParams.entries())));
     if (what === "directory") return json(await unifiedAgents(store));
     if (what === "enroll-tokens") return json(await listEnrollTokens(store));
+    // The wake hooks' owner view (#14544), as the owner's own
+    // GET /api/<owner>/wake-hooks: address, kind, host, never the
+    // token or the path (wake.js showHook). Setting and removing
+    // stay owner-token acts, like revoking.
+    if (what === "wake-hooks") return json({ hooks: (await store.wakeHooks()).map(showHook) });
     return json({ credentials: await store.fleetCredentialState() });
   }
   return notFound();

@@ -93,9 +93,7 @@ pub fn media_type_for(path: &str) -> &'static str {
     let lower = path.to_ascii_lowercase();
     if lower.ends_with(".p7c") || lower.ends_with(".p7b") {
         "application/pkcs7-mime"
-    } else if lower.ends_with(".crl")
-        || lower.ends_with(".crl.pem")
-        || lower.ends_with(".crl.der")
+    } else if lower.ends_with(".crl") || lower.ends_with(".crl.pem") || lower.ends_with(".crl.der")
     {
         "application/pkix-crl"
     } else {
@@ -192,14 +190,20 @@ pub fn verify_bundle(req: &PublishVerifyRequest) -> Result<PublishVerifyReport> 
     let bundle = load_bundle(&req.bundle)?;
     let plan_req = PublishPlanRequest {
         bundle: req.bundle.clone(),
-        host: req.host.clone().unwrap_or_else(|| DEFAULT_PUBLISH_HOST.to_string()),
+        host: req
+            .host
+            .clone()
+            .unwrap_or_else(|| DEFAULT_PUBLISH_HOST.to_string()),
         dns_target: None,
     };
     let plan = plan_bundle(&plan_req)?;
     let mut checks = vec![Check {
         name: "manifest-checksums".into(),
         ok: true,
-        detail: format!("{} files verified in source bundle", bundle.manifest.files.len()),
+        detail: format!(
+            "{} files verified in source bundle",
+            bundle.manifest.files.len()
+        ),
     }];
     for art in &plan.artifacts {
         let rel = url_path_for(&art.source);
@@ -232,7 +236,11 @@ pub fn verify_bundle(req: &PublishVerifyRequest) -> Result<PublishVerifyReport> 
             Err(e) => checks.push(Check {
                 name,
                 ok: false,
-                detail: format!("missing published file {} ({}): {e}", path.display(), art.url),
+                detail: format!(
+                    "missing published file {} ({}): {e}",
+                    path.display(),
+                    art.url
+                ),
             }),
         }
     }
@@ -281,7 +289,11 @@ pub fn render_plan_yaml(plan: &PublishPlan) -> String {
 pub fn render_plan_text(plan: &PublishPlan) -> String {
     let mut out = format!(
         "Publish plan: {} ({}, {})\n  host: {} (base {})\n  artifacts: {}\n",
-        plan.bundle, plan.bundle_id, plan.bundle_type, plan.host, plan.base_url,
+        plan.bundle,
+        plan.bundle_id,
+        plan.bundle_type,
+        plan.host,
+        plan.base_url,
         plan.artifacts.len()
     );
     for a in &plan.artifacts {
@@ -322,7 +334,10 @@ mod tests {
     #[test]
     fn url_and_mime_rules() {
         // Oracle: §4.4 example shape + §24.7 MIME table.
-        assert_eq!(url_path_for("public/bundles/roots-all.pem"), "bundles/roots-all.pem");
+        assert_eq!(
+            url_path_for("public/bundles/roots-all.pem"),
+            "bundles/roots-all.pem"
+        );
         assert_eq!(url_path_for("leaf.crt.pem"), "leaf.crt.pem");
         assert_eq!(media_type_for("ca.crt.pem"), "application/pkix-cert");
         assert_eq!(media_type_for("issuers.p7c"), "application/pkcs7-mime");

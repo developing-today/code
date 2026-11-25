@@ -1,0 +1,403 @@
+{
+  "note": "D2 slice 1 fixture graph. Readable ids stand in for object_id content hashes (as in D3's fixtures). Areas and readers stand in for composition-A read grants.",
+  "areas": {
+    "forum-public": ["*"],
+    "cyp-public": ["*"],
+    "dee-notes": ["*"],
+    "room-meetup": ["ana", "bo", "cyp"],
+    "cyp-private": ["cyp"],
+    "bo-private": ["bo"]
+  },
+  "authors": {
+    "ed25519:aaaa1111chat": "ana",
+    "ed25519:bbbb2222forum": "bo",
+    "ed25519:cccc3333media": "cyp",
+    "ed25519:dddd4444notes": "dee"
+  },
+  "objects": [
+    {
+      "object_id": "img-group-photo",
+      "area": "cyp-public",
+      "author": "ed25519:cccc3333media",
+      "created_claim": "2026-11-24T01:45:00Z",
+      "kind": "image",
+      "body": {
+        "digest": "blake3:group-photo-v1",
+        "mime": "image/jpeg",
+        "size": 2100000
+      },
+      "schema_version": 1
+    },
+    {
+      "object_id": "img-group-photo-v2",
+      "area": "cyp-public",
+      "author": "ed25519:cccc3333media",
+      "created_claim": "2026-11-24T03:00:00Z",
+      "kind": "image",
+      "body": {
+        "digest": "blake3:group-photo-v2-cropped",
+        "mime": "image/jpeg",
+        "size": 1900000
+      },
+      "schema_version": 1
+    },
+    {
+      "object_id": "post-meetup-thread",
+      "area": "forum-public",
+      "author": "ed25519:bbbb2222forum",
+      "created_claim": "2026-11-24T01:40:00Z",
+      "kind": "forum-post",
+      "body": { "text": "Meetup retrospective: photos and notes here." },
+      "schema_version": 1
+    },
+    {
+      "object_id": "msg-photo-answer",
+      "area": "forum-public",
+      "author": "ed25519:cccc3333media",
+      "created_claim": "2026-11-24T01:50:00Z",
+      "kind": "chat-message",
+      "body": { "text": "Here's the group photo." },
+      "schema_version": 1
+    },
+    {
+      "object_id": "post-photo-published",
+      "area": "forum-public",
+      "author": "ed25519:bbbb2222forum",
+      "created_claim": "2026-11-24T01:55:00Z",
+      "kind": "forum-post",
+      "body": { "text": "Group photo from the meetup." },
+      "schema_version": 1
+    },
+    {
+      "object_id": "msg-late-reply",
+      "area": "forum-public",
+      "author": "ed25519:aaaa1111chat",
+      "created_claim": "2026-11-24T04:00:00Z",
+      "kind": "chat-message",
+      "body": { "text": "Great day, thanks all." },
+      "schema_version": 1
+    },
+    {
+      "object_id": "note-recap",
+      "area": "dee-notes",
+      "author": "ed25519:dddd4444notes",
+      "created_claim": "2026-11-24T02:30:00Z",
+      "kind": "note",
+      "body": { "text": "Recap: the thread as it stood when I wrote this." },
+      "schema_version": 1
+    },
+    {
+      "object_id": "album-meetup",
+      "area": "cyp-public",
+      "author": "ed25519:cccc3333media",
+      "created_claim": "2026-11-24T01:44:00Z",
+      "kind": "album",
+      "body": { "title": "Meetup album" },
+      "schema_version": 1
+    },
+    {
+      "object_id": "img-stage",
+      "area": "cyp-public",
+      "author": "ed25519:cccc3333media",
+      "created_claim": "2026-11-24T01:46:00Z",
+      "kind": "image",
+      "body": {
+        "digest": "blake3:stage",
+        "mime": "image/jpeg",
+        "size": 1500000
+      },
+      "schema_version": 1
+    },
+    {
+      "object_id": "img-crowd",
+      "area": "cyp-public",
+      "author": "ed25519:cccc3333media",
+      "created_claim": "2026-11-24T01:47:00Z",
+      "kind": "image",
+      "body": {
+        "digest": "blake3:crowd",
+        "mime": "image/jpeg",
+        "size": 1600000
+      },
+      "schema_version": 1
+    },
+    {
+      "object_id": "img-private-draft",
+      "area": "cyp-private",
+      "author": "ed25519:cccc3333media",
+      "created_claim": "2026-11-24T01:48:00Z",
+      "kind": "image",
+      "body": {
+        "digest": "blake3:draft",
+        "mime": "image/jpeg",
+        "size": 900000
+      },
+      "schema_version": 1
+    },
+    {
+      "object_id": "img-sunset",
+      "area": "cyp-public",
+      "author": "ed25519:cccc3333media",
+      "created_claim": "2026-11-24T01:49:00Z",
+      "kind": "image",
+      "body": {
+        "digest": "blake3:sunset",
+        "mime": "image/jpeg",
+        "size": 1700000
+      },
+      "schema_version": 1
+    },
+    {
+      "object_id": "img-cake",
+      "area": "cyp-public",
+      "author": "ed25519:cccc3333media",
+      "created_claim": "2026-11-24T01:49:30Z",
+      "kind": "image",
+      "body": {
+        "digest": "blake3:cake",
+        "mime": "image/jpeg",
+        "size": 1200000
+      },
+      "schema_version": 1
+    },
+    {
+      "object_id": "page-meetup",
+      "area": "forum-public",
+      "author": "ed25519:aaaa1111chat",
+      "created_claim": "2026-11-24T02:40:00Z",
+      "kind": "page",
+      "body": { "title": "Meetup page" },
+      "schema_version": 1
+    },
+    {
+      "object_id": "doc-bo-budget",
+      "area": "bo-private",
+      "author": "ed25519:bbbb2222forum",
+      "created_claim": "2026-11-24T01:30:00Z",
+      "kind": "note",
+      "body": { "text": "Budget notes (private)." },
+      "schema_version": 1
+    },
+    {
+      "object_id": "post-budget-pointer",
+      "area": "forum-public",
+      "author": "ed25519:bbbb2222forum",
+      "created_claim": "2026-11-24T02:50:00Z",
+      "kind": "forum-post",
+      "body": { "text": "Budget below, for those who can see it." },
+      "schema_version": 1
+    },
+    {
+      "object_id": "note-a",
+      "area": "dee-notes",
+      "author": "ed25519:dddd4444notes",
+      "created_claim": "2026-11-24T02:00:00Z",
+      "kind": "note",
+      "body": { "text": "A, which shows B." },
+      "schema_version": 1
+    },
+    {
+      "object_id": "note-b",
+      "area": "dee-notes",
+      "author": "ed25519:dddd4444notes",
+      "created_claim": "2026-11-24T02:01:00Z",
+      "kind": "note",
+      "body": { "text": "B, which shows A." },
+      "schema_version": 1
+    },
+    {
+      "object_id": "post-old-ref",
+      "area": "forum-public",
+      "author": "ed25519:bbbb2222forum",
+      "created_claim": "2026-11-24T02:55:00Z",
+      "kind": "forum-post",
+      "body": { "text": "Last year's photo." },
+      "schema_version": 1
+    }
+  ],
+  "pruned": ["img-last-year"],
+  "links": [
+    {
+      "object_id": "lnk-supersede-photo",
+      "author": "ed25519:cccc3333media",
+      "created_claim": "2026-11-24T03:00:00Z",
+      "verb": "supersede",
+      "source": "img-group-photo-v2",
+      "target": "img-group-photo",
+      "schema_version": 1
+    },
+    {
+      "object_id": "lnk-nest-answer",
+      "author": "ed25519:cccc3333media",
+      "created_claim": "2026-11-24T01:50:00Z",
+      "verb": "nest",
+      "source": "msg-photo-answer",
+      "target": "post-meetup-thread",
+      "schema_version": 1
+    },
+    {
+      "object_id": "lnk-nest-published",
+      "author": "ed25519:bbbb2222forum",
+      "created_claim": "2026-11-24T01:55:00Z",
+      "verb": "nest",
+      "source": "post-photo-published",
+      "target": "post-meetup-thread",
+      "schema_version": 1
+    },
+    {
+      "object_id": "lnk-nest-late",
+      "author": "ed25519:aaaa1111chat",
+      "created_claim": "2026-11-24T04:00:00Z",
+      "verb": "nest",
+      "source": "msg-late-reply",
+      "target": "post-meetup-thread",
+      "schema_version": 1
+    },
+    {
+      "object_id": "lnk-nest-stage",
+      "author": "ed25519:cccc3333media",
+      "created_claim": "2026-11-24T01:46:00Z",
+      "verb": "nest",
+      "source": "img-stage",
+      "target": "album-meetup",
+      "schema_version": 1
+    },
+    {
+      "object_id": "lnk-nest-crowd",
+      "author": "ed25519:cccc3333media",
+      "created_claim": "2026-11-24T01:47:00Z",
+      "verb": "nest",
+      "source": "img-crowd",
+      "target": "album-meetup",
+      "schema_version": 1
+    },
+    {
+      "object_id": "lnk-nest-draft",
+      "author": "ed25519:cccc3333media",
+      "created_claim": "2026-11-24T01:48:00Z",
+      "verb": "nest",
+      "source": "img-private-draft",
+      "target": "album-meetup",
+      "schema_version": 1
+    },
+    {
+      "object_id": "lnk-nest-sunset",
+      "author": "ed25519:cccc3333media",
+      "created_claim": "2026-11-24T01:49:00Z",
+      "verb": "nest",
+      "source": "img-sunset",
+      "target": "album-meetup",
+      "schema_version": 1
+    },
+    {
+      "object_id": "lnk-nest-cake",
+      "author": "ed25519:cccc3333media",
+      "created_claim": "2026-11-24T01:49:30Z",
+      "verb": "nest",
+      "source": "img-cake",
+      "target": "album-meetup",
+      "schema_version": 1
+    },
+    {
+      "object_id": "lnk-embed-photo-live",
+      "author": "ed25519:bbbb2222forum",
+      "created_claim": "2026-11-24T01:55:00Z",
+      "verb": "embed",
+      "source": "post-photo-published",
+      "target": "img-group-photo",
+      "embed": { "mode": "live", "scope": "object" },
+      "schema_version": 1
+    },
+    {
+      "object_id": "lnk-embed-thread-snapshot",
+      "author": "ed25519:dddd4444notes",
+      "created_claim": "2026-11-24T02:30:00Z",
+      "verb": "embed",
+      "source": "note-recap",
+      "target": "post-meetup-thread",
+      "embed": {
+        "mode": "snapshot",
+        "scope": "collection",
+        "pin": {
+          "root": "post-meetup-thread",
+          "members": ["msg-photo-answer", "post-photo-published"],
+          "members_digest": "sha256:aeff1c28cb58c74ee59f01935ec60e4d6ae2425a875e946a5d9be864ca9aecab"
+        },
+        "bounds": { "max_count": 20, "max_depth": 2 }
+      },
+      "schema_version": 1
+    },
+    {
+      "object_id": "lnk-embed-album-live",
+      "author": "ed25519:aaaa1111chat",
+      "created_claim": "2026-11-24T02:40:00Z",
+      "verb": "embed",
+      "source": "page-meetup",
+      "target": "album-meetup",
+      "embed": {
+        "mode": "live",
+        "scope": "collection",
+        "bounds": { "max_count": 3, "max_depth": 1 }
+      },
+      "schema_version": 1
+    },
+    {
+      "object_id": "lnk-embed-photo-snapshot",
+      "author": "ed25519:aaaa1111chat",
+      "created_claim": "2026-11-24T02:41:00Z",
+      "verb": "embed",
+      "source": "page-meetup",
+      "target": "img-group-photo",
+      "embed": {
+        "mode": "snapshot",
+        "scope": "object",
+        "pin": { "object": "img-group-photo" }
+      },
+      "schema_version": 1
+    },
+    {
+      "object_id": "lnk-embed-budget-live",
+      "author": "ed25519:bbbb2222forum",
+      "created_claim": "2026-11-24T02:50:00Z",
+      "verb": "embed",
+      "source": "post-budget-pointer",
+      "target": "doc-bo-budget",
+      "embed": { "mode": "live", "scope": "object" },
+      "schema_version": 1
+    },
+    {
+      "object_id": "lnk-embed-a-shows-b",
+      "author": "ed25519:dddd4444notes",
+      "created_claim": "2026-11-24T02:02:00Z",
+      "verb": "embed",
+      "source": "note-a",
+      "target": "note-b",
+      "embed": { "mode": "live", "scope": "object" },
+      "schema_version": 1
+    },
+    {
+      "object_id": "lnk-embed-b-shows-a",
+      "author": "ed25519:dddd4444notes",
+      "created_claim": "2026-11-24T02:03:00Z",
+      "verb": "embed",
+      "source": "note-b",
+      "target": "note-a",
+      "embed": { "mode": "live", "scope": "object" },
+      "schema_version": 1
+    },
+    {
+      "object_id": "lnk-embed-pruned-snapshot",
+      "author": "ed25519:bbbb2222forum",
+      "created_claim": "2026-11-24T02:55:00Z",
+      "verb": "embed",
+      "source": "post-old-ref",
+      "target": "img-last-year",
+      "embed": {
+        "mode": "snapshot",
+        "scope": "object",
+        "pin": { "object": "img-last-year" }
+      },
+      "schema_version": 1
+    }
+  ]
+}
