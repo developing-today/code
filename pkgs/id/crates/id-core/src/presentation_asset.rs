@@ -211,11 +211,12 @@ macro_rules! versioned_type {
 }
 
 name_type!(
-    /// A filter name: one or more `/`-separated segments, each a plain
-    /// name, such as `tint` or `fx/sparkle`. The leading segments name the
-    /// filter's family, which world policy can allow or deny as a whole
-    /// (`fx/*`). What a filter does is the filter registry's, a later
-    /// slice.
+    /// A filter name, such as `tint` or `fx/sparkle`.
+    ///
+    /// One or more `/`-separated segments, each a plain name. The leading
+    /// segments name the filter's family, which world policy can allow or
+    /// deny as a whole (`fx/*`). What a filter does is the filter
+    /// registry's, a later slice.
     FilterName,
     check_filter_name
 );

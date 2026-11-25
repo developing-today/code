@@ -1,6 +1,8 @@
-//! World presentation policy (slice 2 of the #14731 plan; design record
+//! World presentation policy: what a world lets appearances render.
+//!
+//! Slice 2 of the #14731 plan; design record
 //! `doc/2026-11-25T01-25-06Z_design_id5970_user_presentation_assets.md`,
-//! §5 "World presentation policy", with §4's rungs and §6's abuse rules).
+//! §5 "World presentation policy", with §4's rungs and §6's abuse rules.
 //!
 //! A world declares which presentation capabilities it enables:
 //!
@@ -62,6 +64,7 @@ pub enum Rung {
 
 impl Rung {
     /// The poorer of two rungs.
+    #[must_use]
     pub fn poorer(self, other: Self) -> Self {
         self.max(other)
     }
