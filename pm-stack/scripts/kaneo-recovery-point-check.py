@@ -24,10 +24,15 @@ def check_recovery(record_path, source_dsn_file, now):
     finished = backup["check_record_data"](record, 1, now)
     host, port, database = identity["identity"](source_dsn_file)
     source = record.get("source")
-    if not isinstance(source, dict) or source != {
-        "host": host, "port": port, "database": database
-    } or type(source.get("port")) is not int or database != "kaneo":
-        raise ValueError("recovery evidence does not identify the source Kaneo database")
+    if (
+        not isinstance(source, dict)
+        or source != {"host": host, "port": port, "database": database}
+        or type(source.get("port")) is not int
+        or database != "kaneo"
+    ):
+        raise ValueError(
+            "recovery evidence does not identify the source Kaneo database"
+        )
     captured = record.get("recoveryPointAt")
     if not isinstance(captured, str):
         raise ValueError("data capture time is missing")
@@ -51,9 +56,14 @@ def main():
         check_recovery(args.record, args.source_dsn_file, datetime.now(timezone.utc))
     except (ValueError, OSError, UnicodeError, TypeError):
         # Never include raw input (in particular the DSN or arbitrary JSON).
-        print("Kaneo recovery point REFUSED: require verified source-bound archive with data captured within one hour", file=sys.stderr)
+        print(
+            "Kaneo recovery point REFUSED: require verified source-bound archive with data captured within one hour",
+            file=sys.stderr,
+        )
         return 1
-    print("Kaneo recovery point OK: source-bound archive; data captured within one hour; local/R2/Drive verified")
+    print(
+        "Kaneo recovery point OK: source-bound archive; data captured within one hour; local/R2/Drive verified"
+    )
     return 0
 
 

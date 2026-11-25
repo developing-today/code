@@ -1,4 +1,5 @@
 """Oracles: migration 0016/0017 shapes, SQLite catalog, read-only invariant."""
+
 import hashlib
 import importlib.util
 import json
@@ -39,16 +40,26 @@ class SchemaInspectorTests(unittest.TestCase):
         self.assertNotIn("import_batch", [c["name"] for c in row["columns"]])
 
     def test_oracle_missing_dedupe_or_partial_unique_fails(self):
-        for suffix in ("", "CREATE UNIQUE INDEX partial ON engineering_events(dedupe_key) WHERE topic='x';"):
+        for suffix in (
+            "",
+            "CREATE UNIQUE INDEX partial ON engineering_events(dedupe_key) WHERE topic='x';",
+        ):
             with self.subTest(suffix=suffix):
                 if self.path.exists():
                     self.path.unlink()
-                self.database("""CREATE TABLE engineering_events (
+                self.database(
+                    """CREATE TABLE engineering_events (
                     id INTEGER PRIMARY KEY, run_date TEXT NOT NULL, topic TEXT NOT NULL,
                     headline TEXT NOT NULL, dedupe_key TEXT NOT NULL,
-                    payload TEXT NOT NULL, created_at TEXT NOT NULL);""" + suffix)
-                row = inspector.inspect_database(self.path)["tables"]["engineering_events"]
-                self.assertIn("missing unconditional unique key: dedupe_key", row["gaps"])
+                    payload TEXT NOT NULL, created_at TEXT NOT NULL);"""
+                    + suffix
+                )
+                row = inspector.inspect_database(self.path)["tables"][
+                    "engineering_events"
+                ]
+                self.assertIn(
+                    "missing unconditional unique key: dedupe_key", row["gaps"]
+                )
 
     def test_oracle_0017_absent_source_fk_is_reported_not_invented(self):
         self.database("""CREATE TABLE automation_sheet_rows (
@@ -57,7 +68,10 @@ class SchemaInspectorTests(unittest.TestCase):
             row_index INTEGER NOT NULL, data TEXT NOT NULL,
             UNIQUE(source_id, import_batch, sheet_name, row_index));""")
         row = inspector.inspect_database(self.path)["tables"]["automation_sheet_rows"]
-        self.assertIn("source association unenforced: source_id -> automation_sources.id", row["gaps"])
+        self.assertIn(
+            "source association unenforced: source_id -> automation_sources.id",
+            row["gaps"],
+        )
         self.assertEqual(row["foreign_keys"], [])
 
     def test_oracle_manifest_missing_and_home_unknown(self):
@@ -66,7 +80,9 @@ class SchemaInspectorTests(unittest.TestCase):
         self.assertEqual(len(report["tables"]), 19)
         self.assertFalse(report["live_gate_cleared"])
         self.assertIn("missing table", report["tables"]["finance_events"]["gaps"])
-        self.assertIn("home contract unknown", report["tables"]["home_events"]["unknown"])
+        self.assertIn(
+            "home contract unknown", report["tables"]["home_events"]["unknown"]
+        )
 
     def test_oracle_sqlite_catalog_fk_and_composite_index(self):
         self.database("""CREATE TABLE research_sources(id INTEGER PRIMARY KEY);
@@ -96,32 +112,51 @@ class SchemaInspectorTests(unittest.TestCase):
 
     def test_oracle_sqlite_identity_pk_and_nullability(self):
         for declaration, expected in (
-                ("id TEXT", "missing single-column id primary key"),
-                ("id TEXT UNIQUE", "missing single-column id primary key"),
-                ("id TEXT, extra TEXT, PRIMARY KEY(id, extra)", "missing single-column id primary key"),
-                ("id TEXT PRIMARY KEY", "nullable primary identity: id"),
-                ("id TEXT NOT NULL PRIMARY KEY", None),
-                ("id INTEGER PRIMARY KEY", None)):
+            ("id TEXT", "missing single-column id primary key"),
+            ("id TEXT UNIQUE", "missing single-column id primary key"),
+            (
+                "id TEXT, extra TEXT, PRIMARY KEY(id, extra)",
+                "missing single-column id primary key",
+            ),
+            ("id TEXT PRIMARY KEY", "nullable primary identity: id"),
+            ("id TEXT NOT NULL PRIMARY KEY", None),
+            ("id INTEGER PRIMARY KEY", None),
+        ):
             with self.subTest(declaration=declaration):
                 if self.path.exists():
                     self.path.unlink()
                 self.database(f"CREATE TABLE engineering_events ({declaration});")
-                gaps = inspector.inspect_database(self.path)["tables"]["engineering_events"]["gaps"]
+                gaps = inspector.inspect_database(self.path)["tables"][
+                    "engineering_events"
+                ]["gaps"]
                 identity_gaps = [g for g in gaps if "primary" in g]
                 self.assertEqual(identity_gaps, [expected] if expected else [])
 
     def test_oracle_strict_cli_before_file_access(self):
         for extra in (["--typo"], ["stray"], ["--data", "x"], ["--database"]):
-            result = subprocess.run([sys.executable, "-I", str(SCRIPT),
-                                     "--database", str(self.path), *extra], capture_output=True, text=True)
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    "-I",
+                    str(SCRIPT),
+                    "--database",
+                    str(self.path),
+                    *extra,
+                ],
+                capture_output=True,
+                text=True,
+            )
             self.assertEqual(result.returncode, 2)
             self.assertIn("usage:", result.stderr)
             self.assertFalse(self.path.exists())
 
     def test_oracle_cli_json_is_local_not_live(self):
         self.database()
-        result = subprocess.run([sys.executable, "-I", str(SCRIPT), "--database=" + str(self.path)],
-                                capture_output=True, text=True)
+        result = subprocess.run(
+            [sys.executable, "-I", str(SCRIPT), "--database=" + str(self.path)],
+            capture_output=True,
+            text=True,
+        )
         self.assertEqual(result.returncode, 1)
         self.assertFalse(json.loads(result.stdout)["live_gate_cleared"])
 

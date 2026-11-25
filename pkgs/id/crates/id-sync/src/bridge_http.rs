@@ -47,7 +47,8 @@ use crate::hex::hex_encode;
 /// streams.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HttpRequest {
-    /// The HTTP method (`GET` or `POST` for the bridge legs).
+    /// The HTTP method (`GET` or `POST` for the bridge legs, `PUT`
+    /// for a pkarr relay publish).
     pub method: String,
     /// The full URL the request goes to.
     pub url: String,
@@ -111,6 +112,8 @@ impl BridgeHttp for ReqwestHttp {
         let mut builder = match request.method.as_str() {
             "GET" => self.client.get(&request.url),
             "POST" => self.client.post(&request.url),
+            // The pkarr relay sinks publish with PUT (#10706).
+            "PUT" => self.client.put(&request.url),
             other => bail!("bridge http method {other} is not one the legs use"),
         };
         for (name, value) in &request.headers {

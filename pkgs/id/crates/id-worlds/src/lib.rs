@@ -61,6 +61,7 @@
 pub use id_core::port;
 
 pub mod account_charge;
+pub mod attachment_dispatch;
 pub mod blob_gate;
 pub mod chat_anchor_render;
 pub mod creator_announcements;

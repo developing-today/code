@@ -1270,6 +1270,19 @@
       "reason": "Wired by #14195 slice 1: the gate script and its contract tests run in the dedicated nix-dep-gate workflow (nightly + workflow_dispatch)."
     },
     {
+      "id": "scripts.fleet-binary-keeper",
+      "paths": ["scripts/tests/test_fleet_binary_keeper.py"],
+      "invocation": "python3 -m unittest discover -s scripts/tests -p 'test_fleet_binary_keeper.py' -v",
+      "venue": {
+        "workflow": ".github/workflows/scripts-test.yml",
+        "job_step": "Run fleet binary keeper contract tests (#14999)",
+        "state": "active",
+        "dispatchable": true
+      },
+      "status": "mapped",
+      "related_issues": [14999]
+    },
+    {
       "id": "scripts.provider-retirement-gate",
       "paths": ["scripts/tests/test_check_provider_retirement_gate.py"],
       "invocation": "python3 -m unittest discover -s scripts/tests -p 'test_check_provider_retirement_gate.py' -v",
@@ -1358,6 +1371,7 @@
         "pkgs/atlas-search/crates/atlas-search/tests/cli_parity.rs",
         "pkgs/atlas-search/crates/atlas-embed/tests/gate_a.rs",
         "pkgs/atlas-search/crates/atlas-core/tests/parity.rs",
+        "pkgs/atlas-search/crates/atlas-core/tests/repo_docs.rs",
         "pkgs/atlas-search/crates/**/src/**"
       ],
       "invocation": "cd pkgs/atlas-search && cargo test --workspace --all-targets",
@@ -1396,6 +1410,32 @@
       },
       "status": "mapped",
       "related_issues": [6400]
+    },
+    {
+      "id": "fleet.static-release",
+      "paths": [".github/scripts/check-fleet-static-release.test.sh"],
+      "invocation": "bash .github/scripts/check-fleet-static-release.sh && bash .github/scripts/check-fleet-static-release.test.sh",
+      "venue": {
+        "workflow": ".github/workflows/fleet-static-release.yml",
+        "job_step": "publish / Contract — wiring matches registry and policy (#14999)",
+        "state": "active",
+        "dispatchable": true
+      },
+      "status": "mapped",
+      "related_issues": [14999]
+    },
+    {
+      "id": "cf.record-worker-deploy",
+      "paths": ["scripts/tests/test_record_worker_deploy.py"],
+      "invocation": "python3 -m unittest discover -s scripts/tests -p 'test_record_worker_deploy.py' -v",
+      "venue": {
+        "workflow": ".github/workflows/scripts-test.yml",
+        "job_step": "Run cf worker record-deploy retry tests (#15041)",
+        "state": "active",
+        "dispatchable": true
+      },
+      "status": "mapped",
+      "related_issues": [15041]
     },
     {
       "id": "web-gen-api.e2e",

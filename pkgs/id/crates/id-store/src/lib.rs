@@ -59,5 +59,6 @@ pub mod tag_index;
 pub mod tags;
 pub mod turso;
 pub mod talk_page;
+pub mod thread_resolution;
 
 pub use store::STORE_PATH;

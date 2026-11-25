@@ -220,7 +220,8 @@ describe("class + quiet merges (design §1/§2)", () => {
     const plain = validateNewSubscription({ endpoint: "https://push.example/p", keys: { p256dh: "p", auth: "a" } });
     expect(plain.ok && plain.value.delivery).toBeUndefined();
     expect(
-      validateNewSubscription({ endpoint: "https://push.example/x", keys: { p256dh: "p", auth: "a" }, client: "fax" }).ok,
+      validateNewSubscription({ endpoint: "https://push.example/x", keys: { p256dh: "p", auth: "a" }, client: "fax" })
+        .ok,
     ).toBe(false);
   });
   test("quiet defaults 23:00–07:00 America/Chicago; partial overrides merge", () => {

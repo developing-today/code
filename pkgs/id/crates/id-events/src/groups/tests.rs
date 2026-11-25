@@ -2267,7 +2267,7 @@ fn test_a_device_authored_grant_stands_under_weak_remove_with_a_wide_removal_pas
 // ----- Grant expiry (F1) and grantor veto (F2, #13534) -----
 
 /// The expiry comparison rule (D1): expired iff action time T >= grant bound; T = None
-/// never expires. Each action below differs only in its asserted time.
+/// is expired under a bounded grant (#14876). Each action below differs only in its asserted time.
 #[test]
 fn test_an_expired_grant_carries_no_chain_at_or_past_its_bound() {
     let g = id("g");
@@ -2307,8 +2307,10 @@ fn test_an_expired_grant_carries_no_chain_at_or_past_its_bound() {
     }
 }
 
+/// A bounded grant fails closed: an action that asserts no time cannot show it falls before
+/// the bound, so the chain is refused (#14876).
 #[test]
-fn test_an_untimed_action_does_not_expire_a_grant() {
+fn test_an_untimed_action_is_outside_a_bounded_grant() {
     let g = id("g");
     let events = vec![
         stamped(custom("g", 1, &[], Policy::default()), Some(10)),
@@ -2316,6 +2318,29 @@ fn test_an_untimed_action_does_not_expire_a_grant() {
         stamped(add("a1", 1, g, 3, Role::Write, &["a0"]), Some(10)),
         stamped(
             delegate_exp("d0", 1, g, 2, Role::Write, true, Some(100), &["a1"]),
+            Some(10),
+        ),
+        stamped(
+            delegate("d1", 2, g, 3, Role::Write, true, &["d0"]),
+            Some(10),
+        ),
+        delegate("d2", 3, g, 4, Role::Read, false, &["d1"]),
+    ];
+    let p = project(&events);
+    assert_eq!(outcome(&p, "d2"), Outcome::Refused(Refusal::NoChain));
+}
+
+/// Fail-closed applies only to bounded grants: an untimed action under an unbounded chain
+/// still stands (#14876).
+#[test]
+fn test_an_untimed_action_under_an_unbounded_grant_stands() {
+    let g = id("g");
+    let events = vec![
+        stamped(custom("g", 1, &[], Policy::default()), Some(10)),
+        stamped(add("a0", 1, g, 2, Role::Write, &["g"]), Some(10)),
+        stamped(add("a1", 1, g, 3, Role::Write, &["a0"]), Some(10)),
+        stamped(
+            delegate("d0", 1, g, 2, Role::Write, true, &["a1"]),
             Some(10),
         ),
         stamped(
