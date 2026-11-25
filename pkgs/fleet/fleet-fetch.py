@@ -68,7 +68,7 @@ def jb(obj):
     return q(json.dumps(obj)) + "::jsonb"
 
 
-EVENTS_TURSO_URL = "https://fleet-queue-dezren39.aws-us-east-1.turso.io"
+EVENTS_TURSO_URL = "https://d1-gateway.developing-today.workers.dev/db/fleet-queue"
 
 
 def events_sink():

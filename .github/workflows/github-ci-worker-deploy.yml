@@ -1,0 +1,62 @@
+name: github-ci worker deploy
+
+# Deploys pkgs/github-ci/worker with Cloudflare versions: every push to
+# main that touches the Worker runs its vitest suite, uploads a version
+# tagged with the commit, and deploys that version at 100%. The
+# Worker's secrets carry over from version to version.
+# workflow_dispatch with rollback_version deploys an earlier version.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "pkgs/github-ci/worker/**"
+      - ".github/workflows/github-ci-worker-deploy.yml"
+  workflow_dispatch:
+    inputs:
+      rollback_version:
+        description: "Existing version id to deploy at 100% (rollback); empty uploads this commit"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: github-ci-worker-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: test, upload and deploy the github-ci Worker version
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: pkgs/github-ci/worker
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      ROLLBACK_VERSION: ${{ github.event.inputs.rollback_version }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7.1.0
+        with:
+          node-version: 24
+      - run: npm ci
+      - if: env.ROLLBACK_VERSION == ''
+        run: npm test
+      - name: Upload and deploy the version
+        run: |
+          set -euo pipefail
+          uuid_re='^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+          if [ -n "$ROLLBACK_VERSION" ]; then
+            [[ $ROLLBACK_VERSION =~ $uuid_re ]] || { echo "rollback_version is not a version id" >&2; exit 2; }
+            npx wrangler versions deploy "$ROLLBACK_VERSION@100%" --yes --message "rollback to $ROLLBACK_VERSION"
+            exit 0
+          fi
+          out=$(npx wrangler versions upload --tag "git-${GITHUB_SHA:0:12}" --message "$GITHUB_SHA" 2>&1 | tee /dev/stderr)
+          vid=$(grep -oE 'Worker Version ID: [0-9a-f-]{36}' <<<"$out" | awk '{print $4}' | tail -1)
+          [[ $vid =~ $uuid_re ]] || { echo "could not read the uploaded version id" >&2; exit 1; }
+          npx wrangler versions deploy "$vid@100%" --yes --message "$GITHUB_SHA"
+          npx wrangler deployments status
