@@ -320,7 +320,12 @@ fn backfill_link_statement(
     )
 }
 
-fn seed_task_links(t: &TursoBackend, task_id: i64, row: &Value, actor: &str) -> Result<(), TErr> {
+pub(crate) fn seed_task_links(
+    t: &TursoBackend,
+    task_id: i64,
+    row: &Value,
+    actor: &str,
+) -> Result<(), TErr> {
     let created_at = row
         .get("created_at")
         .and_then(Value::as_str)
@@ -889,105 +894,4 @@ pub(crate) fn verb_link_list(t: &TursoBackend, req: &Value) -> Value {
         Ok(rows) => ok(json!({"task_id": task_id, "links": rows})),
         Err(error) => terr(error),
     }
-}
-
-/// Normalize the JSON compatibility view into task_deps for one block
-/// generation. The caller writes the returned canonical cache alongside
-/// the task row; the table keeps the direct/ref columns for SQL consumers.
-pub(crate) fn sync_task_deps(
-    t: &TursoBackend,
-    task_id: i64,
-    block_id: &str,
-    deps: &[Value],
-    fallback_created_at: &str,
-    source: &str,
-) -> Result<Vec<Value>, TErr> {
-    let normalized: Vec<Value> = deps
-        .iter()
-        .map(|dep| normalize_dep(dep, task_id, block_id, fallback_created_at, source))
-        .collect();
-    if !normalized.is_empty() {
-        let mut statements = vec![("BEGIN IMMEDIATE", Vec::new())];
-        statements.extend(normalized.iter().map(dep_insert_statement));
-        statements.push(("COMMIT", Vec::new()));
-        t.exec_batch(&statements)?;
-    }
-    let cache = normalized.iter().map(dependency_cache_state).collect();
-    Ok(cache)
-}
-
-fn dependency_cache_state(dep: &Value) -> Value {
-    let state = dep
-        .get("state")
-        .and_then(Value::as_str)
-        .unwrap_or("malformed");
-    let mut raw = dep.get("detail").cloned().unwrap_or_else(|| json!({}));
-    if !raw.is_object() {
-        raw = json!({"raw": raw});
-    }
-    let obj = raw.as_object_mut().expect("dependency detail object");
-    let dep_kind = dep
-        .get("dep_kind")
-        .and_then(Value::as_str)
-        .unwrap_or("malformed");
-    let kind = dep_kind.strip_prefix("blocked-by-").unwrap_or("malformed");
-    obj.insert("kind".into(), json!(kind));
-    if let Some(repo) = dep.get("ref_repo").and_then(Value::as_str) {
-        obj.insert("repo".into(), json!(repo));
-    }
-    if let Some(number) = dep.get("ref_number").and_then(Value::as_i64) {
-        let key = if kind == "ci" { "run_id" } else { "number" };
-        obj.insert(key.into(), json!(number));
-    }
-    if let Some(task_id) = dep.get("ref_task_id").and_then(Value::as_i64) {
-        obj.insert("task_id".into(), json!(task_id));
-    }
-    let cache_state = match state {
-        "malformed" => "broken",
-        "cleared" if obj.get("original_state").and_then(Value::as_str) == Some("broken") => {
-            "broken"
-        }
-        other => other,
-    };
-    obj.insert("state".into(), json!(cache_state));
-    obj.insert(
-        "recorded_at".into(),
-        dep.get("created_at").cloned().unwrap_or(Value::Null),
-    );
-    obj.insert(
-        "cleared_at".into(),
-        dep.get("cleared_at").cloned().unwrap_or(Value::Null),
-    );
-    raw
-}
-
-pub(crate) fn clear_task_deps(
-    t: &TursoBackend,
-    task_id: i64,
-    block_id: Option<&str>,
-    worker: &str,
-    reason: &str,
-    now: &str,
-) -> Result<(), TErr> {
-    let block_filter = if block_id.is_some() {
-        " AND block_id = ?"
-    } else {
-        ""
-    };
-    let mut args = vec![
-        Arg::Text(now.to_owned()),
-        Arg::Text(worker.to_owned()),
-        Arg::Text(reason.to_owned()),
-        Arg::Int(task_id),
-    ];
-    if let Some(block_id) = block_id {
-        args.push(Arg::Text(block_id.to_owned()));
-    }
-    let sql = format!(
-        "UPDATE task_deps SET state = 'cleared', cleared_at = ?, cleared_by = ?, \
-         detail = json_set(detail, '$.clear_reason', ?) WHERE task_id = ? \
-         AND state = 'open'{block_filter}"
-    );
-    t.exec(&sql, &args)?;
-    Ok(())
 }
