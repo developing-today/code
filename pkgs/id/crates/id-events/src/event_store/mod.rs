@@ -1281,7 +1281,7 @@ impl EventStore {
         &mut self,
         op: impl FnOnce(&mut Mirror<'_>) -> Result<(T, bool), StoreError>,
     ) -> Result<T, StoreError> {
-        let txn = self.db.begin_write()?;
+        let mut txn = self.db.begin_write()?;
         let (value, changed) = {
             let mut mirror = Mirror {
                 txn: &mut txn,

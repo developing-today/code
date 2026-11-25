@@ -720,7 +720,7 @@ fn settle(
                 store_action(m.txn, &id, action)?;
             }
             if let Some(body) = body {
-                store_body(m.txn, &id, body)?;
+                store_body(&mut *m.txn, &id, body)?;
             }
             if let Some((op, group)) = device {
                 store_device_op(m.txn, &id, op, group.as_ref())?;
@@ -761,7 +761,7 @@ fn settle(
             let mut stored_body = false;
             if let Some(body) = body {
                 if is_stored(m.txn, &id)? {
-                    store_body(m.txn, &id, body)?;
+                    store_body(&mut *m.txn, &id, body)?;
                     stored_body = true;
                 }
             }
@@ -798,7 +798,7 @@ fn settle(
                     store_action(m.txn, &id, action)?;
                 }
                 if let Some(body) = body {
-                    store_body(m.txn, &id, body)?;
+                    store_body(&mut *m.txn, &id, body)?;
                 }
                 if let Some((op, group)) = device {
                     store_device_op(m.txn, &id, op, group.as_ref())?;
@@ -813,7 +813,7 @@ fn settle(
                     store_action(m.txn, &id, action)?;
                 }
                 if let Some(body) = body {
-                    store_body(m.txn, &id, body)?;
+                    store_body(&mut *m.txn, &id, body)?;
                 }
                 if let Some((op, group)) = device {
                     store_device_op(m.txn, &id, op, group.as_ref())?;
