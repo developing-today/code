@@ -45,10 +45,10 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
 use fleet_proxy_proto::mux::{
-    OpenIntent, StreamCeiling, StreamFrame, StreamId, StreamWindow, MUX_KEEPALIVE_S,
-    RST_CANCELLED, RST_PROTOCOL_ERROR, RST_TIMEOUT,
+    MUX_KEEPALIVE_S, OpenIntent, RST_CANCELLED, RST_PROTOCOL_ERROR, RST_TIMEOUT, StreamCeiling,
+    StreamFrame, StreamId, StreamWindow,
 };
-use fleet_proxy_proto::{read_frame, write_frame, ProtoError};
+use fleet_proxy_proto::{ProtoError, read_frame, write_frame};
 
 /// Session tuning for a mux endpoint. Production uses
 /// [`MuxConfig::default`]: the record's keepalive constant
@@ -597,10 +597,7 @@ impl MuxSession {
                     // intent; the half-head arm is unreachable in
                     // practice and stays as a guard.
                     let intent = match (method, path) {
-                        (Some(m), Some(p)) => OpenIntent::Request {
-                            method: m,
-                            path: p,
-                        },
+                        (Some(m), Some(p)) => OpenIntent::Request { method: m, path: p },
                         (None, None) => OpenIntent::RawConnect,
                         _ => {
                             let _ = self.shared.send_frame(&StreamFrame::Rst {
@@ -769,6 +766,15 @@ pub struct MuxStream {
     fin_out_sent: AtomicBool,
 }
 
+impl std::fmt::Debug for MuxStream {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MuxStream")
+            .field("id", &self.id)
+            .field("trip", &self.trip)
+            .finish_non_exhaustive()
+    }
+}
+
 impl MuxStream {
     fn new(
         id: StreamId,
@@ -878,7 +884,12 @@ impl MuxStream {
     /// peer's sending. Consuming more than was received grants
     /// only what the table still holds ungranted.
     pub fn consumed(&self, len: u64) {
-        let credit = self.shared.table.lock().unwrap().note_consumed(self.id, len);
+        let credit = self
+            .shared
+            .table
+            .lock()
+            .unwrap()
+            .note_consumed(self.id, len);
         if credit > 0 {
             let _ = self.shared.send_frame(&StreamFrame::Window {
                 stream: self.id,
@@ -943,11 +954,11 @@ impl MuxStream {
             if let StreamFrame::Data { status: slot, .. } = &mut frame {
                 *slot = status;
             }
-            self.shared.send_frame(&frame).map_err(|_| {
-                StreamError::TunnelLost {
+            self.shared
+                .send_frame(&frame)
+                .map_err(|_| StreamError::TunnelLost {
                     trip: self.trip.clone(),
-                }
-            })?;
+                })?;
         }
         Ok(())
     }
@@ -965,11 +976,11 @@ impl MuxStream {
         if let StreamFrame::Data { status: slot, .. } = &mut frame {
             *slot = status;
         }
-        self.shared.send_frame(&frame).map_err(|_| {
-            StreamError::TunnelLost {
+        self.shared
+            .send_frame(&frame)
+            .map_err(|_| StreamError::TunnelLost {
                 trip: self.trip.clone(),
-            }
-        })?;
+            })?;
         self.shared.table.lock().unwrap().note_fin_out(self.id);
         Ok(())
     }
@@ -1038,11 +1049,7 @@ impl MuxStream {
             if left.is_zero() {
                 return Err(StreamError::Timeout);
             }
-            let (guard, _) = self
-                .shared
-                .credit_cv
-                .wait_timeout(table, left)
-                .unwrap();
+            let (guard, _) = self.shared.credit_cv.wait_timeout(table, left).unwrap();
             table = guard;
         }
     }
@@ -1109,8 +1116,14 @@ mod tests {
             table.note_data_in(id(1), MAX_DATA_PAYLOAD_BYTES).unwrap();
         }
         assert_eq!(table.send_credit(id(1)), 0);
-        assert!(table.note_data_out(id(1), 1).is_err(), "send overrun refused");
-        assert!(table.note_data_in(id(1), 1).is_err(), "receive overrun refused");
+        assert!(
+            table.note_data_out(id(1), 1).is_err(),
+            "send overrun refused"
+        );
+        assert!(
+            table.note_data_in(id(1), 1).is_err(),
+            "receive overrun refused"
+        );
         table.note_window(id(1), 100).unwrap();
         table.note_data_out(id(1), 100).unwrap();
         assert_eq!(table.note_consumed(id(1), 512), 512);

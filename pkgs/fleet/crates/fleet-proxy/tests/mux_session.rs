@@ -15,13 +15,11 @@
 use std::io::Write;
 use std::os::unix::net::UnixStream;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{mpsc, Arc, Mutex};
+use std::sync::{Arc, Mutex, mpsc};
 use std::time::{Duration, Instant};
 
 use fleet_proxy::mux::{MuxConfig, MuxSession, MuxStream, OpenInfo, StreamError, StreamHandler};
-use fleet_proxy_proto::mux::{
-    OpenIntent, StreamCeiling, StreamId, RST_CANCELLED, RST_TIMEOUT,
-};
+use fleet_proxy_proto::mux::{OpenIntent, RST_CANCELLED, RST_TIMEOUT, StreamCeiling, StreamId};
 
 fn fast_config() -> MuxConfig {
     MuxConfig {
@@ -194,7 +192,7 @@ fn backpressure_bounds_one_stream_and_not_the_tunnel() {
         std::thread::spawn(move || {
             let r = big.send_chunk(&payload);
             send_done.store(true, Ordering::SeqCst);
-            (big, r)
+            (big, r, payload)
         })
     };
     // The send cannot complete while the consumer stalls: the
@@ -222,7 +220,7 @@ fn backpressure_bounds_one_stream_and_not_the_tunnel() {
     // Release the consumer: the blocked send completes and the
     // full body arrives intact.
     release.store(true, Ordering::SeqCst);
-    let (big, sent) = sender.join().unwrap();
+    let (big, sent, payload) = sender.join().unwrap();
     sent.unwrap();
     big.close_send().unwrap();
     assert_eq!(read_all(&big).unwrap(), payload);
@@ -247,7 +245,11 @@ fn cancellation_resets_only_the_cancelled_stream() {
     let (a, _b, _kill) = link(fast_config(), fast_config(), handler);
 
     let doomed = a
-        .open_stream(4802, &OpenIntent::RawConnect, Some("trip-doomed".to_string()))
+        .open_stream(
+            4802,
+            &OpenIntent::RawConnect,
+            Some("trip-doomed".to_string()),
+        )
         .unwrap();
     doomed.send_chunk(b"partial").unwrap();
     doomed.reset(RST_CANCELLED);
@@ -290,7 +292,11 @@ fn stream_ceiling_resets_a_stalled_stream_as_timeout() {
     // Open and send nothing: the terminating side's ceiling
     // expires and it resets the stream with the timeout reason.
     let stalled = a
-        .open_stream(4803, &OpenIntent::RawConnect, Some("trip-stall".to_string()))
+        .open_stream(
+            4803,
+            &OpenIntent::RawConnect,
+            Some("trip-stall".to_string()),
+        )
         .unwrap();
     match rx.recv_timeout(Duration::from_secs(5)) {
         Ok(Err(StreamError::Timeout)) => {}
@@ -387,7 +393,11 @@ fn silent_peer_is_declared_dead_by_the_liveness_horizon() {
         std::thread::spawn(move || a_run.run(sa, noop));
     }
     let stream = a
-        .open_stream(4805, &OpenIntent::RawConnect, Some("trip-silent".to_string()))
+        .open_stream(
+            4805,
+            &OpenIntent::RawConnect,
+            Some("trip-silent".to_string()),
+        )
         .unwrap();
     let t0 = Instant::now();
     while !a.is_dead() {
