@@ -14,8 +14,8 @@
 //     unit and pins the aggregator's PM_PROJECTOR_URL to it.
 //   - install.sh renders PM_AGG_SOURCE=live for the deployment.
 //   - src/sources/live.ts wires items pool-first (fleet feed Project
-//     pool, then projector, then fixtures) and comments via the
-//     projector with a fixture fallback.
+//     pool, then projector) and comments via the projector, with no
+//     fixture fallback for either in live mode (#14065).
 //   - src/program.ts (/program) must not claim the comment projection
 //     is fixture-backed or still to come.
 //   - README.md carries the matrix, naming the projector and Pad.
@@ -64,6 +64,10 @@ const commentsBody = commentsStart >= 0 ? live.slice(commentsStart, commentsStar
 check(
   commentsBody.includes("projectorComments(cfg.projector.baseUrl"),
   "live.ts comments() reads the GitHub comment projection from the projector",
+);
+check(
+  !live.includes("fix.items(") && !live.includes("fix.comments("),
+  "live.ts serves no fixture items or comments in live mode (#14065)",
 );
 check(!live.includes("projector is dead by config"), "live.ts carries no stale 'projector is dead by config' claim");
 
