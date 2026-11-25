@@ -5,12 +5,12 @@ plugins {
 
 val buildAndroidRemote by tasks.registering(Exec::class) {
     workingDir = rootProject.projectDir.resolve("..")
+    environment("CARGO_NDK_ANDROID_PLATFORM", "26")
     commandLine(
         "cargo",
         "ndk",
         "-t", "arm64-v8a",
         "-t", "x86_64",
-        "-p", "26",
         "-o", "android/app/src/main/jniLibs",
         "build",
         "--release",
