@@ -20,8 +20,8 @@ test("index serves activity with freshness and canonical credential-free links",
   const html = await response!.text();
   expect(html).toContain("D1 decision-events");
   expect(html).toContain(stamp);
-  expect(html).toContain("60 seconds");
-  expect(html).toContain("https://pm.security.cab/decisions/set%2F%3Cscript%3E");
+  expect(html).toContain("1 minute ago");
+  expect(html).toContain("https://pm.security.cab/decisions?set=set%2F%3Cscript%3E");
   expect(html).not.toContain("<script>");
   expect(html).not.toContain("server-only-secret");
   expect(html).not.toContain("old-token");
@@ -44,11 +44,19 @@ test("set page shows ordered event history, composite pagination, and missing de
   expect(seen[0].url).toBe("https://decision-events.internal/sets/set-1/events?limit=200");
 });
 
+test("slash-containing set IDs remain one encoded upstream route segment", async () => {
+  // Oracle: canonical hosted detail URLs preserve slash-containing IDs.
+  const seen: Request[] = [];
+  const response = await decisionPage(req("/decisions?set=set%2Fone"), io({ setId: "set/one", events: [], nextAfter: null }, seen));
+  expect(response?.status).toBe(200);
+  expect(seen[0].url).toBe("https://decision-events.internal/sets/set%2Fone/events?limit=200");
+});
+
 test("page cursor is forwarded but browser cookies and credentials are not", async () => {
   const seen: Request[] = [];
   await decisionPage(new Request(`https://pm.security.cab/decisions/set-1?after=${encodeURIComponent(stamp + "|event-1")}`, {
     headers: { cookie: "owner=private", authorization: "Bearer browser" },
-  }), io({ events: [], nextAfter: null }, seen));
+  }), io({ setId: "set-1", events: [], nextAfter: null }, seen));
   expect(new URL(seen[0].url).searchParams.get("after")).toBe(stamp + "|event-1");
   expect(seen[0].headers.get("cookie")).toBeNull();
 });

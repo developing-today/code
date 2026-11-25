@@ -54,12 +54,12 @@ async function readJson(request: Request, io: DecisionPagesIo): Promise<unknown>
 }
 
 function readPath(path: string): string {
-  return path.split("/").map(encodeURIComponent).join("/");
+  return encodeURIComponent(path);
 }
 
 function ageLabel(at: string, now: number): string {
   const seconds = Math.max(0, Math.floor((now - Date.parse(at)) / 1000));
-  if (seconds < 60) return `${seconds} seconds`;
+  if (seconds <= 60) return `${seconds} seconds`;
   const minutes = Math.floor(seconds / 60);
   if (minutes < 60) return `${minutes} minute${minutes === 1 ? "" : "s"}`;
   const hours = Math.floor(minutes / 60);
@@ -71,7 +71,8 @@ function ageLabel(at: string, now: number): string {
 export async function decisionPage(request: Request, io: DecisionPagesIo): Promise<Response | null> {
   const url = new URL(request.url);
   if (request.method !== "GET" || (url.pathname !== "/decisions" && !/^\/decisions\/[^/]+$/.test(url.pathname))) return null;
-  if (url.pathname === "/decisions") {
+  const querySetId = url.pathname === "/decisions" ? url.searchParams.get("set") : null;
+  if (url.pathname === "/decisions" && querySetId === null) {
     try {
       const data = await readJson(new Request(`${ORIGIN}/sets?limit=${PAGE_SIZE}`), io) as {
         sets?: Array<{ setId?: unknown; events?: unknown; firstTs?: unknown; lastTs?: unknown; lastType?: unknown }>;
@@ -79,9 +80,9 @@ export async function decisionPage(request: Request, io: DecisionPagesIo): Promi
       if (!Array.isArray(data?.sets) || data.sets.some((s) => !s || typeof s.setId !== "string" || !validSetId(s.setId) ||
         !Number.isFinite(s.events) || Number(s.events) < 1 || typeof s.lastTs !== "string" || Number.isNaN(Date.parse(s.lastTs)) || typeof s.lastType !== "string")) return unavailable();
       const fetchedAt = new Date(io.now()).toISOString();
-       const rows = data.sets.map((set) => `<div class="item"><h2><a href="https://pm.security.cab/decisions/${encodeURIComponent(set.setId as string)}">Decision set ${escapeHtml(set.setId)}</a></h2>
+      const rows = data.sets.map((set) => `<div class="item"><h2><a href="https://pm.security.cab/decisions?set=${encodeURIComponent(set.setId as string)}">Decision set ${escapeHtml(set.setId)}</a></h2>
 <p class="context">${escapeHtml(set.events)} events · latest ${escapeHtml(set.lastType)} at ${escapeHtml(set.lastTs)} (${escapeHtml(ageLabel(set.lastTs as string, io.now()))} ago)</p></div>`).join("");
-       return page(`<h1>Decision activity</h1><p class="context">Read from D1 decision-events at ${escapeHtml(fetchedAt)}. Activity is current as of each event time; question definitions are not in this event feed.</p>
+      return page(`<h1>Decision activity</h1><p class="context">Read from D1 decision-events at ${escapeHtml(fetchedAt)}. Showing at most ${PAGE_SIZE} recent sets, not a complete index. Activity is current as of each event time; question definitions are not in this event feed.</p>
 ${rows || '<p class="context">No decision-event activity is recorded.</p>'}`);
     } catch {
       return unavailable();
@@ -89,7 +90,7 @@ ${rows || '<p class="context">No decision-event activity is recorded.</p>'}`);
   }
 
   let setId: string;
-  try { setId = decodeURIComponent(url.pathname.slice("/decisions/".length)); } catch { return page("<h1>Invalid decision set</h1>", 400); }
+  try { setId = querySetId ?? decodeURIComponent(url.pathname.slice("/decisions/".length)); } catch { return page("<h1>Invalid decision set</h1>", 400); }
   if (!validSetId(setId)) return page("<h1>Invalid decision set</h1>", 400);
   const after = url.searchParams.get("after");
   if (after !== null && (!validCursor(after) || after.length > 256)) return page("<h1>Invalid page cursor</h1>", 400);
@@ -107,7 +108,7 @@ ${rows || '<p class="context">No decision-event activity is recorded.</p>'}`);
     const fetchedAt = new Date(io.now()).toISOString();
     const rows = data.events.map((event) => `<div class="item"><h2>${escapeHtml(event.type)}</h2><p class="context">${escapeHtml(event.ts)} · event <code>${escapeHtml(event.eventId)}</code>${event.questionRef ? ` · question <code>${escapeHtml(event.questionRef)}</code>` : ""}</p></div>`).join("");
     const next = typeof data.nextAfter === "string"
-      ? `<p><a href="https://pm.security.cab/decisions/${encodeURIComponent(setId)}?after=${encodeURIComponent(data.nextAfter)}">Next page</a></p>` : "";
+      ? `<p><a href="https://pm.security.cab/decisions?set=${encodeURIComponent(setId)}&amp;after=${encodeURIComponent(data.nextAfter)}">Next page</a></p>` : "";
     return page(`<p><a href="https://pm.security.cab/decisions">All decision activity</a></p><h1>Decision set ${escapeHtml(setId)}</h1>
 <p class="context">Read from D1 decision-events at ${escapeHtml(fetchedAt)}. Question definitions are not in this event feed; decisions, choices, answers, and write actions are not exposed by this activity-only page.</p>
 <p class="context">${escapeHtml(data.events.length)} events on this page.${after ? ` After <code>${escapeHtml(after)}</code>.` : ""}</p>

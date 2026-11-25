@@ -34,6 +34,8 @@ interface Env {
   /** Server-side credential for the decision-events authenticated GET routes. */
   DECISION_EVENTS_SECRET?: string;
   DECISION_EVENTS?: { fetch(request: Request): Promise<Response> };
+  /** Opt-in only after the #14865 cutover gate and credential read probe. */
+  DECISION_PAGES?: string;
   /** Local development only: where GitHub's API and the queue store
    * are, when they are stand-ins. Never set where this is deployed: the
    * Worker's tokens are sent to whatever these name. */
@@ -107,9 +109,12 @@ export class PmEdge extends DurableObject<Env> {
         queueDb: env.QUEUE_DB_ORIGIN,
         fetchImpl: fetch,
       },
-      decisionEvents: env.DECISION_EVENTS ? {
+      decisionEvents: env.DECISION_PAGES === "on" ? {
         secret: env.DECISION_EVENTS_SECRET,
-        fetch: (request) => env.DECISION_EVENTS!.fetch(request),
+        fetch: async (request) => {
+          if (!env.DECISION_EVENTS) throw new Error("decision-events binding unavailable");
+          return env.DECISION_EVENTS.fetch(request);
+        },
       } : undefined,
       // Live connections to the app. The platform holds them, so they
       // stay open while this object is put away between events, and it
