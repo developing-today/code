@@ -211,7 +211,9 @@ pub enum ReportError {
     Signature,
     /// The report claims a filing time too far ahead of this node's
     /// clock.
-    #[error("report filed at {filed_at_ms} ms is more than {MAX_FUTURE_SKEW_MS} ms ahead of now ({now_ms} ms)")]
+    #[error(
+        "report filed at {filed_at_ms} ms is more than {MAX_FUTURE_SKEW_MS} ms ahead of now ({now_ms} ms)"
+    )]
     FromTheFuture {
         /// The signed filing time.
         filed_at_ms: u64,
@@ -219,7 +221,9 @@ pub enum ReportError {
         now_ms: u64,
     },
     /// The target is not something this operator lists or hosts.
-    #[error("{0} is not in this operator's scope; an operator only takes reports about what it lists or hosts")]
+    #[error(
+        "{0} is not in this operator's scope; an operator only takes reports about what it lists or hosts"
+    )]
     OutOfScope(String),
     /// Reading or writing the report log failed.
     #[error("report storage: {0}")]
@@ -471,9 +475,9 @@ impl OperatorScope for HostedScope {
     }
 
     fn hosts_published(&self, world_id: &str, program: &ProgramIdentity) -> bool {
-        self.worlds
-            .get(world_id)
-            .is_some_and(|published| published.contains(&program_publish_state::record_key(program)))
+        self.worlds.get(world_id).is_some_and(|published| {
+            published.contains(&program_publish_state::record_key(program))
+        })
     }
 }
 
@@ -634,7 +638,9 @@ impl ReportLog {
     }
 
     fn next_sequence(&self) -> u64 {
-        self.facts.last().map_or(1, |fact| fact.sequence.saturating_add(1))
+        self.facts
+            .last()
+            .map_or(1, |fact| fact.sequence.saturating_add(1))
     }
 
     fn check_next(&self, fact: &ReportFact) -> Result<(), ReportError> {
@@ -723,7 +729,14 @@ mod tests {
     }
 
     fn report(target: ReportTarget, reason: ReportReason) -> SignedReport {
-        SignedReport::sign(target, reason, "seen in the lobby", NOW - 1_000, &reporter()).unwrap()
+        SignedReport::sign(
+            target,
+            reason,
+            "seen in the lobby",
+            NOW - 1_000,
+            &reporter(),
+        )
+        .unwrap()
     }
 
     #[test]
@@ -942,9 +955,14 @@ mod tests {
         let target = ReportTarget::HostedWorld {
             world_id: "quiz-hall".to_owned(),
         };
-        let late =
-            SignedReport::sign(target.clone(), ReportReason::Spam, "", NOW + MAX_FUTURE_SKEW_MS, &reporter())
-                .unwrap();
+        let late = SignedReport::sign(
+            target.clone(),
+            ReportReason::Spam,
+            "",
+            NOW + MAX_FUTURE_SKEW_MS,
+            &reporter(),
+        )
+        .unwrap();
         intake(&late, &hosted, NOW).unwrap();
         let future = SignedReport::sign(
             target,
@@ -1013,7 +1031,9 @@ mod tests {
             .file(first.clone(), &hosted, NOW + 5, Some(dir.path()))
             .unwrap();
         assert_eq!(a, again, "filing the same report twice appends nothing");
-        let b = log.file(second, &hosted, NOW + 10, Some(dir.path())).unwrap();
+        let b = log
+            .file(second, &hosted, NOW + 10, Some(dir.path()))
+            .unwrap();
         assert_eq!((a.sequence, b.sequence), (1, 2));
         assert_eq!(a.received_at_ms, NOW);
 
