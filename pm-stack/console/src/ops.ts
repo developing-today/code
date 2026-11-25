@@ -1415,8 +1415,13 @@ export class Ops {
    * credential is the runner's, from the repository's secret store,
    * and never passes through here. */
   async storeMigrate(store: unknown) {
+    // Cheap refusal first, like deploy(): a name that could not be a
+    // store's is refused before GitHub is asked anything.
+    if (typeof store !== "string" || !/^[a-z0-9][a-z0-9-]{0,62}$/.test(store)) {
+      throw new OpError(400, "store: a store's name");
+    }
     const stores = await this.storesOfRecord();
-    if (typeof store !== "string" || (store !== TEST_STORE && !stores.some((s) => s.name === store))) {
+    if (store !== TEST_STORE && !stores.some((s) => s.name === store)) {
       throw new OpError(400, `store: one of ${[TEST_STORE, ...stores.map((s) => s.name)].join(", ")}`);
     }
     await this.gh(["-X", "POST", `repos/${this.cfg.repo}/actions/workflows/${MIGRATION_WORKFLOW}/dispatches`], {

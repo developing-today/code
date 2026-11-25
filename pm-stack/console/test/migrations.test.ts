@@ -160,7 +160,7 @@ describe("store migrations", () => {
     ]);
     // A store the list does not name is refused before any dispatch.
     for (const store of ["pm-dispatch.yml", "../x", "", null, "fleet-queue "]) {
-      await expect(table["store.migrate"].run({ store })).rejects.toThrow(/store: one of/);
+      await expect(table["store.migrate"].run({ store })).rejects.toThrow(/store:/);
     }
     expect(r.calls.filter((c) => c.argv.some((a) => a.includes("/dispatches"))).length).toBe(2);
     expect(table["store.migrate"].audit({ store: "fleet-queue", extra: "x" })).toEqual({ store: "fleet-queue" });
