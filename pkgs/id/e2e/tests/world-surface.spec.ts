@@ -106,15 +106,14 @@ test.describe("World surface", () => {
     await expect(surface).toBeVisible({ timeout: 15_000 });
 
     const before = await recordsCount(page);
-    // Load the OS clipboard the way a user does: type into the game input,
-    // select all, copy. No clipboard permission APIs involved.
-    const gameInput = page.locator("[data-world-input]");
-    await gameInput.fill("++");
-    await gameInput.press("ControlOrMeta+a");
-    await gameInput.press("ControlOrMeta+c");
-
-    await page.locator("[data-world-view]").click();
-    await page.locator("[data-world-view]").press("ControlOrMeta+v");
+    // Dispatch the browser paste event with clipboard data. Headless Firefox
+    // does not expose a reliable OS clipboard in the Nix sandbox, while this
+    // exercises the same world-view paste handler and WebSocket frame.
+    await page.locator("[data-world-view]").evaluate((view) => {
+      const clipboardData = new DataTransfer();
+      clipboardData.setData("text/plain", "++");
+      view.dispatchEvent(new ClipboardEvent("paste", { clipboardData, bubbles: true, cancelable: true }));
+    });
     // The pasted "++" is two "+" presses for the fixture: +2.
     await expect(page.locator("[data-world-log]")).toContainText(/input #\d+ from player/, {
       timeout: 15_000,
@@ -229,10 +228,11 @@ test.describe("World surface", () => {
     });
     await expect.poll(() => screenText(page), { timeout: 15_000 }).toMatch(/counter/);
 
-    // Narrow the browser window: the client reports a smaller viewport over
-    // the live channel (#811: resize stays session-local) and the fixture
-    // reflows to its 20-column layout.
-    await page.setViewportSize({ width: 320, height: 800 });
+    // Resize the element observed by the world client. Changing the browser
+    // window alone does not change this container's width in the Nix layout.
+    await view.evaluate((element) => {
+      (element as HTMLElement).style.width = "192px";
+    });
     await expect(screen).toHaveAttribute("aria-label", /World screen, 20 columns by \d+ rows/, {
       timeout: 15_000,
     });
@@ -240,7 +240,9 @@ test.describe("World surface", () => {
     await expect.poll(() => screenText(page), { timeout: 15_000 }).toMatch(/counter/);
 
     // Widen again: the surface re-renders back at 30 columns.
-    await page.setViewportSize({ width: 1280, height: 720 });
+    await view.evaluate((element) => {
+      (element as HTMLElement).style.width = "288px";
+    });
     await expect(screen).toHaveAttribute("aria-label", /World screen, 30 columns by \d+ rows/, {
       timeout: 15_000,
     });
