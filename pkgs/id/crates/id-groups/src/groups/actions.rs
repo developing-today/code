@@ -26,9 +26,10 @@ pub struct Action {
     pub outcome: Outcome,
 }
 
-/// What a delegation recorded: the delegation mode change, if one was needed, and the grant. The
-/// grant is `None` when the mode change was refused. The mode change is `None` when the grant was
-/// refused: the pair is atomic (#14877), so a refused grant records neither event, and the
+/// What a delegation recorded: the delegation mode change, if one was needed, and the grant.
+///
+/// The grant is `None` when the mode change was refused. The mode change is `None` when the grant
+/// was refused: the pair is atomic (#14877), so a refused grant records neither event, and the
 /// returned grant carries the refusal the fold gave it in the trial fold.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Delegated {
