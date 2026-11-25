@@ -6,9 +6,9 @@
 //! — and, by the §6 collapse rule, indistinguishable from a column
 //! that does not exist at all: both are `field_unsupported`.
 //!
-//! Registration and owner configuration (#13758) will construct these
-//! values after checking them against the live endpoint; until then
-//! they are built directly in the shapes the design specifies.
+//! Registration and owner configuration (#13758, `registration.rs`)
+//! checks these values, with the rest of the endpoint configuration,
+//! against the live endpoint before any query runs.
 
 use serde::{Deserialize, Serialize};
 
