@@ -4,13 +4,16 @@
 import { describe, expect, test } from "bun:test";
 import { readConfig } from "../src/config.ts";
 import {
+  effectiveSettings,
   goesBy,
   MACHINES_FOR_NOW,
+  OWNER_CHANGEABLE,
   PLATFORM_OWN,
   PLATFORM_SETTING_NAMES,
   type PlatformSettings,
   platformSettings,
   settingsDifferences,
+  settingsInForce,
   settingsThatDiffer,
 } from "../src/settings.ts";
 
@@ -202,5 +205,89 @@ describe("saying a machine's other settings to the owner", () => {
     expect(long[1].platform).toEqual(platformSettings().needsRepos);
     // What is not a list or a string is said as it is.
     expect(settingsDifferences({ ...platformSettings(), queue: 7 })[0].machine).toBe(7);
+  });
+});
+
+describe("owner-changeable settings", () => {
+  const platform = {
+    ...platformSettings(),
+    promptLabel: "repo/prompt",
+    needsRepos: ["repo/project"],
+  };
+  const told: PlatformSettings = {
+    ...platform,
+    repo: "machine/repo",
+    queue: "machine-queue",
+    promptLabel: "machine/prompt",
+    needsRepos: ["machine/project"],
+  };
+
+  test("S1 oracle: repository → machine → owner precedence follows design §3", () => {
+    const owner = {
+      rev: 4,
+      at: 1_700_000_000_000,
+      by: "owner@example.test",
+      values: { promptLabel: "owner/prompt" },
+    };
+    const effective = effectiveSettings(told, owner, platform);
+
+    expect(OWNER_CHANGEABLE).toEqual(["promptLabel", "needsRepos"]);
+    expect(effective.repo).toBe(platform.repo);
+    expect(effective.queue).toBe(platform.queue);
+    expect(effective.promptLabel).toBe(owner.values.promptLabel);
+    // No owner override exists yet, so needsRepos still comes from the machine.
+    expect(effective.needsRepos).toEqual(told.needsRepos);
+    expect(told.promptLabel).toBe("machine/prompt");
+    expect(told.needsRepos).toEqual(["machine/project"]);
+  });
+
+  test("owner needsRepos overrides the machine, and clearing reveals the machine again", () => {
+    const owner = {
+      rev: 5,
+      at: 1_700_000_001_000,
+      by: "owner@example.test",
+      values: { needsRepos: ["owner/project"] },
+    };
+
+    expect(effectiveSettings(told, owner, platform).needsRepos).toEqual(["owner/project"]);
+    expect(effectiveSettings(told, { ...owner, values: {} }, platform).needsRepos).toEqual(told.needsRepos);
+    expect(effectiveSettings(told, { ...owner, values: {} }, platform).promptLabel).toBe(platform.promptLabel);
+  });
+
+  test("in-force projection names source and timestamps while keeping repository contrast", () => {
+    const owner = {
+      rev: 6,
+      at: 1_700_000_002_000,
+      by: "owner@example.test",
+      values: { promptLabel: "owner/prompt", needsRepos: ["owner/project"] },
+    };
+    const rows = settingsInForce(told, owner, platform);
+
+    expect(rows).toHaveLength(PLATFORM_SETTING_NAMES.length);
+    expect(rows.find((row) => row.name === "promptLabel")).toEqual({
+      name: "promptLabel",
+      source: "owner",
+      since: owner.at,
+      value: owner.values.promptLabel,
+      repository: platform.promptLabel,
+      by: owner.by,
+      rev: owner.rev,
+    });
+    expect(rows.find((row) => row.name === "needsRepos")).toEqual({
+      name: "needsRepos",
+      source: "owner",
+      since: owner.at,
+      value: owner.values.needsRepos,
+      repository: platform.needsRepos,
+      by: owner.by,
+      rev: owner.rev,
+    });
+    expect(rows.find((row) => row.name === "queue")).toEqual({
+      name: "queue",
+      source: "repository",
+      since: null,
+      value: platform.queue,
+      repository: platform.queue,
+    });
   });
 });
