@@ -412,6 +412,7 @@ The OS-timer half of surface 2. Cadence is the unit's own `OnCalendar`/`OnUnitAc
 | `worktree-janitor.timer` | `OnCalendar=*-*-* 01,07,13,19:23:00` | `worktree-janitor.service` | laptop (user systemd; code#6884) | not recorded | not recorded | 2026-11-17 | 2026-11-17 |
 | `charge-producer.timer` | `OnCalendar=*-*-* *:18,48:00` | `charge-producer.service` | laptop (user systemd) | not recorded | not recorded | not recorded | 2026-11-04 |
 | `cloudflare-quota-export.timer` | `OnCalendar=*-*-* *:00/15:00` | `cloudflare-quota-export.service` | laptop (user systemd) | not recorded | not recorded | not recorded | 2026-11-04 |
+| `conductor-silence.timer` (repo-shipped, not yet installed) | `OnUnitActiveSec=30m,OnBootSec=5m` | `conductor-silence.service` | laptop (user systemd; code#15123; conductor-silence heartbeat: files one tracking issue when the fleet conductor's newest cycle-log timestamp exceeds 2h) | not recorded | not recorded | 2026-11-25 | 2026-11-25 |
 | `codex-remote-control-watchdog.timer` | `OnUnitActiveUSec=5min,OnBootUSec=2min` | `codex-remote-control-watchdog.service` | laptop (user systemd) | not recorded | not recorded | not recorded | 2026-11-04 |
 | `cold-store-drill.timer` | `OnCalendar=*-*-01 05:12:00` | `cold-store-drill.service` | laptop (user systemd) | not recorded | not recorded | not recorded | 2026-11-04 |
 | `cold-store-nightly.timer` | `OnCalendar=*-*-* 03:12:00` | `cold-store-nightly.service` | laptop (user systemd) | not recorded | not recorded | not recorded | 2026-11-04 |
