@@ -50,6 +50,18 @@
 //! pruned them answers with a snapshot of the surface — reduced
 //! fidelity, identical authority, since both go through the same read
 //! check (v1 §4.2).
+//!
+//! # Concurrent edits (#10050)
+//!
+//! Every write names the revision it was decided against: an item
+//! version for a claim or move, a document revision for an edit or a
+//! review. A write against a surface that has moved since is refused as
+//! stale, with what the actor missed (the current item, or the document
+//! edits after its revision), never merged. The refusal is an audit event
+//! like any other, and the actor recovers by re-reading, reconciling and
+//! retrying under the same grant, without rejoining.
+//! [`crate::surface_host::SurfaceHost`] serializes writes at the world
+//! host and gives agents that retry contract.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
@@ -603,7 +615,15 @@ pub enum SurfaceError {
         seen: u64,
         /// The item's version now.
         current: u64,
+        /// The item as it stands now, to reconcile against.
+        item: Box<TaskItem>,
     },
+    /// A document edit or review was decided against a revision the
+    /// document has moved past.
+    StaleDecision(Box<StaleDecision>),
+    /// The host could not serialize the write (its writer failed
+    /// mid-write), so it refuses rather than risk a merge.
+    HostCannotSerialize,
     /// Another live claim holds the item.
     Contended {
         /// The holder.
@@ -636,8 +656,25 @@ impl SurfaceError {
             Self::NotHolder => "not_holder",
             Self::BadState => "bad_state",
             Self::WrongModel => "wrong_model",
+            Self::StaleDecision(_) => "stale_decision",
+            Self::HostCannotSerialize => "host_cannot_serialize",
         }
     }
+}
+
+/// A document write decided against a revision the document has moved
+/// past: refused, never merged, with every edit the actor did not see.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StaleDecision {
+    /// The document.
+    pub surface: SurfaceId,
+    /// The revision the actor decided against.
+    pub decided_against: u64,
+    /// The document's revision now.
+    pub current: u64,
+    /// The edits after `decided_against`, oldest first: the diff to
+    /// reconcile against before retrying.
+    pub missed: Vec<DocumentEdit>,
 }
 
 /// One audited act on a surface: every mutation, and every refusal.
@@ -1014,6 +1051,7 @@ impl WorkSurfaces {
                     return Err(SurfaceError::Stale {
                         seen: seen_version,
                         current: entry.version,
+                        item: Box::new(entry.clone()),
                     });
                 }
                 if let Some(claim) = entry.claim.as_ref().filter(|c| c.expires_at > now) {
@@ -1092,6 +1130,7 @@ impl WorkSurfaces {
                     return Err(SurfaceError::Stale {
                         seen: seen_version,
                         current: entry.version,
+                        item: Box::new(entry.clone()),
                     });
                 }
                 if entry.state == to {
@@ -1214,21 +1253,25 @@ impl WorkSurfaces {
         done
     }
 
-    /// Edit a document. An append-only document takes only appends; a
-    /// last-writer-wins document takes appends and replaces, keeping
-    /// the replaced text in history. Any edit returns the review state
-    /// to draft.
+    /// Edit a document, naming the revision the edit was decided against
+    /// (0 before the first edit). An append-only document takes only
+    /// appends; a last-writer-wins document takes appends and replaces,
+    /// keeping the replaced text in history. Any edit returns the review
+    /// state to draft.
     ///
     /// # Errors
     ///
-    /// No such document, the actor may not edit, the edit does not fit
-    /// the conflict model, or the result is out of bounds.
+    /// No such document, the actor may not edit, the document moved past
+    /// `decided_against` (a stale decision, with the edits missed), the
+    /// edit does not fit the conflict model, or the result is out of
+    /// bounds. Every refusal is audited.
     pub fn edit_document(
         &mut self,
         registry: &RoleRegistry,
         actor: &SurfaceActor,
         name: &str,
         op: EditOp,
+        decided_against: u64,
         now: u64,
     ) -> Result<u64, SurfaceError> {
         let surface = SurfaceId::Document(name.to_owned());
@@ -1242,6 +1285,7 @@ impl WorkSurfaces {
                 if op.text().is_empty() {
                     return Err(SurfaceError::BadInput);
                 }
+                check_decision(&surface, document, decided_against)?;
                 let (next, replaced) = match &op {
                     EditOp::Append { text } => (format!("{}{text}", document.content), None),
                     EditOp::Replace { text } => {
@@ -1284,17 +1328,20 @@ impl WorkSurfaces {
         result
     }
 
-    /// Set a document's review state.
+    /// Set a document's review state, naming the revision reviewed: a
+    /// review never lands on content its reviewer did not see.
     ///
     /// # Errors
     ///
-    /// No such document, or the actor may not review it.
+    /// No such document, the actor may not review it, or the document
+    /// moved past `reviewed_revision` (a stale decision).
     pub fn review_document(
         &mut self,
         registry: &RoleRegistry,
         actor: &SurfaceActor,
         name: &str,
         review: ReviewState,
+        reviewed_revision: u64,
         now: u64,
     ) -> Result<(), SurfaceError> {
         let surface = SurfaceId::Document(name.to_owned());
@@ -1305,6 +1352,7 @@ impl WorkSurfaces {
                     .documents
                     .get_mut(name)
                     .ok_or(SurfaceError::UnknownSurface)?;
+                check_decision(&surface, document, reviewed_revision)?;
                 document.review = review;
                 Ok(())
             });
@@ -1487,6 +1535,43 @@ impl WorkSurfaces {
             at,
         });
     }
+}
+
+impl WorkSurfaces {
+    /// Audit a refusal made outside the surface methods (the host's
+    /// serialization refusal).
+    pub(crate) fn record_refusal(
+        &mut self,
+        kind: &str,
+        surface: &SurfaceId,
+        actor: &SurfaceActor,
+        error: &SurfaceError,
+        at: u64,
+    ) {
+        self.audit(kind, surface, None, actor, &Err::<(), _>(error.clone()), at);
+    }
+}
+
+fn check_decision(
+    surface: &SurfaceId,
+    document: &Document,
+    decided_against: u64,
+) -> Result<(), SurfaceError> {
+    let current = document.history.last().map_or(0, |e| e.revision);
+    if decided_against == current {
+        return Ok(());
+    }
+    Err(SurfaceError::StaleDecision(Box::new(StaleDecision {
+        surface: surface.clone(),
+        decided_against,
+        current,
+        missed: document
+            .history
+            .iter()
+            .filter(|e| e.revision > decided_against)
+            .cloned()
+            .collect(),
+    })))
 }
 
 const fn owner_only(actor: &SurfaceActor) -> Result<(), SurfaceError> {
@@ -1725,13 +1810,17 @@ mod tests {
 
         // Agent 1 claims against the version it saw before: stale, not a
         // double assignment.
-        assert_eq!(
-            s.claim(&r, &worker(1), "work", id, seen, T0 + 2),
+        match s.claim(&r, &worker(1), "work", id, seen, T0 + 2) {
             Err(SurfaceError::Stale {
-                seen,
-                current: seen + 1
-            })
-        );
+                seen: named,
+                current,
+                item,
+            }) => {
+                assert_eq!((named, current), (seen, seen + 1));
+                assert_eq!(item.claim.unwrap().holder, worker(2), "says what it missed");
+            }
+            other => panic!("expected a stale refusal, got {other:?}"),
+        }
         assert_eq!(last_outcome(&s), "refused:stale");
 
         // With the current version it is contended, and says by whom.
@@ -1938,6 +2027,7 @@ mod tests {
                 EditOp::Append {
                     text: "plan: ".to_owned()
                 },
+                0,
                 T0
             ),
             Ok(1)
@@ -1949,6 +2039,7 @@ mod tests {
             EditOp::Append {
                 text: "ship it".to_owned(),
             },
+            1,
             T0 + 1,
         )
         .unwrap();
@@ -1959,6 +2050,7 @@ mod tests {
             EditOp::Replace {
                 text: "plan: wait".to_owned(),
             },
+            2,
             T0 + 2,
         )
         .unwrap();
@@ -1983,14 +2075,15 @@ mod tests {
                 EditOp::Append {
                     text: "x".to_owned()
                 },
+                3,
                 T0
             ),
             Err(SurfaceError::NotPermitted)
         );
-        s.review_document(&r, &reviewer(), "notes", ReviewState::Approved, T0)
+        s.review_document(&r, &reviewer(), "notes", ReviewState::Approved, 3, T0)
             .unwrap();
         assert_eq!(
-            s.review_document(&r, &worker(1), "notes", ReviewState::Approved, T0),
+            s.review_document(&r, &worker(1), "notes", ReviewState::Approved, 3, T0),
             Err(SurfaceError::NotPermitted)
         );
         // An edit after approval returns it to draft.
@@ -2001,6 +2094,7 @@ mod tests {
             EditOp::Append {
                 text: "!".to_owned(),
             },
+            3,
             T0 + 3,
         )
         .unwrap();
@@ -2034,6 +2128,7 @@ mod tests {
             EditOp::Append {
                 text: "one".to_owned(),
             },
+            0,
             T0,
         )
         .unwrap();
@@ -2045,6 +2140,7 @@ mod tests {
                 EditOp::Replace {
                     text: "gone".to_owned()
                 },
+                1,
                 T0
             ),
             Err(SurfaceError::WrongModel)
@@ -2061,6 +2157,7 @@ mod tests {
             EditOp::Replace {
                 text: "two".to_owned(),
             },
+            1,
             T0,
         )
         .unwrap();

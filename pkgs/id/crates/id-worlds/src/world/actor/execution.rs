@@ -1956,6 +1956,7 @@ impl WorldActor {
             .ok_or(CapError::bad_args())?;
         let bytes = super::super::blob_decode(encoded).ok_or(CapError::bad_args())?;
         let hash = super::super::blob_id(&bytes);
+        self.check_blob_boundary()?;
         if let Err(error) = self.core.check_blob_put(&hash, bytes.len()) {
             tracing::debug!("world {}: blob put refused: {error:#}", self.core.world_id);
             return Err(CapError::bad_args_with(format!("{error:#}")));
@@ -1989,6 +1990,7 @@ impl WorldActor {
         if crate::world_caps::validate_blob_hash(hash).is_err() {
             return Err(CapError::bad_args());
         }
+        self.check_blob_boundary()?;
         let data = match self.core.blobs.get(hash) {
             None => serde_json::Value::Null,
             Some(bytes) => serde_json::json!(super::super::blob_encode(bytes)),
@@ -2010,6 +2012,7 @@ impl WorldActor {
         if crate::world_caps::validate_blob_hash(hash).is_err() {
             return Err(CapError::bad_args());
         }
+        self.check_blob_boundary()?;
         if !self.core.blobs.contains_key(hash) {
             return Ok(serde_json::json!({"hash": hash, "deleted": false}));
         }
@@ -2023,6 +2026,12 @@ impl WorldActor {
         }
         self.core.blobs.remove(hash);
         Ok(serde_json::json!({"hash": hash, "deleted": true}))
+    }
+
+    fn check_blob_boundary(&self) -> Result<(), CapError> {
+        self.core
+            .check_blob_boundary_for(self.acting)
+            .map_err(|error| CapError::bad_args_with(format!("{error:#}")))
     }
 
     /// `http.fetch` (#1062): a GET of an allowlisted URL. The core

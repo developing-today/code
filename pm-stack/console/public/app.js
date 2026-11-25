@@ -3032,6 +3032,26 @@ export function workerSaid(w, now = Date.now()) {
   return { text: `In service. A deploy of ${commit} is ${run.state.replace("_", " ")}, started ${when}.`, tone: "" };
 }
 
+/** One store token's line on the Platform screen: when it runs out and
+ * whether that needs looking at. Only its name and its date are ever
+ * known here, never the token. */
+export function tokenSaid(t, now = Date.now()) {
+  const day = typeof t.expiresAt === "string" ? t.expiresAt.slice(0, 10) : "";
+  const left = day ? Math.floor((Date.parse(t.expiresAt) - now) / 86_400_000) : 0;
+  switch (t.state) {
+    case "expired":
+      return { text: `Ran out on ${day}. What uses it cannot reach its store until it is rotated.`, tone: "warn" };
+    case "soon":
+      return { text: `Runs out on ${day}, in ${left <= 0 ? "less than a day" : left === 1 ? "1 day" : `${left} days`}. Rotate it before then.`, tone: "warn" };
+    case "fine":
+      return { text: `Runs out on ${day}.`, tone: "good" };
+    case "none":
+      return { text: "Carries no date: it does not run out by itself.", tone: "" };
+    default:
+      return { text: "Could not be read from here, so when it runs out is not known.", tone: "" };
+  }
+}
+
 /** The counts the Platform screen opens with. */
 export function platformCounts(workers) {
   const live = workers.filter((w) => w.state === "in service");
@@ -3049,7 +3069,12 @@ export function platformCounts(workers) {
  * how its last deploy went; and what joining the one platform means
  * for each that has not yet. */
 async function viewPlatform() {
-  const p = await api(freshly("platform"));
+  // When the store tokens run out is a machine's to read; with none
+  // reporting, the Workers still show.
+  const [p, held] = await Promise.all([
+    api(freshly("platform")),
+    api("tokens").catch((error) => ({ error: error.message })),
+  ]);
   const workers = Array.isArray(p.workers) ? p.workers : [];
   const n = platformCounts(workers);
   const repo = `https://github.com/${me.repo || "developing-today/code"}`;
@@ -3070,6 +3095,20 @@ async function viewPlatform() {
       p.malformed ? h("p", { class: "why" }, `${p.malformed} entr${p.malformed === 1 ? "y" : "ies"} in the list could not be read and ${p.malformed === 1 ? "is" : "are"} not shown.`) : null,
     ),
   ];
+  const tokens = Array.isArray(held?.tokens) ? held.tokens : [];
+  out.push(h("h2", {}, `Store tokens${tokens.length ? ` (${tokens.length})` : ""}`));
+  if (held?.error) out.push(card(h("p", { class: "why" }, `When the store tokens run out could not be read: ${held.error}`)));
+  for (const t of tokens) {
+    const s = tokenSaid(t);
+    out.push(
+      card(
+        h("div", { class: "row" }, chip(t.state === "fine" ? "in date" : t.state === "soon" ? "runs out soon" : t.state === "expired" ? "ran out" : t.state === "none" ? "no date" : "not read", s.tone)),
+        h("h3", {}, t.name),
+        h("p", { class: "meta" }, `Used by ${(t.stores || []).join(", ")}.`),
+        h("p", { class: s.tone === "warn" ? "why" : "meta" }, s.text),
+      ),
+    );
+  }
   for (const group of Object.keys(GROUP_SAID)) {
     const rows = workers.filter((w) => w.group === group);
     if (rows.length === 0) continue;
@@ -3128,6 +3167,7 @@ export function everyRead(caps, edge) {
     ...["blocked", "queued", "claimed", "parked"].map((status) => `queue?status=${status}&q=`),
     "releases",
     "platform",
+    "tokens",
     "messages?limit=15",
     "push",
     "devices",

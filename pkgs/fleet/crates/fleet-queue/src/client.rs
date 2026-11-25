@@ -64,6 +64,7 @@ pub fn run(args: &[String]) -> i32 {
     match sub {
         "validate" => cmd_validate(rest),
         "enqueue" => cmd_enqueue(rest),
+        "meta" => cmd_meta(rest),
         "list" => cmd_list(rest),
         "claim" => cmd_claim(rest),
         "release" => cmd_release(rest),
@@ -156,6 +157,19 @@ pub fn guard_rows(limit: i64) -> Result<Vec<Value>, String> {
 mod tests {
     use super::*;
     use proptest::prelude::*;
+
+    #[test]
+    fn list_marks_manual_only_rows_9178() {
+        let cells = list_row_cells(&json!({
+            "id": 7,
+            "priority": 10,
+            "status": "queued",
+            "manual_only": true,
+            "created_at": "2026-11-25T00:00:00Z",
+            "title": "manual item",
+        }));
+        assert_eq!(cells[2], "queued (manual-only)");
+    }
 
     #[test]
     fn execution_lane_split_7598() {

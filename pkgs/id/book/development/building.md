@@ -104,7 +104,7 @@ Tests run under cargo-nextest where the justfile uses it. The recipes:
 | `just test-native-shell` | `cargo nextest run -p id-native-shell`. A separate recipe because the crate is not a default member. |
 | `just test-android-remote` | `cargo test -p id-android-remote`. A separate recipe because the Android bridge is a non-default workspace member. |
 | `just test-hw-shell` | `cargo nextest run -p id-hw-shell`. Same reason. |
-| `just test-rust-examples` | `cargo test` against `examples/rust-world/Cargo.toml`, `examples/rust-counter/Cargo.toml`, `examples/rust-cells/Cargo.toml` and `examples/rust-orbit/Cargo.toml` — standalone crates outside the workspace. |
+| `just test-rust-examples` | `cargo test` against `examples/rust-world/Cargo.toml`, `examples/rust-counter/Cargo.toml`, `examples/rust-cells/Cargo.toml`, `examples/rust-orbit/Cargo.toml` and `examples/rust-colony/Cargo.toml` — standalone crates outside the workspace. |
 | `just test-integration` | `cargo nextest run --all-features --test cli_integration`. Alias: `test-int`. |
 | `just test-web-unit` | `cd web && bun run test` (Vitest), then the build-manifest shell test. |
 | `just test-web-typecheck` | `cd web && bun run typecheck` (`tsc --noEmit`). |
