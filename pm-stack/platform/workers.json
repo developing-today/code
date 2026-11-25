@@ -191,11 +191,11 @@
       "path": "infra/github-backup/rehost/worker",
       "does": "Serves read-only git clones of the four fleet repos from the backup copy in R2, so the code can still be cloned when GitHub and the backup laptop are both down.",
       "state": "in service",
-      "deploy": "by hand",
-      "workflow": null,
+      "deploy": "actions",
+      "workflow": "cf-worker-versions-release.yml",
       "address": "https://git.security.cab",
       "next": "Deployed by hand with its deploy.sh; the backup laptop's publisher refreshes what it serves (#8584).",
-      "lastDeployedCommit": null
+      "lastDeployedCommit": "df6651ee1a2f6dc4468f945872705af8e4dc9d65"
     },
     {
       "name": "pkarr",
