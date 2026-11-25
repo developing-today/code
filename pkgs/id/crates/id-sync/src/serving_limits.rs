@@ -50,8 +50,14 @@
 //! Keys are opaque strings — share id, owner id, and reader
 //! identity-or-address — so this core does not depend on the grants
 //! model's types, which land with #14780.
+//!
+//! This is the one canonical serving-limits core: #14841
+//! consolidated the duplicate `id-caps::public_share_limits` into
+//! this module, and the resolution of every divergence between the
+//! two is recorded on that issue.
 
 use std::collections::HashMap;
+use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
@@ -60,8 +66,11 @@ use serde::{Deserialize, Serialize};
 pub const DEFAULT_MAX_OBJECTS_PER_FETCH: u64 = 10_000;
 
 /// V1 default snapshot byte cap per reader fetch (#5802 D3 item 4:
-/// 100 MB). Configuration, not an invariant.
-pub const DEFAULT_MAX_BYTES_PER_FETCH: u64 = 100 * 1024 * 1024;
+/// 100 MB). Configuration, not an invariant. The record writes the
+/// unit as MB without fixing decimal vs binary; #14841 resolved it
+/// as decimal — the plain reading of the record's unit, and the
+/// reading its companion figure (10,000 objects) already uses.
+pub const DEFAULT_MAX_BYTES_PER_FETCH: u64 = 100 * 1000 * 1000;
 
 /// V1 default per-share request-rate cap (#5802 D3 item 4: 60
 /// requests/minute per reader identity-or-address). Configuration,
@@ -140,6 +149,73 @@ pub struct OwnerAggregateLimits {
     /// Maximum fetches in flight at once across all of the owner's
     /// shares.
     pub max_concurrent_fetches: u32,
+}
+
+/// Why a limits configuration was refused. Ported from the
+/// consolidated `id-caps::public_share_limits` (#14841): a zero
+/// limit would disable serving rather than limit it, so
+/// configuration boundaries validate and refuse it by name. (The
+/// duplicate's above-ceiling refusal was NOT ported: owner tuning
+/// above a platform ceiling is clamped by
+/// [`ShareServingLimits::effective`], per the #14841 resolution.)
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LimitsError {
+    /// A limit is zero, which would disable serving rather than
+    /// limit it. The payload names the offending field.
+    Zero(&'static str),
+}
+
+impl fmt::Display for LimitsError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Zero(field) => write!(f, "{field} must be nonzero"),
+        }
+    }
+}
+
+impl std::error::Error for LimitsError {}
+
+impl ShareServingLimits {
+    /// Check that every limit is nonzero.
+    ///
+    /// # Errors
+    ///
+    /// [`LimitsError::Zero`] naming the first zero limit.
+    pub const fn validate(&self) -> Result<(), LimitsError> {
+        if self.max_objects_per_fetch == 0 {
+            return Err(LimitsError::Zero("max_objects_per_fetch"));
+        }
+        if self.max_bytes_per_fetch == 0 {
+            return Err(LimitsError::Zero("max_bytes_per_fetch"));
+        }
+        if self.max_requests_per_minute == 0 {
+            return Err(LimitsError::Zero("max_requests_per_minute"));
+        }
+        Ok(())
+    }
+}
+
+impl OwnerAggregateLimits {
+    /// Check that every limit is nonzero.
+    ///
+    /// # Errors
+    ///
+    /// [`LimitsError::Zero`] naming the first zero limit.
+    pub const fn validate(&self) -> Result<(), LimitsError> {
+        if self.max_objects_per_window == 0 {
+            return Err(LimitsError::Zero("max_objects_per_window"));
+        }
+        if self.max_bytes_per_window == 0 {
+            return Err(LimitsError::Zero("max_bytes_per_window"));
+        }
+        if self.window_ms == 0 {
+            return Err(LimitsError::Zero("window_ms"));
+        }
+        if self.max_concurrent_fetches == 0 {
+            return Err(LimitsError::Zero("max_concurrent_fetches"));
+        }
+        Ok(())
+    }
 }
 
 /// Which per-share snapshot cap stopped a fetch. The serde names are
@@ -556,8 +632,30 @@ mod tests {
     fn v1_defaults_are_the_records_numbers() {
         let d = ShareServingLimits::v1_defaults();
         assert_eq!(d.max_objects_per_fetch, 10_000);
-        assert_eq!(d.max_bytes_per_fetch, 100 * 1024 * 1024);
+        assert_eq!(d.max_bytes_per_fetch, 100_000_000);
         assert_eq!(d.max_requests_per_minute, 60);
+    }
+
+    #[test]
+    fn zero_limits_are_refused_by_name() {
+        // Ported from the consolidated id-caps core (#14841): a zero
+        // limit disables serving rather than limiting it, so it is
+        // refused by name at configuration boundaries.
+        assert_eq!(ShareServingLimits::v1_defaults().validate(), Ok(()));
+        let zero_objects = ShareServingLimits {
+            max_objects_per_fetch: 0,
+            ..ShareServingLimits::v1_defaults()
+        };
+        assert_eq!(
+            zero_objects.validate(),
+            Err(LimitsError::Zero("max_objects_per_fetch"))
+        );
+        assert_eq!(owner_limits(1, 1, 1).validate(), Ok(()));
+        let zero_window = OwnerAggregateLimits {
+            window_ms: 0,
+            ..owner_limits(1, 1, 1)
+        };
+        assert_eq!(zero_window.validate(), Err(LimitsError::Zero("window_ms")));
     }
 
     #[test]
