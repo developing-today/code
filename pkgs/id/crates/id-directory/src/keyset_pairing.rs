@@ -668,7 +668,10 @@ mod tests {
 
     #[test]
     fn revoking_an_unknown_device_is_refused_and_writes_nothing() {
-        let (_dir, mut file) = migrated();
+        let (dir, mut file) = migrated();
+        // Oracle: the append API refuses changes that cannot fold, and
+        // neither the in-memory log nor its persisted bytes may change.
+        let before = std::fs::read(dir.path().join("keyset.jsonl")).unwrap();
         let count = file.records().count();
         let error = file
             .revoke_scanned(
@@ -677,8 +680,12 @@ mod tests {
                 "unknown",
             )
             .unwrap_err();
-        assert!(error.to_string().contains("unknown"), "{error:#}");
+        assert!(error.to_string().contains("refused"), "{error:#}");
         assert_eq!(file.records().count(), count);
+        assert_eq!(
+            std::fs::read(dir.path().join("keyset.jsonl")).unwrap(),
+            before
+        );
     }
 
     #[test]
