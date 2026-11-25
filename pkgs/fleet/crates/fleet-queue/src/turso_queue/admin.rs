@@ -1494,6 +1494,7 @@ pub(crate) fn verb_list(t: &TursoBackend, req: &Value) -> Value {
             args.push(Arg::Text(format!("$.\"{key}\"")));
             args.push(Arg::Text(encoded));
         }
+    }
     // #14170 Q5: --label narrows to tasks whose cached label set
     // holds that label; a trailing `*` matches a prefix (`user/*`).
     // The cache is refreshed at every transition and by the hourly
