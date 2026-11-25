@@ -204,7 +204,22 @@ struct Harness {
     provider_pubkey: RsaPublicKey,
 }
 
+/// The pre-drill (production-shaped) allowlist: only the owner's
+/// own door identities. The H7 drill must end with exactly this
+/// list in force.
+fn baseline_allowlist() -> Vec<String> {
+    vec![
+        "devtoday-local:drew".to_string(),
+        format!("google:{GOOGLE_SUB}"),
+        format!("github:{GITHUB_ID}"),
+    ]
+}
+
 async fn harness() -> Harness {
+    harness_with_allowlist(baseline_allowlist()).await
+}
+
+async fn harness_with_allowlist(allowlist: Vec<String>) -> Harness {
     let mut rng = OsRng;
     // Mock upstream first (its port feeds the door config).
     let mock_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
@@ -262,11 +277,7 @@ async fn harness() -> Harness {
             }],
             local_credential_hash: credential_hash,
         },
-        allowlist: vec![
-            "devtoday-local:drew".to_string(),
-            format!("google:{GOOGLE_SUB}"),
-            format!("github:{GITHUB_ID}"),
-        ],
+        allowlist,
         clients: vec![Client {
             client_id: CLIENT_ID.to_string(),
             name: "Test RP".to_string(),
@@ -758,6 +769,86 @@ async fn door_state_handle_is_single_use() {
         "denied",
         "unknown_or_expired_state",
         ""
+    ));
+}
+
+// ---------------- H7 gate-relaxation drill (#14265) ----------------
+
+/// H7 drill (child of #9086, design §4.4 + §5 slice H7): dry-run
+/// the gate relaxation — add a test enrollment, verify what the
+/// enrolled identity gets, remove it — against throwaway provider
+/// configs/stores only. Production policy is never touched: each
+/// step builds its own harness, and the drill ends with the
+/// baseline allowlist in force and the test identity denied.
+///
+/// Oracle: design §4.4 — the gate is deny-by-default, relaxation
+/// is a data change (allowlist entries), and a newly enrolled
+/// account with only `read-only` on no tenant can do nothing
+/// until granted. The middle assertion records where the current
+/// provider departs from that oracle (see the runbook in
+/// `doc/2026-11-25T20-55-00Z_runbook_h7-gate-relaxation-drill/`).
+#[tokio::test]
+async fn h7_gate_relaxation_drill_add_verify_remove() {
+    const TEST_SUB: &str = "h7-drill-test-subject";
+    let test_key = format!("google:{TEST_SUB}");
+
+    // Step 0 — pre-drill state: the test identity is not enrolled,
+    // is denied at the gate (audited), and leaves no identity row.
+    let h = harness_with_allowlist(baseline_allowlist()).await;
+    *h.mock.subject.lock().unwrap() = TEST_SUB.to_string();
+    let resp = drive_door(&h, "google").await;
+    assert_eq!(resp.status(), 403, "pre-drill: test identity denied");
+    assert!(audit_has(
+        &h,
+        "door/google",
+        "denied",
+        "not_allowlisted",
+        &test_key
+    ));
+    assert_eq!(h.identities.status("google", TEST_SUB).unwrap(), None);
+    drop(h);
+
+    // Step 1 — add the test enrollment: one allowlist entry, the
+    // §4.4 relaxation as a pure data change (no redeploy).
+    let mut relaxed = baseline_allowlist();
+    relaxed.push(test_key.clone());
+    let h = harness_with_allowlist(relaxed).await;
+    *h.mock.subject.lock().unwrap() = TEST_SUB.to_string();
+    let resp = drive_door(&h, "google").await;
+    assert_eq!(resp.status(), 302, "drill: enrolled test identity logs in");
+    let claims = exchange_and_verify(&h, &location(&resp)).await;
+    // Observed gate behaviour: the provider holds ONE account, so
+    // the newly enrolled identity links to that account and
+    // carries the account's full role set. There is no fresh
+    // read-only-on-no-tenant account for it to land on, so an
+    // allowlist entry is only safe for the owner's own door
+    // identities until multi-account enrollment exists. This is
+    // the drill's finding, filed as its own issue from #14265.
+    assert_eq!(
+        claims["sub"], "drew",
+        "enrolled identity lands on the single account"
+    );
+    assert_eq!(
+        claims["roles"],
+        serde_json::json!(ROLES),
+        "enrolled identity carries the account role set"
+    );
+    assert!(h.identities.is_active("google", TEST_SUB));
+    drop(h);
+
+    // Step 2 — remove the test enrollment: the baseline allowlist
+    // is in force again and the same identity is denied, audited,
+    // exactly as in the pre-drill state.
+    let h = harness_with_allowlist(baseline_allowlist()).await;
+    *h.mock.subject.lock().unwrap() = TEST_SUB.to_string();
+    let resp = drive_door(&h, "google").await;
+    assert_eq!(resp.status(), 403, "post-drill: test identity denied again");
+    assert!(audit_has(
+        &h,
+        "door/google",
+        "denied",
+        "not_allowlisted",
+        &test_key
     ));
 }
 
