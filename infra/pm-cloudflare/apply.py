@@ -151,6 +151,13 @@ def apply(state: dict, check: bool) -> list[str]:
         for key in ("github_token_env", "queue_token_env"):
             if not env(worker[key]):
                 raise SystemExit(f"secret {worker[key]} (a Worker token) is not readable here")
+    google_id = env(state["access"]["google_client_id_env"])
+    google_secret = env(state["access"]["google_client_secret_env"])
+    if bool(google_id) != bool(google_secret):
+        raise SystemExit("Google sign-in needs both client credentials or neither")
+    # An empty pair preserves any existing Google provider. Passing a tuple
+    # prevents expose.py from trying the laptop's secret store in Actions.
+    google = (google_id, google_secret)
     cf = expose.Cloudflare(token, check)
     accounts = cf.get("/accounts?per_page=5")
     if len(accounts) != 1:
@@ -161,11 +168,6 @@ def apply(state: dict, check: bool) -> list[str]:
         raise SystemExit(f"state tunnel is {state['tunnel']}; expose.py manages {expose.TUNNEL}: renaming the tunnel is its own change")
     if state["worker"]["name"] != expose.WORKER:
         raise SystemExit(f"state Worker is {state['worker']['name']}; expose.py routes {expose.WORKER}: moving the hostname is its own change")
-    google_id = env(state["access"]["google_client_id_env"])
-    google_secret = env(state["access"]["google_client_secret_env"])
-    # A pair, even when empty: ensure_idps reads the secret store
-    # itself for a None, and there is no secret store in Actions.
-    google = (google_id, google_secret)
 
     # Order matters, as in expose.py: the sign-in gate is put in place
     # first and the route last, so the origin is never reachable
