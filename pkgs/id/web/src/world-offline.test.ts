@@ -146,7 +146,7 @@ describe("world page offline read model (#10927)", () => {
   const realWebSocket = globalThis.WebSocket;
   const realResizeObserver = globalThis.ResizeObserver;
   const realServiceWorker = Object.getOwnPropertyDescriptor(navigator, "serviceWorker");
-  const serviceWorker = new FakeServiceWorkerContainer();
+  let serviceWorker = new FakeServiceWorkerContainer();
   let root: HTMLElement;
   const q = <T extends HTMLElement>(selector: string): T => {
     const found = root.querySelector<T>(selector);
@@ -212,6 +212,8 @@ describe("world page offline read model (#10927)", () => {
     // page is offline and must read from the store alone.
     vi.resetModules();
     FakeSocket.all.length = 0;
+    serviceWorker = new FakeServiceWorkerContainer();
+    Object.defineProperty(navigator, "serviceWorker", { configurable: true, value: serviceWorker });
     sessionStorage.clear();
     document.body.innerHTML = worldPageMarkup();
     await import("./world");
@@ -253,7 +255,7 @@ describe("world page offline read model (#10927)", () => {
     previous.deliver({ type: "view", data: "old host view" });
     previous.deliver({ type: "records", records: { note: "old projection" }, next_after: null });
 
-    serviceWorker.notify({ type: "client.notify", head: 5 });
+    serviceWorker.notify({ type: "client.notify", head: 5, content: "must not be trusted or rendered" });
     await vi.waitFor(() => expect(FakeSocket.all.length).toBeGreaterThan(1));
     const resumed = FakeSocket.all.at(-1) as FakeSocket;
     resumed.open();
@@ -274,5 +276,6 @@ describe("world page offline read model (#10927)", () => {
     expect(q("[data-world-view]").textContent).toContain("new host view");
     expect(q("[data-world-records]").textContent).toContain("new projection");
     expect(q("[data-world-records]").textContent).not.toContain("old projection");
+    expect(document.body.textContent).not.toContain("must not be trusted or rendered");
   });
 });
