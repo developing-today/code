@@ -714,7 +714,7 @@ mod tests {
             after.appeal_decisions.entries[0].action,
             TransparencyAction::AppealDecided {
                 sequence: logged.sequence,
-                appeal_id: appeal.id.clone(),
+                appeal_id: appeal.id,
                 contested: contested.clone(),
                 moderator: hex_of(&moderator),
                 decision: ClosureDecision::Actioned,
