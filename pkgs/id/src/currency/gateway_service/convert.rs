@@ -95,7 +95,8 @@ use crate::currency::conversion::{
     PresentedObject,
 };
 use crate::currency::gateway::{
-    Authorized, Convert, CurrencyOp, GatewayError, authorize, idempotency_id, verify_envelope,
+    Authorized, Convert, CurrencyOp, DeviceResolver, GatewayError, authorize, idempotency_id,
+    verify_envelope,
 };
 use crate::currency::gateway_poc::{RegistryView, SignedReceipt, sign_receipt_with};
 use crate::currency_poc::ledger::{LedgerBackend, TransferError};

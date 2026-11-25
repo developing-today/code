@@ -475,13 +475,8 @@ fn refusals_write_no_intent_and_move_nothing() {
     let mut reverse = auth.clone();
     reverse.source_ledger = auth.dest_ledger.clone();
     reverse.dest_ledger = auth.source_ledger.clone();
-    let error = convert(
-        &mut fx,
-        10,
-        1_000,
-        &present(&fx.euro_issuer, &reverse, None),
-    )
-    .expect_err("wrong pair");
+    let reversed = present(&fx.euro_issuer, &reverse, None);
+    let error = convert(&mut fx, 10, 1_000, &reversed).expect_err("wrong pair");
     assert!(
         matches!(
             error,
@@ -499,13 +494,8 @@ fn refusals_write_no_intent_and_move_nothing() {
     assert!(matches!(error, ServiceError::Conversion(_)), "{error:?}");
 
     // A quote this gateway never issued.
-    let error = convert(
-        &mut fx,
-        12,
-        1_000,
-        &present(&fx.euro_issuer, &auth, Some(99)),
-    )
-    .expect_err("unknown quote");
+    let unquoted = present(&fx.euro_issuer, &auth, Some(99));
+    let error = convert(&mut fx, 12, 1_000, &unquoted).expect_err("unknown quote");
     assert!(
         matches!(
             error,
