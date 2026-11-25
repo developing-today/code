@@ -182,9 +182,26 @@ mod android_jni;
 mod tests {
     #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
+    use std::net::SocketAddr;
+
+    use iroh::{EndpointAddr, EndpointId, TransportAddr};
     use serde_json::json;
 
-    use super::{RemoteView, parse_view_frame};
+    use super::{RemoteView, parse_endpoint_addr, parse_view_frame};
+
+    #[test]
+    fn compact_node_and_socket_address_parses_to_direct_endpoint_address() {
+        let node_id_text = "01".repeat(32);
+        let node_id: EndpointId = node_id_text.parse().expect("valid endpoint ID");
+        let socket_addr: SocketAddr = "127.0.0.1:40123".parse().expect("valid socket address");
+        let expected = EndpointAddr::from_parts(node_id, [TransportAddr::Ip(socket_addr)]);
+
+        assert_eq!(
+            parse_endpoint_addr(&format!("{node_id_text}@{socket_addr}"))
+                .expect("compact direct address parses"),
+            expected
+        );
+    }
 
     #[test]
     fn shell_contract_view_frame_yields_the_host_text_projection() {
