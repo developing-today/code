@@ -180,6 +180,7 @@ test("schema: an existing queue database gains manual_only with an automatic def
       title: null,
       body: null,
       payload: {},
+      metadata: {},
       dedupe_key: null,
       priority: null,
       status: "queued",
