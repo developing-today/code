@@ -41,6 +41,10 @@ def make_source(path, events_rows, with_extra=True):
     if os.path.exists(path):
         os.unlink(path)
     db = sqlite3.connect(path)
+    # WAL like the live sources: the snapshot inherits the journal
+    # mode, and its -wal/-shm sidecars must not break the run's
+    # staging cleanup (the first live run failed exactly there).
+    db.execute("PRAGMA journal_mode=WAL")
     db.execute("CREATE TABLE events (id INTEGER PRIMARY KEY, kind TEXT, payload BLOB, score REAL)")
     db.execute("CREATE INDEX events_kind ON events (kind)")
     db.execute("CREATE TABLE snapshots (id INTEGER PRIMARY KEY, note TEXT)")

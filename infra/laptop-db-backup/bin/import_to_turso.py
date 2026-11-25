@@ -47,6 +47,7 @@ import argparse
 import json
 import os
 import re
+import shutil
 import sqlite3
 import sys
 import tempfile
@@ -395,8 +396,12 @@ def run_import(source_path, home, home_name):
         finally:
             snap.close()
     finally:
-        os.unlink(snap_path)
-        os.rmdir(staging_dir)
+        # The snapshot inherits the source's WAL journal mode, so its
+        # -wal/-shm sidecars outlive the read-only connection that
+        # read it; remove the whole staging dir, never just the file
+        # (first live run, #13474: rmdir failed "Directory not empty"
+        # after staging verified, before the swap).
+        shutil.rmtree(staging_dir, ignore_errors=True)
     record = {
         "import_id": uuid.uuid4().hex,
         "imported_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
