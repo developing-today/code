@@ -814,3 +814,36 @@ fn test_native_redb_oracle_partial_fork_preserves_committed_rows() {
     let mut txn = TenantWrite::begin(&mut tenant).unwrap();
     check_retained_fork(&mut txn, &events);
 }
+
+/// The native EventStore is the oracle: the tenant-backed public backend must
+/// expose the same applied result and observable read/sync surface for the same
+/// signed event.
+#[test]
+fn tenant_event_store_matches_native_backend_for_applied_message() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut native = EventStore::open(dir.path(), Default::default(), 0).unwrap();
+    let mut tenant =
+        TenantEventStore::open_tenant(SqliteEndpoint::new(), Default::default(), 0).unwrap();
+    let signed = event("message", None);
+    let author = *signed.header.verifying_key.as_bytes();
+
+    let native_ingest = native.ingest_events(vec![signed.clone()], 1).unwrap();
+    let tenant_ingest = tenant.ingest_events(vec![signed.clone()], 1).unwrap();
+    assert_eq!(tenant_ingest, native_ingest, "native redb is the oracle");
+    assert_eq!(tenant.chain(&author).unwrap(), native.chain(&author).unwrap());
+    assert_eq!(
+        tenant.event_by_id(&signed.id).unwrap(),
+        native.event_by_id(&signed.id).unwrap()
+    );
+    assert_eq!(
+        tenant.applied_events(&author, None, None, 8).unwrap(),
+        native.applied_events(&author, None, None, 8).unwrap()
+    );
+    assert_eq!(tenant.sync_entries().unwrap(), native.sync_entries().unwrap());
+    assert_eq!(
+        tenant.sync_bytes(&signed.id).unwrap(),
+        native.sync_bytes(&signed.id).unwrap()
+    );
+    tenant.check_invariants().unwrap();
+    native.check_invariants().unwrap();
+}
