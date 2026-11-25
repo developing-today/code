@@ -22,10 +22,12 @@
 //!   [`ThemeAdjustment`]s surfaces can display.
 //!
 //! The schema splits from #5858 (split 1: `Post::theme_ref`,
-//! `Board::foreign_theme_mode`) have not landed: the cascade accepts an
-//! optional post-theme input and a local [`ForeignThemeMode`] (default
-//! [`ForeignThemeMode::Honor`]) so precedence is implemented and tested
-//! before the schema arrives. Suppression of a board theme by the host
+//! `Board::foreign_theme_mode`) have landed on the records: the cascade
+//! takes the post theme already resolved from its `theme_ref` through
+//! the graph (see [`resolve_post_theme`]) and the foreign-theme mode
+//! from the board's stored field (see [`CascadeInputs::for_records`]),
+//! defaulting to [`ForeignThemeMode::Honor`] for older bodies.
+//! Suppression of a board theme by the host
 //! and personal view layers stays in [`BoardGraph::compose_view`]; this
 //! module renders the theme that projection returned.
 //!
@@ -40,7 +42,7 @@ use std::fmt::Write as _;
 
 use sha2::{Digest, Sha256};
 
-use super::{ArtifactHash, Theme, ThemeLayout};
+use super::{ArtifactHash, Board, ForeignThemeMode, Post, Theme, ThemeLayout};
 
 /// A theme-settable reserved role and the grammar its values must parse
 /// as at render (#5858 Decisions 2–3). Roles outside this list are
@@ -312,23 +314,6 @@ fn accessibility_tokens(overrides: &AccessibilityOverrides) -> BTreeMap<String, 
     tokens
 }
 
-/// How a receiving board treats post themes (#5858 Decision 4). Local
-/// to this module until the schema split lands `foreign_theme_mode`
-/// on the board root; the default is `Honor`.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum ForeignThemeMode {
-    /// Post themes enter the cascade at layer 3 in full (tokens;
-    /// layout still follows the scoping rule).
-    #[default]
-    Honor,
-    /// Post themes contribute only non-colour roles (type, spacing,
-    /// density); colour roles resolve from the board layer down.
-    TokensOnly,
-    /// Post themes do not enter the cascade; every post renders in
-    /// the board theme.
-    Flatten,
-}
-
 /// Inputs to the per-token cascade for one board render.
 #[derive(Clone, Debug, Default)]
 pub struct CascadeInputs<'a> {
@@ -344,6 +329,44 @@ pub struct CascadeInputs<'a> {
     pub viewer_preferences: BTreeMap<String, String>,
     /// The viewer's accessibility overrides (top layer).
     pub accessibility: AccessibilityOverrides,
+}
+
+impl<'a> CascadeInputs<'a> {
+    /// Cascade inputs for a board render from stored records: the
+    /// board's theme and the post's theme (each already resolved from
+    /// its `*_ref` through the graph), with the foreign-theme mode
+    /// taken from the board's stored [`Board::foreign_theme_mode`]
+    /// instead of the local default — older board bodies without the
+    /// field render as `Honor`, the pre-split behaviour.
+    #[must_use]
+    pub fn for_records(
+        board: &Board,
+        board_theme: Option<&'a Theme>,
+        post_theme: Option<&'a Theme>,
+        viewer_preferences: BTreeMap<String, String>,
+        accessibility: AccessibilityOverrides,
+    ) -> Self {
+        Self {
+            board_theme,
+            post_theme,
+            foreign_mode: board.foreign_mode(),
+            viewer_preferences,
+            accessibility,
+        }
+    }
+}
+
+/// Resolve a post's stored [`Post::theme_ref`] through a
+/// caller-supplied theme store: `None` when the post names no theme
+/// or the store does not hold it, so the cascade skips layer 3 with
+/// one labelled step — the render never fails for an unresolvable
+/// post theme.
+#[must_use]
+pub fn resolve_post_theme(
+    post: &Post,
+    fetch: &dyn Fn(&ArtifactHash) -> Option<Theme>,
+) -> Option<Theme> {
+    post.theme_ref.as_ref().and_then(fetch)
 }
 
 /// One labelled degradation step (#5858 Decision 4): a missing theme
@@ -1026,6 +1049,75 @@ mod render_tests {
             ForeignThemeMode::Flatten,
         ));
         assert_eq!(resolved.tokens["accent"], "#111111");
+    }
+
+    fn record_board(foreign_theme_mode: Option<ForeignThemeMode>) -> Board {
+        Board {
+            board_id: "club".to_owned(),
+            forked_from: None,
+            theme_ref: None,
+            foreign_theme_mode,
+        }
+    }
+
+    fn record_post(theme_ref: Option<ArtifactHash>) -> Post {
+        Post {
+            board: ArtifactHash::new("a".repeat(64)).unwrap(),
+            thread: ArtifactHash::new("b".repeat(64)).unwrap(),
+            parent_post: None,
+            body: "post".to_owned(),
+            attachments: Vec::new(),
+            embed_ref: None,
+            note_ref: None,
+            note_anchor: None,
+            note_view: None,
+            theme_ref,
+        }
+    }
+
+    #[test]
+    fn cascade_inputs_take_the_mode_from_the_stored_board_record() {
+        let board_theme = theme(&[("accent", "#111111")], ThemeLayout::List);
+        let post_theme = theme(&[("accent", "#222222")], ThemeLayout::Grid);
+
+        // Stored Flatten flattens the post theme through the constructor.
+        let flat_board = record_board(Some(ForeignThemeMode::Flatten));
+        let resolved = resolve_board_theme(&CascadeInputs::for_records(
+            &flat_board,
+            Some(&board_theme),
+            Some(&post_theme),
+            BTreeMap::new(),
+            AccessibilityOverrides::default(),
+        ));
+        assert_eq!(resolved.tokens["accent"], "#111111");
+
+        // A legacy board body without the field renders as Honor.
+        let legacy_board = record_board(None);
+        let resolved = resolve_board_theme(&CascadeInputs::for_records(
+            &legacy_board,
+            Some(&board_theme),
+            Some(&post_theme),
+            BTreeMap::new(),
+            AccessibilityOverrides::default(),
+        ));
+        assert_eq!(resolved.tokens["accent"], "#222222");
+    }
+
+    #[test]
+    fn resolve_post_theme_uses_the_store_or_skips_layer_three() {
+        let post_theme = theme(&[("accent", "#222222")], ThemeLayout::Grid);
+        let stored = post_theme.clone();
+        let post = record_post(Some(ArtifactHash::new("c".repeat(64)).unwrap()));
+
+        let fetched = resolve_post_theme(&post, &|_| Some(stored.clone())).unwrap();
+        assert_eq!(fetched, post_theme);
+
+        // A ref the store does not hold skips layer 3 instead of failing.
+        assert!(resolve_post_theme(&post, &|_| None).is_none());
+
+        // A post with no ref names no theme.
+        let ref_free = record_post(None);
+        assert!(resolve_post_theme(&ref_free, &|_| Some(stored.clone())).is_none());
     }
 
     #[test]

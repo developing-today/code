@@ -103,6 +103,7 @@ in
       "${acpxPlugin}/node_modules/@agentclientprotocol/codex-acp/dist/index.js";
     ".openclaw/acpx/managed-codex-acp-wrapper.mjs".source = ./acpx/codex-acp-wrapper.mjs;
     ".openclaw/acpx/managed-muse-agent-acp-wrapper.mjs".source = ./acpx/muse-agent-acp-wrapper.mjs;
+    ".openclaw/acpx/home-dir.mjs".source = ./acpx/home-dir.mjs;
   };
   home.file.".acpx/config.json".text = builtins.toJSON {
     agents = {
