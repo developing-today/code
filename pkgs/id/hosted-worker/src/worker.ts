@@ -13,7 +13,7 @@
 
 import { FailClosed, parseBindingId, parseJurisdiction, userStub, type ObjectNamespaceLike } from "./routing.ts";
 import { PersistentHostedAccountDirectory, type HostedDirectoryDatabase } from "./persistent-account-directory.ts";
-import { HDR_BINDING, HDR_IROH, HDR_JURISDICTION, HDR_ROUTED, bodyTooLarge, requestBodyLimit } from "./user-do.ts";
+import { HDR_BINDING, HDR_CSE, HDR_IROH, HDR_JURISDICTION, HDR_ROUTED, bodyTooLarge, requestBodyLimit } from "./user-do.ts";
 
 export { UserDO } from "./user-do.ts";
 // The tenancy control plane's per-tenant operations object (E2 of
@@ -107,6 +107,16 @@ export default {
       headers.delete("x-iroh-id");
       headers.delete(HDR_IROH);
       if (irohId !== null) headers.set(HDR_IROH, irohId);
+      // The binding's client-side-encryption choice (§7 of the
+      // #2258 spec): consumed from the internal caller like the
+      // ID key — the binding record is its source — stripped of
+      // any client-supplied copy under either name, and re-set
+      // as an internal header. Absent stays absent; the DO binds
+      // its persisted default and fails closed on disagreement.
+      const cse = req.headers.get("x-client-side-encryption");
+      headers.delete("x-client-side-encryption");
+      headers.delete(HDR_CSE);
+      if (cse !== null) headers.set(HDR_CSE, cse);
       headers.set(HDR_BINDING, bindingId);
       headers.set(HDR_JURISDICTION, jurisdiction);
       headers.set(HDR_ROUTED, "restricted");

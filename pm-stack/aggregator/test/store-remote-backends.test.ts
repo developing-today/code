@@ -402,6 +402,7 @@ describe("remote store row mapping", () => {
     const remote = createTursoActionsRemote(async () => rec.client);
     const first: DashAction = {
       id: "da-1",
+      clientToken: "ct-4-abcdefgh",
       kind: "triage",
       verb: "acknowledge",
       objectRef: "orch:item-1",
@@ -410,7 +411,7 @@ describe("remote store row mapping", () => {
       createdAt: "2026-11-01T00:00:00.000Z",
       state: "new",
     };
-    const second: DashAction = { ...first, id: "da-2", createdAt: "2026-11-01T01:00:00.000Z" };
+    const second: DashAction = { ...first, id: "da-2", clientToken: "ct-5-abcdefgh", createdAt: "2026-11-01T01:00:00.000Z" };
     await remote.saveAll([first, second]);
     expect(rec.seen).toHaveLength(1);
     expect(rec.seen[0].match(/\('da-/g)).toHaveLength(2);

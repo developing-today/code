@@ -4930,6 +4930,48 @@ mod tests {
     }
 
     #[test]
+    fn release_platform_limit_contract_14993() {
+        // Oracle (#14993): a release can record a platform
+        // limitation -- the route-mismatch hand-back -- so the
+        // claim pick stops offering the task to seats of the wrong
+        // family (the five redraws of laptop-routed task 23528).
+        // verb_release validates the pair with the lane verb's own
+        // validator before anything mutates, writes it to the lane
+        // ledger the pick clause reads (upserting a minimal row
+        // when the claim never created one), records it on the
+        // `released` event, and the client passes both flags
+        // through under the lane verb's field names.
+        let src = &test_source();
+        let seg = seg8217(
+            src,
+            "pub(crate) fn verb_release(",
+            "\npub(crate) fn verb_wake(",
+        );
+        for needle in [
+            "platform_limit_error(limit_platform.as_deref(), limit_reason.as_deref())",
+            "UPDATE repo_task_lane_ledger SET platform_limit = ?",
+            "INSERT INTO repo_task_lane_ledger",
+            "\"platform_limit\": limit_family",
+            "\"platform_limit_reason\": limit_reason",
+        ] {
+            assert!(seg.contains(needle), "verb_release misses {needle}");
+        }
+        let client_src = [
+            include_str!("client/support.rs"),
+            include_str!("client/commands_lifecycle.rs"),
+        ]
+        .concat();
+        assert!(
+            client_src.contains("\"platform_limit\": args.get(\"limit-platform\")"),
+            "the release client passes --limit-platform through"
+        );
+        assert!(
+            client_src.contains("\"platform_limit_reason\": args.get(\"limit-reason\")"),
+            "the release client passes --limit-reason through"
+        );
+    }
+
+    #[test]
     fn one_queue_filter_parse_and_compile_8097() {
         // The designated lanes' expressions parse and compile:
         // not-code is `repo != code`; code-only is `repo = code`.

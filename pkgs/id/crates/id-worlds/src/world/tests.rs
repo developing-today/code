@@ -9333,6 +9333,69 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn failover_measurements_match_the_q2_design_bounds() {
+        // Q2 measurements (design #5787 Q2, #7572): the §7
+        // holder-death walkthrough on the authority clock with the
+        // standing defaults (30 s term, 10 s renewal), measuring
+        // detection, grant, and replay-to-ready instead of only the
+        // outcome. The clock starts at 1_000; the holder's term is
+        // stamped to expire at 31_000 and the holder dies at the
+        // stamp — the worst case for detection.
+        let w = lease_world().await;
+        w.handle
+            .handoff_write_lease("native-1", 1, Some(31_000))
+            .await
+            .unwrap();
+
+        // native-2 has served as a reader at the tip for the full
+        // observation window; the grantor's tip for this grant is 2.
+        let mut pool = spill_pool::SpillPool::default();
+        pool.configure("native-2");
+        for cycle in 0..u64::from(spill_pool::READER_OBSERVATION_CYCLES) {
+            assert!(pool.observe("native-2", cycle, true, true, true, 2, 2, 0, 0));
+        }
+
+        // Detection: one millisecond before expiry the failover is
+        // still refused — no fence can exist before the term lapses,
+        // and the refused attempt journals nothing (the successful
+        // failover below still lands at positions 2 and 3). At
+        // expiry it proceeds. Measured detection latency for a death
+        // at the stamp: 31_000 - 1_000 = 30_000 ms — exactly one
+        // term, the design's stated worst-case bound.
+        w.clock.advance(29_999);
+        assert!(
+            w.handle
+                .failover_write_lease(pool.clone(), 2, 0, 30_000)
+                .await
+                .is_err()
+        );
+        w.clock.advance(1);
+        let execution = w
+            .handle
+            .failover_write_lease(pool, 2, 0, 30_000)
+            .await
+            .unwrap();
+
+        // Grant: the fence and the grant are two consecutive journal
+        // appends (positions 2 and 3) — the grant lands one append
+        // after the fence, at the same authority instant.
+        assert_eq!(execution.entries().len(), 2);
+        assert_eq!(execution.grant_position(), 3);
+        assert_eq!(execution.grant_epoch(), 3);
+
+        // Replay-to-ready: the caught-up successor, observed at
+        // position 2, replays exactly one entry — far less than a
+        // cold replay — before it may write: the grant record
+        // itself is its barrier.
+        assert!(!execution.resume_ready(2));
+        assert!(execution.resume_ready(3));
+
+        // The successor's fresh term runs a full 30 s from the
+        // failover instant.
+        assert_eq!(execution.resulting_lease().expires_at_ms, Some(61_000));
+    }
+
+    #[tokio::test]
     async fn spill_copy_dispatch_waits_for_live_successor_replay_and_epoch() {
         let w = lease_world().await;
         w.handle
