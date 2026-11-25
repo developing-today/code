@@ -41,7 +41,7 @@ id-events = { path = "../id-events", default-features = false }
 id-store = { path = "../id-store", default-features = false }
 iroh = "1"
 iroh-base = "1"
-iroh-blobs = "0.103"
+iroh-blobs = "0.105"
 iroh-mainline-address-lookup = { version = "0.6", optional = true }
 p2panda-core = { git = "https://github.com/dezren39/p2panda", rev = "4a8a7ea4b6e0da187108fba9a0085e0f9679aded" }
 p2panda-store = { git = "https://github.com/dezren39/p2panda", rev = "4a8a7ea4b6e0da187108fba9a0085e0f9679aded", default-features = false }
@@ -59,7 +59,7 @@ tracing = "0.1"
 # oracle signs with the same crate the production envelope path uses.
 ed25519-dalek = { version = "3", features = ["rand_core"] }
 iroh-docs = "0.101"
-iroh-gossip = { version = "0.101", features = ["net"] }
+iroh-gossip = { version = "0.103", features = ["net"] }
 p2panda-auth = { git = "https://github.com/dezren39/p2panda", rev = "4a8a7ea4b6e0da187108fba9a0085e0f9679aded", features = [
   "serde",
 ] }
