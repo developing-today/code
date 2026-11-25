@@ -21,6 +21,7 @@
 //! [`meta_client`] request/response plumbing.
 
 pub mod announcement;
+pub mod announcement_pkarr;
 pub mod artifact;
 pub mod bridge;
 pub mod bridge_http;
