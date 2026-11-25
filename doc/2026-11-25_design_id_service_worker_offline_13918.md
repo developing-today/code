@@ -63,13 +63,13 @@ Pages are versioned with the shell because a cached page references the hashed a
 
 ### 4.3 Request routing
 
-| Request | Strategy |
-|---|---|
-| Not `GET`, or another origin | Not intercepted |
-| `/api/*`, `/ws/*`, `/blob/*`, `/.well-known/*`, `/sw.js` | Not intercepted (online only) |
-| `/assets/main.<hash>.js`, `/assets/styles.<hash>.css` | Cache first, then network (immutable) |
+| Request                                                         | Strategy                                                                                                                    |
+| --------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
+| Not `GET`, or another origin                                    | Not intercepted                                                                                                             |
+| `/api/*`, `/ws/*`, `/blob/*`, `/.well-known/*`, `/sw.js`        | Not intercepted (online only)                                                                                               |
+| `/assets/main.<hash>.js`, `/assets/styles.<hash>.css`           | Cache first, then network (immutable)                                                                                       |
 | Navigation (`mode: navigate`) without a `token` query parameter | Network first; a cacheable response is stored; on network failure, the stored copy for that exact URL, else an offline page |
-| Anything else (partials, manifest, other assets) | Not intercepted |
+| Anything else (partials, manifest, other assets)                | Not intercepted                                                                                                             |
 
 A page response is stored only when it is a plain `200` HTML response, not redirected, and not marked `Cache-Control: no-store`. A server error, a `401` from the token guard, or a redirect is passed to the page unchanged and never cached, so the worker never hides an auth failure behind a stale page. URLs carrying `?token=` are never intercepted, so a credential never becomes a cache key. The pages cache keeps the 50 most recent entries.
 
