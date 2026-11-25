@@ -9333,6 +9333,51 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn spill_copy_dispatch_waits_for_live_successor_replay_and_epoch() {
+        let w = lease_world().await;
+        w.handle
+            .handoff_write_lease("native-1", 1, Some(31_000))
+            .await
+            .unwrap();
+        let mut pool = spill_pool::SpillPool::default();
+        pool.configure("native-2");
+        for cycle in 0..u64::from(spill_pool::READER_OBSERVATION_CYCLES) {
+            assert!(pool.observe("native-2", cycle, true, true, true, 2, 2, 0, 0));
+        }
+        w.clock.advance(60_000);
+        let execution = w
+            .handle
+            .failover_write_lease(pool, 2, 0, 30_000)
+            .await
+            .unwrap();
+        assert_eq!(execution.successor(), "native-2");
+        assert_eq!(execution.grant_epoch(), 3);
+
+        let stale_replay = w
+            .handle
+            .dispatch_spill_copy("native-2", 3, 2, b"journal-copy".to_vec())
+            .await;
+        assert!(stale_replay.unwrap_err().to_string().contains("ReplayPending"));
+        assert_eq!(
+            w.handle
+                .dispatch_spill_copy("native-2", 3, execution.grant_position(), b"journal-copy".to_vec())
+                .await
+                .unwrap(),
+            b"journal-copy"
+        );
+
+        w.handle
+            .handoff_write_lease(DO_WRITE_LEASE_HOLDER, 4, None)
+            .await
+            .unwrap();
+        assert!(w
+            .handle
+            .dispatch_spill_copy("native-2", 3, execution.grant_position(), b"stale".to_vec())
+            .await
+            .is_err());
+    }
+
+    #[tokio::test]
     async fn failover_with_no_eligible_successor_recovers_to_the_do() {
         // Oracle: design #5787 §7 — no eligible successor: the DO
         // grants to itself rather than to a lagging replica, and the

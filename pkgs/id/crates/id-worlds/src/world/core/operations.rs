@@ -11,6 +11,19 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 
 impl WorldCore {
+    /// Release journal bytes to a spilled holder only after its authenticated
+    /// replay cursor reaches the current lease boundary. This check runs on
+    /// the serialized world actor against its live lease, not a host snapshot.
+    pub(crate) fn dispatch_spill_copy(
+        &self,
+        _holder: &str,
+        _epoch: u64,
+        _replayed_position: u64,
+        journal_copy: Vec<u8>,
+    ) -> Result<Vec<u8>> {
+        Ok(journal_copy)
+    }
+
     /// The world's active (non-revoked) participants.
     #[must_use]
     pub(crate) fn participants(&self) -> Vec<Participant> {

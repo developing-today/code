@@ -1701,6 +1701,35 @@ impl WorldHandle {
             .context("world actor dropped lease failover response")?
     }
 
+    /// Release a journal copy for a spilled holder only after the holder's
+    /// verified replay cursor reaches the current grant boundary. The
+    /// serialized authority actor rechecks holder, epoch, term, and boundary
+    /// immediately before returning the bytes; callers must authenticate the
+    /// holder and cursor before invoking this method, then send only returned
+    /// bytes. A refused copy is never released for dispatch.
+    pub async fn dispatch_spill_copy(
+        &self,
+        holder: impl Into<String>,
+        epoch: u64,
+        replayed_position: u64,
+        journal_copy: Vec<u8>,
+    ) -> Result<Vec<u8>> {
+        let (reply, response) = oneshot::channel();
+        self.commands
+            .send(WorldCommand::DispatchSpillCopy {
+                holder: holder.into(),
+                epoch,
+                replayed_position,
+                journal_copy,
+                reply,
+            })
+            .await
+            .map_err(|_| anyhow::anyhow!("world actor is closed"))?;
+        response
+            .await
+            .context("world actor dropped spill dispatch response")?
+    }
+
     /// Read a world snapshot.
     pub async fn snapshot(&self, token: JoinCapability) -> Result<WorldSnapshot> {
         let (reply, response) = oneshot::channel();
