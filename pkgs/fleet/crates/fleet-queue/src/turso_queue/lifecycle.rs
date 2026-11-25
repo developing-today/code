@@ -3993,4 +3993,51 @@ mod task_notes_tests {
         let task = get_task(&t, task_id).unwrap().unwrap();
         assert_eq!(task["status"], "queued");
     }
+
+    #[test]
+    fn q6_block_unblock_keeps_dependency_rows_and_cache_aligned() {
+        let (t, _db) = fake_backend();
+        let task_id = task(&t, Some("q6-worker"));
+        let blocked = verb_block(
+            &t,
+            &json!({
+                "task_id": task_id,
+                "worker": "q6-worker",
+                "reason_class": "dependency",
+                "blocker": "issue is still open",
+                "deps": [{"kind":"issue", "repo":"developing-today/code", "number":14170, "reason":"parent work"}]
+            }),
+        );
+        assert_eq!(blocked["ok"], true, "{blocked}");
+        let normalized = t
+            .query_objs(
+                "SELECT dep_kind, ref_repo, ref_number, state FROM task_deps WHERE task_id = ?",
+                &[Arg::Int(task_id)],
+                &[],
+            )
+            .expect("normalized edge after block");
+        assert_eq!(normalized.len(), 1);
+        assert_eq!(normalized[0]["dep_kind"], "blocked-by-issue");
+        assert_eq!(normalized[0]["ref_number"], 14170);
+        assert_eq!(normalized[0]["state"], "open");
+        let task_row = get_task(&t, task_id).unwrap().unwrap();
+        assert_eq!(task_row["blocked_deps"][0]["number"], 14170);
+
+        let unblocked = verb_unblock(
+            &t,
+            &json!({"task_id": task_id, "worker": "q6-worker", "reason": "parent resolved"}),
+        );
+        assert_eq!(unblocked["ok"], true, "{unblocked}");
+        let normalized = t
+            .query_objs(
+                "SELECT state, cleared_by FROM task_deps WHERE task_id = ?",
+                &[Arg::Int(task_id)],
+                &[],
+            )
+            .expect("cleared edge remains in normalized history");
+        assert_eq!(normalized[0]["state"], "cleared");
+        assert_eq!(normalized[0]["cleared_by"], "q6-worker");
+        let task_row = get_task(&t, task_id).unwrap().unwrap();
+        assert!(task_row["blocked_deps"].is_null());
+    }
 }

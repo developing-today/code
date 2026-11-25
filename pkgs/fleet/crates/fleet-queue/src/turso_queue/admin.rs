@@ -81,6 +81,14 @@ pub(crate) fn verb_block(t: &TursoBackend, req: &Value) -> Value {
                 Arg::Int(task_id),
             ],
         )?;
+        super::links::clear_task_deps(
+            t,
+            task_id,
+            None,
+            &worker,
+            "superseded_by_new_block",
+            &iso(now_unix_v),
+        )?;
         if let Some(ds) = deps.as_ref() {
             let block_id = dep_until.as_deref().unwrap_or("");
             let cache_deps =
