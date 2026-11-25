@@ -16,11 +16,19 @@ impl WorldCore {
     /// the serialized world actor against its live lease, not a host snapshot.
     pub(crate) fn dispatch_spill_copy(
         &self,
-        _holder: &str,
-        _epoch: u64,
-        _replayed_position: u64,
+        holder: &str,
+        epoch: u64,
+        replayed_position: u64,
         journal_copy: Vec<u8>,
     ) -> Result<Vec<u8>> {
+        super::spill_gate::check_spill_admission(
+            self.write_lease(),
+            holder,
+            epoch,
+            replayed_position,
+            self.clock().now_ms(),
+        )
+        .map_err(|reason| anyhow::anyhow!("spill admission refused: {reason:?}"))?;
         Ok(journal_copy)
     }
 

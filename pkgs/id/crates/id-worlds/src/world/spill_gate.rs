@@ -113,9 +113,35 @@ pub fn evaluate_spill(
     if let Decision::Deny(residency) = evaluate(scope, hops, now_s, verifier) {
         reasons.push(SpillDeny::Residency(residency));
     }
-    if let Err(lease_reason) = lease.check_writer(spill_host, presented_epoch, now_ms) {
-        reasons.push(SpillDeny::Lease(lease_reason));
+    if let Err(reason) = check_spill_admission(
+        lease,
+        spill_host,
+        presented_epoch,
+        replayed_position,
+        now_ms,
+    ) {
+        reasons.push(reason);
     }
+    if reasons.is_empty() {
+        SpillDecision::Allow
+    } else {
+        SpillDecision::Deny(reasons)
+    }
+}
+
+/// Check the authoritative lease and current holder's replay boundary.
+/// The world actor repeats this immediately before releasing journal bytes,
+/// so a host cannot reuse an old snapshot after a later fence or grant.
+pub(crate) fn check_spill_admission(
+    lease: &WriteLease,
+    spill_host: &str,
+    presented_epoch: u64,
+    replayed_position: u64,
+    now_ms: u64,
+) -> Result<(), SpillDeny> {
+    lease
+        .check_writer(spill_host, presented_epoch, now_ms)
+        .map_err(SpillDeny::Lease)?;
     let required_position = lease
         .transitions()
         .filter(|transition| {
@@ -128,17 +154,14 @@ pub fn evaluate_spill(
         .last()
         .map_or(0, |transition| transition.position);
     if replayed_position < required_position {
-        reasons.push(SpillDeny::ReplayPending {
+        return Err(SpillDeny::ReplayPending {
             replayed_position,
             required_position,
         });
     }
-    if reasons.is_empty() {
-        SpillDecision::Allow
-    } else {
-        SpillDecision::Deny(reasons)
-    }
+    Ok(())
 }
+
 
 /// Move the spill's journal/event copy across the boundary — the only
 /// sanctioned way to do it. On [`SpillDecision::Allow`], `send` is
