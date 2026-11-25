@@ -57,6 +57,7 @@
 
 pub mod claim;
 pub mod client;
+pub mod compact;
 pub mod doc;
 pub mod find;
 pub mod gallery;
@@ -87,6 +88,7 @@ pub mod writer_set;
 
 pub use claim::cmd_claim;
 pub use client::{create_local_client_endpoint, create_local_operator_endpoint};
+pub use compact::{CompactOptions, DEFAULT_RETAIN_RECENT, cmd_compact, compact_store, policy_for};
 pub use doc::cmd_doc;
 pub use find::{
     PeekOptions, SearchOptions, cmd_find, cmd_find_matches, cmd_peek, cmd_search, cmd_show,

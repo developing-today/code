@@ -41,6 +41,7 @@
 //!   revoke       Revoke a delegation by its grant's event ID
 //!   doc          Documents: publish a file, fetch its bytes; list events, frontier, history
 //!   claim        Tag claims on any subject (set, clear, list, search)
+//!   compact      Reclaim live-class event bytes with one retention pass
 //!   writer-sets  Writer sets in the event store (show, expand, discover)
 //!   migrate-tags Migrate existing files to name/file auto-tags (alias: migrate)
 //! ```
@@ -1484,6 +1485,28 @@ pub enum Command {
         /// The claim action to run.
         #[command(subcommand)]
         command: ClaimCommand,
+    },
+    /// Reclaim live-class bytes in the event store with one retention pass (#2056).
+    ///
+    /// The production caller for `LocalEvents::compact` (#5534, #2036 §4.6, criterion 8):
+    /// drops the bytes of applied `chat.message.v1` events below the per-author retain
+    /// frontier, keeping durable kinds, checkpoints and each author's most recent events.
+    /// A compacted event keeps its presence, applied verdict and causal edges as a
+    /// residue. Fails clearly while `id serve` holds the single-opener store.
+    ///
+    /// # Examples
+    ///
+    /// ```bash
+    /// id compact
+    /// id compact --retain-recent 50 --json
+    /// ```
+    Compact {
+        /// Print JSON instead of a line.
+        #[arg(long, global = true)]
+        json: bool,
+        /// How many of each author's most recent applied events are always kept.
+        #[arg(long, default_value_t = crate::commands::compact::DEFAULT_RETAIN_RECENT)]
+        retain_recent: u32,
     },
     /// Writer sets stored in the event store: show one, expand it, or discover
     /// sets by scope (writer-set spec §§4–5; issue #6690).

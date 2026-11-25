@@ -448,6 +448,10 @@ async fn main() -> Result<()> {
         Some(Command::WriterSets { json, command }) => {
             id::commands::cmd_writer_sets(cli.event_store, json, command).await
         }
+        Some(Command::Compact {
+            json,
+            retain_recent,
+        }) => id::commands::cmd_compact(cli.event_store, json, retain_recent).await,
         Some(Command::Publish {
             world,
             listen,
