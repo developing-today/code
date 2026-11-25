@@ -20,6 +20,9 @@ the game, out-of-turn input from the second player and input from a
 watcher are sent and the records must not change. After the game, a
 restart, a disconnect (the second player quits) and a move against the
 AI that takes the open seat check that a leave is surfaced.
+Last, the host is stopped and started again on the same data directory,
+and a fresh join must read the same records: the journal keeps the
+game replayable.
 
 Exit status 0 only when every game in every topology finishes; the
 last line is `RESULT verdict=PASS ...` or `RESULT verdict=FAIL ...`.
@@ -70,6 +73,7 @@ class Host:
         module: Path,
         port: int,
         timeout: float,
+        label: str = "serve",
     ):
         self.id_bin = id_bin
         self.data_dir = data_dir
@@ -78,7 +82,7 @@ class Host:
         self.timeout = timeout
         self.token = secrets.token_hex(16)
         data_dir.mkdir(parents=True, exist_ok=True)
-        self.log_path = data_dir.parent / f"{data_dir.name}-serve.log"
+        self.log_path = data_dir.parent / f"{data_dir.name}-{label}.log"
         env = dict(os.environ, ID_WORLD_ADMIN_TOKEN=self.token)
         self.proc = subprocess.Popen(
             [
@@ -547,6 +551,16 @@ def play(host: Host, game: str, homes: dict[str, Path], timeout: float) -> dict:
             player.quit()
 
 
+def read_once(host: Host, name: str, home: Path, timeout: float) -> dict:
+    """Join as a watcher, settle, read the records and leave."""
+    reader = Player(host, name, home, timeout)
+    try:
+        time.sleep(1.0)
+        return reader.records()
+    finally:
+        reader.quit()
+
+
 def run(args) -> int:
     root = Path(args.dir or tempfile.mkdtemp(prefix="board-games-"))
     root.mkdir(parents=True, exist_ok=True)
@@ -574,8 +588,37 @@ def run(args) -> int:
                 }
                 try:
                     outcome = play(host, game, homes, args.timeout)
+                    before = read_once(host, "dee", case / "dee", args.timeout)
                 finally:
                     host.stop()
+                # The journal keeps the game replayable: a fresh serve on the
+                # same data directory restores the same records.
+                host = Host(
+                    id_bin,
+                    host_dir,
+                    game,
+                    modules[game],
+                    port - 1,
+                    args.timeout,
+                    label="serve-again",
+                )
+                try:
+                    after = read_once(host, "eve", case / "eve", args.timeout)
+                finally:
+                    host.stop()
+                if after != before:
+                    raise Failure(
+                        f"{game}: records after a restart differ: {before} vs {after}"
+                    )
+                restored = [
+                    line
+                    for line in host.log_path.read_text(errors="replace").splitlines()
+                    if "restored" in line
+                ]
+                log(
+                    f"  restart on the same data directory restored the same records"
+                    f" ({restored[0].strip() if restored else 'no restore line'})"
+                )
                 results.append({"topology": topology, **outcome})
                 log(f"  PASS {topology}/{game}")
     except Failure as error:
