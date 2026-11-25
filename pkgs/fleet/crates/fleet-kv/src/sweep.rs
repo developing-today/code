@@ -423,6 +423,117 @@ impl Sweeper<'_> {
     }
 }
 
+/// What [`rebase`] did.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Rebased {
+    /// The central head version the key now builds on (0: absent).
+    pub onto: u64,
+    /// The local version re-queued against that base, if the overlay has
+    /// one. `None` means the key now follows central.
+    pub requeued: Option<u64>,
+}
+
+/// Resolves a conflicted key by a new intent (design D007): reads the
+/// central head, makes its version the key's base and clears the conflict
+/// mark, cancels the key's pending intents, and queues one new intent for
+/// the overlay's current version against that base. With no overlay row
+/// (after `clear-override`) nothing is queued and the key follows central.
+/// Never overwrites silently: the re-queued intent is an ordinary CAS, so a
+/// head that moves again is another recorded conflict.
+pub fn rebase(
+    store: &LocalStore,
+    identity: &Identity<'_>,
+    primary: &dyn Pipeline,
+    definition: &Namespace,
+    namespace: &str,
+    key: &str,
+) -> Result<Rebased, SweepError> {
+    let scope_id = definition.scope_for(identity.owner_user_id, identity.context_id);
+    let address = Address {
+        scope_id: scope_id.clone(),
+        registry_id: definition.registry_id.clone(),
+        namespace: namespace.to_string(),
+        key: key.to_string(),
+    };
+    let onto = central::head(primary, &address)?.map_or(0, |head| head.version);
+    let tx = Transaction::new_unchecked(&store.connection, TransactionBehavior::Immediate)
+        .map_err(busy_or_sql)?;
+    let tuple = params![
+        identity.owner_user_id,
+        identity.context_id,
+        identity.partition_id,
+        namespace,
+        key
+    ];
+    tx.execute(
+        "INSERT INTO kv_central_base (
+             owner_user_id, context_id, partition_id, namespace, key, scope_id, version, conflicted)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 0)
+         ON CONFLICT (owner_user_id, context_id, partition_id, namespace, key) DO UPDATE SET
+             scope_id = excluded.scope_id,
+             version = excluded.version,
+             conflicted = 0",
+        params![
+            identity.owner_user_id,
+            identity.context_id,
+            identity.partition_id,
+            namespace,
+            key,
+            scope_id,
+            crate::signed(onto)
+        ],
+    )
+    .map_err(sql)?;
+    tx.execute(
+        "UPDATE kv_outbox SET status = 'cancelled'
+         WHERE owner_user_id=?1 AND context_id=?2 AND partition_id=?3 AND namespace=?4 AND key=?5
+           AND status = 'pending'",
+        tuple,
+    )
+    .map_err(sql)?;
+    let local: Option<i64> = tx
+        .query_row(
+            "SELECT version FROM kv_local
+             WHERE owner_user_id=?1 AND context_id=?2 AND partition_id=?3 AND namespace=?4 AND key=?5",
+            tuple,
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(sql)?;
+    if let Some(version) = local {
+        let generation: i64 = tx
+            .query_row(
+                "SELECT generation FROM kv_fence
+                 WHERE owner_user_id=?1 AND context_id=?2 AND partition_id=?3 AND namespace=?4 AND key=?5",
+                tuple,
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(sql)?
+            .unwrap_or(0);
+        tx.execute(
+            "INSERT INTO kv_outbox (
+                 owner_user_id, context_id, partition_id, namespace, key, version, op, generation, status)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'rebase', ?7, 'pending')",
+            params![
+                identity.owner_user_id,
+                identity.context_id,
+                identity.partition_id,
+                namespace,
+                key,
+                version,
+                generation
+            ],
+        )
+        .map_err(sql)?;
+    }
+    tx.commit().map_err(sql)?;
+    Ok(Rebased {
+        onto,
+        requeued: local.map(unsigned),
+    })
+}
+
 enum Step {
     Decided(Swept),
     Wait(&'static str),
@@ -594,6 +705,67 @@ mod tests {
                 .unwrap()
                 .len(),
             1
+        );
+    }
+
+    #[test]
+    fn central_sweep_rebase_requeues_the_local_head_against_the_winner() {
+        let primary = primary_with_namespaces();
+        let store = LocalStore::in_memory().unwrap();
+        let (one, two) = (session("s1"), session("s2"));
+        store.set(&one, "status", "claim", b"one").unwrap();
+        store.set(&two, "status", "claim", b"two").unwrap();
+        store.set(&two, "status", "claim", b"two again").unwrap();
+        sweep(&primary, &primary, &store, &one).unwrap();
+        assert_eq!(
+            sweep(&primary, &primary, &store, &two).unwrap().conflicts(),
+            1
+        );
+        let definition = central::resolve(&primary, central::REGISTRY_ID, "status").unwrap();
+        let rebased = rebase(&store, &two, &primary, &definition, "status", "claim").unwrap();
+        assert_eq!(
+            rebased,
+            Rebased {
+                onto: 1,
+                requeued: Some(2)
+            }
+        );
+        // Exactly one intent is pending: the re-proposed local head.
+        assert_eq!(pending(&store, &two, "status", "claim"), 1);
+        let report = sweep(&primary, &primary, &store, &two).unwrap();
+        assert_eq!(report.committed(), 1, "{report:?}");
+        let winner = head(&primary, &shared("claim")).unwrap().unwrap();
+        assert_eq!(
+            (winner.version, winner.value.as_slice()),
+            (2, &b"two again"[..])
+        );
+        // The first body stays a retrievable conflict; nothing was lost.
+        assert_eq!(conflicts(&primary, &shared("claim")).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn central_sweep_rebase_after_clear_follows_central() {
+        let primary = primary_with_namespaces();
+        let store = LocalStore::in_memory().unwrap();
+        let (one, two) = (session("s1"), session("s2"));
+        store.set(&one, "status", "claim", b"one").unwrap();
+        store.set(&two, "status", "claim", b"two").unwrap();
+        sweep(&primary, &primary, &store, &one).unwrap();
+        sweep(&primary, &primary, &store, &two).unwrap();
+        store.clear_override(&two, "status", "claim").unwrap();
+        let definition = central::resolve(&primary, central::REGISTRY_ID, "status").unwrap();
+        let rebased = rebase(&store, &two, &primary, &definition, "status", "claim").unwrap();
+        assert_eq!(rebased.requeued, None);
+        assert_eq!(pending(&store, &two, "status", "claim"), 0);
+        // A later write sweeps against the adopted base instead of waiting.
+        store.set(&two, "status", "claim", b"later").unwrap();
+        assert_eq!(
+            sweep(&primary, &primary, &store, &two).unwrap().committed(),
+            1
+        );
+        assert_eq!(
+            head(&primary, &shared("claim")).unwrap().unwrap().version,
+            2
         );
     }
 
