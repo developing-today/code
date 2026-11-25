@@ -1,0 +1,14 @@
+[package]
+name = "fleet-pool"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "The generic pooling primitive: members, nested groups, scope-keyed walls, strategies, and a mandatory decision log (design #13752 §3, work item 3a #14721)."
+
+[dependencies]
+
+[dev-dependencies]
+# Property tests (AGENTS.md testing doctrine), the same proptest version
+# pkgs/id uses.
+proptest = "1.12"
