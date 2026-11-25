@@ -73,10 +73,14 @@ fn request(body: Option<serde_json::Value>) -> Request {
     }
 }
 
+/// What the echo handler records per stream: (method, path,
+/// trip).
+type Seen = Arc<Mutex<Vec<(String, String, Option<String>)>>>;
+
 /// The terminating handler shape serve uses: assemble the
 /// request body to fin, then answer in one response. Records
 /// what it saw for the test to assert on.
-fn echo_handler(seen: Arc<Mutex<Vec<(String, String, Option<String>)>>>) -> StreamHandler {
+fn echo_handler(seen: Seen) -> StreamHandler {
     Arc::new(move |stream: MuxStream, info: OpenInfo| {
         let (method, path) = match &info.intent {
             OpenIntent::Request { method, path } => (method.clone(), path.clone()),
@@ -87,7 +91,9 @@ fn echo_handler(seen: Arc<Mutex<Vec<(String, String, Option<String>)>>>) -> Stre
         let echoed = serde_json::json!({
             "received": String::from_utf8_lossy(&body),
         });
-        stream.respond(200, &serde_json::to_vec(&echoed).unwrap()).unwrap();
+        stream
+            .respond(200, &serde_json::to_vec(&echoed).unwrap())
+            .unwrap();
     })
 }
 
@@ -98,10 +104,7 @@ fn mux_roundtrip_delivers_request_and_response() {
     let resp = mux_roundtrip(stream, &request(Some(serde_json::json!({"task": 7}))))
         .expect("mux roundtrip");
     assert_eq!(resp.status, 200);
-    assert_eq!(
-        resp.body,
-        serde_json::json!({ "received": "{\"task\":7}" })
-    );
+    assert_eq!(resp.body, serde_json::json!({ "received": "{\"task\":7}" }));
     let seen = seen.lock().unwrap();
     assert_eq!(seen.len(), 1);
     assert_eq!(seen[0].0, "POST");

@@ -1099,10 +1099,7 @@ mod tests {
         // → the pooled frame path stays in charge.
         let offered = strings(&["proxy-connect", CAP_PROXY_MUX]);
         assert!(mux_selected(&offered, &fleet_negotiated(&[CAP_PROXY_MUX])));
-        assert!(!mux_selected(
-            &offered,
-            &fleet_negotiated(&["proxy-serve"])
-        ));
+        assert!(!mux_selected(&offered, &fleet_negotiated(&["proxy-serve"])));
         assert!(!mux_selected(
             &strings(&["proxy-connect"]),
             &fleet_negotiated(&[CAP_PROXY_MUX])
