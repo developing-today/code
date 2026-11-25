@@ -50,11 +50,11 @@ fn upsert(id: &str, values: Vec<(&str, serde_json::Value)>) -> JournalDelta {
 fn bridge(host: &Arc<HostedWorldFixture>, budget: usize) -> (World, Schedule) {
     let mut world = World::new();
     world.insert_resource(JournalTail::new(
-        host.clone(),
+        Arc::clone(host),
         schema(),
         LagBudget::new(budget),
     ));
-    world.insert_resource(IntentGate(host.clone()));
+    world.insert_resource(IntentGate(Arc::clone(host)));
     world.insert_resource(IntentOutbox::default());
     let mut schedule = Schedule::default();
     configure_bridge_schedule(&mut schedule);
@@ -157,6 +157,7 @@ fn a_position_applies_wholly_or_not_at_all() {
 #[derive(Resource, Default)]
 struct Seen(Vec<(Option<u64>, usize)>);
 
+#[allow(clippy::needless_pass_by_value)]
 fn observe(
     applied: Res<'_, AppliedPosition>,
     names: Query<'_, '_, &WorldName>,

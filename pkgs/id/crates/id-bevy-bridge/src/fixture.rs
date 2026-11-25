@@ -2,7 +2,7 @@
 //! rules without a running world host (design §1, Q4).
 
 /// A fixture delta at one journal position.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum JournalDelta {
     /// Create or update a journal entity with its predicate values.
     Upsert {
@@ -25,39 +25,40 @@ pub enum JournalDelta {
 impl JournalDelta {
     /// Journal position carried by this delta.
     #[must_use]
-    pub fn position(&self) -> u64 {
+    pub const fn position(&self) -> u64 {
         match self {
             Self::Upsert { position, .. } | Self::Retract { position, .. } => *position,
         }
     }
 }
 
-/// Example recorded prefix: Ada is projected at position 1 and retracted
-/// at position 3. The unknown predicate intentionally demonstrates the
+/// Example recorded prefix.
+///
+/// Ada is projected at position 1 and retracted at position 3. The unknown predicate intentionally demonstrates the
 /// fail-closed schema boundary; it does not affect the projected state.
 #[must_use]
 pub fn static_fixture() -> Vec<JournalDelta> {
     vec![
         JournalDelta::Upsert {
             position: 1,
-            id: "entity-ada".to_string(),
+            id: "entity-ada".to_owned(),
             values: vec![
-                ("name".to_string(), serde_json::json!("Ada")),
-                ("position".to_string(), serde_json::json!([1.5, 2.0])),
+                ("name".to_owned(), serde_json::json!("Ada")),
+                ("position".to_owned(), serde_json::json!([1.5, 2.0])),
                 (
-                    "unregistered.secret".to_string(),
+                    "unregistered.secret".to_owned(),
                     serde_json::json!("must not project"),
                 ),
             ],
         },
         JournalDelta::Upsert {
             position: 2,
-            id: "entity-babbage".to_string(),
-            values: vec![("name".to_string(), serde_json::json!("Babbage"))],
+            id: "entity-babbage".to_owned(),
+            values: vec![("name".to_owned(), serde_json::json!("Babbage"))],
         },
         JournalDelta::Retract {
             position: 3,
-            id: "entity-ada".to_string(),
+            id: "entity-ada".to_owned(),
         },
     ]
 }

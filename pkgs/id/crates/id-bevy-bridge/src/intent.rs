@@ -24,7 +24,7 @@ use crate::map::WorldPosition;
 use crate::projection::applied_position;
 
 /// The change an intent proposes for one ID entity.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum Proposal {
     /// Create or update the entity with these predicate values.
@@ -42,7 +42,7 @@ pub enum Proposal {
 }
 
 /// A proposed append, as submitted to the gate.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Intent {
     /// The app's own number for this intent.
     pub intent_id: u64,
@@ -102,7 +102,7 @@ fn hex_encode(bytes: &[u8]) -> String {
 
 fn hex_decode(text: &str) -> Option<Vec<u8>> {
     let digits = text.as_bytes();
-    if digits.len() % 2 != 0 {
+    if !digits.len().is_multiple_of(2) {
         return None;
     }
     let nibble = |digit: u8| {
@@ -110,9 +110,10 @@ fn hex_decode(text: &str) -> Option<Vec<u8>> {
             .to_digit(16)
             .and_then(|v| u8::try_from(v).ok())
     };
-    digits
-        .chunks_exact(2)
-        .map(|pair| Some((nibble(pair[0])? << 4) | nibble(pair[1])?))
+    let (pairs, _) = digits.as_chunks::<2>();
+    pairs
+        .iter()
+        .map(|[high, low]| Some((nibble(*high)? << 4) | nibble(*low)?))
         .collect()
 }
 

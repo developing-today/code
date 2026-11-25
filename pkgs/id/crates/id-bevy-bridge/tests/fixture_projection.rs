@@ -1,7 +1,12 @@
 //! Acceptance oracle for slice 1: schema-driven world projection must be
 //! explicit, fail-closed, and retraction-driven (design §1, #13702).
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::unreadable_literal
+)]
 
 use bevy_ecs::prelude::*;
 use id_bevy_bridge::{
@@ -49,28 +54,25 @@ fn fixture_projects_classified_world_state_and_fails_closed() {
     let fixture = vec![
         JournalDelta::Upsert {
             position: 1,
-            id: "world-1".to_string(),
+            id: "world-1".to_owned(),
             values: vec![
-                ("name".to_string(), serde_json::json!("Ada")),
+                ("name".to_owned(), serde_json::json!("Ada")),
                 (
-                    "position".to_string(),
+                    "position".to_owned(),
                     serde_json::json!([1.5000000000000002, 2.0]),
                 ),
                 (
-                    "unclassified.predicate".to_string(),
+                    "unclassified.predicate".to_owned(),
                     serde_json::json!("secret"),
                 ),
-                (
-                    "client.selection".to_string(),
-                    serde_json::json!("selected"),
-                ),
-                ("cache.local".to_string(), serde_json::json!("cache")),
+                ("client.selection".to_owned(), serde_json::json!("selected")),
+                ("cache.local".to_owned(), serde_json::json!("cache")),
             ],
         },
         JournalDelta::Upsert {
             position: 2,
-            id: "world-2".to_string(),
-            values: vec![("name".to_string(), serde_json::json!("Babbage"))],
+            id: "world-2".to_owned(),
+            values: vec![("name".to_owned(), serde_json::json!("Babbage"))],
         },
     ];
 
@@ -111,8 +113,8 @@ fn retraction_despawns_and_removes_mapping_at_its_position() {
     let mut world = World::new();
     let create = [JournalDelta::Upsert {
         position: 4,
-        id: "gone".to_string(),
-        values: vec![("name".to_string(), serde_json::json!("Transient"))],
+        id: "gone".to_owned(),
+        values: vec![("name".to_owned(), serde_json::json!("Transient"))],
     }];
     assert_eq!(
         project_fixture(&mut world, &fixture_schema(), &create),
@@ -121,7 +123,7 @@ fn retraction_despawns_and_removes_mapping_at_its_position() {
     let entity = world.resource::<IdEntityMap>().entity("gone").unwrap();
     let retract = [JournalDelta::Retract {
         position: 5,
-        id: "gone".to_string(),
+        id: "gone".to_owned(),
     }];
     assert_eq!(
         project_fixture(&mut world, &fixture_schema(), &retract),
@@ -139,11 +141,11 @@ fn later_position_must_not_be_applied_before_an_earlier_one() {
     let fixture = [
         JournalDelta::Retract {
             position: 8,
-            id: "gone".to_string(),
+            id: "gone".to_owned(),
         },
         JournalDelta::Retract {
             position: 7,
-            id: "gone".to_string(),
+            id: "gone".to_owned(),
         },
     ];
     assert_eq!(

@@ -47,7 +47,7 @@ impl IdEntityMap {
     /// Record a mapping created at `position`. Overwrites any existing
     /// entry for the same ID (re-projection after a despawn reallocates).
     pub fn insert(&mut self, id: &str, entity: Entity, position: u64) {
-        self.entries.insert(id.to_string(), (entity, position));
+        self.entries.insert(id.to_owned(), (entity, position));
     }
 
     /// Look up the Bevy entity for an ID entity.

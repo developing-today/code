@@ -22,7 +22,7 @@ use crate::projection::{AppliedPosition, ProjectionError, applied_position, appl
 use crate::schema::BridgeSchema;
 
 /// Every delta the journal recorded at one position.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PositionBatch {
     /// The journal position.
     pub position: u64,
@@ -79,7 +79,11 @@ impl fmt::Debug for JournalTail {
 impl JournalTail {
     /// A tail over `source`, projecting through `schema`.
     #[must_use]
-    pub fn new(source: Arc<dyn JournalSource>, schema: BridgeSchema, budget: LagBudget) -> Self {
+    pub const fn new(
+        source: Arc<dyn JournalSource>,
+        schema: BridgeSchema,
+        budget: LagBudget,
+    ) -> Self {
         Self {
             source,
             schema,

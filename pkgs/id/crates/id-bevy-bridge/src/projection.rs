@@ -50,9 +50,7 @@ impl AppliedPosition {
 /// Read the applied position of `world`.
 #[must_use]
 pub fn applied_position(world: &World) -> Option<u64> {
-    world
-        .get_resource::<AppliedPosition>()
-        .and_then(|p| p.get())
+    world.get_resource::<AppliedPosition>().and_then(|p| p.0)
 }
 
 /// One decoded world-state component value.
