@@ -225,9 +225,6 @@ if [ "$MODE" = preflight ]; then
   exit 0
 fi
 python3 -I "$SCRIPT_DIR/kaneo-target-preflight.py" "$SOURCE_DSN_FILE" "$TARGET_DSN_FILE" "$TARGET_HOST" || exit $?
-# URI defaults must not inherit libpq endpoint/service overrides. The helper
-# compares omitted ports as 5432, not an ambient PGPORT value.
-unset PGHOST PGHOSTADDR PGPORT PGDATABASE PGSERVICE PGSERVICEFILE PGOPTIONS
 [ -n "$FENCE_CHECK" ] || FENCE_CHECK="$SCRIPT_DIR/fence-check.sh"
 
 if [ -n "$PG_BIN_DIR" ]; then

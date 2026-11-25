@@ -7,6 +7,7 @@ not general libpq conninfo. Diagnostics never include DSNs or credentials.
 """
 
 import ipaddress
+import os
 import re
 import sys
 from pathlib import Path
@@ -80,6 +81,12 @@ def main():
         print("kaneo target preflight: require SOURCE_FILE TARGET_FILE TARGET_HOST", file=sys.stderr)
         return 2
     try:
+        # URI mode must not silently inherit libpq's out-of-band endpoints.
+        if any(os.environ.get(name) for name in (
+            "PGHOST", "PGHOSTADDR", "PGPORT", "PGDATABASE", "PGSERVICE",
+            "PGSERVICEFILE", "PGOPTIONS",
+        )):
+            raise ValueError("ambient libpq endpoint override")
         source = identity(sys.argv[1])
         target = identity(sys.argv[2])
         if target[0] != host_identity(sys.argv[3]):
