@@ -1098,11 +1098,13 @@ fn check_invariants_rows<T: RowRead + ?Sized>(
         let id = hash_of(&id_bytes)?;
         let row = Row::decode(id, &value)?;
         row_event(&row)?;
-        if hashes.contains_key(id.as_bytes()) || !waiting.contains(&id) {
+        if hashes.contains_key(id.as_bytes().as_slice()) || !waiting.contains(&id) {
             return Err(corrupt("a waiting row and the in-memory pool disagree"));
         }
         for dep in &row.deps {
-            if hashes.contains_key(dep.as_bytes()) || proof_ids.contains_key(dep.as_bytes()) {
+            if hashes.contains_key(dep.as_bytes().as_slice())
+                || proof_ids.contains_key(dep.as_bytes().as_slice())
+            {
                 return Err(corrupt(
                     "a waiting event waits for a dependency that is present",
                 ));
