@@ -54,6 +54,11 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Contract — wiring matches registry and policy (#14999)
+        run: |
+          bash .github/scripts/check-fleet-static-release.sh
+          bash .github/scripts/check-fleet-static-release.test.sh
+
       - name: Resolve target revision and check for an existing release
         id: current
         env:
