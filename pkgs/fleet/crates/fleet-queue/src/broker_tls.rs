@@ -94,6 +94,23 @@ mod server {
         }
     }
 
+    impl Drop for BrokerStream {
+        fn drop(&mut self) {
+            // The broker's one-request-per-connection contract
+            // (Connection: close) would otherwise end the TLS
+            // session at the bare TCP layer, and rustls readers
+            // treat that abrupt end as an error even after a
+            // complete response. Send the close_notify alert on
+            // the way out (best effort, never blocking on the
+            // peer's answer).
+            if let BrokerStream::Tls(tls) = self {
+                tls.conn.send_close_notify();
+                let _ = tls.conn.write_tls(&mut tls.sock);
+                let _ = tls.sock.flush();
+            }
+        }
+    }
+
     impl BrokerTlsServer {
         /// From the broker's environment: both
         /// `QUEUE_BROKER_TLS_CERT_FILE` and
