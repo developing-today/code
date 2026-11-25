@@ -10,7 +10,8 @@ and D2 slice 1, embeds and render states
 Prior art named by the issue: #9126 (graph query and visualisation research),
 #10235 (the bounded, server-paged graph viewer), #13623 (Kitty graphics stills).
 
-Status: slice 1 of 4, with slice 2 in [`slice-2-web.md`](slice-2-web.md). The view model and the interaction contract are designed
+Status: slice 1 of 4, with slice 2 in [`slice-2-web.md`](slice-2-web.md) and slice 3 in
+[`slice-3-kitty.md`](slice-3-kitty.md). The view model and the interaction contract are designed
 here and checked by a stdlib reference. Slice 2 (web and WASM renderer), slice 3
 (Kitty renderer) and slice 4 (fallback and conformance checklist) build on the
 frame defined here; §6 already fixes the list/tree floor they are tested against.
