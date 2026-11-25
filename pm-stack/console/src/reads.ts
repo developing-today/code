@@ -37,6 +37,8 @@ export async function platformRead(
         return ops.releases();
       case "platform":
         return ops.platform();
+      case "store-migrations":
+        return ops.storeMigrations();
       case "roadmaps":
         return plan.capabilities();
       case "roadmap":

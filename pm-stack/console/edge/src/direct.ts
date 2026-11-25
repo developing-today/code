@@ -64,6 +64,7 @@ export const DIRECT_ACTIONS = [
   "task.move",
   "pr.merge",
   "deploy.start",
+  "store.migrate",
   "intake.send",
 ] as const;
 

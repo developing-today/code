@@ -194,6 +194,10 @@ export function actions(
     // be done late: a deploy that starts hours after it was asked for
     // is a surprise.
     "deploy.start": { run: (a) => ops.deploy(a.what, a.scratch), touch: [], audit: ids("what", "scratch") },
+    // Start one store's migration (#14256), the way a deploy is
+    // started. Never held to be done late, for the same reason: a
+    // migration that starts hours after it was asked for is a surprise.
+    "store.migrate": { run: (a) => ops.storeMigrate(a.store), touch: [], audit: ids("store") },
     "unit.act": {
       run: (a) => ops.serviceAct(a.unit, a.action),
       touch: ["services"],

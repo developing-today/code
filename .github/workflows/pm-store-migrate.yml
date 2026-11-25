@@ -1,0 +1,111 @@
+name: pm-store migrate
+
+# Run a store migration from the app (#14256).
+#
+# The PM console's Stores section starts this workflow for a chosen
+# store (its `store.migrate` action dispatches it the way `deploy()`
+# dispatches a deploy), and shows each store's last run of it. The
+# run name carries the store, so the app can tell from GitHub's own
+# record which store a run was for.
+#
+# The guard is the shared schema's existing discipline: the
+# disposable-PostgreSQL test (test-migration.sh) runs first, and no
+# store is touched unless it passes.
+#
+# A named store is reached with its connection string from the
+# repository's secret store (PM_MIGRATE_URL_<STORE>, dashes as
+# underscores, upper case) — in the runner only, never in the app or
+# the Worker. Until a store's secret exists the job says so in its
+# summary and skips that store instead of failing; the `test` store
+# needs no secret: it stands a disposable PostgreSQL up, applies
+# every migration, and applies them again to prove the second run
+# reports each one as an already-applied no-op.
+run-name: Migrate ${{ inputs.store }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      store:
+        description: "Store to migrate (test = disposable stand-in store)"
+        required: true
+        type: choice
+        options:
+          - test
+          - fleet-queue
+          - fleet-platform
+          - fleet-mirror
+          - voice-line-ledger
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pm-store-migrate-${{ inputs.store }}
+  cancel-in-progress: false
+
+jobs:
+  migrate:
+    name: migrate ${{ inputs.store }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      STORE: ${{ inputs.store }}
+      PM_MIGRATE_URL_FLEET_QUEUE: ${{ secrets.PM_MIGRATE_URL_FLEET_QUEUE }}
+      PM_MIGRATE_URL_FLEET_PLATFORM: ${{ secrets.PM_MIGRATE_URL_FLEET_PLATFORM }}
+      PM_MIGRATE_URL_FLEET_MIRROR: ${{ secrets.PM_MIGRATE_URL_FLEET_MIRROR }}
+      PM_MIGRATE_URL_VOICE_LINE_LEDGER: ${{ secrets.PM_MIGRATE_URL_VOICE_LINE_LEDGER }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: Guard — the disposable migration test
+        run: bash pm-stack/shared-schema/test-migration.sh
+      - name: Resolve the store's connection string
+        id: target
+        run: |
+          case "$STORE" in
+            test) echo "kind=test" >> "$GITHUB_OUTPUT" ;;
+            fleet-queue) url="$PM_MIGRATE_URL_FLEET_QUEUE" ;;
+            fleet-platform) url="$PM_MIGRATE_URL_FLEET_PLATFORM" ;;
+            fleet-mirror) url="$PM_MIGRATE_URL_FLEET_MIRROR" ;;
+            voice-line-ledger) url="$PM_MIGRATE_URL_VOICE_LINE_LEDGER" ;;
+            *) echo "unknown store: $STORE" >&2; exit 2 ;;
+          esac
+          if [ "$STORE" != "test" ]; then
+            if [ -n "${url:-}" ]; then
+              echo "kind=named" >> "$GITHUB_OUTPUT"
+              echo "::add-mask::$url"
+              printf '%s' "$url" > "$RUNNER_TEMP/store-url"
+            else
+              echo "kind=unconfigured" >> "$GITHUB_OUTPUT"
+              echo "Skipped ${STORE}: set the PM_MIGRATE_URL_* repository secret for this store to migrate it. The guard above still ran, and the test store proves the apply path." >> "$GITHUB_STEP_SUMMARY"
+            fi
+          fi
+      - name: Stand the test store up
+        if: steps.target.outputs.kind == 'test'
+        run: |
+          docker run --detach --rm --name pm-store-migrate-test \
+            --env POSTGRES_HOST_AUTH_METHOD=trust \
+            --env POSTGRES_DB=pm_store_test \
+            --publish 54329:5432 postgres:16-alpine >/dev/null
+          for _ in $(seq 1 60); do
+            if docker exec pm-store-migrate-test psql -X -qAt -U postgres -d pm_store_test -c 'SELECT 1' >/dev/null 2>&1; then exit 0; fi
+            sleep 1
+          done
+          echo "the test store did not become ready" >&2; exit 1
+      - name: Apply the migrations
+        if: steps.target.outputs.kind != 'unconfigured'
+        run: |
+          if [ "$STORE" = "test" ]; then
+            url="postgres://postgres@127.0.0.1:54329/pm_store_test"
+          else
+            url="$(cat "$RUNNER_TEMP/store-url")"
+          fi
+          sudo apt-get update -qq && sudo apt-get install -y -qq postgresql-client >/dev/null
+          bash pm-stack/shared-schema/apply-migrations.sh --database-url "$url" | tee "$RUNNER_TEMP/first-run.txt"
+          if [ "$STORE" = "test" ]; then
+            # The proof of the no-op rule: a second run applies nothing.
+            bash pm-stack/shared-schema/apply-migrations.sh --database-url "$url" | tee "$RUNNER_TEMP/second-run.txt"
+            if grep -qv '^no-op: already applied\|^migrations: 0 applied' "$RUNNER_TEMP/second-run.txt"; then
+              echo "the second run did not report every migration as already applied" >&2; exit 1
+            fi
+            echo "Migrated the test store twice: the second run reported every migration as an already-applied no-op." >> "$GITHUB_STEP_SUMMARY"
+          fi

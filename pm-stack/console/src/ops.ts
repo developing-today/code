@@ -12,6 +12,7 @@
 // resolved inside expose().
 import type { Config } from "./config.ts";
 import { OpError } from "./errors.ts";
+import { lastMigrationRuns, MIGRATION_WORKFLOW, TEST_STORE } from "./migrations.ts";
 import { plain } from "./plain.ts";
 import { WORKERS_FILE, workersList } from "./platform.ts";
 import { STORES_FILE, storesList } from "./stores.ts";
@@ -1377,6 +1378,52 @@ export class Ops {
       ...(fromNothing ? { inputs: { scratch: "true" } } : {}),
     });
     return { started: what, scratch: fromNothing };
+  }
+
+  /** The stores the list of record names, read from the repository
+   * the way platform() reads the Workers list. */
+  private async storesOfRecord() {
+    const got = (await this.gh([`repos/${this.cfg.repo}/contents/${STORES_FILE}`])) as { content?: string } | null;
+    if (typeof got?.content !== "string") throw new OpError(502, "the list of stores could not be read");
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(new TextDecoder().decode(Uint8Array.from(atob(got.content), (c) => c.charCodeAt(0))));
+    } catch {
+      throw new OpError(502, "the list of stores is not valid JSON");
+    }
+    return storesList(parsed).stores;
+  }
+
+  /** Every store's last migration run (#14256), from GitHub's own
+   * record of the migration workflow's runs: when, which commit, and
+   * how it ended — a failure is shown as a failure, with its link. */
+  async storeMigrations() {
+    const stores = await this.storesOfRecord();
+    const found = (await this.gh([
+      `repos/${this.cfg.repo}/actions/workflows/${MIGRATION_WORKFLOW}/runs?per_page=30`,
+    ])) as { workflow_runs?: unknown } | null;
+    return {
+      workflow: MIGRATION_WORKFLOW,
+      stores: lastMigrationRuns(found?.workflow_runs, [{ name: TEST_STORE, title: "Test store (stand-in)" }, ...stores]),
+    };
+  }
+
+  /** Start a migration of one named store from main, the way deploy()
+   * starts a deploy: a dispatch of the migration workflow with the
+   * store as its one input. Only a store the list of record names —
+   * or the workflow's stand-in test store — can be named; the store's
+   * credential is the runner's, from the repository's secret store,
+   * and never passes through here. */
+  async storeMigrate(store: unknown) {
+    const stores = await this.storesOfRecord();
+    if (typeof store !== "string" || (store !== TEST_STORE && !stores.some((s) => s.name === store))) {
+      throw new OpError(400, `store: one of ${[TEST_STORE, ...stores.map((s) => s.name)].join(", ")}`);
+    }
+    await this.gh(["-X", "POST", `repos/${this.cfg.repo}/actions/workflows/${MIGRATION_WORKFLOW}/dispatches`], {
+      ref: "main",
+      inputs: { store },
+    });
+    return { started: store };
   }
 
   // ---- one screen --------------------------------------------------------

@@ -2769,6 +2769,7 @@ const CAN_SAID = {
   "task.unblock": "unblock a task",
   "pr.merge": "merge",
   "deploy.start": "start a deploy",
+  "store.migrate": "run a store migration",
   "intake.send": "file a note, a bug or a change",
   "question.answer": "record an answer",
   "question.defer": "hand a question back",
@@ -3052,6 +3053,18 @@ export function tokenSaid(t, now = Date.now()) {
   }
 }
 
+/** One store's migration line on the Platform screen (#14256): its
+ * last run of the migration workflow — when, which commit, and how it
+ * ended. A failed run reads as failed; its link is the run itself. */
+export function migrationSaid(s, now = Date.now()) {
+  if (!s.run) return { text: "No migration has been run from here yet.", tone: "" };
+  const when = ago(s.run.at, now);
+  const commit = String(s.run.commit || "").slice(0, 7);
+  if (s.run.state === "failure") return { text: `Its last migration, ${when}, failed (${commit}).`, tone: "warn" };
+  if (s.run.state === "success") return { text: `Last migrated ${when}, of ${commit}.`, tone: "good" };
+  return { text: `A migration of ${commit} is ${String(s.run.state).replace(/_/g, " ")}, started ${when}.`, tone: "" };
+}
+
 /** The counts the Platform screen opens with. */
 export function platformCounts(workers) {
   const live = workers.filter((w) => w.state === "in service");
@@ -3071,9 +3084,10 @@ export function platformCounts(workers) {
 async function viewPlatform() {
   // When the store tokens run out is a machine's to read; with none
   // reporting, the Workers still show.
-  const [p, held] = await Promise.all([
+  const [p, held, mig] = await Promise.all([
     api(freshly("platform")),
     api("tokens").catch((error) => ({ error: error.message })),
+    api("store-migrations").catch((error) => ({ error: error.message })),
   ]);
   const workers = Array.isArray(p.workers) ? p.workers : [];
   const n = platformCounts(workers);
@@ -3106,6 +3120,34 @@ async function viewPlatform() {
         h("h3", {}, t.name),
         h("p", { class: "meta" }, `Used by ${(t.stores || []).join(", ")}.`),
         h("p", { class: s.tone === "warn" ? "why" : "meta" }, s.text),
+      ),
+    );
+  }
+  const migrations = Array.isArray(mig?.stores) ? mig.stores : [];
+  out.push(h("h2", {}, `Store migrations${migrations.length ? ` (${migrations.length})` : ""}`));
+  if (mig?.error) out.push(card(h("p", { class: "why" }, `The stores' last migrations could not be read: ${mig.error}`)));
+  for (const s of migrations) {
+    const said = migrationSaid(s);
+    const startMigration = async (e) => {
+      const yes = await ask({
+        title: `Migrate ${s.title}?`,
+        text: "GitHub runs the shared-schema migrations against this store from main, after the disposable migration test passes. One already applied is reported as a no-op.",
+        okLabel: "Start it",
+      });
+      if (yes !== null) act("store.migrate", { store: s.name }, "Migration started", e.target);
+    };
+    out.push(
+      card(
+        h("div", { class: "row" }, s.run ? chip(s.run.state === "success" ? "migrated" : s.run.state === "failure" ? "last migration failed" : s.run.state.replace(/_/g, " "), said.tone) : chip("never migrated", "")),
+        h("h3", {}, s.title),
+        h("p", { class: said.tone === "warn" ? "why" : "meta" }, said.text),
+        h(
+          "div",
+          { class: "row end" },
+          s.run?.url ? ext(s.run.url, "Last run") : null,
+          ext(`${repo}/actions/workflows/pm-store-migrate.yml`, "Its migrations"),
+          h("button", { class: "small", onclick: startMigration }, "Run migration"),
+        ),
       ),
     );
   }
