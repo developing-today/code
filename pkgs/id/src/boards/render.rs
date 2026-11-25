@@ -1022,6 +1022,10 @@ impl ThemeValidationReport {
     }
 }
 
+/// Reads an asset blob from the content-addressed store by hash, or
+/// `None` when the store does not hold it.
+pub type AssetFetch<'a> = &'a dyn Fn(&ArtifactHash) -> Option<Vec<u8>>;
+
 /// Build the publish-time validation report for `theme` (#5858
 /// Decision 3, "Validation tooling").
 ///
@@ -1034,7 +1038,7 @@ impl ThemeValidationReport {
 #[must_use]
 pub fn theme_validation_report(
     theme: &Theme,
-    fetch: Option<&dyn Fn(&ArtifactHash) -> Option<Vec<u8>>>,
+    fetch: Option<AssetFetch<'_>>,
 ) -> ThemeValidationReport {
     let refusal = super::BoardObject::Theme(theme.clone())
         .validate_shape()
