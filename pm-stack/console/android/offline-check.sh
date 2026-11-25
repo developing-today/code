@@ -189,6 +189,19 @@ tap_text() {
   adb shell input tap "$xy"
 }
 
+# Taps, retrying while the page settles: a single look can race the
+# rendering — in run 45567951938 the tab bar was on the screen in the
+# failure dump seconds after the stage-2 tap's own look had missed
+# it. Five looks, a breath between.
+tap_text_retry() {
+  local tries=0
+  until tap_text "$1"; do
+    tries=$((tries + 1))
+    [ "$tries" -ge 5 ] && return 1
+    sleep 3
+  done
+}
+
 # One action arriving at the demo edge, counted from its log.
 count_answer() {
   python3 -c '
@@ -277,7 +290,7 @@ adb shell am force-stop "$PKG" 2>/dev/null || true
 
 echo "offline-check: 1. the app opens against the demo edge"
 launch_and_wait_text "Needs me" 120 || fail "the app did not open to the console (no 'Needs me' tab)"
-tap_text "Needs me" || fail "could not open the Needs me tab"
+tap_text_retry "Needs me" || fail "could not open the Needs me tab"
 wait_text "$QUESTION_TEXT" 60 || fail "the demo question is not shown"
 
 echo "offline-check: 2. with no connection, opened again it shows what it kept"
@@ -285,7 +298,7 @@ airplane on || fail "could not turn aeroplane mode on"
 launch_and_wait_text "$QUESTION_TEXT" 60 || fail "opened with no connection, the app does not show the question it last saw"
 
 echo "offline-check: 3. answered while offline, app swiped away, network back"
-tap_text "$ANSWER_LABEL" || fail "could not tap the answer '$ANSWER_LABEL'"
+tap_text_retry "$ANSWER_LABEL" || fail "could not tap the answer '$ANSWER_LABEL'"
 wait_no_text "$QUESTION_TEXT" 30 || fail "the answered question is still listed"
 # The answer is only written to the outbox when its 4.5-second undo
 # window runs out (app.js: later), so the app stays open past that
@@ -320,7 +333,7 @@ while [ "$i" -lt 60 ]; do
 done
 [ "$seen" = "1" ] || fail "the demo edge saw the answer $seen times, not once (log: $ACT_LOG)"
 launch_and_wait_text "Needs me" 60 || fail "the app did not reopen after the answer was sent"
-tap_text "Needs me" || fail "could not open the Needs me tab again"
+tap_text_retry "Needs me" || fail "could not open the Needs me tab again"
 wait_text "$NEXT_QUESTION_TEXT" 60 || fail "the Needs me list did not load after the answer was sent"
 if screen_text | grep -qF "$QUESTION_TEXT"; then
   fail "the answered question is back in the list after being sent"
