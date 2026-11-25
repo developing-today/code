@@ -253,11 +253,11 @@
       "path": "pkgs/lab-ops-hub",
       "does": "One Worker that exercises the whole paid Workers surface at personal scale, inside the plan's included amounts.",
       "state": "in service",
-      "deploy": "by hand",
-      "workflow": null,
+      "deploy": "actions",
+      "workflow": "cf-worker-versions-release.yml",
       "address": "https://lab-ops-hub.developing-today.workers.dev",
       "next": "Deployed from Actions, stood up, checked and rolled back the way the PM console is; listed here with its last deploy. Its container images are already built by Actions.",
-      "lastDeployedCommit": null
+      "lastDeployedCommit": "df6651ee1a2f6dc4468f945872705af8e4dc9d65"
     },
     {
       "name": "cf-container-hello",
