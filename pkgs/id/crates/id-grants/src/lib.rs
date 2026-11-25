@@ -46,6 +46,13 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
+pub mod publication;
+
+pub use publication::{
+    ClassLevel, DiscoveryMode, PublicationRecord, Publications, PublishError, PublishRequest,
+    ShareId, ShareManifest, UNLISTED_LABEL, UNPUBLISH_NOTICE,
+};
+
 /// A grant's stable identifier.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
