@@ -81,6 +81,15 @@ pub(crate) fn verb_block(t: &TursoBackend, req: &Value) -> Value {
                 Arg::Int(task_id),
             ],
         )?;
+        if let Some(ds) = deps.as_ref() {
+            let block_id = dep_until.as_deref().unwrap_or("");
+            let cache_deps =
+                super::links::sync_task_deps(t, task_id, block_id, ds, &iso(now_unix_v), "block")?;
+            t.exec(
+                "UPDATE tasks SET blocked_deps = ? WHERE id = ?",
+                &[Arg::Text(json!(cache_deps).to_string()), Arg::Int(task_id)],
+            )?;
+        }
         t.exec("DELETE FROM leases WHERE task_id = ?", &[Arg::Int(task_id)])?;
         event(
             t,
@@ -162,6 +171,14 @@ pub(crate) fn dep_recheck_one(
                 &[Arg::Text(now.clone()), Arg::Int(task_id)],
             )?;
             if cleared.affected > 0 {
+                super::links::clear_task_deps(
+                    t,
+                    task_id,
+                    Some(until),
+                    "dep-rechecker",
+                    "ttl_expired",
+                    &now,
+                )?;
                 event(
                     t,
                     Some("dep-rechecker"),
@@ -247,6 +264,14 @@ pub(crate) fn dep_recheck_one(
             // that transition owns the audit trail.
             return Ok(("still_blocked", failures));
         }
+        super::links::clear_task_deps(
+            t,
+            task_id,
+            row.get("dep_blocked_until").and_then(Value::as_str),
+            "dep-rechecker",
+            "resolved",
+            &now,
+        )?;
         emit_dep_transitions(t, task_id, row, &transitions)?;
         event(
             t,
@@ -282,6 +307,16 @@ pub(crate) fn dep_recheck_one(
             Arg::Text(now.clone()),
             Arg::Int(task_id),
         ],
+    )?;
+    let block_id = row
+        .get("dep_blocked_until")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    let cache_deps =
+        super::links::sync_task_deps(t, task_id, block_id, &new_deps, &now, "dep_recheck")?;
+    t.exec(
+        "UPDATE tasks SET blocked_deps = ? WHERE id = ? AND status = 'blocked'",
+        &[Arg::Text(json!(cache_deps).to_string()), Arg::Int(task_id)],
     )?;
     emit_dep_transitions(t, task_id, row, &transitions)?;
     Ok(("still_blocked", failures))
@@ -686,6 +721,14 @@ fn unblock_drop(
              WHERE id = ? AND status = 'blocked'",
             &[Arg::Text(now_iso()), Arg::Int(task_id)],
         )?;
+        super::links::clear_task_deps(
+            t,
+            task_id,
+            row.get("dep_blocked_until").and_then(Value::as_str),
+            worker,
+            "drop_all",
+            &now_iso(),
+        )?;
         event(
             t,
             Some(worker),
@@ -706,6 +749,22 @@ fn unblock_drop(
                 Arg::Text(now_iso()),
                 Arg::Int(task_id),
             ],
+        )?;
+        let block_id = row
+            .get("dep_blocked_until")
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        let cache_deps = super::links::sync_task_deps(
+            t,
+            task_id,
+            block_id,
+            &remaining,
+            &now_iso(),
+            "unblock_drop",
+        )?;
+        t.exec(
+            "UPDATE tasks SET blocked_deps = ? WHERE id = ? AND status = 'blocked'",
+            &[Arg::Text(json!(cache_deps).to_string()), Arg::Int(task_id)],
         )?;
         event(
             t,
@@ -774,6 +833,15 @@ pub(crate) fn verb_unblock(t: &TursoBackend, req: &Value) -> Value {
                dep_recheck_seconds = NULL, updated_at = ? \
              WHERE id = ? AND status = 'blocked'",
             &[Arg::Text(now_iso()), Arg::Int(task_id)],
+        )
+        .map_err(|e| e)?;
+        super::links::clear_task_deps(
+            t,
+            task_id,
+            row.get("dep_blocked_until").and_then(Value::as_str),
+            &worker,
+            "manual_unblock",
+            &now_iso(),
         )
         .map_err(|e| e)?;
         let (kind, detail) = if prev_deps.is_empty() {

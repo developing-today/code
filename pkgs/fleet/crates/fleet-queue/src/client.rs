@@ -90,6 +90,7 @@ pub fn run(args: &[String]) -> i32 {
         "history" => cmd_timeline("history", rest),
         "show" => cmd_show(rest),
         "note" => cmd_note(rest),
+        "link" => cmd_link(rest),
         "models" => cmd_models(rest),
         "health" => cmd_health(rest),
         "signal" => cmd_signal(rest),

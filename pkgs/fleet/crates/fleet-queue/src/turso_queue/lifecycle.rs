@@ -3435,7 +3435,14 @@ mod task_notes_tests {
              VALUES ('repo-health-code-pilot', 't', '{}', 50, ?, ?, ?, ?, NULL, ?, '{}', \
              '2026-11-25T00:00:00Z', '2026-11-25T00:00:00Z')",
             &[
-                Arg::Text(if worker.is_some() { "claimed" } else { "queued" }.into()),
+                Arg::Text(
+                    if worker.is_some() {
+                        "claimed"
+                    } else {
+                        "queued"
+                    }
+                    .into(),
+                ),
                 arg_str(worker),
                 arg_str(worker.map(|_| "anthropic")),
                 arg_str(worker.map(|_| "claude-opus")),
@@ -3448,7 +3455,10 @@ mod task_notes_tests {
     }
 
     fn add(t: &TursoBackend, task_id: i64, worker: &str, body: &str) -> Value {
-        verb_note_add(t, &json!({"task_id": task_id, "worker": worker, "body": body}))
+        verb_note_add(
+            t,
+            &json!({"task_id": task_id, "worker": worker, "body": body}),
+        )
     }
 
     fn history(t: &TursoBackend, task_id: i64) -> Vec<Value> {
@@ -3483,7 +3493,9 @@ mod task_notes_tests {
         let rows = listed["row"]["rows"].as_array().unwrap().clone();
         assert_eq!(listed["row"]["count"], 2);
         assert_eq!(
-            rows.iter().map(|r| r["id"].as_i64().unwrap()).collect::<Vec<_>>(),
+            rows.iter()
+                .map(|r| r["id"].as_i64().unwrap())
+                .collect::<Vec<_>>(),
             written,
             "both notes survive, oldest first"
         );
@@ -3521,7 +3533,10 @@ mod task_notes_tests {
         );
         assert_eq!(refused["ok"], false);
         assert!(
-            refused["error"].as_str().unwrap().contains("only its author"),
+            refused["error"]
+                .as_str()
+                .unwrap()
+                .contains("only its author"),
             "{refused}"
         );
 
@@ -3535,7 +3550,11 @@ mod task_notes_tests {
 
         let h = history(&t, id);
         let kinds: Vec<&str> = h.iter().map(|r| r["kind"].as_str().unwrap()).collect();
-        assert_eq!(kinds, ["note_added", "note_edited"], "the refused edit wrote no history");
+        assert_eq!(
+            kinds,
+            ["note_added", "note_edited"],
+            "the refused edit wrote no history"
+        );
         assert_eq!(h[1]["detail"]["previous_body"], "first draft");
         assert_eq!(h[1]["detail"]["note_id"], note_id);
         assert_eq!(h[1]["session_id"], "ses_claim");
@@ -3544,12 +3563,18 @@ mod task_notes_tests {
         assert_eq!(removed["ok"], true, "{removed}");
         assert!(!removed["row"]["deleted_at"].is_null());
         let again = verb_note_remove(&t, &json!({"note_id": note_id, "worker": "lane-9"}));
-        assert!(again["error"].as_str().unwrap().contains("was removed"), "{again}");
+        assert!(
+            again["error"].as_str().unwrap().contains("was removed"),
+            "{again}"
+        );
         let live = verb_note_list(&t, &json!({"task_id": id}));
         assert_eq!(live["row"]["count"], 0);
         assert_eq!(live["row"]["rows"].as_array().unwrap().len(), 0);
         let all = verb_note_list(&t, &json!({"task_id": id, "include_removed": true}));
-        assert_eq!(all["row"]["rows"][0]["body"], "second draft", "soft delete keeps the row");
+        assert_eq!(
+            all["row"]["rows"][0]["body"], "second draft",
+            "soft delete keeps the row"
+        );
         let h = history(&t, id);
         assert_eq!(h[2]["kind"], "note_removed");
         assert_eq!(h[2]["detail"]["previous_body"], "second draft");
@@ -3564,14 +3589,30 @@ mod task_notes_tests {
         let long = add(&t, id, "w", &"x".repeat(NOTE_BODY_MAX_CHARS + 1));
         assert!(long["error"].as_str().unwrap().contains("4096"), "{long}");
         let at_limit = add(&t, id, "w", &"é".repeat(NOTE_BODY_MAX_CHARS));
-        assert_eq!(at_limit["ok"], true, "the limit counts characters, not bytes");
+        assert_eq!(
+            at_limit["ok"], true,
+            "the limit counts characters, not bytes"
+        );
         let no_author = verb_note_add(&t, &json!({"task_id": id, "body": "b"}));
-        assert!(no_author["error"].as_str().unwrap().contains("worker is required"));
-        let bad_kind =
-            verb_note_add(&t, &json!({"task_id": id, "worker": "w", "body": "b", "author_kind": "robot"}));
+        assert!(
+            no_author["error"]
+                .as_str()
+                .unwrap()
+                .contains("worker is required")
+        );
+        let bad_kind = verb_note_add(
+            &t,
+            &json!({"task_id": id, "worker": "w", "body": "b", "author_kind": "robot"}),
+        );
         assert_eq!(bad_kind["exit"], 2, "{bad_kind}");
         let missing = add(&t, id + 999, "w", "b");
-        assert!(missing["error"].as_str().unwrap().contains("does not exist"), "{missing}");
+        assert!(
+            missing["error"]
+                .as_str()
+                .unwrap()
+                .contains("does not exist"),
+            "{missing}"
+        );
         // A non-holder's note carries no claim marks.
         let plain = add(&t, id, "w", "plain");
         assert!(plain["row"]["session_id"].is_null());
@@ -3653,5 +3694,148 @@ mod task_notes_tests {
         assert_eq!(links[1]["other_kind"], "pr");
         assert_eq!(links[1]["other_number"], 14441);
         assert_eq!(links[1]["link_kind"], "pr_for");
+        super::links::ensure_q6_backfill(&t).expect("backfill re-run is safe");
+        let still_two = t
+            .query_objs(
+                "SELECT id FROM queue_links WHERE task_id = ? AND removed_at IS NULL",
+                &[Arg::Int(task_id)],
+                &[],
+            )
+            .expect("seeded links remain queryable");
+        assert_eq!(still_two.len(), 2, "backfill is idempotent");
+    }
+
+    #[test]
+    fn q6_sql_census_reproduces_recorded_blocker_counts() {
+        let (t, _db) = fake_backend();
+        let mut task_id = 1i64;
+        let mut open_remaining = 241usize;
+        while open_remaining > 0 {
+            let count = if task_id <= 63 { 2 } else { 1 };
+            let count = count.min(open_remaining);
+            let deps: Vec<Value> = (0..count)
+                .map(|idx| {
+                    let number = if task_id <= 7 && idx == 0 {
+                        3399
+                    } else {
+                        5000 + task_id * 10 + idx as i64
+                    };
+                    json!({"kind":"issue", "repo":"developing-today/code", "number":number, "state":"open"})
+                })
+                .collect();
+            super::links::sync_task_deps(
+                &t,
+                task_id,
+                "census-fixture",
+                &deps,
+                "2026-11-24T00:00:00Z",
+                "fixture",
+            )
+            .expect("normalize open census edges");
+            open_remaining -= count;
+            task_id += 1;
+        }
+        for offset in 0..50i64 {
+            let dep = json!({"kind":"issue", "repo":"developing-today/code", "number":6000 + offset, "state":"cleared", "cleared_at":"2026-11-24T01:00:00Z"});
+            super::links::sync_task_deps(
+                &t,
+                1000 + offset,
+                "census-fixture",
+                &[dep],
+                "2026-11-24T00:00:00Z",
+                "fixture",
+            )
+            .expect("normalize cleared census edges");
+        }
+        for task in [16024i64, 20343] {
+            let malformed = json!({"kind":"task", "state":"open"});
+            super::links::sync_task_deps(
+                &t,
+                task,
+                "census-fixture",
+                &[malformed],
+                "2026-11-24T00:00:00Z",
+                "fixture",
+            )
+            .expect("retain malformed task:None edge");
+        }
+        let counts = t
+            .query_objs(
+                "SELECT state, count(*) AS n FROM task_deps GROUP BY state ORDER BY state",
+                &[],
+                &[],
+            )
+            .expect("SQL-only blocker state census");
+        assert_eq!(
+            counts.iter().find(|r| r["state"] == "open").unwrap()["n"],
+            241
+        );
+        assert_eq!(
+            counts.iter().find(|r| r["state"] == "cleared").unwrap()["n"],
+            50
+        );
+        assert_eq!(
+            counts.iter().find(|r| r["state"] == "malformed").unwrap()["n"],
+            2
+        );
+        let top = t
+            .query_objs(
+                "SELECT ref_number, count(*) AS n FROM task_deps WHERE state = 'open' \
+                 AND ref_number IS NOT NULL GROUP BY ref_number ORDER BY n DESC, ref_number LIMIT 1",
+                &[],
+                &[],
+            )
+            .expect("SQL top blocker query");
+        assert_eq!(top[0]["ref_number"], 3399);
+        assert_eq!(top[0]["n"], 7);
+        let tasks = t
+            .query_objs(
+                "SELECT count(DISTINCT task_id) AS n FROM task_deps WHERE state = 'open'",
+                &[],
+                &[],
+            )
+            .expect("SQL distinct blocked task count");
+        assert_eq!(tasks[0]["n"], 178);
+    }
+
+    #[test]
+    fn q6_link_change_emits_history_without_changing_task_status() {
+        let (t, _db) = fake_backend();
+        let packet = json!({
+            "title":"Q6 link history", "priority":50,
+            "dedupe_key":"q6-link-history-fixture",
+            "payload":{"schema":"repo-task/v1", "kind":"small_fix", "repo":"developing-today/code",
+                "problem":"history", "evidence":["fixture"], "acceptance":["linked transitions are visible"],
+                "scope":{"include":["Q6"],"exclude":[]}, "tests":["history oracle"],
+                "risk":{"level":"low","flags":[]}, "priority_reason":"fixture",
+                "timebox_minutes":30,"max_attempts":2,"context_refs":[],
+                "dedupe":{"checked_at":"2026-11-25T00:00:00Z","basis":"fixture"}}
+        });
+        let enqueued = verb_enqueue(
+            &t,
+            &json!({"queue":"repo-health-code-pilot", "packet":packet}),
+        );
+        assert_eq!(enqueued["ok"], true, "{enqueued}");
+        let task_id = enqueued["row"]["id"].as_i64().unwrap();
+        let request = json!({"task_id":task_id,"worker":"q6-test","link_kind":"related",
+            "other_issue":{"repo":"developing-today/code","number":14170}});
+        assert_eq!(verb_link_add(&t, &request)["ok"], true);
+        assert_eq!(verb_link_remove(&t, &request)["ok"], true);
+        let events = t
+            .query_objs(
+                "SELECT kind FROM events WHERE task_id = ? AND kind IN ('linked','unlinked') ORDER BY id",
+                &[Arg::Int(task_id)],
+                &[],
+            )
+            .expect("link transition event rows");
+        assert_eq!(
+            events
+                .iter()
+                .map(|r| r["kind"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            ["linked", "unlinked"]
+        );
+        let task = get_task(&t, task_id).unwrap().unwrap();
+        assert_eq!(task["status"], "queued");
     }
 }

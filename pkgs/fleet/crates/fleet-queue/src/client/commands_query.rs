@@ -1162,7 +1162,9 @@ pub(super) fn cmd_timeline(verb: &str, rest: &[String]) -> i32 {
     let json_out = args.has("json");
     if events.is_empty() && notes.is_empty() {
         if json_out {
-            print_json(&json!({"task_id": task_id, "events": [], "notes": [], "story": [], "served": []}));
+            print_json(
+                &json!({"task_id": task_id, "events": [], "notes": [], "story": [], "served": []}),
+            );
             return 0;
         }
         println!("task {task_id}: no timeline records");
@@ -2041,4 +2043,94 @@ fn cmd_note_remove(rest: &[String]) -> i32 {
     let resp = unwrap_ok(call("/note-remove", &body));
     print_json(&require_row(&resp, "note_remove"));
     0
+}
+
+/// Queue relationship management backed by normalized queue_links.
+pub(super) fn cmd_link(rest: &[String]) -> i32 {
+    if rest.is_empty() || is_help_arg(&rest[0]) {
+        println!("{}", usage("link"));
+        return if rest.is_empty() { 2 } else { 0 };
+    }
+    let tail = &rest[1..];
+    match rest[0].as_str() {
+        "add" => cmd_link_change(tail, true),
+        "remove" => cmd_link_change(tail, false),
+        "list" => {
+            let args = parse_verb_args("link list", tail, &[], &["include-removed", "json"]);
+            reject_extra_pos("link list", &args, 1);
+            let task_id = args.pos_i64(0, "task_id");
+            let resp = unwrap_ok(call(
+                "/link-list",
+                &json!({
+                    "task_id": task_id,
+                    "include_removed": args.has("include-removed"),
+                }),
+            ));
+            if args.has("json") {
+                print_json(&resp);
+            } else {
+                println!(
+                    "{}",
+                    resp.get("links").cloned().unwrap_or_else(|| json!([]))
+                );
+            }
+            0
+        }
+        sub => {
+            eprint(&format!(
+                "repo-queue: unknown link command {sub:?}\n{}",
+                usage("link")
+            ));
+            2
+        }
+    }
+}
+
+fn cmd_link_change(rest: &[String], add: bool) -> i32 {
+    let verb = if add { "link add" } else { "link remove" };
+    let args = parse_verb_args(verb, rest, &["worker", "kind", "issue", "pr", "task"], &[]);
+    reject_extra_pos(verb, &args, 1);
+    let target_count = ["issue", "pr", "task"]
+        .iter()
+        .filter(|k| args.has(k))
+        .count();
+    if target_count != 1 {
+        die(
+            2,
+            &format!("{verb}: exactly one of --issue, --pr, or --task is required"),
+        );
+    }
+    let mut body = json!({
+        "task_id": args.pos_i64(0, "task_id"),
+        "worker": opt_worker(&args),
+        "link_kind": args.get("kind").unwrap_or_else(|| "related".to_owned()),
+    });
+    if let Some(issue) = args.get("issue") {
+        let (repo, number) = parse_link_target(&issue, "issue");
+        body["other_issue"] = json!({"repo": repo, "number": number});
+    } else if let Some(pr) = args.get("pr") {
+        let (repo, number) = parse_link_target(&pr, "pr");
+        body["other_pr"] = json!({"repo": repo, "number": number});
+    } else if let Some(task) = args.get("task") {
+        body["other_task_id"] = json!(
+            task.parse::<i64>()
+                .unwrap_or_else(|_| die(2, "link: --task must be a positive integer"))
+        );
+    }
+    let path = if add { "/link-add" } else { "/link-remove" };
+    print_json(&unwrap_ok(call(path, &body)));
+    0
+}
+
+fn parse_link_target(value: &str, label: &str) -> (String, i64) {
+    let Some((repo, number)) = value.rsplit_once('#') else {
+        die(2, &format!("link: --{label} must be owner/repo#number"));
+    };
+    let number = number
+        .parse::<i64>()
+        .unwrap_or_else(|_| die(2, &format!("link: --{label} number must be positive")));
+    if repo.split('/').count() != 2 || repo.split('/').any(str::is_empty) || number <= 0 {
+        die(2, &format!("link: --{label} must be owner/repo#number"));
+    }
+    (repo.to_owned(), number)
 }

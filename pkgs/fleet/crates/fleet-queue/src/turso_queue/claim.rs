@@ -204,6 +204,9 @@ pub(crate) fn verb_enqueue(t: &TursoBackend, req: &Value) -> Value {
             ],
         )?;
         let id = ins.last_insert_rowid.unwrap_or(0);
+        let mut link_row = task.clone();
+        link_row["created_at"] = json!(now_iso());
+        seed_task_links(t, id, &link_row, "enqueue_repo_task")?;
         event(
             t,
             Some("enqueue_repo_task"),

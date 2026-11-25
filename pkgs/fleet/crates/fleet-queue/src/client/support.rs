@@ -215,6 +215,7 @@ Run `repo-queue <verb> --help` for flags:\n\
   history <task-id> [--worker <id>] [--json]  (alias of timeline)\n\
   show <task-id> [--limit <n>] [--json]\n\
   note <add|list|edit|remove> ...\n\
+  link <add|remove|list> ...\n\
   models [--days <n>] [--json]\n\
   health [--queue <name>] [--worker <id>]\n\
   signal [--queue <name>] [--reason <text>]\n\
@@ -311,6 +312,18 @@ pub(crate) fn usage(verb: &str) -> &'static str {
         }
         "note" => {
             "usage: repo-queue note <add|list|edit|remove> ...\n\nA task's notes: an append-only, authored stream (#14170 Q4). Run `repo-queue note <sub> --help` for flags."
+        }
+        "link" => {
+            "usage: repo-queue link <add|remove|list> ...\n\nManages normalized relationships for a queue task."
+        }
+        "link add" => {
+            "usage: repo-queue link add <task-id> [--kind <kind>] (--issue <owner/repo#n> | --pr <owner/repo#n> | --task <task-id>) [--worker <id>]\n\nAdds an issue, pull request, or task relationship."
+        }
+        "link remove" => {
+            "usage: repo-queue link remove <task-id> [--kind <kind>] (--issue <owner/repo#n> | --pr <owner/repo#n> | --task <task-id>) [--worker <id>]\n\nSoft-removes a relationship."
+        }
+        "link list" => {
+            "usage: repo-queue link list <task-id> [--include-removed] [--json]\n\nLists a task's relationships."
         }
         "note add" => {
             "usage: repo-queue note add <task-id> --text <text> [--worker <id>] [--kind agent|human|system] [--session-id <id>] [--model-provider <p>] [--model-id <id>] [--model-variant <v>]\n\nAppends a note to a task. The worker is the author. The body is at most 4096 characters. Without marks, a note by the task's claim holder copies the claim's session and model."

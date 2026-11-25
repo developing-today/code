@@ -1034,6 +1034,7 @@ impl TursoBackend {
                 )?;
             }
         }
+        super::links::ensure_q6_backfill(self)?;
         Ok(())
     }
 }
@@ -1051,7 +1052,7 @@ impl Clone for Arg {
     }
 }
 
-pub(crate) const SCHEMA: [&str; 44] = [
+pub(crate) const SCHEMA: [&str; 45] = [
     "CREATE TABLE IF NOT EXISTS tasks (\
         id INTEGER PRIMARY KEY AUTOINCREMENT, \
         queue TEXT NOT NULL, manual_only INTEGER NOT NULL DEFAULT 0, title TEXT, body TEXT, \
@@ -1140,12 +1141,13 @@ pub(crate) const SCHEMA: [&str; 44] = [
         ON queue_links(task_id, link_kind, link_key) WHERE removed_at IS NULL",
     "CREATE TABLE IF NOT EXISTS task_deps (\
         id INTEGER PRIMARY KEY AUTOINCREMENT, task_id INTEGER NOT NULL, \
-        dep_kind TEXT NOT NULL, dep_key TEXT NOT NULL, ref_repo TEXT, \
+        block_id TEXT NOT NULL, dep_kind TEXT NOT NULL, dep_key TEXT NOT NULL, ref_repo TEXT, \
         ref_number INTEGER, ref_task_id INTEGER, \
         state TEXT NOT NULL DEFAULT 'open' CHECK(state IN ('open','cleared','malformed')), \
         created_at TEXT NOT NULL, cleared_at TEXT, cleared_by TEXT, \
-        detail TEXT NOT NULL DEFAULT '{}', UNIQUE(task_id, dep_key))",
+        detail TEXT NOT NULL DEFAULT '{}', UNIQUE(task_id, block_id, dep_key))",
     "CREATE INDEX IF NOT EXISTS task_deps_task ON task_deps(task_id, state)",
+    "CREATE INDEX IF NOT EXISTS task_deps_block ON task_deps(task_id, block_id, state)",
     "CREATE INDEX IF NOT EXISTS task_deps_ref ON task_deps(ref_repo, ref_number, state)",
     "CREATE TABLE IF NOT EXISTS queue_schema_migrations (\
         name TEXT PRIMARY KEY, applied_at TEXT NOT NULL, detail TEXT NOT NULL DEFAULT '{}')",
