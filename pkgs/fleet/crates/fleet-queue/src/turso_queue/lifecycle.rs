@@ -3298,6 +3298,64 @@ mod task_history_tests {
         assert!(all_ids.contains(&other_queue), "{all}");
     }
 
+    /// #13068: `list --status dep_blocked` returns the rows health counts
+    /// as dep-blocked (blocked rows with a `blocked_deps` record) through
+    /// the broker `/list` route, while `--status blocked` still lists
+    /// every blocked row.
+    #[test]
+    fn list_dep_blocked_matches_health_count_13068() {
+        let (t, _) = fake_backend();
+        let queue = "dep-list-13068";
+        let dep_blocked = seed_consumer_task(&t, queue, "blocked", 3_000);
+        let plain_blocked = seed_consumer_task(&t, queue, "blocked", 2_000);
+        let queued_with_deps = seed_consumer_task(&t, queue, "queued", 1_000);
+        let other_queue = seed_consumer_task(&t, "dep-list-13068-other", "blocked", 1_000);
+        for id in [dep_blocked, queued_with_deps, other_queue] {
+            t.exec(
+                "UPDATE tasks SET blocked_deps = ? WHERE id = ?",
+                &[
+                    Arg::Text(r#"[{"kind":"issue","ref":"developing-today/code#1"}]"#.into()),
+                    Arg::Int(id),
+                ],
+            )
+            .unwrap();
+        }
+
+        let ids = |resp: &Value| -> Vec<i64> {
+            let mut ids: Vec<i64> = resp["rows"]
+                .as_array()
+                .unwrap_or_else(|| panic!("no rows: {resp}"))
+                .iter()
+                .map(|r| r["id"].as_i64().unwrap())
+                .collect();
+            ids.sort_unstable();
+            ids
+        };
+
+        let dep = crate::turso_queue::dispatch(
+            &t,
+            "/list",
+            &json!({"queue": queue, "status": "dep_blocked", "limit": 500}),
+        );
+        assert_eq!(ids(&dep), vec![dep_blocked], "{dep}");
+        assert_eq!(dep["total"], 1, "{dep}");
+
+        let blocked = crate::turso_queue::dispatch(
+            &t,
+            "/list",
+            &json!({"queue": queue, "status": "blocked", "limit": 500}),
+        );
+        assert_eq!(ids(&blocked), vec![dep_blocked, plain_blocked], "{blocked}");
+
+        let health = super::super::verb_health(&t, &json!({"queue": queue}));
+        let entry = health["rows"]
+            .as_array()
+            .and_then(|rows| rows.iter().find(|r| r["queue"] == queue))
+            .unwrap_or_else(|| panic!("no health row for {queue}: {health}"));
+        assert_eq!(entry["dep_blocked"], dep["total"], "{health}");
+        assert_eq!(entry["blocked"], 2, "{health}");
+    }
+
     /// Oracle (#14170 Q8, design §9): the needs-user read returns only
     /// blocked/parked tasks carrying a question metadata entry, lifts
     /// the question object out of the metadata, and counts blocked-by

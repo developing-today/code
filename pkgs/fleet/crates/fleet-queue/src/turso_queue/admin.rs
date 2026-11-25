@@ -1836,9 +1836,19 @@ pub(crate) fn verb_list(t: &TursoBackend, req: &Value) -> Value {
         conds += " AND queue = ?";
         args.push(Arg::Text(queue));
     }
+    // #13068: dep-blocked tasks are not a stored status — they are
+    // `blocked` rows carrying a `blocked_deps` record (#8276), which
+    // health counts separately as `dep_blocked`. `--status dep_blocked`
+    // selects exactly those rows, matching the health count;
+    // `--status blocked` keeps its meaning and lists every blocked row,
+    // dep-blocked ones included.
     if let Some(s) = req_str(req, "status") {
-        conds += " AND status = ?";
-        args.push(Arg::Text(s.to_string()));
+        if s == "dep_blocked" {
+            conds += " AND status = 'blocked' AND blocked_deps IS NOT NULL";
+        } else {
+            conds += " AND status = ?";
+            args.push(Arg::Text(s.to_string()));
+        }
     }
     // #5444: recover a lane's or worker's live claims before lease
     // expiry — list filters end-to-end (client -> broker -> here).
