@@ -29,6 +29,7 @@ examples=(
   apps/tic-tac-toe/program
   apps/space-invaders/program
   apps/checkers/program
+  apps/chess/program
 )
 
 for example in "${examples[@]}"; do
