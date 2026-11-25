@@ -65,7 +65,8 @@ use crate::world_session::{
     Inbound, SessionConfig, SessionIo, encode_hex, run_session, run_session_with,
 };
 use crate::world_terminal::{
-    PROBE_QUERIES, PROBE_TIMEOUT, ProbeDemux, ProbeOutcome, TierPresenter,
+    CURSOR_HIDE, CURSOR_SHOW, DISPLAY_ENV, DisplayMode, PROBE_QUERIES, PROBE_TIMEOUT, ProbeDemux,
+    ProbeOutcome, TerminalProfile, TierPresenter, primary_exit_sequence,
 };
 
 /// File, beside the other server keys, that holds the SSH host key.
@@ -325,6 +326,7 @@ impl Server for SshServer {
             exec: None,
             exec_backlog: Arc::new(AtomicUsize::new(0)),
             options: self.options,
+            display: Ok(DisplayMode::Auto),
         }
     }
 }
@@ -362,6 +364,9 @@ struct SshClient {
     exec_backlog: Arc<AtomicUsize>,
     /// Adapter options the server was started with, handed to each shell.
     options: SshServeOptions,
+    /// Display mode from the client's `ID_DISPLAY` environment request
+    /// (#14861), or the refused value.
+    display: Result<DisplayMode, String>,
 }
 
 enum SshInputFrame {
@@ -523,6 +528,22 @@ impl Handler for SshClient {
         session.channel_success(channel)
     }
 
+    /// `ID_DISPLAY` chooses the raw session's display mode (#14861).
+    /// Every other variable is declined: the world takes no environment.
+    async fn env_request(
+        &mut self,
+        channel: ChannelId,
+        variable_name: &str,
+        variable_value: &str,
+        session: &mut Session,
+    ) -> Result<(), russh::Error> {
+        if variable_name != DISPLAY_ENV {
+            return session.channel_failure(channel);
+        }
+        self.display = DisplayMode::parse(variable_value).ok_or_else(|| variable_value.to_owned());
+        session.channel_success(channel)
+    }
+
     async fn window_change_request(
         &mut self,
         channel: ChannelId,
@@ -567,16 +588,36 @@ impl Handler for SshClient {
             ));
             return Ok(());
         }
+        if !login.command_mode
+            && let Err(value) = &self.display
+        {
+            // An unknown mode is refused rather than guessed, before the
+            // shell joins the world or writes a single terminal byte.
+            let message = format!("{}\r\n", terminal_text(&display_refusal(value)));
+            session.channel_success(channel)?;
+            let handle = session.handle();
+            tokio::spawn(async move {
+                let _ = handle.data(channel, message).await;
+                tokio::time::sleep(REFUSED_SHELL_DELAY).await;
+                let _ = handle.close(channel).await;
+            });
+            return Ok(());
+        }
+        let display = if login.command_mode {
+            DisplayMode::Auto
+        } else {
+            self.display.clone().unwrap_or_default()
+        };
         let first = join_frame(login);
         session.channel_success(channel)?;
-        let alt_screen = !login.command_mode;
+        let alt_screen = !login.command_mode && display.uses_alt_screen();
 
         let (input, frames) = mpsc::channel(INPUT_QUEUE);
         let first_resize = self.viewport.take();
         // A raw shell behind a PTY owns a terminal to probe. Command mode is
         // line oriented, and an exec channel or PTY-less client gets no probe:
         // its bytes must keep the existing JSON-lines behavior.
-        let probe_tty = first_resize.is_some() && !login.command_mode;
+        let probe_tty = first_resize.is_some() && !login.command_mode && display.probes();
         self.input = Some(input);
         let mode = if login.command_mode {
             ShellMode::Command
@@ -594,6 +635,9 @@ impl Handler for SshClient {
             mode,
             alt_screen,
             alt_screen_entered: false,
+            display,
+            hide_cursor: !login.command_mode && display.hides_cursor(),
+            cursor_hidden: false,
             last_error: None,
             dropped_input: Arc::clone(&self.dropped_input),
             lines: WorldLineBuffer::default(),
@@ -614,7 +658,11 @@ impl Handler for SshClient {
             kitty: kitty::KittyKeyboard::new(),
             kitty_drop_baseline: 0,
             kitty_verify_deadline: None,
-            presenter: None,
+            // A mode the player chose renders through its presenter from the
+            // first frame, so text mode never falls back to cursor writes
+            // while the probe window (if any) is open.
+            presenter: (!login.command_mode && display.is_forced())
+                .then(|| TierPresenter::new(TerminalProfile::default()).with_display(display)),
             active_form: None,
             form_line: Vec::new(),
             form_backlog: VecDeque::new(),
@@ -631,7 +679,7 @@ impl Handler for SshClient {
                 documents_store: Some(io.blobs.clone()),
                 ..SessionConfig::default()
             };
-            io.enter_alt_screen().await;
+            io.begin_display().await;
             io.start_terminal_probe().await;
             run_session_with(&hub, &mut io, config).await;
             io.restore_kitty_keyboard().await;
@@ -841,6 +889,12 @@ struct SshIo {
     alt_screen: bool,
     /// Whether the enter sequence has actually been written to the channel.
     alt_screen_entered: bool,
+    /// Display mode the player chose, `Auto` when none (#14861).
+    display: DisplayMode,
+    /// Whether this session hides the cursor while it draws.
+    hide_cursor: bool,
+    /// Whether the hide sequence was written, so it is undone on exit.
+    cursor_hidden: bool,
     /// The last error message, re-sent after leaving the alternate screen.
     last_error: Option<String>,
     /// Bytes the input queue refused, shared with the russh handler: drops
@@ -1146,15 +1200,41 @@ impl SshIo {
         }
     }
 
+    /// Open the session's display: the alternate screen when the mode
+    /// uses it, then the cursor hide for a cursor mode the player chose.
+    async fn begin_display(&mut self) {
+        self.enter_alt_screen().await;
+        if self.hide_cursor
+            && !self.cursor_hidden
+            && self.handle.data(self.channel, CURSOR_HIDE).await.is_ok()
+        {
+            self.cursor_hidden = true;
+        }
+    }
+
     /// Leave the alternate screen and re-send the last error after the leave
     /// sequence, so a refused join stays readable in the restored scrollback.
     async fn leave_alt_screen(&mut self) {
+        let rows = self
+            .presenter
+            .as_ref()
+            .and_then(TierPresenter::last_screen_rows);
         // Restore presenter modes (synchronized output) on every exit
         // path, before the alternate screen itself is left (F13.4).
-        let restore = self
+        let mut restore = self
             .presenter
             .as_mut()
             .map_or_else(String::new, TierPresenter::finish);
+        if self.cursor_hidden {
+            self.cursor_hidden = false;
+            if self.alt_screen {
+                restore.push_str(CURSOR_SHOW);
+            } else {
+                // Primary mode: the finished frame stays on show above the
+                // shell prompt (#14861).
+                restore.push_str(&primary_exit_sequence(rows));
+            }
+        }
         if !self.alt_screen_entered {
             if !restore.is_empty() {
                 let _ = self.handle.data(self.channel, restore).await;
@@ -1167,6 +1247,18 @@ impl SshIo {
             None => format!("{restore}{ALT_SCREEN_LEAVE}"),
         };
         let _ = self.handle.data(self.channel, text).await;
+    }
+
+    /// A text view: a full clear and repaint, or in text mode the changed
+    /// lines only, with no escape byte (#14861).
+    fn text_view(&mut self, data: &str) -> String {
+        if self.display == DisplayMode::Text
+            && let Some(presenter) = self.presenter.as_mut()
+        {
+            let lines: Vec<String> = data.lines().map(terminal_text).collect();
+            return presenter.render_lines(&lines);
+        }
+        format!("\x1b[H\x1b[2J{}", terminal_text(data))
     }
 
     /// Send the one startup probe burst, never retried per feature (F13.4).
@@ -1203,7 +1295,14 @@ impl SshIo {
             ?tier,
             "terminal capability probe closed; tier presenter selected"
         );
-        self.presenter = Some(TierPresenter::from_outcome(&outcome));
+        match self.presenter.as_mut() {
+            // A mode the player chose keeps its presenter (and its diff
+            // state); the probe only adds the confirmed profile (#14861).
+            Some(presenter) if self.display.is_forced() => {
+                presenter.adopt_outcome(&outcome, self.display);
+            }
+            _ => self.presenter = Some(TierPresenter::from_outcome(&outcome)),
+        }
         // Retained for the raw input path: kitty activation (Slice E of
         // #787) reads the detected support from here once the held
         // pre-activation bytes below have drained as legacy input.
@@ -1699,7 +1798,11 @@ impl SessionIo for SshIo {
                 }
                 self.closed_form = None;
                 self.active_form = Some(form);
-                format!("\x1b[H\x1b[2J{}", terminal_text(&prompt))
+                if self.display == DisplayMode::Text {
+                    format!("\r\n{}", terminal_text(&prompt))
+                } else {
+                    format!("\x1b[H\x1b[2J{}", terminal_text(&prompt))
+                }
             } else {
                 self.active_form = None;
                 self.form_line.clear();
@@ -1750,17 +1853,17 @@ impl SessionIo for SshIo {
                             }
                             rendered
                         } else if let Some(data) = value["data"].as_str() {
-                            format!("\x1b[H\x1b[2J{}", terminal_text(data))
+                            self.text_view(data)
                         } else {
                             return true;
                         }
                     } else if let Some(data) = value["data"].as_str() {
-                        format!("\x1b[H\x1b[2J{}", terminal_text(data))
+                        self.text_view(data)
                     } else {
                         return true;
                     }
                 } else if let Some(data) = value["data"].as_str() {
-                    format!("\x1b[H\x1b[2J{}", terminal_text(data))
+                    self.text_view(data)
                 } else {
                     return true;
                 };
@@ -2476,6 +2579,14 @@ impl Typing {
 /// one participant's text could otherwise reorder or falsify the terminal
 /// output around it (design #3455). The accepted cost is that `ZWJ`-joined
 /// emoji render as separate glyphs here; the stored text is untouched.
+/// The one line that refuses an unknown `ID_DISPLAY` value (#14861).
+fn display_refusal(value: &str) -> String {
+    format!(
+        "unknown {DISPLAY_ENV} value {value:?}; use {}",
+        DisplayMode::NAMES.join(", ")
+    )
+}
+
 fn terminal_text(data: &str) -> String {
     data.chars()
         .filter(|ch| (!ch.is_control() || matches!(ch, '\n' | '\t')) && !crate::is_format_char(*ch))
@@ -4903,6 +5014,141 @@ mod tests {
         let contents = terminal.screen().contents();
         assert!(contents.contains("ab"), "{contents:?}");
         assert!(!contents.contains("cd"), "{contents:?}");
+        server.abort();
+    }
+
+    /// Serve the fixed 4x2 screen world and return its port, server task
+    /// and a player capability.
+    async fn fixed_screen_server() -> (u16, tokio::task::JoinHandle<std::io::Result<()>>, String) {
+        let world = WorldHandle::spawn_with_program(
+            WorldCore::new("lobby", WorldLimits::default()).unwrap(),
+            Box::new(FixedScreenSsh),
+        );
+        let (_, capability) = world
+            .issue(
+                "player".to_owned(),
+                crate::world::WorldScopes::from_names(["join", "input"]).unwrap(),
+            )
+            .await
+            .unwrap();
+        let hub = WorldHub::single(WorldService::new(world, Some("admin".to_owned())));
+        let (port, server) = start(hub).await;
+        (port, server, capability.expose().to_owned())
+    }
+
+    /// A PTY shell that asked for `ID_DISPLAY=<value>` before it opened.
+    async fn display_shell(
+        session: &client::Handle<TrustAll>,
+        value: &str,
+    ) -> Channel<client::Msg> {
+        let channel = session.channel_open_session().await.unwrap();
+        channel
+            .request_pty(true, "xterm", 80, 24, 0, 0, &[])
+            .await
+            .unwrap();
+        channel.set_env(true, DISPLAY_ENV, value).await.unwrap();
+        channel.request_shell(true).await.unwrap();
+        channel
+    }
+
+    /// Read raw channel bytes until `needle` appears in them (or the
+    /// channel closes, when `needle` is `None`).
+    async fn read_bytes_until(channel: &mut Channel<client::Msg>, needle: Option<&str>) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        tokio::time::timeout(Duration::from_secs(15), async {
+            loop {
+                if needle.is_some_and(|needle| sequence_count(&bytes, needle) > 0) {
+                    break;
+                }
+                match channel.wait().await {
+                    Some(ChannelMsg::Data { data }) => bytes.extend_from_slice(&data),
+                    Some(_) => {}
+                    None => break,
+                }
+            }
+        })
+        .await
+        .unwrap_or_else(|_| panic!("timed out waiting for {needle:?}; got {bytes:?}"));
+        bytes
+    }
+
+    #[tokio::test]
+    async fn a_text_display_writes_plain_lines_and_never_an_escape_byte() {
+        let (port, server, capability) = fixed_screen_server().await;
+        let session = connect(port, &capability).await;
+        let mut channel = display_shell(&session, "text").await;
+        let mut bytes = read_bytes_until(&mut channel, Some("wxyz")).await;
+        // Let any late output (a probe, a repaint) arrive before judging.
+        let _ = tokio::time::timeout(Duration::from_millis(600), async {
+            while let Some(message) = channel.wait().await {
+                if let ChannelMsg::Data { data } = message {
+                    bytes.extend_from_slice(&data);
+                }
+            }
+        })
+        .await;
+        assert!(
+            !bytes.contains(&0x1b),
+            "text mode wrote an escape byte: {:?}",
+            String::from_utf8_lossy(&bytes)
+        );
+        let text = String::from_utf8_lossy(&bytes);
+        assert!(text.contains("abcd\r\nwxyz\r\n"), "{text:?}");
+        assert_eq!(
+            text.matches("wxyz").count(),
+            1,
+            "an unchanged view was rewritten: {text:?}"
+        );
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn a_primary_display_hides_the_cursor_and_stays_on_the_primary_screen() {
+        let (port, server, capability) = fixed_screen_server().await;
+        let session = connect(port, &capability).await;
+        let mut channel = display_shell(&session, "primary").await;
+        let mut terminal = vt100::Parser::default();
+        let bytes = read_until_screen_bytes(&mut channel, &mut terminal, "wxyz").await;
+        assert_eq!(sequence_position(&bytes, CURSOR_HIDE), Some(0), "{bytes:?}");
+        assert_eq!(sequence_count(&bytes, ALT_SCREEN_ENTER), 0, "{bytes:?}");
+        assert!(terminal.screen().contents().contains("abcd"));
+        assert!(!terminal.screen().alternate_screen());
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn an_alternate_display_enters_the_alternate_screen_then_hides_the_cursor() {
+        let (port, server, capability) = fixed_screen_server().await;
+        let session = connect(port, &capability).await;
+        let mut channel = display_shell(&session, "alternate").await;
+        let mut terminal = vt100::Parser::default();
+        let bytes = read_until_screen_bytes(&mut channel, &mut terminal, "wxyz").await;
+        assert_eq!(
+            sequence_position(&bytes, ALT_SCREEN_ENTER),
+            Some(0),
+            "{bytes:?}"
+        );
+        assert_eq!(
+            sequence_position(&bytes, CURSOR_HIDE),
+            Some(ALT_SCREEN_ENTER.len()),
+            "{bytes:?}"
+        );
+        assert!(terminal.screen().alternate_screen());
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn an_unknown_display_is_refused_before_any_terminal_byte() {
+        let (port, server, capability) = fixed_screen_server().await;
+        let session = connect(port, &capability).await;
+        let mut channel = display_shell(&session, "bogus").await;
+        let bytes = read_bytes_until(&mut channel, None).await;
+        let text = String::from_utf8_lossy(&bytes);
+        assert!(!bytes.contains(&0x1b), "{text:?}");
+        assert!(
+            text.contains("unknown ID_DISPLAY value \"bogus\"; use alternate, primary, text, auto"),
+            "{text:?}"
+        );
         server.abort();
     }
 

@@ -208,6 +208,23 @@ $ ssh -p 2222 toy-world@127.0.0.1
 
 Failures: `--listen` together with `--stdio` is a clap error, exit `2`. An unreachable host fails the tunnel, exit `1`.
 
+### Display modes
+
+A raw SSH session (not `cmd:`) chooses how the world's view is written with the `ID_DISPLAY` environment variable, sent as an SSH environment request. The tunnel passes it through untouched.
+
+```
+$ ssh -o SetEnv=ID_DISPLAY=text -p 2222 toy-world@127.0.0.1
+```
+
+| Value       | Screen                                                          | Writes                                                              |
+| ----------- | --------------------------------------------------------------- | ------------------------------------------------------------------- |
+| `auto`      | Alternate screen (the default when the variable is not sent).   | The tier the terminal probe selects.                                |
+| `alternate` | Alternate screen; the cursor is hidden while the world draws.   | Cursor-addressed rows, re-drawing only rows that changed.           |
+| `primary`   | Primary screen; the last frame stays on show after the session. | Cursor-addressed rows, erased and rewritten in place.               |
+| `text`      | Primary screen, no cursor movement.                             | Plain lines, only the lines that changed, and never an escape byte. |
+
+An unknown value refuses the session with one line naming the four values. Command-mode sessions ignore the variable.
+
 ## `compile`
 
 Compiles Roc sources on the host and installs the result. The host rewrites the app's `pf: platform "..."` path to its staged copy of the world platform, so any relative platform path in the source works.

@@ -79,6 +79,116 @@ pub enum PresentationTier {
     Tier3,
 }
 
+/// SSH environment variable a player sets to choose a [`DisplayMode`]
+/// (`ssh -o SetEnv=ID_DISPLAY=text ...`, #14861).
+pub const DISPLAY_ENV: &str = "ID_DISPLAY";
+
+/// How an interactive raw session writes the world's view (#14861).
+///
+/// `Auto` is the behaviour from before display modes existed: the
+/// alternate screen and the probed tier. The other three are the
+/// player's explicit choice and override the probe where they must.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum DisplayMode {
+    /// Alternate screen and the probed tier.
+    #[default]
+    Auto,
+    /// Alternate screen buffer, cursor-addressed rendering.
+    Alternate,
+    /// Primary screen, cursor-addressed erase and rewrite in place; the
+    /// final frame stays on show after the session.
+    Primary,
+    /// Plain lines only, changed lines only, never an escape sequence.
+    Text,
+}
+
+impl DisplayMode {
+    /// The accepted values, in the order they are documented.
+    pub const NAMES: [&'static str; 4] = ["alternate", "primary", "text", "auto"];
+
+    /// Parse an `ID_DISPLAY` value; `None` for anything else, so a typo
+    /// is refused rather than guessed.
+    #[must_use]
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "auto" => Some(Self::Auto),
+            "alternate" => Some(Self::Alternate),
+            "primary" => Some(Self::Primary),
+            "text" => Some(Self::Text),
+            _ => None,
+        }
+    }
+
+    /// The value's name, as accepted by [`DisplayMode::parse`].
+    #[must_use]
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::Alternate => "alternate",
+            Self::Primary => "primary",
+            Self::Text => "text",
+        }
+    }
+
+    /// Whether the session runs in the alternate screen buffer.
+    #[must_use]
+    pub fn uses_alt_screen(self) -> bool {
+        matches!(self, Self::Auto | Self::Alternate)
+    }
+
+    /// Whether the player chose this mode explicitly (anything but `Auto`).
+    #[must_use]
+    pub fn is_forced(self) -> bool {
+        self != Self::Auto
+    }
+
+    /// Whether the session may write the startup capability probe. Text
+    /// mode never writes an escape byte, so it never probes.
+    #[must_use]
+    pub fn probes(self) -> bool {
+        self != Self::Text
+    }
+
+    /// Whether the session hides the cursor while it draws. Only the two
+    /// cursor-addressed modes a player chose do; `Auto` is unchanged.
+    #[must_use]
+    pub fn hides_cursor(self) -> bool {
+        matches!(self, Self::Alternate | Self::Primary)
+    }
+
+    /// The tier this mode renders, given the probed one. The cursor
+    /// modes are the player's statement that the terminal addresses the
+    /// cursor, so they render at least Tier 2; Tier 1 extras still need
+    /// the probe's positive evidence. Text is always Tier 3.
+    #[must_use]
+    pub fn tier_for(self, probed: PresentationTier) -> PresentationTier {
+        match self {
+            Self::Auto => probed,
+            Self::Alternate | Self::Primary => match probed {
+                PresentationTier::Tier3 => PresentationTier::Tier2,
+                other => other,
+            },
+            Self::Text => PresentationTier::Tier3,
+        }
+    }
+}
+
+/// Cursor hide sequence written by the cursor modes a player chose.
+pub const CURSOR_HIDE: &str = "\x1b[?25l";
+/// Cursor show sequence, written on every exit path after [`CURSOR_HIDE`].
+pub const CURSOR_SHOW: &str = "\x1b[?25h";
+
+/// The bytes that end a primary-mode session: put the cursor on the
+/// line after the last frame row and show it, so the finished frame
+/// stays on screen above the shell prompt.
+#[must_use]
+pub fn primary_exit_sequence(frame_rows: Option<u16>) -> String {
+    match frame_rows {
+        Some(rows) if rows > 0 => format!("\x1b[{rows};1H\r\n{CURSOR_SHOW}"),
+        _ => format!("\r\n{CURSOR_SHOW}"),
+    }
+}
+
 /// Profile plus input bytes that were not complete matching query replies.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct ProbeOutcome {
@@ -472,6 +582,33 @@ impl TierPresenter {
             counters: PresenterCounters::default(),
             sync_used: false,
         }
+    }
+
+    /// Render in a player-chosen [`DisplayMode`] (#14861): the tier
+    /// becomes [`DisplayMode::tier_for`] the one this presenter selected.
+    #[must_use]
+    pub fn with_display(mut self, mode: DisplayMode) -> Self {
+        self.tier = mode.tier_for(self.tier);
+        self
+    }
+
+    /// Adopt a completed probe's profile under a player-chosen mode,
+    /// keeping the diff state when the tier does not change, so a forced
+    /// mode does not repaint (or, in text mode, reprint) the whole view
+    /// when the probe closes.
+    pub fn adopt_outcome(&mut self, outcome: &ProbeOutcome, mode: DisplayMode) {
+        let tier = mode.tier_for(outcome.tier());
+        self.profile = outcome.profile;
+        if tier != self.tier {
+            self.tier = tier;
+            self.invalidate();
+        }
+    }
+
+    /// Rows of the last screen this presenter rendered, if any.
+    #[must_use]
+    pub fn last_screen_rows(&self) -> Option<u16> {
+        self.previous_screen.as_ref().map(|screen| screen.height)
     }
 
     /// The tier this presenter renders.
@@ -1054,6 +1191,59 @@ mod tests {
             }
             Ok(self.replies.drain(..).flatten().collect())
         }
+    }
+
+    #[test]
+    fn display_modes_parse_name_and_choose_tiers() {
+        for name in DisplayMode::NAMES {
+            assert_eq!(DisplayMode::parse(name).map(DisplayMode::name), Some(name));
+        }
+        assert_eq!(DisplayMode::parse("Text"), None);
+        assert_eq!(DisplayMode::parse(""), None);
+        assert_eq!(DisplayMode::default(), DisplayMode::Auto);
+
+        use PresentationTier::{Tier1, Tier2, Tier3};
+        for probed in [Tier1, Tier2, Tier3] {
+            assert_eq!(DisplayMode::Auto.tier_for(probed), probed);
+            assert_eq!(DisplayMode::Text.tier_for(probed), Tier3);
+        }
+        for mode in [DisplayMode::Alternate, DisplayMode::Primary] {
+            assert_eq!(mode.tier_for(Tier3), Tier2);
+            assert_eq!(mode.tier_for(Tier2), Tier2);
+            assert_eq!(mode.tier_for(Tier1), Tier1);
+            assert!(mode.hides_cursor() && mode.probes() && mode.is_forced());
+        }
+        assert!(DisplayMode::Auto.uses_alt_screen() && DisplayMode::Alternate.uses_alt_screen());
+        assert!(!DisplayMode::Primary.uses_alt_screen() && !DisplayMode::Text.uses_alt_screen());
+        assert!(!DisplayMode::Text.probes() && !DisplayMode::Auto.hides_cursor());
+    }
+
+    #[test]
+    fn primary_exit_leaves_the_cursor_under_the_frame() {
+        assert_eq!(primary_exit_sequence(Some(12)), "\x1b[12;1H\r\n\x1b[?25h");
+        assert_eq!(primary_exit_sequence(None), "\r\n\x1b[?25h");
+        assert_eq!(primary_exit_sequence(Some(0)), "\r\n\x1b[?25h");
+    }
+
+    #[test]
+    fn a_forced_text_presenter_writes_no_escape_and_keeps_its_diff_on_adopt() {
+        let mut presenter =
+            TierPresenter::new(TerminalProfile::default()).with_display(DisplayMode::Text);
+        let first = presenter.render_lines(&["a score 0".to_owned(), "b ..A..".to_owned()]);
+        assert_eq!(first, "a score 0\r\nb ..A..\r\n");
+        presenter.adopt_outcome(&ProbeOutcome::default(), DisplayMode::Text);
+        let next = presenter.render_lines(&["a score 10".to_owned(), "b ..A..".to_owned()]);
+        assert_eq!(next, "a score 10\r\n");
+        assert!(!first.contains('\x1b') && !next.contains('\x1b'));
+        assert_eq!(presenter.tier(), PresentationTier::Tier3);
+    }
+
+    #[test]
+    fn a_forced_cursor_presenter_renders_at_least_tier_two() {
+        let presenter =
+            TierPresenter::new(TerminalProfile::default()).with_display(DisplayMode::Primary);
+        assert_eq!(presenter.tier(), PresentationTier::Tier2);
+        assert_eq!(presenter.last_screen_rows(), None);
     }
 
     #[test]
