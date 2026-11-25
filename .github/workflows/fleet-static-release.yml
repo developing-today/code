@@ -1,0 +1,117 @@
+name: fleet static release
+
+# CI tier policy: see .github/ci-policy.md
+#
+# Automated publish cadence for the fleet static binary (#14999).
+#
+# scripts/muse/publish-fleet.sh builds the static binary from a revision
+# and uploads it as the GitHub release fleet-static-<short> (asset
+# fleet-x86_64-linux-musl plus its .sha256). Until now publishing was a
+# manual operator step, so the newest fetchable release silently aged
+# behind main and seats could not fetch a current build by any
+# sanctioned path. This workflow runs the same script from Actions:
+#
+# - daily on the schedule below, and on workflow_dispatch (optional rev
+#   input; default is current origin/main);
+# - a pre-check resolves the target revision and skips the build
+#   entirely when fleet-static-<short> already exists with both assets,
+#   so a day main does not move costs one release read, not a build;
+# - the publish step retries once: publish-fleet.sh is idempotent, and
+#   a fresh attempt re-queries the Nix cache substituter after the
+#   transient rate-limit window of #14859.
+#
+# Publishing a release does not move the bootstrap pin in
+# scripts/muse/bootstrap.sh; the pin still moves by hand per the fleet
+# book (pkgs/fleet/book/development/release-and-rollout.md, section 2).
+#
+# No push or pull_request triggers: main-only CI per the 2026-11-13
+# owner ruling in .github/ci-policy.md (PR #9377).
+
+on:
+  workflow_dispatch:
+    inputs:
+      rev:
+        description: "Revision to publish (default: current origin/main)"
+        required: false
+        type: string
+  schedule:
+    - cron: "41 5 * * *"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: fleet-static-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: "full (main tier): publish fleet-static release from main"
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Resolve target revision and check for an existing release
+        id: current
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INPUT_REV: ${{ inputs.rev }}
+        run: |
+          git fetch -q origin main
+          rev="$(git rev-parse "${INPUT_REV:-origin/main}")"
+          short="${rev:0:7}"
+          tag="fleet-static-$short"
+          {
+            echo "rev=$rev"
+            echo "tag=$tag"
+          } >> "$GITHUB_OUTPUT"
+          assets="$(gh release view "$tag" -R developing-today/code \
+            --json assets --jq '[.assets[].name] | join(" ")' 2>/dev/null || true)"
+          if [[ "$assets" == *"fleet-x86_64-linux-musl"* && "$assets" == *"fleet-x86_64-linux-musl.sha256"* ]]; then
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+            echo "$tag already published with both assets for $rev; nothing to do." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+            echo "$tag not yet published for $rev; publishing." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - uses: DeterminateSystems/nix-installer-action@3138316df39ed29be04236d7ffc686fa525866aa # v23
+        if: steps.current.outputs.publish == 'true'
+
+      - uses: DeterminateSystems/magic-nix-cache-action@84c0677f58dcedf3b91f8223ce36a9ea5b3c84b7 # v15
+        if: steps.current.outputs.publish == 'true'
+        continue-on-error: true
+        with:
+          # FlakeHub Cache off (#2120), matching fleet-smoke: the GitHub
+          # Actions cache is the cache.
+          use-flakehub: false
+          use-gha-cache: true
+
+      - name: Publish the fleet-static release
+        if: steps.current.outputs.publish == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Bounded retry (#14859): publish-fleet.sh is idempotent, and
+          # a fresh attempt reuses whatever the failed attempt already
+          # fetched or built into the local Nix store.
+          for attempt in 1 2; do
+            if bash scripts/muse/publish-fleet.sh "${{ steps.current.outputs.rev }}" | tee publish.out; then
+              break
+            fi
+            if [ "$attempt" -eq 2 ]; then
+              echo "::error::publish-fleet.sh failed on both attempts"
+              exit 1
+            fi
+            echo "::warning::publish attempt ${attempt} failed; retrying in 60s"
+            sleep 60
+          done
+          {
+            echo "Published from ${{ steps.current.outputs.rev }}:"
+            echo '```'
+            grep -E '^(tag|sha256)=' publish.out || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
