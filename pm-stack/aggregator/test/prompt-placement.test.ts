@@ -2,7 +2,8 @@
 import { describe, expect, test } from "bun:test";
 import type { Provenance } from "../src/model.ts";
 import { buildQueueView } from "../src/queue-view.ts";
-import { renderQueue, renderQueueBody } from "../src/render.ts";
+import { renderBoardBody, renderQueue, renderQueueBody, renderRoadmap } from "../src/render.ts";
+import { FIXTURE_BOARD, FIXTURE_ROADMAP } from "../src/sources/fixtures.ts";
 import { PAGES } from "../src/pages.ts";
 import { PRIMARY_PROMPT_PAGES, renderPromptDock, renderSectionPrompt } from "../src/prompt-widget.ts";
 
@@ -72,5 +73,18 @@ describe("pages carry the widgets", () => {
     expect(html).toContain('data-scope="page" data-page="queue"');
     expect(html).toContain('data-scope="stack" data-page="queue"');
     expect(html).toContain('data-scope="agent" data-page="queue"');
+  });
+
+  test("board cards carry a board section widget keyed by the card id", () => {
+    const item = FIXTURE_BOARD.find((b) => b.status !== "done") ?? FIXTURE_BOARD[0];
+    const html = renderBoardBody([item], new Map());
+    expect(html).toContain('data-scope="section" data-page="board"');
+    expect(html).toContain(`name="sectionRef" value="${item.id}"`);
+  });
+
+  test("roadmap cards carry a roadmap section widget keyed by the row subject", () => {
+    const html = renderRoadmap(FIXTURE_ROADMAP, new Map(), provenance, "quarter");
+    expect(html).toContain('data-scope="section" data-page="roadmap"');
+    expect(html).toContain('data-scope="page" data-page="roadmap"');
   });
 });

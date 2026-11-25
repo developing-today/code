@@ -1696,7 +1696,7 @@ export function renderBoardBody(
               }
             }
           }
-          return `<div class="card"><a href="/item/${encodeURIComponent(item.id)}">${src}${esc(item.title)}</a>${cmt}<br>${repo}${kaneo}${statusClash}${stripHtml(items, item.links)}${statusCtl}${briefs}</div>`;
+          return `<div class="card"><a href="/item/${encodeURIComponent(item.id)}">${src}${esc(item.title)}</a>${cmt}<br>${repo}${kaneo}${statusClash}${stripHtml(items, item.links)}${statusCtl}${briefs}${renderSectionPrompt("board", item.id)}</div>`;
         })
         .join("");
       // The in-flight lane is dated by the orchestration section that
@@ -1877,6 +1877,7 @@ function roadmapCard(
   spend?: SpendCardsView | null,
   epicRollups?: Map<string, EpicRollup>,
   showRowNotes = false,
+  promptPage?: string,
 ): string {
   const refs = allRefs([row]);
   const refBadges = refs
@@ -1918,7 +1919,7 @@ function roadmapCard(
       }
     }
   }
-  return `<div class="card"><a href="/item/${encodeURIComponent(row.subject)}">${esc(row.title)}</a>${cmt}<br><span class="badge ${esc(row.status.toLowerCase().replace(/[^a-z]/g, "-"))}">${esc(row.status)}</span> <span class="muted">${esc(row.area)} · ${esc(row.horizon)}</span>${horizonWarning}${statusClash}${refBadges}${grist}${repoFile}${rollupHtml}${annotationHtml}${rowNotes}${expansion}${briefPanels}</div>`;
+  return `<div class="card"><a href="/item/${encodeURIComponent(row.subject)}">${esc(row.title)}</a>${cmt}<br><span class="badge ${esc(row.status.toLowerCase().replace(/[^a-z]/g, "-"))}">${esc(row.status)}</span> <span class="muted">${esc(row.area)} · ${esc(row.horizon)}</span>${horizonWarning}${statusClash}${refBadges}${grist}${repoFile}${rollupHtml}${annotationHtml}${rowNotes}${expansion}${briefPanels}${promptPage ? renderSectionPrompt(promptPage, row.subject) : ""}</div>`;
 }
 
 function roadmapAnnotationHtml(annotation: RoadmapAnnotation): string {
@@ -1934,7 +1935,7 @@ function timelineTable(
   briefs?: Map<RefKey, ItemBrief>,
   forecasts?: Map<RefKey, ForecastContract[]>,
   spend?: SpendCardsView | null,
-  options?: { epicRollups?: Map<string, EpicRollup>; showRowNotes?: boolean },
+  options?: { epicRollups?: Map<string, EpicRollup>; showRowNotes?: boolean; promptPage?: string },
 ): string {
   const head = `<tr><th scope="col">Theme</th>${tl.lanes.map((l) => `<th scope="col">${esc(l.label)}</th>`).join("")}</tr>`;
   const body = tl.themes
@@ -1944,7 +1945,7 @@ function timelineTable(
       const cells = tl.lanes
         .map((lane) => {
           const rs = tl.cells.get(theme)?.get(lane.key) ?? [];
-          return `<td class="tl-cell">${rs.map((r) => roadmapCard(r, items, counts, drill?.get(r.subject), annotations, briefs, forecasts, spend, options?.epicRollups, options?.showRowNotes)).join("")}</td>`;
+          return `<td class="tl-cell">${rs.map((r) => roadmapCard(r, items, counts, drill?.get(r.subject), annotations, briefs, forecasts, spend, options?.epicRollups, options?.showRowNotes, options?.promptPage)).join("")}</td>`;
         })
         .join("");
       return `<tr><th scope="row">${esc(theme)} <span class="muted theme-rollup">(${done}/${themeRows.length} done)</span></th>${cells}</tr>`;
@@ -2014,9 +2015,13 @@ export function renderRoadmap(
           .join("")
       : '<p class="muted">No priority rows in the current roadmap source.</p>';
   } else if (grain === "quarter") {
-    body = timelineTable(buildTimeline(rows), items, counts, drill, annotations, briefs, forecasts, spend);
+    body = timelineTable(buildTimeline(rows), items, counts, drill, annotations, briefs, forecasts, spend, {
+      promptPage: "roadmap",
+    });
   } else if (grain === "month") {
-    body = timelineTable(monthTimeline(rows), items, counts, drill, annotations, briefs, forecasts, spend);
+    body = timelineTable(monthTimeline(rows), items, counts, drill, annotations, briefs, forecasts, spend, {
+      promptPage: "roadmap",
+    });
   } else {
     const dg = roadmapDayGrain(rows, grain);
     const byTheme = new Map<string, RoadmapRow[]>();
@@ -2031,7 +2036,19 @@ export function renderRoadmap(
             const cards = (laneRows: RoadmapRow[]) =>
               laneRows
                 .map((row) =>
-                  roadmapCard(row, items, counts, drill?.get(row.subject), annotations, briefs, forecasts, spend),
+                  roadmapCard(
+                    row,
+                    items,
+                    counts,
+                    drill?.get(row.subject),
+                    annotations,
+                    briefs,
+                    forecasts,
+                    spend,
+                    undefined,
+                    false,
+                    "roadmap",
+                  ),
                 )
                 .join("");
             const lanes = dg.lanes
@@ -7352,7 +7369,7 @@ function projectCard(s: ProjectSummary): string {
   const homeLine = s.homeDoc
     ? `<br><span class="muted">Home doc: <a href="${esc(s.homeDoc.url)}">${esc(s.homeDoc.path)}</a></span>`
     : "";
-  return `<div class="card"><strong><a href="${esc(s.route)}">${esc(s.title)}</a></strong><br>${poolLine}<br>${roadmapLine}${homeLine}<br><a href="${esc(s.route)}">Project page →</a></div>`;
+  return `<div class="card"><strong><a href="${esc(s.route)}">${esc(s.title)}</a></strong><br>${poolLine}<br>${roadmapLine}${homeLine}<br><a href="${esc(s.route)}">Project page →</a>${renderSectionPrompt("program", s.id)}</div>`;
 }
 
 /** /program as the projects index (#1121): one card per configured
