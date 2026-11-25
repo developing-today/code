@@ -123,7 +123,10 @@ function initWorld(): void {
   connectNotice.innerHTML = `
     <h2 id="world-connect-notice-title" tabindex="-1" class="font-bold">World capabilities could not be verified</h2>
     <p>This version of the app cannot describe what this world may do. No world connection has been opened.</p>
+    <h3 class="font-semibold">Using your client</h3>
     <ul><li>Do something this version of the app cannot describe.</li></ul>
+    <h3 class="font-semibold">Through the server side</h3>
+    <ul><li>Server-side capabilities cannot be verified before connecting; the world host decides them.</li></ul>
     <p>The app cannot verify whether this world may ask for more while you are connected.</p>
     <div class="flex gap-2">
       <button type="button" data-world-connect-once class="btn btn-primary">Connect once</button>
