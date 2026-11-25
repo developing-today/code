@@ -32,6 +32,7 @@
 - [Artifact and binary repositories](platform/artifact-repositories.md)
 - [Automation and automated scaling](platform/automation-and-scaling.md)
 - [Object storage: RustFS and SeaweedFS](platform/object-storage.md)
+- [Security: Falco runtime detection](platform/security-and-falco.md)
 
 - [ESP32](microcontrollers/esp32.md)
 

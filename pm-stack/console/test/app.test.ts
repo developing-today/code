@@ -5,11 +5,25 @@
 import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import {
+  plainWords,
+  ASK_KINDS,
   ago,
+  askArgs,
+  askKind,
+  askSent,
   androidSource,
   answeredKeys,
   awayNotice,
+  censusSaid,
+  differsSaid,
+  doneKindsSaid,
+  doneSaid,
+  doneTaskSaid,
+  laneSaid,
+  mergedBySaid,
+  acceptAllSaid,
   awayState,
+  blockedSaid,
   band,
   capital,
   changeAsked,
@@ -17,6 +31,7 @@ import {
   deviceLabel,
   deviceState,
   endpointMark,
+  enrollCommand,
   everyRead,
   flushSaid,
   freshSaid,
@@ -24,22 +39,39 @@ import {
   intakeSaid,
   keptGroups,
   keptSaid,
+  heldWaitsSaid,
   levelHeadings,
   listed,
+  liveDelay,
+  liveMessage,
+  liveUrl,
   machineSaid,
+  needsLead,
+  recommendedSets,
   machinesMark,
+  matchReportSaid,
+  mergeMatchReport,
+  offerSaid,
   phaseHeading,
   platformCounts,
   prCheck,
   runSaid,
+  sharedGoal,
+  sharedGoalSaid,
   sentSaid,
   servingSaid,
   subscriptionState,
+  taskAgent,
   testSaid,
+  unitStateSaid,
+  whyShown,
   unreadSaid,
   whySaid,
   workerSaid,
 } from "../public/app.js";
+import { DIRECT_ACTIONS, DIRECT_READ_SECTIONS } from "../edge/src/direct.ts";
+import { QUEUE_WHY_CHARS } from "../src/ops.ts";
+import { ASK_INTENTS } from "../src/work.ts";
 import { androidRelease } from "../src/edge-proto.ts";
 import { contact, endpointMark as serverMark } from "../src/push.ts";
 
@@ -465,7 +497,7 @@ test("with the switch on and something missing, the Cloudflare screen says what 
     "the queue store token",
   ]);
   expect(awayState({ ...base, configured: false }).lacks).toEqual([
-    "a machine's first report, which says where things are",
+    "a machine's first report, which says who may sign in",
   ]);
   // With the switch off nothing is lacking: nothing was asked for.
   expect(awayState({ edge: true, directEnabled: false, primary: true })).toMatchObject({
@@ -499,12 +531,35 @@ test("the laptop being away is said differently when Cloudflare is carrying on",
   const carrying = awayNotice(true, "2 h ago");
   expect(carrying.title).toBe("The laptop is not connected");
   expect(carrying.text).toContain("Cloudflare is carrying on");
-  expect(carrying.text).toContain("as the laptop last reported them, 2 h ago");
+  expect(carrying.text).toContain("what is labelled as needing you are current");
+  expect(carrying.text).toContain("Sessions and questions are as the laptop last reported them, 2 h ago");
   const waiting = awayNotice(false, "2 h ago");
   expect(waiting.title).toBe("The laptop is out of reach");
   expect(waiting.text).toBe(
     "It last reported 2 h ago; this is the state as of then. You can keep working: what is safe to do late is held and sent when it is back.",
   );
+});
+
+test("lists of what needs the owner that are not whole say so, and name what could not be read when that is known", () => {
+  const lists = { hands: [], reviews: [], other: [] };
+  // Whole: nothing is said, with or without the word.
+  expect(censusSaid({ ...lists, complete: true, unread: [] })).toBe("");
+  expect(censusSaid(lists)).toBe("");
+  expect(censusSaid(null)).toBe("");
+  // Not whole, and the reader names what is missing.
+  expect(censusSaid({ ...lists, complete: false, unread: ["a/one"] })).toBe(
+    "Not the whole list: a/one could not be read just now.",
+  );
+  expect(censusSaid({ ...lists, complete: false, unread: ["a/one", "a/two (user/review)", "a/three"] })).toBe(
+    "Not the whole list: a/one, a/two (user/review) and a/three could not be read just now.",
+  );
+  // Not whole, from a reader that does not say what is missing (the laptop's dashboard).
+  for (const unread of [undefined, [], [""], "a/one", [3]]) {
+    expect([unread, censusSaid({ ...lists, complete: false, unread })]).toEqual([
+      unread,
+      "Not the whole list: some of it could not be read just now.",
+    ]);
+  }
 });
 
 test("text on a status colour can be read, on the dark page and the light one", () => {
@@ -646,7 +701,7 @@ test("what is kept is listed by what it needs: waiting, kept back, failed, with 
     ["Waiting to send", ["drop"], ["w2", "w1"]],
     ["Kept back for you to look at", ["send", "drop"], ["s1"]],
     ["Could not be done", ["again", "drop"], ["f1"]],
-    ["With the platform, waiting for a machine", [], ["h1"]],
+    ["With the platform, waiting to be done", [], ["h1"]],
     ["Sent", [], ["d1"]],
   ]);
   // A group with nothing in it is not shown.
@@ -673,6 +728,7 @@ test("keeping a copy of every screen reads each under the address its screen ask
     "queue?status=parked&q=",
     "releases",
     "platform",
+    "tokens",
     "messages?limit=15",
     "push",
     "devices",
@@ -697,6 +753,7 @@ test("keeping a copy of every screen reads each under the address its screen ask
     "queue?status=parked&q=",
     "releases",
     "platform",
+    "tokens",
     "messages?limit=15",
     "push",
     "devices",
@@ -717,7 +774,17 @@ test("what the owner is told of something just done, from what became of it when
   });
   expect(sentSaid({ ...quiet, entry: { state: "done" } }, id)).toEqual({ state: "done", result: null, others: [] });
   // Taken by the platform for a machine.
-  expect(sentSaid({ ...quiet, entry: { state: "held" }, others: older }, id)).toEqual({ state: "held", others: older });
+  // Taken by the platform to be done later, with what it said of who will.
+  expect(sentSaid({ ...quiet, entry: { state: "held", note: "Kept: who will" }, others: older }, id)).toEqual({
+    state: "held",
+    note: "Kept: who will",
+    others: older,
+  });
+  expect(sentSaid({ ...quiet, entry: { state: "held" }, others: older }, id)).toEqual({
+    state: "held",
+    note: "",
+    others: older,
+  });
   // Refused: said, and nothing more.
   expect(sentSaid({ ...quiet, entry: { state: "failed", note: "no such issue" } }, id)).toEqual({
     state: "failed",
@@ -807,7 +874,24 @@ test("a machine, as the Machines screen says it: what only it reports and does, 
     // A kind this screen has no words for is said as it is named.
     does: ["record an answer", "cancel a task", "start, stop or restart a unit", "something.new"],
     said: true,
+    // Nothing said of the code Cloudflare runs, and it is on main's settings.
+    otherCode: "",
+    differs: [],
   });
+  // Cloudflare's own commit, where it is known: said when the machine runs another, and only then.
+  expect(machineSaid(machine, platform, now, "0123abcd4567").otherCode).toBe("");
+  expect(machineSaid(machine, platform, now, "fedcba987654").otherCode).toBe(
+    "Cloudflare runs fedcba9: the two are on different code.",
+  );
+  expect(machineSaid({ ...machine, version: null }, platform, now, "fedcba987654").otherCode).toBe("");
+  // On other settings than main's: each is said, in the order given.
+  const differs = [
+    { name: "queue", machine: "another-queue", platform: "repo-health-code-pilot", goesBy: "platform" },
+    { name: "needsRepos", machine: ["a/b", "c/d"], platform: ["a/b", "e/f"], goesBy: "machine" },
+  ];
+  expect(machineSaid({ ...machine, differs }, platform, now).differs).toEqual(differs.map(differsSaid));
+  // An answer whose list is not one says nothing of it.
+  expect(machineSaid({ ...machine, differs: "many" }, platform, now).differs).toEqual([]);
   // With nothing in front of it, everything is the machine's.
   const alone = machineSaid(machine, null, now);
   expect(alone.reports).toEqual(["the board", "sessions", "questions", "its units", "your prompts"]);
@@ -867,11 +951,18 @@ test("the Machines screen is drawn again when what it shows has changed, and not
   for (const [why, changed] of [
     ["it went quiet", answer({ machines: [{ ...machine, quiet: true }] })],
     ["it runs another commit", answer({ machines: [{ ...machine, version: "fedcba987654" }] })],
+    [
+      "it runs with another setting",
+      answer({
+        machines: [{ ...machine, differs: [{ name: "queue", machine: "q", platform: "p", goesBy: "platform" }] }],
+      }),
+    ],
     ["it can do something more", answer({ machines: [{ ...machine, actions: ["a.b", "c.d"] }] })],
     ["it is called something else", answer({ machines: [{ ...machine, name: "amd" }] })],
     ["there is another", answer({ machines: [machine, { ...machine, name: "amd" }] })],
     ["there is none", answer({ machines: [] })],
     ["something else waits", answer({ held: [{ id: "h1" }, { id: "h2" }] })],
+    ["what waits now waits for someone else", answer({ held: [{ id: "h1", kind: "task.move", waits: "asked" }] })],
     ["nothing waits", answer({ held: [] })],
     [
       "the platform stopped doing the core",
@@ -891,6 +982,551 @@ test("the Machines screen is drawn again when what it shows has changed, and not
   expect(machinesMark(quiet, now + 60_000)).not.toBe(machinesMark(quiet, now));
   // An answer that is not one is not a crash.
   expect(machinesMark(null, now)).toBe(machinesMark({}, now));
+});
+
+// The oracle is the Worker's own lists: whatever it does or reads
+// itself it can be turned away for, and then the app says so. A kind
+// with no words of its own is shown by its name ("hands.done").
+// Seen on the live board on 2026-11-24: "Why 272 tasks are blocked"
+// above six lines that added up to fifteen. Almost every blocked task
+// carries a reason of its own, so the commonest six said nothing of the
+// rest. The oracle is arithmetic: what is said has to add up to what is
+// blocked, whatever the reasons are.
+test("why tasks are blocked is said by the kind of reason, and adds up to all of them", () => {
+  const kinds = [
+    { kind: "reason", n: 231 },
+    { kind: "time-past", n: 9 },
+    { kind: "time", n: 2 },
+    { kind: "tasks", n: 12 },
+    { kind: "none", n: 21 },
+  ];
+  const said = blockedSaid(kinds);
+  expect(said.map((line) => line.n).reduce((a, b) => a + b, 0)).toBe(275);
+  expect(said.map((line) => `${line.n} ${line.text}`)).toEqual([
+    "231 have a reason written on them",
+    "12 wait on other tasks",
+    "11 wait for a time: for 9 of them it has already passed",
+    "21 have no reason recorded",
+  ]);
+  // One, and the words follow.
+  expect(
+    blockedSaid([
+      { kind: "reason", n: 1 },
+      { kind: "time", n: 1 },
+      { kind: "tasks", n: 1 },
+      { kind: "none", n: 1 },
+    ]).map((l) => `${l.n} ${l.text}`),
+  ).toEqual([
+    "1 has a reason written on it",
+    "1 waits on other tasks",
+    "1 waits for a time",
+    "1 has no reason recorded",
+  ]);
+  expect(blockedSaid([{ kind: "time-past", n: 1 }]).map((l) => `${l.n} ${l.text}`)).toEqual([
+    "1 waits for a time: it has already passed",
+  ]);
+  // A kind this screen has no words for is still counted, and said as it is named.
+  expect(blockedSaid([{ kind: "something-new", n: 3 }]).map((l) => `${l.n} ${l.text}`)).toEqual(["3 something-new"]);
+  // Counts as the queue store gives them (text), and nothing at all.
+  expect(blockedSaid([{ kind: "none", n: "4" }]).map((l) => l.n)).toEqual([4]);
+  expect(blockedSaid([])).toEqual([]);
+  expect(blockedSaid(null)).toEqual([]);
+  // The reasons as an older console gives them (each its own text, the commonest six): said as they were.
+  expect(blockedSaid([{ why: "waiting on native issue blockers", n: "7" }]).map((l) => `${l.n} ${l.text}`)).toEqual([
+    "7 waiting on native issue blockers",
+  ]);
+});
+
+// What was finished lately, as the app says it. The oracle is the
+// document's own numbers: what is said has to be them, with "at least"
+// where GitHub's page was full and there may be more than were counted.
+test("what was finished in the last day is said in numbers, with 'at least' where there may be more", () => {
+  const none = { day: 0, more: false, latest: [] };
+  expect(
+    doneSaid({
+      tasks: { day: 12, latest: [] },
+      merged: { day: 100, more: true, latest: [] },
+      closed: { day: 1, more: false, latest: [] },
+    }),
+  ).toEqual({
+    tiles: [
+      { n: "12", label: "tasks finished" },
+      { n: "100+", label: "pull requests merged" },
+      { n: "1", label: "issue closed" },
+    ],
+    line: "In the last day: 12 tasks finished, at least 100 pull requests merged, 1 issue closed.",
+  });
+  // One of each, and none of some: said as it is, the nothings left out of the line.
+  expect(doneSaid({ tasks: { day: 1, latest: [] }, merged: { ...none, day: 1 }, closed: none })).toEqual({
+    tiles: [
+      { n: "1", label: "task finished" },
+      { n: "1", label: "pull request merged" },
+      { n: "0", label: "issues closed" },
+    ],
+    line: "In the last day: 1 task finished, 1 pull request merged.",
+  });
+  expect(doneSaid({ tasks: { day: 0, latest: [] }, merged: none, closed: none })?.line).toBe(
+    "Nothing was finished in the last day.",
+  );
+  // None counted, but the page was full of older things: there may still be some.
+  expect(
+    doneSaid({ tasks: { day: 0, latest: [] }, merged: { ...none, more: true }, closed: { ...none, more: true } }),
+  ).toEqual({
+    tiles: [
+      { n: "0", label: "tasks finished" },
+      { n: "0+", label: "pull requests merged" },
+      { n: "0+", label: "issues closed" },
+    ],
+    line: "In the last day: nothing counted; pull requests merged and issues closed could not all be counted.",
+  });
+  // Not read yet, or a copy from a console that does not read it: nothing is said, not zeros.
+  expect(doneSaid(null)).toBeNull();
+  expect(doneSaid(undefined)).toBeNull();
+  expect(doneSaid({})).toBeNull();
+  expect(doneSaid({ tasks: { day: "many" }, merged: none, closed: none })).toBeNull();
+});
+
+// What the day's finished tasks were, by kind. The oracle is the counts
+// themselves: each is said with its kind's name, the most first, and
+// what is said adds up to what was counted.
+test("the day's finished tasks are said by kind, the most first", () => {
+  expect(
+    doneKindsSaid([
+      { kind: "second_pass", n: 650 },
+      { kind: "small_fix", n: 40 },
+      { kind: null, n: 3 },
+      { kind: "triage", n: 1 },
+    ]),
+  ).toBe("650 second pass · 40 small fix · 3 of no kind · 1 triage");
+  // Nothing counted, a copy without them, and counts that are not counts: nothing is said.
+  expect(doneKindsSaid([])).toBe("");
+  expect(doneKindsSaid(undefined)).toBe("");
+  expect(doneKindsSaid([{ kind: "triage", n: 0 }, { kind: "x", n: "many" }, null])).toBe("");
+});
+
+// A lane the pool made up for itself is a long run of letters that is
+// nobody's name (seen live: "any-occodecpanaakhknhcenhhbmkcflkicffigpl"
+// across two lines of a card). It is said as what it is.
+test("a lane the pool made up is said as a pooled lane; a named one by its name", () => {
+  expect(laneSaid("any-occodecpanaakhknhcenhhbmkcflkicffigpl")).toBe("a pooled lane");
+  expect(laneSaid("any-o")).toBe("any-o");
+  expect(laneSaid("code-i")).toBe("code-i");
+  expect(laneSaid("oc-code-06")).toBe("oc-code-06");
+  expect(laneSaid(null)).toBe("");
+  expect(laneSaid(undefined)).toBe("");
+});
+
+// Who merged is said only where it tells something. Seen live: every
+// one of forty pull requests said the same name, the owner's, because
+// his agents work under it.
+test("who a pull request is by is said only when they are not all by the same one", () => {
+  const prs = (...by: (string | null)[]) => by.map((who, i) => ({ number: i + 1, by: who }));
+  expect(mergedBySaid(prs("dezren39", "dezren39", "dezren39"))).toBe(false);
+  expect(mergedBySaid(prs("dezren39", "dependabot[bot]", "dezren39"))).toBe(true);
+  // One alone, or none: there is nothing to tell apart.
+  expect(mergedBySaid(prs("dezren39"))).toBe(false);
+  expect(mergedBySaid([])).toBe(false);
+  expect(mergedBySaid(undefined)).toBe(false);
+});
+
+// A finished task says what came of it. The oracle is the queue's own
+// list of verdicts (fleet-queue's disposition.rs: VERDICTS), each given
+// words here; one this app has no words for is said as it is named.
+test("a finished task says what came of it, where it goes, and who did it", () => {
+  const task = {
+    id: 21001,
+    title: "Fix the claim scan",
+    at: "2026-11-24T10:00:00",
+    lane: "code-a",
+    model: "m-1",
+    kind: "small_fix",
+    issue: 5,
+    pr: 77,
+    verdict: "merged_verified",
+    url: "https://github.com/o/r/issues/5",
+    prUrl: "https://github.com/o/r/pull/77",
+  };
+  const now = Date.parse("2026-11-24T12:00:00Z");
+  expect(doneTaskSaid(task, now)).toEqual({
+    chips: ["small fix", "merged"],
+    links: [
+      { text: "#77", url: "https://github.com/o/r/pull/77" },
+      { text: "issue #5", url: "https://github.com/o/r/issues/5" },
+    ],
+    meta: "task 21001 · code-a · m-1 · finished 2 h ago",
+  });
+  const said = (verdict: string | null) => doneTaskSaid({ ...task, verdict }, now).chips.slice(1);
+  expect(
+    ["merged_verified", "closed_verified", "open_draft_with_followup", "open_draft_superseded", "invalid_no_work"].map(
+      (v) => said(v)[0],
+    ),
+  ).toEqual([
+    "merged",
+    "issue closed",
+    "left as a draft, with a follow-up",
+    "its draft was superseded",
+    "no work came of it",
+  ]);
+  expect(said("something_new")).toEqual(["something new"]);
+  expect(said(null)).toEqual([]);
+  // Done in a lane the pool made up: said as that, not by its run of letters.
+  expect(doneTaskSaid({ ...task, lane: "any-occodecpanaakhknhcenhhbmkcflkicffigpl" }, now).meta).toBe(
+    "task 21001 · a pooled lane · m-1 · finished 2 h ago",
+  );
+  // With nothing known but that it was finished.
+  expect(
+    doneTaskSaid(
+      {
+        id: 7,
+        title: "Task 7",
+        at: "",
+        lane: null,
+        model: null,
+        kind: null,
+        issue: null,
+        pr: null,
+        verdict: null,
+        url: null,
+        prUrl: null,
+      },
+      now,
+    ),
+  ).toEqual({
+    chips: [],
+    links: [],
+    meta: "task 7",
+  });
+});
+
+// What he is sending is his to say: something to do, a question, or
+// how he wants work done from now on. The oracle is the three kinds
+// the platform takes (ASK_INTENTS in src/work.ts): each has words here,
+// and anything else is taken as something to do.
+test("each kind of prompt has its own words, and the platform takes every kind the app offers", () => {
+  expect(ASK_KINDS.map((k) => k.intent)).toEqual([...ASK_INTENTS]);
+  expect(ASK_KINDS.map((k) => [k.label, k.send, k.chip])).toEqual([
+    ["Do this", "Send", ""],
+    ["Answer this", "Ask", "Question"],
+    ["From now on", "Set", "Standing instruction"],
+  ]);
+  for (const kind of ASK_KINDS) expect(kind.placeholder.length).toBeGreaterThan(40);
+  expect(askKind("question")).toBe(ASK_KINDS[1]);
+  expect(askKind("directive")).toBe(ASK_KINDS[2]);
+  for (const other of ["task", undefined, null, "rant", 7]) expect(askKind(other)).toBe(ASK_KINDS[0]);
+  // What is sent with it: nothing more for something to do (as before), the kind for the others.
+  expect(askArgs("  Do the docs  ", "task")).toEqual({ text: "Do the docs" });
+  expect(askArgs("Why?", "question")).toEqual({ text: "Why?", intent: "question" });
+  expect(askArgs("No red merges", "directive")).toEqual({ text: "No red merges", intent: "directive" });
+  expect(askArgs("x", "rant")).toEqual({ text: "x" });
+  // And what he is told when it has gone.
+  expect(askSent("task", { issue: 7, queued: true })).toBe("Sent as #7; first in the queue");
+  expect(askSent("question", { issue: 7, queued: true })).toBe("Asked as #7; first in the queue");
+  expect(askSent("directive", { issue: 7, queued: true })).toBe("Set as #7; first in the queue");
+  expect(askSent("question", { issue: 7, queued: false, note: "filed, not queued: the queue is down" })).toBe(
+    "Filed as #7. filed, not queued: the queue is down",
+  );
+  expect(askSent("task", { issue: 7, queued: false })).toBe("Filed as #7.");
+});
+
+// An enroll command shared to the phone is read back for the
+// provisioning form (#14377): the binding the mint put in it. The
+// oracle is the command the form itself shows at a mint (name, kind,
+// groups, the bootstrap token); the token is opaque, so a command is
+// known by its flags, and text without one is not a command.
+test("a shared enroll command gives its binding back, and other text does not", () => {
+  expect(
+    enrollCommand("fleet agent enroll --name scout-1 --kind muse --groups muse,fleet --bootstrap tok-abc123"),
+  ).toEqual({
+    token: "tok-abc123",
+    name: "scout-1",
+    kind: "muse",
+    groups: ["muse", "fleet"],
+    notesIdentity: undefined,
+  });
+  expect(enrollCommand("fleet agent enroll --name solo --bootstrap tok-xyz")).toEqual({
+    token: "tok-xyz",
+    name: "solo",
+    kind: undefined,
+    groups: [],
+    notesIdentity: undefined,
+  });
+  expect(enrollCommand("fleet agent enroll --name n --kind codex --notes-identity muse/n --bootstrap t")).toEqual({
+    token: "t",
+    name: "n",
+    kind: "codex",
+    groups: [],
+    notesIdentity: "muse/n",
+  });
+  // No bootstrap token, no enroll step, or not text at all: not a command.
+  expect(enrollCommand("fleet agent enroll --name scout-1 --kind muse")).toBeNull();
+  expect(enrollCommand("please enroll the new laptop when it arrives")).toBeNull();
+  expect(enrollCommand("run --bootstrap the servers")).toBeNull();
+  expect(enrollCommand(null)).toBeNull();
+  expect(enrollCommand(42)).toBeNull();
+});
+
+// A goal most of a list shares is said once, not on every card. Seen
+// live: sixty queued tasks, fifty-nine of them triage with the same
+// three lines of goal each. The oracle is counting: the goal that more
+// than half of the tasks carry, where there are at least three of them.
+test("a goal most of the tasks share is found, to be said once; where there is none, each card keeps its own", () => {
+  const t = (goal: string | null, step: string | null = null) => ({ goal, step });
+  const same = "Record a verdict on the issue";
+  expect(sharedGoal([t(same), t(same), t(same), t("Another")])).toEqual({ goal: same, n: 3 });
+  // Exactly half is not most, however many that is.
+  expect(sharedGoal([t(same), t(same), t(same), t("A"), t("B"), t("C")])).toBeNull();
+  expect(sharedGoal([t(same), t(same), t(same), t(same), t("A"), t("B"), t("C")])).toEqual({ goal: same, n: 4 });
+  // Two alike say nothing of a list.
+  expect(sharedGoal([t(same), t(same)])).toBeNull();
+  // A card that shows its next step does not show its goal, so it is not counted as carrying one.
+  expect(sharedGoal([t(same, "doing it"), t(same, "doing it"), t(same, "doing it"), t(same)])).toBeNull();
+  expect(sharedGoal([t(same), t(same), t(same), t(same, "doing it")])).toEqual({ goal: same, n: 3 });
+  // No goals at all, nothing at all, and something that is not a list.
+  expect(sharedGoal([t(null), t(""), t(null)])).toBeNull();
+  expect(sharedGoal([])).toBeNull();
+  expect(sharedGoal(undefined)).toBeNull();
+  // What is said of it.
+  expect(sharedGoalSaid({ goal: same, n: 59 }, 60)).toBe(
+    "59 of these 60 have the same goal, said here once: Record a verdict on the issue",
+  );
+  expect(sharedGoalSaid({ goal: same, n: 3 }, 3)).toBe(
+    "All 3 have the same goal, said here once: Record a verdict on the issue",
+  );
+});
+
+// The composer's match report, said as the bridge reported it
+// (#14375, acceptance 1-2): matched and delivered counts with the
+// recipients named, the remainder while any are left, and a broaden
+// folded in until none remain — the screen then shows no Broaden.
+test("a match report is said with its recipients, and a broaden folds into it", () => {
+  const sent = { batch: "b9", matched: 2, delivered: 1, recipients: ["felix-1"], remaining: 1 };
+  expect(matchReportSaid(sent)).toBe("Matched 2 · sent to 1 (felix-1) · 1 more matched and not yet reached");
+  const widened = mergeMatchReport(sent, {
+    batch: "b9",
+    matched: 2,
+    delivered: 1,
+    recipients: ["felix-2"],
+    remaining: 0,
+  });
+  expect(widened.delivered).toBe(2);
+  expect(widened.recipients).toEqual(["felix-1", "felix-2"]);
+  expect(widened.remaining).toBe(0);
+  expect(matchReportSaid(widened)).toBe("Matched 2 · sent to 2 (felix-1, felix-2)");
+  // An answer that is not a report (a send held for a machine) is
+  // not said as one.
+  expect(matchReportSaid({ held: true })).toBeNull();
+  expect(matchReportSaid(null)).toBeNull();
+  expect(mergeMatchReport(sent, { held: true })).toBe(sent);
+  // An offer is said by its state and its claimed slots.
+  expect(offerSaid({ state: "open", claimed: 1, slots: 2, claims: [{ agent: "felix-1" }] })).toBe(
+    "open · 1 of 2 claimed",
+  );
+  expect(offerSaid({ state: "filled", slots: 2, claims: [{ agent: "a" }, { agent: "b" }] })).toBe(
+    "filled · 2 of 2 claimed",
+  );
+});
+
+// A reason that was cut where the queue's store cuts it says that it
+// was. Seen live: "...and the sandbox CLI, t". The oracle is the length
+// the read asks the store for (QUEUE_WHY_CHARS in src/ops.ts).
+test("a blocked task's reason that was cut short ends by saying so", () => {
+  expect(QUEUE_WHY_CHARS).toBe(300);
+  expect(whyShown("Short reason.")).toBe("Short reason.");
+  expect(whyShown("x".repeat(299))).toBe("x".repeat(299));
+  expect(whyShown("x".repeat(300))).toBe(`${"x".repeat(300)}…`);
+  expect(whyShown(`${"word ".repeat(59)}and t`)).toBe(`${"word ".repeat(59)}and t…`);
+  expect(whyShown("")).toBe("");
+  expect(whyShown(null)).toBe("");
+});
+
+// What needs the owner is what only he can do. Seen live: "394 need
+// you" on the first screen, of which 347 were questions the fleet had
+// already recommended an answer to. The number that is his alone leads.
+test("what only the owner can do leads: the count on the first screen, the badge, and the list the Needs screen opens on", () => {
+  const counts = { questions: 347, hands: 29, reviews: 19, other: 9 };
+  expect(needsLead(counts)).toEqual({ badge: 48, tile: 29, tileLabel: "only you", opens: "hands" });
+  // Nothing for his hands: reviews asked of him, then questions.
+  expect(needsLead({ ...counts, hands: 0 })).toMatchObject({ badge: 19, tile: 0, opens: "reviews" });
+  expect(needsLead({ questions: 5, hands: 0, reviews: 0, other: 2 })).toMatchObject({
+    badge: 0,
+    tile: 0,
+    opens: "questions",
+  });
+  // Nothing at all still opens somewhere.
+  expect(needsLead({ questions: 0, hands: 0, reviews: 0, other: 0 })).toMatchObject({ badge: 0, opens: "hands" });
+});
+
+test("the sets with a recommendation to accept, each once, with how many questions that answers", () => {
+  const open = [
+    { set: "s1", setTitle: "One", recommended: ["a"] },
+    { set: "s1", setTitle: "One", recommended: [] },
+    { set: "s2", setTitle: "Two", recommended: [] },
+    { set: "s3", setTitle: "Three", recommended: ["x"] },
+    { set: "s1", setTitle: "One", recommended: ["b"] },
+  ];
+  expect(recommendedSets(open)).toEqual({ sets: ["s1", "s3"], questions: 3 });
+  expect(recommendedSets([])).toEqual({ sets: [], questions: 0 });
+  expect(recommendedSets(null)).toEqual({ sets: [], questions: 0 });
+});
+
+test("accepting every recommendation says what it came to: answered, waiting to go, and not accepted", () => {
+  const done = (applied: number) => ({ state: "done", result: { applied } });
+  expect(acceptAllSaid([done(2), done(5)])).toBe("7 answered");
+  expect(acceptAllSaid([done(2), { state: "held" }, { state: "kept" }])).toBe(
+    "2 answered; 2 sets wait to be sent or done",
+  );
+  expect(acceptAllSaid([{ state: "kept" }])).toBe("1 set waits to be sent or done");
+  expect(acceptAllSaid([done(1), { state: "refused", note: "no" }, null])).toBe(
+    "1 answered; 2 sets could not be accepted",
+  );
+  expect(acceptAllSaid([{ state: "refused" }])).toBe("1 set could not be accepted");
+  // A set whose questions were all answered meanwhile is accepted, and answers nothing.
+  expect(acceptAllSaid([done(0)])).toBe("0 answered");
+  expect(acceptAllSaid([])).toBe("0 answered");
+});
+
+test("a unit's state is said once where systemd's two words are the same", () => {
+  expect(unitStateSaid({ active: "failed", sub: "failed" })).toBe("failed");
+  expect(unitStateSaid({ active: "active", sub: "running" })).toBe("active · running");
+  expect(unitStateSaid({ active: "inactive", sub: "dead" })).toBe("inactive · dead");
+  expect(unitStateSaid({ active: "active" })).toBe("active");
+  expect(unitStateSaid(null)).toBe("");
+});
+
+// Seen on the live board: a task's lane is its agent's own name
+// ("code-f", "oc-code-02") or one of the pool's ("any-n", "any-occode…"),
+// and its worker ("repo-worker-code", "xaltha") is always an agent's.
+test("a task's agent, to message it: its lane where that is an agent's name, else its worker", () => {
+  // With the registered names in hand, only a registered one is offered.
+  const names = new Set(["code-f", "any-n", "xaltha", "repo-worker-code", "conductor"]);
+  expect(taskAgent({ lane: "code-f", worker: "repo-worker-code" }, names)).toBe("code-f");
+  expect(taskAgent({ lane: "any-n", worker: "repo-worker-code" }, names)).toBe("any-n");
+  expect(taskAgent({ lane: "any-occodefihdbkklhacimchhigmnffadedgjjjdi", worker: "xaltha" }, names)).toBe("xaltha");
+  expect(taskAgent({ lane: "somewhere-else", worker: "nobody-known" }, names)).toBeNull();
+  // Without them: the lane, unless it is one of the pool's made-up ones.
+  expect(taskAgent({ lane: "code-f", worker: "repo-worker-code" })).toBe("code-f");
+  expect(taskAgent({ lane: "any-n", worker: "repo-worker-code" })).toBe("any-n");
+  expect(taskAgent({ lane: "any-occodefihdbkklhacimchhigmnffadedgjjjdi", worker: "xaltha" })).toBe("xaltha");
+  expect(taskAgent({ lane: null, worker: "conductor" })).toBe("conductor");
+  expect(taskAgent({ lane: "", worker: "" })).toBeNull();
+  expect(taskAgent(null)).toBeNull();
+});
+
+// The app is told when something changes (a WebSocket the Worker
+// holds) and reads again at once. What it is told is the Worker's to
+// word (edge.ts `changed`); the oracle for the wire is that message.
+test("what the Worker says over the live connection: which documents to read again, and nothing else is acted on", () => {
+  expect(liveMessage('{"t":"changed","docs":["core"]}')).toEqual({ docs: ["core"] });
+  expect(liveMessage('{"t":"changed","docs":["core","ops","questions"]}')).toEqual({
+    docs: ["core", "ops", "questions"],
+  });
+  // The platform's own answer to "ping", a kind this app does not know, and anything that is not a message.
+  for (const text of [
+    "pong",
+    '{"t":"something-new","docs":["core"]}',
+    '{"t":"changed"}',
+    '{"t":"changed","docs":"core"}',
+    "{",
+    "",
+    null,
+    7,
+  ]) {
+    expect([text, liveMessage(text)]).toEqual([text, { docs: [] }]);
+  }
+  // A document this app does not have is not asked for.
+  expect(liveMessage('{"t":"changed","docs":["core","secrets",7]}')).toEqual({ docs: ["core"] });
+});
+
+test("a live connection that drops is tried again, soon at first and then no more often than every half minute", () => {
+  const delays = [1, 2, 3, 4, 5, 6, 7, 20].map((tries) => liveDelay(tries));
+  expect(delays[0]).toBe(1_000);
+  // Never sooner than the time before, never more than half a minute.
+  for (let i = 1; i < delays.length; i++) expect(delays[i]).toBeGreaterThanOrEqual(delays[i - 1]);
+  expect(Math.max(...delays)).toBe(30_000);
+  expect(liveDelay(0)).toBe(1_000);
+});
+
+test("where the live connection is: the same host, secure where the page is", () => {
+  expect(liveUrl({ protocol: "https:", host: "pm.example.com" })).toBe("wss://pm.example.com/console/api/events");
+  expect(liveUrl({ protocol: "http:", host: "127.0.0.1:4872" })).toBe("ws://127.0.0.1:4872/console/api/events");
+});
+
+test("the header says the screen is live only while it is: connected, or read within the last look", () => {
+  const now = Date.parse("2026-11-24T09:00:00Z");
+  // Connected: live, however long ago the last read was, since a change would have been said.
+  expect(freshSaid({ asOf: now - 5 * 60_000, offline: false, signedOut: false, live: true }, now)).toEqual({
+    text: "live",
+    tone: "",
+  });
+  // Not connected: by how old what is shown is, as before.
+  expect(freshSaid({ asOf: now - 10_000, offline: false, signedOut: false, live: false }, now).text).toBe("live");
+  expect(freshSaid({ asOf: now - 5 * 60_000, offline: false, signedOut: false, live: false }, now).text).toBe(
+    "as of 5 min ago",
+  );
+  // No connection at all, or signed out, is said first.
+  expect(freshSaid({ asOf: now - 5 * 60_000, offline: true, signedOut: false, live: true }, now).text).toBe(
+    "offline · 5 min ago",
+  );
+  expect(freshSaid({ asOf: now, offline: false, signedOut: true, live: true }, now).text).toBe("signed out");
+});
+
+test("everything Cloudflare does or reads itself has words for being turned away for it", () => {
+  const kinds = [...DIRECT_ACTIONS, ...DIRECT_READ_SECTIONS.map((name) => `read.${name}`)];
+  const said = awayState({ edge: true, directEnabled: true, primary: true, refused: kinds }).refused ?? [];
+  expect(said).toHaveLength(kinds.length);
+  expect(kinds.filter((kind, i) => said[i] === kind)).toEqual([]);
+  // Each in words of its own.
+  expect(new Set(said).size).toBe(kinds.length);
+});
+
+test("a setting a machine runs with another value of is said in a sentence: what it says, what main says, and which Cloudflare goes by", () => {
+  expect(
+    differsSaid({ name: "queue", machine: "another-queue", platform: "repo-health-code-pilot", goesBy: "platform" }),
+  ).toBe("For the queue it says another-queue. Cloudflare goes by main's: repo-health-code-pilot.");
+  // The list of repositories is the one Cloudflare still goes by the machine's for, and why is said.
+  expect(
+    differsSaid({ name: "needsRepos", machine: ["a/b", "c/d"], platform: ["a/b", "e/f"], goesBy: "machine" }),
+  ).toBe(
+    "For the repositories looked in for what needs you it says a/b and c/d, and main says a/b and e/f. Cloudflare goes by this machine's until it runs main's: a machine takes a reply only for a repository on its own list.",
+  );
+  // What it does not say at all, and a list with nothing in it.
+  expect(differsSaid({ name: "promptLabel", machine: null, platform: "owner/prompt", goesBy: "platform" })).toBe(
+    "For the label that marks an instruction it says nothing. Cloudflare goes by main's: owner/prompt.",
+  );
+  expect(differsSaid({ name: "queueDbUrl", machine: "", platform: "https://x.example", goesBy: "platform" })).toBe(
+    "For where the queue's store answers it says nothing. Cloudflare goes by main's: https://x.example.",
+  );
+  expect(differsSaid({ name: "needsRepos", machine: [], platform: ["a/b"], goesBy: "machine" })).toStartWith(
+    "For the repositories looked in for what needs you it says none, and main says a/b.",
+  );
+  // Each setting has words of its own, and one this screen has none for is said by its name.
+  const said = ["repo", "queue", "queueDbUrl", "queueTokenName", "androidPackage", "promptLabel", "needsRepos"].map(
+    (name) => differsSaid({ name, machine: "x", platform: "y", goesBy: "platform" }),
+  );
+  expect(new Set(said).size).toBe(said.length);
+  expect(said.filter((line) => /For (repo|queue[A-Z]|android|prompt|needs)/.test(line))).toEqual([]);
+  expect(differsSaid({ name: "somethingNew", machine: "x", platform: "y", goesBy: "platform" })).toBe(
+    "For somethingNew it says x. Cloudflare goes by main's: y.",
+  );
+  // A setting gone by the machine's that is not the list is said without a reason that is not its own.
+  expect(differsSaid({ name: "queue", machine: "x", platform: "y", goesBy: "machine" })).toBe(
+    "For the queue it says x, and main says y. Cloudflare goes by this machine's until it runs main's.",
+  );
+  // Something that is not a difference is not a crash.
+  expect(differsSaid(null)).toBe("For a setting it says nothing. Cloudflare goes by main's: nothing.");
+});
+
+test("who something held waits for is said in the owner's words, and not at all when the platform did not say", () => {
+  // Each of the three says something of its own.
+  const said = ["either", "machine", "asked"].map((waits) => heldWaitsSaid(waits));
+  expect(said.every((line) => line.length > 20)).toBe(true);
+  expect(new Set(said).size).toBe(3);
+  expect(said[0]).toContain("Cloudflare does this as soon as it can again");
+  expect(said[2]).toContain("may have got it");
+  // An answer older than the saying, or one that says something else: nothing is made up.
+  for (const waits of [undefined, null, "", "someone", "constructor", "toString", 3, {}]) {
+    expect([waits, heldWaitsSaid(waits)]).toEqual([waits, ""]);
+  }
 });
 
 test("a Worker's line on the Platform screen: how it gets into service, and how its last deploy went", () => {
@@ -1075,4 +1711,26 @@ test("each list that could not be read is said on the screens that show it, with
     );
     expect([view, at > 0 && body.includes(`...notices(docs.ops, ["${list}"])`)]).toEqual([view, true]);
   }
+});
+
+test("words written for a Markdown file are shown as plain words", () => {
+  // A row of the PM stack's roadmap, as its file has it (seen raw on the Roadmap screen on 2026-11-24).
+  expect(
+    plainWords(
+      "The app managed from Cloudflare. Design record: [`doc/2026-11-23T06-50-00Z_architecture_pm_platform_cloudflare_core/`](../../doc/2026-11-23T06-50-00Z_architecture_pm_platform_cloudflare_core/). What is left is tracked in one place.",
+    ),
+  ).toBe(
+    "The app managed from Cloudflare. Design record: doc/2026-11-23T06-50-00Z_architecture_pm_platform_cloudflare_core/. What is left is tracked in one place.",
+  );
+  expect(plainWords("See [the plan](https://example.com/a_b) and **this** and `fleet queue list`.")).toBe(
+    "See the plan and this and fleet queue list.",
+  );
+  // Brackets that are not a link, an issue number, and nothing at all are left as they are.
+  expect(plainWords("Done [x] for #13497 (see the file)")).toBe("Done [x] for #13497 (see the file)");
+  expect(plainWords("a * b * c")).toBe("a * b * c");
+  expect([plainWords(""), plainWords(null), plainWords(undefined)]).toEqual(["", "", ""]);
+  // And a roadmap row's words are shown that way.
+  expect(readFileSync(new URL("../public/app.js", import.meta.url), "utf8")).toContain(
+    'h("p", {}, plainWords(r.intent))',
+  );
 });

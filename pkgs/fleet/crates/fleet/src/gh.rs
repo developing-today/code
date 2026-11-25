@@ -90,6 +90,11 @@
 //!
 //! Controls (environment):
 //!   FLEET_GH_BIN        the `gh` binary to run (default: `gh`)
+//!   FLEET_GH_SHIM_ACTIVE set to 1 on every child `gh` fleet
+//!                       spawns: the gh-fleet shim's recursion
+//!                       guard, so a PATH `gh` that is the shim
+//!                       execs the pristine gh instead of
+//!                       re-entering a second fleet (#14650)
 //!   FLEET_GH_APP_ID     GitHub App ID (default: 5612056)
 //!   FLEET_GH_APP_OWNERS comma list replacing the default App owners
 //!   FLEET_GH_ORDER      comma list fixing the rotation exactly:
@@ -133,6 +138,7 @@ use crate::gh_cache;
 use crate::gh_closure;
 use crate::gh_guard;
 use crate::gh_metadata;
+use crate::gh_sync;
 use fleet_config::{Config, DEFAULT_GH_CACHE_PORT};
 use fleet_secrets::Resolver;
 use std::io::{IsTerminal, Write};
@@ -192,7 +198,20 @@ FLEET_GH_CACHE as a comma list; an address without a port gets port
 `fleet gh cache-status` probes the configured daemons. `--cache-addr`
 overrides every daemon address for one call; `--no-cache` resolves
 in-process. When no daemon answers, the call resolves in-process and
-says so on stderr — never silently.";
+says so on stderr — never silently.
+
+Sync verbs (code#10973, step 2.2 of #9016): the `sync-*` shadow
+verbs are the typed Queue/GitHub sync surface for scripted flows
+(pm-stack dispatch's fallback, the opencode claimant, job bodies).
+Each declares its whole command line, validates it strictly, and
+rewrites to the canonical gh call before the guard, closure and
+metadata layers run, inheriting the rotation and the retry-safety
+rule. `fleet gh sync-labels --repo OWNER/REPO <issue|pr> <n>` prints
+an item's label names as JSON; `sync-view` prints labels,state,title
+JSON; `sync-comment` posts a comment (`--body` or `--body-file`);
+`sync-issue-create`, `sync-issue-get`, `sync-labels-add`,
+`sync-label-ensure` and `sync-issue-close` (fleet closure reasons)
+cover the issue writes dispatch composes. See gh_sync.rs.";
 
 /// The fleet's GitHub Apps, in rotation order. Each carries its
 /// private key (and, except the fleet App whose ID is a public
@@ -1236,13 +1255,26 @@ struct Attempt {
     stderr: Vec<u8>,
 }
 
+/// The gh-fleet shim's recursion guard (pkgs/gh-fleet): a child
+/// `gh` that sees this set to 1 execs the pristine gh directly
+/// instead of routing through `fleet gh`. Fleet sets it on every
+/// `gh` it spawns — fleet IS the routing layer, so a child that
+/// re-entered fleet would run the call through a second, possibly
+/// different-revision fleet, which among other failures rejects
+/// this fleet's own generated closure arguments (#14650). An
+/// explicit FLEET_GH_BIN is untouched: the guard never changes
+/// which binary was chosen, it only tells the shim not to route.
+const SHIM_GUARD_ENV: &str = "FLEET_GH_SHIM_ACTIVE";
+
 /// Run the real `gh` once, under `token`, capturing output for
 /// classification. stdin is inherited so prompts behave; stdout and
-/// stderr are piped (see the module header for why).
+/// stderr are piped (see the module header for why). The child
+/// carries the shim recursion guard (SHIM_GUARD_ENV).
 fn run_gh_once(gh_bin: &str, args: &[String], token: &str) -> std::io::Result<Attempt> {
     let out = Command::new(gh_bin)
         .args(args)
         .env("GH_TOKEN", token)
+        .env(SHIM_GUARD_ENV, "1")
         .stdin(Stdio::inherit())
         .output()?;
     Ok(Attempt {
@@ -1447,10 +1479,14 @@ fn raw_args(args: &[String], raw_env: bool) -> Option<Vec<String>> {
 /// environment untouched — no token resolved, none injected, no
 /// failover. Stdio is inherited (not captured) so interactive
 /// `gh` behaves exactly as it does unwrapped; the exit code is
-/// the child's own.
+/// the child's own. The one deliberate exception to "untouched"
+/// is the shim recursion guard (SHIM_GUARD_ENV): without it a
+/// PATH `gh` that is the gh-fleet shim re-enters fleet instead
+/// of reaching the pristine gh raw mode promises (#14650).
 fn run_raw(gh_bin: &str, args: &[String]) -> i32 {
     match Command::new(gh_bin)
         .args(args)
+        .env(SHIM_GUARD_ENV, "1")
         .stdin(Stdio::inherit())
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit())
@@ -1525,6 +1561,24 @@ pub fn run(config: &Config, args: &[String]) -> i32 {
     if args.first().is_some_and(|a| a == "closures") {
         return run_closures(&args[1..]);
     }
+    // Sync verbs (#10973, step 2.2 of #9016): strictly-parsed typed
+    // verbs that rewrite to the canonical gh call. The rewrite is
+    // applied here, before the close guard, the closure layer and
+    // the metadata create path parse the arguments, so a sync call
+    // inherits every passthrough control — and the rotation below —
+    // exactly as the hand-written call it replaces would have.
+    let sync_rewrite;
+    let args: &[String] = match gh_sync::parse(args) {
+        Ok(Some(canonical)) => {
+            sync_rewrite = canonical;
+            &sync_rewrite
+        }
+        Ok(None) => args,
+        Err(e) => {
+            eprintln!("{e}");
+            return EXIT_USAGE;
+        }
+    };
     let guard_intent = match gh_guard::parse(args) {
         Ok(intent) => intent,
         Err(e) => {
@@ -2469,6 +2523,133 @@ mod tests {
             dir.to_string_lossy().to_string(),
             script.to_string_lossy().to_string(),
         )
+    }
+
+    /// Place an executable script the way fake_gh does: the text
+    /// goes to a side file and a separate `cp` (exited before we
+    /// return) writes the file that is executed, so no descriptor
+    /// this process holds open can make a child's exec fail with
+    /// ETXTBSY (#11834). Returns the script's path.
+    fn place_script(dir: &std::path::Path, name: &str, text: &str) -> String {
+        let source = dir.join(format!("{name}.src"));
+        std::fs::write(&source, text).unwrap();
+        let script = dir.join(name);
+        let _ = std::fs::remove_file(&script);
+        let copied = std::process::Command::new("cp")
+            .arg(&source)
+            .arg(&script)
+            .status()
+            .expect("run cp to place the script");
+        assert!(copied.success(), "cp of {name} failed: {copied}");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        script.to_string_lossy().to_string()
+    }
+
+    /// Build the #14650 shim world: a directory holding three
+    /// executables that reproduce the production gh-fleet boundary
+    /// with the shim's real guard semantics (pkgs/gh-fleet): `gh`
+    /// is the shim — guarded (FLEET_GH_SHIM_ACTIVE=1) it execs the
+    /// pristine gh, unguarded it exports FLEET_GH_BIN + the guard
+    /// and execs `fleet gh`; `fleet` stands in for the nested
+    /// fleet a re-entry would create (it logs the re-entry, then
+    /// does what that fleet would do — run its resolved
+    /// FLEET_GH_BIN); `pristine-gh` is the real gh. Every hop
+    /// appends one line to a log whose path is baked into the
+    /// scripts (no shared env, so parallel tests cannot race).
+    /// Returns (dir, shim path).
+    fn shim_world(tag: &str) -> (String, String) {
+        let dir = std::env::temp_dir().join(format!("fleet-gh-shim-{}-{tag}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let log = dir.join("calls.log");
+        let log = log.display();
+        let pristine_path = dir.join("pristine-gh").display().to_string();
+        let fleet_path = dir.join("fleet").display().to_string();
+        let pristine = format!(
+            "#!/bin/sh\n\
+             echo \"pristine $*\" >> \"{log}\"\n\
+             echo 'pristine gh output'\n\
+             exit 0\n"
+        );
+        let fleet = format!(
+            "#!/bin/sh\n\
+             echo \"fleet-reentry $*\" >> \"{log}\"\n\
+             exec \"$FLEET_GH_BIN\" \"$@\"\n"
+        );
+        let shim = format!(
+            "#!/bin/sh\n\
+             if [ \"${{FLEET_GH_SHIM_ACTIVE:-}}\" = \"1\" ]; then\n\
+             exec \"{pristine_path}\" \"$@\"\n\
+             fi\n\
+             export FLEET_GH_BIN=\"{pristine_path}\"\n\
+             export FLEET_GH_SHIM_ACTIVE=1\n\
+             exec \"{fleet_path}\" gh \"$@\"\n"
+        );
+        place_script(&dir, "pristine-gh", &pristine);
+        place_script(&dir, "fleet", &fleet);
+        let shim_path = place_script(&dir, "gh", &shim);
+        (dir.to_string_lossy().to_string(), shim_path)
+    }
+
+    // oracle: #14650 — a direct `fleet gh` whose `gh` is the
+    // gh-fleet shim must reach the pristine gh in ONE hop. The
+    // production shim's guard semantics are the truth: guarded,
+    // the shim execs the pristine gh; unguarded, it re-enters
+    // fleet. The scripts' log decides — any "fleet-reentry" line
+    // (or a second line at all) means the guard was not set.
+    #[test]
+    fn run_gh_once_does_not_reenter_fleet_through_the_shim() {
+        // The guard must start absent from the ambient environment,
+        // or the child would inherit it and the test could not tell
+        // whether run_gh_once set it. Nothing else in this crate
+        // reads the variable, so clearing it cannot race a reader.
+        unsafe { std::env::remove_var(SHIM_GUARD_ENV) };
+        let (dir, shim) = shim_world("once");
+        let log = format!("{dir}/calls.log");
+        let args: Vec<String> = ["issue", "list"].iter().map(|s| s.to_string()).collect();
+        let attempt = run_gh_once(&shim, &args, "tok-test").unwrap();
+        assert_eq!(attempt.code, 0);
+        assert_eq!(
+            String::from_utf8_lossy(&attempt.stdout),
+            "pristine gh output\n"
+        );
+        let calls = std::fs::read_to_string(&log).unwrap();
+        assert_eq!(
+            calls.lines().count(),
+            1,
+            "exactly one pristine call, no re-entry: {calls}"
+        );
+        assert!(
+            calls.starts_with("pristine "),
+            "the one call is the pristine gh: {calls}"
+        );
+    }
+
+    // oracle: #14650, raw path — the same guard duty on run_raw:
+    // raw mode hands the caller the pristine gh, never a nested
+    // fleet. run_raw inherits stdio, so the scripts' log (not
+    // captured output) is the evidence.
+    #[test]
+    fn run_raw_does_not_reenter_fleet_through_the_shim() {
+        unsafe { std::env::remove_var(SHIM_GUARD_ENV) };
+        let (dir, shim) = shim_world("raw");
+        let log = format!("{dir}/calls.log");
+        let args: Vec<String> = ["issue", "list"].iter().map(|s| s.to_string()).collect();
+        let code = run_raw(&shim, &args);
+        assert_eq!(code, 0);
+        let calls = std::fs::read_to_string(&log).unwrap();
+        assert_eq!(
+            calls.lines().count(),
+            1,
+            "exactly one pristine call, no re-entry: {calls}"
+        );
+        assert!(
+            calls.starts_with("pristine "),
+            "the one call is the pristine gh: {calls}"
+        );
     }
 
     // oracle: code#8887's headline acceptance — a rate-limited

@@ -65,7 +65,8 @@ use crate::world_session::{
     Inbound, SessionConfig, SessionIo, encode_hex, run_session, run_session_with,
 };
 use crate::world_terminal::{
-    PROBE_QUERIES, PROBE_TIMEOUT, ProbeDemux, ProbeOutcome, TierPresenter,
+    DisplayMode, PROBE_QUERIES, PROBE_TIMEOUT, ProbeDemux, ProbeOutcome, TerminalProfile,
+    TierPresenter,
 };
 
 /// File, beside the other server keys, that holds the SSH host key.
@@ -89,6 +90,39 @@ const MAX_LINE: usize = 1024;
 const ALT_SCREEN_ENTER: &str = "\x1b[?1049h";
 /// Leave the alternate screen buffer and restore the screen the user came from.
 const ALT_SCREEN_LEAVE: &str = "\x1b[?1049l";
+/// Hide the text cursor for the length of a cursor-mode session (#14861 D2).
+const CURSOR_HIDE: &str = "\x1b[?25l";
+/// Show the text cursor again on every exit path of a cursor-mode session.
+const CURSOR_SHOW: &str = "\x1b[?25h";
+/// Primary-mode session opening: home and erase in the primary buffer (no
+/// alternate screen), so the first frame paints over a clean area and the
+/// final frame stays in scrollback afterwards (#14861 D2).
+const PRIMARY_ENTER: &str = "\x1b[H\x1b[2J";
+
+/// Session-opening display bytes for a raw shell in `mode` (#14861 D2).
+/// `Auto` is byte-identical to the pre-mode behaviour; `Text` opens with
+/// nothing, because no escape byte may ever be written in that mode.
+fn display_enter_bytes(mode: DisplayMode) -> String {
+    match mode {
+        DisplayMode::Auto => ALT_SCREEN_ENTER.to_owned(),
+        DisplayMode::Alternate => format!("{ALT_SCREEN_ENTER}{CURSOR_HIDE}"),
+        DisplayMode::Primary => format!("{PRIMARY_ENTER}{CURSOR_HIDE}"),
+        DisplayMode::Text => String::new(),
+    }
+}
+
+/// Session-closing display bytes for a raw shell in `mode`, given the
+/// row count of the last frame painted (#14861 D2). `Auto` is
+/// byte-identical to the pre-mode behaviour; primary moves the cursor
+/// one row below the final frame, which stays on show.
+fn display_exit_bytes(mode: DisplayMode, last_frame_rows: usize) -> String {
+    match mode {
+        DisplayMode::Auto => ALT_SCREEN_LEAVE.to_owned(),
+        DisplayMode::Alternate => format!("{ALT_SCREEN_LEAVE}{CURSOR_SHOW}"),
+        DisplayMode::Primary => format!("{CURSOR_SHOW}\x1b[{};1H", last_frame_rows + 1),
+        DisplayMode::Text => String::new(),
+    }
+}
 /// Input bytes dropped before the session tells the viewer about it.
 const INPUT_DROP_NOTICE_BYTES: usize = 1024;
 /// Largest line the terminal presenter will accept for one form response.
@@ -321,6 +355,7 @@ impl Server for SshServer {
             login: None,
             input: None,
             viewport: None,
+            display: None,
             dropped_input: Arc::new(AtomicUsize::new(0)),
             exec: None,
             exec_backlog: Arc::new(AtomicUsize::new(0)),
@@ -333,6 +368,10 @@ impl Server for SshServer {
 enum ShellMode {
     Raw,
     Command,
+    /// A raw session that negotiated the text display mode (#14937):
+    /// painting is the mode's Tier 3 text presentation, and input is
+    /// line oriented, parsed exactly like command mode's lines.
+    Text,
 }
 
 struct Login {
@@ -351,6 +390,9 @@ struct SshClient {
     login: Option<Login>,
     input: Option<mpsc::Sender<SshInputFrame>>,
     viewport: Option<(u32, u32)>,
+    /// The raw `ID_DISPLAY` value the client negotiated before the shell
+    /// opened (#14861 D3); validated when the shell is built.
+    display: Option<String>,
     /// Bytes the input queue refused, shared with the shell so the drop is
     /// visible. The handler counts drops for the life of the connection,
     /// including after the shell opens, so the counter must be shared, not
@@ -523,6 +565,24 @@ impl Handler for SshClient {
         session.channel_success(channel)
     }
 
+    async fn env_request(
+        &mut self,
+        channel: ChannelId,
+        variable_name: &str,
+        variable_value: &str,
+        session: &mut Session,
+    ) -> Result<(), russh::Error> {
+        // The display-mode negotiation (#14861 D3): the client sends
+        // ID_DISPLAY before the shell opens (`ssh -o SetEnv=ID_DISPLAY=…`);
+        // the value is validated when the shell is built. No other
+        // variable is accepted.
+        if variable_name == DisplayMode::ENV_NAME {
+            self.display = Some(variable_value.to_owned());
+            return session.channel_success(channel);
+        }
+        session.channel_failure(channel)
+    }
+
     async fn window_change_request(
         &mut self,
         channel: ChannelId,
@@ -567,9 +627,34 @@ impl Handler for SshClient {
             ));
             return Ok(());
         }
+        // The negotiated display mode (#14861 D2/D3). Command mode is
+        // line oriented and ignores ID_DISPLAY entirely. An unknown
+        // value refuses the join with a one-line message naming the
+        // four values, rather than guessing a mode the player did not
+        // ask for; the client's value is not echoed back.
+        let display_mode = if login.command_mode {
+            DisplayMode::Auto
+        } else {
+            match self.display.as_deref().map(DisplayMode::parse) {
+                None => DisplayMode::Auto,
+                Some(Some(mode)) => mode,
+                Some(None) => {
+                    session.channel_success(channel)?;
+                    let handle = session.handle();
+                    let message = format!(
+                        "world: {env} must be one of: auto, alternate, primary, text\r\n",
+                        env = DisplayMode::ENV_NAME
+                    );
+                    tokio::spawn(async move {
+                        let _ = handle.data(channel, message.into_bytes()).await;
+                        let _ = handle.close(channel).await;
+                    });
+                    return Ok(());
+                }
+            }
+        };
         let first = join_frame(login);
         session.channel_success(channel)?;
-        let alt_screen = !login.command_mode;
 
         let (input, frames) = mpsc::channel(INPUT_QUEUE);
         let first_resize = self.viewport.take();
@@ -580,6 +665,8 @@ impl Handler for SshClient {
         self.input = Some(input);
         let mode = if login.command_mode {
             ShellMode::Command
+        } else if display_mode == DisplayMode::Text {
+            ShellMode::Text
         } else {
             ShellMode::Raw
         };
@@ -592,8 +679,9 @@ impl Handler for SshClient {
             first_resize,
             capability: login.capability.clone(),
             mode,
-            alt_screen,
-            alt_screen_entered: false,
+            display_mode,
+            display_entered: false,
+            last_frame_rows: 0,
             last_error: None,
             dropped_input: Arc::clone(&self.dropped_input),
             lines: WorldLineBuffer::default(),
@@ -614,7 +702,19 @@ impl Handler for SshClient {
             kitty: kitty::KittyKeyboard::new(),
             kitty_drop_baseline: 0,
             kitty_verify_deadline: None,
-            presenter: None,
+            // A text session may never emit an escape byte, so its
+            // Tier 3 presenter exists from the first frame instead of
+            // waiting for the probe to close; when the probe window
+            // closes it is replaced by the probed profile's presenter
+            // (still Tier 3 under the mode rule).
+            presenter: if display_mode == DisplayMode::Text {
+                Some(TierPresenter::for_mode(
+                    TerminalProfile::default(),
+                    display_mode,
+                ))
+            } else {
+                None
+            },
             active_form: None,
             form_line: Vec::new(),
             form_backlog: VecDeque::new(),
@@ -631,14 +731,14 @@ impl Handler for SshClient {
                 documents_store: Some(io.blobs.clone()),
                 ..SessionConfig::default()
             };
-            io.enter_alt_screen().await;
+            io.enter_display().await;
             io.start_terminal_probe().await;
             run_session_with(&hub, &mut io, config).await;
             io.restore_kitty_keyboard().await;
             if io.errored {
                 tokio::time::sleep(REFUSED_SHELL_DELAY).await;
             }
-            io.leave_alt_screen().await;
+            io.leave_display().await;
             let _ = io.handle.close(channel).await;
         });
         Ok(())
@@ -836,12 +936,15 @@ struct SshIo {
     first_resize: Option<(u32, u32)>,
     capability: String,
     mode: ShellMode,
-    /// Whether this session uses the alternate screen buffer (raw sessions only;
-    /// command mode never emits either sequence).
-    alt_screen: bool,
-    /// Whether the enter sequence has actually been written to the channel.
-    alt_screen_entered: bool,
-    /// The last error message, re-sent after leaving the alternate screen.
+    /// The display mode this session negotiated (#14861 D2/D3); `Auto`
+    /// for command mode and for raw sessions that did not ask.
+    display_mode: DisplayMode,
+    /// Whether the enter framing has actually been written to the channel.
+    display_entered: bool,
+    /// Rows in the last frame this session painted; primary mode moves
+    /// the cursor one row below it on exit.
+    last_frame_rows: usize,
+    /// The last error message, re-sent after the display framing is undone.
     last_error: Option<String>,
     /// Bytes the input queue refused, shared with the russh handler: drops
     /// counted after the shell opens are exactly the ones this session must
@@ -972,9 +1075,12 @@ fn prepend_dropped_input_notice(counter: &AtomicUsize, out: &mut Vec<u8>) -> Opt
     Some(bytes)
 }
 
+mod client;
 mod form_io;
 mod form_prompt;
 mod kitty;
+
+pub use client::{HostKeyCheck, HostKeyTrust, SshConnection, SshTarget, connect_frames};
 use form_io::{
     FormBytes, FormInputProgress, consume_form_input, discard_form_input_line,
     discard_form_lf_after_cr, form_closed_aliases, form_retry_alias, form_view_is_unchanged,
@@ -1127,41 +1233,48 @@ impl SshIo {
         }
     }
 
-    /// Enter the alternate screen before the first session frame, so a raw
-    /// session's repaints never land in the viewer's scrollback.
-    async fn enter_alt_screen(&mut self) {
-        if !self.alt_screen || self.alt_screen_entered {
+    /// Frame the session's display before the first session frame, per
+    /// the negotiated mode (#14861 D2): the alternate modes enter the
+    /// alternate screen (an explicit alternate also hides the cursor),
+    /// primary homes and erases in the primary buffer and hides the
+    /// cursor, and text writes nothing at all. Command mode writes
+    /// nothing in any mode.
+    async fn enter_display(&mut self) {
+        if self.display_entered || matches!(self.mode, ShellMode::Command) {
             return;
         }
-        if self
-            .handle
-            .data(self.channel, ALT_SCREEN_ENTER)
-            .await
-            .is_ok()
-        {
-            self.alt_screen_entered = true;
+        let enter = display_enter_bytes(self.display_mode);
+        if enter.is_empty() {
+            return;
+        }
+        if self.handle.data(self.channel, enter).await.is_ok() {
+            self.display_entered = true;
         }
     }
 
-    /// Leave the alternate screen and re-send the last error after the leave
-    /// sequence, so a refused join stays readable in the restored scrollback.
-    async fn leave_alt_screen(&mut self) {
+    /// Undo the display framing on every exit path and re-send the last
+    /// error after the framing bytes, so a refused join stays readable
+    /// (#14861 D2): alternate leaves its buffer (and shows the cursor it
+    /// hid), primary shows the cursor and moves it below the final
+    /// frame, which stays on show, and text has nothing to restore.
+    async fn leave_display(&mut self) {
         // Restore presenter modes (synchronized output) on every exit
-        // path, before the alternate screen itself is left (F13.4).
+        // path, before the display framing itself is undone (F13.4).
         let restore = self
             .presenter
             .as_mut()
             .map_or_else(String::new, TierPresenter::finish);
-        if !self.alt_screen_entered {
+        if !self.display_entered {
             if !restore.is_empty() {
                 let _ = self.handle.data(self.channel, restore).await;
             }
             return;
         }
-        self.alt_screen_entered = false;
+        self.display_entered = false;
+        let exit = display_exit_bytes(self.display_mode, self.last_frame_rows);
         let text = match self.last_error.take() {
-            Some(error) => format!("{restore}{ALT_SCREEN_LEAVE}\r\n{error}\r\n"),
-            None => format!("{restore}{ALT_SCREEN_LEAVE}"),
+            Some(error) => format!("{restore}{exit}\r\n{error}\r\n"),
+            None => format!("{restore}{exit}"),
         };
         let _ = self.handle.data(self.channel, text).await;
     }
@@ -1173,6 +1286,13 @@ impl SshIo {
     /// like a caller that never had a terminal.
     async fn start_terminal_probe(&mut self) {
         if !self.probe_tty || self.probe.is_some() {
+            return;
+        }
+        // A text session never probes: the probe burst is itself escape
+        // bytes, and the mode already forces Tier 3, so the probe could
+        // not change the painting (#14861 D2). Kitty keyboard therefore
+        // never activates in text mode either; its input stays plain.
+        if self.display_mode == DisplayMode::Text {
             return;
         }
         if self.handle.data(self.channel, PROBE_QUERIES).await.is_err() {
@@ -1200,7 +1320,10 @@ impl SshIo {
             ?tier,
             "terminal capability probe closed; tier presenter selected"
         );
-        self.presenter = Some(TierPresenter::from_outcome(&outcome));
+        self.presenter = Some(TierPresenter::from_outcome_for_mode(
+            &outcome,
+            self.display_mode,
+        ));
         // Retained for the raw input path: kitty activation (Slice E of
         // #787) reads the detected support from here once the held
         // pre-activation bytes below have drained as legacy input.
@@ -1375,6 +1498,17 @@ impl SshIo {
         }
         recv_bytes_through_probe(&mut self.frames, &mut self.probe, &mut self.probe_outcome).await
     }
+
+    /// The full-repaint prefix for a frame this shell paints itself:
+    /// home + erase, except in text mode, which never writes an escape
+    /// byte (#14861 D2).
+    fn repaint_prefix(&self) -> &'static str {
+        if self.display_mode == DisplayMode::Text {
+            ""
+        } else {
+            "\x1b[H\x1b[2J"
+        }
+    }
 }
 
 impl SessionIo for SshIo {
@@ -1403,7 +1537,9 @@ impl SessionIo for SshIo {
             let bytes: Vec<_> = self.form_backlog.drain(..).collect();
             match self.mode {
                 ShellMode::Raw => return Inbound::Text(raw_frame(&SshInputFrame::Bytes(bytes))),
-                ShellMode::Command => self.commands.extend(self.lines.push(&bytes)),
+                ShellMode::Command | ShellMode::Text => {
+                    self.commands.extend(self.lines.push(&bytes));
+                }
             }
         }
         if self.active_form.is_some() {
@@ -1488,7 +1624,10 @@ impl SessionIo for SshIo {
                     }
                 }
             }
-            ShellMode::Command => loop {
+            // Text mode shares command mode's line parsing wholesale
+            // (#14937): the same line buffer, the same commands, the
+            // same shell-answered replies. Only painting differs.
+            ShellMode::Command | ShellMode::Text => loop {
                 if let Some(command) = self.commands.pop_front() {
                     if let Some(frame) = command_frame(&command, &self.capability) {
                         if let WorldCommand::Records { prefix } = &command {
@@ -1683,7 +1822,11 @@ impl SessionIo for SshIo {
                 return true;
             }
             let input = terminal_form_input_manifest();
+            // A text session cannot present an interactive form (its
+            // prompt is painted with escape bytes), so it takes the
+            // plain-text projection branch below (#14861 D2).
             let message = if form.presentation_token.is_some()
+                && self.display_mode != DisplayMode::Text
                 && form.validate_device_input(&input).is_ok()
             {
                 let prompt = terminal_form_prompt(&form);
@@ -1717,7 +1860,7 @@ impl SessionIo for SshIo {
         let mut next_screen = None;
         let text = match value["type"].as_str() {
             Some("snapshot") => {
-                if matches!(self.mode, ShellMode::Command) {
+                if matches!(self.mode, ShellMode::Command | ShellMode::Text) {
                     "World chat: type a line to chat; /help lists commands.\r\nworld> ".to_owned()
                 } else {
                     return true;
@@ -1728,10 +1871,28 @@ impl SessionIo for SshIo {
                     if let Ok(crate::world_presentation::WorldSurface::Screen(screen)) =
                         serde_json::from_value(surface.clone())
                     {
-                        let raw_mode = matches!(self.mode, ShellMode::Raw);
+                        // Raw and text sessions paint through the
+                        // presenter path (text's presenter is the eager
+                        // Tier 3 one its mode selected); command sessions
+                        // take the plain full render below.
+                        let raw_mode = matches!(self.mode, ShellMode::Raw | ShellMode::Text);
                         let rendered = if raw_mode {
                             if let Some(presenter) = self.presenter.as_mut() {
                                 Some(presenter.render_screen(&screen))
+                            } else if self.display_mode == DisplayMode::Primary {
+                                // No presenter yet (the probe has not
+                                // closed, or never ran): paint with the
+                                // primary contract directly, so a primary
+                                // session never receives an alternate-style
+                                // row diff before its presenter exists.
+                                let previous = self.previous_screen.as_ref().filter(|previous| {
+                                    previous.width == screen.width
+                                        && previous.height == screen.height
+                                        && previous.version == screen.version
+                                });
+                                previous
+                                    .and_then(|previous| screen.paint_primary(previous))
+                                    .or_else(|| screen.paint_primary_full())
                             } else {
                                 self.previous_screen
                                     .as_ref()
@@ -1747,17 +1908,17 @@ impl SessionIo for SshIo {
                             }
                             rendered
                         } else if let Some(data) = value["data"].as_str() {
-                            format!("\x1b[H\x1b[2J{}", terminal_text(data))
+                            format!("{}{}", self.repaint_prefix(), terminal_text(data))
                         } else {
                             return true;
                         }
                     } else if let Some(data) = value["data"].as_str() {
-                        format!("\x1b[H\x1b[2J{}", terminal_text(data))
+                        format!("{}{}", self.repaint_prefix(), terminal_text(data))
                     } else {
                         return true;
                     }
                 } else if let Some(data) = value["data"].as_str() {
-                    format!("\x1b[H\x1b[2J{}", terminal_text(data))
+                    format!("{}{}", self.repaint_prefix(), terminal_text(data))
                 } else {
                     return true;
                 };
@@ -1920,210 +2081,13 @@ impl SessionIo for SshIo {
         if written {
             // Non-view output invalidates the terminal baseline; a successfully
             // written screen view becomes the new baseline only now.
+            if let Some(screen) = &next_screen {
+                self.last_frame_rows = usize::from(screen.height);
+            }
             self.previous_screen = next_screen;
         }
         written
     }
-}
-
-/// Where `id world join --via ssh` connects: `[user@]host[:port]` (port 22
-/// by default; an IPv6 address goes in brackets). The user is only the SSH
-/// login: on the frame channel it names no world and grants nothing.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct SshTarget {
-    /// SSH login name (`id` when absent).
-    pub user: String,
-    /// Host name or address.
-    pub host: String,
-    /// TCP port.
-    pub port: u16,
-}
-
-impl std::str::FromStr for SshTarget {
-    type Err = anyhow::Error;
-
-    fn from_str(text: &str) -> anyhow::Result<Self> {
-        let (user, rest) = text.rsplit_once('@').unwrap_or(("id", text));
-        let port = |digits: &str| {
-            anyhow::ensure!(
-                digits.bytes().all(|byte| byte.is_ascii_digit()),
-                "`{digits}` is not a port"
-            );
-            let port = digits
-                .parse::<u16>()
-                .map_err(|_| anyhow::anyhow!("`{digits}` is not a port"))?;
-            anyhow::ensure!(port != 0, "`{digits}` is not a port");
-            Ok(port)
-        };
-        let (host, port) = if let Some(inner) = rest.strip_prefix('[') {
-            let Some((host, tail)) = inner.split_once(']') else {
-                anyhow::bail!("`{text}`: missing `]` after the IPv6 address");
-            };
-            match tail.strip_prefix(':') {
-                Some(digits) => (host, port(digits)?),
-                None if tail.is_empty() => (host, 22),
-                None => anyhow::bail!("`{text}`: expected `:port` after `]`"),
-            }
-        } else {
-            match rest.split_once(':') {
-                Some((host, digits)) if !digits.contains(':') => (host, port(digits)?),
-                Some(_) => anyhow::bail!("`{text}`: put an IPv6 address in brackets"),
-                None => (rest, 22),
-            }
-        };
-        // #3267: whitespace, control characters, and `/` in the user or
-        // host are never legitimate — without this check they parse and
-        // fail later inside russh as opaque DNS/auth errors, and a
-        // newline-bearing host lands verbatim in error messages and the
-        // known-hosts lookup key. The bracketed-IPv6 host is held to the
-        // same rule: valid IPv6 literals contain none of these.
-        let has_bad_chars = |part: &str| {
-            part.chars()
-                .any(|c| c.is_whitespace() || c.is_control() || c == '/')
-        };
-        anyhow::ensure!(
-            !has_bad_chars(user) && !has_bad_chars(host),
-            "`{text}` is not [user@]host[:port]: user and host must not \
-             contain whitespace, control characters, or `/`"
-        );
-        anyhow::ensure!(
-            !host.is_empty() && !user.is_empty(),
-            "`{text}` is not [user@]host[:port]"
-        );
-        Ok(Self {
-            user: user.to_owned(),
-            host: host.to_owned(),
-            port,
-        })
-    }
-}
-
-/// How the SSH client decides to trust the host key. There is no
-/// trust-on-first-use: an unknown key is refused with its fingerprint.
-#[derive(Clone, Debug)]
-pub enum HostKeyCheck {
-    /// The SHA256 fingerprint `id serve` prints (`SHA256:...`).
-    Fingerprint(String),
-    /// An OpenSSH `known_hosts` file.
-    KnownHosts(std::path::PathBuf),
-}
-
-/// The client half of the host-key decision.
-#[derive(Debug)]
-pub struct HostKeyTrust {
-    host: String,
-    port: u16,
-    check: HostKeyCheck,
-    refused: Arc<std::sync::Mutex<Option<String>>>,
-}
-
-impl russh::client::Handler for HostKeyTrust {
-    type Error = russh::Error;
-
-    async fn check_server_key(
-        &mut self,
-        key: &russh::keys::PublicKeyOrCertificate,
-    ) -> Result<bool, russh::Error> {
-        let russh::keys::PublicKeyOrCertificate::PublicKey { key, .. } = key else {
-            self.refuse("a certificate (not supported)".to_owned());
-            return Ok(false);
-        };
-        let fingerprint = key.fingerprint(HashAlg::Sha256).to_string();
-        let trusted = match &self.check {
-            HostKeyCheck::Fingerprint(expected) => *expected == fingerprint,
-            HostKeyCheck::KnownHosts(path) => {
-                russh::keys::check_known_hosts_path(&self.host, self.port, key, path)
-                    .unwrap_or(false)
-            }
-        };
-        if !trusted {
-            self.refuse(fingerprint);
-        }
-        Ok(trusted)
-    }
-}
-
-impl HostKeyTrust {
-    fn refuse(&self, fingerprint: String) {
-        if let Ok(mut refused) = self.refused.lock() {
-            *refused = Some(fingerprint);
-        }
-    }
-}
-
-/// Keeps the SSH connection of a frame session open; dropping it disconnects.
-pub struct SshConnection {
-    _session: russh::client::Handle<HostKeyTrust>,
-}
-
-impl std::fmt::Debug for SshConnection {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("SshConnection").finish_non_exhaustive()
-    }
-}
-
-/// Open a frame session over an SSH exec channel. The returned stream
-/// carries exactly the bytes an iroh `/id-world/1` stream would: use
-/// [`crate::frames::write_frame_to`] and [`crate::frames::read_frame_from`].
-///
-/// # Errors
-///
-/// Fails if the host is unreachable, its key is not trusted, or it does not
-/// offer the frame transport.
-pub async fn connect_frames(
-    target: &SshTarget,
-    check: HostKeyCheck,
-) -> anyhow::Result<(SshConnection, russh::ChannelStream<russh::client::Msg>)> {
-    use anyhow::Context as _;
-
-    let refused = Arc::new(std::sync::Mutex::new(None));
-    let trust = HostKeyTrust {
-        host: target.host.clone(),
-        port: target.port,
-        check,
-        refused: Arc::clone(&refused),
-    };
-    let config = Arc::new(russh::client::Config::default());
-    let mut session =
-        match russh::client::connect(config, (target.host.as_str(), target.port), trust).await {
-            Ok(session) => session,
-            Err(error) => {
-                if let Some(key) = refused.lock().ok().and_then(|mut refused| refused.take()) {
-                    anyhow::bail!(
-                        "the host key of {}:{} ({key}) is not trusted; compare it with the \
-                         `world ssh host key` line `id serve` prints, then pass \
-                         --ssh-host-key {key} or add the key to known_hosts",
-                        target.host,
-                        target.port
-                    );
-                }
-                return Err(error).context("connect over ssh");
-            }
-        };
-    // The login grants nothing here: the frames carry their own capability.
-    let auth = session
-        .authenticate_password(target.user.as_str(), "")
-        .await
-        .context("ssh login")?;
-    anyhow::ensure!(auth.success(), "the ssh server refused the login");
-    let mut channel = session
-        .channel_open_session()
-        .await
-        .context("open ssh channel")?;
-    channel
-        .exec(true, WORLD_EXEC_COMMAND)
-        .await
-        .context("start the frame transport")?;
-    loop {
-        match channel.wait().await {
-            Some(russh::ChannelMsg::Success) => break,
-            Some(russh::ChannelMsg::Failure) | None => anyhow::bail!(
-                "the ssh server does not offer the id world frame transport (exec {WORLD_EXEC_COMMAND})"
-            ),
-            Some(_) => {}
-        }
-    }
-    Ok((SshConnection { _session: session }, channel.into_stream()))
 }
 
 const MAX_WORLD_TERMINAL_LINE: usize = 1024;
@@ -3066,6 +3030,40 @@ mod tests {
         channel
     }
 
+    /// A shell that negotiates a display mode first, the way
+    /// `ssh -o SetEnv=ID_DISPLAY=<value>` does (#14861 D3).
+    async fn shell_with_display(
+        session: &client::Handle<TrustAll>,
+        value: &str,
+    ) -> Channel<client::Msg> {
+        let channel = session.channel_open_session().await.unwrap();
+        channel
+            .request_pty(true, "xterm", 80, 24, 0, 0, &[])
+            .await
+            .unwrap();
+        channel
+            .set_env(true, DisplayMode::ENV_NAME, value)
+            .await
+            .unwrap();
+        channel.request_shell(true).await.unwrap();
+        channel
+    }
+
+    async fn invite_capability(hub: &WorldHub, name: &str) -> String {
+        let invite = hub
+            .lease(None, Some("admin"))
+            .await
+            .unwrap()
+            .service()
+            .invite(Some("admin"), name.to_owned(), None, None)
+            .await
+            .unwrap();
+        serde_json::to_value(invite).unwrap()["capability"]
+            .as_str()
+            .unwrap()
+            .to_owned()
+    }
+
     async fn read_until(
         channel: &mut Channel<client::Msg>,
         terminal: &mut vt100::Parser,
@@ -3167,6 +3165,246 @@ mod tests {
         assert_eq!(sequence_count(&bytes, ALT_SCREEN_LEAVE), 0);
 
         drop(channel);
+        drop(session);
+        server.abort();
+    }
+
+    #[test]
+    fn display_framing_bytes_follow_the_design_table() {
+        // Oracle: design D2's mode table — auto is the pre-mode byte
+        // stream exactly; alternate brackets with ?1049 and hides the
+        // cursor; primary never touches ?1049, leaves the frame, and
+        // exits below it; text writes nothing at either end.
+        assert_eq!(display_enter_bytes(DisplayMode::Auto), ALT_SCREEN_ENTER);
+        assert_eq!(display_exit_bytes(DisplayMode::Auto, 24), ALT_SCREEN_LEAVE);
+
+        let enter = display_enter_bytes(DisplayMode::Alternate);
+        assert!(enter.starts_with(ALT_SCREEN_ENTER), "{enter:?}");
+        assert!(enter.ends_with(CURSOR_HIDE), "{enter:?}");
+        assert_eq!(
+            display_exit_bytes(DisplayMode::Alternate, 24),
+            format!("{ALT_SCREEN_LEAVE}{CURSOR_SHOW}")
+        );
+
+        let enter = display_enter_bytes(DisplayMode::Primary);
+        assert!(!enter.contains("?1049"), "{enter:?}");
+        assert!(enter.starts_with(PRIMARY_ENTER), "{enter:?}");
+        assert!(enter.ends_with(CURSOR_HIDE), "{enter:?}");
+        assert_eq!(
+            display_exit_bytes(DisplayMode::Primary, 24),
+            format!("{CURSOR_SHOW}\x1b[25;1H")
+        );
+
+        assert!(display_enter_bytes(DisplayMode::Text).is_empty());
+        assert!(display_exit_bytes(DisplayMode::Text, 24).is_empty());
+    }
+
+    #[tokio::test]
+    async fn an_explicit_alternate_shell_hides_the_cursor_inside_the_alternate_screen() {
+        let hub = lobby_hub();
+        let capability = invite_capability(&hub, "ssh-raw-alternate").await;
+        let (port, server) = start(hub).await;
+        let session = connect(port, &capability).await;
+        let mut channel = shell_with_display(&session, "alternate").await;
+
+        // Oracle: design D2 — an explicit alternate enters the alternate
+        // screen exactly as auto does, then hides the cursor for the
+        // session.
+        let bytes = read_until_bytes(
+            &mut channel,
+            CURSOR_HIDE.as_bytes(),
+            Duration::from_secs(10),
+        )
+        .await;
+        assert_eq!(sequence_position(&bytes, ALT_SCREEN_ENTER), Some(0));
+        assert_eq!(
+            sequence_position(&bytes, CURSOR_HIDE),
+            Some(ALT_SCREEN_ENTER.len())
+        );
+
+        drop(channel);
+        drop(session);
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn a_primary_shell_paints_in_the_primary_buffer() {
+        let hub = lobby_hub();
+        let capability = invite_capability(&hub, "ssh-raw-primary").await;
+        let (port, server) = start(hub).await;
+        let session = connect(port, &capability).await;
+        let mut channel = shell_with_display(&session, "primary").await;
+
+        // Oracle: design D2 — primary opens with home + erase + cursor
+        // hide in the primary buffer and never enters or leaves the
+        // alternate screen.
+        let bytes = read_until_bytes(
+            &mut channel,
+            CURSOR_HIDE.as_bytes(),
+            Duration::from_secs(10),
+        )
+        .await;
+        assert!(
+            bytes.starts_with(PRIMARY_ENTER.as_bytes()),
+            "primary session did not open with home+erase: {bytes:?}"
+        );
+        assert_eq!(sequence_count(&bytes, ALT_SCREEN_ENTER), 0);
+        assert_eq!(sequence_count(&bytes, ALT_SCREEN_LEAVE), 0);
+
+        drop(channel);
+        drop(session);
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn a_text_shell_never_writes_an_escape_byte() {
+        let (port, server) = start(lobby_hub()).await;
+        // A wrong capability is refused by the world inside the shell,
+        // which deterministically produces session output (the refusal
+        // text) without needing a world program.
+        let session = connect(port, &"0".repeat(64)).await;
+        let mut channel = shell_with_display(&session, "text").await;
+
+        // Oracle: design D2 — in text mode no escape sequence is ever
+        // written: no display framing, no probe burst, plain text only.
+        let bytes = read_until_bytes(
+            &mut channel,
+            b"join denied",
+            Duration::from_secs(10),
+        )
+        .await;
+        assert!(
+            String::from_utf8_lossy(&bytes).contains("join denied"),
+            "refusal never arrived: {bytes:?}"
+        );
+        assert!(
+            !bytes.contains(&0x1b),
+            "text session wrote an escape byte: {bytes:?}"
+        );
+
+        drop(channel);
+        drop(session);
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn a_text_shell_parses_typed_lines_with_the_command_parsing() {
+        let hub = lobby_hub();
+        let world = hub
+            .lease(None, Some("admin"))
+            .await
+            .unwrap()
+            .service()
+            .world()
+            .clone();
+        let mut events = world.subscribe();
+        let capability = invite_capability(&hub, "ssh-text-lines").await;
+        let (port, server) = start(hub).await;
+        let session = connect(port, &capability).await;
+        let mut channel = shell_with_display(&session, "text").await;
+
+        // Oracle: issue #14937 — input in text mode stays line
+        // oriented, parsed exactly like command mode's lines. The join
+        // banner is the command mode's, in plain text.
+        let banner = read_until_bytes(
+            &mut channel,
+            b"world> ",
+            Duration::from_secs(10),
+        )
+        .await;
+        assert!(
+            String::from_utf8_lossy(&banner).contains("world> "),
+            "text session never showed its banner: {banner:?}"
+        );
+        assert!(
+            !banner.contains(&0x1b),
+            "text banner wrote an escape byte: {banner:?}"
+        );
+
+        // A typed line reaches the world as a chat line. Under raw
+        // keystroke forwarding no Chat event would ever fire.
+        channel.data(&b"hello from text mode\r"[..]).await.unwrap();
+        tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                if let Ok(event) = events.recv().await {
+                    if matches!(event.kind, crate::world::WorldEventKind::Chat { .. }) {
+                        break;
+                    }
+                }
+            }
+        })
+        .await
+        .expect("typed line was not sent to the world as chat");
+
+        // Slash commands are the shell's own, answered in plain text.
+        channel.data(&b"/help\r"[..]).await.unwrap();
+        let help = read_until_bytes(
+            &mut channel,
+            b"Commands:",
+            Duration::from_secs(10),
+        )
+        .await;
+        assert!(
+            String::from_utf8_lossy(&help).contains("Commands:"),
+            "shell did not answer /help: {help:?}"
+        );
+        assert!(
+            !help.contains(&0x1b),
+            "text /help wrote an escape byte: {help:?}"
+        );
+
+        // And /quit ends the session, as in command mode.
+        channel.data(&b"/quit\r"[..]).await.unwrap();
+        tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                match channel.wait().await {
+                    Some(_) => {}
+                    None => break,
+                }
+            }
+        })
+        .await
+        .expect("text session did not close on /quit");
+
+        drop(session);
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn an_unknown_display_value_refuses_the_join() {
+        let hub = lobby_hub();
+        let capability = invite_capability(&hub, "ssh-raw-bad-display").await;
+        let (port, server) = start(hub).await;
+        let session = connect(port, &capability).await;
+        let mut channel = shell_with_display(&session, "sideways").await;
+
+        // Oracle: design D3 — an unknown value refuses the join with a
+        // one-line message naming the four values (without echoing the
+        // client's value), and the channel closes without ever entering
+        // a display mode.
+        let mut bytes = Vec::new();
+        tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                match channel.wait().await {
+                    Some(ChannelMsg::Data { data }) => bytes.extend_from_slice(&data),
+                    Some(_) => {}
+                    None => break,
+                }
+            }
+        })
+        .await
+        .expect("refused channel did not close");
+        let text = String::from_utf8_lossy(&bytes);
+        assert!(
+            text.contains("must be one of: auto, alternate, primary, text"),
+            "refusal did not name the four values: {text:?}"
+        );
+        assert!(
+            !text.contains("sideways"),
+            "refusal echoed the client's value: {text:?}"
+        );
+        assert_eq!(sequence_count(&bytes, ALT_SCREEN_ENTER), 0);
+
         drop(session);
         server.abort();
     }

@@ -1,7 +1,7 @@
 ---
 created: 2026-11-23
-last-modified: 2026-11-23
-revision: 1
+last-modified: 2026-11-24
+revision: 2
 ---
 
 # Living documents
@@ -31,9 +31,11 @@ Data files that are appended mechanically (e.g. dataset tables) may live beside 
 ## Index
 
 - [`flag-observations/`](flag-observations/README.md) — the execution-risk flag dataset: schema, standing practice, and the observation log lanes append to.
+- [`decentralized-systems-stats.md`](decentralized-systems-stats.md) — verified quantitative dataset for decentralized-systems projects.
 - [`iroh/`](iroh/) — iroh ecosystem catalogues maintained by the weekly iroh digest (blog catalogue; talks and announcements).
 - [`roc/`](roc/) — Roc ecosystem catalogues maintained by the weekly Roc digest and media sweep (talks and announcements).
 
 ## Change log
 
 - r1 (2026-11-23): Folder created under the DOCS-MIGRATION programme (#5983) with the header contract and the first living documents (flag-observations; iroh and roc catalogues follow in their own PRs).
+- r2 (2026-11-24): Added the decentralized-systems quantitative stats dataset migrated under #13877.

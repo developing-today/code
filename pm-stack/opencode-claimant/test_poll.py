@@ -9,9 +9,12 @@ outcome; a running one carries neither. Non-dict / child entries must
 never count.
 """
 
+import contextlib
 import importlib.util
+import io
 import json
 import tempfile
+import time
 import unittest
 import urllib.error
 import urllib.parse
@@ -121,6 +124,96 @@ class TestSummarizeCap(unittest.TestCase):
             [root(), root(outcome="failed")], set(), NOW
         )
         self.assertEqual((live, active, room), (2, 1, poll.CAP - 1))
+
+
+class TestPilotCapComparison(unittest.TestCase):
+    """Oracle: #1658's advisory cap-4 arithmetic over the existing
+    non-scheduled active-root proxy, with unknowns preserved. Operational
+    cap-36 accounting and candidate discovery must remain unchanged.
+    Every external reader is mocked; no queue or server is touched.
+    """
+
+    def run_main(self, sessions, active_ids):
+        stdout = io.StringIO()
+        with (
+            patch.object(poll.time, "time", return_value=NOW / 1000),
+            patch.object(poll, "fetch_sessions", return_value=sessions),
+            patch.object(poll, "fetch_active_ids", return_value=active_ids),
+            patch.object(poll, "fetch_claimed_rows", return_value=[]),
+            patch.object(poll, "fetch_handed_off_rows", return_value=[]),
+            patch.object(poll, "fetch_ledger_bindings", return_value={}),
+            contextlib.redirect_stdout(stdout),
+            contextlib.redirect_stderr(io.StringIO()),
+        ):
+            self.assertEqual(poll.main(), 0)
+        return json.loads(stdout.getvalue())
+
+    def test_five_active_roots_report_overage_without_changing_launch_room(self):
+        sessions = [root(id=f"ses_{i}") for i in range(5)]
+        out = self.run_main(sessions, {s["id"] for s in sessions})
+        self.assertIn("pilot_cap_comparison", out)
+        self.assertEqual(
+            out["pilot_cap_comparison"],
+            {
+                "proposed_cap": 4,
+                "observed_active_claimant_roots": 5,
+                "available_slots": 0,
+                "over_cap_by": 1,
+            },
+        )
+        self.assertEqual(
+            (out["cap"], out["concurrency_cap"], out["cap_room"]), (36, 36, 31)
+        )
+
+    def test_count_range_obeys_advisory_and_operational_invariants(self):
+        for count in range(41):
+            with self.subTest(count=count):
+                sessions = [root(id=f"ses_{i}") for i in range(count)]
+                out = self.run_main(sessions, {s["id"] for s in sessions})
+                comparison = out["pilot_cap_comparison"]
+                self.assertEqual(comparison["proposed_cap"], 4)
+                self.assertEqual(comparison["observed_active_claimant_roots"], count)
+                self.assertEqual(comparison["available_slots"], max(0, 4 - count))
+                self.assertEqual(comparison["over_cap_by"], max(0, count - 4))
+                self.assertEqual(out["cap_room"], max(0, 36 - count))
+
+    def test_unknown_reads_or_timing_preserve_null_measurements(self):
+        for sessions, active_ids in (
+            (None, set()),
+            ([root()], None),
+            ([root(time={"updated": "unreadable"})], set()),
+        ):
+            with self.subTest(sessions=sessions, active_ids=active_ids):
+                out = self.run_main(sessions, active_ids)
+                self.assertEqual(
+                    out["pilot_cap_comparison"],
+                    {
+                        "proposed_cap": 4,
+                        "observed_active_claimant_roots": None,
+                        "available_slots": None,
+                        "over_cap_by": None,
+                    },
+                )
+                self.assertIsNone(out["cap_room"])
+
+    def test_scheduled_roots_and_children_do_not_consume_advisory_slots(self):
+        sessions = [
+            root(),
+            root(id="scheduled", metadata={"openchamber": {"kind": "scheduled"}}),
+            root(id="legacy", title="Queue lane (scheduled) - code"),
+            root(id="child", parentID="ses_x"),
+        ]
+        out = self.run_main(sessions, {s["id"] for s in sessions})
+        self.assertEqual(
+            out["pilot_cap_comparison"],
+            {
+                "proposed_cap": 4,
+                "observed_active_claimant_roots": 1,
+                "available_slots": 3,
+                "over_cap_by": 0,
+            },
+        )
+        self.assertEqual(out["cap_room"], 35)
 
 
 class TestClaimantCapAccounting(unittest.TestCase):
@@ -991,6 +1084,176 @@ class TestPollCompleteness(unittest.TestCase):
         with patch.object(poll, "_server_get", return_value=page) as request:
             self.assertIsNone(poll.fetch_sessions())
         self.assertEqual(request.call_count, 2)
+
+
+class TestReadTimeoutConstants(unittest.TestCase):
+    """#13135: every external read is bounded at its transport. The
+    constants carry the historical values — the broker's 30s is also
+    pinned end-to-end by test_poll_transport.py — and the slow-read
+    threshold sits far below every timeout so drift is noted before
+    a read can fail."""
+
+    def test_timeouts_carry_the_historical_values(self):
+        self.assertEqual(poll.SERVER_READ_TIMEOUT_S, 15)
+        self.assertEqual(poll.BROKER_READ_TIMEOUT_S, 30)
+        self.assertEqual(poll.LEDGER_READ_TIMEOUT_S, 60)
+
+    def test_slow_threshold_below_every_timeout(self):
+        self.assertLess(poll.SLOW_READ_MS, poll.SERVER_READ_TIMEOUT_S * 1000)
+        self.assertLess(poll.SLOW_READ_MS, poll.BROKER_READ_TIMEOUT_S * 1000)
+        self.assertLess(poll.SLOW_READ_MS, poll.LEDGER_READ_TIMEOUT_S * 1000)
+
+
+class TestTimedRead(unittest.TestCase):
+    """#13135: _timed_read records a slow-read note for a read that
+    takes at least SLOW_READ_MS and is otherwise transparent — same
+    result, same exceptions."""
+
+    def setUp(self):
+        poll._SLOW_READS.clear()
+
+    def tearDown(self):
+        poll._SLOW_READS.clear()
+
+    def test_fast_read_records_no_note(self):
+        with patch.object(poll, "SLOW_READ_MS", 60_000):
+            self.assertEqual(poll._timed_read("fast", lambda: 42), 42)
+        self.assertEqual(poll.slow_reads(), [])
+
+    def test_slow_read_records_note_and_returns_result(self):
+        def slow():
+            time.sleep(0.05)
+            return "rows"
+
+        with patch.object(poll, "SLOW_READ_MS", 10):
+            with contextlib.redirect_stderr(io.StringIO()) as err:
+                self.assertEqual(poll._timed_read("queue q claimed rows", slow), "rows")
+        notes = poll.slow_reads()
+        self.assertEqual(len(notes), 1)
+        self.assertEqual(notes[0]["read"], "queue q claimed rows")
+        self.assertGreaterEqual(notes[0]["elapsed_ms"], 10)
+        self.assertIn("slow read queue q claimed rows", err.getvalue())
+
+    def test_slow_failing_read_still_records_and_propagates(self):
+        def slow_fail():
+            time.sleep(0.05)
+            raise RuntimeError("backend down")
+
+        with patch.object(poll, "SLOW_READ_MS", 10):
+            with contextlib.redirect_stderr(io.StringIO()):
+                with self.assertRaises(RuntimeError):
+                    poll._timed_read("ledger bindings", slow_fail)
+        self.assertEqual([n["read"] for n in poll.slow_reads()], ["ledger bindings"])
+
+
+class TestMainParallelReads(unittest.TestCase):
+    """#13135: main() runs the independent external reads concurrently
+    and the printed JSON keeps its exact shape and semantics. Every
+    fetch is stubbed; no broker, server or subprocess is touched."""
+
+    SLEEP_S = 0.25
+
+    def run_main(self, sessions_ok):
+        now = int(time.time() * 1000)
+        live_root = {
+            "id": "ses_live",
+            "time": {"created": now - 5 * MIN, "updated": now - MIN},
+        }
+        candidate = {
+            "id": 42,
+            "status": "claimed",
+            "priority": 1,
+            "progress": {"lane": "opencode", "stage": "handed_off"},
+        }
+
+        def fake_sessions():
+            time.sleep(self.SLEEP_S)
+            return [live_root] if sessions_ok else None
+
+        def fake_active():
+            time.sleep(self.SLEEP_S)
+            return set()
+
+        def fake_claimed(queue):
+            time.sleep(self.SLEEP_S)
+            return [dict(candidate)] if queue == poll.QUEUES[0] else []
+
+        def fake_handed_off(queue):
+            time.sleep(self.SLEEP_S)
+            return []
+
+        def fake_bindings(ids):
+            time.sleep(self.SLEEP_S)
+            return {}
+
+        stdout = io.StringIO()
+        start = time.monotonic()
+        with (
+            patch.object(poll, "fetch_sessions", side_effect=fake_sessions),
+            patch.object(poll, "fetch_active_ids", side_effect=fake_active),
+            patch.object(poll, "fetch_claimed_rows", side_effect=fake_claimed),
+            patch.object(poll, "fetch_handed_off_rows", side_effect=fake_handed_off),
+            patch.object(poll, "fetch_ledger_bindings", side_effect=fake_bindings),
+            contextlib.redirect_stdout(stdout),
+            contextlib.redirect_stderr(io.StringIO()),
+        ):
+            rc = poll.main()
+        elapsed = time.monotonic() - start
+        return rc, json.loads(stdout.getvalue()), elapsed
+
+    def test_reads_overlap_and_output_shape_is_unchanged(self):
+        rc, out, elapsed = self.run_main(True)
+        self.assertEqual(rc, 0)
+        # 11 stubbed reads of SLEEP_S each: sequential would take
+        # ~2.75s; concurrent must finish in a small multiple of one
+        # read (the ledger read still waits for the queue reads).
+        self.assertLess(elapsed, 6 * self.SLEEP_S)
+        self.assertEqual(
+            set(out),
+            {
+                "queues",
+                "candidates",
+                "stuck_bound",
+                "stale_binding",
+                "ledger_readable",
+                "live_root_sessions",
+                "active_root_sessions",
+                "cap",
+                "concurrency_cap",
+                "cap_room",
+                "pilot_cap_comparison",
+            },
+        )
+        self.assertEqual(set(out["queues"]), set(poll.QUEUES))
+        for entry in out["queues"].values():
+            self.assertEqual(
+                set(entry),
+                {
+                    "claimed",
+                    "handed_off",
+                    "candidates",
+                    "stuck_bound",
+                    "stale_binding",
+                    "read_ok",
+                    "read_errors",
+                },
+            )
+            self.assertTrue(entry["read_ok"])
+        self.assertEqual([c["id"] for c in out["candidates"]], [42])
+        self.assertEqual(out["candidates"][0]["queue"], poll.QUEUES[0])
+        self.assertTrue(out["ledger_readable"])
+        self.assertEqual(out["live_root_sessions"], 1)
+        self.assertEqual(out["active_root_sessions"], 1)
+        self.assertEqual(out["cap_room"], poll.CAP - 1)
+
+    def test_unreadable_session_list_still_fails_closed(self):
+        rc, out, _elapsed = self.run_main(False)
+        self.assertEqual(rc, 0)
+        self.assertIsNone(out["live_root_sessions"])
+        self.assertIsNone(out["active_root_sessions"])
+        self.assertIsNone(out["cap_room"])
+        # Queue discovery is unaffected by the server outage.
+        self.assertEqual([c["id"] for c in out["candidates"]], [42])
 
 
 if __name__ == "__main__":

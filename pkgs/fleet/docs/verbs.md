@@ -30,41 +30,42 @@ Invocation is `fleet <domain> <verb> [args...]`. The executable aliases `repo-qu
 
 Client for the repo-queue broker. It supports direct broker transport and the configured proxy path; broker unavailability is an execution error, not a successful empty result.
 
-| Verb                 | Purpose                                                                                                                                                                                          |
-| -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `validate`           | Validate a queue packet without enqueueing it.                                                                                                                                                   |
-| `enqueue`            | Submit a packet to the queue.                                                                                                                                                                    |
-| `list`               | List queue items using the requested filters.                                                                                                                                                    |
-| `show`               | Read the full record for one item.                                                                                                                                                               |
-| `claim`              | Atomically claim the highest-priority eligible item for a worker and lane.                                                                                                                       |
-| `release`            | Release a held claim; requires a reason.                                                                                                                                                         |
-| `lane`               | Inspect lane state or change a lane's state.                                                                                                                                                     |
-| `bind`               | Bind an item to its task/session reference.                                                                                                                                                      |
-| `heartbeat`          | Extend the current claim lease.                                                                                                                                                                  |
-| `checkpoint`         | Save progress and the next action for a claimed item.                                                                                                                                            |
-| `park`               | Park an item until a delay or wake. Waiting on a person requires a hands item and a concrete action.                                                                                             |
-| `wake`               | Return a parked item to eligibility.                                                                                                                                                             |
-| `block`              | Block an item with a reason class. Human waits follow the same hands-item rule as `park`.                                                                                                        |
-| `unblock`            | Clear an item's block.                                                                                                                                                                           |
-| `dep-recheck`        | Re-evaluate recorded dependency edges.                                                                                                                                                           |
-| `quarantine-recheck` | Re-evaluate quarantined items.                                                                                                                                                                   |
-| `repair`             | Repair a quarantined item's malformed packet in place (dedupe stamp re-derived live; `--dry-run` reports only).                                                                                  |
-| `cancel`             | Cancel an item.                                                                                                                                                                                  |
-| `revive`             | Reopen a failed or cancelled item.                                                                                                                                                               |
-| `fail`               | Mark a claimed item failed with a reason class.                                                                                                                                                  |
-| `complete`           | Complete a claimed item with a structured result.                                                                                                                                                |
-| `verify-disposition` | Verify a recorded disposition.                                                                                                                                                                   |
-| `timeline`           | Print one item's event timeline.                                                                                                                                                                 |
-| `history`            | Alias for the item event timeline.                                                                                                                                                               |
-| `models`             | Show model catalog and pool information.                                                                                                                                                         |
-| `health`             | Show broker health and queue counts.                                                                                                                                                             |
-| `signal`             | Send a signal to a worker or item.                                                                                                                                                               |
-| `fallback`           | Use the GitHub-issue fallback claim workflow; see the nested commands below.                                                                                                                     |
-| `dispatch`           | Plan or submit one remote command on an eligible Fleet runner. Dry-run by default; details and caching rules are in the [remote build and test runbook](../doc/agents/remote-build-and-test.md). |
-| `session`            | Inspect, list, or retrieve results for remote dispatch sessions.                                                                                                                                 |
-| `surfaces`           | Print the placement surface registry as JSON; accepts `--registry PATH` for another registry file.                                                                                               |
-| `outbox`             | Inspect and drain the creation outbox.                                                                                                                                                           |
-| `stack`              | Record and operate on dependent pull-request stacks.                                                                                                                                             |
+| Verb                  | Purpose                                                                                                                                                                                          |
+| --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `validate`            | Validate a queue packet without enqueueing it.                                                                                                                                                   |
+| `enqueue`             | Submit a packet to the queue.                                                                                                                                                                    |
+| `list`                | List queue items using the requested filters.                                                                                                                                                    |
+| `show`                | Read the full record for one item.                                                                                                                                                               |
+| `claim`               | Atomically claim the highest-priority eligible item for a worker and lane.                                                                                                                       |
+| `release`             | Release a held claim; requires a reason.                                                                                                                                                         |
+| `lane`                | Inspect lane state or change a lane's state.                                                                                                                                                     |
+| `bind`                | Bind an item to its task/session reference.                                                                                                                                                      |
+| `heartbeat`           | Extend the current claim lease.                                                                                                                                                                  |
+| `checkpoint`          | Save progress and the next action for a claimed item.                                                                                                                                            |
+| `park`                | Park an item until a delay or wake. Waiting on a person requires a hands item and a concrete action.                                                                                             |
+| `wake`                | Return a parked item to eligibility.                                                                                                                                                             |
+| `block`               | Block an item with a reason class. Human waits follow the same hands-item rule as `park`.                                                                                                        |
+| `unblock`             | Clear an item's block.                                                                                                                                                                           |
+| `dep-recheck`         | Re-evaluate recorded dependency edges.                                                                                                                                                           |
+| `quarantine-recheck`  | Re-evaluate quarantined items.                                                                                                                                                                   |
+| `repair`              | Repair a quarantined item's malformed packet in place (dedupe stamp re-derived live; `--dry-run` reports only).                                                                                  |
+| `resolution-backfill` | Run the idempotent, evidence-only Q2 terminal-resolution backfill and print its census.                                                                                                          |
+| `cancel`              | Cancel an item.                                                                                                                                                                                  |
+| `revive`              | Reopen a failed or cancelled item.                                                                                                                                                               |
+| `fail`                | Mark a claimed item failed with a reason class.                                                                                                                                                  |
+| `complete`            | Complete a claimed item with a structured result.                                                                                                                                                |
+| `verify-disposition`  | Verify a recorded disposition.                                                                                                                                                                   |
+| `timeline`            | Print one item's event timeline.                                                                                                                                                                 |
+| `history`             | Alias for the item event timeline.                                                                                                                                                               |
+| `models`              | Show model catalog and pool information.                                                                                                                                                         |
+| `health`              | Show broker health and queue counts.                                                                                                                                                             |
+| `signal`              | Send a signal to a worker or item.                                                                                                                                                               |
+| `fallback`            | Use the GitHub-issue fallback claim workflow; see the nested commands below.                                                                                                                     |
+| `dispatch`            | Plan or submit one remote command on an eligible Fleet runner. Dry-run by default; details and caching rules are in the [remote build and test runbook](../doc/agents/remote-build-and-test.md). |
+| `session`             | Inspect, list, or retrieve results for remote dispatch sessions.                                                                                                                                 |
+| `surfaces`            | Print the placement surface registry as JSON; accepts `--registry PATH` for another registry file.                                                                                               |
+| `outbox`              | Inspect and drain the creation outbox.                                                                                                                                                           |
+| `stack`               | Record and operate on dependent pull-request stacks.                                                                                                                                             |
 
 ### `queue fallback`
 
@@ -172,18 +173,33 @@ The resolver uses the configured Fleet secrets broker and supported fallback sto
 
 Leading `--cache-addr ADDR` options and `--no-cache` control the token cache for a call. Normal `gh` flags and subcommands pass through unchanged.
 
+The `sync-*` verbs are the typed Queue/GitHub sync surface for scripted flows (#10973, step 2.2 of #9016): each declares its whole command line, validates it strictly, and rewrites to the canonical `gh` call before the close guard, closure and metadata layers run, inheriting the rotation and the retry-safety rule. All take `--repo OWNER/REPO`.
+
+| Verb                                                                                | Purpose                                                                                               |
+| ----------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------- |
+| `sync-labels <issue\|pr> <number>`                                                  | Print the item's label names as a JSON list.                                                          |
+| `sync-view <issue\|pr> <number>`                                                    | Print the item's labels, state and title as JSON.                                                     |
+| `sync-comment <issue\|pr> <number> --body TEXT \| --body-file PATH`                 | Post a comment on the item.                                                                           |
+| `sync-issue-create --title TITLE (--body TEXT \| --body-file PATH) [--label LABEL]` | Create an issue; the metadata create path stamps the body as usual.                                   |
+| `sync-issue-get <number>`                                                           | Print one issue's API JSON.                                                                           |
+| `sync-labels-add <number> --label LABEL [--label LABEL]`                            | Add labels to an issue.                                                                               |
+| `sync-label-ensure --label LABEL --color COLOR --description TEXT`                  | Create a label, or update it when it already exists.                                                  |
+| `sync-issue-close <number> --reason REASON`                                         | Close an issue with a fleet closure reason (implemented, superseded, cancelled, started-incorrectly). |
+
 ## `bridge` — Fleet messaging
 
-| Verb     | Purpose                                                                             |
-| -------- | ----------------------------------------------------------------------------------- |
-| `send`   | Send a message or command to agents, groups, or all agents using the owner token.   |
-| `agents` | List registered agents and groups with unread counts.                               |
-| `log`    | Read bridge message history with filters.                                           |
-| `hello`  | Register or refresh an agent and its groups.                                        |
-| `inbox`  | Read unread messages or commands; can mark returned rows read or wait for arrivals. |
-| `post`   | Reply to central or send a message/instruction to an address.                       |
-| `ack`    | Mark one or more inbound messages read.                                             |
-| `health` | Check the bridge health endpoint.                                                   |
+| Verb     | Purpose                                                                                                                                                                                                                                                     |
+| -------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `send`   | Send a message or command to agents, groups, or all agents using the owner token. Names may be globs (`agent:f*`); `--limit N` caps delivery and the answer is the match report. `send --broaden <batch>` delivers a pattern send's remainder on its batch. |
+| `offer`  | Post a message or command as a claim offer with `--slots N`: the next N eligible agents to claim it are delivered it.                                                                                                                                       |
+| `offers` | List every offer with its claims.                                                                                                                                                                                                                           |
+| `agents` | List registered agents and groups with unread counts.                                                                                                                                                                                                       |
+| `log`    | Read bridge message history with filters.                                                                                                                                                                                                                   |
+| `hello`  | Register or refresh an agent and its groups.                                                                                                                                                                                                                |
+| `inbox`  | Read unread messages or commands; can mark returned rows read or wait for arrivals.                                                                                                                                                                         |
+| `post`   | Reply to central or send a message/instruction to an address.                                                                                                                                                                                               |
+| `ack`    | Mark one or more inbound messages read.                                                                                                                                                                                                                     |
+| `health` | Check the bridge health endpoint.                                                                                                                                                                                                                           |
 
 `fleet bridge --help` lists the central and agent forms and their accepted flags.
 
@@ -232,6 +248,18 @@ search over the fleet's session history and notes, with classification
 filters. It is the client half of the Atlas search service; the service
 itself runs on the laptop (`fleet serve search`, 127.0.0.1:18760), and
 the Cloudflare worker surface (pkgs/atlas-search/worker) forwards to it.
+
+## `orgs` — GitHub organization registry
+
+| Command           | Purpose                                                                                                                          |
+| ----------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| `fleet orgs list` | List the locally stored org/App/installation snapshot as a table or JSON; supports `--app`, `--org`, and `--permission` filters. |
+| `fleet orgs sync` | Refresh the Turso registry from each configured GitHub App's own installation listing.                                           |
+
+The registry only makes coverage claims from `GET /app/installations` authenticated
+with that App's JWT and follows every Link page. OAuth-token
+`/orgs/<org>/installations` reads are not authoritative. See
+[`orgs-registry.md`](../doc/fleet/orgs-registry.md) for configuration and schema.
 
 | Command                                             | Purpose                                                                             |
 | --------------------------------------------------- | ----------------------------------------------------------------------------------- |

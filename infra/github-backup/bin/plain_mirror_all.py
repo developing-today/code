@@ -23,13 +23,18 @@ def main(argv=None):
     for repo in FLEET_REPOS:
         try:
             result = mirror_repo(repo, backup_root())
-            print(f"github-backup: {repo}: verified plain mirror ({result['refs']} refs)")
+            print(
+                f"github-backup: {repo}: verified plain mirror ({result['refs']} refs)"
+            )
         except (OSError, RuntimeError, ValueError) as exc:
             print(f"github-backup: {repo}: {exc}", file=sys.stderr)
             failures.append(repo)
 
     if failures:
-        print("github-backup: plain mirror failures: " + ", ".join(failures), file=sys.stderr)
+        print(
+            "github-backup: plain mirror failures: " + ", ".join(failures),
+            file=sys.stderr,
+        )
         return 1
     return 0
 

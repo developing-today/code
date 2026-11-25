@@ -33,17 +33,22 @@
 //   PM_METADATA_DB_PATH (default DB), FLEET_BIN (default `fleet`).
 import { execFile } from "node:child_process";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
-import { homedir, tmpdir } from "node:os";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Database } from "bun:sqlite";
 import {
   buildTriagePacket,
+  collectPrimaryParentViolations,
+  itemRefKey,
   openMetadataStore,
+  primaryParentLabels,
   runMetadataCheck,
   storeOutcome,
   type EpicSlugMap,
   type IngestionItem,
+  type PrimaryParentViolation,
 } from "../src/metadata-ingestion.ts";
+import { requireHome } from "../src/home.ts";
 
 const USAGE =
   "metadata-sweeper: usage: bun run scripts/metadata-sweeper.ts --repo <owner/name> [--repo ...] " +
@@ -78,7 +83,9 @@ function takeValue(args: string[], index: number, flag: string): string {
 function parseArgs(argv: string[]): Options {
   const repos: string[] = [];
   const only: { kind: "issue" | "pr"; number: number }[] = [];
-  let dbPath = process.env.PM_METADATA_DB_PATH ?? join(homedir(), ".local/state/pm-aggregator/pm-metadata.sqlite");
+  let dbPath =
+    process.env.PM_METADATA_DB_PATH ??
+    join(requireHome("PM_METADATA_DB_PATH"), ".local/state/pm-aggregator/pm-metadata.sqlite");
   let limit = 50;
   let triageQueue = "repo-health-code-pilot";
   let writeBack = false;
@@ -321,7 +328,38 @@ interface SweepCounts {
   writtenBack: number;
   needsTriage: number;
   forwarded: number;
+  primaryParentViolations: number;
   errors: number;
+}
+
+/** Ancestor chain of a native parent, as `repo#number` keys, for the
+ * primary-parent ancestor rule (design §3). Returns null when the chain
+ * could not be read: an unreadable chain never manufactures a finding. */
+async function fetchAncestorRefs(repo: string, parent: { repo: string; number: number }): Promise<Set<string> | null> {
+  const refs = new Set<string>();
+  let cursor = { repo: parent.repo, number: parent.number };
+  try {
+    // GitHub's hierarchy is shallow in practice; 10 bounds a cycle or a
+    // pathological chain without silently truncating a realistic one.
+    for (let depth = 0; depth < 10; depth++) {
+      refs.add(itemRefKey(cursor));
+      const stdout = await runFleet([
+        "gh",
+        "api",
+        `repos/${cursor.repo}/issues/${cursor.number}/parent`,
+        "--jq",
+        "{number: .number, repo_url: .repository_url}",
+      ]);
+      const parsed = JSON.parse(stdout) as { number?: unknown; repo_url?: unknown };
+      if (!Number.isSafeInteger(parsed.number) || typeof parsed.repo_url !== "string") break;
+      const match = /\/repos\/([^/]+\/[^/]+)$/.exec(parsed.repo_url);
+      if (!match?.[1]) break;
+      cursor = { repo: match[1], number: parsed.number as number };
+    }
+    return refs;
+  } catch {
+    return null;
+  }
 }
 
 async function fetchOne(repo: string, kind: "issue" | "pr", number: number): Promise<IngestionItem | null> {
@@ -346,7 +384,7 @@ async function main(): Promise<void> {
   const db = openMetadataStore(options.dryRun ? ":memory:" : options.dbPath, (path) => new Database(path));
   try {
     const scratch = await mkdtemp(join(tmpdir(), "metadata-sweeper-"));
-    const summary: Record<string, SweepCounts & { dbRows: number }> = {};
+    const summary: Record<string, SweepCounts & { dbRows: number; violations: PrimaryParentViolation[] }> = {};
     try {
       for (const repo of options.repos) {
         const counts: SweepCounts = {
@@ -356,8 +394,10 @@ async function main(): Promise<void> {
           writtenBack: 0,
           needsTriage: 0,
           forwarded: 0,
+          primaryParentViolations: 0,
           errors: 0,
         };
+        const violations: PrimaryParentViolation[] = [];
         try {
           const [issues, prs] = await Promise.all([
             listItems(repo, "issue", options.limit),
@@ -397,6 +437,7 @@ async function main(): Promise<void> {
           for (const item of items) {
             counts.scanned++;
             try {
+              let checked = item;
               let outcome = runMetadataCheck(item, { epicSlugs, ingestedBy: "metadata-sweeper" });
               // Native parent is authoritative (see resolveAscertainedParent):
               // consult it before finalizing any ascertained outcome, not
@@ -409,10 +450,8 @@ async function main(): Promise<void> {
               if (item.kind === "issue" && !item.nativeParent && outcome.kind !== "current") {
                 const parent = await fetchNativeParent(repo, item.number);
                 if (parent) {
-                  outcome = runMetadataCheck(
-                    { ...item, nativeParent: parent },
-                    { epicSlugs, ingestedBy: "metadata-sweeper" },
-                  );
+                  checked = { ...item, nativeParent: parent };
+                  outcome = runMetadataCheck(checked, { epicSlugs, ingestedBy: "metadata-sweeper" });
                 } else if (parent === undefined) {
                   counts.errors++;
                   console.error(
@@ -420,6 +459,24 @@ async function main(): Promise<void> {
                   );
                   continue;
                 }
+              }
+
+              // Primary-parent convention (design §3): validate and report
+              // violations in the audit output, never resolve them here.
+              let ancestorRefs: Set<string> | undefined;
+              if (checked.kind === "issue" && checked.nativeParent && primaryParentLabels(checked.labels).length > 0) {
+                const chain = await fetchAncestorRefs(repo, checked.nativeParent);
+                if (chain === null) {
+                  console.error(
+                    `metadata-sweeper: ${repo}#${checked.number}: ancestor chain unread; ancestor rule not checked`,
+                  );
+                } else {
+                  ancestorRefs = chain;
+                }
+              }
+              for (const violation of collectPrimaryParentViolations(checked, epicSlugs, ancestorRefs)) {
+                counts.primaryParentViolations++;
+                violations.push(violation);
               }
               if (outcome.kind === "needs-triage") {
                 counts.needsTriage++;
@@ -476,7 +533,7 @@ async function main(): Promise<void> {
           console.error(`metadata-sweeper: repo ${repo}: ${(error as Error).message}`);
         }
         const row = db.query("SELECT COUNT(*) AS count FROM pm_metadata_items").get() as { count: number };
-        summary[repo] = { ...counts, dbRows: Number(row.count) };
+        summary[repo] = { ...counts, dbRows: Number(row.count), violations };
       }
     } finally {
       await rm(scratch, { recursive: true, force: true });

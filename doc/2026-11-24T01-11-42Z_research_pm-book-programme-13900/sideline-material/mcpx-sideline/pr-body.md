@@ -6,7 +6,7 @@ New file: `pkgs/mcpx/docs/worker.md` — what the Worker is, the door chain (cli
 
 ## Registration (both navigation systems)
 
-- `docs/SUMMARY.md`: chapter entry after *Reaching a daemon on another machine*; the H1 matches the entry text exactly.
+- `docs/SUMMARY.md`: chapter entry after _Reaching a daemon on another machine_; the H1 matches the entry text exactly.
 - `docs/compendium.manifest.json`: `docs/worker.md` as chapter-source in `designs`, plus the previously missing entry for `worker/README.md` (`not-compendium`, mirroring `daemon/README.md`; its book chapter is the new file). Without that second entry `TestEveryDocumentHasAChapter` cannot pass with the Worker in the tree.
 
 ## Verification (laptop worktree, fast local checks per bookwright v5)

@@ -54,11 +54,13 @@ import { renderPredictionRange } from "./quota-downtime.ts";
 /** Methodology version for the arrival kind (design §6; the
  * c4-methodology-log.jsonl entry of the same name): every record
  * this module emits names it, so a score is always attributable
- * to the method that produced it. c4-meth:3 (#13536) dates
+ * to the method that produced it. c4-meth:4 (#13357) checks the
+ * §4 day form before the calendar form and renders mixed spans
+ * compound; c4-meth:3 (#13536) dates
  * far-out calendar bounds; c4-meth:2 (#13408) unified the stored
  * rendering on the one shared §4 formatter; c4-meth:1 records
  * rendered with this module's own duration/day-only copy. */
-export const ARRIVAL_METHODOLOGY_VERSION = "c4-meth:3";
+export const ARRIVAL_METHODOLOGY_VERSION = "c4-meth:4";
 
 /** Ledger source the live wiring mirrors arrival records under
  * (design §1) — distinct from S1's "quota-forecast"; C4 records

@@ -103,6 +103,8 @@ fn leaf_request(
         name: name.into(),
         common_name: None,
         dns_names: vec!["www.example.test".into()],
+        ip_addresses: vec![],
+        csr: None,
         key_algorithm,
         issuer_algorithm,
         issuer_partition: None,

@@ -14,6 +14,9 @@ import type { Config } from "./config.ts";
 import { OpError } from "./errors.ts";
 import { plain } from "./plain.ts";
 import { WORKERS_FILE, workersList } from "./platform.ts";
+import { STORES_FILE, storesList } from "./stores.ts";
+import { heldTokens, jwtExpiry, type TokenExpiry, tokenExpiry } from "./tokens.ts";
+import { timed, unread } from "./timed.ts";
 
 export interface RunResult {
   code: number;
@@ -33,6 +36,24 @@ export type Fetch = (
   headers?: { get(name: string): string | null };
 }>;
 export type Row = Record<string, string | number | null>;
+/** How much of a task's reason the Queue screen is given. One that is
+ * this long was cut here, and the screen says so. */
+export const QUEUE_WHY_CHARS = 300;
+
+/** A value as the queue's store sends it. A whole number comes as text
+ * marked as an integer (the wire carries 64 bits, and a JSON number
+ * does not): it is read as the number it is, where a number can hold
+ * it exactly. Anything else is passed on as it came. */
+function fromStore(cell: { type?: string; value?: string | number | null } | undefined): string | number | null {
+  const value = cell?.value ?? null;
+  if (cell?.type === "integer" && typeof value === "string" && /^-?[0-9]+$/.test(value)) {
+    const n = Number(value);
+    if (Number.isSafeInteger(n)) return n;
+  }
+  return value;
+}
+/** How long the queue store has to answer one asking, body and all. */
+export const QUEUE_ASK_MS = 20_000;
 /** Queue priorities, most urgent first (the queue's design scale). */
 export const PRIORITY_SCALE = [10, 20, 30, 40, 50, 70, 90] as const;
 
@@ -178,8 +199,62 @@ function id(value: unknown, name: string): number {
   return Number(s);
 }
 
+/** The bridge's target grammar (#14375): `all`, a bare name or glob, or
+ * `agent:`/`group:` before either — the segment characters are the
+ * bridge's own (names plus `*`), so a pattern the bridge would refuse
+ * is refused here first, before anything runs. */
+function bridgeTargets(to: unknown): string[] {
+  if (!Array.isArray(to) || to.length === 0 || to.length > 50) throw new OpError(400, "to: one to fifty targets");
+  return to.map((t) => {
+    if (typeof t !== "string" || !/^(all|(agent:|group:)?[A-Za-z0-9*][A-Za-z0-9._*-]{0,63})$/.test(t))
+      throw new OpError(400, `to: not a target: ${JSON.stringify(t).slice(0, 80)}`);
+    return t;
+  });
+}
+
+/** An optional whole-number count (a send limit, an offer's ttl):
+ * absent is null; present must be a positive number within the cap. */
+function optionalCount(value: unknown, name: string, max: number): number | null {
+  if (value === undefined || value === null || value === "") return null;
+  const n = id(value, name);
+  if (n > max) throw new OpError(400, `${name}: at most ${max}`);
+  return n;
+}
+
+/** A send's answer, as the composer shows it: the bridge's match
+ * report, field for field. An answer without the report's numbers is
+ * not a report at all — the send's outcome is unknown, and saying so
+ * beats inventing counts. */
+function matchReport(out: Record<string, unknown> | null, to: string[], command: boolean) {
+  const num = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : null);
+  const matched = num(out?.matched);
+  const delivered = num(out?.delivered);
+  if (!out || matched === null || delivered === null) {
+    throw new OpError(502, "the bridge did not say who that reached");
+  }
+  return {
+    to,
+    command,
+    batch: typeof out.batch === "string" ? out.batch : null,
+    matched,
+    delivered,
+    recipients: Array.isArray(out.recipients) ? out.recipients.filter((r): r is string => typeof r === "string") : [],
+    remaining: num(out.remaining) ?? Math.max(0, matched - delivered),
+    unregistered: Array.isArray(out.unregistered) ? out.unregistered : [],
+  };
+}
+
+/** How long what a token said of its expiry is kept before the token
+ * is fetched again: long enough that the notifier's minute does not
+ * fetch every secret every minute, short enough that a rotation shows
+ * the same hour. */
+export const TOKEN_EXPIRY_KEPT_MS = 10 * 60_000;
+
 export class Ops {
   private queueToken: string | null = null;
+  /** What each token said of when it runs out, by its name, and when
+   * that was read. Never the token itself. */
+  private expiries = new Map<string, { at: number; expiresAt: number | null | undefined }>();
 
   /** How the queue store and the dashboard are reached. Kept as a plain
    * caller: these classes also run at the edge, where the platform's
@@ -246,38 +321,54 @@ export class Ops {
         { type: "close" },
       ],
     };
-    const ask = async () => {
+    type Answer = {
+      results?: {
+        type?: string;
+        response?: {
+          result?: {
+            cols: { name: string }[];
+            rows: { type?: string; value?: string | number | null }[][];
+            affected_row_count?: number;
+          };
+        };
+      }[];
+    };
+    /** One asking: the answer and its body, within the time. A queue
+     * store that never answers would otherwise hold the read for as
+     * long as it liked. (The token is fetched before the time starts:
+     * on a machine that is the fleet binary's work, not the store's.) */
+    const ask = async (): Promise<{ status: number; ok: boolean; body: Answer | null }> => {
       if (this.queueToken === null) {
         this.queueToken = (await this.must([this.cfg.fleetBin, "secrets", "get", this.cfg.queueTokenName])).trim();
       }
-      return this.fetchImpl(`${this.cfg.queueDbUrl}/v2/pipeline`, {
-        method: "POST",
-        headers: { Authorization: `Bearer ${this.queueToken}`, "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      });
+      const bearer = this.queueToken;
+      try {
+        return await timed(QUEUE_ASK_MS, async (signal) => {
+          const res = await this.fetchImpl(`${this.cfg.queueDbUrl}/v2/pipeline`, {
+            method: "POST",
+            headers: { Authorization: `Bearer ${bearer}`, "Content-Type": "application/json" },
+            body: JSON.stringify(body),
+            signal,
+          });
+          if (res.ok) return { status: res.status, ok: true, body: (await res.json()) as Answer };
+          unread(res);
+          return { status: res.status, ok: false, body: null };
+        });
+      } catch (error) {
+        if ((error as Error).name === "TimeoutError") {
+          throw new OpError(502, `the queue store did not answer within ${QUEUE_ASK_MS / 1000} seconds`);
+        }
+        throw error;
+      }
     };
-    let res = await ask();
-    if (res.status === 401 || res.status === 403) {
+    let answered = await ask();
+    if (answered.status === 401 || answered.status === 403) {
       // The token was rotated: fetch it again, once.
       this.queueToken = null;
-      res = await ask();
+      answered = await ask();
     }
-    if (!res.ok) throw new OpError(502, `queue store answered http ${res.status}`);
-    const results =
-      (
-        (await res.json()) as {
-          results?: {
-            type?: string;
-            response?: {
-              result?: {
-                cols: { name: string }[];
-                rows: { value?: string | number | null }[][];
-                affected_row_count?: number;
-              };
-            };
-          }[];
-        }
-      ).results ?? [];
+    if (!answered.ok) throw new OpError(502, `queue store answered http ${answered.status}`);
+    const results = answered.body?.results ?? [];
     return statements.map((_, i) => {
       const result = results[i]?.type === "ok" ? results[i].response?.result : undefined;
       if (!result) throw new OpError(502, "queue store refused the query");
@@ -291,7 +382,7 @@ export class Ops {
       if (!/^\s*select\b/i.test(st.sql)) throw new Error("the console only reads the queue store");
     }
     return (await this.pipeline(statements)).map((result) =>
-      result.rows.map((row) => Object.fromEntries(result.cols.map((c, i) => [c.name, row[i]?.value ?? null]))),
+      result.rows.map((row) => Object.fromEntries(result.cols.map((c, i) => [c.name, fromStore(row[i])]))),
     );
   }
 
@@ -334,7 +425,7 @@ export class Ops {
     const q = typeof search === "string" ? search.trim().slice(0, 100) : "";
     const like = `%${q.replace(/[\\%_]/g, "\\$&")}%`;
     return this.sql(
-      "SELECT id, status, priority, title, dedupe_key, substr(updated_at,1,16) AS updated, substr(coalesce(json_extract(progress,'$.reason'), json_extract(progress,'$.blocker'), ready_condition, ''),1,300) AS why FROM tasks WHERE queue = ? AND status = ? AND title LIKE ? ESCAPE '\\' ORDER BY (priority IS NULL), priority ASC, created_at ASC, id ASC LIMIT ?",
+      `SELECT id, status, priority, title, dedupe_key, substr(updated_at,1,16) AS updated, substr(coalesce(json_extract(progress,'$.reason'), json_extract(progress,'$.blocker'), ready_condition, ''),1,${QUEUE_WHY_CHARS}) AS why FROM tasks WHERE queue = ? AND status = ? AND title LIKE ? ESCAPE '\\' ORDER BY (priority IS NULL), priority ASC, created_at ASC, id ASC LIMIT ?`,
       [this.cfg.queue, status as string, like, Math.min(n, 200)],
     );
   }
@@ -499,20 +590,435 @@ export class Ops {
     return Array.isArray(log) ? log : [];
   }
 
-  /** Send a message or a command to agents, groups, or everyone. */
-  async send(to: unknown, body: unknown, command: unknown) {
-    if (!Array.isArray(to) || to.length === 0 || to.length > 50) throw new OpError(400, "to: one to fifty targets");
-    const targets = to.map((t) => {
-      if (typeof t !== "string" || !/^(all|(agent:|group:)?[A-Za-z0-9][A-Za-z0-9._-]{0,63})$/.test(t))
-        throw new OpError(400, `to: not a target: ${JSON.stringify(t).slice(0, 80)}`);
-      return t;
+  /**
+   * The owner's unified pipeline (#14374, design §4.9): one feed over
+   * connector messages, fleet mailboxes and notes, read through
+   * `fleet bridge pipeline`. The owner's view is never sender-stripped
+   * — an instruction shows who really sent it here; anonymity is what
+   * agents see, never this console. Filters are the bridge's own
+   * (kind / sender / receiver / surface / batch / unread / work
+   * state); each value is validated here and travels as its own
+   * argument. (Named for the bridge's feed, not this class's own
+   * queue-store pipeline above.)
+   */
+  async pipelineFeed(query: URLSearchParams) {
+    const argv = [this.cfg.fleetBin, "bridge", "pipeline", "--order", "desc"];
+    const one = (param: string, flag: string, name: string, ok: RegExp) => {
+      const v = query.get(param);
+      if (v === null || v === "") return;
+      const value = text(v, name, 200);
+      if (!ok.test(value)) throw new OpError(400, `${name}: not a ${name}: ${JSON.stringify(value).slice(0, 80)}`);
+      argv.push(flag, value);
+    };
+    one("kind", "--kind", "kind", /^(message|instruction|command|note)$/);
+    one("surface", "--surface", "surface", /^(connector|fleet|notes)$/);
+    one("sender", "--sender", "sender", /^[A-Za-z0-9][A-Za-z0-9@:._/-]{0,127}$/);
+    one("receiver", "--receiver", "receiver", /^[A-Za-z0-9][A-Za-z0-9@:._/-]{0,127}$/);
+    one("batch", "--batch", "batch", /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/);
+    one("work_state", "--work-state", "work state", /^[a-z][a-z0-9_-]{0,63}$/);
+    if (query.get("unread") === "1" || query.get("unread_only") === "true") argv.push("--unread");
+    const limit = query.get("limit");
+    argv.push("--limit", String(limit === null || limit === "" ? 100 : Math.min(id(limit, "limit"), 200)));
+    const rows = (JSON.parse(await this.must(argv)) as { messages?: unknown } | null)?.messages;
+    return Array.isArray(rows) ? rows : [];
+  }
+
+  /**
+   * The one count the phone's widget adds to its summary (#14377,
+   * design §4.10): how many instructions in the owner's pipeline are
+   * unread — connector instructions and fleet commands under the
+   * pipeline's own unread rule (inbound, not yet read), counted from
+   * the same feed the Messages screen shows, so the widget's number
+   * is the screen's. The feed is read at its own largest page: a
+   * backlog past the page counts as the page, as it does on the
+   * screen. This is the `pipeline` document section's whole data;
+   * the phone's token stays read-only and summary-scoped — it is
+   * handed this count by the summary, never the feed.
+   */
+  async unreadInstructions() {
+    const rows = await this.pipelineFeed(new URLSearchParams({ unread: "1", limit: "200" }));
+    const instructions = rows.filter((r) => {
+      const kind = (r as { kind?: unknown } | null)?.kind;
+      return kind === "instruction" || kind === "command";
+    }).length;
+    return { unreadInstructions: instructions };
+  }
+
+  /** Per-agent credential state on the bridge (#14374): active or
+   * revoked, the scopes the live credentials carry. State only — the
+   * bridge never returns a hash, and neither does this. */
+  async credentials() {
+    const rows = (
+      JSON.parse(await this.must([this.cfg.fleetBin, "bridge", "credentials"])) as { credentials?: unknown } | null
+    )?.credentials;
+    return Array.isArray(rows) ? (rows as Record<string, unknown>[]) : [];
+  }
+
+  /**
+   * The unified agents list for the Agents screen (#14374, design
+   * §4.9): the bridge's directory (`fleet bridge directory` — fleet
+   * registry rows and notes identities, each marked by surface) with
+   * each row's credential state merged in. A fleet row's state comes
+   * from the credential view under the agent's own name; a notes
+   * row's from its identity's token scopes — an identity whose tokens
+   * were revoked keeps its directory place with both scopes off,
+   * which is the revoked state the screen shows. Notes identities
+   * have no presence: the bridge says `presence: "none"` and this
+   * merge invents nothing.
+   */
+  async directory() {
+    const [dir, creds] = await Promise.all([
+      this.must([this.cfg.fleetBin, "bridge", "directory"]).then(
+        (out) => (JSON.parse(out) as { agents?: unknown } | null)?.agents,
+      ),
+      this.credentials().catch(() => [] as Record<string, unknown>[]),
+    ]);
+    const rows = Array.isArray(dir) ? (dir as Record<string, unknown>[]) : [];
+    const byAgent = new Map(creds.map((c) => [String(c.agent), c]));
+    return rows.map((row) => {
+      if (row.surface === "fleet") {
+        const c = byAgent.get(String(row.name));
+        return {
+          ...row,
+          credential: c
+            ? {
+                state: c.state,
+                scopes: Array.isArray(c.scopes) ? c.scopes : [],
+                credentials: typeof c.credentials === "number" ? c.credentials : 0,
+                created: c.created ?? null,
+                revoked_at: c.revoked_at ?? null,
+              }
+            : null,
+        };
+      }
+      const scopes = (row.scopes ?? {}) as { can_send?: unknown; can_inbox?: unknown };
+      const live = scopes.can_send === true || scopes.can_inbox === true;
+      return {
+        ...row,
+        credential: {
+          state: live ? "active" : "revoked",
+          scopes: [...(scopes.can_send === true ? ["send"] : []), ...(scopes.can_inbox === true ? ["inbox"] : [])],
+          credentials: null,
+          created: row.first_seen ?? null,
+          revoked_at: null,
+        },
+      };
     });
+  }
+
+  /**
+   * Revoke an agent's bridge credentials from the Agents screen
+   * (#14374): the owner's kill switch, per surface — a fleet agent's
+   * credentials, or a notes identity's tokens. Revoking is the
+   * owner's act: on the laptop it runs here; at the edge the action
+   * is held for a machine (edge-proto.ts), never performed by the
+   * edge's read-scope credential.
+   */
+  async revokeCredential(surface: unknown, name: unknown) {
+    const s = text(surface, "surface", 20);
+    if (s !== "fleet" && s !== "notes") throw new OpError(400, `surface: not a surface: ${JSON.stringify(s)}`);
+    const n = text(name, "name", 200);
+    if (!/^[A-Za-z0-9][A-Za-z0-9@._/-]{0,127}$/.test(n)) {
+      throw new OpError(400, `name: not an agent name: ${JSON.stringify(n).slice(0, 80)}`);
+    }
+    const argv =
+      s === "fleet"
+        ? [this.cfg.fleetBin, "bridge", "revoke", "--agent", n]
+        : [this.cfg.fleetBin, "bridge", "revoke", "--identity", n];
+    const out = JSON.parse(await this.must(argv)) as { revoked?: unknown };
+    return { surface: s, name: n, revoked: typeof out.revoked === "number" ? out.revoked : 0 };
+  }
+
+  /** The minted bootstrap tokens' state for the Agents screen
+   * (#14376): pending, used, expired or revoked, each with the times
+   * that closed it. State only — the bridge stores hashes and returns
+   * neither a hash nor a value here; a token's value existed once, in
+   * its mint answer. */
+  async enrollTokens() {
+    const rows = (
+      JSON.parse(await this.must([this.cfg.fleetBin, "bridge", "enroll-tokens"])) as {
+        enroll_tokens?: unknown;
+      } | null
+    )?.enroll_tokens;
+    return Array.isArray(rows) ? (rows as Record<string, unknown>[]) : [];
+  }
+
+  /**
+   * The wake hooks for the Agents screen (#14544): one per address
+   * (channel:claude, channel:chatgpt or agent:<name>), read through
+   * `fleet bridge wake-hooks`. What the bridge shows of a hook —
+   * address, kind, host, whether it holds a token — never the token
+   * or the URL's path.
+   */
+  async wakeHooks() {
+    const rows = (
+      JSON.parse(await this.must([this.cfg.fleetBin, "bridge", "wake-hooks"])) as { hooks?: unknown } | null
+    )?.hooks;
+    return Array.isArray(rows) ? (rows as Record<string, unknown>[]) : [];
+  }
+
+  /**
+   * Set one wake hook from the Agents screen (#14544), through the
+   * wake-hooks API the retired bridge page used. The hook travels as
+   * JSON on the CLI's stdin, never as an argument: its token is a
+   * value, and values do not travel as arguments (mintEnrollToken).
+   * The address and URL are checked here first, in the console's own
+   * terms, before anything runs; the bridge checks them again.
+   */
+  async setWakeHook(input: { address?: unknown; url?: unknown; token?: unknown }) {
+    const address = text(input.address, "address", 200).trim().toLowerCase();
+    if (!/^(channel:(claude|chatgpt)|agent:[a-z0-9][a-z0-9._-]{0,63})$/.test(address)) {
+      throw new OpError(400, `address: not a wake address: ${JSON.stringify(address).slice(0, 80)}`);
+    }
+    const url = text(input.url, "url", 2048).trim();
+    let parsed: URL;
+    try {
+      parsed = new URL(url);
+    } catch {
+      throw new OpError(400, "url: not a URL");
+    }
+    if (parsed.protocol !== "https:" || parsed.username || parsed.password || parsed.hash) {
+      throw new OpError(400, "url: must be https, with no user name, password or #fragment");
+    }
+    const hook: Record<string, unknown> = { address, url: parsed.href };
+    if (input.token !== undefined && input.token !== null && input.token !== "") {
+      hook.token = text(input.token, "token", 512);
+    }
+    const out = JSON.parse(
+      await this.must([this.cfg.fleetBin, "bridge", "wake-hooks", "--set", "-"], { stdin: JSON.stringify(hook) }),
+    ) as { hook?: unknown };
+    return { hook: out.hook ?? null };
+  }
+
+  /**
+   * Remove one address's wake hook from the Agents screen (#14544):
+   * the same API with no URL in it. No value travels in it, and done
+   * late it is still the right act, so at the edge it is held for a
+   * machine like agent.revoke-enroll (edge-proto.ts).
+   */
+  async removeWakeHook(address: unknown) {
+    const a = text(address, "address", 200).trim().toLowerCase();
+    if (!/^(channel:(claude|chatgpt)|agent:[a-z0-9][a-z0-9._-]{0,63})$/.test(a)) {
+      throw new OpError(400, `address: not a wake address: ${JSON.stringify(a).slice(0, 80)}`);
+    }
+    const out = JSON.parse(
+      await this.must([this.cfg.fleetBin, "bridge", "wake-hooks", "--remove", "--address", a]),
+    ) as { removed?: unknown };
+    return { address: a, removed: out.removed === true };
+  }
+
+  /**
+   * Mint a bootstrap enroll token from the Agents screen (#14376,
+   * design §4.9), bound at mint to the new agent's name, kind, groups
+   * and class notes identity, for the TTL the owner picked. The
+   * bridge's answer carries the token value, and it passes straight
+   * through to the caller — the one screen that shows it, once.
+   * Nothing keeps it: this class holds no state but the queue token,
+   * the action's audit record names only the binding (actions.ts),
+   * and the value never travels as an argument — the CLI builds the
+   * mint from these flags, and the value comes back on stdout alone.
+   * The binding is checked here first, in the console's own terms,
+   * before anything runs.
+   */
+  async mintEnrollToken(input: {
+    agent?: unknown;
+    kind?: unknown;
+    groups?: unknown;
+    notesIdentity?: unknown;
+    ttlSeconds?: unknown;
+  }) {
+    const name = (value: unknown, what: string, max = 128) => {
+      const n = text(value, what, max);
+      if (!/^[A-Za-z0-9][A-Za-z0-9@._/-]{0,127}$/.test(n)) {
+        throw new OpError(400, `${what}: not a name: ${JSON.stringify(n).slice(0, 80)}`);
+      }
+      return n;
+    };
+    const agent = name(input.agent, "agent");
+    const argv = [this.cfg.fleetBin, "bridge", "mint-enroll", "--agent", agent];
+    if (input.kind !== undefined && input.kind !== null && input.kind !== "") {
+      argv.push("--kind", name(input.kind, "kind", 64));
+    }
+    if (input.groups !== undefined && input.groups !== null && input.groups !== "") {
+      const groups = (Array.isArray(input.groups) ? input.groups : String(input.groups).split(","))
+        .map((g) => (typeof g === "string" ? g.trim() : g))
+        .filter((g) => g !== "");
+      if (groups.length > 16) throw new OpError(400, "groups: at most sixteen");
+      for (const g of groups) {
+        if (typeof g !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(g)) {
+          throw new OpError(400, `groups: not a group name: ${JSON.stringify(g).slice(0, 80)}`);
+        }
+      }
+      if (groups.length > 0) argv.push("--groups", groups.join(","));
+    }
+    if (input.notesIdentity !== undefined && input.notesIdentity !== null && input.notesIdentity !== "") {
+      argv.push("--notes-identity", name(input.notesIdentity, "notes identity"));
+    }
+    if (input.ttlSeconds !== undefined && input.ttlSeconds !== null && input.ttlSeconds !== "") {
+      const ttl = id(input.ttlSeconds, "ttl");
+      if (ttl < 60 || ttl > 604_800) throw new OpError(400, "ttl: between a minute and a week, in seconds");
+      argv.push("--ttl", String(ttl));
+    }
+    const out = JSON.parse(await this.must(argv)) as {
+      agent?: unknown;
+      kind?: unknown;
+      groups?: unknown;
+      notes_identity?: unknown;
+      expires_at?: unknown;
+      bootstrap_token?: unknown;
+    } | null;
+    if (typeof out?.bootstrap_token !== "string" || out.bootstrap_token === "") {
+      throw new OpError(502, "the bridge's mint answer carried no token");
+    }
+    return {
+      agent: typeof out.agent === "string" ? out.agent : agent,
+      kind: typeof out.kind === "string" ? out.kind : "agent",
+      groups: Array.isArray(out.groups) ? out.groups.filter((g) => typeof g === "string") : [],
+      notes_identity: typeof out.notes_identity === "string" ? out.notes_identity : null,
+      expires_at: typeof out.expires_at === "string" ? out.expires_at : null,
+      bootstrap_token: out.bootstrap_token,
+    };
+  }
+
+  /**
+   * Take back an agent's unused bootstrap tokens from the Agents
+   * screen (#14376): every still-pending token minted for the agent.
+   * By name, never by value — the list shows no hash, and a token
+   * value has no business travelling to undo its own minting. Used
+   * tokens are not this revoke's (they became credentials; revoke
+   * those above), and expired ones are already dead.
+   */
+  async revokeEnrollTokens(agent: unknown) {
+    const n = text(agent, "agent", 200);
+    if (!/^[A-Za-z0-9][A-Za-z0-9@._/-]{0,127}$/.test(n)) {
+      throw new OpError(400, `agent: not an agent name: ${JSON.stringify(n).slice(0, 80)}`);
+    }
+    const out = JSON.parse(await this.must([this.cfg.fleetBin, "bridge", "revoke-enroll", "--agent", n])) as {
+      revoked?: unknown;
+    };
+    return { agent: n, revoked: typeof out.revoked === "number" ? out.revoked : 0 };
+  }
+
+  /**
+   * Mint a per-agent credential directly from the Agents screen
+   * (#14376): for an agent that is already enrolled, or a service
+   * credential with --addr. Like the enroll mint, the value passes
+   * straight through to the one screen that shows it, once, and is
+   * kept nowhere. A service address must name the agent itself — the
+   * bridge binds a service credential to its own name, and the check
+   * is made here first as everywhere else.
+   */
+  async mintCredential(input: { agent?: unknown; scopes?: unknown; addr?: unknown }) {
+    const agent = text(input.agent, "agent", 200);
+    if (!/^[A-Za-z0-9][A-Za-z0-9@._/-]{0,127}$/.test(agent)) {
+      throw new OpError(400, `agent: not an agent name: ${JSON.stringify(agent).slice(0, 80)}`);
+    }
+    const argv = [this.cfg.fleetBin, "bridge", "mint-credential", "--agent", agent];
+    if (input.scopes !== undefined && input.scopes !== null && input.scopes !== "") {
+      const scopes = (Array.isArray(input.scopes) ? input.scopes : String(input.scopes).split(","))
+        .map((s) => (typeof s === "string" ? s.trim() : s))
+        .filter((s) => s !== "");
+      if (scopes.length === 0 || scopes.some((s) => s !== "inbox" && s !== "send" && s !== "read")) {
+        throw new OpError(400, "scopes: only inbox, send and read exist");
+      }
+      argv.push("--scopes", scopes.join(","));
+    }
+    if (input.addr !== undefined && input.addr !== null && input.addr !== "") {
+      const addr = text(input.addr, "addr", 200);
+      if (addr !== `service:${agent}`) {
+        throw new OpError(400, "addr: a service credential is bound to its own name (service:<agent>)");
+      }
+      argv.push("--addr", addr);
+    }
+    const out = JSON.parse(await this.must(argv)) as {
+      agent?: unknown;
+      scopes?: unknown;
+      addr?: unknown;
+      credential?: unknown;
+    } | null;
+    if (typeof out?.credential !== "string" || out.credential === "") {
+      throw new OpError(502, "the bridge's mint answer carried no credential");
+    }
+    return {
+      agent: typeof out.agent === "string" ? out.agent : agent,
+      scopes: Array.isArray(out.scopes) ? out.scopes.filter((s) => typeof s === "string") : [],
+      addr: typeof out.addr === "string" ? out.addr : null,
+      credential: out.credential,
+    };
+  }
+
+  /** Send a message or a command to agents, groups, or everyone.
+   * Targets are the bridge's whole grammar (#14375, design §4.1): a
+   * name, a glob (agent:f*), a group, or all. `limit` caps how many
+   * of the matched agents receive it. The answer is the bridge's own
+   * match report — matched, delivered, the recipients by name, and
+   * how many matched agents remain — never a console-side recount. */
+  async send(to: unknown, body: unknown, command: unknown, limit?: unknown) {
+    const targets = bridgeTargets(to);
     const argv = [this.cfg.fleetBin, "bridge", "send", "--to", targets.join(",")];
     if (command === true) argv.push("--command");
+    const n = optionalCount(limit, "limit", 1000);
+    if (n !== null) argv.push("--limit", String(n));
     // The text goes on stdin, so nothing in it is read as an option.
     argv.push("-");
-    await this.must(argv, { stdin: text(body, "text", 16_000) });
-    return { to: targets, command: command === true };
+    const out = JSON.parse(await this.must(argv, { stdin: text(body, "text", 16_000) })) as Record<
+      string,
+      unknown
+    > | null;
+    return matchReport(out, targets, command === true);
+  }
+
+  /** Broaden a pattern send (#14375, design §4.1): deliver its
+   * original text to the matched agents its limit left over. One
+   * bridge call with the send's batch — a follow-up send, never a
+   * fresh fan-out, so nobody is delivered to twice. The answer is
+   * the same match report, updated: delivered counts this call,
+   * remaining what is still left. */
+  async broaden(batch: unknown, limit?: unknown) {
+    const b = text(batch, "batch", 128);
+    if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(b)) {
+      throw new OpError(400, `batch: not a batch id: ${JSON.stringify(b).slice(0, 80)}`);
+    }
+    const argv = [this.cfg.fleetBin, "bridge", "send", "--broaden", b];
+    const n = optionalCount(limit, "limit", 1000);
+    if (n !== null) argv.push("--limit", String(n));
+    const out = JSON.parse(await this.must(argv)) as Record<string, unknown> | null;
+    return matchReport(out, [], false);
+  }
+
+  /** Post the text as a claim offer instead of delivering it
+   * (#14375, design §4.2): the next `slots` eligible agents to claim
+   * it are delivered a row on the offer's batch, and their replies
+   * thread onto that batch. The answer is the bridge's offer row. */
+  async offer(to: unknown, body: unknown, command: unknown, slots: unknown, ttlSeconds?: unknown) {
+    const targets = bridgeTargets(to);
+    const argv = [
+      this.cfg.fleetBin,
+      "bridge",
+      "offer",
+      "--to",
+      targets.join(","),
+      "--slots",
+      String(id(slots, "slots")),
+    ];
+    if (command === true) argv.push("--command");
+    const ttl = optionalCount(ttlSeconds, "ttl", 7 * 24 * 3600);
+    if (ttl !== null) argv.push("--ttl", String(ttl));
+    argv.push("-");
+    const out = JSON.parse(await this.must(argv, { stdin: text(body, "text", 16_000) })) as { offer?: unknown } | null;
+    if (!out || typeof out !== "object" || !out.offer || typeof out.offer !== "object") {
+      throw new OpError(502, "the bridge did not say what became of the offer");
+    }
+    return out.offer as Record<string, unknown>;
+  }
+
+  /** Every offer with its claims (#14375): the composer's offer rows
+   * read through `fleet bridge offers` — who claimed, when, and the
+   * row each claim delivered. Claimants' replies are pipeline rows
+   * on the offer's batch, read with the feed. */
+  async offers() {
+    const out = JSON.parse(await this.must([this.cfg.fleetBin, "bridge", "offers"])) as { offers?: unknown } | null;
+    return Array.isArray(out?.offers) ? out.offers : [];
   }
 
   // ---- sign-in ------------------------------------------------------------
@@ -577,25 +1083,47 @@ export class Ops {
     return { google: true, changed: said.filter((line) => line.startsWith("changed: ")).map((line) => line.slice(9)) };
   }
 
-  /** Have the edge do the core itself, or stop it. On gives the Worker
-   * the repository automation token and the queue store token, read
-   * from the secret store by the setup script and sent to Cloudflare;
-   * off takes them away, and is remembered. It can only be done on a
-   * machine, where the secret store is. */
-  async edgeDirect(on: unknown) {
+  /** Persist the desired direct-mode state in the repository, then ask
+   * Actions to apply it. Token rotation is explicit because Worker
+   * secret values cannot be read back to determine whether they changed. */
+  async edgeDirect(on: unknown, refreshTokens: unknown = false) {
     if (typeof on !== "boolean") throw new OpError(400, "on: true or false");
-    const r = await this.expose(["--edge-direct", on ? "on" : "off"]);
-    const said = `${r.stdout}\n${r.stderr}`
-      .split("\n")
-      .map((line) => line.trim())
-      .filter((line) => line !== "");
-    if (r.code !== 0) {
-      throw new OpError(
-        502,
-        `Cloudflare was not ${on ? "given" : "relieved of"} the tokens: ${(said.pop() ?? "the setup script failed").slice(0, 300)}`,
-      );
+    if (typeof refreshTokens !== "boolean") throw new OpError(400, "refreshTokens: true or false");
+    if (refreshTokens && !on) throw new OpError(400, "refreshTokens requires direct mode on");
+    const file = `repos/${this.cfg.repo}/contents/infra/pm-cloudflare/state.json`;
+    const current = (await this.gh([file])) as { sha?: unknown; content?: unknown } | null;
+    if (typeof current?.sha !== "string" || typeof current.content !== "string") {
+      throw new OpError(502, "could not read the Cloudflare repository state");
     }
-    return { on, changed: said.filter((line) => line.startsWith("changed: ")).map((line) => line.slice(9)) };
+    let state: Record<string, unknown>;
+    try {
+      const binary = atob(current.content.replace(/\s/g, ""));
+      state = JSON.parse(new TextDecoder().decode(Uint8Array.from(binary, (c) => c.charCodeAt(0)))) as Record<
+        string,
+        unknown
+      >;
+    } catch {
+      throw new OpError(502, "the Cloudflare repository state was not valid JSON");
+    }
+    const worker = state.worker as Record<string, unknown> | undefined;
+    if (!worker || (worker.direct !== "on" && worker.direct !== "off")) {
+      throw new OpError(502, "the Cloudflare repository state has no valid worker.direct setting");
+    }
+    worker.direct = on ? "on" : "off";
+    const bytes = new TextEncoder().encode(`${JSON.stringify(state, null, 2)}\n`);
+    let binary = "";
+    for (const byte of bytes) binary += String.fromCharCode(byte);
+    await this.gh(["-X", "PUT", file], {
+      message: `pm-console: ${on ? "enable" : "disable"} edge direct mode`,
+      sha: current.sha,
+      content: btoa(binary),
+      branch: "main",
+    });
+    await this.gh(["-X", "POST", `repos/${this.cfg.repo}/actions/workflows/pm-cloudflare-config.yml/dispatches`], {
+      ref: "main",
+      inputs: { mode: "apply", refresh_tokens: String(refreshTokens) },
+    });
+    return { on, started: "pm-cloudflare-config.yml" };
   }
 
   // ---- services ----------------------------------------------------------
@@ -766,6 +1294,44 @@ export class Ops {
       malformed: list.malformed,
       workers: list.workers.map((w) => ({ ...w, run: w.workflow ? (runs.get(w.workflow) ?? null) : null })),
     };
+  }
+
+  /** When each store token the platform holds runs out (#14255): the
+   * tokens the repository's list of stores names
+   * (pm-stack/platform/stores.json), each fetched by name the way the
+   * queue token is and read for its `exp` claim. Only the name and the
+   * date leave here; a token that could not be fetched says only that. */
+  async tokenExpiries(now: number = Date.now()): Promise<{ checkedAt: string; tokens: TokenExpiry[] }> {
+    const got = (await this.gh([`repos/${this.cfg.repo}/contents/${STORES_FILE}`])) as { content?: string } | null;
+    if (typeof got?.content !== "string") throw new OpError(502, "the list of stores could not be read");
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(new TextDecoder().decode(Uint8Array.from(atob(got.content), (c) => c.charCodeAt(0))));
+    } catch {
+      throw new OpError(502, "the list of stores is not valid JSON");
+    }
+    const held = heldTokens(storesList(parsed).stores);
+    const tokens = await Promise.all(
+      held.map(async (token) => {
+        const kept = this.expiries.get(token.name);
+        if (kept && now - kept.at < TOKEN_EXPIRY_KEPT_MS) return tokenExpiry(token, kept.expiresAt, now);
+        let expiresAt: number | null | undefined;
+        try {
+          const value =
+            token.name === this.cfg.queueTokenName && this.queueToken !== null
+              ? this.queueToken
+              : (await this.must([this.cfg.fleetBin, "secrets", "get", token.name])).trim();
+          expiresAt = jwtExpiry(value);
+        } catch {
+          // Why it could not be fetched is not said: what the fleet
+          // binary prints about a secret stays on the machine.
+          expiresAt = undefined;
+        }
+        this.expiries.set(token.name, { at: now, expiresAt });
+        return tokenExpiry(token, expiresAt, now);
+      }),
+    );
+    return { checkedAt: new Date(now).toISOString(), tokens };
   }
 
   async releases() {

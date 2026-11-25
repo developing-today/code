@@ -18,18 +18,36 @@ Implements the fleet architecture spec v0.3
   requires `--root` and `--root-key-dir`.
 - `fleet cert leaf issue|inspect|list` — profiles mirroring
   `pkgs/idp-pki`'s idp-ca: `server`, `client`, `saml-signing`,
-  `oidc-signing`; requires `--issuer-key-dir`.
+  `oidc-signing`; requires `--issuer-key-dir`. `--ip` adds IP SANs and
+  `--csr <file>` certifies a key made elsewhere (no key is generated or
+  written; the manifest records `host-local` custody). The broker TLS
+  profiles `broker-server`/`broker-client` (P-256, 90d, renewed with
+  30d left) take a CSR only, issue only from a Base (`general`) issuer
+  set, and require `.internal` DNS names plus a tailnet IP SAN, with
+  wildcards and public names refused (#14399).
 - `fleet cert chain build|test` — signature-verified path building
   (shortest path, path-length pruned) and validation under
   all/classical/PQ trust selections.
+- `fleet cert ocsp sign|inspect|test` — RFC 6960 responses from
+  issuer bundles: direct issuer signing or a delegated responder
+  certificate (leaf profile `ocsp-responder`: EKU id-kp-OCSPSigning
+  - NoCheck, 30d default), verified against the crate chain code.
+    This is the §4.3 functional responder core; it embeds no OCSP URL.
 - `fleet cert bundle inspect`, `profile list|show`,
   `algorithms list|describe`, `explain`, `doctor`.
+- `fleet cert inventory list|show|search|audit` — read-only
+  cross-bundle inventory (§6.1): drift (checksum/size/missing/
+  orphaned/unreferenced), upcoming expiries (CA 5y, leaf 90d
+  Gregorian horizons, overridable per run), orphaned material;
+  audit exits 1 iff expired>0 or drift>0. Nothing writes.
 - Text and `--json` output; fleet exit-code contract (0/2/1).
 
 Not yet built (tracked as child issues under #9157): `revoke`/`crl`,
-`ocsp`, `publish`, `dns`, `trust`, `key`, `format`, profile
-validate/scaffold, algorithm benchmark/doctor, `batch`,
-`inventory`, renew/rotate verbs, bundle pack/unpack/diff/migrate.
+`dns`, `trust`, `key` import/export/escrow/restore/rotate,
+`format`, profile validate/scaffold, algorithm benchmark/doctor,
+`batch`, renew/rotate verbs, bundle pack/unpack/diff/migrate,
+publish apply/status (production-gated; slice 1 ships plan +
+verify read-only).
 
 ## Design decisions worth knowing
 
@@ -70,9 +88,11 @@ validate/scaffold, algorithm benchmark/doctor, `batch`,
 
 ## Evidence
 
-`cargo test -p fleet-cert` — 19 unit tests (registry, time
-grammar, naming, graph arithmetic, profiles, bundle round-trip)
-and 7 integration tests in `tests/hierarchy.rs`, each naming its
+`cargo test -p fleet-cert` — 30 unit tests (registry, time
+grammar, naming, graph arithmetic, profiles, bundle round-trip,
+inventory horizons) and 17 integration tests
+(`tests/hierarchy.rs` 7, `tests/ocsp.rs` 3, `tests/publish.rs` 2,
+`tests/inventory.rs` 5), each naming its
 oracle: spec inventory arithmetic (§§3.2/24.2), the crate
 validator, the system `openssl` as an independent implementation
 (classical, PQ, and cross-signed paths), the §24.1/§24.3 policy

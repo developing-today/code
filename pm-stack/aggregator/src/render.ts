@@ -4187,7 +4187,7 @@ export function renderOverviewBody(summary: OverviewSummary): string {
         })
         .join("")
     : `<p class="muted">No quota pools measured yet.</p>`;
-  const healthStrip = `<div class="card"><span class="dot ${summary.health.down || summary.health.degraded ? "down" : "up"}"></span><strong>${summary.health.up} of ${summary.health.total} services up</strong>${summary.health.down ? ` · ${summary.health.down} down` : ""}${summary.health.degraded ? ` · <span class="badge stale">degraded</span>` : ""}${summary.health.feedAgeMs !== null ? ` · feed ${esc(ageMsText(summary.health.feedAgeMs))} old` : ""} — <a href="/health">health</a></div>`;
+  const healthStrip = `<div class="card"><span class="dot ${summary.health.down || summary.health.degraded ? "down" : "up"}"></span><strong>${summary.health.up} of ${summary.health.total} services up</strong>${summary.health.down ? ` · ${summary.health.down} down` : ""}${summary.health.degraded ? ` · <span class="badge stale">degraded</span>` : ""}${summary.health.feedAgeMs !== null ? ` · feed ${esc(ageMsText(summary.health.feedAgeMs))}` : ""} — <a href="/health">health</a></div>`;
   // #1116 item (5): when the feed itself has crossed the staleness
   // threshold the dashboard must say so visibly — a "feed X old" suffix
   // is not an actionable warning. The data-signal hook is what the
@@ -4354,7 +4354,7 @@ ${dnsTable(section.entries, renewingSoon, next)}`;
  * Written without template literals on purpose — it lives inside one.
  */
 const AA_EXPLORER_SCRIPT = `<script type="module">
-import { applyDominanceFilters, applyInequalityFilters, bandIndex, baselineRatios, chartClickSuppressed, computeRecommendations, effectiveChartView, logEdges, normName, panChartView, paretoSet, parseChartViewBox, pctRank, projectTask, resetChartView, scoreEdges, sortRows, unpricedScoredPoints, zoomChartView } from "/assets/aa-explorer-computations.js";
+import { applyDominanceFilters, applyInequalityFilters, bandIndex, baselineRatios, chartClickSuppressed, computeRecommendations, costScoreEnvelope, costScoreOls, costScoreTail, effectiveChartView, logEdges, normName, panChartView, paretoSet, parseChartViewBox, pctRank, projectTask, resetChartView, scoreEdges, sortRows, unpricedScoredPoints, zoomChartView } from "/assets/aa-explorer-computations.js";
 (function () {
   var dataEl = document.getElementById("xpl-data");
   if (!dataEl) return;
@@ -4461,6 +4461,7 @@ import { applyDominanceFilters, applyInequalityFilters, bandIndex, baselineRatio
     sel: null,
     hidden: [],
     sizeBy: {},
+    overlays: {},
     tasksMode: "per",
     baseline: "",
     pfCut: "50",
@@ -4627,6 +4628,35 @@ import { applyDominanceFilters, applyInequalityFilters, bandIndex, baselineRatio
     var fr = rows.filter(function (p) { return p[cfg.flag]; }).sort(function (a, b) { return cfg.x(a) - cfg.x(b); });
     if (fr.length > 1) {
       g += '<polyline points="' + fr.map(function (p) { return X(cfg.x(p)).toFixed(1) + "," + Y(cfg.y(p)).toFixed(1); }).join(" ") + '" fill="none" stroke="#e6edf3" stroke-width="1.4" opacity="0.65" stroke-dasharray="5 3"/>';
+    }
+    // comparison-line overlays (#1400): Cost x Score only, toggleable,
+    // off by default. All three read the same visible rows the dots use
+    // and draw in data coordinates through this chart's own X/Y scales.
+    if (id === "xpl-c2") {
+      var ovRows = rows.map(function (p) { return { cost: cfg.x(p), score: cfg.y(p) }; });
+      if (S.overlays.trend) {
+        var fit = costScoreOls(ovRows);
+        if (fit) {
+          var tLo = Math.max(xlo, fit.costMin), tHi = Math.min(xhi, fit.costMax);
+          var yAt = function (c) {
+            var y = fit.intercept + fit.slope * Math.log10(Math.max(c, tLo));
+            return Math.min(Math.max(y, ylo), yhi);
+          };
+          g += '<polyline class="xpl-overlay" points="' + X(tLo).toFixed(1) + "," + Y(yAt(tLo)).toFixed(1) + " " + X(tHi).toFixed(1) + "," + Y(yAt(tHi)).toFixed(1) + '" fill="none" stroke="#e3b341" stroke-width="1.6" opacity="0.85"><title>OLS cost–score trend (score on log10 cost, n=' + fit.n + ")</title></polyline>";
+        }
+      }
+      if (S.overlays.envelope) {
+        var env = costScoreEnvelope(ovRows);
+        if (env.length > 1) {
+          g += '<polyline class="xpl-overlay" points="' + env.map(function (pt) { return X(pt.cost).toFixed(1) + "," + Y(pt.score).toFixed(1); }).join(" ") + '" fill="none" stroke="#3fb950" stroke-width="1.6" opacity="0.85" stroke-dasharray="7 3"><title>Smoothed upper-envelope frontier (cost/score Pareto set)</title></polyline>';
+        }
+      }
+      if (S.overlays.tail) {
+        var tail = costScoreTail(ovRows, 8);
+        if (tail.length > 1) {
+          g += '<polyline class="xpl-overlay" points="' + tail.map(function (pt) { return X(pt.cost).toFixed(1) + "," + Y(pt.score).toFixed(1); }).join(" ") + '" fill="none" stroke="#79c0ff" stroke-width="1.6" opacity="0.85" stroke-dasharray="2 3"><title>Smoothed upper-tail expectation (mean of the top half per log-cost bin)</title></polyline>';
+        }
+      }
     }
     // dot sizing by the chart's third metric (reference design's toggle)
     var sizeVals = null, sizeLo = 0, sizeHi = 1;
@@ -5790,7 +5820,7 @@ import { applyDominanceFilters, applyInequalityFilters, bandIndex, baselineRatio
   var bandsEl = document.getElementById("xf-bands");
   if (bandsEl) bandsEl.addEventListener("change", function (ev) { S.bandCount = Number(ev.target.value); renderRecs(); renderBandComparisons(); enhanceCharts(); });
   var bandScaleEl = document.getElementById("xf-bandscale");
-  if (bandScaleEl) bandScaleEl.addEventListener("change", function (ev) { S.bandScale = Number(ev.target.value); renderBandComparisons(); });
+  if (bandScaleEl) bandScaleEl.addEventListener("change", function (ev) { S.bandScale = Number(ev.target.value); renderBandComparisons(); enhanceCharts(); });
   function syncRecInputs() {
     document.querySelectorAll("[data-rec]").forEach(function (el) {
       var f = el.getAttribute("data-rec");
@@ -5878,6 +5908,9 @@ import { applyDominanceFilters, applyInequalityFilters, bandIndex, baselineRatio
   document.querySelectorAll("[data-sizeby]").forEach(function (cb) {
     cb.addEventListener("change", function () { S.sizeBy[cb.getAttribute("data-sizeby")] = cb.checked; drawCharts(); });
   });
+  document.querySelectorAll("[data-overlay]").forEach(function (cb) {
+    cb.addEventListener("change", function () { S.overlays[cb.getAttribute("data-overlay")] = cb.checked; drawCharts(); });
+  });
   document.querySelectorAll("[data-dl]").forEach(function (b) {
     b.addEventListener("click", function () { downloadPng(b.getAttribute("data-dl")); });
   });
@@ -5925,7 +5958,7 @@ import { applyDominanceFilters, applyInequalityFilters, bandIndex, baselineRatio
     return JSON.parse(JSON.stringify({
       tab: S.tab, persp: S.persp, xp: S.xp, q: S.q, creator: S.creator, fam: S.fam, bench: S.bench,
       effortAny: S.effortAny, efforts: S.efforts, providerAny: S.providerAny, providers: S.providers, off: S.off, elig: S.elig, pooledOnly: S.pooledOnly,
-      measuredOnly: S.measuredOnly, hideDisabled: S.hideDisabled, hidden: S.hidden, sizeBy: S.sizeBy,
+      measuredOnly: S.measuredOnly, hideDisabled: S.hideDisabled, hidden: S.hidden, sizeBy: S.sizeBy, overlays: S.overlays,
       tasksMode: S.tasksMode, baseline: S.baseline, sortKey: S.sortKey, sortDir: S.sortDir, dom: S.dom, pfCut: S.pfCut, bandCount: S.bandCount,
       bandScale: S.bandScale, rec: S.rec, pj: S.pj, ineq: S.ineq,
     }));
@@ -5944,11 +5977,12 @@ import { applyDominanceFilters, applyInequalityFilters, bandIndex, baselineRatio
     if (ineqCombineEl) ineqCombineEl.value = S.ineq.combine;
     document.querySelectorAll("[data-tmode]").forEach(function (b) { b.classList.toggle("active", b.getAttribute("data-tmode") === S.tasksMode); });
     document.querySelectorAll("[data-sizeby]").forEach(function (cb) { cb.checked = !!S.sizeBy[cb.getAttribute("data-sizeby")]; });
+    document.querySelectorAll("[data-overlay]").forEach(function (cb) { cb.checked = !!S.overlays[cb.getAttribute("data-overlay")]; });
   }
   function applySetup(st) {
     if (!st || typeof st !== "object") return;
     ["tab", "persp", "xp", "q", "creator", "fam", "bench", "effortAny", "providerAny", "elig", "pooledOnly", "measuredOnly", "hideDisabled", "tasksMode", "baseline", "pfCut", "bandCount", "bandScale", "sortKey", "sortDir"].forEach(function (k) { if (st[k] !== undefined) S[k] = st[k]; });
-    ["efforts", "providers", "off", "hidden", "sizeBy", "rec", "pj", "ineq", "dom"].forEach(function (k) { if (st[k] !== undefined) S[k] = st[k]; });
+    ["efforts", "providers", "off", "hidden", "sizeBy", "overlays", "rec", "pj", "ineq", "dom"].forEach(function (k) { if (st[k] !== undefined) S[k] = st[k]; });
     POINTS = S.persp === "cai" ? CAI_POINTS : AA_POINTS;
     S.sel = null;
     showDetail(null);
@@ -6261,7 +6295,7 @@ ${aaTabAge}
 <div id="xpl-legend" class="strip"></div>
 <div class="xpl-charts" id="xpl-charts">
 <div class="chart" data-chart="xpl-c1"><h3>Completion time × Score</h3><span class="xpl-ctl"><label><input type="checkbox" data-sizeby="xpl-c1"> size dots by cost</label><button type="button" data-dl="xpl-c1">Download PNG</button></span><span class="chart-tools" data-tools="xpl-c1"><button type="button" data-zact="expand" data-zfor="xpl-c1">⤢ Expand</button><button type="button" data-zact="in" data-zfor="xpl-c1" aria-label="Zoom in">+</button><button type="button" data-zact="out" data-zfor="xpl-c1" aria-label="Zoom out">−</button><button type="button" data-zact="reset" data-zfor="xpl-c1" aria-label="Reset view">⟲</button></span><svg id="xpl-c1" viewBox="0 0 680 400" role="img" aria-label="Completion time by score scatter chart"></svg><p class="muted" data-note></p></div>
-<div class="chart" data-chart="xpl-c2"><h3>Cost × Score</h3><span class="xpl-ctl"><label><input type="checkbox" data-sizeby="xpl-c2"> size dots by time</label><button type="button" data-dl="xpl-c2">Download PNG</button></span><span class="chart-tools" data-tools="xpl-c2"><button type="button" data-zact="expand" data-zfor="xpl-c2">⤢ Expand</button><button type="button" data-zact="in" data-zfor="xpl-c2" aria-label="Zoom in">+</button><button type="button" data-zact="out" data-zfor="xpl-c2" aria-label="Zoom out">−</button><button type="button" data-zact="reset" data-zfor="xpl-c2" aria-label="Reset view">⟲</button></span><svg id="xpl-c2" viewBox="0 0 680 400" role="img" aria-label="Cost by score scatter chart"></svg><p class="muted" data-note></p></div>
+<div class="chart" data-chart="xpl-c2"><h3>Cost × Score</h3><span class="xpl-ctl"><label><input type="checkbox" data-sizeby="xpl-c2"> size dots by time</label><label><input type="checkbox" data-overlay="trend"> trend</label><label><input type="checkbox" data-overlay="envelope"> envelope</label><label><input type="checkbox" data-overlay="tail"> tail</label><button type="button" data-dl="xpl-c2">Download PNG</button></span><span class="chart-tools" data-tools="xpl-c2"><button type="button" data-zact="expand" data-zfor="xpl-c2">⤢ Expand</button><button type="button" data-zact="in" data-zfor="xpl-c2" aria-label="Zoom in">+</button><button type="button" data-zact="out" data-zfor="xpl-c2" aria-label="Zoom out">−</button><button type="button" data-zact="reset" data-zfor="xpl-c2" aria-label="Reset view">⟲</button></span><svg id="xpl-c2" viewBox="0 0 680 400" role="img" aria-label="Cost by score scatter chart"></svg><p class="muted" data-note></p></div>
 <div class="chart" data-chart="xpl-c3"><h3>Cost × Completion time</h3><span class="xpl-ctl"><label><input type="checkbox" data-sizeby="xpl-c3"> size dots by score</label><button type="button" data-dl="xpl-c3">Download PNG</button></span><span class="chart-tools" data-tools="xpl-c3"><button type="button" data-zact="expand" data-zfor="xpl-c3">⤢ Expand</button><button type="button" data-zact="in" data-zfor="xpl-c3" aria-label="Zoom in">+</button><button type="button" data-zact="out" data-zfor="xpl-c3" aria-label="Zoom out">−</button><button type="button" data-zact="reset" data-zfor="xpl-c3" aria-label="Reset view">⟲</button></span><svg id="xpl-c3" viewBox="0 0 680 400" role="img" aria-label="Cost by completion time scatter chart"></svg><p class="muted" data-note></p></div>
 <div class="chart" data-chart="xpl-c4"><h3>Tasks completed vs duration</h3><span class="xpl-ctl"><button type="button" data-tmode="per">Seconds per task</button><button type="button" data-tmode="tot">Total time to finish all tasks</button><button type="button" data-dl="xpl-c4">Download PNG</button></span><span class="chart-tools" data-tools="xpl-c4"><button type="button" data-zact="expand" data-zfor="xpl-c4">⤢ Expand</button><button type="button" data-zact="in" data-zfor="xpl-c4" aria-label="Zoom in">+</button><button type="button" data-zact="out" data-zfor="xpl-c4" aria-label="Zoom out">−</button><button type="button" data-zact="reset" data-zfor="xpl-c4" aria-label="Reset view">⟲</button></span><svg id="xpl-c4" viewBox="0 0 680 400" role="img" aria-label="Tasks completed by duration scatter chart"></svg><p class="muted" data-note></p></div>
 <div class="chart" data-chart="xpl-c5"><h3>Multiples of the baseline</h3><span class="xpl-ctl"><label>Baseline <select id="xf-baseline"></select></label><button type="button" data-dl="xpl-c5">Download PNG</button></span><span class="chart-tools" data-tools="xpl-c5"><button type="button" data-zact="expand" data-zfor="xpl-c5">⤢ Expand</button><button type="button" data-zact="in" data-zfor="xpl-c5" aria-label="Zoom in">+</button><button type="button" data-zact="out" data-zfor="xpl-c5" aria-label="Zoom out">−</button><button type="button" data-zact="reset" data-zfor="xpl-c5" aria-label="Reset view">⟲</button></span><svg id="xpl-c5" viewBox="0 0 680 400" role="img" aria-label="Cost and duration multiples scatter chart"></svg><p class="muted" data-note></p></div>
@@ -6640,9 +6674,29 @@ export function renderHealth(view: HealthView, provenance: Provenance): string {
     view.mode === "fixtures"
       ? `<div class="banner">Fixtures mode — no live probes are made in this deployment; every service reports “fixtures”.</div>`
       : "";
+  const bootMs = Date.parse(view.bootAt);
+  const uptimeMs = Number.isFinite(bootMs) ? Math.max(0, nowMs - bootMs) : NaN;
+  // #14059(b): surface the deployed commit + its age from the same
+  // HealthView.version / bootAt that /api/health serves — the page and
+  // the API cannot disagree because both read this view.
+  const buildLine =
+    view.version === "unknown"
+      ? `<div class="card">Build <strong>unknown</strong> — this process was not deployed with PM_AGG_BUILD_VERSION, so the deployed commit cannot be shown (boot ${esc(view.bootAt)}).</div>`
+      : `<div class="card">Build <code title="${esc(view.version)}">${esc(view.version.slice(0, 8))}</code> <span class="muted">(<code>${esc(view.version)}</code> · boot ${esc(view.bootAt)} · up ${esc(ageMsText(uptimeMs))})</span> — same commit <a href="/api/health">/api/health</a> serves as version.</div>`;
+  // CF-9 (#14949): the edition's drift vs main, from the same
+  // HealthView /api/health serves. Unassembled (fixtures/tests)
+  // renders nothing; unknown renders its reason, never a guess.
+  const editionLine = !view.edition
+    ? ""
+    : view.edition.state === "unknown"
+      ? `<div class="card">Edition drift <strong>unknown</strong> — ${esc(view.edition.reason ?? "not measured")}.</div>`
+      : view.edition.state === "in-sync"
+        ? `<div class="card">Edition <strong>in sync</strong> with main at <code>${esc((view.edition.mainHead ?? "").slice(0, 8))}</code>.</div>`
+        : `<div class="card">Edition <strong>${view.edition.stale ? "STALE" : "behind"}</strong> — deployed <code>${esc((view.edition.deployedCommit ?? "").slice(0, 8))}</code> (${esc(view.edition.deployedCommitAt ?? "")}), main <code>${esc((view.edition.mainHead ?? "").slice(0, 8))}</code>, ${esc(String(view.edition.behindBy ?? "?"))} commits behind; main has carried newer code for ${esc(ageMsText(view.edition.driftMs ?? 0))}${view.edition.stale ? " — past the drift threshold; the merge → switch flip is overdue" : ""}.</div>`;
   const body = `<h1>Health</h1>
 <p class="muted">Every stack service probed live (results cached 60 s), every feed section aged, the last job runs, and this dashboard's own render history — assembled from the same view <a href="/api/health">/api/health</a> serves, at ${esc(view.generatedAt)}.</p>
-${degraded}${modeNote}
+${buildLine}
+${editionLine}${degraded}${modeNote}
 <h2 id="topology">Services &amp; topology</h2>
 <p class="muted">What runs where: the component, its port and bind as actually deployed, what consumes it, and what breaks without it. State is probed, never assumed.</p>
 <div class="tblwrap"><table class="table table-zebra"><caption>Services, ports, and topology</caption><tr><th scope="col">Service</th><th scope="col">Port</th><th scope="col">Bind</th><th scope="col">Runs as</th><th scope="col">State</th><th scope="col">Consumed by</th><th scope="col">If it is down</th></tr>${serviceRows}</table></div>
@@ -6930,7 +6984,7 @@ function coverageSectionHtml(coverage: CoverageSnapshotFile | null | undefined):
   const cell = (
     repo: string,
     v: number | null,
-    key: "openIssues" | "gateNow" | "gateNext" | "poolItems" | "poolUnsetStatus" | "poolUnsetArea",
+    key: "openIssues" | "gateNow" | "gateNext" | "poolItems" | "poolUnsetStatus" | "poolUnsetArea" | "staleOpenIssues",
   ): string => {
     if (v === null) return "—";
     const d = delta.get(repo)?.[key];
@@ -6952,7 +7006,7 @@ function coverageSectionHtml(coverage: CoverageSnapshotFile | null | undefined):
       const collectedAt = r.staleIssuesCollectedAt
         ? `<time datetime="${esc(r.staleIssuesCollectedAt)}">${esc(r.staleIssuesCollectedAt)}</time>`
         : "—";
-      return `<tr><td>${esc(r.repo)}</td><td>${cell(r.repo, r.openIssues, "openIssues")}</td><td>${cell(r.repo, r.gateNow, "gateNow")}</td><td>${cell(r.repo, r.gateNext, "gateNext")}</td><td>${cell(r.repo, r.poolItems, "poolItems")}</td><td>${cell(r.repo, r.poolUnsetStatus, "poolUnsetStatus")}</td><td>${cell(r.repo, r.poolUnsetArea, "poolUnsetArea")}</td><td>${r.staleOpenIssues === null ? "—" : r.staleOpenIssues}</td><td>${collectedAt}</td><td>${status}</td></tr>`;
+      return `<tr><td>${esc(r.repo)}</td><td>${cell(r.repo, r.openIssues, "openIssues")}</td><td>${cell(r.repo, r.gateNow, "gateNow")}</td><td>${cell(r.repo, r.gateNext, "gateNext")}</td><td>${cell(r.repo, r.poolItems, "poolItems")}</td><td>${cell(r.repo, r.poolUnsetStatus, "poolUnsetStatus")}</td><td>${cell(r.repo, r.poolUnsetArea, "poolUnsetArea")}</td><td>${cell(r.repo, r.staleOpenIssues, "staleOpenIssues")}</td><td>${collectedAt}</td><td>${status}</td></tr>`;
     })
     .join("");
   const note = baseline
@@ -7762,8 +7816,9 @@ export function phase12PanelHtml(
  * F-item progress counted from #1235's ordered step list, and Phases
  * 11 and 13 count the F-item mapping table in planning/roadmaps/id.md
  * (the source of record, #9923 step 3) when the source carries it;
- * Phases 0-10 have no F-item numbering in their plans, so they state
- * that gap instead of showing a fabricated percentage. */
+ * Phases 0-10 joined that table for #13944 (F-numbering mirroring
+ * their plans' P-step lists, refs = their validation audits), so
+ * they derive from the same mapping instead of stating a gap. */
 export function phaseTrackerPanelHtml(
   items: Map<RefKey, GhItem>,
   phase12: Phase12Snapshot | null = null,
@@ -7773,7 +7828,7 @@ export function phaseTrackerPanelHtml(
   const head = `<h2>Phase tracker — validation by phase, live from <a href="${umbrellaUrl}">#${PHASE_TRACKER_UMBRELLA}</a></h2>`;
   const progress = derivePhase12Progress(phase12, items);
   const mappedProgress = phaseMapping ? deriveMappedProgress(phaseMapping.entries, items) : null;
-  const sourceLine = `<p class="muted">Source: the validation audits <a href="https://github.com/${PHASE_TRACKER_REPO}/issues/1075">#1075</a>–<a href="https://github.com/${PHASE_TRACKER_REPO}/issues/1078">#1078</a> under umbrella <a href="${umbrellaUrl}">#${PHASE_TRACKER_UMBRELLA}</a>, resolved from the same live GitHub items as the tracked-issues table above (the page provenance stamp applies). Phase 12 progress counts the ordered steps in <a href="${PHASE12_ISSUE_URL}">#1235</a> against live issue state${phase12 ? ` (body fetched ${esc(phase12.fetchedAt)})` : ""}; ${phaseMapping ? `Phases 11 and 13 progress counts the F-item mapping table in <a href="https://github.com/${PHASE_TRACKER_REPO}/blob/main/planning/roadmaps/id.md">planning/roadmaps/id.md</a> (read ${esc(phaseMapping.fetchedAt)}) against live item state; ` : ""}Phases 0–10 have no F-item numbering in their plans, so no percentage is shown for them — the gap is stated rather than a number invented.</p>`;
+  const sourceLine = `<p class="muted">Source: the validation audits <a href="https://github.com/${PHASE_TRACKER_REPO}/issues/1075">#1075</a>–<a href="https://github.com/${PHASE_TRACKER_REPO}/issues/1078">#1078</a> under umbrella <a href="${umbrellaUrl}">#${PHASE_TRACKER_UMBRELLA}</a>, resolved from the same live GitHub items as the tracked-issues table above (the page provenance stamp applies). Phase 12 progress counts the ordered steps in <a href="${PHASE12_ISSUE_URL}">#1235</a> against live issue state${phase12 ? ` (body fetched ${esc(phase12.fetchedAt)})` : ""}; ${phaseMapping ? `All phases except 12 count the F-item mapping table in <a href="https://github.com/${PHASE_TRACKER_REPO}/blob/main/planning/roadmaps/id.md">planning/roadmaps/id.md</a> (read ${esc(phaseMapping.fetchedAt)}) against live item state — for Phases 0–10 the F-numbering mirrors their plans' P-step lists and each item's ref is its phase's validation audit (#1075–#1077); ` : "The F-item mapping is unavailable in the current source, so no mapped percentage is shown — a number is never invented."}</p>`;
   const rows = derivePhaseValidation(items)
     .map((r) => {
       const badge =
@@ -7799,9 +7854,7 @@ export function phaseTrackerPanelHtml(
             : `<span class="muted">withheld — #1235 feed unavailable or stale</span>`
           : mapped
             ? `<strong>${mapped.done}/${mapped.total} items done (${mapped.percent}%)</strong><br><span class="muted">${mapped.open} open${mapped.unresolved ? ` · ${mapped.unresolved} not resolved in the current source` : ""} — from the F-item mapping in planning/roadmaps/id.md</span>`
-            : r.phase <= 10
-              ? `<span class="muted">not derived — this phase's plan has no F-item numbering</span>`
-              : `<span class="muted">not derived — F-item mapping unavailable in the current source</span>`;
+            : `<span class="muted">not derived — F-item mapping unavailable in the current source</span>`;
       return `<tr><th scope="row">Phase ${r.phase}</th><td>${badge}</td><td>${audit}</td><td>${followUps}</td><td>${progressCell}</td></tr>`;
     })
     .join("");
@@ -7924,7 +7977,8 @@ export function queuePanelHtml(snapshot: QueueSnapshot | null): string {
     return `${head}<div class="banner">The queue-broker snapshot is unavailable in the current source, so no queue state is shown \u2014 this panel never renders hand-kept queue values.</div>`;
   }
   const fetchedIso = new Date(snapshot.fetchedAt).toISOString();
-  const sourceLine = `<p class="muted">Source: queue-broker /health + /list (read-only), fetched ${esc(fetchedIso)}.</p>`;
+  const historySource = snapshot.history ? " + /history-since" : "";
+  const sourceLine = `<p class="muted">Source: queue-broker /health + /list${historySource} (read-only), fetched ${esc(fetchedIso)}.</p>`;
   if (!snapshot.available || snapshot.stale) {
     const why = snapshot.errors.length ? ` Last read error: ${esc(snapshot.errors[0])}.` : "";
     return `${head}${sourceLine}<div class="banner">Stale source: this queue snapshot was fetched at ${esc(fetchedIso)}, outside the freshness window \u2014 queue numbers are withheld rather than shown silently old.${why} They refresh on the next successful broker read.</div>`;
@@ -7961,7 +8015,29 @@ export function queuePanelHtml(snapshot: QueueSnapshot | null): string {
   const items = idItems.length
     ? `<h3>Claimed &amp; parked id items (${idItems.length})</h3><table><caption>Claimed &amp; parked id items</caption><thead><tr><th scope="col">Task</th><th scope="col">Issue</th><th scope="col">Status</th><th scope="col">Worker / lane</th><th scope="col">Stage</th></tr></thead><tbody>${itemRows}</tbody></table>`
     : `<h3>Claimed &amp; parked id items</h3><p class="muted">None in the current snapshot.</p>`;
-  return `${head}${sourceLine}${streams}${items}`;
+  const history = snapshot.history;
+  let historyHtml = "";
+  if (history) {
+    if (!history.available) {
+      historyHtml = `<h3>Recent task changes</h3><p class="muted">History feed unavailable at cursor ${history.cursor}: ${esc(history.error ?? "no error detail")}.</p>`;
+    } else if (history.rows.length === 0) {
+      historyHtml = `<h3>Recent task changes</h3><p class="muted">No new transitions after history cursor ${history.cursor}.</p>`;
+    } else {
+      const rows = [...history.rows]
+        .sort((a, b) => b.id - a.id)
+        .slice(0, 20)
+        .map((event) => {
+          const transition = `${event.fromStatus ?? "\u2014"} \u2192 ${event.toStatus ?? event.kind}`;
+          return `<tr><td>${event.id}</td><td>${event.taskId}</td><td>${esc(event.kind)}</td><td>${esc(transition)}</td><td>${esc(event.actor ?? "\u2014")}</td><td>${esc(event.createdAt)}</td></tr>`;
+        })
+        .join("");
+      const more = history.hasMore
+        ? `<p class="muted">More history remains after cursor ${history.cursor}; the next read resumes there.</p>`
+        : "";
+      historyHtml = `<h3>Recent task changes</h3><table><caption>Task history after cursor ${history.cursor}</caption><thead><tr><th scope="col">History id</th><th scope="col">Task</th><th scope="col">Kind</th><th scope="col">Transition</th><th scope="col">Actor</th><th scope="col">At</th></tr></thead><tbody>${rows}</tbody></table>${more}`;
+    }
+  }
+  return `${head}${sourceLine}${streams}${items}${historyHtml}`;
 }
 
 export function renderProgramProject(

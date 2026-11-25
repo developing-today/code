@@ -1,0 +1,13 @@
+[app]
+id = "space-invaders"
+name = "Space Invaders"
+version = "0.1.0"
+description = "A single-player Roc world arcade game."
+
+[program]
+kind = "roc-world"
+source = "program/"
+
+[interfaces.web]
+mode = "adapter"
+route = "/space-invaders"

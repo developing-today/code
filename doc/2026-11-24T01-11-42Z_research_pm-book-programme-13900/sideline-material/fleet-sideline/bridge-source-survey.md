@@ -59,7 +59,7 @@ message-bridge.fleet-token.
 Title: "Bridge: class/name notes, public wake signal, and Archer hook".
 Design (verbatim substance): identities class/name (e.g. muse/archer);
 authenticated senders address one identity or wildcard either segment
-(muse/*, */archer, */*); notes stored server-side in the bridge Durable
+(muse/*, */archer, _/_); notes stored server-side in the bridge Durable
 Object, delivered to every registered identity matching the address;
 GET /<class>/<name> is a public content-free signal returning the same
 bare UUID shape for registered and unregistered paths; registered
@@ -71,18 +71,19 @@ only by hashes; a small bridge helper provides send/inbox/ack; Archer
 gets a Muse hook polling only the public muse/archer signal, comparing
 one UUID to last-seen, waking on change, then fetching + acking inbox.
 Acceptance proof list: worker deployed; muse/archer registered; direct
-+ wildcard notes delivered; signal changed after delivery; hook detects
-change in manual run, dry-run before enabling; inbox fetch+ack verified,
-inbox empty after ack; unregistered path rotates synthetic UUID.
-Privacy properties (issue): no note content, no identity existence
-proof, no differing response shape, decoy rotation for every path;
-tokens never committed/printed/logged.
-Follow-up comment on #13895 by dezren39, 2026-11-24T00:33:27Z, recording
-Drew's direction (~18:29 CST): fleet subcommand family (get/send/
-receive/watch) eventually replaces/reimplements the standalone helper;
-bridge coverage lands in the fleet book; the helper stays minimal;
-"This item is a follow-up for the fleet book / PM-book programme to
-pick up, not work for this issue." -> filed as #13907 by this lane.
+
+- wildcard notes delivered; signal changed after delivery; hook detects
+  change in manual run, dry-run before enabling; inbox fetch+ack verified,
+  inbox empty after ack; unregistered path rotates synthetic UUID.
+  Privacy properties (issue): no note content, no identity existence
+  proof, no differing response shape, decoy rotation for every path;
+  tokens never committed/printed/logged.
+  Follow-up comment on #13895 by dezren39, 2026-11-24T00:33:27Z, recording
+  Drew's direction (~18:29 CST): fleet subcommand family (get/send/
+  receive/watch) eventually replaces/reimplements the standalone helper;
+  bridge coverage lands in the fleet book; the helper stays minimal;
+  "This item is a follow-up for the fleet book / PM-book programme to
+  pick up, not work for this issue." -> filed as #13907 by this lane.
 
 ## Fleet book bridge chapters — audit record
 

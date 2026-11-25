@@ -117,6 +117,13 @@ omitting it leaves such tasks unclaimed. No claimable task is
 `{"task": null}`, exit **5**, with counts (`queued`, `at_cap_queued`,
 `queued_not_yet_due`, `parked_due`) explaining why.
 
+An enqueue may set the task's top-level `manual_only` flag. It defaults to
+false and is persisted on the task row with the enqueue audit event. Automatic
+default and handoff picks always skip flagged tasks, regardless of priority or
+queue depth; an explicit by-ID claim can still take one. The task remains in
+listings with a `(manual-only)` status marker, distinct from parked or blocked
+work. Changes to this flag must be audit logged.
+
 ## Leases and heartbeat
 
 A _lease_ is the claim's expiry. Claim's default lease is **2700 s
@@ -124,9 +131,11 @@ A _lease_ is the claim's expiry. Claim's default lease is **2700 s
 lease is born expired. `fleet agent next` claims with a 14,400 s (4-hour)
 lease instead, because 45 minutes lapses mid-task.
 
-`heartbeat` extends the lease: `lease_until = now + extend_seconds`, default
-extend **900 s (15 minutes)**, range 1..=86400 — note the asymmetry: a
-heartbeat adds 900 s, not a fresh 2700 s, unless told otherwise. It may also
+`heartbeat` keeps the later of the current deadline and the time of the
+heartbeat plus `extend_seconds`. The default renewal window is **900 s
+(15 minutes)**, range 1..=86400. A heartbeat five minutes into a four-hour
+claim preserves the original four-hour deadline. A default heartbeat five
+minutes before expiry moves the deadline ten minutes later. It may also
 merge a progress value (`--progress` / `--progress-file`, mutually
 exclusive). `checkpoint` records progress plus a required `--stage` (the
 help line brackets it optional; the source requires it — missing `--stage`

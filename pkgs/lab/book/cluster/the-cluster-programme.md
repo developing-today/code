@@ -8,7 +8,9 @@ This chapter gives the programme's structure and its current
 state. The design areas have their own chapters:
 [Talos and Cozystack](talos-and-cozystack.md),
 [Storage: LINSTOR and DRBD](storage-linstor-and-drbd.md), and
-[Boot and auto-join](boot-and-auto-join.md).
+[Boot and auto-join](boot-and-auto-join.md). The programme's
+runtime-detection layer is
+[Security: Falco runtime detection](../platform/security-and-falco.md).
 
 ## Structure of record
 
@@ -71,19 +73,20 @@ thorough research and planning, one proven local TALM container
 flow, one live Cloudflare Tunnel on the laptop, and a large
 ticketed programme. Component by component:
 
-| Component | State |
-|---|---|
-| Talos Linux (current programme) | Planned — no node installed; "no node is installed until the TALM bootstrap flow is proven" (status record 2026-10-27). Epic [#1086](https://github.com/developing-today/code/issues/1086) open. |
-| Talos (historical v1.9 test cluster) | Proven, then retired — torn down 2026-10-26. History only. |
-| TALM bootstrap flow | Proven locally (containers); planned on bare metal. See [Talos and Cozystack](talos-and-cozystack.md). |
-| Cozystack | Planned — the platform is **chosen, settled by Drew 2026-11-23**; not yet installed. Install epic [#1087](https://github.com/developing-today/code/issues/1087) is "proposed/Later" in the roadmap. |
-| LINSTOR + DRBD | Planned — design only. See [Storage: LINSTOR and DRBD](storage-linstor-and-drbd.md). |
-| Postgres (CloudNativePG via Cozystack) | Planned — decision recorded in the research brief: use Cozystack's CNPG-based managed Postgres; do not deploy a second operator. |
-| RustFS (S3) | Planned; the RustFS-versus-SeaweedFS decision is with the comparison lane (Drew's current lean: SeaweedFS, 2026-11-23); epic [#1088](https://github.com/developing-today/code/issues/1088). See [Object storage: RustFS and SeaweedFS](../platform/object-storage.md). |
-| Platform services (NATS, FluxCD, Cloudflare tunnel, Tailscale on-cluster) | Planned — the day-one list from the register; epic #1088. |
-| First workload: the ID app on FluxCD | Planned — epic [#1092](https://github.com/developing-today/code/issues/1092). Which app exactly is "the ID app" is still an open question (gap 12). |
-| Observability, backup and recovery | Planned — epic [#1090](https://github.com/developing-today/code/issues/1090), including the power-return boot order. |
-| save-secrets tooling for Talos | Proven fix — [#6554](https://github.com/developing-today/code/issues/6554) closed via PR #8000 (atomic encrypt, fail loudly). |
+| Component                                                                 | State                                                                                                                                                                                                                                                                                                                                      |
+| ------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Talos Linux (current programme)                                           | Planned — no node installed; "no node is installed until the TALM bootstrap flow is proven" (status record 2026-10-27). Epic [#1086](https://github.com/developing-today/code/issues/1086) open.                                                                                                                                           |
+| Talos (historical v1.9 test cluster)                                      | Proven, then retired — torn down 2026-10-26. History only.                                                                                                                                                                                                                                                                                 |
+| TALM bootstrap flow                                                       | Proven locally (containers); planned on bare metal. See [Talos and Cozystack](talos-and-cozystack.md).                                                                                                                                                                                                                                     |
+| Cozystack                                                                 | Planned — the platform is **chosen, settled by Drew 2026-11-23**; not yet installed. Install epic [#1087](https://github.com/developing-today/code/issues/1087) is "proposed/Later" in the roadmap.                                                                                                                                        |
+| LINSTOR + DRBD                                                            | Planned — design only. See [Storage: LINSTOR and DRBD](storage-linstor-and-drbd.md).                                                                                                                                                                                                                                                       |
+| Postgres (CloudNativePG via Cozystack)                                    | Planned — CloudNativePG + streaming replicas (Drew's lean; Cozystack's shipped operator); decision recorded in the research brief: use Cozystack's CNPG-based managed Postgres, do not deploy a second operator. Treatment in [Storage: LINSTOR and DRBD](storage-linstor-and-drbd.md).                                                    |
+| RustFS (S3)                                                               | Planned; the RustFS-versus-SeaweedFS decision landed 2026-11-24: SeaweedFS stays as Cozystack's S3 layer, and RustFS is pilot-only for standalone large-object workloads outside Cozystack; epic [#1088](https://github.com/developing-today/code/issues/1088). See [Object storage: RustFS and SeaweedFS](../platform/object-storage.md). |
+| Runtime detection (Falco)                                                 | Planned — adopted as the design's tripwire layer (Drew, 2026-11-23); not deployed. See [Security: Falco runtime detection](../platform/security-and-falco.md).                                                                                                                                                                             |
+| Platform services (NATS, FluxCD, Cloudflare tunnel, Tailscale on-cluster) | Planned — the day-one list from the register; epic #1088.                                                                                                                                                                                                                                                                                  |
+| First workload: the ID app on FluxCD                                      | Planned — epic [#1092](https://github.com/developing-today/code/issues/1092). Which app exactly is "the ID app" is still an open question (gap 12).                                                                                                                                                                                        |
+| Observability, backup and recovery                                        | Planned — epic [#1090](https://github.com/developing-today/code/issues/1090), including the power-return boot order.                                                                                                                                                                                                                       |
+| save-secrets tooling for Talos                                            | Proven fix — [#6554](https://github.com/developing-today/code/issues/6554) closed via PR #8000 (atomic encrypt, fail loudly).                                                                                                                                                                                                              |
 
 ### The one live artefact
 
@@ -115,7 +118,7 @@ CNPG Postgres plus RustFS provide data services.
   no hand-maintained Dockerfiles. The census read the issue body
   and its closed/done state but did not independently re-verify
   the proof artefacts, and this book cites it as closed-per-record.
-  Containerised build/compile *in the cluster* is planned and
+  Containerised build/compile _in the cluster_ is planned and
   waits on the cluster — see the
   [High-level roadmap](../roadmap/high-level-roadmap.md).
 - **VMs near the lab.**
@@ -155,8 +158,11 @@ CNPG Postgres plus RustFS provide data services.
   [#8408](https://github.com/developing-today/code/issues/8408)
   (open). Direction of record: tunnel or shunt bulk traffic to
   cheap-or-free-egress services, compress aggressively, and only
-  cross the home link with what must. (Budget figures from the
-  record are cost material and are not reproduced in this book.)
+  cross the home link with what must. Falco's unexpected-egress
+  watching is the planned detection side of this strategy — see
+  [Security: Falco runtime detection](../platform/security-and-falco.md).
+  (Budget figures from the record are cost material and are not
+  reproduced in this book.)
 - **boats.dev**, a container-hosting service with a free tier —
   not one of the project's domains, corrected 2026-10-25 — is a
   research item

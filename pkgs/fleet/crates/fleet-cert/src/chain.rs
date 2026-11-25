@@ -18,7 +18,7 @@ use crate::algorithm::AlgorithmId;
 use crate::bundle::sha256_hex;
 use crate::error::{CertError, Result};
 use crate::timeparse::Rfc3339;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use x509_parser::extensions::ParsedExtension;
 use x509_parser::prelude::*;
 
@@ -97,7 +97,7 @@ fn tbs_bytes(der: &[u8]) -> Result<Vec<u8>> {
 }
 
 /// Classify a subject key from its SPKI OID (+ size for RSA).
-fn classify_subject(spki_oid: &str, spki_bytes: &[u8]) -> Option<AlgorithmId> {
+pub(crate) fn classify_subject(spki_oid: &str, spki_bytes: &[u8]) -> Option<AlgorithmId> {
     match spki_oid {
         "1.3.101.112" => Some(AlgorithmId::Ed25519),
         "1.2.840.10045.2.1" => Some(AlgorithmId::P256),
@@ -243,7 +243,7 @@ impl TrustSelection {
 }
 
 /// One named check in a validation report.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Check {
     pub name: String,
     pub ok: bool,

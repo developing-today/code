@@ -25,6 +25,7 @@ use crate::{
     is_node_id, load_or_create_keypair,
 };
 
+mod announce;
 mod journal;
 mod owner;
 mod scaffold;
@@ -1035,6 +1036,8 @@ pub async fn cmd_world(command: WorldCommand) -> Result<()> {
             JournalCommand::Check { dir, json } => print_journal_check(&dir, json),
             JournalCommand::Backup { dir, out } => journal_backup(&dir, &out),
         },
+        WorldCommand::Announce(args) => announce::announce(args).await,
+        WorldCommand::Lookup(args) => announce::lookup(args).await,
     }
 }
 
@@ -1875,6 +1878,7 @@ fn render_view_frame(
         id_worlds::world_presentation::WorldSurface::Scene(_) => None,
         id_worlds::world_presentation::WorldSurface::Audio(_) => None,
         id_worlds::world_presentation::WorldSurface::Widget(_) => None,
+        id_worlds::world_presentation::WorldSurface::Media(_) => None,
     }
 }
 
@@ -2587,7 +2591,7 @@ mod tests {
         .join("\n");
         assert_eq!(
             check_contract(&good).unwrap(),
-            "6 frames conform to shell contract v1.15"
+            "6 frames conform to shell contract v1.16"
         );
         let bad = [
             r#"{"from": "client", "frame": {"type": "chat", "text": "too early"}}"#,

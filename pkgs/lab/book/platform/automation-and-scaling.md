@@ -20,7 +20,7 @@ dispatch: jobs spill across GitHub-hosted runners, Blacksmith,
 Codespaces, and Actions-exec ephemeral sessions that are
 created, handed off, renewed and closed programmatically (see
 [GitHub Actions](github-actions.md) and
-[Build-server alternatives](build-servers.md)). That *is*
+[Build-server alternatives](build-servers.md)). That _is_
 automated scale-up and scale-down of build capacity, with the
 queue as the scaler. The laptop joins as a placement surface,
 and a lab-integration draft (P9) would add cluster nodes as
@@ -61,8 +61,15 @@ candidate for when a cluster exists. No HPA, KEDA or Karpenter
 configuration exists anywhere in the estate, because no cluster
 exists yet. One neighbouring design must not be conflated with
 this: the ID currency-autoscaling design (#5825) is
-*application-level* scaling design — a stateless front end and
+_application-level_ scaling design — a stateless front end and
 its scaling triggers — not infrastructure autoscaling.
+
+## Detection feeds — planned
+
+Falco's runtime detections are planned to feed this automation
+layer as their consumer: the tripwire's alerts become automation
+inputs (see [Security: Falco runtime detection](security-and-falco.md)).
+No wiring exists; this is planned only.
 
 ## Gaps
 

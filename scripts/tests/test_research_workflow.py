@@ -201,6 +201,95 @@ class ResearchWorkflowTests(unittest.TestCase):
             if path.is_file()
         }
 
+    def standalone(self):
+        package = (
+            self.root / "docs/requests/2026-11-23T22-00-25Z_research_roc-ecosystem"
+        )
+        package.mkdir()
+        (package / f"{package.name}.md").write_text(
+            "# Standalone research\n\nNot a managed workflow package.\n",
+            encoding="utf-8",
+        )
+        return package
+
+    def test_unscoped_check_skips_standalone_research_but_checks_managed_package(self):
+        """Oracle: CLI inventory contains only the initialized managed package."""
+        managed = self.init()
+        standalone = self.standalone()
+        (standalone / "overview.md").write_text("# Overview\n", encoding="utf-8")
+        before = self.snapshot()
+        result = self.cli("check", "--repo-root", self.root)
+        self.assertEqual(
+            [p["package"] for p in json.loads(result.stdout)["packages"]],
+            [str(managed)],
+        )
+        self.assertEqual(self.snapshot(), before)
+
+    def test_unscoped_check_still_rejects_managed_package_missing_main(self):
+        """Oracle: a retained transcript prevents treating a broken package as standalone."""
+        package = self.init()
+        (package / "main.md").unlink()
+        (package / f"{package.name}.md").write_text("# Research\n", encoding="utf-8")
+        result = self.cli("check", "--repo-root", self.root, ok=False)
+        self.assertIn("main.md", result.stderr)
+
+    def test_unscoped_check_keeps_state_based_discovery_for_nonstandard_names(self):
+        """Oracle: valid workflow state discovers a package regardless of directory name."""
+        package = self.init()
+        renamed = package.with_name("nonstandard-package")
+        package.rename(renamed)
+        state = self.state(renamed)
+        state["id"] = renamed.name
+        self.write_state(renamed, state)
+        result = self.cli("check", "--repo-root", self.root)
+        self.assertEqual(
+            [p["package"] for p in json.loads(result.stdout)["packages"]],
+            [str(renamed)],
+        )
+
+    def test_explicit_standalone_selection_still_rejects_missing_workflow(self):
+        """Oracle: explicit package validation still requires main.md and workflow state."""
+        result = self.check(self.standalone(), ok=False)
+        self.assertIn("main.md", result.stderr)
+
+    def test_unscoped_check_does_not_skip_named_directories_without_exact_record(self):
+        """Oracle: matching directory names remain candidates without a positive standalone record."""
+        package = self.standalone()
+        (package / f"{package.name}.md").rename(package / "other.md")
+        result = self.cli("check", "--repo-root", self.root, ok=False)
+        self.assertIn("main.md", result.stderr)
+
+    def test_unscoped_check_rejects_standalone_lookalikes_with_managed_artifacts(self):
+        """Oracle: every reserved workflow artifact preserves strict package validation."""
+        package = self.standalone()
+        for artifact in (
+            "main.md",
+            "transcript.txt",
+            "design.md",
+            "changes.md",
+            "concepts",
+            "notes",
+        ):
+            with self.subTest(artifact=artifact):
+                path = package / artifact
+                if artifact in ("concepts", "notes"):
+                    path.mkdir()
+                else:
+                    path.write_text("# Incomplete workflow\n", encoding="utf-8")
+                self.cli("check", "--repo-root", self.root, ok=False)
+                if path.is_dir():
+                    path.rmdir()
+                else:
+                    path.unlink()
+
+    def test_unscoped_check_does_not_skip_record_with_workflow_state(self):
+        """Oracle: workflow state in the record disqualifies the standalone exemption."""
+        package = self.standalone()
+        (package / f"{package.name}.md").write_text(
+            f"# Research\n{STATE_START}\n{{}}\n{STATE_END}\n", encoding="utf-8"
+        )
+        self.cli("check", "--repo-root", self.root, ok=False)
+
     def create_note(self, package):
         body = self.scratch / "cross-agent-note.txt"
         body.write_bytes(b"Keep the original sender's evidence intact.\n")

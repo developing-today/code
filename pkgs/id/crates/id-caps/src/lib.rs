@@ -11,10 +11,14 @@
 //! This crate depends on `id-core` for [`id_core::json_unique`] only;
 //! the dependency points one way — `id-core` never names this crate.
 
+pub mod account_quota;
 pub mod agent_delegation;
+pub mod agent_majority;
+pub mod agent_quota_ledger;
 pub mod cap_baseline;
 pub mod cap_class;
 pub mod cap_diff;
+pub mod cap_notice;
 pub mod declaration;
 pub mod http_fetch_url;
 pub mod library_attach;
@@ -23,8 +27,15 @@ pub mod library_manifest;
 pub mod library_resolution;
 pub mod mcp_bridge;
 pub mod mcp_policy;
+pub mod owner_review;
 pub mod portal;
+pub mod role_config;
+pub mod shared_review;
+pub mod surface_host;
+pub mod task_delegation;
 pub mod used_caps;
+pub mod work_surfaces;
+pub mod world_agents;
 pub mod world_caps;
 pub mod world_limits;
 pub mod world_manifest;

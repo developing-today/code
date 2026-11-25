@@ -1428,11 +1428,11 @@ mod tests {
     /// not store (Codex finding on PR 2214: the tally had a voided count the outcome dropped).
     ///
     /// The shape matters. An event above its author's fork point that arrives *after* the
-    /// fork is refused as frozen (`ingest.rs`, "Known limit: a rival refused as frozen"), so
-    /// it is counted as refused, and the voided count stays zero: voided labels an event the
-    /// store keeps without applying, not an arrival it turns away.
+    /// fork is kept as voided evidence (#12050; `ingest.rs`, "Events above a fork point are
+    /// kept as evidence"), so it is counted as voided, and the refused count stays zero:
+    /// voided labels an event the store keeps without applying.
     #[tokio::test(flavor = "multi_thread")]
-    async fn test_a_range_session_counts_frozen_arrivals_as_refused() {
+    async fn test_a_range_session_counts_post_fork_arrivals_as_voided() {
         let (_da, mut a) = open();
         let (_db, mut b) = open();
         let events = chain_of(1, 5, b"x");
@@ -1476,16 +1476,21 @@ mod tests {
         assert_eq!(da.sent, 2, "events 4 and 5 are missing on B's side");
         assert_eq!(
             db.received, 2,
-            "both above the fork point are received and turned away: {db:?}"
+            "both above the fork point are received and kept: {db:?}"
         );
         assert_eq!(
-            db.refused, 2,
-            "events 4 and 5 arrive above the fork point, so they are frozen: {db:?}"
+            db.refused, 0,
+            "no arrival is refused: the fork no longer turns its later events away: {db:?}"
         );
-        assert_eq!(db.accepted, 0, "a frozen arrival is not accepted: {db:?}");
+        assert_eq!(db.accepted, 0, "a post-fork arrival is not applied: {db:?}");
         assert_eq!(
-            db.voided, 0,
-            "voided counts stored-but-unapplied events, not refused arrivals: {db:?}"
+            db.voided, 2,
+            "events 4 and 5 arrive above the fork point, so they are kept as voided evidence: {db:?}"
+        );
+        assert!(
+            b.event_by_id(&events[3].id).unwrap().is_some()
+                && !b.event_applied(&events[3].id).unwrap(),
+            "the kept arrival is present on B but does not apply"
         );
     }
 
@@ -1494,9 +1499,9 @@ mod tests {
     /// that names a voided group operation in its `after` set: the membership
     /// layer voids an event that names a voided event when its author is not a
     /// member of the group at that position (resolve rule 3), so the receiver
-    /// keeps the event without applying it. This is the stored-but-unapplied
-    /// shape the frozen-arrival test above cannot reach: a frozen arrival is
-    /// turned away, while this one is kept.
+    /// keeps the event without applying it. This is a second stored-but-unapplied
+    /// shape, beside the post-fork one above: there the fork voids the arrival,
+    /// here the membership layer does.
     #[tokio::test(flavor = "multi_thread")]
     async fn test_a_range_session_counts_a_stored_but_unapplied_arrival_as_voided() {
         use id_core::membership::AuthId;

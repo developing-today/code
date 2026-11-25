@@ -10,11 +10,23 @@
 // developing-today/zettel, dezren39/dezren39) before reaching here.
 //
 // Fallback: if the app route is unusable (no app credentials in env, or
-// the installation/token call fails), use the laptop's authenticated
-// `gh` CLI. Either way failures surface as GitHubError with both routes'
-// errors summarized — issue creation is never silently skipped.
+// the installation/token call fails), use the fleet gh sync verbs
+// (code#10973, step 2.2 of #9016) on the laptop's packaged fleet
+// binary, over the fleet token rotation. Either way failures surface
+// as GitHubError with both routes' errors summarized — issue creation
+// is never silently skipped.
 import { createSign } from "node:crypto";
+import { join } from "node:path";
 import { OUTBOUND_FETCH_TIMEOUT_MS, isTimeoutAbort, outboundTimeout } from "./fetchTimeout.ts";
+import { requireHome } from "./home.ts";
+
+/** The packaged fleet binary the fallback's sync verbs run through:
+ * PM_DISPATCH_FLEET_BIN overrides; the default is the packaged
+ * location the opencode claimant also uses (~/.local/bin/fleet). Resolved
+ * at spawn time, so a missing HOME fails only the fallback that needs it
+ * (#8220). */
+const fleetBin = (): string =>
+  process.env.PM_DISPATCH_FLEET_BIN ?? join(requireHome("PM_DISPATCH_FLEET_BIN"), ".local", "bin", "fleet");
 
 const GH_API = "https://api.github.com";
 
@@ -204,7 +216,47 @@ export class GitHubClient {
     return token;
   }
 
-  // --- gh CLI fallback -------------------------------------------------------
+  // --- fleet gh sync-verb fallback -------------------------------------------
+  //
+  // Every fallback call runs one typed sync verb (code#10973) instead
+  // of composing raw gh arguments here: the verb validates its whole
+  // command line and rewrites to the canonical gh call over the fleet
+  // token rotation, and its stdout is the underlying call's stdout,
+  // byte-exact, so the parsers below keep their shapes.
+
+  private async fleetGh(args: string[], timeoutMs = GH_SUBPROCESS_TIMEOUT_MS): Promise<string> {
+    let proc;
+    try {
+      proc = Bun.spawn([fleetBin(), "gh", ...args], {
+        stdin: "ignore",
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+    } catch (e) {
+      throw new GitHubError(`fleet gh ${args[0]} failed to start: ${e instanceof Error ? e.message : String(e)}`);
+    }
+    // The fetch routes are bounded (#10825) and so is the direct-gh
+    // fallback below: a subprocess parked on API rate-limit retries
+    // must never hold the launch handler open indefinitely (#6992).
+    // The fleet path carries the same bound.
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const deadline = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => {
+        proc.kill();
+        reject(new GitHubError(`fleet gh ${args[0]} timed out after ${timeoutMs} ms — killed`));
+      }, timeoutMs);
+    });
+    try {
+      const [out, err, code] = await Promise.race([
+        Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited]),
+        deadline,
+      ]);
+      if (code !== 0) throw new GitHubError(`fleet gh ${args[0]} failed: ${err.trim().slice(0, 200)}`);
+      return out;
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
+    }
+  }
 
   private async gh(args: string[], input?: string, timeoutMs = GH_SUBPROCESS_TIMEOUT_MS): Promise<string> {
     const proc = Bun.spawn([this.ghBinary, ...args], {
@@ -251,20 +303,19 @@ export class GitHubClient {
         });
       }
     } catch {
-      // gh fallback for label creation is best-effort: `gh issue create
-      // --label` fails on a missing label, so create it there too.
+      // The verb fallback for label creation is best-effort: issue
+      // create with a missing label fails, so ensure it there too.
       try {
-        await this.gh([
-          "label",
-          "create",
-          label,
+        await this.fleetGh([
+          "sync-label-ensure",
           "--repo",
           repo,
+          "--label",
+          label,
           "--color",
           def.color,
           "--description",
           def.description,
-          "--force",
         ]);
       } catch {
         /* label may already exist — the create call below will say so */
@@ -317,13 +368,13 @@ export class GitHubClient {
         // POST may already have created the issue server-side, so a gh
         // create would file a duplicate tracking issue (#7101).
         if (e instanceof MalformedCreateBodyError || e instanceof AmbiguousCreateError) throw e;
-        // Fall through to gh with the app error preserved in the message
-        // if gh fails too.
+        // Fall through to the fleet gh verb with the app error
+        // preserved in the message if the verb fails too.
         try {
           return await this.createIssueViaGh(repo, title, body, labels);
         } catch (ghErr) {
           throw new GitHubError(
-            `issue create failed via app (${e instanceof Error ? e.message : String(e)}) and via gh (${ghErr instanceof Error ? ghErr.message : String(ghErr)})`,
+            `issue create failed via app (${e instanceof Error ? e.message : String(e)}) and via fleet gh (${ghErr instanceof Error ? ghErr.message : String(ghErr)})`,
           );
         }
       }
@@ -337,12 +388,12 @@ export class GitHubClient {
     body: string,
     labels: string[],
   ): Promise<{ number: number; url: string }> {
-    const args = ["issue", "create", "--repo", repo, "--title", title, "--body", body];
+    const args = ["sync-issue-create", "--repo", repo, "--title", title, "--body", body];
     for (const l of labels) args.push("--label", l);
-    const out = await this.gh(args);
+    const out = await this.fleetGh(args);
     const url = out.trim().split("\n").pop()!.trim();
     const m = /\/issues\/(\d+)$/.exec(url);
-    if (!m) throw new GitHubError(`gh issue create returned an unparseable URL: ${url.slice(0, 120)}`);
+    if (!m) throw new GitHubError(`fleet gh sync-issue-create returned an unparseable URL: ${url.slice(0, 120)}`);
     return { number: Number(m[1]), url };
   }
 
@@ -371,12 +422,12 @@ export class GitHubClient {
         };
       } catch (e) {
         appError = e;
-        /* fall through to gh, mirroring createIssue */
+        /* fall through to the fleet gh verb, mirroring createIssue */
       }
     }
     try {
-      const out = await this.gh(["api", `repos/${repo}/issues/${issueNumber}`]);
-      const endpoint = `gh api repos/${repo}/issues/${issueNumber}`;
+      const out = await this.fleetGh(["sync-issue-get", "--repo", repo, String(issueNumber)]);
+      const endpoint = `fleet gh sync-issue-get repos/${repo}/issues/${issueNumber}`;
       let parsed: unknown;
       try {
         parsed = JSON.parse(out);
@@ -395,7 +446,7 @@ export class GitHubClient {
       if (isNotFoundError(msg)) return null;
       if (appError) {
         throw new GitHubError(
-          `issue lookup failed via app (${appError instanceof Error ? appError.message : String(appError)}) and via gh (${msg})`,
+          `issue lookup failed via app (${appError instanceof Error ? appError.message : String(appError)}) and via fleet gh (${msg})`,
         );
       }
       throw e;
@@ -411,10 +462,16 @@ export class GitHubClient {
         if (!res.ok) throw new GitHubError(`add labels failed (HTTP ${res.status})`);
         return;
       } catch {
-        /* fall through to gh */
+        /* fall through to the fleet gh verb */
       }
     }
-    await this.gh(["issue", "edit", String(issueNumber), "--repo", repo, ...labels.flatMap((l) => ["--add-label", l])]);
+    await this.fleetGh([
+      "sync-labels-add",
+      "--repo",
+      repo,
+      String(issueNumber),
+      ...labels.flatMap((l) => ["--label", l]),
+    ]);
   }
 
   /**
@@ -439,17 +496,23 @@ export class GitHubClient {
         if (!res.ok) throw new GitHubError(`issue close failed (HTTP ${res.status})`);
         return;
       } catch {
-        /* fall through to gh */
+        /* fall through to the fleet gh verb */
       }
     }
-    await this.gh([
-      "issue",
-      "close",
-      String(issueNumber),
+    // Through the verb the close speaks the fleet closure taxonomy
+    // (#9221): not_planned closes as `cancelled`, completed as
+    // `implemented`, and the close carries the closure reason
+    // comment + record. GitHub's own state_reason granularity is
+    // not preserved; every live caller closes with not_planned, to
+    // compensate a dispatch-created tracking issue whose launch
+    // failed (launch_failure.ts).
+    await this.fleetGh([
+      "sync-issue-close",
       "--repo",
       repo,
+      String(issueNumber),
       "--reason",
-      stateReason === "not_planned" ? "not planned" : "completed",
+      stateReason === "not_planned" ? "cancelled" : "implemented",
     ]);
   }
 
@@ -461,9 +524,9 @@ export class GitHubClient {
         if (!res.ok) throw new GitHubError(`issue comment failed (HTTP ${res.status})`);
         return;
       } catch {
-        /* fall through to gh */
+        /* fall through to the fleet gh verb */
       }
     }
-    await this.gh(["issue", "comment", String(issueNumber), "--repo", repo, "--body", body]);
+    await this.fleetGh(["sync-comment", "--repo", repo, "issue", String(issueNumber), "--body", body]);
   }
 }

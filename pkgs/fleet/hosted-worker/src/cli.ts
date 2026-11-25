@@ -60,6 +60,9 @@
 //   fleet-hosted claim [--worker <id>] [--lane <lane>]
 //                             [--queue <name>] [--count <1..5>]
 //                             [--task-id <n>] [--session-id <id>]
+//   fleet-hosted backfill [--repo <owner/name>]...
+//   fleet-hosted backfill runs
+//   fleet-hosted divergence [--repo <owner/name>]...
 //   fleet-hosted sync project --owner <login> --project <number>
 //                             [--add-issue <owner/repo#n>
 //                              [--add-status <Status>]
@@ -74,6 +77,8 @@
 // Service URL and token come from the caller's environment / stored
 // state (see the package-root cli.ts), never from verb flags.
 
+import { parseBackfillRunsArgs, parseRepoScopeArgs } from "./backfill-cli.ts";
+import { requireHome } from "./home.ts";
 import { FailClosed } from "./errors.ts";
 import { parseMetadataBlock, renderBodyWithBlock } from "./metadata.ts";
 import { parseQueryCliArgs, renderQueryResponse } from "./query-cli.ts";
@@ -88,11 +93,7 @@ import {
 } from "./session-resolution.ts";
 import { isValidSessionId } from "./sessions.ts";
 import type { FlowSyncResponse, ProjectSyncResponse } from "./sync.ts";
-import {
-  parseFlowSyncCliArgs,
-  parseProjectSyncCliArgs,
-  renderSyncResponse,
-} from "./sync-cli.ts";
+import { parseFlowSyncCliArgs, parseProjectSyncCliArgs, renderSyncResponse } from "./sync-cli.ts";
 
 export const TOKEN_ENV = "FLEET_HOSTED_TOKEN";
 export const WORKER_ENV = "FLEET_WORKER";
@@ -136,11 +137,19 @@ export function resolveCallerToken(sources: {
   env: (name: string) => string | null | undefined;
   stored?: string | null;
 }): string | null {
-  return (
-    nonempty(sources.explicit) ??
-    nonempty(sources.env(TOKEN_ENV)) ??
-    nonempty(sources.stored ?? null)
-  );
+  return nonempty(sources.explicit) ?? nonempty(sources.env(TOKEN_ENV)) ?? nonempty(sources.stored ?? null);
+}
+
+/** The caller token file: FLEET_HOSTED_TOKEN_FILE when set, else the
+ *  default under HOME — resolved through the #5762 home-resolution
+ *  contract (#14757): an unset or empty HOME is a named
+ *  HomeUnresolvedError, never the passwd fallback os.homedir() would
+ *  silently substitute. The override never needs HOME. */
+export function callerTokenFile(env: Record<string, string | undefined>): string {
+  const override = env["FLEET_HOSTED_TOKEN_FILE"];
+  if (override !== undefined) return override;
+  const home = requireHome("FLEET_HOSTED_TOKEN_FILE", env).replace(/\/+$/, "");
+  return `${home}/.config/fleet-hosted/token`;
 }
 
 function usage(message: string): FailClosed {
@@ -169,6 +178,21 @@ class ServiceClient {
   constructor(private deps: CliDeps) {}
 
   async post(path: string, body: Record<string, unknown>): Promise<Record<string, unknown>> {
+    return this.call("POST", path, body);
+  }
+
+  /** The GET twin of post (the backfill run record is the one
+   * door document a verb reads rather than writes): same token
+   * carriage, same refusal idiom. */
+  async get(path: string): Promise<Record<string, unknown>> {
+    return this.call("GET", path, undefined);
+  }
+
+  private async call(
+    method: "GET" | "POST",
+    path: string,
+    body: Record<string, unknown> | undefined,
+  ): Promise<Record<string, unknown>> {
     const token = this.deps.token;
     if (token === null) {
       throw new FailClosed(
@@ -181,12 +205,12 @@ class ServiceClient {
     try {
       res = await this.deps.fetch(
         new Request(`${this.deps.serviceUrl}${path}`, {
-          method: "POST",
+          method,
           headers: {
             authorization: `Bearer ${token}`,
-            "content-type": "application/json",
+            ...(body !== undefined ? { "content-type": "application/json" } : {}),
           },
-          body: JSON.stringify(body),
+          ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
         }),
       );
     } catch (e) {
@@ -200,10 +224,18 @@ class ServiceClient {
     try {
       doc = await res.json();
     } catch {
-      throw new FailClosed(502, "service_unreachable", `fleet-hosted service answered HTTP ${res.status} with a non-JSON body`);
+      throw new FailClosed(
+        502,
+        "service_unreachable",
+        `fleet-hosted service answered HTTP ${res.status} with a non-JSON body`,
+      );
     }
     if (typeof doc !== "object" || doc === null || Array.isArray(doc)) {
-      throw new FailClosed(502, "service_unreachable", `fleet-hosted service answered HTTP ${res.status} with a non-object body`);
+      throw new FailClosed(
+        502,
+        "service_unreachable",
+        `fleet-hosted service answered HTTP ${res.status} with a non-object body`,
+      );
     }
     const record = doc as Record<string, unknown>;
     if (!res.ok) {
@@ -224,11 +256,7 @@ class ServiceClient {
  * stale error — not a silent fallback — is what a dead stored id
  * produces. Returns null when no level supplies a session (an
  * uncited call, which the doors accept where the design does). */
-async function carriedSessionId(
-  deps: CliDeps,
-  client: ServiceClient,
-  explicit: string | null,
-): Promise<string | null> {
+async function carriedSessionId(deps: CliDeps, client: ServiceClient, explicit: string | null): Promise<string | null> {
   const env = deps.env;
   const supplied =
     nonempty(explicit) !== null ||
@@ -263,10 +291,7 @@ async function carriedSessionId(
  * liveness demand — the registry's own answer (200, or 409 when
  * already closed) is the authority on the session's state. */
 function closableSessionId(deps: CliDeps, explicit: string | null): string | null {
-  const resolution = resolveSessionId(
-    { explicit, env: deps.env, stored: deps.store.read() },
-    () => true,
-  );
+  const resolution = resolveSessionId({ explicit, env: deps.env, stored: deps.store.read() }, () => true);
   return resolution.kind === "session" ? resolution.sessionId : null;
 }
 
@@ -694,6 +719,32 @@ async function verbNext(deps: CliDeps, client: ServiceClient, argv: string[]): P
   return { exitCode, stdout: renderJson({ claim, intake }), stderr: "" };
 }
 
+// --- Backfill verbs (#14312) -------------------------------------------
+
+/** The scope body the operator routes accept: named repos, or an
+ * empty document for the deployment's configured scope (the
+ * routes' own fallback — the CLI asserts no scope of its own). */
+function scopeBody(repos: string[]): Record<string, unknown> {
+  return repos.length > 0 ? { repos } : {};
+}
+
+async function verbBackfill(client: ServiceClient, argv: string[]): Promise<CliOutcome> {
+  if (argv[0] === "runs") {
+    parseBackfillRunsArgs(argv.slice(1));
+    const doc = await client.get("/v1/ingestion/backfill/runs");
+    return { exitCode: 0, stdout: renderJson(doc), stderr: "" };
+  }
+  const repos = parseRepoScopeArgs(argv, "backfill");
+  const record = await client.post("/v1/ingestion/backfill", scopeBody(repos));
+  return { exitCode: 0, stdout: renderJson(record), stderr: "" };
+}
+
+async function verbDivergence(client: ServiceClient, argv: string[]): Promise<CliOutcome> {
+  const repos = parseRepoScopeArgs(argv, "divergence");
+  const report = await client.post("/v1/ingestion/divergence", scopeBody(repos));
+  return { exitCode: 0, stdout: renderJson(report), stderr: "" };
+}
+
 // --- Sync verbs ---------------------------------------------------------
 
 async function verbSync(client: ServiceClient, argv: string[]): Promise<CliOutcome> {
@@ -719,6 +770,8 @@ const USAGE = [
   "  create issue|pr — stamped create through the service",
   "  query — Metadata query (JSON first)",
   "  next | claim — work intake through the queue door",
+  "  backfill [runs] — recorded Metadata backfill through the ingestion door",
+  "  divergence — body-vs-DB divergence report through the ingestion door",
   "  sync project|flow — sync verbs through the sync door",
   "the full command line is declared in src/cli.ts (#3352)",
 ].join("\n");
@@ -746,6 +799,10 @@ export async function runCli(argv: string[], deps: CliDeps): Promise<CliOutcome>
         return await verbNext(deps, client, rest);
       case "claim":
         return await verbClaim(deps, client, rest);
+      case "backfill":
+        return await verbBackfill(client, rest);
+      case "divergence":
+        return await verbDivergence(client, rest);
       case "sync":
         return await verbSync(client, rest);
       case undefined:

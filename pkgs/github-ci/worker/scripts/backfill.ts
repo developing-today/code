@@ -7,11 +7,16 @@
  *   1. List every issue and PR (all states) from the REST API. The
  *      issues list also carries each PR's comment count, which the
  *      pulls list omits — the two are joined on number.
- *   2. Diff against the stored rows on (gh_updated_at, body_hash).
- *      Changed or missing items are re-upserted through the SAME
- *      statement builders the webhook paths use, so every guard
- *      (tombstone, version, comment-count versioning) applies
- *      identically. Unchanged items are not rewritten.
+ *   2. Diff against the stored rows on (gh_updated_at, body_hash,
+ *      comments, parent). Changed or missing items are re-upserted
+ *      through the SAME statement builders the webhook paths use, so
+ *      every guard (tombstone, version, comment-count versioning)
+ *      applies identically. Unchanged items are not rewritten. For
+ *      items that already had a stored row, the diff also produces
+ *      the #14170 Q7 history rows (body edits, count deltas, parent
+ *      changes) a missed webhook would have written — actor
+ *      "backfill" — flushed fail-open after the snapshots: a failed
+ *      history write never fails the sweep.
  *   3. Stored numbers the API no longer returns are tombstoned and
  *      deleted (GitHub deletes are the one event class a missed
  *      webhook can never replay).
@@ -41,11 +46,20 @@ import {
   commentTouchStmts,
   forceCommentsStmt,
   ensureMirrorSchema,
+  historyInsertStmt,
   isAgentNote,
+  labelStartStmt,
+  labelHistoryInsertStmt,
+  snapshotLabelHistory,
   issueUpsertStmt,
   mirrorSweepBatch,
+  parentOf,
   prUpsertStmt,
+  snapshotHistory,
   tombstoneDeleteStmts,
+  type IssueRow,
+  type PrRow,
+  type StoredMirrorRow,
 } from "../src/mirror";
 import { FLEET_REPOS } from "../src/policy";
 import { queueNow, type SinkEnv } from "../src/sink";
@@ -175,12 +189,22 @@ interface StoredRow {
   comments: number;
   commentsGhUpdatedAt: string | null;
   agentNoteId: number | null;
+  /** The sub-issue parent projection; issues table only (null for PRs). */
+  parentNumber: number | null;
+  /** The stored label set as JSON text (#14170 Q5). */
+  labels: string | null;
 }
 
-const storedRows = async (q: Turso, table: string, repo: string): Promise<Map<number, StoredRow>> => {
+const storedRows = async (
+  q: Turso,
+  table: string,
+  repo: string,
+  withParent = false,
+): Promise<Map<number, StoredRow>> => {
   const r = await retry(`read ${table}`, () =>
     q.execute(
-      `SELECT number, gh_updated_at, body_hash, comments, comments_gh_updated_at, latest_agent_note_id
+      `SELECT number, gh_updated_at, body_hash, comments, comments_gh_updated_at, latest_agent_note_id,
+              ${withParent ? "parent_number" : "NULL"}, labels
          FROM ${table} WHERE repo = ?`,
       [{ type: "text", value: repo }],
     ),
@@ -199,6 +223,8 @@ const storedRows = async (q: Turso, table: string, repo: string): Promise<Map<nu
       comments: Number(cell(3) ?? 0) || 0,
       commentsGhUpdatedAt: cell(4),
       agentNoteId: cell(5) === null ? null : Number(cell(5)),
+      parentNumber: cell(6) === null ? null : Number(cell(6)),
+      labels: cell(7),
     });
   }
   return map;
@@ -216,6 +242,10 @@ interface RepoSummary {
   pointers_failed: number;
   counts_forced: number;
   counts_repair_failed: number;
+  history_rows: number;
+  history_failed: number;
+  /** #14170 Q5 label-diff rows written (start rows are set-based and not counted). */
+  label_history_rows: number;
   incomplete?: boolean;
   vanished_skipped_live: number;
   unchanged: number;
@@ -236,6 +266,9 @@ const sweepRepo = async (repo: string): Promise<RepoSummary> => {
     pointers_failed: 0,
     counts_forced: 0,
     counts_repair_failed: 0,
+    history_rows: 0,
+    history_failed: 0,
+    label_history_rows: 0,
     unchanged: 0,
   };
   const q = new Turso(env.TURSO_QUEUE_URL, env.TURSO_QUEUE_TOKEN);
@@ -248,7 +281,7 @@ const sweepRepo = async (repo: string): Promise<RepoSummary> => {
     commentsByNumber.set(Number(item.number), Number(item.comments ?? 0) || 0);
   }
   const pureIssues = issueList.filter((i) => !i.pull_request);
-  const storedIssues = await storedRows(q, "github_mirror_issues", repo);
+  const storedIssues = await storedRows(q, "github_mirror_issues", repo, true);
   const storedPrs = await storedRows(q, "github_mirror_pull_requests", repo);
   summary.issues_seen = pureIssues.length;
   summary.prs_seen = pullList.length;
@@ -258,6 +291,10 @@ const sweepRepo = async (repo: string): Promise<RepoSummary> => {
     isPr: boolean;
     item: Obj;
     stmt: { sql: string; args?: import("../src/turso").TursoArg[] };
+    /** Q7 history rows this item's diff implies (empty on first sight). */
+    history: { sql: string; args?: import("../src/turso").TursoArg[] }[];
+    /** Q5 label-diff rows (empty on first sight; start rows are set-based). */
+    labelHistory: { sql: string; args?: import("../src/turso").TursoArg[] }[];
   }
   interface CountRepair {
     number: number;
@@ -271,18 +308,25 @@ const sweepRepo = async (repo: string): Promise<RepoSummary> => {
     const number = Number(item.number);
     const prev = stored.get(number);
     const hash = await bodyHashOf(item);
-    // The diff key is (gh_updated_at, body_hash, comments): the count
-    // must be in the key because a comment does not move a PR's
-    // updated_at, and a count written wrong under a newer version
-    // stamp is invisible to the other two fields.
+    // The diff key is (gh_updated_at, body_hash, comments, parent):
+    // the count must be in the key because a comment does not move
+    // a PR's updated_at, and a count written wrong under a newer
+    // version stamp is invisible to the other two fields; the
+    // parent (issues only, #14170 Q7) is in the key because a
+    // re-parenting can be an issue's only change, and the first
+    // sweep after Q7 must populate the projection on rows whose
+    // parent was never observed.
     const apiComments = isPr
       ? (commentsByNumber.get(number) ?? Number(item.comments ?? 0))
       : Number(item.comments ?? 0);
+    const parent = isPr ? { known: false, parent: null } : parentOf(item);
+    const parentMoved = !!prev && parent.known && prev.parentNumber !== parent.parent;
     if (
       prev &&
       prev.ghUpdatedAt === String(item.updated_at ?? "") &&
       prev.bodyHash === hash &&
-      prev.comments === apiComments
+      prev.comments === apiComments &&
+      !parentMoved
     ) {
       summary.unchanged++;
       return;
@@ -294,6 +338,8 @@ const sweepRepo = async (repo: string): Promise<RepoSummary> => {
         guardVersion: prev.commentsGhUpdatedAt,
       });
     }
+    let row: IssueRow | PrRow;
+    let stmt: Pending["stmt"];
     if (isPr) {
       // Join the comment count from the issues-list object and keep
       // THAT object's updated_at as the count's version: the two
@@ -306,20 +352,37 @@ const sweepRepo = async (repo: string): Promise<RepoSummary> => {
         comments: commentsByNumber.get(number) ?? Number(item.comments ?? 0),
         comments_updated_at: issueObj ? String(issueObj.updated_at ?? "") : undefined,
       };
-      pending.push({
-        number,
-        isPr,
-        item,
-        stmt: prUpsertStmt(buildPrRow({ pull_request: withComments }, repo, hash)),
-      });
+      row = buildPrRow({ pull_request: withComments }, repo, hash);
+      stmt = prUpsertStmt(row as PrRow);
     } else {
-      pending.push({
-        number,
-        isPr,
-        item,
-        stmt: issueUpsertStmt(buildIssueRow({ issue: item }, repo, hash)),
-      });
+      row = buildIssueRow({ issue: item }, repo, hash);
+      stmt = issueUpsertStmt(row);
     }
+    // Q7 history for the changes this upsert lands, diffed against
+    // the stored row exactly as the webhook path diffs (the shared
+    // snapshotHistory applies the same acceptance rules, so a sweep
+    // item the upsert's guards would refuse yields no rows). First
+    // sights (no prev) write none.
+    let history: Pending["history"] = [];
+    let labelHistory: Pending["labelHistory"] = [];
+    if (prev) {
+      const storedView: StoredMirrorRow = {
+        bodyHash: prev.bodyHash,
+        comments: prev.comments,
+        commentsGhUpdatedAt: prev.commentsGhUpdatedAt,
+        ghUpdatedAt: prev.ghUpdatedAt,
+        parentNumber: prev.parentNumber,
+        tombstoneVersion: null,
+        labels: prev.labels,
+      };
+      const countVersion = isPr ? (row as PrRow).comments_gh_updated_at : row.gh_updated_at;
+      history = snapshotHistory(storedView, row, countVersion, isPr, "backfill").map(historyInsertStmt);
+      // Q5: the label diff a missed labeled/unlabeled webhook would
+      // have written. A row whose labels were never observed gets
+      // its start row from the set-based pass after the flush.
+      labelHistory = snapshotLabelHistory(storedView, row, isPr, "backfill", "backfill").map(labelHistoryInsertStmt);
+    }
+    pending.push({ number, isPr, item, stmt, history, labelHistory });
   };
   for (const issue of pureIssues) await consider(issue, false, storedIssues);
   for (const pr of pullList) await consider(pr, true, storedPrs);
@@ -401,14 +464,61 @@ const sweepRepo = async (repo: string): Promise<RepoSummary> => {
     }
   }
 
+  // Q5 label START rows for rows observed before this run that have
+  // no label history yet (rows mirrored before Q5): set-based, one
+  // statement per table, written BEFORE the snapshot flush so the
+  // start carries the pre-run set and any diff row below follows it.
+  // Fail-open like all history.
+  const labelStarts = (): Pending["stmt"][] => [
+    labelStartStmt(repo, null, false, "backfill", "backfill"),
+    labelStartStmt(repo, null, true, "backfill", "backfill"),
+  ];
+  try {
+    await sweepBatch(env, labelStarts());
+  } catch (e) {
+    summary.history_failed++;
+    console.error(`backfill ${repo}: label start rows failed open: ${String(e)}`);
+  }
+
+  const historyFlush: Pending["stmt"][] = [];
+  let labelRows = 0;
   for (const p of pending) {
     if (!failed.has(p.number)) {
       flush.push(p.stmt);
       summary.upserted++;
+      // History rides only with an upsert that actually flushed: an
+      // item withheld for a failed pointer repair keeps its diff —
+      // and its history — eligible for the next run.
+      historyFlush.push(...p.history, ...p.labelHistory);
+      labelRows += p.labelHistory.length;
     }
   }
   for (let i = 0; i < flush.length; i += 200) {
     await sweepBatch(env, flush.slice(i, i + 200));
+  }
+
+  // Q7 history flush, FAIL-OPEN (design §10.3): history never gates
+  // the sweep, so a failed history batch is counted and logged, not
+  // propagated — the repo is not marked incomplete for it.
+  if (historyFlush.length > 0) {
+    try {
+      for (let i = 0; i < historyFlush.length; i += 200) {
+        await sweepBatch(env, historyFlush.slice(i, i + 200));
+      }
+      summary.history_rows += historyFlush.length - labelRows;
+      summary.label_history_rows += labelRows;
+    } catch (e) {
+      summary.history_failed++;
+      console.error(`backfill ${repo}: history write failed open: ${String(e)}`);
+    }
+  }
+  // Q5 start rows for this run's first sights (and minimal seeds the
+  // snapshot flush just filled in), now that their sets are stored.
+  try {
+    await sweepBatch(env, labelStarts());
+  } catch (e) {
+    summary.history_failed++;
+    console.error(`backfill ${repo}: label start rows failed open: ${String(e)}`);
   }
 
   // Count-repair pass: for every row whose count mismatched at diff
@@ -437,6 +547,25 @@ const sweepRepo = async (repo: string): Promise<RepoSummary> => {
           ),
         ]);
         summary.counts_forced++;
+        // The forced count is a change the sweep observed: it gets
+        // its history row too, fail-open like all history.
+        try {
+          await sweepBatch(env, [
+            historyInsertStmt({
+              repo,
+              number: repair.number,
+              isPr: repair.isPr,
+              kind: "comment_count_changed",
+              detail: { from: now.comments, to: freshCount },
+              actor: "backfill",
+              ghUpdatedAt: typeof fresh.updated_at === "string" ? fresh.updated_at : null,
+            }),
+          ]);
+          summary.history_rows++;
+        } catch (e) {
+          summary.history_failed++;
+          console.error(`backfill ${repo}: repair history write failed open: ${String(e)}`);
+        }
       }
     } catch {
       summary.counts_repair_failed++;

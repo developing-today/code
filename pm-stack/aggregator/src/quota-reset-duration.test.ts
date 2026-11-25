@@ -97,7 +97,7 @@ describe("deriveResetDurationRecords — published reset, ranged by observed jit
     expect(r.basis.name).toBe("reset_cadence");
     expect(r.basis.detail).toContain("reopening anchored on the published resetsAt");
     expect(r.basis.detail).toContain("already walled at issuance");
-    expect(r.methodology_version).toBe("c4-meth:3");
+    expect(r.methodology_version).toBe("c4-meth:4");
     expect(r.state).toBe("predicted");
     expect(r.state_reason).toBeNull();
     expect(r.supersedes).toBe("c4:reset_duration:claude:5-hour:1");

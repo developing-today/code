@@ -63,7 +63,7 @@ The root crate's `[features]` table in `pkgs/id/Cargo.toml` is the whole feature
 
 ### The CLI-2 split: `--no-default-features` is not the lib build
 
-`cargo build --no-default-features` and the Nix `id-lib` package are different builds, and the package README's Cargo quick-start conflates them — disagreement CLI-2 in the book's research. The facts, from `Cargo.toml` and `flake.nix`:
+`cargo build --no-default-features` and the Nix `id-lib` package are different builds. The package README's Cargo quick-start formerly conflated them — disagreements CLI-2 and DES-10 in the book's research — and now uses plain `cargo build` for the lib variant. The facts, from `Cargo.toml` and `flake.nix`:
 
 - A default build already has no web UI: `web` is opt-in and is not in `default`.
 - `cargo build --no-default-features` removes `sandbox` and `world` as well. `id match-audit` and the four sandbox-gated `world` subcommands leave the parser entirely, and every other `id world` command fails at runtime.
@@ -103,7 +103,7 @@ Tests run under cargo-nextest where the justfile uses it. The recipes:
 | `just test-crate-integration` | Five named integration targets in sub-crates the root shards do not cover: `id-caps` `roc_import_policy`, `id-cli` `aliases`, `id-core` `probe_petname_load`, `id-store` `store_traits`, `id-web` `web_router_security`. |
 | `just test-native-shell` | `cargo nextest run -p id-native-shell`. A separate recipe because the crate is not a default member. |
 | `just test-hw-shell` | `cargo nextest run -p id-hw-shell`. Same reason. |
-| `just test-rust-examples` | `cargo test` against `examples/rust-world/Cargo.toml` and `examples/rust-counter/Cargo.toml` — standalone crates outside the workspace. |
+| `just test-rust-examples` | `cargo test` against `examples/rust-world/Cargo.toml`, `examples/rust-counter/Cargo.toml`, `examples/rust-cells/Cargo.toml`, `examples/rust-orbit/Cargo.toml` and `examples/rust-colony/Cargo.toml` — standalone crates outside the workspace. |
 | `just test-integration` | `cargo nextest run --all-features --test cli_integration`. Alias: `test-int`. |
 | `just test-web-unit` | `cd web && bun run test` (Vitest), then the build-manifest shell test. |
 | `just test-web-typecheck` | `cd web && bun run typecheck` (`tsc --noEmit`). |
@@ -127,13 +127,13 @@ Run one test by name with the recipe `test-one`, which takes the test name as it
 
 The flake's `checks` set in `pkgs/id/flake.nix` exposes the CI set as individual named checks — among them `cargo-fmt-check`, `clippy-lint`, `clippy-native-shell`, `web-lint`, `test` (which runs the `test-sandbox` recipe), `test-unit`, `test-crate-integration`, `test-native-shell`, `test-hw-shell`, `test-rust-examples`, `test-int`, the four integration shards `test-shard-0` to `test-shard-3`, `roc-test`, `roc-examples`, `doc`, `cargo-check`, `prod-lines-check`, the five `crash-gate` checks and `just-recipes-drift` — plus NixOS VM checks for serve and end-to-end tests on Linux. The `default` check runs the `ci` recipe.
 
-Two counts for this check set circulate in the package's own documents and disagree — disagreement DES-4 in the book's research: `ARCHITECTURE.md` states 11 CI checks in its build-system section and 27 checks in its testing section, and the justfile's `test-nix` comment also states 27. The count is unverified: this chapter names the checks instead of totalling them.
+Two counts once circulated for this check set and disagreed — disagreement DES-4 in the book's research: `ARCHITECTURE.md` stated 11 CI checks in its build-system section and 27 checks in its testing section, and the justfile's `test-nix` comments also stated 27. All three were wrong. Measured on 2026-11-23 at `06450991e33`, `checks.x86_64-linux` has 50 attributes, from `nix eval '.#checks.x86_64-linux' --apply 'x: builtins.length (builtins.attrNames x)'` in `pkgs/id`; `ARCHITECTURE.md` now records that measurement and its method, and the justfile no longer states a fixed total.
 
 At the repository level, `.github/workflows/id-check.yml` (workflow name `id`) runs the fast checks on pushes to `main` as a parallel matrix, one job per check listed in `.github/scripts/id-pr-checks.txt`, and runs the full `nix flake check` on its schedule and on manual dispatch. The end-to-end browser and NixOS VM checks run in `.github/workflows/id-e2e-nightly.yml`.
 
 ### Test counts are dated measurements
 
-This book states no standing test totals. A count is a measurement of one run on one date, and it is recorded with its date or not at all. One count was supplied to this book's research from a separate work lane: an `id-sync` nextest run reported as 474 passed, attributed to the lane for issue #13291. That count is unverified here — it was not re-run for this chapter, and no date for the run was supplied with it — so it is recorded as a claim to re-measure, not as a fact about the current tree. To produce a current count for one crate, run `cargo nextest run --all-features -p id-sync` in `pkgs/id/` and record the summary line with the date and the commit.
+This book states no standing test totals (disagreement DES-7: no record names how its count was produced, so the package documents no longer state totals either). A count is a measurement of one run on one date, and it is recorded with its date or not at all. One count was supplied to this book's research from a separate work lane: an `id-sync` nextest run reported as 474 passed, attributed to the lane for issue #13291. That count is unverified here — it was not re-run for this chapter, and no date for the run was supplied with it — so it is recorded as a claim to re-measure, not as a fact about the current tree. To produce a current count for one crate, run `cargo nextest run --all-features -p id-sync` in `pkgs/id/` and record the summary line with the date and the commit.
 
 ## Running a node while developing
 

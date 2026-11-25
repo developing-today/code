@@ -90,13 +90,23 @@ pub fn serve(_config: &Config, cwd: Option<&str>, timeout_s: u64, cmd: &[String]
         );
     }
     let home = fleet_config::Config::home_dir();
+    let line = remote_line(&fleet_config::ctx::Ctx::from_env(), cwd, cmd);
+    let mut ssh = ssh_base(&home, timeout_s);
+    ssh.arg(line);
+    spawn_with_deadline(&mut ssh, timeout_s)
+}
+
+/// The remote command line (the remote shell parses it). The
+/// caller's `FLEET_CTX_*` record leads as an explicit `export …;`
+/// prefix (code#14188): the SSH carrier that works whatever the
+/// laptop sshd's `AcceptEnv` allows, and covers the `cd` and the
+/// whole command. No context, no prefix — the line is unchanged.
+fn remote_line(ctx: &fleet_config::ctx::Ctx, cwd: Option<&str>, cmd: &[String]) -> String {
     let mut line = cmd.join(" ");
     if let Some(d) = cwd {
         line = format!("cd {} && {}", shell_quote(d), line);
     }
-    let mut ssh = ssh_base(&home, timeout_s);
-    ssh.arg(line);
-    spawn_with_deadline(&mut ssh, timeout_s)
+    format!("{}{line}", ctx.shell_prefix())
 }
 
 fn health(config: &Config) -> i32 {
@@ -222,5 +232,41 @@ pub fn run(config: &Config, args: &[String]) -> i32 {
             eprintln!("{USAGE}");
             EXIT_USAGE
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::remote_line;
+    use fleet_config::ctx::Ctx;
+
+    #[test]
+    fn remote_line_without_context_is_unchanged_14188() {
+        let cmd = vec!["echo".to_string(), "hi".to_string()];
+        assert_eq!(remote_line(&Ctx::default(), None, &cmd), "echo hi");
+    }
+
+    #[test]
+    fn remote_line_exports_context_ahead_of_cd_and_command_14188() {
+        let ctx = Ctx::from_pairs([("FLEET_CTX_ID", "task-22655"), ("FLEET_CTX_PID", "42")]);
+        let cmd = vec![
+            "printf".to_string(),
+            "'%s'".to_string(),
+            "\"$FLEET_CTX_ID\"".to_string(),
+        ];
+        let line = remote_line(&ctx, Some("/"), &cmd);
+        assert!(
+            line.starts_with("export FLEET_CTX_ID='task-22655' FLEET_CTX_PID='42'; cd "),
+            "{line}"
+        );
+        // What the remote login shell does with it: a scrubbed env,
+        // the context arrives anyway.
+        let out = std::process::Command::new("/bin/sh")
+            .arg("-c")
+            .arg(&line)
+            .env_clear()
+            .output()
+            .expect("sh runs");
+        assert_eq!(String::from_utf8(out.stdout).unwrap(), "task-22655");
     }
 }

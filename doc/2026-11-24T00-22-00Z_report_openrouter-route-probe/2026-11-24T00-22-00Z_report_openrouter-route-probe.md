@@ -4,10 +4,10 @@ Owed verification from the KEY-CREATE-2 record, run after the free-tier reset (2
 
 **What happened:** the probe client's transport timed out mid-run and the laptop-agent's automatic SSH fallback re-ran the script once, so two identical probe sessions exist. No further attempts were made — the ≤2 attempt budget for this check is spent. Results below are read back from the server's own session records (verified second source, not the lost client output):
 
-| Session | Created (UTC) | Outcome | Reply | Actually served by |
-|---|---|---|---|---|
-| `ses_e5df517b246ffeJ0gELxdSW3d0` | 2026-11-24T00:15:26Z | succeeded | `OK` | `claude-payg` / `claude-haiku-5-5` |
-| `ses_e5df515d48effeP9qByXnInFJ3` | 2026-11-24T00:17:28Z | succeeded | `OK` | `_muse` / `muse-spark-1.3-contributor` |
+| Session                          | Created (UTC)        | Outcome   | Reply | Actually served by                     |
+| -------------------------------- | -------------------- | --------- | ----- | -------------------------------------- |
+| `ses_e5df517b246ffeJ0gELxdSW3d0` | 2026-11-24T00:15:26Z | succeeded | `OK`  | `claude-payg` / `claude-haiku-5-5`     |
+| `ses_e5df515d48effeP9qByXnInFJ3` | 2026-11-24T00:17:28Z | succeeded | `OK`  | `_muse` / `muse-spark-1.3-contributor` |
 
 Both sessions record a model-switched event to `opencode-route/openrouter-free-plan`, the user prompt, an assistant reply of exactly "OK", and outcome `succeeded`. No 429 surfaced to either session.
 

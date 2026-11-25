@@ -26,7 +26,7 @@ use std::time::Duration;
 
 use fleet_secrets::{Resolver, SecretError, SecretSource, SecretValue};
 use serde_json::{Value, json};
-use tiny_http::{Header, Response, Server, StatusCode};
+use std::net::TcpListener;
 
 struct State {
     secrets_url: String,
@@ -38,6 +38,10 @@ struct State {
     turso: std::sync::OnceLock<crate::turso_queue::TursoBackend>,
     /// Why the backend is not ready yet: the latest startup failure.
     turso_pending: Mutex<String>,
+    /// #13765: the coordinator sweep must never overlap itself — a
+    /// slow GitHub pass skips instead of piling a second grant loop
+    /// onto the same counters.
+    coord_sweep_running: Mutex<bool>,
 }
 
 /// The queue broker's secrets-by-name source: a direct HTTP call to
@@ -247,6 +251,11 @@ fn validate_durations(path: &str, req: &Value) -> Result<(), String> {
         "/claim" | "/claim-flow" => lease_seconds(req).map(|_| ()),
         "/heartbeat" => extend_seconds(req).map(|_| ()),
         "/park" => delay_seconds(req).map(|_| ()),
+        "/reprioritize" => crate::validate::resolve_priority(
+            req.get("priority").unwrap_or(&Value::Null),
+            "priority",
+        )
+        .map(|_| ()),
         _ => Ok(()),
     }
 }
@@ -452,6 +461,130 @@ impl crate::turso_queue::DepProbe for GhDepProbe {
             }
             Err(o) => o,
         }
+    }
+}
+
+/// #13765: the production coordinator GitHub surface — the
+/// broker's live load/run reads for the placement sweep, over the
+/// same broker-owned token as the dep probe. Every read carries a
+/// bounded per-request timeout (the staleness-lookup budget), so a
+/// slow GitHub never queues a broker request behind the sweep.
+struct BrokerCoordGh {
+    secrets_url: String,
+    secrets_token: String,
+    agent: ureq::Agent,
+    token: Mutex<Option<(String, std::time::Instant)>>,
+}
+
+impl BrokerCoordGh {
+    fn token(&self) -> Result<String, String> {
+        let mut slot = self.token.lock().unwrap_or_else(|p| p.into_inner());
+        if let Some((tok, at)) = &*slot {
+            if at.elapsed() < std::time::Duration::from_secs(600) {
+                return Ok(tok.clone());
+            }
+        }
+        let source = DirectSecrets {
+            url: self.secrets_url.clone(),
+            token: self.secrets_token.clone(),
+            agent: self.agent.clone(),
+        };
+        let v = source
+            .resolve(GH_DEP_TOKEN_SECRET)
+            .map_err(|e| format!("github token resolve failed: {e}"))?;
+        let tok = v.expose().to_string();
+        *slot = Some((tok.clone(), std::time::Instant::now()));
+        Ok(tok)
+    }
+
+    fn get_json(&self, path: &str) -> Result<Value, String> {
+        use std::time::Duration as D;
+        let tok = self.token()?;
+        let url = format!("https://api.github.com{path}");
+        let req = self
+            .agent
+            .get(&url)
+            .config()
+            .timeout_global(Some(
+                crate::turso_queue::STALENESS_LOOKUP_TIMEOUT.max(D::from_secs(2)),
+            ))
+            .build();
+        let mut resp = req
+            .header("Authorization", &format!("Bearer {tok}"))
+            .header("Accept", "application/vnd.github+json")
+            .header("User-Agent", "fleet-queue-broker")
+            .call()
+            .map_err(|e| format!("github request failed for {path}: {e}"))?;
+        let status = resp.status().as_u16();
+        if status == 404 {
+            return Err(format!("github 404 for {path}"));
+        }
+        if !(200..300).contains(&status) {
+            return Err(format!("github http {status} for {path}"));
+        }
+        let text = resp
+            .body_mut()
+            .read_to_string()
+            .map_err(|e| format!("github response unreadable: {e}"))?;
+        serde_json::from_str(&text).map_err(|e| format!("github response not json: {e}"))
+    }
+
+    fn total_for(&self, repo: &str, status: &str) -> Result<i64, String> {
+        let v = self.get_json(&format!(
+            "/repos/{repo}/actions/runs?status={status}&per_page=1"
+        ))?;
+        v.get("total_count")
+            .and_then(|t| t.as_i64())
+            .ok_or_else(|| format!("{repo} ({status}): HTTP 200 without total_count"))
+    }
+
+    fn ids_for(&self, repo: &str, status: &str) -> Result<Vec<i64>, String> {
+        let v = self.get_json(&format!(
+            "/repos/{repo}/actions/runs?status={status}&per_page=100"
+        ))?;
+        let runs = v
+            .get("workflow_runs")
+            .and_then(|r| r.as_array())
+            .cloned()
+            .unwrap_or_default();
+        Ok(runs
+            .iter()
+            .filter_map(|r| r.get("id").and_then(|i| i.as_i64()))
+            .collect())
+    }
+}
+
+impl crate::turso_queue::CoordGh for BrokerCoordGh {
+    fn load_counts(&self, repo: &str) -> Result<(i64, i64), String> {
+        Ok((
+            self.total_for(repo, "in_progress")?,
+            self.total_for(repo, "queued")?,
+        ))
+    }
+
+    fn live_run_ids(&self, repo: &str) -> Result<Vec<i64>, String> {
+        let mut ids = self.ids_for(repo, "in_progress")?;
+        ids.extend(self.ids_for(repo, "queued")?);
+        ids.sort_unstable();
+        ids.dedup();
+        Ok(ids)
+    }
+
+    fn run_actual_minutes(&self, repo: &str, run_id: i64) -> Result<Option<f64>, String> {
+        let v = self.get_json(&format!("/repos/{repo}/actions/runs/{run_id}"))?;
+        let status = v.get("status").and_then(|s| s.as_str()).unwrap_or("");
+        if status != "completed" {
+            return Ok(None);
+        }
+        let (Some(start), Some(end)) = (
+            v.get("run_started_at").and_then(|s| s.as_str()),
+            v.get("updated_at").and_then(|s| s.as_str()),
+        ) else {
+            return Ok(None);
+        };
+        // Whole minutes rounded up, at least one (the sweep's
+        // shared helper); malformed stamps leave the claim alone.
+        Ok(crate::turso_queue::coord_minutes_between(start, end))
     }
 }
 
@@ -661,6 +794,246 @@ fn maybe_raise_actions_exec_extension(st: &State, resp: &Value) {
     });
 }
 
+/// Broker-owned GitHub synchronization for a committed reprioritize.
+/// Queue state is never rolled back on an API failure; the durable
+/// retry row and task event are written instead. Only `priority/*`
+/// labels are edited, so expedite/next-up and unrelated labels are
+/// outside this operation's write set.
+fn sync_reprioritized(st: &State, t: &crate::turso_queue::TursoBackend, resp: &Value) {
+    let Some(row) = resp.get("row") else { return };
+    let id = row.get("id").and_then(Value::as_i64).unwrap_or(0);
+    let payload = row.get("payload").unwrap_or(&Value::Null);
+    let Some(number) = payload.pointer("/issue/number").and_then(Value::as_i64) else {
+        return; // queue-only task; no linked issue
+    };
+    let Some(repo) = payload.get("repo").and_then(Value::as_str) else {
+        return;
+    };
+    let Some(priority) = row.get("priority").and_then(Value::as_i64) else {
+        return;
+    };
+    let Some(label) = crate::validate::label_for_priority(priority) else {
+        return;
+    };
+    let category = crate::validate::category_for_priority(priority).unwrap_or("unknown");
+    let attempt = (|| -> Result<(), String> {
+        let resolver = Resolver::new(vec![Box::new(DirectSecrets {
+            url: st.secrets_url.clone(),
+            token: st.secrets_token.clone(),
+            agent: st.agent.clone(),
+        })]);
+        let token = resolver
+            .resolve(GH_DEP_TOKEN_SECRET)
+            .map_err(|e| e.to_string())?;
+        let base = format!("https://api.github.com/repos/{repo}/issues/{number}");
+        let get = st
+            .agent
+            .get(&base)
+            .header("Authorization", &format!("Bearer {}", token.expose()))
+            .header("Accept", "application/vnd.github+json")
+            .header("User-Agent", "fleet-queue-broker")
+            .call()
+            .map_err(|e| format!("github_read_failed: {e}"))?;
+        let issue: Value = get
+            .into_body()
+            .read_json()
+            .map_err(|e| format!("github_read_failed: {e}"))?;
+        let names: Vec<String> = issue
+            .get("labels")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|l| l.get("name").and_then(Value::as_str).map(str::to_owned))
+            .collect();
+        for old in names
+            .iter()
+            .filter(|n| n.starts_with("priority/") && n.as_str() != label)
+        {
+            let url = format!("{base}/labels/{}", old.replace('/', "%2F"));
+            st.agent
+                .delete(&url)
+                .header("Authorization", &format!("Bearer {}", token.expose()))
+                .header("Accept", "application/vnd.github+json")
+                .header("User-Agent", "fleet-queue-broker")
+                .call()
+                .map_err(|e| format!("github_label_remove_failed: {e}"))?;
+        }
+        if !names.iter().any(|n| n == label) {
+            st.agent
+                .post(&format!("{base}/labels"))
+                .header("Authorization", &format!("Bearer {}", token.expose()))
+                .header("Accept", "application/vnd.github+json")
+                .header("User-Agent", "fleet-queue-broker")
+                .send_json(json!({"labels": [label]}))
+                .map_err(|e| format!("github_label_add_failed: {e}"))?;
+        }
+        // Update lineage.priority only inside an existing metadata block.
+        if let Some(body) = issue.get("body").and_then(Value::as_str) {
+            if let (Some(start), Some(end)) = (
+                body.find("<!-- pm-metadata:start -->"),
+                body.find("<!-- pm-metadata:end -->"),
+            ) {
+                if end > start {
+                    let block = &body[start..end];
+                    if let Some(open) = block.find("```json") {
+                        let json_start = open + "```json".len();
+                        if let Some(relative_close) = block[json_start..].find("```") {
+                            let close = json_start + relative_close;
+                            let mut metadata: Value =
+                                serde_json::from_str(block[json_start..close].trim())
+                                    .map_err(|e| format!("pm_metadata_parse_failed: {e}"))?;
+                            if metadata.get("lineage").is_some_and(Value::is_object) {
+                                metadata["lineage"]["priority"] = json!(category);
+                                let replacement = format!(
+                                    "```json\n{}\n```",
+                                    serde_json::to_string_pretty(&metadata).unwrap_or_default()
+                                );
+                                let patched = format!(
+                                    "{}{}{}",
+                                    &body[..start],
+                                    block.replacen(&block[open..close + 3], &replacement, 1),
+                                    &body[end..]
+                                );
+                                st.agent
+                                    .patch(&base)
+                                    .header("Authorization", &format!("Bearer {}", token.expose()))
+                                    .header("Accept", "application/vnd.github+json")
+                                    .header("User-Agent", "fleet-queue-broker")
+                                    .send_json(json!({"body": patched}))
+                                    .map_err(|e| format!("github_metadata_update_failed: {e}"))?;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        Ok(())
+    })();
+    // Do not acknowledge an older sync if another reprioritize landed
+    // while the GitHub request was in flight. The durable intent for
+    // the newer category remains pending and will reconcile from the
+    // current task row on the next broker request.
+    let still_current = crate::turso_queue::get_task(t, id)
+        .ok()
+        .flatten()
+        .and_then(|current| current.get("priority").and_then(Value::as_i64))
+        == Some(priority);
+    if attempt.is_ok() && still_current {
+        let _ = t.exec("UPDATE tasks SET progress = json_set(COALESCE(progress, '{}'), '$.reprioritize_sync_pending', false) WHERE id = ?", &[
+            crate::turso_queue::Arg::Int(id),
+        ]);
+        let _ = t.exec("UPDATE reprioritize_sync_outbox SET state = 'done', updated_at = ? WHERE task_id = ? AND issue = ? AND state = 'pending'", &[
+            crate::turso_queue::Arg::Text(crate::turso_queue::now_iso()), crate::turso_queue::Arg::Int(id), crate::turso_queue::Arg::Int(number),
+        ]);
+    }
+    if let Err(error) = attempt {
+        let now = crate::turso_queue::now_iso();
+        let error_class = error.split(':').next().unwrap_or("github_sync_failed");
+        let pending = t.query_objs("SELECT id FROM reprioritize_sync_outbox WHERE task_id = ? AND issue = ? AND state = 'pending' LIMIT 1", &[
+            crate::turso_queue::Arg::Int(id), crate::turso_queue::Arg::Int(number),
+        ], &[]).unwrap_or_default();
+        if pending.is_empty() {
+            let _ = t.exec("INSERT INTO reprioritize_sync_outbox (task_id, repo, issue, category, label, state, attempts, available_at, last_error_class, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 'pending', 0, ?, ?, ?, ?)", &[
+            crate::turso_queue::Arg::Int(id), crate::turso_queue::Arg::Text(repo.to_owned()), crate::turso_queue::Arg::Int(number),
+            crate::turso_queue::Arg::Text(category.to_owned()), crate::turso_queue::Arg::Text(label.to_owned()), crate::turso_queue::Arg::Text(now.clone()),
+            crate::turso_queue::Arg::Text(error_class.to_owned()), crate::turso_queue::Arg::Text(now.clone()), crate::turso_queue::Arg::Text(now.clone()),
+        ]);
+        } else {
+            let _ = t.exec("UPDATE reprioritize_sync_outbox SET attempts = attempts + 1, available_at = ?, last_error_class = ?, updated_at = ? WHERE task_id = ? AND issue = ? AND state = 'pending'", &[
+            crate::turso_queue::Arg::Text(crate::turso_queue::iso(crate::turso_queue::now_unix() + 30)), crate::turso_queue::Arg::Text(error_class.to_owned()), crate::turso_queue::Arg::Text(now.clone()), crate::turso_queue::Arg::Int(id), crate::turso_queue::Arg::Int(number),
+        ]);
+        }
+        let detail = json!({"error_class": error_class, "issue": number, "category": category});
+        let _ = t.exec("INSERT INTO events (worker_id, task_id, kind, detail, created_at) VALUES ('queue-broker', ?, 'reprioritize_sync_pending', ?, ?)", &[
+            crate::turso_queue::Arg::Int(id), crate::turso_queue::Arg::Text(detail.to_string()), crate::turso_queue::Arg::Text(now),
+        ]);
+        let _ = crate::log::info(
+            "queue-broker",
+            &format!("reprioritize GitHub sync pending for task {id}: {error_class}"),
+        );
+    }
+}
+
+/// Retry due sync intents before serving the next broker call. A
+/// retry uses the latest task row (if it still exists), so a newer
+/// reprioritize supersedes an older pending category cleanly.
+fn retry_reprioritize_sync(st: &State, t: &crate::turso_queue::TursoBackend) {
+    let Ok(rows) = t.query_objs("SELECT task_id FROM reprioritize_sync_outbox WHERE state = 'pending' AND available_at <= ? ORDER BY id LIMIT 20", &[
+        crate::turso_queue::Arg::Text(crate::turso_queue::now_iso()),
+    ], &[]) else { return };
+    for r in rows {
+        let id = r.get("task_id").and_then(Value::as_i64).unwrap_or(0);
+        if let Ok(Some(row)) = crate::turso_queue::get_task(t, id) {
+            sync_reprioritized(st, t, &json!({"row": row}));
+        }
+    }
+}
+
+/// Cursor form of `/history-since` for the PM projector. The original
+/// timestamp filter remains available to older callers; `after_id` is
+/// the monotonic resume point so equal-second history rows cannot be
+/// skipped or replayed as the feed advances.
+fn dispatch_history_since_cursor(t: &crate::turso_queue::TursoBackend, req: &Value) -> Value {
+    let Some(after_id) = req.get("after_id").and_then(Value::as_i64) else {
+        return fail(2, "history-since: after_id must be an integer");
+    };
+    if after_id < 0 {
+        return fail(2, "history-since: after_id must be non-negative");
+    }
+    let limit = req
+        .get("limit")
+        .and_then(Value::as_i64)
+        .unwrap_or(200)
+        .clamp(1, 50_000) as usize;
+    let task_id = req.get("task_id").and_then(Value::as_i64);
+    let since = req.get("since").and_then(Value::as_str);
+    let mut sql = "SELECT id, event_id, task_id, kind, from_status, to_status, from_priority, \
+                   to_priority, actor, session_id, model_provider, model_id, detail, source, created_at \
+                   FROM task_history WHERE id > ?"
+        .to_string();
+    let mut args = vec![crate::turso_queue::Arg::Int(after_id)];
+    if let Some(id) = task_id {
+        sql.push_str(" AND task_id = ?");
+        args.push(crate::turso_queue::Arg::Int(id));
+    }
+    if let Some(since) = since {
+        sql.push_str(" AND created_at >= ?");
+        args.push(crate::turso_queue::Arg::Text(since.to_string()));
+    }
+    sql.push_str(&format!(" ORDER BY id ASC LIMIT {}", limit + 1));
+    match t.query_objs(&sql, &args, &["detail"]) {
+        Ok(rows) => history_cursor_page(rows, after_id, limit, task_id),
+        Err(e) => fail(2, e),
+    }
+}
+
+fn history_cursor_page(
+    mut rows: Vec<Value>,
+    after_id: i64,
+    limit: usize,
+    task_id: Option<i64>,
+) -> Value {
+    rows.retain(|row| {
+        row.get("id")
+            .and_then(Value::as_i64)
+            .is_some_and(|id| id > after_id)
+    });
+    rows.sort_by_key(|row| row.get("id").and_then(Value::as_i64).unwrap_or(i64::MAX));
+    let has_more = rows.len() > limit;
+    rows.truncate(limit);
+    let next_cursor = rows
+        .last()
+        .and_then(|row| row.get("id"))
+        .and_then(Value::as_i64)
+        .unwrap_or(after_id);
+    ok(json!({
+        "rows": rows,
+        "task_id": task_id,
+        "next_cursor": next_cursor,
+        "has_more": has_more
+    }))
+}
+
 fn dispatch(st: &State, path: &str, req: &Value) -> Value {
     if let Err(e) = validate_durations(path, req) {
         return fail(2, e);
@@ -684,7 +1057,39 @@ fn dispatch(st: &State, path: &str, req: &Value) -> Value {
                     .unwrap_or_default();
                 return fail(3, format!("queue backend not ready: {why}"));
             };
-            let resp = crate::turso_queue::dispatch(turso, path, req);
+            retry_reprioritize_sync(st, turso);
+            // The worker id arrives over the broker's authenticated
+            // (X-Agent-Token) channel, like every other lifecycle
+            // verb — that is the authenticated caller identity the
+            // reprioritized event records as actor. A legacy `actor`
+            // string without a worker is promoted for back-compat;
+            // a caller-provided actor never overrides the worker.
+            let mut effective_req = req.clone();
+            if path == "/reprioritize" {
+                let has_worker = effective_req
+                    .get("worker")
+                    .and_then(Value::as_str)
+                    .is_some_and(|s| !s.trim().is_empty());
+                if !has_worker {
+                    if let Some(a) = effective_req
+                        .get("actor")
+                        .and_then(Value::as_str)
+                        .map(str::to_owned)
+                    {
+                        if !a.trim().is_empty() {
+                            effective_req["worker"] = json!(a);
+                        }
+                    }
+                }
+            }
+            let resp = if path == "/history-since" && effective_req.get("after_id").is_some() {
+                dispatch_history_since_cursor(turso, &effective_req)
+            } else {
+                crate::turso_queue::dispatch(turso, path, &effective_req)
+            };
+            if path == "/reprioritize" && resp.get("ok").and_then(Value::as_bool) == Some(true) {
+                sync_reprioritized(st, turso, &resp);
+            }
             // #8568: the broker-side needs-drew raise for an
             // escalated block (fire-and-forget).
             if path == "/block" {
@@ -697,13 +1102,6 @@ fn dispatch(st: &State, path: &str, req: &Value) -> Value {
             resp
         }
     }
-}
-
-fn json_response(status: u16, body: Value) -> Response<std::io::Cursor<Vec<u8>>> {
-    let data = serde_json::to_vec(&body).unwrap_or_else(|_| b"{}".to_vec());
-    Response::from_data(data)
-        .with_status_code(StatusCode(status))
-        .with_header(Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..]).unwrap())
 }
 
 fn token_matches(provided: Option<&str>, expected: &str) -> bool {
@@ -743,6 +1141,17 @@ fn pre_body_refusal(
         }
     }
     None
+}
+
+/// #14191: attribute every queue event this request writes to the
+/// context id its `X-Fleet-Ctx-*` headers carry (none: no change).
+fn request_ctx_scope(
+    req: &crate::uds_http::HttpRequest,
+) -> crate::turso_queue::ctx_scope::CtxScope {
+    let ctx = fleet_config::ctx::Ctx::from_headers(
+        req.headers.iter().map(|(k, v)| (k.as_str(), v.as_str())),
+    );
+    crate::turso_queue::ctx_scope::enter(ctx.id())
 }
 
 /// Transport-agnostic request handling (#6216): the TCP loop adapts
@@ -793,7 +1202,6 @@ fn handle_request(
 }
 
 pub fn run() -> i32 {
-    use std::io::Read as _;
     let bind =
         std::env::var("QUEUE_BROKER_BIND").unwrap_or_else(|_| "100.99.113.103:4801".to_string());
     let home = match crate::home::from_env() {
@@ -873,9 +1281,10 @@ pub fn run() -> i32 {
         agent,
         turso: std::sync::OnceLock::new(),
         turso_pending: Mutex::new("starting".to_string()),
+        coord_sweep_running: Mutex::new(false),
     });
 
-    let server = match Server::http(&bind) {
+    let server = match TcpListener::bind(&bind) {
         Ok(server) => server,
         Err(e) => {
             crate::log::info("queue-broker", &format!("cannot bind {bind}: {e:?}"));
@@ -905,6 +1314,53 @@ pub fn run() -> i32 {
                     crate::log::info("queue-broker", &e);
                     std::process::exit(3);
                 }
+            }
+        });
+    }
+
+    // #13765: the coordinator sweep, on its own thread beside the
+    // #12247 startup thread: every COORD_SWEEP_INTERVAL_SECS (20s
+    // default, COORD_SWEEP_INTERVAL_SECS override) it refreshes the
+    // true load view, expires stale holds, settles finished
+    // Blacksmith runs, recomputes the counters, and grants the
+    // waitlist FIFO. The pass skips when the backend is not ready
+    // yet or the previous pass is still running (a slow GitHub
+    // never piles a second grant loop onto the same counters),
+    // and every leg inside the sweep is failure-tolerant, so the
+    // thread itself never dies — it logs the pass summary.
+    {
+        let st = Arc::clone(&state);
+        std::thread::spawn(move || {
+            let interval = std::env::var("COORD_SWEEP_INTERVAL_SECS")
+                .ok()
+                .and_then(|v| v.parse::<u64>().ok())
+                .filter(|v| *v > 0)
+                .unwrap_or(crate::turso_queue::COORD_SWEEP_INTERVAL_SECS);
+            loop {
+                std::thread::sleep(Duration::from_secs(interval));
+                let Some(turso) = st.turso.get() else {
+                    continue;
+                };
+                let already = st
+                    .coord_sweep_running
+                    .lock()
+                    .map(|mut g| std::mem::replace(&mut *g, true))
+                    .unwrap_or(true);
+                if already {
+                    continue;
+                }
+                let gh = BrokerCoordGh {
+                    secrets_url: st.secrets_url.clone(),
+                    secrets_token: st.secrets_token.clone(),
+                    agent: st.agent.clone(),
+                    token: Mutex::new(None),
+                };
+                let now = crate::turso_queue::now_iso();
+                let sum = crate::turso_queue::coordinator_sweep(turso, &gh, &now);
+                if let Ok(mut g) = st.coord_sweep_running.lock() {
+                    *g = false;
+                }
+                crate::log::info("queue-broker", &format!("coord sweep: {sum}"));
             }
         });
     }
@@ -947,6 +1403,7 @@ pub fn run() -> i32 {
                         })
                     },
                     move |req| {
+                        let _ctx = request_ctx_scope(req);
                         let (status, value) = handle_request(
                             &st,
                             &tok,
@@ -955,6 +1412,7 @@ pub fn run() -> i32 {
                             req.header("X-Agent-Token"),
                             &req.body,
                         );
+                        crate::uds_http::log_ctx_trip("queue-broker", req, status);
                         (
                             status,
                             serde_json::to_vec(&value).unwrap_or_else(|_| b"{}".to_vec()),
@@ -976,58 +1434,42 @@ pub fn run() -> i32 {
         ),
     }
 
-    for mut req in server.incoming_requests() {
-        let state = Arc::clone(&state);
-        let token = token.clone();
-        std::thread::spawn(move || {
-            let method = req.method().as_str().to_string();
-            let target = req.url().to_string();
-            let provided = req
-                .headers()
-                .iter()
-                .find(|h| h.field.as_str().to_ascii_lowercase() == "x-agent-token")
-                .map(|h| h.value.as_str().to_string());
-            // #6515: authenticate and size-check from the headers
-            // before reading any body byte. tiny_http 0.12 exposes
-            // no per-connection read timeout, so the residual TCP
-            // slow-body risk is bounded by this gate plus the capped
-            // read below and thread-per-connection isolation; the
-            // UDS transport carries real read timeouts (uds_http).
-            let content_length = req
-                .headers()
-                .iter()
-                .find(|h| h.field.as_str().to_ascii_lowercase() == "content-length")
-                .and_then(|h| h.value.as_str().parse::<u64>().ok());
-            if let Some((status, value)) = pre_body_refusal(
-                &method,
-                &target,
-                provided.as_deref(),
+    let pre_token = token.clone();
+    crate::tcp_http::serve(
+        server,
+        move |head| {
+            pre_body_refusal(
+                &head.method,
+                &head.target,
+                head.header("X-Agent-Token"),
+                &pre_token,
+                head.header("Content-Length")
+                    .and_then(|v| v.parse::<u64>().ok()),
+            )
+            .map(|(status, value)| {
+                (
+                    status,
+                    serde_json::to_vec(&value).unwrap_or_else(|_| b"{}".to_vec()),
+                )
+            })
+        },
+        move |req| {
+            let _ctx = request_ctx_scope(req);
+            let (status, value) = handle_request(
+                &state,
                 &token,
-                content_length,
-            ) {
-                let _ = req.respond(json_response(status, value));
-                return;
-            }
-            let mut body = Vec::new();
-            if method == "POST" {
-                // Capped read: cap+1 bytes detect an overrun that
-                // the declared length hid (or never declared).
-                let cap = (crate::uds_http::MAX_BODY_BYTES + 1) as u64;
-                let _ = req.as_reader().take(cap).read_to_end(&mut body);
-                if body.len() > crate::uds_http::MAX_BODY_BYTES {
-                    let _ = req.respond(json_response(
-                        413,
-                        json!({"error": "request body too large"}),
-                    ));
-                    return;
-                }
-            }
-            let (status, value) =
-                handle_request(&state, &token, &method, &target, provided.as_deref(), &body);
-            let _ = req.respond(json_response(status, value));
-        });
-    }
-    // incoming_requests() ends only when the server stops.
+                &req.method,
+                &req.target,
+                req.header("X-Agent-Token"),
+                &req.body,
+            );
+            crate::uds_http::log_ctx_trip("queue-broker", req, status);
+            (
+                status,
+                serde_json::to_vec(&value).unwrap_or_else(|_| b"{}".to_vec()),
+            )
+        },
+    );
     0
 }
 
@@ -1455,5 +1897,153 @@ mod startup_retry_tests {
         let r = resolve_with_startup_retry(&resolver, "some.token", Duration::from_millis(300));
         assert!(r.is_err());
         assert!(start.elapsed() < Duration::from_secs(5));
+    }
+}
+
+#[cfg(test)]
+mod reprioritize_sync_tests {
+    /// T3/T4 contract pins (#14100): the GitHub sync leg runs after
+    /// the queue commit, touches only priority/* labels, sets
+    /// lineage.priority only inside an existing pm-metadata block,
+    /// and records failures as pending + outbox without rolling
+    /// back the queue change.
+    const SRC: &str = include_str!("queue_broker.rs");
+
+    fn sync_fn() -> &'static str {
+        let start = SRC
+            .find("fn sync_reprioritized")
+            .expect("sync_reprioritized must exist");
+        let rest = &SRC[start..];
+        let end = rest
+            .find("\nfn retry_reprioritize_sync")
+            .expect("retry fn follows");
+        &rest[..end]
+    }
+
+    #[test]
+    fn sync_touches_only_priority_labels() {
+        let f = sync_fn();
+        // Removal is scoped to priority/* labels, add is the mapped one.
+        assert!(f.contains("starts_with(\"priority/\")"), "{f}");
+        // expedite/next-up are never in the sync write set.
+        assert!(!f.contains("expedite"), "must not touch expedite");
+        assert!(!f.contains("next-up"), "must not touch next-up");
+    }
+
+    #[test]
+    fn sync_sets_lineage_only_inside_an_existing_block() {
+        let f = sync_fn();
+        assert!(f.contains("pm-metadata:start"), "reads existing block");
+        assert!(
+            f.contains("[\"lineage\"][\"priority\"]"),
+            "sets lineage.priority"
+        );
+        assert!(
+            f.contains("get(\"lineage\").is_some_and(Value::is_object)"),
+            "never creates a block speculatively"
+        );
+    }
+
+    #[test]
+    fn queue_change_never_rolls_back_and_failure_is_recorded() {
+        // The sync runs only after a committed queue write.
+        assert!(
+            SRC.contains("if path == \"/reprioritize\" && resp.get(\"ok\")"),
+            "sync is post-commit only"
+        );
+        let f = sync_fn();
+        // Failure path: pending event + durable outbox row, and the
+        // success path clears the visible marker only when no newer
+        // reprioritize landed meanwhile.
+        assert!(f.contains("reprioritize_sync_pending"), "pending event");
+        assert!(
+            f.contains("INSERT INTO reprioritize_sync_outbox"),
+            "durable intent"
+        );
+        assert!(
+            f.contains("still_current"),
+            "no stale clear of a newer intent"
+        );
+        // The retry runs ahead of serving, from the latest task row.
+        assert!(SRC.contains("retry_reprioritize_sync(st, turso)"));
+    }
+}
+
+#[cfg(test)]
+mod history_since_cursor_contract_tests {
+    use super::*;
+
+    // Oracle: the PM projector resumes from a task_history id cursor,
+    // receives rows in strictly increasing id order, and knows whether
+    // another page remains.
+    const SRC: &str = include_str!("queue_broker.rs");
+
+    #[test]
+    fn history_since_accepts_after_id_and_returns_page_cursor() {
+        let marker = ["fn dispatch_history_", "since_cursor("].concat();
+        let start = SRC
+            .find(&marker)
+            .expect("queue-broker cursor route must exist");
+        let rest = &SRC[start..];
+        let end = rest
+            .find("\nfn dispatch(")
+            .expect("cursor route must end at the next function");
+        let route = &rest[..end];
+        assert!(
+            route.contains("id > ?"),
+            "cursor excludes ids already seen: {route}"
+        );
+        assert!(
+            route.contains("ORDER BY id ASC"),
+            "pages are stable: {route}"
+        );
+        assert!(
+            route.contains("next_cursor"),
+            "the client can advance: {route}"
+        );
+        assert!(
+            route.contains("has_more"),
+            "the client can drain another page: {route}"
+        );
+        assert!(
+            SRC.contains("path == \"/history-since\" && effective_req.get(\"after_id\").is_some()"),
+            "after_id requests use the monotonic cursor route"
+        );
+    }
+
+    #[test]
+    fn cursor_pages_advance_without_replaying_seen_rows() {
+        let first = history_cursor_page(
+            vec![
+                json!({"id": 42, "task_id": 8}),
+                json!({"id": 40, "task_id": 7}),
+                json!({"id": 41, "task_id": 7}),
+            ],
+            39,
+            2,
+            None,
+        );
+        assert_eq!(
+            first["rows"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|r| r["id"].as_i64().unwrap())
+                .collect::<Vec<_>>(),
+            vec![40, 41],
+            "oracle: an ID cursor returns the next two unseen history rows in ascending order"
+        );
+        assert_eq!(first["next_cursor"], 41);
+        assert_eq!(first["has_more"], true);
+
+        let second = history_cursor_page(
+            vec![json!({"id": 40}), json!({"id": 42})],
+            first["next_cursor"].as_i64().unwrap(),
+            2,
+            None,
+        );
+        assert_eq!(second["rows"], json!([{"id": 42}]));
+        assert_eq!(second["next_cursor"], 42);
+        assert_eq!(second["has_more"], false);
     }
 }

@@ -31,17 +31,13 @@ import {
   type R2BucketLike,
 } from "./routing.ts";
 import { issueNonce, verifyProof, type AuthContext } from "./bridge-auth.ts";
-import {
-  BRIDGE_SCHEMA,
-  BridgeStore,
-  DEFAULT_WAITING_LIMITS,
-  type WaitingLimits,
-} from "./bridge-store.ts";
+import { BRIDGE_SCHEMA, BridgeStore, DEFAULT_WAITING_LIMITS, type WaitingLimits } from "./bridge-store.ts";
 import {
   BridgeSessionServer,
   decodeBatch,
   decodeEntries,
   encodeBatch,
+  encodedEventBytes,
   DEFAULT_BRIDGE_LIMITS,
   type FrameTransport,
 } from "./bridge-session.ts";
@@ -59,6 +55,30 @@ export const HDR_ROUTED = "x-hosted-routed";
  * bridge authenticates callers by proof against this key, and a
  * request whose routing context names no valid key fails closed. */
 export const HDR_IROH = "x-hosted-iroh-id";
+/** The binding's client-side-encryption choice (spec
+ * 2026-10-30T22-45-00Z §7, tracker #2852), resolved by the
+ * authenticated internal caller from the binding record
+ * (`BindingRecord::client_side_encryption` in hosted_binding.rs)
+ * and consumed exactly like HDR_IROH: the front door strips any
+ * client-supplied copy and re-sets this internal header. Values
+ * are "1" (on) and "0" (off). The guard binds the choice into the
+ * object's persisted identity at its first routed request; per
+ * §7 it can change afterwards only by export/import to a new
+ * binding, so a later request naming a different choice fails
+ * closed as an identity mismatch. An object bound before this
+ * context existed has no persisted choice and reads as off —
+ * the keying all its stored blobs already use. */
+export const HDR_CSE = "x-hosted-client-side-encryption";
+
+/** The R2 object key for a blob (spec §5.1 + §7). Plaintext
+ * blobs are keyed by bare content hash, so identical bytes
+ * dedupe across users. Client-encrypted blobs are scoped to the
+ * owning binding, so they dedupe only per user: the service
+ * never stores one user's ciphertext as another user's object,
+ * and identical ciphertext uploaded by two users is two objects. */
+export function blobObjectKey(bindingId: string, hash: string, clientSideEncryption: boolean): string {
+  return clientSideEncryption ? `cse/${bindingId}/${hash}` : hash;
+}
 
 interface SqlStorage {
   exec(query: string, ...params: unknown[]): { toArray(): Record<string, unknown>[] };
@@ -280,7 +300,11 @@ export class UserDO {
       return n;
     };
     return {
-      perAuthor: parse(this.env.BRIDGE_WAITING_PER_AUTHOR, DEFAULT_WAITING_LIMITS.perAuthor, "BRIDGE_WAITING_PER_AUTHOR"),
+      perAuthor: parse(
+        this.env.BRIDGE_WAITING_PER_AUTHOR,
+        DEFAULT_WAITING_LIMITS.perAuthor,
+        "BRIDGE_WAITING_PER_AUTHOR",
+      ),
       total: parse(this.env.BRIDGE_WAITING_TOTAL, DEFAULT_WAITING_LIMITS.total, "BRIDGE_WAITING_TOTAL"),
       maxAgeMs: parse(this.env.BRIDGE_WAITING_MAX_AGE_MS, DEFAULT_WAITING_LIMITS.maxAgeMs, "BRIDGE_WAITING_MAX_AGE_MS"),
     };
@@ -336,7 +360,7 @@ export class UserDO {
     return rows.length === 0 ? null : String(rows[0].value);
   }
 
-  private guard(req: Request): { bindingId: string; jurisdiction: string } {
+  private guard(req: Request): { bindingId: string; jurisdiction: string; clientSideEncryption: boolean } {
     if (req.headers.get(HDR_ROUTED) !== "restricted") {
       throw new FailClosed(403, "unrouted_request", "request did not arrive via the jurisdiction routing module");
     }
@@ -350,33 +374,59 @@ export class UserDO {
         "object jurisdiction does not match routed jurisdiction; failing closed",
       );
     }
+    const cseHeader = req.headers.get(HDR_CSE);
+    if (cseHeader !== null && cseHeader !== "1" && cseHeader !== "0") {
+      throw new FailClosed(
+        400,
+        "invalid_cse_context",
+        "client-side-encryption routing context must be \"1\" or \"0\"; failing closed",
+      );
+    }
     const boundBinding = this.meta("binding_id");
     const boundJurisdiction = this.meta("jurisdiction");
     if (boundBinding === null) {
       // First routed request: bind identity immutably. Concurrent first
-      // requests are serialized by the DO input gate, and both meta
-      // rows are written together before any data route runs.
+      // requests are serialized by the DO input gate, and all meta
+      // rows are written together before any data route runs. An
+      // absent CSE context binds as off: every caller that predates
+      // the §7 threading stores bare-hash blobs, and silently
+      // re-scoping an object would orphan the bytes it already holds.
       this.state.storage.sql.exec(
-        "INSERT INTO meta (key, value) VALUES (?, ?), (?, ?)",
+        "INSERT INTO meta (key, value) VALUES (?, ?), (?, ?), (?, ?)",
         "binding_id",
         bindingId,
         "jurisdiction",
         jurisdiction,
+        "client_side_encryption",
+        cseHeader === "1" ? "1" : "0",
       );
-    } else if (boundBinding !== bindingId || boundJurisdiction !== jurisdiction) {
+      return { bindingId, jurisdiction, clientSideEncryption: cseHeader === "1" };
+    }
+    if (boundBinding !== bindingId || boundJurisdiction !== jurisdiction) {
       throw new FailClosed(
         409,
         "identity_mismatch",
         "object is bound to a different binding/jurisdiction; failing closed",
       );
     }
-    return { bindingId, jurisdiction };
+    const boundCse = this.meta("client_side_encryption") === "1";
+    if (cseHeader !== null && (cseHeader === "1") !== boundCse) {
+      // §7: the choice is part of the binding. It changes only by
+      // export/import to a new binding (a new object), never by a
+      // routing context that disagrees with the persisted identity.
+      throw new FailClosed(
+        409,
+        "identity_mismatch",
+        "object is bound to a different client-side-encryption choice; failing closed",
+      );
+    }
+    return { bindingId, jurisdiction, clientSideEncryption: boundCse };
   }
 
   async fetch(req: Request): Promise<Response> {
     await this.ready;
     try {
-      const { bindingId, jurisdiction } = this.guard(req);
+      const { bindingId, jurisdiction, clientSideEncryption } = this.guard(req);
       this.state.storage.sql.exec(
         "INSERT INTO meta (key, value) VALUES ('requests', '1') ON CONFLICT(key) DO UPDATE SET value = CAST(value AS INTEGER) + 1",
       );
@@ -387,6 +437,7 @@ export class UserDO {
         return json({
           binding_id: bindingId,
           jurisdiction,
+          client_side_encryption: clientSideEncryption,
           ...usage,
           ceiling_bytes: ceiling,
           at_cap: ceiling !== null && usage.storage_bytes >= ceiling,
@@ -402,6 +453,7 @@ export class UserDO {
         return json({
           binding_id: bindingId,
           jurisdiction,
+          client_side_encryption: clientSideEncryption,
           usage: this.usage(),
           kv: Object.fromEntries(kvRows.map((r) => [String(r.key), String(r.value)])),
           blobs: blobRows.map((r) => ({
@@ -415,6 +467,7 @@ export class UserDO {
         return json({
           binding_id: bindingId,
           jurisdiction,
+          client_side_encryption: clientSideEncryption,
           schema_version: Number(this.meta("schema_version")),
           object_name: this.state.id.name ?? null,
         });
@@ -438,7 +491,11 @@ export class UserDO {
         const irohHex = this.requireIroh(req);
         const body = await readBytesUpTo(req, DEFAULT_BRIDGE_LIMITS.maxBatchBytes);
         if (body === null) {
-          throw new FailClosed(413, "batch_too_large", `push body is larger than the ${DEFAULT_BRIDGE_LIMITS.maxBatchBytes}-byte batch bound`);
+          throw new FailClosed(
+            413,
+            "batch_too_large",
+            `push body is larger than the ${DEFAULT_BRIDGE_LIMITS.maxBatchBytes}-byte batch bound`,
+          );
         }
         const store = await this.bridgeProof(req, bindingId, irohHex, "push", body);
         const rawEvents = decodeBatch(body, DEFAULT_BRIDGE_LIMITS);
@@ -459,13 +516,7 @@ export class UserDO {
         const irohHex = this.requireIroh(req);
         const text = await readTextUpTo(req, 64 * 1024);
         if (text === null) throw bodyTooLarge(64 * 1024);
-        const store = await this.bridgeProof(
-          req,
-          bindingId,
-          irohHex,
-          "pull",
-          new TextEncoder().encode(text),
-        );
+        const store = await this.bridgeProof(req, bindingId, irohHex, "pull", new TextEncoder().encode(text));
         let positions = new Map<string, number>();
         let maxEvents = DEFAULT_BRIDGE_LIMITS.maxBatchEvents;
         try {
@@ -489,17 +540,31 @@ export class UserDO {
           .filter((e) => e.seq >= (positions.get(e.author) ?? 0))
           .sort((a, b) => (a.author < b.author ? -1 : a.author > b.author ? 1 : a.seq - b.seq));
         const batch: Uint8Array[] = [];
-        let batchBytes = 0;
+        let batchBytes = 4; // the encoded count prefix encodeBatch writes
         let more = false;
         for (const entry of entries) {
           const held = store.heldEvent(entry.id);
           if (!held) continue;
-          if (batch.length >= maxEvents || batchBytes + held.bytes.length > DEFAULT_BRIDGE_LIMITS.maxBatchBytes) {
+          if (
+            batch.length >= maxEvents ||
+            batchBytes + encodedEventBytes(held.bytes) > DEFAULT_BRIDGE_LIMITS.maxBatchBytes
+          ) {
+            if (batch.length === 0) {
+              // The first event alone cannot fit any batch under
+              // the bound: refuse by name rather than answer with
+              // an empty batch the caller would retry forever
+              // (#14644).
+              throw new FailClosed(
+                413,
+                "event_too_large",
+                `event of ${held.bytes.length} bytes cannot fit the ${DEFAULT_BRIDGE_LIMITS.maxBatchBytes}-byte batch bound`,
+              );
+            }
             more = true;
             break;
           }
           batch.push(held.bytes);
-          batchBytes += held.bytes.length;
+          batchBytes += encodedEventBytes(held.bytes);
         }
         return new Response(encodeBatch(batch), {
           status: 200,
@@ -527,7 +592,7 @@ export class UserDO {
           .map((r) => ({ hash: String(r.hash) }));
         try {
           const sets = await produceExportSets(store.appliedEvents(), blobRows, async (hash) => {
-            const obj = await bucket.get(hash);
+            const obj = await bucket.get(blobObjectKey(bindingId, hash, clientSideEncryption));
             if (!obj) return null;
             return new Uint8Array(await new Response(obj.body).arrayBuffer());
           });
@@ -577,13 +642,16 @@ export class UserDO {
         const digest = await crypto.subtle.digest("SHA-256", bytes);
         const hash = [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
         const bucket = blobsBindingFor(this.env, jurisdiction as Jurisdiction);
-        // Content-addressed dedup: identical bytes are stored
-        // once, whoever uploads them; the reference row below is
+        // Content-addressed dedup, scoped by the §7 choice
+        // (blobObjectKey): plaintext bytes are stored once,
+        // whoever uploads them; client-encrypted bytes are stored
+        // once per binding. Either way the reference row below is
         // what grants THIS user access.
         const priorRef = this.state.storage.sql.exec("SELECT hash FROM blobs WHERE hash = ?", hash).toArray();
         this.assertWritable(priorRef.length === 0 ? bytes.byteLength : 0);
-        const existing = await bucket.head(hash);
-        if (!existing) await bucket.put(hash, bytes);
+        const key = blobObjectKey(bindingId, hash, clientSideEncryption);
+        const existing = await bucket.head(key);
+        if (!existing) await bucket.put(key, bytes);
         this.state.storage.sql.exec(
           "INSERT INTO blobs (hash, size, owner, created_at) VALUES (?, ?, ?, ?) ON CONFLICT(hash) DO NOTHING",
           hash,
@@ -591,14 +659,14 @@ export class UserDO {
           bindingId,
           new Date().toISOString(),
         );
-        return json({ hash, size: bytes.byteLength, stored: true, deduped: !!existing });
+        return json({ hash, size: bytes.byteLength, stored: true, deduped: !!existing, client_side_encryption: clientSideEncryption });
       }
       if (blobHashMatch && req.method === "GET") {
         const hash = blobHashMatch[1];
         const rows = this.state.storage.sql.exec("SELECT size FROM blobs WHERE hash = ?", hash).toArray();
         if (rows.length === 0) return json({ error: "not_found" }, 404);
         const bucket = blobsBindingFor(this.env, jurisdiction as Jurisdiction);
-        const obj = await bucket.get(hash);
+        const obj = await bucket.get(blobObjectKey(bindingId, hash, clientSideEncryption));
         if (!obj) return json({ error: "not_found" }, 404);
         return new Response(obj.body, {
           status: 200,

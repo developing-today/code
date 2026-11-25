@@ -64,6 +64,9 @@ pub fn run(args: &[String]) -> i32 {
     match sub {
         "validate" => cmd_validate(rest),
         "enqueue" => cmd_enqueue(rest),
+        "meta" => cmd_meta(rest),
+        "staleness" => cmd_staleness(rest),
+        "needs-user" => cmd_needs_user(rest),
         "list" => cmd_list(rest),
         "claim" => cmd_claim(rest),
         "release" => cmd_release(rest),
@@ -72,6 +75,7 @@ pub fn run(args: &[String]) -> i32 {
         "heartbeat" => cmd_heartbeat(rest),
         "checkpoint" => cmd_checkpoint(rest),
         "park" => cmd_park(rest),
+        "reprioritize" => cmd_reprioritize(rest),
         "wake" => cmd_wake(rest),
         "block" => cmd_block(rest),
         "unblock" => cmd_unblock(rest),
@@ -82,10 +86,12 @@ pub fn run(args: &[String]) -> i32 {
         "revive" => cmd_revive(rest),
         "fail" => cmd_fail(rest),
         "complete" => cmd_complete(rest),
+        "resolution-backfill" => cmd_resolution_backfill(rest),
         "verify-disposition" => cmd_verify_disposition(rest),
         "timeline" => cmd_timeline("timeline", rest),
         "history" => cmd_timeline("history", rest),
         "show" => cmd_show(rest),
+        "note" => cmd_note(rest),
         "models" => cmd_models(rest),
         "health" => cmd_health(rest),
         "signal" => cmd_signal(rest),
@@ -155,6 +161,19 @@ mod tests {
     use proptest::prelude::*;
 
     #[test]
+    fn list_marks_manual_only_rows_9178() {
+        let cells = list_row_cells(&json!({
+            "id": 7,
+            "priority": 10,
+            "status": "queued",
+            "manual_only": true,
+            "created_at": "2026-11-25T00:00:00Z",
+            "title": "manual item",
+        }));
+        assert_eq!(cells[2], "queued (manual-only)");
+    }
+
+    #[test]
     fn execution_lane_split_7598() {
         // Oracle (#7598): a worker passing its own lane id in
         // --execution.lane is accepted; the recorded execution
@@ -218,6 +237,36 @@ mod tests {
                 "cmd_timeline queries {kind} so claim displacements are visible"
             );
         }
+    }
+
+    #[test]
+    fn timeline_surfaces_staleness_autocomplete_14268() {
+        // #14268: a claim-time staleness retirement writes exactly
+        // one event, `staleness_autocomplete`, and no `claimed`
+        // event. While the history kind lists omitted it, four
+        // retired tasks read as "zero history events, no result"
+        // through every client surface and were misdiagnosed as
+        // silent completions. Both surfaces that assemble a task's
+        // history query the kind now.
+        let src = include_str!("client/commands_query.rs");
+        let timeline_seg = src
+            .split("fn cmd_timeline(")
+            .nth(1)
+            .and_then(|s| s.split("let resp = call(").next())
+            .unwrap_or("");
+        assert!(
+            timeline_seg.contains("\"staleness_autocomplete\""),
+            "cmd_timeline queries staleness_autocomplete so retirements are visible"
+        );
+        let show_seg = src
+            .split("fn cmd_show(")
+            .nth(1)
+            .and_then(|s| s.split("fn cmd_timeline(").next())
+            .unwrap_or("");
+        assert!(
+            show_seg.contains("\"staleness_autocomplete\""),
+            "cmd_show queries staleness_autocomplete so retirements are visible"
+        );
     }
 
     #[test]
@@ -415,6 +464,52 @@ mod tests {
     fn iso_utc_formats_the_store_shape() {
         assert_eq!(iso_utc(0), "1970-01-01T00:00:00Z");
         assert_eq!(iso_utc(1_794_676_389), "2026-11-14T17:13:09Z");
+    }
+
+    #[test]
+    fn timeline_interleaves_notes_into_one_story_14170_q4() {
+        // #14170 Q4 oracle: notes and events render as one
+        // chronological story; each keeps its own order, and a
+        // same-second tie puts the event first.
+        let ev = |id: i64, us: i64| TimelineEvent {
+            id,
+            kind: "claimed".to_string(),
+            session_id: None,
+            provider: None,
+            model: None,
+            variant: None,
+            trigger: None,
+            created_at: format!("e{id}"),
+            created_us: us,
+        };
+        let note = |id: i64, us: i64| TimelineNote {
+            id,
+            author: "w".to_string(),
+            author_kind: "agent".to_string(),
+            session_id: None,
+            provider: None,
+            model: None,
+            variant: None,
+            body: format!("n{id}\nsecond line"),
+            created_at: format!("n{id}"),
+            created_us: us,
+            edited_at: None,
+            deleted_at: None,
+        };
+        let events = [ev(1, 10), ev(2, 20), ev(3, 40)];
+        let notes = [note(7, 5), note(8, 20), note(9, 30), note(10, 50)];
+        let story: Vec<String> = interleave_notes(&events, &notes)
+            .iter()
+            .map(|e| match e {
+                TimelineEntry::Event(ev) => ev.created_at.clone(),
+                TimelineEntry::Note(n) => n.created_at.clone(),
+            })
+            .collect();
+        assert_eq!(story, ["n7", "e1", "e2", "n8", "n9", "e3", "n10"]);
+        let line = format_timeline_note(&note(7, 5));
+        assert!(line.starts_with("n7  note #7  by w"), "{line}");
+        assert!(line.ends_with("\n    n7\n    second line"), "{line}");
+        assert!(interleave_notes(&[], &[]).is_empty());
     }
 
     #[test]
@@ -798,6 +893,39 @@ mod tests {
         let mut scalar = json!(5);
         attach_mode_line(&mut scalar, "heartbeat", legs_served(true, true));
         assert_eq!(scalar, json!(5));
+    }
+
+    #[test]
+    fn served_lifecycle_verbs_report_normal_cloud() {
+        // #8581 acceptance remainder: every task-row lifecycle
+        // verb whose served path prints the broker's row carries
+        // the contract mode line — a broker-served verb on a
+        // healthy store reports normal/cloud under its own CLI
+        // verb name (claim/heartbeat/checkpoint wire their legs
+        // explicitly and are covered above).
+        for verb in [
+            "release",
+            "lane",
+            "bind",
+            "park",
+            "wake",
+            "block",
+            "unblock",
+            "dep-recheck",
+            "quarantine-recheck",
+            "cancel",
+            "revive",
+            "fail",
+            "complete",
+        ] {
+            let row = served_row(json!({"id": 7, "status": "claimed"}), verb);
+            assert_eq!(
+                row["mode_line"],
+                json!({"verb": verb, "mode": "normal", "route": "cloud"}),
+                "served_row for {verb}"
+            );
+            assert_eq!(row["id"], json!(7));
+        }
     }
 
     #[test]
@@ -2416,6 +2544,28 @@ esac
         // "default" is the server saying no variant was chosen, so
         // the session's real variant supplies effort.
         assert_eq!(derived["effort"], json!("low"));
+    }
+
+    #[test]
+    fn completion_telemetry_route_claim_model_is_the_pool_not_the_model() {
+        // A transfer-stamped claim through the route provider: its
+        // claim_model holds the route id (the pool), never a serving
+        // leaf, so the session's leaf supplies the model — and with
+        // no session record the model is an honest null rather than
+        // the route alias.
+        let claim = json!({"claim_provider": "opencode-route", "claim_model": "workhorse"});
+        let session = json!({"data": {
+            "model": {"providerID": "opencode-route", "id": "workhorse"},
+            "route_usage": {"lastServing": {
+                "providerID": "anthropic", "modelID": "claude-opus-4-1", "variant": "medium"
+            }},
+        }});
+        let derived = derive_completion_telemetry(&claim, Some(&session));
+        assert_eq!(derived["model"], json!("claude-opus-4-1"));
+        assert_eq!(derived["effort"], json!("medium"));
+        assert_eq!(derived["pool"], json!("workhorse"));
+        let derived = derive_completion_telemetry(&claim, None);
+        assert_eq!(derived["model"], Value::Null);
     }
 
     #[test]

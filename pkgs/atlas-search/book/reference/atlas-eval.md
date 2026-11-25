@@ -2,19 +2,20 @@
 
 Source: [pkgs/atlas-search/crates/atlas-core/src/bin/atlas-eval.rs](https://github.com/developing-today/code/blob/main/pkgs/atlas-search/crates/atlas-core/src/bin/atlas-eval.rs) and [pkgs/atlas-search/crates/atlas-core/src/eval.rs](https://github.com/developing-today/code/blob/main/pkgs/atlas-search/crates/atlas-core/src/eval.rs) (issue #5741).
 
-`atlas-eval` is a single-verb binary with no subcommands: the offline ranking-evaluation runner for Atlas. It scores saved rankings — lists of document ids produced earlier by any retrieval signal, against a corpus — against judged relevance data, and prints a report. It generates no rankings itself: it loads no embedding model, opens no database, and makes no network calls. The same input therefore produces a byte-identical report on every run.
+`atlas-eval` is a single-verb binary with no subcommands: the offline ranking-evaluation runner for Atlas. It scores saved rankings — lists of document ids produced earlier by any retrieval signal, against a corpus — against judged relevance data, and prints a report. It generates no rankings itself: it loads no embedding model, opens no database, and makes no network calls. The same input and command therefore produce a byte-identical report on every run.
 
 ## Invocation
 
 ```
 atlas-eval <eval.json> <dev|test>
+atlas-eval --precision-at-k <k> <eval.json> <dev|test>
 ```
 
-There are no option flags. `--help` / `-h` prints the one-line usage text to stdout and exits 0; `--version` / `-V` prints `atlas-eval 0.1.0`, exit 0. The literal word `help` is not recognised: it falls into the wrong-arity path, prints the usage text to stderr, and exits 2.
+The original invocation remains unchanged and prints the existing `atlas-eval-report/v1` output. `--precision-at-k` selects a separate report, leaving all callers of the original command and its output unchanged. `--help` / `-h` prints both usage forms to stdout and exits 0; `--version` / `-V` prints `atlas-eval 0.1.0`, exit 0. The literal word `help` is not recognised and exits 2.
 
 | Flag                               | Argument                            | Default  | Meaning                                                                                                                    |
 | ---------------------------------- | ----------------------------------- | -------- | -------------------------------------------------------------------------------------------------------------------------- |
-| (none)                             | —                                   | —        | This binary takes no `--flag` options beyond `--help` / `--version`.                                                       |
+| `--precision-at-k`                 | integer `k` in `1..=1000`           | —        | Emit the standalone Precision@k report (`atlas-eval-precision-report/v1`) instead of the existing report.                  |
 | `&lt;eval.json&gt;` (positional 1) | path to an `atlas-eval/v1` document | required | The evaluation input: queries, qrels, and saved rankings (see below).                                                      |
 | `&lt;dev\|test&gt;` (positional 2) | `dev` or `test`                     | required | Which split of the input document to score. Any other value is an error: `atlas-eval: unknown split "…" (want dev\|test)`. |
 
@@ -30,7 +31,7 @@ Validation rejects, before any scoring: a wrong format version, duplicate query 
 
 ## Behaviour: what is scored and reported
 
-For the requested split, the runner scores every run in the document and prints one `atlas-eval-report/v1` JSON report to stdout. Four metrics are computed per query, then averaged over the queries that have at least one relevant document (`queries_scored`), both overall and per query class:
+For the original invocation, the runner scores every run in the document and prints one `atlas-eval-report/v1` JSON report to stdout. Four metrics are computed per query, then averaged over the queries that have at least one relevant document (`queries_scored`), both overall and per query class:
 
 | Metric      | Meaning                                                                                                                                                                      |
 | ----------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -40,6 +41,12 @@ For the requested split, the runner scores every run in the document and prints 
 | MRR@10      | Mean reciprocal rank: `1 / rank` of the first relevant document, counting only the top 10 ranks (0 when none appears there).                                                 |
 
 Each per-query record in the report preserves the run's top-1000 document ids (field `top1000`) and the query's judged grades, so any number in the report can be recomputed from the report alone. Reports are deterministic: signals, queries, and classes are sorted, and floats are rounded to 6 decimal places.
+
+The optional precision invocation emits a separate `atlas-eval-precision-report/v1` document with `k` and, per signal, the macro precision mean, per-class means, and per-query `hits`, `denominator`, and `precision`. Each query contributes to the mean, including queries with no positive qrels. The denominator is always `k`: a short or missing ranking has zero-valued missing slots. For example, one relevant hit in a one-result ranking at `k=3` is `1/3`, not `1/1`. The bound `1..=1000` keeps the report depth within the harness's existing rank evidence ceiling.
+
+```sh
+atlas-eval --precision-at-k 10 eval.json dev
+```
 
 ## Dev/test discipline
 
@@ -95,3 +102,17 @@ The report's per-signal means carry the four metrics above — `ndcg10`, `recall
 | 0    | Success: the report for the requested split was printed to stdout.                         |
 | 1    | Runtime failure: unreadable input file, invalid evaluation data, or an evaluation failure. |
 | 2    | Usage failure: wrong arity (including `--help`/`-h`/`help`) or an unknown split value.     |
+
+## Offline single-user recommendation candidates
+
+The Python experiment in `eval/session_cooccurrence.py` evaluates the session co-occurrence signal from [#9140](https://github.com/developing-today/code/issues/9140). From the repository root, run the synthetic fixture with:
+
+```sh
+python3 pkgs/atlas-search/eval/session_cooccurrence.py pkgs/atlas-search/eval/fixtures/session-cooccurrence.json -k 2
+```
+
+The fixture uses `atlas-recommendation-eval/v1`. One subject has an explicit list of eligible session and item references, a chronological cutoff, and sessions with inclusive integer start/end positions and ordered item opens. References must have a common stable namespace and opens must follow event order. Eligibility comes from the evaluation fixture or a trusted upstream projection that resolves current access and tombstones. The evaluator admits matching subjects and sessions and removes ineligible items before any split or pair count. It discards sessions spanning the cutoff. The CLI reports aggregate counts and metrics.
+
+Training uses sessions ending at or before the cutoff. Each distinct seed/candidate pair contributes once per training session. Candidates accumulate votes across distinct seeds, omit seeds, and break ties by item reference ascending. Each later session with at least two eligible, distinct opens provides a test case. The first half (rounded down) supplies seeds and the remainder supplies binary relevance. Repeated opens use their first position. Precision and recall use pooled counts, while reciprocal rank and normalized discounted gain use session means. An unseen seed counts as a miss. With no scorable sessions the metrics are null. The fixture hand-counts one hit across two scorable sessions at depth two.
+
+A live experiment needs a trusted session-to-query join, stable item resolution and an eligibility projection current at evaluation time. The current trace writer in `crates/atlas-core/src/trace.rs` emits a requester and query ID and leaves file/content identity fields null. Feedback in `crates/atlas-core/src/feedback.rs` attaches the opened signal to a query and chunk. The synthetic fixture tests the algorithm only. The package has no production recommendation route from this experiment.

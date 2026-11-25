@@ -31,15 +31,19 @@ members = [
   "crates/id-render",
   "crates/id-native-shell",
   "crates/id-hw-shell",
+  "crates/id-tui-shell",
   "crates/id-cli",
   "crates/id-import-notion",
+  "crates/id-client",
+  "crates/id-pg",
+  "crates/id-grants",
 ]
 # The vendored crates stay OUT of the workspace: as path dependencies inside
 # this directory Cargo would otherwise treat them as members, and a member's
 # feature graph joins the lock resolve — p2panda-sync's `test_utils` feature
 # forwards to `p2panda-store/test_utils`, whose `sqlite` feature pulls sqlx
 # into Cargo.lock even though no build here enables it (see vendor/README.md).
-exclude = ["vendor/p2panda-sync", "vendor/p2panda-encryption"]
+exclude = ["vendor/p2panda-sync", "vendor/p2panda-encryption", "vendor/kdl"]
 default-members = [
   ".",
   "crates/id-core",
@@ -56,6 +60,9 @@ default-members = [
   "crates/id-render",
   "crates/id-cli",
   "crates/id-import-notion",
+  "crates/id-pg",
+  "crates/id-grants",
+  "crates/id-client",
 ]
 
 # =============================================================================
@@ -82,7 +89,7 @@ dht = ["id-sync/dht", "id-cli/dht"]
 currency-poc-tb = ["dep:tigerbeetle"]
 
 [dependencies]
-num-bigint = { version = "0.4.8", optional = true }
+num-bigint = { version = "0.5.1", optional = true }
 # Foundation leaf modules extracted in Phase 1 of the crate split (#3447).
 # Features are forwarded explicitly (see [features]); the crate's modules
 # are re-exported at their historical crate:: paths in src/lib.rs.
@@ -116,6 +123,10 @@ id-cli = { path = "crates/id-cli", default-features = false }
 # Directory-family modules extracted in step 6b of the crate split
 # (#4409). Re-exported at their historical crate:: paths in src/lib.rs.
 id-directory = { path = "crates/id-directory", default-features = false }
+# The public-shares grants model (#5802): the libsql adapter builds its
+# published set from the real publication record (#14781, #14784) in
+# src/foreign_libsql.rs.
+id-grants = { path = "crates/id-grants" }
 # Currency registry + account factory (F1 #2317, F2 #2318); composed
 # with the gateway envelope by the #2321 PoC (src/currency/gateway_poc.rs).
 id-currency-registry = { path = "crates/id-currency-registry", default-features = false }
@@ -159,7 +170,7 @@ p2panda-auth = { git = "https://github.com/p2panda/p2panda", rev = "da80c05b9526
 # declared there now, with the same features.
 postcard = { version = "1", features = ["alloc"] }
 rand = "0.10"
-redb = "=4.6.0"
+redb = "=5.0.0"
 rustyline = "19"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -227,14 +238,14 @@ id-sync = { path = "crates/id-sync", default-features = false, features = [
   "test-utils",
 ] }
 # SQLite for the bridge PoC's DO-shaped hosted store (#2276). Bundled, so no system SQLite is needed.
-rusqlite = { version = "0.42", features = ["bundled"] }
+rusqlite = { version = "0.43", features = ["bundled"] }
 wat = "=1.263.0"
 tokio-tungstenite = "0.30"
 # vt100 moved to id-worlds (dev) with world_ssh in step 5c (#4408).
 # The CLI integration tests drive an SSH client against the world SSH
 # server; the server side (and its russh) lives in id-worlds since
 # step 5c, so the facade keeps russh for its tests only.
-russh = "=0.65.1"
+russh = "=0.65.2"
 proptest = "1.12"
 # Interop vectors for the canonical CBOR of event headers. Dev only.
 dcbor = "=0.25.2"
@@ -247,7 +258,7 @@ iroh-blobs = "0.103"
 # Parses the relay kit's configs in tests/relay_ops.rs. Dev only.
 toml = "1"
 # Local mainline DHT testnet for tests/dht_testnet.rs (P7.3). Dev only; already in the lock via the `dht` feature.
-n0-mainline = "0.7"
+n0-mainline = "0.8"
 # The lookup under test in tests/dht_testnet.rs (P7.3); the root package
 # only names it for that test, so it is a dev-dependency.
 iroh-mainline-address-lookup = "0.6"

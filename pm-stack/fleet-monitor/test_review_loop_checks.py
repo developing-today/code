@@ -322,5 +322,105 @@ class VerdictFooterParsingTests(unittest.TestCase):
         self.assertEqual(checks.parse_verdict_footers([body]), [])
 
 
+class LiveCollectionTests(unittest.TestCase):
+    """The live collector speaks the current queue CLI contract: the
+    bulk list is a human table (single-status only) and --json is a
+    scoped single-task exact read."""
+
+    TABLE = (
+        "task        priority  status  age       dedupe_key"
+        "                                            title\n"
+        "----        --------  ------  ---       ----------"
+        "                                            -----\n"
+        "task 22217  70        queued  2:18:26   "
+        "repo-health:v1:second-pass:developing-today/code:12518:pass-2"
+        "              Second pass #12518: pm-console edge\n"
+        "task 22328  70        queued  2:12:17   "
+        "repo-health:v1:triage:developing-today/code:issue:13492"
+        "                    Triage #13492: Machines\n"
+    )
+
+    def test_parse_task_table(self):
+        rows = checks._parse_task_table(self.TABLE)
+        self.assertEqual(
+            rows,
+            [
+                (
+                    22217,
+                    "repo-health:v1:second-pass:developing-today/code:12518:pass-2",
+                ),
+                (22328, "repo-health:v1:triage:developing-today/code:issue:13492"),
+            ],
+        )
+        self.assertEqual(checks._parse_task_table("(no tasks)\n"), [])
+        self.assertEqual(checks._parse_task_table(""), [])
+
+    def test_packet_from_record(self):
+        rec = {
+            "id": 22217,
+            "status": "queued",
+            "created_at": "2026-11-24T07:50:00Z",
+            "claimed_at": None,
+            "payload": {
+                "issue": {"number": 12518},
+                "review": {"pass": 2, "pass_cap": 3},
+            },
+        }
+        self.assertEqual(
+            checks._packet_from_record(rec),
+            {
+                "task_id": 22217,
+                "status": "queued",
+                "issue": 12518,
+                "review_pass": 2,
+                "review_pass_cap": 3,
+                "effort": None,
+                "created_at": "2026-11-24T07:50:00Z",
+                "claimed_at": None,
+            },
+        )
+        no_review = dict(rec, payload={"issue": {"number": 12518}})
+        self.assertIsNone(checks._packet_from_record(no_review))
+        no_issue = dict(rec, payload={"review": {"pass": 1}})
+        self.assertIsNone(checks._packet_from_record(no_issue))
+
+    def test_collect_live_packets_exact_reads_only_review_rows(self):
+        import json as jsonlib
+        from unittest import mock
+
+        exact = jsonlib.dumps(
+            {
+                "task": {
+                    "id": 22217,
+                    "status": "queued",
+                    "created_at": "2026-11-24T07:50:00Z",
+                    "claimed_at": None,
+                    "payload": {
+                        "issue": {"number": 12518},
+                        "review": {"pass": 2, "pass_cap": 3},
+                    },
+                }
+            }
+        )
+        calls = []
+
+        def fake_run(cmd):
+            calls.append(cmd)
+            if "--task" in cmd:
+                return exact
+            status = cmd[cmd.index("--status") + 1]
+            return self.TABLE if status == "queued" else "(no tasks)\n"
+
+        with mock.patch.object(checks, "_run", side_effect=fake_run):
+            packets = checks._collect_live_packets("repo-health-code-pilot")
+        self.assertEqual(len(packets), 1)
+        self.assertEqual(packets[0]["task_id"], 22217)
+        self.assertEqual(packets[0]["review_pass"], 2)
+        exact_reads = [c for c in calls if "--task" in c]
+        self.assertEqual(len(exact_reads), 1)  # triage row never read
+        status_calls = [c for c in calls if "--status" in c]
+        self.assertEqual(len(status_calls), 3)  # queued, claimed, parked
+
+
 if __name__ == "__main__":
     unittest.main()

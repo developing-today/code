@@ -105,6 +105,16 @@ export const PAGES: PageDef[] = [
     nav: "primary",
   },
   {
+    id: "needs-user",
+    title: "Needs user",
+    route: "/needs-user",
+    api: "/api/needs-user",
+    blurb:
+      "Open questions waiting on you (#14084), by the priority you set, then how many issues wait on each answer, then age.",
+    group: "overview",
+    nav: "dropdown",
+  },
+  {
     id: "reports",
     title: "Reports",
     route: "/reports",

@@ -66,7 +66,7 @@ import {
 import { mergeChargeRows } from "../charges-collect.ts";
 import type { CloudflareExportDoc } from "../saas-extract.ts";
 import { poolItemToGhItem } from "../projects.ts";
-import { createNeedsDrewSweeper, type NeedsDrewCensus } from "../needs-drew.ts";
+import { createNeedsDrewSweeper, needsDrewSweepTtlMs, type NeedsDrewCensus } from "../needs-drew.ts";
 import { INITIAL_STANDING_AUTO, sanitizeTierItemExtensions, withUserFallbacks } from "../tier-items.ts";
 import { assembleWorkItems } from "../work-items.ts";
 import {
@@ -347,18 +347,29 @@ async function gristRoadmap(cfg: Config): Promise<RoadmapRow[]> {
  * Enrich board items / roadmap rows with their cross-repo registry links.
  * This is the first-class requirement Kaneo cannot provide: the registry is
  * where a `code` task's link to an `opencode` PR lives.
+ *
+ * A failed registry read never throws and never blocks the board: the
+ * entry keeps its own links and the result reports `linksDegraded` so the
+ * caller can say so in its provenance (#8570) instead of claiming links
+ * it did not fetch.
  */
 async function enrichWithRegistryLinks<T extends { links: Link[] }>(
   baseUrl: string,
   entries: T[],
   subjectOf: (entry: T) => string,
-): Promise<T[]> {
-  return Promise.all(
+): Promise<{ entries: T[]; linksDegraded: boolean }> {
+  let linksDegraded = false;
+  const enriched = await Promise.all(
     entries.map(async (entry) => {
       const extra = await projectorLinks(baseUrl, subjectOf(entry));
+      if (extra === null) {
+        linksDegraded = true;
+        return entry;
+      }
       return extra.length ? { ...entry, links: mergeLinks(entry.links, extra) } : entry;
     }),
   );
+  return { entries: enriched, linksDegraded };
 }
 
 // --- Orchestrator in-flight lane -------------------------------------------
@@ -861,20 +872,26 @@ export function liveSource(
   let laptopFailureAt = 0;
   let laptopInFlight: Promise<MappedSessions | null> | null = null;
   const LAPTOP_FAILURE_CACHE_MS = 15_000;
-  // #1226: the Needs-Drew label census hits the GitHub search API
-  // (8 queries per sweep). The sweeper caches for 5 minutes and shares
-  // one in-flight sweep between concurrent callers, so the three
-  // attention fragments rendering together do not each pay that cost or
-  // burn the search rate limit (#3970).
-  const needsDrewSweep = createNeedsDrewSweeper((url) => {
-    const token = process.env.PM_AGG_GITHUB_TOKEN ?? process.env.GITHUB_TOKEN;
-    const headers: Record<string, string> = {
-      Accept: "application/vnd.github+json",
-      "X-GitHub-Api-Version": "2022-11-28",
-      ...(token ? { Authorization: "Bearer " + token } : {}),
-    };
-    return getJson(url, headers);
-  });
+  // #1226: the Needs-Drew label census asks each repository's list of
+  // open issues by label (8 requests per sweep; the search API until
+  // #14103, which GitHub refuses some tokens in the form it was asked). The
+  // sweeper caches for 5 minutes and shares one in-flight sweep between
+  // concurrent callers, so the three attention fragments rendering
+  // together do not each pay that cost (#3970).
+  const needsDrewSweep = createNeedsDrewSweeper(
+    (url) => {
+      const token = process.env.PM_AGG_GITHUB_TOKEN ?? process.env.GITHUB_TOKEN;
+      const headers: Record<string, string> = {
+        Accept: "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+        ...(token ? { Authorization: "Bearer " + token } : {}),
+      };
+      return getJson(url, headers);
+    },
+    {},
+    // Half as often with no token: see needsDrewSweepTtlMs.
+    { ttlMs: needsDrewSweepTtlMs(Boolean(process.env.PM_AGG_GITHUB_TOKEN ?? process.env.GITHUB_TOKEN)) },
+  );
   // #9922: the Path to Phase 12 body feed — one GraphQL read of
   // #1235's body, cached for 5 minutes and shared in-flight (same
   // discipline as the Needs-Drew sweeper above), fail-soft to the
@@ -1231,6 +1248,9 @@ export function liveSource(
   // when nothing good exists yet — never a throw into a page.
   let queueCache: { value: QueueSnapshot; at: number } | null = null;
   let queueInFlight: Promise<QueueSnapshot> | null = null;
+  // Q8: the queue history cursor is process-local and monotonic. A
+  // restart safely replays from zero because history rows are immutable.
+  let queueHistoryCursor = 0;
   async function queueSnapshot(): Promise<QueueSnapshot> {
     if (queueCache && Date.now() - queueCache.at < 60_000) {
       const v = queueCache.value;
@@ -1241,7 +1261,15 @@ export function liveSource(
         try {
           const token = await readBrokerToken(cfg.queueBrokerTokenFile);
           if (!token) throw new Error(`queue broker token file unreadable: ${cfg.queueBrokerTokenFile}`);
-          const snap = await fetchQueueSnapshot(cfg.queueBrokerUrl, token);
+          const snap = await fetchQueueSnapshot(
+            cfg.queueBrokerUrl,
+            token,
+            undefined,
+            undefined,
+            200,
+            queueHistoryCursor,
+          );
+          if (snap.history?.available) queueHistoryCursor = snap.history.cursor;
           queueCache = { value: snap, at: Date.now() };
           return snap;
         } catch (err) {
@@ -1368,9 +1396,14 @@ export function liveSource(
         provenance.board = "live (Kaneo; done aged out after 7 days, retired ROADMAP Done-table cards filtered)";
         let merged = board;
         if (cfg.projector.baseUrl) {
-          merged = await enrichWithRegistryLinks(cfg.projector.baseUrl, board, (b) => b.id);
-          provenance.board =
-            "live (Kaneo + projector links; done aged out after 7 days, retired ROADMAP Done-table cards filtered)";
+          const { entries, linksDegraded } = await enrichWithRegistryLinks(cfg.projector.baseUrl, board, (b) => b.id);
+          merged = entries;
+          // #8570: a dead registry degrades the links visibly — the board
+          // stays up on the Kaneo cards, and the chip names the outage
+          // instead of claiming "+ projector links" for links not fetched.
+          provenance.board = linksDegraded
+            ? "live (Kaneo + projector links unavailable (registry unreachable); done aged out after 7 days, retired ROADMAP Done-table cards filtered)"
+            : "live (Kaneo + projector links; done aged out after 7 days, retired ROADMAP Done-table cards filtered)";
         }
         // In-flight lane (see inFlightBoardItems above): synthetic
         // entries from the fleet feed's orchestration section — the
@@ -1403,8 +1436,16 @@ export function liveSource(
           let merged = rows;
           let label = "live (Grist)";
           if (cfg.projector.baseUrl) {
-            merged = await enrichWithRegistryLinks(cfg.projector.baseUrl, rows, (r) => r.subject);
-            label = "live (Grist + projector links)";
+            const { entries, linksDegraded } = await enrichWithRegistryLinks(
+              cfg.projector.baseUrl,
+              rows,
+              (r) => r.subject,
+            );
+            merged = entries;
+            // #8570: same degraded-links honesty as the board path above.
+            label = linksDegraded
+              ? "live (Grist + projector links unavailable (registry unreachable))"
+              : "live (Grist + projector links)";
           }
           // #1738: merge the repos' own roadmap files in alongside the
           // Grist rows. The repo-file read never throws (its failures
