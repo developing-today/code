@@ -231,7 +231,7 @@ knight_targets : U64 -> List(U64)
 knight_targets = |index|
     List.fold([0, 1, 2, 3, 4, 5, 6, 7], [], |acc, tag|
         match knight_step(index, tag) {
-            Ok(target) => List.append(acc, target)
+            Ok(sq) => List.append(acc, sq)
             Err(_) => acc
         })
 
@@ -254,11 +254,11 @@ ray_attacked = |board, from, dir, a, b|
         }
     }
 
-## Is `target` attacked by any piece of side `by_side`?
+## Is `square` attacked by any piece of side `by_side`?
 is_attacked : Str, U64, Str -> Bool
-is_attacked = |board, target, by_side| {
-    row = target / 8
-    col = target % 8
+is_attacked = |board, square, by_side| {
+    row = square / 8
+    col = square % 8
     pawn = if by_side == "white" { 80 } else { 112 }
     knight = if by_side == "white" { 78 } else { 110 }
     king = king_byte(by_side)
@@ -269,20 +269,20 @@ is_attacked = |board, target, by_side| {
     # target; a black pawn sits one row above.
     pawn_hit =
         if by_side == "white" {
-            (row < 7 and col > 0 and cell_at(board, target + 7) == pawn)
-            or (row < 7 and col < 7 and cell_at(board, target + 9) == pawn)
+            (row < 7 and col > 0 and cell_at(board, square + 7) == pawn)
+            or (row < 7 and col < 7 and cell_at(board, square + 9) == pawn)
         } else {
-            (row > 0 and col > 0 and cell_at(board, target - 9) == pawn)
-            or (row > 0 and col < 7 and cell_at(board, target - 7) == pawn)
+            (row > 0 and col > 0 and cell_at(board, square - 9) == pawn)
+            or (row > 0 and col < 7 and cell_at(board, square - 7) == pawn)
         }
-    knight_hit = List.any(knight_targets(target), |sq| cell_at(board, sq) == knight)
+    knight_hit = List.any(knight_targets(square), |sq| cell_at(board, sq) == knight)
     king_hit = List.any([0, 1, 2, 3, 4, 5, 6, 7], |dir|
-        match step_rc(target, dir) {
+        match step_rc(square, dir) {
             Ok(sq) => cell_at(board, sq) == king
             Err(_) => Bool.False
         })
-    diag_hit = List.any([1, 3, 5, 7], |dir| ray_attacked(board, target, dir, bishop, queen))
-    line_hit = List.any([0, 2, 4, 6], |dir| ray_attacked(board, target, dir, rook, queen))
+    diag_hit = List.any([1, 3, 5, 7], |dir| ray_attacked(board, square, dir, bishop, queen))
+    line_hit = List.any([0, 2, 4, 6], |dir| ray_attacked(board, square, dir, rook, queen))
     pawn_hit or knight_hit or king_hit or diag_hit or line_hit
 }
 
@@ -383,11 +383,11 @@ pawn_moves = |pos, index, side| {
 ## Leaper moves (knight, king): every target square that is empty or
 ## holds an enemy.
 leaper_moves : Str, U64, Str, List(U64) -> List(Move)
-leaper_moves = |board, index, side, targets|
-    List.fold(targets, [], |acc, target| {
-        occupant = side_of(cell_at(board, target))
+leaper_moves = |board, index, side, squares|
+    List.fold(squares, [], |acc, sq| {
+        occupant = side_of(cell_at(board, sq))
         if occupant == "" or occupant == enemy_of(side) {
-            List.append(acc, { from: index, to: target, promo: 0 })
+            List.append(acc, { from: index, to: sq, promo: 0 })
         } else {
             acc
         }
@@ -397,7 +397,7 @@ king_steps : U64 -> List(U64)
 king_steps = |index|
     List.fold([0, 1, 2, 3, 4, 5, 6, 7], [], |acc, dir|
         match step_rc(index, dir) {
-            Ok(target) => List.append(acc, target)
+            Ok(sq) => List.append(acc, sq)
             Err(_) => acc
         })
 
