@@ -110,7 +110,7 @@ pub struct EmbeddedHost {
 }
 
 impl EmbeddedHost {
-    fn with_store(store: JournalStore, settings: HostSettings) -> Self {
+    const fn with_store(store: JournalStore, settings: HostSettings) -> Self {
         Self {
             core: Mutex::new(Core {
                 store: Some(store),

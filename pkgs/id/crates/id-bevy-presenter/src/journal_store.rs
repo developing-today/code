@@ -280,7 +280,7 @@ impl JournalStore {
     }
 }
 
-fn restamp(delta: JournalDelta, position: u64) -> JournalDelta {
+const fn restamp(delta: JournalDelta, position: u64) -> JournalDelta {
     match delta {
         JournalDelta::Upsert { id, values, .. } => JournalDelta::Upsert {
             position,
