@@ -226,6 +226,20 @@ in
       description = "Port the pm-aggregator listens on (its PM_AGG_PORT default; the deployed state .env may override it — the #1822 socket unit mirrors this value, so keep the two in step).";
     };
 
+    aggregatorBackendPort = lib.mkOption {
+      type = lib.types.port;
+      default = 14870;
+      description = "Private loopback port for pm-aggregator behind its socket-activated proxy.";
+    };
+
+    aggregatorFreshnessBackendPort = lib.mkOption {
+      type = lib.types.port;
+      default = 14871;
+      description = "Private loopback port for the pm-aggregator freshness publisher listener behind its socket-activated proxy.";
+    };
+
+    aggregatorSocketActivation = lib.mkEnableOption "the pm-aggregator socket-proxy listeners";
+
     dispatchPort = lib.mkOption {
       type = lib.types.port;
       default = 4879;
@@ -288,7 +302,19 @@ in
             # signal delivered to this service is attributed in
             # ${aggState}/sigterm-witness.log before it is
             # forwarded to the app.
-            ExecStart = "${sigtermWitness}/bin/sigterm-witness --log ${aggState}/sigterm-witness.log ${pmAggregator}/bin/pm-aggregator";
+            # Bun 1.4.4 cannot adopt a systemd-passed listener.
+            # Preserve the direct public binds until the socket is
+            # explicitly enabled; with aggregatorSocketActivation the
+            # env wrapper pins the app to the private loopback backend
+            # ports and the sockets + socket-proxyd own the public
+            # addresses (#1822, same pattern as the projector). The
+            # wrapper is needed because PM_AGG_HOSTS/PM_AGG_PORT also
+            # live in the state .env (EnvironmentFile), which must not
+            # win over the backend pin.
+            ExecStart =
+              "${sigtermWitness}/bin/sigterm-witness --log ${aggState}/sigterm-witness.log "
+              + (lib.optionalString cfg.aggregatorSocketActivation "${pkgs.coreutils}/bin/env PM_AGG_HOSTS=127.0.0.1 PM_AGG_PORT=${toString cfg.aggregatorBackendPort} PM_AGG_FRESHNESS_PORT=${toString cfg.aggregatorFreshnessBackendPort} ")
+              + "${pmAggregator}/bin/pm-aggregator";
             EnvironmentFile = "${aggState}/.env";
             # The projector is a deployed service of this stack — never
             # render it off (see the header note). The coverage snapshot
@@ -755,8 +781,11 @@ in
       # default. pm-projector's socket is enabled only by
       # projectorSocketActivation, which also switches its app to the
       # private backend port; this socket targets socket-proxyd because
-      # Bun 1.4.4 cannot consume LISTEN_FDS. The other sockets stay
-      # inactive until their services have a working listener adapter.
+      # Bun 1.4.4 cannot consume LISTEN_FDS. pm-aggregator follows the
+      # same arrangement behind aggregatorSocketActivation (its freshness
+      # publisher listener gets a separate socket + proxy because it
+      # forwards to a different backend port). pm-dispatch's socket
+      # stays inactive until its slice adds the same adapter.
       # Listen
       # addresses mirror the services' live binds, verified on the
       # laptop 2026-11-14: projector 127.0.0.1:7801; aggregator
@@ -774,17 +803,29 @@ in
         };
 
         pm-aggregator = {
-          Unit.Description = "PM aggregator listeners (#1822; inactive until slice 3)";
+          Unit.Description = "PM aggregator listeners (#1822; inactive unless aggregatorSocketActivation)";
           Socket = {
             ListenStream = [
               "127.0.0.1:${toString cfg.aggregatorPort}"
               "${cfg.tailnetAddress}:${toString cfg.aggregatorPort}"
-              # The freshness publisher listener (loopback only);
-              # mirrors PM_AGG_FRESHNESS_PORT in the service env above.
-              "127.0.0.1:4871"
             ];
-            Service = "pm-aggregator.service";
+            Service = "pm-aggregator-proxy.service";
           };
+          Install.WantedBy = lib.optionals cfg.aggregatorSocketActivation [ "sockets.target" ];
+        };
+
+        # The freshness publisher listener (loopback only; mirrors
+        # PM_AGG_FRESHNESS_PORT in the service env above) gets its own
+        # socket + proxy: it forwards to a different backend port than
+        # the main listeners, and one socket-proxyd instance serves one
+        # backend address.
+        pm-aggregator-freshness = {
+          Unit.Description = "PM aggregator freshness publisher listener (#1822; inactive unless aggregatorSocketActivation)";
+          Socket = {
+            ListenStream = "127.0.0.1:4871";
+            Service = "pm-aggregator-freshness-proxy.service";
+          };
+          Install.WantedBy = lib.optionals cfg.aggregatorSocketActivation [ "sockets.target" ];
         };
 
         pm-dispatch = {
@@ -807,6 +848,28 @@ in
         };
         Service = {
           ExecStart = "${config.systemd.package}/lib/systemd/systemd-socket-proxyd 127.0.0.1:${toString cfg.projectorBackendPort}";
+        };
+      };
+
+      systemd.user.services.pm-aggregator-proxy = {
+        Unit = {
+          Description = "PM aggregator socket proxy (#1822)";
+          Requires = [ "pm-aggregator.service" ];
+          After = [ "pm-aggregator.service" ];
+        };
+        Service = {
+          ExecStart = "${config.systemd.package}/lib/systemd/systemd-socket-proxyd 127.0.0.1:${toString cfg.aggregatorBackendPort}";
+        };
+      };
+
+      systemd.user.services.pm-aggregator-freshness-proxy = {
+        Unit = {
+          Description = "PM aggregator freshness publisher socket proxy (#1822)";
+          Requires = [ "pm-aggregator.service" ];
+          After = [ "pm-aggregator.service" ];
+        };
+        Service = {
+          ExecStart = "${config.systemd.package}/lib/systemd/systemd-socket-proxyd 127.0.0.1:${toString cfg.aggregatorFreshnessBackendPort}";
         };
       };
     };
