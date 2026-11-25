@@ -903,6 +903,13 @@ fn apply_entry(state: &mut KeysetState, record: &KeysetRecord) -> Result<()> {
                 authorized_admin,
                 "device enrollment requires an active admin"
             );
+            ensure!(
+                !state
+                    .devices
+                    .get(device_key)
+                    .is_some_and(|device| device.revoked),
+                "a revoked device key cannot be enrolled again"
+            );
             state.devices.insert(
                 device_key.clone(),
                 DeviceState {
@@ -1110,6 +1117,51 @@ mod tests {
         assert!(state.is_admin(&public(1)));
         assert!(!state.is_device(&public(2)));
         assert_eq!(state.devices[&public(2)].enrolled_at, 2);
+    }
+
+    #[test]
+    fn a_revoked_device_key_cannot_be_enrolled_again() {
+        let first = genesis();
+        let admin = key(1);
+        let device = key(2);
+        let enrolled = append(
+            &first,
+            &admin,
+            2,
+            KeysetEntry::DeviceEnrolled {
+                device_key: public(2),
+                label: "tablet".to_owned(),
+            },
+            Some(&device),
+        );
+        let revoked = append(
+            &enrolled,
+            &admin,
+            3,
+            KeysetEntry::DeviceRevoked {
+                device_key: public(2),
+                reason: "lost".to_owned(),
+            },
+            None,
+        );
+        let replay = KeysetRecord::sign(
+            &admin,
+            4,
+            revoked.hash.clone(),
+            KeysetEntry::DeviceEnrolled {
+                device_key: public(2),
+                label: "recovered".to_owned(),
+            },
+            Some(&device),
+        )
+        .unwrap();
+        let mut log = Log::default();
+        for record in [&first, &enrolled, &revoked, &replay] {
+            log.insert(record.clone()).unwrap();
+        }
+        let state = fold(&log, &first.hash).unwrap();
+        assert_eq!(state.head_hash, revoked.hash);
+        assert!(!state.is_device(&public(2)));
     }
 
     /// Lamport 2 at the genesis head, with the rotation's merge key
@@ -1715,15 +1767,22 @@ mod tests {
                         Some(&key(*seed)),
                     )
                     .unwrap();
-                    self.state.devices.insert(
-                        public(*seed),
-                        DeviceState {
-                            label: format!("device-{seed}"),
-                            enrolled_at: lamport,
-                            revoked: false,
-                        },
-                    );
-                    self.emit(record, true);
+                    let valid = !self
+                        .state
+                        .devices
+                        .get(&public(*seed))
+                        .is_some_and(|device| device.revoked);
+                    if valid {
+                        self.state.devices.insert(
+                            public(*seed),
+                            DeviceState {
+                                label: format!("device-{seed}"),
+                                enrolled_at: lamport,
+                                revoked: false,
+                            },
+                        );
+                    }
+                    self.emit(record, valid);
                 }
                 HistoryOp::Revoke(seed) => {
                     let lamport = self.next_lamport();
