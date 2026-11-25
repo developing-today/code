@@ -58,7 +58,7 @@ describe("validateNewPrompt", () => {
 
   test("accepts the decision target with its design 3.4 fields", () => {
     const decision = {
-      contextLevel: "medium",
+      contextLevel: "medium" as const,
       advancedConstraints: [{ when: { field: "a", eq: 1 }, then: { field: "b", required: true } }],
       contextGenerator: "model:claude-haiku-5-5",
     };
