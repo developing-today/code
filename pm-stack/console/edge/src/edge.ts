@@ -144,6 +144,7 @@ import {
   type OwnerSettings,
   platformSettings,
   settingsDifferences,
+  ownerSettingChange,
   settingsInForce,
   settingsThatDiffer,
 } from "../../src/settings.ts";
@@ -436,6 +437,37 @@ export class Edge {
         touch: [],
         audit: () => ({}),
       },
+      // The owner changes one of the settings the owner may change, or
+      // puts it back to main's (#14956). Done here and only here: no
+      // machine is in this path, and the host has no such action, so a
+      // request this side is not sure is the owner's cannot do it
+      // anywhere. What is kept in the log is the name, never the value.
+      "settings.set": {
+        run: async (a, by) => {
+          const change = ownerSettingChange(a.name, a.value);
+          if ("error" in change) throw new OpError(400, change.error);
+          await this.settingsBase(a.baseRev);
+          const kept =
+            change.name === "promptLabel"
+              ? await this.setOwnerSetting(this.changedBy(by), "promptLabel", change.value)
+              : await this.setOwnerSetting(this.changedBy(by), "needsRepos", change.value);
+          return { rev: kept.rev };
+        },
+        touch: [],
+        audit: (a) => ({ name: a.name }),
+      },
+      "settings.clear": {
+        run: async (a, by) => {
+          if (a.name !== undefined && !(OWNER_CHANGEABLE as readonly unknown[]).includes(a.name)) {
+            throw new OpError(400, `name: one of ${OWNER_CHANGEABLE.join(", ")}, or none for all of them`);
+          }
+          await this.settingsBase(a.baseRev);
+          const kept = await this.clearOwnerSetting(this.changedBy(by), a.name as OwnerChangeableName | undefined);
+          return { rev: kept?.rev ?? 0 };
+        },
+        touch: [],
+        audit: (a) => ({ name: a.name ?? null }),
+      },
       // Something waiting for a machine is taken back by the owner
       // before one has it. (One a machine was already handed may still
       // be done: its answer then finds nothing waiting, and is let go.)
@@ -560,6 +592,32 @@ export class Edge {
       cleared.map((n) => ({ kind: "setting.clear", name: n })),
     );
     return record;
+  }
+
+  /** Who changes a setting: the owner this side is sure of. */
+  private changedBy(by: string | undefined): string {
+    if (typeof by !== "string" || by === "") throw new OpError(400, "Who is changing this is not known here.");
+    return by;
+  }
+
+  /** A change made from what the owner last saw: refused when the
+   * settings have changed since (another tab, another device), with
+   * what they are now, so the owner looks again and decides again.
+   * Without a revision the change is made over whatever is there. 0 is
+   * the revision before the owner has changed anything. */
+  private async settingsBase(baseRev: unknown): Promise<void> {
+    if (baseRev === undefined) return;
+    if (!Number.isSafeInteger(baseRev) || (baseRev as number) < 0) {
+      throw new OpError(400, "baseRev: the revision the change was made from, a whole number");
+    }
+    const now = await this.ownerSettings();
+    if ((now?.rev ?? 0) !== baseRev) {
+      throw new OpError(
+        409,
+        "The settings were changed meanwhile, somewhere else: look at them again before changing them.",
+        { settings: now },
+      );
+    }
   }
 
   private async keepOwnerSettings(
@@ -1070,6 +1128,7 @@ export class Edge {
         // Which settings are in force, from where, since when, with
         // their values: this answer is the owner's alone.
         settings: settingsInForce(told, await this.ownerSettings()),
+        settingsRev: (await this.ownerSettings())?.rev ?? 0,
       },
       // One machine can report today: the one whose key this side holds.
       machines:
@@ -2502,7 +2561,7 @@ export class Edge {
 
   /** What a thrown error is answered with. */
   private failed(error: unknown, what: string): Response {
-    if (error instanceof OpError) return json({ error: error.message }, error.status);
+    if (error instanceof OpError) return json({ ...error.said, error: error.message }, error.status);
     console.error(`pm-edge: ${what}: ${(error as Error).message}`);
     return json({ error: "the edge could not do that" }, 500);
   }
@@ -2592,7 +2651,7 @@ export class Edge {
     await this.audit({ ...base, phase: "start" });
     const entry = { id: id ?? crypto.randomUUID(), kind, at: base.at, by, note: "" };
     try {
-      const result = await action.run(args);
+      const result = await action.run(args, by);
       await this.audit({ ...base, phase: "done", ok: true });
       await this.logAct({ ...entry, status: "done" });
       const cfg = await this.config();

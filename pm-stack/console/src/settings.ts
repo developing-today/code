@@ -42,6 +42,46 @@ export const OWNER_CHANGEABLE = ["promptLabel", "needsRepos"] as const satisfies
 
 export type OwnerChangeableName = (typeof OWNER_CHANGEABLE)[number];
 
+/** The longest label the owner may set: GitHub's own limit on a label. */
+export const PROMPT_LABEL_MAX = 50;
+/** The most repositories the owner may list: the dashboard's census is a
+ * few dozen, and a list this long is a mistake, not a census. */
+export const NEEDS_REPOS_MAX = 50;
+/** A repository as GitHub names one: owner, slash, name. */
+const REPO_NAME = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})\/[A-Za-z0-9._-]{1,100}$/;
+
+/** A change the owner asked for, checked whole: the name is one the
+ * owner may change and the value is that setting's shape. A list of
+ * repositories comes back without repeats, in the order given. Nothing
+ * else is said of a refusal than what is wrong; the value is never
+ * repeated in it. */
+export function ownerSettingChange(
+  name: unknown,
+  value: unknown,
+):
+  | { name: "promptLabel"; value: string }
+  | { name: "needsRepos"; value: string[] }
+  | { error: string } {
+  if (typeof name !== "string" || !(OWNER_CHANGEABLE as readonly string[]).includes(name)) {
+    return { error: `name: one of ${OWNER_CHANGEABLE.join(", ")}` };
+  }
+  if (name === "promptLabel") {
+    if (typeof value !== "string" || value === "") return { error: "promptLabel: a label's name" };
+    if (value.length > PROMPT_LABEL_MAX) return { error: `promptLabel: at most ${PROMPT_LABEL_MAX} characters` };
+    if (value.trim() !== value) return { error: "promptLabel: no spaces at either end" };
+    // A comma separates labels where GitHub takes a list of them.
+    if (/[,\p{Cc}]/u.test(value)) return { error: "promptLabel: no commas or control characters" };
+    return { name, value };
+  }
+  if (!Array.isArray(value) || value.length === 0) return { error: "needsRepos: a list of at least one owner/name" };
+  if (!value.every((repo) => typeof repo === "string" && REPO_NAME.test(repo))) {
+    return { error: "needsRepos: each one owner/name, as GitHub names a repository" };
+  }
+  const repos = [...new Set(value as string[])];
+  if (repos.length > NEEDS_REPOS_MAX) return { error: `needsRepos: at most ${NEEDS_REPOS_MAX} repositories` };
+  return { name: "needsRepos", value: repos };
+}
+
 export interface OwnerSettings {
   /** Monotonic revision; every accepted change increments it. */
   rev: number;

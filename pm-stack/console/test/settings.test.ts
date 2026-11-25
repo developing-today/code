@@ -7,9 +7,12 @@ import {
   effectiveSettings,
   goesBy,
   MACHINES_FOR_NOW,
+  NEEDS_REPOS_MAX,
   OWNER_CHANGEABLE,
+  ownerSettingChange,
   PLATFORM_OWN,
   PLATFORM_SETTING_NAMES,
+  PROMPT_LABEL_MAX,
   type PlatformSettings,
   platformSettings,
   settingsDifferences,
@@ -296,5 +299,54 @@ describe("owner-changeable settings", () => {
       value: platform.needsRepos,
       repository: platform.needsRepos,
     });
+  });
+});
+
+// The oracle for a change the owner asks for is the design's D5 (doc/
+// 2026-11-25T08-48-36Z_design_pm-owner-settings-at-edge.md): a name the
+// owner may change, a value in that setting's shape, or nothing at all.
+describe("a change the owner asks for is checked whole", () => {
+  test("the two settings the owner may change take their own shapes", () => {
+    expect(ownerSettingChange("promptLabel", "owner/prompt")).toEqual({ name: "promptLabel", value: "owner/prompt" });
+    expect(ownerSettingChange("promptLabel", "x".repeat(PROMPT_LABEL_MAX))).toEqual({
+      name: "promptLabel",
+      value: "x".repeat(PROMPT_LABEL_MAX),
+    });
+    expect(ownerSettingChange("needsRepos", ["developing-today/code", "a/b", "developing-today/code"])).toEqual({
+      name: "needsRepos",
+      value: ["developing-today/code", "a/b"],
+    });
+    // Main's own lists are lists the owner could set.
+    expect(ownerSettingChange("needsRepos", platformSettings().needsRepos)).toEqual({
+      name: "needsRepos",
+      value: platformSettings().needsRepos,
+    });
+  });
+
+  test("anything else is refused, saying what is wrong and never the value", () => {
+    const refused = (name: unknown, value: unknown) => {
+      const said = ownerSettingChange(name, value);
+      return "error" in said ? said.error.split(":")[0] : "taken";
+    };
+    for (const name of PLATFORM_SETTING_NAMES.filter((n) => !(OWNER_CHANGEABLE as readonly string[]).includes(n))) {
+      expect([name, refused(name, "x")]).toEqual([name, "name"]);
+    }
+    expect(refused(undefined, "x")).toBe("name");
+    expect(refused("promptLabel", "")).toBe("promptLabel");
+    expect(refused("promptLabel", 7)).toBe("promptLabel");
+    expect(refused("promptLabel", "x".repeat(PROMPT_LABEL_MAX + 1))).toBe("promptLabel");
+    expect(refused("promptLabel", "trailing ")).toBe("promptLabel");
+    expect(refused("promptLabel", "one,two")).toBe("promptLabel");
+    expect(refused("promptLabel", "line\nbreak")).toBe("promptLabel");
+    expect(refused("needsRepos", [])).toBe("needsRepos");
+    expect(refused("needsRepos", "a/b")).toBe("needsRepos");
+    expect(refused("needsRepos", ["a/b/c"])).toBe("needsRepos");
+    expect(refused("needsRepos", ["no-slash"])).toBe("needsRepos");
+    expect(refused("needsRepos", ["a/b", 3])).toBe("needsRepos");
+    expect(refused("needsRepos", Array.from({ length: NEEDS_REPOS_MAX + 1 }, (_, i) => `o/r${i}`))).toBe("needsRepos");
+    // Repeats are not counted against the limit.
+    expect(refused("needsRepos", Array.from({ length: NEEDS_REPOS_MAX + 5 }, () => "o/r"))).toBe("taken");
+    const said = ownerSettingChange("promptLabel", "secret,label");
+    expect(JSON.stringify(said)).not.toContain("secret");
   });
 });

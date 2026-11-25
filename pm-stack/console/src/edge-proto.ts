@@ -149,6 +149,10 @@ export interface MachinesAnswer {
      * the owner reads which settings are in force and since when
      * (#14955). Absent from an answer older than the saying. */
     settings?: SettingInForce[];
+    /** The revision of the owner's changes these settings are at (0
+     * before any): what a change from the app is made from, so one made
+     * from an older look is refused (#14956). */
+    settingsRev?: number;
   } | null;
   machines: {
     name: string;

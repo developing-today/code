@@ -2159,10 +2159,13 @@ describe("actions", () => {
         "push.off",
         "push.on",
         "push.test",
+        "settings.clear",
+        "settings.set",
       ],
       sections: [],
       refused: [],
       settings: expect.any(Array),
+      settingsRev: 0,
     });
     expect(first.machines).toEqual([
       {
@@ -4181,6 +4184,124 @@ describe("which settings are in force is said, and since when", () => {
     // Nobody not signed in is told the values.
     expect((await w.browse("/console/api/machines", { token: null })).status).toBe(401);
   });
+
+  test("the owner changes a setting from the app and puts it back: the edge does it, keeps it and goes by it", async () => {
+    const w = await setup({ direct: true });
+    await w.hostReads();
+    await w.link.now.once();
+    w.hostSaw.length = 0;
+    const at = w.now.t;
+    const set = await w.act("settings.set", { name: "promptLabel", value: "owner/label", baseRev: 0 });
+    expect([set.status, await set.json()]).toEqual([200, { ok: true, result: { rev: 1 } }]);
+    // Done here: no machine was asked, and none is handed it to do later.
+    expect(w.hostSaw.filter((call) => call.includes("/api/act"))).toEqual([]);
+    const answer = await machines(w);
+    expect(answer.held).toEqual([]);
+    expect(answer.platform?.settingsRev).toBe(1);
+    expect(answer.platform?.settings?.find((entry) => entry.name === "promptLabel")).toMatchObject({
+      source: "owner",
+      since: at,
+      value: "owner/label",
+      by: OWNER,
+      rev: 1,
+    });
+    // The public answer names it the owner's, from when it was changed.
+    expect((await health(w)).settingsInForce.find((entry) => entry.name === "promptLabel")).toEqual({
+      name: "promptLabel",
+      source: "owner",
+      since: at,
+    });
+    // A list of repositories is kept once each, in the order given.
+    w.now.t += 1_000;
+    const repos = await w.act("settings.set", {
+      name: "needsRepos",
+      value: ["developing-today/code", "developing-today/opencode", "developing-today/code"],
+      baseRev: 1,
+    });
+    expect(await repos.json()).toEqual({ ok: true, result: { rev: 2 } });
+    expect((await machines(w)).platform?.settings?.find((entry) => entry.name === "needsRepos")?.value).toEqual([
+      "developing-today/code",
+      "developing-today/opencode",
+    ]);
+    // Put back, main's is in force again.
+    w.now.t += 1_000;
+    const cleared = await w.act("settings.clear", { name: "promptLabel", baseRev: 2 });
+    expect(await cleared.json()).toEqual({ ok: true, result: { rev: 3 } });
+    expect(source((await health(w)).settingsInForce, "promptLabel")).toBe("repository");
+    expect(source((await health(w)).settingsInForce, "needsRepos")).toBe("owner");
+    // With no name, every one the owner changed is put back.
+    const all = await w.act("settings.clear", {});
+    expect(await all.json()).toEqual({ ok: true, result: { rev: 4 } });
+    expect((await health(w)).settingsInForce.filter((entry) => entry.source === "owner")).toEqual([]);
+    // The log says what was changed by name and by whom, never the value.
+    const log = JSON.stringify(auditStored(w));
+    expect(log).toContain("settings.set");
+    expect(log).toContain("setting.clear");
+    expect(log).not.toContain("owner/label");
+    expect(log).not.toContain("developing-today/opencode");
+  });
+
+  test("a change is checked whole: a name the owner may not change, or a value not the setting's shape, changes nothing", async () => {
+    const w = await setup({ direct: true });
+    await w.hostReads();
+    await w.link.now.once();
+    const refused = async (kind: string, args: Record<string, unknown>) => {
+      const res = await w.act(kind, args);
+      return [res.status, ((await res.json()) as { error: string }).error.split(":")[0]];
+    };
+    expect(await refused("settings.set", { name: "queue", value: "another-queue" })).toEqual([400, "name"]);
+    expect(await refused("settings.set", { name: "promptLabel", value: "" })).toEqual([400, "promptLabel"]);
+    expect(await refused("settings.set", { name: "promptLabel", value: " padded" })).toEqual([400, "promptLabel"]);
+    expect(await refused("settings.set", { name: "promptLabel", value: "a,b" })).toEqual([400, "promptLabel"]);
+    expect(await refused("settings.set", { name: "promptLabel", value: "x".repeat(51) })).toEqual([400, "promptLabel"]);
+    expect(await refused("settings.set", { name: "needsRepos", value: [] })).toEqual([400, "needsRepos"]);
+    expect(await refused("settings.set", { name: "needsRepos", value: ["not a repository"] })).toEqual([
+      400,
+      "needsRepos",
+    ]);
+    expect(await refused("settings.set", { name: "needsRepos", value: "developing-today/code" })).toEqual([
+      400,
+      "needsRepos",
+    ]);
+    expect(await refused("settings.clear", { name: "repo" })).toEqual([400, "name"]);
+    expect(await refused("settings.set", { name: "promptLabel", value: "ok", baseRev: -1 })).toEqual([400, "baseRev"]);
+    // Nothing was kept.
+    expect((await machines(w)).platform?.settingsRev).toBe(0);
+    expect((await health(w)).settingsInForce.filter((entry) => entry.source === "owner")).toEqual([]);
+  });
+
+  test("a change made from an older look is refused with the settings as they are now", async () => {
+    const w = await setup({ direct: true });
+    await w.hostReads();
+    await w.link.now.once();
+    // Two tabs both see revision 0; the first one's change is made.
+    expect((await w.act("settings.set", { name: "promptLabel", value: "first/label", baseRev: 0 })).status).toBe(200);
+    // The second, from the same look, is refused and told what is there now.
+    const late = await w.act("settings.set", { name: "promptLabel", value: "second/label", baseRev: 0 });
+    const body = (await late.json()) as { error: string; settings: { rev: number; values: Record<string, unknown> } };
+    expect(late.status).toBe(409);
+    expect(body.settings).toMatchObject({ rev: 1, values: { promptLabel: "first/label" }, by: OWNER });
+    const clear = await w.act("settings.clear", { name: "promptLabel", baseRev: 0 });
+    expect(clear.status).toBe(409);
+    expect((await machines(w)).platform?.settings?.find((entry) => entry.name === "promptLabel")?.value).toBe(
+      "first/label",
+    );
+    // Without a revision it is made over whatever is there.
+    expect((await w.act("settings.set", { name: "promptLabel", value: "third/label" })).status).toBe(200);
+    expect((await machines(w)).platform?.settingsRev).toBe(2);
+  });
+
+  test("only someone the edge is sure is the owner changes a setting", async () => {
+    const w = await setup({ direct: true });
+    await w.hostReads();
+    await w.link.now.once();
+    const res = await w.browse("/console/api/act", {
+      body: { kind: "settings.set", args: { name: "promptLabel", value: "stranger/label" } },
+      token: null,
+    });
+    expect(res.status).not.toBe(200);
+    expect((await machines(w)).platform?.settingsRev).toBe(0);
+  });
 });
 
 describe("the edge does the core itself", () => {
@@ -5038,6 +5159,8 @@ describe("the edge does the core itself", () => {
         "push.off",
         "push.on",
         "push.test",
+        "settings.clear",
+        "settings.set",
         "ask.send",
         "ask.reply",
         "ask.close",
@@ -5053,6 +5176,7 @@ describe("the edge does the core itself", () => {
       sections: ["board", "prs", "priorities", "asks", "census", "done"],
       refused: [],
       settings: expect.any(Array),
+      settingsRev: 0,
     });
     expect(first.machines.map((m) => m.name)).toEqual(["nixos"]);
     // Turned away for merging: that is a machine's for the hour, and said so.
