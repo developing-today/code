@@ -134,6 +134,9 @@ export interface AuthDeps {
   /** The kv blob bucket (#13318, src/kv-blobs.ts). Absent → the blob
    * upload door fails closed with 503. */
   kvBlobs?: KvBlobBucket;
+  /** The key read capabilities are MACed with (#13318; a secret).
+   * Absent → the blob read routes fail closed with 503. */
+  kvBlobCapabilityKey?: string;
 }
 
 export async function sha256Hex(text: string): Promise<string> {

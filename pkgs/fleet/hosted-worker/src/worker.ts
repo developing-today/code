@@ -146,6 +146,7 @@ export function buildDeps(env: HostedEnv, opener?: QueueSqlOpener): AuthDeps {
     ...(bridge ? { bridge } : {}),
     ...(kvPrimary ? { kvPrimary } : {}),
     ...(env.KV_BLOBS ? { kvBlobs: r2KvBlobBucket(env.KV_BLOBS) } : {}),
+    ...(env.KV_BLOB_CAPABILITY_KEY ? { kvBlobCapabilityKey: env.KV_BLOB_CAPABILITY_KEY } : {}),
   };
 }
 

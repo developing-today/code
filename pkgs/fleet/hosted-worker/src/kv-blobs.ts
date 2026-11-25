@@ -327,3 +327,241 @@ export async function handleKvBlobPut(req: Request, ctx: CallerContext, deps: Au
     { status: 201, headers: { "content-type": "application/json" } },
   );
 }
+
+// --- reads: capability mint and capability-only read (design §9) ----------
+//
+//   POST /v1/kv/blobs/capability   {registry?, namespace, scope, key}
+//
+// A hash grants nothing. The reader first proves it may read the row:
+// the same scope rule as a write (the namespace's shared scope, or its
+// own private scope), then the key's live head must hold a published
+// KvBlobRefV1 whose object is in the bucket. Only then is a five-minute
+// capability minted, scoped to that one object and the read operation:
+// an HMAC-SHA256 under the Worker's KV_BLOB_CAPABILITY_KEY over every
+// field it names. Then
+//
+//   GET /v1/kv/blobs/read?jurisdiction&tier&digest&bytes_len&expires&mac
+//
+// serves the bytes under the capability alone, re-hashing them on the
+// way out: a stored copy that no longer matches its digest ends the
+// body with an error instead of completing, so it is never served as
+// the value. No key configured → 503 on both routes.
+
+/** How long a read capability lives. */
+export const CAPABILITY_TTL_MS = 5 * 60 * 1000;
+
+export interface BlobCapability {
+  jurisdiction: string;
+  tier: string;
+  digest: string;
+  bytesLen: number;
+  expiresAtMs: number;
+}
+
+function capabilityBinding(cap: BlobCapability): Uint8Array {
+  return new TextEncoder().encode(
+    `fleet-kv-capability-v1\nread\n${cap.jurisdiction}\n${cap.tier}\n${cap.digest}\n${cap.bytesLen}\n${cap.expiresAtMs}`,
+  );
+}
+
+async function capabilityKey(secret: string, usage: "sign" | "verify"): Promise<CryptoKey> {
+  return crypto.subtle.importKey("raw", new TextEncoder().encode(secret), { name: "HMAC", hash: "SHA-256" }, false, [
+    usage,
+  ]);
+}
+
+/** The capability's MAC, lower-case hex. */
+export async function signCapability(secret: string, cap: BlobCapability): Promise<string> {
+  const key = await capabilityKey(secret, "sign");
+  const mac = await crypto.subtle.sign("HMAC", key, capabilityBinding(cap) as BufferSource);
+  return hex(new Uint8Array(mac));
+}
+
+/** Whether `mac` is this capability's, compared in constant time. */
+export async function verifyCapability(secret: string, cap: BlobCapability, mac: string): Promise<boolean> {
+  if (!DIGEST.test(mac)) return false;
+  const signature = new Uint8Array(32);
+  for (let i = 0; i < 32; i++) signature[i] = parseInt(mac.slice(i * 2, i * 2 + 2), 16);
+  const key = await capabilityKey(secret, "verify");
+  return crypto.subtle.verify("HMAC", key, signature as BufferSource, capabilityBinding(cap) as BufferSource);
+}
+
+/** A KvBlobRefV1 as fleet_kv::blob decodes it: every field, in order. */
+export function decodeKvBlobRef(
+  text: string,
+): { digest: string; bytesLen: number; jurisdiction: string; tier: string; locator: string } | null {
+  if (!text.endsWith("\n")) return null;
+  const lines = text.slice(0, -1).split("\n");
+  const fields = ["profile", "digest", "bytes_len", "jurisdiction", "tier", "locator", "state"];
+  if (lines.length !== fields.length) return null;
+  const values: string[] = [];
+  for (let i = 0; i < fields.length; i++) {
+    const prefix = `${fields[i]}=`;
+    if (!lines[i].startsWith(prefix)) return null;
+    values.push(lines[i].slice(prefix.length));
+  }
+  const [profile, digest, bytesLen, jurisdiction, tier, locator, state] = values;
+  if (profile !== "raw-blake3-256" || state !== "published") return null;
+  if (!DIGEST.test(digest) || !DECIMAL.test(bytesLen) || !LABEL.test(jurisdiction) || !LABEL.test(tier)) return null;
+  // eslint-disable-next-line no-control-regex
+  if (locator === "" || /[\u0000-\u001f\u007f]/.test(locator)) return null;
+  return { digest, bytesLen: Number(bytesLen), jurisdiction, tier, locator };
+}
+
+function base64Text(b64: string): string {
+  const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+  return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+}
+
+/** The key's live head value as text, or null when absent or masked. */
+async function liveHeadText(
+  primary: NonNullable<AuthDeps["kvPrimary"]>,
+  address: { scope: string; registry: string; namespace: string; key: string },
+): Promise<string | null> {
+  const read = KV_CATALOG.statements.find((s) => s.name === "head.read");
+  if (!read) throw new FailClosed(500, "kv_catalog_incomplete", "the catalogue has no head.read");
+  const [rows] = await runKvTransaction(primary, [
+    {
+      sql: read.sql,
+      args: [
+        { type: "text", value: address.scope },
+        { type: "text", value: address.registry },
+        { type: "text", value: address.namespace },
+        { type: "text", value: address.key },
+      ],
+    },
+  ]);
+  const row = rows?.[0];
+  if (!row) return null;
+  const state = row[1] as { type?: string; value?: string } | undefined;
+  const value = row[2] as { type?: string; base64?: string; value?: string } | undefined;
+  if (state?.value !== "live" || !value) return null;
+  try {
+    if (value.type === "blob" && typeof value.base64 === "string") return base64Text(value.base64);
+    if (value.type === "text" && typeof value.value === "string") return value.value;
+  } catch {
+    return null;
+  }
+  return null;
+}
+
+/** The capability mint's handler. */
+export async function handleKvBlobCapability(req: Request, ctx: CallerContext, deps: AuthDeps): Promise<Response> {
+  const secret = deps.kvBlobCapabilityKey;
+  const bucket = deps.kvBlobs;
+  const primary = deps.kvPrimary;
+  if (!bucket || !secret) {
+    throw new FailClosed(503, "kv_blobs_not_configured", "this deployment has no kv blob bucket or capability key");
+  }
+  if (!primary) {
+    throw new FailClosed(503, "kv_primary_not_configured", "this deployment has no fleet-kv primary configured");
+  }
+  let body: Record<string, unknown>;
+  try {
+    const parsed: unknown = await req.json();
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) throw new Error("not an object");
+    body = parsed as Record<string, unknown>;
+  } catch {
+    refused("kv_blob_malformed", "the body is not a JSON object");
+  }
+  const field = (name: string): string => {
+    const value = body[name];
+    if (typeof value !== "string" || value === "") refused("kv_blob_malformed", `missing ${name}`);
+    return value;
+  };
+  const registry = typeof body.registry === "string" && body.registry !== "" ? body.registry : KV_REGISTRY;
+  const namespace = field("namespace");
+  const scope = field("scope");
+  const key = field("key");
+  if (scope.startsWith("private:") && ctx.kind !== "service" && !scope.startsWith(privateScopePrefix(ctx.bindingId))) {
+    throw new FailClosed(403, "kv_scope_refused", "the private scope is not the caller's");
+  }
+  await ensureKvMigrated(primary);
+  await checkKvScopes(primary, [{ scope, registry, namespace }]);
+  const head = await liveHeadText(primary, { scope, registry, namespace, key });
+  const reference = head === null ? null : decodeKvBlobRef(head);
+  if (!reference) {
+    throw new FailClosed(404, "no_live_reference", "the key's live value is not a blob reference");
+  }
+  if (!(await bucket.head(publishedKey(reference.jurisdiction, reference.tier, reference.digest)))) {
+    throw new FailClosed(404, "kv_blob_not_found", "the referenced blob is not published");
+  }
+  const cap: BlobCapability = {
+    jurisdiction: reference.jurisdiction,
+    tier: reference.tier,
+    digest: reference.digest,
+    bytesLen: reference.bytesLen,
+    expiresAtMs: Date.now() + CAPABILITY_TTL_MS,
+  };
+  const mac = await signCapability(secret, cap);
+  const q = new URLSearchParams({
+    jurisdiction: cap.jurisdiction,
+    tier: cap.tier,
+    digest: cap.digest,
+    bytes_len: String(cap.bytesLen),
+    expires: String(cap.expiresAtMs),
+    mac,
+  });
+  return new Response(
+    JSON.stringify({
+      read_url: `/v1/kv/blobs/read?${q}`,
+      expires_at_ms: cap.expiresAtMs,
+      digest: cap.digest,
+      bytes_len: cap.bytesLen,
+      jurisdiction: cap.jurisdiction,
+      tier: cap.tier,
+    }),
+    { status: 200, headers: { "content-type": "application/json" } },
+  );
+}
+
+/** The capability-only read's handler. */
+export async function handleKvBlobRead(req: Request, deps: AuthDeps, now: () => number = Date.now): Promise<Response> {
+  const secret = deps.kvBlobCapabilityKey;
+  const bucket = deps.kvBlobs;
+  if (!bucket || !secret) {
+    throw new FailClosed(503, "kv_blobs_not_configured", "this deployment has no kv blob bucket or capability key");
+  }
+  const q = new URL(req.url).searchParams;
+  const get = (name: string): string => q.get(name) ?? "";
+  const cap: BlobCapability = {
+    jurisdiction: get("jurisdiction"),
+    tier: get("tier"),
+    digest: get("digest"),
+    bytesLen: DECIMAL.test(get("bytes_len")) ? Number(get("bytes_len")) : -1,
+    expiresAtMs: DECIMAL.test(get("expires")) ? Number(get("expires")) : -1,
+  };
+  if (cap.bytesLen < 0 || cap.expiresAtMs < 0 || !(await verifyCapability(secret, cap, get("mac")))) {
+    throw new FailClosed(401, "capability_invalid", "the capability does not verify");
+  }
+  if (now() >= cap.expiresAtMs) {
+    throw new FailClosed(401, "capability_expired", "the capability has expired");
+  }
+  const stored = await bucket.get(publishedKey(cap.jurisdiction, cap.tier, cap.digest));
+  if (!stored) throw new FailClosed(404, "kv_blob_not_found", "the blob is not published");
+  const hasher = new Blake3Hasher();
+  const checked = stored.pipeThrough(
+    new TransformStream<Uint8Array, Uint8Array>({
+      transform(chunk, controller) {
+        hasher.update(chunk);
+        if (hasher.length > cap.bytesLen) {
+          controller.error(new Error("blob_length_mismatch"));
+          return;
+        }
+        controller.enqueue(chunk);
+      },
+      flush(controller) {
+        if (hasher.length !== cap.bytesLen) controller.error(new Error("blob_length_mismatch"));
+        else if (hex(hasher.finalize()) !== cap.digest) controller.error(new Error("blob_digest_mismatch"));
+      },
+    }),
+  );
+  return new Response(checked, {
+    status: 200,
+    headers: {
+      "content-type": "application/octet-stream",
+      "content-length": String(cap.bytesLen),
+      "cache-control": "no-store",
+    },
+  });
+}

@@ -118,7 +118,7 @@ export const HOSTED_DOORS: HostedDoor[] = [
   },
   {
     id: "kv-upload",
-    routes: ["PUT /v1/kv/blobs"],
+    routes: ["PUT /v1/kv/blobs", "POST /v1/kv/blobs/capability", "GET /v1/kv/blobs/read"],
     fillingIssue: "#13318",
     state: "live",
   },

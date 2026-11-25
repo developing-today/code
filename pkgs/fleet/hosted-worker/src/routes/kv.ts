@@ -8,7 +8,7 @@
 
 import type { AuthDeps, CallerContext } from "../auth.ts";
 import { FailClosed } from "../errors.ts";
-import { handleKvBlobPut } from "../kv-blobs.ts";
+import { handleKvBlobCapability, handleKvBlobPut, handleKvBlobRead } from "../kv-blobs.ts";
 import { handleKvPipeline } from "../kv-door.ts";
 import type { RouteDef } from "../router.ts";
 
@@ -33,5 +33,24 @@ export const routes: RouteDef[] = [
     path: "/v1/kv/blobs",
     door: "kv-upload",
     handler: (req: Request, ctx: CallerContext | null, deps: AuthDeps) => handleKvBlobPut(req, caller(ctx), deps),
+  },
+  // The read capability mint (#13318): a reader proves it may read the
+  // row before it gets a five-minute, one-object read capability.
+  {
+    method: "POST",
+    path: "/v1/kv/blobs/capability",
+    door: "kv",
+    handler: (req: Request, ctx: CallerContext | null, deps: AuthDeps) =>
+      handleKvBlobCapability(req, caller(ctx), deps),
+  },
+  // The read itself is authorized by the capability alone: no other
+  // credential, so the route is public and the handler fails closed
+  // (401) on a capability that does not verify or has expired.
+  {
+    method: "GET",
+    path: "/v1/kv/blobs/read",
+    door: null,
+    public: true,
+    handler: (req: Request, _ctx: CallerContext | null, deps: AuthDeps) => handleKvBlobRead(req, deps),
   },
 ];

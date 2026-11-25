@@ -115,6 +115,10 @@ export interface HostedEnv {
   /** The kv blob bucket (#13318): an R2 binding for the blob upload
    * door. Absent → that door fails closed (503). */
   KV_BLOBS?: R2BucketLike;
+  /** The kv blob read-capability key (#13318): a secret, set by name
+   * at deployment, never in wrangler.toml. Absent → the read routes
+   * fail closed (503). */
+  KV_BLOB_CAPABILITY_KEY?: string;
   /** The message bridge, by service binding (#14373): the bridge
    * door calls it with the PM credential below. A binding, not a
    * value: present when the deployed shape carries it (wrangler.toml
