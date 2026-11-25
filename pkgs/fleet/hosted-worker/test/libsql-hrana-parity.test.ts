@@ -133,6 +133,7 @@ test("hrana store: the full QueueStore surface round-trips over the transport se
   try {
     const row = await t.store.insertTask({
       queue: "repo-health",
+      manual_only: false,
       title: "fix issue 4242",
       body: "b",
       payload: fixPacket().payload,

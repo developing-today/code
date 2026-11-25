@@ -1042,6 +1042,25 @@ mod tests {
         // the automatic pick sees no work rather than taking that row.
         insert(1, 1, 10);
         assert!(pick().is_empty(), "manual-only work is never auto-claimed");
+        conn.execute(
+            "UPDATE tasks SET status = 'handed_off', progress = '{\"lane\":\"opencode\"}' WHERE id = 1",
+            [],
+        )
+        .unwrap();
+        let handoff = conn
+            .prepare(&format!(
+                "SELECT id FROM tasks WHERE {} ORDER BY priority ASC LIMIT 1",
+                handoff_pick_predicate()
+            ))
+            .unwrap()
+            .query_map([], |row| row.get::<_, i64>(0))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert!(
+            handoff.is_empty(),
+            "handoff auto-pick also skips manual-only work"
+        );
 
         // It is removed before ordering, so an ordinary lower-priority
         // row remains eligible instead of being blocked behind it.
@@ -2050,6 +2069,7 @@ mod tests {
         // Third branch: the full sink predicate, ungated.
         let sink_branch = format!("OR ({HANDOFF_SQL})");
         assert!(pred.contains(&sink_branch), "sink branch present: {pred}");
+        assert!(pred.starts_with("manual_only = 0 AND"), "automatic pick excludes manual-only: {pred}");
         assert_eq!(pred.matches("not_before <= ?").count(), 2);
         assert_eq!(
             pred.matches('?').count(),

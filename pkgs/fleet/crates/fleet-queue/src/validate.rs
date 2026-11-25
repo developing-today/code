@@ -1335,6 +1335,12 @@ pub fn validate_packet(packet: &Value) -> (Vec<String>, Vec<String>) {
     let Some(obj) = packet.as_object() else {
         return (vec!["packet: must be a JSON object".to_string()], warnings);
     };
+    if obj
+        .get("manual_only")
+        .is_some_and(|value| !value.is_boolean())
+    {
+        errors.push("packet.manual_only: must be a boolean".to_string());
+    }
     let Some(payload) = obj.get("payload").filter(|p| p.is_object()) else {
         return (
             vec!["packet.payload: required object (repo-task/v1 payload)".to_string()],
@@ -1548,6 +1554,7 @@ pub fn task_from_packet(packet: &Value, queue: &str) -> Value {
     };
     json!({
         "queue": queue,
+        "manual_only": packet.get("manual_only").and_then(Value::as_bool).unwrap_or(false),
         "title": packet.get("title").cloned().unwrap_or(Value::Null),
         "body": packet.get("body").cloned().unwrap_or(Value::Null),
         "payload": payload,

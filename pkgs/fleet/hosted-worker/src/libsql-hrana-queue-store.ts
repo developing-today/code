@@ -204,6 +204,10 @@ export class HranaQueueStore implements QueueStore {
       for (const stmt of LIBSQL_QUEUE_SCHEMA) {
         await this.client.execute({ sql: stmt, args: [] });
       }
+      const cols = await this.client.execute({ sql: "SELECT name FROM pragma_table_info('tasks')", args: [] });
+      if (!cols.rows.some((col) => col["name"] === "manual_only")) {
+        await this.client.execute({ sql: "ALTER TABLE tasks ADD COLUMN manual_only INTEGER NOT NULL DEFAULT 0", args: [] });
+      }
     })();
     return this.schemaReady;
   }

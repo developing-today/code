@@ -10,7 +10,7 @@ use super::*;
 pub const DEFAULT_TURSO_URL: &str = "https://fleet-queue-dezren39.aws-us-east-1.turso.io";
 pub const TURSO_TOKEN_SECRET_NAME: &str = "turso.fleet-queue-rw-token";
 
-pub(crate) const TASK_COLS: &str = "id, queue, title, body, payload, dedupe_key, priority, status, \
+pub(crate) const TASK_COLS: &str = "id, queue, manual_only, title, body, payload, dedupe_key, priority, status, \
     not_before, worker_id, claimed_at, lease_until, lane_id, platform, attempts, max_attempts, \
     claim_provider, claim_model, claim_variant, claim_session_id, \
     progress, result, last_error, park_kind, wait_kind, ready_condition, \
@@ -854,6 +854,9 @@ impl TursoBackend {
                             v = serde_json::from_str(s).unwrap_or(Value::Null);
                         }
                     }
+                    if col == "manual_only" {
+                        v = Value::Bool(v.as_i64().unwrap_or(0) != 0);
+                    }
                     obj.insert(col.clone(), v);
                 }
                 Value::Object(obj)
@@ -886,6 +889,7 @@ impl TursoBackend {
         let cols = self.query_objs("SELECT name FROM pragma_table_info('tasks')", &[], &[])?;
         for col in [
             "platform",
+            "manual_only",
             "claim_provider",
             "claim_model",
             "claim_variant",
@@ -895,7 +899,12 @@ impl TursoBackend {
                 .iter()
                 .any(|c| c.get("name").and_then(|v| v.as_str()) == Some(col));
             if !has {
-                self.exec(&format!("ALTER TABLE tasks ADD COLUMN {col} TEXT"), &[])?;
+                let ty = if col == "manual_only" {
+                    "INTEGER NOT NULL DEFAULT 0"
+                } else {
+                    "TEXT"
+                };
+                self.exec(&format!("ALTER TABLE tasks ADD COLUMN {col} {ty}"), &[])?;
             }
         }
         // #8276: the dependency-block columns (blocked_deps JSON,
@@ -1043,7 +1052,7 @@ impl Clone for Arg {
 pub(crate) const SCHEMA: [&str; 36] = [
     "CREATE TABLE IF NOT EXISTS tasks (\
         id INTEGER PRIMARY KEY AUTOINCREMENT, \
-        queue TEXT NOT NULL, title TEXT, body TEXT, \
+        queue TEXT NOT NULL, manual_only INTEGER NOT NULL DEFAULT 0, title TEXT, body TEXT, \
         payload TEXT NOT NULL DEFAULT '{}', dedupe_key TEXT, \
         priority INTEGER, status TEXT NOT NULL DEFAULT 'queued', \
         not_before TEXT, worker_id TEXT, claimed_at TEXT, lease_until TEXT, \

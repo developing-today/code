@@ -29,6 +29,7 @@ import type { Json, JsonObject } from "./queue-validate.ts";
 export interface TaskRow {
   id: number;
   queue: string;
+  manual_only: boolean;
   title: string | null;
   body: string | null;
   payload: Json;

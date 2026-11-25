@@ -56,7 +56,7 @@ export type SqlParam = string | number | bigint | boolean | null;
 export const LIBSQL_QUEUE_SCHEMA: string[] = [
   `CREATE TABLE IF NOT EXISTS tasks (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    queue TEXT NOT NULL, title TEXT, body TEXT,
+    queue TEXT NOT NULL, manual_only INTEGER NOT NULL DEFAULT 0, title TEXT, body TEXT,
     payload TEXT NOT NULL DEFAULT '{}', dedupe_key TEXT,
     priority INTEGER, status TEXT NOT NULL DEFAULT 'queued',
     not_before TEXT, worker_id TEXT, claimed_at TEXT, lease_until TEXT,
@@ -108,7 +108,7 @@ export const LIBSQL_QUEUE_SCHEMA: string[] = [
 // core.rs TASK_COLS / LEDGER_COLS order: the SELECT column order the
 // row readers below rely on.
 export const TASK_COLS =
-  "id, queue, title, body, payload, dedupe_key, priority, status, " +
+  "id, queue, manual_only, title, body, payload, dedupe_key, priority, status, " +
   "not_before, worker_id, claimed_at, lease_until, lane_id, platform, attempts, max_attempts, " +
   "claim_provider, claim_model, claim_variant, claim_session_id, " +
   "progress, result, last_error, park_kind, wait_kind, ready_condition, " +
@@ -132,6 +132,7 @@ const TASK_INT_COLS = new Set([
   "max_attempts",
   "required_budget_minutes",
   "dep_recheck_seconds",
+  "manual_only",
 ]);
 
 export function failWhere(what: string): never {
@@ -165,6 +166,7 @@ export function toStoredJson(v: Json): string | null {
 
 export function encodeTaskValue(col: string, v: unknown): SqlParam {
   if (TASK_JSON_COLS.has(col)) return toStoredJson(v as Json);
+  if (col === "manual_only") return v === true ? 1 : 0;
   if (TASK_INT_COLS.has(col)) return intOrNull(v, col);
   return textOrNull(v, col);
 }
@@ -177,6 +179,7 @@ export function readTask(r: Record<string, unknown>): TaskRow {
   return {
     id: intOrNull(need("id"), "id") ?? failWhere("task row has null id"),
     queue: textOrNull(need("queue"), "queue") ?? "",
+    manual_only: intOrNull(need("manual_only"), "manual_only") === 1,
     title: textOrNull(need("title"), "title"),
     body: textOrNull(need("body"), "body"),
     payload: jsonValue(need("payload"), "payload"),
@@ -279,6 +282,10 @@ export class LibSQLQueueStore implements QueueStore {
     this.netloc = opts.netloc ?? null;
     for (const stmt of LIBSQL_QUEUE_SCHEMA) {
       db.exec(stmt);
+    }
+    const cols = db.exec("SELECT name FROM pragma_table_info('tasks')").toArray();
+    if (!cols.some((col) => col["name"] === "manual_only")) {
+      db.exec("ALTER TABLE tasks ADD COLUMN manual_only INTEGER NOT NULL DEFAULT 0");
     }
   }
 

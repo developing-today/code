@@ -115,7 +115,7 @@ async function verb(store: QueueStore, env: QueueEnv, name: string, req: JsonObj
 // ---------------------------------------------------------------------------
 
 const NATIVE_TASK_COLS = (
-  "id, queue, title, body, payload, dedupe_key, priority, status, " +
+  "id, queue, manual_only, title, body, payload, dedupe_key, priority, status, " +
   "not_before, worker_id, claimed_at, lease_until, lane_id, platform, attempts, max_attempts, " +
   "claim_provider, claim_model, claim_variant, claim_session_id, " +
   "progress, result, last_error, park_kind, wait_kind, ready_condition, " +
@@ -155,11 +155,79 @@ test("schema: the store carries the native queue tables and columns, no second q
   }
 });
 
+test("schema: an existing queue database gains manual_only with an automatic default", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "fleet-libsql-legacy-"));
+  const db = new DatabaseSync(join(dir, "fleet-queue.db"));
+  const sql: SyncSqlDb = {
+    exec(query: string, ...params: (string | number | bigint | boolean | null | ArrayBuffer | Uint8Array)[]) {
+      const stmt = db.prepare(query);
+      if (/^\s*(select|pragma|values|with)\b/i.test(query)) {
+        const rows = stmt.all(...(params as never[])) as Record<string, unknown>[];
+        return { toArray: () => rows };
+      }
+      stmt.run(...(params as never[]));
+      return { toArray: () => [] as Record<string, unknown>[] };
+    },
+  };
+  try {
+    const legacyTasks = LIBSQL_QUEUE_SCHEMA[0]?.replace("manual_only INTEGER NOT NULL DEFAULT 0, ", "");
+    assert.ok(legacyTasks);
+    db.exec(legacyTasks);
+    const store = new LibSQLQueueStore(sql, { nowIso: () => iso(T0) });
+    const row = await store.insertTask({
+      queue: "repo-health",
+      manual_only: false,
+      title: null,
+      body: null,
+      payload: {},
+      dedupe_key: null,
+      priority: null,
+      status: "queued",
+      not_before: null,
+      worker_id: null,
+      claimed_at: null,
+      lease_until: null,
+      lane_id: null,
+      platform: null,
+      attempts: 0,
+      max_attempts: 1000,
+      claim_provider: null,
+      claim_model: null,
+      claim_variant: null,
+      claim_session_id: null,
+      progress: {},
+      result: {},
+      last_error: null,
+      park_kind: null,
+      wait_kind: null,
+      ready_condition: null,
+      required_budget_minutes: null,
+      last_checked_at: null,
+      check_outcome: null,
+      created_at: iso(T0),
+      updated_at: iso(T0),
+      completed_at: null,
+      blocked_deps: null,
+      dep_next_recheck_at: null,
+      dep_blocked_until: null,
+      dep_recheck_seconds: null,
+    });
+    assert.equal(row.manual_only, false);
+    const column = (db.prepare("PRAGMA table_info(tasks)").all() as { name: string; dflt_value: string }[])
+      .find((col) => col.name === "manual_only");
+    assert.equal(column?.dflt_value, "0");
+  } finally {
+    db.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("store: a full task row round-trips every column through the shared schema", async () => {
   const t = openStore();
   try {
     const row = await t.store.insertTask({
       queue: "repo-health",
+      manual_only: false,
       title: "t",
       body: "b",
       payload: { schema: "repo-task/v1", tags: ["a", "b"], n: 3 },
@@ -254,6 +322,7 @@ test("store: a losing conditional update reports false and leaves the row", asyn
   try {
     const row = await t.store.insertTask({
       queue: "repo-health",
+      manual_only: false,
       title: null,
       body: null,
       payload: {},
