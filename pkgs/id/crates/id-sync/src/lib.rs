@@ -22,6 +22,7 @@
 
 pub mod announcement;
 pub mod announcement_pkarr;
+pub mod announcement_relay;
 pub mod artifact;
 pub mod bridge;
 pub mod bridge_http;
