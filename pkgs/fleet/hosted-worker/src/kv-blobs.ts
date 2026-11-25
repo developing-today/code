@@ -29,7 +29,14 @@
 import type { AuthDeps, CallerContext } from "./auth.ts";
 import { Blake3Hasher, hex } from "./blake3.ts";
 import { FailClosed } from "./errors.ts";
-import { checkKvScopes, ensureKvMigrated, KV_CATALOG, privateScopePrefix, runKvTransaction } from "./kv-door.ts";
+import {
+  checkKvScopes,
+  ensureKvMigrated,
+  KV_CATALOG,
+  kvNamespacePlacement,
+  privateScopePrefix,
+  runKvTransaction,
+} from "./kv-door.ts";
 
 /** The registry fleet-kv's namespaces live in. */
 export const KV_REGISTRY = "fleet-kv-central";
@@ -257,6 +264,19 @@ export async function handleKvBlobPut(req: Request, ctx: CallerContext, deps: Au
       namespace: upload.namespace,
     },
   ]);
+  // The partition is the namespace's placement policy, never the pusher's
+  // choice; a namespace with none places no blobs (design §10).
+  const placement = await kvNamespacePlacement(primary, upload.registry, upload.namespace);
+  if (!placement) {
+    throw new FailClosed(403, "kv_blob_placement_missing", `namespace ${upload.namespace} has no blob placement`);
+  }
+  if (placement.jurisdiction !== upload.jurisdiction || placement.tier !== upload.tier) {
+    throw new FailClosed(
+      403,
+      "partition_mismatch",
+      `namespace ${upload.namespace} places blobs in (${placement.jurisdiction}, ${placement.tier})`,
+    );
+  }
 
   // Stage while verifying: the staged bytes are invisible until publish.
   const hasher = new Blake3Hasher();

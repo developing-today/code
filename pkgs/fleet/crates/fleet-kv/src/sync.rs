@@ -51,6 +51,26 @@ pub(crate) fn migrate_to_v6(tx: &rusqlite::Transaction<'_>) -> Result<(), KvErro
     .map_err(sql)
 }
 
+/// Local schema version 9: the cached definition carries the namespace's
+/// blob placement (code#13318).
+pub(crate) fn migrate_to_v9(tx: &rusqlite::Transaction<'_>) -> Result<(), KvError> {
+    let present: i64 = tx
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('kv_namespace_cache') WHERE name='blob_jurisdiction'",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(sql)?;
+    if present == 0 {
+        tx.execute_batch(
+            "ALTER TABLE kv_namespace_cache ADD COLUMN blob_jurisdiction TEXT;
+             ALTER TABLE kv_namespace_cache ADD COLUMN blob_tier TEXT;",
+        )
+        .map_err(sql)?;
+    }
+    Ok(())
+}
+
 /// What the host's cache says about one namespace.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Lookup {
@@ -83,8 +103,8 @@ pub fn pull_namespaces(store: &LocalStore, primary: &dyn Pipeline) -> Result<usi
         tx.execute(
             "INSERT INTO kv_namespace_cache (
                  namespace, registry_id, scope_kind, shared_scope_id, core_binding,
-                 global_flag, blob_threshold, policy_epoch)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                 global_flag, blob_threshold, policy_epoch, blob_jurisdiction, blob_tier)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
             params![
                 definition.namespace,
                 definition.registry_id,
@@ -94,6 +114,14 @@ pub fn pull_namespaces(store: &LocalStore, primary: &dyn Pipeline) -> Result<usi
                 i64::from(definition.global_flag),
                 i64::try_from(definition.blob_threshold).unwrap_or(i64::MAX),
                 i64::try_from(definition.policy_epoch).unwrap_or(i64::MAX),
+                definition
+                    .placement
+                    .as_ref()
+                    .map(|partition| partition.jurisdiction.as_str()),
+                definition
+                    .placement
+                    .as_ref()
+                    .map(|partition| partition.tier.as_str()),
             ],
         )
         .map_err(sql)?;
@@ -135,7 +163,7 @@ pub fn lookup(store: &LocalStore, namespace: &str) -> Result<Lookup, KvError> {
         .connection
         .query_row(
             "SELECT registry_id, scope_kind, shared_scope_id, core_binding, global_flag,
-                    blob_threshold, policy_epoch
+                    blob_threshold, policy_epoch, blob_jurisdiction, blob_tier
              FROM kv_namespace_cache WHERE namespace = ?1",
             params![namespace],
             |row| {
@@ -152,6 +180,15 @@ pub fn lookup(store: &LocalStore, namespace: &str) -> Result<Lookup, KvError> {
                     global_flag: row.get::<_, i64>(4)? == 1,
                     blob_threshold: unsigned(row.get(5)?),
                     policy_epoch: unsigned(row.get(6)?),
+                    placement: match (
+                        row.get::<_, Option<String>>(7)?,
+                        row.get::<_, Option<String>>(8)?,
+                    ) {
+                        (Some(jurisdiction), Some(tier)) => {
+                            Some(crate::blob::Partition::new(&jurisdiction, &tier))
+                        }
+                        _ => None,
+                    },
                 })
             },
         )
@@ -503,6 +540,39 @@ mod tests {
         };
         assert_eq!(definition.scope, Scope::Shared("status-v2".into()));
         assert_eq!(definition.policy_epoch, 2);
+    }
+
+    #[test]
+    fn central_sync_pull_caches_the_blob_placement() {
+        let primary = primary();
+        let mut placed = Namespace::shared("status", "fleet-status");
+        placed.placement = Some(crate::blob::Partition::new("eu", "standard"));
+        define_namespace(&primary, &placed).unwrap();
+        let store = LocalStore::in_memory().unwrap();
+        pull_namespaces(&store, &primary).unwrap();
+        let Lookup::Known(status) = lookup(&store, "status").unwrap() else {
+            panic!("status should be cached");
+        };
+        assert_eq!(
+            status,
+            central::resolve(&primary, REGISTRY_ID, "status").unwrap()
+        );
+        assert_eq!(
+            status.placement,
+            Some(crate::blob::Partition::new("eu", "standard"))
+        );
+        let Lookup::Known(notes) = lookup(&store, "notes").unwrap() else {
+            panic!("notes should be cached");
+        };
+        assert_eq!(notes.placement, None);
+        // Dropping the placement reaches hosts on their next pull.
+        placed.placement = None;
+        define_namespace(&primary, &placed).unwrap();
+        pull_namespaces(&store, &primary).unwrap();
+        let Lookup::Known(status) = lookup(&store, "status").unwrap() else {
+            panic!("status should be cached");
+        };
+        assert_eq!(status.placement, None);
     }
 
     #[test]

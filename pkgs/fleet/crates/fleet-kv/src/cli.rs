@@ -76,8 +76,9 @@ the caller's central keys (cached for at most 1 s; --allow-stale reads an
 expired cache when central is unreachable). sync places a value over the
 namespace's inline threshold as a blob: it streams the bytes to the upload
 door beside FLEET_KV_URL (the token needs the kv-upload door) in the
-partition FLEET_KV_BLOB_JURISDICTION and FLEET_KV_BLOB_TIER, then writes
-the reference; without those two such values wait as pending_needs_phase3.
+partition the namespace's definition places it in (namespace define
+--blob-partition JUR/TIER), then writes the reference; a namespace with no
+placement keeps such values waiting as no_blob_placement.
 set --force-blob places the value in a blob at any size when sync sends
 it; with --global it is refused with pending_needs_phase3 (exit 69).
 
@@ -96,7 +97,7 @@ const REBASE_USAGE: &str = "usage: fleet kv rebase --namespace NS KEY\n\nResolve
 const CLEAR_USAGE: &str = "usage: fleet kv clear-override --namespace NS KEY\n\nDrop the local overlay row, advance the key's fence and cancel unsent sweep\nintents. History is kept. Busy for over 5 s: clear_busy_try_again.\n";
 const SNAPSHOT_USAGE: &str = "usage: fleet kv snapshot DEST\n\nWrite a consistent one-file snapshot of this host's whole store (WAL included)\nto DEST, with a manifest row inside it. Never overwrites DEST. Prints the manifest.\n";
 const RESTORE_USAGE: &str = "usage: fleet kv restore SNAPSHOT\n       fleet kv restore --archive\n\nRestore SNAPSHOT as this host's store after checking its manifest, schema\nversion and integrity. Refuses when a store (or its WAL) already exists.\nPrints the manifest.\n\n--archive instead adopts this session's last central archive checkpoint as new\nlocal writes (queued to sweep). Keys this store already has history for keep\ntheir local rows; keys the archive holds no bytes for are listed as\nprotection_unavailable_needs_phase3. No checkpoint: archive_not_found.\n";
-const NAMESPACE_USAGE: &str = "usage: fleet kv namespace define NS (--shared SCOPE | --private) [--global-flag] [--blob-threshold BYTES]\n       fleet kv namespace list\n\nDefine a central namespace, or print them all. Needs the central store and an\nadmin credential (the hosted door's kv-admin role); the local store is not\nopened. --shared SCOPE gives every agent one shared scope; --private gives each\n(owner, context) its own. Defining NS again keeps its settings unless a flag\nchanges them, raises its policy epoch, and refuses to change shared to private\nor back (namespace_scope_change). --global-flag marks NS as global (a\ndesignation only). --blob-threshold is the inline ceiling, at most 1 MiB\n(default 256 KiB). Hosts see a change after their next `fleet kv sync`.\n\ndefine prints `namespace=NS scope=SCOPE epoch=N`; list prints one line per\nnamespace: NS<TAB>SCOPE<TAB>EPOCH<TAB>THRESHOLD<TAB>global|-, where SCOPE is\nshared:ID or private.\n";
+const NAMESPACE_USAGE: &str = "usage: fleet kv namespace define NS (--shared SCOPE | --private) [--global-flag] [--blob-threshold BYTES] [--blob-partition JUR/TIER]\n       fleet kv namespace list\n\nDefine a central namespace, or print them all. Needs the central store and an\nadmin credential (the hosted door's kv-admin role); the local store is not\nopened. --shared SCOPE gives every agent one shared scope; --private gives each\n(owner, context) its own. Defining NS again keeps its settings unless a flag\nchanges them, raises its policy epoch, and refuses to change shared to private\nor back (namespace_scope_change). --global-flag marks NS as global (a\ndesignation only). --blob-threshold is the inline ceiling, at most 1 MiB\n(default 256 KiB). --blob-partition JUR/TIER places NS's blobs in that\njurisdiction and sensitivity tier; with none, values over the threshold wait\n(no_blob_placement) and the upload door refuses them. Hosts see a change after their next `fleet kv sync`.\n\ndefine prints `namespace=NS scope=SCOPE epoch=N`; list prints one line per\nnamespace: NS<TAB>SCOPE<TAB>EPOCH<TAB>THRESHOLD<TAB>global|-<TAB>JUR/TIER|-,\nwhere SCOPE is shared:ID or private.\n";
 const REVERT_USAGE: &str = "usage: fleet kv revert --namespace NS KEY --to VERSION\n       fleet kv revert NS KEY --to VERSION\n\nAppend a new version equal to VERSION from this key's local history.\n";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -246,6 +247,7 @@ enum Command {
         scope: Option<crate::central::Scope>,
         global_flag: bool,
         blob_threshold: Option<u64>,
+        blob_partition: Option<crate::blob::Partition>,
     },
     /// `namespace list`: print every central namespace definition.
     NamespaceList,
@@ -558,6 +560,7 @@ fn parse_namespace(args: &[String]) -> Result<Command, ParseError> {
     let mut scope: Option<crate::central::Scope> = None;
     let mut global_flag = false;
     let mut blob_threshold: Option<u64> = None;
+    let mut blob_partition: Option<crate::blob::Partition> = None;
     let mut positionals: Vec<String> = Vec::new();
     let mut rest = args[1..].iter();
     let mut only_positionals = false;
@@ -615,6 +618,21 @@ fn parse_namespace(args: &[String]) -> Result<Command, ParseError> {
                     })?;
                 blob_threshold = Some(bytes);
             }
+            "--blob-partition" if define => {
+                let raw = take_value("--blob-partition")?;
+                let partition = raw
+                    .split_once('/')
+                    .filter(|(jurisdiction, tier)| {
+                        crate::blob::valid_label(jurisdiction) && crate::blob::valid_label(tier)
+                    })
+                    .map(|(jurisdiction, tier)| crate::blob::Partition::new(jurisdiction, tier))
+                    .ok_or_else(|| {
+                        usage(format!(
+                            "--blob-partition needs JURISDICTION/TIER in lower-case letters, digits and `-`, got `{raw}`"
+                        ))
+                    })?;
+                blob_partition = Some(partition);
+            }
             _ => {
                 return Err(usage(format!(
                     "unknown argument `{arg}` for `kv namespace {action}`"
@@ -638,6 +656,7 @@ fn parse_namespace(args: &[String]) -> Result<Command, ParseError> {
                 scope,
                 global_flag,
                 blob_threshold,
+                blob_partition,
             })
         }
         "list" => {
@@ -715,22 +734,14 @@ pub fn central_from_env() -> CentralOpened {
 }
 
 /// The blob plane the environment configures: the upload door beside
-/// `FLEET_KV_URL` and the partition in `FLEET_KV_BLOB_JURISDICTION` and
-/// `FLEET_KV_BLOB_TIER`. `None` keeps over-threshold values local.
-type BlobPlaneOpened =
-    Result<Option<(Box<dyn crate::sweep::BlobUploader>, crate::blob::Partition)>, CentralError>;
+/// `FLEET_KV_URL`. `None` keeps over-threshold values local.
+type BlobPlaneOpened = Result<Option<Box<dyn crate::sweep::BlobUploader>>, CentralError>;
 
 fn blob_plane_from_env() -> BlobPlaneOpened {
     #[cfg(feature = "http")]
     {
-        Ok(
-            crate::http::HttpBlobUploader::from_env()?.map(|(uploader, partition)| {
-                (
-                    Box::new(uploader) as Box<dyn crate::sweep::BlobUploader>,
-                    partition,
-                )
-            }),
-        )
+        Ok(crate::http::HttpBlobUploader::from_env()?
+            .map(|uploader| Box::new(uploader) as Box<dyn crate::sweep::BlobUploader>))
     }
     #[cfg(not(feature = "http"))]
     {
@@ -1113,12 +1124,9 @@ fn execute_central(
                 Ok(configured) => configured,
                 Err(error) => return refuse_central(err, &error),
             };
-            let plane = configured
-                .as_ref()
-                .map(|(uploader, partition)| crate::sweep::BlobPlane {
-                    uploader: uploader.as_ref(),
-                    partition: partition.clone(),
-                });
+            let plane = configured.as_ref().map(|uploader| crate::sweep::BlobPlane {
+                uploader: uploader.as_ref(),
+            });
             let report = match sync::sync_with_blobs(
                 store,
                 identity,
@@ -1209,6 +1217,7 @@ fn execute_admin(
             scope,
             global_flag,
             blob_threshold,
+            blob_partition,
         } => {
             let existing = match central::namespaces(primary, REGISTRY_ID) {
                 Ok(defined) => defined
@@ -1247,6 +1256,9 @@ fn execute_admin(
             if let Some(bytes) = blob_threshold {
                 definition.blob_threshold = bytes;
             }
+            if let Some(partition) = blob_partition {
+                definition.placement = Some(partition);
+            }
             // `define_namespace` stores one past the previous epoch, so
             // hosts that cached the old definition see the change.
             match central::define_namespace(primary, &definition) {
@@ -1263,7 +1275,7 @@ fn execute_admin(
             Ok(defined) => defined.iter().try_for_each(|definition| {
                 writeln!(
                     out,
-                    "{}\t{}\t{}\t{}\t{}",
+                    "{}\t{}\t{}\t{}\t{}\t{}",
                     definition.namespace,
                     describe_scope(&definition.scope),
                     definition.policy_epoch,
@@ -1272,7 +1284,11 @@ fn execute_admin(
                         "global"
                     } else {
                         "-"
-                    }
+                    },
+                    definition.placement.as_ref().map_or_else(
+                        || "-".to_string(),
+                        |partition| format!("{}/{}", partition.jurisdiction, partition.tier)
+                    )
                 )
             }),
             Err(error) => return refuse_central(err, &error),
@@ -2070,7 +2086,10 @@ mod tests {
         let store = LocalStore::in_memory().expect("store");
         let listed = central.invoke(&store, "admin", &["namespace", "list"], b"");
         assert_eq!(listed.code, EXIT_OK, "{}", listed.err);
-        assert_eq!(text(&listed), "status\tshared:fleet-status\t1\t262144\t-\n");
+        assert_eq!(
+            text(&listed),
+            "status\tshared:fleet-status\t1\t262144\t-\t-\n"
+        );
 
         let defined = central.invoke(
             &store,
@@ -2103,7 +2122,7 @@ mod tests {
         let listed = central.invoke(&store, "admin", &["namespace", "list"], b"");
         assert_eq!(
             text(&listed),
-            "notes\tprivate\t1\t4096\t-\nstatus\tshared:fleet-status\t2\t262144\tglobal\n"
+            "notes\tprivate\t1\t4096\t-\t-\nstatus\tshared:fleet-status\t2\t262144\tglobal\t-\n"
         );
 
         // Shared to private would strand the shared keys.
@@ -2134,6 +2153,38 @@ mod tests {
         assert_eq!(
             invoke(&store, &["set", "--namespace", "notes", "k", "v"], b"").code,
             EXIT_OK
+        );
+    }
+
+    #[test]
+    fn central_cli_namespace_blob_partition_is_kept_and_listed() {
+        let central = Central::new();
+        let store = LocalStore::in_memory().expect("store");
+        let placed = central.invoke(
+            &store,
+            "admin",
+            &[
+                "namespace",
+                "define",
+                "status",
+                "--blob-partition",
+                "eu/standard",
+            ],
+            b"",
+        );
+        assert_eq!(placed.code, EXIT_OK, "{}", placed.err);
+        // Defining it again without the flag keeps the placement.
+        let flagged = central.invoke(
+            &store,
+            "admin",
+            &["namespace", "define", "status", "--global-flag"],
+            b"",
+        );
+        assert_eq!(flagged.code, EXIT_OK, "{}", flagged.err);
+        let listed = central.invoke(&store, "admin", &["namespace", "list"], b"");
+        assert_eq!(
+            text(&listed),
+            "status\tshared:fleet-status\t3\t262144\tglobal\teu/standard\n"
         );
     }
 
@@ -2198,6 +2249,31 @@ mod tests {
             ][..],
             &["namespace", "list", "--private"][..],
             &["--global", "namespace", "list"][..],
+            &[
+                "namespace",
+                "define",
+                "x",
+                "--private",
+                "--blob-partition",
+                "eu",
+            ][..],
+            &[
+                "namespace",
+                "define",
+                "x",
+                "--private",
+                "--blob-partition",
+                "EU/std",
+            ][..],
+            &[
+                "namespace",
+                "define",
+                "x",
+                "--private",
+                "--blob-partition",
+                "eu/",
+            ][..],
+            &["namespace", "list", "--blob-partition", "eu/standard"][..],
         ] {
             let outcome = invoke(&store, words, b"");
             assert_eq!(outcome.code, EXIT_USAGE, "{words:?}: {}", outcome.err);
