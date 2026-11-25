@@ -447,8 +447,9 @@ impl KeysetState {
     #[must_use]
     pub fn active_device_keys(&self) -> BTreeSet<[u8; 32]> {
         self.devices
-            .keys()
-            .filter_map(|key| hex_to_array::<32>(key))
+            .iter()
+            .filter(|(_, device)| !device.revoked)
+            .filter_map(|(key, _)| hex_to_array::<32>(key))
             .collect()
     }
 

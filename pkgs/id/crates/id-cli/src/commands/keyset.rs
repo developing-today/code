@@ -225,8 +225,12 @@ pub fn render_state(state: &KeysetState) -> String {
 /// behaviour — it is its own only device — so an unmigrated member needs no
 /// entry here.
 #[must_use]
-pub fn device_sets(_keysets: &BTreeMap<Key, KeysetState>) -> DeviceSets {
-    DeviceSets::new()
+pub fn device_sets(keysets: &BTreeMap<Key, KeysetState>) -> DeviceSets {
+    let mut sets = DeviceSets::new();
+    for (member, state) in keysets {
+        sets.insert(*member, state.active_device_keys());
+    }
+    sets
 }
 
 /// One line on how far the head is protected by checkpoint finality.

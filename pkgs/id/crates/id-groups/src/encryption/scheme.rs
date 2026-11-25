@@ -380,14 +380,15 @@ impl Session {
     pub fn create(
         &mut self,
         view: &GroupView,
-        _devices: &DeviceSets,
+        devices: &DeviceSets,
         rng: &Rng,
     ) -> Result<Envelope, SchemeError> {
-        if !view.members.contains_key(&key_of(self.me)) {
+        let model = devices.expand(view);
+        if !model.contains(&key_of(self.me)) {
             return Err(SchemeError::NotInModel(short(key_of(self.me))));
         }
-        let initial: Vec<VerifyingKey> = members_of(&model_of(view))?;
-        self.change(view, _devices, |y| EncryptionGroup::create(y, initial, rng))
+        let initial: Vec<VerifyingKey> = members_of(&model)?;
+        self.change(view, devices, |y| EncryptionGroup::create(y, initial, rng))
     }
 
     /// Adds the device key `added`, which the device set of a member `view` lists must already
@@ -402,8 +403,9 @@ impl Session {
         self.add_with_history(view, devices, added, HistoryMode::Full, rng)
     }
 
-    /// Adds `added`, which `view` must already list, with a welcome that carries the secrets
-    /// `mode` allows: every secret for `Full`, the newest N for `Recent(N)` (P4.5).
+    /// Adds the device key `added`, which the device set of a member `view` lists must already
+    /// hold, with a welcome that carries the secrets `mode` allows: every secret for `Full`,
+    /// the newest N for `Recent(N)` (P4.5).
     ///
     /// The bundle is cut here, before `Dcgka::add`, so the crate never sees a secret outside the
     /// window. The joiner then holds exactly the window and refuses older messages.
@@ -412,13 +414,13 @@ impl Session {
     pub fn add_with_history(
         &mut self,
         view: &GroupView,
-        _devices: &DeviceSets,
+        devices: &DeviceSets,
         added: Key,
         mode: HistoryMode,
         rng: &Rng,
     ) -> Result<Vec<Envelope>, SchemeError> {
         self.ensure_welcomed()?;
-        if !view.members.contains_key(&added) {
+        if !devices.expand(view).contains(&added) {
             return Err(SchemeError::NotInModel(short(added)));
         }
         let added_key = member_of(added)?;
@@ -433,7 +435,7 @@ impl Session {
             let y = self.state.as_ref().ok_or(SchemeError::Poisoned)?;
             mode.welcome_bundle(&y.secrets)
         };
-        messages.push(self.change(view, _devices, |mut y| {
+        messages.push(self.change(view, devices, |mut y| {
             let (dcgka, output) = Dcgka::add(y.dcgka, added_key, &bundle, rng)?;
             y.dcgka = dcgka;
             publish(y, output)
@@ -450,12 +452,12 @@ impl Session {
     pub fn add_from_join(
         &mut self,
         view: &GroupView,
-        _devices: &DeviceSets,
+        devices: &DeviceSets,
         added: Key,
         rng: &Rng,
     ) -> Result<Vec<Envelope>, SchemeError> {
         self.ensure_welcomed()?;
-        if !view.members.contains_key(&added) {
+        if !devices.expand(view).contains(&added) {
             return Err(SchemeError::NotInModel(short(added)));
         }
         let added_key = member_of(added)?;
@@ -465,11 +467,11 @@ impl Session {
         self.check_policy(view)?;
         let mut messages = self.merge_heads(rng)?;
         messages.push(
-            self.change(view, _devices, |y| {
+            self.change(view, devices, |y| {
                 EncryptionGroup::add_from_join(y, added_key, rng)
             })?,
         );
-        messages.push(self.change(view, _devices, |y| EncryptionGroup::update(y, rng))?);
+        messages.push(self.change(view, devices, |y| EncryptionGroup::update(y, rng))?);
         Ok(messages)
     }
 
@@ -480,12 +482,12 @@ impl Session {
     pub fn remove(
         &mut self,
         view: &GroupView,
-        _devices: &DeviceSets,
+        devices: &DeviceSets,
         removed: Key,
         rng: &Rng,
     ) -> Result<Vec<Envelope>, SchemeError> {
         self.ensure_welcomed()?;
-        if view.members.contains_key(&removed) {
+        if devices.expand(view).contains(&removed) {
             return Err(SchemeError::StillInModel(short(removed)));
         }
         let removed_key = member_of(removed)?;
@@ -493,7 +495,7 @@ impl Session {
         self.check_policy(view)?;
         let mut messages = self.merge_heads(rng)?;
         messages.push(
-            self.change(view, _devices, |y| EncryptionGroup::remove(y, removed_key, rng))?,
+            self.change(view, devices, |y| EncryptionGroup::remove(y, removed_key, rng))?,
         );
         Ok(messages)
     }
@@ -513,8 +515,9 @@ impl Session {
     /// A compromise (N8) keeps the device's key, so `added` is `removed`. A fork (decision 17)
     /// replaces the key, so `added` is the device's new key.
     ///
-    /// `without` is the view after the removal and `with` the view after the re-add, so `with`
-    /// lists `added` and `without` does not. The removal rotates the epoch, so the old key loses
+    /// `without` is the view after the removal and `with` the view after the re-add, with the
+    /// device sets to match: the `with` sets hold `added`, the `without` sets do not hold
+    /// `removed`. The removal rotates the epoch, so the old key loses
     /// the secret it held. The re-add welcomes `added` into the new epoch without any earlier
     /// secret (P4.3). This session must be a manager's: the caller is the device that performs the
     /// procedure.
@@ -832,13 +835,14 @@ impl Session {
         })
     }
 
-    /// Runs one membership change, then checks the crate's roster against the fold's members. The
-    /// state is taken, as in [`Self::step`]. A mismatch therefore leaves the session poisoned: it
-    /// cannot go on with a roster the fold does not give (P4.13).
+    /// Runs one membership change, then checks the crate's roster against the fold's members as
+    /// the device sets expand them. The state is taken, as in [`Self::step`]. A mismatch
+    /// therefore leaves the session poisoned: it cannot go on with a roster the fold does not
+    /// give (P4.13).
     fn change<T>(
         &mut self,
         view: &GroupView,
-        _devices: &DeviceSets,
+        devices: &DeviceSets,
         op: impl FnOnce(Group) -> Step<T>,
     ) -> Result<T, SchemeError> {
         self.check_policy(view)?;
@@ -846,7 +850,7 @@ impl Session {
         let y = self.state.take().ok_or(SchemeError::Poisoned)?;
         let (y, value) = op(y).map_err(crate_error)?;
         let roster = roster_of(&y)?;
-        let model = model_of(view);
+        let model = devices.expand(view);
         if roster == model {
             self.state = Some(y);
             return Ok(value);
@@ -920,11 +924,6 @@ pub fn key_of(member: VerifyingKey) -> Key {
 fn roster_of(y: &Group) -> Result<BTreeSet<Key>, SchemeError> {
     let members = EncryptionGroup::members(y).map_err(crate_error)?;
     Ok(members.into_iter().map(key_of).collect())
-}
-
-/// The members the group fold gives: the keys of [`GroupView::members`].
-fn model_of(view: &GroupView) -> BTreeSet<Key> {
-    view.members.keys().copied().collect()
 }
 
 fn member_of(key: Key) -> Result<VerifyingKey, SchemeError> {
