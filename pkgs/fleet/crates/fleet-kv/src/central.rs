@@ -1155,8 +1155,16 @@ mod tests {
         assert!(statements.iter().all(|sql| !sql.contains(';')));
         let primary = SqlitePrimary::in_memory().expect("primary");
         migrate(&primary).expect("second run is a no-op");
-        let recorded = read(&primary, "SELECT COUNT(*) FROM kv_central_migrations", &[]).unwrap();
-        assert_eq!(recorded[0][0], Value::Integer(MIGRATIONS.len() as i64));
+        let recorded = primary
+            .transaction_unlisted(&[Statement::numbered(
+                "SELECT COUNT(*) FROM kv_central_migrations",
+                &[],
+            )])
+            .unwrap();
+        assert_eq!(
+            recorded[0].rows[0][0],
+            Value::Integer(MIGRATIONS.len() as i64)
+        );
     }
 
     #[test]
