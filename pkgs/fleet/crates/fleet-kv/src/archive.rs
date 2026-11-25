@@ -63,7 +63,7 @@ impl ArchiveError {
         match self {
             Self::Local(error) => error.code(),
             Self::Central(error) => error.code(),
-            Self::Malformed(code) => *code,
+            Self::Malformed(code) => code,
         }
     }
 

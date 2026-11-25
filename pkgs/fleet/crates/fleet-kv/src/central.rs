@@ -183,10 +183,10 @@ impl CentralError {
             Self::Unavailable(_) => "unavailable",
             Self::Store(_) => "central_store",
             Self::IdempotencyKeyReuse { .. } => "idempotency_key_reuse",
-            Self::Malformed(code) => *code,
+            Self::Malformed(code) => code,
             Self::UnknownNamespace { .. } => "unknown_namespace",
             Self::NotConfigured(_) => "central_not_configured",
-            Self::Refused { code, .. } => *code,
+            Self::Refused { code, .. } => code,
         }
     }
 
@@ -298,7 +298,6 @@ impl SqlitePrimary {
             let mut prepared = transaction.prepare(&statement.sql).map_err(store)?;
             let columns: Vec<String> = prepared
                 .column_names()
-                .into_iter()
                 .map(str::to_string)
                 .collect();
             let mut rows = prepared
