@@ -26,6 +26,10 @@
 //!   index, checksum verification.
 //! - [`inventory`] — read-only cross-bundle inventory: `inventory
 //!   list|show|search|audit` over bundle directories (spec §6.1).
+//! - [`trust`] — §3.5 trust-bundle export and the broker-client
+//!   trust store: two-phase rollover (stage → acknowledge →
+//!   activate → retire) with last-known-good retention (BT-2,
+//!   #14400; spec §27.3 item 9 in its minimal broker form).
 //!
 //! Safety rails baked into the API, not just the CLI:
 //! - Root/issuer signing always requires an explicitly passed signer
@@ -50,6 +54,7 @@ pub mod ocsp;
 pub mod profile;
 pub mod publish;
 pub mod timeparse;
+pub mod trust;
 
 pub use error::{CertError, Result};
 

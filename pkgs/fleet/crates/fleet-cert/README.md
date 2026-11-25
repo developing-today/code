@@ -33,6 +33,15 @@ Implements the fleet architecture spec v0.3
   certificate (leaf profile `ocsp-responder`: EKU id-kp-OCSPSigning
   - NoCheck, 30d default), verified against the crate chain code.
     This is the §4.3 functional responder core; it embeds no OCSP URL.
+- `fleet cert trust export|stage|ack|activate|retire|status` —
+  the §3.5 trust bundle and the broker-client trust store (#14400):
+  export assembles a versioned trust bundle (roots-classical /
+  roots-all / roots-pq / cross-certs) from verified root sets;
+  the store runs the §27.3 item 9 two-phase rollover — stage
+  (verify; a failed distribution never touches the active
+  anchors), acknowledge (binds version to content hash),
+  activate (refused without a matching ack; the displaced
+  version is kept as last-known-good), retire.
 - `fleet cert bundle inspect`, `profile list|show`,
   `algorithms list|describe`, `explain`, `doctor`.
 - `fleet cert inventory list|show|search|audit` — read-only
@@ -43,7 +52,7 @@ Implements the fleet architecture spec v0.3
 - Text and `--json` output; fleet exit-code contract (0/2/1).
 
 Not yet built (tracked as child issues under #9157): `revoke`/`crl`,
-`dns`, `trust`, `key` import/export/escrow/restore/rotate,
+`dns`, `key` import/export/escrow/restore/rotate,
 `format`, profile validate/scaffold, algorithm benchmark/doctor,
 `batch`, renew/rotate verbs, bundle pack/unpack/diff/migrate,
 publish apply/status (production-gated; slice 1 ships plan +
