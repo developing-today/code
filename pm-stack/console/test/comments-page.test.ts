@@ -47,7 +47,7 @@ test("hosted comments: verified owner sees actual rows, read time and honest wat
   expect(html).toContain("issue:42");
   expect(html).toContain("&lt;script&gt;bad&lt;/script&gt;");
   expect(html).toContain("2026-11-25T12:00:00.000Z");
-  expect(html).toContain("2026-11-20T00:00:00.000Z");
+  expect(html).toContain("2026-11-20T00:00:00Z");
   expect(html).toContain("Producer freshness unknown");
   expect(w.calls).toHaveLength(1);
   expect(w.calls[0].sql).toMatch(/^select .* from shared_comments .*limit 101$/i);
@@ -70,8 +70,11 @@ test("hosted comments: disabled preserves route; enabled writes return 405 witho
   const off = await world(false);
   expect((await off.request({ "cf-access-jwt-assertion": await off.token() })).headers.get("x-pm-next")).toBe("relay");
   expect(off.calls).toHaveLength(0);
+  // Each world creates a different signing key at the same JWKS URI.
+  clearJwksCache();
   const on = await world();
-  expect((await on.request({ "cf-access-jwt-assertion": await on.token() }, "POST")).status).toBe(405);
+  const write = await on.request({ "cf-access-jwt-assertion": await on.token() }, "POST");
+  expect(write.status).toBe(405);
   expect(on.calls).toHaveLength(0);
 });
 
