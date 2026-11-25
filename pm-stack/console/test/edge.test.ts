@@ -16,6 +16,7 @@ import { join } from "node:path";
 import { beforeEach, describe, expect, test } from "bun:test";
 import { DIRECT_ACTIONS, queueWrites } from "../edge/src/direct.ts";
 import { Edge, type KV, SILENT_MS } from "../edge/src/edge.ts";
+import { AUDIT_KEPT } from "../edge/src/edge-shared.ts";
 import { forgetPoke, type Io, route } from "../edge/src/entry.ts";
 import type { Action } from "../src/actions.ts";
 import { clearJwksCache, identify } from "../src/auth.ts";
@@ -53,6 +54,40 @@ const ISSUER = {
   source: "access" as const,
 };
 const START = Date.parse("2026-11-22T12:00:00Z");
+
+/** A collection kept one record per key (#14960), read back as the
+ * list its index names, in order. A world no object has read yet may
+ * still hold the old whole-array value, which is the list itself. */
+const storedList = <T>(stored: Map<string, unknown>, name: string, entry: (id: string) => string): T[] => {
+  const index = stored.get(`${name}:index`);
+  if (Array.isArray(index)) {
+    return index.flatMap((id) => {
+      if (typeof id !== "string") return [];
+      const value = stored.get(entry(id));
+      return value === undefined ? [] : [value as T];
+    });
+  }
+  return (stored.get(name) as T[] | undefined) ?? [];
+};
+const heldStored = (w: { stored: Map<string, unknown> }) => storedList(w.stored, "held", (id) => `held:${id}`);
+const takenStored = (w: { stored: Map<string, unknown> }) => storedList(w.stored, "taken", (id) => `taken:${id}`);
+/** The handed names as storage holds them (#14960). */
+const handedStored = (w: { stored: Map<string, unknown> }): string[] => {
+  const index = w.stored.get("handed:index");
+  if (Array.isArray(index)) return index.filter((id): id is string => typeof id === "string");
+  return (w.stored.get("handed") as string[] | undefined) ?? [];
+};
+/** The audit log as its entries are kept (#14960): one per key under
+ * its number, the kept window behind the next number. */
+const auditStored = (w: { stored: Map<string, unknown> }): unknown[] => {
+  const next = w.stored.get("audit:next");
+  if (typeof next === "number") {
+    const entries: unknown[] = [];
+    for (let seq = Math.max(0, next - AUDIT_KEPT); seq < next; seq++) entries.push(w.stored.get(`audit:${seq}`));
+    return entries;
+  }
+  return (w.stored.get("audit") as unknown[] | undefined) ?? [];
+};
 /** The order the platform's Workers are shown in, by what they belong to. */
 const ORDER = ["platform", "fleet", "data", "id", "lab"];
 const SECTION_NAMES = [
@@ -1826,7 +1861,7 @@ describe("actions", () => {
     // A refusal by the host is the host's answer, not "unreachable".
     const refused = await w.act("issue.comment", { issue: 13, text: "x" });
     expect([refused.status, await refused.json()]).toEqual([404, { error: "no such issue" }]);
-    expect((w.stored.get("held") as unknown[] | undefined) ?? []).toEqual([]);
+    expect(heldStored(w)).toEqual([]);
   });
 
   test("with the host out of reach, what may be done late is held, done once when it is back, and the rest is refused", async () => {
@@ -1908,7 +1943,7 @@ describe("actions", () => {
     w.net.hostUp = true;
     // The host dies after writing down that it started the second one:
     // stand in for that by marking it started before the report.
-    const ids = (w.stored.get("held") as { id: string }[]).map((h) => h.id);
+    const ids = (heldStored(w) as { id: string }[]).map((h) => h.id);
     const done = { [ids[1]]: "started" };
     w.link.now = new EdgeLink({
       url: `https://${HOST}`,
@@ -2268,7 +2303,7 @@ describe("actions", () => {
       again: true,
       waits: "machine",
     });
-    expect((w.stored.get("held") as { id: string }[]).map((h) => h.id)).toEqual([id]);
+    expect((heldStored(w) as { id: string }[]).map((h) => h.id)).toEqual([id]);
     // The laptop comes back and does it once; sent yet again, the device
     // is told how it came out.
     w.net.hostUp = true;
@@ -2385,7 +2420,7 @@ describe("actions", () => {
     for (let i = 0; i < 100; i++) expect((await w.act("ask.send", { text: `n${i}` })).status).toBe(200);
     const full = await w.act("ask.send", { text: "one too many" });
     expect(full.status).toBe(503);
-    expect((w.stored.get("held") as unknown[]).length).toBe(100);
+    expect((heldStored(w) as unknown[]).length).toBe(100);
   });
 });
 
@@ -3269,7 +3304,7 @@ describe("the host's report is the host's", () => {
     });
     expect(inside.headers.get("x-pm-console")).toBe("1");
     expect(w.hostSaw).toEqual(["POST /internal/hold"]);
-    expect((w.stored.get("held") as unknown[] | undefined) ?? []).toEqual([]);
+    expect(heldStored(w)).toEqual([]);
   });
 });
 
@@ -4373,9 +4408,9 @@ describe("the edge does the core itself", () => {
     expect(w.ran).toEqual([]);
     expect(onlyPokes(w)).toBe(true);
     // Only the reply's queue task waits for a machine.
-    expect((w.stored.get("held") as { kind: string }[]).map((h) => h.kind)).toEqual(["prompt.enqueue"]);
+    expect((heldStored(w) as { kind: string }[]).map((h) => h.kind)).toEqual(["prompt.enqueue"]);
     // Each is on this side's record of what was done, without what was typed.
-    const audit = w.stored.get("audit") as { action: string; phase: string; ok?: boolean; args: unknown }[];
+    const audit = auditStored(w) as { action: string; phase: string; ok?: boolean; args: unknown }[];
     expect(audit.filter((a) => a.phase === "done" && a.ok).map((a) => a.action)).toEqual([
       "ask.reply",
       "ask.close",
@@ -4387,6 +4422,138 @@ describe("the edge does the core itself", () => {
       "deploy.start",
     ]);
     expect(JSON.stringify(audit)).not.toContain("Thanks");
+  });
+
+  test("one audit event writes one entry, not the whole log (#14960)", async () => {
+    const w = await primary();
+    // A log at its kept size, kept one entry per key.
+    for (let seq = 0; seq < AUDIT_KEPT; seq++)
+      w.stored.set(`audit:${seq}`, { action: "seed", phase: "done", ok: true, n: seq });
+    w.stored.set("audit:next", AUDIT_KEPT);
+    w.edge.now = w.makeEdge();
+    const before = w.puts.length;
+    expect((await w.act("issue.comment", { issue: 7, text: "counted" })).status).toBe(200);
+    // Of the log, only the event's two entries (start and done) and the
+    // count beside them were written — never the whole log at once.
+    expect(w.puts.slice(before).filter((k) => k === "audit" || k.startsWith("audit:"))).toEqual([
+      "audit:300",
+      "audit:next",
+      "audit:301",
+      "audit:next",
+    ]);
+    // The kept size stands: the two oldest entries fell out of the window.
+    expect([w.stored.has("audit:0"), w.stored.has("audit:1"), w.stored.has("audit:301")]).toEqual([false, false, true]);
+    const log = auditStored(w) as { n?: number }[];
+    expect(log.length).toBe(AUDIT_KEPT);
+    expect(log[0].n).toBe(2);
+  });
+
+  test("one act more writes one act record, not the whole record of what was done (#14960)", async () => {
+    const w = await primary();
+    // The record at its kept size, kept one act per key, newest first.
+    const ids: string[] = [];
+    for (let n = 0; n < 30; n++) {
+      const id = `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
+      ids.push(id);
+      w.stored.set(`act:${id}`, {
+        id,
+        kind: "issue.comment",
+        at: new Date(START + (30 - n) * 1000).toISOString(),
+        by: "owner",
+        status: "done",
+        note: "",
+      });
+    }
+    w.stored.set("acts:index", ids);
+    w.edge.now = w.makeEdge();
+    const before = w.puts.length;
+    expect((await w.act("issue.comment", { issue: 7, text: "counted" })).status).toBe(200);
+    const written = w.puts.slice(before).filter((k) => k === "acts" || k === "acts:index" || k.startsWith("act:"));
+    // The whole record was never written; the index was written once.
+    expect(written.filter((k) => k === "acts")).toEqual([]);
+    expect(written.filter((k) => k === "acts:index")).toHaveLength(1);
+    // Every act record written is the new act's own.
+    const fresh = [...new Set(written.filter((k) => k.startsWith("act:")))];
+    expect(fresh).toHaveLength(1);
+    expect(ids).not.toContain(fresh[0].slice(4));
+    // The kept size stands: the last act in the list fell out, record and all.
+    expect(w.stored.has(`act:${ids[29]}`)).toBe(false);
+    expect(storedList(w.stored, "acts", (id) => `act:${id}`)).toHaveLength(30);
+  });
+
+  test("taking one thing back writes the held index, not the whole list (#14960)", async () => {
+    const w = await primary();
+    // What is held, at its most, kept one record per key.
+    const ids: string[] = [];
+    for (let n = 0; n < 100; n++) {
+      const id = `10000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
+      ids.push(id);
+      w.stored.set(`held:${id}`, {
+        id,
+        kind: "issue.comment",
+        args: { issue: 7, text: `held ${n}` },
+        who: "owner",
+        at: new Date(START + n * 1000).toISOString(),
+        unsent: true,
+      });
+    }
+    w.stored.set("held:index", ids);
+    w.edge.now = w.makeEdge();
+    const before = w.puts.length;
+    expect((await w.act("held.drop", { id: ids[50] })).status).toBe(200);
+    // Only the index was written; the dropped record is forgotten, the rest untouched.
+    expect(w.puts.slice(before).filter((k) => k === "held" || k === "held:index" || k.startsWith("held:"))).toEqual([
+      "held:index",
+    ]);
+    expect(w.stored.has(`held:${ids[50]}`)).toBe(false);
+    expect(heldStored(w)).toHaveLength(99);
+  });
+
+  test("what an older copy kept as whole lists is read back the same, and kept the new way (#14960)", async () => {
+    const w = await primary();
+    // Storage as the version before this one left it: whole lists under plain names.
+    for (const k of [...w.stored.keys()]) {
+      if (/^(held|taken|handed|acts|act:|audit)/.test(k)) w.stored.delete(k);
+    }
+    const held = [
+      {
+        id: "20000000-0000-4000-8000-000000000001",
+        kind: "issue.comment",
+        args: { issue: 7, text: "kept" },
+        who: "owner",
+        at: new Date(START).toISOString(),
+        unsent: true,
+      },
+    ];
+    const acts = [
+      {
+        id: "20000000-0000-4000-8000-000000000002",
+        kind: "issue.comment",
+        at: new Date(START).toISOString(),
+        by: "owner",
+        status: "done",
+        note: "",
+      },
+    ];
+    w.stored.set("held", held);
+    w.stored.set("handed", [held[0].id]);
+    w.stored.set("acts", acts);
+    w.stored.set("audit", [{ action: "issue.comment", phase: "done", ok: true }]);
+    w.stored.set("taken", []);
+    w.edge.now = w.makeEdge();
+    const { doc } = await w.core();
+    // Read back the same: what is held is as it was, and the act is on the record.
+    expect(heldStored(w)).toEqual(held);
+    expect(handedStored(w)).toEqual([held[0].id]);
+    expect(doc.acts.map((a: { id: string }) => a.id)).toContain(acts[0].id);
+    // Kept the new way now: the plain names are gone, the records under their own.
+    expect([w.stored.has("held"), w.stored.has("handed"), w.stored.has("acts")]).toEqual([false, false, false]);
+    expect(w.stored.get(`held:${held[0].id}`)).toEqual(held[0]);
+    expect(w.stored.get(`act:${acts[0].id}`)).toEqual(acts[0]);
+    // The audit log, too: the next event is numbered after the kept entry.
+    expect((await w.act("issue.comment", { issue: 7, text: "after" })).status).toBe(200);
+    expect(w.stored.has("audit")).toBe(false);
+    expect(auditStored(w)[0]).toEqual({ action: "issue.comment", phase: "done", ok: true });
   });
 
   test("an action a device sends twice under one name is done here once, and answered the same after a restart too", async () => {
@@ -4403,7 +4570,7 @@ describe("the edge does the core itself", () => {
     expect(await third.json()).toEqual({ ok: true, result: { issue: 201, queued: true }, again: true });
     expect(comments()).toBe(1);
     // Its queue task is waiting for a machine once, too.
-    expect((w.stored.get("held") as { kind: string }[]).map((h) => h.kind)).toEqual(["prompt.enqueue"]);
+    expect((heldStored(w) as { kind: string }[]).map((h) => h.kind)).toEqual(["prompt.enqueue"]);
     // On this side's record of what was done, under the device's name for it.
     expect(
       (await w.core()).doc.acts.filter((a: { id: string }) => a.id === id).map((a: { status: string }) => a.status),
@@ -4580,7 +4747,7 @@ describe("the edge does the core itself", () => {
       expect(said(w)[0]).toContain("the BMC is on");
       // No machine was asked, and nothing waits for one.
       expect(w.ran.filter((r) => r.kind === "hands.done")).toEqual([]);
-      expect(w.stored.get("held") ?? []).toEqual([]);
+      expect(heldStored(w)).toEqual([]);
       // The list the app shows is read again before the answer: the
       // item is gone from the very next look, with nothing left to settle.
       expect((await w.core()).doc.census.hands).toEqual([]);
@@ -4596,7 +4763,7 @@ describe("the edge does the core itself", () => {
       expect(said(w)).toEqual([]);
       // Something was written, so it is not a machine's to do again from the start.
       expect(w.ran.filter((r) => r.kind === "hands.done")).toEqual([]);
-      expect(w.stored.get("held") ?? []).toEqual([]);
+      expect(heldStored(w)).toEqual([]);
       w.ghBreaks.length = 0;
       const again = await w.act("hands.done", { ref: REF });
       expect(await again.json()).toEqual({ ok: true, result: { ref: REF, done: true } });
@@ -5039,7 +5206,7 @@ describe("the edge does the core itself", () => {
       result: { issue: 500, url: "https://github.com/developing-today/code/issues/500", queued: true },
     });
     expect(w.githubCalls.filter((c) => c.method === "POST" && c.url.endsWith("/issues"))).toHaveLength(1);
-    const held = w.stored.get("held") as { kind: string; args: Record<string, unknown> }[];
+    const held = heldStored(w) as { kind: string; args: Record<string, unknown> }[];
     expect(held.map((h) => [h.kind, h.args.issue, h.args.text])).toEqual([
       ["prompt.enqueue", 500, "File this from the edge"],
     ]);
@@ -5076,7 +5243,7 @@ describe("the edge does the core itself", () => {
       "Owner: Do the docs",
     ]);
     expect(w.ghIssues[500].body).toContain("Change nothing to answer it");
-    const held = w.stored.get("held") as { kind: string; args: Record<string, unknown> }[];
+    const held = heldStored(w) as { kind: string; args: Record<string, unknown> }[];
     expect(held.map((h) => [h.kind, h.args.issue, h.args.intent])).toEqual([
       ["prompt.enqueue", 500, "question"],
       ["prompt.enqueue", 501, "directive"],
@@ -5101,7 +5268,7 @@ describe("the edge does the core itself", () => {
     ]);
     // A reply on the question is held as a question too.
     await w.act("ask.reply", { issue: 500, text: "Since when?" });
-    expect((w.stored.get("held") as typeof held).at(-1)?.args).toMatchObject({
+    expect((heldStored(w) as typeof held).at(-1)?.args).toMatchObject({
       issue: 500,
       intent: "question",
       text: "Since when?",
@@ -5218,14 +5385,14 @@ describe("the edge does the core itself", () => {
     // Three tasks wait for a machine, each as the action that builds it there.
     const at = new Date(w.now.t).toISOString();
     expect(
-      (w.stored.get("held") as { kind: string; args: Record<string, unknown> }[]).map((h) => [h.kind, h.args]),
+      (heldStored(w) as { kind: string; args: Record<string, unknown> }[]).map((h) => [h.kind, h.args]),
     ).toEqual([
       ["triage.enqueue", { issue: 500, title: body.title, rank: "now", at }],
       ["triage.enqueue", { issue: 301, title: "do this first", rank: "expedite", at, note: true }],
       ["prompt.enqueue", { issue: 501, text: "pick these up first\n\n(note, Fleet; from the PM app)", at }],
     ]);
     // What he typed is not on the record of what was done.
-    expect(JSON.stringify(w.stored.get("audit"))).not.toContain("badge count");
+    expect(JSON.stringify(auditStored(w))).not.toContain("badge count");
     // The Intake screen, read here, already has them.
     const intake = (await (await w.browse("/console/api/intake")).json()) as {
       items: { number: number; kind: string }[];
@@ -5247,7 +5414,7 @@ describe("the edge does the core itself", () => {
       ["triage.enqueue", 301],
       ["prompt.enqueue", 501],
     ]);
-    expect(w.stored.get("held")).toEqual([]);
+    expect(heldStored(w)).toEqual([]);
   });
 
   test("a laptop from before this side read things itself changes nothing by saying what it has", async () => {
@@ -5304,7 +5471,7 @@ describe("the edge does the core itself", () => {
     const { result } = (await res.json()) as { result: { queued: boolean; note: string } };
     expect(result.queued).toBe(false);
     expect(result.note).toBe("filed, not queued: the issue could not be read from its task");
-    expect(w.stored.get("held") ?? []).toEqual([]);
+    expect(heldStored(w)).toEqual([]);
   });
 
   test("with too much already waiting, the issue is still filed and the answer says its task is not", async () => {
@@ -5324,7 +5491,7 @@ describe("the edge does the core itself", () => {
     const { result } = (await res.json()) as { result: { issue: number; queued: boolean; note: string } };
     expect(result).toMatchObject({ issue: 500, queued: false });
     expect(result.note).toBe("filed, not queued: too much is already waiting for a machine");
-    expect((w.stored.get("held") as unknown[]).length).toBe(100);
+    expect((heldStored(w) as unknown[]).length).toBe(100);
   });
 
   test("the screens that need only GitHub and the queue are read here, and the ones that need a machine are asked of it", async () => {
@@ -5413,7 +5580,7 @@ describe("the edge does the core itself", () => {
       ((await (await w.browse("/console/health", { token: null })).json()) as { refused: string[] }).refused;
     expect(await health()).toEqual(["pr.merge"]);
     // It is on this side's record as refused here, not as a failure of the owner's.
-    const audit = w.stored.get("audit") as { action: string; phase: string; ok?: boolean; error?: string }[];
+    const audit = auditStored(w) as { action: string; phase: string; ok?: boolean; error?: string }[];
     expect(audit.filter((a) => a.action === "pr.merge" && a.phase === "done")).toEqual([
       expect.objectContaining({ ok: false, error: "refused here; left to a machine" }),
     ]);
@@ -5480,7 +5647,7 @@ describe("the edge does the core itself", () => {
     w.ghRefuses.push((method) => method !== "GET");
     const comment = await w.act("issue.comment", { issue: 301, text: "later, then" });
     expect(await comment.json()).toEqual({ ok: true, held: true, result: null, waits: "either" });
-    expect((w.stored.get("held") as { kind: string }[]).map((h) => h.kind)).toEqual(["issue.comment"]);
+    expect((heldStored(w) as { kind: string }[]).map((h) => h.kind)).toEqual(["issue.comment"]);
     const merge = await w.act("pr.merge", { pr: 55 });
     expect(merge.status).toBe(503);
     expect(((await merge.json()) as { error: string }).error).toContain("not something to do late, so it is not kept");
@@ -6599,7 +6766,7 @@ describe("the edge does the core itself", () => {
     // And an action is done here, not held for the laptop.
     expect(await (await w.act("issue.comment", { issue: 14, text: "late" })).json()).toMatchObject({ ok: true });
     expect(w.githubCalls.at(-1)).toMatchObject({ method: "POST", url: expect.stringContaining("/issues/14/comments") });
-    expect(w.stored.get("held") ?? []).toEqual([]);
+    expect(heldStored(w)).toEqual([]);
   });
 
   test("an older held action the laptop never took is done here first, under its own name", async () => {
@@ -6616,7 +6783,7 @@ describe("the edge does the core itself", () => {
       result: null,
       waits: "either",
     });
-    expect((w.stored.get("held") as { id: string }[]).map((h) => h.id)).toEqual([olderId]);
+    expect((heldStored(w) as { id: string }[]).map((h) => h.id)).toEqual([olderId]);
     // The token is put right and this side takes comments back.
     w.ghRefuses.length = 0;
     w.net.hostUp = true;
@@ -6634,10 +6801,10 @@ describe("the edge does the core itself", () => {
       .map((c) => (JSON.parse(c.body ?? "{}") as { body?: string }).body);
     // The refused first try is recorded too: the two that count come last, in order.
     expect(posted.slice(-2)).toEqual(["older", "newer"]);
-    expect(w.stored.get("held") ?? []).toEqual([]);
+    expect(heldStored(w)).toEqual([]);
     expect(w.stored.get(`a:${olderId}`)).toMatchObject({ kind: "issue.comment", state: "done" });
     expect(w.stored.get(`a:${newerId}`)).toMatchObject({ kind: "issue.comment", state: "done" });
-    expect(w.stored.get("handed") ?? []).toEqual([]);
+    expect(handedStored(w)).toEqual([]);
   });
 
   test("a held rank is replaced by a newer rank about the same issue: the last one wins", async () => {
@@ -6654,7 +6821,7 @@ describe("the edge does the core itself", () => {
       result: null,
       waits: "either",
     });
-    expect((w.stored.get("held") as { id: string }[]).map((h) => h.id)).toEqual([olderId]);
+    expect((heldStored(w) as { id: string }[]).map((h) => h.id)).toEqual([olderId]);
     // The token is put right and this side takes ranking back.
     w.ghRefuses.length = 0;
     w.net.hostUp = true;
@@ -6665,7 +6832,7 @@ describe("the edge does the core itself", () => {
     const newerId = "0f000000-0000-4000-8000-000000000012";
     const second = await w.act("issue.rank", { issue: 201, rank: "now" }, newerId);
     expect(await second.json()).toMatchObject({ ok: true });
-    expect(w.stored.get("held") ?? []).toEqual([]);
+    expect(heldStored(w)).toEqual([]);
     expect(w.stored.get(`a:${olderId}`)).toMatchObject({ kind: "issue.rank", state: "done", status: 409 });
     expect(w.stored.get(`a:${newerId}`)).toMatchObject({ kind: "issue.rank", state: "done" });
     expect(w.ghLabels[201]).toContain("now");
@@ -6696,13 +6863,13 @@ describe("the edge does the core itself", () => {
     const answer = await w.link.now.once();
     expect(answer?.commands.map((c) => c.id)).toEqual([olderId]);
     expect(w.ran.filter((r) => r.kind === "issue.comment")).toHaveLength(1);
-    expect(w.stored.get("handed")).toEqual([olderId]);
+    expect(handedStored(w)).toEqual([olderId]);
     // A newer comment about the same issue waits behind the handed one:
     // it is kept, not done here.
     const newerId = "0f000000-0000-4000-8000-000000000022";
     const second = await w.act("issue.comment", { issue: 7, text: "newer" }, newerId);
     expect(await second.json()).toEqual({ ok: true, held: true, result: null, waits: "machine" });
-    expect((w.stored.get("held") as { id: string }[]).map((h) => h.id)).toEqual([olderId, newerId]);
+    expect((heldStored(w) as { id: string }[]).map((h) => h.id)).toEqual([olderId, newerId]);
     // Nothing was done here: the laptop did the older, the newer waits.
     // The only call this side made was the older one's refused try.
     expect(w.githubCalls.filter((c) => comment(c.method, c.url)).map((c) => c.body)).toEqual(['{"body":"older"}']);
@@ -6735,7 +6902,7 @@ describe("the edge does the core itself", () => {
     expect(done).toMatchObject({ ok: true });
     expect(done.held).toBeUndefined();
     expect(
-      (w.stored.get("held") as { kind: string; args: Record<string, unknown> }[]).map((h) => h.args.issue),
+      (heldStored(w) as { kind: string; args: Record<string, unknown> }[]).map((h) => h.args.issue),
     ).toEqual([7]);
     const posted = w.githubCalls
       .filter((c) => comment(c.method, c.url))
@@ -6753,7 +6920,7 @@ describe("the edge does the core itself", () => {
     w.githubCalls
       .filter((c) => COMMENT(c.method, c.url))
       .map((c) => (JSON.parse(c.body ?? "{}") as { body?: string }).body);
-  const heldIds = (w: HeldWorld) => ((w.stored.get("held") as { id: string }[] | undefined) ?? []).map((h) => h.id);
+  const heldIds = (w: HeldWorld) => (heldStored(w) as { id: string }[]).map((h) => h.id);
   /** What is held, each with who it waits for, as the Machines screen is told it. */
   const heldWaits = async (w: HeldWorld) =>
     ((await (await w.browse("/console/api/machines")).json()) as MachinesAnswer).held.map((h) => [h.id, h.waits]);
@@ -6798,7 +6965,7 @@ describe("the edge does the core itself", () => {
     expect(w.now.t).toBe(t0 + 60 * 60_000);
     // Done here: asked of GitHub once more and no more, by no machine.
     expect(commented(w)).toEqual(["held, then done here", "held, then done here"]);
-    expect([heldIds(w), w.stored.get("taken") ?? [], w.stored.get("handed") ?? [], w.ran]).toEqual([[], [], [], []]);
+    expect([heldIds(w), takenStored(w), handedStored(w), w.ran]).toEqual([[], [], [], []]);
     expect(w.stored.get(`a:${ID(1)}`)).toMatchObject({ kind: "issue.comment", state: "done", status: 200 });
     const { doc } = await w.core();
     expect(doc.edge).toEqual({ held: 0, primary: true });
@@ -6899,7 +7066,7 @@ describe("the edge does the core itself", () => {
     w.net.edgeUp = true;
     await w.hostReads();
     expect((await w.link.now.once())?.commands.map((c) => c.id)).toEqual([ID(21), ID(22)]);
-    expect(w.stored.get("handed")).toEqual([ID(21), ID(22)]);
+    expect(handedStored(w)).toEqual([ID(21), ID(22)]);
     w.net.hostUp = false;
     w.net.edgeUp = false;
     // A later one about the same thing as a handed one waits behind it, held.
@@ -6909,12 +7076,12 @@ describe("the edge does the core itself", () => {
       held: true,
     });
     const before = commented(w).length;
-    const kept = (w.stored.get("held") as { id: string; at: string }[]).map((h) => Date.parse(h.at));
+    const kept = (heldStored(w) as { id: string; at: string }[]).map((h) => Date.parse(h.at));
     // Woken (to notice the laptop gone quiet), none of the three is done here: two are the
     // laptop's, which may have done them, and the third waits behind one of those.
     await wake(w);
     expect([commented(w).length, heldIds(w)]).toEqual([before, [ID(21), ID(22), ID(23)]]);
-    expect(w.stored.get("taken") ?? []).toEqual([]);
+    expect(takenStored(w)).toEqual([]);
     // Nor does it wake itself over them again and again: nothing here is its own to do, and
     // its next wake is the day's end of the oldest.
     expect(w.alarm.at).toBe(kept[0] + 24 * 60 * 60_000 + 1_000);
@@ -6952,7 +7119,7 @@ describe("the edge does the core itself", () => {
     const waking = w.edge.now.alarm();
     for (let turn = 0; turn < 200 && commented(w).length < 2; turn++) await new Promise((r) => setTimeout(r, 1));
     expect(commented(w)).toEqual(["A", "A"]);
-    expect([heldIds(w), (w.stored.get("taken") as { id: string }[]).map((t) => t.id)]).toEqual([
+    expect([heldIds(w), (takenStored(w) as { id: string }[]).map((t) => t.id)]).toEqual([
       [ID(32), ID(33)],
       [ID(31)],
     ]);
@@ -6962,7 +7129,7 @@ describe("the edge does the core itself", () => {
     await w.hostReads();
     const answer = await w.link.now.once();
     expect(answer?.commands.map((c) => c.id)).toEqual([ID(33)]);
-    expect(w.stored.get("handed")).toEqual([ID(33)]);
+    expect(handedStored(w)).toEqual([ID(33)]);
     expect(w.ran.filter((r) => r.kind === "issue.comment").map((r) => r.args.text)).toEqual(["C"]);
     // GitHub answers. A is done here, then B behind it; C was the laptop's and is not done here.
     w.ghHolds.length = 0;
@@ -6975,7 +7142,7 @@ describe("the edge does the core itself", () => {
     // The laptop says C is done, and nothing waits.
     await w.hostReads();
     await w.link.now.once();
-    expect([heldIds(w), w.stored.get("handed") ?? []]).toEqual([[], []]);
+    expect([heldIds(w), handedStored(w)]).toEqual([[], []]);
     expect(w.ran.filter((r) => r.kind === "issue.comment")).toHaveLength(1);
     for (const n of [31, 32]) expect(w.stored.get(`a:${ID(n)}`)).toMatchObject({ state: "done", status: 200 });
   });
@@ -7020,7 +7187,7 @@ describe("the edge does the core itself", () => {
     const tried = w.now.t;
     expect(commented(w)).toEqual(["still refused", "still refused"]);
     expect(heldIds(w)).toEqual([ID(51), ID(52)]);
-    expect([w.stored.get("taken") ?? [], w.stored.get("handed") ?? []]).toEqual([[], []]);
+    expect([takenStored(w), handedStored(w)]).toEqual([[], []]);
     expect(w.stored.get(`a:${ID(51)}`)).toMatchObject({ state: "given" });
     // Not tried again before the kind's next hour is up.
     expect(w.alarm.at).toBe(tried + 60 * 60_000);
@@ -7056,11 +7223,17 @@ describe("the edge does the core itself", () => {
       [ID(64), 10, "ended"],
       [ID(65), 11, "untouched"],
     ]);
-    const held = w.stored.get("held") as { id: string; at: string }[];
+    const held = heldStored(w) as { id: string; at: string }[];
     const by = (n: number) => held.find((h) => h.id === ID(n)) as { id: string; at: string };
     // As an object put away part-way would leave things: four taken, three of them out of the list.
-    w.stored.set("taken", [by(61), by(62), by(63), by(64), "not one", { id: 7 }]);
-    w.stored.set("held", [by(63), by(65)]);
+    // (The taken index also names two that are not records of a taken thing: one with no
+    // record kept under its name, and one whose record's name is not a name.)
+    w.stored.set("taken:index", [ID(61), ID(62), ID(63), ID(64), "not one", ID(66)]);
+    for (const n of [61, 62, 63, 64]) w.stored.set(`taken:${ID(n)}`, by(n));
+    w.stored.set(`taken:${ID(66)}`, { id: 7 });
+    w.stored.set("held:index", [ID(63), ID(65)]);
+    w.stored.set(`held:${ID(63)}`, by(63));
+    w.stored.set(`held:${ID(65)}`, by(65));
     w.stored.set(`a:${ID(61)}`, { at: w.now.t, kind: "issue.comment", state: "running" });
     w.stored.set(`a:${ID(64)}`, { at: w.now.t, kind: "issue.comment", state: "done", status: 200, body: { ok: true } });
     // (The one never begun was put away just after being turned away again: its name's record
@@ -7072,7 +7245,7 @@ describe("the edge does the core itself", () => {
     // Never begun: it waits again, in its place (before the two that were kept after it).
     expect(heldIds(w)).toEqual([ID(62), ID(63), ID(65)]);
     expect(w.stored.get(`a:${ID(62)}`)).toMatchObject({ state: "given" });
-    expect(w.stored.has("taken")).toBe(false);
+    expect(takenStored(w)).toEqual([]);
     // Begun and not known to have ended: neither side does it again, and the owner is told to look.
     expect(w.stored.get(`a:${ID(61)}`)).toMatchObject({ state: "done", status: 502 });
     expect(doc.acts.find((a: { id: string }) => a.id === ID(61))).toMatchObject({
@@ -7138,7 +7311,7 @@ describe("the edge does the core itself", () => {
     w.ghRefuses.length = 0;
     w.now.t += 60 * 60_000;
     // What it takes cannot be written down: it is not taken, and still waits.
-    w.storeFails.add("taken");
+    w.storeFails.add(`taken:${ID(121)}`);
     await w.edge.now.alarm();
     expect([commented(w).length, heldIds(w)]).toEqual([1, [ID(121)]]);
     expect(((await w.core()).doc.edge as { held: number }).held).toBe(1);
@@ -7159,7 +7332,7 @@ describe("the edge does the core itself", () => {
     await heldComments(w, [[ID(125), 7, "older"]]);
     w.ghRefuses.length = 0;
     w.now.t += 61 * 60_000;
-    w.storeFails.add("taken");
+    w.storeFails.add(`taken:${ID(125)}`);
     await w.edge.now.alarm();
     expect([commented(w).length, heldIds(w)]).toEqual([1, [ID(125)]]);
     // Storage is well again, and the owner comments on the same issue: the older is made
@@ -7210,7 +7383,7 @@ describe("the edge does the core itself", () => {
     expect([commented(w), heldIds(w)]).toEqual([[], [ID(141), ID(142)]]);
     expect(w.stored.get(`a:${ID(141)}`)).toMatchObject({ state: "given" });
     // Tried once, not over and over: taken, and then no longer taken.
-    expect(w.puts.slice(written).filter((key) => key === "taken")).toHaveLength(2);
+    expect(w.puts.slice(written).filter((key) => key === "taken:index")).toHaveLength(2);
     // The laptop comes back and does both, in order.
     w.net.hostUp = true;
     w.net.edgeUp = true;
@@ -7455,7 +7628,7 @@ describe("the edge does the core itself", () => {
       }),
     );
     const waking = w.edge.now.alarm();
-    const taken = () => ((w.stored.get("taken") as unknown[] | undefined) ?? []).length;
+    const taken = () => takenStored(w).length;
     for (let turn = 0; turn < 200 && taken() === 0; turn++) await new Promise((r) => setTimeout(r, 1));
     expect(taken()).toBe(1);
     const again = w.act("issue.comment", { issue: 7, text: "taken, then offered" }, ID(251));
@@ -7468,19 +7641,16 @@ describe("the edge does the core itself", () => {
     // Made here, once, and not by the laptop.
     expect(commented(w)).toEqual(["taken, then offered", "taken, then offered"]);
     expect(w.ran.filter((r) => r.kind === "issue.comment")).toEqual([]);
-    expect([heldIds(w), w.stored.get("taken")]).toEqual([[], []]);
+    expect([heldIds(w), takenStored(w)]).toEqual([[], []]);
   });
 
   test("one kept before it was written down whether it reached a machine is taken to have: this side leaves it to the laptop", async () => {
     const w = await primary();
     await heldComments(w, [[ID(261), 7, "from before"]]);
     // As the version before this one stored it: with no word either way.
-    const stored = w.stored.get("held") as Record<string, unknown>[];
+    const stored = heldStored(w) as Record<string, unknown>[];
     expect(stored.map((h) => h.unsent)).toEqual([true]);
-    w.stored.set(
-      "held",
-      stored.map(({ unsent: _unsent, ...rest }) => rest),
-    );
+    w.stored.set(`held:${ID(261)}`, stored.map(({ unsent: _unsent, ...rest }) => rest)[0]);
     w.ghRefuses.length = 0;
     w.now.t += 61 * 60_000;
     await wakeNow(w);
@@ -7530,7 +7700,7 @@ describe("the edge does the core itself", () => {
       }),
     );
     const waking = w.edge.now.alarm();
-    const taken = () => ((w.stored.get("taken") as unknown[] | undefined) ?? []).length;
+    const taken = () => takenStored(w).length;
     for (let turn = 0; turn < 200 && taken() === 0; turn++) await new Promise((r) => setTimeout(r, 1));
     expect(taken()).toBe(1);
     const again = w.act("issue.comment", { issue: 7, text: "taken, refused, offered" }, ID(255));
@@ -7544,7 +7714,7 @@ describe("the edge does the core itself", () => {
     // Refused twice by GitHub, made by nobody, and waiting again as it was.
     expect(commented(w)).toEqual(["taken, refused, offered", "taken, refused, offered"]);
     expect(w.ran.filter((r) => r.kind === "issue.comment")).toEqual([]);
-    expect([heldIds(w), w.stored.get("taken")]).toEqual([[ID(255)], []]);
+    expect([heldIds(w), takenStored(w)]).toEqual([[ID(255)], []]);
     expect(await heldWaits(w)).toEqual([[ID(255), "either"]]);
   });
 
