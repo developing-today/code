@@ -1337,7 +1337,8 @@
         "nixos/home/laptop-repo-keeper.test.sh",
         "nixos/home/laptop-untracked-review.test.sh",
         "nixos/home/openclaw-backup.test.sh",
-        "nixos/home/oc-password-sync.test.sh"
+        "nixos/home/oc-password-sync.test.sh",
+        "nixos/home/stable-entrypoints.test.sh"
       ],
       "invocation": "nix flake check (make-laptop-backups-checks)",
       "venue": {
