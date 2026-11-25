@@ -41,6 +41,7 @@ Groups and verbs (spec §6.1 tree; status as built):
   inventory list | show | search | audit
   key      generate | inspect
   publish  plan | verify (apply | status deferred, production-gated)
+  trust    export | stage | ack | activate | retire | status
   profile  list | show
   algorithms list | describe
   explain  [topic]
@@ -236,6 +237,7 @@ fn run_inner(args: &[String]) -> Result<i32> {
         "inventory" => inventory_cmd(rest, json_out),
         "key" => key_cmd(rest, json_out),
         "publish" => publish_cmd(rest, json_out),
+        "trust" => trust_cmd(rest, json_out),
         "profile" => profile_cmd(rest, json_out),
         "algorithms" => algorithms_cmd(rest, json_out),
         "explain" => explain_cmd(rest, json_out),
@@ -1208,6 +1210,167 @@ fn algorithms_cmd(args: &[String], json_out: bool) -> Result<i32> {
     }
 }
 
+// ---------------------------------------------------------------- trust (§3.5, BT-2)
+
+fn trust_cmd(args: &[String], json_out: bool) -> Result<i32> {
+    let verb = args.first().map(|s| s.as_str()).unwrap_or("");
+    let rest = if args.is_empty() { &[][..] } else { &args[1..] };
+    match verb {
+        "export" => {
+            let p = parse_args(rest, &["root", "out", "version", "name", "at"], &[])?;
+            let root_bundles: Vec<PathBuf> = p.all("root").into_iter().map(PathBuf::from).collect();
+            if root_bundles.is_empty() {
+                return Err(CertError::usage(
+                    "trust export requires --root <root-set-bundle-dir> (repeatable)",
+                ));
+            }
+            let out = p.require("out", "trust export")?;
+            let version_raw = p.require("version", "trust export")?;
+            let version: u32 = version_raw.parse().map_err(|_| {
+                CertError::usage(format!(
+                    "trust export --version '{version_raw}' is not a version number"
+                ))
+            })?;
+            let at = p
+                .get("at")
+                .map(Rfc3339::parse)
+                .transpose()?
+                .unwrap_or_else(Rfc3339::now);
+            let manifest = crate::trust::export_trust_bundle(
+                &crate::trust::TrustExportRequest {
+                    root_bundles,
+                    version,
+                    name: p.get("name").unwrap_or("Fleet Trust Bundle").to_string(),
+                    at,
+                },
+                &PathBuf::from(&out),
+            )?;
+            let anchors = manifest
+                .certificates
+                .iter()
+                .filter(|c| c.role == "root")
+                .count();
+            let text = format!(
+                "Trust bundle exported: {} (version {}, {} anchors, {} files)\n  out: {}\n",
+                manifest.bundle_id,
+                manifest.bundle_version,
+                anchors,
+                manifest.files.len(),
+                out
+            );
+            let value = json!({
+                "bundle_id": manifest.bundle_id,
+                "bundle_version": manifest.bundle_version,
+                "anchors": anchors,
+                "files": manifest.files.iter().map(|f| f.path.clone()).collect::<Vec<_>>(),
+                "out": out,
+            });
+            Ok(emit(json_out, text, value))
+        }
+        "stage" => {
+            let p = parse_args(rest, &["bundle", "store"], &[])?;
+            let bundle = p.require("bundle", "trust stage")?;
+            let store = p.require("store", "trust stage")?;
+            let vref = crate::trust::stage_bundle(&PathBuf::from(&store), &PathBuf::from(&bundle))?;
+            let text = format!(
+                "Staged trust bundle version {} ({}) in {}\n",
+                vref.version, vref.bundle_id, store
+            );
+            Ok(emit(json_out, text, serde_json::to_value(&vref)?))
+        }
+        "ack" => {
+            let p = parse_args(rest, &["store", "version", "at"], &[])?;
+            let store = p.require("store", "trust ack")?;
+            let version = p
+                .get("version")
+                .map(|v| {
+                    v.parse::<u32>().map_err(|_| {
+                        CertError::usage(format!(
+                            "trust ack --version '{v}' is not a version number"
+                        ))
+                    })
+                })
+                .transpose()?;
+            let at = p
+                .get("at")
+                .map(Rfc3339::parse)
+                .transpose()?
+                .unwrap_or_else(Rfc3339::now);
+            let ack = crate::trust::acknowledge(&PathBuf::from(&store), version, at)?;
+            let text = format!(
+                "Acknowledged trust bundle version {} ({}) at {}\n",
+                ack.version, ack.bundle_id, ack.acknowledged_at
+            );
+            Ok(emit(json_out, text, serde_json::to_value(&ack)?))
+        }
+        "activate" => {
+            let p = parse_args(rest, &["store", "version"], &[])?;
+            let store = p.require("store", "trust activate")?;
+            let version = p
+                .get("version")
+                .map(|v| {
+                    v.parse::<u32>().map_err(|_| {
+                        CertError::usage(format!(
+                            "trust activate --version '{v}' is not a version number"
+                        ))
+                    })
+                })
+                .transpose()?;
+            let vref = crate::trust::activate(&PathBuf::from(&store), version)?;
+            let text = format!(
+                "Active trust bundle is now version {} ({})\n",
+                vref.version, vref.bundle_id
+            );
+            Ok(emit(json_out, text, serde_json::to_value(&vref)?))
+        }
+        "retire" => {
+            let p = parse_args(rest, &["store", "version"], &[])?;
+            let store = p.require("store", "trust retire")?;
+            let version_raw = p.require("version", "trust retire")?;
+            let version: u32 = version_raw.parse().map_err(|_| {
+                CertError::usage(format!(
+                    "trust retire --version '{version_raw}' is not a version number"
+                ))
+            })?;
+            crate::trust::retire(&PathBuf::from(&store), version)?;
+            let text = format!("Retired trust bundle version {version}\n");
+            Ok(emit(json_out, text, json!({"retired": version})))
+        }
+        "status" => {
+            let p = parse_args(rest, &["store"], &[])?;
+            let store = p.require("store", "trust status")?;
+            let status = crate::trust::store_status(&PathBuf::from(&store))?;
+            let fmt_ref = |r: &Option<crate::trust::VersionRef>| match r {
+                Some(v) => format!("{} ({})", v.version, v.bundle_id),
+                None => "none".to_string(),
+            };
+            let mut text = format!(
+                "Trust store {}\n  active:   {}\n  previous: {}\n  staged:   {}\n  installed: {}\n",
+                store,
+                fmt_ref(&status.active),
+                fmt_ref(&status.previous),
+                fmt_ref(&status.staged),
+                status
+                    .installed_versions
+                    .iter()
+                    .map(|v| v.to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
+            for ack in &status.acks {
+                text.push_str(&format!(
+                    "  ack: version {} ({}) at {}\n",
+                    ack.version, ack.bundle_id, ack.acknowledged_at
+                ));
+            }
+            Ok(emit(json_out, text, serde_json::to_value(&status)?))
+        }
+        other => Err(CertError::usage(format!(
+            "unknown trust verb '{other}' (export | stage | ack | activate | retire | status)"
+        ))),
+    }
+}
+
 // ---------------------------------------------------------------- explain / doctor
 
 const NOT_BUILT: &[(&str, &str)] = &[
@@ -1220,10 +1383,6 @@ const NOT_BUILT: &[(&str, &str)] = &[
         "live AIA/CDP publication apply + status (production-gated follow-up; slice 1 ships plan + verify read-only)",
     ),
     ("dns", "DNS plan/render/verify (spec §24.7)"),
-    (
-        "trust",
-        "trust-store install/export (spec §3.5 follow-through)",
-    ),
     (
         "key import/export/escrow/restore/rotate",
         "remaining standalone key ceremonies (spec §6.1)",
@@ -1253,7 +1412,7 @@ fn explain_cmd(args: &[String], json_out: bool) -> Result<i32> {
     let body = match topic {
         "overview" => {
             "fleet cert implements the §6.1 command tree's core: root, issuer, leaf, ocsp, \
-chain, bundle, inventory (list | show | search | audit, read-only), publish (plan | verify read-only), profile, algorithms, explain, doctor. Signing is library-first (§6.4): \
+chain, bundle, inventory (list | show | search | audit, read-only), publish (plan | verify read-only), trust (export | stage | ack | activate | retire | status — the §3.5 trust bundle and the broker-client trust store, BT-2), profile, algorithms, explain, doctor. Signing is library-first (§6.4): \
 the CLI is a thin shell over the fleet-cert crate. Cross-signing is policy data \
 (§§3.2/24.2), time is Gregorian calendar arithmetic (§5.4), and ML-DSA-44 is a \
 first-class algorithm with RFC 9881 identifiers. Topics: signer-source, \
