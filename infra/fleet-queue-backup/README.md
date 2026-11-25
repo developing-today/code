@@ -36,8 +36,13 @@ decisions.
 - `systemd/` — a daily user timer (`fleet-queue-backup-export.timer`,
   02:15 + up to 30 min randomized delay) and a weekly one
   (`fleet-queue-backup-d1-home.timer`, Sundays 03:40) whose wrappers
-  fetch the credentials from Bitwarden by name at runtime. Install
-  with `systemd/install-units.sh` from a checkout on the laptop.
+  fetch the credentials from Bitwarden by name at runtime. Both
+  services first run `systemd/update-checkout.sh` as ExecStartPre,
+  which brings the service-owned checkout they were installed from
+  to origin/main (refusing a dirty tree; warning and continuing on a
+  fetch failure), so the units follow main and never depend on a
+  working directory. Install with `systemd/install-units.sh` from a
+  dedicated checkout on the laptop.
 - `docs/RUNBOOK.md` — the restore path, the drill procedure, and the
   freshness target.
 - `tests/` — hermetic tests; sqlite3 is the oracle. Run:
@@ -45,7 +50,8 @@ decisions.
   `python3 -I tests/test_restore_drill.py`,
   `python3 -I tests/test_export_to_turso.py`,
   `python3 -I tests/test_restore_drill_d1_home.py`,
-  `bash systemd/test-export-arguments.sh`.
+  `bash systemd/test-export-arguments.sh`,
+  `bash systemd/test-update-checkout.sh`.
 
 ## Credentials
 
