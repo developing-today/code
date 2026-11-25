@@ -46,8 +46,10 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
+pub mod persist;
 pub mod publication;
 
+pub use persist::{GrantSetSnapshot, LoadError, SNAPSHOT_FORMAT};
 pub use publication::{
     ClassLevel, DiscoveryMode, ListingEntry, PublicationRecord, Publications, PublishError,
     PublishRequest, ShareId, ShareManifest, UNLISTED_LABEL, UNPUBLISH_NOTICE,
