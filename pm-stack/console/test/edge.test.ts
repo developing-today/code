@@ -21,7 +21,7 @@ import { forgetPoke, type Io, route } from "../edge/src/entry.ts";
 import type { Action } from "../src/actions.ts";
 import { clearJwksCache, identify } from "../src/auth.ts";
 import { readConfig } from "../src/config.ts";
-import { platformSettings } from "../src/settings.ts";
+import { type OwnerChangeableName, type OwnerSettings, platformSettings } from "../src/settings.ts";
 import { Devices, Limiter } from "../src/devices.ts";
 import { Docs } from "../src/docs.ts";
 import { NEEDS_LABELS } from "../src/needs.ts";
@@ -1426,6 +1426,125 @@ beforeEach(() => {
 });
 
 describe("before the host's first report", () => {
+  // Oracle: the design's §3 precedence table and §D2 storage/audit shapes.
+  // S4 owns the HTTP write path; these tests exercise its private storage
+  // seam directly, not a new machine- or owner-facing action.
+  test("the edge config uses owner settings above the machine's needsRepos and repository defaults", async () => {
+    const w = await setup();
+    const machineRepos = ["machine/repo"];
+    w.edgeConfig.needsRepos = machineRepos;
+    await w.link.now.once();
+
+    const owner: OwnerSettings = {
+      rev: 1,
+      at: w.now.t,
+      by: OWNER,
+      values: { promptLabel: "owner/instructions", needsRepos: ["owner/repo"] },
+    };
+    const helpers = w.edge.now as unknown as {
+      saveOwnerSettings(
+        next: OwnerSettings,
+        changes: readonly { kind: "setting.set" | "setting.clear"; name: OwnerChangeableName }[],
+      ): Promise<void>;
+      config(): Promise<EdgeConfig | null>;
+    };
+    expect(await helpers.config()).toMatchObject({
+      promptLabel: platformSettings().promptLabel,
+      needsRepos: machineRepos,
+    });
+    await helpers.saveOwnerSettings(owner, [
+      { kind: "setting.set", name: "promptLabel" },
+      { kind: "setting.set", name: "needsRepos" },
+    ]);
+
+    expect(w.stored.get("ownerSettings")).toEqual(owner);
+    expect(w.stored.get("cfg")).toMatchObject({ needsRepos: machineRepos });
+    expect(await helpers.config()).toMatchObject({
+      promptLabel: "owner/instructions",
+      needsRepos: ["owner/repo"],
+      repo: platformSettings().repo,
+    });
+    expect(auditStored(w)).toEqual([
+      { kind: "setting.set", name: "promptLabel", rev: 1, at: owner.at, by: OWNER },
+      { kind: "setting.set", name: "needsRepos", rev: 1, at: owner.at, by: OWNER },
+    ]);
+    expect(JSON.stringify(auditStored(w))).not.toContain("owner/instructions");
+
+    // A fresh DO instance reads the override back independently of cfg.
+    w.edge.now = w.makeEdge();
+    const recovered = w.edge.now as unknown as { config(): Promise<EdgeConfig | null> };
+    expect(await recovered.config()).toMatchObject({ promptLabel: "owner/instructions", needsRepos: ["owner/repo"] });
+  });
+
+  test("clearing owner settings restores lower layers, retains the revision and audits no values", async () => {
+    const w = await setup();
+    w.edgeConfig.needsRepos = ["machine/repo"];
+    await w.link.now.once();
+    const owner: OwnerSettings = {
+      rev: 1, at: START, by: OWNER, values: { promptLabel: "private/label", needsRepos: ["private/repo"] },
+    };
+    w.stored.set("ownerSettings", owner);
+    w.edge.now = w.makeEdge();
+    const helpers = w.edge.now as unknown as {
+      saveOwnerSettings(next: OwnerSettings, changes: { kind: "setting.clear"; name: OwnerChangeableName }[]): Promise<void>;
+      config(): Promise<EdgeConfig | null>;
+    };
+    await helpers.config(); // prime the derived cache before clearing
+    const partial = { ...owner, rev: 2, at: START + 1, values: { needsRepos: ["private/repo"] } };
+    await helpers.saveOwnerSettings(partial, [{ kind: "setting.clear", name: "promptLabel" }]);
+    expect(await helpers.config()).toMatchObject({ promptLabel: platformSettings().promptLabel, needsRepos: ["private/repo"] });
+    const cleared = { ...owner, rev: 3, at: START + 2, values: {} };
+    await helpers.saveOwnerSettings(cleared, [{ kind: "setting.clear", name: "needsRepos" }]);
+    expect(await helpers.config()).toMatchObject({ promptLabel: platformSettings().promptLabel, needsRepos: ["machine/repo"] });
+    expect(w.stored.get("ownerSettings")).toEqual(cleared);
+    expect(auditStored(w)).toEqual([
+      { kind: "setting.clear", name: "promptLabel", rev: 2, at: START + 1, by: OWNER },
+      { kind: "setting.clear", name: "needsRepos", rev: 3, at: START + 2, by: OWNER },
+    ]);
+
+    // Failed persistence must not replace the cached effective config.
+    w.storeFails.add("ownerSettings");
+    await expect(helpers.saveOwnerSettings(owner, [])).rejects.toThrow("storage: could not write ownerSettings");
+    expect(w.stored.get("ownerSettings")).toEqual(cleared);
+    expect(await helpers.config()).toMatchObject({ needsRepos: ["machine/repo"] });
+  });
+
+  test("a sync with owner-settings-shaped data cannot change the owner record", async () => {
+    const w = await setup();
+    const owner: OwnerSettings = { rev: 4, at: START, by: OWNER, values: { promptLabel: "owner/prompt" } };
+    w.stored.set("ownerSettings", owner);
+    await w.link.now.once();
+    const kept = JSON.parse(w.keys.text() as string) as { privateJwk: JsonWebKey };
+    const body = new TextEncoder().encode(
+      JSON.stringify({
+        v: 1,
+        at: w.now.t + 1,
+        config: { ...w.edgeConfig, promptLabel: "machine/prompt", ownerSettings: { rev: 99, values: {} } },
+        sections: [],
+        have: {},
+        acks: [],
+        ownerSettings: { rev: 99, at: w.now.t + 1, by: "machine", values: { promptLabel: "machine/override" } },
+      }),
+    );
+    const res = await route(
+      new Request(`https://${HOST}/console/edge/sync`, {
+        method: "POST",
+        body,
+        headers: {
+          "x-pm-key": await keyId(await w.link.now.publicKey()),
+          "x-pm-signature": await sign(kept.privateJwk, body),
+          "cf-ray": "2",
+        },
+      }),
+      w.io,
+    );
+    expect(res.status).toBe(200);
+    expect(w.stored.get("ownerSettings")).toEqual(owner);
+    expect(w.stored.get("cfg")).toMatchObject({ promptLabel: "machine/prompt" });
+    expect(w.stored.get("cfg")).not.toHaveProperty("ownerSettings");
+    expect(w.puts.filter((key) => key === "ownerSettings")).toEqual([]);
+  });
+
   test("the edge stays out of the way: the host answers everything, as before", async () => {
     const w = await setup();
     const health = (await (await w.browse("/console/health", { token: null })).json()) as Record<string, unknown>;

@@ -128,7 +128,14 @@ import type { Later } from "../../src/plan.ts";
 import { platformRead } from "../../src/reads.ts";
 import { Notifier, WATCHED as NOTIFIED } from "../../src/notify.ts";
 import { contact, Push } from "../../src/push.ts";
-import { goesBy, platformSettings, settingsDifferences, settingsThatDiffer } from "../../src/settings.ts";
+import {
+  effectiveSettings,
+  type OwnerChangeableName,
+  type OwnerSettings,
+  platformSettings,
+  settingsDifferences,
+  settingsThatDiffer,
+} from "../../src/settings.ts";
 import { timed, unread } from "../../src/timed.ts";
 import appFiles from "../../public/files.json";
 
@@ -210,6 +217,8 @@ export class Edge {
   private cfg: EdgeConfig | null | undefined;
   /** What a machine told, as it is kept; undefined until read. */
   private told: EdgeConfig | null | undefined;
+  /** The owner's word, kept apart from a machine's; undefined until read. */
+  private owner: OwnerSettings | null | undefined;
   private mirrors: Mirrors;
   private held: Held[] | null = null;
   /** Held actions already handed to a machine in a report answer and not
@@ -415,16 +424,39 @@ export class Edge {
     return this.told;
   }
 
+  private async ownerSettings(): Promise<OwnerSettings | null> {
+    if (this.owner === undefined) this.owner = ((await this.kv.get("ownerSettings")) as OwnerSettings | undefined) ?? null;
+    return this.owner;
+  }
+
+  /** Keep an accepted owner revision and its per-setting audit entries.
+   * Only the owner action may call this: validation, identity and revision
+   * checks belong there, never in sync. Even clearing the last override
+   * keeps the revision, so a stale tab cannot reuse an earlier revision. */
+  private async saveOwnerSettings(
+    next: OwnerSettings,
+    changes: readonly { kind: "setting.set" | "setting.clear"; name: OwnerChangeableName }[],
+  ): Promise<void> {
+    const record = structuredClone(next);
+    await this.kv.put("ownerSettings", record);
+    this.owner = record;
+    this.cfg = undefined;
+    for (const { kind, name } of changes) {
+      await this.audit({ kind, name, rev: record.rev, at: record.at, by: record.by });
+    }
+  }
+
   /** What this side goes by; null until a machine has said who may
    * sign in. Who may sign in is as the machine told it (the
    * deployment's, until that is applied from Actions: #13495). The
    * repository's settings are this side's own, as its deploy carries
    * them, whatever a machine told for them; the list of repositories
-   * alone is still the machine's (src/settings.ts says why). */
+   * alone is still the machine's unless the owner overrides it. The
+   * owner's values win for the owner-changeable names only. */
   private async config(): Promise<EdgeConfig | null> {
     if (this.cfg === undefined) {
       const told = await this.toldConfig();
-      this.cfg = told === null ? null : goesBy(told);
+      this.cfg = told === null ? null : effectiveSettings(told, await this.ownerSettings());
     }
     return this.cfg;
   }
@@ -1540,7 +1572,9 @@ export class Edge {
     if (!says) return json({ error: "config: not one this side can use" }, 400);
     if (JSON.stringify(says) !== JSON.stringify(await this.toldConfig())) {
       // Kept as told: what is gone by is worked out from it (config()),
-      // and where the machine differs is said from it.
+      // and where the machine differs is said from it. edgeConfig picks
+      // only machine fields; no override-shaped field in this report
+      // can write the separate ownerSettings record.
       await this.kv.put("cfg", says);
       this.told = says;
       this.cfg = undefined;
