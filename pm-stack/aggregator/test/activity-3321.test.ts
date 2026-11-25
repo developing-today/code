@@ -249,6 +249,28 @@ describe("ingestion store (#3321)", () => {
     expect(cp?.lastSourceId).toBe(deliveries[0]?.sourceId);
   });
 
+  test("seen-id retention evicts the oldest id so it can be replayed", async () => {
+    const { store } = tmpStores();
+    const deliveries: ActivityDelivery[] = Array.from({ length: 2001 }, (_, i) => ({
+      source: "github",
+      sourceId: `event-${i}`,
+      at: iso(0),
+      kind: "github-event",
+      ref: "developing-today/code",
+      summary: `event ${i}`,
+    }));
+    const events = { record: async () => ({}) };
+
+    const initial = await store.ingest(events, deliveries);
+    expect(initial.ingested).toBe(2001);
+    expect(await store.seenIds("github")).toHaveLength(2000);
+
+    // The oldest id has fallen out of the bounded dedupe window and is eligible again.
+    const replay = await store.ingest(events, [deliveries[0]!]);
+    expect(replay.ingested).toBe(1);
+    expect(replay.duplicates).toBe(0);
+  });
+
   test("restart resumes from the persisted checkpoint: replay stays duplicate", async () => {
     const { eventsFile, activityFile, events, store } = tmpStores();
     const deliveries: ActivityDelivery[] = [

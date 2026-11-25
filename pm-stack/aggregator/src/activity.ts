@@ -638,8 +638,16 @@ export class IngestionStore {
     let failed = 0;
     const failedIds: string[] = [];
     let dirty = false;
+    // A replay batch may contain thousands of deliveries; build each persisted
+    // seen list's lookup index once instead of rescanning it for every delivery.
+    const seenBySource = new Map<string, Set<string>>();
     for (const d of deliveries) {
       const seen = (this.data.seen[d.source] ??= []);
+      let seenSet = seenBySource.get(d.source);
+      if (!seenSet) {
+        seenSet = new Set(seen);
+        seenBySource.set(d.source, seenSet);
+      }
       const cp = (this.data.checkpoints[d.source] ??= {
         source: d.source,
         lastSourceId: null,
@@ -648,7 +656,7 @@ export class IngestionStore {
         duplicates: 0,
         updatedAt: new Date().toISOString(),
       });
-      if (seen.includes(d.sourceId)) {
+      if (seenSet.has(d.sourceId)) {
         duplicates++;
         cp.duplicates++;
         cp.updatedAt = new Date().toISOString();
@@ -682,7 +690,11 @@ export class IngestionStore {
         continue;
       }
       seen.push(d.sourceId);
-      if (seen.length > SEEN_RETENTION_MAX) seen.splice(0, seen.length - SEEN_RETENTION_MAX);
+      seenSet.add(d.sourceId);
+      if (seen.length > SEEN_RETENTION_MAX) {
+        const evicted = seen.splice(0, seen.length - SEEN_RETENTION_MAX);
+        for (const sourceId of evicted) seenSet.delete(sourceId);
+      }
       cp.deliveries++;
       cp.lastSourceId = d.sourceId;
       if (!cp.lastEventAt || Date.parse(d.at) >= Date.parse(cp.lastEventAt)) cp.lastEventAt = d.at;
