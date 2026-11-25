@@ -23,9 +23,12 @@
 //! invariant 6) — and a known note with no recorded policy falls
 //! through to the user default, then the server default, then public.
 //!
-//! This module decides reads only. It wires into no projection yet:
-//! the journal view is the first caller (next slice on #12751), and
-//! the other projections follow it instead of re-deriving the order.
+//! [`NoteReader`] is the one predicate every projection in
+//! [`crate::note_projections`] takes for its `can_read` seam: it looks
+//! up each note's owner default and applies the same order, so no
+//! projection re-derives it.
+
+use std::collections::BTreeMap;
 
 use p2panda_core::Hash;
 
@@ -215,6 +218,73 @@ pub fn may_read(
         return false;
     };
     role_for(owner, &resolved.access, reader, groups).is_some()
+}
+
+/// One reader's read check over a note log, ready to hand every
+/// projection (journal, capture, database, transclusion) as its
+/// `can_read` predicate.
+///
+/// The user-default level of the #5678 order is the note owner's
+/// default, so it is looked up per note from `owner_defaults` by the
+/// note's owner; `server_default` applies to every note. A note the
+/// log does not hold is denied, so a projection over it never
+/// confirms that it exists (design invariant 6).
+#[derive(Clone, Debug)]
+pub struct NoteReader<'a> {
+    notes: &'a NoteCheckpoints,
+    reader: AuthorKey,
+    groups: &'a GroupRoles,
+    owner_defaults: &'a BTreeMap<AuthorKey, NoteAccess>,
+    server_default: Option<NoteAccess>,
+}
+
+impl<'a> NoteReader<'a> {
+    /// A reader's check over `notes`, with each owner's default
+    /// access and the host's configured default.
+    #[must_use]
+    pub const fn new(
+        notes: &'a NoteCheckpoints,
+        reader: AuthorKey,
+        groups: &'a GroupRoles,
+        owner_defaults: &'a BTreeMap<AuthorKey, NoteAccess>,
+        server_default: Option<NoteAccess>,
+    ) -> Self {
+        Self {
+            notes,
+            reader,
+            groups,
+            owner_defaults,
+            server_default,
+        }
+    }
+
+    /// The two fall-through levels for one note: its owner's default
+    /// and the server's. `None` for a note the log does not hold.
+    #[must_use]
+    pub fn defaults_for(&self, note: Hash) -> Option<ReadDefaults> {
+        let (owner, _) = self.notes.access(note)?;
+        Some(ReadDefaults {
+            user_default: self.owner_defaults.get(&owner).cloned(),
+            server_default: self.server_default.clone(),
+        })
+    }
+
+    /// Which level of the #5678 order decides `note` for this
+    /// reader's host. `None` for a note the log does not hold.
+    #[must_use]
+    pub fn resolve(&self, note: Hash) -> Option<ResolvedRead> {
+        let defaults = self.defaults_for(note)?;
+        resolve_for(self.notes, note, &defaults)
+    }
+
+    /// Whether this reader may read `note`. The signature matches the
+    /// projections' `can_read` predicate.
+    #[must_use]
+    pub fn may_read(&self, note: &Hash) -> bool {
+        self.defaults_for(*note).is_some_and(|defaults| {
+            may_read(self.notes, *note, self.reader, self.groups, &defaults)
+        })
+    }
 }
 
 #[cfg(test)]
@@ -545,5 +615,194 @@ mod tests {
             ),
             Some(NoteRole::Admin)
         );
+    }
+
+    // -- NoteReader across projections (#12751) -------------------------
+
+    mod across_projections {
+        use super::*;
+        use crate::note_blocks::{Block, BlockId, BlockKind, BlockTree};
+        use crate::note_projections::{
+            CalendarDate, CaptureTarget, DatabaseDefinition, NoteProperty, ProjectedNote,
+            PropertyFilter, PropertyValue, TransclusionRender, capture_target, database_view,
+            journal_view, render_transclusion,
+        };
+
+        const A: u8 = 1;
+        const B: u8 = 2;
+        const C: u8 = 3;
+
+        fn day(d: u8) -> CalendarDate {
+            CalendarDate {
+                year: 2026,
+                month: 11,
+                day: d,
+            }
+        }
+
+        fn tree() -> BlockTree {
+            BlockTree {
+                blocks: vec![Block {
+                    id: BlockId("b".to_owned()),
+                    kind: BlockKind::Paragraph,
+                    text: "body".to_owned(),
+                    children: Vec::new(),
+                }],
+            }
+        }
+
+        fn projected(byte: u8, date: u8) -> ProjectedNote {
+            ProjectedNote {
+                note: hash(byte),
+                revision: hash(byte.wrapping_add(100)),
+                tree: tree(),
+                dates: vec![day(date)],
+                properties: vec![NoteProperty {
+                    name: "status".to_owned(),
+                    value: PropertyValue::Text("open".to_owned()),
+                }],
+            }
+        }
+
+        /// A's note 10 has no policy (A's default keeps it private);
+        /// B's note 11 has no policy and B set no default; A's note
+        /// 12 grants C read on the object; note 13 is not in the log.
+        fn world() -> (NoteCheckpoints, Vec<ProjectedNote>) {
+            let mut log = NoteCheckpoints::new();
+            log.create(hash(10), author(A), content(b"a private by default"))
+                .unwrap();
+            log.create(hash(11), author(B), content(b"b no default"))
+                .unwrap();
+            log.create_with_access(
+                hash(12),
+                author(A),
+                content(b"a shared with c"),
+                NoteAccess::Scoped(vec![grant(author(C), NoteRole::Read)]),
+            )
+            .unwrap();
+            let notes = vec![
+                projected(10, 24),
+                projected(11, 25),
+                projected(12, 23),
+                projected(13, 22),
+            ];
+            (log, notes)
+        }
+
+        fn owner_defaults() -> BTreeMap<AuthorKey, NoteAccess> {
+            BTreeMap::from([(author(A), NoteAccess::Scoped(vec![]))])
+        }
+
+        fn journal_ids(reader: &NoteReader<'_>, notes: &[ProjectedNote]) -> Vec<Hash> {
+            journal_view(notes, &|n: &Hash| reader.may_read(n))
+                .iter()
+                .map(|row| row.note.note)
+                .collect()
+        }
+
+        #[test]
+        fn test_journal_applies_each_owners_default() {
+            let (log, notes) = world();
+            let groups = GroupRoles::none();
+            let defaults = owner_defaults();
+
+            // C reads A's shared note (object level) and B's note
+            // (public), never A's note left at A's private default,
+            // never a note the log does not hold.
+            let c = NoteReader::new(&log, author(C), &groups, &defaults, None);
+            assert_eq!(journal_ids(&c, &notes), vec![hash(12), hash(11)]);
+
+            // A reads everything A owns, plus B's public note.
+            let a = NoteReader::new(&log, author(A), &groups, &defaults, None);
+            assert_eq!(journal_ids(&a, &notes), vec![hash(12), hash(10), hash(11)]);
+
+            assert_eq!(c.resolve(hash(10)).unwrap().level, ReadLevel::UserDefault);
+            assert_eq!(c.resolve(hash(11)).unwrap().level, ReadLevel::Public);
+            assert_eq!(c.resolve(hash(12)).unwrap().level, ReadLevel::Object);
+            assert_eq!(c.resolve(hash(13)), None);
+        }
+
+        #[test]
+        fn test_server_default_closes_notes_whose_owner_set_none() {
+            let (log, notes) = world();
+            let groups = GroupRoles::none();
+            let defaults = owner_defaults();
+            let c = NoteReader::new(
+                &log,
+                author(C),
+                &groups,
+                &defaults,
+                Some(NoteAccess::Scoped(vec![])),
+            );
+            // B set no default, so the server's now decides note 11;
+            // A's own default still decides note 10, and the object
+            // grant on note 12 still wins over both.
+            assert_eq!(journal_ids(&c, &notes), vec![hash(12)]);
+            assert_eq!(c.resolve(hash(11)).unwrap().level, ReadLevel::ServerConfig);
+            assert_eq!(c.resolve(hash(10)).unwrap().level, ReadLevel::UserDefault);
+        }
+
+        #[test]
+        fn test_capture_never_appends_to_a_note_the_reader_cannot_read() {
+            let (log, notes) = world();
+            let groups = GroupRoles::none();
+            let defaults = owner_defaults();
+            let c = NoteReader::new(&log, author(C), &groups, &defaults, None);
+            let a = NoteReader::new(&log, author(A), &groups, &defaults, None);
+            assert_eq!(
+                capture_target(&notes, day(24), &|n: &Hash| c.may_read(n)),
+                CaptureTarget::Create { date: day(24) }
+            );
+            assert!(matches!(
+                capture_target(&notes, day(24), &|n: &Hash| a.may_read(n)),
+                CaptureTarget::Existing { note } if note.note == hash(10)
+            ));
+        }
+
+        #[test]
+        fn test_database_rows_follow_the_same_order() {
+            let (log, notes) = world();
+            let groups = GroupRoles::none();
+            let defaults = owner_defaults();
+            let c = NoteReader::new(&log, author(C), &groups, &defaults, None);
+            let def = DatabaseDefinition {
+                name: "open items".to_owned(),
+                filters: BTreeMap::from([(
+                    "status".to_owned(),
+                    PropertyFilter::Equals(PropertyValue::Text("open".to_owned())),
+                )]),
+                columns: vec!["status".to_owned()],
+                sort: None,
+            };
+            let rows: Vec<Hash> = database_view(&def, &notes, &|n: &Hash| c.may_read(n))
+                .iter()
+                .map(|row| row.note.note)
+                .collect();
+            assert_eq!(rows, vec![hash(11), hash(12)]);
+        }
+
+        #[test]
+        fn test_transclusion_degrades_when_the_owner_default_denies() {
+            let (log, _) = world();
+            let groups = GroupRoles::none();
+            let defaults = owner_defaults();
+            let source = tree();
+            let block = BlockId("b".to_owned());
+            let render = |reader: &NoteReader<'_>| {
+                render_transclusion(
+                    &hash(10),
+                    None,
+                    Some(&block),
+                    None,
+                    Some(&source),
+                    &hash(10),
+                    &|n: &Hash| reader.may_read(n),
+                )
+            };
+            let c = NoteReader::new(&log, author(C), &groups, &defaults, None);
+            let a = NoteReader::new(&log, author(A), &groups, &defaults, None);
+            assert_eq!(render(&c), TransclusionRender::Unresolved);
+            assert!(matches!(render(&a), TransclusionRender::Content { .. }));
+        }
     }
 }

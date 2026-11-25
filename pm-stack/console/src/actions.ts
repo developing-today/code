@@ -203,9 +203,13 @@ export function actions(
     // written to the record of what was done, and the action is never
     // held anywhere to be done late.
     "sso.google": { run: (a) => ops.googleSignin(a.clientId, a.clientSecret), touch: [], audit: () => ({}) },
-    // The owner's switch for the edge doing the core itself. Done on a
-    // machine, where the tokens are, and never held.
-    "edge.direct": { run: (a) => ops.edgeDirect(a.on), touch: [], audit: (a) => ({ on: a.on === true }) },
+    // Persist the desired direct-mode state, then ask Actions to apply it.
+    // Refresh is explicit because it replaces secrets whose values cannot be read back.
+    "edge.direct": {
+      run: (a) => ops.edgeDirect(a.on, a.refreshTokens ?? false),
+      touch: [],
+      audit: (a) => ({ on: a.on === true, refreshTokens: a.refreshTokens === true }),
+    },
     "message.send": {
       run: (a) => ops.send(a.to, a.text, a.command, a.limit),
       touch: [],

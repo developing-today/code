@@ -4873,6 +4873,7 @@ dependencies = [
  "id-currency-registry",
  "id-directory",
  "id-events",
+ "id-grants",
  "id-groups",
  "id-store",
  "id-sync",
@@ -5121,6 +5122,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "id-grants"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "id-groups"
 version = "0.1.0"
 dependencies = [
@@ -5209,6 +5218,7 @@ dependencies = [
  "hex",
  "id",
  "id-core",
+ "id-grants",
  "iroh",
  "iroh-base",
  "iroh-blobs",

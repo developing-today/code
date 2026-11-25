@@ -633,6 +633,8 @@ fn leaf_cmd(args: &[String], json_out: bool) -> Result<i32> {
                 "name",
                 "cn",
                 "dns",
+                "ip",
+                "csr",
                 "algorithm",
                 "issuer-algorithm",
                 "issuer-partition",
@@ -641,6 +643,15 @@ fn leaf_cmd(args: &[String], json_out: bool) -> Result<i32> {
             flags.extend(TIME_FLAGS);
             let p = parse_args(rest, &flags, &["json"])?;
             let issuer = p.require("issuer", "leaf issue")?;
+            let ip_addresses = p
+                .all("ip")
+                .iter()
+                .map(|s| {
+                    s.trim()
+                        .parse::<std::net::IpAddr>()
+                        .map_err(|_| CertError::usage(format!("--ip '{s}' is not an IP address")))
+                })
+                .collect::<Result<Vec<_>>>()?;
             let signer = signer_source(&p, "issuer-key-dir", "leaf issue")?;
             let profile_name = p.require("profile", "leaf issue")?;
             let prof = profile::leaf_profile(&profile_name)?;
@@ -669,6 +680,8 @@ fn leaf_cmd(args: &[String], json_out: bool) -> Result<i32> {
                 name,
                 common_name: p.get("cn").map(|s| s.to_string()),
                 dns_names: p.all("dns"),
+                ip_addresses,
+                csr: p.get("csr").map(PathBuf::from),
                 key_algorithm: parse_algo("algorithm")?,
                 issuer_algorithm: parse_algo("issuer-algorithm")?,
                 issuer_partition: p.get("issuer-partition").map(|s| s.to_string()),
@@ -1050,6 +1063,20 @@ fn list_cmd(args: &[String], json_out: bool, want: BundleType) -> Result<i32> {
     Ok(emit(json_out, text, value))
 }
 
+fn san_policy_name(policy: profile::SanPolicy) -> &'static str {
+    match policy {
+        profile::SanPolicy::Free => "free",
+        profile::SanPolicy::Broker => "broker",
+    }
+}
+
+fn key_custody_name(custody: profile::KeyCustody) -> &'static str {
+    match custody {
+        profile::KeyCustody::IssuerOrCsr => "issuer-or-csr",
+        profile::KeyCustody::HostCsrOnly => "host-csr-only",
+    }
+}
+
 fn profile_cmd(args: &[String], json_out: bool) -> Result<i32> {
     let verb = args.first().map(|s| s.as_str()).unwrap_or("list");
     let rest = &args[1.min(args.len())..];
@@ -1058,7 +1085,7 @@ fn profile_cmd(args: &[String], json_out: bool) -> Result<i32> {
             let mut text = String::from("Leaf profiles (mirroring pkgs/idp-pki idp-ca):\n");
             for prof in profile::leaf_profiles() {
                 text.push_str(&format!(
-                    "  {:12} key={:8} validity={}d  {}\n",
+                    "  {:14} key={:8} validity={}d  {}\n",
                     prof.name,
                     prof.key_algorithm.name(),
                     prof.default_validity.days,
@@ -1073,6 +1100,10 @@ fn profile_cmd(args: &[String], json_out: bool) -> Result<i32> {
                     "extended_key_usages": p.extended_key_usages.iter().map(|k| format!("{k:?}")).collect::<Vec<_>>(),
                     "default_validity_days": p.default_validity.days,
                     "san_defaults_to_cn": p.san_defaults_to_cn,
+                    "san_policy": san_policy_name(p.san_policy),
+                    "key_custody": key_custody_name(p.key_custody),
+                    "issuer_purpose": p.issuer_purpose,
+                    "renew_within_days": p.renew_within.map(|d| d.days),
                     "notes": p.notes,
                 })).collect::<Vec<_>>(),
             });
@@ -1096,6 +1127,10 @@ fn profile_cmd(args: &[String], json_out: bool) -> Result<i32> {
                 "key_algorithm": prof.key_algorithm.name(),
                 "default_validity_days": prof.default_validity.days,
                 "san_defaults_to_cn": prof.san_defaults_to_cn,
+                "san_policy": san_policy_name(prof.san_policy),
+                "key_custody": key_custody_name(prof.key_custody),
+                "issuer_purpose": prof.issuer_purpose,
+                "renew_within_days": prof.renew_within.map(|d| d.days),
                 "notes": prof.notes,
             });
             Ok(emit(json_out, text, value))
@@ -1266,7 +1301,13 @@ window."
         "profiles" => "Leaf profiles mirror pkgs/idp-pki's idp-ca: server (P-256, \
 serverAuth, 730d, SAN defaults to DNS:<cn>), client (P-256, clientAuth, 730d), \
 saml-signing and oidc-signing (RSA-2048, digitalSignature + nonRepudiation, 1095d, \
-no EKU). See `fleet cert profile list`."
+no EKU). Two more are the fleet brokers' TLS leaves (broker-TLS ADR-0001): \
+broker-server and broker-client (P-256, serverAuth or clientAuth, 90d, renewed with 30d \
+left). They issue only from a Base (general) issuer set, only from a CSR made on the \
+broker's host (--csr; the issuer never holds the key), and only with internal SANs: \
+at least one --dns name under .internal and a tailnet --ip (100.64.0.0/10 or \
+fd7a:115c:a1e0::/48); wildcards, public names and other IPs are refused. Revocation \
+is CRL-only: no OCSP URL or AIA is embedded. See `fleet cert profile list`."
             .to_string(),
         other => {
             return Err(CertError::usage(format!(

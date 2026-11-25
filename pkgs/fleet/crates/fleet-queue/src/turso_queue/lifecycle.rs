@@ -480,7 +480,7 @@ pub(crate) fn claim_pick_once(
         // and no timer gating — Rule 1's default collection
         // path for the claimant.
         let pick_predicate = if handoff_pick {
-            HANDOFF_SQL.to_string()
+            handoff_pick_predicate()
         } else {
             default_pick_predicate()
         };
@@ -2770,6 +2770,95 @@ mod task_history_tests {
         .unwrap()
     }
 
+    fn insert_metadata_task(t: &TursoBackend, title: &str) -> i64 {
+        let now = now_iso();
+        t.exec(
+            "INSERT INTO tasks (queue, title, payload, metadata, status, created_at, updated_at) VALUES (?, ?, '{}', '{}', 'queued', ?, ?)",
+            &[Arg::Text("metadata-test".into()), Arg::Text(title.into()), Arg::Text(now.clone()), Arg::Text(now)],
+        )
+        .unwrap()
+        .last_insert_rowid
+        .unwrap()
+    }
+
+    #[test]
+    fn metadata_merge_patch_limits_filter_and_history_oracle() {
+        let (t, _) = fake_backend();
+        let first = insert_metadata_task(&t, "first");
+        let other = insert_metadata_task(&t, "other");
+
+        let set = super::super::verb_meta(
+            &t,
+            &json!({"op":"set", "task_id":first, "patch":{
+                "programme":"audit-7",
+                "tracking_issue":"developing-today/code#14170",
+                "custom.with-dot":"kept"
+            }}),
+        );
+        assert_eq!(set["ok"], true);
+
+        let patch = super::super::verb_meta(
+            &t,
+            &json!({"op":"set", "task_id":first, "patch":{
+                "programme":null,
+                "source_issue":"developing-today/code#14158"
+            }}),
+        );
+        assert_eq!(patch["ok"], true);
+        let metadata =
+            super::super::verb_meta(&t, &json!({"op":"get", "task_id":first}))["row"].clone();
+        assert!(metadata.get("programme").is_none());
+        assert_eq!(metadata["tracking_issue"], "developing-today/code#14170");
+        assert_eq!(metadata["source_issue"], "developing-today/code#14158");
+        assert_eq!(metadata["custom.with-dot"], "kept");
+
+        let filtered = super::verb_list(
+            &t,
+            &json!({"queue":"metadata-test", "meta":{
+                "tracking_issue":"developing-today/code#14170",
+                "custom.with-dot":"kept"
+            }}),
+        );
+        assert_eq!(filtered["total"], 1);
+        assert_eq!(filtered["rows"][0]["id"], first);
+
+        let too_large = Value::Object(
+            ["a", "b", "c", "d", "e"]
+                .into_iter()
+                .map(|key| (key.to_string(), Value::String("x".repeat(2000))))
+                .collect(),
+        );
+        let rejected =
+            super::super::verb_meta(&t, &json!({"op":"set", "task_id":other, "patch":too_large}));
+        assert_eq!(rejected["ok"], false);
+        assert!(rejected["error"].as_str().unwrap().contains("8192"));
+
+        let history = t
+            .query_objs(
+                "SELECT kind, detail FROM events WHERE task_id = ? AND kind = 'meta_updated' ORDER BY id",
+                &[Arg::Int(first)],
+                &["detail"],
+            )
+            .unwrap();
+        assert_eq!(history.len(), 2);
+        assert_eq!(
+            history[0]["detail"]["changed"]["programme"]["new"],
+            "audit-7"
+        );
+        assert_eq!(
+            history[1]["detail"]["changed"]["programme"]["old"],
+            "audit-7"
+        );
+        assert!(history[1]["detail"]["changed"]["programme"]["new"].is_null());
+        assert_eq!(
+            history_rows(&t, first)
+                .iter()
+                .filter(|r| r["kind"] == "meta_updated")
+                .count(),
+            2
+        );
+    }
+
     /// Oracle (#14170 Q1): a scripted lifecycle through the real verbs
     /// writes exactly one task_history row per mapped event, in order,
     /// and each row's to_status equals the task's actual status right
@@ -3021,7 +3110,10 @@ mod task_labels_tests {
                 &["labels"],
             )
             .unwrap();
-        (rows[0]["labels"].clone(), rows[0]["labels_synced_at"].clone())
+        (
+            rows[0]["labels"].clone(),
+            rows[0]["labels_synced_at"].clone(),
+        )
     }
 
     fn enqueue(t: &TursoBackend, number: i64) -> i64 {
@@ -3074,7 +3166,10 @@ mod task_labels_tests {
         let mut both = vec![held, plain];
         both.sort();
         assert_eq!(listed(&t, "priority/high"), both);
-        assert!(listed(&t, "user/hol").is_empty(), "exact names do not prefix-match");
+        assert!(
+            listed(&t, "user/hol").is_empty(),
+            "exact names do not prefix-match"
+        );
 
         // A label change on GitHub lands in the mirror only; the sweep
         // carries it into the cache without any queue transition.
@@ -3090,11 +3185,18 @@ mod task_labels_tests {
 
         // A transition refreshes too: the claim re-reads the mirror.
         set_mirror_labels(&conn, 14170, r#"["user/hold"]"#);
-        let c = verb_claim(&t, &json!({"worker": "w", "queue": QUEUE, "lane": "code-oracle",
+        let c = verb_claim(
+            &t,
+            &json!({"worker": "w", "queue": QUEUE, "lane": "code-oracle",
                     "session_id": "ses_labels", "model_provider": "anthropic",
-                    "model_id": "claude-haiku-5-5", "model_variant": "default"}));
+                    "model_id": "claude-haiku-5-5", "model_variant": "default"}),
+        );
         assert_eq!(c["ok"], true, "{c}");
-        assert_eq!(c["row"]["id"].as_i64(), Some(held), "oldest equal-priority task is claimed first: {c}");
+        assert_eq!(
+            c["row"]["id"].as_i64(),
+            Some(held),
+            "oldest equal-priority task is claimed first: {c}"
+        );
         assert_eq!(cache(&t, held).0, json!(["user/hold"]));
 
         // The rich row carries the cache and its stamp for `show`.
@@ -3113,13 +3215,19 @@ mod task_labels_tests {
         let id = enqueue(&t, 14180);
         assert_eq!(cache(&t, id), (json!([]), Value::Null));
         let s = sweep_task_labels(&t, false).expect("first pass reports");
-        assert!(s.get("error").is_some(), "missing mirror is reported, not raised: {s}");
+        assert!(
+            s.get("error").is_some(),
+            "missing mirror is reported, not raised: {s}"
+        );
 
         mirror(&conn);
         set_mirror_labels(&conn, 14180, r#"["user/hold"]"#);
         let s = sweep_task_labels(&t, false).expect("no pass recorded yet, so it runs");
         assert_eq!(s["stamped"], 1, "{s}");
-        assert!(sweep_task_labels(&t, false).is_none(), "within the hour it waits");
+        assert!(
+            sweep_task_labels(&t, false).is_none(),
+            "within the hour it waits"
+        );
         let forced = sweep_task_labels(&t, true).expect("force runs regardless");
         assert_eq!(forced["stamped"], 1, "{forced}");
         assert_eq!(cache(&t, id).0, json!(["user/hold"]));
@@ -3131,5 +3239,352 @@ mod task_labels_tests {
         );
         assert_eq!(full["ok"], true, "{full}");
         assert_eq!(full["row"]["labels_sync"]["scope"], "actionable", "{full}");
+    }
+}
+
+#[cfg(test)]
+mod task_resolution_tests {
+    use super::super::{verb_cancel, verb_complete, verb_resolution_backfill, verb_revive};
+    use super::reprioritize_tests::fake_backend;
+    use super::*;
+
+    const QUEUE: &str = "repo-health-code-pilot";
+
+    fn packet(number: i64) -> Value {
+        json!({
+            "title": format!("resolution oracle {number}"), "priority": 50,
+            "dedupe_key": format!("repo-health:v1:fix:developing-today/code:issue:{number}"),
+            "payload": {
+                "schema": "repo-task/v1", "kind": "small_fix",
+                "repo": "developing-today/code", "problem": "p", "priority_reason": "r",
+                "evidence": ["e"], "acceptance": ["a"], "tests": ["t"], "context_refs": [],
+                "scope": {"include": ["x"], "exclude": ["y"]}, "risk": {"level": "low", "flags": []},
+                "timebox_minutes": 45, "issue": {"number": number},
+                "dedupe": {"checked_at": "2026-11-14T00:00:00Z", "basis": "test"}
+            }
+        })
+    }
+
+    fn enqueue_claim(t: &TursoBackend, number: i64) -> i64 {
+        let enq = verb_enqueue(t, &json!({"queue": QUEUE, "packet": packet(number)}));
+        assert_eq!(enq["ok"], true, "{enq}");
+        let claimed = verb_claim(
+            t,
+            &json!({
+                "worker": "resolution-worker", "queue": QUEUE, "lane": "resolution-test",
+                "session_id": "ses_resolution", "model_provider": "anthropic",
+                "model_id": "claude-haiku-5-5", "model_variant": "default"
+            }),
+        );
+        assert_eq!(claimed["ok"], true, "{claimed}");
+        enq["row"]["id"].as_i64().expect("task id")
+    }
+
+    fn row(t: &TursoBackend, id: i64) -> Value {
+        get_task(t, id).unwrap().expect("task row")
+    }
+
+    #[test]
+    fn cancel_requires_a_resolution_and_disposition_stamps_verified_done() {
+        let (t, _) = fake_backend();
+        let cancelled_id = enqueue_claim(&t, 14170);
+        let rejected = verb_cancel(
+            &t,
+            &json!({"task_id": cancelled_id, "worker": "resolution-worker", "reason": "missing label"}),
+        );
+        assert_eq!(rejected["ok"], false, "{rejected}");
+        assert_eq!(row(&t, cancelled_id)["status"], "claimed");
+
+        let cancelled = verb_cancel(
+            &t,
+            &json!({"task_id": cancelled_id, "worker": "resolution-worker", "reason": "duplicate of task 99", "resolution": "duplicate", "resolution_ref": "task:99"}),
+        );
+        assert_eq!(cancelled["ok"], true, "{cancelled}");
+        assert_eq!(cancelled["row"]["resolution"], "duplicate");
+        assert_eq!(cancelled["row"]["resolution_category"], "redirection");
+        assert_eq!(cancelled["row"]["resolution_ref"], "task:99");
+
+        let done_id = enqueue_claim(&t, 14171);
+        let now = now_iso();
+        let complete = verb_complete(
+            &t,
+            &json!({
+                "task_id": done_id, "worker": "resolution-worker",
+                "result": {
+                    "evidence": "verified closure note",
+                    "disposition": {
+                        "checked_at": now, "source": "fleet gh readback",
+                        "issue": {"number": 14171, "state": "closed", "closed_at": now},
+                        "pulls": [], "verdict": "closed_verified"
+                    }
+                }
+            }),
+        );
+        assert_eq!(complete["ok"], true, "{complete}");
+        assert_eq!(complete["row"]["resolution"], "done");
+        assert_eq!(complete["row"]["resolution_category"], "success");
+        assert_eq!(complete["row"]["resolution_substatus"], "verified");
+    }
+
+    #[test]
+    fn revive_clears_resolution_but_keeps_the_old_verdict_in_history() {
+        let (t, _) = fake_backend();
+        let enq = verb_enqueue(&t, &json!({"queue": QUEUE, "packet": packet(14172)}));
+        let id = enq["row"]["id"].as_i64().unwrap();
+        t.exec(
+            "UPDATE tasks SET status='failed', resolution='wontfix', resolution_category='rejection', \
+               resolution_substatus='out_of_scope', resolution_reason='legacy decision', \
+               resolved_by='resolution-worker', resolved_at='2026-11-24T00:00:00Z' WHERE id=?",
+            &[Arg::Int(id)],
+        )
+        .unwrap();
+        let revived = verb_revive(
+            &t,
+            &json!({"task_id": id, "worker": "resolution-worker", "reason": "scope reopened"}),
+        );
+        assert_eq!(revived["ok"], true, "{revived}");
+        assert!(row(&t, id)["resolution"].is_null());
+        let events = t
+            .query_objs(
+                "SELECT detail FROM events WHERE task_id=? AND kind='revived' ORDER BY id DESC LIMIT 1",
+                &[Arg::Int(id)],
+                &["detail"],
+            )
+            .unwrap();
+        assert_eq!(
+            events[0]["detail"]["resolution_cleared"]["resolution"],
+            "wontfix"
+        );
+        assert_eq!(
+            events[0]["detail"]["resolution_cleared"]["reason"],
+            "legacy decision"
+        );
+        let history = t
+            .query_objs(
+                "SELECT detail FROM task_history WHERE task_id=? AND kind='revived' ORDER BY id DESC LIMIT 1",
+                &[Arg::Int(id)],
+                &["detail"],
+            )
+            .unwrap();
+        assert_eq!(
+            history[0]["detail"]["resolution_cleared"]["resolution"],
+            "wontfix"
+        );
+        assert_eq!(
+            history[0]["detail"]["resolution_cleared"]["reason"],
+            "legacy decision"
+        );
+    }
+
+    #[test]
+    fn resolution_backfill_only_writes_provable_rows_and_reports_baseline() {
+        let (t, _) = fake_backend();
+        let verified = verb_enqueue(&t, &json!({"queue": QUEUE, "packet": packet(14173)}));
+        let verified_id = verified["row"]["id"].as_i64().unwrap();
+        let duplicate = verb_enqueue(&t, &json!({"queue": QUEUE, "packet": packet(14174)}));
+        let duplicate_id = duplicate["row"]["id"].as_i64().unwrap();
+        t.exec(
+            "UPDATE tasks SET status='done', result=? WHERE id=?",
+            &[
+                Arg::Text(json!({"disposition":{"verdict":"merged_verified"}}).to_string()),
+                Arg::Int(verified_id),
+            ],
+        )
+        .unwrap();
+        t.exec(
+            "UPDATE tasks SET status='cancelled', dedupe_key='repo-health:v1:fix:developing-today/code:issue:14174', result=? WHERE id=?",
+            &[Arg::Text(json!({"cancel_reason":"dedupe duplicate"}).to_string()), Arg::Int(duplicate_id)],
+        ).unwrap();
+        let surviving = verb_enqueue(&t, &json!({"queue": QUEUE, "packet": packet(14175)}));
+        let surviving_id = surviving["row"]["id"].as_i64().unwrap();
+        t.exec(
+            "UPDATE tasks SET dedupe_key='repo-health:v1:fix:developing-today/code:issue:14174' WHERE id=?",
+            &[Arg::Int(surviving_id)],
+        ).unwrap();
+        let out = verb_resolution_backfill(&t, &json!({}));
+        assert_eq!(out["ok"], true, "{out}");
+        assert_eq!(out["row"]["census"], 2, "{out}");
+        assert_eq!(out["row"]["proved"], 2, "{out}");
+        assert_eq!(row(&t, verified_id)["resolution_substatus"], "verified");
+        assert_eq!(
+            row(&t, duplicate_id)["resolution_ref"],
+            format!("task:{surviving_id}")
+        );
+        let again = verb_resolution_backfill(&t, &json!({}));
+        assert_eq!(again["row"]["proved"], 0, "idempotent: {again}");
+    }
+}
+// ---------------------------------------------------------------------------
+// Tests (#14170 Q4): the task_notes stream against the rusqlite-backed
+// fake pipeline. Oracle: two concurrent note adds both survive in
+// order; an edit preserves the original in history; the history rows
+// a note writes are state-neutral and carry the note pointer.
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod task_notes_tests {
+    use super::reprioritize_tests::fake_backend;
+    use super::*;
+
+    fn task(t: &TursoBackend, worker: Option<&str>) -> i64 {
+        t.exec(
+            "INSERT INTO tasks (queue, title, payload, priority, status, worker_id, \
+             claim_provider, claim_model, claim_variant, claim_session_id, progress, \
+             created_at, updated_at) \
+             VALUES ('repo-health-code-pilot', 't', '{}', 50, ?, ?, ?, ?, NULL, ?, '{}', \
+             '2026-11-25T00:00:00Z', '2026-11-25T00:00:00Z')",
+            &[
+                Arg::Text(if worker.is_some() { "claimed" } else { "queued" }.into()),
+                arg_str(worker),
+                arg_str(worker.map(|_| "anthropic")),
+                arg_str(worker.map(|_| "claude-opus")),
+                arg_str(worker.map(|_| "ses_claim")),
+            ],
+        )
+        .unwrap()
+        .last_insert_rowid
+        .unwrap()
+    }
+
+    fn add(t: &TursoBackend, task_id: i64, worker: &str, body: &str) -> Value {
+        verb_note_add(t, &json!({"task_id": task_id, "worker": worker, "body": body}))
+    }
+
+    fn history(t: &TursoBackend, task_id: i64) -> Vec<Value> {
+        t.query_objs(
+            "SELECT kind, from_status, to_status, actor, session_id, model_provider, \
+             model_id, detail FROM task_history WHERE task_id = ? ORDER BY id",
+            &[Arg::Int(task_id)],
+            &["detail"],
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn concurrent_note_adds_both_survive_in_order() {
+        let (t, _db) = fake_backend();
+        let id = task(&t, None);
+        let t = std::sync::Arc::new(t);
+        let handles: Vec<_> = (0..2)
+            .map(|i| {
+                let t = t.clone();
+                std::thread::spawn(move || {
+                    let out = add(&t, id, &format!("w{i}"), &format!("note from w{i}"));
+                    assert_eq!(out["ok"], true, "{out}");
+                    out["row"]["id"].as_i64().unwrap()
+                })
+            })
+            .collect();
+        let mut written: Vec<i64> = handles.into_iter().map(|h| h.join().unwrap()).collect();
+        written.sort();
+        assert_ne!(written[0], written[1], "each add is its own row");
+        let listed = verb_note_list(&t, &json!({"task_id": id}));
+        let rows = listed["row"]["rows"].as_array().unwrap().clone();
+        assert_eq!(listed["row"]["count"], 2);
+        assert_eq!(
+            rows.iter().map(|r| r["id"].as_i64().unwrap()).collect::<Vec<_>>(),
+            written,
+            "both notes survive, oldest first"
+        );
+        let mut authors: Vec<&str> = rows.iter().map(|r| r["author"].as_str().unwrap()).collect();
+        authors.sort();
+        assert_eq!(authors, ["w0", "w1"]);
+        // One state-neutral history row per note, pointing at it.
+        let h = history(&t, id);
+        assert_eq!(h.len(), 2);
+        for (row, note) in h.iter().zip(&rows) {
+            assert_eq!(row["kind"], "note_added");
+            assert!(row["from_status"].is_null() && row["to_status"].is_null());
+            assert_eq!(row["detail"]["note_id"], note["id"]);
+            assert_eq!(row["actor"], note["author"]);
+        }
+    }
+
+    #[test]
+    fn edit_preserves_the_original_in_history_and_is_author_only() {
+        let (t, _db) = fake_backend();
+        let id = task(&t, Some("lane-9"));
+        let added = add(&t, id, "lane-9", "first draft");
+        assert_eq!(added["ok"], true, "{added}");
+        let note = added["row"].clone();
+        let note_id = note["id"].as_i64().unwrap();
+        // The claim holder's note copies the claim's marks.
+        assert_eq!(note["session_id"], "ses_claim");
+        assert_eq!(note["model_provider"], "anthropic");
+        assert_eq!(note["model_id"], "claude-opus");
+        assert_eq!(note["author_kind"], "agent");
+
+        let refused = verb_note_edit(
+            &t,
+            &json!({"note_id": note_id, "worker": "someone-else", "body": "hijack"}),
+        );
+        assert_eq!(refused["ok"], false);
+        assert!(
+            refused["error"].as_str().unwrap().contains("only its author"),
+            "{refused}"
+        );
+
+        let edited = verb_note_edit(
+            &t,
+            &json!({"note_id": note_id, "worker": "lane-9", "body": "second draft"}),
+        );
+        assert_eq!(edited["ok"], true, "{edited}");
+        assert_eq!(edited["row"]["body"], "second draft");
+        assert!(!edited["row"]["edited_at"].is_null());
+
+        let h = history(&t, id);
+        let kinds: Vec<&str> = h.iter().map(|r| r["kind"].as_str().unwrap()).collect();
+        assert_eq!(kinds, ["note_added", "note_edited"], "the refused edit wrote no history");
+        assert_eq!(h[1]["detail"]["previous_body"], "first draft");
+        assert_eq!(h[1]["detail"]["note_id"], note_id);
+        assert_eq!(h[1]["session_id"], "ses_claim");
+
+        let removed = verb_note_remove(&t, &json!({"note_id": note_id, "worker": "lane-9"}));
+        assert_eq!(removed["ok"], true, "{removed}");
+        assert!(!removed["row"]["deleted_at"].is_null());
+        let again = verb_note_remove(&t, &json!({"note_id": note_id, "worker": "lane-9"}));
+        assert!(again["error"].as_str().unwrap().contains("was removed"), "{again}");
+        let live = verb_note_list(&t, &json!({"task_id": id}));
+        assert_eq!(live["row"]["count"], 0);
+        assert_eq!(live["row"]["rows"].as_array().unwrap().len(), 0);
+        let all = verb_note_list(&t, &json!({"task_id": id, "include_removed": true}));
+        assert_eq!(all["row"]["rows"][0]["body"], "second draft", "soft delete keeps the row");
+        let h = history(&t, id);
+        assert_eq!(h[2]["kind"], "note_removed");
+        assert_eq!(h[2]["detail"]["previous_body"], "second draft");
+    }
+
+    #[test]
+    fn note_add_validates_body_author_kind_and_task() {
+        let (t, _db) = fake_backend();
+        let id = task(&t, None);
+        let empty = add(&t, id, "w", "   ");
+        assert_eq!(empty["exit"], 2, "{empty}");
+        let long = add(&t, id, "w", &"x".repeat(NOTE_BODY_MAX_CHARS + 1));
+        assert!(long["error"].as_str().unwrap().contains("4096"), "{long}");
+        let at_limit = add(&t, id, "w", &"é".repeat(NOTE_BODY_MAX_CHARS));
+        assert_eq!(at_limit["ok"], true, "the limit counts characters, not bytes");
+        let no_author = verb_note_add(&t, &json!({"task_id": id, "body": "b"}));
+        assert!(no_author["error"].as_str().unwrap().contains("worker is required"));
+        let bad_kind =
+            verb_note_add(&t, &json!({"task_id": id, "worker": "w", "body": "b", "author_kind": "robot"}));
+        assert_eq!(bad_kind["exit"], 2, "{bad_kind}");
+        let missing = add(&t, id + 999, "w", "b");
+        assert!(missing["error"].as_str().unwrap().contains("does not exist"), "{missing}");
+        // A non-holder's note carries no claim marks.
+        let plain = add(&t, id, "w", "plain");
+        assert!(plain["row"]["session_id"].is_null());
+        // latest keeps the newest n, oldest first; count stays total.
+        add(&t, id, "w", "third");
+        let latest = verb_note_list(&t, &json!({"task_id": id, "latest": 2}));
+        let bodies: Vec<&str> = latest["row"]["rows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| r["body"].as_str().unwrap())
+            .collect();
+        assert_eq!(bodies, ["plain", "third"]);
+        assert_eq!(latest["row"]["count"], 3);
     }
 }

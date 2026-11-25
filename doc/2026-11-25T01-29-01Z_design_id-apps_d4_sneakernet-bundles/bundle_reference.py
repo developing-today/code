@@ -31,7 +31,7 @@ non-critical: unknown is ignored, but it is still covered by the signature):
 
   entry = alg_len:u8 alg digest_len:u8 digest size:u64 kind:u8
           alg "raw-blake3-256", digest 32 bytes; kind 1 content, 2 link,
-          3 blob; entries strictly ascending by (alg, digest)
+          3 blob, 4 envelope (slice 4); entries strictly ascending by (alg, digest)
 
 The bundle ID is BLAKE3-256 of manifest_body, written as the D1 portable
 object URI id://any/graph/v2/obj/raw-blake3-256.<hex>.
@@ -56,7 +56,7 @@ MAX_MANIFEST = 1 << 20
 MAX_ENTRIES = 4096
 MAX_OBJECT = 16 << 20
 DIGEST_ALG = b"raw-blake3-256"
-KINDS = {1: "content", 2: "link", 3: "blob"}
+KINDS = {1: "content", 2: "link", 3: "blob", 4: "envelope"}  # 4: slice 4
 KNOWN_TAGS = {0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x81}
 REQUIRED_TAGS = {0x01, 0x02, 0x03, 0x05, 0x07}
 EXAMPLE_SHA256 = "95f95205826df1419619663572e0698eb2a3133485fa81cc275263bf031b7e93"
@@ -537,7 +537,7 @@ def read_b(blob: bytes):
         dg = k.get(32, "bad_contents")
         size = k.num(8, "bad_contents")
         kind = k.num(1, "bad_contents")
-        if kind not in (1, 2, 3):
+        if kind not in (1, 2, 3, 4):
             raise BundleError("unknown_kind")
         if size > (16 << 20):
             raise BundleError("object_too_large")

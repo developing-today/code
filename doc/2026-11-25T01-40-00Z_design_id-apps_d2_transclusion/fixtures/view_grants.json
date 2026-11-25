@@ -1,0 +1,167 @@
+{
+  "note": "Slice 2 overlay, added to graph.json by capability_reference.py. Slice 1 fixtures and expected.json are unchanged.",
+  "managers": {
+    "forum-public": ["bo"],
+    "cyp-public": ["cyp"],
+    "dee-notes": ["dee"],
+    "room-meetup": ["cyp"],
+    "cyp-private": ["cyp"],
+    "bo-private": ["bo"]
+  },
+  "render_at": "2026-11-25T00:00:00Z",
+  "max_window_days": 7,
+  "objects": [
+    {
+      "object_id": "doc-bo-plan",
+      "area": "bo-private",
+      "author": "ed25519:bbbb2222forum",
+      "kind": "note",
+      "created_claim": "2026-11-24T05:00:00Z"
+    },
+    {
+      "object_id": "post-plan-public",
+      "area": "forum-public",
+      "author": "ed25519:bbbb2222forum",
+      "kind": "forum-post",
+      "created_claim": "2026-11-24T05:10:00Z"
+    },
+    {
+      "object_id": "album-private",
+      "area": "cyp-private",
+      "author": "ed25519:cccc3333media",
+      "kind": "album",
+      "created_claim": "2026-11-24T05:20:00Z"
+    },
+    {
+      "object_id": "img-p1",
+      "area": "cyp-private",
+      "author": "ed25519:cccc3333media",
+      "kind": "image",
+      "created_claim": "2026-11-24T05:21:00Z"
+    },
+    {
+      "object_id": "img-p2",
+      "area": "cyp-private",
+      "author": "ed25519:cccc3333media",
+      "kind": "image",
+      "created_claim": "2026-11-24T05:22:00Z"
+    },
+    {
+      "object_id": "img-p3",
+      "area": "cyp-private",
+      "author": "ed25519:cccc3333media",
+      "kind": "image",
+      "created_claim": "2026-11-24T06:00:00Z"
+    },
+    {
+      "object_id": "post-album-public",
+      "area": "cyp-public",
+      "author": "ed25519:cccc3333media",
+      "kind": "post",
+      "created_claim": "2026-11-24T05:30:00Z"
+    }
+  ],
+  "links": [
+    {
+      "object_id": "lnk-nest-p1",
+      "verb": "nest",
+      "source": "img-p1",
+      "target": "album-private",
+      "author": "ed25519:cccc3333media",
+      "created_claim": "2026-11-24T05:21:00Z"
+    },
+    {
+      "object_id": "lnk-nest-p2",
+      "verb": "nest",
+      "source": "img-p2",
+      "target": "album-private",
+      "author": "ed25519:cccc3333media",
+      "created_claim": "2026-11-24T05:22:00Z"
+    },
+    {
+      "object_id": "lnk-nest-p3",
+      "verb": "nest",
+      "source": "img-p3",
+      "target": "album-private",
+      "author": "ed25519:cccc3333media",
+      "created_claim": "2026-11-24T06:00:00Z"
+    },
+    {
+      "object_id": "lnk-embed-plan-snapshot",
+      "verb": "embed",
+      "source": "post-plan-public",
+      "target": "doc-bo-plan",
+      "author": "ed25519:bbbb2222forum",
+      "created_claim": "2026-11-24T05:10:00Z",
+      "embed": {
+        "mode": "snapshot",
+        "scope": "object",
+        "pin": {
+          "object": "doc-bo-plan"
+        }
+      }
+    },
+    {
+      "object_id": "lnk-embed-plan-budget",
+      "verb": "embed",
+      "source": "doc-bo-plan",
+      "target": "doc-bo-budget",
+      "author": "ed25519:bbbb2222forum",
+      "created_claim": "2026-11-24T05:00:00Z",
+      "embed": {
+        "mode": "live",
+        "scope": "object"
+      }
+    },
+    {
+      "object_id": "lnk-embed-private-album-snapshot",
+      "verb": "embed",
+      "source": "post-album-public",
+      "target": "album-private",
+      "author": "ed25519:cccc3333media",
+      "created_claim": "2026-11-24T05:30:00Z",
+      "embed": {
+        "mode": "snapshot",
+        "scope": "collection",
+        "pin": {
+          "root": "album-private",
+          "members": ["img-p1", "img-p2"],
+          "members_digest": "sha256:bfb1597f962b162d3ae6e7f440ee673892f40e1a3600ec6e5ff5a58c1f96a3dd"
+        },
+        "bounds": {
+          "max_count": 5,
+          "max_depth": 1
+        }
+      }
+    }
+  ],
+  "grants": [
+    {
+      "grant_id": "grant-plan",
+      "issuer": "ed25519:bbbb2222forum",
+      "area": "forum-public",
+      "link": "lnk-embed-plan-snapshot",
+      "covers": {
+        "object": "doc-bo-plan"
+      },
+      "rights": ["read"],
+      "issued_claim": "2026-11-24T05:10:00Z",
+      "not_before": "2026-11-24T05:10:00Z",
+      "not_after": "2026-11-30T00:00:00Z"
+    },
+    {
+      "grant_id": "grant-private-album",
+      "issuer": "ed25519:cccc3333media",
+      "area": "cyp-public",
+      "link": "lnk-embed-private-album-snapshot",
+      "covers": {
+        "root": "album-private",
+        "members_digest": "sha256:bfb1597f962b162d3ae6e7f440ee673892f40e1a3600ec6e5ff5a58c1f96a3dd"
+      },
+      "rights": ["read"],
+      "issued_claim": "2026-11-24T05:30:00Z",
+      "not_before": "2026-11-24T05:30:00Z",
+      "not_after": "2026-11-28T00:00:00Z"
+    }
+  ]
+}

@@ -18,12 +18,12 @@ digest rule, size ceilings, the bundle ID, and how a reader rejects.
 
 Leaves to later slices, with the manifest slot already reserved:
 
-| Slice | Topic | Slot or hook in slice 1 |
-|---|---|---|
-| 2 | Bundle grants and broker renewal | tag `0x08 grants`; slice-1 readers reject a bundle that has it |
-| 3 | Import order, creator binding against fleet CA / IdP, rejection catalogue | tag `0x04 creator_binding` is carried and signed; slice 1 reports it as `unbound` or `present-unchecked` |
-| 4 | Merge on contact | none needed: contents are plain content-addressed objects |
-| 5 | Carrier profiles (media, email, QR) | §5 format ceilings; carriers only tighten them |
+| Slice | Topic                                                                     | Slot or hook in slice 1                                                                                                                           |
+| ----- | ------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 2     | Bundle grants and broker renewal                                          | tag `0x08 grants`; slice-1 readers reject a bundle that has it                                                                                    |
+| 3     | Import order, creator binding against fleet CA / IdP, rejection catalogue | tag `0x04 creator_binding` is carried and signed; slice 1 reports it as `unbound` or `present-unchecked`. Done: `slice-3-import-and-binding.md`   |
+| 4     | Merge on contact                                                          | none foreseen; slice 4 adds manifest kind 4 (the envelope), which a slice-1 reader rejects as `unknown_kind`. Done: `slice-4-merge-on-contact.md` |
+| 5     | Carrier profiles (media, email, QR)                                       | §5 format ceilings; carriers only tighten them. Done: `slice-5-carrier-profiles.md`                                                               |
 
 Bearer versus recipient-bound grants is Drew's decision (#13889 open question
 1). This record does not settle it. §7 puts the options in plain words.
@@ -63,18 +63,18 @@ bundle. Tags `0x80`–`0xff` are non-critical: a reader ignores an unknown one,
 and it is still covered by the signature, so it cannot be stripped or added
 in transit.
 
-| Tag | Name | Value | Presence |
-|---|---|---|---|
-| `0x01` | format | `id-bundle/1` | required |
-| `0x02` | creator_identity | UTF-8, the IdP-stable identity, no control characters | required |
-| `0x03` | signing_key | key alg `0x01` (Ed25519) + 32 bytes | required |
-| `0x04` | creator_binding | opaque proof that the key belongs to the identity | optional in slice 1; checked in slice 3 |
-| `0x05` | created_at | u64 unix seconds; the creator's claim | required |
-| `0x06` | expires_at | u64 unix seconds, later than created_at | optional |
-| `0x07` | contents | count:u32, then entries (§3.2) | required, count 1–4096 |
-| `0x08` | grants | reserved for slice 2 | must be absent |
-| `0x09` | scope | ASCII D1 URI naming the exported slice, e.g. a `head/` | optional |
-| `0x81` | renewal_note | UTF-8 human note on renewal | optional |
+| Tag    | Name             | Value                                                                                   | Presence                                |
+| ------ | ---------------- | --------------------------------------------------------------------------------------- | --------------------------------------- |
+| `0x01` | format           | `id-bundle/1`                                                                           | required                                |
+| `0x02` | creator_identity | UTF-8, the IdP-stable identity, no control characters (slice 3: `keyset:<identity ID>`) | required                                |
+| `0x03` | signing_key      | key alg `0x01` (Ed25519) + 32 bytes                                                     | required                                |
+| `0x04` | creator_binding  | opaque proof that the key belongs to the identity                                       | optional in slice 1; checked in slice 3 |
+| `0x05` | created_at       | u64 unix seconds; the creator's claim                                                   | required                                |
+| `0x06` | expires_at       | u64 unix seconds, later than created_at                                                 | optional                                |
+| `0x07` | contents         | count:u32, then entries (§3.2)                                                          | required, count 1–4096                  |
+| `0x08` | grants           | reserved for slice 2                                                                    | must be absent                          |
+| `0x09` | scope            | ASCII D1 URI naming the exported slice, e.g. a `head/`                                  | optional                                |
+| `0x81` | renewal_note     | UTF-8 human note on renewal                                                             | optional                                |
 
 ### 3.2 Contents entries
 
@@ -88,6 +88,10 @@ entry = alg_len:u8 alg digest_len:u8 digest size:u64 kind:u8
 - `kind` is 1 content object, 2 link object, or 3 blob. A blob is the media
   bytes that a D3 media body `{digest, size, mime}` points at; on a carrier
   with no network, inline is the out-of-band path.
+  Slice 4 adds kind 4, the envelope: the data-plane operation that placed an
+  object in its area, with the author's capability. See
+  `slice-4-merge-on-contact.md`. A slice-1 reader rejects it as
+  `unknown_kind`.
 - Entries are strictly ascending by digest bytes, so a duplicate object is
   impossible and two writers of the same set produce the same manifest bytes.
 - `size` is the exact object length; the reader knows the total length before
@@ -97,7 +101,7 @@ entry = alg_len:u8 alg digest_len:u8 digest size:u64 kind:u8
 
 The carried bytes are exactly the bytes whose hash is the object's D3
 `object_id`: the canonical encoding without the `object_id` field (D3 §2.3).
-So the entry digest *is* the object ID, and a bundle needs no second
+So the entry digest _is_ the object ID, and a bundle needs no second
 identifier. D3 has not fixed that byte encoding yet. The format does not
 depend on it, and the example uses compact JSON as stand-in bytes, labelled
 as such in the script.
@@ -121,11 +125,13 @@ as such in the script.
   IdP. This follows the SSB lesson in #13889 and D3 §7: identity is the IdP
   identity, not one device key. A slice-1 reader reports an absent binding as
   `unbound` rather than rejecting, so the format can be exercised before the
-  binding check exists. Slice 3 makes it a rejection.
+  binding check exists. Slice 3 makes it a rejection
+  (`slice-3-import-and-binding.md`).
 
 ## 5. Size discipline
 
-Format ceilings, which every carrier profile may tighten (slice 5):
+Format ceilings, which every carrier profile may tighten (slice 5,
+`slice-5-carrier-profiles.md`):
 
 - manifest at most 1 MiB;
 - at most 4096 entries;
@@ -174,19 +180,19 @@ broker renewal.
 
 Both readers produce the same code for every case in the self-test.
 
-| Code | Cause |
-|---|---|
-| `bad_magic`, `unknown_version` | not a v1 bundle |
-| `truncated_header`, `truncated_manifest`, `truncated_signature`, `truncated_objects`, `truncated_record` | file ends early |
-| `trailing_bytes` | bytes after the last object |
-| `manifest_too_large`, `too_many_entries`, `object_too_large` | §5 ceilings |
-| `records_not_ascending`, `entries_not_ascending` | duplicate or out-of-order tag or entry |
-| `unknown_critical_tag`, `missing_required_field`, `unknown_format` | manifest structure |
-| `grants_reserved_slice_2` | grants present before slice 2 defines them |
-| `bad_signing_key`, `unknown_signature_alg`, `bad_signature` | signature |
-| `unknown_digest_alg`, `bad_digest_length`, `unknown_kind`, `bad_contents`, `empty_contents` | contents index |
-| `digest_mismatch` | an object's bytes do not hash to its entry |
-| `bad_creator_identity`, `bad_time`, `expiry_before_creation`, `bad_scope`, `bad_renewal_note` | field values |
+| Code                                                                                                     | Cause                                      |
+| -------------------------------------------------------------------------------------------------------- | ------------------------------------------ |
+| `bad_magic`, `unknown_version`                                                                           | not a v1 bundle                            |
+| `truncated_header`, `truncated_manifest`, `truncated_signature`, `truncated_objects`, `truncated_record` | file ends early                            |
+| `trailing_bytes`                                                                                         | bytes after the last object                |
+| `manifest_too_large`, `too_many_entries`, `object_too_large`                                             | §5 ceilings                                |
+| `records_not_ascending`, `entries_not_ascending`                                                         | duplicate or out-of-order tag or entry     |
+| `unknown_critical_tag`, `missing_required_field`, `unknown_format`                                       | manifest structure                         |
+| `grants_reserved_slice_2`                                                                                | grants present before slice 2 defines them |
+| `bad_signing_key`, `unknown_signature_alg`, `bad_signature`                                              | signature                                  |
+| `unknown_digest_alg`, `bad_digest_length`, `unknown_kind`, `bad_contents`, `empty_contents`              | contents index                             |
+| `digest_mismatch`                                                                                        | an object's bytes do not hash to its entry |
+| `bad_creator_identity`, `bad_time`, `expiry_before_creation`, `bad_scope`, `bad_renewal_note`            | field values                               |
 
 Reader A checks the manifest structure before the signature, and reader B
 checks the signature after the structure too; neither trusts a field it has

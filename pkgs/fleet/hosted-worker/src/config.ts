@@ -19,6 +19,7 @@
 
 import type { RpValidationConfig } from "./jwt.ts";
 import { parseTenancyFixture, type TenancyDirectory } from "./tenancy.ts";
+import type { D1DatabaseLike } from "./d1-queue-store.ts";
 
 export const HOSTED_VERSION = "0.1.0";
 export const SERVICE_NAME = "fleet-hosted";
@@ -92,6 +93,14 @@ export interface HostedEnv {
   /** The Turso auth token for QUEUE_LIBSQL_URL (a secret binding,
    *  never committed). Unset for unauthenticated local endpoints. */
   QUEUE_LIBSQL_AUTH_TOKEN?: string;
+  /** The fleet-queue D1 database, by binding (#14866): the queue
+   *  verbs run against it through D1QueueStore when the binding is
+   *  present \u2014 the Cloudflare-first data plane. A binding, not a
+   *  value: present when the deployed shape carries it
+   *  (wrangler.toml declares it); its presence is the selection
+   *  signal, and it takes precedence over the Turso/libSQL queue
+   *  backends in buildDeps. Absent \u2192 those backends, unchanged. */
+  QUEUE_D1?: D1DatabaseLike;
   /** The message bridge, by service binding (#14373): the bridge
    * door calls it with the PM credential below. A binding, not a
    * value: present when the deployed shape carries it (wrangler.toml
