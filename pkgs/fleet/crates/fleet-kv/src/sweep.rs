@@ -223,10 +223,16 @@ impl Sweeper<'_> {
         let pending = pending_intents(store, identity)?;
         let mut definitions: HashMap<String, Option<Namespace>> = HashMap::new();
         let mut held: HashSet<(String, String)> = HashSet::new();
+        // Keys whose earlier intent just conflicted: their next intent is
+        // reported once as waiting for a rebase rather than silently skipped.
+        let mut just_conflicted: HashSet<(String, String)> = HashSet::new();
         let mut report = SweepReport::default();
         for intent in pending {
             let pair = (intent.namespace.clone(), intent.key.clone());
             if held.contains(&pair) {
+                if just_conflicted.remove(&pair) {
+                    wait(&mut report, &intent, "blocked_by_conflict");
+                }
                 continue;
             }
             let definition = match definitions.get(&intent.namespace) {
@@ -249,6 +255,7 @@ impl Sweeper<'_> {
             match self.sweep_one(store, identity, &incarnation, &intent, &definition)? {
                 Step::Decided(swept) => {
                     if matches!(swept.outcome, Outcome::Conflict { .. }) {
+                        just_conflicted.insert(pair.clone());
                         held.insert(pair);
                     }
                     report.swept.push(swept);
