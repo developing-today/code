@@ -83,7 +83,8 @@ hosted instance is the public backstop, never a requirement.
   version recorded in the audit for every action.
 - **Ledger selection belongs to the hiring world.** The hire charges
   the ledger configured by that world; absent an explicit shared-ledger
-  rule in the world's configuration, it charges the world owner's ledger. The hire record fixes both
+  rule in the world's configuration, it charges the world owner's
+  ledger. The hire record fixes both
   the ledger and quota class for the hire's term. Each action spends
   against the ledger recorded on its hire, not the agent owner's or
   host operator's budget. This resolves v4 §5 Q1 in accordance with
