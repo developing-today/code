@@ -29,7 +29,7 @@ Continue the AUDIT-7 Lane 4 batch 3/14 audit for `developing-today/code`: read e
 
 Five payload entries were processed: five actual merged PRs audited and labelled, with no invalid references. Three are complete, one partial, and one has no separate spawning issue. Across all slices to this point, **226 valid PRs are audited from 230 processed payload identifiers**; #7667, #7668, #7693 and #7694 are issues rather than PRs. There are 20 payload identifiers remaining; next is #8055. Batch 3 remains partial.
 
-Tracking progress comment: [#13879 comment 7163102613](https://github.com/developing-today/code/issues/13879#issuecomment-7163102613).
+Tracking progress comment: [#13879 comment 7163264171](https://github.com/developing-today/code/issues/13879#issuecomment-7163264171).
 
 ## Raw supplements
 
