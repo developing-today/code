@@ -639,6 +639,12 @@ def owner_address(given: str | None, env: pathlib.Path) -> str:
 def ensure_idps(
     cf: Cloudflare, account: str, google: tuple[str, str] | None = None
 ) -> list[str]:
+    # In Actions the owner may omit Google credentials. Keep an existing
+    # provider unchanged in that case; a half-pair is a configuration error.
+    client_id, client_secret = google or (secret(GOOGLE_ID), secret(GOOGLE_SECRET))
+    if bool(client_id) != bool(client_secret):
+        raise SystemExit("Google sign-in needs both its client ID and client secret")
+    has_google_client = bool(client_id and client_secret)
     idps = cf.get(f"/accounts/{account}/access/identity_providers")
     by_type = {i["type"]: i for i in idps}
     ids = []
@@ -653,12 +659,10 @@ def ensure_idps(
             ids.append(made["id"])
     else:
         ids.append(by_type["onetimepin"]["id"])
-    # A client handed in now is used; otherwise the two secrets, if they exist.
-    client_id, client_secret = google or (secret(GOOGLE_ID), secret(GOOGLE_SECRET))
     if "google" in by_type:
         ids.append(by_type["google"]["id"])
-        if google:
-            # Already on, and a client was handed in: it is the one to
+        if has_google_client:
+            # Already on, and a client pair is available: it is the one to
             # use from here on (a corrected or replaced client).
             cf.change(
                 "access: give Google sign-in the client just supplied",
@@ -670,7 +674,7 @@ def ensure_idps(
                     "config": {"client_id": client_id, "client_secret": client_secret},
                 },
             )
-    elif client_id and client_secret:
+    elif has_google_client:
         made = cf.change(
             "access: add Google sign-in",
             "POST",

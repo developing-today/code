@@ -1559,14 +1559,16 @@ fn run_tiers(config: &Config, addrs: Vec<String>, all: bool) -> i32 {
 /// Every App in tiers order: the built-ins, then the configured
 /// Apps in file order (the same order the rotation uses).
 fn all_apps(config: &Config) -> Vec<GhApp> {
-    GhApp::ALL.into_iter().chain(
-        config
-            .gh
-            .apps
-            .iter()
-            .map(|app| GhApp::Configured(app.slug.clone())),
-    )
-    .collect()
+    GhApp::ALL
+        .into_iter()
+        .chain(
+            config
+                .gh
+                .apps
+                .iter()
+                .map(|app| GhApp::Configured(app.slug.clone())),
+        )
+        .collect()
 }
 
 /// The `--all` source set: every installation of every App (live,
@@ -1603,10 +1605,14 @@ fn tiers_all_from_lists(entries: &[(GhApp, Vec<String>)]) -> Vec<TokenSource> {
         let mut sorted = owners.clone();
         sorted.sort();
         sorted.dedup();
-        out.extend(sorted.into_iter().map(|owner| TokenSource::AppInstallation {
-            app: app.clone(),
-            owner,
-        }));
+        out.extend(
+            sorted
+                .into_iter()
+                .map(|owner| TokenSource::AppInstallation {
+                    app: app.clone(),
+                    owner,
+                }),
+        );
     }
     out.push(TokenSource::Personal);
     out

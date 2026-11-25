@@ -22,7 +22,8 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use id_config::{
-    CONFIG_SCHEMA_VERSION, ConfigDocument, ConfigError, FIXED_GATE_IDS, FieldClass, Mode,
+    CONFIG_SCHEMA_VERSION, ConfigDocument, ConfigError, DEADLINE_MS_LIMIT, FIXED_GATE_IDS,
+    Fanout, FieldClass, MAX_HOPS_LIMIT, Mode, PEER_BREADTH_LIMIT, PER_PEER_TIMEOUT_MS_LIMIT,
     ResolvedConfig, SyncScope, Tier, field_class,
 };
 use serde_json::{Value, json};
@@ -367,8 +368,117 @@ fn mechanism_behavior_classification_is_stable() {
     ] {
         assert_eq!(field_class(path), Some(FieldClass::Mechanism), "{path}");
     }
-    for path in ["mode", "behavior.tier", "overrides", "extensions"] {
+    for path in ["mode", "behavior.tier", "overrides", "extensions", "fanout"] {
         assert_eq!(field_class(path), Some(FieldClass::Behavior), "{path}");
     }
     assert_eq!(field_class("no_such_field"), None);
+}
+
+/// Slice 9111-F1: the fan-out keys of #9111 record section 7.1.
+#[test]
+fn fanout_defaults_apply_when_absent() {
+    let resolved = load(&valid_doc()).expect("valid doc resolves");
+    assert_eq!(resolved.fanout, Fanout::default());
+    assert_eq!(resolved.fanout.deadline_ms, 5_000);
+    assert_eq!(resolved.fanout.per_peer_timeout_ms, 2_000);
+    assert_eq!(resolved.fanout.peer_breadth, 4);
+    // A present but empty section also means every default.
+    let mut doc = valid_doc();
+    doc["fanout"] = json!({});
+    assert_eq!(load(&doc).expect("empty fanout").fanout, Fanout::default());
+}
+
+#[test]
+fn fanout_limits_are_inclusive_and_fail_closed() {
+    let cases = [
+        ("deadline_ms", DEADLINE_MS_LIMIT),
+        ("per_peer_timeout_ms", PER_PEER_TIMEOUT_MS_LIMIT),
+        ("peer_breadth", u64::from(PEER_BREADTH_LIMIT)),
+    ];
+    for (key, limit) in cases {
+        let field = format!("fanout.{key}");
+        // The limit itself is accepted.
+        let mut doc = valid_doc();
+        doc["fanout"] = json!({ "deadline_ms": DEADLINE_MS_LIMIT, key: limit });
+        load(&doc).unwrap_or_else(|err| panic!("{field} = {limit} must load: {err}"));
+        // One past the limit, and zero, are rejected, never clamped.
+        for bad in [limit + 1, 0] {
+            let mut doc = valid_doc();
+            doc["fanout"] = json!({ key: bad });
+            match load_err(&doc) {
+                ConfigError::OutOfRange {
+                    field: got,
+                    value,
+                    limit: got_limit,
+                } => {
+                    assert_eq!(got, field);
+                    assert_eq!(value, bad);
+                    assert_eq!(got_limit, limit);
+                }
+                other => panic!("{field} = {bad} gave {other:?}"),
+            }
+        }
+    }
+    // An unknown fan-out key rejects (fail-closed unknown-field policy).
+    let mut doc = valid_doc();
+    doc["fanout"] = json!({ "remote_breadth": 2 });
+    load_err(&doc);
+}
+
+#[test]
+fn hop_ceiling_is_bounded() {
+    let mut doc = valid_doc();
+    doc["ceilings"]["max_hops"] = json!(MAX_HOPS_LIMIT);
+    load(&doc).expect("max_hops at the limit loads");
+    doc["ceilings"]["max_hops"] = json!(MAX_HOPS_LIMIT + 1);
+    match load_err(&doc) {
+        ConfigError::OutOfRange { field, value, limit } => {
+            assert_eq!(field, "ceilings.max_hops");
+            assert_eq!(value, u64::from(MAX_HOPS_LIMIT) + 1);
+            assert_eq!(limit, u64::from(MAX_HOPS_LIMIT));
+        }
+        other => panic!("max_hops 9 gave {other:?}"),
+    }
+}
+
+#[test]
+fn per_peer_timeout_clamps_to_deadline() {
+    let mut doc = valid_doc();
+    doc["fanout"] = json!({ "deadline_ms": 1_500, "per_peer_timeout_ms": 2_500 });
+    let resolved = load(&doc).expect("timeout above deadline is accepted");
+    assert_eq!(resolved.fanout.deadline_ms, 1_500);
+    assert_eq!(resolved.fanout.per_peer_timeout_ms, 1_500);
+    // At or under the deadline it is kept as written.
+    doc["fanout"] = json!({ "deadline_ms": 1_500, "per_peer_timeout_ms": 1_500 });
+    assert_eq!(load(&doc).expect("equal").fanout.per_peer_timeout_ms, 1_500);
+}
+
+#[test]
+fn schema_declares_the_fanout_limits() {
+    let schema = schema();
+    assert_eq!(
+        schema["$defs"]["ceilings"]["properties"]["max_hops"]["maximum"],
+        json!(MAX_HOPS_LIMIT)
+    );
+    let fanout = &schema["$defs"]["fanout"];
+    assert_eq!(fanout["additionalProperties"], json!(false));
+    let defaults = Fanout::default();
+    for (key, limit, default) in [
+        ("deadline_ms", DEADLINE_MS_LIMIT, defaults.deadline_ms),
+        (
+            "per_peer_timeout_ms",
+            PER_PEER_TIMEOUT_MS_LIMIT,
+            defaults.per_peer_timeout_ms,
+        ),
+        (
+            "peer_breadth",
+            u64::from(PEER_BREADTH_LIMIT),
+            u64::from(defaults.peer_breadth),
+        ),
+    ] {
+        let prop = &fanout["properties"][key];
+        assert_eq!(prop["maximum"], json!(limit), "{key} maximum");
+        assert_eq!(prop["minimum"], json!(1), "{key} minimum");
+        assert_eq!(prop["default"], json!(default), "{key} default");
+    }
 }

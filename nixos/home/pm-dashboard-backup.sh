@@ -377,6 +377,11 @@ conditional file turso/alerts_incident_events.json
 conditional file turso/alerts_push_subscriptions.json
 conditional file turso/alerts_notification_sends.json
 conditional file turso/orch_runs.json
+optional file turso/push_endpoints.json
+optional file turso/push_preferences.json
+optional file turso/push_item_stages.json
+optional file turso/push_item_stage_events.json
+optional file turso/push_registry_meta.json
 conditional tree db-dumps
 conditional file projector/pmp_links.sql
 optional tree aggregator/snapshots
@@ -621,6 +626,14 @@ import json, pathlib, sys
 root = pathlib.Path(sys.argv[1])
 for name in ('agg_actions','agg_activity_ingestion','agg_activity_gaps','agg_usage_snapshots','agg_store_documents','alerts_incidents','alerts_incident_events','alerts_push_subscriptions','alerts_notification_sends','orch_runs'):
     rows = json.loads((root / (name + '.json')).read_text())
+    if not isinstance(rows, list): raise SystemExit(name + ': not a JSON array')
+    print(name + '=' + str(len(rows)))
+# The push registry (#14084 S1): optional while an older exporter
+# that predates it may still be the installed one; validated when present.
+for name in ('push_endpoints','push_preferences','push_item_stages','push_item_stage_events','push_registry_meta'):
+    path = root / (name + '.json')
+    if not path.exists(): continue
+    rows = json.loads(path.read_text())
     if not isinstance(rows, list): raise SystemExit(name + ': not a JSON array')
     print(name + '=' + str(len(rows)))
 PYEOF

@@ -839,7 +839,12 @@ function platformLimitRefusal(limit: string | null, reason: string | null, famil
   return `task is limited to platform '${limit}' (reason: ${reason}); the transfer-claim must declare its platform family to take it`;
 }
 
-async function scopeMatch(store: QueueStore, row: TaskRow, scope: ClaimScope, withPlatformLimit: boolean): Promise<boolean> {
+async function scopeMatch(
+  store: QueueStore,
+  row: TaskRow,
+  scope: ClaimScope,
+  withPlatformLimit: boolean,
+): Promise<boolean> {
   if (scope.queue !== null && row.queue !== scope.queue) return false;
   if (scope.filter && !filterMatches(scope.filter, row)) return false;
   if (taskRequirementsUnmet(row, scope.claimer) !== null) return false;
@@ -860,6 +865,7 @@ async function scopeMatch(store: QueueStore, row: TaskRow, scope: ClaimScope, wi
 }
 
 function eligibleDefault(row: TaskRow, now: string, claimer: ClaimerCtx): boolean {
+  if (row.manual_only) return false;
   const required = requiredBudget(row);
   const remaining = claimer.remaining ?? -1;
   const gate = required === null || remaining >= required;
@@ -886,7 +892,9 @@ function payloadNonEmpty(row: TaskRow): boolean {
 async function expireLeases(store: QueueStore, env: QueueEnv): Promise<number> {
   const now = nowIso(env);
   let expired = 0;
-  const rows = (await store.allTasks()).filter((t) => t.status === "claimed" && t.lease_until !== null && t.lease_until < now);
+  const rows = (await store.allTasks()).filter(
+    (t) => t.status === "claimed" && t.lease_until !== null && t.lease_until < now,
+  );
   for (const row of rows) {
     const toSink = handoffShape(progressOf(row));
     const [progress, cleared] = clearBinding(row.progress, "expire_leases", env);
@@ -977,7 +985,7 @@ async function finishClaim(store: QueueStore, env: QueueEnv, row: TaskRow, opts:
   }
   if (cleared || opts.claimSession) {
     await store.updateTask(current.id, { progress: nextProgress, updated_at: now });
-    current = await store.getTask(current.id) ?? current;
+    current = (await store.getTask(current.id)) ?? current;
   }
   await store.upsertLease(
     {
@@ -993,7 +1001,7 @@ async function finishClaim(store: QueueStore, env: QueueEnv, row: TaskRow, opts:
   }
   if (opts.model) {
     await stampClaimModel(store, env, opts.worker, current.id, opts.model, opts.stampTrigger);
-    current = await store.getTask(current.id) ?? current;
+    current = (await store.getTask(current.id)) ?? current;
   }
   await store.touchWorker(opts.worker, true, now);
   if (cleared) {
@@ -1003,7 +1011,7 @@ async function finishClaim(store: QueueStore, env: QueueEnv, row: TaskRow, opts:
     ...opts.detail,
     cleared_session_id: cleared,
   });
-  return await store.getTask(current.id) ?? current;
+  return (await store.getTask(current.id)) ?? current;
 }
 
 const MAX_CLAIM_RACE_LOSSES = 32;
@@ -1028,7 +1036,7 @@ async function claimPickOnce(
     const candidates: TaskRow[] = [];
     for (const t of await store.allTasks()) {
       if (
-        payloadNonEmpty(t) &&
+        !t.manual_only && payloadNonEmpty(t) &&
         (pickMode === "handoff" ? isHandedOff(t) : eligibleDefault(t, now, scope.claimer)) &&
         (await scopeMatch(store, t, scope, true))
       ) {
@@ -1305,7 +1313,7 @@ async function claimTransfer(
   if (!updated) {
     fail(4, "claim_repo_task: transfer refused: the claim changed under the transfer");
   }
-  let current = await store.getTask(taskId) as TaskRow;
+  let current = (await store.getTask(taskId)) as TaskRow;
   await store.upsertLease(
     {
       task_id: taskId,
@@ -1323,12 +1331,12 @@ async function claimTransfer(
     if (ledger) {
       await store.updateLedger(taskId, { session_id: claimSession, updated_at: now });
     }
-    current = await store.getTask(taskId) as TaskRow;
+    current = (await store.getTask(taskId)) as TaskRow;
     await recordSessionBound(store, env, scope.claimer.worker, current, claimSession, "transfer");
   }
   if (model) {
     await stampClaimModel(store, env, scope.claimer.worker, taskId, model, "transfer");
-    current = await store.getTask(taskId) as TaskRow;
+    current = (await store.getTask(taskId)) as TaskRow;
   }
   await store.touchWorker(scope.claimer.worker, true, now);
   await emitMarked(store, env, scope.claimer.worker, current, "claimed", {
@@ -1574,6 +1582,8 @@ function dedupePartition(rows: TaskRow[]): { live: TaskRow | null; terminal: Tas
 
 function emptyTaskRow(fields: Partial<TaskRow> & { queue: string }): Omit<TaskRow, "id"> {
   return {
+    manual_only: false,
+    metadata: {},
     title: null,
     body: null,
     payload: {},
@@ -1644,6 +1654,7 @@ async function verbEnqueue(store: QueueStore, env: QueueEnv, req: Req): Promise<
     );
   }
   const packet = clone(packetRaw) as JsonObject;
+  const metadata: JsonObject = req["metadata"] === undefined ? {} : isObj(req["metadata"]) ? req["metadata"] : fail(2, "enqueue: metadata must be a JSON object");
   const warnings = [...warnings0];
   await enrichPayloadLabels(
     store,
@@ -1698,6 +1709,8 @@ async function verbEnqueue(store: QueueStore, env: QueueEnv, req: Req): Promise<
   const row = await store.insertTask(
     emptyTaskRow({
       queue,
+      manual_only: task["manual_only"] === true,
+      metadata,
       title: typeof task["title"] === "string" ? task["title"] : null,
       body: typeof task["body"] === "string" ? task["body"] : null,
       payload: (task["payload"] ?? {}) as Json,
@@ -1732,6 +1745,11 @@ async function verbEnqueue(store: QueueStore, env: QueueEnv, req: Req): Promise<
       identity: identity?.key ?? null,
     });
   }
+  await emit(store, env, "enqueue_repo_task", row.id, "enqueued", {
+    queue,
+    dedupe_key: dedupeKey,
+    manual_only: row.manual_only,
+  });
   const resp = ok({ row, rpc: "enqueue_repo_task_turso", warnings });
   if (predecessor) {
     resp["revived_from"] = { task_id: predecessor.id, status: predecessor.status };
@@ -1867,7 +1885,9 @@ async function notClaimedReason(store: QueueStore, row: TaskRow | null, worker: 
     base = `it is ${row.status}`;
   }
   if (row.status !== "claimed") {
-    const events = (await store.eventsForTask(row.id)).filter((e) => e.kind === "claimed" || e.kind === "lease_expired");
+    const events = (await store.eventsForTask(row.id)).filter(
+      (e) => e.kind === "claimed" || e.kind === "lease_expired",
+    );
     const last = events[events.length - 1];
     if (last && last.kind === "lease_expired" && last.worker_id === worker) {
       base += `; ${worker}'s lease expired at ${last.created_at} and the task went back to the queue, so claim it again before completing it (heartbeat to keep a lease; checkpoint saves progress but does not renew it)`;
@@ -2125,7 +2145,7 @@ async function verbPark(store: QueueStore, env: QueueEnv, req: Req): Promise<Res
     });
   }
   await store.deleteLease(row.id);
-  const fresh = await store.getTask(row.id) as TaskRow;
+  const fresh = (await store.getTask(row.id)) as TaskRow;
   if (cleared) await onBindingCleared(store, env, worker, fresh, cleared, "park_task");
   if (toSink) {
     await emitMarked(store, env, worker, fresh, "parked", {
@@ -2176,7 +2196,7 @@ async function verbRelease(store: QueueStore, env: QueueEnv, req: Req): Promise<
   });
   await store.deleteLease(row.id);
   await store.touchWorker(worker, true, now);
-  const fresh = await store.getTask(row.id) as TaskRow;
+  const fresh = (await store.getTask(row.id)) as TaskRow;
   if (cleared) await onBindingCleared(store, env, worker, fresh, cleared, "release_repo_task");
   await emitMarked(store, env, worker, fresh, "released", {
     reason,
@@ -2218,7 +2238,7 @@ async function verbWake(store: QueueStore, env: QueueEnv, req: Req): Promise<Res
       updated_at: nowIso(env),
     },
   );
-  const fresh = await store.getTask(taskId) as TaskRow;
+  const fresh = (await store.getTask(taskId)) as TaskRow;
   if (updated) {
     await emitMarked(store, env, worker, fresh, "woken", {
       reason,
@@ -2355,7 +2375,7 @@ async function verbBlock(store: QueueStore, env: QueueEnv, req: Req): Promise<Re
     updated_at: now,
   });
   await store.deleteLease(row.id);
-  const fresh = await store.getTask(row.id) as TaskRow;
+  const fresh = (await store.getTask(row.id)) as TaskRow;
   await emit(store, env, worker, row.id, "blocked", mergeObj({ blocker, reason_class: reasonClass }, depEvent));
   return ok({ row: fresh });
 }
@@ -2412,7 +2432,12 @@ interface DepTransition {
   evidence: Json;
 }
 
-async function emitDepTransitions(store: QueueStore, env: QueueEnv, task: TaskRow, transitions: DepTransition[]): Promise<void> {
+async function emitDepTransitions(
+  store: QueueStore,
+  env: QueueEnv,
+  task: TaskRow,
+  transitions: DepTransition[],
+): Promise<void> {
   for (const t of transitions) {
     await emitMarked(store, env, "dep-rechecker", task, t.transition === "cleared" ? "dep_cleared" : "dep_broken", {
       dep: t.dep,
@@ -2422,7 +2447,12 @@ async function emitDepTransitions(store: QueueStore, env: QueueEnv, task: TaskRo
   }
 }
 
-async function depRecheckOne(store: QueueStore, env: QueueEnv, row: TaskRow, cache: Map<string, DepObs>): Promise<[string, number]> {
+async function depRecheckOne(
+  store: QueueStore,
+  env: QueueEnv,
+  row: TaskRow,
+  cache: Map<string, DepObs>,
+): Promise<[string, number]> {
   const deps = depsOf(row);
   if (deps.length === 0) return ["not_dep_blocked", 0];
   const now = nowIso(env);
@@ -2441,7 +2471,7 @@ async function depRecheckOne(store: QueueStore, env: QueueEnv, row: TaskRow, cac
       },
     );
     if (updated) {
-      const fresh = await store.getTask(row.id) as TaskRow;
+      const fresh = (await store.getTask(row.id)) as TaskRow;
       await emitMarked(store, env, "dep-rechecker", fresh, "dep_ttl_expired", {
         deps,
         dep_blocked_until: row.dep_blocked_until,
@@ -2492,7 +2522,7 @@ async function depRecheckOne(store: QueueStore, env: QueueEnv, row: TaskRow, cac
       },
     );
     if (!updated) return ["still_blocked", failures];
-    const fresh = await store.getTask(row.id) as TaskRow;
+    const fresh = (await store.getTask(row.id)) as TaskRow;
     await emitDepTransitions(store, env, fresh, transitions);
     await emitMarked(store, env, "dep-rechecker", fresh, "dep_unblocked", {
       deps,
@@ -2511,7 +2541,7 @@ async function depRecheckOne(store: QueueStore, env: QueueEnv, row: TaskRow, cac
     dep_next_recheck_at: next,
     updated_at: now,
   });
-  const fresh = await store.getTask(row.id) as TaskRow;
+  const fresh = (await store.getTask(row.id)) as TaskRow;
   await emitDepTransitions(store, env, fresh, transitions);
   return ["still_blocked", failures];
 }
@@ -2591,7 +2621,7 @@ async function verbUnblock(store: QueueStore, env: QueueEnv, req: Req): Promise<
       updated_at: nowIso(env),
     },
   );
-  const fresh = await store.getTask(taskId) as TaskRow;
+  const fresh = (await store.getTask(taskId)) as TaskRow;
   if (prevDeps.length === 0) {
     await emitMarked(store, env, worker, fresh, "unblocked", { reason, via: "unblock_task_turso" });
   } else {
@@ -2620,7 +2650,7 @@ async function verbCancel(store: QueueStore, env: QueueEnv, req: Req): Promise<R
     updated_at: nowIso(env),
   });
   await store.deleteLease(row.id);
-  const fresh = await store.getTask(taskId) as TaskRow;
+  const fresh = (await store.getTask(taskId)) as TaskRow;
   await emit(store, env, worker, taskId, "cancelled", { reason, via: "cancel_repo_task_turso" });
   const sid = sessionIdOf(progressOf(row));
   if (sid !== null) await recordSessionUnbound(store, env, worker, fresh, sid, "cancel");
@@ -2656,7 +2686,7 @@ async function verbFail(store: QueueStore, env: QueueEnv, req: Req): Promise<Res
     updated_at: now,
   });
   await store.deleteLease(row.id);
-  const fresh = await store.getTask(row.id) as TaskRow;
+  const fresh = (await store.getTask(row.id)) as TaskRow;
   if (requeue && cleared) await onBindingCleared(store, env, worker, fresh, cleared, "fail_repo_task");
   await emitMarked(store, env, worker, fresh, "failed", {
     error,
@@ -3173,7 +3203,7 @@ async function verbComplete(store: QueueStore, env: QueueEnv, req: Req): Promise
   });
   await store.deleteLease(row.id);
   await store.touchWorker(worker, false, now);
-  const fresh = await store.getTask(row.id) as TaskRow;
+  const fresh = (await store.getTask(row.id)) as TaskRow;
   await emitMarked(store, env, worker, fresh, "completed", { via: "complete_task_turso" });
   const sid = sessionIdOf(progressOf(row));
   if (sid !== null) await recordSessionUnbound(store, env, worker, fresh, sid, "complete");
@@ -3269,7 +3299,7 @@ async function verbLane(store: QueueStore, env: QueueEnv, req: Req): Promise<Res
   const applyLimit = async (): Promise<void> => {
     if (clearLimit) {
       await store.updateLedger(taskId, { platform_limit: null, platform_limit_reason: null, updated_at: now });
-      const t = await store.getTask(taskId) as TaskRow;
+      const t = (await store.getTask(taskId)) as TaskRow;
       await emitMarked(store, env, worker, t, "lane_assigned", {
         platform_limit: null,
         platform_limit_reason: null,
@@ -3284,7 +3314,7 @@ async function verbLane(store: QueueStore, env: QueueEnv, req: Req): Promise<Res
         fam = null;
       }
       await store.updateLedger(taskId, { platform_limit: fam, platform_limit_reason: limitReason, updated_at: now });
-      const t = await store.getTask(taskId) as TaskRow;
+      const t = (await store.getTask(taskId)) as TaskRow;
       await emitMarked(store, env, worker, t, "lane_assigned", {
         platform_limit: fam,
         platform_limit_reason: limitReason,
@@ -3304,7 +3334,7 @@ async function verbLane(store: QueueStore, env: QueueEnv, req: Req): Promise<Res
         exclusion_reason: exclusion,
         updated_at: now,
       });
-      const t = await store.getTask(taskId) as TaskRow;
+      const t = (await store.getTask(taskId)) as TaskRow;
       await emitMarked(store, env, worker, t, "lane_assigned", {
         assigned_lane: "direct",
         previous_lane: "opencode",
@@ -3323,7 +3353,7 @@ async function verbLane(store: QueueStore, env: QueueEnv, req: Req): Promise<Res
         exclusion_reason: null,
         updated_at: now,
       });
-      const t = await store.getTask(taskId) as TaskRow;
+      const t = (await store.getTask(taskId)) as TaskRow;
       await emitMarked(store, env, worker, t, "lane_assigned", {
         assigned_lane: "opencode",
         previous_lane: "direct",
@@ -3381,7 +3411,7 @@ async function verbLane(store: QueueStore, env: QueueEnv, req: Req): Promise<Res
     progress: mergeObj(obj(task.progress), { lane }),
     updated_at: now,
   });
-  const t = await store.getTask(taskId) as TaskRow;
+  const t = (await store.getTask(taskId)) as TaskRow;
   await emitMarked(store, env, worker, t, "lane_assigned", {
     assigned_lane: lane,
     exclusion_reason: exclusion,
@@ -3435,10 +3465,10 @@ async function verbBind(store: QueueStore, env: QueueEnv, req: Req): Promise<Res
     progress: mergeObj(obj(task.progress), { session_id: sid, launched_by: launchedBy }),
     updated_at: now,
   });
-  const fresh = await store.getTask(taskId) as TaskRow;
+  const fresh = (await store.getTask(taskId)) as TaskRow;
   await recordSessionBound(store, env, worker, fresh, sid, "bind");
   if (model) await stampClaimModel(store, env, worker, taskId, model, "bind");
-  const fresh2 = await store.getTask(taskId) as TaskRow;
+  const fresh2 = (await store.getTask(taskId)) as TaskRow;
   await emitMarked(store, env, worker, fresh2, "lane_session_bound", {
     session_id: sid,
     launched_by: launchedBy,
@@ -3486,7 +3516,7 @@ async function verbRevive(store: QueueStore, env: QueueEnv, req: Req): Promise<R
     lease_until: null,
     updated_at: nowIso(env),
   });
-  const fresh = await store.getTask(taskId) as TaskRow;
+  const fresh = (await store.getTask(taskId)) as TaskRow;
   await emit(store, env, worker, taskId, "revived", {
     reason,
     previous_status: row.status,

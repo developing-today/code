@@ -47,7 +47,7 @@ describe("dashboard notification candidate derivation", () => {
       TASK_NOW,
     );
 
-    expect(candidates.map((entry) => entry.class)).toEqual(["needs-drew", "blocked-age"]);
+    expect(candidates.map((entry) => entry.class)).toEqual(["needs-user", "blocked-age"]);
     expect(candidates[0].objectRef).toBe("item:developing-today/code#3317");
     expect(candidates[1].escalationStep).toBe(48);
     expect(candidates[1].breakthrough).toBe(true);
@@ -160,7 +160,7 @@ describe("dashboard notification candidate derivation", () => {
 
 describe("notification transition policy", () => {
   const base: NotificationCandidate = {
-    class: "needs-drew",
+    class: "needs-user",
     objectRef: "item:task-1",
     stateFingerprint: "enter",
     title: "Task 1",
@@ -245,7 +245,7 @@ describe("JsonlNotificationHistory", () => {
     const file = join(dir, "notifications.jsonl");
     const entry = {
       at: "2026-11-04T12:00:00.000Z",
-      class: "needs-drew" as const,
+      class: "needs-user" as const,
       objectRef: "item:task-1",
       stateFingerprint: "entered-needs-drew",
       outcome: "sent" as const,

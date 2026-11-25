@@ -1072,6 +1072,7 @@ pub fn run() -> i32 {
                             &req.target,
                             req.header("X-Agent-Token"),
                         );
+                        crate::uds_http::log_ctx_trip("secrets-broker", req, status);
                         (
                             status,
                             serde_json::to_vec(&value).unwrap_or_else(|_| b"{}".to_vec()),
@@ -1120,6 +1121,7 @@ pub fn run() -> i32 {
                 &req.target,
                 req.header("X-Agent-Token"),
             );
+            crate::uds_http::log_ctx_trip("secrets-broker", req, status);
             (
                 status,
                 serde_json::to_vec(&value).unwrap_or_else(|_| b"{}".to_vec()),
