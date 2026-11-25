@@ -11,7 +11,7 @@
 //! - names a `peer_id` with no `peers[]` entry, or one already listed;
 //! - names a peer that can never be asked: its class is `send_only` or
 //!   `unknown`, or its entry does not grant `query.out` (record §7.1,
-//!   "a send_only peer is never asked");
+//!   "a `send_only` peer is never asked");
 //! - asks to relay through a peer that is not `fully_trusted` with
 //!   `relay_granted` (record §7.3, a load error, never a silent drop);
 //! - has a `timeout_ms` outside `1 ..= PER_PEER_TIMEOUT_MS_LIMIT`, or an
