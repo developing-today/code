@@ -98,22 +98,22 @@ machines:
       last_seen: '2026-11-25T12:24:06Z'
       status: unreachable
       checks:
-        reported_at: '2026-11-25T13:54:13Z'
+        reported_at: '2026-11-25T14:24:12Z'
         reachable:
           state: failed
           ssh: true
           opencode_server_http: null
         load_headroom:
           state: ok
-          load15: 1.78
+          load15: 1.64
           cpu_cores: 16
-          load15_per_core: 0.111
+          load15_per_core: 0.102
         disk_headroom:
           state: ok
           volume: worktree (home)
           total_gb: 250
           free_gb: 156
-          free_pct: 62.4
+          free_pct: 62.2
         sessions:
           state: unknown
           reason: attach API HTTP None
