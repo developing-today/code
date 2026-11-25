@@ -40,6 +40,14 @@
 //!   unverifiable policy fails closed. Removing the mirror label
 //!   does not unprotect an item.
 //!
+//! * **Aging reconsiders, it never just ages.** [`evaluate_aging`]
+//!   (PRI-05a, #9481) turns dated evidence (deadline, pivot,
+//!   freshness, effort, opportunity, value) into at most one bounded
+//!   scale step per sweep, emitted as an `aging_reconsideration`
+//!   triage hint. Elapsed time only makes an item due; age alone
+//!   never moves it and never reaches Critical, and the protected
+//!   owner set is skipped.
+//!
 //! The module is pure: no I/O, no queue, no persisted state. It
 //! changes no live priority and authorises no schema change — later
 //! slices (PRI-02 … PRI-07) consume it.
@@ -762,6 +770,321 @@ pub fn queue_v1_golden() -> BTreeMap<i64, &'static str> {
     ])
 }
 
+// ---------------------------------------------------------------------------
+// PRI-05a — evidence-based bidirectional aging and review windows
+// (developing-today/code#9481; design parent #9199, slice PRI-05a).
+// ---------------------------------------------------------------------------
+
+/// Wire schema identifier of an aging policy.
+pub const AGING_POLICY_SCHEMA_VERSION: &str = "fleet.priority-aging-policy/v1";
+
+/// A versioned aging policy. Aging is a *reconsideration*: its
+/// output is an `aging_reconsideration` triage hint (the #9200
+/// registry permits that code a hint only), never a base write.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgingPolicy {
+    /// `fleet.priority-aging-policy/v1`.
+    pub schema_version: String,
+    /// The reference recommendations cite.
+    pub policy_ref: String,
+    /// Policy version (canonical decimal string).
+    pub version: String,
+    /// Seconds after the last meaningful triage before an item is
+    /// due for reconsideration.
+    pub review_interval_secs: i64,
+    /// Evidence observed longer ago than this is stale and ignored.
+    pub evidence_max_age_secs: i64,
+}
+
+impl AgingPolicy {
+    /// Validate the policy document.
+    pub fn validate(&self) -> Result<(), PriorityError> {
+        if self.schema_version != AGING_POLICY_SCHEMA_VERSION {
+            return Err(PriorityError::UnsupportedVersion {
+                schema_version: self.schema_version.clone(),
+            });
+        }
+        let invalid = |detail: String| Err(PriorityError::InvalidProfile { detail });
+        if self.policy_ref.is_empty() {
+            return invalid("aging policy_ref must not be empty".to_string());
+        }
+        if !is_canonical_decimal(&self.version) {
+            return invalid(format!(
+                "aging policy version is not a canonical decimal string: {:?}",
+                self.version
+            ));
+        }
+        if self.review_interval_secs <= 0 || self.evidence_max_age_secs <= 0 {
+            return invalid("aging intervals must be positive".to_string());
+        }
+        Ok(())
+    }
+}
+
+/// Which way a signal argues the item should move.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgingDirection {
+    /// Claim sooner (a lower value).
+    Raise,
+    /// Claim later (a higher value).
+    Lower,
+}
+
+/// The kind of evidence behind a signal. Elapsed time is not a
+/// kind: age only makes an item *due* for review.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgingSignalKind {
+    /// A verified deadline.
+    Deadline,
+    /// An authorised strategic pivot.
+    Pivot,
+    /// Fresh activity (or its absence) on the work.
+    Freshness,
+    /// Effort evidence (e.g. turned out small, or much larger).
+    Effort,
+    /// A time-boxed opportunity.
+    Opportunity,
+    /// Demonstrated value / usefulness.
+    Value,
+}
+
+/// One piece of evidence for a reconsideration.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgingSignal {
+    /// What kind of evidence.
+    pub kind: AgingSignalKind,
+    /// Which way it argues.
+    pub direction: AgingDirection,
+    /// Where the evidence is; a signal without one is ignored.
+    pub evidence_ref: String,
+    /// Confidence, 0–100.
+    pub confidence_pct: u8,
+    /// When the evidence was observed (same clock as `as_of`).
+    pub observed_at: i64,
+}
+
+/// The item under reconsideration.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgingItem {
+    /// Canonical identity.
+    pub work: WorkRef,
+    /// Current intrinsic value.
+    pub current: PriorityValue,
+    /// Last meaningful triage time; `None` means never triaged and
+    /// always due.
+    pub last_meaningful_triage_at: Option<i64>,
+    /// The owner-policy reference the sweep read.
+    pub owner_policy_ref: Option<String>,
+}
+
+/// A bounded, evidence-backed reconsideration hint.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgingRecommendation {
+    /// Target work.
+    pub work: WorkRef,
+    /// Always `aging_reconsideration`.
+    pub reason_code: String,
+    /// The effect class: always a hint.
+    pub effect: String,
+    /// Direction of the proposed move.
+    pub direction: AgingDirection,
+    /// Current value.
+    pub from: PriorityValue,
+    /// Proposed value: exactly one scale step away.
+    pub to: PriorityValue,
+    /// The evidence the move rests on (deduplicated, sorted).
+    pub evidence_refs: Vec<String>,
+    /// Lowest confidence among the supporting signals.
+    pub confidence_pct: u8,
+    /// Evaluation time.
+    pub as_of: i64,
+    /// Aging policy reference and version.
+    pub policy_ref: String,
+    /// Aging policy version.
+    pub policy_version: String,
+    /// When the item is next due for reconsideration.
+    pub next_review_at: i64,
+}
+
+/// Why an evaluation produced no recommendation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgingHold {
+    /// Inside the review window since the last meaningful triage.
+    NotDue,
+    /// Due, but no usable evidence: age alone never moves an item.
+    AgeOnly,
+    /// Usable evidence argues both ways equally.
+    Balanced,
+    /// Already at the profile edge in the argued direction.
+    AtEdge,
+    /// Raising into the most urgent value needs deadline evidence;
+    /// age, freshness or value alone never reach Critical.
+    CriticalNeedsDeadline,
+    /// The item is in the protected owner set; aging never touches it.
+    ProtectedExpedite,
+}
+
+/// The outcome of one aging evaluation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AgingOutcome {
+    /// Recommend one bounded step.
+    Recommend(AgingRecommendation),
+    /// No move, with the reason and the next review time.
+    Hold {
+        /// Why nothing was recommended.
+        hold: AgingHold,
+        /// When to look again.
+        next_review_at: i64,
+    },
+}
+
+/// Evaluate one item for evidence-based aging (PRI-05a).
+///
+/// * The protected-owner gate runs first: a protected item is held
+///   as [`AgingHold::ProtectedExpedite`]; a stale, missing or
+///   unverifiable owner policy is an error (fail closed).
+/// * An item inside its review window is [`AgingHold::NotDue`].
+/// * Only signals with an evidence reference, observed no later
+///   than `as_of` and no longer ago than the policy's evidence age,
+///   count; a replayed evidence reference counts once.
+/// * No usable evidence is [`AgingHold::AgeOnly`]: elapsed time
+///   makes an item due, it never moves it.
+/// * The net direction moves the item **one** scale step (ratified
+///   bands are label intent and are never an aging target); raising
+///   into the profile's most urgent scale value requires deadline
+///   evidence.
+#[allow(clippy::too_many_arguments)]
+pub fn evaluate_aging(
+    profile: &PriorityProfile,
+    policy: &AgingPolicy,
+    item: &AgingItem,
+    signals: &[AgingSignal],
+    as_of: i64,
+    owner_policy: Option<&OwnerPriorityPolicy>,
+    membership: Option<&ProtectedMembership>,
+) -> Result<AgingOutcome, PriorityError> {
+    profile.validate()?;
+    policy.validate()?;
+    profile.check(&item.current)?;
+
+    let gate = PriorityWrite {
+        work: item.work.clone(),
+        owner_policy_ref: item.owner_policy_ref.clone(),
+        source: WriteSource::Aging,
+        field: PriorityField::IntrinsicUrgency,
+    };
+    let next_review_at = as_of.saturating_add(policy.review_interval_secs);
+    match check_priority_write(&gate, owner_policy, membership, None) {
+        Ok(()) => {}
+        Err(PriorityError::OwnerPolicy(ContractError::OwnerPolicyProtected)) => {
+            return Ok(AgingOutcome::Hold {
+                hold: AgingHold::ProtectedExpedite,
+                next_review_at,
+            });
+        }
+        Err(err) => return Err(err),
+    }
+
+    if let Some(last) = item.last_meaningful_triage_at {
+        let due_at = last.saturating_add(policy.review_interval_secs);
+        if as_of < due_at {
+            return Ok(AgingOutcome::Hold {
+                hold: AgingHold::NotDue,
+                next_review_at: due_at,
+            });
+        }
+    }
+
+    let oldest = as_of.saturating_sub(policy.evidence_max_age_secs);
+    let mut seen = BTreeSet::new();
+    let usable: Vec<&AgingSignal> = signals
+        .iter()
+        .filter(|s| !s.evidence_ref.trim().is_empty())
+        .filter(|s| s.observed_at <= as_of && s.observed_at >= oldest)
+        .filter(|s| s.confidence_pct <= 100)
+        .filter(|s| seen.insert(s.evidence_ref.clone()))
+        .collect();
+    if usable.is_empty() {
+        return Ok(AgingOutcome::Hold {
+            hold: AgingHold::AgeOnly,
+            next_review_at,
+        });
+    }
+    let raises = usable
+        .iter()
+        .filter(|s| s.direction == AgingDirection::Raise)
+        .count();
+    let lowers = usable.len() - raises;
+    let direction = match raises.cmp(&lowers) {
+        Ordering::Greater => AgingDirection::Raise,
+        Ordering::Less => AgingDirection::Lower,
+        Ordering::Equal => {
+            return Ok(AgingOutcome::Hold {
+                hold: AgingHold::Balanced,
+                next_review_at,
+            });
+        }
+    };
+    let supporting: Vec<&&AgingSignal> =
+        usable.iter().filter(|s| s.direction == direction).collect();
+
+    let scale: Vec<i64> = profile
+        .entries
+        .iter()
+        .filter(|e| e.kind == EntryKind::Scale)
+        .map(|e| e.value)
+        .collect();
+    let current = item.current.value;
+    let target = match direction {
+        AgingDirection::Raise => scale.iter().rev().find(|v| **v < current).copied(),
+        AgingDirection::Lower => scale.iter().find(|v| **v > current).copied(),
+    };
+    let Some(target) = target else {
+        return Ok(AgingOutcome::Hold {
+            hold: AgingHold::AtEdge,
+            next_review_at,
+        });
+    };
+    if direction == AgingDirection::Raise
+        && Some(&target) == scale.first()
+        && !supporting
+            .iter()
+            .any(|s| s.kind == AgingSignalKind::Deadline)
+    {
+        return Ok(AgingOutcome::Hold {
+            hold: AgingHold::CriticalNeedsDeadline,
+            next_review_at,
+        });
+    }
+
+    let reason = super::contracts::ReasonCode::AgingReconsideration;
+    reason.check_field_effect(super::contracts::FieldEffectKind::Hint)?;
+    let mut evidence_refs: Vec<String> =
+        supporting.iter().map(|s| s.evidence_ref.clone()).collect();
+    evidence_refs.sort();
+    Ok(AgingOutcome::Recommend(AgingRecommendation {
+        work: item.work.clone(),
+        reason_code: reason.as_str().to_string(),
+        effect: "hint".to_string(),
+        direction,
+        from: item.current.clone(),
+        to: profile.validate_value(target)?,
+        evidence_refs,
+        confidence_pct: supporting
+            .iter()
+            .map(|s| s.confidence_pct)
+            .min()
+            .unwrap_or(0),
+        as_of,
+        policy_ref: policy.policy_ref.clone(),
+        policy_version: policy.version.clone(),
+        next_review_at,
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1225,5 +1548,278 @@ mod tests {
                 .code(),
             "unknown_priority_name"
         );
+    }
+
+    fn aging_policy() -> AgingPolicy {
+        AgingPolicy {
+            schema_version: AGING_POLICY_SCHEMA_VERSION.to_string(),
+            policy_ref: "aging-policy:1".to_string(),
+            version: "1".to_string(),
+            review_interval_secs: 7 * 86_400,
+            evidence_max_age_secs: 14 * 86_400,
+        }
+    }
+
+    const NOW: i64 = 1_800_000_000;
+    const DAY: i64 = 86_400;
+
+    fn item(id: &str, value: i64, last_triage: Option<i64>) -> AgingItem {
+        AgingItem {
+            work: work(id),
+            current: queue().validate_value(value).unwrap(),
+            last_meaningful_triage_at: last_triage,
+            owner_policy_ref: Some("owner-policy:7".to_string()),
+        }
+    }
+
+    fn signal(kind: AgingSignalKind, direction: AgingDirection, evidence: &str) -> AgingSignal {
+        AgingSignal {
+            kind,
+            direction,
+            evidence_ref: evidence.to_string(),
+            confidence_pct: 80,
+            observed_at: NOW - DAY,
+        }
+    }
+
+    fn age(item: &AgingItem, signals: &[AgingSignal]) -> AgingOutcome {
+        evaluate_aging(
+            &queue(),
+            &aging_policy(),
+            item,
+            signals,
+            NOW,
+            Some(&policy()),
+            Some(&membership()),
+        )
+        .unwrap()
+    }
+
+    fn recommended(outcome: AgingOutcome) -> AgingRecommendation {
+        match outcome {
+            AgingOutcome::Recommend(r) => r,
+            other => panic!("expected a recommendation, got {other:?}"),
+        }
+    }
+
+    fn held(outcome: AgingOutcome) -> AgingHold {
+        match outcome {
+            AgingOutcome::Hold { hold, .. } => hold,
+            other => panic!("expected a hold, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn pmo_priority_aging_moves_both_directions_with_evidence() {
+        use AgingDirection::*;
+        use AgingSignalKind::*;
+        let week_old = Some(NOW - 8 * DAY);
+
+        // A week-old normal item with a verified deadline rises one step.
+        let rise = recommended(age(
+            &item("1", 40, week_old),
+            &[signal(Deadline, Raise, "ev:deadline")],
+        ));
+        assert_eq!((rise.from.value, rise.to.value), (40, 30));
+        assert_eq!(rise.direction, Raise);
+        assert_eq!(rise.reason_code, "aging_reconsideration");
+        assert_eq!(rise.effect, "hint");
+        assert_eq!(rise.evidence_refs, vec!["ev:deadline".to_string()]);
+        assert_eq!(rise.policy_ref, "aging-policy:1");
+        assert_eq!(rise.policy_version, "1");
+        assert_eq!(rise.as_of, NOW);
+        assert_eq!(rise.next_review_at, NOW + 7 * DAY);
+
+        // A post-pivot high item falls one step.
+        let fall = recommended(age(
+            &item("2", 20, week_old),
+            &[signal(Pivot, Lower, "ev:pivot")],
+        ));
+        assert_eq!((fall.from.value, fall.to.value), (20, 30));
+        assert_eq!(fall.direction, Lower);
+
+        // Bounded: many signals still move exactly one scale step,
+        // and the move skips the ratified bands (label intent).
+        let many = [
+            signal(Deadline, Raise, "ev:a"),
+            signal(Value, Raise, "ev:b"),
+            signal(Freshness, Raise, "ev:c"),
+        ];
+        let one = recommended(age(&item("3", 30, week_old), &many));
+        assert_eq!(one.to.value, 20);
+        assert_eq!(one.confidence_pct, 80);
+        assert_eq!(one.evidence_refs.len(), 3);
+
+        // Age alone never moves an item, however old.
+        assert_eq!(
+            held(age(&item("4", 70, Some(NOW - 400 * DAY)), &[])),
+            AgingHold::AgeOnly
+        );
+        assert_eq!(held(age(&item("4", 70, None), &[])), AgingHold::AgeOnly);
+
+        // Age-only paths never reach Critical: freshness/value evidence
+        // cannot raise high (20) to critical (10); a deadline can.
+        assert_eq!(
+            held(age(
+                &item("5", 20, week_old),
+                &[signal(Value, Raise, "ev:v")]
+            )),
+            AgingHold::CriticalNeedsDeadline
+        );
+        let crit = recommended(age(
+            &item("5", 20, week_old),
+            &[signal(Deadline, Raise, "ev:d")],
+        ));
+        assert_eq!(crit.to.value, 10);
+
+        // Inside the review window nothing moves.
+        assert_eq!(
+            held(age(
+                &item("6", 40, Some(NOW - DAY)),
+                &[signal(Deadline, Raise, "ev:d")]
+            )),
+            AgingHold::NotDue
+        );
+
+        // Unusable evidence is ignored: missing ref, future, stale.
+        let mut future = signal(Deadline, Raise, "ev:future");
+        future.observed_at = NOW + DAY;
+        let mut stale = signal(Deadline, Raise, "ev:stale");
+        stale.observed_at = NOW - 30 * DAY;
+        let blank = signal(Deadline, Raise, "  ");
+        assert_eq!(
+            held(age(&item("7", 40, week_old), &[future, stale, blank])),
+            AgingHold::AgeOnly
+        );
+
+        // A replayed evidence reference counts once; balanced evidence holds.
+        let replay = [
+            signal(Freshness, Raise, "ev:same"),
+            signal(Freshness, Raise, "ev:same"),
+            signal(Pivot, Lower, "ev:other"),
+        ];
+        assert_eq!(
+            held(age(&item("8", 40, week_old), &replay)),
+            AgingHold::Balanced
+        );
+
+        // Profile edges hold rather than leave the profile.
+        assert_eq!(
+            held(age(
+                &item("9", 90, week_old),
+                &[signal(Pivot, Lower, "ev:p")]
+            )),
+            AgingHold::AtEdge
+        );
+        assert_eq!(
+            held(age(
+                &item("10", 10, week_old),
+                &[signal(Deadline, Raise, "ev:d")]
+            )),
+            AgingHold::AtEdge
+        );
+
+        // A value from another profile version is rejected.
+        let mut foreign = item("11", 40, week_old);
+        foreign.current.profile_version = "2".to_string();
+        assert_eq!(
+            evaluate_aging(
+                &queue(),
+                &aging_policy(),
+                &foreign,
+                &[],
+                NOW,
+                Some(&policy()),
+                Some(&membership())
+            )
+            .unwrap_err()
+            .code(),
+            "profile_mismatch"
+        );
+    }
+
+    #[test]
+    fn pmo_priority_aging_skips_protected_expedite_set() {
+        use AgingDirection::*;
+        use AgingSignalKind::*;
+        let week_old = Some(NOW - 8 * DAY);
+        let strong = [
+            signal(Pivot, Lower, "ev:pivot"),
+            signal(Freshness, Lower, "ev:quiet"),
+        ];
+
+        // #3447 is in the protected set at the expedite band: aging
+        // holds it, whatever the evidence says.
+        assert_eq!(
+            held(age(&item("3447", 15, week_old), &strong)),
+            AgingHold::ProtectedExpedite
+        );
+        assert_eq!(
+            held(age(
+                &item("3447", 15, week_old),
+                &[signal(Deadline, Raise, "ev:d")]
+            )),
+            AgingHold::ProtectedExpedite
+        );
+
+        // An unprotected item stored at 15 ages normally to the next
+        // scale value, never onto the other ratified band.
+        let ordinary = recommended(age(&item("842", 15, week_old), &strong));
+        assert_eq!(ordinary.to.value, 20);
+
+        // The owner gate fails closed for aging too.
+        let mut stale = item("842", 40, week_old);
+        stale.owner_policy_ref = Some("owner-policy:6".to_string());
+        assert_eq!(
+            evaluate_aging(
+                &queue(),
+                &aging_policy(),
+                &stale,
+                &strong,
+                NOW,
+                Some(&policy()),
+                Some(&membership())
+            )
+            .unwrap_err()
+            .code(),
+            "OWNER_POLICY_VERSION_CONFLICT"
+        );
+        stale.owner_policy_ref = None;
+        assert_eq!(
+            evaluate_aging(
+                &queue(),
+                &aging_policy(),
+                &stale,
+                &strong,
+                NOW,
+                Some(&policy()),
+                Some(&membership())
+            )
+            .unwrap_err()
+            .code(),
+            "owner_policy_ref_missing"
+        );
+        assert_eq!(
+            evaluate_aging(
+                &queue(),
+                &aging_policy(),
+                &item("842", 40, week_old),
+                &strong,
+                NOW,
+                None,
+                Some(&membership())
+            )
+            .unwrap_err()
+            .code(),
+            "owner_policy_unavailable"
+        );
+
+        // Malformed aging policy is rejected.
+        let mut bad = aging_policy();
+        bad.review_interval_secs = 0;
+        assert_eq!(bad.validate().unwrap_err().code(), "invalid_profile");
+        bad = aging_policy();
+        bad.schema_version = "fleet.priority-aging-policy/v2".to_string();
+        assert_eq!(bad.validate().unwrap_err().code(), "unsupported_version");
     }
 }
