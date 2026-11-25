@@ -5,6 +5,8 @@
 //! malformed command line touches nothing; [`run`] then opens the store at
 //! `<state dir>/kv/local.db` as the launch identity recorded for the bound
 //! session, failing closed with `identity_unavailable` when there is none.
+//! `snapshot` and `restore` act on the whole host store and need the same
+//! launch identity; `restore` writes the store path without opening it.
 
 use fleet_config::Config;
 use fleet_kv::{LocalStore, cli, launch};
@@ -31,6 +33,18 @@ pub fn run(args: &[String]) -> i32 {
             let store = LocalStore::open(&path)
                 .map_err(|error| ("store_unavailable", error.to_string()))?;
             Ok((store, identity))
+        },
+        || {
+            // A restore never opens the store, but it still runs only as a
+            // session with a trusted launch identity.
+            launch::load(&state_dir, session.as_deref())
+                .map_err(|error| (error.code(), error.to_string()))?;
+            let path = launch::database_path(&state_dir);
+            if let Some(dir) = path.parent() {
+                std::fs::create_dir_all(dir)
+                    .map_err(|error| ("store_unavailable", error.to_string()))?;
+            }
+            Ok(path)
         },
         &mut std::io::stdin().lock(),
         &mut std::io::stdout().lock(),

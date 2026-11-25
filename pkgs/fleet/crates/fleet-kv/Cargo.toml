@@ -7,6 +7,9 @@ license.workspace = true
 description = "Identity-scoped local SQLite storage for fleet-kv."
 
 [dependencies]
+# Unkeyed BLAKE3-256 content ids for working files (#9120 profile);
+# already in the workspace lockfile.
+blake3 = "1.8"
 fleet-config = { workspace = true }
 rusqlite = { version = "0.43", features = ["bundled"] }
 

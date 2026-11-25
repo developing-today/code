@@ -403,11 +403,20 @@ pub const DOMAINS: &[Domain] = &[
     },
     Domain {
         name: "kv",
-        summary: "Key/value bytes for this session in the host-local store: get, set, list, delete (masking tombstone), clear-override and revert, per --namespace. --global is not built yet.",
+        summary: "Key/value bytes for this session in the host-local store: get, set, list, delete (masking tombstone), clear-override and revert, per --namespace; snapshot and restore back up the whole host store. --global is not built yet.",
         capabilities: &[Capability::Kv],
         primary: Capability::Kv,
         aliases: &[],
-        subcommands: &["get", "set", "list", "delete", "clear-override", "revert"],
+        subcommands: &[
+            "get",
+            "set",
+            "list",
+            "delete",
+            "clear-override",
+            "revert",
+            "snapshot",
+            "restore",
+        ],
     },
     Domain {
         name: "agent",
