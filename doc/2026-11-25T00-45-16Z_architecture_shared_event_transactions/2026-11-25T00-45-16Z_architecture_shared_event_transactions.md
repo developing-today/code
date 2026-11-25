@@ -120,3 +120,33 @@ redb 5's `range` takes `impl KeyRange` rather than an explicit generic argument.
 Removed the unsupported turbofish in all three native paging adapters. Earlier plain
 Cargo run `45519717589` reached compilation (rather than failing Nix setup),
 but predates the compiler fixes and is not evidence for the current head.
+
+## Next ownership seam — 2026-11-25
+
+Selected direction after read-only review: `EventStore<B = Database>`, with a
+backend trait exposing closure-scoped `read(&self, op)` and `write(&self, op)`
+operations over row handles. The write closure returns the existing change bit;
+the backend owns begin/commit/abort through the shared transaction runner.
+Native constructors and file-maintenance methods remain specialized to
+`EventStore<Database>`; shared ingest, waiting state and generation/cache handling
+stay in the existing event-store implementation rather than a second outer store.
+
+The tenant adapter owns `Mutex<TenantStore<T>>`. It holds the lock for the entire
+closure, with a read transaction spanning all pages and multi-table reads, not
+one independent snapshot per SQL request. Closure scope avoids a returned guard
+that must borrow a tenant session it also owns. It preserves `EventStoreBackend`
+reads through `&self` and the current `Send + Sync` shared handle contract.
+An enum adds transport erasure/variant dispatch without reducing helper-porting
+work; a separate core with two outer orchestrators risks policy divergence.
+
+Before making ingest generic, the next reviewable slice must prove native/tenant
+read-snapshot parity, read cleanup and transaction rollback under this ownership
+seam. Then port the existing `transact`/`reload` and ingest helpers, not a new
+hosted ingest path. An uncertain COMMIT retires the baton; only a fresh session
+and waiting-pool/cache recovery may restore usability, with no blind retry.
+A mutex is only local exclusion: authoritative single-writer ownership per
+tenant must also be enforced before claiming restart/concurrency parity.
+
+The earlier lifecycle test also needs the allowlisted `meta` table rather than
+the invented `driver_rows` name, and explicit error-only closure result types.
+These are fixture/compiler corrections, not a relaxation of table validation.
