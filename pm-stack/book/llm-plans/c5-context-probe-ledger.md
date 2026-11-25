@@ -24,22 +24,38 @@ Regenerate: `node bin/free-context-probe.mjs --inventory-only --out target/fleet
 - Offline suite `node --test bin/free-context-probe.test.mjs` (7 tests):
   inventory oracle (configured plan targets, alias expansion, no
   `opencode-route/*` wrappers), deterministic sentinel payload oracle,
-  rate/auth/context classification oracle, provenance oracle, serving-leaf
-  event parsing, strict argv rejection, and a no-network inventory CLI run.
+  narrowed rate/auth/context classification oracle (HTTP 413 alone is not
+  a context proof; only explicit context signals classify as
+  `fail-context`), provenance oracle, strict argv rejection (unknown,
+  duplicate, and mutually exclusive flags), and a no-network inventory
+  CLI run.
 - Dry-run manifest builds one deterministic payload shape per leaf with
   explicit cost controls (`--max-probes`, `--timeout-ms`,
   `--max-input-tokens`, one attempt per leaf, zero network calls).
-- Live mode is single-leaf only (`--live` requires exact `--leaf` and
-  `--max-probes 1`), enforces the token cap before spawning, records
-  requested leaf, actual serving leaf, input shape, token usage, latency,
-  and failure reason, and never logs credentials or raw error bodies.
+  The chars/4 input figure is labeled a rough preflight estimate, not a
+  provider tokenizer oracle.
+- Live mode is one keyless Kilo call only (`--live` requires exact
+  `--leaf kilo/kilo-auto/free` and `--max-probes 1`, fixed 8-block
+  payload, 64-token output cap, bounded body read), records requested
+  leaf, response model / serving leaf, input shape, server-reported
+  usage, latency, and failure reason, and never logs credentials or raw
+  error bodies. Exit status keys on HTTP 200, not on the sentinel
+  alone. All other leaves remain dry-run.
 
 ## Live probes run in this slice
 
-None with provider credentials. The authorized-host live path is
-implemented (`--live` shells `opencode run --format json --model <leaf>`
-with a strict timeout and the sentinel oracle) but this lane did not
-execute credentialed probes; no context value is promoted.
+One keyless Kilo smoke probe, 2026-11-25
+(`node bin/free-context-probe.mjs --live --leaf kilo/kilo-auto/free
+--max-probes 1`; record:
+`pm-stack/book/llm-plans/evidence/c5-kilo-free-smoke-2026-11-25.json`):
+
+- HTTP 200, sentinel returned (`pass-sentinel`), ~1 s latency,
+  response model `reflection/beam-free`
+  (serving leaf `kilo/reflection/beam-free`, upstream provider not
+  reported by the gateway), server-reported usage 271 in / 60 out.
+- This is a small sentinel smoke probe only (fixed 8-block payload,
+  64-token output cap), not a context-ceiling test. No context value is
+  promoted: the record stays `contextSource: provider-published`.
 
 ## Remaining work (explicit ledger)
 

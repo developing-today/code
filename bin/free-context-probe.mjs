@@ -24,7 +24,6 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { parseJsonc } from './provider-catalog-sync.mjs';
 
@@ -53,6 +52,7 @@ export function parseArgs(argv) {
     }
     if (FLAG_OPTIONS.includes(token)) {
       if (inlineValue !== null) throw new UsageError(`${token} takes no value\n${USAGE}`);
+      if (flags.has(token)) throw new UsageError(`${token} was given more than once\n${USAGE}`);
       flags.add(token);
       continue;
     }
@@ -177,10 +177,8 @@ export function approxInputTokens(text) {
 export function classifyResult({ httpStatus, bodyText }) {
   const body = typeof bodyText === 'string' ? bodyText.toLowerCase() : '';
   if (httpStatus === 200) return { outcome: 'pass', reason: 'http-200' };
-  const contextSignals = ['context_length_exceeded', 'maximum context', 'too many tokens', 'context window', 'input too long', 'max_tokens'];
-  if (contextSignals.some((s) => body.includes(s)) || httpStatus === 413) {
-    return { outcome: 'fail-context', reason: httpStatus === 413 ? 'http-413' : 'context-signal' };
-  }
+  const contextSignals = ['context_length_exceeded', 'maximum context length', 'exceeds the model context window', 'input tokens exceed the limit'];
+  if (contextSignals.some((s) => body.includes(s))) return { outcome: 'fail-context', reason: 'context-signal' };
   if (httpStatus === 429) return { outcome: 'fail-rate', reason: 'http-429' };
   if (httpStatus === 401 || httpStatus === 402 || httpStatus === 403) return { outcome: 'fail-auth', reason: `http-${httpStatus}` };
   if (httpStatus === 404 || httpStatus === 410) return { outcome: 'fail-gone', reason: `http-${httpStatus}` };
@@ -193,53 +191,52 @@ export function tagContextSource({ empiricallyTested }) {
   return empiricallyTested === true ? 'empirically-tested' : 'provider-published';
 }
 
-export function summarizeOpenCodeEvents(stdout) {
-  const result = { servingLeaf: null, usage: null, text: '' };
-  const visit = (value) => {
-    if (!value || typeof value !== 'object') return;
-    const provider = value.providerID ?? value.providerId ?? value.provider;
-    const model = value.modelID ?? value.modelId ?? value.model;
-    if (typeof provider === 'string' && typeof model === 'string') result.servingLeaf = `${provider}/${model}`;
-    const usage = value.tokens ?? value.usage;
-    if (usage && typeof usage === 'object') {
-      const input = usage.input ?? usage.prompt_tokens ?? usage.input_tokens;
-      const output = usage.output ?? usage.completion_tokens ?? usage.output_tokens;
-      if (Number.isFinite(input) || Number.isFinite(output)) result.usage = { input: input ?? null, output: output ?? null };
-    }
-    if (typeof value.text === 'string') result.text += value.text;
-    if (typeof value.content === 'string') result.text += value.content;
-    for (const child of Object.values(value)) if (child && typeof child === 'object') visit(child);
-  };
-  for (const line of stdout.split(/\r?\n/)) {
-    if (!line.trim()) continue;
-    try { visit(JSON.parse(line)); } catch { result.text += line; }
-  }
-  return result;
-}
-
-export function runOpenCodeProbe({ model, prompt, timeoutMs, env = process.env }) {
-  return new Promise((resolve, reject) => {
-    const child = spawn('opencode', ['run', '--format', 'json', '--model', model, prompt], {
-      env,
-      stdio: ['ignore', 'pipe', 'ignore'],
-    });
-    let stdout = '';
-    let timedOut = false;
-    const timer = setTimeout(() => {
-      timedOut = true;
-      child.kill('SIGTERM');
-    }, timeoutMs);
-    child.stdout.setEncoding('utf8');
-    child.stdout.on('data', (chunk) => { stdout += chunk; });
-    child.once('error', () => {
-      clearTimeout(timer);
-      reject(new Error('opencode process could not start'));
-    });
-    child.once('close', (code) => {
-      clearTimeout(timer);
-      resolve({ code, timedOut, ...summarizeOpenCodeEvents(stdout) });
-    });
+// Deliberately no OpenCode process: agent prompts, tools and fallback routes
+// would invalidate a one-request budget. This first live slice is keyless
+// Kilo only, at a fixed endpoint with an explicit free model and no paid tail.
+export async function runKiloProbe({ prompt, timeoutMs, fetchImpl = fetch }) {
+  const response = await fetchImpl('https://ai-gateway.kilo.ai/api/v1/chat/completions', {
+    method: 'POST',
+    redirect: 'error',
+    headers: { 'content-type': 'application/json' },
+    signal: AbortSignal.timeout(timeoutMs),
+    body: JSON.stringify({
+      model: 'kilo-auto/free',
+      messages: [{ role: 'user', content: prompt }],
+      max_tokens: 64,
+      stream: false,
+    }),
   });
+  // Bound response memory and retain the timeout while reading the body.
+  const reader = response.body.getReader();
+  const chunks = [];
+  let length = 0;
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    length += value.length;
+    if (length > 65536) {
+      await reader.cancel();
+      throw new Error('response-too-large');
+    }
+    chunks.push(value);
+  }
+  const text = Buffer.concat(chunks).toString('utf8');
+  let data;
+  try { data = JSON.parse(text); } catch { data = {}; }
+  const usage = data.usage;
+  return {
+    ...classifyResult({ httpStatus: response.status, bodyText: text }),
+    httpStatus: response.status,
+    responseModel: typeof data.model === 'string' ? data.model : null,
+    reportedUpstream: typeof data.provider === 'string' ? data.provider : null,
+    usage: {
+      input: Number.isFinite(usage?.prompt_tokens) ? usage.prompt_tokens : null,
+      output: Number.isFinite(usage?.completion_tokens) ? usage.completion_tokens : null,
+    },
+    sentinelReturned: data.choices?.[0]?.message?.content?.trim() === PROBE_SENTINEL,
+    finishReason: data.choices?.[0]?.finish_reason ?? null,
+  };
 }
 
 function resolveConfigPath({ options, root }) {
@@ -254,6 +251,9 @@ async function main(argv) {
   }
   if (flags.has('--live') && flags.has('--dry-run')) {
     throw new UsageError(`--live and --dry-run are mutually exclusive\n${USAGE}`);
+  }
+  if (flags.has('--live') && flags.has('--inventory-only')) {
+    throw new UsageError(`--live and --inventory-only are mutually exclusive\n${USAGE}`);
   }
   const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
   const configPath = resolveConfigPath({ options, root });
@@ -289,46 +289,59 @@ async function main(argv) {
   if (!Number.isInteger(maxInputTokens) || maxInputTokens < 256) throw new UsageError(`--max-input-tokens must be an integer >= 256\n${USAGE}`);
 
   if (flags.has('--live')) {
-    // Cost control: live mode probes exactly one leaf per invocation.
-    if (!options['--leaf']) throw new UsageError(`--live requires --leaf <provider/model> (single-leaf bound)\n${USAGE}`);
+    // Cost control: this first live adapter is one keyless Kilo call only.
+    if (options['--leaf'] !== 'kilo/kilo-auto/free') {
+      throw new UsageError('--live currently supports only --leaf kilo/kilo-auto/free; all other providers remain dry-run\n' + USAGE);
+    }
     if (filtered.length !== 1) throw new UsageError(`--live matched ${filtered.length} leaves; give an exact --leaf\n${USAGE}`);
     if (options['--max-probes'] !== undefined && Number(options['--max-probes']) !== 1) {
       throw new UsageError(`--live requires --max-probes 1\n${USAGE}`);
     }
     const leaf = filtered[0];
+    // This adapter only permits a bounded 8-block payload (about 160 chars),
+    // while the configured budget applies to payload + instructions. The
+    // chars/4 figure is a rough preflight estimate, not a tokenizer oracle.
     const payload = buildProbePayload({ blocks: 8 });
-    if (approxInputTokens(payload) > maxInputTokens) {
+    const prompt = `Repeat the final sentinel exactly and nothing else. Input payload follows:\n${payload}`;
+    const estimatedPromptTokens = approxInputTokens(prompt);
+    if (estimatedPromptTokens > maxInputTokens) {
       throw new UsageError(`live probe payload exceeds --max-input-tokens ${maxInputTokens}\n${USAGE}`);
     }
-    const prompt = `Repeat the final sentinel exactly and nothing else. Input payload follows:\n${payload}`;
     const started = Date.now();
     let liveResult;
     try {
-      liveResult = await runOpenCodeProbe({ model: leaf.target, prompt, timeoutMs });
+      liveResult = await runKiloProbe({ prompt, timeoutMs });
     } catch {
-      liveResult = { code: null, timedOut: false, servingLeaf: null, usage: null, text: '' };
+      liveResult = { outcome: 'fail-transient', reason: 'request-error', httpStatus: null, responseModel: null, reportedUpstream: null, usage: { input: null, output: null }, sentinelReturned: false };
     }
-    const pass = liveResult.code === 0 && liveResult.text.includes(PROBE_SENTINEL);
+    const pass = liveResult.outcome === 'pass' && liveResult.sentinelReturned;
     const record = {
       at: new Date().toISOString(),
       mode: 'live',
       requestedLeaf: `${leaf.provider}/${leaf.model}`,
       plan: leaf.plan,
       inputChars: payload.length,
-      approxInputTokens: approxInputTokens(payload),
+      approxInputTokens: estimatedPromptTokens,
+      inputTokenEstimate: 'rough chars/4; not a provider tokenizer; live adapter also bounds this payload to 8 fixed blocks',
       timeoutMs,
       maxInputTokens,
+      maxOutputTokens: 64,
       attempts: 1,
       latencyMs: Date.now() - started,
-      outcome: pass ? 'pass-sentinel' : liveResult.timedOut ? 'fail-timeout' : 'fail-oracle',
-      reason: pass ? 'sentinel-returned' : liveResult.timedOut ? 'timeout' : `opencode-exit-${liveResult.code ?? 'start-failed'}`,
-      servingLeaf: liveResult.servingLeaf,
+      outcome: pass ? 'pass-sentinel' : liveResult.outcome,
+      reason: pass ? 'sentinel-returned' : liveResult.reason,
+      httpStatus: liveResult.httpStatus,
+      responseModel: liveResult.responseModel,
+      reportedUpstream: liveResult.reportedUpstream,
+      servingProvider: 'kilo',
+      servingLeaf: liveResult.responseModel ? `kilo/${liveResult.responseModel}` : null,
       usage: liveResult.usage,
-      contextSource: tagContextSource({ empiricallyTested: pass }),
+      contextSource: 'provider-published',
+      note: 'Single small sentinel smoke probe only; request has a 64-token output cap. Timeout is not proof of zero provider cost. This is not a context-ceiling test.',
     };
     if (options['--out']) fs.writeFileSync(options['--out'], `${JSON.stringify(record, null, 2)}\n`);
     else console.log(JSON.stringify(record, null, 2));
-    return pass ? 0 : 4;
+    return liveResult.httpStatus === 200 ? 0 : 4;
   }
 
   // Default: dry-run manifest (no network). One deterministic shape per leaf.

@@ -9,7 +9,6 @@ import {
   extractFreeLeaves,
   parseArgs,
   PROBE_SENTINEL,
-  summarizeOpenCodeEvents,
   tagContextSource,
   UsageError,
 } from './free-context-probe.mjs';
@@ -38,8 +37,9 @@ test('probe payload is deterministic and terminates in its sentinel', () => {
 });
 
 test('result classifier distinguishes context failure from rate/auth walls', () => {
-  assert.deepEqual(classifyResult({ httpStatus: 413, bodyText: '' }), { outcome: 'fail-context', reason: 'http-413' });
+  assert.deepEqual(classifyResult({ httpStatus: 413, bodyText: '' }), { outcome: 'fail-other', reason: 'http-413' });
   assert.deepEqual(classifyResult({ httpStatus: 400, bodyText: 'context_length_exceeded' }), { outcome: 'fail-context', reason: 'context-signal' });
+  assert.deepEqual(classifyResult({ httpStatus: 400, bodyText: 'max_tokens reached' }), { outcome: 'fail-other', reason: 'http-400' });
   assert.deepEqual(classifyResult({ httpStatus: 429, bodyText: 'quota' }), { outcome: 'fail-rate', reason: 'http-429' });
   assert.deepEqual(classifyResult({ httpStatus: 401, bodyText: 'invalid key' }), { outcome: 'fail-auth', reason: 'http-401' });
 });
@@ -49,19 +49,16 @@ test('context provenance is never promoted without an empirical pass', () => {
   assert.equal(tagContextSource({ empiricallyTested: true }), 'empirically-tested');
 });
 
-test('OpenCode JSON events retain serving identity and usage, not raw diagnostics', () => {
-  const summary = summarizeOpenCodeEvents([
-    JSON.stringify({ type: 'step_finish', providerID: 'google-free', modelID: 'gemini-4-hydrogen', tokens: { input: 1234, output: 8 } }),
-    JSON.stringify({ type: 'text', part: { text: PROBE_SENTINEL } }),
-  ].join('\n'));
-  assert.equal(summary.servingLeaf, 'google-free/gemini-4-hydrogen');
-  assert.deepEqual(summary.usage, { input: 1234, output: 8 });
-  assert.ok(summary.text.includes(PROBE_SENTINEL));
-});
-
-test('CLI rejects unknown flags before reading config or making requests', () => {
+test('CLI rejects unknown, duplicate and incompatible flags before network', () => {
   assert.throws(() => parseArgs(['--live', '--leef', 'groq/model']), UsageError);
   assert.throws(() => parseArgs(['--live', '--leaf']), UsageError);
+  assert.throws(() => parseArgs(['--live', '--live']), UsageError);
+});
+
+test('CLI rejects live plus inventory mode before reading config or making requests', () => {
+  const result = spawnSync(process.execPath, [script, '--live', '--inventory-only'], { cwd: root, encoding: 'utf8' });
+  assert.equal(result.status, 2);
+  assert.match(result.stderr, /mutually exclusive/);
 });
 
 test('inventory-only CLI reports configured direct leaves without network calls', () => {
