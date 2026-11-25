@@ -975,10 +975,10 @@ fn retry_reprioritize_sync(st: &State, t: &crate::turso_queue::TursoBackend) {
 /// skipped or replayed as the feed advances.
 fn dispatch_history_since_cursor(t: &crate::turso_queue::TursoBackend, req: &Value) -> Value {
     let Some(after_id) = req.get("after_id").and_then(Value::as_i64) else {
-        return fail(2, "history-since: after_id must be an integer".into());
+        return fail(2, "history-since: after_id must be an integer");
     };
     if after_id < 0 {
-        return fail(2, "history-since: after_id must be non-negative".into());
+        return fail(2, "history-since: after_id must be non-negative");
     }
     let limit = req
         .get("limit")
