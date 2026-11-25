@@ -145,7 +145,7 @@ export function effectiveSettings<T extends PlatformSettings>(
 
 /** One pure projection of the currently effective source for each setting. */
 export function settingsInForce(
-  told: Partial<Record<keyof PlatformSettings, unknown>>,
+  told: Partial<Record<keyof PlatformSettings, unknown>> | null | undefined,
   owner: OwnerSettings | null | undefined,
   platform: PlatformSettings = platformSettings(),
 ): SettingInForce[] {
@@ -178,12 +178,12 @@ export function settingsInForce(
       };
     }
 
-    const source = machineSettings.has(name) ? "machine" : "repository";
+    const source = machineSettings.has(name) && told?.[name] !== undefined ? "machine" : "repository";
     return {
       name,
       source,
       since: null,
-      value: source === "machine" ? told[name] : platform[name],
+      value: source === "machine" ? told?.[name] : platform[name],
       repository: platform[name],
     };
   });

@@ -289,5 +289,12 @@ describe("owner-changeable settings", () => {
       value: platform.queue,
       repository: platform.queue,
     });
+    expect(settingsInForce(null, null, platform).find((row) => row.name === "needsRepos")).toEqual({
+      name: "needsRepos",
+      source: "repository",
+      since: null,
+      value: platform.needsRepos,
+      repository: platform.needsRepos,
+    });
   });
 });
