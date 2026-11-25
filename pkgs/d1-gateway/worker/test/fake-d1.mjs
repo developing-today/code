@@ -10,6 +10,14 @@ function refuseControl(sql) {
   }
 }
 
+const CODES = { 1: "ERROR", 19: "CONSTRAINT", 23: "AUTH" };
+// D1's error text: "D1_ERROR: <sqlite message>: SQLITE_<CODE>".
+function d1Error(e) {
+  if (/^D1_ERROR/.test(e.message)) return e;
+  const code = CODES[(e.errcode ?? 1) & 0xff] ?? "ERROR";
+  return new Error(`D1_ERROR: ${e.errstr ? e.message : e.message}: SQLITE_${code}`);
+}
+
 class Stmt {
   constructor(db, sql, args = []) {
     this.db = db;
@@ -32,6 +40,13 @@ class Stmt {
     return this.allSync();
   }
   allSync() {
+    try {
+      return this.#allSync();
+    } catch (e) {
+      throw d1Error(e);
+    }
+  }
+  #allSync() {
     const st = this.#prep();
     if (returnsRows(this.sql)) {
       const results = st.all(...this.#norm());
@@ -48,6 +63,13 @@ class Stmt {
     return this.allSync();
   }
   async raw(opts = {}) {
+    try {
+      return this.#raw(opts);
+    } catch (e) {
+      throw d1Error(e);
+    }
+  }
+  #raw(opts) {
     const st = this.#prep();
     const objs = st.all(...this.#norm());
     const names = st.columns ? st.columns().map((c) => c.name) : objs.length > 0 ? Object.keys(objs[0]) : [];

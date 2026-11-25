@@ -114,11 +114,9 @@ function isWrite(sql) {
 
 function errorBody(e) {
   const message = String(e?.message ?? e);
-  let code = e?.code;
-  if (!code) {
-    const m = /\b(SQLITE_[A-Z_]+)\b/.exec(message);
-    code = m ? m[1] : "SQLITE_ERROR";
-  }
+  const m = /\b(SQLITE_[A-Z_]+)\b/.exec(message);
+  let code = m ? m[1] : null;
+  if (!code) code = typeof e?.code === "string" && !e.code.startsWith("ERR_") ? e.code : "SQLITE_ERROR";
   return { message, code };
 }
 
