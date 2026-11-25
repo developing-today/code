@@ -471,7 +471,7 @@ mod tests {
             "world-1",
             "release-a",
             set(&[CLASS_CHAT_READ, CLASS_CHAT_WRITE]),
-            1,
+            CAP_CLASS_TABLE_VERSION,
             BaselineHistoryKind::Accept,
             AT,
         )
@@ -673,7 +673,7 @@ mod tests {
         let value = serde_json::to_value(&baseline).expect("serializes");
         assert_eq!(value["world_id"], "world-1");
         assert_eq!(value["release_identity"], "release-a");
-        assert_eq!(value["table_version"], 1);
+        assert_eq!(value["table_version"], CAP_CLASS_TABLE_VERSION);
         assert_eq!(
             value["baseline_key"],
             serde_json::Value::String(baseline.baseline_key.clone())
