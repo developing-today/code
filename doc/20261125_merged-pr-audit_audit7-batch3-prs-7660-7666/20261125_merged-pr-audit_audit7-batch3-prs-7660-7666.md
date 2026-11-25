@@ -27,7 +27,7 @@ Continue the AUDIT-7 Lane 4 batch 3/14 audit for `developing-today/code`: read e
 
 ## Slice state
 
-This slice adds five audited PRs to the prior 25: **30/250 audited; 220 remain; batch 3 remains partial**. The next PR in the fixed payload list is #7667. All five outcome labels were read back. The batch ledger for all 250 PRs is not complete.
+This slice adds five audited PRs to the prior 20: **25/250 audited; 225 remain; batch 3 remains partial**. The next PR in the fixed payload list is #7667. All five outcome labels were read back. The batch ledger for all 250 PRs is not complete.
 
 ## Raw supplements
 
