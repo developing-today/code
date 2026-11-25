@@ -864,6 +864,7 @@ dependencies = [
 name = "fleet-queue"
 version = "0.1.0"
 dependencies = [
+ "chunked_transfer",
  "fleet-config",
  "fleet-secrets",
  "libc",
@@ -873,7 +874,6 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
- "tiny_http",
  "ureq",
 ]
 

@@ -75,6 +75,7 @@ pub mod trace_ingest;
 pub mod trace_stats;
 pub mod turso;
 pub mod types;
+pub mod version_projection;
 
 /// Maximum neighbor chunks search expansion may attach to each result.
 /// Keep this aligned with the service's get-chunk neighbors ceiling.
