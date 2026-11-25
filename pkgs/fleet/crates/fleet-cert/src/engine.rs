@@ -27,7 +27,7 @@ use crate::model::{
     ParentRef, RootCreateRequest,
 };
 use crate::naming::{GenerationPartition, slugify};
-use crate::profile::leaf_profile;
+use crate::profile::resolve_profile;
 use crate::timeparse::Rfc3339;
 use rcgen::{
     BasicConstraints, CertificateParams, DnType, DnValue, IsCa, Issuer, KeyPair, KeyUsagePurpose,
@@ -850,7 +850,7 @@ fn clamp_window(
 /// `cert leaf issue`: issue one leaf from an issuer bundle, signed
 /// by the selected issuer key loaded from `req.issuer_signer`.
 pub fn issue_leaf(req: &LeafIssueRequest, out_dir: &Path) -> Result<BundleManifest> {
-    let profile = leaf_profile(&req.profile)?;
+    let profile = resolve_profile(&req.profile)?;
     let issuer_bundle = load_bundle(&req.issuer_bundle)?;
     if issuer_bundle.manifest.bundle_type != BundleType::IssuerSet {
         return Err(CertError::usage(format!(
@@ -858,6 +858,18 @@ pub fn issue_leaf(req: &LeafIssueRequest, out_dir: &Path) -> Result<BundleManife
             req.issuer_bundle.display(),
             issuer_bundle.manifest.bundle_type.as_str()
         )));
+    }
+    if profile.is_custom {
+        if let Some(requested) = req.key_algorithm {
+            if requested != profile.key_algorithm {
+                return Err(CertError::policy(format!(
+                    "profile '{}' fixes key algorithm {}, not {}",
+                    profile.name,
+                    profile.key_algorithm.name(),
+                    requested.name()
+                )));
+            }
+        }
     }
     let key_algo = req.key_algorithm.unwrap_or(profile.key_algorithm);
     let issuer_partition = req
@@ -924,6 +936,12 @@ pub fn issue_leaf(req: &LeafIssueRequest, out_dir: &Path) -> Result<BundleManife
         &req.name,
         &mut warnings,
     )?;
+    if na.0 - nb.0 > time::Duration::days(i64::from(profile.max_validity_days)) {
+        return Err(CertError::policy(format!(
+            "profile '{}' validity exceeds its {} day ceiling",
+            profile.name, profile.max_validity_days
+        )));
+    }
 
     // Subject + SANs.
     let mut sans: Vec<String> = req.dns_names.clone();
@@ -945,8 +963,8 @@ pub fn issue_leaf(req: &LeafIssueRequest, out_dir: &Path) -> Result<BundleManife
         &cn,
     );
     params.is_ca = IsCa::ExplicitNoCa;
-    params.key_usages = profile.key_usages.to_vec();
-    params.extended_key_usages = profile.extended_key_usages.to_vec();
+    params.key_usages = profile.key_usages;
+    params.extended_key_usages = profile.extended_key_usages;
     params.not_before = nb.0;
     params.not_after = na.0;
     params.serial_number = Some(random_serial());
