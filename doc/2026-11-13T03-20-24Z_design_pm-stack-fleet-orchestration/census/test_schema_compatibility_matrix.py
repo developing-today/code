@@ -34,6 +34,38 @@ FACT_SECTIONS = {
     "aggregator_actions": "3.14", "shared_comments": "3.14", "projector": "3.14",
     "pmp_links": "3.14", "pm_target": "3.14",
 }
+# Reviewed projection of §3, independently bound below to the actual document.
+# A whole-section quote search alone would let journal steal events' home.
+FACT_SEMANTICS = {
+    "queue_identity": ("the queue broker", "tasks", "reuse"),
+    "queue_state": ("the queue broker", "tasks.status", "reuse"),
+    "urgency_profile": ("the queue broker", "tasks.priority", "reuse"),
+    "lease_claim": ("the queue broker", "leases", "reuse"),
+    "blocked_dependencies": ("the queue broker", "tasks.blocked_deps", "extend"),
+    "broker_events": ("the queue broker", "events", "reuse"),
+    "journal": ("#9208", "no journal table exists on main", "absent"),
+    "checkpoints": ("the queue broker", "checkpoints", "reuse"),
+    "notes": ("#9208", "absent as a Fleet-store fact", "absent"),
+    "cursors": ("fleet-queue", "none exists", "absent"),
+    "operation_receipts": ("REL-03", "No persisted operation or receipt table exists on main", "absent"),
+    "creation_outbox": ("broker", "creation_outbox", "reuse"),
+    "project_fields": ("GitHub", "GitHub", "reuse"),
+    "metadata_block": ("the stamper", "GitHub body", "reuse"),
+    "metadata_mirror": ("ingestion", "pm_metadata_items", "reuse"),
+    "merge_intent": ("the queue broker", "merge_intents", "reuse"),
+    "placement_sessions": ("the placement line", "placement_sessions", "reuse"),
+    "coordination_replica": ("Local coordination replica", "local SQLite file", "reuse"),
+    "fallback_markers": ("workers", "GitHub issue comments", "reuse"),
+    "aggregator_actions": ("aggregator", "public.agg_actions", "reuse"),
+    "shared_comments": ("Aggregator", "public.shared_comments", "reuse"),
+    "projector": ("Projector", "hot ledger", "reuse"),
+    "pmp_links": ("projector/link registry", "pmp_links", "reuse"),
+    "pm_target": ("PM line", "current homes", "conflict"),
+}
+ROW_GATE_FACTS = {
+    "lease_claim", "blocked_dependencies", "journal", "notes", "cursors",
+    "operation_receipts", "pmp_links", "pm_target",
+}
 
 
 def sections(text):
@@ -91,15 +123,20 @@ def validate(mirror, source_text, persisted_facts=()):
         if fact in facts or len(row["owners"]) != 1 or not row["owners"][0].strip():
             raise ValueError(f"duplicate owner or fact: {fact}")
         facts[fact] = row
+        if "muse-dev2" in row["home"]:
+            raise ValueError("PM target conflict: muse-dev2 is not an admitted home")
         section = row["source"]
         if section not in required or not section.startswith("3."):
             raise ValueError("unregistered source section")
         covered.add(section)
-        for quote in (row["owners"][0], row["home"], row["disposition"]):
+        for quote in (row["owners"][0], row["home"]):
             if not quote.strip() or normalized(quote) not in normalized(source[section]):
                 raise ValueError(f"unsupported owner/home/disposition: {fact}")
         if row["disposition"] not in {"reuse", "extend", "absent", "conflict"}:
             raise ValueError("invalid disposition")
+        if (row["disposition"] not in normalized(source[section])
+                and not (section in {"3.13", "3.14"} and row["disposition"] == "reuse")):
+            raise ValueError("unsupported disposition")
         for field in ("legacy_mapping", "write_read_api", "rollback"):
             if not row[field] or any(ref not in required for ref in row[field]):
                 raise ValueError(f"missing normative {field}: {fact}")
@@ -111,8 +148,12 @@ def validate(mirror, source_text, persisted_facts=()):
             raise ValueError("ungated unresolved fact")
         if any(ref not in required for ref in row["gates"]):
             raise ValueError("unregistered gate")
-        if "muse-dev2" in row["home"]:
-            raise ValueError("PM target conflict: muse-dev2 is not an admitted home")
+        expected_gates = ([section] if fact in ROW_GATE_FACTS else []) + ["5", "9"]
+        if row["gates"] != expected_gates:
+            raise ValueError(f"per-row gate drift: {fact}")
+        observed = (row["owners"][0], row["home"], row["disposition"])
+        if observed != FACT_SEMANTICS.get(fact):
+            raise ValueError(f"named fact semantics drift: {fact}")
     if covered != {key for key in required if key.startswith("3.")}:
         raise ValueError("uncovered source matrix row")
     if {fact: row["source"] for fact, row in facts.items()} != FACT_SECTIONS:
@@ -177,6 +218,21 @@ class SchemaCompatibilityMatrixTests(unittest.TestCase):
                 row[field] = []
                 with self.assertRaisesRegex(ValueError, "missing normative|ungated"):
                     validate(mutant, self.source)
+
+    def test_each_rows_gate_references_cannot_be_replaced(self):
+        for index, row in enumerate(self.mirror["facts"]):
+            with self.subTest(fact=row["fact"]):
+                mutant = copy.deepcopy(self.mirror)
+                mutant["facts"][index]["gates"] = ["4"]
+                with self.assertRaisesRegex(ValueError, "per-row gate drift"):
+                    validate(mutant, self.source)
+
+    def test_journal_cannot_steal_events_owner_home_and_disposition(self):
+        mutant = copy.deepcopy(self.mirror)
+        row = next(r for r in mutant["facts"] if r["fact"] == "journal")
+        row.update(owners=["the queue broker"], home="events", disposition="reuse")
+        with self.assertRaisesRegex(ValueError, "named fact semantics drift"):
+            validate(mutant, self.source)
 
     def test_dead_pm_home_is_rejected(self):
         mutant = copy.deepcopy(self.mirror)
