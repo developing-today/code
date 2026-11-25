@@ -15,6 +15,9 @@
 //! - [`host`]: host mode's supervisor state for #10693 (packet P1) — the
 //!   lifecycle host file, transitions, rebuild, per-state census, and
 //!   the replaying supervisor over one data root.
+//! - [`creator_announcements`]: scheduled creator announcements — the
+//!   durable local schedule and its evaluator, which fires late after
+//!   downtime and records the lateness (#13743).
 //! - [`creator_index`]: the author-scoped local index over the author's
 //!   own worlds and programs, rebuilt from journals and records, with
 //!   build time and staleness (#13741).
@@ -57,6 +60,7 @@ pub use id_core::port;
 pub mod account_charge;
 pub mod blob_gate;
 pub mod chat_anchor_render;
+pub mod creator_announcements;
 pub mod creator_index;
 pub mod groups;
 pub mod guest_burn;
