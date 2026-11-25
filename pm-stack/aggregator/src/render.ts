@@ -7968,7 +7968,8 @@ export function queuePanelHtml(snapshot: QueueSnapshot | null): string {
     return `${head}<div class="banner">The queue-broker snapshot is unavailable in the current source, so no queue state is shown \u2014 this panel never renders hand-kept queue values.</div>`;
   }
   const fetchedIso = new Date(snapshot.fetchedAt).toISOString();
-  const sourceLine = `<p class="muted">Source: queue-broker /health + /list (read-only), fetched ${esc(fetchedIso)}.</p>`;
+  const historySource = snapshot.history ? " + /history-since" : "";
+  const sourceLine = `<p class="muted">Source: queue-broker /health + /list${historySource} (read-only), fetched ${esc(fetchedIso)}.</p>`;
   if (!snapshot.available || snapshot.stale) {
     const why = snapshot.errors.length ? ` Last read error: ${esc(snapshot.errors[0])}.` : "";
     return `${head}${sourceLine}<div class="banner">Stale source: this queue snapshot was fetched at ${esc(fetchedIso)}, outside the freshness window \u2014 queue numbers are withheld rather than shown silently old.${why} They refresh on the next successful broker read.</div>`;
@@ -8005,7 +8006,29 @@ export function queuePanelHtml(snapshot: QueueSnapshot | null): string {
   const items = idItems.length
     ? `<h3>Claimed &amp; parked id items (${idItems.length})</h3><table><caption>Claimed &amp; parked id items</caption><thead><tr><th scope="col">Task</th><th scope="col">Issue</th><th scope="col">Status</th><th scope="col">Worker / lane</th><th scope="col">Stage</th></tr></thead><tbody>${itemRows}</tbody></table>`
     : `<h3>Claimed &amp; parked id items</h3><p class="muted">None in the current snapshot.</p>`;
-  return `${head}${sourceLine}${streams}${items}`;
+  const history = snapshot.history;
+  let historyHtml = "";
+  if (history) {
+    if (!history.available) {
+      historyHtml = `<h3>Recent task changes</h3><p class="muted">History feed unavailable at cursor ${history.cursor}: ${esc(history.error ?? "no error detail")}.</p>`;
+    } else if (history.rows.length === 0) {
+      historyHtml = `<h3>Recent task changes</h3><p class="muted">No new transitions after history cursor ${history.cursor}.</p>`;
+    } else {
+      const rows = [...history.rows]
+        .sort((a, b) => b.id - a.id)
+        .slice(0, 20)
+        .map((event) => {
+          const transition = `${event.fromStatus ?? "\u2014"} \u2192 ${event.toStatus ?? event.kind}`;
+          return `<tr><td>${event.id}</td><td>${event.taskId}</td><td>${esc(event.kind)}</td><td>${esc(transition)}</td><td>${esc(event.actor ?? "\u2014")}</td><td>${esc(event.createdAt)}</td></tr>`;
+        })
+        .join("");
+      const more = history.hasMore
+        ? `<p class="muted">More history remains after cursor ${history.cursor}; the next read resumes there.</p>`
+        : "";
+      historyHtml = `<h3>Recent task changes</h3><table><caption>Task history after cursor ${history.cursor}</caption><thead><tr><th scope="col">History id</th><th scope="col">Task</th><th scope="col">Kind</th><th scope="col">Transition</th><th scope="col">Actor</th><th scope="col">At</th></tr></thead><tbody>${rows}</tbody></table>${more}`;
+    }
+  }
+  return `${head}${sourceLine}${streams}${items}${historyHtml}`;
 }
 
 export function renderProgramProject(
