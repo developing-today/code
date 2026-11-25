@@ -149,14 +149,26 @@ export function actionFromRow(row: Record<string, unknown>): DashAction {
   return action;
 }
 
+// The actions store persists its FULL record set on every mutation
+// (saveAll is the store's only write path), and this remote used to
+// upsert every row every time — the whole agg_actions table shipped
+// per dashboard action, the same whole-table rewrite the activity
+// remote below was fixed for (#14865, after #14836). The remote now
+// remembers the row content it last wrote (or loaded) per id and
+// sends only rows whose content changed; the upsert's change guard
+// stays as a backstop.
 export function createTursoActionsRemote(getClient: GetClient = getTursoStoreClient): ActionsRemote {
+  const written = new Map<string, string>();
   return {
     async loadAll(): Promise<DashAction[]> {
       const db = await requireClient(getClient);
       const rows = await db.query<Record<string, unknown>>(
         `select ${ACTION_COLUMNS} from public.agg_actions order by created_at asc`,
       );
-      return rows.map(actionFromRow);
+      const actions = rows.map(actionFromRow);
+      written.clear();
+      for (const action of actions) written.set(action.id, actionRowValues(action));
+      return actions;
     },
 
     async saveAll(actions: readonly DashAction[]): Promise<void> {
@@ -164,10 +176,14 @@ export function createTursoActionsRemote(getClient: GetClient = getTursoStoreCli
       const db = await requireClient(getClient);
       // Insertion order matters: supersedes/duplicate_of are self-FKs, so
       // parents must land before children. The store keeps insertion order;
-      // createdAt ascending preserves it.
+      // createdAt ascending preserves it — including among just the
+      // changed rows, since a child is never older than its parent.
       const ordered = [...actions].sort((a, b) => a.createdAt.localeCompare(b.createdAt));
-      for (const chunk of chunks(ordered)) {
-        const values = chunk.map(actionRowValues).join(",\n");
+      const changed = ordered
+        .map((action) => ({ id: action.id, row: actionRowValues(action) }))
+        .filter(({ id, row }) => written.get(id) !== row);
+      for (const chunk of chunks(changed)) {
+        const values = chunk.map(({ row }) => row).join(",\n");
         await db.query(
           `insert into public.agg_actions (${ACTION_COLUMNS}) values\n${values}\n` +
             `on conflict (id) ${updateChanged("agg_actions", [
@@ -180,6 +196,7 @@ export function createTursoActionsRemote(getClient: GetClient = getTursoStoreCli
             ])}`,
           { operation: "actions", candidates: chunk.length },
         );
+        for (const { id, row } of chunk) written.set(id, row);
       }
     },
   };
@@ -472,22 +489,33 @@ export function commentFromRow(row: Record<string, unknown>): DashComment {
   return comment;
 }
 
+// Same whole-table rewrite as actions, fixed the same way (#14865):
+// the comments store persists its full record set on every mutation,
+// so one added or triaged comment used to upsert every row of
+// public.shared_comments. Only rows whose content changed are sent.
 export function createTursoCommentsRemote(getClient: GetClient = getTursoStoreClient): CommentsRemote {
+  const written = new Map<string, string>();
   return {
     async loadAll(): Promise<DashComment[]> {
       const db = await requireClient(getClient);
       const rows = await db.query<Record<string, unknown>>(
         `select ${COMMENT_COLUMNS} from public.shared_comments order by created_at asc`,
       );
-      return rows.map(commentFromRow);
+      const comments = rows.map(commentFromRow);
+      written.clear();
+      for (const comment of comments) written.set(comment.id, commentRowValues(comment));
+      return comments;
     },
 
     async saveAll(comments: readonly DashComment[]): Promise<void> {
       if (comments.length === 0) return;
       const db = await requireClient(getClient);
       const ordered = [...comments].sort((a, b) => a.createdAt.localeCompare(b.createdAt));
-      for (const chunk of chunks(ordered)) {
-        const values = chunk.map(commentRowValues).join(",\n");
+      const changed = ordered
+        .map((comment) => ({ id: comment.id, row: commentRowValues(comment) }))
+        .filter(({ id, row }) => written.get(id) !== row);
+      for (const chunk of chunks(changed)) {
+        const values = chunk.map(({ row }) => row).join(",\n");
         await db.query(
           `insert into public.shared_comments (${COMMENT_COLUMNS}) values\n${values}\n` +
             // Only the state fields the store mutates after creation
@@ -502,6 +530,7 @@ export function createTursoCommentsRemote(getClient: GetClient = getTursoStoreCl
             ])}`,
           { operation: "comments", candidates: chunk.length },
         );
+        for (const { id, row } of chunk) written.set(id, row);
       }
     },
   };
