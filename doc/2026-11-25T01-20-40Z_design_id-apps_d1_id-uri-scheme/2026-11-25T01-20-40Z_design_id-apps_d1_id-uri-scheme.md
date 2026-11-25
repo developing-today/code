@@ -11,7 +11,9 @@ Status: proposal. Slice 1 of 5. Slices 2 (collections), 3 (failure matrix), 4
 and sketches only what the grammar needs from them. Slice 2 has landed as
 `slice-2-collection-form.md` in this folder: it fills `set/` and closes R1 rows 3, 8
 and 16. Slice 5 has landed as `slice-5-display-forms.md`: angle
-brackets in plain text, short labels and state words.
+brackets in plain text, short labels and state words. Slice 4 has landed as
+`slice-4-carriers-and-hints.md`: extensible hint kinds, when a hint is followed, and
+a profile per carrier.
 
 Executable reference: `graph_uri_reference.py` in this folder
 (`python3 -I graph_uri_reference.py self-test`, stdlib only). It holds the golden
@@ -60,8 +62,8 @@ Rules the ABNF does not carry:
   dedupe keys store the identity form, never hints or fragments.
 - **Critical vs non-critical.** The version segment and the shape tokens are critical:
   an unknown one is rejected (`unknown_critical_shape`, `unsupported_critical_version`),
-  as in V1. In slice 1 the `via` kinds are a closed list too; slice 4 decides whether
-  unknown hint kinds are skipped instead of rejected.
+  as in V1. In slice 1 the `via` kinds were a closed list too; slice 4 makes them
+  extensible: an unknown well-formed kind is kept and skipped.
 - **Length.** The 8 KiB cap from #9117 applies. The portable identity forms are fixed
   length: 101 characters for an object, 185 for a chain head with an expected head.
 - **V1 is untouched.** `v1` URIs keep their meaning and their parser. A `v2` parser
@@ -119,9 +121,10 @@ This touches a settled ruling, so it is a proposal for Drew, not a decision (§9
 - **Hints** are `via=<kind>:<value>`, ordered, repeatable, untrusted and droppable.
   Kinds in slice 1: `broker:` (a broker name), `pkarr:` (z-base32 key), `bundle:`
   (a D4 bundle id), `https:` (a door). Because the name is a hash, a hostile hint can
-  waste time but cannot substitute content. Slice 4 adds per-carrier rules, the
+  waste time but cannot substitute content. Slice 4
+  (`slice-4-carriers-and-hints.md`) adds value rules per kind, per-carrier rules, the
   resolver privacy policy R1 asks for (following a hint tells its host someone is
-  resolving this name), and decides on `mailto:`.
+  resolving this name), and rejects a `mailto:` kind.
 - **Any other query parameter is rejected** (`undeclared_query_parameter`, as in
   #9117). That is how "no capability in a URI" is enforced: there is no place to put
   one. A carrier that needs access too, such as a QR invite, carries the URI and a
@@ -141,7 +144,7 @@ version 8. The equivalent Willow pinned entry needs version 11 in byte mode (R1)
 The QR form is a transport encoding, defined only for portable identity forms with no
 hints or fragment: the reader lower-cases the whole string and parses it normally.
 Non-portable forms are excluded because their namespace may be case-sensitive.
-Slice 4 covers paper and email survival in full.
+Slice 4 covers paper and email survival in full, and puts set URIs in byte mode.
 
 ## 7. Failure semantics, only as far as the grammar needs them (slice 3 owns the matrix)
 
@@ -211,8 +214,9 @@ Everything else in this record is the designer's call and can be changed by revi
   `supersede` never walked) and the "collect" question below.
 - Slice 3 writes the failure matrix against #13779's revocation decision points,
   starting from §7.
-- Slice 4 adds per-carrier hint rules, hint-kind extensibility, resolver privacy and
-  `mailto:`, with one worked URI per carrier.
+- Slice 4 (landed, `slice-4-carriers-and-hints.md`) adds per-carrier hint rules,
+  hint-kind extensibility and resolver privacy, rejects a `mailto:` kind, and gives one
+  worked URI per carrier.
 - Slice 5 (landed, `slice-5-display-forms.md`) hands D5 the display rules: angle
   brackets in plain text (RFC 3986 Appendix C), labels with the digest middle elided,
   and the `edited`, `removed`, `stale` and other state words the head form makes
