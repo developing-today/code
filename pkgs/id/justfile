@@ -36,7 +36,7 @@ alias check-all := check
 
 # CI-safe checks (read-only, no modifications) [bun]
 [group('check')]
-ci: cargo-fmt-check web-fmt-check cargo-check clippy-lint clippy-native-shell clippy-bevy-bridge web-lint test-sandbox test-native-shell test-tui-shell test-hw-shell test-bevy-bridge test-rust-examples test-web-unit test-web-typecheck roc-test doc build release
+ci: cargo-fmt-check web-fmt-check cargo-check clippy-lint clippy-native-shell clippy-bevy-bridge clippy-bevy-presenter web-lint test-sandbox test-native-shell test-tui-shell test-hw-shell test-bevy-bridge test-bevy-presenter test-rust-examples test-web-unit test-web-typecheck roc-test doc build release
     @echo "✓ CI checks passed!"
 
 # Auto-fix formatting and lint issues
@@ -177,6 +177,11 @@ clippy-native-shell:
 [group('lint')]
 clippy-bevy-bridge:
     cargo clippy -p id-bevy-bridge --all-targets -- -D warnings
+
+# Clippy for id-bevy-presenter (#13705): non-default workspace member, so the default-member clippy-lint never sees it.
+[group('lint')]
+clippy-bevy-presenter:
+    cargo clippy -p id-bevy-presenter --all-targets -- -D warnings
 
 # Fail when any production .rs file exceeds 2,500 production lines (#1411);
 # the companion self-test proves the guard fails, not just that it passes
@@ -328,6 +333,11 @@ test-hw-shell:
 [group('test')]
 test-bevy-bridge:
     cargo nextest run -p id-bevy-bridge
+
+# Run the id-bevy-presenter tests (#13705): the 2D presenter-client app against a world hosted in a separate process; non-default workspace member, so the default-member test recipes never run it.
+[group('test')]
+test-bevy-presenter:
+    cargo nextest run -p id-bevy-presenter
 
 # Run the Rust example-guest unit tests (#7904, #13656): plaza-sdk (examples/rust-world, 9 tests), rust-counter (examples/rust-counter, 2 tests), rust-cells (examples/rust-cells), rust-orbit (examples/rust-orbit; the #13606 Orbit Arcade guest), rust-colony (examples/rust-colony; the #13605 Colony guest) and rust-sketch (examples/rust-sketch; the literal-vector guest slice of #13608) are standalone crates outside the pkgs/id workspace, so the workspace test recipes never run them.
 [group('test')]

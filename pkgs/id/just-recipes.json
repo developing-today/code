@@ -1466,12 +1466,14 @@
         { "arguments": [], "recipe": "clippy-lint", "star": null },
         { "arguments": [], "recipe": "clippy-native-shell", "star": null },
         { "arguments": [], "recipe": "clippy-bevy-bridge", "star": null },
+        { "arguments": [], "recipe": "clippy-bevy-presenter", "star": null },
         { "arguments": [], "recipe": "web-lint", "star": null },
         { "arguments": [], "recipe": "test-sandbox", "star": null },
         { "arguments": [], "recipe": "test-native-shell", "star": null },
         { "arguments": [], "recipe": "test-tui-shell", "star": null },
         { "arguments": [], "recipe": "test-hw-shell", "star": null },
         { "arguments": [], "recipe": "test-bevy-bridge", "star": null },
+        { "arguments": [], "recipe": "test-bevy-presenter", "star": null },
         { "arguments": [], "recipe": "test-rust-examples", "star": null },
         { "arguments": [], "recipe": "test-web-unit", "star": null },
         { "arguments": [], "recipe": "test-web-typecheck", "star": null },
@@ -1513,6 +1515,19 @@
       "private": false,
       "quiet": false,
       "namepath": "clippy-bevy-bridge",
+      "shebang": false
+    },
+    "clippy-bevy-presenter": {
+      "attributes": [{ "group": "lint" }],
+      "body": [["cargo clippy -p id-bevy-presenter --all-targets -- -D warnings"]],
+      "dependencies": [],
+      "doc": "Clippy for id-bevy-presenter (#13705): non-default workspace member, so the default-member clippy-lint never sees it.",
+      "name": "clippy-bevy-presenter",
+      "parameters": [],
+      "priors": 0,
+      "private": false,
+      "quiet": false,
+      "namepath": "clippy-bevy-presenter",
       "shebang": false
     },
     "clippy-lint": {
@@ -2521,6 +2536,19 @@
       "private": false,
       "quiet": false,
       "namepath": "test-bevy-bridge",
+      "shebang": false
+    },
+    "test-bevy-presenter": {
+      "attributes": [{ "group": "test" }],
+      "body": [["cargo nextest run -p id-bevy-presenter"]],
+      "dependencies": [],
+      "doc": "Run the id-bevy-presenter tests (#13705): the 2D presenter-client app against a world hosted in a separate process; non-default workspace member, so the default-member test recipes never run it.",
+      "name": "test-bevy-presenter",
+      "parameters": [],
+      "priors": 0,
+      "private": false,
+      "quiet": false,
+      "namepath": "test-bevy-presenter",
       "shebang": false
     },
     "test-crate-integration": {

@@ -30,6 +30,7 @@ justfmt-check
 clippy-lint
 clippy-native-shell
 clippy-bevy-bridge
+clippy-bevy-presenter
 web-lint
 cargo-check
 prod-lines-check
@@ -37,6 +38,7 @@ test-unit
 test-crate-integration
 test-native-shell
 test-bevy-bridge
+test-bevy-presenter
 test-tui-shell
 test-hw-shell
 test-rust-examples

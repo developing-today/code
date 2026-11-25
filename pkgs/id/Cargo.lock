@@ -1139,6 +1139,7 @@ dependencies = [
  "bevy_reflect",
  "bevy_render",
  "bevy_shader",
+ "bevy_sprite_render",
  "bevy_transform",
  "bevy_utils",
  "bytemuck",
@@ -4930,6 +4931,18 @@ version = "0.1.0"
 dependencies = [
  "bevy_ecs",
  "proptest",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "id-bevy-presenter"
+version = "0.1.0"
+dependencies = [
+ "bevy",
+ "id-bevy-bridge",
+ "id-caps",
  "serde",
  "serde_json",
  "thiserror 2.0.21",
