@@ -54,7 +54,7 @@ use id_core::rejection::Reason;
 use id_core::waiting::AuthorKey;
 use id_store::chain::Event;
 use id_store::chat::CHAT_MESSAGE_KIND;
-use id_store::event_rows::RowWrite;
+use id_store::event_rows::RowRead;
 
 /// One stored event, with the membership action it carries when it is a group operation.
 #[derive(Clone, Debug)]
@@ -606,7 +606,7 @@ fn causal_order(nodes: &[Node], position: &HashMap<Hash, usize>) -> Result<Vec<u
 pub(super) type Loaded = (Vec<Stored>, HashMap<AuthorKey, SeqNum>, Vec<Event>);
 
 /// Reads every stored event with its action, the fork points, and the kept fork proof headers.
-pub(super) fn load<T: RowWrite>(rows: &mut T) -> Result<Loaded, StoreError> {
+pub(super) fn load<T: RowRead>(rows: &mut T) -> Result<Loaded, StoreError> {
     let actions: HashMap<_, _> = rows.scan_all("actions")?.into_iter().collect();
     let device_ops: HashMap<_, _> = rows.scan_all("device_ops")?.into_iter().collect();
     let mut stored = Vec::new();

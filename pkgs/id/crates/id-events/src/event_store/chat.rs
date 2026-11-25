@@ -125,15 +125,8 @@ impl EventStore {
     ///
     /// Returns a redb error if the read fails, or [`StoreError::Corrupt`].
     pub fn group_policy(&self, group: &Hash) -> Result<Option<Policy>, StoreError> {
-        let txn = self.db.begin_read()?;
-        let (stored, forks, headers) = {
-            let events = txn.open_table(EVENTS)?;
-            let actions = txn.open_table(ACTIONS)?;
-            let device_ops = txn.open_table(DEVICE_OPS)?;
-            let forks = txn.open_table(FORKS)?;
-            let proof_headers = txn.open_table(PROOF_HEADERS)?;
-            resolve::load(&events, &actions, &device_ops, &forks, &proof_headers)?
-        };
+        let mut txn = self.db.begin_read()?;
+        let (stored, forks, headers) = resolve::load(&mut txn)?;
         let residue = super::compaction::load_residue_read(&txn)?;
         let resolved = resolve::resolve(&stored, &forks, &headers, &residue)?;
         Ok(resolved
@@ -161,15 +154,8 @@ impl EventStore {
         group: &Hash,
         reader: &AuthorKey,
     ) -> Result<Vec<ChatRecord>, StoreError> {
-        let txn = self.db.begin_read()?;
-        let (stored, forks, headers) = {
-            let events = txn.open_table(EVENTS)?;
-            let actions = txn.open_table(ACTIONS)?;
-            let device_ops = txn.open_table(DEVICE_OPS)?;
-            let forks = txn.open_table(FORKS)?;
-            let proof_headers = txn.open_table(PROOF_HEADERS)?;
-            resolve::load(&events, &actions, &device_ops, &forks, &proof_headers)?
-        };
+        let mut txn = self.db.begin_read()?;
+        let (stored, forks, headers) = resolve::load(&mut txn)?;
         let residue = super::compaction::load_residue_read(&txn)?;
         let resolved = resolve::resolve(&stored, &forks, &headers, &residue)?;
         if !resolve::roster_of(&resolved, group).contains(reader) {
