@@ -40,6 +40,8 @@ import {
 
 /** The registry fleet-kv's namespaces live in. */
 export const KV_REGISTRY = "fleet-kv-central";
+/** The row envelope of a blob reference (design §11, blob.rs REF_ENVELOPE). */
+export const KV_REF_ENVELOPE = "kv:ref-v1";
 
 /** The object store under the door: the slice of R2 it uses. */
 export interface KvBlobBucket {
@@ -433,13 +435,14 @@ function base64Text(b64: string): string {
   return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
 }
 
-/** The key's live head value as text, or null when absent or masked. */
+/** The key's live head value as text when its envelope is a blob
+ * reference, or null when absent, masked or inline. */
 async function liveHeadText(
   primary: NonNullable<AuthDeps["kvPrimary"]>,
   address: { scope: string; registry: string; namespace: string; key: string },
 ): Promise<string | null> {
-  const read = KV_CATALOG.statements.find((s) => s.name === "head.read");
-  if (!read) throw new FailClosed(500, "kv_catalog_incomplete", "the catalogue has no head.read");
+  const read = KV_CATALOG.statements.find((s) => s.name === "head.read_enveloped");
+  if (!read) throw new FailClosed(500, "kv_catalog_incomplete", "the catalogue has no head.read_enveloped");
   const [rows] = await runKvTransaction(primary, [
     {
       sql: read.sql,
@@ -455,7 +458,10 @@ async function liveHeadText(
   if (!row) return null;
   const state = row[1] as { type?: string; value?: string } | undefined;
   const value = row[2] as { type?: string; base64?: string; value?: string } | undefined;
-  if (state?.value !== "live" || !value) return null;
+  const envelope = row[5] as { type?: string; value?: string } | undefined;
+  // Only a head whose row envelope is a reference holds one (design §11);
+  // inline bytes that spell a reference are still inline bytes.
+  if (state?.value !== "live" || !value || envelope?.value !== KV_REF_ENVELOPE) return null;
   try {
     if (value.type === "blob" && typeof value.base64 === "string") return base64Text(value.base64);
     if (value.type === "text" && typeof value.value === "string") return value.value;

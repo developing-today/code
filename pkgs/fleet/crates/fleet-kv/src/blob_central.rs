@@ -142,8 +142,8 @@ pub fn publish_cas_statements(
     args.push(central::text(&reference.digest));
     vec![
         Statement::numbered(central::BLOB_RECEIPT_INSERT, &args),
-        Statement::numbered(central::CONFLICT_INSERT, &args),
-        Statement::numbered(central::VERSION_INSERT, &args),
+        Statement::numbered(central::BLOB_CONFLICT_INSERT, &args),
+        Statement::numbered(central::BLOB_VERSION_INSERT, &args),
         Statement::numbered(central::HEAD_UPSERT, &args),
         Statement::numbered(BLOB_REF_INSERT, &args),
         Statement::numbered(central::RECEIPT_READ, &args),
@@ -300,6 +300,58 @@ mod tests {
             }) => version,
             other => panic!("expected a commit, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn blob_publish_cas_heads_carry_the_reference_envelope() {
+        let primary = primary();
+        let reference = reference(b"a large value");
+        mark_published(&primary, &reference).unwrap();
+        let first = intent("k", 0, &reference, "1");
+        committed(publish_cas(&primary, &first, &reference).unwrap());
+        let head = central::head(&primary, &first.address).unwrap().unwrap();
+        assert_eq!(head.envelope, blob::REF_ENVELOPE);
+        assert_eq!(
+            head.envelope().unwrap(),
+            blob::Envelope::Ref(reference.clone())
+        );
+        // A plain CAS over it is inline bytes again, even when those bytes
+        // spell a reference: the envelope, not the bytes, decides.
+        let plain = Intent {
+            expected_version: 1,
+            idempotency: IdempotencyKey {
+                outbox_id: "2".into(),
+                ..first.idempotency.clone()
+            },
+            ..first.clone()
+        };
+        central::cas(&primary, &plain).unwrap();
+        let head = central::head(&primary, &first.address).unwrap().unwrap();
+        assert_eq!(head.envelope, blob::RAW_ENVELOPE);
+        assert_eq!(
+            head.envelope().unwrap(),
+            blob::Envelope::Raw(reference.encode())
+        );
+        // A lost publish-CAS keeps its body as a reference proposal.
+        let stale = intent("k", 0, &reference, "3");
+        let PublishCas::Decided(Receipt {
+            outcome: Outcome::Conflict { conflict_id, .. },
+            ..
+        }) = publish_cas(&primary, &stale, &reference).unwrap()
+        else {
+            panic!("expected a conflict");
+        };
+        let rows = primary
+            .transaction_unlisted(&[Statement::numbered(
+                "SELECT proposed_envelope FROM kv_conflicts WHERE id = ?1",
+                &[Value::Integer(conflict_id)],
+            )])
+            .unwrap();
+        assert_eq!(rows[0].rows[0][0].as_str(), Some(blob::REF_ENVELOPE));
+        // Every head of the scope reads with its envelope.
+        let listed =
+            central::heads(&primary, "shared:team", central::REGISTRY_ID, "files").unwrap();
+        assert_eq!(listed[0].1.envelope, blob::RAW_ENVELOPE);
     }
 
     #[test]
