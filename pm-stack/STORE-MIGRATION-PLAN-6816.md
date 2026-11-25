@@ -133,7 +133,7 @@ two active writers" is mechanical instead of advisory:
   record (`--backup-record-file`) describes a complete generation with a
   valid archive identity and verified local, R2, and Drive copies, finished
   no more than 36 hours ago by default (`--max-backup-age-hours` can set a
-  stricter window). That 36-hour archive bound is not sufficient to claim Kaneo's 1-hour RPO: promotion additionally requires a separately verified Kaneo recovery point no older than 1 hour, or the window record must report that RPO as unmet and must not describe the cutover as meeting it. `pm-stack/scripts/fence-check.sh` reports **FENCED** (fail
+  stricter window). That 36-hour archive bound is not sufficient to claim Kaneo's 1-hour RPO: promotion additionally requires a separately verified Kaneo recovery point no older than 1 hour; otherwise promotion is refused until that recovery point is independently verified. `pm-stack/scripts/fence-check.sh` reports **FENCED** (fail
   closed on anything unreadable) **and** the target's exact table count and row
   count equal the source's. A refused promotion touches no store. Only a pass
   writes a cutover receipt (fence verdict, both counts, verdict line) with
