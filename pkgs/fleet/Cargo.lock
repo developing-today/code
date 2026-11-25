@@ -889,10 +889,13 @@ dependencies = [
  "atlas-core",
  "atlas-embed",
  "atlas-proto",
+ "flate2",
  "fleet-config",
+ "libc",
  "proptest",
  "serde",
  "serde_json",
+ "sha2",
  "ureq",
 ]
 
