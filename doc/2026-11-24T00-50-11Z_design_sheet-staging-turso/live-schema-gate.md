@@ -69,4 +69,31 @@ review the real writer's conflict target/update set, and observe live consumers.
 Oracle test file: `scripts/tests/test_inspect_sheet_staging_schema.py`.
 Command: `python3 -I -m unittest discover -s scripts/tests -p test_inspect_sheet_staging_schema.py -v`.
 Only focused tests are requested; no full Python suite or production test.
-Execution receipts follow below after dispatched outcomes are observed.
+Execution receipts (2026-11-25 UTC):
+
+- Failing-first commit `1812db7e020` was pushed before implementation.
+  Fleet dry-run selected `fleet-personal` (GitHub Actions); dispatched run
+  [dezren39/fleet#45528581726](https://github.com/dezren39/fleet/actions/runs/45528581726),
+  handle `fp_d466ef45a63809193c4dd50acd57c064`, completed **failure**.
+  At 01:54:54Z the focused discovery command reported `Ran 1 test in 0.000s`,
+  `FAILED (errors=1)`: import raised `FileNotFoundError` for the not-yet-existing
+  `target/scripts/inspect_sheet_staging_schema.py`. This is the expected red,
+  not an infrastructure failure or a production-schema observation.
+- Implementation/review-fix commit
+  `3416fd2e7b559e4d1dfe061afc5d9c14c1cade5a` is the pinned green-test input.
+  Initial green run [45529363441](https://github.com/dezren39/fleet/actions/runs/45529363441)
+  (handle `fp_018a8de5aa55b38d66c5fdb3a5f85b4f`, `fleet-personal`) completed
+  **failure before tests**: Actions checkout treated the abbreviated SHA
+  `3416fd2e7b5` as a branch/tag glob and fetch failed at 01:59:51Z. Retry uses
+  the full 40-character SHA, unchanged code.
+- Full-SHA retry [dezren39/fleet#45529947275](https://github.com/dezren39/fleet/actions/runs/45529947275),
+  handle `fp_aa5de8ec6fbf49eee1936c1cf1e465a9`, completed **success** on
+  `fleet-personal` (GitHub Actions). The runner printed
+  `Target HEAD: 3416fd2e7b559e4d1dfe061afc5d9c14c1cade5a`; at 02:03:12Z the
+  exact focused command reported `Ran 9 tests in 0.149s`, `OK`. All nine named
+  oracles passed, including independent identity/nullability checks and the
+  faithful 0016 runtime-findings fixture without synthetic guards.
+  No output artifact handoff is needed for this stdlib-only test; the runner
+  reported its dependency cache saved. These fixture tests prove inspector behavior,
+  not deployed-schema compatibility or any live writer/reader gate.
+- `git diff --check` passed locally. No local test fallback or full suite ran.
