@@ -15,6 +15,9 @@
 //! - [`host`]: host mode's supervisor state for #10693 (packet P1) — the
 //!   lifecycle host file, transitions, rebuild, per-state census, and
 //!   the replaying supervisor over one data root.
+//! - [`creator_index`]: the author-scoped local index over the author's
+//!   own worlds and programs, rebuilt from journals and records, with
+//!   build time and staleness (#13741).
 //! - [`program_bundle`]: the signed single-file program bundle (#8280,
 //!   design D1-D3): export, verify and fork, fully offline.
 //! - [`program_publish_state`]: draft / published journal facts per
@@ -54,6 +57,7 @@ pub use id_core::port;
 pub mod account_charge;
 pub mod blob_gate;
 pub mod chat_anchor_render;
+pub mod creator_index;
 pub mod groups;
 pub mod guest_burn;
 pub mod host;
