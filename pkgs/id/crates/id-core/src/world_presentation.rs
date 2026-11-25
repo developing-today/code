@@ -2603,11 +2603,13 @@ mod tests {
     #[test]
     fn paint_primary_refuses_invalid_screens() {
         let valid = grid(2, 1, " ");
+        // A stored cell count that disagrees with the declared
+        // dimensions is not a valid screen.
         let invalid = ScreenSurface {
-            version: 2,
+            version: 1,
             width: 2,
             height: 1,
-            cells: vec![cell(" "), cell(" ")],
+            cells: vec![cell(" ")],
         };
         assert_eq!(valid.paint_primary(&invalid), None);
         assert_eq!(invalid.paint_primary(&valid), None);
