@@ -204,10 +204,14 @@ tap_text() {
 # screen (run 45573336528's dump ends at the visible asks, the
 # question nowhere in it). A swipe up, a breath, another look.
 wait_text_scrolling() {
-  local tries=0
-  until screen_text | grep -qF "$1"; do
+  local tries=0 texts
+  until texts="$(screen_text)" && printf '%s' "$texts" | grep -qF "$1"; do
     tries=$((tries + 1))
     [ "$tries" -gt 10 ] && return 1
+    # Say where the page stands, so a stuck scroll is diagnosable:
+    # run 45575646271 scrolled ten times and the failure dump still
+    # showed the top of the page.
+    echo "offline-check: scroll $tries: page shows '$(printf '%s' "$texts" | head -3 | tr '\n' ' ')' … '$(printf '%s' "$texts" | tail -2 | tr '\n' ' ')'" >&2
     adb shell input swipe 540 1600 540 600 300 >/dev/null 2>&1 || true
     sleep 2
   done
