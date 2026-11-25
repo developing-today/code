@@ -30,12 +30,12 @@ only, on three triggers. Attribution and the chain are never destroyed.**
 
 ### 1. Triggers
 
-| Trigger | Who may invoke | Effect |
-|---|---|---|
-| Legal erasure (a verified legal obligation to delete personal data) | The operator of the store holding the bytes | `redact` then `erase` |
-| Author's own request for their own post body | The post's author (its signing identity) | `redact` then `erase` |
-| Unlawful content (material the operator may not keep) | The operator | `redact` then `erase` |
-| Community or object-owner takedown | Per #5677 §7 | `redact` only (tombstone, body kept) |
+| Trigger                                                             | Who may invoke                              | Effect                               |
+| ------------------------------------------------------------------- | ------------------------------------------- | ------------------------------------ |
+| Legal erasure (a verified legal obligation to delete personal data) | The operator of the store holding the bytes | `redact` then `erase`                |
+| Author's own request for their own post body                        | The post's author (its signing identity)    | `redact` then `erase`                |
+| Unlawful content (material the operator may not keep)               | The operator                                | `redact` then `erase`                |
+| Community or object-owner takedown                                  | Per #5677 §7                                | `redact` only (tombstone, body kept) |
 
 The object owner cannot erase someone else's post: sovereignty (#5677 §7)
 covers forks and visibility, not destroying another author's words. A
@@ -62,7 +62,7 @@ commitment stays in the chain, so:
 - **Invariant 3 holds.** The chain still verifies end to end: no entry's
   canonical bytes change.
 - **Invariant 4 is refined, not broken.** A `redact` entry keeps the removed
-  body's *commitment* (which is what "the removed body's hash" now means) and
+  body's _commitment_ (which is what "the removed body's hash" now means) and
   the actor. After erasure, nobody, including the operator, can confirm a
   candidate body against it.
 
@@ -103,7 +103,7 @@ are removed.
 ### 5. Composition with #5677
 
 #5677 lists "deleting history" as a non-goal. This decision keeps it: the
-record of *who* did *what kind* of thing *when* is never deleted. What can be
+record of _who_ did _what kind_ of thing _when_ is never deleted. What can be
 destroyed is the content of one body, after it has been redacted, on one of
 three named triggers, with the destruction itself recorded. Tombstoning
 (#5834) stays the only community takedown tool.
