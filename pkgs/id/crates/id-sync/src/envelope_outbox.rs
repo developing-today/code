@@ -11,6 +11,7 @@ use std::fs::File;
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use anyhow::{Context, Result, anyhow, ensure};
 use serde::{Deserialize, Serialize};
@@ -21,7 +22,7 @@ use iroh_tickets::endpoint::EndpointTicket;
 
 use crate::artifact::{self, SignedArtifact};
 use crate::envelope::Envelope;
-use crate::envelope_net::deliver;
+use crate::envelope_net::{EnvelopeBoundaryGate, deliver};
 
 /// Deliveries attempted before an envelope is given up.
 pub const MAX_ATTEMPTS: u32 = 12;
@@ -128,6 +129,7 @@ pub struct Outbox {
     path: PathBuf,
     entries: BTreeMap<String, Entry>,
     finished_order: VecDeque<String>,
+    boundary_gate: Option<Arc<dyn EnvelopeBoundaryGate>>,
 }
 
 impl Outbox {
@@ -142,6 +144,7 @@ impl Outbox {
             path: path.into(),
             entries: BTreeMap::new(),
             finished_order: VecDeque::new(),
+            boundary_gate: None,
         };
         let bytes = match fs::read(&outbox.path) {
             Ok(bytes) => bytes,
@@ -218,7 +221,20 @@ impl Outbox {
         self.enqueue_payload(&Payload::Artifact(artifact), target)
     }
 
+    /// Install the runtime boundary gate for new payloads and every retry.
+    /// The gate is not persisted with the outbox journal.
+    pub fn set_boundary_gate(&mut self, gate: Arc<dyn EnvelopeBoundaryGate>) {
+        self.boundary_gate = Some(gate);
+    }
+
     fn enqueue_payload(&mut self, payload: &Payload, target: &str) -> Result<()> {
+        if let Some(outcome) = self.boundary_outcome(payload) {
+            ensure!(
+                outcome.is_allow(),
+                "outbox payload refused by boundary ({})",
+                outcome.name()
+            );
+        }
         let key = payload.key(target);
         ensure!(!self.entries.contains_key(&key), "{key} is already queued");
         let record = match payload {
@@ -232,6 +248,18 @@ impl Outbox {
             },
         };
         self.commit(record)
+    }
+
+    fn boundary_outcome(
+        &self,
+        payload: &Payload,
+    ) -> Option<id_core::boundary_surfaces::FrameworkOutcome> {
+        self.boundary_gate.as_ref().map(|gate| match payload {
+            Payload::Envelope(envelope) => {
+                gate.check_envelope(&envelope.from, Some(&envelope.audience))
+            }
+            Payload::Artifact(artifact) => gate.check_envelope(&artifact.author, None),
+        })
     }
 
     /// The IDs of envelopes that are queued and due at `now`.
@@ -262,7 +290,10 @@ impl Outbox {
         let mut denied = Vec::new();
         for id in self.due(now) {
             if let Some(entry) = self.entries.get(&id) {
-                if check(entry) {
+                let boundary_allows = self
+                    .boundary_outcome(&entry.payload)
+                    .is_none_or(|outcome| outcome.is_allow());
+                if check(entry) && boundary_allows {
                     admitted.push(id);
                 } else {
                     denied.push(id);
@@ -697,6 +728,22 @@ mod tests {
     use super::*;
     use crate::envelope::EnvelopeKind;
 
+    #[derive(Debug)]
+    struct DenyEnvelopeBoundary;
+
+    impl EnvelopeBoundaryGate for DenyEnvelopeBoundary {
+        fn check_envelope(
+            &self,
+            _: &str,
+            _: Option<&str>,
+        ) -> id_core::boundary_surfaces::FrameworkOutcome {
+            id_core::boundary_surfaces::FrameworkOutcome::Deny {
+                placement: Vec::new(),
+                assurance: Vec::new(),
+            }
+        }
+    }
+
     const NOW: u64 = 1_000_000_000;
     const MINUTE: u64 = 60_000;
 
@@ -719,6 +766,35 @@ mod tests {
 
     fn path(dir: &tempfile::TempDir) -> PathBuf {
         dir.path().join("outbox.jsonl")
+    }
+
+    #[test]
+    fn envelope_boundary_denial_prevents_outbox_enqueue() {
+        // Oracle: a denied BridgeFederation outcome leaves no durable outbox
+        // record for the outbound envelope.
+        let dir = tempfile::TempDir::new().unwrap();
+        let mut outbox = Outbox::open(path(&dir)).unwrap();
+        outbox.set_boundary_gate(Arc::new(DenyEnvelopeBoundary));
+
+        assert!(outbox.enqueue(&target(), envelope("denied")).is_err());
+        assert_eq!(outbox.entries().count(), 0);
+    }
+
+    #[test]
+    fn envelope_boundary_is_rechecked_before_each_retry() {
+        // Oracle: after an envelope is queued, a newly denied boundary keeps
+        // it queued and out of the admitted send set.
+        let dir = tempfile::TempDir::new().unwrap();
+        let mut outbox = Outbox::open(path(&dir)).unwrap();
+        let target = target();
+        let envelope = envelope("queued");
+        let id = Payload::Envelope(envelope.clone()).key(&target);
+        outbox.enqueue(&target, envelope).unwrap();
+        outbox.set_boundary_gate(Arc::new(DenyEnvelopeBoundary));
+
+        let (admitted, denied) = outbox.due_checked(NOW, |_| true);
+        assert!(admitted.is_empty());
+        assert_eq!(denied, vec![id]);
     }
 
     fn queued_line(id: &str) -> String {

@@ -946,6 +946,7 @@ pub struct WorldService {
     pub(crate) runtime: crate::world_limits::RuntimeLimits,
     pub(crate) mail: Option<Arc<dyn crate::directory_mail::MailSink>>,
     pub(crate) outbox: Option<Arc<Mutex<crate::envelope_outbox::Outbox>>>,
+    pub(crate) envelope_boundary_gate: Option<Arc<dyn id_sync::envelope_net::EnvelopeBoundaryGate>>,
     pub(crate) profile_operation: Arc<Mutex<()>>,
     /// The world's host metrics registry (F11.7), shared with the actor:
     /// the session layer records the frame bytes it sends into it.

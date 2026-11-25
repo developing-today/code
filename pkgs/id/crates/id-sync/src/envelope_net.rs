@@ -6,6 +6,7 @@
 //! [`Reply`]. The payload's signature is what makes it trusted, not the iroh
 //! node that delivered it.
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
@@ -17,6 +18,7 @@ use iroh::{
 use serde::{Deserialize, Serialize};
 
 use id_core::Refusal;
+use id_core::boundary_surfaces::FrameworkOutcome;
 use id_core::connectivity::connect;
 
 use crate::envelope::Envelope;
@@ -48,6 +50,14 @@ pub enum Reply {
         /// Why it could not be applied now.
         message: String,
     },
+}
+
+/// Application boundary evaluator adapter for direct envelope ingress and
+/// outbox enqueue/retry. The subject is the signed envelope author; `world`
+/// is its declared audience when the protocol carries one.
+pub trait EnvelopeBoundaryGate: Send + Sync + std::fmt::Debug {
+    /// Check bridge/federation transport for a subject and optional world.
+    fn check_envelope(&self, subject: &str, world: Option<&str>) -> FrameworkOutcome;
 }
 
 /// Sends `envelope` to the node at `target`, and says whether it is done.
@@ -112,22 +122,35 @@ async fn exchange(
 #[derive(Clone, Debug)]
 pub struct EnvelopeProtocol<H> {
     hub: H,
+    boundary_gate: Option<Arc<dyn EnvelopeBoundaryGate>>,
 }
 
 impl<H: SessionHost> EnvelopeProtocol<H> {
     /// Serve the friend envelopes of every world in `hub`.
     #[must_use]
     pub const fn new(hub: H) -> Self {
-        Self { hub }
+        Self {
+            hub,
+            boundary_gate: None,
+        }
+    }
+
+    /// Install the application boundary evaluator adapter for this wire path.
+    #[must_use]
+    pub fn with_boundary_gate(mut self, gate: Arc<dyn EnvelopeBoundaryGate>) -> Self {
+        self.boundary_gate = Some(gate);
+        self
     }
 }
 
 impl<H: SessionHost> ProtocolHandler for EnvelopeProtocol<H> {
     async fn accept(&self, conn: Connection) -> Result<(), AcceptError> {
         let hub = self.hub.clone();
+        let boundary_gate = self.boundary_gate.clone();
         answer_frames(&conn, move |body| {
             let hub = hub.clone();
-            async move { receive(&hub, &body).await }
+            let boundary_gate = boundary_gate.clone();
+            async move { receive_with_boundary_gate(&hub, boundary_gate.as_deref(), &body).await }
         })
         .await
     }
@@ -181,7 +204,11 @@ where
     Ok(())
 }
 
-async fn receive<H: SessionHost>(hub: &H, body: &[u8]) -> Reply {
+async fn receive_with_boundary_gate<H: SessionHost>(
+    hub: &H,
+    boundary_gate: Option<&dyn EnvelopeBoundaryGate>,
+    body: &[u8],
+) -> Reply {
     let envelope: Envelope = match crate::checked_json::from_slice_unique(body) {
         Ok(envelope) => envelope,
         Err(error) => {
@@ -190,6 +217,19 @@ async fn receive<H: SessionHost>(hub: &H, body: &[u8]) -> Reply {
             };
         }
     };
+    if let Err(error) = envelope.verify() {
+        return Reply::Refused {
+            message: format!("invalid envelope: {error:#}"),
+        };
+    }
+    if let Some(boundary_gate) = boundary_gate {
+        let outcome = boundary_gate.check_envelope(&envelope.from, Some(&envelope.audience));
+        if !outcome.is_allow() {
+            return Reply::Refused {
+                message: format!("envelope boundary refused ({})", outcome.name()),
+            };
+        }
+    }
     match hub.receive_envelope(envelope).await {
         Ok(Availability::Busy) => Reply::Retry {
             message: "the server is busy; try again".to_owned(),
@@ -206,6 +246,11 @@ async fn receive<H: SessionHost>(hub: &H, body: &[u8]) -> Reply {
             message: format!("{error:#}"),
         },
     }
+}
+
+#[cfg(test)]
+async fn receive<H: SessionHost>(hub: &H, body: &[u8]) -> Reply {
+    receive_with_boundary_gate(hub, None, body).await
 }
 
 #[cfg(test)]
@@ -226,6 +271,7 @@ mod tests {
     use tokio::sync::Mutex;
 
     use super::*;
+    use crate::host::UnreachedHost;
     use id_core::connectivity::silent::{
         endpoint_with_silent_lookup, unanswered_addr, unanswered_id,
     };
@@ -567,5 +613,27 @@ mod tests {
             NOW,
         )
         .unwrap()
+    }
+
+    #[derive(Debug)]
+    struct DenyEnvelopeBoundary;
+
+    impl EnvelopeBoundaryGate for DenyEnvelopeBoundary {
+        fn check_envelope(&self, _: &str, _: Option<&str>) -> FrameworkOutcome {
+            FrameworkOutcome::Deny {
+                placement: Vec::new(),
+                assurance: Vec::new(),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn boundary_denial_refuses_envelope_before_host_receive() {
+        // Oracle: a denied BridgeFederation outcome returns Refused and the
+        // UnreachedHost proves no envelope reached persistence.
+        let body = serde_json::to_vec(&test_envelope()).unwrap();
+        let reply =
+            receive_with_boundary_gate(&UnreachedHost, Some(&DenyEnvelopeBoundary), &body).await;
+        assert!(matches!(reply, Reply::Refused { .. }));
     }
 }

@@ -166,6 +166,7 @@ impl WorldService {
             runtime: crate::world_limits::RuntimeLimits::default(),
             mail: None,
             outbox: None,
+            envelope_boundary_gate: None,
             profile_operation: Arc::new(Mutex::new(())),
             next_session_id: Arc::new(std::sync::atomic::AtomicU64::new(1)),
             resume_baselines: Arc::new(Mutex::new(super::resume::BaselineCache::default())),
@@ -413,10 +414,25 @@ impl WorldService {
         self
     }
 
+    /// Check direct envelope egress before it is queued and again at each
+    /// retry through this service's outbox.
+    #[must_use]
+    pub fn with_envelope_boundary_gate(
+        mut self,
+        gate: Arc<dyn id_sync::envelope_net::EnvelopeBoundaryGate>,
+    ) -> Self {
+        self.envelope_boundary_gate = Some(gate);
+        self
+    }
+
     /// Queue envelopes for other servers in this outbox. Without one, remote
     /// friend actions are refused.
     #[must_use]
     pub fn with_outbox(mut self, outbox: crate::envelope_outbox::Outbox) -> Self {
+        let mut outbox = outbox;
+        if let Some(gate) = &self.envelope_boundary_gate {
+            outbox.set_boundary_gate(Arc::clone(gate));
+        }
         self.outbox = Some(Arc::new(Mutex::new(outbox)));
         self
     }

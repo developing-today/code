@@ -948,6 +948,7 @@ struct ServeWorlds {
     admin_token: Option<String>,
     boundary_config: Option<crate::server_config::Boundaries>,
     boundary_server: String,
+    envelope_boundary_gate: Option<Arc<dyn id_sync::envelope_net::EnvelopeBoundaryGate>>,
     blobs: iroh_blobs::api::Store,
     docs: Docs,
     checkpoint_every: u64,
@@ -1012,6 +1013,7 @@ impl ServeWorlds {
             ..WorldLimits::default()
         };
         let runtime = self.runtime;
+        let envelope_boundary_gate = self.envelope_boundary_gate.clone();
         // Until the serving process has live placement evidence sources, an
         // enabled boundary receives no claims and therefore fails closed.
         let boundary_gate = self.boundary_config.as_ref().map(|boundaries| {
@@ -1030,12 +1032,17 @@ impl ServeWorlds {
             let mail = self.mail.clone();
             let source_only = self.source_only;
             let trusted_module_keys = self.trusted_module_keys.clone();
+            let envelope_boundary_gate = envelope_boundary_gate.clone();
             move |handle| {
                 let service = WorldService::new(handle, admin_token)
                     .with_blob_store(blobs)
                     .with_runtime_limits(runtime)
                     .with_source_only(source_only)
                     .with_module_trust_keys(trusted_module_keys);
+                let service = match envelope_boundary_gate {
+                    Some(gate) => service.with_envelope_boundary_gate(gate),
+                    None => service,
+                };
                 match &mail {
                     Some(sink) => service.with_mail(Arc::clone(sink)),
                     None => service,
@@ -1360,6 +1367,15 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
         }
         None => None,
     };
+    #[cfg(feature = "world")]
+    let envelope_boundary_gate: Option<Arc<dyn id_sync::envelope_net::EnvelopeBoundaryGate>> =
+        started_server_config.as_ref().map(|started| {
+            Arc::new(crate::boundary_gate::ServerEnvelopeBoundaryGate::new(
+                started.config.boundaries().clone(),
+                node_id.to_string(),
+                Arc::new(crate::boundary_evidence::AppEvidenceVerifier::default()),
+            )) as Arc<dyn id_sync::envelope_net::EnvelopeBoundaryGate>
+        });
     // #5119 (PR #8356 review): a durable world's live directory is
     // its own `.id-worlds/<name>/directory.jsonl`, not the directory
     // beside the groups log that slice 3 persists into, so seed the
@@ -1700,6 +1716,7 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
                 .as_ref()
                 .map(|started| started.config.boundaries().clone()),
             boundary_server: node_id.to_string(),
+            envelope_boundary_gate: envelope_boundary_gate.clone(),
             blobs: store_handle.clone(),
             docs: docs.clone(),
             checkpoint_every: world_checkpoint_every,
@@ -1870,27 +1887,31 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
     };
     #[cfg(feature = "world")]
     let router_builder = match (world_hub.as_ref(), world_protocol) {
-        (Some(hub), Some(world_protocol)) => router_builder
-            .accept(id_worlds::world_net::WORLD_ALPN, world_protocol)
-            .accept(
-                id_worlds::world_replication_net::REPLICATION_ALPN,
-                id_worlds::world_replication_net::WorldReplicationProtocol::new(
-                    hub.clone(),
-                    ed25519_dalek::SigningKey::from_bytes(&key.to_bytes()),
-                ),
-            )
-            .accept(
-                id_sync::envelope_net::ENVELOPE_ALPN,
-                id_sync::envelope_net::EnvelopeProtocol::new(hub.clone()),
-            )
-            .accept(
-                id_sync::artifact::PUSH_ALPN,
-                id_sync::artifact::ArtifactPushProtocol::new(hub.clone()),
-            )
-            .accept(
-                id_sync::artifact::PULL_ALPN,
-                id_sync::artifact::ArtifactPullProtocol::new(hub.clone()),
-            ),
+        (Some(hub), Some(world_protocol)) => {
+            let envelope_protocol = id_sync::envelope_net::EnvelopeProtocol::new(hub.clone());
+            let envelope_protocol = match &envelope_boundary_gate {
+                Some(gate) => envelope_protocol.with_boundary_gate(Arc::clone(gate)),
+                None => envelope_protocol,
+            };
+            router_builder
+                .accept(id_worlds::world_net::WORLD_ALPN, world_protocol)
+                .accept(
+                    id_worlds::world_replication_net::REPLICATION_ALPN,
+                    id_worlds::world_replication_net::WorldReplicationProtocol::new(
+                        hub.clone(),
+                        ed25519_dalek::SigningKey::from_bytes(&key.to_bytes()),
+                    ),
+                )
+                .accept(id_sync::envelope_net::ENVELOPE_ALPN, envelope_protocol)
+                .accept(
+                    id_sync::artifact::PUSH_ALPN,
+                    id_sync::artifact::ArtifactPushProtocol::new(hub.clone()),
+                )
+                .accept(
+                    id_sync::artifact::PULL_ALPN,
+                    id_sync::artifact::ArtifactPullProtocol::new(hub.clone()),
+                )
+        }
         _ => router_builder,
     };
     #[cfg(all(feature = "world", feature = "ssh"))]

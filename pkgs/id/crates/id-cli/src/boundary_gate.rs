@@ -167,6 +167,47 @@ impl id_sync::relay_ingest::RelayBoundaryGate for ServerBoundaryGate {
     }
 }
 
+/// Server-config-backed boundary adapter for direct envelope ingress and
+/// outbox enqueue/retry. The envelope audience supplies the world scope.
+#[derive(Debug)]
+pub struct ServerEnvelopeBoundaryGate {
+    boundaries: Boundaries,
+    server: String,
+    verifier: Arc<crate::boundary_evidence::AppEvidenceVerifier>,
+}
+
+impl ServerEnvelopeBoundaryGate {
+    /// Create the envelope adapter from the loaded config for this server.
+    #[must_use]
+    pub fn new(
+        boundaries: Boundaries,
+        server: String,
+        verifier: Arc<crate::boundary_evidence::AppEvidenceVerifier>,
+    ) -> Self {
+        Self {
+            boundaries,
+            server,
+            verifier,
+        }
+    }
+}
+
+impl id_sync::envelope_net::EnvelopeBoundaryGate for ServerEnvelopeBoundaryGate {
+    fn check_envelope(&self, subject: &str, world: Option<&str>) -> FrameworkOutcome {
+        let gate = ServerBoundaryGate::without_hop_evidence(
+            self.boundaries.clone(),
+            self.server.clone(),
+            world.map(str::to_owned),
+            Arc::clone(&self.verifier),
+        );
+        <ServerBoundaryGate as BoundaryGate>::check(
+            &gate,
+            EnforcementPoint::BridgeFederation,
+            subject,
+        )
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
