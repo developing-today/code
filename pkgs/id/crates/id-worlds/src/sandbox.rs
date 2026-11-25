@@ -128,6 +128,60 @@ impl CallMetrics {
     }
 }
 
+/// How many compiled guest modules [`compiled_module`] keeps. Unit
+/// tests compile many modules on parallel threads; they keep more so
+/// that one test's second compile is not evicted by its neighbours.
+const COMPILED_MODULES_KEPT: usize = if cfg!(test) { 256 } else { 4 };
+
+/// Recently compiled guest modules, keyed by the BLAKE3 hash of their
+/// bytes, newest last (#13941). One dev-loop edit used to compile the
+/// same candidate three times (the compiler's output validation, the
+/// fixture gate and the candidate launch), and a Wasm compile is the
+/// costliest step of each. Only the compiled code is shared: every
+/// [`Sandbox::compile`] still applies its own limits and export
+/// policy, and every instance gets its own store, fuel and memory.
+static COMPILED_MODULES: std::sync::Mutex<Vec<([u8; 32], Engine, Module)>> =
+    std::sync::Mutex::new(Vec::new());
+
+/// Compile `wasm` under the sandbox's fixed engine configuration, or
+/// return the compiled module kept from an earlier compile of the
+/// same bytes. A failed compile is not kept.
+fn compiled_module(wasm: &[u8]) -> Result<(Engine, Module)> {
+    let key = *blake3::hash(wasm).as_bytes();
+    // A poisoned lock only means another compile panicked while it
+    // held the list; the entries in it are still whole.
+    {
+        let mut kept = COMPILED_MODULES
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(index) = kept.iter().position(|(hash, ..)| *hash == key) {
+            let entry = kept.remove(index);
+            let found = (entry.1.clone(), entry.2.clone());
+            kept.push(entry);
+            return Ok(found);
+        }
+    }
+    let mut config = Config::new();
+    config.consume_fuel(true);
+    config.max_wasm_stack(512 * 1024);
+    config.wasm_multi_memory(false);
+    config.wasm_memory64(false);
+    let engine =
+        Engine::new(&config).map_err(|e| anyhow::anyhow!("create Wasmtime engine: {e}"))?;
+    let module =
+        Module::new(&engine, wasm).map_err(|e| anyhow::anyhow!("compile Wasm module: {e}"))?;
+    let mut kept = COMPILED_MODULES
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if !kept.iter().any(|(hash, ..)| *hash == key) {
+        if kept.len() >= COMPILED_MODULES_KEPT {
+            kept.remove(0);
+        }
+        kept.push((key, engine.clone(), module.clone()));
+    }
+    Ok((engine, module))
+}
+
 /// Validated, compiled, import-free Wasm module.
 #[derive(Clone, Debug)]
 pub struct Sandbox {
@@ -154,15 +208,7 @@ impl Sandbox {
             "sandbox message limit must be nonzero"
         );
 
-        let mut config = Config::new();
-        config.consume_fuel(true);
-        config.max_wasm_stack(512 * 1024);
-        config.wasm_multi_memory(false);
-        config.wasm_memory64(false);
-        let engine =
-            Engine::new(&config).map_err(|e| anyhow::anyhow!("create Wasmtime engine: {e}"))?;
-        let module =
-            Module::new(&engine, wasm).map_err(|e| anyhow::anyhow!("compile Wasm module: {e}"))?;
+        let (engine, module) = compiled_module(wasm)?;
         let imports: Vec<_> = module
             .imports()
             .map(|i| format!("{}::{}", i.module(), i.name()))
@@ -1203,6 +1249,45 @@ mod tests {
     fn compile(wat: &str, limits: SandboxLimits) -> Result<Sandbox> {
         let wasm = wat::parse_str(wat)?;
         Sandbox::compile(&wasm, limits)
+    }
+
+    #[test]
+    fn compiling_the_same_bytes_again_shares_the_code_not_the_limits() {
+        // #13941: a dev-loop edit compiled one candidate three times.
+        // The second compile of the same bytes reuses the compiled
+        // code, but keeps the limits it was given and still yields
+        // instances that share nothing.
+        let wasm = wat::parse_str(ECHO).unwrap();
+        let first = Sandbox::compile(&wasm, SandboxLimits::default()).unwrap();
+        let tight = SandboxLimits {
+            fuel: 1_000,
+            ..SandboxLimits::default()
+        };
+        let second = Sandbox::compile(&wasm, tight).unwrap();
+        assert!(Module::same(&first.module, &second.module));
+        assert_eq!(second.limits.fuel, 1_000);
+        assert_eq!(first.limits.fuel, SandboxLimits::default().fuel);
+        let mut a = first.instantiate(1).unwrap();
+        let mut b = second.instantiate(1).unwrap();
+        assert_eq!(a.view().unwrap(), b"hello");
+        assert_eq!(b.view().unwrap(), b"hello");
+    }
+
+    #[test]
+    fn a_kept_module_still_answers_to_the_export_policy() {
+        // The compiled code is kept even when the export policy then
+        // refuses it; the next compile of the same bytes must be
+        // refused the same way, not served past the check.
+        let wasm =
+            wat::parse_str(r#"(module (memory (export "memory") 1 1) (func (export "rogue")))"#)
+                .unwrap();
+        for _ in 0..2 {
+            let refused = Sandbox::compile(&wasm, SandboxLimits::default()).unwrap_err();
+            assert!(
+                refused.to_string().contains("not in the ABI allowlist"),
+                "{refused:#}"
+            );
+        }
     }
 
     #[test]
@@ -2524,7 +2609,8 @@ mod tests {
         assert!(rows.iter().any(|row| row.contains("A s s #")), "{rows:?}");
         assert!(rows.iter().any(|row| row.contains(". . s X")), "{rows:?}");
         assert!(
-            rows.iter().any(|row| row.contains("soil left=3 cleared=0/3")),
+            rows.iter()
+                .any(|row| row.contains("soil left=3 cleared=0/3")),
             "{rows:?}"
         );
         // (input, expected outcome, expected after-state)
@@ -2589,7 +2675,8 @@ mod tests {
         let rows = view_rows(&mut live);
         assert!(rows.iter().any(|row| row.contains(". . . A")), "{rows:?}");
         assert!(
-            rows.iter().any(|row| row.contains("soil left=0 cleared=3/3")),
+            rows.iter()
+                .any(|row| row.contains("soil left=0 cleared=3/3")),
             "{rows:?}"
         );
         assert!(
