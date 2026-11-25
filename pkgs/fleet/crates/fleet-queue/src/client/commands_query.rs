@@ -2100,16 +2100,16 @@ pub(super) fn cmd_link(rest: &[String]) -> i32 {
         println!("{}", usage("link"));
         return if rest.is_empty() { 2 } else { 0 };
     }
-    let (subcommand, args) = rest.split_first().expect("link subcommand is present");
+    let (subcommand, rest) = rest.split_first().expect("link subcommand is present");
     if is_help_arg(subcommand) {
         println!("{}", usage("link"));
         return 0;
     }
     match subcommand.as_str() {
-        "add" => cmd_link_add(args),
-        "remove" => cmd_link_remove(args),
+        "add" => cmd_link_add(rest),
+        "remove" => cmd_link_remove(rest),
         "list" => {
-            let parsed = parse_verb_args("link list", args, &[], &["include-removed", "json"]);
+            let parsed = parse_verb_args("link list", rest, &[], &["include-removed", "json"]);
             reject_extra_pos("link list", &parsed, 1);
             let task_id = parsed.pos_i64(0, "task_id");
             let resp = unwrap_ok(call(

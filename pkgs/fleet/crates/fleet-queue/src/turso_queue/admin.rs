@@ -7,6 +7,14 @@
 
 use super::*;
 
+fn blocked_deps_snapshot(row: &Value) -> Arg {
+    match row.get("blocked_deps") {
+        None | Some(Value::Null) => Arg::Null,
+        Some(Value::String(raw)) => Arg::Text(raw.clone()),
+        Some(value) => Arg::Text(value.to_string()),
+    }
+}
+
 pub(crate) fn verb_block(t: &TursoBackend, req: &Value) -> Value {
     let task_id = req_i64(req, "task_id").unwrap_or(0);
     let worker = req_str(req, "worker").unwrap_or("").to_string();
@@ -198,18 +206,18 @@ pub(crate) fn dep_recheck_one(
     }
     if let Some(until) = row.get("dep_blocked_until").and_then(|v| v.as_str()) {
         if until <= now.as_str() {
-            let prior_cache = json!(deps).to_string();
+            let prior_cache = blocked_deps_snapshot(row);
             let mut statements = vec![("BEGIN IMMEDIATE", Vec::new())];
             statements.push((
                 "UPDATE tasks SET status = 'queued', blocked_deps = NULL, \
                    dep_next_recheck_at = NULL, dep_blocked_until = NULL, \
                    dep_recheck_seconds = NULL, updated_at = ? \
-                 WHERE id = ? AND status = 'blocked' AND dep_blocked_until IS ? AND json(blocked_deps) = json(?)",
+                 WHERE id = ? AND status = 'blocked' AND dep_blocked_until IS ? AND COALESCE(json(blocked_deps), 'null') = COALESCE(json(?), 'null')",
                 vec![
                     Arg::Text(now.clone()),
                     Arg::Int(task_id),
                     Arg::Text(until.to_owned()),
-                    Arg::Text(prior_cache),
+                    prior_cache,
                 ],
             ));
             statements.push(super::links::clear_task_deps_guarded_statement(
@@ -300,20 +308,20 @@ pub(crate) fn dep_recheck_one(
     if deps_all_resolved(&new_deps) {
         let block_until = row.get("dep_blocked_until").and_then(Value::as_str);
         let storage_block_id = super::links::task_dep_block_id(row, &deps);
-        let prior_cache = json!(deps).to_string();
+        let prior_cache = blocked_deps_snapshot(row);
         let mut statements = vec![("BEGIN IMMEDIATE", Vec::new())];
         statements.push((
             "UPDATE tasks SET status = 'queued', blocked_deps = NULL, \
                dep_next_recheck_at = NULL, dep_blocked_until = NULL, \
                dep_recheck_seconds = NULL, updated_at = ? \
-             WHERE id = ? AND status = 'blocked' AND dep_blocked_until IS ? AND json(blocked_deps) = json(?)",
+             WHERE id = ? AND status = 'blocked' AND dep_blocked_until IS ? AND COALESCE(json(blocked_deps), 'null') = COALESCE(json(?), 'null')",
             vec![
                 Arg::Text(now.clone()),
                 Arg::Int(task_id),
                 block_until
                     .map(|value| Arg::Text(value.to_owned()))
                     .unwrap_or(Arg::Null),
-                Arg::Text(prior_cache),
+                prior_cache,
             ],
         ));
         statements.push(super::links::clear_task_deps_guarded_statement(
@@ -352,12 +360,12 @@ pub(crate) fn dep_recheck_one(
     let block_id = super::links::task_dep_block_id(row, &deps);
     let (cache_deps, dep_writes) =
         super::links::prepare_task_deps(task_id, &block_id, &new_deps, &now, "dep_recheck");
-    let prior_cache = json!(deps).to_string();
+    let prior_cache = blocked_deps_snapshot(row);
     let block_until = row.get("dep_blocked_until").and_then(Value::as_str);
     let mut statements = vec![("BEGIN IMMEDIATE", Vec::new())];
     statements.push((
         "UPDATE tasks SET blocked_deps = ?, dep_next_recheck_at = ?, updated_at = ? \
-         WHERE id = ? AND status = 'blocked' AND dep_blocked_until IS ? AND json(blocked_deps) = json(?)",
+         WHERE id = ? AND status = 'blocked' AND dep_blocked_until IS ? AND COALESCE(json(blocked_deps), 'null') = COALESCE(json(?), 'null')",
         vec![
             Arg::Text(json!(cache_deps).to_string()),
             // The max TTL is a hard deadline: never schedule
@@ -376,7 +384,7 @@ pub(crate) fn dep_recheck_one(
             block_until
                 .map(|value| Arg::Text(value.to_owned()))
                 .unwrap_or(Arg::Null),
-            Arg::Text(prior_cache),
+            prior_cache,
         ],
     ));
     statements.extend(super::links::guard_task_dep_writes(
@@ -795,7 +803,7 @@ fn unblock_drop(
             "UPDATE tasks SET status = 'queued', blocked_deps = NULL, \
                dep_next_recheck_at = NULL, dep_blocked_until = NULL, \
                dep_recheck_seconds = NULL, updated_at = ? \
-             WHERE id = ? AND status = 'blocked' AND dep_blocked_until IS ? AND json(blocked_deps) = json(?)",
+             WHERE id = ? AND status = 'blocked' AND dep_blocked_until IS ? AND COALESCE(json(blocked_deps), 'null') = COALESCE(json(?), 'null')",
             vec![
                 Arg::Text(now.clone()),
                 Arg::Int(task_id),
@@ -851,7 +859,7 @@ fn unblock_drop(
             ("BEGIN IMMEDIATE".to_owned(), Vec::new()),
             (
                 "UPDATE tasks SET blocked_deps = ?, updated_at = ? WHERE id = ? AND status = 'blocked' \
-                 AND dep_blocked_until IS ? AND json(blocked_deps) = json(?)".to_owned(),
+                 AND dep_blocked_until IS ? AND COALESCE(json(blocked_deps), 'null') = COALESCE(json(?), 'null')".to_owned(),
                 vec![
                     Arg::Text(json!(cache_deps).to_string()),
                     Arg::Text(now),
@@ -942,18 +950,18 @@ pub(crate) fn verb_unblock(t: &TursoBackend, req: &Value) -> Value {
         let now = now_iso();
         let block_until = row.get("dep_blocked_until").and_then(Value::as_str);
         let storage_block_id = super::links::task_dep_block_id(&row, &prev_deps);
-        let prior_cache = json!(prev_deps).to_string();
+        let prior_cache = blocked_deps_snapshot(&row);
         let mut statements = vec![("BEGIN IMMEDIATE", Vec::new())];
         statements.push((
             "UPDATE tasks SET status = 'queued', blocked_deps = NULL, \
                dep_next_recheck_at = NULL, dep_blocked_until = NULL, \
                dep_recheck_seconds = NULL, updated_at = ? \
-             WHERE id = ? AND status = 'blocked' AND dep_blocked_until IS ? AND json(blocked_deps) = json(?)",
+             WHERE id = ? AND status = 'blocked' AND dep_blocked_until IS ? AND COALESCE(json(blocked_deps), 'null') = COALESCE(json(?), 'null')",
             vec![
                 Arg::Text(now.clone()),
                 Arg::Int(task_id),
                 block_until.map(|value| Arg::Text(value.to_owned())).unwrap_or(Arg::Null),
-                Arg::Text(prior_cache),
+                prior_cache,
             ],
         ));
         statements.push(super::links::clear_task_deps_guarded_statement(
