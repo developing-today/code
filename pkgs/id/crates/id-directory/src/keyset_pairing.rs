@@ -680,7 +680,10 @@ mod tests {
                 "unknown",
             )
             .unwrap_err();
-        assert!(error.to_string().contains("refused"), "{error:#}");
+        assert!(
+            format!("{error:#}").contains("unknown device key"),
+            "{error:#}"
+        );
         assert_eq!(file.records().count(), count);
         assert_eq!(
             std::fs::read(dir.path().join("keyset.jsonl")).unwrap(),
