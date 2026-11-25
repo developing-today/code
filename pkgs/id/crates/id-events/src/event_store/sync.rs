@@ -918,7 +918,7 @@ mod tests {
     use id_core::waiting::WaitingLimits;
     use id_store::chain::ChainExt;
     use p2panda_core::{Hash, SigningKey};
-    use redb::ReadableDatabase;
+    use redb::{ReadableDatabase, ReadableTable};
     use std::sync::Arc;
 
     use iroh::endpoint::{Endpoint, presets};
