@@ -114,6 +114,9 @@ pub const REPORT_FORMAT: &str = "atlas-eval-report/v1";
 /// wide headroom over real graded-relevance schemes (typically 0-4).
 pub const MAX_GRADE: u32 = 30;
 
+/// Maximum depth accepted by [`evaluate_precision`].
+pub const MAX_PRECISION_K: usize = 1000;
+
 /// Which split of the eval set a query belongs to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -609,6 +612,55 @@ pub struct EvalReport {
     pub signals: Vec<SignalReport>,
 }
 
+/// Precision@k for one query. The denominator is always `k`, including
+/// short or empty rankings, so unfilled result slots score zero.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PrecisionQuery {
+    /// Query id.
+    pub query: String,
+    /// Query class.
+    #[serde(rename = "class")]
+    pub class: String,
+    /// Relevant documents found in the first `k` slots.
+    pub hits: usize,
+    /// Precision denominator, exactly `k`.
+    pub denominator: usize,
+    /// `hits / denominator`, rounded to six decimal places.
+    pub precision: f64,
+}
+
+/// Precision@k means for a signal, across every query in the split.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PrecisionSignalReport {
+    /// Signal name.
+    pub signal: String,
+    /// Number of queries in this split and the precision mean's denominator.
+    pub queries_total: usize,
+    /// Macro mean of per-query precision values.
+    pub precision: f64,
+    /// Macro means by query class.
+    pub per_class: BTreeMap<String, f64>,
+    /// Per-query results, sorted by query id.
+    pub per_query: Vec<PrecisionQuery>,
+}
+
+/// A standalone Precision@k report; intentionally distinct from
+/// [`EvalReport`] so existing report output remains byte-identical.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PrecisionReport {
+    /// Report format identifier.
+    pub format: String,
+    /// Split scored.
+    pub split: Split,
+    /// Requested precision depth.
+    pub k: usize,
+    /// One entry per signal, sorted by signal name.
+    pub signals: Vec<PrecisionSignalReport>,
+}
+
+/// Report format emitted by [`evaluate_precision`].
+pub const PRECISION_REPORT_FORMAT: &str = "atlas-eval-precision-report/v1";
+
 impl EvalReport {
     /// Whether every signal in the report passed: no constraint
     /// violations anywhere (#8627).
@@ -822,6 +874,77 @@ pub fn evaluate(data: &EvalData, split: Split) -> Result<EvalReport> {
     })
 }
 
+/// Score every run in `data` for Precision@k on one split.
+///
+/// Unlike the relevance-conditioned headline metrics, precision is
+/// defined for every query. Each query contributes `hits / k`; a ranking
+/// shorter than `k` (including a missing ranking) has zero-valued missing
+/// slots. `k` must be within `1..=MAX_PRECISION_K`.
+pub fn evaluate_precision(data: &EvalData, split: Split, k: usize) -> Result<PrecisionReport> {
+    data.validate()?;
+    if !(1..=MAX_PRECISION_K).contains(&k) {
+        return Err(Error::fatal(format!(
+            "Precision@k depth {k} is outside the supported range 1..={MAX_PRECISION_K}"
+        )));
+    }
+    let mut queries: Vec<&QueryRec> = data.queries.iter().filter(|q| q.split == split).collect();
+    queries.sort_by(|a, b| a.id.cmp(&b.id));
+    if queries.is_empty() {
+        return Err(Error::fatal(format!(
+            "eval input has no queries in the {split:?} split"
+        )));
+    }
+    let mut runs: Vec<&Run> = data.runs.iter().collect();
+    runs.sort_by(|a, b| a.signal.cmp(&b.signal));
+    let signals = runs
+        .into_iter()
+        .map(|run| {
+            let mut sum = 0.0;
+            let mut class_sums: BTreeMap<String, (usize, f64)> = BTreeMap::new();
+            let mut per_query = Vec::with_capacity(queries.len());
+            for query in &queries {
+                let grades = data.grades_for(&query.id);
+                let hits = run
+                    .results
+                    .get(&query.id)
+                    .into_iter()
+                    .flatten()
+                    .take(k)
+                    .filter(|doc| grades.get(*doc).copied().unwrap_or(0) >= 1)
+                    .count();
+                let precision = round6(hits as f64 / k as f64);
+                sum += precision;
+                let class = class_sums.entry(query.class.clone()).or_default();
+                class.0 += 1;
+                class.1 += precision;
+                per_query.push(PrecisionQuery {
+                    query: query.id.clone(),
+                    class: query.class.clone(),
+                    hits,
+                    denominator: k,
+                    precision,
+                });
+            }
+            PrecisionSignalReport {
+                signal: run.signal.clone(),
+                queries_total: queries.len(),
+                precision: round6(sum / queries.len() as f64),
+                per_class: class_sums
+                    .into_iter()
+                    .map(|(class, (count, sum))| (class, round6(sum / count as f64)))
+                    .collect(),
+                per_query,
+            }
+        })
+        .collect();
+    Ok(PrecisionReport {
+        format: PRECISION_REPORT_FORMAT.to_owned(),
+        split,
+        k,
+        signals,
+    })
+}
+
 /// Pick the best signal in a report by one metric — the harness's
 /// parameter-selection helper. Deterministic: ties go to the
 /// lexicographically smallest signal name.
@@ -971,6 +1094,63 @@ mod tests {
         assert_eq!(signal.per_class["documentation"].ndcg10, 1.0);
         // The per-query top-1000 is preserved for recomputation.
         assert_eq!(signal.per_query[0].top1000, ranking(&["d2", "d1"]));
+    }
+
+    // Oracle: direct count from the fixture. At k=2, q1 has one hit,
+    // q2's empty ranking has zero hits, and q3 has one hit in slot 2.
+    // Missing slots remain in the denominator: per-query values are
+    // 1/2, 0/2, 1/2; macro mean is 1/3. All queries, including the
+    // empty/no-relevance case, contribute to precision means.
+    #[test]
+    fn precision_at_k_reports_fixed_denominator_and_macro_means() {
+        let d = data(serde_json::json!({
+            "format": "atlas-eval/v1",
+            "queries": [
+                {"id": "q1", "class": "code", "split": "dev"},
+                {"id": "q2", "class": "code", "split": "dev"},
+                {"id": "q3", "class": "documentation", "split": "dev"}
+            ],
+            "qrels": [
+                {"query": "q1", "doc": "a", "grade": 1},
+                {"query": "q2", "doc": "b", "grade": 0},
+                {"query": "q3", "doc": "b", "grade": 2}
+            ],
+            "runs": [
+                {"signal": "zeta", "results": {"q1": ["a"], "q2": [], "q3": ["x", "b"]}},
+                {"signal": "alpha", "results": {"q1": ["x"], "q2": ["b"], "q3": []}}
+            ]
+        }));
+        let report = evaluate_precision(&d, Split::Dev, 2).unwrap();
+        assert_eq!(report.format, PRECISION_REPORT_FORMAT);
+        assert_eq!(report.k, 2);
+        assert_eq!(report.signals[0].signal, "alpha");
+        assert_eq!(report.signals[1].signal, "zeta");
+        let zeta = &report.signals[1];
+        assert_eq!(zeta.queries_total, 3);
+        assert_eq!(zeta.precision, 0.333333);
+        assert_eq!(zeta.per_class["code"], 0.25);
+        assert_eq!(zeta.per_class["documentation"], 0.5);
+        assert_eq!(zeta.per_query[0].hits, 1);
+        assert_eq!(zeta.per_query[0].denominator, 2);
+        assert_eq!(zeta.per_query[0].precision, 0.5);
+        assert_eq!(zeta.per_query[1].precision, 0.0);
+        assert_eq!(zeta.per_query[2].precision, 0.5);
+    }
+
+    // Oracle: public bound is inclusive at 1 and MAX_PRECISION_K and
+    // rejects zero and MAX_PRECISION_K+1 before scoring.
+    #[test]
+    fn precision_at_k_depth_is_bounded() {
+        let d = data(serde_json::json!({
+            "format": "atlas-eval/v1",
+            "queries": [{"id": "q", "class": "code", "split": "dev"}],
+            "qrels": [],
+            "runs": [{"signal": "s", "results": {}}]
+        }));
+        assert!(evaluate_precision(&d, Split::Dev, 0).is_err());
+        assert!(evaluate_precision(&d, Split::Dev, MAX_PRECISION_K + 1).is_err());
+        assert!(evaluate_precision(&d, Split::Dev, 1).is_ok());
+        assert!(evaluate_precision(&d, Split::Dev, MAX_PRECISION_K).is_ok());
     }
 
     // Oracle: the split labels in the input. Dev evaluation must not
