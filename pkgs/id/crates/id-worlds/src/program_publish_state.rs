@@ -46,8 +46,9 @@ use serde::{Deserialize, Serialize};
 use crate::program_bundle::{BundleRecord, ProgramIdentity};
 use crate::world::{MAX_RECORD_VALUE_BYTES, Records};
 
-/// The record-key prefix every publish-state fact lives under. One
-/// record per program version: the key is this prefix followed by the
+/// The record-key prefix every publish-state fact lives under.
+///
+/// One record per program version: the key is this prefix followed by the
 /// version's D1 identity (author, escaped name, version, content
 /// hash), so facts enumerate by prefix and never collide across
 /// versions.
@@ -90,7 +91,7 @@ impl ProgramPublishFact {
     /// A draft fact for `program`: no bundle has been offered for
     /// publication.
     #[must_use]
-    pub fn draft(program: ProgramIdentity) -> Self {
+    pub const fn draft(program: ProgramIdentity) -> Self {
         Self {
             program,
             state: ProgramPublishState::Draft,
@@ -288,7 +289,7 @@ mod tests {
         // and reads as draft by the same rule, not as a copy of v1's.
         let v2 = ProgramIdentity {
             version: 2,
-            ..program.clone()
+            ..program
         };
         assert_eq!(fact_in(&records, &v2).unwrap(), None);
         assert_eq!(state_in(&records, &v2).unwrap(), ProgramPublishState::Draft);
