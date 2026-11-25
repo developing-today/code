@@ -85,18 +85,43 @@ the live-verified mapping its acceptance asks for.
 <!-- workflow:state -->
 
 {
-"version": 1,
-"id": "2026-11-25T01-31-34Z_audit_sandbox-systemd-unit-sources",
-"created_at": "2026-11-25T01:31:34Z",
-"stage": "delivery",
-"status": "complete",
-"concepts": [
-{
-"id": "C001",
-"title": "Live-verified committed-source mapping for resource-sampler, hatch-execd, hatch-ca-trust (code#3235)",
-"status": "complete"
-}
-]
+ "version": 1,
+ "id": "2026-11-25T01-31-34Z_audit_sandbox-systemd-unit-sources",
+ "created_at": "2026-11-25T01:31:34Z",
+ "stage": "delivery",
+ "status": "complete",
+ "transcript": {
+  "path": "supplements/live-capture.txt",
+  "sha256": "75b45308a862306b0fe6c3b98c6caa36c068577d8328ef2fcb9fd9a47dcd5218"
+ },
+ "concepts": [
+  {
+   "id": "C001",
+   "title": "Live-verified committed-source mapping for resource-sampler, hatch-execd, hatch-ca-trust (code#3235)",
+   "path": "main.md",
+   "status": "complete",
+   "source_lines": [
+    [
+     1,
+     60
+    ]
+   ]
+  }
+ ],
+ "dependencies": [],
+ "issues": [
+  "https://github.com/developing-today/code/issues/3235"
+ ],
+ "prs": [],
+ "tasks": [],
+ "events": [
+  {
+   "at": "2026-11-25T01:31:34Z",
+   "stage": "delivery",
+   "status": "complete",
+   "reason": "Audit run from the sandbox seat itself; live systemctl/sha256 capture recorded as the transcript and the per-unit mapping written into main.md."
+  }
+ ]
 }
 
 <!-- /workflow:state -->
