@@ -13,6 +13,7 @@ Continue the AUDIT-7 Lane 4 batch 3/14 audit for `developing-today/code`: read e
 - #8019 implements shared script-name resolution for CLI and daemon `/v1/exec`, including `--remote-file`; #2168 closes with the feature.
 - #8020 is the post-merge maintenance follow-up that registers `--remote-file` in the existing #2188 exec-flag coverage contract and refreshes the generated flag index. It has no separate source issue.
 - #8021 makes DNS state encryption atomic and verifies the produced ciphertext before replacing the saved state; #6536 closes with the fix.
+- The #6378 audit found that #8032's nextest adoption did not measure or close the remaining integration/E2E/VM targets. Filed follow-up #15079 and enqueued live remote-measurement task #23801; the source closure pointer is #13871 comment 7162067831.
 - Applied and read back `audit:complete` on #8016, #8019 and #8021, `audit:partial` on #8018, and `audit:no-issue` on #8020. Posted the partial closure pointer and the no-issue disposition.
 
 ## Per-entry ledger
@@ -33,4 +34,4 @@ Tracking progress comment: [#13879 comment 7161649598](https://github.com/develo
 
 ## Raw supplements
 
-`raw/` contains all five PR bodies, complete changed-file responses, PR comments, source issue bodies/comment pages, later PR #11236, merged-PR searches, label readbacks, the Lane 2 closure pointer, and the partial/no-issue disposition comments.
+`raw/` contains all five PR bodies, complete changed-file responses, PR comments, source issue bodies/comment pages, later PR #11236, merged-PR searches, label readbacks, the Lane 2 closure pointer, the #6378 issue #15079 and task #23801 filing/readbacks, and the partial/no-issue disposition comments.
