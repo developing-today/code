@@ -378,8 +378,6 @@ pub(crate) fn seed_task_links(
     if links.is_empty() {
         return Ok(());
     }
-    let task = get_task(t, task_id)?.unwrap_or_else(|| row.clone());
-    let now = now_iso();
     let mut statements = vec![("BEGIN IMMEDIATE", Vec::new())];
     for link in &links {
         statements.push((
@@ -388,17 +386,6 @@ pub(crate) fn seed_task_links(
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
             link_insert_args(task_id, link, actor, created_at),
         ));
-        statements.push((
-            "INSERT INTO events (worker_id, task_id, kind, detail, created_at) \
-             SELECT ?, ?, 'linked', ?, ? WHERE changes() = 1",
-            vec![
-                Arg::Text(actor.to_owned()),
-                Arg::Int(task_id),
-                Arg::Text(link_event_detail(link, &task, actor).to_string()),
-                Arg::Text(now.clone()),
-            ],
-        ));
-        statements.push((HISTORY_INSERT_SQL, vec![Arg::Null, Arg::Null]));
     }
     statements.push(("COMMIT", Vec::new()));
     t.exec_batch(&statements)?;

@@ -122,9 +122,6 @@ pub(crate) fn verb_enqueue(t: &TursoBackend, req: &Value) -> Value {
                     .as_ref()
                     .filter(|r| r.get("status").and_then(|v| v.as_str()) == Some("done"))
                 {
-                    if let Some(id) = row.get("id").and_then(Value::as_i64) {
-                        seed_task_links(t, id, row, "enqueue_repo_task")?;
-                    }
                     return Ok((row.clone(), None, None));
                 }
             }

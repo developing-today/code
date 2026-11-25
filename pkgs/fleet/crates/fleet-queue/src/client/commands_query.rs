@@ -2100,12 +2100,12 @@ pub(super) fn cmd_link(rest: &[String]) -> i32 {
         println!("{}", usage("link"));
         return if rest.is_empty() { 2 } else { 0 };
     }
-    let tail = &rest[1..];
+    let rest = &rest[1..];
     match rest[0].as_str() {
-        "add" => cmd_link_change(tail, true),
-        "remove" => cmd_link_change(tail, false),
+        "add" => cmd_link_add(rest),
+        "remove" => cmd_link_remove(rest),
         "list" => {
-            let args = parse_verb_args("link list", tail, &[], &["include-removed", "json"]);
+            let args = parse_verb_args("link list", rest, &[], &["include-removed", "json"]);
             reject_extra_pos("link list", &args, 1);
             let task_id = args.pos_i64(0, "task_id");
             let resp = unwrap_ok(call(
@@ -2135,13 +2135,61 @@ pub(super) fn cmd_link(rest: &[String]) -> i32 {
     }
 }
 
-fn cmd_link_change(rest: &[String], add: bool) -> i32 {
-    let verb = if add { "link add" } else { "link remove" };
-    let args = parse_verb_args(verb, rest, &["worker", "kind", "issue", "pr", "task"], &[]);
+fn cmd_link_add(rest: &[String]) -> i32 {
+    let verb = "link add";
+    let args = parse_verb_args(
+        "link add",
+        rest,
+        &["worker", "kind", "issue", "pr", "task"],
+        &[],
+    );
     reject_extra_pos(verb, &args, 1);
-    let target_count = ["issue", "pr", "task"]
-        .iter()
-        .filter(|k| args.has(k))
+    finish_link_change(
+        verb,
+        true,
+        args.pos_i64(0, "task_id"),
+        opt_worker(&args),
+        args.get("kind"),
+        args.get("issue"),
+        args.get("pr"),
+        args.get("task"),
+    )
+}
+
+fn cmd_link_remove(rest: &[String]) -> i32 {
+    let verb = "link remove";
+    let args = parse_verb_args(
+        "link remove",
+        rest,
+        &["worker", "kind", "issue", "pr", "task"],
+        &[],
+    );
+    reject_extra_pos(verb, &args, 1);
+    finish_link_change(
+        verb,
+        false,
+        args.pos_i64(0, "task_id"),
+        opt_worker(&args),
+        args.get("kind"),
+        args.get("issue"),
+        args.get("pr"),
+        args.get("task"),
+    )
+}
+
+fn finish_link_change(
+    verb: &str,
+    add: bool,
+    task_id: i64,
+    worker: Option<String>,
+    link_kind: Option<String>,
+    issue: Option<String>,
+    pr: Option<String>,
+    other_task: Option<String>,
+) -> i32 {
+    let target_count = [issue.is_some(), pr.is_some(), other_task.is_some()]
+        .into_iter()
+        .filter(|present| *present)
         .count();
     if target_count != 1 {
         die(
@@ -2150,17 +2198,17 @@ fn cmd_link_change(rest: &[String], add: bool) -> i32 {
         );
     }
     let mut body = json!({
-        "task_id": args.pos_i64(0, "task_id"),
-        "worker": opt_worker(&args),
-        "link_kind": args.get("kind").unwrap_or_else(|| "related".to_owned()),
+        "task_id": task_id,
+        "worker": worker,
+        "link_kind": link_kind.unwrap_or_else(|| "related".to_owned()),
     });
-    if let Some(issue) = args.get("issue") {
+    if let Some(issue) = issue {
         let (repo, number) = parse_link_target(&issue, "issue");
         body["other_issue"] = json!({"repo": repo, "number": number});
-    } else if let Some(pr) = args.get("pr") {
+    } else if let Some(pr) = pr {
         let (repo, number) = parse_link_target(&pr, "pr");
         body["other_pr"] = json!({"repo": repo, "number": number});
-    } else if let Some(task) = args.get("task") {
+    } else if let Some(task) = other_task {
         body["other_task_id"] = json!(
             task.parse::<i64>()
                 .unwrap_or_else(|_| die(2, "link: --task must be a positive integer"))

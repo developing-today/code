@@ -3849,14 +3849,6 @@ mod task_notes_tests {
         assert_eq!(links[1]["other_kind"], "pr");
         assert_eq!(links[1]["other_number"], 14441);
         assert_eq!(links[1]["link_kind"], "pr_for");
-        let seeded_history = t
-            .query_objs(
-                "SELECT id FROM task_history WHERE task_id = ? AND kind = 'linked'",
-                &[Arg::Int(task_id)],
-                &[],
-            )
-            .expect("packet links have state-neutral history rows");
-        assert_eq!(seeded_history.len(), 2);
         t.exec(
             "DELETE FROM queue_links WHERE task_id = ?",
             &[Arg::Int(task_id)],
@@ -3876,14 +3868,6 @@ mod task_notes_tests {
             )
             .expect("enqueue dedupe retry repairs missing packet links");
         assert_eq!(repaired.len(), 2);
-        let repaired_history = t
-            .query_objs(
-                "SELECT id FROM task_history WHERE task_id = ? AND kind = 'linked'",
-                &[Arg::Int(task_id)],
-                &[],
-            )
-            .expect("repaired packet links are audited");
-        assert_eq!(repaired_history.len(), 4);
         t.exec(
             "DELETE FROM queue_schema_migrations WHERE name = 'q6-links-deps-v1'",
             &[],
