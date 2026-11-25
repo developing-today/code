@@ -1700,6 +1700,31 @@ fn a_compound_build_command_uses_one_lock_and_a_shared_workspace_lane() {
     assert!(command.contains("cargo test -p"));
 }
 
+/// Wait for a spawned test child with a deadline, so an environment-specific
+/// hang fails fast with diagnostics instead of stalling the suite forever.
+/// Returns `None` after killing a child that outlives `deadline`.
+/// See https://github.com/developing-today/code/issues/14446.
+fn wait_with_deadline(
+    child: &mut std::process::Child,
+    deadline: std::time::Duration,
+) -> Option<std::process::ExitStatus> {
+    let start = std::time::Instant::now();
+    while start.elapsed() < deadline {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                return Some(status);
+            }
+            Ok(None) => std::thread::sleep(std::time::Duration::from_millis(10)),
+            Err(err) => panic!("try_wait on test child failed: {err}"),
+        }
+    }
+    if child.try_wait().ok().flatten().is_none() {
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+    None
+}
+
 #[test]
 fn a_background_cargo_build_holds_its_target_lease_until_exit() {
     let home = home_with_a_recording_lock();
@@ -1773,12 +1798,17 @@ fn a_background_cargo_build_holds_its_target_lease_until_exit() {
         .map(|log| !log.is_empty())
         .unwrap_or(false);
     std::fs::write(home.join("release"), "").unwrap();
-    let output = child.wait_with_output().unwrap();
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
+    let output = wait_with_deadline(&mut child, std::time::Duration::from_secs(60))
+        .unwrap_or_else(|| {
+            panic!(
+                "background build wrapper did not exit within 60s \
+                (broker.log={:?} started={} finished={}); see #14446",
+                std::fs::read_to_string(home.join("broker.log")).unwrap_or_default(),
+                home.join("started").exists(),
+                home.join("finished").exists(),
+            )
+        });
+    assert!(output.success(), "background build wrapper failed: {output}");
     assert!(
         !checked_in_early,
         "target lease returned while Cargo was active"
@@ -1789,6 +1819,40 @@ fn a_background_cargo_build_holds_its_target_lease_until_exit() {
         "checkin --lease lease-1\n"
     );
     let _ = std::fs::remove_dir_all(&home);
+}
+
+#[test]
+fn a_deadline_wait_collects_a_fast_child() {
+    let mut child = std::process::Command::new("/bin/sh")
+        .arg("-c")
+        .arg("exit 0")
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let output = wait_with_deadline(&mut child, std::time::Duration::from_secs(10))
+        .expect("fast exit");
+    assert!(output.success());
+}
+
+#[test]
+fn a_deadline_wait_kills_a_hung_child_instead_of_blocking() {
+    let mut child = std::process::Command::new("/bin/sh")
+        .arg("-c")
+        .arg("exec sleep 30")
+        .spawn()
+        .unwrap();
+    let start = std::time::Instant::now();
+    let outcome = wait_with_deadline(&mut child, std::time::Duration::from_millis(200));
+    assert!(outcome.is_none(), "sleeping child should hit the deadline");
+    assert!(
+        start.elapsed() < std::time::Duration::from_secs(10),
+        "deadline wait took {:?}; it must fail fast",
+        start.elapsed()
+    );
+    assert!(
+        child.try_wait().ok().flatten().is_some(),
+        "hung child should be reaped after kill"
+    );
 }
 
 #[test]
