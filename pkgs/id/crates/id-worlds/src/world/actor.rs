@@ -1172,12 +1172,9 @@ impl WorldActor {
                 journal_copy,
                 reply,
             } => {
-                let result = self.core.dispatch_spill_copy(
-                    &holder,
-                    epoch,
-                    replayed_position,
-                    journal_copy,
-                );
+                let result =
+                    self.core
+                        .dispatch_spill_copy(&holder, epoch, replayed_position, journal_copy);
                 let _ = reply.send(result);
             }
             WorldCommand::ImportEntity {
