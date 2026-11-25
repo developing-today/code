@@ -565,6 +565,12 @@ async function tursoOverlay(cfg: Config, services: SaasService[]): Promise<SaasS
  * unchanged. Sibling sections are element-filtered the same way
  * (registry via isSessionRecord, subscriptions via isSubscriptionRow).
  */
+/** #14065: the quota view with nothing in it — what live mode serves
+ * when no source can say how much headroom there is. */
+export function emptyQuotaView(): QuotaView {
+  return { pools: [], burn: [], choices: { hasHeadroom: [], burnBeforeReset: [], doNotStart: [] } };
+}
+
 export function isFeedAttentionEntry(v: unknown): v is SessionFeedEntry {
   return isRecord(v) && typeof v.sessionId === "string" && v.sessionId.length > 0;
 }
@@ -1633,8 +1639,12 @@ export function liveSource(
             `${dropped.burnTokensPerMin} burn rate(s) (#2429/#3921/#4546)`;
         }
       } else {
-        provenance.quota = "fixtures (no fleet feed file yet)";
-        view = await fix.quota();
+        // #14065 slice 2: with no feed there are no quota numbers to
+        // show. Fixture pools would read as real headroom, so serve an
+        // empty view with the cause named (the board/roadmap contract).
+        console.error("[quota] no fleet feed file — serving no pools, NOT fixtures");
+        provenance.quota = "unavailable (no fleet feed file yet; fixtures withheld in live mode)";
+        view = emptyQuotaView();
       }
       const standalone = await readQuotaHeartbeatFile(cfg.quotaHeartbeatFile);
       try {
@@ -1795,7 +1805,8 @@ export function liveSource(
         provenance.usage =
           "live (quota-view.md + provider registry, direct read — feed carries no hub sections yet)" +
           feedSanitizationNotes;
-        const quotaForFlags = await overlayCurrent(feed?.quota ?? (await fix.quota()));
+        // #14065 slice 2: flags come from real quota or none at all.
+        const quotaForFlags = await overlayCurrent(feed?.quota ?? emptyQuotaView());
         return {
           ...partial,
           chargesNote: partial.charges.length
@@ -1809,19 +1820,30 @@ export function liveSource(
           domains,
           history,
         };
-      } catch {
-        provenance.usage = "fixtures (no fleet feed hub sections and quota view unreadable)" + feedSanitizationNotes;
-        const fallback = await fix.usage();
-        // #3124: even the fixtures fallback keeps the feed's charge
-        // evidence when a feed exists — fixtures stand in for the
-        // sections that are missing, not for the ones that arrived.
+      } catch (err) {
+        // #14065 slice 2: neither the feed's hub sections nor the quota
+        // view could be read. Invented services, PAYG lines and
+        // subscriptions would read as real spend, so the missing
+        // sections stay empty with the cause named. What did arrive is
+        // kept (#3124): the feed's charge evidence and its flags, the
+        // tracker rows, the domains summary and the local history.
+        const reason = err instanceof Error ? err.message : String(err);
+        console.error(`[usage] quota view unreadable (${reason}) — serving empty sections, NOT fixtures`);
+        provenance.usage =
+          "unavailable (no fleet feed hub sections and quota view unreadable; fixtures withheld in live mode)" +
+          feedSanitizationNotes;
         return {
-          ...fallback,
+          services: [],
           uninstrumentedServices,
-          charges: feedCharges.length ? feedCharges : fallback.charges,
-          chargesNote: feedCharges.length ? undefined : fallback.chargesNote,
-          attention: [...fallback.attention, ...feedChargeFlags],
-          history: Object.keys(history).length ? history : fallback.history,
+          payg: [],
+          charges: feedCharges,
+          chargesNote: feedCharges.length
+            ? undefined
+            : "Usage sources are unreadable (no feed hub sections, no quota view), so no charge evidence is shown.",
+          attention: feedChargeFlags,
+          domains,
+          subscriptions: [],
+          history,
         };
       }
     },
@@ -1979,7 +2001,7 @@ export function liveSource(
             ? "skipped — collector intentionally skipped orchestration collection"
             : feed
               ? "none yet — the orchestration job (#899) has not published a section; the today view derives"
-              : "fixtures (no fleet feed file yet)";
+              : "unavailable (no fleet feed file yet)";
       return null;
     },
     async dns(): Promise<DnsSection | null> {
@@ -2002,7 +2024,7 @@ export function liveSource(
             ? "skipped — collector intentionally skipped DNS collection"
             : feed
               ? "not collected yet — the collector has not embedded a register section"
-              : "fixtures (no fleet feed file yet)";
+              : "unavailable (no fleet feed file yet)";
       return null;
     },
     async aa(batch?: string | null): Promise<AaFeedSection | null> {
@@ -2105,7 +2127,7 @@ export function liveSource(
             ? "skipped — collector intentionally skipped AA collection"
             : feed
               ? "not collected yet — the collector has not embedded an AA section"
-              : "fixtures (no fleet feed file yet)";
+              : "unavailable (no fleet feed file yet)";
       return null;
     },
     async registry(): Promise<SessionRecord[]> {
