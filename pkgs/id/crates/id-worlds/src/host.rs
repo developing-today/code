@@ -1305,7 +1305,13 @@ mod tests {
             format!("{created}\n{{\"torn"),
         )
         .unwrap();
-        std::fs::write(root.path().join("w/modules/aa.wasm"), b"\0asm").unwrap();
+        std::fs::write(
+            root.path()
+                .join("w/modules")
+                .join(format!("{}.wasm", "ab".repeat(32))),
+            b"\0asm",
+        )
+        .unwrap();
         let mut file = HostFile::rebuild(root.path()).unwrap();
         file.transition("w", LifecycleState::Live, actor(), 7)
             .unwrap();
