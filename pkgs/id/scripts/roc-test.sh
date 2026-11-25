@@ -25,7 +25,7 @@ if ! command -v roc >/dev/null 2>&1; then
   exit 1
 fi
 echo "roc-test: $(roc version)"
-for module in RocJson Screen Key; do
+for module in RocJson Screen Key Term; do
   echo "=== roc test examples/roc-world/${module}.roc ==="
   roc test "examples/roc-world/${module}.roc"
 done
@@ -39,4 +39,4 @@ if command -v cargo >/dev/null 2>&1; then
 else
   echo "roc-test: cargo not on PATH - the roc-import-policy fixtures run in the cargo test suite (cargo test -p id-caps --test roc_import_policy); not skipped silently."
 fi
-echo "✓ Roc library expectations passed (RocJson, Screen, Key; roc-cap-demo positive + negative tests)"
+echo "✓ Roc library expectations passed (RocJson, Screen, Key, Term; roc-cap-demo positive + negative tests)"
