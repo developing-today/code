@@ -35,7 +35,9 @@
 //! this path rather than replacing it: same §7 manifest, same
 //! version stamp, same ack binding.
 
-use crate::bundle::{load_bundle, pem_decode_all, read_artifact, sha256_hex, write_bundle, Artifact};
+use crate::bundle::{
+    Artifact, load_bundle, pem_decode_all, read_artifact, sha256_hex, write_bundle,
+};
 use crate::chain::TrustSelection;
 use crate::error::{CertError, Result};
 use crate::model::{BundleManifest, BundleType, CertRecord, MANIFEST_SCHEMA};
@@ -165,8 +167,7 @@ pub fn export_trust_bundle(req: &TrustExportRequest, out_dir: &Path) -> Result<B
                     if record.signer_algorithm.is_some() {
                         return Err(CertError::manifest(format!(
                             "root record {} in {} is not self-signed; refusing to export it as a trust anchor",
-                            record.fingerprint_sha256,
-                            bundle.manifest.bundle_id
+                            record.fingerprint_sha256, bundle.manifest.bundle_id
                         )));
                     }
                     &mut roots
@@ -185,7 +186,9 @@ pub fn export_trust_bundle(req: &TrustExportRequest, out_dir: &Path) -> Result<B
                 continue;
             }
             if record.role == "root" {
-                source.root_fingerprints.push(record.fingerprint_sha256.clone());
+                source
+                    .root_fingerprints
+                    .push(record.fingerprint_sha256.clone());
                 if !source.partitions.contains(&record.partition) {
                     source.partitions.push(record.partition.clone());
                 }
@@ -526,7 +529,9 @@ pub fn stage_bundle(store: &Path, bundle_dir: &Path) -> Result<VersionRef> {
 pub fn acknowledge(store: &Path, version: Option<u32>, at: Rfc3339) -> Result<AckRecord> {
     let mut state = load_state(store)?;
     let staged = state.staged.clone().ok_or_else(|| {
-        CertError::usage("nothing is staged in this trust store; stage a bundle before acknowledging it")
+        CertError::usage(
+            "nothing is staged in this trust store; stage a bundle before acknowledging it",
+        )
     })?;
     if let Some(v) = version {
         if v != staged.version {
@@ -563,7 +568,9 @@ pub fn acknowledge(store: &Path, version: Option<u32>, at: Rfc3339) -> Result<Ac
 pub fn activate(store: &Path, version: Option<u32>) -> Result<VersionRef> {
     let mut state = load_state(store)?;
     let staged = state.staged.clone().ok_or_else(|| {
-        CertError::usage("nothing is staged in this trust store; stage a bundle before activating it")
+        CertError::usage(
+            "nothing is staged in this trust store; stage a bundle before activating it",
+        )
     })?;
     if let Some(v) = version {
         if v != staged.version {
@@ -626,11 +633,7 @@ pub fn store_status(store: &Path) -> Result<TrustStoreStatus> {
     let mut installed_versions = Vec::new();
     if let Ok(entries) = std::fs::read_dir(store.join("versions")) {
         for e in entries.flatten() {
-            if let Some(v) = e
-                .file_name()
-                .to_str()
-                .and_then(|n| n.parse::<u32>().ok())
-            {
+            if let Some(v) = e.file_name().to_str().and_then(|n| n.parse::<u32>().ok()) {
                 installed_versions.push(v);
             }
         }
@@ -679,9 +682,10 @@ pub fn active_anchors(store: &Path, selection: TrustSelection) -> Result<(Versio
     })?;
     // The anchors must be parseable certificates, not just bytes
     // that once hashed correctly.
-    if pem_decode_all(std::str::from_utf8(&bytes).map_err(|_| {
-        CertError::manifest("anchor file is not UTF-8 PEM text".to_string())
-    })?)?
+    if pem_decode_all(
+        std::str::from_utf8(&bytes)
+            .map_err(|_| CertError::manifest("anchor file is not UTF-8 PEM text".to_string()))?,
+    )?
     .is_empty()
     {
         return Err(CertError::manifest(format!(

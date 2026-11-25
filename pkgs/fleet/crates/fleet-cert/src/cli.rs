@@ -1240,10 +1240,7 @@ fn trust_cmd(args: &[String], json_out: bool) -> Result<i32> {
                 &crate::trust::TrustExportRequest {
                     root_bundles,
                     version,
-                    name: p
-                        .get("name")
-                        .unwrap_or("Fleet Trust Bundle")
-                        .to_string(),
+                    name: p.get("name").unwrap_or("Fleet Trust Bundle").to_string(),
                     at,
                 },
                 &PathBuf::from(&out),
@@ -1274,10 +1271,7 @@ fn trust_cmd(args: &[String], json_out: bool) -> Result<i32> {
             let p = parse_args(rest, &["bundle", "store"], &[])?;
             let bundle = p.require("bundle", "trust stage")?;
             let store = p.require("store", "trust stage")?;
-            let vref = crate::trust::stage_bundle(
-                &PathBuf::from(&store),
-                &PathBuf::from(&bundle),
-            )?;
+            let vref = crate::trust::stage_bundle(&PathBuf::from(&store), &PathBuf::from(&bundle))?;
             let text = format!(
                 "Staged trust bundle version {} ({}) in {}\n",
                 vref.version, vref.bundle_id, store
@@ -1291,7 +1285,9 @@ fn trust_cmd(args: &[String], json_out: bool) -> Result<i32> {
                 .get("version")
                 .map(|v| {
                     v.parse::<u32>().map_err(|_| {
-                        CertError::usage(format!("trust ack --version '{v}' is not a version number"))
+                        CertError::usage(format!(
+                            "trust ack --version '{v}' is not a version number"
+                        ))
                     })
                 })
                 .transpose()?;

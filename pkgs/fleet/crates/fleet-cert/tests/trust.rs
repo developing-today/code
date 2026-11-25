@@ -18,8 +18,8 @@ use fleet_cert::graph::CrossSigningMode;
 use fleet_cert::model::{BundleType, RootCreateRequest};
 use fleet_cert::timeparse::Rfc3339;
 use fleet_cert::trust::{
-    acknowledge, activate, active_anchors, export_trust_bundle, read_descriptor, retire,
-    stage_bundle, store_status, TrustExportRequest,
+    TrustExportRequest, acknowledge, activate, active_anchors, export_trust_bundle,
+    read_descriptor, retire, stage_bundle, store_status,
 };
 use std::path::{Path, PathBuf};
 
@@ -144,7 +144,12 @@ fn export_install_rollover_end_to_end() {
 
     let (active_ref, anchors) = active_anchors(&store, TrustSelection::Classical).unwrap();
     assert_eq!(active_ref.version, 1);
-    assert_eq!(pem_decode_all(std::str::from_utf8(&anchors).unwrap()).unwrap().len(), 2);
+    assert_eq!(
+        pem_decode_all(std::str::from_utf8(&anchors).unwrap())
+            .unwrap()
+            .len(),
+        2
+    );
     // No PQ anchors in v1: that selection is not served.
     assert!(active_anchors(&store, TrustSelection::Pq).is_err());
 
@@ -152,7 +157,11 @@ fn export_install_rollover_end_to_end() {
     let roots2 = root_set(
         &tmp,
         "roots2",
-        vec![AlgorithmId::Ed25519, AlgorithmId::P256, AlgorithmId::MlDsa44],
+        vec![
+            AlgorithmId::Ed25519,
+            AlgorithmId::P256,
+            AlgorithmId::MlDsa44,
+        ],
         2,
     );
     let bundle2 = export(&tmp, "tb2", &[roots2], 2);
@@ -171,7 +180,9 @@ fn export_install_rollover_end_to_end() {
     assert_eq!(status.installed_versions, vec![1, 2]);
     let (_, pq_anchors) = active_anchors(&store, TrustSelection::Pq).unwrap();
     assert_eq!(
-        pem_decode_all(std::str::from_utf8(&pq_anchors).unwrap()).unwrap().len(),
+        pem_decode_all(std::str::from_utf8(&pq_anchors).unwrap())
+            .unwrap()
+            .len(),
         1
     );
 
@@ -219,8 +230,7 @@ fn corrupt_distribution_never_touches_active() {
     // the acknowledgement re-verifies what it would bind.
     let bundle2b = export(&tmp, "tb2b", &[roots1], 2);
     stage_bundle(&store, &bundle2b).unwrap();
-    let installed = store
-        .join("versions/2/public/bundles/roots-all.pem");
+    let installed = store.join("versions/2/public/bundles/roots-all.pem");
     let mut bytes = std::fs::read(&installed).unwrap();
     bytes.push(b'Y');
     std::fs::write(&installed, bytes).unwrap();
