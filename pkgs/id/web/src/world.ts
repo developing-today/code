@@ -599,6 +599,11 @@ function initWorld(): void {
   };
 
   view.addEventListener("keydown", (event: KeyboardEvent) => {
+    // The paste shortcut belongs to the browser, not the terminal encoder:
+    // encoding Ctrl+V as the C0 byte 0x16 and preventing default would
+    // cancel the paste event the listener below forwards as a paste frame,
+    // so keyboard paste could never reach the program (#15170).
+    if ((event.ctrlKey || event.metaKey) && !event.altKey && event.key.toLowerCase() === "v") return;
     const bytes = encodeKey(event);
     if (!bytes) return;
     if (sendInputBytes(bytes)) event.preventDefault();
