@@ -254,6 +254,7 @@ pub(super) fn cmd_list(rest: &[String]) -> i32 {
             "lane",
             "worker",
             "task",
+            "label",
         ],
         &["json"],
     );
@@ -304,6 +305,7 @@ pub(super) fn cmd_list(rest: &[String]) -> i32 {
                 "lane": args.get("lane"),
                 "worker": args.get("worker"),
                 "task": args.get_i64("task"),
+                "label": args.get("label"),
             }),
         );
         let resp = unwrap_ok(resp);
@@ -450,6 +452,8 @@ pub(super) fn cmd_show(rest: &[String]) -> i32 {
         "claim_session_id",
         "issue",
         "pr",
+        "labels",
+        "labels_synced_at",
         "progress",
     ] {
         let payload = task.get("payload");

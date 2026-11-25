@@ -15,9 +15,11 @@
 //! - Typed mapping of response values (§5.1) is #13761; the error
 //!   mapping and grantee collapse of *source* errors (§6) is #13762;
 //!   the live/materialized read paths and the HTTP transport are
-//!   #13763. Registration and owner config (§4) are #13758 — until that
-//!   lands, allowlists are constructed directly in the shapes the
-//!   design specifies.
+//!   #13763. Registration and owner config (§2, §4) are the
+//!   [`register`] step from #13758: an [`EndpointConfig`] plus the
+//!   transport's [`EndpointProbe`] become a [`RegisteredEndpoint`] only
+//!   when the endpoint serves exactly the one exposed schema and the
+//!   credential's role is read-only (§9, invariant 9).
 //! - The translator only ever produces a `GET` request for one
 //!   collection. It has no way to express a write (design §9,
 //!   invariant 10).
@@ -50,6 +52,7 @@
 mod allowlist;
 mod query;
 mod refusal;
+mod registration;
 mod translate;
 mod value;
 
@@ -59,5 +62,9 @@ pub use query::{
     SelectItem, Target,
 };
 pub use refusal::{Feature, Refusal, RefusalCode};
+pub use registration::{
+    EndpointConfig, EndpointProbe, ObjectKind, Privilege, RegisteredEndpoint, RegistrationError,
+    RoleGrant, register,
+};
 pub use translate::{PostgrestRequest, Translator, effective_ordering};
 pub use value::Value;
