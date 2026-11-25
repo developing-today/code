@@ -130,6 +130,24 @@ impl HostFile {
         root.join(HOST_FILE_NAME)
     }
 
+    /// The host file for `root` as it stands, writing nothing: the saved
+    /// file when there is one, otherwise one rebuilt in memory from the
+    /// directories (every journal-bearing directory, asleep). For
+    /// read-only operator views such as `id host list`, which must never
+    /// create or change the host file.
+    ///
+    /// # Errors
+    ///
+    /// As [`HostFile::load`] when the file exists, otherwise as
+    /// [`HostFile::rebuild`].
+    pub fn read_or_rebuild(root: &Path) -> Result<Self> {
+        if Self::path_for(root).is_file() {
+            Self::load(root)
+        } else {
+            Self::rebuild(root)
+        }
+    }
+
     /// Load and validate the host file for `root`.
     ///
     /// # Errors
@@ -352,6 +370,35 @@ impl Census {
         slot.other_bytes = slot.other_bytes.saturating_add(row.other_bytes);
         self.worlds.push(row);
     }
+}
+
+/// Per-state counts + bytes over the worlds `file` records under `root`,
+/// without opening any world for serving. Missing directories census as
+/// zero-byte rows, never as errors.
+#[must_use]
+pub fn census_of(root: &Path, file: &HostFile) -> Census {
+    let mut census = Census::default();
+    for (name, record) in &file.worlds {
+        let dir = root.join(name);
+        let mut row = WorldCensus {
+            name: name.clone(),
+            state: record.state,
+            ..WorldCensus::default()
+        };
+        match inventory(&dir, WalkLimits::default()) {
+            Ok(inv) => {
+                row.journal_bytes = inv.journal.bytes;
+                row.modules_bytes = inv.modules.bytes;
+                row.other_bytes = inv.other.bytes;
+            }
+            Err(_) => {
+                row.missing = true;
+            }
+        }
+        census.add(row);
+    }
+    census.worlds.sort_by(|a, b| a.name.cmp(&b.name));
+    census
 }
 
 /// A live world held by the [`Supervisor`]: its service plus the replay
@@ -596,28 +643,7 @@ impl Supervisor {
     /// Per-state counts + bytes over the worlds in the host file.
     /// Missing directories census as zero-byte rows, never as errors.
     pub fn census(&self) -> Census {
-        let mut census = Census::default();
-        for (name, record) in &self.file.worlds {
-            let dir = self.root.join(name);
-            let mut row = WorldCensus {
-                name: name.clone(),
-                state: record.state,
-                ..WorldCensus::default()
-            };
-            match inventory(&dir, WalkLimits::default()) {
-                Ok(inv) => {
-                    row.journal_bytes = inv.journal.bytes;
-                    row.modules_bytes = inv.modules.bytes;
-                    row.other_bytes = inv.other.bytes;
-                }
-                Err(_) => {
-                    row.missing = true;
-                }
-            }
-            census.add(row);
-        }
-        census.worlds.sort_by(|a, b| a.name.cmp(&b.name));
-        census
+        census_of(&self.root, &self.file)
     }
 
     /// Replay `name`'s journal and hold the world live. The caller must
@@ -906,6 +932,26 @@ mod tests {
         rebuilt.save(root.path()).unwrap();
         let sup2 = Supervisor::open(root.path()).await.unwrap();
         assert_eq!(sup2.file().worlds.len(), 2);
+    }
+
+    #[test]
+    fn read_or_rebuild_and_census_of_write_nothing() {
+        let root = data_root_with(&["a", "b"]);
+        let file = HostFile::read_or_rebuild(root.path()).unwrap();
+        assert!(!HostFile::path_for(root.path()).exists());
+        assert_eq!(file.worlds.len(), 2);
+        let census = census_of(root.path(), &file);
+        assert_eq!(census.asleep.worlds, 2);
+        assert_eq!(census.live.worlds, 0);
+        assert!(!HostFile::path_for(root.path()).exists());
+
+        // A saved file is read as saved, not rebuilt.
+        let mut saved = HostFile::rebuild(root.path()).unwrap();
+        saved
+            .transition("b", LifecycleState::Archived, actor(), 1_700_000_000)
+            .unwrap();
+        saved.save(root.path()).unwrap();
+        assert_eq!(HostFile::read_or_rebuild(root.path()).unwrap(), saved);
     }
 
     #[tokio::test]
