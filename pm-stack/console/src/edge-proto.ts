@@ -303,6 +303,12 @@ export const HOLDABLE = new Set([
   // done late, the value would reach nobody and be lost, so a mint
   // asked at the edge while no machine answers is refused, never held.
   "agent.revoke-enroll",
+  // Removing a wake hook (#14544) is the same shape again: no value
+  // in it, still the right act done late. Setting one is deliberately
+  // NOT here: its arguments carry the hook's token, and a held copy
+  // would keep that value at the edge — so a set asked at the edge
+  // while no machine answers is refused, never held, like the mints.
+  "agent.wake-hook-remove",
   "prompt.enqueue",
   // What the owner says is never lost for want of a machine: it is
   // kept and filed when one is back (or filed here, when the edge can).
@@ -357,6 +363,10 @@ export function subjectOf(kind: string, args: Record<string, unknown> | null | u
       // does not queue behind this (a mint is never held), but two
       // take-backs of one agent keep the owner's order.
       return of("enroll", a.agent);
+    case "agent.wake-hook-remove":
+      // One address's wake hook: two removals of one address keep
+      // the owner's order, as a revocation's do.
+      return of("wake-hook", a.address);
     case "unit.act":
       return of("unit", a.unit);
     default:

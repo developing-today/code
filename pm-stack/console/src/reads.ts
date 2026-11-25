@@ -72,6 +72,11 @@ export async function platformRead(
       // never a hash or a value.
       case "enroll-tokens":
         return ops.enrollTokens();
+      // The wake hooks (#14544), for the Agents screen's hook card.
+      // Same bridge story again — the list is a read; setting and
+      // removing are actions (actions.ts), never reads.
+      case "wake-hooks":
+        return ops.wakeHooks();
       case "trends":
         return trends ? trends.read(query.get("days"), fresh, query.get("end")) : undefined;
     }
