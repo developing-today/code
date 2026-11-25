@@ -2,10 +2,9 @@
 //!
 //! Property tests name their oracles, per the testing doctrine:
 //! each `proptest!` block states the invariant it guards, in the
-//! design's own words. Slice 1 lands the first two oracles; the
-//! sibling-success and served-failure-advance oracles follow in
-//! slice 2 with deterministic unit coverage here where the state
-//! machine already binds them.
+//! design's own words. Slice 1 landed the first two oracles; slice
+//! 2 (#15066) adds the sibling-success and served-failure-advance
+//! oracles in property form.
 
 use fleet_pool::{
     AttemptKind, Classification, LeastLoaded, MemberState, NodeId, Pool, RoundRobin,
@@ -30,6 +29,17 @@ fn served_wall(scope: &NodeId) -> Classification {
         kind: AttemptKind::ServedFailure,
         served_disposition: ServedDisposition::Wall,
         advance: true,
+        evidence_scope: scope.clone(),
+        reset_hint: None,
+        evidence: "test served failure".to_owned(),
+    }
+}
+
+fn served(scope: &NodeId, disposition: ServedDisposition, advance: bool) -> Classification {
+    Classification {
+        kind: AttemptKind::ServedFailure,
+        served_disposition: disposition,
+        advance,
         evidence_scope: scope.clone(),
         reset_hint: None,
         evidence: "test served failure".to_owned(),
@@ -133,6 +143,32 @@ fn sibling_success_narrows_a_group_wall() {
     assert_eq!(pool.state_of(&m1, 2), MemberState::Walled);
     let scopes: Vec<&NodeId> = pool.walls().map(|w| &w.scope).collect();
     assert_eq!(scopes, vec![&m1]);
+}
+
+#[test]
+fn supporter_success_narrows_a_group_wall_to_the_remaining_failure() {
+    let mut pool = tree_pool();
+    let (m1, m2, g1) = (NodeId::new("m1"), NodeId::new("m2"), NodeId::new("g1"));
+
+    // Both siblings fail twice with group-scope evidence: one wall
+    // at g1, supported by both.
+    for member in [&m1, &m2] {
+        pool.record_outcome(member, &serve_failure(&g1, Some(100)), 0);
+        pool.record_outcome(member, &serve_failure(&g1, Some(100)), 0);
+    }
+    assert_eq!(pool.state_of(&m1, 1), MemberState::Walled);
+    assert_eq!(pool.state_of(&m2, 1), MemberState::Walled);
+
+    // A supporter's success re-opens the group for it too: the
+    // wall narrows to the member still failing (oracle: *a sibling
+    // success never leaves a group wall wider than the failing
+    // member*). Slice 1 left the group wall in place here, still
+    // gating the member that had just succeeded.
+    pool.record_success(&m1, 2);
+    assert_eq!(pool.state_of(&m1, 2), MemberState::Serving);
+    assert_eq!(pool.state_of(&m2, 2), MemberState::Walled);
+    let scopes: Vec<&NodeId> = pool.walls().map(|w| &w.scope).collect();
+    assert_eq!(scopes, vec![&m2]);
 }
 
 #[test]
@@ -241,6 +277,79 @@ proptest! {
                 named || narrowed,
                 "wall at {scope} is neither evidence-named nor narrowing-derived (evidence: {evidence_scopes:?})",
             );
+        }
+    }
+
+    /// ORACLE (#13693, design §3.5): *a sibling success never
+    /// leaves a group wall wider than the failing member.* Checked
+    /// at the moment of each success: afterwards, the succeeding
+    /// member is gated only by a wall at its own scope, never by a
+    /// group wall.
+    #[test]
+    fn oracle_sibling_success_never_leaves_a_wider_group_wall(
+        ops in prop::collection::vec((0usize..4, 0usize..3, 0u8..3), 1..=24),
+    ) {
+        let members = ["m1", "m2", "m3", "m4"];
+        let mut pool = tree_pool();
+
+        for (i, (member_idx, scope_choice, kind)) in ops.iter().enumerate() {
+            let member = members[*member_idx];
+            let group = if matches!(member, "m1" | "m2") { "g1" } else { "g2" };
+            let scope = match scope_choice {
+                0 => member,
+                1 => group,
+                _ => "root",
+            };
+            let now = i as u64;
+            match kind {
+                0 => {
+                    pool.record_outcome(
+                        &NodeId::new(member),
+                        &serve_failure(&NodeId::new(scope), Some(50)),
+                        now,
+                    );
+                }
+                1 => {
+                    pool.record_outcome(&NodeId::new(member), &served_wall(&NodeId::new(scope)), now);
+                }
+                _ => {
+                    pool.record_success(&NodeId::new(member), now);
+                    if pool.state_of(&NodeId::new(member), now) == MemberState::Walled {
+                        prop_assert!(
+                            pool.walls().any(|w| w.scope == NodeId::new(member)),
+                            "success by {member} left it gated by a group wall, \
+                             not a wall at its own scope",
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// ORACLE (#13717, design §3.5): *a served failure never
+    /// advances the walk unless its classifier says so.* The
+    /// effect's `advance` is exactly the classifier's decision for
+    /// every served disposition; a serve-failure always advances,
+    /// whatever the classification's field carries.
+    #[test]
+    fn oracle_served_failure_advances_only_as_classified(
+        cases in prop::collection::vec((0u8..3, prop::bool::ANY), 1..=16),
+    ) {
+        for (disposition, advance) in cases.iter() {
+            let mut pool = tree_pool();
+            let m = NodeId::new("m1");
+            let disp = match disposition {
+                0 => ServedDisposition::Hold,
+                1 => ServedDisposition::Demote,
+                _ => ServedDisposition::Wall,
+            };
+            let fx = pool.record_outcome(&m, &served(&m, disp, *advance), 0);
+            prop_assert_eq!(fx.advance, *advance);
+
+            let mut cls = serve_failure(&m, None);
+            cls.advance = !advance;
+            let fx = pool.record_outcome(&m, &cls, 1);
+            prop_assert!(fx.advance, "a serve-failure must always advance the walk");
         }
     }
 }
