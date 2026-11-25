@@ -177,7 +177,7 @@ fn accessibility_role_survives_lowering_decision_5855_invariant_5() {
             node.role,
             vocabulary::lookup(kind).expect("registry kind").role
         );
-        assert!(!node.role.is_empty());
+        assert_ne!(node.role, "");
     }
 }
 
@@ -213,7 +213,10 @@ fn mapped_roles_emit_utilities_from_decision_5851_s3() {
         assert!(artefact.class_set.iter().any(|c| c == class));
     }
     assert_eq!(report.mapped.len(), 4);
-    assert!(report.defaulted.is_empty());
+    assert_eq!(
+        report.defaulted,
+        [] as [id_render::lower::DefaultedAssertion; 0]
+    );
     let mut sorted = artefact.class_set.clone();
     sorted.sort();
     assert_eq!(artefact.class_set, sorted, "class set is order-normalised");
@@ -248,13 +251,14 @@ fn density_is_mapped_without_utilities_decision_5851_s3_3() {
     let (artefact, report) =
         lower_web(&doc, &composed(vec![prop("density", "compact")])).expect("lowering succeeds");
     assert_eq!(report.mapped.len(), 1);
-    assert!(report.mapped[0].classes.is_empty());
-    assert!(report.defaulted.is_empty());
-    assert!(
-        find(&artefact.root, "button")
-            .expect("button")
-            .classes
-            .is_empty()
+    assert_eq!(report.mapped[0].classes, [] as [std::string::String; 0]);
+    assert_eq!(
+        report.defaulted,
+        [] as [id_render::lower::DefaultedAssertion; 0]
+    );
+    assert_eq!(
+        find(&artefact.root, "button").expect("button").classes,
+        [] as [std::string::String; 0]
     );
 }
 
@@ -276,7 +280,7 @@ fn raw_css_winner_is_carried_as_text_not_classes_decision_5851_s5() {
         button.raw_css,
         vec![("color".to_string(), "rebeccapurple".to_string())]
     );
-    assert!(button.classes.is_empty());
+    assert_eq!(button.classes, [] as [std::string::String; 0]);
     assert!(report.mapped.is_empty() && report.defaulted.is_empty());
 }
 

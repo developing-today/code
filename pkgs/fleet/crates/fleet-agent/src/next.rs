@@ -33,6 +33,20 @@ use crate::{
     DEFAULT_REPO, EXIT_NO_WORK, EXIT_OK, Out, R, World, argv, check_name, check_repo, parse, usage,
 };
 
+/// The task-it-or-queue-it rule handed to an agent woken by a pushed
+/// command (design §4.6, #14372). Verbatim copy of fleet-bridge's
+/// WORK_RULE; the same text stands in the fleet book
+/// (pkgs/fleet/book/reference/bridge.md). Edit all three together.
+pub const PUSH_WORK_RULE: &str = "\
+Task it or queue it. An instruction is a work item: do the work now, in \
+this session, and reply — or queue it as a repo-task/v1 packet whose \
+context_refs carry the bridge surface, the message id and the batch, and \
+reply with the task id. Record the outcome with fleet bridge work: \
+--state acted for work done in-session, --state queued --task <id> for \
+queued work, --state done when the work is finished. An instruction \
+that is neither acted on nor queued is a defect: it stays at received, \
+where the owner can see it stuck in the pipeline.";
+
 /// Labels that hold an issue (FDR-0012): a person set them on purpose.
 pub const HOLD_LABELS: [&str; 3] = ["held", "user/owned", "do-not-auto-edit"];
 /// Labels on an issue that indexes other work and is not itself a
@@ -603,6 +617,11 @@ pub fn next(world: &dyn World, args: &[String]) -> R<(Value, i32)> {
                     "command_id": id,
                     "instructions": message.get("body").and_then(Value::as_str).unwrap_or(""),
                     "message": message,
+                    // The task-it-or-queue-it rule (design §4.6, #14372):
+                    // the same text the work verb's help and the fleet
+                    // book carry (fleet-bridge's WORK_RULE) — keep all
+                    // three verbatim-consistent.
+                    "rule": PUSH_WORK_RULE,
                 });
                 let then = vec![
                     format!(
@@ -611,6 +630,11 @@ pub fn next(world: &dyn World, args: &[String]) -> R<(Value, i32)> {
                     format!(
                         "fleet bridge post --agent {agent} --reply-to {id} \"could not: <reason>\""
                     ),
+                    format!("fleet bridge work --agent {agent} --state acted {id}"),
+                    format!(
+                        "fleet bridge work --agent {agent} --state queued --task <queue task id> {id}"
+                    ),
+                    format!("fleet bridge work --agent {agent} --state done {id}"),
                 ];
                 return Ok(answer("push", task, then, log));
             }
@@ -668,12 +692,15 @@ pub fn next(world: &dyn World, args: &[String]) -> R<(Value, i32)> {
                          complete, or park with a resume condition that is not a person. \
                          Your claim lease is {} seconds (4 hours) from the claim: \
                          complete or park before it lapses, or the task returns to the \
-                         queue and your completion will be refused.",
+                         queue and your completion will be refused. On long work, \
+                         heartbeat to extend the lease; checkpointing saves progress \
+                         but does not renew it.",
                         AGENT_CLAIM_LEASE_SECONDS
                     ),
                 });
                 let then = vec![
                     format!("fleet queue checkpoint {id} --worker {worker} --lane {lane} ..."),
+                    format!("fleet queue heartbeat {id} --worker {worker} --lane {lane} ..."),
                     format!("fleet queue complete {id} --worker {worker} --lane {lane} ..."),
                 ];
                 return Ok(answer("queue", task, then, log));

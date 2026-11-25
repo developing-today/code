@@ -18,17 +18,20 @@
   lib,
   runCommand,
   mdbook,
+  python3,
   siteUrl ? "/",
 }:
 let
-  # Only the book inputs enter the store: book.toml plus the book
-  # tree. The Rust sources next to them are not book content and stay
-  # out.
+  # The book inputs and the two source contracts checked at build time
+  # enter the store. Other Rust sources stay out.
   src = lib.fileset.toSource {
     root = ./.;
     fileset = lib.fileset.unions [
       ./book.toml
       ./book
+      ./docs/check_book_coverage.py
+      ./crates/atlas-core/src/lib.rs
+      ./crates/atlas-proto/query-parameters-v1.json
     ];
   };
 in
@@ -36,6 +39,7 @@ runCommand "atlas-docs"
   {
     nativeBuildInputs = [
       mdbook
+      python3
     ];
     meta = {
       description = "atlas documentation book (mdBook rendering of pkgs/atlas-search/book)";
@@ -50,6 +54,7 @@ runCommand "atlas-docs"
     cp -r ${src} work
     chmod -R u+w work
     cd work
+    python3 docs/check_book_coverage.py
     # Links that escape the book source tree would 404 in the rendered
     # book: from book/, ../README.md means pkgs/atlas-search/README.md,
     # which is not part of the artifact. Rewrite those links — in the

@@ -283,6 +283,7 @@
       "id": "id.hosted-worker.routing",
       "paths": [
         "pkgs/id/hosted-worker/test/routing.test.ts",
+        "pkgs/id/hosted-worker/test/persistent-account-directory.test.ts",
         "pkgs/id/hosted-worker/test/admission-gate.test.ts",
         "pkgs/id/hosted-worker/test/provisioning.test.ts",
         "pkgs/id/hosted-worker/test/provisioning-surface.test.ts",
@@ -304,7 +305,7 @@
         "pkgs/id/hosted-worker/test/routing-boundary.test.ts",
         "pkgs/id/hosted-worker/test/migration-control.test.ts"
       ],
-      "invocation": "cd pkgs/id/hosted-worker && npm test (node --experimental-transform-types --test test/routing.test.ts test/admission-gate.test.ts test/provisioning.test.ts test/provisioning-surface.test.ts test/enablement.test.ts test/blobs.test.ts test/canonical-cbor.test.ts test/usage.test.ts test/currency.test.ts test/front-door.test.ts test/id-uri-vectors.test.ts test/bridge-blake3.test.ts test/bridge-event.test.ts test/bridge-range.test.ts test/bridge-store.test.ts test/bridge-session.test.ts test/bridge-do.test.ts test/tenancy-schema.test.ts test/export.test.ts test/routing-boundary.test.ts test/migration-control.test.ts)",
+      "invocation": "cd pkgs/id/hosted-worker && npm test (node --experimental-transform-types --test test/routing.test.ts test/persistent-account-directory.test.ts test/admission-gate.test.ts test/provisioning.test.ts test/provisioning-surface.test.ts test/enablement.test.ts test/blobs.test.ts test/canonical-cbor.test.ts test/usage.test.ts test/currency.test.ts test/front-door.test.ts test/id-uri-vectors.test.ts test/bridge-blake3.test.ts test/bridge-event.test.ts test/bridge-range.test.ts test/bridge-store.test.ts test/bridge-session.test.ts test/bridge-do.test.ts test/tenancy-schema.test.ts test/export.test.ts test/routing-boundary.test.ts test/migration-control.test.ts)",
       "venue": {
         "workflow": ".github/workflows/id-hosted-worker-tests.yml",
         "job_step": "hosted-worker-tests / Run the hosted-worker routing suite",
@@ -759,9 +760,7 @@
     },
     {
       "id": "pm-service.collector",
-      "paths": [
-        "pm-stack/pm-service/test/collector.test.ts"
-      ],
+      "paths": ["pm-stack/pm-service/test/collector.test.ts"],
       "invocation": "cd pm-stack/pm-service && bun test",
       "venue": {
         "workflow": ".github/workflows/pm-stack-tests.yml",
@@ -774,9 +773,7 @@
     },
     {
       "id": "pm-service.read-api",
-      "paths": [
-        "pm-stack/pm-service/test/read-api.test.ts"
-      ],
+      "paths": ["pm-stack/pm-service/test/read-api.test.ts"],
       "invocation": "cd pm-stack/pm-service && bun test",
       "venue": {
         "workflow": ".github/workflows/pm-stack-tests.yml",
@@ -1202,6 +1199,19 @@
       "related_issues": [1411]
     },
     {
+      "id": "ci.root-status-files",
+      "paths": [".github/scripts/check-root-status-files.test.sh"],
+      "invocation": "bash .github/scripts/check-root-status-files.test.sh",
+      "venue": {
+        "workflow": ".github/workflows/root-status-guard.yml",
+        "job_step": "Guard contract tests (#12136)",
+        "state": "active",
+        "dispatchable": true
+      },
+      "status": "mapped",
+      "related_issues": [12136]
+    },
+    {
       "id": "bin.node-tests",
       "paths": ["bin/*.test.mjs"],
       "invocation": "node --test bin/*.test.mjs",
@@ -1231,6 +1241,20 @@
       "status": "uncovered-in-fact",
       "phase3_issue": 6187,
       "reason": "The registered scripts-test workflow is disabled_manually."
+    },
+    {
+      "id": "scripts.nix-dep-gate",
+      "paths": ["scripts/tests/test_check_nix_dep_gate.py"],
+      "invocation": "python3 -m unittest discover -s scripts/tests -p 'test_check_nix_dep_gate.py' -v",
+      "venue": {
+        "workflow": ".github/workflows/nix-dep-gate.yml",
+        "job_step": "Run gate contract tests (#14195)",
+        "state": "active",
+        "dispatchable": true
+      },
+      "status": "mapped",
+      "related_issues": [14195],
+      "reason": "Wired by #14195 slice 1: the gate script and its contract tests run in the dedicated nix-dep-gate workflow (nightly + workflow_dispatch)."
     },
     {
       "id": "scripts.provider-retirement-gate",

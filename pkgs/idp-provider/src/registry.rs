@@ -20,6 +20,155 @@ use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 
+#[cfg(test)]
+mod saml_registration_tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    fn load_sps(sps: serde_json::Value) -> Result<ProviderConfig, String> {
+        let config = serde_json::json!({
+            "account": {"account_id": "owner", "roles": []},
+            "saml_sps": sps
+        });
+        let path = std::env::temp_dir().join(format!("idp-saml-{}.json", random_b64url(16)));
+        std::fs::write(&path, config.to_string()).unwrap();
+        let result = ProviderConfig::load(&path);
+        std::fs::remove_file(path).unwrap();
+        result
+    }
+
+    fn sp(entity_id: &str, acs: &str) -> serde_json::Value {
+        serde_json::json!({"entity_id": entity_id, "acs_urls": [acs]})
+    }
+
+    #[test]
+    fn saml_registry_oracle_rejects_invalid_trust_configuration() {
+        // Oracle: static registration contract, design §5 + HTTPS/loopback policy.
+        for bad in [
+            sp("", "https://sp.example/acs"),
+            sp("  ", "https://sp.example/acs"),
+            serde_json::json!({"entity_id": "urn:test:sp", "acs_urls": []}),
+            sp("urn:test:sp", "/acs"),
+            sp("urn:test:sp", "http://sp.example/acs"),
+            sp("urn:test:sp", "http://localhost.example/acs"),
+            sp("urn:test:sp", "http://[2001:db8::1]/acs"),
+            sp("urn:test:sp", "ftp://sp.example/acs"),
+            sp("urn:test:sp", "https://user:password@sp.example/acs"),
+            sp("urn:test:sp", "https://sp.example/acs#fragment"),
+        ] {
+            assert!(
+                load_sps(serde_json::json!([bad])).is_err(),
+                "accepted {bad}"
+            );
+        }
+        let entry = sp("urn:test:sp", "https://sp.example/acs");
+        assert!(load_sps(serde_json::json!([entry, entry])).is_err());
+        for acs in [
+            "http://localhost:8080/acs",
+            "http://127.0.0.2/acs",
+            "http://[::1]/acs",
+        ] {
+            assert!(load_sps(serde_json::json!([sp("local", acs)])).is_ok());
+        }
+    }
+
+    #[test]
+    fn saml_registry_oracle_defaults_and_exact_matching() {
+        // Oracle: design §§3/5; legacy configs remain OIDC-only.
+        let legacy: ProviderConfig = serde_json::from_value(serde_json::json!({
+            "account": {"account_id": "owner", "roles": []}
+        }))
+        .unwrap();
+        assert!(legacy.saml_sps.is_empty());
+        let config = load_sps(serde_json::json!([
+            sp("urn:test:sp", "https://sp.example/acs"),
+            {"entity_id": "other", "acs_urls": ["http://[::1]:8080/acs"],
+             "released_attributes": []}
+        ]))
+        .unwrap();
+        let registered = config.saml_sp("urn:test:sp").unwrap();
+        assert_eq!(registered.released_attributes, SAML_ATTRIBUTES);
+        assert!(!registered.require_signed_requests);
+        assert!(registered.request_signing_certificate.is_none());
+        assert!(registered.accepts_acs("https://sp.example/acs"));
+        assert!(!registered.accepts_acs("https://sp.example/acs/"));
+        assert!(!registered.accepts_acs("https://SP.example/acs"));
+        assert!(config.saml_sp("URN:test:sp").is_none());
+        assert!(config.saml_sp("unknown").is_none());
+        assert!(
+            config
+                .saml_sp("other")
+                .unwrap()
+                .released_attributes
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn saml_registry_oracle_certificate_and_release_policy() {
+        // Oracle: signed requests need a valid configured trust cert;
+        // the release set may only narrow the design's two attributes.
+        let cert = include_str!("../../idp-pki/trust/saml-signing.crt.pem");
+        let mut entry = sp("urn:test:sp", "https://sp.example/acs");
+        entry["require_signed_requests"] = true.into();
+        assert!(load_sps(serde_json::json!([entry])).is_err());
+        entry["request_signing_certificate"] = cert.into();
+        entry["acs_urls"] =
+            serde_json::json!(["https://sp.example/acs", "https://sp.example/alternate"]);
+        entry["released_attributes"] = serde_json::json!(["roles"]);
+        let config = load_sps(serde_json::json!([entry])).unwrap();
+        let registered = config.saml_sp("urn:test:sp").unwrap();
+        assert_eq!(registered.entity_id, "urn:test:sp");
+        assert_eq!(
+            registered.acs_urls,
+            ["https://sp.example/acs", "https://sp.example/alternate"]
+        );
+        assert_eq!(
+            registered.request_signing_certificate.as_deref(),
+            Some(cert)
+        );
+        assert_eq!(registered.released_attributes, ["roles"]);
+        assert!(registered.require_signed_requests);
+        entry["request_signing_certificate"] = "-----BEGIN CERTIFICATE-----\nbogus".into();
+        assert!(load_sps(serde_json::json!([entry])).is_err());
+        entry["request_signing_certificate"] = cert.into();
+        entry["released_attributes"] = serde_json::json!(["email"]);
+        assert!(load_sps(serde_json::json!([entry])).is_err());
+        entry["released_attributes"] = serde_json::json!(["roles", "roles"]);
+        assert!(load_sps(serde_json::json!([entry])).is_err());
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(512))]
+
+        #[test]
+        fn saml_registry_property_oracle_http_only_loopback(
+            octets in any::<[u8; 4]>(), port in 1u16..=65535, path in "[a-z]{1,24}"
+        ) {
+            // Oracle: std's IP loopback classification, independent of URL policy.
+            let ip = std::net::Ipv4Addr::from(octets);
+            let http = format!("http://{ip}:{port}/{path}");
+            let https = format!("https://{ip}:{port}/{path}");
+            prop_assert_eq!(validate_acs_url(&http).is_ok(), ip.is_loopback());
+            prop_assert!(validate_acs_url(&https).is_ok());
+        }
+
+        #[test]
+        fn saml_registry_property_oracle_uniqueness_and_exact_acs(
+            entity in "[a-zA-Z0-9:_-]{1,80}", path in "[a-z]{1,24}"
+        ) {
+            // Oracle: set uniqueness and literal equality (no URL normalization).
+            let url = format!("https://sp.example/{path}");
+            let sp: SamlSp = serde_json::from_value(sp(&entity, &url)).unwrap();
+            prop_assert!(validate_saml_registrations(std::slice::from_ref(&sp)).is_ok());
+            prop_assert!(sp.accepts_acs(&url));
+            let different_acs = format!("{url}/");
+            prop_assert!(!sp.accepts_acs(&different_acs));
+            prop_assert!(validate_saml_registrations(&[sp.clone(), sp]).is_err());
+        }
+    }
+}
+
 /// The stand-up door for this slice: the design's *devtoday local*
 /// identity (§3 of the settled design). The federated doors
 /// (GitHub/Google/Microsoft) land as their own slices and link into
@@ -111,9 +260,144 @@ pub struct UpstreamDoor {
     pub scopes: Vec<String>,
 }
 
+/// The attributes a SAML SP may receive. The design's default release
+/// set is exactly these two (§3); a registration may narrow it but
+/// never add an attribute the provider does not vouch for.
+pub const SAML_ATTRIBUTES: [&str; 2] = ["roles", "displayName"];
+
+fn default_saml_attributes() -> Vec<String> {
+    SAML_ATTRIBUTES
+        .iter()
+        .map(|attr| (*attr).to_string())
+        .collect()
+}
+
+/// One statically registered SAML service provider (design §5). Trust
+/// is a reviewed config change: nothing here fetches metadata, and no
+/// field accepts a metadata URL.
+#[derive(Clone, Debug, Deserialize)]
+pub struct SamlSp {
+    /// The SP's entityID, matched exactly (opaque identifier, not
+    /// required to be a URL).
+    pub entity_id: String,
+    /// Assertion Consumer Service URLs; at least one. The response
+    /// Recipient must equal one of these exactly.
+    pub acs_urls: Vec<String>,
+    /// Optional SP certificate for verifying signed AuthnRequests
+    /// (PEM). Required when `require_signed_requests` is set.
+    #[serde(default)]
+    pub request_signing_certificate: Option<String>,
+    /// Attributes released to this SP; defaults to the design's
+    /// `roles` + `displayName` set.
+    #[serde(default = "default_saml_attributes")]
+    pub released_attributes: Vec<String>,
+    /// Reject unsigned AuthnRequests from this SP.
+    #[serde(default)]
+    pub require_signed_requests: bool,
+}
+
+impl SamlSp {
+    pub fn accepts_acs(&self, acs: &str) -> bool {
+        self.acs_urls.iter().any(|u| u == acs)
+    }
+}
+
+fn loopback_host(host: &str) -> bool {
+    host.eq_ignore_ascii_case("localhost")
+        || host
+            .trim_start_matches('[')
+            .trim_end_matches(']')
+            .parse::<std::net::IpAddr>()
+            .map(|ip| ip.is_loopback())
+            .unwrap_or(false)
+}
+
+/// Validate one ACS URL: absolute HTTP(S), no credentials, no
+/// fragment, HTTPS unless the host is loopback (the local development
+/// carve-out; everything reachable off-host is TLS-only).
+fn validate_acs_url(url: &str) -> Result<(), String> {
+    let parsed = reqwest::Url::parse(url).map_err(|e| format!("invalid ACS URL {url:?}: {e}"))?;
+    if !parsed.username().is_empty() || parsed.password().is_some() {
+        return Err(format!("ACS URL {url:?} must not carry credentials"));
+    }
+    if parsed.fragment().is_some() {
+        return Err(format!("ACS URL {url:?} must not carry a fragment"));
+    }
+    let host = parsed
+        .host_str()
+        .ok_or_else(|| format!("ACS URL {url:?} has no host"))?;
+    match parsed.scheme() {
+        "https" => Ok(()),
+        "http" if loopback_host(host) => Ok(()),
+        "http" => Err(format!(
+            "ACS URL {url:?} is HTTP; only loopback HTTP is allowed"
+        )),
+        scheme => Err(format!("ACS URL {url:?} must be http(s), not {scheme}")),
+    }
+}
+
+fn validate_saml_registrations(sps: &[SamlSp]) -> Result<(), String> {
+    let mut seen = std::collections::HashSet::new();
+    for sp in sps {
+        if sp.entity_id.trim().is_empty() {
+            return Err("SAML SP registration has an empty entityID".into());
+        }
+        if !seen.insert(sp.entity_id.as_str()) {
+            return Err(format!("duplicate SAML entityID {:?}", sp.entity_id));
+        }
+        if sp.acs_urls.is_empty() {
+            return Err(format!("SAML SP {:?} has no ACS URLs", sp.entity_id));
+        }
+        let mut acs_seen = std::collections::HashSet::new();
+        for acs in &sp.acs_urls {
+            validate_acs_url(acs).map_err(|e| format!("SAML SP {:?}: {e}", sp.entity_id))?;
+            if !acs_seen.insert(acs.as_str()) {
+                return Err(format!(
+                    "SAML SP {:?} repeats ACS URL {acs:?}",
+                    sp.entity_id
+                ));
+            }
+        }
+        if let Some(cert) = &sp.request_signing_certificate {
+            use der::DecodePem;
+            if x509_cert::Certificate::from_pem(cert.as_bytes()).is_err() {
+                return Err(format!(
+                    "SAML SP {:?} request-signing certificate is not a valid PEM X.509 certificate",
+                    sp.entity_id
+                ));
+            }
+        }
+        if sp.require_signed_requests && sp.request_signing_certificate.is_none() {
+            return Err(format!(
+                "SAML SP {:?} requires signed requests but has no certificate",
+                sp.entity_id
+            ));
+        }
+        let mut attr_seen = std::collections::HashSet::new();
+        for attr in &sp.released_attributes {
+            if !SAML_ATTRIBUTES.contains(&attr.as_str()) {
+                return Err(format!(
+                    "SAML SP {:?} releases unknown attribute {attr:?}",
+                    sp.entity_id
+                ));
+            }
+            if !attr_seen.insert(attr.as_str()) {
+                return Err(format!(
+                    "SAML SP {:?} repeats attribute {attr:?}",
+                    sp.entity_id
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
 #[derive(Clone, Debug, Deserialize)]
 pub struct ProviderConfig {
     pub account: Account,
+    /// Static SAML trust registry; absent in legacy OIDC configs.
+    #[serde(default)]
+    pub saml_sps: Vec<SamlSp>,
     /// Deny-by-default allowlist of identity keys (`provider:subject`)
     /// holding only the owner's account IDs.
     #[serde(default)]
@@ -136,8 +420,15 @@ impl ProviderConfig {
     pub fn load(path: &Path) -> Result<Self, String> {
         let text = std::fs::read_to_string(path)
             .map_err(|e| format!("failed to read provider config {}: {e}", path.display()))?;
-        serde_json::from_str(&text)
-            .map_err(|e| format!("failed to parse provider config {}: {e}", path.display()))
+        let config: Self = serde_json::from_str(&text)
+            .map_err(|e| format!("failed to parse provider config {}: {e}", path.display()))?;
+        validate_saml_registrations(&config.saml_sps)
+            .map_err(|e| format!("invalid provider config {}: {e}", path.display()))?;
+        Ok(config)
+    }
+
+    pub fn saml_sp(&self, entity_id: &str) -> Option<&SamlSp> {
+        self.saml_sps.iter().find(|sp| sp.entity_id == entity_id)
     }
 
     pub fn client(&self, client_id: &str) -> Option<&Client> {

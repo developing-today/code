@@ -11,7 +11,11 @@
 //! module is the first connector slice:
 //!
 //! * [`MEMORY_CORPORA`] + [`register_memory_corpora`] register the
-//!   design's five corpora as staging units with provenance.
+//!   design's five corpora as staging units with provenance. Each
+//!   unit's registry record carries its embedding-model identity
+//!   (#8623 slice 2): re-registration verifies the recorded identity
+//!   is the mandated model and refuses a corpus recorded under a
+//!   retired model, so ingestion never mixes incomparable vectors.
 //! * [`MemoryEntry`] + [`parse_memory_export`] read a read-only JSON
 //!   export of OpenClaw's memory-lancedb store. The export carries
 //!   the store's columns; its `vector` column is deliberately
@@ -100,14 +104,29 @@ pub const MEMORY_CORPORA: [MemoryCorpus; 5] = [
 /// Registration is idempotent — a corpus already in the registry is
 /// returned as recorded, never re-provisioned — so a connector run
 /// can call this first, unconditionally.
+///
+/// Slice 2 (#8623): a corpus already in the registry is checked
+/// against the mandated embedding-model identity before it is
+/// returned. A corpus recorded under a retired model fails loudly
+/// here — ingestion into it is refused — instead of mixing vectors
+/// from different models into one corpus. Rebuild the corpus with
+/// the re-embed job first; this function never rewrites identity.
 pub fn register_memory_corpora(
     registry: &Registry,
     staging_dir: &Path,
     now: &str,
 ) -> Result<Vec<StagingUnit>> {
+    use crate::shards::EMBEDDING_MODEL_ID;
+
     let mut out = Vec::with_capacity(MEMORY_CORPORA.len());
     for corpus in MEMORY_CORPORA {
         if let Some(unit) = registry.lookup(corpus.unit_id)? {
+            if unit.embedding_model != EMBEDDING_MODEL_ID {
+                return Err(Error::fatal(format!(
+                    "memory connector: refusing corpus {}: its recorded embedding_model `{}` is not the mandated `{EMBEDDING_MODEL_ID}`; vectors from different embedding models are not comparable — rebuild the corpus with the re-embed job first",
+                    corpus.unit_id, unit.embedding_model
+                )));
+            }
             out.push(unit);
             continue;
         }

@@ -85,6 +85,7 @@ pub(crate) fn after_iso(secs: i64) -> String {
 pub(crate) enum Arg {
     Text(String),
     Int(i64),
+    Float(f64),
     Null,
 }
 
@@ -93,6 +94,9 @@ impl Arg {
         match self {
             Arg::Text(v) => json!({"type": "text", "value": v}),
             Arg::Int(v) => json!({"type": "integer", "value": v.to_string()}),
+            // hrana carries floats as JSON numbers (integers go as
+            // strings); both shapes are accepted on read.
+            Arg::Float(v) => json!({"type": "float", "value": v}),
             Arg::Null => json!({"type": "null"}),
         }
     }
@@ -130,9 +134,11 @@ pub(crate) fn cell_to_json(cell: &Value) -> Value {
             .and_then(|s| s.parse::<i64>().ok())
             .map(|n| json!(n))
             .unwrap_or(Value::Null),
+        // The pipeline may carry a float as a JSON number
+        // (hrana) or as a string (mirrors that stringify args);
+        // accept both so REAL columns read back either way.
         "float" => raw
-            .and_then(|v| v.as_str())
-            .and_then(|s| s.parse::<f64>().ok())
+            .and_then(|v| v.as_f64().or_else(|| v.as_str()?.parse::<f64>().ok()))
             .and_then(serde_json::Number::from_f64)
             .map(Value::Number)
             .unwrap_or(Value::Null),
@@ -1012,12 +1018,13 @@ impl Clone for Arg {
         match self {
             Arg::Text(s) => Arg::Text(s.clone()),
             Arg::Int(n) => Arg::Int(*n),
+            Arg::Float(f) => Arg::Float(*f),
             Arg::Null => Arg::Null,
         }
     }
 }
 
-pub(crate) const SCHEMA: [&str; 30] = [
+pub(crate) const SCHEMA: [&str; 34] = [
     "CREATE TABLE IF NOT EXISTS tasks (\
         id INTEGER PRIMARY KEY AUTOINCREMENT, \
         queue TEXT NOT NULL, title TEXT, body TEXT, \
@@ -1131,6 +1138,13 @@ pub(crate) const SCHEMA: [&str; 30] = [
     crate::turso_queue::ACTIONS_EXEC_DDL_COMMANDS_IDX,
     crate::turso_queue::ACTIONS_EXEC_DDL_IO,
     crate::turso_queue::ACTIONS_EXEC_DDL_IO_IDX,
+    // #13765: central placement coordinator — slot claims, the
+    // cross-seat load view, the fleet-wide Blacksmith budget, and
+    // the waitlist. DDL of record in the placement_coord module.
+    crate::turso_queue::PLACEMENT_COORD_DDL_OWNER,
+    crate::turso_queue::PLACEMENT_COORD_DDL_CLAIMS,
+    crate::turso_queue::PLACEMENT_COORD_DDL_BUDGETS,
+    crate::turso_queue::PLACEMENT_COORD_DDL_CLAIMS_IDX,
 ];
 
 // ---------------------------------------------------------------------------

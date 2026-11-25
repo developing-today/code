@@ -291,7 +291,7 @@ test("duplicate delivery: one DB row, unchanged second result, one triage task",
   assert.equal(r1.sufficient, false);
   assert.equal(r1.queue?.action, "enqueued");
   const key = triageDedupeKey(REPO, 8);
-  const tasks = world.queueStore.tasksByDedupe(TRIAGE_QUEUE, key);
+  const tasks = await world.queueStore.tasksByDedupe(TRIAGE_QUEUE, key);
   assert.equal(tasks.length, 1);
   assert.equal((tasks[0].payload as { kind: string }).kind, "triage");
 
@@ -300,7 +300,7 @@ test("duplicate delivery: one DB row, unchanged second result, one triage task",
   const r2 = (await second.json()) as CheckResult;
   assert.equal(r2.outcome, "unchanged");
   assert.equal(r2.queue?.action, "already_enqueued");
-  assert.equal(world.queueStore.tasksByDedupe(TRIAGE_QUEUE, key).length, 1);
+  assert.equal((await world.queueStore.tasksByDedupe(TRIAGE_QUEUE, key)).length, 1);
   const rows = await world.store.list("unattributed", {});
   assert.equal(rows.filter((r) => r.number === 8).length, 1);
 });
@@ -470,7 +470,7 @@ test("an authored block already queue-tracked is sufficient without a parent", a
   const result = (await res.json()) as CheckResult;
   assert.equal(result.sufficient, true);
   assert.equal(result.queue?.action, "not_warranted");
-  assert.equal(world.queueStore.tasksByDedupe(TRIAGE_QUEUE, triageDedupeKey(REPO, 13)).length, 0);
+  assert.equal((await world.queueStore.tasksByDedupe(TRIAGE_QUEUE, triageDedupeKey(REPO, 13))).length, 0);
 });
 
 // --- Malformed input fails closed, per door idiom.

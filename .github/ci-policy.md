@@ -108,6 +108,7 @@ never a state that persists by default.
 | opencode-config-guard     | nightly schedule      | yes    |
 | mcpx fix-test guard       | nightly schedule      | yes    |
 | production-line guard     | nightly schedule      | yes    |
+| root-status guard         | nightly schedule      | yes    |
 | go modules build          | nightly schedule      | yes    |
 | identity build            | nightly schedule      | yes    |
 | map build                 | nightly schedule      | yes    |

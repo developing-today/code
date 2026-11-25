@@ -21,6 +21,8 @@ use crate::timeparse::{CalendarDuration, Rfc3339};
 use rcgen::{BasicConstraints, CertificateParams, DnType, IsCa, KeyUsagePurpose};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
+use std::fs::OpenOptions;
+use std::io::Write;
 use std::path::PathBuf;
 
 /// Full usage for the cert domain (also what `fleet cert --help`
@@ -36,6 +38,9 @@ Groups and verbs (spec §6.1 tree; status as built):
   ocsp     sign | inspect | test
   chain    build | test
   bundle   inspect
+  inventory list | show | search | audit
+  key      generate | inspect
+  publish  plan | verify (apply | status deferred, production-gated)
   profile  list | show
   algorithms list | describe
   explain  [topic]
@@ -228,6 +233,9 @@ fn run_inner(args: &[String]) -> Result<i32> {
         "ocsp" => ocsp_cmd(rest, json_out),
         "chain" => chain_cmd(rest, json_out),
         "bundle" => bundle_cmd(rest, json_out),
+        "inventory" => inventory_cmd(rest, json_out),
+        "key" => key_cmd(rest, json_out),
+        "publish" => publish_cmd(rest, json_out),
         "profile" => profile_cmd(rest, json_out),
         "algorithms" => algorithms_cmd(rest, json_out),
         "explain" => explain_cmd(rest, json_out),
@@ -236,6 +244,208 @@ fn run_inner(args: &[String]) -> Result<i32> {
             "unknown cert group '{other}' — run 'fleet cert --help' for the surface"
         ))),
     }
+}
+
+// ---------------------------------------------------------------- inventory (§6.1 read-only)
+
+fn inventory_scan_args(p: &Parsed) -> Result<crate::inventory::InventoryRequest> {
+    let dir = p
+        .get("dir")
+        .map(|s| s.to_string())
+        .or_else(|| p.positional(0).map(|s| s.to_string()))
+        .unwrap_or_else(|| ".".to_string());
+    let at = p
+        .get("at")
+        .map(Rfc3339::parse)
+        .transpose()?
+        .unwrap_or_else(Rfc3339::now);
+    let ca_within = p
+        .get("ca-within")
+        .map(CalendarDuration::parse)
+        .transpose()?
+        .unwrap_or(crate::inventory::DEFAULT_CA_WITHIN);
+    let leaf_within = p
+        .get("leaf-within")
+        .map(CalendarDuration::parse)
+        .transpose()?
+        .unwrap_or(crate::inventory::DEFAULT_LEAF_WITHIN);
+    Ok(crate::inventory::InventoryRequest {
+        dir: PathBuf::from(dir),
+        at,
+        ca_within,
+        leaf_within,
+    })
+}
+
+fn inventory_cmd(args: &[String], json_out: bool) -> Result<i32> {
+    let verb = args.first().map(|s| s.as_str()).unwrap_or("");
+    let rest = &args[1.min(args.len())..];
+    match verb {
+        "list" => {
+            let p = parse_args(rest, &["dir", "at", "ca-within", "leaf-within"], &["json"])?;
+            let req = inventory_scan_args(&p)?;
+            let report = crate::inventory::audit(&req)?;
+            let (text, value) = crate::inventory::render_list(&report);
+            Ok(emit(json_out, text, value))
+        }
+        "show" => {
+            let p = parse_args(
+                rest,
+                &["bundle", "dir", "at", "ca-within", "leaf-within"],
+                &["json"],
+            )?;
+            let bundle_dir = p
+                .get("bundle")
+                .map(|s| s.to_string())
+                .or_else(|| p.positional(0).map(|s| s.to_string()))
+                .ok_or_else(|| CertError::usage("inventory show needs a bundle directory"))?;
+            let mut req = inventory_scan_args(&p)?;
+            // `list_bundles` considers the scan root itself when it is
+            // a bundle, so pointing the scan at the bundle directory
+            // audits exactly that bundle — including parseable-but-
+            // unverifiable ones.
+            req.dir = PathBuf::from(&bundle_dir);
+            let report = crate::inventory::audit(&req)?;
+            let at = report.at;
+            let found = report.bundles.into_iter().next().ok_or_else(|| {
+                CertError::usage(format!("{bundle_dir} is not a bundle directory"))
+            })?;
+            let (text, value) = crate::inventory::render_show(&found, at);
+            Ok(emit(json_out, text, value))
+        }
+        "search" => {
+            let p = parse_args(
+                rest,
+                &[
+                    "dir",
+                    "at",
+                    "ca-within",
+                    "leaf-within",
+                    "subject",
+                    "fingerprint",
+                    "role",
+                    "algorithm",
+                ],
+                &["expired", "json"],
+            )?;
+            let req = inventory_scan_args(&p)?;
+            let filter = crate::inventory::SearchFilter {
+                subject: p.get("subject").map(|s| s.to_string()),
+                fingerprint: p.get("fingerprint").map(|s| s.to_string()),
+                role: p.get("role").map(|s| s.to_string()),
+                algorithm: p.get("algorithm").map(|s| s.to_string()),
+                expired: p.has("expired"),
+            };
+            let hits = crate::inventory::search(
+                &req.dir,
+                req.at,
+                req.ca_within,
+                req.leaf_within,
+                &filter,
+            )?;
+            let (text, value) = crate::inventory::render_search(&hits, req.at);
+            Ok(emit(json_out, text, value))
+        }
+        "audit" => {
+            let p = parse_args(rest, &["dir", "at", "ca-within", "leaf-within"], &["json"])?;
+            let req = inventory_scan_args(&p)?;
+            let report = crate::inventory::audit(&req)?;
+            let failed = report.totals.expired > 0 || report.totals.drift_findings > 0;
+            let (text, value) = crate::inventory::render_audit(&report);
+            let code = emit(json_out, text, value);
+            Ok(if failed { 1 } else { code })
+        }
+        other => Err(CertError::usage(format!(
+            "unknown inventory verb '{other}' (list | show | search | audit)"
+        ))),
+    }
+}
+
+// ---------------------------------------------------------------- standalone key ceremony
+
+fn key_cmd(args: &[String], json_out: bool) -> Result<i32> {
+    let verb = args.first().map(|s| s.as_str()).unwrap_or("");
+    let rest = &args[1.min(args.len())..];
+    match verb {
+        "generate" => {
+            let p = parse_args(rest, &["algorithm", "out"], &["json"])?;
+            let algorithm = parse_key_algorithm(&p)?;
+            let out = PathBuf::from(p.require("out", "key generate")?);
+            let key = engine::generate_key(algorithm)?;
+            let der = key.serialize_der();
+            // Key generation is an explicit ceremony: create a new
+            // owner-readable file, and never replace an existing key.
+            let mut options = OpenOptions::new();
+            options.write(true).create_new(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                options.mode(0o600);
+            }
+            let mut file = options.open(&out).map_err(|e| {
+                CertError::policy(format!(
+                    "cannot create private key {} without replacing an existing file: {e}",
+                    out.display()
+                ))
+            })?;
+            file.write_all(&der)
+                .and_then(|_| file.sync_all())
+                .map_err(|e| {
+                    let _ = std::fs::remove_file(&out);
+                    CertError::engine(format!("writing private key {} failed: {e}", out.display()))
+                })?;
+            let value = json!({"algorithm": algorithm.info().name, "private_key": out.display().to_string(), "encoding": "PKCS#8 DER"});
+            Ok(emit(
+                json_out,
+                format!(
+                    "Generated {} private key at {} (PKCS#8 DER)\n",
+                    algorithm.info().name,
+                    out.display()
+                ),
+                value,
+            ))
+        }
+        "inspect" => {
+            let p = parse_args(rest, &["algorithm", "in"], &["json"])?;
+            let algorithm = parse_key_algorithm(&p)?;
+            let path = PathBuf::from(p.require("in", "key inspect")?);
+            let pkcs8 = std::fs::read(&path).map_err(|e| {
+                CertError::policy(format!("cannot read private key {}: {e}", path.display()))
+            })?;
+            let public = engine::inspect_key(algorithm, &pkcs8)?;
+            let fingerprint = crate::bundle::sha256_hex(&public);
+            let value = json!({
+                "algorithm": algorithm.info().name,
+                "private_key": path.display().to_string(),
+                "encoding": "PKCS#8 DER",
+                "public_key_fingerprint_sha256": fingerprint,
+                "public_key_bytes": public.len(),
+                "private_material_emitted": false,
+            });
+            Ok(emit(
+                json_out,
+                format!(
+                    "{} private key\n  encoding: PKCS#8 DER\n  public-key SHA-256: {fingerprint}\n  public-key bytes: {}\n  private material: redacted\n",
+                    algorithm.info().name,
+                    public.len()
+                ),
+                value,
+            ))
+        }
+        other => Err(CertError::usage(format!(
+            "unknown key verb '{other}' (generate | inspect)"
+        ))),
+    }
+}
+
+fn parse_key_algorithm(p: &Parsed) -> Result<AlgorithmId> {
+    let name = p.require("algorithm", "key operation")?;
+    AlgorithmId::parse(&name).map(|(algorithm, warning)| {
+        if let Some(warning) = warning {
+            eprintln!("warning: {warning}");
+        }
+        algorithm
+    })
 }
 
 // ---------------------------------------------------------------- root
@@ -689,6 +899,125 @@ fn bundle_cmd(args: &[String], json_out: bool) -> Result<i32> {
     }
 }
 
+// ---------------------------------------------------------------- publish (slice 1: plan + verify read-only)
+
+fn publish_cmd(args: &[String], json_out: bool) -> Result<i32> {
+    let verb = args.first().map(|s| s.as_str()).unwrap_or("");
+    let rest = &args[1.min(args.len())..];
+    match verb {
+        "plan" => {
+            let p = parse_args(
+                rest,
+                &[
+                    "bundle",
+                    "host",
+                    "aia-base-url",
+                    "dns-target",
+                    "format",
+                    "out",
+                ],
+                &["json"],
+            )?;
+            let dir = p
+                .get("bundle")
+                .map(|s| s.to_string())
+                .or_else(|| p.positional(0).map(|s| s.to_string()))
+                .ok_or_else(|| CertError::usage("publish plan needs a bundle directory"))?;
+            // --aia-base-url overrides --host when both are given.
+            let host = p
+                .get("aia-base-url")
+                .map(|s| s.to_string())
+                .or_else(|| p.get("host").map(|s| s.to_string()))
+                .unwrap_or_else(|| crate::publish::DEFAULT_PUBLISH_HOST.to_string());
+            let req = crate::model::PublishPlanRequest {
+                bundle: PathBuf::from(&dir),
+                host,
+                dns_target: p.get("dns-target").map(|s| s.to_string()),
+            };
+            let plan = crate::publish::plan_bundle(&req)?;
+            let format = p.get("format").unwrap_or("text").to_ascii_lowercase();
+            let value =
+                serde_json::to_value(&plan).map_err(|e| CertError::engine(e.to_string()))?;
+            let text = crate::publish::render_plan_text(&plan);
+            let out_text = match format.as_str() {
+                "json" => serde_json::to_string_pretty(&value)
+                    .map_err(|e| CertError::engine(e.to_string()))?,
+                "yaml" | "yml" => crate::publish::render_plan_yaml(&plan),
+                "text" => text.clone(),
+                other => {
+                    return Err(CertError::usage(format!(
+                        "unknown --format '{other}' (text | json | yaml)"
+                    )));
+                }
+            };
+            if let Some(out) = p.get("out") {
+                std::fs::write(out, format!("{out_text}\n"))?;
+            }
+            if format == "yaml" && !json_out {
+                print!("{out_text}\n");
+                return Ok(0);
+            }
+            Ok(emit(json_out, format!("{text}"), value))
+        }
+        "verify" => {
+            let p = parse_args(rest, &["bundle", "published-dir", "host"], &["json"])?;
+            let dir = p
+                .get("bundle")
+                .map(|s| s.to_string())
+                .or_else(|| p.positional(0).map(|s| s.to_string()))
+                .ok_or_else(|| CertError::usage("publish verify needs a bundle directory"))?;
+            let pub_dir = p
+                .get("published-dir")
+                .map(|s| s.to_string())
+                .or_else(|| p.positional(1).map(|s| s.to_string()))
+                .ok_or_else(|| {
+                    CertError::usage(
+                        "publish verify needs --published-dir <mirror> (read-only local check)",
+                    )
+                })?;
+            let req = crate::model::PublishVerifyRequest {
+                bundle: PathBuf::from(&dir),
+                published_dir: PathBuf::from(&pub_dir),
+                host: p.get("host").map(|s| s.to_string()),
+            };
+            let report = crate::publish::verify_bundle(&req)?;
+            let mut text = format!(
+                "Publish verify: {} against {}\n",
+                report.bundle, report.published_dir
+            );
+            for c in &report.checks {
+                text.push_str(&format!(
+                    "  [{}] {} — {}\n",
+                    if c.ok { "ok" } else { "FAIL" },
+                    c.name,
+                    c.detail
+                ));
+            }
+            text.push_str(&format!(
+                "  result: {}\n",
+                if report.valid {
+                    "IN SYNC"
+                } else {
+                    "OUT OF SYNC"
+                }
+            ));
+            let value =
+                serde_json::to_value(&report).map_err(|e| CertError::engine(e.to_string()))?;
+            let code = emit(json_out, text, value);
+            Ok(if report.valid { code } else { 1 })
+        }
+        "apply" | "status" | "stage" | "check" | "commit" | "rollback" | "render" => {
+            Err(CertError::policy(format!(
+                "publish {verb} is deferred to a later production-gated slice (per the #9155 gate map): \
+                 slice 1 implements plan + verify read-only only; never executes against live endpoints without gate clearance"
+            )))
+        }
+        other => Err(CertError::usage(format!(
+            "unknown publish verb '{other}' (plan | verify; apply | status are a later gated slice)"
+        ))),
+    }
+}
+
 fn list_cmd(args: &[String], json_out: bool, want: BundleType) -> Result<i32> {
     let p = parse_args(args, &["dir"], &["json"])?;
     let dir = p.get("dir").unwrap_or(".").to_string();
@@ -852,8 +1181,8 @@ const NOT_BUILT: &[(&str, &str)] = &[
         "revocation + signed CRLs (spec §13 phase F)",
     ),
     (
-        "publish",
-        "AIA/CDP publication machinery (spec §13 phase F)",
+        "publish apply/status",
+        "live AIA/CDP publication apply + status (production-gated follow-up; slice 1 ships plan + verify read-only)",
     ),
     ("dns", "DNS plan/render/verify (spec §24.7)"),
     (
@@ -861,8 +1190,8 @@ const NOT_BUILT: &[(&str, &str)] = &[
         "trust-store install/export (spec §3.5 follow-through)",
     ),
     (
-        "key",
-        "key inspect/import/export/convert-public (spec §6.1)",
+        "key import/export/escrow/restore/rotate",
+        "remaining standalone key ceremonies (spec §6.1)",
     ),
     ("format", "format list/describe/export/convert (spec §7.5)"),
     (
@@ -874,7 +1203,6 @@ const NOT_BUILT: &[(&str, &str)] = &[
         "algorithm benchmarks (spec §6.1)",
     ),
     ("batch", "batch plan/validate/apply (spec §6.5)"),
-    ("inventory", "inventory list/show/search/audit (spec §6.1)"),
     (
         "root/issuer renew/rotate/replace",
         "lifecycle verbs (spec §5.2)",
@@ -890,7 +1218,7 @@ fn explain_cmd(args: &[String], json_out: bool) -> Result<i32> {
     let body = match topic {
         "overview" => {
             "fleet cert implements the §6.1 command tree's core: root, issuer, leaf, ocsp, \
-chain, bundle, profile, algorithms, explain, doctor. Signing is library-first (§6.4): \
+chain, bundle, inventory (list | show | search | audit, read-only), publish (plan | verify read-only), profile, algorithms, explain, doctor. Signing is library-first (§6.4): \
 the CLI is a thin shell over the fleet-cert crate. Cross-signing is policy data \
 (§§3.2/24.2), time is Gregorian calendar arithmetic (§5.4), and ML-DSA-44 is a \
 first-class algorithm with RFC 9881 identifiers. Topics: signer-source, \
@@ -984,7 +1312,7 @@ fn doctor_cmd(_args: &[String], json_out: bool) -> Result<i32> {
         "  openssl (independent validator): {}\n",
         openssl.as_deref().unwrap_or("not found")
     ));
-    text.push_str("  built: root, issuer, leaf, chain, bundle (inspect), profile (list/show), algorithms (list/describe), explain, doctor\n");
+    text.push_str("  built: root, issuer, leaf, key (generate/inspect), chain, bundle (inspect), inventory (list/show/search/audit read-only), publish (plan/verify read-only), profile (list/show), algorithms (list/describe), explain, doctor\n");
     text.push_str("  not built yet (tracked as child issues under #9157):\n");
     for (name, what) in NOT_BUILT {
         text.push_str(&format!("    {name} — {what}\n"));
@@ -992,7 +1320,7 @@ fn doctor_cmd(_args: &[String], json_out: bool) -> Result<i32> {
     let value = json!({
         "engine_self_test": algo_results.iter().map(|(i, ok)| json!({"algorithm": i.name, "ok": ok})).collect::<Vec<_>>(),
         "openssl": openssl,
-        "built": ["root", "issuer", "leaf", "chain", "bundle-inspect", "profile-list/show", "algorithms-list/describe", "explain", "doctor"],
+        "built": ["root", "issuer", "leaf", "key-generate/inspect", "chain", "bundle-inspect", "inventory-list/show/search/audit", "publish-plan/verify", "profile-list/show", "algorithms-list/describe", "explain", "doctor"],
         "not_built": NOT_BUILT.iter().map(|(n, w)| json!({"surface": n, "scope": w})).collect::<Vec<_>>(),
     });
     let code = emit(json_out, text, value);
@@ -1018,6 +1346,73 @@ fn engine_self_test(algo: AlgorithmId) -> bool {
     match crate::chain::parse_cert(cert.der()) {
         Ok(info) => crate::chain::verify_signature(&info, &info),
         Err(_) => false,
+    }
+}
+
+#[cfg(test)]
+mod key_ceremony_tests {
+    use super::*;
+
+    #[test]
+    fn generate_creates_private_file_once_and_inspect_redacts_material() {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock after epoch")
+            .as_nanos();
+        let dir =
+            std::env::temp_dir().join(format!("fleet-cert-key-{}-{nonce}", std::process::id()));
+        std::fs::create_dir(&dir).expect("create isolated test directory");
+        let path = dir.join("p256.pk8");
+        let path_text = path.to_string_lossy().into_owned();
+        let generated = key_cmd(
+            &[
+                "generate".into(),
+                "--algorithm".into(),
+                "p256".into(),
+                "--out".into(),
+                path_text.clone(),
+            ],
+            true,
+        );
+        assert!(generated.is_ok());
+        let bytes = std::fs::read(&path).expect("generated PKCS#8 key");
+        assert!(!bytes.is_empty());
+        assert!(engine::inspect_key(AlgorithmId::P256, &bytes).is_ok());
+        assert!(
+            key_cmd(
+                &[
+                    "inspect".into(),
+                    "--algorithm".into(),
+                    "p256".into(),
+                    "--in".into(),
+                    path_text.clone(),
+                ],
+                true,
+            )
+            .is_ok()
+        );
+        assert!(
+            key_cmd(
+                &[
+                    "generate".into(),
+                    "--algorithm".into(),
+                    "p256".into(),
+                    "--out".into(),
+                    path_text,
+                ],
+                true,
+            )
+            .is_err()
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+        }
+        std::fs::remove_dir_all(dir).expect("remove isolated test directory");
     }
 }
 

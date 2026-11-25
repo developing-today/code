@@ -18,7 +18,7 @@ use crate::algorithm::AlgorithmId;
 use crate::bundle::sha256_hex;
 use crate::error::{CertError, Result};
 use crate::timeparse::Rfc3339;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use x509_parser::extensions::ParsedExtension;
 use x509_parser::prelude::*;
 
@@ -243,7 +243,7 @@ impl TrustSelection {
 }
 
 /// One named check in a validation report.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Check {
     pub name: String,
     pub ok: bool,

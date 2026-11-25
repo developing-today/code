@@ -187,16 +187,18 @@ The `sync-*` verbs are the typed Queue/GitHub sync surface for scripted flows (#
 
 ## `bridge` — Fleet messaging
 
-| Verb     | Purpose                                                                             |
-| -------- | ----------------------------------------------------------------------------------- |
-| `send`   | Send a message or command to agents, groups, or all agents using the owner token.   |
-| `agents` | List registered agents and groups with unread counts.                               |
-| `log`    | Read bridge message history with filters.                                           |
-| `hello`  | Register or refresh an agent and its groups.                                        |
-| `inbox`  | Read unread messages or commands; can mark returned rows read or wait for arrivals. |
-| `post`   | Reply to central or send a message/instruction to an address.                       |
-| `ack`    | Mark one or more inbound messages read.                                             |
-| `health` | Check the bridge health endpoint.                                                   |
+| Verb     | Purpose                                                                                                                                                                                                                                                     |
+| -------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `send`   | Send a message or command to agents, groups, or all agents using the owner token. Names may be globs (`agent:f*`); `--limit N` caps delivery and the answer is the match report. `send --broaden <batch>` delivers a pattern send's remainder on its batch. |
+| `offer`  | Post a message or command as a claim offer with `--slots N`: the next N eligible agents to claim it are delivered it.                                                                                                                                       |
+| `offers` | List every offer with its claims.                                                                                                                                                                                                                           |
+| `agents` | List registered agents and groups with unread counts.                                                                                                                                                                                                       |
+| `log`    | Read bridge message history with filters.                                                                                                                                                                                                                   |
+| `hello`  | Register or refresh an agent and its groups.                                                                                                                                                                                                                |
+| `inbox`  | Read unread messages or commands; can mark returned rows read or wait for arrivals.                                                                                                                                                                         |
+| `post`   | Reply to central or send a message/instruction to an address.                                                                                                                                                                                               |
+| `ack`    | Mark one or more inbound messages read.                                                                                                                                                                                                                     |
+| `health` | Check the bridge health endpoint.                                                                                                                                                                                                                           |
 
 `fleet bridge --help` lists the central and agent forms and their accepted flags.
 
@@ -248,10 +250,10 @@ the Cloudflare worker surface (pkgs/atlas-search/worker) forwards to it.
 
 ## `orgs` — GitHub organization registry
 
-| Command | Purpose |
-| --- | --- |
+| Command           | Purpose                                                                                                                          |
+| ----------------- | -------------------------------------------------------------------------------------------------------------------------------- |
 | `fleet orgs list` | List the locally stored org/App/installation snapshot as a table or JSON; supports `--app`, `--org`, and `--permission` filters. |
-| `fleet orgs sync` | Refresh the Turso registry from each configured GitHub App's own installation listing. |
+| `fleet orgs sync` | Refresh the Turso registry from each configured GitHub App's own installation listing.                                           |
 
 The registry only makes coverage claims from `GET /app/installations` authenticated
 with that App's JWT and follows every Link page. OAuth-token

@@ -1742,7 +1742,8 @@ pub(crate) fn not_claimed_reason(
     {
         reason.push_str(&format!(
             "; {worker}'s lease expired{} and the task went back to the queue, so claim it \
-             again before completing it (heartbeat or checkpoint to keep a lease)",
+             again before completing it (heartbeat to keep a lease; checkpoint saves \
+             progress but does not renew it)",
             field("created_at")
                 .map(|at| format!(" at {at}"))
                 .unwrap_or_default()

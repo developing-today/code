@@ -8,11 +8,10 @@
 // apply actions; the dashboard only records them.
 import { execFile } from "node:child_process";
 import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
-import { homedir, tmpdir } from "node:os";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Database } from "bun:sqlite";
 import { createQuotaRefresher, systemdTrigger } from "./quota-refresh.ts";
-import { startPmCoreJobs } from "./pm-core-jobs.ts";
 import { buildQuotaAnalytics, primeAttemptAggregates, type QuotaAnalytics } from "./analytics-store.ts";
 import { decodePathSegment } from "./path-segment.ts";
 import { errorBoundaryResponse, notFoundResponse } from "./error-boundary.ts";
@@ -303,6 +302,7 @@ import {
   subjectForecastContracts,
   type ForecastContract,
 } from "./forecast-contract.ts";
+import { requireHome } from "./home.ts";
 
 // Cap `t` at `max` UTF-16 code units, but never leave half of a surrogate
 // pair at the cut (#7740, mirroring the #7694-family capUnits guard): an
@@ -2264,7 +2264,7 @@ async function withMetadataTempFile<T>(prefix: string, content: string, run: (pa
 }
 
 const metadataDbPath =
-  process.env.PM_METADATA_DB_PATH ?? join(homedir(), ".local/state/pm-aggregator/pm-metadata.sqlite");
+  process.env.PM_METADATA_DB_PATH ?? join(requireHome("PM_METADATA_DB_PATH"), ".local/state/pm-aggregator/pm-metadata.sqlite");
 const metadataDb = openMetadataStore(metadataDbPath, (path) => new Database(path));
 const metadataWebhookHandler = createMetadataWebhookHandler({
   secret: () => resolveBwsSecret("pm-aggregator.github-webhook-secret"),
@@ -5578,19 +5578,6 @@ const freshnessIpcServer = Bun.serve({
   fetch: createFreshnessIpcHandler(freshnessStore),
 });
 console.log(`freshness publisher listening on http://${freshnessIpcServer.hostname}:${freshnessIpcServer.port}`);
-
-// #8570: in live mode the aggregator process owns the quota gatherer and
-// fleet-feed collector schedules. Their output files remain audit/debug
-// products; request freshness is held by the in-process stores/caches.
-if (cfg.source === "live") {
-  void startPmCoreJobs({
-    warn: (message) => console.log(`[pm-core] ${message}`),
-  }).catch((error) => {
-    console.error(
-      `[pm-core] failed to start scheduled jobs: ${error instanceof Error ? error.message : String(error)}`,
-    );
-  });
-}
 
 // #3976: start the anti-entropy loop in live mode — one pass now,
 // then the 5-minute cadence. Fixtures mode has no journal to reconcile.
