@@ -88,7 +88,9 @@
         "rows_read": 10604,
         "query_duration_ms": 1.688
       }
-    ]
+    ],
+    "fts_payload_definition": "Sum of FTS data block BLOB bytes, docsize BLOB bytes, and term-key text bytes; excludes segid/pgno fields and all SQLite B-tree/page overhead, so it is a lower bound on physical FTS allocation.",
+    "payload_shares_are_lower_bounds": true
   },
   "tier_stores": [
     {
