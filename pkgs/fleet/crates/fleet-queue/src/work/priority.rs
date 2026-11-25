@@ -47,6 +47,15 @@
 //!   triage hint. Elapsed time only makes an item due; age alone
 //!   never moves it and never reaches Critical, and the protected
 //!   owner set is skipped.
+//! * **Opportunity boosts are temporary and separate.**
+//!   [`OpportunityBoost`] (PRI-05b, #9482) is a derived factor with an
+//!   explicit start, expiry and `expiry_action = retriage`.
+//!   [`effective_priority`] applies the strongest active boost without
+//!   touching intrinsic urgency; [`evaluate_boost_expiry`] removes only
+//!   the boost and emits an `opportunity_expired` retriage request, so
+//!   the item returns to its own value and stays in the searchable
+//!   backlog instead of being buried. The protected owner set and the
+//!   ratified bands are never boosted.
 //!
 //! The module is pure: no I/O, no queue, no persisted state. It
 //! changes no live priority and authorises no schema change — later
@@ -76,6 +85,11 @@ pub const QUEUE_PROFILE_VERSION: &str = "1";
 pub const EXPEDITE_VALUE: i64 = 15;
 /// #7030 ratified stored band for the `next-up` label.
 pub const NEXT_UP_VALUE: i64 = 25;
+/// Wire schema identifier of a temporary opportunity boost.
+pub const OPPORTUNITY_BOOST_SCHEMA_VERSION: &str = "fleet.priority-opportunity-boost/v1";
+/// The most scale steps one opportunity boost may move an item.
+pub const MAX_BOOST_STEPS: u8 = 2;
+
 /// Evidence for the ratified bands: the #7030 ratification comment
 /// and the broker readback comment cited by the design.
 pub const RATIFIED_BAND_EVIDENCE: [&str; 2] = [
@@ -130,6 +144,12 @@ pub enum PriorityError {
     /// The owner policy (or its membership snapshot) is missing or
     /// unverifiable for an affected mutation: fail closed.
     OwnerPolicyUnavailable,
+    /// An opportunity boost document is malformed, targets other
+    /// work, or replays a reference with different content.
+    InvalidBoost {
+        /// What was wrong, in one line.
+        detail: String,
+    },
     /// A shared-contract owner-policy failure
     /// (`OWNER_POLICY_PROTECTED`, `OWNER_POLICY_VERSION_CONFLICT`,
     /// `owner_policy_ref_missing`).
@@ -147,6 +167,7 @@ impl PriorityError {
             PriorityError::ProfileMismatch { .. } => "profile_mismatch",
             PriorityError::UnmappedAcrossProfiles { .. } => "unmapped_across_profiles",
             PriorityError::OwnerPolicyUnavailable => "owner_policy_unavailable",
+            PriorityError::InvalidBoost { .. } => "invalid_boost",
             PriorityError::OwnerPolicy(err) => err.code(),
         }
     }
@@ -182,6 +203,7 @@ impl fmt::Display for PriorityError {
                 f,
                 "owner_policy_unavailable: missing or unverifiable owner policy fails closed"
             ),
+            PriorityError::InvalidBoost { detail } => write!(f, "invalid_boost: {detail}"),
             PriorityError::OwnerPolicy(err) => write!(f, "{err}"),
         }
     }
@@ -672,6 +694,8 @@ pub enum WriteSource {
     Mobile,
     /// A slash command.
     SlashCommand,
+    /// A temporary opportunity boost or its expiry (PRI-05b).
+    OpportunityBoost,
 }
 
 /// The protected field a write touches.
@@ -1085,6 +1109,337 @@ pub fn evaluate_aging(
     }))
 }
 
+/// What happens when an opportunity boost expires. The only
+/// supported action is to retriage: the boost is removed and the
+/// item is reassessed, never silently buried.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExpiryAction {
+    /// Remove the temporary factor and request a retriage.
+    Retriage,
+}
+
+/// A temporary, time-boxed opportunity boost (PRI-05b). It is a
+/// derived factor kept apart from intrinsic urgency: applying or
+/// expiring it never writes the base value.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OpportunityBoost {
+    /// `fleet.priority-opportunity-boost/v1`.
+    pub schema_version: String,
+    /// Stable reference of this boost; a replay with the same
+    /// reference must carry the same content.
+    pub boost_ref: String,
+    /// The boosted work.
+    pub work: WorkRef,
+    /// Where the opportunity evidence is.
+    pub opportunity_ref: String,
+    /// When the boost starts to apply (inclusive).
+    pub starts_at: i64,
+    /// When the boost stops applying (exclusive).
+    pub expires_at: i64,
+    /// How many scale steps toward urgent, `1..=MAX_BOOST_STEPS`.
+    pub steps: u8,
+    /// Always [`ExpiryAction::Retriage`].
+    pub expiry_action: ExpiryAction,
+}
+
+impl OpportunityBoost {
+    /// Validate the boost document.
+    pub fn validate(&self) -> Result<(), PriorityError> {
+        if self.schema_version != OPPORTUNITY_BOOST_SCHEMA_VERSION {
+            return Err(PriorityError::UnsupportedVersion {
+                schema_version: self.schema_version.clone(),
+            });
+        }
+        let invalid = |detail: String| Err(PriorityError::InvalidBoost { detail });
+        if self.boost_ref.trim().is_empty() {
+            return invalid("boost_ref must not be empty".to_string());
+        }
+        if self.opportunity_ref.trim().is_empty() {
+            return invalid(format!(
+                "boost {} has no opportunity evidence reference",
+                self.boost_ref
+            ));
+        }
+        if self.expires_at <= self.starts_at {
+            return invalid(format!(
+                "boost {} must expire after it starts",
+                self.boost_ref
+            ));
+        }
+        if self.steps == 0 || self.steps > MAX_BOOST_STEPS {
+            return invalid(format!(
+                "boost {} steps must be 1..={MAX_BOOST_STEPS}, got {}",
+                self.boost_ref, self.steps
+            ));
+        }
+        Ok(())
+    }
+
+    /// Whether the boost applies at `as_of`.
+    pub fn is_active(&self, as_of: i64) -> bool {
+        self.starts_at <= as_of && as_of < self.expires_at
+    }
+}
+
+/// The item a boost is evaluated against.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BoostedItem {
+    /// Canonical identity.
+    pub work: WorkRef,
+    /// Intrinsic urgency; a boost never writes it.
+    pub intrinsic: PriorityValue,
+    /// The owner-policy reference the evaluation read.
+    pub owner_policy_ref: Option<String>,
+}
+
+/// Why an active boost had no effect.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BoostSuppression {
+    /// The item is in the protected owner set.
+    ProtectedExpedite,
+    /// The item sits on a ratified band (owner label intent).
+    RatifiedBand,
+}
+
+/// Intrinsic urgency and the effective value a boost produces.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EffectivePriority {
+    /// Target work.
+    pub work: WorkRef,
+    /// Unchanged intrinsic urgency.
+    pub intrinsic: PriorityValue,
+    /// The value used for ordering at `as_of`.
+    pub effective: PriorityValue,
+    /// The boost that produced `effective`, if any applied.
+    pub active_boost_ref: Option<String>,
+    /// Why an active boost was ignored, if it was.
+    pub suppressed: Option<BoostSuppression>,
+    /// Evaluation time.
+    pub as_of: i64,
+}
+
+/// A request to reassess an item whose opportunity boost expired.
+/// It is an `opportunity_expired` effect: the derived boost is
+/// removed and a retriage hint is raised; the base is untouched.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RetriageRequest {
+    /// Target work.
+    pub work: WorkRef,
+    /// Always `opportunity_expired`.
+    pub reason_code: String,
+    /// The expired boost.
+    pub boost_ref: String,
+    /// How many steps the removed boost carried.
+    pub removed_steps: u8,
+    /// Intrinsic urgency, unchanged by the expiry.
+    pub base: PriorityValue,
+    /// The opportunity evidence the reassessment starts from.
+    pub evidence_refs: Vec<String>,
+    /// When the boost expired.
+    pub expired_at: i64,
+    /// When the retriage is due (the evaluation time).
+    pub retriage_due_at: i64,
+}
+
+/// Where a boost stands at an evaluation time.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BoostState {
+    /// Not started yet.
+    Pending {
+        /// When it starts.
+        starts_at: i64,
+    },
+    /// Applying now.
+    Active {
+        /// When it expires.
+        expires_at: i64,
+    },
+    /// Expired: remove it and retriage.
+    Expired(RetriageRequest),
+    /// Expired on a protected item: the boost never applied, so it is
+    /// dropped and no automatic retriage is raised.
+    ExpiredProtected {
+        /// The dropped boost.
+        boost_ref: String,
+    },
+}
+
+/// Run the owner gate for a boost path. `Ok(true)` means the item is
+/// protected; any other failure (missing, stale or unverifiable
+/// policy) is an error, so the evaluation fails closed.
+fn boost_gate_protected(
+    item: &BoostedItem,
+    owner_policy: Option<&OwnerPriorityPolicy>,
+    membership: Option<&ProtectedMembership>,
+) -> Result<bool, PriorityError> {
+    let gate = PriorityWrite {
+        work: item.work.clone(),
+        owner_policy_ref: item.owner_policy_ref.clone(),
+        source: WriteSource::OpportunityBoost,
+        field: PriorityField::IntrinsicUrgency,
+    };
+    match check_priority_write(&gate, owner_policy, membership, None) {
+        Ok(()) => Ok(false),
+        Err(PriorityError::OwnerPolicy(ContractError::OwnerPolicyProtected)) => Ok(true),
+        Err(err) => Err(err),
+    }
+}
+
+/// Compute an item's effective value from its intrinsic urgency and
+/// its opportunity boosts (PRI-05b).
+///
+/// * Boosts for other work are ignored; every boost for this work is
+///   validated, and a replayed `boost_ref` with different content is
+///   [`PriorityError::InvalidBoost`].
+/// * Boosts never stack: the active boost with the most steps applies
+///   (ties broken by `boost_ref`), so concurrent opportunities cannot
+///   inflate an item.
+/// * A boost moves the effective value up the scale (ratified bands
+///   are skipped) and never into the most urgent scale value; reaching
+///   Critical needs a deadline, not an opportunity.
+/// * Protected owner items and ratified-band items are never boosted.
+pub fn effective_priority(
+    profile: &PriorityProfile,
+    item: &BoostedItem,
+    boosts: &[OpportunityBoost],
+    as_of: i64,
+    owner_policy: Option<&OwnerPriorityPolicy>,
+    membership: Option<&ProtectedMembership>,
+) -> Result<EffectivePriority, PriorityError> {
+    profile.validate()?;
+    profile.check(&item.intrinsic)?;
+    let protected = boost_gate_protected(item, owner_policy, membership)?;
+
+    let mut seen: BTreeMap<&str, &OpportunityBoost> = BTreeMap::new();
+    for boost in boosts.iter().filter(|b| b.work == item.work) {
+        boost.validate()?;
+        let replayed = seen
+            .insert(boost.boost_ref.as_str(), boost)
+            .is_some_and(|prior| prior != boost);
+        if replayed {
+            return Err(PriorityError::InvalidBoost {
+                detail: format!(
+                    "boost_ref {} replayed with different content",
+                    boost.boost_ref
+                ),
+            });
+        }
+    }
+    let strongest = seen
+        .values()
+        .filter(|b| b.is_active(as_of))
+        .max_by(|a, b| a.steps.cmp(&b.steps).then(b.boost_ref.cmp(&a.boost_ref)));
+
+    let unchanged = |suppressed: Option<BoostSuppression>| EffectivePriority {
+        work: item.work.clone(),
+        intrinsic: item.intrinsic.clone(),
+        effective: item.intrinsic.clone(),
+        active_boost_ref: None,
+        suppressed,
+        as_of,
+    };
+    let Some(boost) = strongest else {
+        return Ok(unchanged(None));
+    };
+    if protected {
+        return Ok(unchanged(Some(BoostSuppression::ProtectedExpedite)));
+    }
+    let on_band = profile
+        .entry(item.intrinsic.value)
+        .is_some_and(|e| e.kind == EntryKind::RatifiedBand);
+    if on_band {
+        return Ok(unchanged(Some(BoostSuppression::RatifiedBand)));
+    }
+
+    let scale: Vec<i64> = profile
+        .entries
+        .iter()
+        .filter(|e| e.kind == EntryKind::Scale)
+        .map(|e| e.value)
+        .collect();
+    let floor = scale.get(1).copied().unwrap_or(item.intrinsic.value);
+    let mut effective = item.intrinsic.value;
+    for _ in 0..boost.steps {
+        match scale.iter().rev().find(|v| **v < effective) {
+            Some(next) if *next >= floor => effective = *next,
+            _ => break,
+        }
+    }
+    Ok(EffectivePriority {
+        work: item.work.clone(),
+        intrinsic: item.intrinsic.clone(),
+        effective: profile.validate_value(effective)?,
+        active_boost_ref: Some(boost.boost_ref.clone()),
+        suppressed: None,
+        as_of,
+    })
+}
+
+/// Evaluate one opportunity boost at `as_of` (PRI-05b). On expiry the
+/// boost is removed and an `opportunity_expired` retriage request is
+/// returned carrying the unchanged base; the registry check confirms
+/// the code permits only a derived removal and a hint, never a base
+/// write. A protected item's expired boost is dropped with no
+/// automatic retriage.
+pub fn evaluate_boost_expiry(
+    profile: &PriorityProfile,
+    boost: &OpportunityBoost,
+    item: &BoostedItem,
+    as_of: i64,
+    owner_policy: Option<&OwnerPriorityPolicy>,
+    membership: Option<&ProtectedMembership>,
+) -> Result<BoostState, PriorityError> {
+    profile.validate()?;
+    boost.validate()?;
+    profile.check(&item.intrinsic)?;
+    if boost.work != item.work {
+        return Err(PriorityError::InvalidBoost {
+            detail: format!("boost {} targets other work", boost.boost_ref),
+        });
+    }
+    let protected = boost_gate_protected(item, owner_policy, membership)?;
+    if as_of < boost.starts_at {
+        return Ok(BoostState::Pending {
+            starts_at: boost.starts_at,
+        });
+    }
+    if as_of < boost.expires_at {
+        return Ok(BoostState::Active {
+            expires_at: boost.expires_at,
+        });
+    }
+    if protected {
+        return Ok(BoostState::ExpiredProtected {
+            boost_ref: boost.boost_ref.clone(),
+        });
+    }
+    let reason = super::contracts::ReasonCode::OpportunityExpired;
+    reason.check_field_effect(super::contracts::FieldEffectKind::Derived)?;
+    reason.check_field_effect(super::contracts::FieldEffectKind::Hint)?;
+    if reason
+        .check_field_effect(super::contracts::FieldEffectKind::Base)
+        .is_ok()
+    {
+        return Err(PriorityError::InvalidBoost {
+            detail: "opportunity_expired must never permit a base write".to_string(),
+        });
+    }
+    match boost.expiry_action {
+        ExpiryAction::Retriage => Ok(BoostState::Expired(RetriageRequest {
+            work: item.work.clone(),
+            reason_code: reason.as_str().to_string(),
+            boost_ref: boost.boost_ref.clone(),
+            removed_steps: boost.steps,
+            base: item.intrinsic.clone(),
+            evidence_refs: vec![boost.opportunity_ref.clone()],
+            expired_at: boost.expires_at,
+            retriage_due_at: as_of,
+        })),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1293,6 +1648,7 @@ mod tests {
             WriteSource::Import,
             WriteSource::Mobile,
             WriteSource::SlashCommand,
+            WriteSource::OpportunityBoost,
         ];
         let fields = [
             PriorityField::IntrinsicUrgency,
@@ -1821,5 +2177,307 @@ mod tests {
         bad = aging_policy();
         bad.schema_version = "fleet.priority-aging-policy/v2".to_string();
         assert_eq!(bad.validate().unwrap_err().code(), "unsupported_version");
+    }
+
+    fn boost(
+        id: &str,
+        boost_ref: &str,
+        steps: u8,
+        starts_at: i64,
+        expires_at: i64,
+    ) -> OpportunityBoost {
+        OpportunityBoost {
+            schema_version: OPPORTUNITY_BOOST_SCHEMA_VERSION.to_string(),
+            boost_ref: boost_ref.to_string(),
+            work: work(id),
+            opportunity_ref: format!("evidence:{boost_ref}"),
+            starts_at,
+            expires_at,
+            steps,
+            expiry_action: ExpiryAction::Retriage,
+        }
+    }
+
+    fn boosted(id: &str, value: i64) -> BoostedItem {
+        BoostedItem {
+            work: work(id),
+            intrinsic: queue().validate_value(value).unwrap(),
+            owner_policy_ref: Some("owner-policy:7".to_string()),
+        }
+    }
+
+    fn effective(item: &BoostedItem, boosts: &[OpportunityBoost], as_of: i64) -> EffectivePriority {
+        effective_priority(
+            &queue(),
+            item,
+            boosts,
+            as_of,
+            Some(&policy()),
+            Some(&membership()),
+        )
+        .unwrap()
+    }
+
+    fn expiry(item: &BoostedItem, b: &OpportunityBoost, as_of: i64) -> BoostState {
+        evaluate_boost_expiry(
+            &queue(),
+            b,
+            item,
+            as_of,
+            Some(&policy()),
+            Some(&membership()),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn pmo_priority_opportunity_expiry_retriages_without_base_mutation() {
+        let cold = boosted("900", 70);
+        let window = boost("900", "boost:conf", 2, NOW, NOW + 7 * DAY);
+
+        // Before the window the boost is pending and does nothing.
+        assert_eq!(
+            expiry(&cold, &window, NOW - 1),
+            BoostState::Pending { starts_at: NOW }
+        );
+        let before = effective(&cold, std::slice::from_ref(&window), NOW - 1);
+        assert_eq!(before.effective.value, 70);
+        assert_eq!(before.active_boost_ref, None);
+
+        // Inside the window: two scale steps (70 → 50 → 40), base kept.
+        let during = effective(&cold, std::slice::from_ref(&window), NOW + DAY);
+        assert_eq!(during.effective.value, 40);
+        assert_eq!(during.intrinsic.value, 70);
+        assert_eq!(during.active_boost_ref.as_deref(), Some("boost:conf"));
+        assert_eq!(
+            expiry(&cold, &window, NOW + DAY),
+            BoostState::Active {
+                expires_at: NOW + 7 * DAY
+            }
+        );
+
+        // Expiry (exclusive end) removes only the boost and retriages.
+        let at_expiry = NOW + 7 * DAY;
+        let BoostState::Expired(request) = expiry(&cold, &window, at_expiry) else {
+            panic!("expected an expired boost");
+        };
+        assert_eq!(request.reason_code, "opportunity_expired");
+        assert_eq!(request.base, cold.intrinsic);
+        assert_eq!(request.base.value, 70);
+        assert_eq!(request.removed_steps, 2);
+        assert_eq!(
+            request.evidence_refs,
+            vec!["evidence:boost:conf".to_string()]
+        );
+        assert_eq!(request.expired_at, at_expiry);
+        assert_eq!(request.retriage_due_at, at_expiry);
+        let after = effective(&cold, std::slice::from_ref(&window), at_expiry + DAY);
+        assert_eq!(after.effective, cold.intrinsic);
+        assert_eq!(after.active_boost_ref, None);
+
+        // The registry permits the expiry only a derived removal and a
+        // hint; a base write under this code is refused.
+        let code = crate::work::contracts::ReasonCode::OpportunityExpired;
+        assert!(
+            code.check_field_effect(crate::work::contracts::FieldEffectKind::Base)
+                .is_err()
+        );
+
+        // Cold backlog stays searchable: the expired item is still in
+        // the ordered set, back at its own value, not dropped or
+        // buried below untouched cold work.
+        let key = |id: &str, value: i64| CandidateKey {
+            work: work(id),
+            urgency: Some(queue().validate_value(value).unwrap()),
+            peer_rank: None,
+            created_at: 1,
+        };
+        let ordered = order_candidates(vec![
+            key("901", 90),
+            CandidateKey {
+                work: work("900"),
+                urgency: Some(after.effective.clone()),
+                peer_rank: None,
+                created_at: 1,
+            },
+            key("902", 40),
+        ])
+        .unwrap();
+        let ids: Vec<&str> = ordered.iter().map(|c| c.work.work_id.as_str()).collect();
+        assert_eq!(ids, vec!["902", "900", "901"]);
+
+        // Boosts never stack: the strongest active one applies.
+        let small = boost("900", "boost:small", 1, NOW, NOW + 7 * DAY);
+        let both = effective(&cold, &[small.clone(), window.clone()], NOW + DAY);
+        assert_eq!(both.effective.value, 40);
+        assert_eq!(both.active_boost_ref.as_deref(), Some("boost:conf"));
+
+        // An opportunity never reaches Critical.
+        let high = boosted("903", 20);
+        let capped = effective(&high, &[boost("903", "boost:hi", 2, NOW, NOW + DAY)], NOW);
+        assert_eq!(capped.effective.value, 20);
+
+        // A ratified band is owner label intent: never boosted.
+        let next_up = boosted("904", NEXT_UP_VALUE);
+        let band = effective(
+            &next_up,
+            &[boost("904", "boost:band", 1, NOW, NOW + DAY)],
+            NOW,
+        );
+        assert_eq!(band.effective.value, NEXT_UP_VALUE);
+        assert_eq!(band.suppressed, Some(BoostSuppression::RatifiedBand));
+
+        // Boosts for other work are ignored.
+        let other = effective(
+            &cold,
+            &[boost("905", "boost:other", 2, NOW, NOW + DAY)],
+            NOW,
+        );
+        assert_eq!(other.effective.value, 70);
+
+        // Replay: identical duplicates collapse, differing ones fail.
+        let dup = effective(&cold, &[window.clone(), window.clone()], NOW + DAY);
+        assert_eq!(dup.effective.value, 40);
+        let mut forged = window.clone();
+        forged.steps = 1;
+        let err = effective_priority(
+            &queue(),
+            &cold,
+            &[window.clone(), forged],
+            NOW + DAY,
+            Some(&policy()),
+            Some(&membership()),
+        )
+        .unwrap_err();
+        assert_eq!(err.code(), "invalid_boost");
+
+        // Malformed and unknown-version boosts are refused.
+        let mut bad = window.clone();
+        bad.expires_at = bad.starts_at;
+        assert_eq!(bad.validate().unwrap_err().code(), "invalid_boost");
+        bad = window.clone();
+        bad.steps = MAX_BOOST_STEPS + 1;
+        assert_eq!(bad.validate().unwrap_err().code(), "invalid_boost");
+        bad = window.clone();
+        bad.opportunity_ref = " ".to_string();
+        assert_eq!(bad.validate().unwrap_err().code(), "invalid_boost");
+        bad = window.clone();
+        bad.schema_version = "fleet.priority-opportunity-boost/v2".to_string();
+        assert_eq!(bad.validate().unwrap_err().code(), "unsupported_version");
+        assert!(
+            serde_json::from_str::<ExpiryAction>("\"bury\"").is_err(),
+            "only retriage is a valid expiry action"
+        );
+
+        // A boost for other work cannot be expired against this item.
+        assert_eq!(
+            evaluate_boost_expiry(
+                &queue(),
+                &boost("905", "boost:other", 1, NOW, NOW + DAY),
+                &cold,
+                NOW + 2 * DAY,
+                Some(&policy()),
+                Some(&membership())
+            )
+            .unwrap_err()
+            .code(),
+            "invalid_boost"
+        );
+
+        // The owner gate still fails closed for boosts.
+        let mut stale = cold.clone();
+        stale.owner_policy_ref = Some("owner-policy:6".to_string());
+        assert_eq!(
+            evaluate_boost_expiry(
+                &queue(),
+                &window,
+                &stale,
+                at_expiry,
+                Some(&policy()),
+                Some(&membership())
+            )
+            .unwrap_err()
+            .code(),
+            "OWNER_POLICY_VERSION_CONFLICT"
+        );
+        assert_eq!(
+            effective_priority(
+                &queue(),
+                &cold,
+                &[window.clone()],
+                NOW,
+                None,
+                Some(&membership())
+            )
+            .unwrap_err()
+            .code(),
+            "owner_policy_unavailable"
+        );
+    }
+
+    #[test]
+    fn pmo_priority_opportunity_expiry_never_changes_protected_expedite() {
+        let protected = boosted("3447", EXPEDITE_VALUE);
+        let window = boost("3447", "boost:protected", 2, NOW, NOW + DAY);
+
+        // While active, the protected item keeps its ratified value.
+        let during = effective(&protected, std::slice::from_ref(&window), NOW);
+        assert_eq!(during.effective.value, EXPEDITE_VALUE);
+        assert_eq!(during.intrinsic.value, EXPEDITE_VALUE);
+        assert_eq!(during.active_boost_ref, None);
+        assert_eq!(during.suppressed, Some(BoostSuppression::ProtectedExpedite));
+
+        // On expiry the boost is dropped with no automatic retriage
+        // and no value change.
+        assert_eq!(
+            expiry(&protected, &window, NOW + DAY),
+            BoostState::ExpiredProtected {
+                boost_ref: "boost:protected".to_string()
+            }
+        );
+        let after = effective(&protected, std::slice::from_ref(&window), NOW + 2 * DAY);
+        assert_eq!(after.effective.value, EXPEDITE_VALUE);
+
+        // The same item in another repository is a different item.
+        let lookalike = BoostedItem {
+            work: WorkRef::new("developing-today/other", "3447").unwrap(),
+            intrinsic: queue().validate_value(70).unwrap(),
+            owner_policy_ref: Some("owner-policy:7".to_string()),
+        };
+        let mut other_window = window.clone();
+        other_window.work = lookalike.work.clone();
+        let boosted_other = effective(&lookalike, &[other_window], NOW);
+        assert_eq!(boosted_other.effective.value, 40);
+
+        // A boost path is never an owner action, so the gate denies it.
+        let denied = check_priority_write(
+            &write(
+                "3447",
+                WriteSource::OpportunityBoost,
+                PriorityField::IntrinsicUrgency,
+            ),
+            Some(&policy()),
+            Some(&membership()),
+            Some(&principal("principal:drew")),
+        )
+        .unwrap_err();
+        assert_eq!(denied.code(), "OWNER_POLICY_PROTECTED");
+
+        // A membership snapshot from another policy fails closed.
+        let mut foreign = membership();
+        foreign.policy_ref = "owner-policy:8".to_string();
+        assert_eq!(
+            effective_priority(
+                &queue(),
+                &protected,
+                &[window.clone()],
+                NOW,
+                Some(&policy()),
+                Some(&foreign)
+            )
+            .unwrap_err()
+            .code(),
+            "owner_policy_unavailable"
+        );
     }
 }
