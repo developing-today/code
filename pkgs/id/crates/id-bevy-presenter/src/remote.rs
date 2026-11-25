@@ -468,12 +468,13 @@ impl Listener {
 
     /// Stop taking new presenters and wait for the door to close.
     pub fn stop(&mut self) {
+        let Some(accepting) = self.accepting.take() else {
+            return;
+        };
         self.stopped.store(true, Ordering::SeqCst);
         // Wake the accept loop so it sees the flag.
         let _ = TcpStream::connect(self.addr);
-        if let Some(accepting) = self.accepting.take() {
-            let _ = accepting.join();
-        }
+        let _ = accepting.join();
     }
 }
 
