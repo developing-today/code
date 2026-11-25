@@ -17,19 +17,36 @@ import (
 // the firing order is fixed, and the outcome reproduces exactly on
 // every run, with no seed and no sleep-as-scheduler-hint.
 
-// waitTerminal waits until the task reaches a terminal status,
-// letting the bubble advance virtual time past each pending timer in
-// turn (deadline first, then the grace timer it arms).
-func waitTerminal(t *testing.T, st *tasks.Store, id string) tasks.Task {
+// runOutClock lets virtual time run past every store timer armed so
+// far, then waits for the fired callbacks to finish.
+//
+// The order matters, and the first version of these tests had it
+// backwards. Per the synctest package docs, when every goroutine in
+// a bubble is durably blocked, a pending synctest.Wait returns —
+// time advances only when Wait has NOT been called. A loop of Wait
+// calls therefore consumes each idle moment by returning from Wait
+// instead of letting the clock move, and the timers never fire.
+// Blocking the test goroutine on time.Sleep is what advances the
+// clock (the pool budget pilot's shape); the single Wait afterwards
+// only synchronizes with the timer callbacks, which by then have
+// either run or are running to their own blocked state.
+func runOutClock(d time.Duration) {
+	time.Sleep(d)
+	synctest.Wait()
+}
+
+// terminalAfter runs the clock out and returns the task's snapshot,
+// failing unless it reached a terminal status.
+func terminalAfter(t *testing.T, st *tasks.Store, id string, d time.Duration) tasks.Task {
 	t.Helper()
-	for range 10 {
-		synctest.Wait()
-		if snap, ok := st.Get(id); ok && tasks.Terminal(snap.Status) {
-			return snap
-		}
+	runOutClock(d)
+	snap, ok := st.Get(id)
+	if !ok {
+		t.Fatalf("task %s not found after the clock ran out", id)
 	}
-	snap, _ := st.Get(id)
-	t.Fatalf("task never reached a terminal status, got %+v", snap)
+	if !tasks.Terminal(snap.Status) {
+		t.Fatalf("task never reached a terminal status, got %+v", snap)
+	}
 	return snap
 }
 
@@ -50,7 +67,9 @@ func TestCancelGraceExpiresDeterministicallyInSynctest(t *testing.T) {
 		if !ok || snap.Status != tasks.Working {
 			t.Fatalf("cancel should return the pre-cancel wire state, got %+v", snap)
 		}
-		got := waitTerminal(t, st, task.TaskID)
+		// The grace timer fires one virtual hour after the cancel;
+		// run the clock to two hours so the expiry has landed.
+		got := terminalAfter(t, st, task.TaskID, 2*time.Hour)
 		if got.Status != tasks.Cancelled {
 			t.Fatalf("status = %q, want %q", got.Status, tasks.Cancelled)
 		}
@@ -63,6 +82,10 @@ func TestCancelGraceExpiresDeterministicallyInSynctest(t *testing.T) {
 func TestDeadlineCancelsDeterministicallyInSynctest(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		st := tasks.New()
+		// Pinned so the timer chain is fully determined by this test:
+		// the deadline fires at 30 minutes and starts a one-hour
+		// grace; the cancel lands when the grace expires.
+		st.CancelGrace = time.Hour
 		release := make(chan struct{})
 		defer close(release)
 		task, err := st.StartWithDeadline(tasks.Caller("tester"), 0, 30*time.Minute, func(ctx context.Context) (any, *tasks.Fault) {
@@ -72,7 +95,9 @@ func TestDeadlineCancelsDeterministicallyInSynctest(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		got := waitTerminal(t, st, task.TaskID)
+		// Deadline (30m) + grace (1h) = 90 virtual minutes to the
+		// terminal transition; run the clock to two hours.
+		got := terminalAfter(t, st, task.TaskID, 2*time.Hour)
 		if got.Status != tasks.Cancelled {
 			t.Fatalf("status = %q, want %q", got.Status, tasks.Cancelled)
 		}
