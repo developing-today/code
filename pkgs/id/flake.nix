@@ -985,7 +985,8 @@
                 src = ./.;
                 nativeBuildInputs = [ rustToolchain ];
                 buildPhase = ''
-                  find . -name '*.rs' -not -path '*/target/*' \
+                  # Match treefmt.toml: vendored upstream Rust is excluded.
+                  find . -name '*.rs' -not -path '*/target/*' -not -path './vendor/*' \
                     -exec rustfmt --check --edition 2024 {} +
                 '';
                 installPhase = ''
@@ -1077,10 +1078,11 @@
                 src = ./.;
                 nativeBuildInputs = [ pkgs.prettier ]; # nodepackages remove 2026-04-03
                 buildPhase = ''
+                  # Match treefmt.toml: vendored upstream docs are excluded.
                   find . \( -name '*.html' -o -name '*.md' -o -name '*.mdx' \
                     -o -name '*.scss' -o -name '*.yaml' \) \
                     -not -path '*/node_modules/*' -not -path '*/target/*' \
-                    -not -path '*/dist/*' \
+                    -not -path '*/dist/*' -not -path './vendor/*' \
                     -exec prettier --check {} +
                 '';
                 installPhase = ''
