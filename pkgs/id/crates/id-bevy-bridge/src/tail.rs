@@ -17,6 +17,7 @@ use bevy_ecs::prelude::*;
 
 use crate::fixture::JournalDelta;
 use crate::intent::{confirm_intents, reconcile_predictions, submit_intents};
+use crate::map::IdEntityMap;
 use crate::projection::{AppliedPosition, ProjectionError, applied_position, apply_position};
 use crate::schema::BridgeSchema;
 
@@ -160,6 +161,9 @@ pub fn tail_journal(world: &mut World) {
     }
     if !world.contains_resource::<AppliedPosition>() {
         world.insert_resource(AppliedPosition::default());
+    }
+    if !world.contains_resource::<IdEntityMap>() {
+        world.insert_resource(IdEntityMap::new());
     }
     world.resource_scope(|world, tail: Mut<'_, JournalTail>| {
         let mut applied = 0;
