@@ -78,3 +78,59 @@ export function renderPromptVariantWidgets(opts: Omit<PromptWidgetOptions, "vari
     .join("");
   return `<details class="prompt-variants"><summary>Specialized tasks</summary>${items}</details>`;
 }
+
+/** #10032 S1 (design #9539 §2): the primary pages that carry a page-scope
+ *  widget. Ids are the page manifest's (src/pages.ts); "attention" is the
+ *  Needs you page. */
+export const PRIMARY_PROMPT_PAGES: readonly string[] = [
+  "overview",
+  "today",
+  "attention",
+  "program",
+  "queue",
+  "roadmap",
+  "board",
+];
+
+/** #10032 S1: a section-scope widget for one discrete row, collapsed so a
+ *  long list stays readable. The ref is opaque to the store. */
+export function renderSectionPrompt(page: string, sectionRef: string): string {
+  return (
+    `<details class="prompt-section"><summary class="muted">Ask about this</summary>` +
+    renderPromptWidget({ scope: "section", page, sectionRef }) +
+    `</details>`
+  );
+}
+
+export interface PromptDockOptions {
+  /** The page id the stack and agent widgets report as their origin. */
+  page: string;
+  /** Add the page-scope widget and the specialized variants. Only the
+   *  primary pages get them; sub-pages keep the stack and agent widgets. */
+  pageScope: boolean;
+}
+
+/** #10032 S1: the prompt dock in the shared footer. Every page gets the
+ *  stack and agent widgets (design §2 "Lives in the nav/footer on every
+ *  page"); primary pages also get the page-scope widget and the S5
+ *  variants. It sits in the layout, outside any refreshing fragment, so a
+ *  half-typed prompt survives a live refresh. */
+export function renderPromptDock(opts: PromptDockOptions): string {
+  const pagePart = opts.pageScope
+    ? `<section class="prompt-scope" data-prompt-scope="page"><h3>Ask about this page</h3>` +
+      renderPromptWidget({ scope: "page", page: opts.page }) +
+      renderPromptVariantWidgets({ scope: "page", page: opts.page }) +
+      `</section>`
+    : "";
+  return (
+    `<details class="prompt-dock"${opts.pageScope ? " open" : ""}><summary>Ask Claude</summary>` +
+    pagePart +
+    `<section class="prompt-scope" data-prompt-scope="stack"><h3>Ask about the PM stack</h3>` +
+    renderPromptWidget({ scope: "stack", page: opts.page }) +
+    `</section>` +
+    `<section class="prompt-scope" data-prompt-scope="agent"><h3>Hand a task to an agent</h3>` +
+    renderPromptWidget({ scope: "agent", page: opts.page }) +
+    `</section>` +
+    `</details>`
+  );
+}
