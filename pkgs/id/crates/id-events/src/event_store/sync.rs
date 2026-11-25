@@ -479,17 +479,19 @@ fn sync_key(position: &[u8], id: &Id) -> Result<Key, StoreError> {
     Ok(key)
 }
 
-/// One data-phase record: the event's bytes, then its body when the sender holds one.
-/// The event length prefixes the record, so the body is the rest; an absent body is an
-/// empty rest. The header commits to the body by hash and size, and the receiver checks
-/// the body against that commitment before storing it, so a body can never be attached
-/// to the wrong event.
+/// One data-phase record: the event's bytes, then a body-presence byte, then its body
+/// when present. The event length prefixes the event and the presence byte distinguishes
+/// an absent body from a present empty one. The header commits to a present body by hash
+/// and size, and the receiver checks that commitment before storing it.
 fn encode_record(event: &[u8], body: Option<&[u8]>) -> Result<Vec<u8>> {
-    let mut record = Vec::with_capacity(4 + event.len() + body.map_or(0, <[u8]>::len));
+    let mut record = Vec::with_capacity(5 + event.len() + body.map_or(0, <[u8]>::len));
     record.extend_from_slice(&u32::try_from(event.len())?.to_be_bytes());
     record.extend_from_slice(event);
     if let Some(body) = body {
+        record.push(1);
         record.extend_from_slice(body);
+    } else {
+        record.push(0);
     }
     Ok(record)
 }
@@ -505,13 +507,21 @@ fn decode_record(record: &[u8]) -> Result<(Vec<u8>, Option<Vec<u8>>)> {
         .get(4..4 + len)
         .context("a record names more event bytes than it holds")?
         .to_vec();
-    let body = &record[4 + len..];
+    let body = record
+        .get(4 + len..)
+        .context("a record has no body-presence marker")?;
+    let (present, body) = body
+        .split_first()
+        .context("a record has no body-presence marker")?;
     Ok((
         event,
-        if body.is_empty() {
-            None
-        } else {
-            Some(body.to_vec())
+        match present {
+            0 => {
+                ensure!(body.is_empty(), "a body-less record carries body bytes");
+                None
+            }
+            1 => Some(body.to_vec()),
+            _ => bail!("a record has an invalid body-presence marker"),
         },
     ))
 }
@@ -1263,6 +1273,121 @@ mod tests {
         for event in &events {
             assert_eq!(b.event_body(&event.id).unwrap(), body.as_slice());
         }
+    }
+
+    /// Range sync preserves all three body states: BLAKE3(empty) with size zero is a
+    /// present empty payload, distinct from a header-only event, and non-empty bytes
+    /// remain byte-identical.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_range_sync_round_trips_absent_empty_and_non_empty_bodies() {
+        let (_da, mut a) = open();
+        let (_db, mut b) = open();
+        let empty = [];
+        let non_empty = b"non-empty body";
+        let events = [
+            chain::sign(
+                &signer(81),
+                0,
+                None,
+                None,
+                ChainExt {
+                    kind: "message".to_owned(),
+                    group: None,
+                    after: Vec::new(),
+                    tag: None,
+                    document: None,
+                    removes: None,
+                    note: None,
+                    link: None,
+                    checkpoint: None,
+                    rotation: None,
+                    chat: None,
+                    anchor: None,
+                },
+            )
+            .unwrap(),
+            chain::sign(
+                &signer(82),
+                0,
+                None,
+                Some(&empty),
+                ChainExt {
+                    kind: "message".to_owned(),
+                    group: None,
+                    after: Vec::new(),
+                    tag: None,
+                    document: None,
+                    removes: None,
+                    note: None,
+                    link: None,
+                    checkpoint: None,
+                    rotation: None,
+                    chat: None,
+                    anchor: None,
+                },
+            )
+            .unwrap(),
+            chain::sign(
+                &signer(83),
+                0,
+                None,
+                Some(non_empty),
+                ChainExt {
+                    kind: "message".to_owned(),
+                    group: None,
+                    after: Vec::new(),
+                    tag: None,
+                    document: None,
+                    removes: None,
+                    note: None,
+                    link: None,
+                    checkpoint: None,
+                    rotation: None,
+                    chat: None,
+                    anchor: None,
+                },
+            )
+            .unwrap(),
+        ];
+        assert_eq!(events[1].header.payload_hash, Some(Hash::digest(empty)));
+        assert_eq!(events[1].header.payload_size, 0);
+        for (event, body) in
+            events
+                .iter()
+                .zip([None, Some(empty.as_slice()), Some(non_empty.as_slice())])
+        {
+            assert!(matches!(
+                a.ingest_with_body(&event.bytes, body, NOW).unwrap(),
+                Ingest::Accepted { .. }
+            ));
+        }
+
+        let (dialer, acceptor) = loopback(
+            &mut a,
+            &mut b,
+            Params::default(),
+            Params::default(),
+            Cut::Never,
+        )
+        .await
+        .unwrap();
+        dialer.unwrap();
+        acceptor.unwrap();
+
+        assert!(
+            b.event_body(&events[0].id).is_err(),
+            "header-only event stays body-less"
+        );
+        assert_eq!(
+            b.event_body(&events[1].id).unwrap(),
+            Vec::<u8>::new(),
+            "present empty body reads back empty"
+        );
+        assert_eq!(
+            b.event_body(&events[2].id).unwrap(),
+            non_empty,
+            "non-empty body stays byte-identical"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread")]
