@@ -13,7 +13,7 @@
 //!    check needs nothing from the source, so a transport can run it before
 //!    it sends a credential anywhere.
 //! 2. **The live endpoint**, as reported by an [`EndpointProbe`] that the
-//!    transport fills (#13763): the PostgREST `db-schemas` setting must
+//!    transport fills (#13763): the `PostgREST` `db-schemas` setting must
 //!    list exactly the one exposed schema (§2, §4 layer 3), and the
 //!    credential's role may hold nothing on that schema beyond `SELECT` on
 //!    its relations and `USAGE` on the schema itself — `INSERT`,
@@ -44,7 +44,7 @@ use crate::translate::Translator;
 pub struct EndpointConfig {
     /// The source alias used in `id://foreign/postgres/<alias>/...`.
     pub alias: String,
-    /// The PostgREST base URL. HTTPS, or plain HTTP on a loopback host.
+    /// The `PostgREST` base URL. HTTPS, or plain HTTP on a loopback host.
     pub base_url: String,
     /// The one schema the endpoint exposes, sent as `Accept-Profile`.
     pub schema: String,
@@ -102,7 +102,7 @@ pub enum Privilege {
 
 impl Privilege {
     /// The privilege's SQL keyword.
-    pub fn name(self) -> &'static str {
+    pub const fn name(self) -> &'static str {
         match self {
             Self::Select => "SELECT",
             Self::Insert => "INSERT",
@@ -137,7 +137,7 @@ pub struct RoleGrant {
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct EndpointProbe {
-    /// The schemas the PostgREST endpoint serves (its `db-schemas`
+    /// The schemas the `PostgREST` endpoint serves (its `db-schemas`
     /// setting, or the schema list its schema probe returns).
     pub db_schemas: Vec<String>,
     /// Every privilege the credential's role holds on the exposed schema
@@ -416,30 +416,30 @@ pub struct RegisteredEndpoint {
 
 impl RegisteredEndpoint {
     /// The source alias.
-    pub fn alias(&self) -> &str {
-        &self.config.alias
+    pub const fn alias(&self) -> &str {
+        self.config.alias.as_str()
     }
 
-    /// The PostgREST base URL.
-    pub fn base_url(&self) -> &str {
-        &self.config.base_url
+    /// The `PostgREST` base URL.
+    pub const fn base_url(&self) -> &str {
+        self.config.base_url.as_str()
     }
 
     /// The exposed schema the registration checked; the only value ever
     /// sent as `Accept-Profile` (§9 invariant 2).
-    pub fn schema(&self) -> &str {
-        &self.config.schema
+    pub const fn schema(&self) -> &str {
+        self.config.schema.as_str()
     }
 
     /// The credential reference, for the transport to resolve just before
     /// each request.
-    pub fn credential_ref(&self) -> &str {
-        &self.config.credential_ref
+    pub const fn credential_ref(&self) -> &str {
+        self.config.credential_ref.as_str()
     }
 
     /// The registered collection allowlists.
-    pub fn collections(&self) -> &[CollectionAllowlist] {
-        &self.config.collections
+    pub const fn collections(&self) -> &[CollectionAllowlist] {
+        self.config.collections.as_slice()
     }
 
     /// A query translator over the registered collections.
