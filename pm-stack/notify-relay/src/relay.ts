@@ -7,6 +7,8 @@
 // Object performs; src/index.ts is only storage + scheduling
 // around this module.
 
+import type { AnsweredRecord, PendingAnswer } from "./answers.ts";
+
 /** A heartbeat every ~60s; the alarm sits at last-beat + 150s
  * (~2 missed beats + margin, design §2). The alarm is the only
  * scheduler in the design. */
@@ -81,6 +83,12 @@ export interface RelayState {
   origin: string | null;
   lastDelivery: DeliveryRecord | null;
   mirrorEvents: MirrorEvent[];
+  /** Answers taken at the edge, waiting for the aggregator's drain
+   * (step 3, src/answers.ts). */
+  pendingAnswers: PendingAnswer[];
+  /** The first answer per question, kept after its drain so a
+   * repeat is answered the same way. */
+  answered: AnsweredRecord[];
 }
 
 export const emptyRelayState = (): RelayState => ({
@@ -89,6 +97,8 @@ export const emptyRelayState = (): RelayState => ({
   origin: null,
   lastDelivery: null,
   mirrorEvents: [],
+  pendingAnswers: [],
+  answered: [],
 });
 
 /** Keep the 30-day mirror log bounded by event time (the laptop's
