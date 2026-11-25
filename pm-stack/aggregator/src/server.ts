@@ -13,6 +13,7 @@ import { join } from "node:path";
 import { Database } from "bun:sqlite";
 import { createQuotaRefresher, systemdTrigger } from "./quota-refresh.ts";
 import { buildQuotaAnalytics, primeAttemptAggregates, type QuotaAnalytics } from "./analytics-store.ts";
+import { readRouteApiTarget } from "./route-rollup.ts";
 import { decodePathSegment } from "./path-segment.ts";
 import { errorBoundaryResponse, notFoundResponse } from "./error-boundary.ts";
 import { ACTION_STATES, ActionsStore, validateNewAction, type DashAction, type NewAction } from "./actions.ts";
@@ -3739,6 +3740,7 @@ async function handler(req: Request, remoteAddress?: string): Promise<Response> 
           quota,
           usage,
           quotaCurrentPath: cfg.quotaCurrentFile,
+          routeApi: readRouteApiTarget(cfg.opencodeServerStateFile),
           mcpxCallLedgerDir: cfg.mcpxCallLedgerDir,
           fleetInvocationLedgerFile: cfg.fleetInvocationLedgerFile,
         }),
@@ -3764,6 +3766,7 @@ async function handler(req: Request, remoteAddress?: string): Promise<Response> 
         quota,
         usage,
         quotaCurrentPath: cfg.quotaCurrentFile,
+        routeApi: readRouteApiTarget(cfg.opencodeServerStateFile),
         mcpxCallLedgerDir: cfg.mcpxCallLedgerDir,
         fleetInvocationLedgerFile: cfg.fleetInvocationLedgerFile,
       });
@@ -5537,9 +5540,10 @@ for (const server of servers) {
 // restart measured 26.4 s against ~0.03 s warm (2026-11-13
 // follow-up). primeAttemptAggregates fills the same cache through
 // the day-sliced stale-while-revalidate refresh instead, so the loop
-// stays responsive; later builds ride that cache as before, and a
-// /quota request landing before the prime settles still pays the
-// synchronous cold build on its own path (unchanged semantics).
+// stays responsive; later builds ride that cache as before. Since
+// #2795 the aggregates come from the OpenCode server's rollup API, so
+// there is no synchronous cold build at all: a /quota request landing
+// before the prime settles shows the section as unavailable.
 // programSources joins the warmed assemblies in the same follow-up:
 // it was the one major assembly left out, so /program's first
 // post-restart request always paid its cold fan-out on the request
@@ -5547,7 +5551,7 @@ for (const server of servers) {
 setTimeout(() => {
   void (async () => {
     try {
-      primeAttemptAggregates();
+      primeAttemptAggregates(readRouteApiTarget(cfg.opencodeServerStateFile));
       await Promise.allSettled([
         boardContext(),
         overviewContext(),

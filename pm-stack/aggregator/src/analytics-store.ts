@@ -3,10 +3,11 @@
 // that already exists — nothing is estimated into existence:
 //
 //   - Burn, models, efforts, legs: the route proxy's route_attempt
-//     ledger in the OpenCode database (~/.local/share/opencode/
-//     opencode.db) — one row per model call with provider, model,
-//     variant (effort), token columns (input / output / reasoning /
-//     cache read / cache write), recorded cost, and outcome.
+//     ledger — one row per model call with provider, model, variant
+//     (effort), token columns (input / output / reasoning / cache read
+//     / cache write), recorded cost, and outcome — read through the
+//     OpenCode server's rollup API (GET /api/route/attempts/rollup,
+//     #2795), never by opening opencode.db.
 //   - Sessions, sub-sessions, turns, tool calls, skill use, and the
 //     in-session mcpx subset: session_v2 + session_message in the
 //     OpenCode database. Direct daemon calls come from mcpx's separate,
@@ -19,15 +20,18 @@
 //     the aggregator's own usage-snapshot store, via UsageView
 //     .history — dated quota reads, never a model.
 //
-// The OpenCode database is opened READ-ONLY. Any failure (missing
-// file, locked, schema drift) degrades the section to an explicit
-// unavailable state — the page never breaks over analytics.
+// The OpenCode database is still opened READ-ONLY for the activity
+// counts alone. Any failure (server down, missing file, locked, schema
+// drift) degrades the section to an explicit unavailable state — the
+// page never breaks over analytics.
 
 import { Database } from "bun:sqlite";
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { QuotaPool, QuotaView, SnapshotRecord, UsageView } from "./model.ts";
+import { credentialKey, fetchRollup, type RollupRow } from "./route-rollup.ts";
+import type { OpenCodeTarget } from "./sources/opencode.ts";
 import {
   projectWindow,
   tokenRatios,
@@ -226,152 +230,38 @@ interface AttemptAggregates {
   daily21d: { day: string; calls: number; tokens: number }[];
 }
 
-const DAY_SELECT = `date(time_started/1000, 'unixepoch', 'localtime')`;
-
-function queryLegRowsRange(db: Database, from: number, to: number | null): DayLegRow[] {
-  return db
-    .query(
-      `SELECT ${DAY_SELECT} AS day,
-              provider_id, credential_id,
-              COUNT(*) AS calls,
-              SUM(outcome = 'success') AS success,
-              COALESCE(SUM(tokens_input), 0) AS input,
-              COALESCE(SUM(tokens_output), 0) AS output,
-              COALESCE(SUM(tokens_reasoning), 0) AS reasoning,
-              COALESCE(SUM(tokens_cache_read), 0) AS cache_read,
-              COALESCE(SUM(tokens_cache_write), 0) AS cache_write,
-              COALESCE(SUM(cost_usd), 0) AS cost,
-              COUNT(cost_usd) AS cost_rows
-         FROM route_attempt
-        WHERE time_started >= ? AND (? IS NULL OR time_started < ?)
-        GROUP BY day, provider_id, credential_id`,
-    )
-    .all(from, to, to) as DayLegRow[];
-}
-
-function queryLegRows(db: Database, now: number): DayLegRow[] {
-  return queryLegRowsRange(db, now - 15 * DAY_MS, null);
-}
-
-function queryModelRowsRange(db: Database, from: number, to: number | null): DayModelRow[] {
-  return db
-    .query(
-      `SELECT ${DAY_SELECT} AS day,
-              model_id, variant,
-              COUNT(*) AS calls,
-              SUM(outcome = 'success') AS success,
-              COALESCE(SUM(tokens_input), 0) AS input,
-              COALESCE(SUM(tokens_output), 0) AS output,
-              COALESCE(SUM(tokens_reasoning), 0) AS reasoning,
-              COALESCE(SUM(tokens_cache_read), 0) AS cache_read,
-              COALESCE(SUM(tokens_cache_write), 0) AS cache_write,
-              COALESCE(SUM(cost_usd), 0) AS cost,
-              COUNT(cost_usd) AS cost_rows
-         FROM route_attempt
-        WHERE time_started >= ? AND (? IS NULL OR time_started < ?)
-        GROUP BY day, model_id, variant`,
-    )
-    .all(from, to, to) as DayModelRow[];
-}
-
-function queryModelRows(db: Database, now: number): DayModelRow[] {
-  return queryModelRowsRange(db, now - 15 * DAY_MS, null);
-}
-
-function queryCoverage(db: Database): { f: number; t: number } {
-  return db.query(`SELECT MIN(time_started) AS f, MAX(time_started) AS t FROM route_attempt`).get() as {
-    f: number;
-    t: number;
+/** API row -> the leg/model row shapes the builder sums. Leg rows carry
+ * the server's credentialKey where they used to carry credential_id. */
+function legRowOf(r: RollupRow): DayLegRow {
+  return {
+    day: String(r.bucket),
+    provider_id: r.providerID ?? "",
+    credential_id: r.credentialKey ?? null,
+    ...countsOf(r),
   };
 }
 
-function queryHourRows(db: Database, now: number): DayModelRow[] {
-  return db
-    .query(
-      `SELECT model_id, variant, COUNT(*) AS calls, SUM(outcome='success') AS success,
-              COALESCE(SUM(tokens_input),0) AS input, COALESCE(SUM(tokens_output),0) AS output,
-              COALESCE(SUM(tokens_reasoning),0) AS reasoning, COALESCE(SUM(tokens_cache_read),0) AS cache_read,
-              COALESCE(SUM(tokens_cache_write),0) AS cache_write, COALESCE(SUM(cost_usd),0) AS cost, COUNT(cost_usd) AS cost_rows
-         FROM route_attempt WHERE time_started >= ? GROUP BY model_id, variant`,
-    )
-    .all(now - HOUR_MS) as DayModelRow[];
+function modelRowOf(r: RollupRow): DayModelRow {
+  return {
+    day: r.bucket === null ? "" : String(r.bucket),
+    model_id: r.modelID ?? "",
+    variant: r.variant ?? null,
+    ...countsOf(r),
+  };
 }
 
-function queryCredentialCoverageRange(db: Database, from: number, to: number | null): { n: number; c: number } {
-  return db
-    .query(
-      `SELECT COUNT(*) AS n, COUNT(credential_id) AS c FROM route_attempt WHERE time_started >= ? AND (? IS NULL OR time_started < ?)`,
-    )
-    .get(from, to, to) as { n: number; c: number };
-}
-
-function queryCredentialCoveragePct(db: Database, now: number): number | null {
-  const credCov = queryCredentialCoverageRange(db, now - 7 * DAY_MS, null);
-  return credCov.n > 0 ? (credCov.c / credCov.n) * 100 : null;
-}
-
-function queryHourly7dRange(
-  db: Database,
-  from: number,
-  to: number | null,
-): { hour: number; calls: number; tokens: number }[] {
-  return db
-    .query(
-      `SELECT CAST(strftime('%H', time_started/1000, 'unixepoch', 'localtime') AS INTEGER) AS hour,
-              COUNT(*) AS calls,
-              COALESCE(SUM(tokens_input + tokens_output + tokens_cache_read + tokens_cache_write), 0) AS tokens
-         FROM route_attempt WHERE time_started >= ? AND (? IS NULL OR time_started < ?) GROUP BY hour ORDER BY hour`,
-    )
-    .all(from, to, to) as { hour: number; calls: number; tokens: number }[];
-}
-
-function queryHourly7d(db: Database, now: number): { hour: number; calls: number; tokens: number }[] {
-  return queryHourly7dRange(db, now - 7 * DAY_MS, null);
-}
-
-function queryDowHistoryRange(
-  db: Database,
-  from: number,
-  to: number,
-): { dow: number; calls: number; tokens: number }[] {
-  return db
-    .query(
-      `SELECT CAST(strftime('%w', time_started/1000, 'unixepoch', 'localtime') AS INTEGER) AS dow,
-              COUNT(*) AS calls,
-              COALESCE(SUM(tokens_input + tokens_output + tokens_cache_read + tokens_cache_write), 0) AS tokens
-         FROM route_attempt WHERE time_started >= ? AND time_started < ? GROUP BY dow ORDER BY dow`,
-    )
-    .all(from, to) as { dow: number; calls: number; tokens: number }[];
-}
-
-function queryDowHistory(db: Database): { dow: number; calls: number; tokens: number }[] {
-  return db
-    .query(
-      `SELECT CAST(strftime('%w', time_started/1000, 'unixepoch', 'localtime') AS INTEGER) AS dow,
-              COUNT(*) AS calls,
-              COALESCE(SUM(tokens_input + tokens_output + tokens_cache_read + tokens_cache_write), 0) AS tokens
-         FROM route_attempt GROUP BY dow ORDER BY dow`,
-    )
-    .all() as { dow: number; calls: number; tokens: number }[];
-}
-
-function queryDaily21dRange(
-  db: Database,
-  from: number,
-  to: number | null,
-): { day: string; calls: number; tokens: number }[] {
-  return db
-    .query(
-      `SELECT ${DAY_SELECT} AS day,
-              COUNT(*) AS calls,
-              COALESCE(SUM(tokens_input + tokens_output + tokens_cache_read + tokens_cache_write), 0) AS tokens
-         FROM route_attempt WHERE time_started >= ? AND (? IS NULL OR time_started < ?) GROUP BY day ORDER BY day`,
-    )
-    .all(from, to, to) as { day: string; calls: number; tokens: number }[];
-}
-
-function queryDaily21d(db: Database, now: number): { day: string; calls: number; tokens: number }[] {
-  return queryDaily21dRange(db, now - 21 * DAY_MS, null);
+function countsOf(r: RollupRow) {
+  return {
+    calls: r.attempts,
+    success: r.successes,
+    input: r.tokensInput,
+    output: r.tokensOutput,
+    reasoning: r.tokensReasoning,
+    cache_read: r.tokensCacheRead,
+    cache_write: r.tokensCacheWrite,
+    cost: r.costUsd,
+    cost_rows: r.costRows,
+  };
 }
 
 /** [start, end) slice bounds covering [from, to): the first slice ends
@@ -398,174 +288,127 @@ function chunkBounds(from: number, to: number, widthMs: number): Array<[number, 
   return out;
 }
 
-function computeAttemptAggregates(db: Database, now: number): AttemptAggregates {
-  return {
-    legRows: queryLegRows(db, now),
-    modelRows: queryModelRows(db, now),
-    coverage: queryCoverage(db),
-    hourRows: queryHourRows(db, now),
-    credentialCoveragePct: queryCredentialCoveragePct(db, now),
-    hourly7d: queryHourly7d(db, now),
-    dowHistory: queryDowHistory(db),
-    daily21d: queryDaily21d(db, now),
-  };
-}
-
 // #5082: ALL route_attempt aggregates ride ONE stale-while-revalidate
-// cache. The scans cost seconds each over the 21 GB ledger (measured
-// 2026-11-13: ~5.4 s of uncached scans per build, ~10 s cold) and the
-// builder runs synchronously on the server's only event loop, so
-// per-request scans made /quota take 5-19 s and stalled every other
-// page queued behind them. The aggregates are slow-moving (hour/day
-// buckets over 7-21 day windows), so a minutes-old copy is honest;
-// refreshes run chunked in the background, one query per macrotask,
-// so a refresh never monopolizes the loop either. The first build in
-// a process computes synchronously — server.ts warms it at boot, off
-// the request path.
+// cache. The ledger scans cost seconds over the 21 GB ledger (measured
+// 2026-11-13), and the aggregates are slow-moving (hour/day buckets
+// over 7-21 day windows), so a minutes-old copy is honest.
 //
-// #5082 follow-up (same day): one query per macrotask was not enough —
-// the widest single scans (leg/model rows over 15d, the unbounded
-// day-of-week history) still blocked the loop for ~2.6 s each. The
-// refresh now runs every windowed scan in day slices (2-day chunks
-// for the day-of-week history, whose span is set by the coverage
-// read): the widest measured slice is ~0.3 s, and slices merge
-// exactly — day-grouped rows are disjoint across day-aligned slices,
-// hour/day-of-week buckets merge by summation.
+// #2795 (2026-11-25): the scans now run in the OpenCode server, behind
+// GET /api/route/attempts/rollup, instead of in this process over
+// opencode.db. The refresh still asks for one local day (or a 2-day
+// chunk for the day-of-week history) per request, so no single request
+// holds the server's own loop for long, and day-grouped rows stay
+// disjoint across slices while hour/day-of-week buckets merge by
+// summation. Requests are async, so the aggregator's loop is never
+// blocked by them. There is no synchronous cold build any more: until
+// the first refresh lands, the section reports itself unavailable.
 const AGGREGATES_TTL_MS = 300_000;
-let aggregatesCache: { path: string; at: number; data: AttemptAggregates } | null = null;
+let aggregatesCache: { key: string; at: number; data: AttemptAggregates } | null = null;
 let aggregatesRefreshing = false;
 
-function refreshAttemptAggregates(db: Database, path: string, onSettled?: () => void): void {
-  if (aggregatesRefreshing) return;
-  aggregatesRefreshing = true;
-  const now = Date.now();
+async function computeAttemptAggregates(target: OpenCodeTarget, now: number): Promise<AttemptAggregates> {
   const until = now + 1;
-  const data: Partial<AttemptAggregates> = { legRows: [], modelRows: [], daily21d: [] };
-  const hourlyByHour = new Map<number, { hour: number; calls: number; tokens: number }>();
-  const dowByDow = new Map<number, { dow: number; calls: number; tokens: number }>();
-  const cred = { n: 0, c: 0 };
-  const steps: Array<() => void> = [];
+  const legRows: DayLegRow[] = [];
+  const modelRows: DayModelRow[] = [];
   for (const [from, to] of daySliceBounds(now - 15 * DAY_MS, until)) {
-    steps.push(() => {
-      data.legRows!.push(...queryLegRowsRange(db, from, to));
-    });
-    steps.push(() => {
-      data.modelRows!.push(...queryModelRowsRange(db, from, to));
-    });
+    const legs = await fetchRollup(target, { since: from, until: to, bucket: "day", group: ["provider", "credential"] });
+    legRows.push(...legs.map(legRowOf));
+    const models = await fetchRollup(target, { since: from, until: to, bucket: "day", group: ["model", "variant"] });
+    modelRows.push(...models.map(modelRowOf));
   }
-  steps.push(() => {
-    data.hourRows = queryHourRows(db, now);
-  });
+  const hourRows = (await fetchRollup(target, { since: now - HOUR_MS, group: ["model", "variant"] })).map(modelRowOf);
+
+  const cred = { n: 0, c: 0 };
+  const hourlyByHour = new Map<number, { hour: number; calls: number; tokens: number }>();
   for (const [from, to] of daySliceBounds(now - 7 * DAY_MS, until)) {
-    steps.push(() => {
-      const part = queryCredentialCoverageRange(db, from, to);
-      cred.n += part.n;
-      cred.c += part.c;
-    });
-    steps.push(() => {
-      for (const r of queryHourly7dRange(db, from, to)) {
-        const acc = hourlyByHour.get(r.hour) ?? { hour: r.hour, calls: 0, tokens: 0 };
-        acc.calls += r.calls;
-        acc.tokens += r.tokens;
-        hourlyByHour.set(r.hour, acc);
-      }
-    });
+    for (const r of await fetchRollup(target, { since: from, until: to })) {
+      cred.n += r.attempts;
+      cred.c += r.credentialRows;
+    }
+    for (const r of await fetchRollup(target, { since: from, until: to, bucket: "hourOfDay" })) {
+      const hour = Number(r.bucket);
+      const acc = hourlyByHour.get(hour) ?? { hour, calls: 0, tokens: 0 };
+      acc.calls += r.attempts;
+      acc.tokens += r.tokensCombined;
+      hourlyByHour.set(hour, acc);
+    }
   }
+
+  const daily21d: { day: string; calls: number; tokens: number }[] = [];
   for (const [from, to] of daySliceBounds(now - 21 * DAY_MS, until)) {
-    steps.push(() => {
-      data.daily21d!.push(...queryDaily21dRange(db, from, to));
-    });
+    for (const r of await fetchRollup(target, { since: from, until: to, bucket: "day" }))
+      daily21d.push({ day: String(r.bucket), calls: r.attempts, tokens: r.tokensCombined });
   }
-  steps.push(() => {
-    data.coverage = queryCoverage(db);
-    // The day-of-week history is unbounded; slice its full span (set
-    // by the coverage read) into 2-day chunks merged by summation.
-    // (30-day chunks were tried first: with ~20 days of history that
-    // was the whole scan in one step — measured 2.58 s, the one slow
-    // poll hit in the post-deploy probe. 2-day chunks measure ~0.3 s.)
-    const from = data.coverage.f ?? until;
-    for (const [cf, ct] of chunkBounds(from, until, 2 * DAY_MS)) {
-      steps.push(() => {
-        for (const r of queryDowHistoryRange(db, cf, ct)) {
-          const acc = dowByDow.get(r.dow) ?? { dow: r.dow, calls: 0, tokens: 0 };
-          acc.calls += r.calls;
-          acc.tokens += r.tokens;
-          dowByDow.set(r.dow, acc);
-        }
-      });
+
+  // Coverage: the whole ledger's first and last attempt. Its start also
+  // sets where the unbounded day-of-week history begins; that span is
+  // read in 2-day chunks merged by summation (2-day chunks measured
+  // ~0.3 s each on 2026-11-13; 30-day chunks were the whole scan in one).
+  const whole = (await fetchRollup(target, { since: 0, until }))[0];
+  const coverage = { f: whole?.first ?? 0, t: whole?.last ?? 0 };
+  const dowByDow = new Map<number, { dow: number; calls: number; tokens: number }>();
+  for (const [cf, ct] of chunkBounds(whole?.first ?? until, until, 2 * DAY_MS)) {
+    for (const r of await fetchRollup(target, { since: cf, until: ct, bucket: "dayOfWeek" })) {
+      const dow = Number(r.bucket);
+      const acc = dowByDow.get(dow) ?? { dow, calls: 0, tokens: 0 };
+      acc.calls += r.attempts;
+      acc.tokens += r.tokensCombined;
+      dowByDow.set(dow, acc);
     }
-    steps.push(() => {
-      data.credentialCoveragePct = cred.n > 0 ? (cred.c / cred.n) * 100 : null;
-      data.hourly7d = [...hourlyByHour.values()].sort((a, b) => a.hour - b.hour);
-      data.dowHistory = [...dowByDow.values()].sort((a, b) => a.dow - b.dow);
-    });
-  });
-  let idx = 0;
-  const step = (): void => {
-    if (idx >= steps.length) {
-      aggregatesCache = { path, at: Date.now(), data: data as AttemptAggregates };
-      aggregatesRefreshing = false;
-      onSettled?.();
-      return;
-    }
-    const next = steps[idx++];
-    try {
-      next();
-    } catch {
-      // fail-soft: keep serving the stale copy; a later stale read retries
-      aggregatesRefreshing = false;
-      onSettled?.();
-      return;
-    }
-    setTimeout(step, 0);
+  }
+
+  return {
+    legRows,
+    modelRows,
+    coverage,
+    hourRows,
+    credentialCoveragePct: cred.n > 0 ? (cred.c / cred.n) * 100 : null,
+    hourly7d: [...hourlyByHour.values()].sort((a, b) => a.hour - b.hour),
+    dowHistory: [...dowByDow.values()].sort((a, b) => a.dow - b.dow),
+    daily21d,
   };
-  setTimeout(step, 0);
 }
 
-function loadAttemptAggregates(db: Database, path: string, now: number): AttemptAggregates {
-  if (aggregatesCache && aggregatesCache.path === path) {
-    if (now - aggregatesCache.at < AGGREGATES_TTL_MS) return aggregatesCache.data;
-    refreshAttemptAggregates(db, path);
-    return aggregatesCache.data;
-  }
-  const data = computeAttemptAggregates(db, now);
-  aggregatesCache = { path, at: now, data };
-  return data;
+function refreshAttemptAggregates(target: OpenCodeTarget, onSettled?: () => void): void {
+  if (aggregatesRefreshing) return;
+  aggregatesRefreshing = true;
+  computeAttemptAggregates(target, Date.now())
+    .then((data) => {
+      aggregatesCache = { key: target.baseUrl, at: Date.now(), data };
+    })
+    .catch(() => {
+      // fail-soft: keep serving the stale copy; a later stale read retries
+    })
+    .finally(() => {
+      aggregatesRefreshing = false;
+      onSettled?.();
+    });
+}
+
+/** The cached aggregates for this server, refreshing in the background
+ * when stale or missing. Null until the first refresh lands. */
+function loadAttemptAggregates(target: OpenCodeTarget, now: number): AttemptAggregates | null {
+  const cached = aggregatesCache && aggregatesCache.key === target.baseUrl ? aggregatesCache : null;
+  if (!cached || now - cached.at >= AGGREGATES_TTL_MS) refreshAttemptAggregates(target);
+  return cached?.data ?? null;
 }
 
 /**
- * Boot prime (#5082 follow-up, 2026-11-13): fill the aggregates cache
- * through the SLICED refresh instead of the synchronous first build.
- * The cold computeAttemptAggregates path measures ~12 s of
- * uninterrupted event-loop time over the live ledger; when server.ts
- * paid it inside the boot warm-up, every request that arrived during
- * the warm-up queued behind it — the first /api/program.json after a
- * restart measured 26.4 s while every later hit measured ~0.03 s.
- * Priming runs the same day-sliced steps as a stale refresh (widest
- * slice ~0.3 s, one per macrotask), so the loop stays responsive and
- * no request path ever pays the cold build at boot. A /quota request
- * that lands before the prime settles still takes the synchronous
- * cold path in loadAttemptAggregates — unchanged semantics, bounded
- * to that one request.
- *
- * Returns true when a prime was started. When there is nothing to do
- * (cache already populated for this DB, a refresh already in flight,
- * or no readable DB) it returns false and `onSettled` fires
+ * Boot prime (#5082): fill the aggregates cache in the background so
+ * the first /quota or /program request after a restart is served from
+ * it. Returns true when a prime was started. When there is nothing to
+ * do (cache already populated for this server, a refresh already in
+ * flight, or no server to ask) it returns false and `onSettled` fires
  * immediately, so an awaiting caller never hangs; when a prime is
- * started, `onSettled` fires once it lands or aborts fail-soft.
+ * started, `onSettled` fires once it lands or fails soft.
  */
-export function primeAttemptAggregates(opencodeDbPath: string = OPENCODE_DB_DEFAULT, onSettled?: () => void): boolean {
-  if (aggregatesCache && aggregatesCache.path === opencodeDbPath) {
+export function primeAttemptAggregates(target: OpenCodeTarget | null, onSettled?: () => void): boolean {
+  if (!target || (aggregatesCache && aggregatesCache.key === target.baseUrl)) {
     onSettled?.();
     return false;
   }
   if (aggregatesRefreshing) return false;
-  const db = getDb(opencodeDbPath);
-  if (!db) {
-    onSettled?.();
-    return false;
-  }
-  refreshAttemptAggregates(db, opencodeDbPath, onSettled);
+  refreshAttemptAggregates(target, onSettled);
   return true;
 }
 
@@ -1022,18 +865,22 @@ export function buildQuotaAnalytics(args: {
   quota: QuotaView;
   usage: UsageView;
   quotaCurrentPath: string;
+  /** The OpenCode server whose route-attempt rollup feeds burn, models,
+   * efforts, legs and coverage (#2795). Null or absent: unavailable. */
+  routeApi?: OpenCodeTarget | null;
+  /** opencode.db, still read directly for the session/tool activity
+   * counts only (no server read API covers those yet). */
   opencodeDbPath?: string;
   mcpxCallLedgerDir?: string;
   fleetInvocationLedgerFile?: string;
   now?: number;
 }): QuotaAnalytics {
   const now = args.now ?? Date.now();
-  const dbPath = args.opencodeDbPath ?? OPENCODE_DB_DEFAULT;
-  const db = getDb(dbPath);
+  const aggregates = args.routeApi ? loadAttemptAggregates(args.routeApi, now) : null;
   const base: QuotaAnalytics = {
     generatedAt: new Date(now).toISOString(),
     now,
-    dbAvailable: !!db,
+    dbAvailable: aggregates !== null,
     attemptsFrom: null,
     attemptsTo: null,
     credentialCoveragePct: null,
@@ -1048,9 +895,8 @@ export function buildQuotaAnalytics(args: {
     daily21d: [],
     activity7d: null,
   };
-  if (!db) return base;
+  if (!aggregates) return base;
   try {
-    const aggregates = loadAttemptAggregates(db, dbPath, now);
     const { legRows, modelRows } = aggregates;
     base.attemptsFrom = aggregates.coverage.f ? new Date(aggregates.coverage.f).toISOString() : null;
     base.attemptsTo = aggregates.coverage.t ? new Date(aggregates.coverage.t).toISOString() : null;
@@ -1119,7 +965,10 @@ export function buildQuotaAnalytics(args: {
     ): { burn: BurnBucket | null; basis: PoolAnalytics["legBasis"]; label: string | null } => {
       const spec = POOL_LEG_BASIS[poolId];
       if (!spec) return { burn: null, basis: null, label: null };
-      const credIds = new Set((spec.gathererProviders ?? []).map((p) => credMap.get(p)).filter(Boolean) as string[]);
+      // The server serves credentialKey, never the id: hash ours to match (#2795).
+      const credIds = new Set(
+        ((spec.gathererProviders ?? []).map((p) => credMap.get(p)).filter(Boolean) as string[]).map(credentialKey),
+      );
       const provIds = new Set(spec.providerIds ?? []);
       if (spec.basis !== "provider-id" && credIds.size === 0) return { burn: null, basis: spec.basis, label: null };
       const b = emptyBurn();
@@ -1211,16 +1060,19 @@ export function buildQuotaAnalytics(args: {
       } satisfies PoolAnalytics;
     });
 
-    base.activity7d = loadActivity(
-      db,
-      now,
-      args.mcpxCallLedgerDir ?? join(homedir(), ".local", "state", "mcpx", "call-ledger"),
-      args.fleetInvocationLedgerFile ?? join(homedir(), ".local", "state", "fleet", "invocations.jsonl"),
-    );
+    const db = getDb(args.opencodeDbPath ?? OPENCODE_DB_DEFAULT);
+    base.activity7d = db
+      ? loadActivity(
+          db,
+          now,
+          args.mcpxCallLedgerDir ?? join(homedir(), ".local", "state", "mcpx", "call-ledger"),
+          args.fleetInvocationLedgerFile ?? join(homedir(), ".local", "state", "fleet", "invocations.jsonl"),
+        )
+      : null;
     return base;
   } catch {
-    // Schema drift or a locked DB must never break /quota: the
-    // section renders its unavailable state from the base model.
+    // A malformed response or schema drift must never break /quota:
+    // the section renders its unavailable state from the base model.
     return { ...base, dbAvailable: false };
   }
 }
