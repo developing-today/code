@@ -1,0 +1,14 @@
+[package]
+name = "fleet-transport"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Accept-side transport authorization: the per-ALPN NodeId allowlist derived from registry enrollment (design #13752 §2.2, work item 2c #14720). Std-only; iroh stays behind this layer when the 2a endpoint lands."
+
+[dependencies]
+
+[dev-dependencies]
+# Property tests (AGENTS.md testing doctrine), the same proptest version
+# pkgs/id uses.
+proptest = "1.12"
