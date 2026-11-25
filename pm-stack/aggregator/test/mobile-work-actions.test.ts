@@ -16,6 +16,7 @@
 //   in, is an echo and plans nothing.
 import { describe, expect, test } from "bun:test";
 import {
+  type ChangeOwner,
   MOBILE_VERBS,
   type MobilePolicyResult,
   type MobilePrincipal,
@@ -323,7 +324,7 @@ describe("owner-policy gate order (PRI-01 check_priority_write)", () => {
 describe("golden corpus: every verb, one result, one owner change, no sync loop", () => {
   const corpus: {
     request: MobileVerbRequest;
-    owners: string[];
+    owners: ChangeOwner[];
     remap: boolean;
   }[] = [
     {
