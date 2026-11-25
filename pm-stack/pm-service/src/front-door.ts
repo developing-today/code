@@ -88,7 +88,8 @@ export type DenyReason =
   | "not_yet_valid"
   | "bad_claim_shape"
   | "no_identity_link"
-  | "no_live_roles";
+  | "no_live_roles"
+  | "invalid_agent_credential";
 
 export type FrontDoorResult =
   | { ok: true; principal: ResolvedPrincipal }
@@ -107,6 +108,8 @@ export interface FrontDoorDeps {
   resolveAccountId: (providerSub: string) => Promise<string | null>;
   /** Live `role_grant` rows for (account_id, binding_id). */
   loadRoles: (accountId: string, bindingId: string) => Promise<Role[]>;
+  /** Optional stricter, surface-specific claims contract after signature validation. */
+  validateClaims?: (claims: Readonly<Record<string, unknown>>) => boolean;
 }
 
 function deny(reason: DenyReason): FrontDoorResult {
@@ -207,6 +210,9 @@ export async function resolveFrontDoor(
       !claims.roles.every((role) => typeof role === "string" && ROLES.has(role))
     ) {
       return deny("bad_claim_shape");
+    }
+    if (deps.validateClaims !== undefined && !deps.validateClaims(claims)) {
+      return deny("invalid_agent_credential");
     }
 
     const providerSub = claims.sub;
