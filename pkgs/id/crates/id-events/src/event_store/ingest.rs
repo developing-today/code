@@ -116,7 +116,7 @@ use id_core::rejection::Reason;
 use id_core::waiting::{AuthorKey, WaitingPool};
 use id_store::chain::{self, Event};
 use id_store::documents::{is_document_kind, is_removal_kind};
-use id_store::event_rows::RowWrite;
+use id_store::event_rows::{RowRead, RowWrite};
 use id_store::tag_claims::is_tag_kind;
 
 /// What the store decides for one event, before the waiting pool sees it.
@@ -1274,6 +1274,18 @@ pub(super) fn is_proof_header(
     Ok(indexed.is_some_and(|row| row.value() == author.as_slice()))
 }
 
+/// Row-backend form of [`is_proof_header`], used by the shared transaction
+/// driver during waiting-pool reconstruction.
+pub(super) fn is_proof_header_rows<T: RowRead>(
+    txn: &mut T,
+    author: &AuthorKey,
+    id: &Hash,
+) -> Result<bool, StoreError> {
+    Ok(txn
+        .get("proof_ids", id.as_bytes())?
+        .is_some_and(|indexed| indexed.as_slice() == author.as_slice()))
+}
+
 /// The proof at `author`'s lowest fork point, which freezes the chain.
 fn read_proof(txn: &WriteTransaction, author: &AuthorKey) -> Result<Option<ForkProof>, StoreError> {
     lowest_proof(&txn.open_table(FORKS)?, author)
@@ -1334,6 +1346,14 @@ pub(super) fn is_applied(txn: &WriteTransaction, hash: &Hash) -> Result<bool, St
 /// for a present hash is never made to wait again.
 pub(super) fn is_present(txn: &WriteTransaction, hash: &Hash) -> Result<bool, StoreError> {
     present_in(&txn.open_table(HASHES)?, &txn.open_table(PROOF_IDS)?, hash)
+}
+
+/// Row-backend form of [`is_present`].
+pub(super) fn is_present_rows<T: RowRead>(txn: &mut T, hash: &Hash) -> Result<bool, StoreError> {
+    if txn.get("hashes", hash.as_bytes())?.is_some() {
+        return Ok(true);
+    }
+    Ok(txn.get("proof_ids", hash.as_bytes())?.is_some())
 }
 
 /// [`is_present`] over the `hashes` and `proof_ids` tables, whether they are read or written.

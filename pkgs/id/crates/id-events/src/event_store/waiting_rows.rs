@@ -26,7 +26,6 @@ use super::{StoreError, be_u64, corrupt, hash_of, row_event, seq_num};
 use id_core::waiting::{AuthorKey, WaitRefusal, WaitingPool};
 use id_store::chain::Event;
 use id_store::event_rows::RowWrite;
-use redb::WriteTransaction;
 
 /// Bytes before a row's dependencies: the author, the sequence number, the arrival time, the
 /// arrival number, and the dependency count.
@@ -192,16 +191,16 @@ pub(super) enum Hold {
 
 /// The waiting pool and its rows, inside one write transaction. Every method changes the pool
 /// and the rows together, so the two agree whenever the transaction commits.
-pub(super) struct Mirror<'a, T: RowWrite = WriteTransaction> {
+pub(super) struct Mirror<'a> {
     /// The transaction that every row change runs in.
-    pub txn: &'a mut T,
+    pub txn: &'a mut dyn RowWrite,
     /// The pool. Callers read it for rival checks and take ready events from it.
     pub pool: &'a mut WaitingPool<Hash, Event>,
     /// The arrival number the next held event takes.
     pub arrivals: &'a mut u64,
 }
 
-impl<T: RowWrite> Mirror<'_, T> {
+impl Mirror<'_> {
     /// Drops every held event that is due at `now`, with its row. Returns how many were
     /// dropped.
     pub fn expire(&mut self, now: u64) -> Result<usize, StoreError> {
@@ -219,7 +218,7 @@ impl<T: RowWrite> Mirror<'_, T> {
     fn flush_expired(&mut self, now: u64) -> Result<usize, StoreError> {
         let expired = self.pool.expire(now);
         for (_author, event) in &expired {
-            drop_held(self.txn, &event.id)?;
+            drop_held(&mut self.txn, &event.id)?;
         }
         Ok(expired.len())
     }
@@ -249,7 +248,7 @@ impl<T: RowWrite> Mirror<'_, T> {
         // An event that waits again keeps its first arrival time, so the age cap counts all of its
         // waiting. A released event keeps its row until the caller decides it, and the row holds
         // that time. An event the store has not held before arrived now.
-        let arrived_at = match get(self.txn, &id)? {
+        let arrived_at = match get(&mut self.txn, &id)? {
             Some(row) => row.arrived_at,
             None => now,
         };
@@ -270,15 +269,15 @@ impl<T: RowWrite> Mirror<'_, T> {
                     deps: stored_deps,
                     bytes,
                 };
-                put(self.txn, &row)?;
+                put(&mut self.txn, &row)?;
                 Ok(Hold::Held)
             }
             Ok(()) => {
-                delete(self.txn, &id)?;
+                delete(&mut self.txn, &id)?;
                 Ok(Hold::Skipped)
             }
             Err(WaitRefusal::AuthorFull | WaitRefusal::PoolFull) => {
-                delete(self.txn, &id)?;
+                delete(&mut self.txn, &id)?;
                 Ok(Hold::Full)
             }
         }
@@ -293,7 +292,7 @@ impl<T: RowWrite> Mirror<'_, T> {
         // `release` expired every event due at `now` into the pool's buffer; their
         // rows go in this transaction too, not a later one's.
         self.flush_expired(now)?;
-        delete(self.txn, id)?;
+        delete(&mut self.txn, id)?;
         self.drop_dep(id)?;
         Ok(released)
     }
@@ -303,7 +302,7 @@ impl<T: RowWrite> Mirror<'_, T> {
     /// applies, so it waits for nothing, as a parked event does. The proof keeps its conflicts
     /// seen. Returns the released events in arrival order.
     pub fn present_proof(&mut self, id: &Hash, now: u64) -> Result<Vec<Event>, StoreError> {
-        let held = get(self.txn, id)?;
+        let held = get(&mut self.txn, id)?;
         let released = self.pool.release(*id, now);
         // As in `release`: the events `release` expired lose their rows here. The
         // flush runs before the park below, so a held proof that was itself due is
@@ -320,7 +319,7 @@ impl<T: RowWrite> Mirror<'_, T> {
     /// there. A header can be released by another header's arrival, and then it is decided
     /// before its own arrival parks it. Nothing is held for an ID without a row.
     pub fn park_proof(&mut self, id: &Hash) -> Result<(), StoreError> {
-        match get(self.txn, id)? {
+        match get(&mut self.txn, id)? {
             Some(row) => self.park(row),
             None => Ok(()),
         }
@@ -340,16 +339,16 @@ impl<T: RowWrite> Mirror<'_, T> {
         self.pool
             .restore_held_for_good(parked.author, parked.id, event, parked.arrived_at)
             .map_err(|_refused| corrupt("a held proof header cannot be held for good"))?;
-        put(self.txn, &parked)
+        put(&mut self.txn, &parked)
     }
 
     /// Removes `id` from the dependencies of every row that waits for it.
     fn drop_dep(&mut self, id: &Hash) -> Result<(), StoreError> {
-        for waiter in waiters_of(self.txn, id)? {
-            let mut row = get(self.txn, &waiter)?
+        for waiter in waiters_of(&mut self.txn, id)? {
+            let mut row = get(&mut self.txn, &waiter)?
                 .ok_or_else(|| corrupt("a dependency is indexed to a waiting event with no row"))?;
             row.deps.retain(|dep| dep != id);
-            put(self.txn, &row)?;
+            put(&mut self.txn, &row)?;
         }
         Ok(())
     }
@@ -361,6 +360,6 @@ impl<T: RowWrite> Mirror<'_, T> {
     /// one mark for the life of the pool.
     pub fn drop_row(&mut self, id: &Hash) -> Result<(), StoreError> {
         self.pool.forget(id);
-        drop_held(self.txn, id)
+        drop_held(&mut self.txn, id)
     }
 }

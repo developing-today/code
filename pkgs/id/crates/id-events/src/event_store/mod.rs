@@ -71,6 +71,7 @@ use redb::{
 
 use id_store::chain::{self, Event};
 use id_store::event_rows::{RowWrite, with_write_transaction};
+use id_store::turso::PipelineTransport;
 
 mod backend;
 mod anchors;
@@ -432,6 +433,144 @@ pub struct EventStore<B = Database> {
 /// Event-store semantics over a tenant-backed row transaction driver.
 pub type TenantEventStore<T> = EventStore<TenantBackend<T>>;
 
+impl<T: PipelineTransport> EventStore<TenantBackend<T>> {
+    /// Opens a TenantStore-backed event store. The tenant row schema is owned
+    /// by `TenantStore`; the event format marker and the event semantics stay
+    /// in the shared id-events layer.
+    pub fn open_tenant(
+        transport: T,
+        limits: WaitingLimits,
+        now_ms: u64,
+    ) -> Result<Self, StoreError> {
+        let backend = TenantBackend::open(transport)?;
+        backend.with_write(|rows| {
+            let mut txn = &mut *rows;
+            match txn.get("meta", FORMAT_KEY)? {
+                None => {
+                    if !txn.scan_page(EVENTS, None, 1)?.is_empty() {
+                        return Err(StoreError::NotAStore(
+                            "event rows exist without a format marker".to_owned(),
+                        ));
+                    }
+                    txn.put("meta", FORMAT_KEY, FORMAT)?;
+                    Ok(((), true))
+                }
+                Some(found) if found == FORMAT => Ok(((), false)),
+                Some(found) if found == FORMAT_V8 => {
+                    txn.put("meta", FORMAT_KEY, FORMAT)?;
+                    Ok(((), true))
+                }
+                Some(found) => Err(StoreError::NotAStore(format!(
+                    "unexpected event-store format {}",
+                    String::from_utf8_lossy(&found)
+                ))),
+            }
+        })?;
+        Self::from_backend(backend, limits, now_ms)
+    }
+}
+
+impl<B: EventStoreStorage> EventStore<B> {
+    /// Builds the shared event-store logic over a backend whose event tables
+    /// are already initialized. Both native and tenant stores use this path
+    /// for device-operation recovery and waiting-pool reconstruction.
+    pub fn from_backend(
+        db: B,
+        limits: WaitingLimits,
+        now_ms: u64,
+    ) -> Result<Self, StoreError> {
+        let (recovered, recovery_incomplete) = db.with_write(|rows| {
+            let mut txn = &mut *rows;
+            let needs_recovery = txn.get("meta", DEVICE_OPS_RECOVERED_KEY)?.is_none();
+            let recovery = ingest::recover_device_ops_rows(&mut txn)?;
+            Ok((recovery, needs_recovery))
+        })?;
+        if recovery_incomplete {
+            tracing::warn!(
+                recovered,
+                "device-operation recovery may be incomplete: some stored or held group-event bodies were unavailable"
+            );
+        }
+        let mut store = Self {
+            db,
+            limits,
+            waiting: WaitingPool::new(limits),
+            next_arrival: 0,
+            unusable: false,
+            generation: 0,
+            roster_cache: Mutex::new(RosterCache::default()),
+        };
+        store.reload(now_ms)?;
+        Ok(store)
+    }
+
+    /// Rebuilds the waiting pool from the rows, in arrival order, using one
+    /// backend-owned write transaction. Expired or already-decided rows are
+    /// dropped in the same transaction as the rebuilt pool state.
+    fn reload(&mut self, now_ms: u64) -> Result<(), StoreError> {
+        let limits = self.limits;
+        let mut pool = WaitingPool::new(limits);
+        let mut next_arrival = 0;
+
+        self.db.with_write(|rows| {
+            let mut txn = &mut *rows;
+            let mut dropped = false;
+            for row in waiting_rows::all(&mut txn)? {
+                next_arrival = next_arrival.max(row.arrival.saturating_add(1));
+                if limits.is_due(row.arrived_at, now_ms) {
+                    waiting_rows::drop_held(&mut txn, &row.id)?;
+                    dropped = true;
+                    continue;
+                }
+                let event = row_event(&row)?;
+                if ingest::is_proof_header_rows(&mut txn, &row.author, &row.id)? {
+                    match pool.restore_held_for_good(row.author, row.id, event, row.arrived_at) {
+                        Ok(()) => {
+                            if !row.deps.is_empty() {
+                                let parked = Row {
+                                    deps: Vec::new(),
+                                    ..row
+                                };
+                                waiting_rows::put(&mut txn, &parked)?;
+                                dropped = true;
+                            }
+                        }
+                        Err(WaitRefusal::AuthorFull | WaitRefusal::PoolFull) => {
+                            waiting_rows::drop_held(&mut txn, &row.id)?;
+                            dropped = true;
+                        }
+                    }
+                    continue;
+                }
+                if ingest::is_present_rows(&mut txn, &row.id)? {
+                    waiting_rows::delete(&mut txn, &row.id)?;
+                    dropped = true;
+                    continue;
+                }
+                for dep in &row.deps {
+                    if ingest::is_present_rows(&mut txn, dep)? {
+                        return Err(corrupt(
+                            "a waiting event waits for a dependency that is present",
+                        ));
+                    }
+                }
+                match pool.restore(row.author, row.id, row.deps, event, row.arrived_at) {
+                    Ok(()) if pool.contains(&row.id) => {}
+                    Ok(()) | Err(WaitRefusal::AuthorFull | WaitRefusal::PoolFull) => {
+                        waiting_rows::drop_held(&mut txn, &row.id)?;
+                        dropped = true;
+                    }
+                }
+            }
+            Ok(((), dropped))
+        })?;
+
+        self.waiting = pool;
+        self.next_arrival = next_arrival;
+        Ok(())
+    }
+}
+
 /// Group rosters memoized by [`EventStore::roster`]: resolving a roster
 /// folds the whole store, so a read-heavy caller (the relay gate asks
 /// once per message) is served from here until the store's generation
@@ -480,7 +619,7 @@ impl BlockList for EventStore {
     }
 }
 
-impl EventStore {
+impl EventStore<Database> {
     /// Opens the store in `dir`, creating it if the directory has none. `limits` are the caps
     /// on waiting events, and `now_ms` is the clock: the waiting events due at it are dropped.
     ///
@@ -557,6 +696,9 @@ impl EventStore {
         txn.commit()?;
         Ok(value)
     }
+}
+
+impl<B: EventStoreStorage> EventStore<B> {
 
     /// The applied state of `author`'s chain, or `None` if the author has no events.
     ///
@@ -564,10 +706,11 @@ impl EventStore {
     ///
     /// Returns a redb error if the read fails, or [`StoreError::Corrupt`].
     pub fn chain(&self, author: &AuthorKey) -> Result<Option<Chain>, StoreError> {
-        let txn = self.db.begin_read()?;
-        let chains = txn.open_table(CHAINS)?;
-        let row = chains.get(author.as_slice())?;
-        row.map(|row| Chain::decode(row.value())).transpose()
+        self.db.with_read(|rows| {
+            rows.get("chains", author.as_slice())?
+                .map(|row| Chain::decode(&row))
+                .transpose()
+        })
     }
 
     /// The applied state of every author's chain, in author order. An author with no applied event
@@ -577,18 +720,17 @@ impl EventStore {
     ///
     /// Returns a redb error if the read fails, or [`StoreError::Corrupt`].
     pub fn chains(&self) -> Result<Vec<(AuthorKey, Chain)>, StoreError> {
-        let txn = self.db.begin_read()?;
-        let chains = txn.open_table(CHAINS)?;
-        let mut found = Vec::new();
-        for row in chains.iter()? {
-            let (author, state) = row?;
-            let author: AuthorKey = author
-                .value()
-                .try_into()
-                .map_err(|_err| corrupt("a chain row has the wrong author length"))?;
-            found.push((author, Chain::decode(state.value())?));
-        }
-        Ok(found)
+        self.db.with_read(|rows| {
+            rows.scan_all("chains")?
+                .into_iter()
+                .map(|(author, state)| {
+                    let author: AuthorKey = author
+                        .try_into()
+                        .map_err(|_err| corrupt("a chain row has the wrong author length"))?;
+                    Ok((author, Chain::decode(&state)?))
+                })
+                .collect()
+        })
     }
 
     /// Whether the event with this ID applies, in the resolved state.
@@ -597,10 +739,8 @@ impl EventStore {
     ///
     /// Returns a redb error if the read fails.
     pub fn event_applied(&self, id: &Hash) -> Result<bool, StoreError> {
-        let txn = self.db.begin_read()?;
-        let applied = txn.open_table(APPLIED)?;
-        let found = applied.get(id.as_bytes().as_slice())?.is_some();
-        Ok(found)
+        self.db
+            .with_read(|rows| Ok(rows.get("applied", id.as_bytes())?.is_some()))
     }
 
     /// The keys that are members of `group` in the resolved state, sorted. A member with access
@@ -625,10 +765,12 @@ impl EventStore {
         if let Some(roster) = self.cached_roster(group) {
             return Ok(roster);
         }
-        let mut txn = self.db.begin_read()?;
-        let (stored, forks, headers) = resolve::load(&mut txn)?;
-        let residue = compaction::load_residue_read(&txn)?;
-        let resolved = resolve::resolve(&stored, &forks, &headers, &residue)?;
+        let resolved = self.db.with_read(|rows| {
+            let mut txn = &mut *rows;
+            let (stored, forks, headers) = resolve::load(&mut txn)?;
+            let residue = compaction::load_residue_rows(&mut txn)?;
+            resolve::resolve(&stored, &forks, &headers, &residue)
+        })?;
         let roster = resolve::roster_of(&resolved, group);
         let mut cache = self.lock_roster_cache();
         if cache.generation != self.generation {
@@ -701,10 +843,12 @@ impl EventStore {
     ///
     /// Returns a redb error if the read fails, or [`StoreError::Corrupt`].
     pub fn event(&self, author: &AuthorKey, seq: SeqNum) -> Result<Option<Event>, StoreError> {
-        let txn = self.db.begin_read()?;
-        let events = txn.open_table(EVENTS)?;
-        let stored = events.get(position_key(author, seq).as_slice())?;
-        stored.map(|bytes| decode_stored(bytes.value())).transpose()
+        let key = position_key(author, seq);
+        self.db.with_read(|rows| {
+            rows.get("events", &key)?
+                .map(|bytes| decode_stored(&bytes))
+                .transpose()
+        })
     }
 
     /// The stored event with this ID, applied or not.
@@ -713,14 +857,14 @@ impl EventStore {
     ///
     /// Returns a redb error if the read fails, or [`StoreError::Corrupt`].
     pub fn event_by_id(&self, id: &Hash) -> Result<Option<Event>, StoreError> {
-        let txn = self.db.begin_read()?;
-        let hashes = txn.open_table(HASHES)?;
-        let events = txn.open_table(EVENTS)?;
-        let Some(position) = hashes.get(id.as_bytes().as_slice())? else {
-            return Ok(None);
-        };
-        let stored = events.get(position.value())?;
-        stored.map(|bytes| decode_stored(bytes.value())).transpose()
+        self.db.with_read(|rows| {
+            let Some(position) = rows.get("hashes", id.as_bytes())? else {
+                return Ok(None);
+            };
+            rows.get("events", &position)?
+                .map(|bytes| decode_stored(&bytes))
+                .transpose()
+        })
     }
 
     /// The stored body of the event with this ID, byte-identical to the body the author's
@@ -732,22 +876,17 @@ impl EventStore {
     /// Returns [`StoreError::MissingBody`] when the event is header-only, its body never
     /// arrived, or no event with this ID is stored; a redb error if the read fails.
     pub fn event_body(&self, id: &Hash) -> Result<Vec<u8>, StoreError> {
-        let txn = self.db.begin_read()?;
-        let bodies = txn.open_table(BODIES)?;
-        match bodies.get(id.as_bytes().as_slice())? {
-            Some(body) => Ok(body.value().to_vec()),
+        self.db.with_read(|rows| match rows.get("bodies", id.as_bytes())? {
+            Some(body) => Ok(body),
             None => Err(StoreError::MissingBody { id: *id }),
-        }
+        })
     }
 
     /// The stored body of the event with this ID, or `None` when there is none. The range
     /// sync sender's view of [`EventStore::event_body`]: a missing body is not an error
     /// there, the event simply travels without one, as it did before bodies were carried.
     pub(crate) fn stored_body(&self, id: &Hash) -> Result<Option<Vec<u8>>, StoreError> {
-        let txn = self.db.begin_read()?;
-        let bodies = txn.open_table(BODIES)?;
-        let stored = bodies.get(id.as_bytes().as_slice())?;
-        Ok(stored.map(|body| body.value().to_vec()))
+        self.db.with_read(|rows| rows.get("bodies", id.as_bytes()))
     }
 
     /// The fork proof that freezes `author`'s chain: the one at the author's lowest fork point, if
@@ -758,9 +897,10 @@ impl EventStore {
     ///
     /// Returns a redb error if the read fails, or [`StoreError::Corrupt`].
     pub fn fork_proof(&self, author: &AuthorKey) -> Result<Option<ForkProof>, StoreError> {
-        let txn = self.db.begin_read()?;
-        let forks = txn.open_table(FORKS)?;
-        lowest_proof(&forks, author)
+        self.db.with_read(|rows| {
+            let mut txn = &mut *rows;
+            lowest_proof_rows(&mut txn, author)
+        })
     }
 
     /// The positions, as `(author, seq)`, of the stored events in `group`.
@@ -769,14 +909,19 @@ impl EventStore {
     ///
     /// Returns a redb error if the read fails, or [`StoreError::Corrupt`].
     pub fn group_members(&self, group: &Hash) -> Result<Vec<(AuthorKey, SeqNum)>, StoreError> {
-        let txn = self.db.begin_read()?;
-        let groups = txn.open_multimap_table(GROUPS)?;
-        let mut members = Vec::new();
-        for position in groups.get(group.as_bytes().as_slice())? {
-            members.push(split_position(position?.value())?);
-        }
-        Ok(members)
+        self.db.with_read(|rows| {
+            let mut members = rows
+                .multi_values("groups", group.as_bytes())?
+                .iter()
+                .map(|position| split_position(position))
+                .collect::<Result<Vec<_>, _>>()?;
+            members.sort_unstable();
+            Ok(members)
+        })
     }
+}
+
+impl EventStore<Database> {
 
     /// Prunes events behind a causal cut that are not in the protected causal past.
     ///
@@ -1338,88 +1483,6 @@ impl EventStore {
             self.generation = self.generation.wrapping_add(1);
         }
         Ok(value)
-    }
-
-    /// Rebuilds the waiting pool from the rows, in arrival order. A row due at `now_ms` is
-    /// dropped, and so is a row past its author's cap. A row whose event is already present --
-    /// stored, applied, or voided -- is stale, so it is dropped too: restoring it would hold an
-    /// already-decided event again. A row for a fork proof header is instead re-held through
-    /// the explicit held-for-good route, even though the header is present. Every drop commits
-    /// with the rebuild. A row that waits for a present event means the rows and the store
-    /// disagree, so the rebuild fails as corruption and the pool is left as it was.
-    fn reload(&mut self, now_ms: u64) -> Result<(), StoreError> {
-        let txn = self.db.begin_write()?;
-        let mut row_txn = &txn;
-        let mut pool = WaitingPool::new(self.limits);
-        let mut next_arrival = 0;
-        let mut dropped = false;
-        for row in waiting_rows::all(&mut row_txn)? {
-            next_arrival = next_arrival.max(row.arrival.saturating_add(1));
-            if self.limits.is_due(row.arrived_at, now_ms) {
-                waiting_rows::drop_held(&mut row_txn, &row.id)?;
-                dropped = true;
-                continue;
-            }
-            let event = row_event(&row)?;
-            if is_proof_header(&txn, &row.author, &row.id)? {
-                // A proof header is present but never applied: it stays held for good through
-                // the explicit route, which the ordinary restore's arrived guard would refuse.
-                match pool.restore_held_for_good(row.author, row.id, event, row.arrived_at) {
-                    Ok(()) => {
-                        if !row.deps.is_empty() {
-                            let parked = Row {
-                                deps: Vec::new(),
-                                ..row
-                            };
-                            waiting_rows::put(&mut row_txn, &parked)?;
-                            dropped = true;
-                        }
-                    }
-                    Err(WaitRefusal::AuthorFull | WaitRefusal::PoolFull) => {
-                        waiting_rows::drop_held(&mut row_txn, &row.id)?;
-                        dropped = true;
-                    }
-                }
-                continue;
-            }
-            if is_present(&txn, &row.id)? {
-                // The event is already stored, applied, or voided: the row is stale, so it
-                // goes rather than holding an already-decided event again. Its device
-                // operation stays: a stored event's operation is kept, only a held one's is
-                // dropped with its row (#8160).
-                waiting_rows::delete(&mut row_txn, &row.id)?;
-                dropped = true;
-                continue;
-            }
-            for dep in &row.deps {
-                if is_present(&txn, dep)? {
-                    return Err(corrupt(
-                        "a waiting event waits for a dependency that is present",
-                    ));
-                }
-            }
-            match pool.restore(row.author, row.id, row.deps, event, row.arrived_at) {
-                Ok(()) if pool.contains(&row.id) => {}
-                Ok(()) => {
-                    // Skipped by an arrived, ready, or duplicate guard: the row names an
-                    // event the rebuilt pool does not hold, so the row goes with the rebuild.
-                    waiting_rows::drop_held(&mut row_txn, &row.id)?;
-                    dropped = true;
-                }
-                Err(WaitRefusal::AuthorFull | WaitRefusal::PoolFull) => {
-                    waiting_rows::drop_held(&mut row_txn, &row.id)?;
-                    dropped = true;
-                }
-            }
-        }
-        if dropped {
-            txn.commit()?;
-        } else {
-            txn.abort()?;
-        }
-        self.waiting = pool;
-        self.next_arrival = next_arrival;
-        Ok(())
     }
 
     /// Runs redb's own integrity check on the file.
