@@ -45,6 +45,10 @@ use id_store::tag_claims::{
     CLEAR_KIND, Claim, LocalClaim, MAX_CLEAR_CLAIMS, SET_KIND, TagOp, TagScope, check_op,
 };
 
+mod talk;
+
+pub use talk::TalkEntry;
+
 /// The directory the event store lives in, under the data directory, unless `--event-store` names
 /// another.
 pub const DIR_NAME: &str = "events";

@@ -26,6 +26,7 @@ default = []
 anyhow = "1"
 cbor-core = { version = "=0.10.1", features = ["serde"] }
 clap = { version = "4", features = ["derive"] }
+ed25519-dalek = { version = "3", features = ["rand_core"] }
 id-core = { path = "../id-core", default-features = false }
 id-store = { path = "../id-store", default-features = false }
 iroh-base = "1"

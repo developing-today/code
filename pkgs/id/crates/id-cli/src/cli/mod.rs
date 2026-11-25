@@ -113,6 +113,7 @@ pub mod groups;
 pub mod match_audit;
 pub mod petname;
 pub mod tag;
+pub mod talk;
 pub mod walk;
 pub mod world;
 pub mod writer_sets;
@@ -123,6 +124,7 @@ pub use gallery::{GalleryArgs, GalleryCommand};
 pub use groups::{DelegateArgs, GroupCommand, GroupRemoveMode, GroupTemplate, RevokeArgs};
 pub use match_audit::MatchAuditCommand;
 pub use petname::PetnameCommand;
+pub use talk::TalkCommand;
 pub use tag::TagCommand;
 pub use walk::WalkCommand;
 pub use world::{
@@ -1484,6 +1486,27 @@ pub enum Command {
         /// The claim action to run.
         #[command(subcommand)]
         command: ClaimCommand,
+    },
+    /// Post on and list an object's talk page: the signed discussion attached to it (#5834).
+    ///
+    /// A post is a signed `talk.post.v1` event, attributed to this node's key. Whoever can see
+    /// the object may post; a correction is a new post that supersedes the old one, which stays
+    /// listed and is marked superseded.
+    ///
+    /// # Examples
+    ///
+    /// ```bash
+    /// id talk post DOCUMENT "this section needs a source"
+    /// id talk post DOCUMENT "fixed wording" --supersedes POST
+    /// id talk list DOCUMENT --json
+    /// ```
+    Talk {
+        /// Print JSON instead of lines (one array for `list`).
+        #[arg(long, global = true)]
+        json: bool,
+        /// The talk action to run.
+        #[command(subcommand)]
+        command: TalkCommand,
     },
     /// Writer sets stored in the event store: show one, expand it, or discover
     /// sets by scope (writer-set spec §§4–5; issue #6690).
