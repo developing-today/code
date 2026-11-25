@@ -5217,6 +5217,7 @@ dependencies = [
  "hex",
  "id",
  "id-core",
+ "id-grants",
  "iroh",
  "iroh-base",
  "iroh-blobs",
