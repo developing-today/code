@@ -849,7 +849,7 @@ fn signed(value: u64) -> i64 {
     i64::try_from(value).unwrap_or(i64::MAX)
 }
 
-fn working_ref(id: Option<String>, len: Option<i64>) -> Option<WorkingRef> {
+pub(crate) fn working_ref(id: Option<String>, len: Option<i64>) -> Option<WorkingRef> {
     id.map(|id| WorkingRef {
         id,
         len: len.map_or(0, unsigned),

@@ -23,7 +23,7 @@ use crate::central::{
     self, Address, CentralError, Head, IdempotencyKey, Intent, Namespace, Op, Outcome, Pipeline,
     REGISTRY_ID, Scope,
 };
-use crate::sweep::{SweepError, SweepReport, Sweeper, host_incarnation};
+use crate::sweep::{BlobPlane, SweepError, SweepReport, Sweeper, host_incarnation};
 use crate::{Identity, KvError, LocalStore, sql, unsigned};
 
 /// Local schema version 6: the cached namespace definitions and the record
@@ -201,6 +201,19 @@ pub fn sync(
     writer: &str,
     sleep: &mut dyn FnMut(Duration),
 ) -> Result<SyncReport, SweepError> {
+    sync_with_blobs(store, identity, primary, writer, sleep, None)
+}
+
+/// [`sync`], placing over-threshold values through `blobs` when a blob
+/// plane is configured (code#13318).
+pub fn sync_with_blobs(
+    store: &LocalStore,
+    identity: &Identity<'_>,
+    primary: &dyn Pipeline,
+    writer: &str,
+    sleep: &mut dyn FnMut(Duration),
+    blobs: Option<&BlobPlane<'_>>,
+) -> Result<SyncReport, SweepError> {
     let namespaces = pull_namespaces(store, primary)?;
     let resolve = |namespace: &str| cached_definition(store, namespace);
     let sweep = Sweeper {
@@ -208,6 +221,7 @@ pub fn sync(
         writer,
         resolve: &resolve,
         sleep,
+        blobs,
     }
     .sweep(store, identity)?;
     Ok(SyncReport { namespaces, sweep })

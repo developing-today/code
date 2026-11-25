@@ -72,8 +72,13 @@ without them --global and sync exit 69 with central_not_configured.
 After the first sync this host knows which namespaces exist: any other
 namespace is refused with unknown_namespace, and get and list also read
 the caller's central keys (cached for at most 1 s; --allow-stale reads an
-expired cache when central is unreachable). --force-blob (blob placement)
-arrives in Phase 3 and is refused with pending_needs_phase3 (exit 69).
+expired cache when central is unreachable). sync places a value over the
+namespace's inline threshold as a blob: it streams the bytes to the upload
+door beside FLEET_KV_URL (the token needs the kv-upload door) in the
+partition FLEET_KV_BLOB_JURISDICTION and FLEET_KV_BLOB_TIER, then writes
+the reference; without those two such values wait as pending_needs_phase3.
+--force-blob is not wired yet and is refused with pending_needs_phase3
+(exit 69).
 
 Exit codes: 0 ok, 1 typed refusal (malformed_key, not_found, conflict,
 unknown_namespace, backup_target_exists, not_a_snapshot, ...),
@@ -703,6 +708,30 @@ pub fn central_from_env() -> CentralOpened {
     }
 }
 
+/// The blob plane the environment configures: the upload door beside
+/// `FLEET_KV_URL` and the partition in `FLEET_KV_BLOB_JURISDICTION` and
+/// `FLEET_KV_BLOB_TIER`. `None` keeps over-threshold values local.
+type BlobPlaneOpened =
+    Result<Option<(Box<dyn crate::sweep::BlobUploader>, crate::blob::Partition)>, CentralError>;
+
+fn blob_plane_from_env() -> BlobPlaneOpened {
+    #[cfg(feature = "http")]
+    {
+        Ok(
+            crate::http::HttpBlobUploader::from_env()?.map(|(uploader, partition)| {
+                (
+                    Box::new(uploader) as Box<dyn crate::sweep::BlobUploader>,
+                    partition,
+                )
+            }),
+        )
+    }
+    #[cfg(not(feature = "http"))]
+    {
+        Ok(None)
+    }
+}
+
 fn not_configured() -> CentralError {
     CentralError::NotConfigured(
         "set FLEET_KV_URL and FLEET_KV_TOKEN_FILE to reach the central store".into(),
@@ -1073,17 +1102,33 @@ fn execute_central(
             }
         }
         Command::Sync { archive: forced } => {
-            let report =
-                match sync::sync(store, identity, primary, identity.owner_user_id, &mut sleep) {
-                    Ok(report) => report,
-                    Err(error) => {
-                        let _ = writeln!(err, "error: {}: {error}", error.code());
-                        return match &error {
-                            crate::sweep::SweepError::Central(central) => central_exit(central),
-                            crate::sweep::SweepError::Local(_) => EXIT_REFUSED,
-                        };
-                    }
-                };
+            let configured = match blob_plane_from_env() {
+                Ok(configured) => configured,
+                Err(error) => return refuse_central(err, &error),
+            };
+            let plane = configured
+                .as_ref()
+                .map(|(uploader, partition)| crate::sweep::BlobPlane {
+                    uploader: uploader.as_ref(),
+                    partition: partition.clone(),
+                });
+            let report = match sync::sync_with_blobs(
+                store,
+                identity,
+                primary,
+                identity.owner_user_id,
+                &mut sleep,
+                plane.as_ref(),
+            ) {
+                Ok(report) => report,
+                Err(error) => {
+                    let _ = writeln!(err, "error: {}: {error}", error.code());
+                    return match &error {
+                        crate::sweep::SweepError::Central(central) => central_exit(central),
+                        crate::sweep::SweepError::Local(_) => EXIT_REFUSED,
+                    };
+                }
+            };
             if let Err(error) = write_sync_report(out, &report) {
                 return finish(Err(error), err);
             }

@@ -13,18 +13,58 @@
 //!
 //! A conflict is recorded centrally with both bodies retrievable; the key's
 //! later intents wait (`blocked_by_conflict`) until a rebase, which is a new
-//! intent. Values over the namespace's inline threshold stay local
-//! (`pending_needs_phase3`): Phase 2 uploads no bytes.
+//! intent.
+//!
+//! A value over the namespace's inline threshold, or one held in a working
+//! file, goes through the blob plane (code#13318, design §9): the sweeper
+//! streams its bytes to the trusted upload door, which verifies and
+//! publishes them, then writes the reference by publish-CAS, so the head is
+//! never a reference to bytes central has not published. The upload runs
+//! before the local write lock is taken, so a long upload never blocks a
+//! local write; an upload whose intent is then cleared leaves a published,
+//! unreferenced blob that GC retires after its grace. With no blob plane
+//! configured those values stay local (`pending_needs_phase3`).
 
 use std::collections::{HashMap, HashSet};
+use std::io::Read;
 use std::time::Duration;
 
 use rusqlite::{OptionalExtension, Transaction, TransactionBehavior, params};
 
+use crate::blob::{self, KvBlobRefV1, Partition, Placement};
+use crate::blob_central::{self, PublishCas};
 use crate::central::{
     self, Address, CentralError, IdempotencyKey, Intent, Namespace, Op, Outcome, Pipeline,
 };
 use crate::{Identity, KvError, LocalStore, busy_or_sql, sql, unsigned};
+
+/// One blob the sweeper asks the upload door to verify and publish.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BlobUpload<'a> {
+    pub registry_id: &'a str,
+    pub namespace: &'a str,
+    pub scope_id: &'a str,
+    pub partition: &'a Partition,
+    /// Lower-case hex BLAKE3-256 of the bytes: an assertion the door
+    /// verifies, never authority.
+    pub digest: &'a str,
+    pub bytes_len: u64,
+}
+
+/// The trusted upload door (design §9): streams the bytes, which the door
+/// verifies against the digest and length and publishes in the partition,
+/// and answers the published reference.
+pub trait BlobUploader {
+    fn upload(&self, upload: &BlobUpload<'_>, bytes: &mut dyn Read)
+    -> central::Result<KvBlobRefV1>;
+}
+
+/// Where the sweeper places blobs: the upload door and the partition every
+/// blob of this host goes to.
+pub struct BlobPlane<'a> {
+    pub uploader: &'a dyn BlobUploader,
+    pub partition: Partition,
+}
 
 /// Local schema version 5: the host incarnation, each key's central base and
 /// local copies of sweep receipts.
@@ -133,7 +173,8 @@ pub struct Swept {
 pub struct Waiting {
     pub namespace: String,
     pub key: String,
-    /// `pending_needs_phase3`, `unknown_namespace` or `blocked_by_conflict`.
+    /// `pending_needs_phase3`, `blob_not_published`, `unknown_namespace` or
+    /// `blocked_by_conflict`.
     pub reason: &'static str,
 }
 
@@ -208,6 +249,17 @@ pub struct Sweeper<'a> {
     pub writer: &'a str,
     pub resolve: &'a dyn Fn(&str) -> central::Result<Namespace>,
     pub sleep: &'a mut dyn FnMut(Duration),
+    /// The blob plane; `None` keeps over-threshold values local.
+    pub blobs: Option<&'a BlobPlane<'a>>,
+}
+
+/// What the sweep does with one intent's bytes before it takes the lock.
+enum Staged {
+    /// A tombstone, or bytes that fit an inline row.
+    Inline,
+    /// Bytes published through the upload door.
+    Blob(KvBlobRefV1),
+    Wait(&'static str),
 }
 
 impl Sweeper<'_> {
@@ -278,6 +330,11 @@ impl Sweeper<'_> {
         intent: &Pending,
         definition: &Namespace,
     ) -> Result<Step, SweepError> {
+        let reference = match self.stage_blob(store, identity, intent, definition)? {
+            Staged::Inline => None,
+            Staged::Blob(reference) => Some(reference),
+            Staged::Wait(reason) => return Ok(Step::Wait(reason)),
+        };
         // The lock clear-override takes: held from the pending check until
         // the decision is recorded, so a clear cancels this intent before it
         // is sent or waits (bounded) for the submission to finish.
@@ -336,6 +393,8 @@ impl Sweeper<'_> {
             .map_err(sql)?;
         let op = if state == "tombstone" {
             Op::Tombstone
+        } else if let Some(reference) = &reference {
+            Op::Set(reference.encode())
         } else {
             if working_id.is_some() || value.len() as u64 > definition.blob_threshold {
                 return Ok(Step::Wait("pending_needs_phase3"));
@@ -359,7 +418,20 @@ impl Sweeper<'_> {
         };
         // An error here drops the transaction: nothing local changes, the
         // intent stays pending, and the next sweep retransmits it.
-        let receipt = central::cas_with_retry(self.primary, &request, &mut *self.sleep)?;
+        let receipt = match &reference {
+            None => central::cas_with_retry(self.primary, &request, &mut *self.sleep)?,
+            Some(reference) => match blob_central::publish_cas_with_retry(
+                self.primary,
+                &request,
+                reference,
+                &mut *self.sleep,
+            )? {
+                PublishCas::Decided(receipt) => receipt,
+                // Deleted under a fence between upload and CAS: the next
+                // sweep uploads the bytes again.
+                PublishCas::NotPublished => return Ok(Step::Wait("blob_not_published")),
+            },
+        };
         let (outcome, version, conflict_id, conflicted, base_version) = match receipt.outcome {
             Outcome::Committed { version } => ("committed", version, None, 0, version),
             Outcome::Conflict {
@@ -420,6 +492,92 @@ impl Sweeper<'_> {
             outcome: receipt.outcome,
             replayed: receipt.replayed,
         }))
+    }
+}
+
+impl Sweeper<'_> {
+    /// Upload `intent`'s bytes when they belong in a blob. Reads the
+    /// immutable version row without the write lock.
+    fn stage_blob(
+        &self,
+        store: &LocalStore,
+        identity: &Identity<'_>,
+        intent: &Pending,
+        definition: &Namespace,
+    ) -> Result<Staged, SweepError> {
+        let (value, state, working_id, working_len): (
+            Vec<u8>,
+            String,
+            Option<String>,
+            Option<i64>,
+        ) = store
+            .connection
+            .query_row(
+                "SELECT value, state, working_id, working_len FROM kv_versions_local
+                     WHERE owner_user_id=?1 AND context_id=?2 AND partition_id=?3 AND namespace=?4
+                       AND key=?5 AND version=?6",
+                params![
+                    identity.owner_user_id,
+                    identity.context_id,
+                    identity.partition_id,
+                    intent.namespace,
+                    intent.key,
+                    crate::signed(intent.version)
+                ],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .map_err(sql)?;
+        if state == "tombstone" {
+            return Ok(Staged::Inline);
+        }
+        let working = crate::working_ref(working_id, working_len);
+        let len = working
+            .as_ref()
+            .map_or(value.len() as u64, |reference| reference.len);
+        // A working file is never read whole into a row, whatever the knob.
+        if working.is_none()
+            && blob::place(len, definition.blob_threshold, false) == Placement::Inline
+        {
+            return Ok(Staged::Inline);
+        }
+        let Some(plane) = self.blobs else {
+            return Ok(Staged::Wait("pending_needs_phase3"));
+        };
+        let (digest, mut reader): (String, Box<dyn Read>) = match &working {
+            Some(reference) => {
+                let dir = store
+                    .working_dir
+                    .as_deref()
+                    .ok_or_else(|| KvError::WorkingFileMissing(reference.id.clone()))?;
+                let file = crate::working::open(dir, reference).map_err(KvError::from)?;
+                (reference.id.clone(), Box::new(file))
+            }
+            None => (
+                blake3::hash(&value).to_hex().to_string(),
+                Box::new(std::io::Cursor::new(value)),
+            ),
+        };
+        let scope_id = definition.scope_for(identity.owner_user_id, identity.context_id);
+        let upload = BlobUpload {
+            registry_id: &definition.registry_id,
+            namespace: &intent.namespace,
+            scope_id: &scope_id,
+            partition: &plane.partition,
+            digest: &digest,
+            bytes_len: len,
+        };
+        let reference = plane.uploader.upload(&upload, &mut reader)?;
+        if reference.digest != digest
+            || reference.bytes_len != len
+            || reference.partition != plane.partition
+        {
+            return Err(CentralError::Store(format!(
+                "the upload door answered a reference to other bytes: {} {} in {}",
+                reference.digest, reference.bytes_len, reference.partition
+            ))
+            .into());
+        }
+        Ok(Staged::Blob(reference))
     }
 }
 
@@ -619,6 +777,7 @@ mod tests {
             writer: "drew",
             resolve: &resolve,
             sleep: &mut sleep,
+            blobs: None,
         }
         .sweep(store, identity)
     }
@@ -840,6 +999,252 @@ mod tests {
         assert_eq!(report.waiting[0].reason, "pending_needs_phase3");
         assert_eq!(head(&primary, &shared("big")).unwrap(), None);
         assert_eq!(pending(&store, &me, "status", "big"), 1);
+    }
+
+    /// The upload door, as the hosted worker runs it: verify the bytes
+    /// against the assertion, then publish them in the partition.
+    struct Door<'a> {
+        primary: &'a SqlitePrimary,
+        /// Publish nothing: the reference names bytes central never saw.
+        skip_publish: bool,
+        uploads: Mutex<Vec<(String, u64, String)>>,
+    }
+
+    impl<'a> Door<'a> {
+        fn new(primary: &'a SqlitePrimary) -> Self {
+            Self {
+                primary,
+                skip_publish: false,
+                uploads: Mutex::new(Vec::new()),
+            }
+        }
+    }
+
+    impl BlobUploader for Door<'_> {
+        fn upload(
+            &self,
+            upload: &BlobUpload<'_>,
+            bytes: &mut dyn Read,
+        ) -> central::Result<KvBlobRefV1> {
+            let mut body = Vec::new();
+            bytes
+                .read_to_end(&mut body)
+                .map_err(|error| CentralError::Unavailable(error.to_string()))?;
+            if body.len() as u64 != upload.bytes_len
+                || blake3::hash(&body).to_hex().as_str() != upload.digest
+            {
+                return Err(CentralError::Refused {
+                    code: "central_refused",
+                    message: "blob_digest_mismatch".into(),
+                });
+            }
+            let reference = KvBlobRefV1 {
+                digest: upload.digest.to_string(),
+                bytes_len: upload.bytes_len,
+                partition: upload.partition.clone(),
+                locator: format!(
+                    "r2:kv/blobs/{}/{}/{}",
+                    upload.partition.jurisdiction, upload.partition.tier, upload.digest
+                ),
+            };
+            if !self.skip_publish {
+                blob_central::mark_published(self.primary, &reference)?;
+            }
+            self.uploads.lock().unwrap().push((
+                upload.scope_id.to_string(),
+                upload.bytes_len,
+                upload.digest.to_string(),
+            ));
+            Ok(reference)
+        }
+    }
+
+    fn sweep_with(
+        primary: &SqlitePrimary,
+        store: &LocalStore,
+        identity: &Identity<'_>,
+        plane: &BlobPlane<'_>,
+    ) -> Result<SweepReport, SweepError> {
+        let resolve = |namespace: &str| central::resolve(primary, REGISTRY_ID, namespace);
+        let mut sleep = |_: Duration| {};
+        Sweeper {
+            primary,
+            writer: "drew",
+            resolve: &resolve,
+            sleep: &mut sleep,
+            blobs: Some(plane),
+        }
+        .sweep(store, identity)
+    }
+
+    fn tight_primary() -> SqlitePrimary {
+        let primary = primary_with_namespaces();
+        let mut tight = Namespace::shared("status", "shared:team");
+        tight.blob_threshold = 4;
+        define_namespace(&primary, &tight).unwrap();
+        primary
+    }
+
+    #[test]
+    fn central_sweep_places_over_threshold_values_as_published_blobs() {
+        let primary = tight_primary();
+        let door = Door::new(&primary);
+        let partition = Partition::new("eu", "standard");
+        let plane = BlobPlane {
+            uploader: &door,
+            partition: partition.clone(),
+        };
+        let store = LocalStore::in_memory().unwrap();
+        let me = session("s1");
+        store.set(&me, "status", "big", b"more than four").unwrap();
+        store.set(&me, "status", "small", b"ok").unwrap();
+        let report = sweep_with(&primary, &store, &me, &plane).unwrap();
+        assert_eq!(report.committed(), 2, "{report:?}");
+        assert!(report.waiting.is_empty());
+        // Only the big value went through the door, in the namespace's scope.
+        let digest = blake3::hash(b"more than four").to_hex().to_string();
+        assert_eq!(
+            *door.uploads.lock().unwrap(),
+            vec![("shared:team".to_string(), 14, digest.clone())]
+        );
+        // Its head is the published reference; the small one stays inline.
+        let big = head(&primary, &shared("big")).unwrap().unwrap();
+        let reference = KvBlobRefV1::decode(&big.value).unwrap();
+        assert_eq!(reference.digest, digest);
+        assert_eq!(reference.partition, partition);
+        assert_eq!(
+            head(&primary, &shared("small")).unwrap().unwrap().value,
+            b"ok"
+        );
+        // The reference is a GC root of its partition, and of no other.
+        assert!(
+            blob_central::roots(&primary, &partition)
+                .unwrap()
+                .content_ids
+                .contains(&digest)
+        );
+        assert!(
+            blob_central::roots(&primary, &Partition::new("us", "standard"))
+                .unwrap()
+                .content_ids
+                .is_empty()
+        );
+        // A second sweep has nothing left to send.
+        assert_eq!(pending(&store, &me, "status", "big"), 0);
+        let again = sweep_with(&primary, &store, &me, &plane).unwrap();
+        assert!(again.swept.is_empty() && again.waiting.is_empty());
+        assert_eq!(door.uploads.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn central_sweep_streams_working_files_through_the_door() {
+        let dir = std::env::temp_dir().join(format!(
+            "fleet-kv-sweep-blob-{}-{}",
+            std::process::id(),
+            now_ms()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let primary = primary_with_namespaces();
+        let door = Door::new(&primary);
+        let plane = BlobPlane {
+            uploader: &door,
+            partition: Partition::new("eu", "standard"),
+        };
+        let store = LocalStore::open(dir.join("kv.db")).unwrap();
+        let me = session("s1");
+        let big: Vec<u8> = (0..(crate::working::INLINE_LIMIT + 4096))
+            .map(|i| (i % 251) as u8)
+            .collect();
+        store.set(&me, "status", "large", &big).unwrap();
+        let report = sweep_with(&primary, &store, &me, &plane).unwrap();
+        assert_eq!(report.committed(), 1, "{report:?}");
+        let reference =
+            KvBlobRefV1::decode(&head(&primary, &shared("large")).unwrap().unwrap().value).unwrap();
+        assert_eq!(reference.bytes_len, big.len() as u64);
+        assert_eq!(reference.digest, blake3::hash(&big).to_hex().as_str());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn central_sweep_waits_when_the_blob_is_not_published() {
+        let primary = tight_primary();
+        let mut door = Door::new(&primary);
+        door.skip_publish = true;
+        let plane = BlobPlane {
+            uploader: &door,
+            partition: Partition::new("eu", "standard"),
+        };
+        let store = LocalStore::in_memory().unwrap();
+        let me = session("s1");
+        store.set(&me, "status", "big", b"more than four").unwrap();
+        let report = sweep_with(&primary, &store, &me, &plane).unwrap();
+        assert_eq!(report.committed(), 0);
+        assert_eq!(report.waiting[0].reason, "blob_not_published");
+        // Nothing was written, and the intent is still pending.
+        assert_eq!(head(&primary, &shared("big")).unwrap(), None);
+        assert_eq!(pending(&store, &me, "status", "big"), 1);
+        // Once the door publishes, the next sweep lands it.
+        door.skip_publish = false;
+        let plane = BlobPlane {
+            uploader: &door,
+            partition: Partition::new("eu", "standard"),
+        };
+        assert_eq!(
+            sweep_with(&primary, &store, &me, &plane)
+                .unwrap()
+                .committed(),
+            1
+        );
+    }
+
+    #[test]
+    fn central_sweep_refuses_a_reference_to_other_bytes() {
+        struct Liar<'a>(Door<'a>);
+        impl BlobUploader for Liar<'_> {
+            fn upload(
+                &self,
+                upload: &BlobUpload<'_>,
+                bytes: &mut dyn Read,
+            ) -> central::Result<KvBlobRefV1> {
+                let mut reference = self.0.upload(upload, bytes)?;
+                reference.partition = Partition::new("us", "standard");
+                Ok(reference)
+            }
+        }
+        let primary = tight_primary();
+        let liar = Liar(Door::new(&primary));
+        let plane = BlobPlane {
+            uploader: &liar,
+            partition: Partition::new("eu", "standard"),
+        };
+        let store = LocalStore::in_memory().unwrap();
+        let me = session("s1");
+        store.set(&me, "status", "big", b"more than four").unwrap();
+        let error = sweep_with(&primary, &store, &me, &plane).unwrap_err();
+        assert!(
+            matches!(error, SweepError::Central(CentralError::Store(_))),
+            "{error:?}"
+        );
+        assert_eq!(head(&primary, &shared("big")).unwrap(), None);
+        assert_eq!(pending(&store, &me, "status", "big"), 1);
+    }
+
+    #[test]
+    fn central_sweep_blob_tombstones_stay_inline() {
+        let primary = tight_primary();
+        let door = Door::new(&primary);
+        let plane = BlobPlane {
+            uploader: &door,
+            partition: Partition::new("eu", "standard"),
+        };
+        let store = LocalStore::in_memory().unwrap();
+        let me = session("s1");
+        store.set(&me, "status", "big", b"more than four").unwrap();
+        store.delete(&me, "status", "big").unwrap();
+        let report = sweep_with(&primary, &store, &me, &plane).unwrap();
+        assert_eq!(report.committed(), 2);
+        assert!(!head(&primary, &shared("big")).unwrap().unwrap().live);
+        assert_eq!(door.uploads.lock().unwrap().len(), 1);
     }
 
     #[test]

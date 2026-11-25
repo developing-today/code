@@ -103,6 +103,7 @@ impl Agent {
             writer: &self.owner,
             resolve: &resolve,
             sleep: &mut sleep,
+            blobs: None,
         }
         .sweep(&self.store, &self.identity())
         .expect("sweep")

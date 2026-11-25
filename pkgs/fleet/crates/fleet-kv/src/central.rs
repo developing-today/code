@@ -684,10 +684,21 @@ pub fn cas_with_retry(
     intent: &Intent,
     sleep: &mut dyn FnMut(Duration),
 ) -> Result<Receipt> {
+    with_retry(intent, sleep, || cas(primary, intent))
+}
+
+/// Run `attempt` until it succeeds, fails for good, or [`MAX_ATTEMPTS`]
+/// attempts have met an unavailable primary, with full-jitter backoff
+/// seeded by `intent`'s fingerprint between them.
+pub(crate) fn with_retry<T>(
+    intent: &Intent,
+    sleep: &mut dyn FnMut(Duration),
+    mut attempt_once: impl FnMut() -> Result<T>,
+) -> Result<T> {
     let mut jitter = Jitter::seeded(&intent.fingerprint());
     let mut attempt = 1;
     loop {
-        match cas(primary, intent) {
+        match attempt_once() {
             Err(error) if error.is_retryable() && attempt < MAX_ATTEMPTS => {
                 sleep(jitter.backoff(attempt));
                 attempt += 1;
