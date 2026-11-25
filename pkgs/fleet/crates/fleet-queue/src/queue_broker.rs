@@ -1899,3 +1899,27 @@ mod reprioritize_sync_tests {
         assert!(SRC.contains("retry_reprioritize_sync(st, turso)"));
     }
 }
+
+#[cfg(test)]
+mod history_since_cursor_contract_tests {
+    // Oracle: the PM projector resumes from a task_history id cursor,
+    // receives rows in strictly increasing id order, and knows whether
+    // another page remains.
+    const SRC: &str = include_str!("queue_broker.rs");
+
+    #[test]
+    fn history_since_accepts_after_id_and_returns_page_cursor() {
+        let start = SRC
+            .find("fn dispatch_history_since_cursor(")
+            .expect("queue-broker cursor route must exist");
+        let rest = &SRC[start..];
+        let end = rest
+            .find("\nfn ")
+            .expect("cursor route must end at the next function");
+        let route = &rest[..end];
+        assert!(route.contains("id > ?"), "cursor excludes ids already seen: {route}");
+        assert!(route.contains("ORDER BY id ASC"), "pages are stable: {route}");
+        assert!(route.contains("next_cursor"), "the client can advance: {route}");
+        assert!(route.contains("has_more"), "the client can drain another page: {route}");
+    }
+}

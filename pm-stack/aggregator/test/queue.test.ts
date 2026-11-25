@@ -200,6 +200,43 @@ describe("fetchQueueSnapshot (fixture broker)", () => {
       "backend down",
     );
   });
+
+  test("projects a history page from the stable after-id cursor", async () => {
+    const calls: { url: string; body: Record<string, unknown> }[] = [];
+    const pageFetch = async (url: string, init?: { headers?: Record<string, string>; body?: string }) => {
+      const body = JSON.parse(init?.body ?? "{}") as Record<string, unknown>;
+      calls.push({ url, body });
+      if (url.endsWith("/health")) return { ok: true, status: 200, json: async () => ({ ok: true, rows: [] }) };
+      if (url.endsWith("/history-since")) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            ok: true,
+            rows: [
+              { id: 40, task_id: 7, kind: "claimed", from_status: "queued", to_status: "claimed", actor: "lane-a", created_at: "2026-11-14T14:00:00Z" },
+              { id: 41, task_id: 7, kind: "parked", from_status: "claimed", to_status: "parked", actor: "lane-a", created_at: "2026-11-14T14:01:00Z" },
+              { id: 42, task_id: 8, kind: "claimed", from_status: "queued", to_status: "claimed", actor: "lane-b", created_at: "2026-11-14T14:02:00Z" },
+            ],
+            next_cursor: 42,
+            has_more: true,
+          }),
+        };
+      }
+      throw new Error(`unexpected url ${url}`);
+    };
+
+    const snap = await fetchQueueSnapshot("http://broker.test:4801", "tok-123", pageFetch as never, () => NOW, 200, 39);
+    expect(snap.available).toBe(true);
+    expect(snap.history?.rows.map((row) => row.id)).toEqual([40, 41, 42]);
+    expect(snap.history?.cursor).toBe(42);
+    expect(snap.history?.hasMore).toBe(true);
+    expect(calls.map((call) => call.url)).toEqual([
+      "http://broker.test:4801/health",
+      "http://broker.test:4801/history-since",
+    ]);
+    expect(calls[1].body).toMatchObject({ after_id: 39, limit: 200 });
+  });
 });
 
 describe("read-only by construction", () => {
