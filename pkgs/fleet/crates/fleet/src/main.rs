@@ -67,6 +67,8 @@ mod gh_cache;
 #[cfg(feature = "gh")]
 mod gh_closure;
 #[cfg(feature = "gh")]
+mod gh_content_ledger;
+#[cfg(feature = "gh")]
 mod gh_guard;
 #[cfg(feature = "gh")]
 mod gh_metadata;
