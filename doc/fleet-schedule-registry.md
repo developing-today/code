@@ -510,7 +510,7 @@ from issue #1319.
 the surface is retained in this registry so a future Jules schedule,
 if one is ever created, lands here in the same pass.
 
-## Surface 4 — GitHub Actions schedules (4 entries)
+## Surface 4 — GitHub Actions schedules (5 entries)
 
 Scheduled workflows in this repo (`.github/workflows/*` with a
 `schedule:` trigger). This surface was added 2026-11-05 with its first
@@ -525,6 +525,7 @@ review, not silently normalised.
 | `dispatch-health-probe` (`.github/workflows/dispatch-health-probe.yml`) | developing-today/code | `*/30 * * * *` (every 30 min UTC) + `workflow_dispatch` | enabled; outside probe of dispatch.security.cab — opens/updates one `meta/dispatch-probe` alert issue on failure, comments + closes it on recovery                                                                                                                                                                                                                 | issue #6992   | `.github/workflows/dispatch-health-probe.yml`                                                 | not recorded | Disable the schedule if the probe misfires (repeated false alerts) or dispatch.security.cab is retired               | 2026-11-11 | 2026-11-11  |
 | `fleet-sync-probe` (`.github/workflows/fleet-sync-probe.yml`)           | developing-today/code | `30 14 * * *` (daily 14:30 UTC) + `workflow_dispatch`   | enabled; judges each fork's sync-upstream freshness (successful scheduled run within 30h, no failed latest run) and opens/updates one `meta/fleet-sync-probe` alert issue on failure, comments + closes it on recovery                                                                                                                                             | issue #12235  | `.github/workflows/fleet-sync-probe.yml`; probe `scripts/fleet/fleet-sync-probe.py`           | not recorded | Disable the schedule if the probe misfires (repeated false alerts) or sync-upstream is retired                       | 2026-11-22 | 2026-11-22  |
 | `root-status-guard` (`.github/workflows/root-status-guard.yml`)         | developing-today/code | `17 7 * * *` (daily 07:17 UTC) + `workflow_dispatch`    | enabled; pure-bash guard that fails when a repo-root file is named _COMPLETE_ / _SUMMARY_ (#12136)                                                                                                                                                                                                                                                                 | issue #12136  | `.github/workflows/root-status-guard.yml`; check `.github/scripts/check-root-status-files.sh` | not recorded | Disable the schedule if the guard misfires (repeated false failures on main) or the root status-file rule is retired | 2026-11-24 | 2026-11-24  |
+| `id-pg-postgrest-contract` (`.github/workflows/id-pg-postgrest-contract.yml`) | developing-today/code | `19 6 * * *` (daily 06:19 UTC) + `workflow_dispatch` | declared in this change; real PostgreSQL/PostgREST and injectable contract tests; not a PR gate | issue #13764 | `.github/workflows/id-pg-postgrest-contract.yml`; `pkgs/id/scripts/test-postgrest-contract.sh` | 25-minute job timeout | Remove with retirement of the PostgREST adapter or replacement of this verification venue | 2026-11-25 | 2026-11-25 |
 
 ## Surface 5 — Mac launchd jobs (3 entries)
 
