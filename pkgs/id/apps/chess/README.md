@@ -54,6 +54,19 @@ board, castling rights, and en-passant target included — and
 that is not exactly 64 piece bytes falls back to the opening
 position instead of trapping.
 
+Two players (#15111): each colour has a seat holding the participant
+that plays it. The first participant to type takes white; a second
+participant takes black by pressing J, which retires the AI (the
+bottom line says so while black's seat is open). With black's seat
+open the AI plays black exactly as in single-player. Turn enforcement
+lives in the world program's `update`, not in the terminal: a key from
+anyone who does not hold the seat of the side to move — the other
+player out of turn, or a spectator — is dropped and the model is
+unchanged, and the expects prove it. Once the game is over either
+seated player can start a new one, and the seats carry over. Records
+add `turn`, `white_seat` and `black_seat`; snapshots from before
+seats restore with both seats open and white to move.
+
 Later slices of #14862 build on this one: id-network multiplayer
 (one binary hosts and the other joins, or a centrally started
 server both players join), and the three-machine demonstration
@@ -73,4 +86,5 @@ ROC=/path/to/roc ZIG=zig ./build.sh
 id serve --world --world-admin-token "$WORLD_ADMIN" --world-module program/chess.wasm
 id world invite HOST_NODE --admin-token "$WORLD_ADMIN" --name Ada
 id world join HOST_NODE --capability TOKEN       # then: arrows/WASD, Enter to select and move
+# a second player, invited the same way, joins and presses J to play black
 ```
