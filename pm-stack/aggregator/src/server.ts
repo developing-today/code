@@ -68,6 +68,12 @@ import { attentionFragment, attentionSections, ghObjectRef, renderAa, renderAtte
 import { buildBriefs } from "./brief.ts";
 import { listDigestArchives, readDigestArchive } from "./digest.ts";
 import { classEnabled, getAlertsStore, startAlertEngine, type PushPayload } from "./alerts.ts";
+import {
+  buildIncidentEnvelope,
+  incidentPageThreshold,
+  incidentTarget,
+  renderIncidentPage,
+} from "./incident-page.ts";
 import { recordSwProbe, sendPush, swProbeSummary } from "./push.ts";
 import { renderDigest, esc } from "./render.ts";
 import type { QueueSnapshot } from "./queue.ts";
@@ -88,7 +94,7 @@ import { json, jsonCompact, html, serviceWorkerResponse } from "./server-respond
 import { questionsHtml, PWA_MANIFEST } from "./server-pages.ts";
 import { boardContext, allForecastContracts, roadmapContext, searchContext, deriveWatchdogItems, attentionContext, ssePatch, sseResponse, boardRender, attentionRender, todaySignals, todayContext, queueContext, overviewContext, programSources, resolveView, poolItemLike, eventContextByRef, eventFilterFromUrl, digestContext, GRAINS, healthContext, sloSummaries, withSearchTiming, withSearchTimings } from "./server-contexts.ts";
 import { handleReportsRead, handleReportWriteRoutes, handleIdentityRoutes, handleWriteRoutes } from "./server-write-routes.ts";
-import { handleAlertIntakeRoutes, handleAlertAction, handleAlertRead, handleAlertsList, handleAlertPreferences, handleNotificationsPage } from "./server-alert-routes.ts";
+import { handleAlertIntakeRoutes, handleAlertAction, handleAlertRead, handleAlertsList, handleAlertPreferences, handleNotificationsPage, UUID_RE } from "./server-alert-routes.ts";
 import { handleDecisionRoutes, handleDecisionsIndex, handleDecisionTailRoutes } from "./server-decision-routes.ts";
 
 function runMetadataFleet(args: string[], input?: string): Promise<string> {
@@ -182,6 +188,40 @@ async function handler(req: Request, remoteAddress?: string): Promise<Response> 
   if (req.method === "GET" && (path === "/reports" || path === "/api/reports.json")) {
     return handleReportsRead(req, path);
   }
+
+  // C6 incident page (#15019, design §6): one evidence-backed page
+  // per threshold-meeting incident, assembled live from the alerts
+  // ledger's healthHook records. The path id is the alerts-ledger
+  // incident id; the page identity joins on healthHook.incidentId.
+  const incidentPageMatch = /^\/reports\/incident\/([\w-]+)$/.exec(path);
+  const incidentJsonMatch = /^\/api\/reports\/incident\/([\w-]+)\.json$/.exec(path);
+  if (req.method === "GET" && (incidentPageMatch || incidentJsonMatch)) {
+    const id = (incidentPageMatch ?? incidentJsonMatch)![1];
+    if (!UUID_RE.test(id)) return json({ error: "incident id must be a uuid" }, 400);
+    const store = await getAlertsStore();
+    if (!store) return json({ error: "alerts store unavailable" }, 503);
+    const incident = await store.getIncident(id);
+    if (!incident) return json({ error: "no such incident", id }, 404);
+    const events = await store.listIncidentEvents(id);
+    if (!events.some((e) => e.detail?.healthHook !== undefined)) {
+      return json({ error: "incident has no healthHook evidence records", id }, 404);
+    }
+    const target = incidentTarget(incident);
+    const related = (await store.listIncidents(200)).filter(
+      (r) => target !== null && incidentTarget(r) === target,
+    );
+    if (!incidentPageThreshold(incident, events, related).qualifies) {
+      return json({ error: "incident does not meet the C6 section 6.2 page threshold", id }, 404);
+    }
+    const envelope = buildIncidentEnvelope({
+      incident,
+      events,
+      related,
+      generatedAt: new Date().toISOString(),
+    });
+    return incidentJsonMatch ? json(envelope) : html(renderIncidentPage(envelope));
+  }
+
   const reportWriteResponse = await handleReportWriteRoutes(req, path);
   if (reportWriteResponse) return reportWriteResponse;
 

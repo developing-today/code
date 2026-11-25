@@ -65,6 +65,7 @@ import {
 import { summarizeDns } from "./dns.ts";
 import { needsDrewWait, type NeedsDrewCensus, type NeedsDrewItem } from "./needs-drew.ts";
 import type { Incident, IncidentEvent, PushSubscriptionRow } from "./alerts.ts";
+import { incidentPageThreshold } from "./incident-page.ts";
 import type { NotificationRollup } from "./notifications.ts";
 import { NOTIFICATION_CLASS_DEFAULTS, NOTIFICATION_CLASSES } from "./notifications.ts";
 import { FEED_STALE_MS, ageMsText, feedAgeText } from "./feed.ts";
@@ -8227,7 +8228,7 @@ export interface AlertsPageView {
   ackWindowMin: number;
 }
 
-function incidentCard(i: Incident): string {
+function incidentCard(i: Incident, events: IncidentEvent[] = [], all: Incident[] = []): string {
   const sev = i.severity === "critical" ? "closed" : i.severity === "warning" ? "implementing" : "open";
   const times = [
     `first seen ${fmtDate(i.first_seen_at)}`,
@@ -8249,11 +8250,19 @@ function incidentCard(i: Incident): string {
       : i.status === "acked"
         ? `<button data-close="${esc(i.id)}">Close</button>`
         : "";
+  // C6 (#15019): incidents with healthHook evidence that meet the
+  // §6.2 threshold earn a durable incident page; link it from the card.
+  const ownEvents = events.filter((e) => e.incident_id === i.id);
+  const pageLink =
+    ownEvents.some((e) => e.detail?.healthHook !== undefined) &&
+    incidentPageThreshold(i, ownEvents, all).qualifies
+      ? `<br><a href="/reports/incident/${esc(i.id)}">Incident page</a>`
+      : "";
   return `<div class="card incident" id="incident-${esc(i.id)}">
 <strong>${esc(i.title)}</strong> <span class="badge ${sev}">${esc(i.severity)}</span> <span class="badge">${esc(i.status)}</span>
 ${i.body ? `<br>${esc(i.body)}` : ""}
 <br><span class="muted">source <code>${esc(i.source)}</code> · key <code>${esc(i.incident_key)}</code> · ${esc(times)}</span>
-${actions ? `<br>${actions}` : ""}
+${actions ? `<br>${actions}` : ""}${pageLink}
 </div>`;
 }
 
@@ -8333,8 +8342,8 @@ export function renderAlerts(view: AlertsPageView, provenance: Provenance, vapid
 <h2>Subscriptions (${view.subscriptions.length})</h2>
 ${view.subscriptions.length ? view.subscriptions.map(subscriptionRow).join("") : `<p class="muted">No push subscriptions yet — enable push above.</p>`}
 <h2>Open incidents (${open.length})</h2>
-${open.length ? open.map(incidentCard).join("") : `<p class="muted">No open incidents. Silence is golden.</p>`}
-${closed.length ? `<h2>Closed (recent)</h2>${closed.map(incidentCard).join("")}` : ""}
+${open.length ? open.map((i) => incidentCard(i, view.events, view.incidents)).join("") : `<p class="muted">No open incidents. Silence is golden.</p>`}
+${closed.length ? `<h2>Closed (recent)</h2>${closed.map((i) => incidentCard(i, view.events, view.incidents)).join("")}` : ""}
 <h2>Ledger — recent transitions</h2>
  <div class="tblwrap"><table><caption>Recent alert-ledger transitions</caption><tr><th scope="col">at</th><th scope="col">kind</th><th scope="col">incident</th><th scope="col">source · key</th></tr>${events}</table></div>`;
   const script = `<script>
