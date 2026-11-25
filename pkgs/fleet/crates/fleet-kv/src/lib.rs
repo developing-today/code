@@ -15,6 +15,7 @@
 
 pub mod archive;
 pub mod backup;
+pub mod blob;
 pub mod catalog;
 pub mod central;
 pub mod cli;
