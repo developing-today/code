@@ -252,7 +252,7 @@ describe("live board: fully filtered is still live (Codex review, PR #2430)", ()
       expect(src.provenance().board).toContain("kaneo task reads failed for every project");
       expect(src.provenance().board).toContain("fixtures withheld in live mode");
       expect(board).toEqual([]);
-      expect(src.provenanceDetail().board.state).toBe("unavailable");
+      expect(src.provenanceDetail!().board.state).toBe("unavailable");
     } finally {
       globalThis.fetch = realFetch;
     }

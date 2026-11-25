@@ -118,7 +118,7 @@ describe("live Grist roadmap reader (#1213)", () => {
       expect(src.provenance().roadmap).toBe(
         "unavailable (grist unreachable: grist roadmap read failed; fixtures withheld in live mode)",
       );
-      expect(src.provenanceDetail().roadmap.state).toBe("unavailable");
+      expect(src.provenanceDetail!().roadmap.state).toBe("unavailable");
       expect(requests).toEqual([
         {
           url: "http://grist.test/api/docs/test-roadmap-doc/tables/Roadmap/records",
