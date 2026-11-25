@@ -20,6 +20,7 @@ use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
 
 use crate::host::{LifecycleState, Supervisor, WakeMode, inspect_world, settings_body};
+use crate::world_export::ExportManifest;
 
 /// Name of the control socket inside a data root.
 pub const CONTROL_SOCKET_NAME: &str = "host.sock";
@@ -92,6 +93,22 @@ pub enum ControlRequest {
         /// The wake mode.
         wake: WakeMode,
     },
+    /// Export a live world to a new file, signed by the host key (#10695).
+    Export {
+        /// The world.
+        world: String,
+        /// Absolute path of the file to write.
+        path: PathBuf,
+    },
+    /// Restore an export file as a new asleep world (#10695).
+    Import {
+        /// Absolute path of the export file.
+        path: PathBuf,
+        /// Lowercase hex of the key the export must be signed by.
+        source: String,
+        /// Who asked, recorded in the host file.
+        actor: String,
+    },
 }
 
 /// The host's answer, sent as one JSON line.
@@ -124,6 +141,23 @@ impl ControlResponse {
             body: None,
         }
     }
+}
+
+/// Parse a pinned export source: 64 hex digits.
+///
+/// # Errors
+///
+/// Fails for anything that is not 32 bytes of hex.
+pub fn parse_source(source: &str) -> Result<[u8; 32]> {
+    crate::world_session::decode_hex(source)
+        .and_then(|bytes| bytes.try_into().ok())
+        .with_context(|| format!("source {source:?} is not 64 hex digits"))
+}
+
+fn export_body(manifest: &ExportManifest, path: &Path) -> Result<serde_json::Value> {
+    let mut body = serde_json::to_value(manifest)?;
+    body["path"] = serde_json::json!(path);
+    Ok(body)
 }
 
 fn state_body(world: &str, state: LifecycleState) -> serde_json::Value {
@@ -166,6 +200,21 @@ pub async fn handle(supervisor: &mut Supervisor, request: ControlRequest) -> Con
         ControlRequest::SetWake { world, wake } => supervisor
             .set_wake(&world, wake)
             .and_then(|()| settings_body(supervisor.file(), &world)),
+        ControlRequest::Export { world, path } => supervisor
+            .export(&world, &path)
+            .await
+            .and_then(|manifest| export_body(&manifest, &path)),
+        ControlRequest::Import {
+            path,
+            source,
+            actor,
+        } => match parse_source(&source) {
+            Ok(source) => supervisor
+                .import(&path, source, &actor)
+                .await
+                .and_then(|manifest| export_body(&manifest, &path)),
+            Err(error) => Err(error),
+        },
     };
     match result {
         Ok(body) => ControlResponse::done(body),
@@ -344,6 +393,12 @@ mod tests {
             .mode();
         assert_eq!(mode & 0o777, 0o600);
         let mut supervisor = Supervisor::open(root.path()).await.unwrap();
+        let key = ed25519_dalek::SigningKey::from_bytes(&[5; 32]);
+        let source = crate::world_session::encode_hex(key.verifying_key().as_bytes());
+        supervisor.set_signing_key(key);
+        let exports = TempDir::new().unwrap();
+        let export_path = exports.path().join("alpha.export");
+        let script_export = export_path.clone();
         let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
         let path = root.path().to_path_buf();
 
@@ -351,9 +406,28 @@ mod tests {
             // A second host on the same root is refused while this one runs.
             assert!(bind(&path).is_err());
 
+            let export = ControlRequest::Export {
+                world: "alpha".to_owned(),
+                path: script_export.clone(),
+            };
+            let asleep = request(&path, &export).await.unwrap();
+            assert!(asleep.error.unwrap().contains("start it"));
+
             let started = request(&path, &act("start", "alpha")).await.unwrap();
             assert!(started.ok, "{started:?}");
             assert_eq!(started.body.unwrap()["state"], "live");
+
+            let exported = request(&path, &export).await.unwrap();
+            assert!(exported.ok, "{exported:?}");
+            assert_eq!(exported.body.unwrap()["world"], "alpha");
+            // Restoring over a world this root records is refused.
+            let again = ControlRequest::Import {
+                path: script_export.clone(),
+                source: source.clone(),
+                actor: "ops".to_owned(),
+            };
+            let refused = request(&path, &again).await.unwrap();
+            assert!(refused.error.unwrap().contains("already"), "refused");
 
             assert!(request(&path, &act("archive", "beta")).await.unwrap().ok);
             let refused = request(&path, &act("start", "beta")).await.unwrap();
@@ -442,6 +516,24 @@ mod tests {
             .collect();
         assert_eq!(actors, ["ops", "ops"]);
 
+        // The export restores into another data root with no host running.
+        let elsewhere = data_root_with(&[]);
+        let restored = crate::host::import_into_root(
+            elsewhere.path(),
+            &export_path,
+            parse_source(&source_hex_of(5)).unwrap(),
+            "ops",
+        )
+        .await
+        .unwrap();
+        assert_eq!(restored.world, "alpha");
+        let there = HostFile::load(elsewhere.path()).unwrap();
+        assert_eq!(there.worlds["alpha"].state, LifecycleState::Asleep);
+        assert_eq!(there.worlds["alpha"].history[0].actor, "ops");
+        let mut moved = Supervisor::open(elsewhere.path()).await.unwrap();
+        moved.start("alpha", "ops").await.unwrap();
+        moved.shutdown().await.unwrap();
+
         // The host is gone: its socket file is stale and a new host binds.
         assert!(request(root.path(), &ControlRequest::List).await.is_err());
         assert!(
@@ -451,6 +543,11 @@ mod tests {
                 .is_none()
         );
         drop(bind(root.path()).unwrap());
+    }
+
+    fn source_hex_of(seed: u8) -> String {
+        let key = ed25519_dalek::SigningKey::from_bytes(&[seed; 32]);
+        crate::world_session::encode_hex(key.verifying_key().as_bytes())
     }
 
     #[test]
@@ -467,6 +564,8 @@ mod tests {
         assert_eq!(line, r#"{"op":"archive","world":"w","actor":"ops"}"#);
         let list: ControlRequest = serde_json::from_str(r#"{"op":"list"}"#).unwrap();
         assert_eq!(list, ControlRequest::List);
+        assert!(parse_source(&source_hex_of(1)).is_ok());
+        assert!(parse_source("abc").is_err());
         let wake: ControlRequest =
             serde_json::from_str(r#"{"op":"set_wake","world":"w","wake":"operator"}"#).unwrap();
         assert_eq!(

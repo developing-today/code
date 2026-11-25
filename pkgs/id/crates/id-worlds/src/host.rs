@@ -32,10 +32,14 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, bail};
+use ed25519_dalek::SigningKey;
 use serde::{Deserialize, Serialize};
 
 use crate::world::{WorldHandle, WorldLimits};
 use crate::world_doctor::{JournalFacts, journal_facts};
+use crate::world_export::{
+    ExportManifest, export_world_to_file, import_world_from_file, read_export_manifest,
+};
 use crate::world_limits::RuntimeLimits;
 use crate::world_session::WorldService;
 use crate::world_storage::{JOURNAL_FILE, WalkLimits, inventory};
@@ -331,6 +335,43 @@ impl HostFile {
     /// Fails for a world this file does not record.
     pub fn set_wake(&mut self, name: &str, wake: WakeMode) -> Result<()> {
         self.record_mut(name)?.wake = wake;
+        Ok(())
+    }
+
+    /// Record the journal-bearing directory `root/name` as an asleep
+    /// world adopted by `actor`.
+    ///
+    /// # Errors
+    ///
+    /// Fails for invalid names, names already recorded, missing
+    /// directories and directories without a journal.
+    pub fn adopt(&mut self, root: &Path, name: &str, actor: &str) -> Result<()> {
+        validate_name(name)?;
+        if self.worlds.contains_key(name) {
+            bail!("world {name:?} is already in the host file");
+        }
+        let dir = root.join(name);
+        if !dir.is_dir() {
+            bail!("no world directory at {}", dir.display());
+        }
+        if !dir.join("journal.jsonl").is_file() {
+            bail!(
+                "{} has no journal.jsonl: not a world directory",
+                dir.display()
+            );
+        }
+        self.worlds.insert(
+            name.to_owned(),
+            WorldRecord {
+                state: LifecycleState::Asleep,
+                history: vec![StateChange {
+                    at_secs: now_secs(),
+                    actor: actor.to_owned(),
+                    prior: LifecycleState::Asleep,
+                }],
+                ..WorldRecord::default()
+            },
+        );
         Ok(())
     }
 
@@ -870,6 +911,51 @@ pub fn settings_body(file: &HostFile, world: &str) -> Result<serde_json::Value> 
     }))
 }
 
+/// Name of the host's signing key inside a data root: the Ed25519 key
+/// that signs world exports, readable by its owner alone.
+pub const HOST_KEY_NAME: &str = "host.key";
+
+/// Restore the export at `path` into `root/<world>`, the world the
+/// export names, without recording it.
+async fn restore_export_dir(
+    root: &Path,
+    file: &HostFile,
+    path: &Path,
+    pinned_source: [u8; 32],
+) -> Result<ExportManifest> {
+    let manifest = read_export_manifest(path).await?;
+    validate_name(&manifest.world)?;
+    if file.worlds.contains_key(&manifest.world) {
+        bail!(
+            "world {:?} is already in this data root: archive or move it before restoring",
+            manifest.world
+        );
+    }
+    import_world_from_file(path, &root.join(&manifest.world), pinned_source).await
+}
+
+/// Restore the export file `path`, signed by `pinned_source`, into the data
+/// root `root` with no host running: the world directory is written and
+/// the host file records the world asleep, adopted by `actor`.
+///
+/// # Errors
+///
+/// Fails for a world name that cannot be a directory, a world the host
+/// file already records, an existing world directory, and as
+/// [`import_world_from_file`]; the host file is unchanged then.
+pub async fn import_into_root(
+    root: &Path,
+    path: &Path,
+    pinned_source: [u8; 32],
+    actor: &str,
+) -> Result<ExportManifest> {
+    let mut file = HostFile::read_or_rebuild(root)?;
+    let manifest = restore_export_dir(root, &file, path, pinned_source).await?;
+    file.adopt(root, &manifest.world, actor)?;
+    file.save(root)?;
+    Ok(manifest)
+}
+
 /// A live world held by the [`Supervisor`]: its service plus the replay
 /// report from the `start` that brought it live.
 #[derive(Clone, Debug)]
@@ -888,6 +974,7 @@ pub struct Supervisor {
     root: PathBuf,
     file: HostFile,
     live: HashMap<String, LiveWorld>,
+    signing_key: Option<SigningKey>,
 }
 
 impl Supervisor {
@@ -915,6 +1002,7 @@ impl Supervisor {
             root: root.to_path_buf(),
             file,
             live: HashMap::new(),
+            signing_key: None,
         };
         let live_names: Vec<String> = supervisor
             .file
@@ -968,34 +1056,54 @@ impl Supervisor {
     /// Fails for unknown/invalid names, missing directories, directories
     /// without a journal, and names already in the host file.
     pub fn adopt(&mut self, name: &str, actor: &str) -> Result<()> {
-        validate_name(name)?;
-        if self.file.worlds.contains_key(name) {
-            bail!("world {name:?} is already in the host file");
-        }
-        let dir = self.root.join(name);
-        if !dir.is_dir() {
-            bail!("no world directory at {}", dir.display());
-        }
-        if !dir.join("journal.jsonl").is_file() {
-            bail!(
-                "{} has no journal.jsonl: not a world directory",
-                dir.display()
-            );
-        }
-        self.file.worlds.insert(
-            name.to_owned(),
-            WorldRecord {
-                state: LifecycleState::Asleep,
-                history: vec![StateChange {
-                    at_secs: now_secs(),
-                    actor: actor.to_owned(),
-                    prior: LifecycleState::Asleep,
-                }],
-                ..WorldRecord::default()
-            },
-        );
-        self.file.save(&self.root)?;
+        let mut next = self.file.clone();
+        next.adopt(&self.root, name, actor)?;
+        next.save(&self.root)?;
+        self.file = next;
         Ok(())
+    }
+
+    /// Use `key` to sign world exports ([`Supervisor::export`]).
+    pub fn set_signing_key(&mut self, key: SigningKey) {
+        self.signing_key = Some(key);
+    }
+
+    /// Export a live world to the new file `path`: its journal, directory
+    /// facts and active module as signed replication frames
+    /// ([`crate::world_export`]). The world keeps serving.
+    ///
+    /// # Errors
+    ///
+    /// Fails for a world not held live (start it first), when the host
+    /// has no signing key, for an existing `path`, and as
+    /// [`export_world_to_file`].
+    pub async fn export(&self, name: &str, path: &Path) -> Result<ExportManifest> {
+        let held = self
+            .live
+            .get(name)
+            .with_context(|| format!("world {name:?} is not live: start it before exporting"))?;
+        let key = self
+            .signing_key
+            .as_ref()
+            .context("this host has no signing key for exports")?;
+        export_world_to_file(&held.service, key, path).await
+    }
+
+    /// Restore the export file `path`, signed by `pinned_source`, as a new
+    /// asleep world named by the export, recorded by `actor`.
+    ///
+    /// # Errors
+    ///
+    /// As [`import_into_root`]; nothing is recorded when it fails.
+    pub async fn import(
+        &mut self,
+        path: &Path,
+        pinned_source: [u8; 32],
+        actor: &str,
+    ) -> Result<ExportManifest> {
+        let manifest = restore_export_dir(&self.root, &self.file, path, pinned_source).await?;
+        self.adopt(&manifest.world, actor)?;
+        Ok(manifest)
     }
 
     /// Start an asleep world: journal replay, then hold live and record.

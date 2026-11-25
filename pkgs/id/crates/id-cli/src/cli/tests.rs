@@ -3326,3 +3326,31 @@ fn test_cli_parse_host_pin_and_wake_mode() {
     }
     assert!(Cli::try_parse_from(["id", "host", "wake-mode", "/data", "w", "never"]).is_err());
 }
+
+#[test]
+fn test_cli_parse_host_key_export_import() {
+    let cli = Cli::parse_from(["id", "host", "key", "/data"]);
+    assert!(matches!(
+        cli.command,
+        Some(Command::Host(HostCommand::Key { .. }))
+    ));
+    let cli = Cli::parse_from(["id", "host", "export", "/data", "w", "w.export"]);
+    match cli.command {
+        Some(Command::Host(HostCommand::Export { world, file, .. })) => {
+            assert_eq!(world, "w");
+            assert_eq!(file, std::path::PathBuf::from("w.export"));
+        }
+        _ => panic!("Expected host export"),
+    }
+    let cli = Cli::parse_from([
+        "id", "host", "import", "/data", "w.export", "--source", "ab",
+    ]);
+    match cli.command {
+        Some(Command::Host(HostCommand::Import { source, actor, .. })) => {
+            assert_eq!(source, "ab");
+            assert_eq!(actor, "operator");
+        }
+        _ => panic!("Expected host import"),
+    }
+    assert!(Cli::try_parse_from(["id", "host", "import", "/data", "w.export"]).is_err());
+}

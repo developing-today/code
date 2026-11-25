@@ -32,6 +32,10 @@ pub async fn cmd_host(command: HostCommand) -> Result<()> {
             let mut supervisor = Supervisor::open(&root)
                 .await
                 .with_context(|| format!("opening data root {}", root.display()))?;
+            match host_key(&root).await {
+                Ok(key) => supervisor.set_signing_key(key),
+                Err(error) => eprintln!("exports are off: no host key ({error:#})"),
+            }
             for name in &start {
                 if let Err(error) = supervisor.start(name, &actor).await {
                     supervisor.shutdown().await?;
@@ -99,6 +103,24 @@ pub async fn cmd_host(command: HostCommand) -> Result<()> {
             mode,
             json,
         } => settings_act(&root, Setting::Wake(mode.parse()?), world, json).await,
+        HostCommand::Key { root } => {
+            let key = host_key(&root).await?;
+            println!("{}", hex_of(key.verifying_key().as_bytes()));
+            Ok(())
+        }
+        HostCommand::Export {
+            root,
+            world,
+            file,
+            json,
+        } => export_act(&root, world, &file, json).await,
+        HostCommand::Import {
+            root,
+            file,
+            source,
+            actor,
+            json,
+        } => import_act(&root, &file, &source, actor, json).await,
         HostCommand::List { root, json } => {
             let file = HostFile::read_or_rebuild(&root)
                 .with_context(|| format!("reading data root {}", root.display()))?;
@@ -178,6 +200,118 @@ async fn operator_act(
     _json: bool,
 ) -> Result<()> {
     anyhow::bail!("reaching a running host needs its Unix control socket")
+}
+
+/// The host's export signing key: `host.key` in the data root, created
+/// owner-only when missing.
+async fn host_key(root: &std::path::Path) -> Result<ed25519_dalek::SigningKey> {
+    let path = root.join(id_worlds::host::HOST_KEY_NAME);
+    let path = path
+        .to_str()
+        .with_context(|| format!("{} is not a UTF-8 path", path.display()))?;
+    let key = id_store::store::load_or_create_keypair(path).await?;
+    Ok(ed25519_dalek::SigningKey::from_bytes(&key.to_bytes()))
+}
+
+fn hex_of(bytes: &[u8]) -> String {
+    bytes.iter().fold(String::new(), |mut out, byte| {
+        let _ = write!(out, "{byte:02x}");
+        out
+    })
+}
+
+/// `exported|restored <world> entries=<n> source=<key> <file>`.
+fn export_line(verb: &str, body: &serde_json::Value) -> String {
+    format!(
+        "{verb} {} entries={} source={} {}\n",
+        body["world"].as_str().unwrap_or("?"),
+        body["entries"].as_u64().unwrap_or(0),
+        body["source"].as_str().unwrap_or("?"),
+        body["path"].as_str().unwrap_or("?"),
+    )
+}
+
+fn print_body(verb: &str, body: &serde_json::Value, json: bool) -> Result<()> {
+    if json {
+        println!("{}", serde_json::to_string_pretty(body)?);
+    } else {
+        print!("{}", export_line(verb, body));
+    }
+    Ok(())
+}
+
+/// Export a live world through the host running on `root`.
+#[cfg(unix)]
+async fn export_act(
+    root: &std::path::Path,
+    world: String,
+    file: &std::path::Path,
+    json: bool,
+) -> Result<()> {
+    use id_worlds::host_control::{ControlRequest, request};
+    let path =
+        std::path::absolute(file).with_context(|| format!("resolving {}", file.display()))?;
+    let answer = request(root, &ControlRequest::Export { world, path }).await?;
+    if !answer.ok {
+        anyhow::bail!(
+            "{}",
+            answer
+                .error
+                .unwrap_or_else(|| "the host refused without a reason".to_owned())
+        );
+    }
+    print_body("exported", &answer.body.unwrap_or_default(), json)
+}
+
+#[cfg(not(unix))]
+async fn export_act(
+    _root: &std::path::Path,
+    _world: String,
+    _file: &std::path::Path,
+    _json: bool,
+) -> Result<()> {
+    anyhow::bail!("reaching a running host needs its Unix control socket")
+}
+
+/// Restore an export through the host running on `root`, or into the data
+/// root directly when no host answers.
+async fn import_act(
+    root: &std::path::Path,
+    file: &std::path::Path,
+    source: &str,
+    actor: String,
+    json: bool,
+) -> Result<()> {
+    let path =
+        std::path::absolute(file).with_context(|| format!("resolving {}", file.display()))?;
+    #[cfg(unix)]
+    {
+        use id_worlds::host_control::{ControlRequest, parse_source, try_request};
+        parse_source(source)?;
+        let message = ControlRequest::Import {
+            path: path.clone(),
+            source: source.to_owned(),
+            actor: actor.clone(),
+        };
+        if let Some(answer) = try_request(root, &message).await? {
+            if !answer.ok {
+                anyhow::bail!(
+                    "{}",
+                    answer
+                        .error
+                        .unwrap_or_else(|| "the host refused without a reason".to_owned())
+                );
+            }
+            return print_body("restored", &answer.body.unwrap_or_default(), json);
+        }
+    }
+    let pinned: [u8; 32] = id_worlds::world_session::decode_hex(source)
+        .and_then(|bytes| bytes.try_into().ok())
+        .with_context(|| format!("source {source:?} is not 64 hex digits"))?;
+    let manifest = id_worlds::host::import_into_root(root, &path, pinned, &actor).await?;
+    let mut body = serde_json::to_value(&manifest)?;
+    body["path"] = serde_json::json!(path);
+    print_body("restored", &body, json)
 }
 
 /// A per-world setting an operator changes (#10694).
@@ -444,6 +578,36 @@ mod tests {
         assert_eq!(
             settings_line(&settings_body(&file, "w").unwrap()),
             "w asleep pinned=true wake=operator\n"
+        );
+    }
+
+    #[tokio::test]
+    async fn host_key_is_stable_and_import_refuses_a_bad_source() {
+        let root = tempfile::TempDir::new().unwrap();
+        let first = host_key(root.path()).await.unwrap();
+        let again = host_key(root.path()).await.unwrap();
+        assert_eq!(first.verifying_key(), again.verifying_key());
+        assert_eq!(hex_of(first.verifying_key().as_bytes()).len(), 64);
+        let refused = import_act(
+            root.path(),
+            &root.path().join("missing.export"),
+            "not-hex",
+            "ops".to_owned(),
+            false,
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+        assert!(refused.contains("64 hex digits"), "{refused}");
+        let body = serde_json::json!({
+            "world": "w",
+            "entries": 4,
+            "source": "ab",
+            "path": "/x/w.export",
+        });
+        assert_eq!(
+            export_line("exported", &body),
+            "exported w entries=4 source=ab /x/w.export\n"
         );
     }
 

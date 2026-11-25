@@ -95,6 +95,7 @@ pub mod world_compile;
 #[cfg(feature = "sandbox")]
 pub mod world_dev;
 pub mod world_doctor;
+pub mod world_export;
 pub mod world_fixture;
 pub mod world_hub;
 pub mod world_line;

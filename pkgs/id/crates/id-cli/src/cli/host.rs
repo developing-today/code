@@ -23,7 +23,8 @@ pub enum HostCommand {
     /// Ctrl-C drains every live world and leaves the host file as it
     /// stands, so the next run replays the same worlds back to live. A
     /// data root without a host file gets one rebuilt from its
-    /// directories, every world asleep.
+    /// directories, every world asleep. Exports are signed with
+    /// `host.key` in the data root, created on first run.
     Run {
         /// The data root.
         root: PathBuf,
@@ -129,6 +130,47 @@ pub enum HostCommand {
         #[arg(value_parser = ["connect", "operator"])]
         mode: String,
         /// Print the world's settings as JSON instead of a line.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Print the host's export signing key (64 hex digits), creating
+    /// `host.key` in the data root, readable by its owner alone, when it
+    /// is missing. Give this to whoever restores this host's exports.
+    Key {
+        /// The data root.
+        root: PathBuf,
+    },
+    /// Export a live world on the running host to a new file: its journal,
+    /// directory facts and active module as signed replication frames.
+    /// The world keeps serving. Start an asleep world first.
+    Export {
+        /// The data root the host runs on.
+        root: PathBuf,
+        /// The world.
+        world: String,
+        /// The file to write; it must not exist.
+        file: PathBuf,
+        /// Print the export manifest as JSON instead of a line.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Restore an export file as a new asleep world in a data root,
+    /// verifying every frame against the signing key you pin. Goes
+    /// through the running host when one answers; otherwise writes the
+    /// world directory and the host file itself. A tampered, cut or
+    /// wrongly signed file restores nothing.
+    Import {
+        /// The data root.
+        root: PathBuf,
+        /// The export file.
+        file: PathBuf,
+        /// The exporting host's key, as its `id host key` prints it.
+        #[arg(long)]
+        source: String,
+        /// The actor recorded on the adoption.
+        #[arg(long, default_value = "operator")]
+        actor: String,
+        /// Print the export manifest as JSON instead of a line.
         #[arg(long)]
         json: bool,
     },
