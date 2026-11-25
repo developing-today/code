@@ -640,13 +640,16 @@ export class IngestionStore {
     let dirty = false;
     // A replay batch may contain thousands of deliveries; build each persisted
     // seen list's lookup index once instead of rescanning it for every delivery.
-    const seenBySource = new Map<string, Set<string>>();
+    const seenBySource = new Map<string, Map<string, number>>();
     for (const d of deliveries) {
       const seen = (this.data.seen[d.source] ??= []);
-      let seenSet = seenBySource.get(d.source);
-      if (!seenSet) {
-        seenSet = new Set(seen);
-        seenBySource.set(d.source, seenSet);
+      let seenCounts = seenBySource.get(d.source);
+      if (!seenCounts) {
+        seenCounts = new Map();
+        // Loaded lists may contain repeated ids; counts preserve membership
+        // until the last copy is evicted, just like the persisted array.
+        for (const id of seen) seenCounts.set(id, (seenCounts.get(id) ?? 0) + 1);
+        seenBySource.set(d.source, seenCounts);
       }
       const cp = (this.data.checkpoints[d.source] ??= {
         source: d.source,
@@ -656,7 +659,7 @@ export class IngestionStore {
         duplicates: 0,
         updatedAt: new Date().toISOString(),
       });
-      if (seenSet.has(d.sourceId)) {
+      if (seenCounts.has(d.sourceId)) {
         duplicates++;
         cp.duplicates++;
         cp.updatedAt = new Date().toISOString();
@@ -690,10 +693,14 @@ export class IngestionStore {
         continue;
       }
       seen.push(d.sourceId);
-      seenSet.add(d.sourceId);
+      seenCounts.set(d.sourceId, 1);
       if (seen.length > SEEN_RETENTION_MAX) {
         const evicted = seen.splice(0, seen.length - SEEN_RETENTION_MAX);
-        for (const sourceId of evicted) seenSet.delete(sourceId);
+        for (const sourceId of evicted) {
+          const remaining = seenCounts.get(sourceId)! - 1;
+          if (remaining) seenCounts.set(sourceId, remaining);
+          else seenCounts.delete(sourceId);
+        }
       }
       cp.deliveries++;
       cp.lastSourceId = d.sourceId;

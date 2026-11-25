@@ -263,12 +263,15 @@ describe("ingestion store (#3321)", () => {
       record: async () => ({} as Awaited<ReturnType<EventsStore["record"]>>),
     };
 
-    const initial = await store.ingest(events, deliveries);
-    expect(initial.ingested).toBe(2001);
+    // Oracle: the documented 2000-id FIFO window. Eviction must take effect
+    // within this same call, not only when a fresh lookup index is built.
+    const initial = await store.ingest(events, [...deliveries, deliveries[0]!, deliveries[0]!]);
+    expect(initial.ingested).toBe(2002);
+    expect(initial.duplicates).toBe(1);
     expect(await store.seenIds("github")).toHaveLength(2000);
 
-    // The oldest id has fallen out of the bounded dedupe window and is eligible again.
-    const replay = await store.ingest(events, [deliveries[0]!]);
+    // Re-adding event-0 evicted event-1; a subsequent call must see that too.
+    const replay = await store.ingest(events, [deliveries[1]!]);
     expect(replay.ingested).toBe(1);
     expect(replay.duplicates).toBe(0);
   });
