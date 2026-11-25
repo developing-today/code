@@ -225,7 +225,7 @@ async fn settings_act(
         Some(Ok(body)) => body,
         Some(Err(error)) => anyhow::bail!("{error}"),
         None => {
-            let mut file = HostFile::load(root)
+            let mut file = HostFile::read_or_rebuild(root)
                 .with_context(|| format!("reading data root {}", root.display()))?;
             match setting {
                 Setting::Pinned(pinned) => file.set_pinned(&world, pinned)?,
@@ -409,11 +409,7 @@ mod tests {
         let dir = root.path().join("w");
         std::fs::create_dir_all(dir.join("modules")).unwrap();
         std::fs::write(dir.join("journal.jsonl"), "").unwrap();
-        HostFile::rebuild(root.path())
-            .unwrap()
-            .save(root.path())
-            .unwrap();
-
+        // No host file yet: the first setting writes one.
         settings_act(root.path(), Setting::Pinned(true), "w".to_owned(), false)
             .await
             .unwrap();
