@@ -20,8 +20,8 @@ def check_recovery(record_path, source_dsn_file, now):
     directory = Path(__file__).resolve().parent
     backup = runpy.run_path(str(directory / "restore-point-check.py"))
     identity = runpy.run_path(str(directory / "kaneo-target-preflight.py"))
-    finished = backup["check_record"](Path(record_path), 1, now)
     record = json.loads(Path(record_path).read_text())
+    finished = backup["check_record_data"](record, 1, now)
     host, port, database = identity["identity"](source_dsn_file)
     source = record.get("source")
     if not isinstance(source, dict) or source != {
