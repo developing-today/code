@@ -1133,6 +1133,67 @@ pub enum WorldCommand {
     /// Inspect or copy a durable world's journal file (F11.12 journal
     /// format management). Local only; no host is contacted.
     Journal(WorldJournalArgs),
+    /// Publish a signed world announcement to pkarr relays (#10706).
+    ///
+    /// Signs with the world key in `--key-file` (an owner-only file,
+    /// created on first use) and prints one JSON line per publish.
+    /// With `--watch` it stays up and republishes on the heartbeat.
+    Announce(WorldAnnounceArgs),
+    /// Fetch a world's announcement from pkarr relays by its world id,
+    /// verify it, and print it as JSON (#10706).
+    Lookup(WorldLookupArgs),
+}
+
+/// The arguments of `id world announce` (#10706).
+#[derive(Args, Debug)]
+pub struct WorldAnnounceArgs {
+    /// File holding the world's signing key (created on first use).
+    /// The world id is this key's public half.
+    #[arg(long)]
+    pub key_file: String,
+    /// The node id (64 hex characters) that hosts the world.
+    #[arg(long)]
+    pub node: String,
+    /// A relay URL that reaches the node (never a raw IP and port).
+    #[arg(long)]
+    pub relay_hint: Option<String>,
+    /// Display name (at most 64 characters).
+    #[arg(long)]
+    pub name: String,
+    /// Short description (at most 200 characters).
+    #[arg(long, default_value = "")]
+    pub description: String,
+    /// A tag (repeatable, at most 8).
+    #[arg(long = "tag")]
+    pub tags: Vec<String>,
+    /// Mark the world listed, so registries may include it. Unlisted
+    /// worlds are found only by their id.
+    #[arg(long)]
+    pub listed: bool,
+    /// Coarse occupancy.
+    #[arg(long, default_value = "has_room", value_parser = ["has_room", "near_full", "full"])]
+    pub occupancy: String,
+    /// A pkarr relay base URL (repeatable). Defaults to the
+    /// developing-today relay.
+    #[arg(long = "relay")]
+    pub relays: Vec<String>,
+    /// How long each announcement stays valid, such as 3h.
+    #[arg(long, default_value = "3h", value_parser = crate::helpers::parse_duration_secs)]
+    pub lifetime: u64,
+    /// Stay up and republish on the heartbeat until interrupted.
+    #[arg(long)]
+    pub watch: bool,
+}
+
+/// The arguments of `id world lookup` (#10706).
+#[derive(Args, Debug)]
+pub struct WorldLookupArgs {
+    /// The world id (64 hex characters).
+    pub world_id: String,
+    /// A pkarr relay base URL (repeatable). Defaults to the
+    /// developing-today relay.
+    #[arg(long = "relay")]
+    pub relays: Vec<String>,
 }
 
 /// The arguments of `id world journal`: a subcommand over a world
