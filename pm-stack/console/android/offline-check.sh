@@ -193,6 +193,21 @@ tap_text() {
   adb shell input tap "$xy"
 }
 
+# Waits for words, scrolling the page down between looks: the Needs
+# me page leads with what only the owner can do, and the questions
+# sit below the fold — and a screen read only holds what is on the
+# screen (run 45573336528's dump ends at the visible asks, the
+# question nowhere in it). A swipe up, a breath, another look.
+wait_text_scrolling() {
+  local tries=0
+  until screen_text | grep -qF "$1"; do
+    tries=$((tries + 1))
+    [ "$tries" -gt 10 ] && return 1
+    adb shell input swipe 540 1600 540 600 300 >/dev/null 2>&1 || true
+    sleep 2
+  done
+}
+
 # Taps, retrying while the page settles: a single look can race the
 # rendering — in run 45567951938 the tab bar was on the screen in the
 # failure dump seconds after the stage-2 tap's own look had missed
@@ -295,13 +310,17 @@ adb shell am force-stop "$PKG" 2>/dev/null || true
 echo "offline-check: 1. the app opens against the demo edge"
 launch_and_wait_text "Needs me" 120 || fail "the app did not open to the console (no 'Needs me' tab)"
 tap_text_retry "Needs me" || fail "could not open the Needs me tab"
-wait_text "$QUESTION_TEXT" 60 || fail "the demo question is not shown"
+wait_text_scrolling "$QUESTION_TEXT" || fail "the demo question is not shown"
 
 echo "offline-check: 2. with no connection, opened again it shows what it kept"
 airplane on || fail "could not turn aeroplane mode on"
-launch_and_wait_text "$QUESTION_TEXT" 60 || fail "opened with no connection, the app does not show the question it last saw"
+if ! launch_and_wait_text "$QUESTION_TEXT" 60; then
+  launch_from_icon
+  wait_text_scrolling "$QUESTION_TEXT" || fail "opened with no connection, the app does not show the question it last saw"
+fi
 
 echo "offline-check: 3. answered while offline, app swiped away, network back"
+wait_text_scrolling "$ANSWER_LABEL" || fail "the answer '$ANSWER_LABEL' is not shown"
 tap_text_retry "$ANSWER_LABEL" || fail "could not tap the answer '$ANSWER_LABEL'"
 wait_no_text "$QUESTION_TEXT" 30 || fail "the answered question is still listed"
 # The answer is only written to the outbox when its 4.5-second undo
@@ -338,7 +357,7 @@ done
 [ "$seen" = "1" ] || fail "the demo edge saw the answer $seen times, not once (log: $ACT_LOG)"
 launch_and_wait_text "Needs me" 60 || fail "the app did not reopen after the answer was sent"
 tap_text_retry "Needs me" || fail "could not open the Needs me tab again"
-wait_text "$NEXT_QUESTION_TEXT" 60 || fail "the Needs me list did not load after the answer was sent"
+wait_text_scrolling "$NEXT_QUESTION_TEXT" || fail "the Needs me list did not load after the answer was sent"
 if screen_text | grep -qF "$QUESTION_TEXT"; then
   fail "the answered question is back in the list after being sent"
 fi
