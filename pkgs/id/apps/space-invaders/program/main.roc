@@ -168,7 +168,7 @@ move_player = |model, dir|
     if dir == 0 {
         if model.player_x > 1 { { ..model, player_x: model.player_x - 1 } } else { model }
     } else {
-        if model.player_x + 1 < field_width { { ..model, player_x: model.player_x + 1 } } else { model }
+        if model.player_x + 2 < field_width { { ..model, player_x: model.player_x + 1 } } else { model }
     }
 
 fire : Model -> Model
