@@ -60,6 +60,27 @@
 
         <activity android:name="com.google.androidbrowserhelper.trusted.FocusActivity" />
 
+        <!-- The launcher activity adds a site-settings shortcut as it
+             opens, and names this activity as the shortcut's target:
+             the library's instructions say to declare it here, with
+             its action and the page the settings are for. Without the
+             declaration the launch itself crashes — the offline
+             check's runs found it: "Component class
+             com.google.androidbrowserhelper.trusted.ManageDataLauncherActivity
+             does not exist in today.developing.pmconsole", thrown out
+             of LauncherActivity.launchTwa before the browser opens. -->
+        <activity
+            android:name="com.google.androidbrowserhelper.trusted.ManageDataLauncherActivity"
+            android:exported="true">
+            <meta-data
+                android:name="android.support.customtabs.trusted.MANAGE_SPACE_URL"
+                android:value="${defaultUrl}" />
+            <intent-filter>
+                <action android:name="android.support.customtabs.action.ACTION_MANAGE_TRUSTED_WEB_ACTIVITY_DATA" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+        </activity>
+
         <!-- Asks for permission to show notifications when the site turns them on (Android 13 and later). -->
         <activity android:name="com.google.androidbrowserhelper.trusted.NotificationPermissionRequestActivity" />
 
