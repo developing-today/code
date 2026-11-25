@@ -392,6 +392,17 @@ fn histogram_percentile_us(histogram: &id::world::HistogramSnapshot, fraction: f
     u64::MAX
 }
 
+/// Format one histogram percentile for a profile line. A percentile
+/// landing in the overflow bucket comes back as `u64::MAX` - a
+/// saturation sentinel, not a measurement - so print the word
+/// `saturated` instead of the raw constant (#15094).
+fn histogram_percentile_field(histogram: &id::world::HistogramSnapshot, fraction: f64) -> String {
+    match histogram_percentile_us(histogram, fraction) {
+        u64::MAX => "saturated".to_string(),
+        value => value.to_string(),
+    }
+}
+
 fn histogram_mean_us(histogram: &id::world::HistogramSnapshot) -> u64 {
     histogram.sum_us.checked_div(histogram.count).unwrap_or(0)
 }
@@ -548,14 +559,14 @@ async fn bench_many_worlds(root: &Path, quick: bool) -> Result<()> {
         "profile many_worlds journal_appends={} journal_append_mean_us={} journal_append_p50_us={} journal_append_p95_us={} journal_append_p99_us={} commands={} command_mean_us={} command_p50_us={} command_p95_us={} command_p99_us={} queue_depth_max={} checkpoints_during_load={}",
         journal_histogram.count,
         histogram_mean_us(&journal_histogram),
-        histogram_percentile_us(&journal_histogram, 0.50),
-        histogram_percentile_us(&journal_histogram, 0.95),
-        histogram_percentile_us(&journal_histogram, 0.99),
+        histogram_percentile_field(&journal_histogram, 0.50),
+        histogram_percentile_field(&journal_histogram, 0.95),
+        histogram_percentile_field(&journal_histogram, 0.99),
         command_histogram.count,
         histogram_mean_us(&command_histogram),
-        histogram_percentile_us(&command_histogram, 0.50),
-        histogram_percentile_us(&command_histogram, 0.95),
-        histogram_percentile_us(&command_histogram, 0.99),
+        histogram_percentile_field(&command_histogram, 0.50),
+        histogram_percentile_field(&command_histogram, 0.95),
+        histogram_percentile_field(&command_histogram, 0.99),
         queue_depth_max,
         checkpoints_during_load,
     );
@@ -1087,14 +1098,14 @@ async fn bench_fuel_spin_isolation(worker_threads: usize, quick: bool) -> Result
         percentile(&spinning_ack, 0.99),
         calm_journal.count,
         histogram_mean_us(&calm_journal),
-        histogram_percentile_us(&calm_journal, 0.99),
+        histogram_percentile_field(&calm_journal, 0.99),
         spinning_journal.count,
         histogram_mean_us(&spinning_journal),
-        histogram_percentile_us(&spinning_journal, 0.99),
+        histogram_percentile_field(&spinning_journal, 0.99),
         histogram_mean_us(&calm_command),
-        histogram_percentile_us(&calm_command, 0.99),
+        histogram_percentile_field(&calm_command, 0.99),
         histogram_mean_us(&spinning_command),
-        histogram_percentile_us(&spinning_command, 0.99),
+        histogram_percentile_field(&spinning_command, 0.99),
         metrics_after_spinning.actor_queue_depth_max,
         metrics_after_spinning
             .checkpoints_total
