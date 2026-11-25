@@ -85,7 +85,9 @@ export function notificationMirrorEvent(
   };
   return {
     mirrorId: createHash("sha256")
-      .update(JSON.stringify([notificationMirrorId({ objectRef: candidate.objectRef, transition, payload }), occurrenceId]))
+      .update(
+        JSON.stringify([notificationMirrorId({ objectRef: candidate.objectRef, transition, payload }), occurrenceId]),
+      )
       .digest("hex"),
     objectRef: candidate.objectRef,
     transition,
@@ -95,10 +97,7 @@ export function notificationMirrorEvent(
 }
 
 export function incidentMirrorEvent(row: IncidentMirrorRow, origin: string): MirroredEvent | null {
-  if (
-    row.severity !== "critical" ||
-    (row.mirror_event_kind !== "opened" && row.mirror_event_kind !== "escalated")
-  ) {
+  if (row.severity !== "critical" || (row.mirror_event_kind !== "opened" && row.mirror_event_kind !== "escalated")) {
     return null;
   }
   const escalation = row.mirror_event_kind === "escalated";
@@ -318,7 +317,9 @@ export class NotifyRelayClient {
         (candidate) => candidate.class === "needs-drew" || candidate.class === "quota-wall",
       );
       const current = new Set(
-        mirrorable.map((candidate) => JSON.stringify([candidate.class, candidate.objectRef, candidate.stateFingerprint])),
+        mirrorable.map((candidate) =>
+          JSON.stringify([candidate.class, candidate.objectRef, candidate.stateFingerprint]),
+        ),
       );
       const priorActive = this.activeCandidates;
       const priorPending = this.pendingEvents;
@@ -335,7 +336,10 @@ export class NotifyRelayClient {
           nextActive.set(key, active);
         }
         const event = notificationMirrorEvent(candidate, active.occurrenceId, active.raisedAt);
-        if (!this.ackedEvents.has(event.mirrorId) && !nextPending.some((pending) => pending.mirrorId === event.mirrorId)) {
+        if (
+          !this.ackedEvents.has(event.mirrorId) &&
+          !nextPending.some((pending) => pending.mirrorId === event.mirrorId)
+        ) {
           nextPending.push(event);
         }
       }
@@ -548,20 +552,23 @@ export class NotifyRelayClient {
       }
       if (Array.isArray(parsed.activeCandidates)) {
         this.activeCandidates = new Map(
-          parsed.activeCandidates
-            .filter(
-              (entry): entry is [string, ActiveMirrorCandidate] =>
-                Array.isArray(entry) &&
-                typeof entry[0] === "string" &&
-                !!entry[1] &&
-                typeof entry[1] === "object" &&
-                typeof entry[1].occurrenceId === "string" &&
-                typeof entry[1].mirrorId === "string" &&
-                typeof entry[1].raisedAt === "string",
-            ),
+          parsed.activeCandidates.filter(
+            (entry): entry is [string, ActiveMirrorCandidate] =>
+              Array.isArray(entry) &&
+              typeof entry[0] === "string" &&
+              !!entry[1] &&
+              typeof entry[1] === "object" &&
+              typeof entry[1].occurrenceId === "string" &&
+              typeof entry[1].mirrorId === "string" &&
+              typeof entry[1].raisedAt === "string",
+          ),
         );
       }
-      if (typeof parsed.incidentEventCursor === "number" && Number.isSafeInteger(parsed.incidentEventCursor) && parsed.incidentEventCursor >= 0) {
+      if (
+        typeof parsed.incidentEventCursor === "number" &&
+        Number.isSafeInteger(parsed.incidentEventCursor) &&
+        parsed.incidentEventCursor >= 0
+      ) {
         this.incidentEventCursor = parsed.incidentEventCursor;
       }
     } catch {
@@ -613,10 +620,7 @@ let singleton: NotifyRelayClient | null = null;
  * deployed/configured yet — the aggregator runs exactly as
  * before in that case. Called once from server.ts startup,
  * beside startAlertEngine. */
-export function startNotifyRelay(
-  cfg: Config,
-  getStore: NotifyRelayDeps["getStore"],
-): NotifyRelayClient | null {
+export function startNotifyRelay(cfg: Config, getStore: NotifyRelayDeps["getStore"]): NotifyRelayClient | null {
   if (!cfg.notifyRelay.url) return null;
   if (singleton) return singleton;
   singleton = new NotifyRelayClient({ url: cfg.notifyRelay.url, stateFile: cfg.notifyRelay.stateFile, getStore });
@@ -645,7 +649,11 @@ export function notifyRelayIncidentEventCursor(): number | null | undefined {
 }
 
 /** Enqueue a page from the incident event ledger and checkpoint its cursor atomically. */
-export function requestNotifyRelayIncidentEvents(rows: IncidentMirrorRow[], cursor: number, origin: string): Promise<void> {
+export function requestNotifyRelayIncidentEvents(
+  rows: IncidentMirrorRow[],
+  cursor: number,
+  origin: string,
+): Promise<void> {
   return singleton?.mirrorIncidentEvents(rows, cursor, origin) ?? Promise.resolve();
 }
 

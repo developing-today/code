@@ -30,13 +30,13 @@ NO-GO half of the ruling); the only read surface is `GET /status`.
 
 ## Routes (closed list)
 
-| Route                                                            | Auth               | Lands in              |
-| ---------------------------------------------------------------- | ------------------ | --------------------- |
-| `POST /mirror/subscriptions`                                     | shared secret      | step 1 (this package) |
-| `POST /heartbeat`                                                | shared secret      | step 1 (this package) |
-| `GET /status`                                                    | none (minimal)     | step 1 (this package) |
+| Route                                                            | Auth               | Lands in                                                                                 |
+| ---------------------------------------------------------------- | ------------------ | ---------------------------------------------------------------------------------------- |
+| `POST /mirror/subscriptions`                                     | shared secret      | step 1 (this package)                                                                    |
+| `POST /heartbeat`                                                | shared secret      | step 1 (this package)                                                                    |
+| `GET /status`                                                    | none (minimal)     | step 1 (this package)                                                                    |
 | `POST /mirror/event`                                             | shared secret      | step 2; append-only, deduped by `mirrorId`, pruned after 30 days, never sent at the edge |
-| `GET /answer/:ledgerId`, `POST /api/needs-drew/:ledgerId/answer` | per-question token | step 3                |
+| `GET /answer/:ledgerId`, `POST /api/needs-drew/:ledgerId/answer` | per-question token | step 3                                                                                   |
 
 Everything else 404s. The heartbeat response carries
 `pendingAnswers` — step 3's drain count, always 0 in step 1, so

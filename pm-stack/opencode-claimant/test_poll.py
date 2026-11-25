@@ -152,14 +152,18 @@ class TestPilotCapComparison(unittest.TestCase):
         sessions = [root(id=f"ses_{i}") for i in range(5)]
         out = self.run_main(sessions, {s["id"] for s in sessions})
         self.assertIn("pilot_cap_comparison", out)
-        self.assertEqual(out["pilot_cap_comparison"], {
-            "proposed_cap": 4,
-            "observed_active_claimant_roots": 5,
-            "available_slots": 0,
-            "over_cap_by": 1,
-        })
-        self.assertEqual((out["cap"], out["concurrency_cap"], out["cap_room"]),
-                         (36, 36, 31))
+        self.assertEqual(
+            out["pilot_cap_comparison"],
+            {
+                "proposed_cap": 4,
+                "observed_active_claimant_roots": 5,
+                "available_slots": 0,
+                "over_cap_by": 1,
+            },
+        )
+        self.assertEqual(
+            (out["cap"], out["concurrency_cap"], out["cap_room"]), (36, 36, 31)
+        )
 
     def test_count_range_obeys_advisory_and_operational_invariants(self):
         for count in range(41):
@@ -181,26 +185,34 @@ class TestPilotCapComparison(unittest.TestCase):
         ):
             with self.subTest(sessions=sessions, active_ids=active_ids):
                 out = self.run_main(sessions, active_ids)
-                self.assertEqual(out["pilot_cap_comparison"], {
-                    "proposed_cap": 4,
-                    "observed_active_claimant_roots": None,
-                    "available_slots": None,
-                    "over_cap_by": None,
-                })
+                self.assertEqual(
+                    out["pilot_cap_comparison"],
+                    {
+                        "proposed_cap": 4,
+                        "observed_active_claimant_roots": None,
+                        "available_slots": None,
+                        "over_cap_by": None,
+                    },
+                )
                 self.assertIsNone(out["cap_room"])
 
     def test_scheduled_roots_and_children_do_not_consume_advisory_slots(self):
-        sessions = [root(), root(id="scheduled", metadata={
-            "openchamber": {"kind": "scheduled"}}),
+        sessions = [
+            root(),
+            root(id="scheduled", metadata={"openchamber": {"kind": "scheduled"}}),
             root(id="legacy", title="Queue lane (scheduled) - code"),
-            root(id="child", parentID="ses_x")]
+            root(id="child", parentID="ses_x"),
+        ]
         out = self.run_main(sessions, {s["id"] for s in sessions})
-        self.assertEqual(out["pilot_cap_comparison"], {
-            "proposed_cap": 4,
-            "observed_active_claimant_roots": 1,
-            "available_slots": 3,
-            "over_cap_by": 0,
-        })
+        self.assertEqual(
+            out["pilot_cap_comparison"],
+            {
+                "proposed_cap": 4,
+                "observed_active_claimant_roots": 1,
+                "available_slots": 3,
+                "over_cap_by": 0,
+            },
+        )
         self.assertEqual(out["cap_room"], 35)
 
 

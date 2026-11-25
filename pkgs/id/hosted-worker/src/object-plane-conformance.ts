@@ -457,6 +457,11 @@ export function objectPlaneConformanceCases(factory: AdapterFactory): Conformanc
           adapter.deleteReplica(receipt.contentId, { epoch: "epoch-7", reverifiedAt: FUTURE }, { now: NOW }),
           "delete_fence_invalid",
         );
+        await expectFailClosed(
+          adapter.deleteReplica(receipt.contentId, { epoch: "epoch-7", reverifiedAt: FUTURE }, { now: "garbage" }),
+          "delete_fence_invalid",
+        );
+        await expectFailClosed(adapter.deleteReplica(receipt.contentId, FENCE, { now: "garbage" }), "delete_fence_invalid");
         check((await adapter.head(receipt.contentId)) !== null, "refused deletes remove nothing");
         const first = await adapter.deleteReplica(receipt.contentId, FENCE, { now: NOW });
         check(first.deleted === true, "fenced delete removes the replica");

@@ -1432,7 +1432,9 @@ export function liveSource(
             );
             merged = entries;
             // #8570: same degraded-links honesty as the board path above.
-            label = linksDegraded ? "live (Grist + projector links unavailable (registry unreachable))" : "live (Grist + projector links)";
+            label = linksDegraded
+              ? "live (Grist + projector links unavailable (registry unreachable))"
+              : "live (Grist + projector links)";
           }
           // #1738: merge the repos' own roadmap files in alongside the
           // Grist rows. The repo-file read never throws (its failures

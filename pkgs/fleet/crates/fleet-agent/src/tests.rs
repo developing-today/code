@@ -1304,9 +1304,18 @@ fn bootstrap_enrolment_exchanges_first_saves_names_and_writes_the_wake_hook() {
         }))],
     )
     .on("fleet bridge hello", vec![ok(json!({"agent": "muse-9"}))])
-    .on("fleet queue health", vec![fail(3, "queue broker unreachable")])
-    .on("fleet gh api rate_limit", vec![ok(json!({"rate": {"remaining": 4000}}))])
-    .on("fleet laptop-agent health", vec![fail(3, "no leg answered")]);
+    .on(
+        "fleet queue health",
+        vec![fail(3, "queue broker unreachable")],
+    )
+    .on(
+        "fleet gh api rate_limit",
+        vec![ok(json!({"rate": {"remaining": 4000}}))],
+    )
+    .on(
+        "fleet laptop-agent health",
+        vec![fail(3, "no leg answered")],
+    );
     let (out, code) = run(
         &fake,
         &[
@@ -1329,7 +1338,10 @@ fn bootstrap_enrolment_exchanges_first_saves_names_and_writes_the_wake_hook() {
         fake.calls()
     );
     assert_eq!(out["groups"], json!(["muse"]));
-    assert_eq!(out["bootstrap"]["fleet_token_name"], "bridge.muse-9-fleet-token");
+    assert_eq!(
+        out["bootstrap"]["fleet_token_name"],
+        "bridge.muse-9-fleet-token"
+    );
     assert_eq!(out["bootstrap"]["notes_token_name"], "bridge.muse-9-token");
     assert_eq!(out["bootstrap"]["notes_identity"], "muse/muse-9");
     // The profile records the credential names — and no token value
@@ -1360,7 +1372,10 @@ fn bootstrap_enrolment_exchanges_first_saves_names_and_writes_the_wake_hook() {
             .join("bridge-muse-9-signal.sh"),
     )
     .unwrap();
-    assert!(script.contains("https://bridge.example/muse/muse-9"), "{script}");
+    assert!(
+        script.contains("https://bridge.example/muse/muse-9"),
+        "{script}"
+    );
     assert!(!script.contains(BOOTSTRAP_FIXTURE));
     let definition: Value = serde_json::from_str(
         &std::fs::read_to_string(
@@ -1376,7 +1391,10 @@ fn bootstrap_enrolment_exchanges_first_saves_names_and_writes_the_wake_hook() {
     assert_eq!(definition["poll_interval_secs"], 60);
     let prompt = definition["prompt"].as_str().unwrap();
     assert!(prompt.contains("fleet bridge notes inbox"), "{prompt}");
-    assert!(prompt.contains("bridge.muse-9-token"), "the prompt names the token, by name: {prompt}");
+    assert!(
+        prompt.contains("bridge.muse-9-token"),
+        "the prompt names the token, by name: {prompt}"
+    );
     assert!(!prompt.contains(BOOTSTRAP_FIXTURE));
 }
 
@@ -1407,7 +1425,10 @@ fn a_refused_exchange_enrols_nothing() {
         matches!(&err, AgentError::Down(m) if m.contains("nothing was stored")),
         "{err}"
     );
-    assert!(!fake.profile_path().exists(), "no profile after a refused exchange");
+    assert!(
+        !fake.profile_path().exists(),
+        "no profile after a refused exchange"
+    );
     assert!(
         !fake.called("bridge hello"),
         "no hello after a refused exchange: {:?}",

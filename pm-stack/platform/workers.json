@@ -172,6 +172,18 @@
       "next": "Deployed from Actions, stood up, checked and rolled back the way the PM console is; listed here with its last deploy."
     },
     {
+      "name": "fleet-git-rehost",
+      "title": "Git rehost",
+      "group": "data",
+      "path": "infra/github-backup/rehost/worker",
+      "does": "Serves read-only git clones of the four fleet repos from the backup copy in R2, so the code can still be cloned when GitHub and the backup laptop are both down.",
+      "state": "in service",
+      "deploy": "by hand",
+      "workflow": null,
+      "address": "https://git.security.cab",
+      "next": "Deployed by hand with its deploy.sh; the backup laptop's publisher refreshes what it serves (#8584)."
+    },
+    {
       "name": "pkarr",
       "title": "pkarr door",
       "group": "id",

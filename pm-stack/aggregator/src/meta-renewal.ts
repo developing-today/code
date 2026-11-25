@@ -51,8 +51,8 @@
  */
 
 import { chmod, mkdir, readFile, rename, writeFile } from "node:fs/promises";
-import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+import { requireHome } from "./home.ts";
 
 /** The portal team the quota read targets (exporter's DEFAULT_TEAM_ID, #1167). */
 export const META_DEFAULT_TEAM_ID = "1073226932208501";
@@ -198,7 +198,8 @@ export interface MetaRenewalDeps {
   log?: (line: string) => void;
 }
 
-export const defaultLatestPath = (): string => join(homedir(), "atlas", "meta-quota-export", "latest.json");
+export const defaultLatestPath = (): string =>
+  join(requireHome("the meta quota export's latest.json"), "atlas", "meta-quota-export", "latest.json");
 
 export const defaultCredentialPath = (statePath: string): string => join(dirname(statePath), "meta-credential.json");
 

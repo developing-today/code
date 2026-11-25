@@ -95,11 +95,13 @@ mod saml_registration_tests {
         assert!(!registered.accepts_acs("https://SP.example/acs"));
         assert!(config.saml_sp("URN:test:sp").is_none());
         assert!(config.saml_sp("unknown").is_none());
-        assert!(config
-            .saml_sp("other")
-            .unwrap()
-            .released_attributes
-            .is_empty());
+        assert!(
+            config
+                .saml_sp("other")
+                .unwrap()
+                .released_attributes
+                .is_empty()
+        );
     }
 
     #[test]

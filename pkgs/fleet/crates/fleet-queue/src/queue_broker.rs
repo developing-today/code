@@ -556,7 +556,10 @@ impl BrokerCoordGh {
 
 impl crate::turso_queue::CoordGh for BrokerCoordGh {
     fn load_counts(&self, repo: &str) -> Result<(i64, i64), String> {
-        Ok((self.total_for(repo, "in_progress")?, self.total_for(repo, "queued")?))
+        Ok((
+            self.total_for(repo, "in_progress")?,
+            self.total_for(repo, "queued")?,
+        ))
     }
 
     fn live_run_ids(&self, repo: &str) -> Result<Vec<i64>, String> {
@@ -1328,6 +1331,7 @@ pub fn run() -> i32 {
                             req.header("X-Agent-Token"),
                             &req.body,
                         );
+                        crate::uds_http::log_ctx_trip("queue-broker", req, status);
                         (
                             status,
                             serde_json::to_vec(&value).unwrap_or_else(|_| b"{}".to_vec()),
@@ -1377,6 +1381,7 @@ pub fn run() -> i32 {
                 req.header("X-Agent-Token"),
                 &req.body,
             );
+            crate::uds_http::log_ctx_trip("queue-broker", req, status);
             (
                 status,
                 serde_json::to_vec(&value).unwrap_or_else(|_| b"{}".to_vec()),

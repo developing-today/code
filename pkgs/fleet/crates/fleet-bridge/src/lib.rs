@@ -593,10 +593,7 @@ fn profile_path(env: &dyn Fn(&str) -> Option<String>) -> Option<std::path::PathB
                 .join("agent.json"),
         );
     }
-    non_blank(env("HOME")).map(|h| {
-        std::path::PathBuf::from(h)
-            .join(".config/fleet/agent.json")
-    })
+    non_blank(env("HOME")).map(|h| std::path::PathBuf::from(h).join(".config/fleet/agent.json"))
 }
 
 fn read_profile_names(env: &dyn Fn(&str) -> Option<String>) -> ProfileNames {
@@ -717,7 +714,10 @@ fn query(pairs: &[(&str, Option<String>)]) -> String {
 /// when a route authenticates by header (the notes routes). Generic
 /// over the builder's typestate: `get` starts WithoutBody, `post`
 /// starts WithBody, and headers are settable in either.
-fn with_auth<State>(req: ureq::RequestBuilder<State>, bearer: Option<&str>) -> ureq::RequestBuilder<State> {
+fn with_auth<State>(
+    req: ureq::RequestBuilder<State>,
+    bearer: Option<&str>,
+) -> ureq::RequestBuilder<State> {
     let req = req
         .header("Accept", "application/json")
         .header("User-Agent", "fleet-bridge");
@@ -771,14 +771,26 @@ impl Client {
     /// One request authenticated by an `Authorization: Bearer` header
     /// instead of a path token (the notes routes work that way). The
     /// token joins the scrub list, like a path token.
-    fn call_bearer(&mut self, method: &str, path: &str, body: Option<&Value>, token: &str) -> R<Value> {
+    fn call_bearer(
+        &mut self,
+        method: &str,
+        path: &str,
+        body: Option<&Value>,
+        token: &str,
+    ) -> R<Value> {
         if !self.secrets_to_scrub.iter().any(|t| t == token) {
             self.secrets_to_scrub.push(token.to_string());
         }
         self.call_req(method, path, body, Some(token))
     }
 
-    fn call_req(&self, method: &str, path: &str, body: Option<&Value>, bearer: Option<&str>) -> R<Value> {
+    fn call_req(
+        &self,
+        method: &str,
+        path: &str,
+        body: Option<&Value>,
+        bearer: Option<&str>,
+    ) -> R<Value> {
         let url = format!("{}{}", self.base, path);
         let result = match body {
             None => with_auth(self.agent.get(&url), bearer).call(),
@@ -1058,14 +1070,18 @@ fn verb_exchange(ctx: &mut Ctx, rest: &[String]) -> R<Value> {
     let agent = out
         .get("agent")
         .and_then(Value::as_str)
-        .ok_or_else(|| BridgeError::Transport("the bridge's exchange answer named no agent".to_string()))?
+        .ok_or_else(|| {
+            BridgeError::Transport("the bridge's exchange answer named no agent".to_string())
+        })?
         .to_string();
     let fleet_value = out
         .get("fleet_token")
         .and_then(Value::as_str)
         .filter(|v| !v.is_empty())
         .ok_or_else(|| {
-            BridgeError::Transport("the bridge's exchange answer carried no fleet credential".to_string())
+            BridgeError::Transport(
+                "the bridge's exchange answer carried no fleet credential".to_string(),
+            )
         })?;
     let fleet_name = format!("bridge.{agent}-fleet-token");
     ctx.secrets.store(&fleet_name, fleet_value).map_err(|e| {
@@ -1148,9 +1164,10 @@ fn verb_notes(ctx: &mut Ctx, rest: &[String]) -> R<Value> {
                 .positional
                 .iter()
                 .map(|p| {
-                    p.parse::<u64>().ok().filter(|n| *n > 0).ok_or_else(|| {
-                        usage(format!("note id '{p}' is not a positive number"))
-                    })
+                    p.parse::<u64>()
+                        .ok()
+                        .filter(|n| *n > 0)
+                        .ok_or_else(|| usage(format!("note id '{p}' is not a positive number")))
                 })
                 .collect::<R<_>>()?;
             let up_to = a.uint("--up-to")?;
@@ -1237,9 +1254,7 @@ pub fn execute(ctx: &mut Ctx, args: &[String]) -> R<Value> {
             )?;
             let to: Vec<String> = a.all("--to").iter().flat_map(|t| split_list(t)).collect();
             if to.is_empty() {
-                return Err(usage(
-                    "offer needs --to (agent:NAME, group:NAME or all)",
-                ));
+                return Err(usage("offer needs --to (agent:NAME, group:NAME or all)"));
             }
             let Some(slots) = a.uint("--slots")? else {
                 return Err(usage("offer needs --slots N (how many claims land)"));
@@ -1430,7 +1445,9 @@ pub fn execute(ctx: &mut Ctx, args: &[String]) -> R<Value> {
                 }
                 (true, false) => {
                     if a.last("--address").is_some() {
-                        return Err(usage("wake-hooks --set: the address is in the JSON on stdin"));
+                        return Err(usage(
+                            "wake-hooks --set: the address is in the JSON on stdin",
+                        ));
                     }
                     let text = text_of(&a, ctx.stdin).map_err(|_| {
                         usage("wake-hooks --set: give the hook as a JSON object on stdin (fleet bridge wake-hooks --set -)")
@@ -1438,10 +1455,16 @@ pub fn execute(ctx: &mut Ctx, args: &[String]) -> R<Value> {
                     let payload: Value = serde_json::from_str(&text)
                         .map_err(|e| usage(format!("wake-hooks --set: stdin is not JSON: {e}")))?;
                     if !payload.is_object() {
-                        return Err(usage("wake-hooks --set: stdin must be a JSON object {address, url, token?}"));
+                        return Err(usage(
+                            "wake-hooks --set: stdin must be a JSON object {address, url, token?}",
+                        ));
                     }
                     let token = owner_token(ctx)?;
-                    client_with(ctx, &token).call("POST", &format!("/api/{token}/wake-hooks"), Some(&payload))
+                    client_with(ctx, &token).call(
+                        "POST",
+                        &format!("/api/{token}/wake-hooks"),
+                        Some(&payload),
+                    )
                 }
                 (false, true) => {
                     a.no_positional("wake-hooks --remove")?;

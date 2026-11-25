@@ -62,13 +62,13 @@ fleet agent enroll --kind K --name N [--groups a,b] [--dry-run] [--profile PATH]
 fleet agent enroll --kind K --name N --bootstrap TOKEN
 ```
 
-| Flag          | Argument | Default                | Meaning                                                                                                                                                   |
-| ------------- | -------- | ---------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `--kind`      | `K`      | required               | One of the 16 kinds (see `kinds`). An unknown kind is a usage error listing all kinds, with "use generic for anything with a shell".                      |
-| `--name`      | `N`      | required               | The agent's name (its bridge mailbox name). The shared USAGE spells this `--name`; the domain help line abbreviates it as the enroll line's second value. |
-| `--groups`    | `a,b`    | kind's built-in groups | Additional bridge groups; adds to the kind's groups, never replaces them.                                                                                 |
-| `--dry-run`   | —        | off                    | Probe nothing and register nothing.                                                                                                                       |
-| `--profile`   | `PATH`   | default profile path   | Where to save the profile.                                                                                                                                |
+| Flag          | Argument | Default                | Meaning                                                                                                                                                             |
+| ------------- | -------- | ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--kind`      | `K`      | required               | One of the 16 kinds (see `kinds`). An unknown kind is a usage error listing all kinds, with "use generic for anything with a shell".                                |
+| `--name`      | `N`      | required               | The agent's name (its bridge mailbox name). The shared USAGE spells this `--name`; the domain help line abbreviates it as the enroll line's second value.           |
+| `--groups`    | `a,b`    | kind's built-in groups | Additional bridge groups; adds to the kind's groups, never replaces them.                                                                                           |
+| `--dry-run`   | —        | off                    | Probe nothing and register nothing.                                                                                                                                 |
+| `--profile`   | `PATH`   | default profile path   | Where to save the profile.                                                                                                                                          |
 | `--bootstrap` | `TOKEN`  | —                      | Provision from the owner's single-use bootstrap token instead of the shared fleet token (binary seats only; never with `--dry-run` — the exchange burns the token). |
 
 ### Behaviour
