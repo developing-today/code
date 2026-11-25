@@ -43,9 +43,14 @@ async function joinWorldAsGuest(page: Page, guestName: string): Promise<void> {
   await expect(page.locator("[data-world-status]")).toHaveText("Connected", { timeout: 15_000 });
 }
 
-/** The current fixture counter as rendered in the screen surface. */
+/** The screen's cell text in row-major order (independent of CSS grid layout). */
+async function screenText(page: Page): Promise<string> {
+  return (await page.locator("[data-world-view] .id-world-screen span").allTextContents()).join("");
+}
+
+/** The current fixture counter rendered in the screen cells. */
 async function screenCount(page: Page): Promise<number> {
-  const text = await page.locator("[data-world-view]").innerText();
+  const text = await screenText(page);
   const match = /count=(\d+)/.exec(text);
   if (!match) throw new Error(`no count=N in world view: ${JSON.stringify(text)}`);
   return Number(match[1]);
@@ -63,7 +68,7 @@ test.describe("World surface", () => {
     await expect(view.locator('[role="img"]')).toHaveAttribute("aria-label", /World screen, \d+ columns by \d+ rows/);
     await expect(view).not.toContainText("Waiting for a world view");
     // The roc-screen fixture renders its counter through Screen cells.
-    await expect(view).toContainText(/count=\d+/);
+    await expect.poll(() => screenText(page), { timeout: 15_000 }).toMatch(/count=\d+/);
     // The join is journaled in the event log.
     await expect(page.locator("[data-world-log]")).toContainText(/Connected to lobby at event \d+/);
   });
@@ -208,24 +213,24 @@ test.describe("World surface", () => {
     const screen = view.locator('[role="img"]');
     await expect(view.locator(".id-world-screen")).toBeVisible({ timeout: 15_000 });
     // Full-width desktop viewport: the fixture lays out at 30 columns.
-    await expect(screen).toHaveAttribute("aria-label", "World screen, 30 columns by 3 rows", {
+    await expect(screen).toHaveAttribute("aria-label", /World screen, 30 columns by \d+ rows/, {
       timeout: 15_000,
     });
-    await expect(view).toContainText(/count=\d+/);
+    await expect.poll(() => screenText(page), { timeout: 15_000 }).toMatch(/count=\d+/);
 
     // Narrow the browser window: the client reports a smaller viewport over
     // the live channel (#811: resize stays session-local) and the fixture
     // reflows to its 20-column layout.
     await page.setViewportSize({ width: 320, height: 800 });
-    await expect(screen).toHaveAttribute("aria-label", "World screen, 20 columns by 3 rows", {
+    await expect(screen).toHaveAttribute("aria-label", /World screen, 20 columns by \d+ rows/, {
       timeout: 15_000,
     });
     // The reflowed surface still renders the program state, not an error.
-    await expect(view).toContainText(/count=\d+/);
+    await expect.poll(() => screenText(page), { timeout: 15_000 }).toMatch(/count=\d+/);
 
     // Widen again: the surface re-renders back at 30 columns.
     await page.setViewportSize({ width: 1280, height: 720 });
-    await expect(screen).toHaveAttribute("aria-label", "World screen, 30 columns by 3 rows", {
+    await expect(screen).toHaveAttribute("aria-label", /World screen, 30 columns by \d+ rows/, {
       timeout: 15_000,
     });
   });

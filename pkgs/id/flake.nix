@@ -927,6 +927,7 @@
                     for spec in tests/*.spec.ts; do
                       echo "=== test-e2e isolated per-spec run: $spec ==="
                       spec_server_dir=$(mktemp -d "$TMPDIR/id-e2e-server.XXXXXX")
+                      ln -s "$PWD/../apps" "$spec_server_dir/apps"
                       ID_E2E_SERVER_CWD="$spec_server_dir" \
                         node node_modules/@playwright/test/cli.js test "$spec" || e2e_status=1
                       rm -rf "$spec_server_dir"

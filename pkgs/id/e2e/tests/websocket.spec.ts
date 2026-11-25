@@ -45,8 +45,8 @@ const browserTypes: Record<string, BrowserType> = { chromium, firefox, webkit };
 //
 // FIX:
 // Override Playwright's `browser` fixture to launch a FRESH browser instance
-// for this file. Since `browser` is worker-scoped (one per file when
-// workers=1), this gives all WebSocket tests a clean networking stack.
+// for each test. A fresh browser for the file is not enough: this spec has
+// enough tests to reproduce the same networking degradation partway through.
 // The built-in `context` and `page` fixtures automatically inherit from our
 // fresh browser, so NO test code changes are needed — tests keep using
 // `{ page }`, `{ browser, baseURL }`, etc. exactly as before.
@@ -81,7 +81,7 @@ const test = base.extend<Record<string, never>, { browser: Browser }>({
       await use(browser);
       await browser.close();
     },
-    { scope: "worker" },
+    { scope: "test" },
   ],
 });
 
@@ -508,8 +508,8 @@ test.describe("Editor Typing + Save", () => {
     // and fetch the raw blob content via /blob/:hash API.
     // This avoids the WS/collab race that occurs when reloading or opening a
     // new page immediately after save.
-    const url = page.url();
-    const hash = url.split("/").pop()!;
+    const hash = await page.locator("#editor-container").getAttribute("data-hash");
+    expect(hash).toBeTruthy();
     const resp = await page.request.get(`${baseURL}/blob/${hash}`);
     expect(resp.ok()).toBeTruthy();
     const body = await resp.text();
@@ -534,8 +534,8 @@ test.describe("Editor Typing + Save", () => {
     await expect(page.locator("#save-btn")).toContainText("saved", { timeout: 10_000 });
 
     // Verify persistence: extract hash from URL and fetch raw blob
-    const url = page.url();
-    const hash = url.split("/").pop()!;
+    const hash = await page.locator("#editor-container").getAttribute("data-hash");
+    expect(hash).toBeTruthy();
     const resp = await page.request.get(`${baseURL}/blob/${hash}`);
     expect(resp.ok()).toBeTruthy();
     const body = await resp.text();

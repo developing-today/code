@@ -43,8 +43,9 @@ test.describe("Settings Page", () => {
     await page.goto("/settings");
 
     await expect(page.locator("h3", { hasText: "Node Identity" })).toBeVisible();
-    // Node ID is displayed in a code element
-    const codeEl = page.locator("code");
+    // Node ID is the code element following the Node Identity heading; the
+    // Client Identity section above has its own code element for the client ID.
+    const codeEl = page.locator("h3", { hasText: "Node Identity" }).locator("xpath=following-sibling::code[1]");
     await expect(codeEl).toBeVisible();
     // Node ID is a 64-character hex string
     const nodeId = await codeEl.textContent();
