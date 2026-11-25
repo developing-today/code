@@ -51,8 +51,8 @@ class MainActivity : Activity() {
         }
         val capability = EditText(this).apply {
             hint = "Join capability"
-            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
             setSingleLine(true)
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
             isSaveEnabled = false
             contentDescription = "World join capability"
         }
