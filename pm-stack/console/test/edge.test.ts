@@ -7383,7 +7383,7 @@ describe("the edge does the core itself", () => {
     expect([commented(w), heldIds(w)]).toEqual([[], [ID(141), ID(142)]]);
     expect(w.stored.get(`a:${ID(141)}`)).toMatchObject({ state: "given" });
     // Tried once, not over and over: taken, and then no longer taken.
-    expect(w.puts.slice(written).filter((key) => key === "taken")).toHaveLength(2);
+    expect(w.puts.slice(written).filter((key) => key === "taken:index")).toHaveLength(2);
     // The laptop comes back and does both, in order.
     w.net.hostUp = true;
     w.net.edgeUp = true;
