@@ -23,6 +23,7 @@ pub mod grants;
 #[cfg(feature = "http")]
 pub mod http;
 pub mod launch;
+pub mod plane;
 #[cfg(test)]
 mod load_probe;
 pub mod read;
