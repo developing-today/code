@@ -271,6 +271,26 @@ pub fn run(
     out: &mut dyn Write,
     err: &mut dyn Write,
 ) -> i32 {
+    run_with_context(
+        args,
+        store,
+        identity,
+        stdin,
+        out,
+        err,
+        &fleet_config::ctx::Ctx::from_env(),
+    )
+}
+
+fn run_with_context(
+    args: &[String],
+    store: &LocalStore,
+    identity: &Identity<'_>,
+    stdin: &mut dyn Read,
+    out: &mut dyn Write,
+    err: &mut dyn Write,
+    _ctx: &fleet_config::ctx::Ctx,
+) -> i32 {
     let command = match parse(args) {
         Ok(command) => command,
         Err(ParseError::Global) => {
@@ -377,17 +397,32 @@ mod tests {
     }
 
     fn invoke(store: &LocalStore, words: &[&str], stdin: &[u8]) -> Outcome {
+        invoke_with_context(
+            store,
+            words,
+            stdin,
+            &fleet_config::ctx::Ctx::from_pairs([]),
+        )
+    }
+
+    fn invoke_with_context(
+        store: &LocalStore,
+        words: &[&str],
+        stdin: &[u8],
+        ctx: &fleet_config::ctx::Ctx,
+    ) -> Outcome {
         let identity = Identity::new("owner", "context", "partition");
         let mut input = stdin;
         let mut out = Vec::new();
         let mut err = Vec::new();
-        let code = run(
+        let code = run_with_context(
             &args(words),
             store,
             &identity,
             &mut input,
             &mut out,
             &mut err,
+            ctx,
         );
         Outcome {
             code,
@@ -435,6 +470,31 @@ mod tests {
             )),
             "a/b\t2\tmasked\n"
         );
+    }
+
+    #[test]
+    fn operation_log_joins_origin_context_without_logging_key_or_value() {
+        let store = LocalStore::in_memory().expect("store");
+        let ctx = fleet_config::ctx::Ctx::from_pairs([("FLEET_CTX_ID", "task-22655")]);
+
+        let set = invoke_with_context(
+            &store,
+            &["set", "--namespace", "private", "api-key", "secret-value"],
+            b"",
+            &ctx,
+        );
+
+        assert_eq!(set.code, EXIT_OK, "{}", set.err);
+        assert_eq!(set.err, "fleet-kv: op=set FLEET_CTX_ID=task-22655\n");
+        assert!(!set.err.contains("api-key"));
+        assert!(!set.err.contains("secret-value"));
+
+        let no_ctx = invoke(
+            &store,
+            &["get", "--namespace", "private", "api-key"],
+            b"",
+        );
+        assert!(no_ctx.err.is_empty(), "{}", no_ctx.err);
     }
 
     #[test]

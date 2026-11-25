@@ -806,6 +806,7 @@ dependencies = [
 name = "fleet-kv"
 version = "0.1.0"
 dependencies = [
+ "fleet-config",
  "proptest",
  "rusqlite",
 ]
