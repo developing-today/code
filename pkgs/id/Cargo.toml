@@ -400,8 +400,12 @@ codegen-units = 256
 strip = false
 
 [profile.test]
-# Include debug info for better error messages
-debug = true
+# Line tables only, not full debuginfo (#15181): with debug = true every
+# one of the ~95 test binaries carried ~1 GB of debuginfo (56 GB under
+# debug/deps), so a fresh `cargo test -p id --no-run` exhausted the fleet
+# executor's disk (61 GB free) and the linker died mid-build. Line tables
+# keep file:line in panics and backtraces at a fraction of the size.
+debug = "line-tables-only"
 opt-level = 0
 
 [[bench]]
