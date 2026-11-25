@@ -269,6 +269,7 @@ enum Command {
         /// reports from, recursively.
         #[arg(long)]
         root: PathBuf,
+    },
     /// Scan a Zettelkasten/Emanote notes vault and stage its markdown
     /// notes into the zettelkasten unit (#8626 slice 4).
     IngestNotes {
