@@ -43,15 +43,43 @@ export default {
       const bindingId = parseBindingId(req.headers.get("x-binding-id"));
       const jurisdiction = parseJurisdiction(req.headers.get("x-jurisdiction"));
       if (env.HOSTED_DIRECTORY) {
+        // Read-only routing guard (#3399): resolve the binding to a
+        // validated stable record. Never signup, inventory, provision,
+        // enable, or migrate here — reads only. Missing, legacy-only,
+        // mismatched, and corrupt records all fail closed before any
+        // namespace access.
+        const directory = new PersistentHostedAccountDirectory(env.HOSTED_DIRECTORY);
         let record;
         try {
-          record = await new PersistentHostedAccountDirectory(env.HOSTED_DIRECTORY).getByBindingId(bindingId);
+          record = await directory.findByBindingId(bindingId);
         } catch (error) {
           if (error instanceof FailClosed) throw error;
           throw new FailClosed(503, "directory_unavailable", "hosted account directory unavailable; failing closed");
         }
         if (!record) {
+          let legacy;
+          try {
+            legacy = await directory.findLegacyByBindingId(bindingId);
+          } catch (error) {
+            if (error instanceof FailClosed) throw error;
+            throw new FailClosed(503, "directory_unavailable", "hosted account directory unavailable; failing closed");
+          }
+          if (legacy) {
+            throw new FailClosed(
+              403,
+              "legacy_subject_requires_migration",
+              "subject has a legacy account of unknown jurisdiction; routing cannot relabel it — migration is a separately reviewed procedure",
+            );
+          }
           throw new FailClosed(403, "directory_account_missing", "no validated hosted account record; failing closed");
+        }
+        try {
+          if (await directory.legacyInventory(record.subjectKey) || await directory.findLegacyByBindingId(bindingId)) {
+            throw new FailClosed(503, "invalid_directory_record", "account conflicts with legacy inventory; failing closed");
+          }
+        } catch (error) {
+          if (error instanceof FailClosed) throw error;
+          throw new FailClosed(503, "directory_unavailable", "hosted account directory unavailable; failing closed");
         }
         if (record.jurisdiction !== jurisdiction) {
           throw new FailClosed(403, "directory_jurisdiction_mismatch", "request jurisdiction does not match the persisted account; failing closed");

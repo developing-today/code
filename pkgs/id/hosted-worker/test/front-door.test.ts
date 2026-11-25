@@ -197,7 +197,7 @@ test("directory guard forwards a matching validated binding through the restrict
 
 for (const scenario of [
   { name: "missing row", status: 403, error: "directory_account_missing" },
-  { name: "legacy-only row", status: 403, error: "directory_account_missing" },
+  { name: "legacy-only row", status: 403, error: "legacy_subject_requires_migration" },
   { name: "jurisdiction mismatch", status: 403, error: "directory_jurisdiction_mismatch" },
   ...[
     ["pending jurisdiction", "jurisdiction_pending", "eu"],

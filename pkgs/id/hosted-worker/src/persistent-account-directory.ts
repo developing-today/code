@@ -120,12 +120,32 @@ export class PersistentHostedAccountDirectory {
 
   /** Read a validated stable account by its minted routing key. */
   async getByBindingId(bindingId: string): Promise<HostedAccountRecord | undefined> {
+    return this.findByBindingId(bindingId);
+  }
+
+  /**
+   * Read-only routing lookup for #3399: the front door resolves an
+   * already-authenticated binding id to its validated stable record.
+   * Only reads; never signs up, inventories, provisions, or migrates.
+   * Unknown bindings return undefined; corrupt rows fail closed via
+   * fromRow (`invalid_directory_record`).
+   */
+  async findByBindingId(bindingId: string): Promise<HostedAccountRecord | undefined> {
     const validatedBindingId = parseBindingId(bindingId);
     const row = await this.database
       .prepare(`SELECT ${COLUMNS} FROM hosted_accounts WHERE binding_id = ?`)
       .bind(validatedBindingId)
       .first<StoredAccountRow>();
-    return row ? fromRow(row) : undefined;
+    if (!row) return undefined;
+    const record = fromRow(row);
+    if (record.bindingId !== validatedBindingId) {
+      throw new FailClosed(
+        503,
+        "invalid_directory_record",
+        "stored hosted account binding does not match its lookup key; failing closed",
+      );
+    }
+    return record;
   }
 
   async signup(input: NewHostedAccount): Promise<HostedAccountRecord> {
@@ -269,6 +289,30 @@ export class PersistentHostedAccountDirectory {
       .bind(subjectKey)
       .first<StoredLegacyAccountRow>();
     return row ? fromLegacyRow(row) : undefined;
+  }
+
+  /**
+   * Read-only routing lookup for #3399: the front door distinguishes a
+   * legacy-only binding from a truly unknown one. Only reads; corrupt
+   * rows fail closed via fromLegacyRow
+   * (`invalid_legacy_inventory_record`).
+   */
+  async findLegacyByBindingId(bindingId: string): Promise<LegacyHostedAccount | undefined> {
+    const validatedBindingId = parseBindingId(bindingId);
+    const row = await this.database
+      .prepare(`SELECT ${LEGACY_COLUMNS} FROM legacy_hosted_accounts WHERE binding_id = ?`)
+      .bind(validatedBindingId)
+      .first<StoredLegacyAccountRow>();
+    if (!row) return undefined;
+    const record = fromLegacyRow(row);
+    if (record.bindingId !== validatedBindingId) {
+      throw new FailClosed(
+        503,
+        "invalid_legacy_inventory_record",
+        "stored legacy binding does not match its lookup key; failing closed",
+      );
+    }
+    return record;
   }
 
   /**
