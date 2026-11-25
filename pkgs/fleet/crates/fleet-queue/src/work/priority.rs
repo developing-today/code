@@ -69,6 +69,12 @@
 //!   per sweep, a per-sweep cap, every move citing its evidence, its
 //!   comparison and the sweep. Protected owner items never move and a
 //!   replayed sweep is refused.
+//! * **Dimensions stay separate and explanations pin their inputs.**
+//!   [`explain_priority`] (PRI-02, #9479) reports intrinsic urgency,
+//!   nullable importance and effective value side by side. Untriaged
+//!   stays untriaged, null importance stays null and is never derived
+//!   from urgency, and every explanation names the profile, policies,
+//!   snapshot, work version and time it was computed from.
 //!
 //! The module is pure: no I/O, no queue, no persisted state. It
 //! changes no live priority and authorises no schema change — later
@@ -110,6 +116,9 @@ pub const PRIORITY_WRITE_CAPABILITY: &str = "priority.write";
 
 /// Wire schema identifier of a clump-refinement policy.
 pub const CLUMP_POLICY_SCHEMA_VERSION: &str = "fleet.priority-clump-policy/v1";
+
+/// Wire schema identifier of a priority explanation.
+pub const PRIORITY_EXPLANATION_SCHEMA_VERSION: &str = "fleet.priority-explanation/v1";
 
 /// Evidence for the ratified bands: the #7030 ratification comment
 /// and the broker readback comment cited by the design.
@@ -176,6 +185,11 @@ pub enum PriorityError {
         /// What was wrong, in one line.
         detail: String,
     },
+    /// An explanation input does not match the pinned snapshot.
+    StaleSnapshot {
+        /// What did not match, in one line.
+        detail: String,
+    },
     /// A shared-contract owner-policy failure
     /// (`OWNER_POLICY_PROTECTED`, `OWNER_POLICY_VERSION_CONFLICT`,
     /// `owner_policy_ref_missing`).
@@ -195,6 +209,7 @@ impl PriorityError {
             PriorityError::OwnerPolicyUnavailable => "owner_policy_unavailable",
             PriorityError::InvalidBoost { .. } => "invalid_boost",
             PriorityError::InvalidSweep { .. } => "invalid_sweep",
+            PriorityError::StaleSnapshot { .. } => "stale_snapshot",
             PriorityError::OwnerPolicy(err) => err.code(),
         }
     }
@@ -232,6 +247,7 @@ impl fmt::Display for PriorityError {
             ),
             PriorityError::InvalidBoost { detail } => write!(f, "invalid_boost: {detail}"),
             PriorityError::InvalidSweep { detail } => write!(f, "invalid_sweep: {detail}"),
+            PriorityError::StaleSnapshot { detail } => write!(f, "stale_snapshot: {detail}"),
             PriorityError::OwnerPolicy(err) => write!(f, "{err}"),
         }
     }
@@ -2078,6 +2094,205 @@ pub fn refine_clump(
     Ok(result)
 }
 
+/// An importance (expected impact/value) assessment. Importance is a
+/// separate axis: it is never derived from urgency, and this contract
+/// selects no numeric weight (PRI-08 researches that).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ImportanceAssessment {
+    /// A named level from the assessor's own taxonomy.
+    pub label: String,
+    /// Who or what assessed it.
+    pub source_ref: String,
+    /// The evidence it rests on.
+    pub evidence_refs: Vec<String>,
+}
+
+/// What contributes to an effective value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PressureFactorKind {
+    /// A temporary opportunity boost (PRI-05b).
+    OpportunityBoost,
+}
+
+/// One explained contribution to the effective value.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PressureFactor {
+    /// What kind of factor.
+    pub kind: PressureFactorKind,
+    /// Signed scale steps (negative is sooner).
+    pub steps: i64,
+    /// The factor's own reference (e.g. the boost).
+    pub source_ref: String,
+    /// The evidence behind it.
+    pub evidence_refs: Vec<String>,
+}
+
+/// The inputs an explanation was computed from.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PinnedInputs {
+    /// Profile identity.
+    pub profile_id: String,
+    /// Profile version.
+    pub profile_version: String,
+    /// Policy reference → version, for every policy consulted.
+    pub policies: BTreeMap<String, String>,
+    /// The queue/graph snapshot reference.
+    pub snapshot_ref: String,
+    /// The work version read (canonical decimal string).
+    pub work_version: String,
+    /// Evaluation time.
+    pub as_of: i64,
+}
+
+/// A read-only explanation of an item's priority dimensions (PRI-02).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PriorityExplanation {
+    /// `fleet.priority-explanation/v1`.
+    pub schema_version: String,
+    /// Target work.
+    pub work: WorkRef,
+    /// Intrinsic urgency; `None` is explicitly untriaged.
+    pub intrinsic: Option<PriorityValue>,
+    /// Importance; `None` is unknown and stays unknown.
+    #[serde(default)]
+    pub importance: Option<ImportanceAssessment>,
+    /// The effective value; `None` exactly when untriaged.
+    pub effective: Option<PriorityValue>,
+    /// What moved the effective value away from intrinsic.
+    #[serde(default)]
+    pub factors: Vec<PressureFactor>,
+    /// The pinned inputs.
+    pub pinned: PinnedInputs,
+}
+
+impl PriorityExplanation {
+    /// Serialise to canonical JSON.
+    pub fn to_json(&self) -> String {
+        serde_json::to_string(self).expect("explanation serialises")
+    }
+
+    /// Parse an explanation, refusing an unknown schema version.
+    /// Documents written before `importance`/`factors` existed read
+    /// as `None`/empty — never a fabricated value.
+    pub fn from_json(text: &str) -> Result<PriorityExplanation, PriorityError> {
+        let parsed: PriorityExplanation =
+            serde_json::from_str(text).map_err(|err| PriorityError::InvalidProfile {
+                detail: format!("explanation is not valid JSON: {err}"),
+            })?;
+        if parsed.schema_version != PRIORITY_EXPLANATION_SCHEMA_VERSION {
+            return Err(PriorityError::UnsupportedVersion {
+                schema_version: parsed.schema_version,
+            });
+        }
+        Ok(parsed)
+    }
+}
+
+/// Explain an item's priority dimensions against pinned inputs
+/// (PRI-02). Read-only: nothing here writes a value.
+///
+/// * `legacy_value` is the stored queue integer as read; `None` is
+///   untriaged and yields no intrinsic or effective value. A stored
+///   value off the profile is an error, never snapped.
+/// * `importance` passes through untouched; `None` stays `None`.
+/// * An `effective` evaluation must be for the same work, the same
+///   intrinsic value and the pinned time, or the explanation is
+///   [`PriorityError::StaleSnapshot`]; an applied boost must be among
+///   `boosts` so its evidence can be cited.
+pub fn explain_priority(
+    profile: &PriorityProfile,
+    work: &WorkRef,
+    legacy_value: Option<i64>,
+    importance: Option<ImportanceAssessment>,
+    effective: Option<&EffectivePriority>,
+    boosts: &[OpportunityBoost],
+    pinned: PinnedInputs,
+) -> Result<PriorityExplanation, PriorityError> {
+    profile.validate()?;
+    if pinned.profile_id != profile.profile_id || pinned.profile_version != profile.version {
+        return Err(PriorityError::ProfileMismatch {
+            expected: profile.key(),
+            found: format!("{}@{}", pinned.profile_id, pinned.profile_version),
+        });
+    }
+    if pinned.snapshot_ref.trim().is_empty() || !is_canonical_decimal(&pinned.work_version) {
+        return Err(PriorityError::InvalidProfile {
+            detail: "explanation needs a snapshot reference and a canonical work version"
+                .to_string(),
+        });
+    }
+    if pinned
+        .policies
+        .iter()
+        .any(|(policy_ref, version)| policy_ref.trim().is_empty() || !is_canonical_decimal(version))
+    {
+        return Err(PriorityError::InvalidProfile {
+            detail: "every pinned policy needs a reference and a canonical version".to_string(),
+        });
+    }
+    let malformed_importance = importance.as_ref().is_some_and(|assessment| {
+        assessment.label.trim().is_empty()
+            || assessment.source_ref.trim().is_empty()
+            || assessment.evidence_refs.is_empty()
+    });
+    if malformed_importance {
+        return Err(PriorityError::InvalidProfile {
+            detail: "an importance assessment needs a label, a source and evidence".to_string(),
+        });
+    }
+    let intrinsic = legacy_value
+        .map(|value| profile.validate_value(value))
+        .transpose()?;
+
+    let mut factors = Vec::new();
+    let effective_value = match (&intrinsic, effective) {
+        (None, None) => None,
+        (None, Some(_)) => {
+            return Err(PriorityError::StaleSnapshot {
+                detail: "an untriaged item has no effective value".to_string(),
+            });
+        }
+        (Some(base), None) => Some(base.clone()),
+        (Some(base), Some(eval)) => {
+            if &eval.work != work || &eval.intrinsic != base || eval.as_of != pinned.as_of {
+                return Err(PriorityError::StaleSnapshot {
+                    detail: "the effective evaluation is for other work, value or time".to_string(),
+                });
+            }
+            profile.check(&eval.effective)?;
+            if let Some(boost_ref) = &eval.active_boost_ref {
+                let boost = boosts
+                    .iter()
+                    .find(|b| &b.boost_ref == boost_ref && &b.work == work)
+                    .ok_or_else(|| PriorityError::StaleSnapshot {
+                        detail: format!("applied boost {boost_ref} is not in the snapshot"),
+                    })?;
+                factors.push(PressureFactor {
+                    kind: PressureFactorKind::OpportunityBoost,
+                    steps: scale_steps(profile, base.value, eval.effective.value),
+                    source_ref: boost.boost_ref.clone(),
+                    evidence_refs: vec![boost.opportunity_ref.clone()],
+                });
+            } else if eval.effective != *base {
+                return Err(PriorityError::StaleSnapshot {
+                    detail: "the effective value moved with no recorded factor".to_string(),
+                });
+            }
+            Some(eval.effective.clone())
+        }
+    };
+    Ok(PriorityExplanation {
+        schema_version: PRIORITY_EXPLANATION_SCHEMA_VERSION.to_string(),
+        work: work.clone(),
+        intrinsic,
+        importance,
+        effective: effective_value,
+        factors,
+        pinned,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3644,6 +3859,201 @@ mod tests {
         assert_eq!(
             run(Some("owner-policy:7"), None).unwrap_err().code(),
             "owner_policy_unavailable"
+        );
+    }
+
+    fn pinned() -> PinnedInputs {
+        PinnedInputs {
+            profile_id: QUEUE_PROFILE_ID.to_string(),
+            profile_version: QUEUE_PROFILE_VERSION.to_string(),
+            policies: BTreeMap::from([
+                ("owner-policy:7".to_string(), "7".to_string()),
+                ("boost-policy:1".to_string(), "1".to_string()),
+            ]),
+            snapshot_ref: "snapshot:42".to_string(),
+            work_version: "12".to_string(),
+            as_of: NOW,
+        }
+    }
+
+    #[test]
+    fn pmo_priority_dimensions_pin_explanation() {
+        let explain = |id: &str,
+                       legacy: Option<i64>,
+                       importance: Option<ImportanceAssessment>,
+                       eval: Option<&EffectivePriority>,
+                       boosts: &[OpportunityBoost],
+                       pins: PinnedInputs| {
+            explain_priority(&queue(), &work(id), legacy, importance, eval, boosts, pins)
+        };
+
+        // Read-old: a legacy stored value keeps its exact ratified
+        // member; importance stays null and is not derived from it.
+        let expedite = explain("3447", Some(EXPEDITE_VALUE), None, None, &[], pinned()).unwrap();
+        assert_eq!(expedite.intrinsic.as_ref().unwrap().value, EXPEDITE_VALUE);
+        assert_eq!(expedite.effective, expedite.intrinsic);
+        assert_eq!(expedite.importance, None);
+        assert!(expedite.factors.is_empty());
+        let critical = explain("700", Some(10), None, None, &[], pinned()).unwrap();
+        assert_eq!(
+            critical.importance, None,
+            "importance is never inferred from urgency"
+        );
+
+        // Untriaged stays untriaged: no fabricated default.
+        let untriaged = explain("701", None, None, None, &[], pinned()).unwrap();
+        assert_eq!(untriaged.intrinsic, None);
+        assert_eq!(untriaged.effective, None);
+
+        // An off-profile stored value is an error, never snapped.
+        assert_eq!(
+            explain("702", Some(16), None, None, &[], pinned())
+                .unwrap_err()
+                .code(),
+            "off_profile_value"
+        );
+
+        // The explanation pins every input.
+        let assessment = ImportanceAssessment {
+            label: "high".to_string(),
+            source_ref: "principal:drew".to_string(),
+            evidence_refs: vec!["ev:impact".to_string()],
+        };
+        let window = boost("900", "boost:conf", 2, NOW - DAY, NOW + DAY);
+        let cold = boosted("900", 70);
+        let eval = effective(&cold, std::slice::from_ref(&window), NOW);
+        let full = explain(
+            "900",
+            Some(70),
+            Some(assessment.clone()),
+            Some(&eval),
+            std::slice::from_ref(&window),
+            pinned(),
+        )
+        .unwrap();
+        assert_eq!(full.schema_version, PRIORITY_EXPLANATION_SCHEMA_VERSION);
+        assert_eq!(full.pinned, pinned());
+        assert_eq!(full.intrinsic.as_ref().unwrap().value, 70);
+        assert_eq!(full.effective.as_ref().unwrap().value, 40);
+        assert_eq!(full.importance, Some(assessment.clone()));
+        assert_eq!(
+            full.factors,
+            vec![PressureFactor {
+                kind: PressureFactorKind::OpportunityBoost,
+                steps: -2,
+                source_ref: "boost:conf".to_string(),
+                evidence_refs: vec!["evidence:boost:conf".to_string()],
+            }]
+        );
+
+        // Round trip, and read-old documents without the newer fields.
+        assert_eq!(
+            PriorityExplanation::from_json(&full.to_json()).unwrap(),
+            full
+        );
+        let mut legacy_doc: serde_json::Value = serde_json::from_str(&expedite.to_json()).unwrap();
+        let object = legacy_doc.as_object_mut().unwrap();
+        object.remove("importance");
+        object.remove("factors");
+        let read_old = PriorityExplanation::from_json(&legacy_doc.to_string()).unwrap();
+        assert_eq!(read_old, expedite);
+        let mut future = full.clone();
+        future.schema_version = "fleet.priority-explanation/v2".to_string();
+        assert_eq!(
+            PriorityExplanation::from_json(&future.to_json())
+                .unwrap_err()
+                .code(),
+            "unsupported_version"
+        );
+
+        // Stale or mismatched inputs are refused.
+        let mut late = pinned();
+        late.as_of = NOW + 1;
+        assert_eq!(
+            explain(
+                "900",
+                Some(70),
+                None,
+                Some(&eval),
+                std::slice::from_ref(&window),
+                late
+            )
+            .unwrap_err()
+            .code(),
+            "stale_snapshot"
+        );
+        assert_eq!(
+            explain(
+                "900",
+                Some(50),
+                None,
+                Some(&eval),
+                std::slice::from_ref(&window),
+                pinned()
+            )
+            .unwrap_err()
+            .code(),
+            "stale_snapshot"
+        );
+        assert_eq!(
+            explain(
+                "901",
+                Some(70),
+                None,
+                Some(&eval),
+                std::slice::from_ref(&window),
+                pinned()
+            )
+            .unwrap_err()
+            .code(),
+            "stale_snapshot"
+        );
+        assert_eq!(
+            explain("900", Some(70), None, Some(&eval), &[], pinned())
+                .unwrap_err()
+                .code(),
+            "stale_snapshot"
+        );
+        assert_eq!(
+            explain("900", None, None, Some(&eval), &[], pinned())
+                .unwrap_err()
+                .code(),
+            "stale_snapshot"
+        );
+        let mut other_profile = pinned();
+        other_profile.profile_version = "2".to_string();
+        assert_eq!(
+            explain("900", Some(70), None, None, &[], other_profile)
+                .unwrap_err()
+                .code(),
+            "profile_mismatch"
+        );
+        let mut no_snapshot = pinned();
+        no_snapshot.snapshot_ref = String::new();
+        assert_eq!(
+            explain("900", Some(70), None, None, &[], no_snapshot)
+                .unwrap_err()
+                .code(),
+            "invalid_profile"
+        );
+        let mut bad_version = pinned();
+        bad_version.work_version = "012".to_string();
+        assert_eq!(
+            explain("900", Some(70), None, None, &[], bad_version)
+                .unwrap_err()
+                .code(),
+            "invalid_profile"
+        );
+        let unsupported = ImportanceAssessment {
+            label: "high".to_string(),
+            source_ref: "principal:drew".to_string(),
+            evidence_refs: Vec::new(),
+        };
+        assert_eq!(
+            explain("900", Some(70), Some(unsupported), None, &[], pinned())
+                .unwrap_err()
+                .code(),
+            "invalid_profile"
         );
     }
 }
