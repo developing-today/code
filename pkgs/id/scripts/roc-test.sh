@@ -31,6 +31,8 @@ for module in RocJson Screen Key Term; do
 done
 echo "=== key-parity: kitty-disambiguate-v1 corpus vs the actual Roc decoder (#787 Slice D) ==="
 bash scripts/key-parity-test.sh
+echo "=== term-parity: paint-primary fixtures vs the actual Roc Term contract (#14861 slice 2) ==="
+bash scripts/term-parity-test.sh
 echo "=== roc-cap-demo: capability-dependent library + app, both negative tests (#5957) ==="
 bash examples/roc-cap-demo/roc-cap-demo-test.sh
 echo "=== roc-import-policy: #5994 section 4 fixture matrix for the import gate (#10027) ==="

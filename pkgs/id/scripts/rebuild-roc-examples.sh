@@ -27,6 +27,7 @@ examples=(
   examples/roc-text-counter
   examples/territory
   apps/tic-tac-toe/program
+  apps/space-invaders/program
 )
 
 for example in "${examples[@]}"; do

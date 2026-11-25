@@ -25,8 +25,10 @@ First local-only vertical slice of the hosted data plane (slice 3 of
   stays available at cap); `PUT|GET|DELETE /v1/kv/<key>` (per-tenant
   store; the key must match `[A-Za-z0-9._-]{1,128}`); `PUT /v1/blobs`,
   `GET|DELETE /v1/blobs/<64-hex>` (content-addressed blobs in R2,
-  deduplicated across users; DELETE drops only this user's
-  reference); and the signed-object bridge routes (`GET
+  deduplicated across users — except client-encrypted blobs
+  (§7 of the #2258 spec), whose R2 keys are scoped to the owning
+  binding so they dedupe only per user; DELETE drops only this
+  user's reference); and the signed-object bridge routes (`GET
 /v1/bridge/challenge`, `GET /v1/bridge/heads`, `POST
 /v1/bridge/push`, `POST /v1/bridge/pull`, `GET /v1/bridge/export`,
   `GET /v1/bridge/ws`), covered in the bridge section below. Storage

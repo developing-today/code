@@ -66,6 +66,7 @@ pub mod memory;
 pub mod notes;
 pub mod occurrences;
 pub mod owner_inventory;
+pub mod reports;
 pub mod repo_docs;
 pub mod search;
 pub mod shards;

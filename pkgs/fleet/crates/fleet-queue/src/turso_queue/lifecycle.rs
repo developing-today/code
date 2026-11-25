@@ -2165,6 +2165,9 @@ pub(crate) fn wake_eligible(status: &str) -> Result<(), String> {
 /// This is the dispatch failure path: an item whose sub-task
 /// session failed to launch/bind returns to the pool immediately
 /// instead of sitting claimed-idle under the dispatcher.
+/// A release may also carry a platform limitation (#14993): the
+/// route-mismatch hand-back, recorded on the lane ledger so the
+/// claim pick stops offering the task to the wrong family.
 pub(crate) fn verb_release(t: &TursoBackend, req: &Value) -> Value {
     let task_id = req_i64(req, "task_id").unwrap_or(0);
     let worker = req_str(req, "worker").unwrap_or("").to_string();
@@ -2176,6 +2179,23 @@ pub(crate) fn verb_release(t: &TursoBackend, req: &Value) -> Value {
                 .to_string(),
         );
     }
+    // #14993: a release may carry a platform limitation -- the
+    // route-mismatch hand-back. A lane that draws a task routed to
+    // a seat it is not (a laptop checkout, an opencode-only
+    // packet) records the limitation as it hands the task back,
+    // and the claim pick (PLATFORM_LIMIT_PICK_CLAUSE) then never
+    // offers the task to another family again, instead of
+    // re-offering it on every redraw. Validated exactly like the
+    // lane verb's set (#8210): a real family, and a recorded
+    // reason of its own.
+    let limit_platform = req_str(req, "platform_limit").map(str::to_string);
+    let limit_reason = req_str(req, "platform_limit_reason").map(str::to_string);
+    if let Some(e) = platform_limit_error(limit_platform.as_deref(), limit_reason.as_deref()) {
+        return fail(2, format!("release_repo_task: {e}"));
+    }
+    let limit_family = limit_platform
+        .as_deref()
+        .and_then(|l| parse_platform(Some(l)).ok().flatten());
     let row = match claimed_by(t, task_id, &worker, "release_repo_task", req) {
         Ok(r) => r,
         Err(v) => return v,
@@ -2197,6 +2217,47 @@ pub(crate) fn verb_release(t: &TursoBackend, req: &Value) -> Value {
             ],
         )?;
         t.exec("DELETE FROM leases WHERE task_id = ?", &[Arg::Int(task_id)])?;
+        // #14993: record the limitation on the task's lane ledger
+        // (the row the claim pick reads). A claimed task may have
+        // no ledger row yet -- assignment creates one, a bare claim
+        // does not -- so the write upserts: update the row when one
+        // exists, insert a minimal one carrying just the limit
+        // when none does.
+        if let Some(fam) = &limit_family {
+            let upd = t.exec(
+                "UPDATE repo_task_lane_ledger SET platform_limit = ?, \
+                   platform_limit_reason = ?, updated_at = ? \
+                 WHERE task_id = ?",
+                &[
+                    Arg::Text(fam.clone()),
+                    arg_str(limit_reason.as_deref()),
+                    Arg::Text(now_iso()),
+                    Arg::Int(task_id),
+                ],
+            )?;
+            if upd.affected == 0 {
+                let queue = row
+                    .get("queue")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let now = now_iso();
+                t.exec(
+                    "INSERT INTO repo_task_lane_ledger \
+                     (queue, task_id, platform_limit, platform_limit_reason, assigned_by, assigned_at, updated_at) \
+                     VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    &[
+                        Arg::Text(queue),
+                        Arg::Int(task_id),
+                        Arg::Text(fam.clone()),
+                        arg_str(limit_reason.as_deref()),
+                        Arg::Text(worker.clone()),
+                        Arg::Text(now.clone()),
+                        Arg::Text(now),
+                    ],
+                )?;
+            }
+        }
         touch_worker(t, &worker, Some(task_id))?;
         if let Some(old) = &cleared {
             on_binding_cleared(t, &worker, task_id, old, "release_repo_task")?;
@@ -2210,6 +2271,8 @@ pub(crate) fn verb_release(t: &TursoBackend, req: &Value) -> Value {
                 &json!({
                     "reason": reason, "via": "release_repo_task_turso",
                     "cleared_session_id": cleared,
+                    "platform_limit": limit_family,
+                    "platform_limit_reason": limit_reason,
                 }),
                 &row,
             ),
@@ -2752,6 +2815,91 @@ mod reprioritize_tests {
             )
             .unwrap();
         assert!(rows.is_empty());
+    }
+
+    // -- #14317: park ready_condition retention ---------------------
+
+    /// Park one claimed task with a caller-supplied ready
+    /// condition; returns (task id, park envelope).
+    fn park_with_condition(t: &TursoBackend) -> (i64, Value) {
+        let id = seed_task(t, "claimed", 90, json!({}), Some("w"));
+        let out = verb_park(
+            t,
+            &json!({
+                "task_id": id, "worker": "w", "reason": "waiting on the trigger",
+                "not_before": "2027-06-01T00:00:00Z",
+                "ready_condition": {"kind": "event_seen", "event_kind": "trigger_fired",
+                                    "note": "trigger prioritized"},
+                "progress": {},
+            }),
+        );
+        assert_eq!(out["ok"], true, "{out}");
+        (id, out)
+    }
+
+    /// #14317 oracle (storage + read-back): parking with
+    /// --ready-condition persists the supplied structured
+    /// condition, and the rich /list read-back behind `queue show`
+    /// / `list --json` returns it intact — before the fix the
+    /// rich projection omitted ready_condition (and park_kind /
+    /// wait_kind / last_error) entirely, so a parked task read
+    /// back `ready_condition: null` and lost its early-wake hook.
+    /// Oracle: the supplied condition object itself, compared
+    /// verbatim at both layers.
+    #[test]
+    fn park_retains_ready_condition_through_rich_list_readback_14317() {
+        let (t, _) = fake_backend();
+        let (id, out) = park_with_condition(&t);
+        let supplied = json!({"kind": "event_seen", "event_kind": "trigger_fired",
+                              "note": "trigger prioritized"});
+        // The park envelope's own row carries the condition.
+        assert_eq!(out["row"]["ready_condition"], supplied, "{out}");
+        // The stored row carries it, parked until the explicit
+        // not_before.
+        let row = get_task(&t, id).unwrap().unwrap();
+        assert_eq!(row["status"], "parked");
+        assert_eq!(row["ready_condition"], supplied);
+        assert_eq!(row["not_before"], "2027-06-01T00:00:00Z");
+        // The rich list read-back (queue show / list --json)
+        // carries it too, alongside the other park wait fields
+        // the show field list reads from the row.
+        let list = verb_list(&t, &json!({"rich": true, "task": id, "limit": 1}));
+        assert_eq!(list["ok"], true, "{list}");
+        let rows = list["rows"].as_array().unwrap();
+        assert_eq!(rows.len(), 1, "{list}");
+        assert_eq!(rows[0]["ready_condition"], supplied, "{list}");
+        assert_eq!(rows[0]["park_kind"], "absolute");
+        assert_eq!(rows[0]["wait_kind"], "external");
+        assert!(rows[0].get("last_error").is_some(), "{list}");
+    }
+
+    /// #14317 oracle (early wake): the stored condition is what
+    /// the park-revalidation sweeper evaluates — when the named
+    /// event fires, the sweeper releases the parked task even
+    /// though its not_before is still months away.
+    #[test]
+    fn parked_ready_condition_is_evaluated_before_not_before_14317() {
+        let (t, _) = fake_backend();
+        let (id, _) = park_with_condition(&t);
+        // The trigger fires: the named event lands on the task.
+        t.exec(
+            "INSERT INTO events (worker_id, task_id, kind, detail, created_at) \
+             VALUES ('trigger-source', ?, 'trigger_fired', '{}', ?)",
+            &[Arg::Int(id), Arg::Text(now_iso())],
+        )
+        .unwrap();
+        // Age the park past the sweeper's recheck cutoff.
+        t.exec(
+            "UPDATE tasks SET last_checked_at = '2020-01-01T00:00:00Z', \
+             updated_at = '2020-01-01T00:00:00Z' WHERE id = ?",
+            &[Arg::Int(id)],
+        )
+        .unwrap();
+        let summary = revalidate_parked(&t, 0, 10, false).unwrap();
+        assert_eq!(summary["released"], 1, "{summary}");
+        let row = get_task(&t, id).unwrap().unwrap();
+        assert_eq!(row["status"], "queued", "{row}");
+        assert_eq!(row["not_before"], Value::Null, "{row}");
     }
 }
 

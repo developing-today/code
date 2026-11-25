@@ -67,7 +67,7 @@ iroh-blobs = "0.103"
 iroh-docs = "0.101"
 iroh-gossip = { version = "0.101", features = ["net"] }
 libc = "0.2"
-p2panda-core = { git = "https://github.com/p2panda/p2panda", rev = "da80c05b95269926bf58121cf6a2d3dd5ca41dfc" }
+p2panda-core = { git = "https://github.com/dezren39/p2panda", rev = "4a8a7ea4b6e0da187108fba9a0085e0f9679aded" }
 postcard = { version = "1", features = ["alloc"] }
 rand = "0.10"
 # The `http.fetch` provider's client (#1062): blocking API only,

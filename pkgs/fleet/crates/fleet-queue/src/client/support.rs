@@ -194,7 +194,7 @@ Run `repo-queue <verb> --help` for flags:\n\
   staleness [--queue <name>] [--older-than-seconds <n>] [--lease-cap-seconds <n>] [--limit <n>]\n\
   needs-user [--queue <name>] [--state <s>] [--limit <n>]\n\
   claim [--queue <name>] [--worker <id>] [--lease-seconds <n>] [--lane <l>] [--task <id>] [--count <n>] [--from-session <id>] [--platform <p>] [--session-id <id>] [--model-provider <p>] [--model-id <id>] [--model-variant <v>] [--filter <f>] [--pool <p>] [--launched-by <who>] [--remaining-budget-minutes <n>] [--handoff] [--bind]\n\
-  release <task-id> [--worker <id>] [--lane <id>] --reason <text>\n\
+  release <task-id> [--worker <id>] [--lane <id>] --reason <text> [--limit-platform <p> --limit-reason <text>]\n\
   lane <task-id> [--worker <id>] [--exclusion-reason <text>] [--opencode-reason <text>] [--limit-platform <p>] [--limit-reason <text>] [--clear-platform-limit]\n\
   bind <task-id> [--worker <id>] --session-id <id> [--launched-by <who>] [--model-provider <p>] [--model-id <id>] [--model-variant <v>]\n\
   heartbeat <task-id> [--worker <id>] [--lane <id>] [--extend-seconds <n>] [--progress <p>] [--progress-file <f>]\n\
@@ -253,7 +253,7 @@ pub(crate) fn usage(verb: &str) -> &'static str {
             "usage: repo-queue claim [--queue <name>] [--worker <id>] [--lease-seconds <n>] [--lane <l>] [--task <id>] [--count <n>] [--from-session <id>] [--platform <p>] [--session-id <id>] [--model-provider <p>] [--model-id <id>] [--model-variant <v>] [--filter <f>] [--pool <p>] [--launched-by <who>] [--remaining-budget-minutes <n>] [--handoff] [--bind]\n\nClaims the highest-priority eligible task."
         }
         "release" => {
-            "usage: repo-queue release <task-id> [--worker <id>] [--lane <id>] --reason <text>\n\nReleases a held claim."
+            "usage: repo-queue release <task-id> [--worker <id>] [--lane <id>] --reason <text> [--limit-platform <p> --limit-reason <text>]\n\nReleases a held claim. With --limit-platform and --limit-reason, the release also limits the task to that platform family (a route mismatch the releaser cannot serve), so the draw stops offering it to other families."
         }
         "lane" => {
             "usage: repo-queue lane <task-id> [--worker <id>] [--exclusion-reason <text>] [--opencode-reason <text>] [--limit-platform <p>] [--limit-reason <text>] [--clear-platform-limit]\n\nReports lane progress on a task."

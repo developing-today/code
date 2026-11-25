@@ -20,6 +20,7 @@ import type { PendingCommentCounts } from "./comments.ts";
 import type { ConflictInbox } from "./conflicts.ts";
 import type { Config } from "./config.ts";
 import { unreportedCheckoutDrift, type CheckoutDrift } from "./checkout-drift.ts";
+import type { EditionDrift } from "./edition-drift.ts";
 import {
   ageMsText,
   FEED_STALE_MS,
@@ -199,6 +200,12 @@ export interface HealthView {
    *  when this does not match the tree it just deployed — a deploy
    *  that cannot prove it is live is a failed deploy. */
   version: string;
+  /** CF-9 (#14949): the laptop edition's drift vs origin/main,
+   *  measured from this process's deployed build marker against the
+   *  primary checkout's refs (src/edition-drift.ts); null when the
+   *  server did not assemble it (fixtures/tests) — never an invented
+   *  in-sync. */
+  edition?: EditionDrift | null;
   generatedAt: string;
   bootAt: string;
   degraded: boolean;
@@ -419,6 +426,9 @@ export interface HealthInputs {
   pushHealth?: PushHealthView | null;
   /** #9988: SLO budget summaries from the journal (server.ts supplies them in live mode). */
   slo?: SloFacetSummary[] | null;
+  /** CF-9 (#14949): the edition-drift measurement (server.ts supplies
+   *  it in live mode); absent/null renders as unassembled. */
+  edition?: EditionDrift | null;
 }
 
 export interface HealthDeps {
@@ -554,12 +564,16 @@ export async function buildHealth(inputs: HealthInputs, deps: HealthDeps = {}): 
       // #1203: a harness whose GraphQL cannot be read (or whose backend
       // is not READY) is a degraded dependency, not an invisible one.
       rfa.state === "down" ||
+      // CF-9 (#14949): an edition stale past the drift threshold is a
+      // degraded stack, named as such — never smoothed over.
+      (inputs.edition != null && inputs.edition.stale) ||
       sectionHealth.some((section) => section.status === "error"));
 
   return {
     status: "ok",
     mode: inputs.mode,
     version: inputs.version ?? resolveBuildVersion(),
+    edition: inputs.edition ?? null,
     generatedAt: new Date(now).toISOString(),
     bootAt: new Date(BOOT_AT).toISOString(),
     degraded,

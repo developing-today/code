@@ -28,9 +28,9 @@ JSON shapes, field order, note placement and fatal messages mirror the
 Python, and the parity tests diff rendered envelopes and SQL strings against
 fixtures recorded from the production Python module.
 
-## The 40 public modules, grouped by job
+## The 44 public modules, grouped by job
 
-`lib.rs` declares 40 public modules. Grouped by the job they do:
+`lib.rs` declares 44 public modules. Grouped by the job they do:
 
 ### Retrieval
 
@@ -60,6 +60,9 @@ fixtures recorded from the production Python module.
 | `occurrences`     | Resolves a canonical content hash back to its chunk occurrences across the shards visible at a caller's sensitivity ceiling                                                                                                                |
 | `cold`            | Verifies a fetched cold-tier shard and reconstructs version bytes from its manifest and occurrence lists                                                                                                                                   |
 | `memory`          | Registers memory corpora as staging units and parses their read-only exports for Atlas ingestion                                                                                                                                           |
+| `notes`           | The zettelkasten connector (#8626): scans a notes vault's Markdown files in sorted tree order and stages them into the `zettelkasten` unit through the registry path, replay-safe — re-scanning an unchanged vault stages zero, an edited note re-stages exactly its chunks |
+| `reports`         | The research-reports connector (#8626): walks a tree of prior fleet research outputs (goal files and briefs) and stages them into the `research-reports` unit with the design's full provenance set, replay-safe — re-staging an unchanged document writes nothing |
+| `repo_docs`       | The repo-docs connector: stages the four fleet repositories' Markdown docs from explicit local checkouts into the `repo-docs` unit — offline and replay-safe, with no remote discovery or fetching |
 | `source_registry` | The provenance source registry (#3125): stable source-root and source-locator registration. The read side is `occurrences`, which resolves chunk occurrences by canonical hash back to every place the content was found                   |
 | `boundary`        | Source-boundary-safe embed splitting: the splitter and the classifier share source offsets, every declared boundary splits, and uncertain text becomes one secret-bearing chunk                                                            |
 | `disclosure`      | Disclosure contexts: the destination-side half of the classification model. The caller ceiling and the destination context's ceiling intersect; neither widens the other, and enforcement happens at the final output boundary in `search` |
@@ -73,6 +76,7 @@ fixtures recorded from the production Python module.
 | `attestation`        | One in-toto-shaped attestation statement per ingest batch (#6045): the statement bytes are embedded verbatim as the claim body, with the statement hash as the claim's subject — no transcoding                                    |
 | `id_projection`      | The Atlas-to-ID attestation projector (#11183): one `attestation.claim` per batch digest, projecting ingest attestations and batch runs to ID                                                                                      |
 | `version_projection` | Deterministically projects immutable Atlas version rows into ID document and version/batch claim descriptors; publication remains a later slice                                                                                    |
+| `consumer_preset`    | The attested-only consumer view preset (#13766): a consumer-side selection over one pinned publication — exactly the versions whose batch has a published `attestation.claim`, joined on `batch_id`. Any inconsistency refuses the whole selection rather than returning a partial one |
 | `sweep`              | The source sweep: candidate filtering, guardrails, headroom, state, locking and run reporting for periodic ingest scheduling                                                                                                       |
 | `github_comments`    | GitHub comments as a corpus source: comment documents, provenance marks and watermarks                                                                                                                                             |
 | `trace_ingest`       | Query traces as a searchable corpus source, plus trace retention and compaction                                                                                                                                                    |

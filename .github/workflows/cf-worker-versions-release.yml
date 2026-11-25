@@ -30,7 +30,11 @@ name: cf-worker versions release
 # A separate record job then writes the deploy state into
 # pm-stack/platform/workers.json (lastDeployedCommit, deploy, workflow)
 # and pushes it to main — workers.json deploy state is written by this
-# pipeline, not by hand (#14941).
+# pipeline, not by hand (#14941). The push goes through
+# .github/scripts/record-worker-deploy.sh, which retries a rejected
+# push by rebasing the record onto current main: parallel releases of
+# different Workers are expected, and their record pushes must not lose
+# records to the stale-ref race (#15041).
 #
 # Until both Cloudflare repository secrets exist the release job says
 # so in its summary and skips the upload instead of failing (the
@@ -269,41 +273,8 @@ jobs:
       - uses: actions/checkout@v7
         with:
           ref: main
-      - name: Write the deploy state for this Worker
+      - name: Write, commit, and push the record (push-race retrying, #15041)
         env:
           WORKER: ${{ inputs.worker }}
           DEPLOYED_COMMIT: ${{ needs.release.outputs.deployed_commit }}
-        run: |
-          set -euo pipefail
-          python3 - <<'PY'
-          import json, os
-          path = "pm-stack/platform/workers.json"
-          with open(path) as fh:
-              data = json.load(fh)
-          for entry in data["workers"]:
-              if entry["name"] == os.environ["WORKER"]:
-                  entry["deploy"] = "actions"
-                  entry["workflow"] = "cf-worker-versions-release.yml"
-                  entry["lastDeployedCommit"] = os.environ["DEPLOYED_COMMIT"]
-                  break
-          else:
-              raise SystemExit(f"worker not in workers.json: {os.environ['WORKER']}")
-          with open(path, "w") as fh:
-              json.dump(data, fh, indent=2)
-              fh.write("\n")
-          PY
-      - name: Commit and push the record
-        env:
-          WORKER: ${{ inputs.worker }}
-          DEPLOYED_COMMIT: ${{ needs.release.outputs.deployed_commit }}
-        run: |
-          set -euo pipefail
-          if git diff --quiet -- pm-stack/platform/workers.json; then
-            echo "workers.json already records this deploy." >> "$GITHUB_STEP_SUMMARY"
-            exit 0
-          fi
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add pm-stack/platform/workers.json
-          git commit -m "cf-worker release: record $WORKER at ${DEPLOYED_COMMIT:0:12} (#14941)"
-          git push origin HEAD:main
+        run: bash .github/scripts/record-worker-deploy.sh

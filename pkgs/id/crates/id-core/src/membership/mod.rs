@@ -26,7 +26,7 @@ use std::fmt;
 
 use p2panda_auth::group::resolver::StrongRemove;
 use p2panda_auth::group::{GroupAction, GroupCrdt, GroupCrdtState};
-use p2panda_auth::traits::Operation;
+use p2panda_auth::traits::{AuthorizationActor, Operation};
 use p2panda_core::Hash;
 use serde::{Deserialize, Serialize};
 
@@ -71,6 +71,8 @@ pub struct AuthOperation {
     pub id: Hash,
     /// The key that signed the event.
     pub author: AuthId,
+    /// Optional authorization that the caller validated outside membership roles.
+    pub authorization_actor: Option<AuthorizationActor<AuthId>>,
     /// The auth frontier: the maximal group operations of this group in the causal past.
     pub dependencies: Vec<Hash>,
     /// The group the action applies to.
@@ -86,6 +88,10 @@ impl Operation<AuthId, Hash, ()> for AuthOperation {
 
     fn author(&self) -> AuthId {
         self.author
+    }
+
+    fn authorization_actor(&self) -> Option<AuthorizationActor<AuthId>> {
+        self.authorization_actor
     }
 
     fn dependencies(&self) -> Vec<Hash> {
