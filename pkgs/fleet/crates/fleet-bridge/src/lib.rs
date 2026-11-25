@@ -852,6 +852,7 @@ const VALUE_FLAGS: &[&str] = &[
     "--notes-identity",
     "--token-hash",
     "--addr",
+    "--address",
 ];
 
 fn parse(args: &[String], switches: &[&str], values: &[&str]) -> R<Args> {
