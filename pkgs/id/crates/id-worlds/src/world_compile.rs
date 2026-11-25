@@ -69,14 +69,20 @@ pub struct Compiler {
 /// tests cover.
 pub const ADMIN_CACHE_AUTHOR: &str = "server-admin";
 
+/// True when `dir` holds a built world platform: `platform.roc` and the
+/// compiled `targets/wasm32/host.wasm`.
+#[must_use]
+pub fn is_platform_dir(dir: &std::path::Path) -> bool {
+    dir.join("platform.roc").is_file() && dir.join("targets/wasm32/host.wasm").is_file()
+}
+
 impl Compiler {
     /// # Errors
     ///
     /// Fails when the platform directory does not look like one.
     pub fn new(platform_dir: PathBuf, roc_bin: String) -> Result<Self> {
         ensure!(
-            platform_dir.join("platform.roc").is_file()
-                && platform_dir.join("targets/wasm32/host.wasm").is_file(),
+            is_platform_dir(&platform_dir),
             "{} is not a world platform directory (need platform.roc and targets/wasm32/host.wasm)",
             platform_dir.display()
         );
