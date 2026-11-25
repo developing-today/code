@@ -1,8 +1,9 @@
-//! The operator's transparency log view: a read-only, replayable
-//! projection over the durable moderation record (#14466; creator
-//! public-world safety v3 outline,
+//! The operator's transparency log view (#14466).
+//!
+//! A read-only, replayable projection over the durable moderation
+//! record. Design: creator public-world safety v3 outline,
 //! `doc/2026-11-24T16-12-00Z_design_id6310_creator_public_world_safety_v3_outline.md`,
-//! sections 1, 2, 4 question 3 and 6 item 3).
+//! sections 1, 2, 4 question 3 and 6 item 3.
 //!
 //! The view is never a second store. [`replay`] reads the two records
 //! the operator already holds and returns a [`TransparencyView`]:
@@ -13,7 +14,8 @@
 //!   participant who revoked (`None` means the admin) and the world-clock
 //!   time when the journal carries one; and
 //! - the [`ClosureLog`] of moderator decisions on safety reports
-//!   (#14465), where appeal decisions land too once appeals exist.
+//!   (#14465). Appeal decisions (#14467) land in the same log;
+//!   [`replay_with_appeals`] shows them as their own section.
 //!
 //! Replaying the same inputs always yields the same view, entry for
 //! entry, so anyone holding the records can check it.
@@ -43,6 +45,7 @@ use std::io::{self, BufRead, Read};
 
 use serde::Serialize;
 
+use crate::safety_appeal::AppealLog;
 use crate::safety_review_queue::{ClosureDecision, ClosureLog, QueueError};
 use crate::world::{JournalEntry, MAX_JOURNAL_VERSION, journal_version_required_by};
 use crate::world_session::encode_hex;
@@ -114,6 +117,23 @@ pub enum TransparencyAction {
         sequence: u64,
         /// The report's id.
         report_id: String,
+        /// The moderator's public key, lower-case hex.
+        moderator: String,
+        /// What was decided.
+        decision: ClosureDecision,
+        /// When the moderator decided, Unix milliseconds.
+        at_ms: u64,
+    },
+    /// A moderator decided an appeal (#14467). `Actioned` upholds the
+    /// appeal; any reversal is a separate action through the role
+    /// model, never automatic.
+    AppealDecided {
+        /// Position in the closure log.
+        sequence: u64,
+        /// The appeal's id.
+        appeal_id: String,
+        /// The action hash of the action the appeal contests.
+        contested: String,
         /// The moderator's public key, lower-case hex.
         moderator: String,
         /// What was decided.
@@ -199,17 +219,21 @@ pub struct TransparencyView {
     pub world_actions: ViewSection,
     /// Report closures, in closure-log order.
     pub report_closures: ViewSection,
+    /// Appeal decisions, in closure-log order.
+    pub appeal_decisions: ViewSection,
     /// Whether the journal's last line was cut off (and not read).
     pub journal_torn_tail: bool,
 }
 
 impl TransparencyView {
-    /// Every entry of both sections, world actions first.
+    /// Every entry of every section: world actions, report closures,
+    /// then appeal decisions.
     pub fn entries(&self) -> impl Iterator<Item = &TransparencyEntry> {
         self.world_actions
             .entries
             .iter()
             .chain(self.report_closures.entries.iter())
+            .chain(self.appeal_decisions.entries.iter())
     }
 
     /// The entry with this action hash, if the view holds it.
@@ -257,6 +281,8 @@ pub enum TransparencyError {
     },
     /// A closure in the closure log no longer verifies.
     Closure(QueueError),
+    /// An appeal in the appeal log no longer verifies.
+    Appeal(String),
     /// Reading the journal failed.
     Io(io::Error),
 }
@@ -277,6 +303,7 @@ impl fmt::Display for TransparencyError {
             ),
             Self::OversizedLine { line } => write!(f, "journal line {line} exceeds the line limit"),
             Self::Closure(error) => write!(f, "closure log: {error}"),
+            Self::Appeal(error) => write!(f, "appeal log: {error}"),
             Self::Io(error) => write!(f, "read journal: {error}"),
         }
     }
@@ -310,8 +337,24 @@ pub struct ViewRequest<'a> {
 /// Any [`TransparencyError`]: the reader is refused, or the journal is
 /// refused whole rather than shown in part as if complete.
 pub fn replay<R: BufRead>(
+    journal: R,
+    closures: &ClosureLog,
+    request: &ViewRequest<'_>,
+    authority: &impl ReadAuthority,
+) -> Result<TransparencyView, TransparencyError> {
+    replay_with_appeals(journal, closures, &AppealLog::new(), request, authority)
+}
+
+/// [`replay`], with the appeal log: a closure that names an appeal
+/// shows as an [`TransparencyAction::AppealDecided`] entry.
+///
+/// # Errors
+///
+/// As [`replay`], or an appeal no longer verifies.
+pub fn replay_with_appeals<R: BufRead>(
     mut journal: R,
     closures: &ClosureLog,
+    appeals: &AppealLog,
     request: &ViewRequest<'_>,
     authority: &impl ReadAuthority,
 ) -> Result<TransparencyView, TransparencyError> {
@@ -324,6 +367,7 @@ pub fn replay<R: BufRead>(
         world_id: request.world_id.to_owned(),
         world_actions: ViewSection::default(),
         report_closures: ViewSection::default(),
+        appeal_decisions: ViewSection::default(),
         journal_torn_tail: false,
     };
     let mut header_version = None;
@@ -387,6 +431,23 @@ pub fn replay<R: BufRead>(
     }
     for fact in closures.facts() {
         let closure = fact.signed.verify().map_err(TransparencyError::Closure)?;
+        if let Some(appeal) = appeals.get(&closure.report_id) {
+            let appeal = appeal
+                .appeal()
+                .map_err(|e| TransparencyError::Appeal(e.to_string()))?;
+            view.appeal_decisions.push(
+                TransparencyEntry::new(TransparencyAction::AppealDecided {
+                    sequence: fact.sequence,
+                    appeal_id: closure.report_id,
+                    contested: appeal.action_hash,
+                    moderator: closure.moderator,
+                    decision: closure.decision,
+                    at_ms: closure.decided_at_ms,
+                }),
+                limits.max_entries,
+            );
+            continue;
+        }
         view.report_closures.push(
             TransparencyEntry::new(TransparencyAction::ReportClosed {
                 sequence: fact.sequence,
@@ -635,7 +696,8 @@ mod tests {
             .iter()
             .map(|entry| match &entry.action {
                 TransparencyAction::ParticipantRevoked { participant_id, .. } => *participant_id,
-                TransparencyAction::ReportClosed { .. } => panic!("not a world action"),
+                TransparencyAction::ReportClosed { .. }
+                | TransparencyAction::AppealDecided { .. } => panic!("not a world action"),
             })
             .collect();
         assert_eq!(kept, vec![4, 5]);
