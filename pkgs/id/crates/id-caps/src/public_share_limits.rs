@@ -305,8 +305,8 @@ where
 {
     let mut served: Vec<K> = Vec::new();
     let mut bytes = 0_u64;
-    let mut count = 0_u64;
     for (key, size) in objects {
+        let count = u64::try_from(served.len()).unwrap_or(u64::MAX);
         let cap = if count >= limits.fetch_max_objects {
             Some(FetchCap::Objects)
         } else if bytes
@@ -326,7 +326,6 @@ where
             };
         }
         bytes += size;
-        count += 1;
         served.push(key);
     }
     FetchPlan {
