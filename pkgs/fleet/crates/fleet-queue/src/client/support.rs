@@ -325,10 +325,10 @@ pub(crate) fn usage(verb: &str) -> &'static str {
             "usage: repo-queue link <add|remove|list> ...\n\nManages normalized relationships for a queue task."
         }
         "link add" => {
-            "usage: repo-queue link add <task-id> [--kind <kind>] --issue <owner/repo#n> | --pr <owner/repo#n> | --task <task-id> [--worker <id>]\n\nAdds an issue, pull request, or task relationship."
+            "usage: repo-queue link add <task-id> [--kind <kind>] [--issue <owner/repo#n> | --pr <owner/repo#n> | --task <task-id>] [--worker <id>]\n\nAdds an issue, pull request, or task relationship. Exactly one target option is required."
         }
         "link remove" => {
-            "usage: repo-queue link remove <task-id> [--kind <kind>] --issue <owner/repo#n> | --pr <owner/repo#n> | --task <task-id> [--worker <id>]\n\nSoft-removes a relationship."
+            "usage: repo-queue link remove <task-id> [--kind <kind>] [--issue <owner/repo#n> | --pr <owner/repo#n> | --task <task-id>] [--worker <id>]\n\nSoft-removes a relationship. Exactly one target option is required."
         }
         "link list" => {
             "usage: repo-queue link list <task-id> [--include-removed] [--json]\n\nLists a task's relationships."
