@@ -37,6 +37,11 @@ export async function platformRead(
         return ops.releases();
       case "platform":
         return ops.platform();
+      // The stores, asked live (#14254). Where a store's token
+      // cannot be fetched (the edge holds none by name), that store
+      // answers as not answering; the others still show.
+      case "stores":
+        return ops.platformStores();
       case "roadmaps":
         return plan.capabilities();
       case "roadmap":

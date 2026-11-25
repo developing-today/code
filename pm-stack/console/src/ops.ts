@@ -14,7 +14,8 @@ import type { Config } from "./config.ts";
 import { OpError } from "./errors.ts";
 import { plain } from "./plain.ts";
 import { WORKERS_FILE, workersList } from "./platform.ts";
-import { STORES_FILE, storesList } from "./stores.ts";
+import { STORES_FILE, storesList, type StoreRow } from "./stores.ts";
+import { storeAnswered, storeLiveStatements, storeNotAnswering, type StoreLive } from "./store-live.ts";
 import { heldTokens, jwtExpiry, type TokenExpiry, tokenExpiry } from "./tokens.ts";
 import { timed, unread } from "./timed.ts";
 
@@ -54,6 +55,8 @@ function fromStore(cell: { type?: string; value?: string | number | null } | und
 }
 /** How long the queue store has to answer one asking, body and all. */
 export const QUEUE_ASK_MS = 20_000;
+/** How long one store has to answer the Platform screen's asking. */
+export const STORE_ASK_MS = 10_000;
 /** Queue priorities, most urgent first (the queue's design scale). */
 export const PRIORITY_SCALE = [10, 20, 30, 40, 50, 70, 90] as const;
 
@@ -255,6 +258,9 @@ export class Ops {
   /** What each token said of when it runs out, by its name, and when
    * that was read. Never the token itself. */
   private expiries = new Map<string, { at: number; expiresAt: number | null | undefined }>();
+  /** Each store's token, by the name of the secret that holds it.
+   * Never a token under its store's name, and never returned. */
+  private storeTokens = new Map<string, string>();
 
   /** How the queue store and the dashboard are reached. Kept as a plain
    * caller: these classes also run at the edge, where the platform's
@@ -1332,6 +1338,90 @@ export class Ops {
       }),
     );
     return { checkedAt: new Date(now).toISOString(), tokens };
+  }
+
+  /** Every store in the list of record, asked live (#14254): does it
+   * answer, its size, the rows in the tables the app reads, and its
+   * schema version. Each store is asked on its own — one that does
+   * not answer is returned as not answering, with the error said
+   * plainly, and the others still show. Reads only. */
+  async platformStores(): Promise<{ checked: string | null; malformed: number; stores: StoreLive[] }> {
+    const got = (await this.gh([`repos/${this.cfg.repo}/contents/${STORES_FILE}`])) as { content?: string } | null;
+    if (typeof got?.content !== "string") throw new OpError(502, "the list of stores could not be read");
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(new TextDecoder().decode(Uint8Array.from(atob(got.content), (c) => c.charCodeAt(0))));
+    } catch {
+      throw new OpError(502, "the list of stores is not valid JSON");
+    }
+    const list = storesList(parsed);
+    const stores = await Promise.all(list.stores.map((store) => this.askStore(store)));
+    return { checked: list.checked, malformed: list.malformed, stores };
+  }
+
+  /** One store, asked once (with one retry after a token rotation,
+   * as the queue store's pipeline does). Never throws: a failure is
+   * this store's own answer, said plainly. */
+  private async askStore(store: StoreRow): Promise<StoreLive> {
+    if (!/^[a-z0-9][a-z0-9._-]{0,119}$/.test(store.token)) {
+      return storeNotAnswering(store, `its token is not held under a secret's name, so it cannot be asked from here`);
+    }
+    const statements = storeLiveStatements(store);
+    const body = {
+      requests: [
+        ...statements.map((st) => ({ type: "execute", stmt: { sql: st.sql, args: [] } })),
+        { type: "close" },
+      ],
+    };
+    type Answer = {
+      results?: { type?: string; response?: { result?: StoreLiveResult } }[];
+    };
+    type StoreLiveResult = { cols: { name: string }[]; rows: { type?: string; value?: string | number | null }[][] };
+    const ask = async (): Promise<{ status: number; ok: boolean; body: Answer | null }> => {
+      let token = this.storeTokens.get(store.token);
+      if (token === undefined) {
+        token =
+          store.token === this.cfg.queueTokenName && this.queueToken !== null
+            ? this.queueToken
+            : (await this.must([this.cfg.fleetBin, "secrets", "get", store.token])).trim();
+        this.storeTokens.set(store.token, token);
+      }
+      const bearer = token;
+      return timed(STORE_ASK_MS, async (signal) => {
+        const res = await this.fetchImpl(`${store.address}/v2/pipeline`, {
+          method: "POST",
+          headers: { Authorization: `Bearer ${bearer}`, "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+          signal,
+        });
+        if (res.ok) return { status: res.status, ok: true, body: (await res.json()) as Answer };
+        unread(res);
+        return { status: res.status, ok: false, body: null };
+      });
+    };
+    try {
+      let answered = await ask();
+      if (answered.status === 401 || answered.status === 403) {
+        // The token was rotated: fetch it again, once.
+        this.storeTokens.delete(store.token);
+        if (store.token === this.cfg.queueTokenName) this.queueToken = null;
+        answered = await ask();
+      }
+      if (!answered.ok) return storeNotAnswering(store, `the store answered http ${answered.status}`);
+      const results = (answered.body?.results ?? []).map((r) =>
+        r?.type === "ok" ? r.response?.result : undefined,
+      );
+      if (results[0] === undefined) return storeNotAnswering(store, "the store refused the asking");
+      return storeAnswered(store, results);
+    } catch (error) {
+      if ((error as Error).name === "TimeoutError") {
+        return storeNotAnswering(store, `the store did not answer within ${STORE_ASK_MS / 1000} seconds`);
+      }
+      // What a secret fetch prints stays on the machine; only that
+      // the asking failed, and how it failed in kind, is said.
+      const message = error instanceof OpError ? "its token could not be fetched" : (error as Error).message;
+      return storeNotAnswering(store, message || "the store could not be asked");
+    }
   }
 
   async releases() {
