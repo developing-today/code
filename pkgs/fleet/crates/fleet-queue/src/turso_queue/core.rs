@@ -1323,7 +1323,7 @@ pub(crate) const HISTORY_INSERT_SQL: &str = "INSERT OR IGNORE INTO task_history 
     FROM events e WHERE e.id = (SELECT max(id) FROM events) AND changes() = 1";
 
 /// Every event kind that history_transition maps: the backfill census.
-pub(crate) const HISTORY_KINDS: [&str; 13] = [
+pub(crate) const HISTORY_KINDS: [&str; 14] = [
     "enqueued",
     "task_revived",
     "revived",
