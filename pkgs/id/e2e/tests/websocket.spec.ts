@@ -44,12 +44,13 @@ const browserTypes: Record<string, BrowserType> = { chromium, firefox, webkit };
 // - A fresh browser process connects instantly every time
 //
 // FIX:
-// Launch a fresh `testBrowser` for each test and make the built-in `context`
-// fixture use it. A fresh browser for the file is not enough: this spec has
-// enough tests to reproduce the same networking degradation partway through.
+// Launch a fresh `testBrowser` for this isolated spec and make the built-in
+// `context` fixture use it. The E2E runner starts a new Playwright process per
+// spec file, so this avoids browser reuse across the much larger suite while
+// keeping all tests in this file on one browser process.
 //
 // COST:
-// ~1-2s of browser launch overhead per test, which eliminates the 30s+
+// ~1-2s of browser launch overhead per worker, which eliminates the 30s+
 // timeout-and-retry cycle that made these tests flaky in Firefox.
 // Chromium is unaffected by the bug but also benefits (no downside).
 // ---------------------------------------------------------------------------
@@ -70,13 +71,16 @@ const CHROMIUM_NIX_ARGS =
       ]
     : [];
 
-const test = base.extend<{ testBrowser: Browser }>({
-  testBrowser: async ({ browserName }, use) => {
-    const args = browserName === "chromium" ? CHROMIUM_NIX_ARGS : [];
-    const testBrowser = await browserTypes[browserName].launch(args.length > 0 ? { args } : undefined);
-    await use(testBrowser);
-    await testBrowser.close();
-  },
+const test = base.extend<Record<string, never>, { testBrowser: Browser }>({
+  testBrowser: [
+    async ({ browserName }, use) => {
+      const args = browserName === "chromium" ? CHROMIUM_NIX_ARGS : [];
+      const testBrowser = await browserTypes[browserName].launch(args.length > 0 ? { args } : undefined);
+      await use(testBrowser);
+      await testBrowser.close();
+    },
+    { scope: "worker" },
+  ],
   context: async ({ testBrowser, contextOptions }, use) => {
     const context = await testBrowser.newContext(contextOptions);
     await use(context);
