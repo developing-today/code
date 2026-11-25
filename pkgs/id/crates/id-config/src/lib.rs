@@ -102,9 +102,7 @@ pub fn field_class(path: &str) -> Option<FieldClass> {
         | "gates" => Some(FieldClass::Mechanism),
         // Mode bundles, behavioral values, scoped overrides and retained
         // extensions are the configurable surface.
-        "mode" | "behavior" | "overrides" | "extensions" | "fanout" => {
-            Some(FieldClass::Behavior)
-        }
+        "mode" | "behavior" | "overrides" | "extensions" | "fanout" => Some(FieldClass::Behavior),
         _ => None,
     }
 }
