@@ -165,11 +165,11 @@
       "path": "pkgs/cold-store-reaper/worker",
       "does": "The read path of the Drive cold store: given an object's hash, pulls it out of its bundle, checks it and returns it.",
       "state": "in service",
-      "deploy": "by hand",
-      "workflow": null,
+      "deploy": "actions",
+      "workflow": "cf-worker-versions-release.yml",
       "address": "https://cold-store-rehydrator.developing-today.workers.dev",
       "next": "Deployed from Actions, stood up, checked and rolled back the way the PM console is; listed here with its last deploy.",
-      "lastDeployedCommit": null
+      "lastDeployedCommit": "a6d7addf843a122cfcadbe2bb8d798dc2f49a2b4"
     },
     {
       "name": "developing-today-backup",
