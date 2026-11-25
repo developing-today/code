@@ -46,6 +46,7 @@ fn document(revision: u64) -> ConfigDocument {
         peers: Vec::new(),
         storage: id_config::Storage::default(),
         tiers: BTreeMap::new(),
+        links: id_config::Links::default(),
     }
 }
 
