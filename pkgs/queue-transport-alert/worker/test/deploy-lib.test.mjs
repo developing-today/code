@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { listItems, newestWithTag, parseArgs, parseJsonOutput, servingCheck, singleServingVersion, ghaUploadIdentity, uploadedVersionId, hasExactUpload } from "../deploy-lib.mjs";
+import { join } from "node:path";
+import { HomeUnsetError, listItems, newestWithTag, parseArgs, parseJsonOutput, resolveBrokerTokenFile, servingCheck, singleServingVersion, ghaUploadIdentity, uploadedVersionId, hasExactUpload } from "../deploy-lib.mjs";
 
 test("parseArgs accepts the three shapes", () => {
   assert.deepEqual(parseArgs([]), { dryRun: false, deployVersion: null });
@@ -83,4 +84,30 @@ test("GHA handoff requires the pinned exact-worker UUID and immutable full-run l
   assert.equal(hasExactUpload([item, item], id, upload), false);
   assert.equal(hasExactUpload([item], id, ghaUploadIdentity({ sha, runId: "123", attempt: "2" })), false);
   assert.equal(hasExactUpload([item], id.replace(/1$/, "2"), upload), false);
+});
+
+// Home-resolution contract probes for the deploy's broker token file
+// (#5762/#8220 unit 3, #14757).
+test("resolveBrokerTokenFile: the default is under HOME", () => {
+  assert.equal(
+    resolveBrokerTokenFile({ HOME: "/home/op" }),
+    join("/home/op", ".config", "queue-broker", "token"),
+  );
+});
+
+test("resolveBrokerTokenFile: HOME unset or empty is a named error", () => {
+  for (const env of [{}, { HOME: "" }]) {
+    assert.throws(
+      () => resolveBrokerTokenFile(env),
+      (e) =>
+        e instanceof HomeUnsetError &&
+        /HOME is not set or is empty/.test(e.message) &&
+        /QTA_BROKER_TOKEN_FILE/.test(e.message),
+    );
+  }
+});
+
+test("resolveBrokerTokenFile: the override needs no HOME", () => {
+  assert.equal(resolveBrokerTokenFile({ QTA_BROKER_TOKEN_FILE: "/run/token" }), "/run/token");
+  assert.equal(resolveBrokerTokenFile({ HOME: "", QTA_BROKER_TOKEN_FILE: "/run/token" }), "/run/token");
 });
