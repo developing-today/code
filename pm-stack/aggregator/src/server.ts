@@ -157,10 +157,12 @@ import {
   buildHealth,
   pageRenderHealth,
   recordRender,
+  resolveBuildVersion,
   summarizeItemCoverage,
   type HealthView,
   type ItemsCoverage,
 } from "./health.ts";
+import { computeEditionDrift, type EditionDrift } from "./edition-drift.ts";
 import { manifestRouteFor } from "./pages.ts";
 import { conflictInbox, type ConflictInbox } from "./conflicts.ts";
 import { watchdogTierItems, WATCHDOG_PROBE_SERVICE_IDS } from "./watchdog.ts";
@@ -712,6 +714,7 @@ async function healthContext(prime = true): Promise<HealthView> {
     conflicts: await assembleConflicts().catch(() => null),
     pushHealth: cfg.source === "fixtures" ? null : freshnessReconciler.health(new Date()),
     slo: cfg.source === "fixtures" ? null : await sloSummaries(),
+    edition: cfg.source === "fixtures" ? null : await editionDrift(),
   });
 }
 
@@ -725,6 +728,27 @@ async function sloSummaries(nowMs = Date.now()): Promise<SloFacetSummary[]> {
     summarizeSloFacet(definition, byFacet.get(definition.id) ?? [], nowMs),
   );
   sloSummaryCache = { at: nowMs, value };
+  return value;
+}
+
+// Edition drift (CF-9, #14949): how far this process's deployed build
+// has fallen behind origin/main, measured from the build marker
+// (PM_AGG_BUILD_VERSION) against the primary checkout's refs
+// (PM_AGG_EDITION_REPO_DIR overrides the checkout; default ~/git/code,
+// the clone pm-git-sync keeps on main). Cached five minutes: the
+// inputs move at merge cadence and each measurement is a handful of
+// local git calls. A failed measurement is null — the health view
+// renders it as unassembled, never as an invented in-sync.
+const EDITION_DRIFT_CACHE_MS = 300_000;
+let editionDriftCache: { at: number; value: EditionDrift | null } | null = null;
+async function editionDrift(nowMs = Date.now()): Promise<EditionDrift | null> {
+  if (editionDriftCache && nowMs - editionDriftCache.at < EDITION_DRIFT_CACHE_MS) {
+    return editionDriftCache.value;
+  }
+  const repoDir =
+    process.env.PM_AGG_EDITION_REPO_DIR?.trim() || join(requireHome("PM_AGG_EDITION_REPO_DIR"), "git", "code");
+  const value = await computeEditionDrift(resolveBuildVersion(), repoDir).catch(() => null);
+  editionDriftCache = { at: nowMs, value };
   return value;
 }
 
