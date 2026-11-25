@@ -87,7 +87,7 @@ Term := {}.{
         Str.concat("\u(1b)[2J", paint_primary(Screen.new(dims.width, dims.height), next))
     }
 
-    emit_run : { open : Bool, x : U64, y : U64, len : U64, text : Str, spaces : Bool, fg : U8, bg : U8, bold : Bool }, U64 -> Str
+    emit_run : { open : Bool, x : U64, y : U64, len : U64, text : Str, spaces : Bool, fg : U8, bg : U8, bold : Bool }*, U64 -> Str
     emit_run = |run, width| {
         if !run.open {
             ""
