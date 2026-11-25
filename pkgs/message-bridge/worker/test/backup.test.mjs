@@ -65,7 +65,7 @@ function fakeR2() {
 function harness(r2) {
   const object = new MessageStore({ storage: { sql: sqlite() }, waitUntil: () => {} }, {});
   const env = {
-    ACCESS_TOKEN: <redacted>
+    ACCESS_TOKEN: OWNER,
     MESSAGES: { idFromName: (name) => name, get: () => object },
     ...(r2 ? { BRIDGE_BACKUP: r2 } : {}),
   };
