@@ -2640,10 +2640,8 @@ mod tests {
                     let frame = signed
                         .encode_frame()
                         .map_err(|err| TestCaseError::fail(format!("encode: {err}")))?;
-                    prop_assert_eq!(
-                        SignedReplicationEnvelope::decode_frame(&frame).as_ref(),
-                        Some(&signed)
-                    );
+                    let decoded = SignedReplicationEnvelope::decode_frame(&frame);
+                    prop_assert_eq!(decoded.as_ref(), Some(&signed));
                     let mut receiver = receiver_for(&envelope);
                     let accepted = receiver.accept(&frame).map_err(|err| {
                         TestCaseError::fail(format!("receiver refused a signed frame: {err:?}"))
