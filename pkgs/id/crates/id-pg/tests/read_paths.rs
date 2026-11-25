@@ -14,10 +14,11 @@
 use std::collections::VecDeque;
 
 use id_pg::{
-    CollectionAllowlist, ColumnDecl, Consistency, ContentRange, DecodeError, EndpointConfig,
-    EndpointProbe, HttpResponse, ModeChoices, ObjectKind, OrderKey, PageDecoder, Pagination,
-    PostgrestRequest, Privilege, Query, ReadError, ReadMode, RegisteredEndpoint, RoleGrant,
-    SnapshotCaps, SnapshotStore, Transport, TransportError, Value, live_read, register,
+    Audience, CollectionAllowlist, ColumnDecl, Consistency, ContentRange, DecodeError,
+    EndpointConfig, EndpointProbe, Failure, HttpResponse, ModeChoices, ObjectKind, OrderKey,
+    PageDecoder, Pagination, PostgrestRequest, Privilege, Query, ReadError, ReadMode, Refusal,
+    RegisteredEndpoint, RoleGrant, SnapshotCaps, SnapshotStore, Transport, TransportError, Value,
+    live_read, register,
 };
 
 type Row = serde_json::Map<String, serde_json::Value>;
@@ -276,6 +277,20 @@ fn live_failed_later_page_is_an_error_not_a_short_success() {
     .unwrap_err();
     assert_eq!(err, ReadError::Status(503));
     assert_eq!(err.code(), "adapter_unavailable");
+}
+
+#[test]
+fn read_errors_collapse_for_a_grantee_through_the_error_mapping() {
+    let grantee = |err: ReadError| err.failure().unwrap().to_error(Audience::Grantee).body();
+    let not_available = grantee(ReadError::Refused(Refusal::not_available()));
+    assert_eq!(grantee(ReadError::Status(401)), not_available);
+    assert_eq!(grantee(ReadError::Status(404)), not_available);
+    assert_eq!(grantee(ReadError::ModeNotChosen), not_available);
+    assert_eq!(
+        grantee(ReadError::Deadline),
+        Failure::Deadline.to_error(Audience::Grantee).body()
+    );
+    assert_eq!(ReadError::SnapshotTooLarge.failure(), None);
 }
 
 #[test]

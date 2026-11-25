@@ -44,6 +44,7 @@ use std::fmt;
 use serde::{Deserialize, Serialize};
 
 use crate::allowlist::CollectionAllowlist;
+use crate::error::Failure;
 use crate::query::{OrderKey, Pagination, Query, Target};
 use crate::refusal::Refusal;
 use crate::registration::RegisteredEndpoint;
@@ -259,6 +260,35 @@ impl ReadError {
             Self::TypeMapping { .. } => "type_mapping_failed",
             Self::SnapshotTooLarge => "snapshot_too_large",
         }
+    }
+}
+
+impl ReadError {
+    /// The same outcome as a [`Failure`], so the error mapping (§6,
+    /// #13762) can apply the grantee collapse. A missing or mismatched
+    /// mode and a non-collection target collapse to `not_available`, and a
+    /// malformed page is an `adapter_unavailable` body failure.
+    /// [`ReadError::SnapshotTooLarge`] has no source-failure form and is
+    /// `None`: it is reported to the owner by its own code.
+    pub fn failure(&self) -> Option<Failure> {
+        Some(match self {
+            Self::Refused(refusal) => Failure::Refused(refusal.clone()),
+            Self::ModeNotChosen | Self::WrongMode { .. } | Self::NotACollection => {
+                Failure::Refused(Refusal::not_available())
+            }
+            Self::Status(status) => Failure::Status(*status),
+            Self::NonJsonBody | Self::MalformedPage => Failure::NonJsonBody,
+            Self::Deadline => Failure::Deadline,
+            Self::Connection => Failure::Connection,
+            Self::TypeMapping {
+                column,
+                declared_type,
+            } => Failure::TypeMapping {
+                column: column.clone(),
+                declared_type: declared_type.clone(),
+            },
+            Self::SnapshotTooLarge => return None,
+        })
     }
 }
 

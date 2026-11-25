@@ -12,13 +12,17 @@
 //!
 //! - This crate is §3 (query translation) and the §10 property/model
 //!   tests over it. Slice #13760.
-//! - Typed mapping of response values (§5.1) is #13761; the error
-//!   mapping and grantee collapse of *source* errors (§6) is #13762.
-//!   The live and materialized read paths (§5.2–§5.4) are the `read`
-//!   module from #13763: [`live_read`] and [`SnapshotStore`] drive
-//!   translated requests through a [`Transport`] that can only `GET`,
-//!   report `per_request` consistency, and gate every read on the
-//!   owner's [`ModeChoices`]. Registration and owner config (§2, §4) are the
+//! - Typed mapping of response values (§5.1) is #13761. The error
+//!   mapping and grantee collapse of *source* errors (§6) is
+//!   [`Failure::to_error`] from #13762: every refusal, HTTP status,
+//!   deadline, and mapping failure becomes a stable [`ErrorCode`], and a
+//!   grantee sees one `not_available` body for anything that depends on
+//!   the data or the grant. The live and materialized read paths
+//!   (§5.2–§5.4) are the `read` module from #13763: [`live_read`] and
+//!   [`SnapshotStore`] drive translated requests through a
+//!   [`Transport`] that can only `GET`, report `per_request`
+//!   consistency, and gate every read on the owner's [`ModeChoices`].
+//!   Registration and owner config (§2, §4) are the
 //!   [`register`] step from #13758: an [`EndpointConfig`] plus the
 //!   transport's [`EndpointProbe`] become a [`RegisteredEndpoint`] only
 //!   when the endpoint serves exactly the one exposed schema and the
@@ -53,6 +57,7 @@
 //! position to page from).
 
 mod allowlist;
+mod error;
 mod query;
 mod read;
 mod refusal;
@@ -61,6 +66,7 @@ mod translate;
 mod value;
 
 pub use allowlist::{CollectionAllowlist, ColumnDecl, DEFAULT_MAX_LIMIT};
+pub use error::{AdapterError, Audience, ErrorCode, Failure, classify_response};
 pub use query::{
     CountPref, Direction, FilterExpr, FilterLeaf, FilterOp, Method, OrderKey, Pagination, Query,
     SelectItem, Target,
