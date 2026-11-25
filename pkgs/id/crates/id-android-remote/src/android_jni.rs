@@ -75,6 +75,7 @@ fn spawn_session(address: String, world: String, capability: String) -> jlong {
                 let runtime = tokio::runtime::Builder::new_current_thread()
                     .enable_all()
                     .build()?;
+                let session_control = Arc::clone(&worker_control);
                 runtime.block_on(async move {
                     let endpoint = bind_public_client_endpoint().await?;
                     let addr = parse_endpoint_addr(&address)?;
@@ -94,8 +95,8 @@ fn spawn_session(address: String, world: String, capability: String) -> jlong {
                         return Ok::<(), anyhow::Error>(());
                     };
                     let (mut session, first_view) = joined?;
-                    update(&worker_control, "connected", Some(first_view), None);
-                    let mut cancel_rx = worker_control.cancel.subscribe();
+                    update(&session_control, "connected", Some(first_view), None);
+                    let mut cancel_rx = session_control.cancel.subscribe();
                     if *cancel_rx.borrow() {
                         endpoint.close().await;
                         return Ok::<(), anyhow::Error>(());
@@ -108,9 +109,9 @@ fn spawn_session(address: String, world: String, capability: String) -> jlong {
                                 }
                             }
                             next = session.next_view() => match next {
-                                Ok(view) => update(&worker_control, "connected", Some(view), None),
+                                Ok(view) => update(&session_control, "connected", Some(view), None),
                                 Err(error) => {
-                                    update(&worker_control, "error", None, Some(format!("{error:#}")));
+                                    update(&session_control, "error", None, Some(format!("{error:#}")));
                                     break;
                                 }
                             }
@@ -168,7 +169,7 @@ pub extern "system" fn Java_org_developingtoday_id_NativeBridge_nativeStart<'loc
 
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_org_developingtoday_id_NativeBridge_nativeSnapshot<'local>(
-    mut env: JNIEnv<'local>,
+    env: JNIEnv<'local>,
     _this: JObject<'local>,
     id: jlong,
 ) -> jstring {
