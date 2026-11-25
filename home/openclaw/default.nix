@@ -181,6 +181,9 @@ in
       # and it starts by itself the moment the host declares the
       # secrets. Delete this when every host carrying the user env also
       # carries its own openclaw secrets.
+      # Guarded by .github/scripts/check-openclaw-unit-wants.sh (#2875):
+      # while any host block in nixos/hosts/default.nix lacks an
+      # openclaw secrets import, dropping this condition fails CI.
       ConditionPathExists = "/run/secrets/openclaw/gateway-token";
       StartLimitIntervalSec = "600";
       StartLimitBurst = 30;
