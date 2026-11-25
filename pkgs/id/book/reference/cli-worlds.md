@@ -208,6 +208,19 @@ $ ssh -p 2222 toy-world@127.0.0.1
 
 Failures: `--listen` together with `--stdio` is a clap error, exit `2`. An unreachable host fails the tunnel, exit `1`.
 
+### Display modes over SSH
+
+A raw shell session paints its frames one of four ways, chosen per session with the `ID_DISPLAY` environment request (`ssh -o SetEnv=ID_DISPLAY=<mode>`, or `SendEnv` in `~/.ssh/config`). The tunnel passes the request through untouched. The mode changes only the painting; the world program sends the same frames either way.
+
+| Mode        | Painting                                                                                                                                                          |
+| ----------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `auto`      | The default when `ID_DISPLAY` is not sent: the alternate screen, with the presentation tier the terminal probe selects. Nothing changes for anyone who does not ask. |
+| `alternate` | The alternate screen, painted with cursor addressing at Tier 2 or better. Choosing it states the terminal has cursor addressing; Tier 1 extras (synchronized output, graphics) still require the probe's positive evidence. The cursor is hidden for the session and shown again on exit. |
+| `primary`   | No alternate screen: the session homes and erases in the primary buffer, then paints each frame transition with cursor addressing. On exit the cursor is shown and moved below the final frame, which stays on show in scrollback. |
+| `text`      | The low-write mode: no escape sequences are ever written. After the first view, only changed lines are sent. Suits dumb terminals, logs, and screen readers.       |
+
+Failures: an `ID_DISPLAY` value outside the four names refuses the join with a one-line message naming the four values; the value sent is not echoed. Command mode (`cmd:`) is line oriented and ignores `ID_DISPLAY`.
+
 ## `compile`
 
 Compiles Roc sources on the host and installs the result. The host rewrites the app's `pf: platform "..."` path to its staged copy of the world platform, so any relative platform path in the source works.
