@@ -301,18 +301,20 @@ spawn_bomb = |model| {
 }
 
 ## xorshift64: shifts and xors only, so no arithmetic can overflow.
+## (The pinned compiler puts these on the concrete type: U64.bitwise_xor,
+## U64.shl_wrap, U64.shr_zf_wrap — there is no Num.bitwise_xor.)
 xorshift : U64 -> U64
 xorshift = |state| {
-    a = Num.bitwise_xor(state, Num.shift_left_by(state, 13))
-    b = Num.bitwise_xor(a, Num.shift_right_zf_by(a, 7))
-    Num.bitwise_xor(b, Num.shift_left_by(b, 17))
+    a = U64.bitwise_xor(state, U64.shl_wrap(state, 13))
+    b = U64.bitwise_xor(a, U64.shr_zf_wrap(a, 7))
+    U64.bitwise_xor(b, U64.shl_wrap(b, 17))
 }
 
 # --- aliens ------------------------------------------------------------------
 
 ## The index of the live alien covering field cell (x, y), if any.
 ## Alien (row, col) sits at (ox + col * 4, oy + row) and is two cells wide.
-alien_at : Model, U64, U64 -> Result(U64, {})
+alien_at : Model, U64, U64 -> Try(U64, {})
 alien_at = |model, x, y|
     if y < model.oy or y >= model.oy + alien_rows or x < model.ox {
         Err({})
@@ -329,7 +331,7 @@ alien_at = |model, x, y|
     }
 
 ## The bottom-most live alien of a column, as a field position.
-bottom_alien : Model, U64 -> Result({ x : U64, y : U64 }, {})
+bottom_alien : Model, U64 -> Try({ x : U64, y : U64 }, {})
 bottom_alien = |model, col|
     List.fold([3, 2, 1, 0], Err({}), |acc, row|
         match acc {
