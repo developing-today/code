@@ -504,8 +504,57 @@ fn key_cmd(args: &[String], json_out: bool) -> Result<i32> {
                 value,
             ))
         }
+        "rotate" => {
+            let p = parse_args(rest, &["algorithm", "in", "out"], &["json"])?;
+            let algorithm = parse_key_algorithm(&p)?;
+            let input = PathBuf::from(p.require("in", "key rotate")?);
+            let out = PathBuf::from(p.require("out", "key rotate")?);
+            let old_pkcs8 = std::fs::read(&input).map_err(|e| {
+                CertError::policy(format!(
+                    "cannot read private key to rotate {}: {e}",
+                    input.display()
+                ))
+            })?;
+            // Rotation (§6.1, V3-S19) is a new key generation, never a
+            // reuse: the old key must load under the named algorithm,
+            // the successor is a fresh key of that algorithm in a new
+            // owner-only file, and the old file is left untouched.
+            // Retiring the old key is a separate, explicit step.
+            let old_public = engine::inspect_key(algorithm, &old_pkcs8)?;
+            let key = engine::generate_key(algorithm)?;
+            let der = key.serialize_der();
+            let new_public = engine::inspect_key(algorithm, &der)?;
+            if new_public == old_public {
+                return Err(CertError::engine(
+                    "rotation produced the same public key as the old one; nothing written",
+                ));
+            }
+            write_new_file(&out, &der, true, "private key")?;
+            let old_fingerprint = crate::bundle::sha256_hex(&old_public);
+            let new_fingerprint = crate::bundle::sha256_hex(&new_public);
+            let value = json!({
+                "algorithm": algorithm.info().name,
+                "previous_private_key": input.display().to_string(),
+                "previous_public_key_fingerprint_sha256": old_fingerprint,
+                "private_key": out.display().to_string(),
+                "encoding": "PKCS#8 DER",
+                "public_key_fingerprint_sha256": new_fingerprint,
+                "previous_key_retained": true,
+                "private_material_emitted": false,
+            });
+            Ok(emit(
+                json_out,
+                format!(
+                    "Rotated {} key: new private key at {} (PKCS#8 DER)\n  previous public-key SHA-256: {old_fingerprint}\n  new public-key SHA-256: {new_fingerprint}\n  previous key: kept at {} (retire it separately)\n",
+                    algorithm.info().name,
+                    out.display(),
+                    input.display()
+                ),
+                value,
+            ))
+        }
         other => Err(CertError::usage(format!(
-            "unknown key verb '{other}' (generate | inspect | import | export)"
+            "unknown key verb '{other}' (generate | inspect | import | export | rotate)"
         ))),
     }
 }
@@ -1925,6 +1974,83 @@ mod key_ceremony_tests {
         let err = pkcs8_from_der_or_pem(&std::fs::read(&legacy).unwrap(), &legacy)
             .expect_err("legacy label refused");
         assert!(err.to_string().contains("EC PRIVATE KEY"));
+        std::fs::remove_dir_all(dir).expect("remove isolated test directory");
+    }
+
+    #[test]
+    fn rotate_writes_a_fresh_key_and_keeps_the_old_one() {
+        let dir = scratch_dir("key-rotate");
+        for (name, algorithm) in [
+            ("ed25519", AlgorithmId::Ed25519),
+            ("p256", AlgorithmId::P256),
+        ] {
+            let old = engine::generate_key(algorithm).expect("generate");
+            let old_der = old.serialize_der();
+            let old_path = dir.join(format!("{name}-g1.pk8"));
+            std::fs::write(&old_path, &old_der).unwrap();
+            let old_text = old_path.to_string_lossy().into_owned();
+            let new_path = dir.join(format!("{name}-g2.pk8"));
+            let new_text = new_path.to_string_lossy().into_owned();
+            let rotate = |out: &str| {
+                key_cmd(
+                    &args(&[
+                        "rotate",
+                        "--algorithm",
+                        name,
+                        "--in",
+                        &old_text,
+                        "--out",
+                        out,
+                    ]),
+                    true,
+                )
+            };
+            assert!(rotate(&new_text).is_ok());
+            // The old key file is untouched.
+            assert_eq!(std::fs::read(&old_path).unwrap(), old_der);
+            // The successor loads under the same algorithm and is a
+            // different key.
+            let new_der = std::fs::read(&new_path).unwrap();
+            let old_public = engine::inspect_key(algorithm, &old_der).unwrap();
+            let new_public = engine::inspect_key(algorithm, &new_der).unwrap();
+            assert_ne!(old_public, new_public);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                assert_eq!(
+                    std::fs::metadata(&new_path).unwrap().permissions().mode() & 0o777,
+                    0o600
+                );
+            }
+            // An existing destination is never replaced, the old path
+            // included.
+            assert!(rotate(&new_text).is_err());
+            assert_eq!(std::fs::read(&new_path).unwrap(), new_der);
+            assert!(rotate(&old_text).is_err());
+            assert_eq!(std::fs::read(&old_path).unwrap(), old_der);
+        }
+        // A key that does not load under the named algorithm is refused
+        // and nothing is written.
+        let ed = engine::generate_key(AlgorithmId::Ed25519).expect("generate");
+        let ed_path = dir.join("ed-as-p256.pk8");
+        std::fs::write(&ed_path, ed.serialize_der()).unwrap();
+        let refused = dir.join("never-written.pk8");
+        assert!(
+            key_cmd(
+                &args(&[
+                    "rotate",
+                    "--algorithm",
+                    "p256",
+                    "--in",
+                    &ed_path.to_string_lossy(),
+                    "--out",
+                    &refused.to_string_lossy(),
+                ]),
+                true,
+            )
+            .is_err()
+        );
+        assert!(!refused.exists());
         std::fs::remove_dir_all(dir).expect("remove isolated test directory");
     }
 
