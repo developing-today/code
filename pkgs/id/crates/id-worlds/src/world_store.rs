@@ -906,7 +906,7 @@ fn install_world_boundary_gate(
     if let Some(gate) = gate {
         core.directory_mut()
             .set_boundary_gate(std::sync::Arc::clone(&gate));
-        core.set_membership_boundary_gate(gate);
+        core.set_world_boundary_gate(gate);
     }
 }
 
@@ -2016,12 +2016,12 @@ mod tests {
     impl BoundaryGate for DenyAccountAndMembershipGate {
         fn check(&self, point: EnforcementPoint, _: &str) -> FrameworkOutcome {
             match point {
-                EnforcementPoint::AccountCreation | EnforcementPoint::WorldMembership => {
-                    FrameworkOutcome::Deny {
-                        placement: Vec::new(),
-                        assurance: Vec::new(),
-                    }
-                }
+                EnforcementPoint::AccountCreation
+                | EnforcementPoint::WorldMembership
+                | EnforcementPoint::BlobStorage => FrameworkOutcome::Deny {
+                    placement: Vec::new(),
+                    assurance: Vec::new(),
+                },
                 _ => FrameworkOutcome::Allow,
             }
         }
@@ -2045,6 +2045,7 @@ mod tests {
             )
             .is_err()
         );
+        assert!(core.check_blob_boundary_for(None).is_err());
     }
 
     #[tokio::test]
