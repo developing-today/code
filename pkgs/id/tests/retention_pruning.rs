@@ -174,6 +174,7 @@ impl Chains {
                 note,
                 content: doc,
                 parents: parents.to_vec(),
+                proposal: None,
             }),
             link: None,
             checkpoint: None,

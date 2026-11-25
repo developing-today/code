@@ -108,6 +108,9 @@ pub enum Entry {
         content: DocumentRef,
         /// The revisions this one builds on.
         parents: Vec<Hash>,
+        /// The proposal this revision accepts, when it is an accepting
+        /// edit (#7849).
+        proposal: Option<Hash>,
     },
     /// A `document.remove` of the document it names.
     Remove {
@@ -932,6 +935,26 @@ impl LocalEvents {
         content: &[u8],
         parents: &[Hash],
     ) -> Result<Hash> {
+        self.accept_proposal(note, media_type, content, parents, None)
+    }
+
+    /// Adds one revision to the note `note`, as [`Self::revise_note`] does, that
+    /// cites `proposal` when it is `Some`: the signed accepting edit a thread
+    /// fold reads to mark that proposal accepted (#7849). The citation is only
+    /// a claim; the thread fold decides whether it counts, against the
+    /// proposal's object and the object's authority.
+    ///
+    /// # Errors
+    ///
+    /// As for [`Self::revise_note`].
+    pub fn accept_proposal(
+        &mut self,
+        note: Hash,
+        media_type: &str,
+        content: &[u8],
+        parents: &[Hash],
+        proposal: Option<Hash>,
+    ) -> Result<Hash> {
         let record = self.note_history(note)?;
         for parent in parents {
             if record.revision(*parent).is_none() {
@@ -965,6 +988,7 @@ impl LocalEvents {
             note,
             content,
             parents: parents.to_vec(),
+            proposal,
         };
         check_note_op(NOTE_REVISE_KIND, &op)?;
         self.record(
@@ -1007,6 +1031,7 @@ impl LocalEvents {
                     note,
                     content,
                     parents,
+                    proposal,
                 } => Some(AppliedNote {
                     id: *id,
                     author: *author,
@@ -1014,6 +1039,7 @@ impl LocalEvents {
                         note: *note,
                         content: content.clone(),
                         parents: parents.clone(),
+                        proposal: *proposal,
                     },
                 }),
                 _ => None,
@@ -1279,6 +1305,7 @@ fn entry_of(event: &Event) -> Option<Entry> {
                 note,
                 content,
                 parents,
+                proposal,
             }),
         ) => Some(Entry::NoteRevise {
             id,
@@ -1286,6 +1313,7 @@ fn entry_of(event: &Event) -> Option<Entry> {
             note: *note,
             content: content.clone(),
             parents: parents.clone(),
+            proposal: *proposal,
         }),
         (
             SET_KIND,
@@ -1544,6 +1572,7 @@ mod tests {
                     note: id(222),
                     content: DocumentRef::for_bytes("text/markdown", b"bogus").unwrap(),
                     parents: vec![id(223)],
+                    proposal: None,
                 }),
                 link: None,
                 checkpoint: None,
@@ -1587,6 +1616,7 @@ mod tests {
                     note: id(note),
                     content: DocumentRef::for_bytes("text/markdown", b"revision").unwrap(),
                     parents: parents.iter().map(|parent| id(*parent)).collect(),
+                    proposal: None,
                 },
             }
         }

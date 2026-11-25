@@ -428,6 +428,35 @@ impl ProposalRecord {
     }
 }
 
+/// Where a proposal's base stands against its object's current heads, as an
+/// editor shows it beside the proposal (§3, §8 item 2). Staleness is an
+/// observation made here, at presentation time, never a stored state.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum BaseStanding {
+    /// The proposal is still open and its base is one of the object's heads:
+    /// accepting it is a plain edit on that head.
+    Current,
+    /// The proposal is still open but its base is no longer a head. The
+    /// object's current heads are named so the editor can show what changed
+    /// since; a writer may still accept it by making the edit.
+    Stale {
+        /// The object's current heads, sorted.
+        heads: Vec<Hash>,
+    },
+    /// The proposal is accepted, rejected, withdrawn or superseded, so its
+    /// base no longer matters.
+    Closed,
+}
+
+/// One proposal against an object, with where its base stands.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ProposalReview<'a> {
+    /// The projected proposal.
+    pub record: &'a ProposalRecord,
+    /// Where its base stands against the object's current heads.
+    pub base: BaseStanding,
+}
+
 /// The deterministic projection of a set of thread events.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ThreadProjection {
@@ -471,6 +500,32 @@ impl ThreadProjection {
         self.proposals
             .iter()
             .filter(|record| record.proposal.object == *object)
+            .collect()
+    }
+
+    /// The proposals against `object` as its editor reviews them, given the
+    /// object's current `heads`: each in projection order with where its base
+    /// stands. An open proposal whose base is not among `heads` is
+    /// [`BaseStanding::Stale`] and names those heads.
+    #[must_use]
+    pub fn review(&self, object: &ObjectRef, heads: &[Hash]) -> Vec<ProposalReview<'_>> {
+        let mut current: Vec<Hash> = heads.to_vec();
+        current.sort_by_key(|id| *id.as_bytes());
+        current.dedup();
+        self.proposals_for(object)
+            .into_iter()
+            .map(|record| {
+                let base = if record.state != ProposalState::Proposed {
+                    BaseStanding::Closed
+                } else if record.is_stale(&current) {
+                    BaseStanding::Stale {
+                        heads: current.clone(),
+                    }
+                } else {
+                    BaseStanding::Current
+                };
+                ProposalReview { record, base }
+            })
             .collect()
     }
 
@@ -949,6 +1004,44 @@ mod tests {
         let projection = project_threads(events, [edit], &open());
         assert_eq!(projection.proposals[0].state, ProposalState::Accepted);
         assert_eq!(projection.proposals[0].accepted_by, vec![hash(71)]);
+    }
+
+    #[test]
+    fn review_marks_an_open_proposal_stale_against_the_current_heads() {
+        let events = [
+            rec(1, 1, &[], proposal(50, 1, 3, None)),
+            rec(2, 1, &[], proposal(51, 1, 4, None)),
+            rec(3, 2, &[], proposal(52, 2, 3, None)),
+        ];
+        let accepted = AcceptingEdit {
+            id: hash(70),
+            author: author(2),
+            object: object(1),
+            proposal: hash(2),
+        };
+        let projection = project_threads(events, [accepted], &open());
+
+        // Base 3 is still a head: the open proposal is current.
+        let review = projection.review(&object(1), &[hash(3), hash(5)]);
+        assert_eq!(review.len(), 2);
+        let open_one = review.iter().find(|r| r.record.id == hash(1)).unwrap();
+        assert_eq!(open_one.base, BaseStanding::Current);
+        let closed = review.iter().find(|r| r.record.id == hash(2)).unwrap();
+        assert_eq!(closed.base, BaseStanding::Closed);
+
+        // The object moved on: the open proposal is stale and names the
+        // heads, sorted and once each; the accepted one stays closed.
+        let review = projection.review(&object(1), &[hash(6), hash(5), hash(6)]);
+        let mut heads = vec![hash(5), hash(6)];
+        heads.sort_by_key(|id| *id.as_bytes());
+        let open_one = review.iter().find(|r| r.record.id == hash(1)).unwrap();
+        assert_eq!(open_one.base, BaseStanding::Stale { heads });
+        let closed = review.iter().find(|r| r.record.id == hash(2)).unwrap();
+        assert_eq!(closed.base, BaseStanding::Closed);
+
+        // Another object's proposals are not in this review.
+        assert!(review.iter().all(|r| r.record.proposal.object == object(1)));
+        assert_eq!(projection.review(&object(2), &[hash(3)]).len(), 1);
     }
 
     #[test]
