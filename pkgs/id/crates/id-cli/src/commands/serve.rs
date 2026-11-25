@@ -1904,6 +1904,20 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
             let sink =
                 ForwardingSink::fanning_out(node_id.to_string(), endpoint.clone(), Vec::new());
             let protocol = ChainedRelayProtocol::new(RelayGate::new(&relay_key, frontier), sink);
+            let protocol = if let Some(started) = &started_server_config {
+                let boundary_gate = Arc::new(
+                    crate::boundary_gate::ServerBoundaryGate::without_hop_evidence(
+                        started.config.boundaries().clone(),
+                        node_id.to_string(),
+                        None,
+                        Arc::new(crate::boundary_evidence::AppEvidenceVerifier::default()),
+                    ),
+                )
+                    as Arc<dyn id_sync::relay_ingest::RelayBoundaryGate>;
+                protocol.with_boundary_gate(boundary_gate)
+            } else {
+                protocol
+            };
             router_builder.accept(CHAINED_RELAY_ALPN, protocol)
         }
         None => router_builder,
