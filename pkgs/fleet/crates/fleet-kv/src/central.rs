@@ -41,7 +41,10 @@ pub const MAX_ATTEMPTS: u32 = 5;
 pub const BACKOFF_CAP: Duration = Duration::from_secs(1);
 
 /// The numbered migrations, oldest first.
-pub const MIGRATIONS: &[(i64, &str)] = &[(1, include_str!("../migrations/0001_central.sql"))];
+pub const MIGRATIONS: &[(i64, &str)] = &[
+    (1, include_str!("../migrations/0001_central.sql")),
+    (2, include_str!("../migrations/0002_archive.sql")),
+];
 
 /// A bound SQL value, in the shapes both the libSQL pipeline and SQLite use.
 #[derive(Clone, Debug, PartialEq)]
@@ -54,21 +57,21 @@ pub enum Value {
 }
 
 impl Value {
-    fn as_i64(&self) -> Option<i64> {
+    pub(crate) fn as_i64(&self) -> Option<i64> {
         match self {
             Self::Integer(value) => Some(*value),
             _ => None,
         }
     }
 
-    fn as_str(&self) -> Option<&str> {
+    pub(crate) fn as_str(&self) -> Option<&str> {
         match self {
             Self::Text(value) => Some(value),
             _ => None,
         }
     }
 
-    fn into_bytes(self) -> Option<Vec<u8>> {
+    pub(crate) fn into_bytes(self) -> Option<Vec<u8>> {
         match self {
             Self::Blob(value) => Some(value),
             Self::Text(value) => Some(value.into_bytes()),
@@ -108,7 +111,7 @@ impl Statement {
     /// A statement bound to the leading arguments it numbers: SQLite counts
     /// a statement's parameters up to its highest `?N`, so the shared
     /// argument list is cut to that length.
-    fn numbered(sql: &str, args: &[Value]) -> Self {
+    pub(crate) fn numbered(sql: &str, args: &[Value]) -> Self {
         let highest = highest_parameter(sql);
         Self {
             sql: sql.to_string(),
@@ -117,7 +120,7 @@ impl Statement {
     }
 }
 
-fn highest_parameter(sql: &str) -> usize {
+pub(crate) fn highest_parameter(sql: &str) -> usize {
     let bytes = sql.as_bytes();
     let mut highest = 0;
     let mut index = 0;
@@ -271,8 +274,17 @@ fn from_sqlite(value: rusqlite::types::Value) -> Value {
     }
 }
 
-impl Pipeline for SqlitePrimary {
-    fn transaction(&self, statements: &[Statement]) -> Result<Vec<Rows>> {
+impl SqlitePrimary {
+    /// Runs statements that are not in the [`crate::catalog`], such as a
+    /// test fixture's bulk seed. Everything else goes through
+    /// [`Pipeline::transaction`], which in tests refuses unlisted SQL so the
+    /// hosted door's catalog cannot fall behind the client.
+    #[cfg(test)]
+    pub(crate) fn transaction_unlisted(&self, statements: &[Statement]) -> Result<Vec<Rows>> {
+        self.run(statements)
+    }
+
+    fn run(&self, statements: &[Statement]) -> Result<Vec<Rows>> {
         let mut connection = self
             .connection
             .lock()
@@ -310,6 +322,21 @@ impl Pipeline for SqlitePrimary {
     }
 }
 
+impl Pipeline for SqlitePrimary {
+    fn transaction(&self, statements: &[Statement]) -> Result<Vec<Rows>> {
+        if cfg!(test) {
+            for statement in statements {
+                assert!(
+                    crate::catalog::is_known(&statement.sql),
+                    "a statement the hosted kv door would refuse, missing from catalog.rs: {}",
+                    statement.sql
+                );
+            }
+        }
+        self.run(statements)
+    }
+}
+
 /// The statements of one migration file, in order.
 pub fn migration_statements(source: &str) -> Vec<String> {
     let without_comments: String = source
@@ -329,14 +356,8 @@ pub fn migration_statements(source: &str) -> Vec<String> {
 /// transaction with its `kv_central_migrations` row. Re-running is a no-op.
 pub fn migrate(primary: &dyn Pipeline) -> Result<()> {
     let applied = primary.transaction(&[
-        Statement::numbered(
-            "CREATE TABLE IF NOT EXISTS kv_central_migrations (
-                 version INTEGER PRIMARY KEY,
-                 applied_at_ms INTEGER NOT NULL
-             )",
-            &[],
-        ),
-        Statement::numbered("SELECT version FROM kv_central_migrations", &[]),
+        Statement::numbered(MIGRATIONS_TABLE, &[]),
+        Statement::numbered(MIGRATIONS_READ, &[]),
     ])?;
     let applied: Vec<i64> = applied
         .get(1)
@@ -351,7 +372,7 @@ pub fn migrate(primary: &dyn Pipeline) -> Result<()> {
             .map(|sql| Statement::numbered(sql, &[]))
             .collect();
         statements.push(Statement::numbered(
-            "INSERT OR IGNORE INTO kv_central_migrations (version, applied_at_ms) VALUES (?1, ?2)",
+            MIGRATION_RECORD,
             &[Value::Integer(*version), Value::Integer(now_ms())],
         ));
         primary.transaction(&statements)?;
@@ -473,7 +494,7 @@ pub struct Receipt {
     pub replayed: bool,
 }
 
-const RECEIPT_INSERT: &str = "INSERT OR IGNORE INTO idem_receipts (
+pub(crate) const RECEIPT_INSERT: &str = "INSERT OR IGNORE INTO idem_receipts (
         writer, host_incarnation, outbox_id, request_fingerprint, attempt,
         scope_id, registry_id, namespace, key, expected_version,
         outcome, version, recorded_at_ms)
@@ -484,37 +505,42 @@ const RECEIPT_INSERT: &str = "INSERT OR IGNORE INTO idem_receipts (
     FROM (SELECT COALESCE((SELECT version FROM kv_heads
         WHERE scope_id = ?1 AND registry_id = ?2 AND namespace = ?3 AND key = ?4), 0) AS version) AS head";
 
-const THIS_ATTEMPT: &str = "receipt.writer = ?8 AND receipt.host_incarnation = ?9 AND receipt.outbox_id = ?10 AND receipt.attempt = ?12";
+macro_rules! this_attempt {
+    () => {
+        "receipt.writer = ?8 AND receipt.host_incarnation = ?9 AND receipt.outbox_id = ?10 AND receipt.attempt = ?12"
+    };
+}
 
-fn conflict_insert() -> String {
-    format!(
-        "INSERT INTO kv_conflicts (
+pub(crate) const CONFLICT_INSERT: &str = concat!(
+    "INSERT INTO kv_conflicts (
             scope_id, registry_id, namespace, key, expected_version, actual_version,
             proposed_state, proposed_value, writer, host_incarnation, outbox_id, written_at_ms)
         SELECT ?1, ?2, ?3, ?4, ?5, receipt.version, ?6, ?7, ?8, ?9, ?10, ?13
         FROM idem_receipts AS receipt
-        WHERE {THIS_ATTEMPT} AND receipt.outcome = 'conflict'"
-    )
-}
+        WHERE ",
+    this_attempt!(),
+    " AND receipt.outcome = 'conflict'"
+);
 
-fn version_insert() -> String {
-    format!(
-        "INSERT INTO kv_versions (
+pub(crate) const VERSION_INSERT: &str = concat!(
+    "INSERT INTO kv_versions (
             scope_id, registry_id, namespace, key, version, parent_version,
             state, value, writer, host_incarnation, outbox_id, written_at_ms)
         SELECT ?1, ?2, ?3, ?4, receipt.version, ?5, ?6, ?7, ?8, ?9, ?10, ?13
         FROM idem_receipts AS receipt
-        WHERE {THIS_ATTEMPT} AND receipt.outcome = 'committed'"
-    )
-}
+        WHERE ",
+    this_attempt!(),
+    " AND receipt.outcome = 'committed'"
+);
 
-fn head_upsert() -> String {
-    format!(
-        "INSERT INTO kv_heads (
+pub(crate) const HEAD_UPSERT: &str = concat!(
+    "INSERT INTO kv_heads (
             scope_id, registry_id, namespace, key, version, state, value, writer, written_at_ms)
         SELECT ?1, ?2, ?3, ?4, receipt.version, ?6, ?7, ?8, ?13
         FROM idem_receipts AS receipt
-        WHERE {THIS_ATTEMPT} AND receipt.outcome = 'committed'
+        WHERE ",
+    this_attempt!(),
+    " AND receipt.outcome = 'committed'
         ON CONFLICT (scope_id, registry_id, namespace, key) DO UPDATE SET
             version = excluded.version,
             state = excluded.state,
@@ -522,10 +548,10 @@ fn head_upsert() -> String {
             writer = excluded.writer,
             written_at_ms = excluded.written_at_ms
         WHERE kv_heads.version = ?5"
-    )
-}
+);
 
-const RECEIPT_READ: &str = "SELECT receipt.request_fingerprint, receipt.attempt, receipt.outcome,
+pub(crate) const RECEIPT_READ: &str =
+    "SELECT receipt.request_fingerprint, receipt.attempt, receipt.outcome,
         receipt.expected_version, receipt.version,
         (SELECT conflict.id FROM kv_conflicts AS conflict
          WHERE conflict.writer = ?8 AND conflict.host_incarnation = ?9
@@ -569,9 +595,9 @@ pub fn cas_statements(intent: &Intent, attempt: &str) -> Vec<Statement> {
     ];
     vec![
         Statement::numbered(RECEIPT_INSERT, &args),
-        Statement::numbered(&conflict_insert(), &args),
-        Statement::numbered(&version_insert(), &args),
-        Statement::numbered(&head_upsert(), &args),
+        Statement::numbered(CONFLICT_INSERT, &args),
+        Statement::numbered(VERSION_INSERT, &args),
+        Statement::numbered(HEAD_UPSERT, &args),
         Statement::numbered(RECEIPT_READ, &args),
     ]
 }
@@ -696,7 +722,69 @@ pub struct Conflict {
     pub idempotency: IdempotencyKey,
 }
 
-const ADDRESS_FILTER: &str = "scope_id = ?1 AND registry_id = ?2 AND namespace = ?3 AND key = ?4";
+macro_rules! address_filter {
+    () => {
+        "scope_id = ?1 AND registry_id = ?2 AND namespace = ?3 AND key = ?4"
+    };
+}
+
+pub(crate) const HEAD_READ: &str = concat!(
+    "SELECT version, state, value, writer, written_at_ms FROM kv_heads WHERE ",
+    address_filter!()
+);
+
+pub(crate) const HISTORY_READ: &str = concat!(
+    "SELECT version, parent_version, state, value, writer, host_incarnation, outbox_id
+             FROM kv_versions WHERE ",
+    address_filter!(),
+    " ORDER BY version"
+);
+
+pub(crate) const CONFLICTS_READ: &str = concat!(
+    "SELECT id, expected_version, actual_version, proposed_state, proposed_value,
+                    writer, host_incarnation, outbox_id
+             FROM kv_conflicts WHERE ",
+    address_filter!(),
+    " ORDER BY id"
+);
+
+pub(crate) const HEADS_READ: &str =
+    "SELECT key, version, state, value, writer, written_at_ms FROM kv_heads
+         WHERE scope_id = ?1 AND registry_id = ?2 AND namespace = ?3 ORDER BY key";
+
+pub(crate) const LISTING_READ: &str = "SELECT key, version, state FROM kv_heads
+         WHERE scope_id = ?1 AND registry_id = ?2 AND namespace = ?3 ORDER BY key";
+
+pub(crate) const NAMESPACE_UPSERT: &str = "INSERT INTO kv_namespaces (
+                 registry_id, namespace, scope_kind, shared_scope_id, core_binding,
+                 global_flag, blob_threshold, policy_epoch, updated_at_ms)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+             ON CONFLICT (registry_id, namespace) DO UPDATE SET
+                 scope_kind = excluded.scope_kind,
+                 shared_scope_id = excluded.shared_scope_id,
+                 core_binding = excluded.core_binding,
+                 global_flag = excluded.global_flag,
+                 blob_threshold = excluded.blob_threshold,
+                 policy_epoch = MAX(kv_namespaces.policy_epoch + 1, excluded.policy_epoch),
+                 updated_at_ms = excluded.updated_at_ms";
+
+pub(crate) const NAMESPACE_EPOCH_READ: &str =
+    "SELECT policy_epoch FROM kv_namespaces WHERE registry_id = ?1 AND namespace = ?2";
+
+pub(crate) const NAMESPACES_READ: &str =
+    "SELECT registry_id, namespace, scope_kind, shared_scope_id, core_binding,
+                global_flag, blob_threshold, policy_epoch
+         FROM kv_namespaces WHERE registry_id = ?1 ORDER BY namespace";
+
+pub(crate) const MIGRATIONS_TABLE: &str = "CREATE TABLE IF NOT EXISTS kv_central_migrations (
+                 version INTEGER PRIMARY KEY,
+                 applied_at_ms INTEGER NOT NULL
+             )";
+
+pub(crate) const MIGRATIONS_READ: &str = "SELECT version FROM kv_central_migrations";
+
+pub(crate) const MIGRATION_RECORD: &str =
+    "INSERT OR IGNORE INTO kv_central_migrations (version, applied_at_ms) VALUES (?1, ?2)";
 
 fn address_args(address: &Address) -> [Value; 4] {
     [
@@ -716,11 +804,11 @@ fn read(primary: &dyn Pipeline, sql: &str, args: &[Value]) -> Result<Vec<Vec<Val
         .unwrap_or_default())
 }
 
-fn unsigned(value: &Value) -> u64 {
+pub(crate) fn unsigned(value: &Value) -> u64 {
     value.as_i64().unwrap_or(0).max(0) as u64
 }
 
-fn string(value: &Value) -> String {
+pub(crate) fn string(value: &Value) -> String {
     value.as_str().unwrap_or_default().to_string()
 }
 
@@ -734,13 +822,7 @@ fn op_of(state: &Value, value: Value) -> Op {
 
 /// The authoritative head of `address`, tombstones included.
 pub fn head(primary: &dyn Pipeline, address: &Address) -> Result<Option<Head>> {
-    let rows = read(
-        primary,
-        &format!(
-            "SELECT version, state, value, writer, written_at_ms FROM kv_heads WHERE {ADDRESS_FILTER}"
-        ),
-        &address_args(address),
-    )?;
+    let rows = read(primary, HEAD_READ, &address_args(address))?;
     Ok(rows.into_iter().next().map(|mut row| {
         let value = std::mem::replace(&mut row[2], Value::Null);
         Head {
@@ -762,8 +844,7 @@ pub fn heads(
 ) -> Result<Vec<(String, Head)>> {
     let rows = read(
         primary,
-        "SELECT key, version, state, value, writer, written_at_ms FROM kv_heads
-         WHERE scope_id = ?1 AND registry_id = ?2 AND namespace = ?3 ORDER BY key",
+        HEADS_READ,
         &[text(scope_id), text(registry_id), text(namespace)],
     )?;
     Ok(rows
@@ -801,8 +882,7 @@ pub fn listing(
 ) -> Result<Vec<Listed>> {
     let rows = read(
         primary,
-        "SELECT key, version, state FROM kv_heads
-         WHERE scope_id = ?1 AND registry_id = ?2 AND namespace = ?3 ORDER BY key",
+        LISTING_READ,
         &[text(scope_id), text(registry_id), text(namespace)],
     )?;
     Ok(rows
@@ -817,14 +897,7 @@ pub fn listing(
 
 /// Every committed version of `address`, oldest first.
 pub fn history(primary: &dyn Pipeline, address: &Address) -> Result<Vec<Version>> {
-    let rows = read(
-        primary,
-        &format!(
-            "SELECT version, parent_version, state, value, writer, host_incarnation, outbox_id
-             FROM kv_versions WHERE {ADDRESS_FILTER} ORDER BY version"
-        ),
-        &address_args(address),
-    )?;
+    let rows = read(primary, HISTORY_READ, &address_args(address))?;
     Ok(rows
         .into_iter()
         .map(|mut row| {
@@ -848,15 +921,7 @@ pub fn history(primary: &dyn Pipeline, address: &Address) -> Result<Vec<Version>
 
 /// Every failed CAS on `address`, oldest first.
 pub fn conflicts(primary: &dyn Pipeline, address: &Address) -> Result<Vec<Conflict>> {
-    let rows = read(
-        primary,
-        &format!(
-            "SELECT id, expected_version, actual_version, proposed_state, proposed_value,
-                    writer, host_incarnation, outbox_id
-             FROM kv_conflicts WHERE {ADDRESS_FILTER} ORDER BY id"
-        ),
-        &address_args(address),
-    )?;
+    let rows = read(primary, CONFLICTS_READ, &address_args(address))?;
     Ok(rows
         .into_iter()
         .map(|mut row| {
@@ -931,15 +996,35 @@ impl Namespace {
     }
 }
 
-/// The private scope of `(owner, context)`: a hash, so no choice of names can
-/// make two identities share a scope or collide with a shared scope id.
+/// The private scope of `(owner, context)`: `private:`, the owner's id in
+/// lowercase hex, `:`, then a hash of both. The hash means no choice of names
+/// can make two identities share a scope or collide with a shared scope id;
+/// the hex owner lets the hosted door check that a private scope belongs to
+/// the authenticated caller without knowing the context.
 pub fn private_scope_id(owner_user_id: &str, context_id: &str) -> String {
     let mut hasher = blake3::Hasher::new();
     for field in [owner_user_id, context_id] {
         hasher.update(&(field.len() as u64).to_le_bytes());
         hasher.update(field.as_bytes());
     }
-    format!("private:{}", hasher.finalize().to_hex())
+    format!(
+        "{}{}",
+        private_scope_prefix(owner_user_id),
+        hasher.finalize().to_hex()
+    )
+}
+
+/// The prefix every private scope of `owner_user_id` starts with.
+pub fn private_scope_prefix(owner_user_id: &str) -> String {
+    let mut prefix = String::with_capacity(9 + owner_user_id.len() * 2);
+    prefix.push_str("private:");
+    for byte in owner_user_id.bytes() {
+        const HEX: &[u8; 16] = b"0123456789abcdef";
+        prefix.push(char::from(HEX[usize::from(byte >> 4)]));
+        prefix.push(char::from(HEX[usize::from(byte & 0x0f)]));
+    }
+    prefix.push(':');
+    prefix
 }
 
 /// Writes a namespace definition. The stored policy epoch becomes one more
@@ -969,25 +1054,8 @@ pub fn define_namespace(primary: &dyn Pipeline, definition: &Namespace) -> Resul
         Value::Integer(now_ms()),
     ];
     let results = primary.transaction(&[
-        Statement::numbered(
-            "INSERT INTO kv_namespaces (
-                 registry_id, namespace, scope_kind, shared_scope_id, core_binding,
-                 global_flag, blob_threshold, policy_epoch, updated_at_ms)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
-             ON CONFLICT (registry_id, namespace) DO UPDATE SET
-                 scope_kind = excluded.scope_kind,
-                 shared_scope_id = excluded.shared_scope_id,
-                 core_binding = excluded.core_binding,
-                 global_flag = excluded.global_flag,
-                 blob_threshold = excluded.blob_threshold,
-                 policy_epoch = MAX(kv_namespaces.policy_epoch + 1, excluded.policy_epoch),
-                 updated_at_ms = excluded.updated_at_ms",
-            &args,
-        ),
-        Statement::numbered(
-            "SELECT policy_epoch FROM kv_namespaces WHERE registry_id = ?1 AND namespace = ?2",
-            &args,
-        ),
+        Statement::numbered(NAMESPACE_UPSERT, &args),
+        Statement::numbered(NAMESPACE_EPOCH_READ, &args),
     ])?;
     results
         .last()
@@ -998,13 +1066,7 @@ pub fn define_namespace(primary: &dyn Pipeline, definition: &Namespace) -> Resul
 
 /// Every namespace defined in `registry_id`, by name.
 pub fn namespaces(primary: &dyn Pipeline, registry_id: &str) -> Result<Vec<Namespace>> {
-    let rows = read(
-        primary,
-        "SELECT registry_id, namespace, scope_kind, shared_scope_id, core_binding,
-                global_flag, blob_threshold, policy_epoch
-         FROM kv_namespaces WHERE registry_id = ?1 ORDER BY namespace",
-        &[text(registry_id)],
-    )?;
+    let rows = read(primary, NAMESPACES_READ, &[text(registry_id)])?;
     Ok(rows
         .into_iter()
         .map(|row| Namespace {
@@ -1093,8 +1155,16 @@ mod tests {
         assert!(statements.iter().all(|sql| !sql.contains(';')));
         let primary = SqlitePrimary::in_memory().expect("primary");
         migrate(&primary).expect("second run is a no-op");
-        let recorded = read(&primary, "SELECT COUNT(*) FROM kv_central_migrations", &[]).unwrap();
-        assert_eq!(recorded[0][0], Value::Integer(MIGRATIONS.len() as i64));
+        let recorded = primary
+            .transaction_unlisted(&[Statement::numbered(
+                "SELECT COUNT(*) FROM kv_central_migrations",
+                &[],
+            )])
+            .unwrap();
+        assert_eq!(
+            recorded[0].rows[0][0],
+            Value::Integer(MIGRATIONS.len() as i64)
+        );
     }
 
     #[test]
@@ -1212,6 +1282,8 @@ mod tests {
     fn central_private_scope_ids_do_not_collide_by_concatenation() {
         assert_ne!(private_scope_id("ab", "c"), private_scope_id("a", "bc"));
         assert!(private_scope_id("a", "b").starts_with("private:"));
+        assert!(private_scope_id("drew", "laptop").starts_with("private:64726577:"));
+        assert_eq!(private_scope_prefix("drew"), "private:64726577:");
     }
 
     #[test]

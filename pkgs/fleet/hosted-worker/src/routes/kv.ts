@@ -1,0 +1,28 @@
+// Kv door (#13316; design doc/2026-11-23T12-45-00Z_design_fleet_kv §4,
+// §9). The fleet-kv client's central plane: a host's `fleet kv` posts
+// its Hrana v2 pipeline here (FLEET_KV_URL = https://<door>/v1/kv), and
+// src/kv-door.ts checks every statement against the catalogue and the
+// caller before forwarding it to the shared primary. Service tokens
+// need the `kv` door in their route scope; admin statements also need
+// `kv-admin` (or the kv-admin role for a person or agent caller).
+
+import type { AuthDeps, CallerContext } from "../auth.ts";
+import { FailClosed } from "../errors.ts";
+import { handleKvPipeline } from "../kv-door.ts";
+import type { RouteDef } from "../router.ts";
+
+function caller(ctx: CallerContext | null): CallerContext {
+  if (!ctx) {
+    throw new FailClosed(401, "missing_token", "the kv door requires an authenticated caller");
+  }
+  return ctx;
+}
+
+export const routes: RouteDef[] = [
+  {
+    method: "POST",
+    path: "/v1/kv/v2/pipeline",
+    door: "kv",
+    handler: (req: Request, ctx: CallerContext | null, deps: AuthDeps) => handleKvPipeline(req, caller(ctx), deps),
+  },
+];

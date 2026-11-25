@@ -13,12 +13,17 @@
 //! `clear-override`, masking `delete` and history `revert` are the three
 //! delete-related states from the fleet-kv design (D005) and stay distinct.
 
+pub mod archive;
 pub mod backup;
+pub mod catalog;
 pub mod central;
 pub mod cli;
+pub mod grants;
 #[cfg(feature = "http")]
 pub mod http;
 pub mod launch;
+#[cfg(test)]
+mod load_probe;
 pub mod read;
 pub mod sweep;
 pub mod sync;
@@ -31,7 +36,7 @@ use rusqlite::{Connection, ErrorCode, OptionalExtension, Transaction, params};
 
 use crate::working::{INLINE_LIMIT, WorkingError, WorkingRef};
 
-const SCHEMA_VERSION: i64 = 7;
+const SCHEMA_VERSION: i64 = 8;
 const BUSY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
 #[derive(Debug)]
@@ -614,7 +619,8 @@ fn busy_or_sql(error: rusqlite::Error) -> KvError {
 /// lets rows refer to working files; version 5 adds the host incarnation, the
 /// per-key central base and local copies of sweep receipts; version 6 adds
 /// the cached namespace definitions pulled by `fleet kv sync`; version 7 adds
-/// the short-lived cache of central heads read through a local miss.
+/// the short-lived cache of central heads read through a local miss; version
+/// 8 records each partition's last survival-archive checkpoint.
 fn migrate(connection: &Connection) -> Result<(), KvError> {
     let current: i64 = connection
         .pragma_query_value(None, "user_version", |row| row.get(0))
@@ -631,6 +637,7 @@ fn migrate(connection: &Connection) -> Result<(), KvError> {
     sweep::migrate_to_v5(&tx)?;
     sync::migrate_to_v6(&tx)?;
     read::migrate_to_v7(&tx)?;
+    archive::migrate_to_v8(&tx)?;
     tx.pragma_update(None, "user_version", SCHEMA_VERSION)
         .map_err(sql)?;
     tx.commit().map_err(sql)

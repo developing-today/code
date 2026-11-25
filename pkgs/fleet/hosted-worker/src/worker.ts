@@ -21,6 +21,7 @@ import { ingestionDepsFrom, runIngestionSweep } from "./ingestion.ts";
 import { LibSQLQueueStore, type SyncSqlDb } from "./libsql-queue-store.ts";
 import { openHranaQueueStore } from "./libsql-hrana-queue-store.ts";
 import { openD1QueueStore } from "./d1-queue-store.ts";
+import { HttpKvPrimary, type KvPrimary } from "./kv-door.ts";
 import { FixtureQueueStore, type QueueStore } from "./queue-store.ts";
 import { StoreQueueRecordSource } from "./queue-records.ts";
 import { dispatch } from "./router.ts";
@@ -128,6 +129,7 @@ export function buildDeps(env: HostedEnv, opener?: QueueSqlOpener): AuthDeps {
   // API and the console share one send path. Absent the binding or
   // the credential, the door fails closed (503) per request.
   const bridge = config.bridge && env.BRIDGE ? new BindingBridgeSurface(env.BRIDGE, config.bridge.token) : undefined;
+  const kvPrimary = kvPrimaryFor(config);
   return {
     config,
     sessions,
@@ -141,7 +143,26 @@ export function buildDeps(env: HostedEnv, opener?: QueueSqlOpener): AuthDeps {
     githubProjects: githubWriter,
     backfillRunStore: backfillRuns,
     ...(bridge ? { bridge } : {}),
+    ...(kvPrimary ? { kvPrimary } : {}),
   };
+}
+
+// The fleet-kv central primary (#13316): one client per configured
+// URL for the isolate's lifetime, so the door's once-per-isolate
+// schema migration (src/kv-door.ts) is not repeated per request.
+const kvPrimaries = new Map<string, KvPrimary>();
+
+/** The kv door's primary for one configuration, or undefined when no
+ *  KV_LIBSQL_URL is set (the door then fails closed with 503). */
+export function kvPrimaryFor(config: Pick<HostedConfig, "kvLibsqlUrl" | "kvLibsqlAuthToken">): KvPrimary | undefined {
+  if (!config.kvLibsqlUrl) return undefined;
+  const key = JSON.stringify([config.kvLibsqlUrl, config.kvLibsqlAuthToken]);
+  let primary = kvPrimaries.get(key);
+  if (!primary) {
+    primary = new HttpKvPrimary(config.kvLibsqlUrl, config.kvLibsqlAuthToken);
+    kvPrimaries.set(key, primary);
+  }
+  return primary;
 }
 
 /** The scheduled invocation's context slice this module uses. */
