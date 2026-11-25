@@ -692,12 +692,15 @@ pub fn next(world: &dyn World, args: &[String]) -> R<(Value, i32)> {
                          complete, or park with a resume condition that is not a person. \
                          Your claim lease is {} seconds (4 hours) from the claim: \
                          complete or park before it lapses, or the task returns to the \
-                         queue and your completion will be refused.",
+                         queue and your completion will be refused. On long work, \
+                         heartbeat to extend the lease; checkpointing saves progress \
+                         but does not renew it.",
                         AGENT_CLAIM_LEASE_SECONDS
                     ),
                 });
                 let then = vec![
                     format!("fleet queue checkpoint {id} --worker {worker} --lane {lane} ..."),
+                    format!("fleet queue heartbeat {id} --worker {worker} --lane {lane} ..."),
                     format!("fleet queue complete {id} --worker {worker} --lane {lane} ..."),
                 ];
                 return Ok(answer("queue", task, then, log));

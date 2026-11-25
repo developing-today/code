@@ -76,6 +76,8 @@ pub mod secrets_broker;
 pub mod turso_queue;
 #[cfg(any(feature = "queue-broker", feature = "secrets-broker"))]
 pub mod uds_http;
+#[cfg(any(feature = "queue-broker", feature = "secrets-broker"))]
+mod tcp_http;
 // The validation library is shared by both surfaces: the broker
 // validates whole packets, and the client validates individual
 // flag values (e.g. `--not-before`) against the same rules, so
