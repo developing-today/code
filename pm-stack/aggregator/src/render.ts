@@ -6974,7 +6974,7 @@ function coverageSectionHtml(coverage: CoverageSnapshotFile | null | undefined):
   const cell = (
     repo: string,
     v: number | null,
-    key: "openIssues" | "gateNow" | "gateNext" | "poolItems" | "poolUnsetStatus" | "poolUnsetArea",
+    key: "openIssues" | "gateNow" | "gateNext" | "poolItems" | "poolUnsetStatus" | "poolUnsetArea" | "staleOpenIssues",
   ): string => {
     if (v === null) return "—";
     const d = delta.get(repo)?.[key];
@@ -6996,7 +6996,7 @@ function coverageSectionHtml(coverage: CoverageSnapshotFile | null | undefined):
       const collectedAt = r.staleIssuesCollectedAt
         ? `<time datetime="${esc(r.staleIssuesCollectedAt)}">${esc(r.staleIssuesCollectedAt)}</time>`
         : "—";
-      return `<tr><td>${esc(r.repo)}</td><td>${cell(r.repo, r.openIssues, "openIssues")}</td><td>${cell(r.repo, r.gateNow, "gateNow")}</td><td>${cell(r.repo, r.gateNext, "gateNext")}</td><td>${cell(r.repo, r.poolItems, "poolItems")}</td><td>${cell(r.repo, r.poolUnsetStatus, "poolUnsetStatus")}</td><td>${cell(r.repo, r.poolUnsetArea, "poolUnsetArea")}</td><td>${r.staleOpenIssues === null ? "—" : r.staleOpenIssues}</td><td>${collectedAt}</td><td>${status}</td></tr>`;
+      return `<tr><td>${esc(r.repo)}</td><td>${cell(r.repo, r.openIssues, "openIssues")}</td><td>${cell(r.repo, r.gateNow, "gateNow")}</td><td>${cell(r.repo, r.gateNext, "gateNext")}</td><td>${cell(r.repo, r.poolItems, "poolItems")}</td><td>${cell(r.repo, r.poolUnsetStatus, "poolUnsetStatus")}</td><td>${cell(r.repo, r.poolUnsetArea, "poolUnsetArea")}</td><td>${cell(r.repo, r.staleOpenIssues, "staleOpenIssues")}</td><td>${collectedAt}</td><td>${status}</td></tr>`;
     })
     .join("");
   const note = baseline
