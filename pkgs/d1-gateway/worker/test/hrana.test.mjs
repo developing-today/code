@@ -27,6 +27,10 @@ test("keyword classification", () => {
   assert.equal(returnsRows("WITH x AS (SELECT 1) SELECT * FROM x"), true);
   assert.equal(returnsRows("WITH x AS (SELECT 1) INSERT INTO t SELECT * FROM x"), false);
   assert.deepEqual(splitStatements("a; b ';' ; -- c;\n d"), ["a", "b ';'", "d"]);
+  assert.deepEqual(
+    splitStatements("CREATE TABLE t(x); CREATE TRIGGER g AFTER INSERT ON t BEGIN UPDATE t SET x = 1; SELECT 2; END; SELECT 3"),
+    ["CREATE TABLE t(x)", "CREATE TRIGGER g AFTER INSERT ON t BEGIN UPDATE t SET x = 1; SELECT 2; END", "SELECT 3"],
+  );
 });
 
 test("execute: insert, select with typed values, close", async () => {

@@ -295,6 +295,12 @@ export function splitStatements(sql) {
       const end = sql.indexOf("*/", i + 2);
       i = end < 0 ? sql.length : end + 2;
     } else if (c === ";") {
+      // A trigger body holds its own semicolons; it ends at END;.
+      if (/^CREATE\s+(?:TEMP\s+|TEMPORARY\s+)?TRIGGER\b/i.test(cur.trim()) && !/\bEND\s*$/i.test(cur)) {
+        cur += c;
+        i++;
+        continue;
+      }
       if (cur.trim()) out.push(cur.trim());
       cur = "";
       i++;
