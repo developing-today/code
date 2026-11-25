@@ -266,11 +266,11 @@
       "path": "pkgs/cf-container-hello",
       "does": "A clean-room test Worker that runs Cloudflare's hello-world container, built to debug the lab hub's container starts.",
       "state": "in service",
-      "deploy": "by hand",
-      "workflow": null,
+      "deploy": "actions",
+      "workflow": "cf-worker-versions-release.yml",
       "address": "https://cf-container-hello.developing-today.workers.dev",
       "next": "A debugging aid: taken down once the lab hub's containers start reliably, or listed with the rest.",
-      "lastDeployedCommit": null
+      "lastDeployedCommit": "df6651ee1a2f6dc4468f945872705af8e4dc9d65"
     }
   ]
 }
