@@ -1,7 +1,9 @@
 # Backing up `fleet kv`
 
 `fleet kv` keeps every host's local rows in one SQLite file,
-`<state dir>/kv/local.db`, in WAL mode. Phase 1 has no central copy, so
+`<state dir>/kv/local.db`, in WAL mode. Values over 1 MiB live beside it as
+content-addressed working files in `local.db.working/`, and the rows refer
+to them. Phase 1 has no central copy, so
 this file and its snapshots are the only copy of the local data. This page
 covers taking snapshots, restoring one on a fresh host, and what a restore
 can lose. Design: #13314, acceptance 6.
@@ -12,17 +14,20 @@ can lose. Design: #13314, acceptance 6.
 fleet kv snapshot /backups/kv-$(date -u +%Y%m%dT%H%M%SZ).db
 ```
 
-- The snapshot is one self-contained file. It holds every committed row,
-  including rows that are still only in the WAL, so never copy `local.db`
-  and its `-wal` file by hand.
+- The snapshot is one database file, `DEST`, plus `DEST.files/` when any
+  version refers to a working file. It holds every committed row, including
+  rows that are still only in the WAL, so never copy `local.db` and its
+  `-wal` file by hand.
 - Before the copy is taken, the store records a manifest row inside it.
   The command prints that manifest:
   `manifest=N taken_at_ms=… schema_version=… overlay_rows=… pinned_files=…`.
-- The manifest pins every live working file (content id, length and hash).
-  Phase 1 keeps every value inline, so `pinned_files` is 0 until streamed
-  working files land.
-- The file appears atomically: it is written as `DEST.partial`, synced and
-  then renamed. `fleet kv snapshot` never overwrites `DEST`
+- The manifest pins every working file that any version refers to, history
+  included, by content id, length and hash (`blake3-256:…`). Each pinned
+  file is checked against its pin as it is copied into `DEST.files/`.
+- The snapshot appears atomically: the files are copied under
+  `DEST.files.partial/` and the database under `DEST.partial`, each synced
+  and then renamed, the database last. If `DEST` exists, the snapshot is
+  whole. `fleet kv snapshot` never overwrites `DEST` or `DEST.files`
   (`backup_target_exists`).
 - Like every `fleet kv` verb, it runs only in a session with a trusted
   launch identity. Without one it exits 69 with `identity_unavailable`.
@@ -46,14 +51,17 @@ fleet kv restore /backups/kv-20261125T180000Z.db
 
 `restore` checks the snapshot before it writes anything:
 
-| Refusal                  | Meaning                                                |
-| ------------------------ | ------------------------------------------------------ |
-| `not_a_snapshot`         | The file has no fleet-kv backup manifest.              |
-| `unknown_schema_version` | A newer `fleet` wrote it. Upgrade first.               |
-| `snapshot_corrupt`       | The file failed `PRAGMA integrity_check`.              |
-| `backup_target_exists`   | This host already has a store, or a stray `-wal` file. |
+| Refusal                  | Meaning                                                                                    |
+| ------------------------ | ------------------------------------------------------------------------------------------ |
+| `not_a_snapshot`         | The file has no fleet-kv backup manifest.                                                  |
+| `snapshot_incomplete`    | A pinned working file is not in `SNAPSHOT.files/`.                                         |
+| `unknown_schema_version` | A newer `fleet` wrote it. Upgrade first.                                                   |
+| `snapshot_corrupt`       | The file failed `PRAGMA integrity_check`, or a pinned working file does not match its pin. |
+| `backup_target_exists`   | This host already has a store, or a stray `-wal` file.                                     |
 
-It never overwrites an existing store. To replace one, move `local.db`,
+It copies the pinned working files into the new store's `local.db.working/`,
+checking each one, before the database appears. It never overwrites an
+existing store. To replace one, move `local.db`,
 `local.db-wal` and `local.db-shm` aside first, and keep them until the
 restored store reads correctly. On success it prints the manifest that
 the snapshot carried. The restored store returns the same reads, history

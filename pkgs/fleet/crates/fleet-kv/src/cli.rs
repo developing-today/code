@@ -35,6 +35,10 @@ host store (operators):
   snapshot       DEST                          write a one-file snapshot to DEST
   restore        SNAPSHOT                      restore SNAPSHOT as this host's store
 
+Values of any size are accepted: up to 1 MiB they are stored inline, and
+larger values stream into a content-addressed working file beside the
+store (`get` streams them back and checks their hash).
+
 Keys are scoped to this session's launch identity (owner, context and
 session). With no trusted launch-identity record every verb but help
 refuses with identity_unavailable (exit 69).
@@ -503,9 +507,9 @@ fn execute(
     log_operation(&command, err, ctx);
     let written = match command {
         Command::Help(text) => out.write_all(text.as_bytes()),
-        Command::Get { namespace, key } => match store.get(identity, &namespace, &key) {
-            Ok(Some(value)) => out.write_all(&value),
-            Ok(None) => {
+        Command::Get { namespace, key } => match store.get_to(identity, &namespace, &key, out) {
+            Ok(true) => Ok(()),
+            Ok(false) => {
                 let _ = writeln!(
                     err,
                     "error: not_found: no live value for `{key}` in `{namespace}`"
@@ -519,19 +523,15 @@ fn execute(
             key,
             value,
         } => {
-            let bytes = match value {
-                ValueSource::Inline(value) => value.into_bytes(),
-                ValueSource::Stdin => {
-                    let mut bytes = Vec::new();
-                    if let Err(error) = stdin.read_to_end(&mut bytes) {
-                        let _ = writeln!(err, "error: stdin_unreadable: {error}");
-                        return EXIT_REFUSED;
-                    }
-                    bytes
+            let stored = match value {
+                ValueSource::Inline(value) => {
+                    store.set(identity, &namespace, &key, value.as_bytes())
                 }
+                ValueSource::Stdin => store.set_reader(identity, &namespace, &key, stdin),
             };
-            match store.set(identity, &namespace, &key, &bytes) {
+            match stored {
                 Ok(version) => writeln!(out, "{version}"),
+                // Reading stdin or writing a working file failed: io_error.
                 Err(error) => return refuse(err, &error),
             }
         }

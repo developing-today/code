@@ -6,10 +6,10 @@
 //! write-ahead log, so the live database file and its WAL never have to be
 //! copied by hand. Before the copy is taken the store records a manifest
 //! row (`kv_backup_manifest`) that travels inside the snapshot and pins every
-//! live working file (`kv_backup_pins`: content id, length, hash). Phase 1
-//! keeps every value inline, so the pin list is empty until streamed working
-//! files land; the table exists now so that a restore always knows what it
-//! must re-link.
+//! working file a version refers to (`kv_backup_pins`: content id, length,
+//! hash). The pinned files are copied, checked, into `DEST.files/`, and a
+//! restore re-links them into the new store's working directory before the
+//! database appears.
 //!
 //! The snapshot file appears atomically: it is written under a `.partial`
 //! name, synced, then renamed. A restore never overwrites an existing store.
@@ -20,7 +20,8 @@ use std::path::{Path, PathBuf};
 
 use rusqlite::{Connection, OpenFlags, OptionalExtension, Transaction, params};
 
-use crate::{KvError, LocalStore, SCHEMA_VERSION, sql, unsigned};
+use crate::working::{self, WorkingError, WorkingRef};
+use crate::{KvError, LocalStore, SCHEMA_VERSION, signed, sql, unsigned, working_dir_for};
 
 /// A working file pinned by a manifest row.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -28,6 +29,15 @@ pub struct PinnedFile {
     pub content_id: String,
     pub length: u64,
     pub hash: String,
+}
+
+impl PinnedFile {
+    fn reference(&self) -> WorkingRef {
+        WorkingRef {
+            id: self.content_id.clone(),
+            len: self.length,
+        }
+    }
 }
 
 /// What a snapshot or a restore recorded.
@@ -48,6 +58,8 @@ pub enum BackupError {
     TargetExists(PathBuf),
     /// The file is not a fleet-kv snapshot (no manifest row).
     NotASnapshot(PathBuf),
+    /// The manifest pins a working file that is not in `SNAPSHOT.files/`.
+    Incomplete(String),
     /// The snapshot was written by a newer schema than this binary knows.
     UnknownSchemaVersion(i64),
     /// `PRAGMA integrity_check` did not report `ok`.
@@ -62,6 +74,7 @@ impl BackupError {
         match self {
             Self::TargetExists(_) => "backup_target_exists",
             Self::NotASnapshot(_) => "not_a_snapshot",
+            Self::Incomplete(_) => "snapshot_incomplete",
             Self::UnknownSchemaVersion(_) => "unknown_schema_version",
             Self::Corrupt(_) => "snapshot_corrupt",
             Self::Io(_) => "io_error",
@@ -79,6 +92,10 @@ impl std::fmt::Display for BackupError {
             Self::NotASnapshot(path) => {
                 write!(f, "{} has no fleet-kv backup manifest", path.display())
             }
+            Self::Incomplete(id) => write!(
+                f,
+                "the snapshot pins working file {id}, which is not in its .files directory"
+            ),
             Self::UnknownSchemaVersion(version) => write!(
                 f,
                 "snapshot schema version {version} is newer than this binary ({SCHEMA_VERSION})"
@@ -126,14 +143,21 @@ pub(crate) fn migrate_to_v3(tx: &Transaction<'_>) -> Result<(), KvError> {
 impl LocalStore {
     /// Write a consistent snapshot of the whole host store to `dest`.
     ///
-    /// Records a manifest row first, so the snapshot carries the manifest
-    /// that describes it, then copies every committed row (WAL included)
-    /// into `dest` with `VACUUM INTO`. Refuses to overwrite `dest`.
+    /// Copies every committed row (WAL included) into `dest` with `VACUUM
+    /// INTO`, then completes the manifest row inside the copy so that it pins
+    /// exactly the working files the copy refers to, and copies those files
+    /// into `dest.files/` after checking each one's length and hash. The
+    /// database file is published last: if it exists, the snapshot is whole.
+    /// The same manifest is recorded in this store. Refuses to overwrite
+    /// `dest` or `dest.files`.
     pub fn snapshot(&self, dest: &Path) -> Result<Manifest, BackupError> {
-        if dest.exists() {
-            return Err(BackupError::TargetExists(dest.to_path_buf()));
+        let files = files_dir(dest);
+        for path in [dest.to_path_buf(), files.clone()] {
+            if path.exists() {
+                return Err(BackupError::TargetExists(path));
+            }
         }
-        let manifest = self.record_manifest()?;
+        let manifest_id = self.start_manifest()?;
         let partial = partial_path(dest);
         remove_if_present(&partial)?;
         self.connection
@@ -142,13 +166,32 @@ impl LocalStore {
                 params![partial.to_string_lossy().as_ref()],
             )
             .map_err(sql)?;
-        // A snapshot is one file: rollback-journal mode, so it can be read
-        // (and inspected read-only) without a WAL or shared-memory sidecar.
-        // The restored store switches back to WAL when it is opened.
-        Connection::open(&partial)
-            .and_then(|copy| copy.pragma_update(None, "journal_mode", "DELETE"))
-            .map_err(sql)?;
+        // A snapshot is one database file in rollback-journal mode, so it
+        // can be read (and inspected read-only) without a WAL or
+        // shared-memory sidecar. The restored store switches back to WAL
+        // when it is opened.
+        let manifest = {
+            let copy = Connection::open(&partial).map_err(sql)?;
+            copy.pragma_update(None, "journal_mode", "DELETE")
+                .map_err(sql)?;
+            complete_manifest(&copy, manifest_id)?
+        };
+        if !manifest.pinned_files.is_empty() {
+            let source = self.working_dir.as_deref().ok_or_else(|| {
+                BackupError::Store(KvError::WorkingFileMissing(
+                    manifest.pinned_files[0].content_id.clone(),
+                ))
+            })?;
+            let files_partial = partial_path(&files);
+            remove_dir_if_present(&files_partial)?;
+            for pin in &manifest.pinned_files {
+                working::copy_verified(source, &files_partial, &pin.reference())
+                    .map_err(|error| BackupError::Store(error.into()))?;
+            }
+            fs::rename(&files_partial, &files)?;
+        }
         publish(&partial, dest)?;
+        self.mirror_manifest(&manifest)?;
         Ok(manifest)
     }
 
@@ -157,24 +200,60 @@ impl LocalStore {
         read_latest_manifest(&self.connection)
     }
 
-    fn record_manifest(&self) -> Result<Manifest, BackupError> {
-        let tx = self.connection.unchecked_transaction().map_err(sql)?;
-        let overlay_rows: i64 = tx
-            .query_row("SELECT COUNT(*) FROM kv_local", [], |row| row.get(0))
+    /// Record the manifest row that the snapshot copy will carry.
+    fn start_manifest(&self) -> Result<i64, BackupError> {
+        self.connection
+            .execute(
+                "INSERT INTO kv_backup_manifest(taken_at_ms, schema_version, overlay_rows)
+                 VALUES (?1, ?2, 0)",
+                params![now_ms(), SCHEMA_VERSION],
+            )
             .map_err(sql)?;
-        let taken_at_ms = now_ms();
+        Ok(self.connection.last_insert_rowid())
+    }
+
+    /// Make this store's copy of the manifest match the one in the snapshot.
+    fn mirror_manifest(&self, manifest: &Manifest) -> Result<(), BackupError> {
+        let tx = self.connection.unchecked_transaction().map_err(sql)?;
+        let id = signed(manifest.id);
         tx.execute(
-            "INSERT INTO kv_backup_manifest(taken_at_ms, schema_version, overlay_rows)
-             VALUES (?1, ?2, ?3)",
-            params![taken_at_ms, SCHEMA_VERSION, overlay_rows],
+            "UPDATE kv_backup_manifest SET overlay_rows=?2 WHERE id=?1",
+            params![id, signed(manifest.overlay_rows)],
         )
         .map_err(sql)?;
-        // Phase 1 stores every value inline: there are no working files to
-        // pin yet. Streamed working files add their rows here.
+        for pin in &manifest.pinned_files {
+            tx.execute(
+                "INSERT OR IGNORE INTO kv_backup_pins(manifest_id, content_id, length, hash)
+                 VALUES (?1, ?2, ?3, ?4)",
+                params![id, pin.content_id, signed(pin.length), pin.hash],
+            )
+            .map_err(sql)?;
+        }
         tx.commit().map_err(sql)?;
-        read_latest_manifest(&self.connection)?
-            .ok_or_else(|| BackupError::Store(KvError::Sql(rusqlite::Error::QueryReturnedNoRows)))
+        Ok(())
     }
+}
+
+/// Fill in the manifest row inside a snapshot copy from what the copy holds:
+/// its overlay count, and a pin for every working file any version refers
+/// to (history included, so `revert` works after a restore).
+fn complete_manifest(copy: &Connection, id: i64) -> Result<Manifest, BackupError> {
+    let tx = copy.unchecked_transaction().map_err(sql)?;
+    tx.execute(
+        "UPDATE kv_backup_manifest SET overlay_rows=(SELECT COUNT(*) FROM kv_local) WHERE id=?1",
+        params![id],
+    )
+    .map_err(sql)?;
+    tx.execute(
+        "INSERT OR IGNORE INTO kv_backup_pins(manifest_id, content_id, length, hash)
+         SELECT DISTINCT ?1, working_id, working_len, 'blake3-256:' || working_id
+         FROM kv_versions_local WHERE working_id IS NOT NULL",
+        params![id],
+    )
+    .map_err(sql)?;
+    tx.commit().map_err(sql)?;
+    read_manifest(copy, Some(id))?
+        .ok_or_else(|| BackupError::Store(KvError::Sql(rusqlite::Error::QueryReturnedNoRows)))
 }
 
 /// Restore `snapshot` to `target`, the store path of a fresh host.
@@ -189,6 +268,19 @@ pub fn restore(snapshot: &Path, target: &Path) -> Result<Manifest, BackupError> 
         }
     }
     let manifest = inspect(snapshot)?;
+    // Working files first, each checked against its pin; the database last,
+    // so a store only appears once every byte it refers to is in place.
+    let from = files_dir(snapshot);
+    let to = working_dir_for(target);
+    for pin in &manifest.pinned_files {
+        working::copy_verified(&from, &to, &pin.reference()).map_err(|error| match error {
+            WorkingError::Missing(id) => BackupError::Incomplete(id),
+            WorkingError::Corrupt(id) => {
+                BackupError::Corrupt(format!("working file {id} does not match its pin"))
+            }
+            WorkingError::Io(error) => BackupError::Io(error),
+        })?;
+    }
     let partial = partial_path(target);
     remove_if_present(&partial)?;
     fs::copy(snapshot, &partial)?;
@@ -222,11 +314,19 @@ pub fn inspect(snapshot: &Path) -> Result<Manifest, BackupError> {
 }
 
 fn read_latest_manifest(connection: &Connection) -> Result<Option<Manifest>, BackupError> {
+    read_manifest(connection, None)
+}
+
+/// Read manifest `id`, or the newest one when `id` is `None`.
+fn read_manifest(
+    connection: &Connection,
+    id: Option<i64>,
+) -> Result<Option<Manifest>, BackupError> {
     let row = connection
         .query_row(
             "SELECT id, taken_at_ms, schema_version, overlay_rows
-             FROM kv_backup_manifest ORDER BY id DESC LIMIT 1",
-            [],
+             FROM kv_backup_manifest WHERE ?1 IS NULL OR id=?1 ORDER BY id DESC LIMIT 1",
+            params![id],
             |row| {
                 Ok((
                     row.get::<_, i64>(0)?,
@@ -283,6 +383,18 @@ fn sidecar(path: &Path, suffix: &str) -> PathBuf {
 
 fn partial_path(path: &Path) -> PathBuf {
     sidecar(path, ".partial")
+}
+
+/// Where a snapshot keeps the working files its manifest pins.
+pub fn files_dir(snapshot: &Path) -> PathBuf {
+    sidecar(snapshot, ".files")
+}
+
+fn remove_dir_if_present(path: &Path) -> io::Result<()> {
+    match fs::remove_dir_all(path) {
+        Err(error) if error.kind() != io::ErrorKind::NotFound => Err(error),
+        _ => Ok(()),
+    }
 }
 
 fn remove_if_present(path: &Path) -> io::Result<()> {

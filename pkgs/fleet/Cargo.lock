@@ -807,6 +807,7 @@ dependencies = [
 name = "fleet-kv"
 version = "0.1.0"
 dependencies = [
+ "blake3",
  "fleet-config",
  "libc",
  "proptest",

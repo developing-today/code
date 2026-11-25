@@ -328,7 +328,7 @@ standalone artifact).
 
 ## `kv` — local key/value bytes
 
-`fleet kv` stores arbitrary bytes for this session in the host-local store (`<state dir>/kv/local.db`, SQLite WAL). Every row is keyed by the caller's full identity `(owner, context, session, namespace, key)`, so one session never reads another's rows. Design: [fleet-kv](../../../doc/2026-11-23T12-45-00Z_design_fleet_kv/2026-11-23T12-45-00Z_design_fleet_kv.md); phase 1 is #13314.
+`fleet kv` stores arbitrary bytes for this session in the host-local store (`<state dir>/kv/local.db`, SQLite WAL). Every row is keyed by the caller's full identity `(owner, context, session, namespace, key)`, so one session never reads another's rows. Values of any size are accepted: up to 1 MiB they are stored inline, and larger values stream into a content-addressed working file beside the store (`local.db.working/`), which `get` streams back and checks. Design: [fleet-kv](../../../doc/2026-11-23T12-45-00Z_design_fleet_kv/2026-11-23T12-45-00Z_design_fleet_kv.md); phase 1 is #13314.
 
 | Command                                      | Purpose                                                                                                               |
 | -------------------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
