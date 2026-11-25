@@ -59,7 +59,10 @@ jobs:
           PM_CONSOLE_DEMO_ACT_LOG: ${{ github.workspace }}/pm-console-acts.jsonl
         run: |
           : >pm-console-acts.jsonl
-          nohup bun run pm-stack/console/scripts/edge-demo.ts 4897 >edge-demo.log 2>&1 &
+          # The edge routes by the name it is called under; the
+          # emulator calls this machine 10.0.2.2, so the demo edge
+          # is started under that name (it still binds loopback).
+          PM_EDGE_DEMO_PUBLIC_HOST=10.0.2.2 nohup bun run pm-stack/console/scripts/edge-demo.ts 4897 >edge-demo.log 2>&1 &
           echo $! >edge-demo.pid
           disown
           for attempt in $(seq 1 30); do
