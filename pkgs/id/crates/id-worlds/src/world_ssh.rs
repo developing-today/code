@@ -1498,6 +1498,17 @@ impl SshIo {
         }
         recv_bytes_through_probe(&mut self.frames, &mut self.probe, &mut self.probe_outcome).await
     }
+
+    /// The full-repaint prefix for a frame this shell paints itself:
+    /// home + erase, except in text mode, which never writes an escape
+    /// byte (#14861 D2).
+    fn repaint_prefix(&self) -> &'static str {
+        if self.display_mode == DisplayMode::Text {
+            ""
+        } else {
+            "\x1b[H\x1b[2J"
+        }
+    }
 }
 
 impl SessionIo for SshIo {
@@ -2076,17 +2087,6 @@ impl SessionIo for SshIo {
             self.previous_screen = next_screen;
         }
         written
-    }
-
-    /// The full-repaint prefix for a frame this shell paints itself:
-    /// home + erase, except in text mode, which never writes an escape
-    /// byte (#14861 D2).
-    fn repaint_prefix(&self) -> &'static str {
-        if self.display_mode == DisplayMode::Text {
-            ""
-        } else {
-            "\x1b[H\x1b[2J"
-        }
     }
 }
 
