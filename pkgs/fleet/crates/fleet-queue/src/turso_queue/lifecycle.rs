@@ -3931,4 +3931,332 @@ mod task_notes_tests {
         assert_eq!(bodies, ["plain", "third"]);
         assert_eq!(latest["row"]["count"], 3);
     }
+
+    #[test]
+    fn q6_normalized_link_and_dependency_tables_exist() {
+        let (t, _db) = fake_backend();
+        let tables = t
+            .query_objs(
+                "SELECT name FROM sqlite_master WHERE type = 'table' \
+                 AND name IN ('queue_links', 'task_deps') ORDER BY name",
+                &[],
+                &[],
+            )
+            .expect("Q6 tables are readable from the SQL store");
+        let names: Vec<&str> = tables
+            .iter()
+            .map(|row| row["name"].as_str().expect("table name is text"))
+            .collect();
+        assert_eq!(names, ["queue_links", "task_deps"]);
+    }
+
+    #[test]
+    fn q6_enqueue_seeds_issue_and_pull_request_links() {
+        let (t, _db) = fake_backend();
+        let packet = json!({
+            "title": "Q6 link seed",
+            "priority": 50,
+            "dedupe_key": "repo-health:v1:fix:developing-today/code:issue:14181",
+            "payload": {
+                "schema": "repo-task/v1",
+                "kind": "small_fix",
+                "repo": "developing-today/code",
+                "problem": "seed links",
+                "evidence": ["fixture"],
+                "acceptance": ["issue and PR links are normalized"],
+                "scope": {"include": ["Q6"], "exclude": ["other slices"]},
+                "tests": ["SQL link seed oracle"],
+                "risk": {"level": "low", "flags": []},
+                "priority_reason": "fixture",
+                "timebox_minutes": 45,
+                "max_attempts": 6,
+                "context_refs": [],
+                "issue": {"number": 14181},
+                "pr": {"number": 14441},
+                "dedupe": {"checked_at": "2026-11-25T00:00:00Z", "basis": "fixture"}
+            }
+        });
+        let enqueued = verb_enqueue(
+            &t,
+            &json!({"queue": "repo-health-code-pilot", "packet": packet.clone()}),
+        );
+        assert_eq!(enqueued["ok"], true, "{enqueued}");
+        let task_id = enqueued["row"]["id"].as_i64().expect("task id");
+        let links = t
+            .query_objs(
+                "SELECT other_kind, other_repo, other_number, link_kind FROM queue_links \
+                 WHERE task_id = ? AND removed_at IS NULL ORDER BY other_kind",
+                &[Arg::Int(task_id)],
+                &[],
+            )
+            .expect("normalized links are readable");
+        assert_eq!(links.len(), 2, "{links:?}");
+        assert_eq!(links[0]["other_kind"], "issue");
+        assert_eq!(links[0]["other_number"], 14181);
+        assert_eq!(links[0]["link_kind"], "implements");
+        assert_eq!(links[1]["other_kind"], "pr");
+        assert_eq!(links[1]["other_number"], 14441);
+        assert_eq!(links[1]["link_kind"], "pr_for");
+        let removed = verb_link_remove(
+            &t,
+            &json!({"task_id":task_id,"worker":"q6-test","link_kind":"implements",
+                "other_issue":{"repo":"developing-today/code","number":14181}}),
+        );
+        assert_eq!(removed["ok"], true, "{removed}");
+        t.exec(
+            "DELETE FROM queue_links WHERE task_id = ? AND other_kind = 'pr'",
+            &[Arg::Int(task_id)],
+        )
+        .expect("simulate a transiently failed link seed");
+        let retry = verb_enqueue(
+            &t,
+            &json!({"queue": "repo-health-code-pilot", "packet": packet}),
+        );
+        assert_eq!(retry["ok"], true, "{retry}");
+        assert_eq!(retry["row"]["id"], task_id);
+        let repaired = t
+            .query_objs(
+                "SELECT id FROM queue_links WHERE task_id = ? AND removed_at IS NULL",
+                &[Arg::Int(task_id)],
+                &[],
+            )
+            .expect("enqueue dedupe retry repairs missing packet links");
+        assert_eq!(repaired.len(), 1, "the removed issue link stays removed");
+        let tombstone = t
+            .query_objs(
+                "SELECT removed_at FROM queue_links WHERE task_id = ? AND other_kind = 'issue'",
+                &[Arg::Int(task_id)],
+                &[],
+            )
+            .expect("soft-removed packet link remains a tombstone");
+        assert_eq!(tombstone.len(), 1);
+        assert!(!tombstone[0]["removed_at"].is_null());
+        t.exec(
+            "DELETE FROM queue_schema_migrations WHERE name = 'q6-links-deps-v1'",
+            &[],
+        )
+        .expect("reset the migration marker to exercise the backfill path");
+        super::links::ensure_q6_backfill(&t).expect("backfill re-run is safe");
+        let still_two = t
+            .query_objs(
+                "SELECT id FROM queue_links WHERE task_id = ? AND removed_at IS NULL",
+                &[Arg::Int(task_id)],
+                &[],
+            )
+            .expect("seeded links remain queryable");
+        assert_eq!(still_two.len(), 1, "backfill preserves the link tombstone");
+    }
+
+    #[test]
+    fn q6_sql_census_reproduces_recorded_blocker_counts() {
+        let (t, _db) = fake_backend();
+        let mut task_id = 1i64;
+        let mut open_remaining = 241usize;
+        while open_remaining > 0 {
+            let count = if task_id <= 63 { 2 } else { 1 };
+            let count = count.min(open_remaining);
+            let deps: Vec<Value> = (0..count)
+                .map(|idx| {
+                    let number = if task_id <= 7 && idx == 0 {
+                        3399
+                    } else {
+                        5000 + task_id * 10 + idx as i64
+                    };
+                    json!({"kind":"issue", "repo":"developing-today/code", "number":number, "state":"open"})
+                })
+                .collect();
+            super::links::sync_task_deps(
+                &t,
+                task_id,
+                "census-fixture",
+                &deps,
+                "2026-11-24T00:00:00Z",
+                "fixture",
+            )
+            .expect("normalize open census edges");
+            open_remaining -= count;
+            task_id += 1;
+        }
+        for offset in 0..50i64 {
+            let dep = json!({"kind":"issue", "repo":"developing-today/code", "number":6000 + offset, "state":"cleared", "cleared_at":"2026-11-24T01:00:00Z"});
+            super::links::sync_task_deps(
+                &t,
+                1000 + offset,
+                "census-fixture",
+                &[dep],
+                "2026-11-24T00:00:00Z",
+                "fixture",
+            )
+            .expect("normalize cleared census edges");
+        }
+        for task in [16024i64, 20343] {
+            let malformed = json!({"kind":"task", "state":"open"});
+            super::links::sync_task_deps(
+                &t,
+                task,
+                "census-fixture",
+                &[malformed],
+                "2026-11-24T00:00:00Z",
+                "fixture",
+            )
+            .expect("retain malformed task:None edge");
+        }
+        let counts = t
+            .query_objs(
+                "SELECT state, count(*) AS n FROM task_deps GROUP BY state ORDER BY state",
+                &[],
+                &[],
+            )
+            .expect("SQL-only blocker state census");
+        assert_eq!(
+            counts.iter().find(|r| r["state"] == "open").unwrap()["n"],
+            241
+        );
+        assert_eq!(
+            counts.iter().find(|r| r["state"] == "cleared").unwrap()["n"],
+            50
+        );
+        assert_eq!(
+            counts.iter().find(|r| r["state"] == "malformed").unwrap()["n"],
+            2
+        );
+        let top = t
+            .query_objs(
+                "SELECT ref_number, count(*) AS n FROM task_deps WHERE state = 'open' \
+                 AND ref_number IS NOT NULL GROUP BY ref_number ORDER BY n DESC, ref_number LIMIT 1",
+                &[],
+                &[],
+            )
+            .expect("SQL top blocker query");
+        assert_eq!(top[0]["ref_number"], 3399);
+        assert_eq!(top[0]["n"], 7);
+        let tasks = t
+            .query_objs(
+                "SELECT count(DISTINCT task_id) AS n FROM task_deps WHERE state = 'open'",
+                &[],
+                &[],
+            )
+            .expect("SQL distinct blocked task count");
+        assert_eq!(tasks[0]["n"], 178);
+    }
+
+    #[test]
+    fn q6_link_change_emits_history_without_changing_task_status() {
+        let (t, _db) = fake_backend();
+        let task_id = task(&t, None);
+        let request = json!({"task_id":task_id,"worker":"q6-test","link_kind":"parent",
+            "other_issue":{"repo":"developing-today/code","number":14170}});
+        assert_eq!(verb_link_add(&t, &request)["ok"], true);
+        assert_eq!(verb_link_remove(&t, &request)["ok"], true);
+        let events = t
+            .query_objs(
+                "SELECT kind FROM events WHERE task_id = ? AND kind IN ('linked','unlinked') ORDER BY id",
+                &[Arg::Int(task_id)],
+                &[],
+            )
+            .expect("link transition event rows");
+        assert_eq!(
+            events
+                .iter()
+                .map(|r| r["kind"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            ["linked", "unlinked"]
+        );
+        let history = t
+            .query_objs(
+                "SELECT kind, from_status, to_status, \
+                 json_extract(detail, '$.link_kind') AS link_kind, \
+                 json_extract(detail, '$.other_number') AS other_number \
+                 FROM task_history WHERE task_id = ? AND kind IN ('linked','unlinked') ORDER BY id",
+                &[Arg::Int(task_id)],
+                &[],
+            )
+            .expect("parent change is visible in child history");
+        assert_eq!(history.len(), 2);
+        for row in &history {
+            assert_eq!(row["link_kind"], "parent");
+            assert_eq!(row["other_number"], 14170);
+            assert!(row["from_status"].is_null());
+            assert!(row["to_status"].is_null());
+        }
+        let task = get_task(&t, task_id).unwrap().unwrap();
+        assert_eq!(task["status"], "queued");
+    }
+
+    #[test]
+    fn q6_block_unblock_keeps_dependency_rows_and_cache_aligned() {
+        let (t, _db) = fake_backend();
+        let task_id = task(&t, Some("q6-worker"));
+        let blocked = verb_block(
+            &t,
+            &json!({
+                "task_id": task_id,
+                "worker": "q6-worker",
+                "reason_class": "dependency",
+                "blocker": "issue is still open",
+                "deps": [{"kind":"issue", "repo":"developing-today/code", "number":14170, "reason":"parent work"}]
+            }),
+        );
+        assert_eq!(blocked["ok"], true, "{blocked}");
+        let normalized = t
+            .query_objs(
+                "SELECT dep_kind, ref_repo, ref_number, state FROM task_deps WHERE task_id = ?",
+                &[Arg::Int(task_id)],
+                &[],
+            )
+            .expect("normalized edge after block");
+        assert_eq!(normalized.len(), 1);
+        assert_eq!(normalized[0]["dep_kind"], "blocked-by-issue");
+        assert_eq!(normalized[0]["ref_number"], 14170);
+        assert_eq!(normalized[0]["state"], "open");
+        let task_row = get_task(&t, task_id).unwrap().unwrap();
+        assert_eq!(task_row["blocked_deps"][0]["number"], 14170);
+        let block_id = task_row["dep_blocked_until"].as_str().unwrap().to_owned();
+
+        let unblocked = verb_unblock(
+            &t,
+            &json!({"task_id": task_id, "worker": "q6-worker", "reason": "parent resolved"}),
+        );
+        assert_eq!(unblocked["ok"], true, "{unblocked}");
+        let normalized = t
+            .query_objs(
+                "SELECT state, cleared_by FROM task_deps WHERE task_id = ?",
+                &[Arg::Int(task_id)],
+                &[],
+            )
+            .expect("cleared edge remains in normalized history");
+        assert_eq!(normalized[0]["state"], "cleared");
+        assert_eq!(normalized[0]["cleared_by"], "q6-worker");
+        let task_row = get_task(&t, task_id).unwrap().unwrap();
+        assert!(task_row["blocked_deps"].is_null());
+        let stale = json!({
+            "kind":"issue", "repo":"developing-today/code", "number":14170,
+            "state":"open", "recorded_at":"2026-11-25T00:00:00Z"
+        });
+        let (cache, writes) = super::links::prepare_task_deps(
+            task_id,
+            &block_id,
+            &[stale],
+            "2026-11-25T00:00:00Z",
+            "stale_recheck_fixture",
+        );
+        let mut statements = vec![("BEGIN IMMEDIATE", Vec::new())];
+        statements.extend(super::links::guard_task_dep_writes(
+            writes,
+            task_id,
+            Some(&block_id),
+            &cache,
+        ));
+        statements.push(("COMMIT", Vec::new()));
+        t.exec_batch(&statements)
+            .expect("a stale recheck must be a safe no-op after unblock");
+        let final_deps = t
+            .query_objs(
+                "SELECT state FROM task_deps WHERE task_id = ?",
+                &[Arg::Int(task_id)],
+                &[],
+            )
+            .expect("final normalized edge remains readable");
+        assert_eq!(final_deps[0]["state"], "cleared");
+    }
 }
