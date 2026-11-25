@@ -765,6 +765,16 @@ impl Broker {
             if let Some(trip) = &req.trip {
                 headers.push(("X-Trip-Id".to_string(), trip.clone()));
             }
+            // #14188: the caller's FLEET_CTX_* record, unchanged, as
+            // X-Fleet-Ctx-* headers on every attempt (re-validated
+            // here: a frame built by a non-Rust client is untrusted).
+            if let Some(ctx) = &req.ctx {
+                let ctx = fleet_config::ctx::Ctx::from_pairs(ctx.iter());
+                headers.extend(
+                    ctx.header_pairs()
+                        .map(|(k, v)| (k.to_string(), v.to_string())),
+                );
+            }
             if *transport == Transport::Cf {
                 headers.extend(cf_headers.iter().cloned());
             }
@@ -1021,6 +1031,20 @@ fn parse_request(frame: &serde_json::Value) -> Result<Request, String> {
         Some(serde_json::Value::Bool(b)) => Some(*b),
         Some(_) => return Err("request \"cf_ok\" must be a boolean or null".to_string()),
     };
+    // #14188: the FLEET_CTX_* record. Lenient by contract (absence
+    // is representable, a partial record is never an error): a
+    // non-object is no context, and entries outside the fixed set or
+    // the value grammar are dropped, never forwarded.
+    let ctx = frame
+        .get("ctx")
+        .and_then(|v| v.as_object())
+        .map(|m| {
+            fleet_config::ctx::Ctx::from_pairs(
+                m.iter()
+                    .filter_map(|(k, v)| v.as_str().map(|v| (k.as_str(), v))),
+            )
+        })
+        .and_then(|c| c.to_frame());
     Ok(Request {
         method,
         path,
@@ -1030,6 +1054,7 @@ fn parse_request(frame: &serde_json::Value) -> Result<Request, String> {
         trip,
         transport,
         cf_ok,
+        ctx,
     })
 }
 
@@ -1267,6 +1292,7 @@ fn keepalive_loop(broker: Arc<Broker>, idle_exit: bool) {
         trip: None,
         transport: None,
         cf_ok: None,
+        ctx: None,
     };
     let mut last_health = now_secs();
     loop {
@@ -1733,6 +1759,34 @@ mod tests {
     }
 
     #[test]
+    fn parse_request_keeps_only_the_valid_fleet_ctx_14188() {
+        let frame = serde_json::json!({
+            "method": "POST",
+            "path": "/claim",
+            "ctx": {
+                "FLEET_CTX_ID": "task-22655",
+                "FLEET_CTX_TASK_ID": "22655",
+                "FLEET_CTX_NOT_IN_SET": "x",
+                "FLEET_CTX_ORIGIN": "bad value with spaces",
+                "FLEET_CTX_HOST": 7,
+            },
+        });
+        let ctx = parse_request(&frame).unwrap().ctx.unwrap();
+        assert_eq!(ctx.len(), 2, "{ctx:?}");
+        assert_eq!(ctx["FLEET_CTX_ID"], "task-22655");
+        assert_eq!(ctx["FLEET_CTX_TASK_ID"], "22655");
+        // Absent, non-object, or all-invalid ctx is no context, never
+        // an error.
+        for frame in [
+            serde_json::json!({"method": "GET", "path": "/health"}),
+            serde_json::json!({"method": "GET", "path": "/health", "ctx": "x"}),
+            serde_json::json!({"method": "GET", "path": "/health", "ctx": {"PATH": "/bin"}}),
+        ] {
+            assert!(parse_request(&frame).unwrap().ctx.is_none());
+        }
+    }
+
+    #[test]
     fn cf_request_ok_applies_the_exec_safety_valve() {
         let mk = |path: &str, body: serde_json::Value| Request {
             method: "POST".to_string(),
@@ -1743,6 +1797,7 @@ mod tests {
             trip: None,
             transport: None,
             cf_ok: None,
+            ctx: None,
         };
         // A long /exec may not ride the edge.
         assert!(!cf_request_ok(&mk(

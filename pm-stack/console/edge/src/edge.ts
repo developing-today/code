@@ -135,12 +135,6 @@ import appFiles from "../../public/files.json";
  * one list of them, and this Worker's build ships exactly those. */
 const STATIC: Record<string, string> = Object.fromEntries(appFiles.files.map((f) => [f.path, f.type]));
 
-
-
-
-
-
-
 export class Edge {
   private kv: KV;
   private now: () => number;
@@ -273,7 +267,11 @@ export class Edge {
     this.woke = this.now();
     this.fetchImpl = plain(options.fetchImpl ?? fetch) as typeof fetch;
     this.builds = new Builds(this.kv, this.now, this.fetchImpl);
-    this.mirrors = new Mirrors(this.kv, () => this.ready(), () => this.confirmed);
+    this.mirrors = new Mirrors(
+      this.kv,
+      () => this.ready(),
+      () => this.confirmed,
+    );
     this.direct = options.direct;
     this.sockets = options.sockets ?? null;
     const setAlarm = options.setAlarm ?? (async () => {});
@@ -393,7 +391,6 @@ export class Edge {
     };
   }
 
-
   // ---- what is kept ------------------------------------------------------
 
   /** What a machine told, as it told it and as it is kept. */
@@ -416,8 +413,6 @@ export class Edge {
     return this.cfg;
   }
 
-
-
   /** Sections from the host, taken in; returns the names that changed. */
   private async take(sections: unknown): Promise<string[]> {
     const names: string[] = [];
@@ -439,7 +434,12 @@ export class Edge {
       // section is the steady-state write load. The time is still taken
       // as current through `confirmed` (see `mirror`), not stored.
       if (have && !have.own && have.hash === raw.hash) continue;
-      await this.mirrors.putMirror({ name: raw.name, at: Math.min(raw.at, this.now()), hash: raw.hash, data: raw.data });
+      await this.mirrors.putMirror({
+        name: raw.name,
+        at: Math.min(raw.at, this.now()),
+        hash: raw.hash,
+        data: raw.data,
+      });
       names.push(raw.name);
     }
     if (names.length > 0) await this.docs.reread(names);
@@ -527,7 +527,6 @@ export class Edge {
    * sorts out whether it did it. This side never does it itself, and
    * nothing newer about the same thing goes ahead of it. */
 
-
   /** Who each held action waits for, as the owner is told it. The same
    * rule heldMine goes by: this side does the oldest about a thing, and
    * then the next, for as long as each is a kind it does and nothing
@@ -552,7 +551,6 @@ export class Edge {
     }
     return waits;
   }
-
 
   /** What this side has taken, read back when an object starts, and each
    * settled by what its record says. One that is in the held list again
@@ -2013,7 +2011,10 @@ export class Edge {
         const mine = this.mine(cfg);
         const bridgeRead =
           seg.length === 1 &&
-          (seg[0] === "messages" || seg[0] === "pipeline" || seg[0] === "directory" || seg[0] === "offers" ||
+          (seg[0] === "messages" ||
+            seg[0] === "pipeline" ||
+            seg[0] === "directory" ||
+            seg[0] === "offers" ||
             seg[0] === "enroll-tokens");
         if (mine && !(bridgeRead && !this.bridgeReady())) {
           const from = this.outwardN;

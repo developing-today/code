@@ -29,6 +29,7 @@ hex = { version = "0.4", features = ["serde"] }
 serde_bytes = "0.11"
 futures-lite = "2"
 id-core = { path = "../id-core", default-features = false }
+id-grants = { path = "../id-grants" }
 iroh = "1"
 iroh-base = "1"
 iroh-blobs = "0.103"

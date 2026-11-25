@@ -124,6 +124,8 @@ fn build_hierarchy(tmp: &TempDir) -> Hierarchy {
                 } else {
                     vec![]
                 },
+                ip_addresses: vec![],
+                csr: None,
                 key_algorithm: None,
                 issuer_algorithm: Some(AlgorithmId::P256),
                 issuer_partition: None,

@@ -35,6 +35,7 @@ pub mod content_store;
 pub mod documents;
 pub mod event_rows;
 pub mod event_types;
+pub mod grant_authority;
 pub mod graph_index;
 pub mod identity;
 pub mod issuer_rotation;
@@ -57,5 +58,6 @@ pub mod tag_claims;
 pub mod tag_index;
 pub mod tags;
 pub mod turso;
+pub mod talk_page;
 
 pub use store::STORE_PATH;

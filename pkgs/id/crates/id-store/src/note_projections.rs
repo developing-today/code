@@ -19,11 +19,10 @@
 //! the only granularity this model has. Every multi-note projection
 //! takes a caller-provided `can_read` predicate and never exposes a
 //! note (or its existence metadata, including through transclusion)
-//! to a reader the predicate denies. Wiring that predicate to the
-//! #5678 resolution order (object → user default → server config →
-//! public) is the named follow-on packet on #8218, explicitly left
-//! out of this slice per its acceptance criteria — the predicate
-//! seam is the handoff point, not a silent drop.
+//! to a reader the predicate denies. The #5678 resolution order
+//! (object → user default → server config → public) is
+//! [`crate::read_authority::NoteReader`], which callers pass as that
+//! predicate (#12751).
 //!
 //! Tests in this module name the #5839 design record
 //! (`doc/2026-11-10T20-12-00Z_design_id_content_model/`) as their
@@ -133,9 +132,13 @@ pub struct ProjectedNote {
 }
 
 /// A read-authority predicate over note IDs: `true` means the viewer
-/// may read the note. Wiring this to the #5678 resolution order is
-/// the named follow-on packet on #8218.
-pub type CanRead = dyn Fn(&Hash) -> bool;
+/// may read the note. The #5678 resolution order is
+/// [`crate::read_authority::NoteReader::may_read`]; pass
+/// `&|n: &Hash| reader.may_read(n)`.
+///
+/// The alias carries a lifetime so a predicate may borrow its reader
+/// state (a `dyn` in a type alias otherwise defaults to `'static`).
+pub type CanRead<'a> = dyn Fn(&Hash) -> bool + 'a;
 
 // ---------------------------------------------------------------------------
 // Outline (D3)
@@ -237,7 +240,7 @@ pub struct JournalRow<'a> {
 /// omitted entirely — including their existence metadata (#5839
 /// invariant 6).
 #[must_use]
-pub fn journal_view<'a>(notes: &'a [ProjectedNote], can_read: &CanRead) -> Vec<JournalRow<'a>> {
+pub fn journal_view<'a>(notes: &'a [ProjectedNote], can_read: &CanRead<'_>) -> Vec<JournalRow<'a>> {
     let mut rows: Vec<JournalRow<'a>> = notes
         .iter()
         .filter(|n| can_read(&n.note))
@@ -281,7 +284,7 @@ pub enum CaptureTarget<'a> {
 pub fn capture_target<'a>(
     notes: &'a [ProjectedNote],
     date: CalendarDate,
-    can_read: &CanRead,
+    can_read: &CanRead<'_>,
 ) -> CaptureTarget<'a> {
     for note in notes {
         if note.dates.contains(&date) && can_read(&note.note) {
@@ -369,7 +372,7 @@ pub struct DatabaseRow<'a> {
 pub fn database_view<'a>(
     def: &DatabaseDefinition,
     notes: &'a [ProjectedNote],
-    can_read: &CanRead,
+    can_read: &CanRead<'_>,
 ) -> Vec<DatabaseRow<'a>> {
     let mut rows: Vec<DatabaseRow<'a>> = notes
         .iter()
@@ -463,7 +466,7 @@ pub fn describe_cell_edit(
     note: &ProjectedNote,
     column: &str,
     value: PropertyValue,
-    can_read: &CanRead,
+    can_read: &CanRead<'_>,
 ) -> Option<PropertyEdit> {
     if !can_read(&note.note) {
         return None;
@@ -508,7 +511,7 @@ pub fn render_transclusion<'a>(
     pinned_tree: Option<&'a BlockTree>,
     head_tree: Option<&'a BlockTree>,
     source_note: &Hash,
-    can_read: &CanRead,
+    can_read: &CanRead<'_>,
 ) -> TransclusionRender<'a> {
     if !can_read(source_note) {
         return TransclusionRender::Unresolved;
