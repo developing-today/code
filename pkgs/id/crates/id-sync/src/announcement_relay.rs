@@ -298,7 +298,7 @@ mod tests {
         (key, fields)
     }
 
-    fn block_on<F: std::future::Future>(future: F) -> F::Output {
+    fn block_on<F: Future>(future: F) -> F::Output {
         tokio::runtime::Builder::new_current_thread()
             .build()
             .unwrap()
