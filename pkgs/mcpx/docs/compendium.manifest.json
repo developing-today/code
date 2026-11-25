@@ -1029,7 +1029,7 @@
       "path": "docs/script-generate.md",
       "chapter": "proposed",
       "role": "chapter-source",
-      "lines": 239,
+      "lines": 294,
       "note": "contract for the script-side generate surface (#14183, split from #1925): call surface, languages, model selection, request/response, budgets, errors, readiness verdict"
     },
     {

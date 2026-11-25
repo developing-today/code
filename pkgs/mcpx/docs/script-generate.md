@@ -7,10 +7,10 @@
 
 ## Status
 
-Contract only. Nothing here is implemented: there is no `generate` global
-in the script client today (`internal/codegen/emit.go`), no route, no
-setting. The implementation packet is a separate piece of work once this
-contract is settled.
+Contract only, settled by lane oc-code-07 for #14183. There is no public
+script `generate` global or route today. The existing `model.*` settings
+are reused; no new setting is proposed. This replaces the competing
+drafts in #14459 and #14472, not the existing model layer.
 
 ## What it is not
 
@@ -49,36 +49,50 @@ if (res.ok) {
 ```
 
 `generate` is async, takes a single options object, and returns a
-discriminated result (section 5) — it never throws for a model-side
-outcome. Throwing stays reserved for programmer errors the script cannot
-branch on (see section 6). A generated ambient declaration
+discriminated result (section 4) — it never throws for a model-side
+outcome. Only a missing/non-object argument throws (see section 6).
+A generated ambient declaration
 (`GlobalDeclarations` in `internal/codegen/emit.go`) carries it the way
 `log`, `emit` and `artifact` are carried today, so editors complete it
 with no import.
 
-Placement follows the one-implementation rule (`docs/exec.md`): the
-global is installed by the launcher for local runs and by `execsvc` for
-daemon runs, over the same generated client. `mcpx exec` snippets, named
-scripts (`mcpx run`), and remote runs all see the same function, because
-there is one place that installs globals. Parity is structural, not
-tested-in.
+Placement follows the generated-client installer (`installGlobals` in
+`internal/codegen/emit.go`), not a synthetic `tools.model` MCP namespace.
+The implementation must add one daemon handler and client transport for
+it, used by local and daemon execution alike; local launchers must not
+make direct provider calls. Local snippets, named scripts and remote runs
+must be acceptance-tested against the same handler.
+
+The handler must validate run identity/cancellation and use the daemon's
+configured model policy. Existing tool visibility checks do not authorize
+this non-tool operation, and `script.permissions` supplies runtime flags,
+not provider/model grants. This contract does not invent a namespace or
+model allow-list that mcpx does not have. `model.provider=none` refuses
+every call, including one with an explicit model/profile. Model selection
+never supplies credentials or changes daemon configuration. The generated
+client is a convenience, not an authorization boundary or a claim that
+arbitrary network-capable scripts are sandboxed.
 
 ## 2. Which script languages can call it
 
-Every language the runner harnesses — today TypeScript/JavaScript
-(deno, bun, node, per `ExecOptions.runtime`) and Python (the harnessed
-client, #1917), with Roc following its codegen target
-(`internal/codegen/roc.go`). The surface is one generated-client function
-per target, added alongside the existing per-language globals, so a new
-harnessed language gets `generate` by implementing the same client
-function — the contract does not bless one language's spelling over
-another's, only the request/response shapes in sections 4 and 5, which
-are JSON on the wire either way.
+The runner has TypeScript/JavaScript, Python and Roc generated clients
+(`internal/codegen/language.go`). First implementation slice: only
+TypeScript/JavaScript under Deno, Bun and Node. Python and Roc bindings
+are explicitly deferred, not promised by TypeScript code generation;
+they must later implement this same JSON request/result contract with
+language-appropriate async calls. Until then their generated declarations
+must not advertise `generate`. Arbitrary shebang interpreters receive no
+supported generation binding.
 
 ## 3. Provider and model selection, and how a model profile is chosen
 
-Selection reuses the model layer exactly as it stands (`internal/model`,
-settings in `internal/settings/model.go`); no new selection machinery.
+Reuse the existing model layer (`internal/model`, settings in
+`internal/settings/model.go`), adding request-aware provider resolution
+where necessary. Resolve `provider/model` ids against configured endpoints
+before invoking a backend; never merely strip a mismatching provider
+prefix and send the model to another provider's endpoint. This routing
+guarantee is an implementation requirement, not a claim that the current
+single-provider resolver already enforces it.
 
 - `model.provider`: `auto` | `sampling` | `plugin` | `openai` |
   `anthropic` | `google` | `none` (default). `none` means no operation
@@ -99,33 +113,48 @@ settings in `internal/settings/model.go`); no new selection machinery.
 
 Resolution order for one call:
 
-1. The call's `model` field; empty falls back to `model.default`.
+1. First refuse `model.provider=none`. Otherwise use the call's `model`
+   field; empty falls back to `model.default`.
 2. If the name matches a profile (case-insensitive), the profile chain
    runs.
 3. Otherwise the id splits on the first `/` into provider and model
    (`SplitModelID`); a bare id belongs to the routed provider.
-4. `auto` prefers a configured provider (an `apiKeyEnv` naming a set
-   variable, or an explicit `baseURL`), then the sampling path, then
-   fails cleanly — auto never scans the environment for known key names,
-   and never parks a request on a sampling question nobody may answer
-   ahead of an explicitly configured endpoint.
+4. For a bare id, `auto` selects a configured provider (an `apiKeyEnv`
+   naming a set variable, or an explicit `baseURL`), otherwise returns
+   `unavailable`. It never scans for known key names or installs a
+   sampling fallback in this slice.
 
-`model.provider=plugin` resolves only where the daemon installed the
-plugin answerer path; elsewhere it is `unavailable`, not a silent
-fallback. The scope guard from #1925 binds the surface, not each call:
+The scope guard from #1925 binds the surface, not each call:
 no mcpx operation may call a model on a path where a deterministic answer
 exists — a script calling `generate` is the caller's explicit choice, so
 the guard is satisfied once, at the surface, and each call is honoured.
 
-The sampling backend asks the run's *driver* through the broker: the
-script spends the driver's model, not the daemon's. A driver that never
-declared the sampling capability gets `unavailable`, and the daemon must
-never answer its own script's sampling question — reentrancy through the
-broker is a loop, and loops are refused, not retried.
+For this first slice the sampling and plugin paths are disabled for
+script calls: resolve without either answerer installed. Explicit
+selection of either returns `unavailable`; profile/auto selection must
+not install them as fallbacks. This avoids interactive sampling per row
+and recursive self-sampling. Enabling either later needs its own tested
+capability, cancellation and loop contract. Direct configured provider
+calls and existing direct-provider profile chains remain in scope.
 
 ## 4. Request and response shape
 
-The script options object maps 1:1 onto `model.Request`:
+The options type is:
+
+```ts
+type GenerateOptions = {
+  prompt: string;
+  system?: string;
+  model?: string;
+  maxTokens?: number; // finite integer; nonpositive means unset
+  stop?: string[];
+  timeout?: string; // positive Go duration, e.g. "20s"; omitted means unset
+  schema?: Record<string, unknown>; // JSON-serializable schema object
+};
+```
+
+Unknown fields return `rejected`, rather than silently ignoring typos.
+The options map to the model request and call context as follows:
 
 | script field | `model.Request` | notes |
 | --- | --- | --- |
@@ -135,7 +164,7 @@ The script options object maps 1:1 onto `model.Request`:
 | `maxTokens` | `MaxTokens` | Nonpositive means unset; section 5 caps it. |
 | `stop` | `Stop` | Honoured where the backend supports it, ignored elsewhere. |
 | `timeout` | call context deadline | Section 5 precedence. |
-| `schema` (optional) | `Schema` | JSON Schema the answer must conform to; passed to backends with structured output, ignored by the rest. |
+| `schema` (optional) | `Schema` | JSON Schema hint passed to backends that support structured output; ignored elsewhere. No cross-provider conformance guarantee; validate output in the caller. |
 
 The response is the discriminated union:
 
@@ -164,20 +193,27 @@ and the CLI): the per-call ask, capped by every applicable ceiling.
 - Ceilings, tightest wins: the selected profile's `budget`, then
   `model.budget` when positive (0 means no layer-imposed ceiling, so the
   per-call ask stands).
-- The call's `timeout`, when set and positive, bounds that call;
-  otherwise the selected profile's `timeout`; otherwise `model.timeout`.
-  Expiry is `timeout`, never a partial answer.
+- Deadlines take the earliest of the remaining run deadline, positive
+  call `timeout`, and positive `model.timeout` (default 90s). A positive
+  profile timeout additionally bounds each attempt; attempts share the
+  overall deadline rather than restarting it. Neither a call nor a
+  profile can extend the layer/run deadline. Expiry or run cancellation
+  is `timeout`, never a partial answer. No automatic client retries;
+  configured profile fallback remains within that deadline.
 
 How the existing knobs map:
 
-- `prompt.maxTokens` is the prompt-hook per-call ask. Script calls bring
-  their own ask, so it does not bound them; the `ModelTokenCap` *rule* is
-  shared, the *knob* is not.
-- `prompt.sampleTimeout` bounds a sampling question a generation raises;
-  it applies to script calls only through the sampling backend, as the
-  question's life, exactly as it does for hooks today.
-- `prompt.catalogBudget` does not apply: it bounds the tool catalog sent
-  to the model with a prompt hook, and a script call sends no catalog.
+- `prompt.maxTokens` (default 1500) supplies the ask for existing
+  consumer/script synthesis and prompt hooks. Explicit script calls
+  bring their own ask, so it does not bound them; the `ModelTokenCap`
+  *rule* is shared, the *knob* is not.
+- `prompt.sampleTimeout` (default 90s) is the broker sampling timeout
+  fallback when `model.timeout` is nonpositive. It has no effect on this
+  direct-provider slice; sampling is refused as described above.
+- `prompt.catalogBudget` (default 1200) bounds the catalog used in
+  consumer script synthesis (`internal/daemon/consumer.go`), not a
+  general generation token budget. A script call sends no automatic
+  catalog, so this knob does not apply.
 - `model.budget` / `model.timeout` are the layer-wide bounds and apply to
   every script call through the layer.
 
@@ -186,9 +222,9 @@ How the existing knobs map:
 A model-side outcome is a value (`ok: false`), never a throw — the
 prompt-hook precedent is that model unavailability must not fail work,
 and a script that cannot branch on `unavailable` will wrap every call in
-try/catch and learn nothing. Only programmer errors throw: a missing or
-non-object argument, an unreadable `schema`, values that fail validation
-before any provider is touched.
+try/catch and learn nothing. Only a missing or non-object options argument
+throws `TypeError`. All field-validation failures, including malformed
+schema, return `ok:false, errorKind:"rejected"` before contacting a provider.
 
 `errorKind` values:
 
@@ -196,44 +232,63 @@ before any provider is touched.
   (`model.provider=none`, the default), the named backend has no path
   installed (sampling/plugin with no answerer), a named provider is not
   configured, a profile is empty, or no default exists and the call named
-  no model. Also the sampling loop refusal in section 3. The `error`
+   no model. Also the disabled sampling/plugin paths in section 3. The `error`
   text names the reason, so a misconfigured provider is
   distinguishable from none configured.
 - `timeout` — the call, profile, or layer deadline expired; the provider
   is treated as unavailable for that call and the caller falls back to
-  its deterministic path with a note, the same shape as a hook frame's
-  `"advice unavailable: …"`.
-- `rejected` — the request itself is invalid: empty `prompt`, unknown
-  profile name, malformed model id, negative budget values. Nothing was
+   its own fallback if it chooses. No fallback script code is run implicitly.
+- `rejected` — the request itself is invalid: empty `prompt`, malformed
+  model id, invalid timeout, or malformed optional fields. Nothing was
   sent anywhere.
 - `provider` — reached but failed: HTTP errors (402 included, with the
-  profile chain stopped), unreachable endpoints, empty output, invalid
-  JSON. Retrying the identical call is expected to fail identically
-  until something outside changes.
+  profile chain stopped), unreachable endpoints, empty output, or an
+  invalid provider protocol response. A generated answer need not be
+  JSON. No client retry is automatic; transient errors may succeed on a
+  later caller-initiated attempt. Failure text must not expose credentials
+  or raw provider payloads. Client-to-daemon transport failures use
+  `provider` too (or `timeout` on deadline/cancellation); they do not throw.
 
-No partial application: a failed call changes nothing (there is nothing
-to change — generation has no side effects), charges nothing mcpx-side
-(spend is the provider's affair), and leaves the run continuing
-deterministically.
+The implementation must preserve typed profile-attempt failures rather
+than classify from error text. On exhaustion, an expired overall deadline
+returns `timeout`; otherwise the last attempted provider failure determines
+`timeout` or `provider`. Return `unavailable` when no configured backend
+could be attempted. Successful fallback still returns success, and HTTP
+402 still stops immediately. The existing profile router wraps exhausted
+chains in `ErrUnavailable`; preserving these causes is required work, not
+existing behavior.
+
+No generated text is returned on failure and no tool is executed by
+`generate`. Provider requests can incur charges even if a timeout or
+transport error prevents delivery. A model-side failure leaves the script
+able to choose its own fallback; it does not guarantee deterministic model
+output or undo provider-side work.
 
 ## Readiness verdict
 
-The implementation packet is **ready to write** with two decisions to
-ratify, both recorded above as contract rather than fact:
+The implementation packet is **ready**, scoped to TypeScript/JavaScript
+and configured direct providers. No ratification or owner decision is
+needed. The three draft conflicts are settled:
 
-1. The discriminated-result shape over throwing for model-side outcomes
-   (section 6). If the packet prefers `ToolError` throws for parity with
-   tool calls, it must say why the hook precedent does not apply.
-2. The knob mapping in section 5 — script calls share the `ModelTokenCap`
-   rule but not the `prompt.*` knobs. If the packet wants one shared
-   per-call setting, it must rename and migrate the hook knob rather
-   than overloading it.
+1. Use the generated `generate` global, not `tools.model`: globals are
+   already installed, whereas tool namespaces are registry-backed and do
+   not supply imaginary model permissions.
+2. Return discriminated results for model outcomes, intentionally unlike
+   `ToolError` throws from tool calls. This optional model operation uses
+   the hook precedent of a recoverable unavailable outcome. Throw only
+   for the local invocation/programmer errors listed above.
+3. Reuse the token-cap rule and `model.*` policy, not the consumer's
+   `prompt.*` asks/catalog knobs. Deadlines cannot be extended by calls.
 
-Open question that is genuinely open: whether the sampling backend needs
-a per-call opt-out flag for scripts running under drivers that answer
-sampling interactively (a script loop asking a human-backed driver once
-per row is a footgun). The contract permits the backend; the packet
-should decide whether the first cut includes it or refuses
-`provider=sampling` from scripts until the loop guard has a test.
+Implementation done checks: transport and shared local/daemon behavior;
+request/result declarations; default/explicit model and profile choice;
+provider-qualified models never reaching another provider's endpoint;
+typed profile-exhaustion classification;
+disabled providers refusing calls; profile 402 stopping fallback; cap
+properties (a positive ceiling is never exceeded, including unset asks);
+earliest-deadline/cancellation behavior; programmer throws versus all four
+model result kinds; and absence of unsupported Python/Roc bindings.
+Use fake providers and a controllable clock, not paid live inference, as
+the test oracle. `ask`/`run` prompt effects remain out of scope.
 
 Refs #1925, #14183.
