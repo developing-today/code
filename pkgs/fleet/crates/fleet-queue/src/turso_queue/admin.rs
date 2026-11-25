@@ -1655,6 +1655,24 @@ pub(crate) fn verb_list(t: &TursoBackend, req: &Value) -> Value {
         conds += " AND dedupe_key = ?";
         args.push(Arg::Text(d.to_string()));
     }
+    if let Some(filters) = req.get("meta").and_then(Value::as_object) {
+        for (key, value) in filters {
+            if crate::validate::validate_metadata_key(key).is_err() {
+                return fail(2, format!("list --meta: invalid metadata key {key:?}"));
+            }
+            let Ok(encoded) = serde_json::to_string(value) else {
+                return fail(
+                    2,
+                    format!("list --meta: cannot encode filter value for {key}"),
+                );
+            };
+            // Bind a quoted JSON path so allowed dots and hyphens remain
+            // literal key characters rather than path syntax.
+            conds += " AND json_extract(metadata, ?) = json_extract(?, '$')";
+            args.push(Arg::Text(format!("$.\"{key}\"")));
+            args.push(Arg::Text(encoded));
+        }
+    }
     // #14170 Q5: --label narrows to tasks whose cached label set
     // holds that label; a trailing `*` matches a prefix (`user/*`).
     // The cache is refreshed at every transition and by the hourly

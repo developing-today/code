@@ -13,6 +13,10 @@ use anyhow::{Context, Result, bail, ensure};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 
+use id_core::boundary::EnforcementPoint;
+use id_core::boundary_surfaces::FrameworkOutcome;
+use id_directory::directory::BoundaryGate;
+
 mod checkpoint_parts;
 mod operations;
 
@@ -25,6 +29,21 @@ mod admin_history;
 
 pub(crate) use admin_history::AdminHistoryByteLedger;
 use admin_history::{admin_history_bytes, admin_history_event_bytes};
+
+#[derive(Clone)]
+pub(crate) struct MembershipBoundaryGateHandle(Arc<dyn BoundaryGate>);
+
+impl MembershipBoundaryGateHandle {
+    pub(crate) fn check(&self, subject: &str) -> FrameworkOutcome {
+        self.0.check(EnforcementPoint::WorldMembership, subject)
+    }
+}
+
+impl std::fmt::Debug for MembershipBoundaryGateHandle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("MembershipBoundaryGateHandle(..)")
+    }
+}
 
 fn presence_after(events: &[WorldEvent]) -> BTreeSet<u64> {
     let mut present = BTreeSet::new();
@@ -161,6 +180,10 @@ pub struct WorldCore {
     /// restore can deliver one leave for sessions lost with the process.
     pub(crate) open_presence: BTreeSet<u64>,
     pub(crate) directory: crate::directory::Directory,
+    /// Runtime boundary gate for account-bound world membership issuance.
+    /// Like the directory's signup/login gate, this is reinstalled by the
+    /// serving app after journal restore and is never persisted.
+    pub(crate) membership_boundary_gate: Option<MembershipBoundaryGateHandle>,
     pub(crate) petnames: crate::petname::Petnames,
     /// Active region-seam handoffs this world is a side of (#3870 phase 1,
     /// design #2818 §3): export fences/payloads and import receipts,
@@ -429,6 +452,7 @@ impl WorldCore {
             admin_history_ledger: AdminHistoryByteLedger::default(),
             open_presence: BTreeSet::new(),
             directory: crate::directory::Directory::new(),
+            membership_boundary_gate: None,
             petnames: crate::petname::Petnames::new(),
             handoff_transfers: Vec::new(),
             write_lease: WriteLease::bootstrap(),

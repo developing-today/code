@@ -1057,6 +1057,7 @@ pub fn dispatch(t: &TursoBackend, path: &str, req: &Value) -> Value {
         "/events-prune" => verb_events_prune(t, req),
         "/history-since" => verb_history_since(t, req),
         "/history-backfill" => verb_history_backfill(t, req),
+        "/meta" => verb_meta(t, req),
         "/labels-sync" => verb_labels_sync(t, req),
         "/note-add" => verb_note_add(t, req),
         "/note-list" => verb_note_list(t, req),
