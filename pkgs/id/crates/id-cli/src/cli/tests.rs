@@ -2118,19 +2118,35 @@ fn test_cli_parse_world_boot_window() {
 
 #[test]
 fn test_cli_parse_world_host() {
-    let cli = Cli::parse_from(["id", "serve", "--world", "--world-host"]);
+    let cli = Cli::parse_from([
+        "id",
+        "serve",
+        "--world",
+        "--world-admin-token",
+        "x",
+        "--world-host",
+    ]);
     match cli.command {
         Some(Command::Serve(args)) => assert!(args.world_host),
         _ => panic!("Expected Serve command"),
     }
-    let cli = Cli::parse_from(["id", "serve", "--world"]);
+    let cli = Cli::parse_from(["id", "serve", "--world", "--world-admin-token", "x"]);
     match cli.command {
         Some(Command::Serve(args)) => assert!(!args.world_host),
         _ => panic!("Expected Serve command"),
     }
     assert!(Cli::try_parse_from(["id", "serve", "--world-host"]).is_err());
     assert!(
-        Cli::try_parse_from(["id", "serve", "--world", "--world-host", "--ephemeral"]).is_err()
+        Cli::try_parse_from([
+            "id",
+            "serve",
+            "--world",
+            "--world-admin-token",
+            "x",
+            "--world-host",
+            "--ephemeral",
+        ])
+        .is_err()
     );
 }
 
