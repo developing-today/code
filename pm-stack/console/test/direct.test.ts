@@ -242,7 +242,15 @@ describe("the edge's run: the bridge through its binding", () => {
     const h = bridgeHarness();
     // A pattern send with a limit: the limit rides the body, and the
     // bridge's match report comes back as the run's output.
-    h.answer.body = { batch: "b9", messages: [], unregistered: [], matched: 2, delivered: 1, recipients: ["felix-1"], remaining: 1 };
+    h.answer.body = {
+      batch: "b9",
+      messages: [],
+      unregistered: [],
+      matched: 2,
+      delivered: 1,
+      recipients: ["felix-1"],
+      remaining: 1,
+    };
     const sent = await h.run(["fleet", "bridge", "send", "--to", "agent:f*", "--command", "--limit", "1", "-"], {
       stdin: "do the thing",
     });
@@ -255,7 +263,15 @@ describe("the edge's run: the bridge through its binding", () => {
     });
     expect(JSON.parse(sent.stdout)).toMatchObject({ matched: 2, delivered: 1, remaining: 1 });
     // A broaden names only the batch: no text, no targets.
-    h.answer.body = { batch: "b9", messages: [], unregistered: [], matched: 2, delivered: 1, recipients: ["felix-2"], remaining: 0 };
+    h.answer.body = {
+      batch: "b9",
+      messages: [],
+      unregistered: [],
+      matched: 2,
+      delivered: 1,
+      recipients: ["felix-2"],
+      remaining: 0,
+    };
     await h.run(["fleet", "bridge", "send", "--broaden", "b9"]);
     expect(h.calls[1].url).toBe("https://bridge.internal/fleet/pm-cred-test/send");
     expect(JSON.parse(h.calls[1].init.body ?? "{}")).toEqual({ agent: "pm-stack", broaden: "b9" });
@@ -288,7 +304,15 @@ describe("the edge's run: the bridge through its binding", () => {
     // The classes run the same verbs through the same translation.
     const { ops } = directClasses(edgeConfig, h.secrets);
     h.answer.status = 201;
-    h.answer.body = { batch: "b9", messages: [], unregistered: [], matched: 2, delivered: 1, recipients: ["felix-2"], remaining: 0 };
+    h.answer.body = {
+      batch: "b9",
+      messages: [],
+      unregistered: [],
+      matched: 2,
+      delivered: 1,
+      recipients: ["felix-2"],
+      remaining: 0,
+    };
     const widened = await ops.broaden("b9");
     expect(widened).toMatchObject({ matched: 2, delivered: 1, remaining: 0 });
     h.answer.body = { offers: [{ id: 7, claims: [] }] };
@@ -321,7 +345,15 @@ describe("the edge's run: the bridge through its binding", () => {
     const h = bridgeHarness();
     const { ops } = directClasses(edgeConfig, h.secrets);
     // A send's answer is the bridge's match report (#14375).
-    h.answer.body = { batch: "b1", messages: [], unregistered: [], matched: 1, delivered: 1, recipients: ["felix-1"], remaining: 0 };
+    h.answer.body = {
+      batch: "b1",
+      messages: [],
+      unregistered: [],
+      matched: 1,
+      delivered: 1,
+      recipients: ["felix-1"],
+      remaining: 0,
+    };
     const sent = await ops.send(["agent:felix-1"], "hello there", true);
     expect(sent).toEqual({
       to: ["agent:felix-1"],
@@ -397,6 +429,40 @@ describe("the edge's run: the bridge through its binding", () => {
     );
     await expect(h.run(["fleet", "bridge", "revoke-enroll", "--agent", "new-1"])).rejects.toThrow(/needs a machine/);
     expect(h.calls).toHaveLength(4);
+    // The wake hooks' list is a read of the same binding (#14544);
+    // setting and removing are owner-token acts, refused here like
+    // the revoke above (a remove is held for a machine instead).
+    h.answer.body = {
+      hooks: [
+        {
+          address: "agent:felix-1",
+          kind: "webhook",
+          host: "hooks.example",
+          has_token: true,
+          added: "2026-11-24T00:00:00.000Z",
+        },
+      ],
+    };
+    const hooks = await h.run(["fleet", "bridge", "wake-hooks"]);
+    expect(h.calls[4].url).toBe("https://bridge.internal/fleet/pm-cred-test/wake-hooks");
+    expect(JSON.parse(hooks.stdout)).toEqual({
+      hooks: [
+        {
+          address: "agent:felix-1",
+          kind: "webhook",
+          host: "hooks.example",
+          has_token: true,
+          added: "2026-11-24T00:00:00.000Z",
+        },
+      ],
+    });
+    await expect(h.run(["fleet", "bridge", "wake-hooks", "--set", "-"], { stdin: "{}" })).rejects.toThrow(
+      /needs a machine/,
+    );
+    await expect(h.run(["fleet", "bridge", "wake-hooks", "--remove", "--address", "agent:felix-1"])).rejects.toThrow(
+      /needs a machine/,
+    );
+    expect(h.calls).toHaveLength(5);
   });
 
   test("the classes read the pipeline and the merged directory through the bridge, and cannot revoke there", async () => {

@@ -145,3 +145,7 @@ A server without an outbox refuses only those changes, with the same message, an
 `sends_envelope` keeps its meaning, "may queue", because the explorer uses it to decide whether a form credential is forwarded for signing.
 
 Not changed: a server with an outbox behaves as before, and a removal or publish for an account with declared homes still needs an outbox.
+
+## Tracking
+
+This record predates the tracking-issue convention, and no issue was filed for it. It is superseded in part by the [events, groups, delegation, removal, and history design](../2026-10-11T03-44-33Z_design_groups_events_delegation/2026-10-11T03-44-33Z_design_groups_events_delegation.md); [the note in this folder](2026-10-11T03-44-33Z_note_superseded_in_part.md) lists what changed and what still holds. (Pointer added 2026-11-25 for #13881.)

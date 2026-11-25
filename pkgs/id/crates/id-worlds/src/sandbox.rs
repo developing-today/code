@@ -355,6 +355,9 @@ impl Sandbox {
             seed,
             limits: self.limits,
             metrics,
+            fuel_rate: None,
+            #[cfg(test)]
+            fuel_now: None,
             trap_fuel: None,
             burn_budget: crate::guest_burn::GuestBurnBudget::shared(),
             charge_key: next_guest_charge_key(),
@@ -390,6 +393,19 @@ pub struct WorldInstance {
     seed: u64,
     limits: SandboxLimits,
     metrics: CallMetrics,
+    /// The owning account's fuel-rate budget (#1067, F12.10), when the
+    /// host installed one for this world. Every [`Self::update`]
+    /// admission charges it the invocation's fuel allowance; `None` —
+    /// every host that has not wired account quotas yet — leaves
+    /// invocation admission exactly as it was before F12.10.
+    fuel_rate: Option<id_caps::account_quota::FuelRateBudget>,
+    /// Test-only admission clock (#1067): when set,
+    /// [`Self::charge_fuel_rate`] charges at this instant instead of
+    /// `Instant::now()`, so admission tests can pin the budget's
+    /// window — or step it by hand — instead of racing the wall
+    /// clock. `None` everywhere except tests that set it.
+    #[cfg(test)]
+    fuel_now: Option<std::time::Instant>,
     /// Fuel a trapped call had spent, captured before the diagnostic getters
     /// refill the store; taken by [`Self::settle`].
     trap_fuel: Option<u64>,
@@ -467,6 +483,55 @@ impl WorldInstance {
     /// In-memory only: never journaled, sent on the wire, or snapshotted.
     pub const fn metrics(&self) -> &CallMetrics {
         &self.metrics
+    }
+
+    /// Install the owning account's fuel-rate budget (#1067, F12.10).
+    ///
+    /// From the next [`Self::update`] on, every invocation admission
+    /// charges this budget the invocation's fuel allowance, and an
+    /// account at its rate has its updates refused until the budget's
+    /// window rolls. Installing replaces any budget already installed;
+    /// the replaced budget's accounting is discarded with it. Hosts
+    /// that never call this leave the instance uncharged, exactly as
+    /// before F12.10.
+    pub fn set_fuel_rate_budget(&mut self, budget: id_caps::account_quota::FuelRateBudget) {
+        self.fuel_rate = Some(budget);
+    }
+
+    /// The installed fuel-rate budget, if any (#1067). For reporting:
+    /// its counters say what the account was charged at admission,
+    /// which is deliberately not the metered consumption in
+    /// [`Self::metrics`].
+    pub const fn fuel_rate_budget(&self) -> Option<&id_caps::account_quota::FuelRateBudget> {
+        self.fuel_rate.as_ref()
+    }
+
+    /// Charge this invocation's fuel allowance against the owning
+    /// account's rate budget (#1067), when one is installed.
+    ///
+    /// Admission control, priced at the allowance: the store is about
+    /// to be handed `limits.fuel`, so that is what the account is
+    /// charged — before the guest runs, so a refusal means the
+    /// invocation never happens and nothing is metered. A refusal is
+    /// recoverable: it does not poison the instance, and the same
+    /// call can succeed once the budget's window rolls.
+    ///
+    /// # Errors
+    ///
+    /// The budget's
+    /// [`FuelRateRefusal`](id_caps::account_quota::FuelRateRefusal)
+    /// when the account is at its rate for the current window.
+    fn charge_fuel_rate(&mut self) -> Result<()> {
+        if let Some(budget) = &mut self.fuel_rate {
+            // Tests pin `fuel_now` (#1067); production always reads
+            // the wall clock.
+            #[cfg(test)]
+            let now = self.fuel_now.unwrap_or_else(std::time::Instant::now);
+            #[cfg(not(test))]
+            let now = std::time::Instant::now();
+            budget.try_charge(now, self.limits.fuel)?;
+        }
+        Ok(())
     }
 
     /// Name the key this guest's burns are charged to (the world id,
@@ -621,13 +686,18 @@ impl WorldInstance {
     }
 
     /// Apply one event from `participant`. The model pointer is committed
-    /// only if guest update succeeds.
+    /// only if guest update succeeds. When the owning account has a
+    /// fuel-rate budget installed (#1067), admission charges it and a
+    /// refusal runs nothing — but only after the message-size check:
+    /// an oversized event never runs, so it must not consume the
+    /// account's execution budget.
     pub fn update(&mut self, participant: u64, event: &[u8]) -> Result<()> {
         ensure!(
             !self.poisoned,
             "world guest is poisoned after a previous failure"
         );
         self.check_message_size(event)?;
+        self.charge_fuel_rate()?;
         // The world's participant limit keeps IDs far below i32::MAX; clamp
         // defensively so a hostile caller can never wrap the guest argument.
         let participant = i32::try_from(participant).unwrap_or(i32::MAX);
@@ -993,6 +1063,14 @@ impl WorldInstance {
 impl WorldInstance {
     fn snapshot_via_trait(&mut self) -> Option<String> {
         crate::world::WorldProgram::snapshot(self).unwrap()
+    }
+
+    /// Pin the admission clock (#1067): [`Self::charge_fuel_rate`]
+    /// charges at `now` until this is called again, so a test can
+    /// hold the budget's window still — or step it past a rollover —
+    /// without sleeping or racing the wall clock.
+    pub fn set_fuel_now_for_test(&mut self, now: std::time::Instant) {
+        self.fuel_now = Some(now);
     }
 }
 
@@ -1388,6 +1466,204 @@ mod tests {
         assert_eq!(world.view().unwrap(), b"hello");
         world.update(1, b"event").unwrap();
         assert_eq!(world.view().unwrap(), b"hello");
+    }
+
+    #[test]
+    fn an_account_at_its_fuel_rate_refuses_the_next_update() {
+        let limits = SandboxLimits {
+            fuel: 10_000,
+            ..SandboxLimits::default()
+        };
+        let runner = compile(ECHO, limits).unwrap();
+        let mut world = runner.instantiate(123).unwrap();
+        // One invocation's allowance exactly fills the account's window.
+        world.set_fuel_rate_budget(id_caps::account_quota::FuelRateBudget::new(limits.fuel));
+        world.update(1, b"event").unwrap();
+        let refusal = world
+            .update(1, b"event")
+            .unwrap_err()
+            .downcast::<id_caps::account_quota::FuelRateRefusal>()
+            .unwrap();
+        assert_eq!(refusal.limit_per_second, limits.fuel);
+        assert_eq!(refusal.charged_in_window, limits.fuel);
+        assert_eq!(refusal.requested_fuel, limits.fuel);
+        // The refused invocation never ran: only one update is metered.
+        assert_eq!(world.metrics().get(GuestCall::Update).calls, 1);
+        // A refusal is recoverable, not poisoning: reads still serve.
+        assert_eq!(world.view().unwrap(), b"hello");
+    }
+
+    #[test]
+    fn a_fuel_rate_budget_accounts_each_admitted_allowance() {
+        let limits = SandboxLimits {
+            fuel: 10_000,
+            ..SandboxLimits::default()
+        };
+        let runner = compile(ECHO, limits).unwrap();
+        let mut world = runner.instantiate(123).unwrap();
+        world.set_fuel_rate_budget(id_caps::account_quota::FuelRateBudget::new(limits.fuel * 3));
+        for _ in 0..3 {
+            world.update(1, b"event").unwrap();
+        }
+        assert!(world.update(1, b"event").is_err());
+        let budget = world.fuel_rate_budget().unwrap();
+        assert_eq!(budget.total_charged(), limits.fuel * 3);
+        assert_eq!(budget.charged_in_window(), limits.fuel * 3);
+        assert_eq!(budget.refusal_count(), 1);
+    }
+
+    #[test]
+    fn an_oversized_event_does_not_consume_the_fuel_budget() {
+        let limits = SandboxLimits {
+            fuel: 10_000,
+            ..SandboxLimits::default()
+        };
+        let runner = compile(ECHO, limits).unwrap();
+        let mut world = runner.instantiate(123).unwrap();
+        // One allowance exactly fills the account's window.
+        world.set_fuel_rate_budget(id_caps::account_quota::FuelRateBudget::new(limits.fuel));
+        let oversized = vec![b'e'; limits.message_bytes + 1];
+        assert!(world.update(1, &oversized).is_err());
+        // The rejected non-invocation charged nothing: the next
+        // valid event still fits the window.
+        world.update(1, b"event").unwrap();
+        let budget = world.fuel_rate_budget().unwrap();
+        assert_eq!(budget.total_charged(), limits.fuel);
+        assert_eq!(budget.refusal_count(), 0);
+    }
+
+    /// Property coverage for the admission accounting invariants
+    /// (Codex review on #12557): generated allowance, quota, event
+    /// size, and admission/refusal sequences, checked against an
+    /// explicit accounting oracle — bounded charges, and refused
+    /// calls that neither execute nor alter invocation metrics nor
+    /// poison the instance. The examples above stay as smoke
+    /// coverage.
+    mod admission_property {
+        use super::*;
+        use proptest::prelude::*;
+
+        /// The oracle: what the ledger and the invocation metrics
+        /// must say after each event. The admission clock is pinned
+        /// for the whole case (see below), so no window rolls
+        /// mid-case and the window charge is just the sum of
+        /// admitted allowances; the case then steps the clock by
+        /// hand to cover a rollover deterministically.
+        #[derive(Debug, Default)]
+        struct Oracle {
+            charged: u64,
+            refusals: u64,
+            calls: u64,
+        }
+
+        proptest! {
+            #[test]
+            fn admission_accounting_matches_its_oracle(
+                (fuel, budget_limit) in (10_000u64..=100_000u64)
+                    .prop_flat_map(|fuel| (Just(fuel), 0..=fuel * 5)),
+                ops in prop::collection::vec(
+                    prop_oneof![
+                        8 => 0..=1024usize,
+                        // Past the 1 MiB message ceiling: rejected
+                        // before admission, so it must charge nothing.
+                        2 => (1024 * 1024 + 1usize)..=(1024 * 1024 + 512usize),
+                    ],
+                    0..=32,
+                ),
+            ) {
+                let limits = SandboxLimits {
+                    fuel,
+                    ..SandboxLimits::default()
+                };
+                let runner = compile(ECHO, limits).unwrap();
+                let mut world = runner.instantiate(123).unwrap();
+                world.set_fuel_rate_budget(
+                    id_caps::account_quota::FuelRateBudget::new(budget_limit),
+                );
+                // Pin the admission clock (#1067): the budget's
+                // window can only roll when this case steps it, never
+                // because the test process was descheduled mid-case.
+                let fuel_now = std::time::Instant::now();
+                world.set_fuel_now_for_test(fuel_now);
+                let mut oracle = Oracle::default();
+                for len in ops {
+                    let event = vec![b'e'; len];
+                    let result = world.update(1, &event);
+                    if len > limits.message_bytes {
+                        // Oversized: rejected before admission, so
+                        // neither the budget nor the metrics move.
+                        prop_assert!(result.is_err());
+                        prop_assert!(
+                            result
+                                .unwrap_err()
+                                .downcast_ref::<id_caps::account_quota::FuelRateRefusal>()
+                                .is_none(),
+                            "an oversized event is a size rejection, not a fuel refusal"
+                        );
+                    } else if oracle
+                        .charged
+                        .checked_add(fuel)
+                        .is_none_or(|total| total > budget_limit)
+                    {
+                        // Refused whole at admission: the guest
+                        // never ran, so nothing is metered.
+                        let refusal = result
+                            .unwrap_err()
+                            .downcast::<id_caps::account_quota::FuelRateRefusal>()
+                            .unwrap();
+                        prop_assert_eq!(refusal.charged_in_window, oracle.charged);
+                        prop_assert_eq!(refusal.requested_fuel, fuel);
+                        oracle.refusals += 1;
+                    } else {
+                        prop_assert!(result.is_ok());
+                        oracle.charged += fuel;
+                        oracle.calls += 1;
+                    }
+                    // Bounded charges, exact refusal accounting, and
+                    // metrics that count admitted invocations only —
+                    // after every operation.
+                    let budget = world.fuel_rate_budget().unwrap();
+                    prop_assert_eq!(budget.total_charged(), oracle.charged);
+                    prop_assert_eq!(budget.charged_in_window(), oracle.charged);
+                    prop_assert_eq!(budget.refusal_count(), oracle.refusals);
+                    prop_assert_eq!(world.metrics().get(GuestCall::Update).calls, oracle.calls);
+                    // A refusal never poisons the instance: reads
+                    // still serve. (The view's bytes are not pinned
+                    // here: the echo fixture's allocator returns 0,
+                    // so an event longer than 32 bytes overwrites
+                    // its "hello" data — that is the fixture, not
+                    // poisoning.)
+                    prop_assert!(world.view().is_ok());
+                }
+                // Step the pinned clock past the window (#1067): the
+                // ledger restarts from zero, so an allowance that
+                // fits the limit is admitted fresh, and one larger
+                // than the limit is still refused — now with an
+                // empty window behind it.
+                world.set_fuel_now_for_test(fuel_now + std::time::Duration::from_secs(2));
+                let rolled = world.update(1, &[]);
+                if fuel <= budget_limit {
+                    prop_assert!(rolled.is_ok());
+                    prop_assert_eq!(
+                        world.fuel_rate_budget().unwrap().charged_in_window(),
+                        fuel
+                    );
+                } else {
+                    prop_assert!(rolled.is_err());
+                    prop_assert!(
+                        rolled
+                            .unwrap_err()
+                            .downcast_ref::<id_caps::account_quota::FuelRateRefusal>()
+                            .is_some(),
+                        "a fresh window still refuses an allowance larger than the limit"
+                    );
+                    prop_assert_eq!(
+                        world.fuel_rate_budget().unwrap().charged_in_window(),
+                        0
+                    );
+                }
+            }
+        }
     }
 
     #[test]
@@ -2182,6 +2458,491 @@ mod tests {
         let mut restored = runner.instantiate(7).unwrap();
         restored.restore(&snapshot).unwrap();
         assert_eq!(records(&mut restored), records(&mut live));
+    }
+
+    #[test]
+    fn checked_in_burrow_replays_detour_to_exit() {
+        // Oracle: burrow/detour-to-exit in app-vectors.json (revision
+        // b9d8177). Inputs are the vector's own, event tags included: the
+        // tag is host journal deduplication metadata and the guest does not
+        // read it. The after states are literal copies of the vector
+        // projections; the outcome is asserted beside them.
+        let wasm = include_bytes!("../../../examples/roc-burrow/burrow.wasm");
+        let runner = Sandbox::compile(wasm, SandboxLimits::default()).unwrap();
+        let mut live = runner.instantiate(7).unwrap();
+        let records = |world: &mut WorldInstance| -> serde_json::Value {
+            serde_json::from_slice(&world.records().unwrap().unwrap()).unwrap()
+        };
+        let expected = |after: serde_json::Value, outcome: &str| -> serde_json::Value {
+            let mut doc = after;
+            doc["outcome"] = serde_json::json!(outcome);
+            doc
+        };
+        let view_rows = |world: &mut WorldInstance| -> Vec<String> {
+            let view = String::from_utf8(world.view().unwrap()).unwrap();
+            let Some(crate::world_presentation::WorldSurface::Screen(screen)) =
+                crate::world_presentation::parse_surface(&view).unwrap()
+            else {
+                panic!("the burrow view must be a structured screen: {view}");
+            };
+            screen
+                .cells
+                .chunks(usize::from(screen.width))
+                .map(|row| row.iter().map(|cell| cell.symbol.as_str()).collect())
+                .collect()
+        };
+        assert_eq!(
+            records(&mut live),
+            expected(
+                serde_json::json!({
+                    "digger": [0, 1],
+                    "soil": [[1, 1], [2, 1], [2, 2]],
+                    "cleared_count": 0,
+                    "phase": "digging"
+                }),
+                ""
+            )
+        );
+        // The semantic text grid: digger west, two soil cells and the rock
+        // on the middle row; the third soil and the exit on the bottom row.
+        let rows = view_rows(&mut live);
+        assert!(rows.iter().any(|row| row.contains("A s s #")), "{rows:?}");
+        assert!(rows.iter().any(|row| row.contains(". . s X")), "{rows:?}");
+        assert!(
+            rows.iter().any(|row| row.contains("soil left=3 cleared=0/3")),
+            "{rows:?}"
+        );
+        // (input, expected outcome, expected after-state)
+        let steps = [
+            (
+                r#"{"kind":"Dig","direction":"E","event":"d1"}"#,
+                "cleared",
+                serde_json::json!({
+                    "digger": [1, 1],
+                    "soil": [[2, 1], [2, 2]],
+                    "cleared_count": 1,
+                    "phase": "digging"
+                }),
+            ),
+            (
+                r#"{"kind":"Dig","direction":"E","event":"d2"}"#,
+                "cleared",
+                serde_json::json!({
+                    "digger": [2, 1],
+                    "soil": [[2, 2]],
+                    "cleared_count": 2,
+                    "phase": "digging"
+                }),
+            ),
+            (
+                r#"{"kind":"Dig","direction":"E","event":"d3"}"#,
+                "blocked-rock",
+                serde_json::json!({
+                    "digger": [2, 1],
+                    "soil": [[2, 2]],
+                    "cleared_count": 2,
+                    "phase": "digging"
+                }),
+            ),
+            (
+                r#"{"kind":"Dig","direction":"S","event":"d4"}"#,
+                "cleared",
+                serde_json::json!({
+                    "digger": [2, 2],
+                    "soil": [],
+                    "cleared_count": 3,
+                    "phase": "digging"
+                }),
+            ),
+            (
+                r#"{"kind":"Walk","direction":"E","event":"w1"}"#,
+                "escaped",
+                serde_json::json!({
+                    "digger": [3, 2],
+                    "soil": [],
+                    "cleared_count": 3,
+                    "phase": "escaped"
+                }),
+            ),
+        ];
+        for (input, outcome, after) in steps {
+            live.update(1, input.as_bytes()).unwrap();
+            assert_eq!(records(&mut live), expected(after, outcome), "{input}");
+        }
+        // Escaped: the digger stands on the exit cell, no soil remains,
+        // and a further dig is refused with the state final.
+        let rows = view_rows(&mut live);
+        assert!(rows.iter().any(|row| row.contains(". . . A")), "{rows:?}");
+        assert!(
+            rows.iter().any(|row| row.contains("soil left=0 cleared=3/3")),
+            "{rows:?}"
+        );
+        assert!(
+            rows.iter()
+                .any(|row| row.contains("phase=escaped last=escaped")),
+            "{rows:?}"
+        );
+        live.update(1, br#"{"kind":"Dig","direction":"W","event":"d5"}"#)
+            .unwrap();
+        assert_eq!(
+            records(&mut live),
+            expected(
+                serde_json::json!({
+                    "digger": [3, 2],
+                    "soil": [],
+                    "cleared_count": 3,
+                    "phase": "escaped"
+                }),
+                "refused"
+            )
+        );
+    }
+
+    #[test]
+    fn checked_in_burrow_snapshot_restore_and_scope_distinctions() {
+        // The snapshot/restore half of the #13603 acceptance, plus the
+        // scope distinctions: host events never drive the guest, the
+        // view's presentation text is not domain state, and refusals the
+        // vector does not exercise still change nothing.
+        let wasm = include_bytes!("../../../examples/roc-burrow/burrow.wasm");
+        let runner = Sandbox::compile(wasm, SandboxLimits::default()).unwrap();
+        let records = |world: &mut WorldInstance| -> serde_json::Value {
+            serde_json::from_slice(&world.records().unwrap().unwrap()).unwrap()
+        };
+        let initial = serde_json::json!({
+            "digger": [0, 1],
+            "soil": [[1, 1], [2, 1], [2, 2]],
+            "cleared_count": 0,
+            "phase": "digging",
+            "outcome": ""
+        });
+
+        // Restore a snapshot into a new instance and compare the next
+        // accepted operations through the regular host.
+        let mut live = runner.instantiate(7).unwrap();
+        live.update(1, br#"{"kind":"Dig","direction":"E","event":"d1"}"#)
+            .unwrap();
+        live.update(1, br#"{"kind":"Dig","direction":"E","event":"d2"}"#)
+            .unwrap();
+        let snapshot = live.snapshot().unwrap().unwrap();
+        let mut restored = runner.instantiate(7).unwrap();
+        restored.restore(&snapshot).unwrap();
+        assert_eq!(records(&mut restored), records(&mut live));
+        assert_eq!(restored.view().unwrap(), live.view().unwrap());
+        assert_eq!(restored.snapshot().unwrap().unwrap(), snapshot);
+        for input in [
+            r#"{"kind":"Dig","direction":"E","event":"d3"}"#,
+            r#"{"kind":"Dig","direction":"S","event":"d4"}"#,
+            r#"{"kind":"Walk","direction":"E","event":"w1"}"#,
+        ] {
+            live.update(1, input.as_bytes()).unwrap();
+            restored.update(1, input.as_bytes()).unwrap();
+            assert_eq!(records(&mut restored), records(&mut live), "{input}");
+        }
+        assert_eq!(
+            records(&mut restored)["phase"],
+            serde_json::json!("escaped")
+        );
+
+        // A host (participant 0) delivery is not a player command.
+        let mut host_driven = runner.instantiate(7).unwrap();
+        host_driven
+            .update(0, br#"{"kind":"Dig","direction":"E","event":"d1"}"#)
+            .unwrap();
+        assert_eq!(records(&mut host_driven), initial);
+
+        // Records carry exactly the five domain keys: no grid glyphs, no
+        // status lines, no level constants.
+        let doc = records(&mut host_driven);
+        let mut keys: Vec<&str> = doc
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
+        keys.sort_unstable();
+        assert_eq!(
+            keys,
+            ["cleared_count", "digger", "outcome", "phase", "soil"]
+        );
+        let text = doc.to_string();
+        assert!(!text.contains("soil left"), "{text}");
+        assert!(!text.contains("rock"), "{text}");
+
+        // Walking into uncleared soil and digging off the board edge are
+        // refusals that change nothing but the last outcome.
+        let mut refused = runner.instantiate(7).unwrap();
+        refused
+            .update(1, br#"{"kind":"Walk","direction":"E","event":"w0"}"#)
+            .unwrap();
+        let mut after = initial.clone();
+        after["outcome"] = serde_json::json!("blocked-soil");
+        assert_eq!(records(&mut refused), after);
+        refused
+            .update(1, br#"{"kind":"Dig","direction":"W","event":"d0"}"#)
+            .unwrap();
+        after["outcome"] = serde_json::json!("blocked-edge");
+        assert_eq!(records(&mut refused), after);
+    }
+
+    #[test]
+    #[ignore = "needs ORBIT_WASM=FILE, the built examples/rust-orbit module"]
+    fn built_orbit_arcade_replays_edge_descent() {
+        // Oracle: orbit-arcade/edge-descent in app-vectors.json (revision
+        // b9d8177), played by the regular host. The guest is built from
+        // source, so this test reads the module named by ORBIT_WASM. The
+        // after-states are literal copies of the vector projections; the
+        // outcome is asserted beside them.
+        let Some(path) = std::env::var_os("ORBIT_WASM") else {
+            panic!("set ORBIT_WASM to the built rust_orbit.wasm");
+        };
+        let wasm = std::fs::read(path).unwrap();
+        let runner = Sandbox::compile(&wasm, SandboxLimits::default()).unwrap();
+        let records = |world: &mut WorldInstance| -> serde_json::Value {
+            serde_json::from_slice(&world.records().unwrap().unwrap()).unwrap()
+        };
+        let expected = |after: &serde_json::Value, outcome: &str| -> serde_json::Value {
+            let mut doc = after.clone();
+            doc["outcome"] = serde_json::json!(outcome);
+            doc
+        };
+        let queued = serde_json::json!({
+            "tick": 3, "cannon": [2, 3], "targets": [{"id": "T", "at": [3, 0]}],
+            "formation_direction": "E", "shots": [],
+            "pending": [{"id": "q4", "for_tick": 4, "steer": 1, "fire": true}],
+            "score": 0, "phase": "active"
+        });
+        let after_t4 = serde_json::json!({
+            "tick": 4, "cannon": [3, 3], "targets": [{"id": "T", "at": [3, 1]}],
+            "formation_direction": "W", "shots": [{"id": "q4", "at": [3, 2]}],
+            "pending": [], "score": 0, "phase": "active"
+        });
+        let after_t5 = serde_json::json!({
+            "tick": 5, "cannon": [3, 3], "targets": [], "formation_direction": "W",
+            "shots": [], "pending": [], "score": 10, "phase": "wave-clear"
+        });
+        let steps = [
+            (
+                r#"{"kind":"QueueControls","id":"q4","for_tick":4,"steer":1,"fire":true}"#,
+                "queued",
+                &queued,
+            ),
+            (
+                r#"{"kind":"Redeliver","ref":"q4"}"#,
+                "already-folded",
+                &queued,
+            ),
+            (
+                r#"{"kind":"Tick","number":4,"event":"t4"}"#,
+                "steer-fire-and-descend",
+                &after_t4,
+            ),
+            (
+                r#"{"kind":"RenderFrames","count":120}"#,
+                "presentation-only",
+                &after_t4,
+            ),
+            (
+                r#"{"kind":"Tick","number":5,"event":"t5"}"#,
+                "hit-T-and-clear",
+                &after_t5,
+            ),
+        ];
+        let mut live = runner.instantiate(7).unwrap();
+        assert_eq!(
+            records(&mut live),
+            serde_json::json!({
+                "tick": 3, "cannon": [2, 3], "targets": [{"id": "T", "at": [3, 0]}],
+                "formation_direction": "E", "shots": [], "pending": [],
+                "score": 0, "phase": "active", "outcome": ""
+            })
+        );
+        for (input, outcome, after) in steps {
+            live.update(1, input.as_bytes()).unwrap();
+            assert_eq!(records(&mut live), expected(after, outcome), "{input}");
+        }
+
+        // Restore a mid-wave snapshot into a new instance and compare the
+        // next accepted operation through the regular host.
+        let mut first = runner.instantiate(7).unwrap();
+        for input in [steps[0].0, steps[2].0] {
+            first.update(1, input.as_bytes()).unwrap();
+        }
+        let snapshot = first.snapshot().unwrap().unwrap();
+        let mut restored = runner.instantiate(7).unwrap();
+        restored.restore(&snapshot).unwrap();
+        assert_eq!(records(&mut restored), records(&mut first));
+        assert_eq!(restored.view().unwrap(), first.view().unwrap());
+        assert_eq!(restored.snapshot().unwrap().unwrap(), snapshot);
+        for input in [steps[1].0, steps[4].0] {
+            first.update(1, input.as_bytes()).unwrap();
+            restored.update(1, input.as_bytes()).unwrap();
+            assert_eq!(records(&mut restored), records(&mut first), "{input}");
+        }
+        assert_eq!(
+            records(&mut restored),
+            expected(&after_t5, "hit-T-and-clear")
+        );
+
+        // Scope: views never tick, host deliveries never drive the wave, the
+        // records hold only domain keys, and the snapshot alone carries the
+        // folded-id deduplication memory.
+        let settled = records(&mut live);
+        for _ in 0..120 {
+            live.view().unwrap();
+        }
+        live.update(0, br#"{"kind":"Tick","number":6}"#).unwrap();
+        assert_eq!(records(&mut live), settled);
+        let mut keys: Vec<String> = settled.as_object().unwrap().keys().cloned().collect();
+        keys.sort_unstable();
+        assert_eq!(
+            keys,
+            [
+                "cannon",
+                "formation_direction",
+                "outcome",
+                "pending",
+                "phase",
+                "score",
+                "shots",
+                "targets",
+                "tick"
+            ]
+        );
+        let memory: serde_json::Value =
+            serde_json::from_slice(&live.snapshot().unwrap().unwrap()).unwrap();
+        assert_eq!(memory["folded"], serde_json::json!(["q4"]));
+    }
+
+    #[test]
+    #[ignore = "needs COLONY_WASM=FILE, the built examples/rust-colony module"]
+    fn built_colony_replays_two_deliveries() {
+        // Oracle: colony/two-deliveries in app-vectors.json (revision
+        // b9d8177), played by the regular host. The guest is built from
+        // source, so this test reads the module named by COLONY_WASM. The
+        // after-states are literal copies of the vector projections; the
+        // outcome is asserted beside them.
+        let Some(path) = std::env::var_os("COLONY_WASM") else {
+            panic!("set COLONY_WASM to the built rust_colony.wasm");
+        };
+        let wasm = std::fs::read(path).unwrap();
+        let runner = Sandbox::compile(&wasm, SandboxLimits::default()).unwrap();
+        let records = |world: &mut WorldInstance| -> serde_json::Value {
+            serde_json::from_slice(&world.records().unwrap().unwrap()).unwrap()
+        };
+        let steps = [
+            (
+                r#"{"kind":"Mine","direction":"E","event":"m1"}"#,
+                "extracted",
+                serde_json::json!({"worker": [1, 1], "ore_cells": [[1, 0]], "pack_ore": 1, "stored_ore": 0, "phase": "working"}),
+            ),
+            (
+                r#"{"kind":"Mine","direction":"N","event":"m2"}"#,
+                "pack-full",
+                serde_json::json!({"worker": [1, 1], "ore_cells": [[1, 0]], "pack_ore": 1, "stored_ore": 0, "phase": "working"}),
+            ),
+            (
+                r#"{"kind":"Walk","direction":"W","event":"w1"}"#,
+                "moved",
+                serde_json::json!({"worker": [0, 1], "ore_cells": [[1, 0]], "pack_ore": 1, "stored_ore": 0, "phase": "working"}),
+            ),
+            (
+                r#"{"kind":"Deposit","event":"d1"}"#,
+                "stored",
+                serde_json::json!({"worker": [0, 1], "ore_cells": [[1, 0]], "pack_ore": 0, "stored_ore": 1, "phase": "working"}),
+            ),
+            (
+                r#"{"kind":"Walk","direction":"E","event":"w2"}"#,
+                "moved",
+                serde_json::json!({"worker": [1, 1], "ore_cells": [[1, 0]], "pack_ore": 0, "stored_ore": 1, "phase": "working"}),
+            ),
+            (
+                r#"{"kind":"Mine","direction":"N","event":"m3"}"#,
+                "extracted",
+                serde_json::json!({"worker": [1, 1], "ore_cells": [], "pack_ore": 1, "stored_ore": 1, "phase": "working"}),
+            ),
+            (
+                r#"{"kind":"Walk","direction":"W","event":"w3"}"#,
+                "moved",
+                serde_json::json!({"worker": [0, 1], "ore_cells": [], "pack_ore": 1, "stored_ore": 1, "phase": "working"}),
+            ),
+            (
+                r#"{"kind":"Deposit","event":"d2"}"#,
+                "supply-goal-met",
+                serde_json::json!({"worker": [0, 1], "ore_cells": [], "pack_ore": 0, "stored_ore": 2, "phase": "supplied"}),
+            ),
+        ];
+        let expected = |after: &serde_json::Value, outcome: &str| -> serde_json::Value {
+            let mut doc = after.clone();
+            doc["outcome"] = serde_json::json!(outcome);
+            doc
+        };
+        let mut live = runner.instantiate(7).unwrap();
+        assert_eq!(
+            records(&mut live),
+            serde_json::json!({
+                "worker": [1, 1], "ore_cells": [[1, 0], [2, 1]], "pack_ore": 0,
+                "stored_ore": 0, "phase": "working", "outcome": ""
+            })
+        );
+        for (input, outcome, after) in &steps {
+            live.update(1, input.as_bytes()).unwrap();
+            assert_eq!(records(&mut live), expected(after, outcome), "{input}");
+        }
+
+        // Restore a mid-run snapshot (after the first deposit) into a new
+        // instance and compare the next accepted operation through the
+        // regular host.
+        let mut first = runner.instantiate(7).unwrap();
+        for (input, _, _) in &steps[..4] {
+            first.update(1, input.as_bytes()).unwrap();
+        }
+        let snapshot = first.snapshot().unwrap().unwrap();
+        let mut restored = runner.instantiate(7).unwrap();
+        restored.restore(&snapshot).unwrap();
+        assert_eq!(records(&mut restored), records(&mut first));
+        assert_eq!(restored.view().unwrap(), first.view().unwrap());
+        assert_eq!(restored.snapshot().unwrap().unwrap(), snapshot);
+        for (input, _, _) in &steps[4..] {
+            first.update(1, input.as_bytes()).unwrap();
+            restored.update(1, input.as_bytes()).unwrap();
+            assert_eq!(records(&mut restored), records(&mut first), "{input}");
+        }
+        assert_eq!(
+            records(&mut restored),
+            expected(&steps[7].2, "supply-goal-met")
+        );
+
+        // Scope: views never change the domain, host deliveries never drive
+        // the colony, a replayed event folds once, the records hold only
+        // domain keys, and the snapshot alone carries the folded event ids.
+        let settled = records(&mut live);
+        for _ in 0..120 {
+            live.view().unwrap();
+        }
+        live.update(0, steps[0].0.as_bytes()).unwrap();
+        assert_eq!(records(&mut live), settled);
+        live.update(1, steps[7].0.as_bytes()).unwrap();
+        assert_eq!(records(&mut live), expected(&steps[7].2, "already-folded"));
+        let mut keys: Vec<String> = settled.as_object().unwrap().keys().cloned().collect();
+        keys.sort_unstable();
+        assert_eq!(
+            keys,
+            [
+                "ore_cells",
+                "outcome",
+                "pack_ore",
+                "phase",
+                "stored_ore",
+                "worker"
+            ]
+        );
+        let memory: serde_json::Value =
+            serde_json::from_slice(&live.snapshot().unwrap().unwrap()).unwrap();
+        assert_eq!(
+            memory["folded"],
+            serde_json::json!(["m1", "m2", "w1", "d1", "w2", "m3", "w3", "d2"])
+        );
     }
 
     #[test]

@@ -17,6 +17,8 @@ pub mod feed_cursor;
 pub mod query;
 pub mod record;
 pub mod social;
+pub mod social_envelope;
+pub mod social_paging;
 pub mod space_binding;
 pub mod term;
 pub mod version;

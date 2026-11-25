@@ -1,0 +1,160 @@
+{
+  "note": "D2 slice 4 host rendering contract. Each item has an id, an area, the record section it comes from, the requirement in one sentence, and either the name of an executable check in host_contract_reference.py or a manual procedure. Hosts load this file and run their own adapter for each executable item against the slice 1 fixtures.",
+  "states": [
+    "shown",
+    "unavailable",
+    "removed",
+    "cycle-cut",
+    "depth-cut",
+    "budget-cut"
+  ],
+  "badges": ["edited", "fork", "changed-since-embed"],
+  "slot_keys": {
+    "shown": {
+      "required": ["link", "mode", "scope", "state", "object"],
+      "optional": ["kind", "embeds", "members", "more", "badges"]
+    },
+    "unavailable": { "required": ["link", "state"], "optional": [] },
+    "removed": {
+      "required": ["link", "mode", "scope", "state", "object"],
+      "optional": []
+    },
+    "cycle-cut": {
+      "required": ["link", "mode", "scope", "state", "object"],
+      "optional": []
+    },
+    "depth-cut": {
+      "required": ["link", "mode", "scope", "state", "object"],
+      "optional": []
+    },
+    "budget-cut": {
+      "required": ["link", "mode", "scope", "state", "object"],
+      "optional": []
+    }
+  },
+  "member_keys": {
+    "rendered": { "required": ["object", "kind"], "optional": ["embeds"] },
+    "cycle-cut": { "required": ["object", "state"], "optional": [] }
+  },
+  "items": [
+    {
+      "id": "H-01",
+      "area": "states",
+      "section": "slice-4 §3.1",
+      "requirement": "Every embed slot resolves to exactly one of the six states, and a host that meets a state it does not know shows it as unavailable.",
+      "check": "states_are_total"
+    },
+    {
+      "id": "H-02",
+      "area": "states",
+      "section": "slice-4 §3.1",
+      "requirement": "Each state carries exactly the members the contract lists for it, and nothing a host could read more from.",
+      "check": "slot_shapes"
+    },
+    {
+      "id": "H-03",
+      "area": "privacy",
+      "section": "slice-4 §3.2",
+      "requirement": "An unavailable slot carries only its link and state, so a host cannot show mode, scope, kind, title, author, size or thumbnail for it.",
+      "check": "unavailable_is_opaque"
+    },
+    {
+      "id": "H-04",
+      "area": "privacy",
+      "section": "slice-4 §3.2",
+      "requirement": "Unauthorised, not stored and pruned targets render the same unavailable slot.",
+      "check": "unavailable_causes_match"
+    },
+    {
+      "id": "H-05",
+      "area": "privacy",
+      "section": "slice-4 §3.2",
+      "requirement": "A cut slot (cycle, depth, budget) only ever names a target the viewer can read.",
+      "check": "cuts_name_readable_targets"
+    },
+    {
+      "id": "H-06",
+      "area": "privacy",
+      "section": "slice-4 §3.2",
+      "requirement": "Collection members and the more count only ever cover members the viewer can read.",
+      "check": "members_and_more_are_readable"
+    },
+    {
+      "id": "H-07",
+      "area": "privacy",
+      "section": "slice-4 §3.6",
+      "requirement": "Losing read access turns a shown slot unavailable on the next render; nothing from an earlier render is reused.",
+      "check": "revocation_takes_effect"
+    },
+    {
+      "id": "H-08",
+      "area": "modes",
+      "section": "slice-4 §3.5",
+      "requirement": "A shown snapshot object slot shows the pinned object, never the head.",
+      "check": "snapshot_shows_pin"
+    },
+    {
+      "id": "H-09",
+      "area": "modes",
+      "section": "slice-4 §3.5",
+      "requirement": "A shown live object slot shows the viewer's readable supersede head.",
+      "check": "live_shows_head"
+    },
+    {
+      "id": "H-10",
+      "area": "badges",
+      "section": "slice-4 §3.5",
+      "requirement": "Badges come only from the badge list, appear only on shown slots, and are never repeated.",
+      "check": "badges_are_known"
+    },
+    {
+      "id": "H-11",
+      "area": "bounds",
+      "section": "slice-4 §3.4",
+      "requirement": "One render shows at most the host budget of objects, nests shown slots no deeper than the default depth, and puts only cut or unavailable stubs one level below.",
+      "check": "render_is_bounded"
+    },
+    {
+      "id": "H-12",
+      "area": "bounds",
+      "section": "slice-4 §3.4",
+      "requirement": "A collection slot shows at most its embed's max_count members.",
+      "check": "max_count_holds"
+    },
+    {
+      "id": "H-13",
+      "area": "loading",
+      "section": "slice-4 §3.3",
+      "requirement": "States are decided from graph metadata alone; withholding every body's bytes changes no state.",
+      "check": "states_ignore_bytes"
+    },
+    {
+      "id": "H-14",
+      "area": "loading",
+      "section": "slice-4 §3.3",
+      "requirement": "A host reserves one fixed footprint per scope before a slot resolves and draws every unavailable slot at the same fixed footprint whatever the cause.",
+      "manual": "Render private-target-outsider and pruned-snapshot side by side on the host at two window widths. The two unavailable slots must have the same size, the same text and no image; the reserved placeholder before resolution must have the same size for every object-scope slot."
+    },
+    {
+      "id": "H-15",
+      "area": "loading",
+      "section": "slice-4 §3.3",
+      "requirement": "A readable but not-yet-synced target shows the host's pending placeholder until it arrives or the sync timeout passes, then unavailable; an unreadable target never starts a fetch.",
+      "manual": "With the target's area readable and the object removed from local storage, open the source: the slot shows pending, then shown once sync delivers it. Block sync: the slot turns unavailable after the timeout. Make the area unreadable: the slot is unavailable at once and the host's sync log shows no request for the target."
+    },
+    {
+      "id": "H-16",
+      "area": "interaction",
+      "section": "slice-4 §3.7",
+      "requirement": "A shown slot opens its object by its id URI; a cut slot opens its object as a new root and never expands inline; an unavailable slot has no action and shows no target URI.",
+      "manual": "On the cycle, page-embeds-collection and private-target-outsider cases, activate each slot by pointer and by keyboard. Shown slots open the object; cycle-cut opens the other note as a new root; the unavailable slot does nothing and its context menu offers no copy-link."
+    },
+    {
+      "id": "H-17",
+      "area": "accessibility",
+      "section": "slice-4 §3.8",
+      "requirement": "Every state has a text equivalent from the fixed wording table, and the unavailable text is the same for every cause.",
+      "manual": "Run a screen reader over every case. Each slot is announced with the table's words for its state, badges are read as words, and both unavailable slots read exactly \"Unavailable\"."
+    }
+  ]
+}

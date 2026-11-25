@@ -32,9 +32,9 @@ use id_core::location_ref::{LocationRef, R2Locator, TypedLocator};
 use id_core::namespace_definition::NamespaceId;
 
 use related_links::{
-    LINKS_VIEW_KEY, LinkError, LinkResolution, LinkTarget, MAX_PATH_REF_BYTES, PathRef,
-    RelatedLink, canonical_links, envelope_links, is_valid_relation, resolve_link, resolve_links,
-    set_view_links, view_links,
+    LINKS_VIEW_KEY, LinkError, LinkResolution, LinkTarget, MAX_PATH_REF_BYTES, PathComparison,
+    PathRef, RelatedLink, canonical_links, envelope_links, is_valid_relation, resolve_link,
+    resolve_links, set_view_links, view_links,
 };
 use sidecar_snapshot::{SidecarBodyV1, SidecarEnvelopeV1, SnapshotId};
 
@@ -139,20 +139,33 @@ fn path_ref_accepts_namespace_relative_paths() {
         "deeply/nested/path/to/an/object.bin",
     ] {
         let path = PathRef::new(raw).unwrap();
-        assert_eq!(path.as_str(), raw, "already-NFC input is stored verbatim");
+        assert_eq!(path.as_str(), raw, "input is stored verbatim");
     }
 }
 
 #[test]
-fn path_ref_normalises_to_nfc_at_write() {
-    // "cafe" + combining acute (U+0301) composes to "café" (U+00E9).
-    let path = PathRef::new("cafe\u{301}").unwrap();
-    assert_eq!(path.as_str(), "caf\u{e9}");
-    // "A" + combining ring above (U+030A) composes to U+00C5.
+fn path_ref_keeps_the_authors_spelling_at_write() {
+    // #14208 / A-9121.1: the stored text is never normalised. "cafe"
+    // + combining acute (U+0301) stays decomposed; it does not become
+    // "café" (U+00E9), which would silently redirect the link.
+    let decomposed = PathRef::new("cafe\u{301}").unwrap();
+    assert_eq!(decomposed.as_str(), "cafe\u{301}");
+    let composed = PathRef::new("caf\u{e9}").unwrap();
+    assert_eq!(composed.as_str(), "caf\u{e9}");
+    // Without the namespace opt-in the two spellings name different
+    // targets.
+    assert_ne!(decomposed, composed);
+    assert!(!decomposed.same_target(&composed, PathComparison::Exact));
+    // With the opt-in they compare equal, and the stored spelling is
+    // still the author's.
+    assert!(decomposed.same_target(&composed, PathComparison::Nfc));
+    assert_eq!(decomposed.comparison_key(PathComparison::Nfc), "caf\u{e9}");
+    assert_eq!(decomposed.as_str(), "cafe\u{301}");
+    // "A" + combining ring above (U+030A) is kept as written too.
     let path = PathRef::new("A\u{30a}/x").unwrap();
-    assert_eq!(path.as_str(), "\u{c5}/x");
-    // Normalisation is idempotent: the stored form re-validates to
-    // itself.
+    assert_eq!(path.as_str(), "A\u{30a}/x");
+    assert_eq!(path.comparison_key(PathComparison::Nfc), "\u{c5}/x");
+    // The stored form re-validates to itself.
     assert_eq!(PathRef::new(path.as_str()).unwrap(), path);
 }
 

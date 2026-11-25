@@ -27,7 +27,7 @@ use crate::model::{
     ParentRef, RootCreateRequest,
 };
 use crate::naming::{GenerationPartition, slugify};
-use crate::profile::leaf_profile;
+use crate::profile::{KeyCustody, SanPolicy, check_broker_sans, leaf_profile};
 use crate::timeparse::Rfc3339;
 use rcgen::{
     BasicConstraints, CertificateParams, DnType, DnValue, IsCa, Issuer, KeyPair, KeyUsagePurpose,
@@ -241,7 +241,7 @@ impl CaHandle {
     fn sign(
         &self,
         subject_params: &CertificateParams,
-        subject_key: &KeyPair,
+        subject_key: &impl rcgen::PublicKeyData,
     ) -> Result<rcgen::Certificate> {
         match &self.signer {
             CaSigner::Classical(key) => Ok(
@@ -882,6 +882,58 @@ fn clamp_window(
 /// by the selected issuer key loaded from `req.issuer_signer`.
 pub fn issue_leaf(req: &LeafIssueRequest, out_dir: &Path) -> Result<BundleManifest> {
     let profile = leaf_profile(&req.profile)?;
+    // Request-level policy first: nothing is loaded or signed for a
+    // request the profile refuses.
+    if profile.san_policy == SanPolicy::Broker {
+        check_broker_sans(
+            profile.name,
+            req.common_name.as_deref(),
+            &req.dns_names,
+            &req.ip_addresses,
+        )?;
+    }
+    let csr = match &req.csr {
+        Some(path) => {
+            if req.private_store.is_some() {
+                return Err(CertError::usage(
+                    "--private-store has nothing to hold for a CSR-issued leaf: its key stays on the subject's host",
+                ));
+            }
+            Some(read_csr(path)?)
+        }
+        None if profile.key_custody == KeyCustody::HostCsrOnly => {
+            return Err(CertError::policy(format!(
+                "{} leaves are issued only from a CSR made on the subject's host (--csr <file>); \
+                 the issuer never generates or holds their key",
+                profile.name
+            )));
+        }
+        None => None,
+    };
+    let key_algo = match &csr {
+        Some((_, csr_algo)) => {
+            if let Some(asked) = req.key_algorithm {
+                if asked != *csr_algo {
+                    return Err(CertError::usage(format!(
+                        "--algorithm {} does not match the CSR's {} key",
+                        asked.name(),
+                        csr_algo.name()
+                    )));
+                }
+            }
+            if profile.key_custody == KeyCustody::HostCsrOnly && *csr_algo != profile.key_algorithm
+            {
+                return Err(CertError::policy(format!(
+                    "{} leaves carry {} keys; the CSR's key is {}",
+                    profile.name,
+                    profile.key_algorithm.name(),
+                    csr_algo.name()
+                )));
+            }
+            *csr_algo
+        }
+        None => req.key_algorithm.unwrap_or(profile.key_algorithm),
+    };
     let issuer_bundle = load_bundle(&req.issuer_bundle)?;
     if issuer_bundle.manifest.bundle_type != BundleType::IssuerSet {
         return Err(CertError::usage(format!(
@@ -890,7 +942,17 @@ pub fn issue_leaf(req: &LeafIssueRequest, out_dir: &Path) -> Result<BundleManife
             issuer_bundle.manifest.bundle_type.as_str()
         )));
     }
-    let key_algo = req.key_algorithm.unwrap_or(profile.key_algorithm);
+    if let Some(wanted) = profile.issuer_purpose {
+        let got = issuer_bundle.manifest.purpose.as_deref();
+        if got != Some(wanted) {
+            return Err(CertError::policy(format!(
+                "{} leaves issue only from a {wanted} (Base) issuer set; {} is {}",
+                profile.name,
+                req.issuer_bundle.display(),
+                got.unwrap_or("of no recorded purpose")
+            )));
+        }
+    }
     let issuer_partition = req
         .issuer_partition
         .clone()
@@ -963,12 +1025,16 @@ pub fn issue_leaf(req: &LeafIssueRequest, out_dir: &Path) -> Result<BundleManife
         .clone()
         .or_else(|| sans.first().cloned())
         .unwrap_or_else(|| req.name.clone());
-    if sans.is_empty() && profile.san_defaults_to_cn {
+    if sans.is_empty() && req.ip_addresses.is_empty() && profile.san_defaults_to_cn {
         sans.push(cn.clone());
     }
-    let key = generate_key(key_algo)?;
     let mut params =
         CertificateParams::new(sans.clone()).map_err(|e| CertError::engine(e.to_string()))?;
+    params.subject_alt_names.extend(
+        req.ip_addresses
+            .iter()
+            .map(|ip| rcgen::SanType::IpAddress(*ip)),
+    );
     params.distinguished_name = distinguished_name(
         &issuer_bundle.manifest.organization,
         &issuer_bundle.manifest.country,
@@ -993,17 +1059,28 @@ pub fn issue_leaf(req: &LeafIssueRequest, out_dir: &Path) -> Result<BundleManife
                 vec![0x05, 0x00],
             ));
     }
-    let cert = issuer.sign(&params, &key)?;
-    let der = cert.der().to_vec();
-
-    let (key_dir, key_location) = key_destination(out_dir, &req.private_store);
-    let external = if req.private_store.is_some() {
-        Some(key_dir.as_path())
-    } else {
-        None
-    };
+    // Leaves embed no AIA, OCSP URL or CDP: revocation is checked by
+    // CRL, and a CDP is embedded only once a real signed CRL is
+    // published for the issuer (the broker profiles' CRL-only rule).
     let mut artifacts = Vec::new();
-    let key_path = stage_key(&mut artifacts, external, "leaf.pk8", &key)?;
+    let (der, key_path, key_location) = match &csr {
+        Some((public_key, _)) => {
+            let cert = issuer.sign(&params, public_key)?;
+            (cert.der().to_vec(), None, "host-local")
+        }
+        None => {
+            let key = generate_key(key_algo)?;
+            let cert = issuer.sign(&params, &key)?;
+            let (key_dir, key_location) = key_destination(out_dir, &req.private_store);
+            let external = if req.private_store.is_some() {
+                Some(key_dir.as_path())
+            } else {
+                None
+            };
+            let key_path = stage_key(&mut artifacts, external, "leaf.pk8", &key)?;
+            (cert.der().to_vec(), key_path, key_location)
+        }
+    };
     let leaf_rel = "leaf.crt.pem".to_string();
     artifacts.push(Artifact {
         rel_path: leaf_rel.clone(),
@@ -1046,6 +1123,56 @@ pub fn issue_leaf(req: &LeafIssueRequest, out_dir: &Path) -> Result<BundleManife
     manifest.certificates = vec![rec];
     let manifest = write_bundle(out_dir, manifest, &artifacts)?;
     Ok(manifest)
+}
+
+/// Read a PKCS#10 CSR (PEM or DER), verify its self-signature, and
+/// return the key it carries with that key's registered algorithm.
+/// Only the key is used: the CSR's subject, SANs and requested
+/// extensions are ignored, since the issuance request and the
+/// profile decide what the leaf says.
+fn read_csr(path: &Path) -> Result<(rcgen::PublicKey, AlgorithmId)> {
+    let raw = std::fs::read(path)
+        .map_err(|e| CertError::usage(format!("cannot read CSR {}: {e}", path.display())))?;
+    let der = match std::str::from_utf8(&raw) {
+        Ok(text) if text.contains("-----BEGIN") => crate::bundle::pem_decode_all(text)?
+            .into_iter()
+            .find(|(label, _)| label == "CERTIFICATE REQUEST" || label == "NEW CERTIFICATE REQUEST")
+            .map(|(_, der)| der)
+            .ok_or_else(|| {
+                CertError::usage(format!(
+                    "{} holds no CERTIFICATE REQUEST block",
+                    path.display()
+                ))
+            })?,
+        _ => raw,
+    };
+    let algo = {
+        use x509_parser::prelude::FromDer;
+        let (_, parsed) =
+            x509_parser::certification_request::X509CertificationRequest::from_der(&der)
+                .map_err(|e| CertError::usage(format!("{} is not a CSR: {e}", path.display())))?;
+        let spki = &parsed.certification_request_info.subject_pki;
+        crate::chain::classify_subject(
+            &spki.algorithm.algorithm.to_id_string(),
+            &spki.subject_public_key.data,
+        )
+        .ok_or_else(|| {
+            CertError::usage(format!(
+                "the CSR in {} carries a key of an unregistered algorithm",
+                path.display()
+            ))
+        })?
+    };
+    let params = rcgen::CertificateSigningRequestParams::from_der(
+        &rustls_pki_types::CertificateSigningRequestDer::from(der),
+    )
+    .map_err(|e| {
+        CertError::usage(format!(
+            "the CSR in {} was refused (its signature must verify): {e}",
+            path.display()
+        ))
+    })?;
+    Ok((params.public_key, algo))
 }
 
 fn extract_ou(dn: &str) -> Option<String> {

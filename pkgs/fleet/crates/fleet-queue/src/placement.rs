@@ -180,6 +180,47 @@ impl Job {
         }
         Value::Object(out)
     }
+
+    /// Rebuild a job from its stored record — the `session status`
+    /// grant path re-dispatches a coordinator-queued session from the
+    /// job its dispatch pass committed. Unknown or missing fields
+    /// fall back to the dispatch defaults, exactly as the flag
+    /// parser would supply them.
+    fn from_json(v: &Value) -> Option<Job> {
+        let repo = v.get("repo")?.as_str()?.to_string();
+        let command = v.get("command")?.as_str()?.to_string();
+        let s = |k: &str| v.get(k).and_then(|x| x.as_str()).map(str::to_string);
+        Some(Job {
+            repo,
+            command,
+            git_ref: s("ref").unwrap_or_default(),
+            runner: s("runner").unwrap_or_else(|| "auto".to_string()),
+            platform: s("platform").unwrap_or_else(|| "linux".to_string()),
+            container: s("container"),
+            surface_pin: s("surface_pin"),
+            preferred_surface: s("preferred_surface"),
+            previous_run_id: v.get("previous_run_id").and_then(|x| x.as_i64()),
+            previous_run_repo: s("previous_run_repo"),
+            push_nix_cache: v
+                .get("push_nix_cache")
+                .and_then(|x| x.as_bool())
+                .unwrap_or(false),
+            actions_cache: s("actions_cache"),
+            actions_cache_restore_keys: v
+                .get("actions_cache_restore_keys")
+                .and_then(|x| x.as_array())
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|x| x.as_str().map(str::to_string))
+                        .collect()
+                })
+                .unwrap_or_default(),
+            allow_paid_blacksmith: v
+                .get("allow_paid_blacksmith")
+                .and_then(|x| x.as_f64())
+                .unwrap_or(0.0),
+        })
+    }
 }
 
 // ----------------------------------------------------------------- context
@@ -952,6 +993,7 @@ fn submitted_by() -> String {
 // ---------------------------------------------------------------- adapters
 
 mod adapters;
+mod coordinator;
 mod remote;
 use adapters::adapter_for;
 #[cfg(test)]
@@ -1397,6 +1439,149 @@ pub fn decide(
 
 // --------------------------------------------------------------- sessions
 
+/// #13765 queued-session completion: a session the coordinator
+/// queued carries its claim handle and job. Once the coordinator
+/// grants the claim, dispatch the stored job on the granted surface,
+/// confirm the slot, and move the record off `queued`. A failed
+/// dispatch releases the slot and fails the session. Best-effort: an
+/// unreachable coordinator or a claim that is not granted leaves the
+/// record queued for the next status call.
+fn complete_queued_session(
+    store: &mut Value,
+    handle: &str,
+    rec: &mut Value,
+    registry: &Value,
+    gh: &dyn Gh,
+) {
+    if rec.get("state").and_then(Value::as_str) != Some("queued") {
+        return;
+    }
+    let Some(claim_handle) = rec
+        .get("claim_handle")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+    else {
+        return;
+    };
+    let coord = coordinator::coordinator();
+    let Ok(status) = coord.claim_status(&claim_handle) else {
+        return;
+    };
+    let claim = status.get("claim").cloned().unwrap_or(Value::Null);
+    if claim.get("state").and_then(Value::as_str) != Some("granted") {
+        return;
+    }
+    let Some(job) = rec.get("job").and_then(Job::from_json) else {
+        return;
+    };
+    let Some(sid) = claim
+        .get("surface")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+    else {
+        return;
+    };
+    let Some(surface) = find_surface(registry, &sid) else {
+        return;
+    };
+    let Some(ad) = adapter_for(surface) else {
+        return;
+    };
+    let kind = surf_str(surface, "kind").to_string();
+    let runner_repo = surf_str(surface, "repo").to_string();
+    match ad.dispatch(&job, gh) {
+        Err(Die(msg)) => {
+            let _ = coord.release(&claim_handle, None);
+            rec["state"] = json!("failed");
+            rec["note"] = json!(format!("coordinator grant dispatch failed: {msg}"));
+        }
+        Ok(result) => {
+            let _ = coord.confirm(&claim_handle, result.run_id);
+            rec["surface"] = json!(sid);
+            rec["surface_kind"] = json!(kind);
+            if !runner_repo.is_empty() {
+                rec["runner_repo"] = json!(runner_repo.clone());
+            }
+            if let Some(run_id) = result.run_id {
+                rec["portable_id"] = json!(format!("{runner_repo}#{run_id}"));
+            }
+            rec["run_id"] = result.run_id.map(Value::from).unwrap_or(Value::Null);
+            rec["run_url"] = result
+                .run_url
+                .clone()
+                .map(Value::from)
+                .unwrap_or(Value::Null);
+            rec["state"] = json!(match &result.terminal_state {
+                Some(s) => s.clone(),
+                None if result.run_id.is_some() => "queued".to_string(),
+                None => "dispatched".to_string(),
+            });
+            if let Some(note) = &result.note {
+                rec["note"] = json!(note);
+            }
+            if kind == "blacksmith" {
+                if let Some(arr) = store
+                    .get_mut("blacksmith_dispatches")
+                    .and_then(Value::as_array_mut)
+                {
+                    arr.push(json!({
+                        "handle": handle,
+                        "month": current_month(),
+                        "minutes": 0.0,
+                        "run_id": result.run_id,
+                        "note": "minutes reconciled from the run's duration on later invocations",
+                        "reconciled": false,
+                    }));
+                }
+            }
+        }
+    }
+    rec["updated_at"] = json!(now_iso());
+}
+
+/// Give a terminal session's coordinator slot back. Blacksmith slots
+/// settle with the run's reconciled minutes and wait for them; every
+/// other slot releases as soon as its run is terminal.
+fn settle_coordinator_claim(store: &Value, handle: &str, rec: &mut Value, state: &str, kind: &str) {
+    let Some(claim_handle) = rec
+        .get("claim_handle")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+    else {
+        return;
+    };
+    if rec.get("coord_released").and_then(Value::as_bool) == Some(true) {
+        return;
+    }
+    if !["succeeded", "failed", "cancelled"].contains(&state) {
+        return;
+    }
+    let actual = if kind == "blacksmith" {
+        let reconciled = store
+            .get("blacksmith_dispatches")
+            .and_then(Value::as_array)
+            .and_then(|arr| {
+                arr.iter().find(|d| {
+                    d.get("handle").and_then(Value::as_str) == Some(handle)
+                        && d.get("reconciled").and_then(Value::as_bool) == Some(true)
+                })
+            })
+            .and_then(|d| d.get("minutes").and_then(Value::as_f64));
+        match reconciled {
+            Some(minutes) => Some(minutes),
+            None => return,
+        }
+    } else {
+        None
+    };
+    if coordinator::coordinator()
+        .release(&claim_handle, actual)
+        .is_ok()
+    {
+        rec["coord_released"] = json!(true);
+    }
+}
+
 fn refresh_session(store: &mut Value, handle: &str, registry: &Value, gh: &dyn Gh) -> R<Value> {
     let mut rec = store
         .get("sessions")
@@ -1408,6 +1593,7 @@ fn refresh_session(store: &mut Value, handle: &str, registry: &Value, gh: &dyn G
                 state_file()
             ))
         })?;
+    complete_queued_session(store, handle, &mut rec, registry, gh);
     let run_id = rec.get("run_id").and_then(|r| r.as_i64());
     let surface_id = rec
         .get("surface")
@@ -1475,6 +1661,18 @@ fn refresh_session(store: &mut Value, handle: &str, registry: &Value, gh: &dyn G
             }
         }
     }
+    let state = rec
+        .get("state")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    let kind = rec
+        .get("surface")
+        .and_then(Value::as_str)
+        .and_then(|sid| find_surface(registry, sid))
+        .map(|s| surf_str(s, "kind").to_string())
+        .unwrap_or_default();
+    settle_coordinator_claim(store, handle, &mut rec, &state, &kind);
     if let Some(sessions) = store.get_mut("sessions").and_then(|s| s.as_object_mut()) {
         sessions.insert(handle.to_string(), rec.clone());
     }
@@ -1897,7 +2095,48 @@ fn run_dispatch(args: &[String]) -> R<i32> {
         assume_blacksmith_used,
         &gh,
     );
-    let (adapter, reasoning) = decide(&registry, &job, &ctx, &gh)?;
+    let (mut adapter, mut reasoning) = decide(&registry, &job, &ctx, &gh)?;
+    // #13765: decide() found no surface — consult the coordinator's
+    // true view before queuing. A seat with zero coverage (no token
+    // for a host) sees no room where the fleet has some; when the
+    // coordinator's occupancy shows room, re-decide once against
+    // those counts. An unreachable coordinator keeps today's queued
+    // path and names the fallback.
+    let mut coord_path = "coordinator";
+    let mut coord_error: Option<String> = None;
+    if adapter.is_none() && dispatch {
+        // Preserve the existing dry-run decision/output: only a real dispatch
+        // consults the coordinator's true view before it enters claim flow.
+        let coord = coordinator::coordinator();
+        match coord.load() {
+            Ok(load) => {
+                let overrides = coordinator::coord_overrides(&load);
+                if !overrides.is_empty() {
+                    let ctx2 = build_ctx(
+                        &registry,
+                        &store,
+                        laptop_busy_flag,
+                        &overrides,
+                        assume_blacksmith_used,
+                        &gh,
+                    );
+                    if let Ok((adapter2, mut reasoning2)) = decide(&registry, &job, &ctx2, &gh) {
+                        if adapter2.is_some() {
+                            reasoning.push(format!(
+                                "coordinator true view shows room ({overrides}); re-decided"
+                            ));
+                            reasoning.append(&mut reasoning2);
+                            adapter = adapter2;
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                coord_path = "singular-fallback";
+                coord_error = Some(e);
+            }
+        }
+    }
     let mut out = Map::new();
     out.insert("job".into(), job.to_json_compact());
     out.insert(
@@ -1934,35 +2173,115 @@ fn run_dispatch(args: &[String]) -> R<i32> {
         return Ok(0);
     }
     let handle = new_handle(&rand_source::URandom);
-    match adapter {
-        None => {
-            let rec = json!({
-                "handle": handle,
-                "job": job.to_json(),
-                "surface": Value::Null,
-                "decision_reasoning": reasoning,
-                "owner_load_coverage": owner_load_coverage_json(&ctx),
-                "run_id": Value::Null,
-                "run_url": Value::Null,
-                "state": "queued",
-                "submitted_by": submitted_by(),
-                "actor": "developing-today[bot] (GitHub App dispatch)",
-                "created_at": now_iso(),
-                "updated_at": now_iso(),
-            });
-            commit_new_session(&rec, None, &*remote)?;
+    let coord = coordinator::coordinator();
+    let seat = coordinator::seat_name();
+    let mut chosen = adapter;
+    let mut claim_error = coord_error;
+    let mut claim: Option<(coordinator::ClaimDecision, Option<Value>)> = None;
+    let mut refused_once = false;
+    // #13765 claim-before-dispatch: a chosen surface is claimed from the
+    // coordinator first. A refused claim (budget spent) re-decides once
+    // with Blacksmith removed and claims the replacement.
+    while let Some(ad) = chosen.as_ref() {
+        let sid = surf_str(ad.surface(), "id").to_string();
+        let answer = coord.claim(
+            &handle,
+            &sid,
+            &seat,
+            coordinator::CLAIM_ESTIMATE_MINUTES,
+            job.allow_paid_blacksmith,
+        );
+        let (decision, claim_answer, err) = coordinator::classify_claim(answer);
+        if err.is_some() {
+            claim_error = err;
+        }
+        if decision == coordinator::ClaimDecision::Refused && !refused_once {
+            refused_once = true;
+            reasoning.push(format!(
+                "coordinator refused {sid} (budget spent); re-decided without Blacksmith"
+            ));
+            let reg2 = coordinator::registry_without_blacksmith(&registry);
+            let ctx2 = build_ctx(
+                &reg2,
+                &store,
+                laptop_busy_flag,
+                &assume_owner_load,
+                assume_blacksmith_used,
+                &gh,
+            );
+            let (next, mut reasoning2) = decide(&reg2, &job, &ctx2, &gh)?;
+            reasoning.append(&mut reasoning2);
+            chosen = next;
+            continue;
+        }
+        claim = Some((decision, claim_answer));
+        break;
+    }
+    let placement_path = match &claim {
+        Some((decision, _)) => coordinator::placement_path(decision),
+        None => coord_path,
+    };
+    let mut rec = Map::new();
+    rec.insert("handle".into(), json!(handle));
+    rec.insert("job".into(), job.to_json());
+    rec.insert("placement_path".into(), json!(placement_path));
+    if let Some(err) = &claim_error {
+        rec.insert("coord_error".into(), json!(err));
+    }
+    rec.insert("decision_reasoning".into(), json!(reasoning));
+    rec.insert("owner_load_coverage".into(), owner_load_coverage_json(&ctx));
+    rec.insert("submitted_by".into(), json!(submitted_by()));
+    rec.insert(
+        "actor".into(),
+        json!("developing-today[bot] (GitHub App dispatch)"),
+    );
+    rec.insert("created_at".into(), json!(now_iso()));
+    rec.insert("updated_at".into(), json!(now_iso()));
+    match (chosen, claim) {
+        (Some(ad), Some((coordinator::ClaimDecision::Queued, claim_answer))) => {
+            let sid = surf_str(ad.surface(), "id").to_string();
+            let position = claim_answer
+                .as_ref()
+                .and_then(|v| v.get("position"))
+                .and_then(|p| p.as_i64());
+            let mut queued = coordinator::queued_session_record(
+                &handle,
+                job.to_json(),
+                &sid,
+                &handle,
+                &reasoning,
+                owner_load_coverage_json(&ctx),
+                &submitted_by(),
+                &now_iso(),
+            );
+            if let Some(obj) = queued.as_object_mut() {
+                if let Some(err) = &claim_error {
+                    obj.insert("coord_error".into(), json!(err));
+                }
+            }
+            commit_new_session(&queued, None, &*remote)?;
             out.insert("handle".into(), json!(handle));
             out.insert("state".into(), json!("queued"));
+            out.insert("placement_path".into(), json!(placement_path));
+            if let Some(pos) = position {
+                out.insert("queue_position".into(), json!(pos));
+            }
         }
-        Some(adapter) => {
-            let result = adapter.dispatch(&job, &gh)?;
-            let surface = adapter.surface().clone();
+        (Some(ad), Some((decision, _))) if coordinator::dispatch_now(&decision) => {
+            let granted = decision == coordinator::ClaimDecision::Granted;
+            let result = match ad.dispatch(&job, &gh) {
+                Ok(r) => r,
+                Err(e) => {
+                    if granted {
+                        let _ = coord.release(&handle, None);
+                    }
+                    return Err(e);
+                }
+            };
+            let surface = ad.surface().clone();
             let sid = surf_str(&surface, "id").to_string();
             let kind = surf_str(&surface, "kind").to_string();
             let runner_repo = surf_str(&surface, "repo").to_string();
-            let mut rec = Map::new();
-            rec.insert("handle".into(), json!(handle));
-            rec.insert("job".into(), job.to_json());
             rec.insert("surface".into(), json!(sid));
             rec.insert("surface_kind".into(), json!(kind));
             if !runner_repo.is_empty() {
@@ -1974,8 +2293,9 @@ fn run_dispatch(args: &[String]) -> R<i32> {
                     json!(format!("{runner_repo}#{run_id}")),
                 );
             }
-            rec.insert("decision_reasoning".into(), json!(reasoning));
-            rec.insert("owner_load_coverage".into(), owner_load_coverage_json(&ctx));
+            if granted {
+                rec.insert("claim_handle".into(), json!(handle));
+            }
             rec.insert(
                 "run_id".into(),
                 result.run_id.map(Value::from).unwrap_or(Value::Null),
@@ -2001,13 +2321,11 @@ fn run_dispatch(args: &[String]) -> R<i32> {
                     }
                 }),
             );
-            rec.insert("submitted_by".into(), json!(submitted_by()));
-            rec.insert(
-                "actor".into(),
-                json!("developing-today[bot] (GitHub App dispatch)"),
-            );
-            rec.insert("created_at".into(), json!(now_iso()));
-            rec.insert("updated_at".into(), json!(now_iso()));
+            if granted {
+                if let Err(e) = coord.confirm(&handle, result.run_id) {
+                    rec.insert("confirm_error".into(), json!(e));
+                }
+            }
             if let Some(note) = &result.note {
                 rec.insert("note".into(), json!(note));
             }
@@ -2028,6 +2346,7 @@ fn run_dispatch(args: &[String]) -> R<i32> {
             };
             commit_new_session(&Value::Object(rec), blacksmith_entry.as_ref(), &*remote)?;
             out.insert("handle".into(), json!(handle));
+            out.insert("placement_path".into(), json!(placement_path));
             if let Some(run_id) = result.run_id {
                 if !runner_repo.is_empty() {
                     out.insert("runner_repo".into(), json!(runner_repo));
@@ -2045,6 +2364,16 @@ fn run_dispatch(args: &[String]) -> R<i32> {
                 "run_url".into(),
                 result.run_url.map(Value::from).unwrap_or(Value::Null),
             );
+        }
+        _ => {
+            rec.insert("surface".into(), Value::Null);
+            rec.insert("run_id".into(), Value::Null);
+            rec.insert("run_url".into(), Value::Null);
+            rec.insert("state".into(), json!("queued"));
+            commit_new_session(&Value::Object(rec), None, &*remote)?;
+            out.insert("handle".into(), json!(handle));
+            out.insert("state".into(), json!("queued"));
+            out.insert("placement_path".into(), json!(placement_path));
         }
     }
     // #13146: opportunistic migration — push any local records the

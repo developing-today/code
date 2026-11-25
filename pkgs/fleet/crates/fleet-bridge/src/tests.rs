@@ -190,6 +190,7 @@ fn every_verb_has_its_own_help() {
         "enroll-tokens",
         "revoke-enroll",
         "mint-credential",
+        "wake-hooks",
         "hello",
         "inbox",
         "post",
@@ -250,7 +251,9 @@ fn usage_errors_exit_2_before_any_request() {
         vec!["work", "--agent", "a", "--state", "received", "3"],
         vec!["work", "--agent", "a", "--state", "queued", "3"],
         vec!["work", "--agent", "a", "--state", "done", "0"],
-        vec!["work", "--agent", "a", "--state", "done", "--task", "x", "3"],
+        vec![
+            "work", "--agent", "a", "--state", "done", "--task", "x", "3",
+        ],
         vec!["log", "--limit", "many"],
         vec!["pipeline", "--limit", "many"],
         vec!["pipeline", "--bogus", "x"],
@@ -266,6 +269,9 @@ fn usage_errors_exit_2_before_any_request() {
         vec!["revoke-enroll"],
         vec!["revoke-enroll", "--agent", "a", "--token-hash", "ab12"],
         vec!["mint-credential"],
+        vec!["wake-hooks", "extra"],
+        vec!["wake-hooks", "--set", "hook.json"],
+        vec!["wake-hooks", "--remove", "--address"],
     ] {
         let e = run_with(url, &s, &args, "").unwrap_err();
         assert_eq!(e.exit_code(), EXIT_USAGE, "{args:?}: {e}");
@@ -386,9 +392,15 @@ fn broaden_carries_the_batch_and_no_text() {
 fn offer_posts_its_slots_and_ttl_and_offers_lists() {
     let (url, seen) = fake_bridge(|_, _, body| {
         if body.is_some() {
-            (201, r#"{"offer":{"id":7,"state":"open","claimed":0,"remaining":2}}"#.into())
+            (
+                201,
+                r#"{"offer":{"id":7,"state":"open","claimed":0,"remaining":2}}"#.into(),
+            )
         } else {
-            (200, r#"{"offers":[{"id":7,"state":"open","claims":[]}]}"#.into())
+            (
+                200,
+                r#"{"offers":[{"id":7,"state":"open","claims":[]}]}"#.into(),
+            )
         }
     });
     let s = secrets(&[(DEFAULT_BRIDGE_OWNER_TOKEN_NAME, OWNER)]);
@@ -396,7 +408,15 @@ fn offer_posts_its_slots_and_ttl_and_offers_lists() {
         &url,
         &s,
         &[
-            "offer", "--to", "agent:f*", "--slots", "2", "--ttl", "3600", "--command", "-",
+            "offer",
+            "--to",
+            "agent:f*",
+            "--slots",
+            "2",
+            "--ttl",
+            "3600",
+            "--command",
+            "-",
         ],
         "take the next task",
     )
@@ -578,13 +598,18 @@ fn ack_log_and_agents_shapes() {
 #[test]
 fn work_marks_the_agents_own_rows_and_names_the_queue_task() {
     let (url, seen) = fake_bridge(|_, _, _| {
-        (200, r#"{"message":{"id":3,"work_state":"queued","work_task_id":23500}}"#.into())
+        (
+            200,
+            r#"{"message":{"id":3,"work_state":"queued","work_task_id":23500}}"#.into(),
+        )
     });
     let s = secrets(&[(DEFAULT_BRIDGE_FLEET_TOKEN_NAME, "f".repeat(40).as_str())]);
     let out = run_with(
         &url,
         &s,
-        &["work", "--agent", "muse-1", "--state", "queued", "--task", "23500", "3"],
+        &[
+            "work", "--agent", "muse-1", "--state", "queued", "--task", "23500", "3",
+        ],
         "",
     )
     .unwrap();
@@ -665,6 +690,62 @@ fn pipeline_directory_credentials_and_revoke_shapes() {
         seen[4].body.as_ref().unwrap(),
         &json!({"identity": "muse/felix"})
     );
+}
+
+#[test]
+fn wake_hooks_verb_shapes() {
+    // #14544: the console's wake-hook control, as owner-token calls
+    // on the wake-hooks API. The set form reads its JSON from stdin,
+    // so a hook token never travels as an argument; the remove form
+    // posts the address alone, which is how the API removes.
+    let (url, seen) = fake_bridge(|_, _, _| (200, r#"{"ok":true}"#.into()));
+    let s = secrets(&[(DEFAULT_BRIDGE_OWNER_TOKEN_NAME, OWNER)]);
+    run_with(&url, &s, &["wake-hooks"], "").unwrap();
+    run_with(
+        &url,
+        &s,
+        &["wake-hooks", "--set", "-"],
+        r#"{"address":"agent:felix","url":"https://hooks.example/wake","token":"sekret"}"#,
+    )
+    .unwrap();
+    run_with(
+        &url,
+        &s,
+        &["wake-hooks", "--remove", "--address", "agent:felix"],
+        "",
+    )
+    .unwrap();
+    let seen = seen.lock().unwrap();
+    assert_eq!(seen[0].url, format!("/api/{OWNER}/wake-hooks"));
+    assert_eq!(seen[0].method, "GET");
+    assert_eq!(seen[1].url, format!("/api/{OWNER}/wake-hooks"));
+    assert_eq!(seen[1].method, "POST");
+    assert_eq!(
+        seen[1].body.as_ref().unwrap(),
+        &json!({"address": "agent:felix", "url": "https://hooks.example/wake", "token": "sekret"})
+    );
+    assert_eq!(seen[2].url, format!("/api/{OWNER}/wake-hooks"));
+    assert_eq!(
+        seen[2].body.as_ref().unwrap(),
+        &json!({"address": "agent:felix"})
+    );
+    // Usage errors are usage errors: they answer before any request.
+    for args in [
+        vec!["wake-hooks", "--set"],
+        vec!["wake-hooks", "--remove"],
+        vec![
+            "wake-hooks",
+            "--set",
+            "--remove",
+            "--address",
+            "agent:felix",
+        ],
+        vec!["wake-hooks", "--address", "agent:felix"],
+    ] {
+        let e = run_with(&url, &s, &args, "").unwrap_err();
+        assert_eq!(e.exit_code(), EXIT_USAGE, "{args:?}: {e}");
+    }
+    assert_eq!(seen.len(), 3, "the usage errors made no request");
 }
 
 #[test]
@@ -904,7 +985,13 @@ fn exchange_stores_credentials_by_name_and_prints_no_value() {
     let out = run_with(
         &url,
         &s,
-        &["exchange", "--agent", "New-1", "--bootstrap", FIXTURE_BOOTSTRAP],
+        &[
+            "exchange",
+            "--agent",
+            "New-1",
+            "--bootstrap",
+            FIXTURE_BOOTSTRAP,
+        ],
         "",
     )
     .unwrap();
@@ -916,7 +1003,10 @@ fn exchange_stores_credentials_by_name_and_prints_no_value() {
     assert_eq!(out["notes_token_name"], "bridge.new-1-token");
     let printed = out.to_string();
     for value in [FIXTURE_FLEET_CRED, FIXTURE_NOTES_TOKEN, FIXTURE_BOOTSTRAP] {
-        assert!(!printed.contains(value), "output must not carry a credential value");
+        assert!(
+            !printed.contains(value),
+            "output must not carry a credential value"
+        );
     }
     let stored = s.stored.borrow();
     assert_eq!(
@@ -942,15 +1032,27 @@ fn exchange_refusal_stores_nothing_and_says_why() {
     let e = run_with(
         &url,
         &s,
-        &["exchange", "--agent", "new-1", "--bootstrap", FIXTURE_BOOTSTRAP],
+        &[
+            "exchange",
+            "--agent",
+            "new-1",
+            "--bootstrap",
+            FIXTURE_BOOTSTRAP,
+        ],
         "",
     )
     .unwrap_err();
     assert_eq!(e.exit_code(), EXIT_HTTP);
     let text = e.to_string();
     assert!(text.contains("bootstrap"), "{text}");
-    assert!(!text.contains(FIXTURE_BOOTSTRAP), "the token is scrubbed: {text}");
-    assert!(s.stored.borrow().is_empty(), "a refused exchange stores nothing");
+    assert!(
+        !text.contains(FIXTURE_BOOTSTRAP),
+        "the token is scrubbed: {text}"
+    );
+    assert!(
+        s.stored.borrow().is_empty(),
+        "a refused exchange stores nothing"
+    );
 }
 
 #[test]
@@ -983,11 +1085,7 @@ fn notes_verbs_carry_kind_and_reply_to_under_a_bearer_token() {
     .unwrap();
     // A reply names only the note id: no --to, and no sender field
     // anywhere in the payload — the worker routes it store-side.
-    execute(
-        &mut ctx,
-        &sv(&["notes", "send", "--reply-to", "7", "done"]),
-    )
-    .unwrap();
+    execute(&mut ctx, &sv(&["notes", "send", "--reply-to", "7", "done"])).unwrap();
     execute(&mut ctx, &sv(&["notes", "inbox"])).unwrap();
     execute(&mut ctx, &sv(&["notes", "ack", "3", "4"])).unwrap();
     let seen = seen.lock().unwrap();
@@ -1002,10 +1100,7 @@ fn notes_verbs_carry_kind_and_reply_to_under_a_bearer_token() {
     );
     assert_eq!(seen[2].url, "/notes/inbox");
     assert_eq!(seen[2].method, "GET");
-    assert_eq!(
-        seen[3].body.as_ref().unwrap(),
-        &json!({ "ids": [3, 4] })
-    );
+    assert_eq!(seen[3].body.as_ref().unwrap(), &json!({ "ids": [3, 4] }));
     for req in seen.iter() {
         assert_eq!(
             req.auth.as_deref(),
