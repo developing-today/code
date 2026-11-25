@@ -30,7 +30,6 @@ use std::fmt::Write as _;
 use std::path::Path as FsPath;
 use std::sync::Arc;
 
-use axum::Json;
 use axum::Router;
 use axum::extract::rejection::QueryRejection;
 use axum::extract::{Path, Query, State};

@@ -208,7 +208,7 @@ pub struct RunManifest {
     /// The app folder its client-side assets are served from. Never
     /// serialized: clients see asset URLs, not server paths.
     #[serde(skip)]
-    pub root: Option<std::path::PathBuf>,
+    pub root: Option<PathBuf>,
 }
 
 /// The run manifests a server knows, keyed by app id.
@@ -575,7 +575,7 @@ pub async fn execute_granted(
     grant: Option<&AppGrant>,
 ) -> std::io::Result<RunResponse> {
     let started = start_run(config, request, stdin.into(), grant)?;
-    let (events, mut received) = mpsc::channel(EVENT_BUFFER);
+    let (events, mut received) = mpsc::channel::<RunEvent>(EVENT_BUFFER);
     let collect = async move {
         let mut stdout = Vec::new();
         let mut stderr = Vec::new();
