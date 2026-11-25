@@ -12,6 +12,7 @@ use std::io::{Read, Write};
 
 use std::path::PathBuf;
 
+use crate::archive;
 use crate::backup::{self, BackupError, Manifest};
 use crate::central::{CentralError, Op, Pipeline};
 use crate::read;
@@ -37,10 +38,14 @@ verbs:
   revert         --namespace NS KEY --to V     append a copy of version V
   sync                                         pull namespace definitions, then
                                                sweep this session's intents
+                                               (and archive them when due)
+  backup                                       sync, then archive this
+                                               session's unswept writes now
 
 host store (operators):
   snapshot       DEST                          write a one-file snapshot to DEST
   restore        SNAPSHOT                      restore SNAPSHOT as this host's store
+  restore        --archive                     adopt this session's archived writes
 
 Values of any size are accepted: up to 1 MiB they are stored inline, and
 larger values stream into a content-addressed working file beside the
@@ -72,10 +77,11 @@ const GET_USAGE: &str = "usage: fleet kv get [--global | --allow-stale] [--verbo
 const SET_USAGE: &str = "usage: fleet kv set [--global [--expect VERSION]] --namespace NS KEY (VALUE | --stdin)\n\nStore bytes as a new local version and queue it for the sweep. Prints the version.\n--global writes central directly by compare-and-swap; --expect VERSION (0 for\nabsent) fails with conflict unless central is still at VERSION.\n";
 const LIST_USAGE: &str = "usage: fleet kv list [--global | --allow-stale] [--verbose] --namespace NS [--include-tombstones]\n\nOne line per key: KEY<TAB>VERSION<TAB>ORIGIN, where ORIGIN is local, central,\nboth or masked. --verbose adds each central row a local row hides\n(shadowed-by-local). --allow-stale lists local rows when central is unreachable.\n";
 const DELETE_USAGE: &str = "usage: fleet kv delete [--global [--expect VERSION]] --namespace NS KEY\n\nWrite a masking tombstone: the key reads absent here and sweeps as a mask.\n--global writes the tombstone to central directly by compare-and-swap.\n";
-const SYNC_USAGE: &str = "usage: fleet kv sync\n\nPull this host's namespace definitions from central, then sweep this session's\npending intents into central by compare-and-swap. Prints a summary line, then\none line per conflict or waiting key.\n";
+const SYNC_USAGE: &str = "usage: fleet kv sync [--archive]\n\nPull this host's namespace definitions from central, then sweep this session's\npending intents into central by compare-and-swap. Prints a summary line, then\none line per conflict or waiting key. When the last archive checkpoint is over\n15 min old (or --archive), it then archives the writes that did not sweep:\ninline values up to the namespace threshold only; larger values are listed as\nprotection_unavailable_needs_phase3 and never uploaded. 15 min is an online\ntarget, not a recovery point: unarchived writes die with this disk.\n";
+const BACKUP_USAGE: &str = "usage: fleet kv backup\n\nThe same as `fleet kv sync --archive`: sync, then checkpoint this session's\nunswept writes to the central survival archive now.\n";
 const CLEAR_USAGE: &str = "usage: fleet kv clear-override --namespace NS KEY\n\nDrop the local overlay row, advance the key's fence and cancel unsent sweep\nintents. History is kept. Busy for over 5 s: clear_busy_try_again.\n";
 const SNAPSHOT_USAGE: &str = "usage: fleet kv snapshot DEST\n\nWrite a consistent one-file snapshot of this host's whole store (WAL included)\nto DEST, with a manifest row inside it. Never overwrites DEST. Prints the manifest.\n";
-const RESTORE_USAGE: &str = "usage: fleet kv restore SNAPSHOT\n\nRestore SNAPSHOT as this host's store after checking its manifest, schema\nversion and integrity. Refuses when a store (or its WAL) already exists.\nPrints the manifest.\n";
+const RESTORE_USAGE: &str = "usage: fleet kv restore SNAPSHOT\n       fleet kv restore --archive\n\nRestore SNAPSHOT as this host's store after checking its manifest, schema\nversion and integrity. Refuses when a store (or its WAL) already exists.\nPrints the manifest.\n\n--archive instead adopts this session's last central archive checkpoint as new\nlocal writes (queued to sweep). Keys this store already has history for keep\ntheir local rows; keys the archive holds no bytes for are listed as\nprotection_unavailable_needs_phase3. No checkpoint: archive_not_found.\n";
 const REVERT_USAGE: &str = "usage: fleet kv revert --namespace NS KEY --to VERSION\n       fleet kv revert NS KEY --to VERSION\n\nAppend a new version equal to VERSION from this key's local history.\n";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -87,6 +93,7 @@ enum Verb {
     ClearOverride,
     Revert,
     Sync,
+    Backup,
     Snapshot,
     Restore,
 }
@@ -101,6 +108,7 @@ impl Verb {
             "clear-override" => Self::ClearOverride,
             "revert" => Self::Revert,
             "sync" => Self::Sync,
+            "backup" => Self::Backup,
             "snapshot" => Self::Snapshot,
             "restore" => Self::Restore,
             _ => return None,
@@ -116,6 +124,7 @@ impl Verb {
             Self::ClearOverride => CLEAR_USAGE,
             Self::Revert => REVERT_USAGE,
             Self::Sync => SYNC_USAGE,
+            Self::Backup => BACKUP_USAGE,
             Self::Snapshot => SNAPSHOT_USAGE,
             Self::Restore => RESTORE_USAGE,
         }
@@ -183,7 +192,12 @@ enum Command {
         key: String,
         global: Option<Expect>,
     },
-    Sync,
+    /// `sync`; `archive` forces a checkpoint (`sync --archive`, `backup`).
+    Sync {
+        archive: bool,
+    },
+    /// `restore --archive`: adopt this partition's archived checkpoint.
+    RestoreArchive,
     ClearOverride {
         namespace: String,
         key: String,
@@ -211,7 +225,9 @@ impl Command {
             Self::Delete { .. } => "delete",
             Self::ClearOverride { .. } => "clear-override",
             Self::Revert { .. } => "revert",
-            Self::Sync => "sync",
+            Self::Sync { archive: false } => "sync",
+            Self::Sync { archive: true } => "backup",
+            Self::RestoreArchive => "restore-archive",
             Self::Snapshot { .. } => "snapshot",
             Self::Restore { .. } => "restore",
         })
@@ -222,7 +238,7 @@ impl Command {
         match self {
             Self::Get { global, .. } | Self::List { global, .. } => *global,
             Self::Set { global, .. } | Self::Delete { global, .. } => global.is_some(),
-            Self::Sync => true,
+            Self::Sync { .. } | Self::RestoreArchive => true,
             _ => false,
         }
     }
@@ -268,6 +284,7 @@ fn parse(args: &[String]) -> Result<Command, ParseError> {
     let mut expect: Option<u64> = None;
     let mut allow_stale = false;
     let mut verbose = false;
+    let mut archive = false;
     let mut positionals: Vec<String> = Vec::new();
     let mut rest = args[skip..].iter();
     let mut only_positionals = false;
@@ -308,6 +325,9 @@ fn parse(args: &[String]) -> Result<Command, ParseError> {
             }
             "--verbose" if matches!(verb, Verb::Get | Verb::List) && inline.is_none() => {
                 verbose = true;
+            }
+            "--archive" if matches!(verb, Verb::Sync | Verb::Restore) && inline.is_none() => {
+                archive = true;
             }
             "--expect" if matches!(verb, Verb::Set | Verb::Delete) => {
                 let raw = take_value("--expect")?;
@@ -362,6 +382,10 @@ fn parse(args: &[String]) -> Result<Command, ParseError> {
                 "`kv {first}` acts on the whole host store and takes no --namespace"
             )));
         }
+        if archive {
+            expect(0)?;
+            return Ok(Command::RestoreArchive);
+        }
         expect(1)?;
         let path = PathBuf::from(positionals.remove(0));
         return Ok(if verb == Verb::Snapshot {
@@ -370,14 +394,16 @@ fn parse(args: &[String]) -> Result<Command, ParseError> {
             Command::Restore { snapshot: path }
         });
     }
-    if verb == Verb::Sync {
+    if matches!(verb, Verb::Sync | Verb::Backup) {
         if namespace.is_some() {
-            return Err(usage(
-                "`kv sync` acts on every namespace and takes no --namespace",
-            ));
+            return Err(usage(format!(
+                "`kv {first}` acts on every namespace and takes no --namespace"
+            )));
         }
         expect(0)?;
-        return Ok(Command::Sync);
+        return Ok(Command::Sync {
+            archive: archive || verb == Verb::Backup,
+        });
     }
     let namespace = namespace.ok_or_else(|| usage("--namespace NS is required"))?;
     Ok(match verb {
@@ -445,7 +471,7 @@ fn parse(args: &[String]) -> Result<Command, ParseError> {
                 to,
             }
         }
-        Verb::Sync | Verb::Snapshot | Verb::Restore => {
+        Verb::Sync | Verb::Backup | Verb::Snapshot | Verb::Restore => {
             unreachable!("sync and host verbs returned above")
         }
     })
@@ -878,7 +904,7 @@ fn execute_central(
                 Err(error) => return refuse_global(err, &error),
             }
         }
-        Command::Sync => {
+        Command::Sync { archive: forced } => {
             let report =
                 match sync::sync(store, identity, primary, identity.owner_user_id, &mut sleep) {
                     Ok(report) => report,
@@ -890,8 +916,29 @@ fn execute_central(
                         };
                     }
                 };
-            write_sync_report(out, &report)
+            if let Err(error) = write_sync_report(out, &report) {
+                return finish(Err(error), err);
+            }
+            let now = read::now_ms();
+            let due = match archive::due(store, identity, now) {
+                Ok(due) => due,
+                Err(error) => return refuse(err, &error),
+            };
+            if !(forced || due) {
+                return finish(Ok(()), err);
+            }
+            match archive::checkpoint(store, identity, primary, now) {
+                Ok(checkpoint) => {
+                    let _ = writeln!(err, "note: {}", checkpoint.protection_gap());
+                    write_checkpoint(out, &checkpoint)
+                }
+                Err(error) => return refuse_archive(err, &error),
+            }
         }
+        Command::RestoreArchive => match archive::restore(store, identity, primary) {
+            Ok(restored) => write_restored(out, &restored),
+            Err(error) => return refuse_archive(err, &error),
+        },
         _ => {
             let _ = writeln!(
                 err,
@@ -901,6 +948,56 @@ fn execute_central(
         }
     };
     finish(written, err)
+}
+
+fn refuse_archive(err: &mut dyn Write, error: &archive::ArchiveError) -> i32 {
+    let _ = writeln!(err, "error: {}: {error}", error.code());
+    match error {
+        archive::ArchiveError::Central(central) => central_exit(central),
+        _ => EXIT_REFUSED,
+    }
+}
+
+fn write_checkpoint(out: &mut dyn Write, checkpoint: &archive::Checkpoint) -> std::io::Result<()> {
+    writeln!(
+        out,
+        "archive at_ms={} archived={} unprotected={}",
+        checkpoint.at_ms,
+        checkpoint.archived(),
+        checkpoint.unprotected().count()
+    )?;
+    for key in checkpoint.unprotected() {
+        writeln!(
+            out,
+            "unprotected\t{}\t{}\t{}",
+            key.namespace,
+            key.key,
+            archive::PROTECTION_UNAVAILABLE
+        )?;
+    }
+    Ok(())
+}
+
+fn write_restored(out: &mut dyn Write, restored: &archive::Restored) -> std::io::Result<()> {
+    writeln!(
+        out,
+        "restored checkpoint_at_ms={} adopted={} kept_local={} unprotected={}",
+        restored.checkpoint_at_ms,
+        restored.adopted.len(),
+        restored.kept_local.len(),
+        restored.unprotected.len()
+    )?;
+    for (namespace, key) in &restored.kept_local {
+        writeln!(out, "kept_local\t{namespace}\t{key}")?;
+    }
+    for (namespace, key) in &restored.unprotected {
+        writeln!(
+            out,
+            "unprotected\t{namespace}\t{key}\t{}",
+            archive::PROTECTION_UNAVAILABLE
+        )?;
+    }
+    Ok(())
 }
 
 fn write_sync_report(out: &mut dyn Write, report: &sync::SyncReport) -> std::io::Result<()> {
@@ -1079,8 +1176,8 @@ fn execute(
                 Err(error) => return refuse(err, &error),
             }
         }
-        Command::Sync => {
-            let _ = writeln!(err, "error: usage: `kv sync` needs the central store");
+        Command::Sync { .. } | Command::RestoreArchive => {
+            let _ = writeln!(err, "error: usage: this verb needs the central store");
             return EXIT_USAGE;
         }
         Command::Snapshot { dest } => match store.snapshot(&dest) {
@@ -1453,9 +1550,22 @@ mod tests {
         }
         let synced = central.invoke(&store, "owner", &["sync"], b"");
         assert_eq!(synced.code, EXIT_OK, "{}", synced.err);
-        assert_eq!(
-            text(&synced),
-            "namespaces=1 committed=1 conflicts=0 waiting=1\nwaiting\telsewhere\tagent\tunknown_namespace\n"
+        // The unswept key makes a first archive checkpoint due.
+        let printed = text(&synced);
+        assert!(
+            printed.starts_with(
+                "namespaces=1 committed=1 conflicts=0 waiting=1\nwaiting\telsewhere\tagent\tunknown_namespace\narchive at_ms="
+            ),
+            "{printed}"
+        );
+        assert!(
+            printed.ends_with(" archived=1 unprotected=0\n"),
+            "{printed}"
+        );
+        assert!(
+            synced.err.contains("not a recovery point"),
+            "{}",
+            synced.err
         );
         let global = central.invoke(
             &store,
@@ -1486,6 +1596,65 @@ mod tests {
             .code,
             EXIT_OK
         );
+    }
+
+    #[test]
+    fn central_cli_backup_archives_and_restore_archive_adopts() {
+        let central = Central::new();
+        let lost = LocalStore::in_memory().expect("store");
+        assert_eq!(central.invoke(&lost, "owner", &["sync"], b"").code, EXIT_OK);
+        // Nothing unswept and checkpoint not forced: no archive line.
+        let quiet = central.invoke(&lost, "owner", &["sync"], b"");
+        assert_eq!(
+            text(&quiet),
+            "namespaces=1 committed=0 conflicts=0 waiting=0\n"
+        );
+        assert_eq!(
+            invoke(
+                &lost,
+                &["set", "--namespace", "status", "agent", "working"],
+                b""
+            )
+            .code,
+            EXIT_OK
+        );
+        let backup = central.invoke(&lost, "owner", &["backup"], b"");
+        assert_eq!(backup.code, EXIT_OK, "{}", backup.err);
+        // The key swept, so the forced checkpoint archives an empty set.
+        assert!(
+            text(&backup).contains("archive at_ms="),
+            "{}",
+            text(&backup)
+        );
+        assert!(text(&backup).ends_with(" archived=0 unprotected=0\n"));
+        let usage = central.invoke(&lost, "owner", &["restore", "--archive", "extra"], b"");
+        assert_eq!(usage.code, EXIT_USAGE);
+        let missing = central.invoke(&lost, "nobody", &["restore", "--archive"], b"");
+        assert_eq!(missing.code, EXIT_REFUSED);
+        assert!(
+            missing.err.starts_with("error: archive_not_found"),
+            "{}",
+            missing.err
+        );
+        // Without central, the archive verbs refuse before opening the store.
+        let unconfigured = invoke(&lost, &["backup"], b"");
+        assert_eq!(unconfigured.code, EXIT_UNAVAILABLE);
+        assert!(
+            unconfigured
+                .err
+                .starts_with("error: central_not_configured"),
+            "{}",
+            unconfigured.err
+        );
+        let restored_fresh = LocalStore::in_memory().expect("fresh");
+        let restored = central.invoke(&restored_fresh, "owner", &["restore", "--archive"], b"");
+        assert_eq!(restored.code, EXIT_OK, "{}", restored.err);
+        assert!(
+            text(&restored).starts_with("restored checkpoint_at_ms="),
+            "{}",
+            text(&restored)
+        );
+        assert!(text(&restored).ends_with(" adopted=0 kept_local=0 unprotected=0\n"));
     }
 
     #[test]

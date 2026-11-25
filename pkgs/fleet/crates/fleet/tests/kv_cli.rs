@@ -52,11 +52,14 @@ fn bad_arguments_and_unconfigured_central_are_answered_before_anything_is_create
     let dir = scratch("strict");
     let usage = fleet(&dir, &["kv", "get", "--namespace", "n", "k", "extra"], None);
     assert_eq!(usage.status.code(), Some(2), "{}", stderr(&usage));
-    // With no central store configured, --global and sync exit 69 before
-    // the session's identity or the local store is touched.
+    // With no central store configured, --global, sync, backup and
+    // restore --archive exit 69 before the session's identity or the local
+    // store is touched.
     for words in [
         &["kv", "list", "--global", "--namespace", "n"][..],
         &["kv", "sync"][..],
+        &["kv", "backup"][..],
+        &["kv", "restore", "--archive"][..],
     ] {
         let global = fleet(&dir, words, None);
         assert_eq!(global.status.code(), Some(69), "{}", stderr(&global));
