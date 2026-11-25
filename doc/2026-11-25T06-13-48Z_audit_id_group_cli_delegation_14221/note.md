@@ -17,12 +17,12 @@
 
 ## Findings
 
-| Id | Finding | F-item / guarantee | Disposition |
-| --- | --- | --- | --- |
-| C1 | `id group delegate` printed the grant without its `expires_at` bound, so the confirmation did not show what was recorded. | F1 / D1 | Fixed in the PR that adds this record: the bound is printed when set. |
-| C2 | A bound at or before now was accepted. The fold applies such a grant, but every action under it is already past the bound, so it is dead on arrival and the command reported success. | F1 / D1 | Fixed in the same PR: the CLI refuses the bound and records nothing. |
-| C3 | `delegate --mode` records the delegation-mode change before the grant. If the grant is refused, the command fails but the mode change stays in the log. | G5, F5 | Per-finding issue #14877. |
-| C4 | The fold never expires a bounded grant for an action with no `at` (legacy lines, or a pre-epoch clock). Expiry fails open. | F1 / D1 | Per-finding issue #14876 (proposes fail-closed). |
+| Id  | Finding                                                                                                                                                                               | F-item / guarantee | Disposition                                                           |
+| --- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------ | --------------------------------------------------------------------- |
+| C1  | `id group delegate` printed the grant without its `expires_at` bound, so the confirmation did not show what was recorded.                                                             | F1 / D1            | Fixed in the PR that adds this record: the bound is printed when set. |
+| C2  | A bound at or before now was accepted. The fold applies such a grant, but every action under it is already past the bound, so it is dead on arrival and the command reported success. | F1 / D1            | Fixed in the same PR: the CLI refuses the bound and records nothing.  |
+| C3  | `delegate --mode` records the delegation-mode change before the grant. If the grant is refused, the command fails but the mode change stays in the log.                               | G5, F5             | Per-finding issue #14877.                                             |
+| C4  | The fold never expires a bounded grant for an action with no `at` (legacy lines, or a pre-epoch clock). Expiry fails open.                                                            | F1 / D1            | Per-finding issue #14876 (proposes fail-closed).                      |
 
 ## Conforming observations
 

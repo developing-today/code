@@ -39,7 +39,7 @@ carried by the current deploy line).
   object's storage behind `get`/`put`/`delete`
   (`edge/src/worker.ts`: `ctx.storage`).
 - Reporting today: the health answer carries `machineSettingsDiffer`
-  — the *names* in which a machine differs from the repository, never
+  — the _names_ in which a machine differs from the repository, never
   values (`settingsThatDiffer`). The Machines screen's answer
   (`machinesSaid`, `MachinesAnswer` in `src/edge-proto.ts`) carries
   `settingsDifferences`: per differing setting, both values and which
@@ -139,7 +139,7 @@ Properties this shape buys:
   bundle; object storage is not in the bundle. An override survives
   every deploy until the owner clears it — which is the point of
   acceptance item 1, and also its hazard, handled in D4.
-- **One place, since when.** The record *is* the one place: which
+- **One place, since when.** The record _is_ the one place: which
   settings are overridden, to what, since `at`, by `by`, at revision
   `rev`. §5's reporting is a projection of this record plus
   `platformSettings()`, not a second store.
@@ -147,7 +147,7 @@ Properties this shape buys:
   appends to the existing audit log (`Edge.audit()`), entries
   `{kind: "setting.set" | "setting.clear", name, rev, at, by}` —
   values are not written to the audit log (the current values are in
-  the record; the log answers *that* a change happened, and when).
+  the record; the log answers _that_ a change happened, and when).
 - **Bounded.** At most two names, validated as in D5; the record is a
   few hundred bytes beside `"cfg"`, `"held"` and `"audit"`.
 
@@ -158,7 +158,7 @@ pure function beside it — the merge stays in the one file both sides
 already share:
 
 ```ts
-effectiveSettings(told, owner, platform = platformSettings())
+effectiveSettings(told, owner, (platform = platformSettings()));
 ```
 
 Order, lowest to highest:
@@ -186,7 +186,7 @@ still an `EdgeConfig`, so every existing consumer — `directClasses`,
 effective settings with no signature changes. One deliberate
 consequence: when the owner overrides `needsRepos`, the edge reads
 the census by the owner's list even while machines report another,
-and a machine is *told* the effective list (D6) so what it answers
+and a machine is _told_ the effective list (D6) so what it answers
 for agrees.
 
 ### D4. Clearing is a first-class act; staleness is shown, not hidden
@@ -194,7 +194,7 @@ for agrees.
 - **Clear** removes one name from `values` (or the whole record),
   bumping `rev` and `at` like a set. With no override, the repository
   speaks again from the next deploy — no, from that moment: the
-  repository's *current bundle* value, which is whatever main said at
+  repository's _current bundle_ value, which is whatever main said at
   the last deploy.
 - **The hazard:** an override outlives the repository change it was
   compensating for, and silently shadows a later deliberate change to
@@ -260,7 +260,7 @@ settings?: { rev: number; values: Partial<…> };
   reports it in its next sync (one new optional `MachineReport`-sibling
   field, or in `have`-style metadata — slice 5 picks the exact slot),
   so the edge can say "machine X runs override rev 3" and, until it
-  does, the machine shows as *not yet on the effective settings* —
+  does, the machine shows as _not yet on the effective settings_ —
   said, not acted on, exactly as #14163 item 3 already treats a
   machine on other settings.
 - Until a machine applies them, nothing breaks: the edge goes by the
@@ -275,11 +275,11 @@ settings?: { rev: number; values: Partial<…> };
 For each name in `PLATFORM_SETTING_NAMES`, exactly one source is in
 force at any moment:
 
-| Setting | Sources, highest first | In force today |
-|---|---|---|
-| `repo`, `queue`, `queueDbUrl`, `queueTokenName`, `androidPackage` | repository | repository |
-| `promptLabel` | **owner** → repository | repository |
-| `needsRepos` | **owner** → machine → repository | machine (in service: equal to repository since 2026-11-24, per #14163) |
+| Setting                                                           | Sources, highest first           | In force today                                                         |
+| ----------------------------------------------------------------- | -------------------------------- | ---------------------------------------------------------------------- |
+| `repo`, `queue`, `queueDbUrl`, `queueTokenName`, `androidPackage` | repository                       | repository                                                             |
+| `promptLabel`                                                     | **owner** → repository           | repository                                                             |
+| `needsRepos`                                                      | **owner** → machine → repository | machine (in service: equal to repository since 2026-11-24, per #14163) |
 
 Sign-in fields are not in this table: they are not platform settings
 (#13495).
@@ -311,10 +311,10 @@ settingsInForce(told, owner, platform): SettingInForce[]
   `machineSettingsDiffer`. No values, no `by` — health today never
   carries values, and an override's value (a repository list, a
   label) is the owner's business. `machineSettingsDiffer` stays as
-  is: it answers a different question (where a *machine* disagrees),
+  is: it answers a different question (where a _machine_ disagrees),
   and removing it would break the checks that read it.
 - **The Machines answer (owner-only)** gains `platform.settings:
-  SettingInForce[]` with values, the repository's contrast value,
+SettingInForce[]` with values, the repository's contrast value,
   `by` and `rev` — this is the one place the owner reads "which
   settings are in force and since when", on the screen that already
   shows where machines differ. The app (§6) renders it as the

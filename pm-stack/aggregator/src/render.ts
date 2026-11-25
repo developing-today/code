@@ -6974,7 +6974,7 @@ function coverageSectionHtml(coverage: CoverageSnapshotFile | null | undefined):
   const cell = (
     repo: string,
     v: number | null,
-    key: "openIssues" | "gateNow" | "gateNext" | "poolItems" | "poolUnsetStatus" | "poolUnsetArea",
+    key: "openIssues" | "gateNow" | "gateNext" | "poolItems" | "poolUnsetStatus" | "poolUnsetArea" | "staleOpenIssues",
   ): string => {
     if (v === null) return "—";
     const d = delta.get(repo)?.[key];
@@ -6996,7 +6996,7 @@ function coverageSectionHtml(coverage: CoverageSnapshotFile | null | undefined):
       const collectedAt = r.staleIssuesCollectedAt
         ? `<time datetime="${esc(r.staleIssuesCollectedAt)}">${esc(r.staleIssuesCollectedAt)}</time>`
         : "—";
-      return `<tr><td>${esc(r.repo)}</td><td>${cell(r.repo, r.openIssues, "openIssues")}</td><td>${cell(r.repo, r.gateNow, "gateNow")}</td><td>${cell(r.repo, r.gateNext, "gateNext")}</td><td>${cell(r.repo, r.poolItems, "poolItems")}</td><td>${cell(r.repo, r.poolUnsetStatus, "poolUnsetStatus")}</td><td>${cell(r.repo, r.poolUnsetArea, "poolUnsetArea")}</td><td>${r.staleOpenIssues === null ? "—" : r.staleOpenIssues}</td><td>${collectedAt}</td><td>${status}</td></tr>`;
+      return `<tr><td>${esc(r.repo)}</td><td>${cell(r.repo, r.openIssues, "openIssues")}</td><td>${cell(r.repo, r.gateNow, "gateNow")}</td><td>${cell(r.repo, r.gateNext, "gateNext")}</td><td>${cell(r.repo, r.poolItems, "poolItems")}</td><td>${cell(r.repo, r.poolUnsetStatus, "poolUnsetStatus")}</td><td>${cell(r.repo, r.poolUnsetArea, "poolUnsetArea")}</td><td>${cell(r.repo, r.staleOpenIssues, "staleOpenIssues")}</td><td>${collectedAt}</td><td>${status}</td></tr>`;
     })
     .join("");
   const note = baseline
@@ -7806,8 +7806,9 @@ export function phase12PanelHtml(
  * F-item progress counted from #1235's ordered step list, and Phases
  * 11 and 13 count the F-item mapping table in planning/roadmaps/id.md
  * (the source of record, #9923 step 3) when the source carries it;
- * Phases 0-10 have no F-item numbering in their plans, so they state
- * that gap instead of showing a fabricated percentage. */
+ * Phases 0-10 joined that table for #13944 (F-numbering mirroring
+ * their plans' P-step lists, refs = their validation audits), so
+ * they derive from the same mapping instead of stating a gap. */
 export function phaseTrackerPanelHtml(
   items: Map<RefKey, GhItem>,
   phase12: Phase12Snapshot | null = null,
@@ -7817,7 +7818,7 @@ export function phaseTrackerPanelHtml(
   const head = `<h2>Phase tracker — validation by phase, live from <a href="${umbrellaUrl}">#${PHASE_TRACKER_UMBRELLA}</a></h2>`;
   const progress = derivePhase12Progress(phase12, items);
   const mappedProgress = phaseMapping ? deriveMappedProgress(phaseMapping.entries, items) : null;
-  const sourceLine = `<p class="muted">Source: the validation audits <a href="https://github.com/${PHASE_TRACKER_REPO}/issues/1075">#1075</a>–<a href="https://github.com/${PHASE_TRACKER_REPO}/issues/1078">#1078</a> under umbrella <a href="${umbrellaUrl}">#${PHASE_TRACKER_UMBRELLA}</a>, resolved from the same live GitHub items as the tracked-issues table above (the page provenance stamp applies). Phase 12 progress counts the ordered steps in <a href="${PHASE12_ISSUE_URL}">#1235</a> against live issue state${phase12 ? ` (body fetched ${esc(phase12.fetchedAt)})` : ""}; ${phaseMapping ? `Phases 11 and 13 progress counts the F-item mapping table in <a href="https://github.com/${PHASE_TRACKER_REPO}/blob/main/planning/roadmaps/id.md">planning/roadmaps/id.md</a> (read ${esc(phaseMapping.fetchedAt)}) against live item state; ` : ""}Phases 0–10 have no F-item numbering in their plans, so no percentage is shown for them — the gap is stated rather than a number invented.</p>`;
+  const sourceLine = `<p class="muted">Source: the validation audits <a href="https://github.com/${PHASE_TRACKER_REPO}/issues/1075">#1075</a>–<a href="https://github.com/${PHASE_TRACKER_REPO}/issues/1078">#1078</a> under umbrella <a href="${umbrellaUrl}">#${PHASE_TRACKER_UMBRELLA}</a>, resolved from the same live GitHub items as the tracked-issues table above (the page provenance stamp applies). Phase 12 progress counts the ordered steps in <a href="${PHASE12_ISSUE_URL}">#1235</a> against live issue state${phase12 ? ` (body fetched ${esc(phase12.fetchedAt)})` : ""}; ${phaseMapping ? `All phases except 12 count the F-item mapping table in <a href="https://github.com/${PHASE_TRACKER_REPO}/blob/main/planning/roadmaps/id.md">planning/roadmaps/id.md</a> (read ${esc(phaseMapping.fetchedAt)}) against live item state — for Phases 0–10 the F-numbering mirrors their plans' P-step lists and each item's ref is its phase's validation audit (#1075–#1077); ` : "The F-item mapping is unavailable in the current source, so no mapped percentage is shown — a number is never invented."}</p>`;
   const rows = derivePhaseValidation(items)
     .map((r) => {
       const badge =
@@ -7843,9 +7844,7 @@ export function phaseTrackerPanelHtml(
             : `<span class="muted">withheld — #1235 feed unavailable or stale</span>`
           : mapped
             ? `<strong>${mapped.done}/${mapped.total} items done (${mapped.percent}%)</strong><br><span class="muted">${mapped.open} open${mapped.unresolved ? ` · ${mapped.unresolved} not resolved in the current source` : ""} — from the F-item mapping in planning/roadmaps/id.md</span>`
-            : r.phase <= 10
-              ? `<span class="muted">not derived — this phase's plan has no F-item numbering</span>`
-              : `<span class="muted">not derived — F-item mapping unavailable in the current source</span>`;
+            : `<span class="muted">not derived — F-item mapping unavailable in the current source</span>`;
       return `<tr><th scope="row">Phase ${r.phase}</th><td>${badge}</td><td>${audit}</td><td>${followUps}</td><td>${progressCell}</td></tr>`;
     })
     .join("");

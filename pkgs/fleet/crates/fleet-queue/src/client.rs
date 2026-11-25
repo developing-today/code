@@ -65,6 +65,8 @@ pub fn run(args: &[String]) -> i32 {
         "validate" => cmd_validate(rest),
         "enqueue" => cmd_enqueue(rest),
         "meta" => cmd_meta(rest),
+        "staleness" => cmd_staleness(rest),
+        "needs-user" => cmd_needs_user(rest),
         "list" => cmd_list(rest),
         "claim" => cmd_claim(rest),
         "release" => cmd_release(rest),
