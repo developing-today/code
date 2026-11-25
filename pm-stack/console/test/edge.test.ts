@@ -4679,6 +4679,7 @@ describe("the edge does the core itself", () => {
         "task.move",
         "pr.merge",
         "deploy.start",
+        "store.migrate",
         "intake.send",
       ],
       sections: ["board", "prs", "priorities", "asks", "census", "done"],
