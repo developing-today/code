@@ -40,6 +40,20 @@ jobs:
         env:
           PM_CONSOLE_SITE: http://10.0.2.2:4897
         run: bash pm-stack/console/android/build.sh
+      # The build above is unsigned (the signing key is not in CI, by
+      # design) and Android will not install an unsigned APK, so sign
+      # it with a throwaway key made on the runner and give it the
+      # name the check step names. The certificate the site lists is
+      # not what is under test here: against the demo edge the app
+      # opens as a Custom Tab over plain http, not as a verified
+      # Trusted Web Activity (see the build step's note).
+      - name: Sign the APK with a throwaway key for the check
+        run: |
+          out=pm-stack/console/android/app/build/outputs/apk/release
+          keytool -genkeypair -keystore "$RUNNER_TEMP/pm-console-check.p12" -storetype PKCS12 -alias pmconsole -keyalg RSA -keysize 2048 -validity 30 -storepass pm-console-check -keypass pm-console-check -dname "CN=pm console offline check"
+          printf 'pm-console-check' >"$RUNNER_TEMP/pm-console-check-password"
+          apksigner="$(find "$ANDROID_HOME/build-tools" -name apksigner -type f | sort -V | tail -1)"
+          "$apksigner" sign --ks "$RUNNER_TEMP/pm-console-check.p12" --ks-type pkcs12 --ks-key-alias pmconsole --ks-pass "file:$RUNNER_TEMP/pm-console-check-password" --out "$out/app-release.apk" "$out/app-release-unsigned.apk"
       - name: Start the demo edge
         env:
           PM_CONSOLE_DEMO_ACT_LOG: ${{ github.workspace }}/pm-console-acts.jsonl
