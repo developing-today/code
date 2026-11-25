@@ -12,7 +12,7 @@
   - `pkgs/id/crates/id-cli/src/cli/groups.rs` (`DelegateArgs`, `RevokeArgs`)
   - `pkgs/id/crates/id-groups/src/groups/log.rs` (`GroupLog::open`,
     `record`, `record_preformed`, `append`, `delegate`)
-  - `pkgs/id/crates/id-groups/src/groups/delegation.rs` (fold, expiry, veto)
+  - `pkgs/id/crates/id-events/src/groups/delegation.rs` (fold, expiry, veto)
   - `pkgs/id/tests/cli_delegation.rs`
 
 ## Findings
