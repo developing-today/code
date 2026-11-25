@@ -81,3 +81,22 @@ open at this pass. The verbatim live unit files in `supplements/` are the
 exact bytes that issue needs to commit. #3235 stays open as the 2026-10-28
 directive's tracking record until hatch#14 lands the two pins; this record is
 the live-verified mapping its acceptance asks for.
+
+<!-- workflow:state -->
+
+{
+"version": 1,
+"id": "2026-11-25T01-31-34Z_audit_sandbox-systemd-unit-sources",
+"created_at": "2026-11-25T01:31:34Z",
+"stage": "delivery",
+"status": "complete",
+"concepts": [
+{
+"id": "C001",
+"title": "Live-verified committed-source mapping for resource-sampler, hatch-execd, hatch-ca-trust (code#3235)",
+"status": "complete"
+}
+]
+}
+
+<!-- /workflow:state -->
