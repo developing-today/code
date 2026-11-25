@@ -483,23 +483,28 @@ impl GrantSet {
         self.grants.values()
     }
 
-    /// Whether `grant` and every ancestor is present, unrevoked, and
-    /// unexpired at `now`.
-    fn lineage_valid(&self, grant: &Grant, now: u64) -> bool {
+    /// The root of `grant`'s delegation chain, when `grant` and every
+    /// ancestor is present, unrevoked, and unexpired at `now`; `None`
+    /// when any link is missing, revoked, or expired, or the chain is
+    /// deeper than [`MAX_DELEGATION_DEPTH`].
+    fn valid_root<'s>(&'s self, grant: &'s Grant, now: u64) -> Option<&'s Grant> {
         let mut current = grant;
         for _ in 0..=MAX_DELEGATION_DEPTH {
             if self.revoked.contains(&current.id) || current.is_expired(now) {
-                return false;
+                return None;
             }
             match &current.parent {
-                None => return true,
-                Some(parent) => match self.grants.get(parent) {
-                    Some(next) => current = next,
-                    None => return false,
-                },
+                None => return Some(current),
+                Some(parent) => current = self.grants.get(parent)?,
             }
         }
-        false
+        None
+    }
+
+    /// Whether `grant` and every ancestor is present, unrevoked, and
+    /// unexpired at `now`.
+    fn lineage_valid(&self, grant: &Grant, now: u64) -> bool {
+        self.valid_root(grant, now).is_some()
     }
 
     /// Authorize one access. Allowed only when a single grant covers the
@@ -508,6 +513,28 @@ impl GrantSet {
     /// its snapshot has not been served yet. The lowest-id such grant is
     /// named.
     pub fn authorize(&self, request: &AccessRequest<'_>) -> Decision {
+        self.authorize_where(request, |_| true)
+    }
+
+    /// Authorize one access as [`GrantSet::authorize`] does, counting
+    /// only grants whose delegation chain is rooted in a grant issued
+    /// by `root_issuer`.
+    ///
+    /// A host passes the resource's owner here, so a grant that someone
+    /// else issued over that resource, or delegated from such a grant,
+    /// never allows anything. Refusal still carries nothing.
+    pub fn authorize_rooted_in(&self, request: &AccessRequest<'_>, root_issuer: &str) -> Decision {
+        self.authorize_where(request, |root| root.issuer == root_issuer)
+    }
+
+    /// The shared check behind [`GrantSet::authorize`] and
+    /// [`GrantSet::authorize_rooted_in`]: `root_ok` must accept the
+    /// valid root of the allowing grant's chain.
+    fn authorize_where(
+        &self,
+        request: &AccessRequest<'_>,
+        root_ok: impl Fn(&Grant) -> bool,
+    ) -> Decision {
         self.grants
             .values()
             .find(|grant| {
@@ -516,7 +543,7 @@ impl GrantSet {
                     && grant.operations.contains(&request.operation)
                     && !(grant.duration == Duration::SnapshotOnce
                         && self.consumed.contains(&grant.id))
-                    && self.lineage_valid(grant, request.now)
+                    && self.valid_root(grant, request.now).is_some_and(&root_ok)
             })
             .map_or(Decision::Deny, |grant| Decision::Allow(grant.id.clone()))
     }
