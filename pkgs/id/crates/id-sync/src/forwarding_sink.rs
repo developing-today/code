@@ -29,6 +29,7 @@ use std::sync::Arc;
 use iroh::{Endpoint, EndpointAddr};
 
 use crate::chained_message::RelayedMessage;
+use crate::envelope_outbox::Outcome;
 use crate::relay_ingest::{ChainedSink, RelayBoundaryGate, forward_message};
 
 /// Where a [`ForwardingSink`] hands each message it delivers locally.
@@ -174,7 +175,7 @@ impl ChainedSink for ForwardingSink {
             tokio::spawn(async move {
                 let outcome = sink.forward_to(addr, &msg).await;
                 match outcome {
-                    crate::envelope_outbox::Outcome::Delivered => {}
+                    Outcome::Delivered => {}
                     other => tracing::warn!(
                         relay = %relay,
                         outcome = ?other,
