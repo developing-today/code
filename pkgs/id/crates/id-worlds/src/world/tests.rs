@@ -9456,42 +9456,35 @@ mod tests {
         let controller = SpillController::new(&MintingAuthenticator);
         let verifier = AcceptingVerifier;
         let sent: RefCell<Vec<Vec<u8>>> = RefCell::new(Vec::new());
-        let mut dispatch = |holder: &str,
-                            epoch: u64,
-                            position: u64,
-                            proof: Vec<u8>,
-                            scope: &Scope,
-                            hops: &[Hop<'_>]| {
-            let sent = &sent;
-            async move {
+        macro_rules! dispatch {
+            ($holder:expr, $epoch:expr, $position:expr, $proof:expr, $scope:expr, $hops:expr) => {
                 controller
                     .dispatch_presented_copy(
                         &w.handle,
-                        scope,
-                        hops,
+                        $scope,
+                        $hops,
                         1_000_000,
                         &verifier,
-                        holder,
-                        epoch,
-                        position,
-                        &proof,
+                        $holder,
+                        $epoch,
+                        $position,
+                        $proof,
                         b"journal-copy".to_vec(),
                         |copy| sent.borrow_mut().push(copy.to_vec()),
                     )
                     .await
-            }
-        };
+            };
+        }
 
         // Forged proof at the boundary position: no cursor, no bytes.
-        let forged = dispatch(
+        let forged = dispatch!(
             "native-2",
             3,
             boundary,
-            b"forged".to_vec(),
+            b"forged".as_slice(),
             &Scope::Unscoped,
-            &[],
-        )
-        .await;
+            &[]
+        );
         assert!(matches!(
             forged,
             Err(SpillDispatchRefusal::UnauthenticatedCursor { .. })
@@ -9500,15 +9493,14 @@ mod tests {
 
         // Authenticated but stale cursor (below the ownership
         // boundary): the actor's final gate refuses, no bytes.
-        let stale = dispatch(
+        let stale = dispatch!(
             "native-2",
             3,
             2,
-            minted_proof("native-2", 3, 2),
+            &minted_proof("native-2", 3, 2),
             &Scope::Unscoped,
-            &[],
-        )
-        .await;
+            &[]
+        );
         assert!(
             matches!(&stale, Err(SpillDispatchRefusal::Authority(reason)) if reason.contains("ReplayPending")),
             "stale cursor must hit the replay gate, got {stale:?}"
@@ -9516,15 +9508,14 @@ mod tests {
         assert!(sent.borrow().is_empty());
 
         // Authenticated cursor for the wrong epoch: no bytes.
-        let wrong_epoch = dispatch(
+        let wrong_epoch = dispatch!(
             "native-2",
             2,
             boundary,
-            minted_proof("native-2", 2, boundary),
+            &minted_proof("native-2", 2, boundary),
             &Scope::Unscoped,
-            &[],
-        )
-        .await;
+            &[]
+        );
         assert!(matches!(
             wrong_epoch,
             Err(SpillDispatchRefusal::Authority(_))
@@ -9551,15 +9542,14 @@ mod tests {
             resource: ResourceId("spill-eu".to_string()),
             evidence: Some(&expired),
         }];
-        let residency = dispatch(
+        let residency = dispatch!(
             "native-2",
             3,
             boundary,
-            minted_proof("native-2", 3, boundary),
+            &minted_proof("native-2", 3, boundary),
             &Scope::Scoped(policy),
-            &hops,
-        )
-        .await;
+            &hops
+        );
         assert!(matches!(
             residency,
             Err(SpillDispatchRefusal::Residency(_))
@@ -9568,15 +9558,14 @@ mod tests {
 
         // The cursor at the current ownership boundary dispatches:
         // exactly one send, with the actor-released bytes.
-        let dispatched = dispatch(
+        let dispatched = dispatch!(
             "native-2",
             3,
             boundary,
-            minted_proof("native-2", 3, boundary),
+            &minted_proof("native-2", 3, boundary),
             &Scope::Unscoped,
-            &[],
-        )
-        .await;
+            &[]
+        );
         assert_eq!(dispatched, Ok(()));
         assert_eq!(sent.borrow().as_slice(), [b"journal-copy".to_vec()]);
 
@@ -9586,15 +9575,14 @@ mod tests {
             .handoff_write_lease(DO_WRITE_LEASE_HOLDER, 4, None)
             .await
             .unwrap();
-        let after_handback = dispatch(
+        let after_handback = dispatch!(
             "native-2",
             3,
             boundary,
-            minted_proof("native-2", 3, boundary),
+            &minted_proof("native-2", 3, boundary),
             &Scope::Unscoped,
-            &[],
-        )
-        .await;
+            &[]
+        );
         assert!(matches!(
             after_handback,
             Err(SpillDispatchRefusal::Authority(_))
