@@ -118,10 +118,10 @@ What this means:
 - Slice 1's example bundle (2,835 bytes, including a 1,280-byte blob) does not
   fit one code. It splits into two page codes. Without its blob it fits one.
   The small code refuses the blob.
-- Slice 3 will make a creator binding mandatory, and its size is not decided.
-  The 96-byte column (a key and a signature) shows its likely floor. A
-  certificate chain would cost more. The reference recomputes the ceilings
-  from one argument when slice 3 fixes the size.
+- Slice 3 made a creator binding mandatory. The 96-byte column was a guess
+  at its floor, and it was too low: a carried keyset chain is 554 bytes or
+  more. So a QR export names the chain instead (65 bytes, close to the
+  96-byte column). `slice-3-import-and-binding.md` §8 has the real numbers.
 - The object bytes are stand-ins until D3 fixes its byte encoding (slice 1
   §3.3). The ceiling moves with object size, and `--table` prints it per size.
 

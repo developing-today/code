@@ -18,12 +18,12 @@ digest rule, size ceilings, the bundle ID, and how a reader rejects.
 
 Leaves to later slices, with the manifest slot already reserved:
 
-| Slice | Topic                                                                     | Slot or hook in slice 1                                                                                  |
-| ----- | ------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------- |
-| 2     | Bundle grants and broker renewal                                          | tag `0x08 grants`; slice-1 readers reject a bundle that has it                                           |
-| 3     | Import order, creator binding against fleet CA / IdP, rejection catalogue | tag `0x04 creator_binding` is carried and signed; slice 1 reports it as `unbound` or `present-unchecked` |
-| 4     | Merge on contact                                                          | none needed: contents are plain content-addressed objects                                                |
-| 5     | Carrier profiles (media, email, QR)                                       | §5 format ceilings; carriers only tighten them. Done: `slice-5-carrier-profiles.md`                      |
+| Slice | Topic                                                                     | Slot or hook in slice 1                                                                                                                         |
+| ----- | ------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| 2     | Bundle grants and broker renewal                                          | tag `0x08 grants`; slice-1 readers reject a bundle that has it                                                                                  |
+| 3     | Import order, creator binding against fleet CA / IdP, rejection catalogue | tag `0x04 creator_binding` is carried and signed; slice 1 reports it as `unbound` or `present-unchecked`. Done: `slice-3-import-and-binding.md` |
+| 4     | Merge on contact                                                          | none needed: contents are plain content-addressed objects                                                                                       |
+| 5     | Carrier profiles (media, email, QR)                                       | §5 format ceilings; carriers only tighten them. Done: `slice-5-carrier-profiles.md`                                                             |
 
 Bearer versus recipient-bound grants is Drew's decision (#13889 open question
 1). This record does not settle it. §7 puts the options in plain words.
@@ -63,18 +63,18 @@ bundle. Tags `0x80`–`0xff` are non-critical: a reader ignores an unknown one,
 and it is still covered by the signature, so it cannot be stripped or added
 in transit.
 
-| Tag    | Name             | Value                                                  | Presence                                |
-| ------ | ---------------- | ------------------------------------------------------ | --------------------------------------- |
-| `0x01` | format           | `id-bundle/1`                                          | required                                |
-| `0x02` | creator_identity | UTF-8, the IdP-stable identity, no control characters  | required                                |
-| `0x03` | signing_key      | key alg `0x01` (Ed25519) + 32 bytes                    | required                                |
-| `0x04` | creator_binding  | opaque proof that the key belongs to the identity      | optional in slice 1; checked in slice 3 |
-| `0x05` | created_at       | u64 unix seconds; the creator's claim                  | required                                |
-| `0x06` | expires_at       | u64 unix seconds, later than created_at                | optional                                |
-| `0x07` | contents         | count:u32, then entries (§3.2)                         | required, count 1–4096                  |
-| `0x08` | grants           | reserved for slice 2                                   | must be absent                          |
-| `0x09` | scope            | ASCII D1 URI naming the exported slice, e.g. a `head/` | optional                                |
-| `0x81` | renewal_note     | UTF-8 human note on renewal                            | optional                                |
+| Tag    | Name             | Value                                                                                   | Presence                                |
+| ------ | ---------------- | --------------------------------------------------------------------------------------- | --------------------------------------- |
+| `0x01` | format           | `id-bundle/1`                                                                           | required                                |
+| `0x02` | creator_identity | UTF-8, the IdP-stable identity, no control characters (slice 3: `keyset:<identity ID>`) | required                                |
+| `0x03` | signing_key      | key alg `0x01` (Ed25519) + 32 bytes                                                     | required                                |
+| `0x04` | creator_binding  | opaque proof that the key belongs to the identity                                       | optional in slice 1; checked in slice 3 |
+| `0x05` | created_at       | u64 unix seconds; the creator's claim                                                   | required                                |
+| `0x06` | expires_at       | u64 unix seconds, later than created_at                                                 | optional                                |
+| `0x07` | contents         | count:u32, then entries (§3.2)                                                          | required, count 1–4096                  |
+| `0x08` | grants           | reserved for slice 2                                                                    | must be absent                          |
+| `0x09` | scope            | ASCII D1 URI naming the exported slice, e.g. a `head/`                                  | optional                                |
+| `0x81` | renewal_note     | UTF-8 human note on renewal                                                             | optional                                |
 
 ### 3.2 Contents entries
 
@@ -121,7 +121,8 @@ as such in the script.
   IdP. This follows the SSB lesson in #13889 and D3 §7: identity is the IdP
   identity, not one device key. A slice-1 reader reports an absent binding as
   `unbound` rather than rejecting, so the format can be exercised before the
-  binding check exists. Slice 3 makes it a rejection.
+  binding check exists. Slice 3 makes it a rejection
+  (`slice-3-import-and-binding.md`).
 
 ## 5. Size discipline
 
