@@ -474,6 +474,20 @@ struct BrokerCoordGh {
     secrets_token: String,
     agent: ureq::Agent,
     token: Mutex<Option<(String, std::time::Instant)>>,
+    /// One sweep pass's responses by path: the run counts and the
+    /// live run ids come from the same per_page=100 list read, so a
+    /// pass costs 2 reads per repo instead of 4.
+    pass: Mutex<std::collections::HashMap<String, Value>>,
+}
+
+/// ETag cache for the coordinator's GitHub reads, kept across sweep
+/// passes: a repeat read sends If-None-Match, and GitHub's 304 answer
+/// does not count against the token's hourly REST limit. Without it
+/// the 20-second sweep spent ~2,900 of the shared 5,000 calls an hour.
+fn coord_etag_cache() -> &'static Mutex<std::collections::HashMap<String, (String, Value)>> {
+    static CACHE: std::sync::OnceLock<Mutex<std::collections::HashMap<String, (String, Value)>>> =
+        std::sync::OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(std::collections::HashMap::new()))
 }
 
 impl BrokerCoordGh {
@@ -498,9 +512,31 @@ impl BrokerCoordGh {
     }
 
     fn get_json(&self, path: &str) -> Result<Value, String> {
+        if let Some(v) = self
+            .pass
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .get(path)
+        {
+            return Ok(v.clone());
+        }
+        let v = self.fetch_json(path)?;
+        self.pass
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert(path.to_string(), v.clone());
+        Ok(v)
+    }
+
+    fn fetch_json(&self, path: &str) -> Result<Value, String> {
         use std::time::Duration as D;
         let tok = self.token()?;
         let url = format!("https://api.github.com{path}");
+        let cached = coord_etag_cache()
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .get(path)
+            .cloned();
         let req = self
             .agent
             .get(&url)
@@ -509,29 +545,57 @@ impl BrokerCoordGh {
                 crate::turso_queue::STALENESS_LOOKUP_TIMEOUT.max(D::from_secs(2)),
             ))
             .build();
-        let mut resp = req
+        let mut req = req
             .header("Authorization", &format!("Bearer {tok}"))
             .header("Accept", "application/vnd.github+json")
-            .header("User-Agent", "fleet-queue-broker")
+            .header("User-Agent", "fleet-queue-broker");
+        if let Some((etag, _)) = &cached {
+            req = req.header("If-None-Match", etag);
+        }
+        let mut resp = req
             .call()
             .map_err(|e| format!("github request failed for {path}: {e}"))?;
         let status = resp.status().as_u16();
+        if status == 304 {
+            if let Some((_, body)) = cached {
+                return Ok(body);
+            }
+            return Err(format!("github 304 without a cached body for {path}"));
+        }
         if status == 404 {
             return Err(format!("github 404 for {path}"));
         }
         if !(200..300).contains(&status) {
             return Err(format!("github http {status} for {path}"));
         }
+        let etag = resp
+            .headers()
+            .get("etag")
+            .and_then(|h| h.to_str().ok())
+            .map(str::to_string);
         let text = resp
             .body_mut()
             .read_to_string()
             .map_err(|e| format!("github response unreadable: {e}"))?;
-        serde_json::from_str(&text).map_err(|e| format!("github response not json: {e}"))
+        let v: Value =
+            serde_json::from_str(&text).map_err(|e| format!("github response not json: {e}"))?;
+        if let Some(etag) = etag {
+            let mut cache = coord_etag_cache().lock().unwrap_or_else(|p| p.into_inner());
+            // Bounded: run-detail paths come and go; the list reads
+            // are a fixed handful per runner repo.
+            if cache.len() > 512 {
+                cache.clear();
+            }
+            cache.insert(path.to_string(), (etag, v.clone()));
+        }
+        Ok(v)
     }
 
     fn total_for(&self, repo: &str, status: &str) -> Result<i64, String> {
+        // Same path as ids_for: total_count rides on the per_page=100
+        // list, so this is answered from the pass cache.
         let v = self.get_json(&format!(
-            "/repos/{repo}/actions/runs?status={status}&per_page=1"
+            "/repos/{repo}/actions/runs?status={status}&per_page=100"
         ))?;
         v.get("total_count")
             .and_then(|t| t.as_i64())
@@ -1354,6 +1418,7 @@ pub fn run() -> i32 {
                     secrets_token: st.secrets_token.clone(),
                     agent: st.agent.clone(),
                     token: Mutex::new(None),
+                    pass: Mutex::new(std::collections::HashMap::new()),
                 };
                 let now = crate::turso_queue::now_iso();
                 let sum = crate::turso_queue::coordinator_sweep(turso, &gh, &now);
