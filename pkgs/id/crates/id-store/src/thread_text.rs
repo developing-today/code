@@ -52,12 +52,20 @@ use id_core::waiting::AuthorKey;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ThreadCommand {
     /// A thread event to sign and publish.
-    Event(ThreadEvent),
+    Event(Box<ThreadEvent>),
     /// Accept a proposal: the object's editor makes the edit citing it.
     Accept {
         /// The proposal the edit cites.
         proposal: Hash,
     },
+}
+
+impl ThreadCommand {
+    /// Wraps a thread event as a command.
+    #[must_use]
+    pub fn event(event: ThreadEvent) -> Self {
+        Self::Event(Box::new(event))
+    }
 }
 
 /// Why a line is not a command, or a command has no text form.
@@ -96,16 +104,16 @@ pub fn parse_command(line: &str) -> Result<ThreadCommand, ThreadTextError> {
     let tokens: Vec<&str> = line.split_whitespace().collect();
     let command = match tokens.as_slice() {
         ["resolve", thread, "edit", object, edit] => {
-            ThreadCommand::Event(ThreadEvent::Resolution(ChatResolution::edit(
+            ThreadCommand::event(ThreadEvent::Resolution(ChatResolution::edit(
                 parse_hash(thread, "thread")?,
                 parse_object(object)?,
                 parse_hash(edit, "edit")?,
             )))
         }
-        ["resolve", thread, "decision", summary] => ThreadCommand::Event(ThreadEvent::Resolution(
+        ["resolve", thread, "decision", summary] => ThreadCommand::event(ThreadEvent::Resolution(
             ChatResolution::decision(parse_hash(thread, "thread")?, parse_blob(summary)?)?,
         )),
-        ["resolve", thread, "no-action"] => ThreadCommand::Event(ThreadEvent::Resolution(
+        ["resolve", thread, "no-action"] => ThreadCommand::event(ThreadEvent::Resolution(
             ChatResolution::no_action(parse_hash(thread, "thread")?),
         )),
         ["resolve", ..] => {
@@ -133,7 +141,7 @@ pub fn parse_command(line: &str) -> Result<ThreadCommand, ThreadTextError> {
                     ));
                 }
             };
-            ThreadCommand::Event(ThreadEvent::Proposal(ChatProposal {
+            ThreadCommand::event(ThreadEvent::Proposal(ChatProposal {
                 object: parse_object(object)?,
                 base: parse_hash(base, "base revision")?,
                 content: parse_blob(content)?,
@@ -147,14 +155,14 @@ pub fn parse_command(line: &str) -> Result<ThreadCommand, ThreadTextError> {
             ));
         }
         ["reject", proposal, "because", reason] => {
-            ThreadCommand::Event(ThreadEvent::Rejection(ChatProposalRejection {
+            ThreadCommand::event(ThreadEvent::Rejection(ChatProposalRejection {
                 proposal: parse_hash(proposal, "proposal")?,
                 reason: parse_blob(reason)?,
             }))
         }
         ["reject", ..] => return Err(syntax("reject takes `<proposal> because <blob>`")),
         ["withdraw", proposal] => {
-            ThreadCommand::Event(ThreadEvent::Withdrawal(ChatProposalWithdrawal {
+            ThreadCommand::event(ThreadEvent::Withdrawal(ChatProposalWithdrawal {
                 proposal: parse_hash(proposal, "proposal")?,
             }))
         }
@@ -186,7 +194,7 @@ pub fn parse_command(line: &str) -> Result<ThreadCommand, ThreadTextError> {
 pub fn format_command(command: &ThreadCommand) -> Result<String, ThreadTextError> {
     let event = match command {
         ThreadCommand::Accept { proposal } => return Ok(format!("accept {}", hex_of(proposal))),
-        ThreadCommand::Event(event) => event,
+        ThreadCommand::Event(event) => &**event,
     };
     event.check()?;
     Ok(match event {
@@ -234,7 +242,9 @@ pub fn format_command(command: &ThreadCommand) -> Result<String, ThreadTextError
 }
 
 /// Reads a projection back as text, one line per resolution head and per
-/// proposal. `object_heads` answers an object's current heads when the caller
+/// proposal.
+///
+/// `object_heads` answers an object's current heads when the caller
 /// knows them; a proposal still open against a base that is no longer a head
 /// is marked stale (an observation, not a state: a writer may still accept it).
 pub fn render_projection(
@@ -476,26 +486,26 @@ mod tests {
             supersedes: Some(hash(5)),
         };
         let commands = [
-            ThreadCommand::Event(ThreadEvent::Proposal(proposal.clone())),
-            ThreadCommand::Event(ThreadEvent::Proposal(ChatProposal {
+            ThreadCommand::event(ThreadEvent::Proposal(proposal.clone())),
+            ThreadCommand::event(ThreadEvent::Proposal(ChatProposal {
                 supersedes: None,
                 content: blob(3, None),
                 ..proposal
             })),
-            ThreadCommand::Event(ThreadEvent::Resolution(ChatResolution::edit(
+            ThreadCommand::event(ThreadEvent::Resolution(ChatResolution::edit(
                 hash(4),
                 object(1),
                 hash(6),
             ))),
-            ThreadCommand::Event(ThreadEvent::Resolution(
+            ThreadCommand::event(ThreadEvent::Resolution(
                 ChatResolution::decision(hash(4), blob(7, None)).unwrap(),
             )),
-            ThreadCommand::Event(ThreadEvent::Resolution(ChatResolution::no_action(hash(4)))),
-            ThreadCommand::Event(ThreadEvent::Rejection(ChatProposalRejection {
+            ThreadCommand::event(ThreadEvent::Resolution(ChatResolution::no_action(hash(4)))),
+            ThreadCommand::event(ThreadEvent::Rejection(ChatProposalRejection {
                 proposal: hash(8),
                 reason: blob(9, None),
             })),
-            ThreadCommand::Event(ThreadEvent::Withdrawal(ChatProposalWithdrawal {
+            ThreadCommand::event(ThreadEvent::Withdrawal(ChatProposalWithdrawal {
                 proposal: hash(8),
             })),
             ThreadCommand::Accept { proposal: hash(8) },
@@ -507,7 +517,7 @@ mod tests {
 
     #[test]
     fn the_line_names_its_parts_in_order() {
-        let line = format_command(&ThreadCommand::Event(ThreadEvent::Resolution(
+        let line = format_command(&ThreadCommand::event(ThreadEvent::Resolution(
             ChatResolution::no_action(hash(4)),
         )))
         .unwrap();
@@ -556,7 +566,7 @@ mod tests {
 
     #[test]
     fn a_hint_with_whitespace_has_no_text_form() {
-        let command = ThreadCommand::Event(ThreadEvent::Rejection(ChatProposalRejection {
+        let command = ThreadCommand::event(ThreadEvent::Rejection(ChatProposalRejection {
             proposal: hash(8),
             reason: blob(9, Some("two words")),
         }));
@@ -701,18 +711,21 @@ mod tests {
             })
     }
 
+    fn arb_object() -> impl Strategy<Value = ObjectRef> {
+        (arb_hash(), any::<[u8; 32]>()).prop_map(|(id, by)| ObjectRef::new(id, by))
+    }
+
     fn arb_command() -> impl Strategy<Value = ThreadCommand> {
-        let object = (arb_hash(), any::<[u8; 32]>()).prop_map(|(id, by)| ObjectRef::new(id, by));
         prop_oneof![
             (
-                object.clone(),
+                arb_object(),
                 arb_hash(),
                 arb_blob(),
                 arb_hash(),
                 proptest::option::of(arb_hash())
             )
                 .prop_map(|(object, base, content, thread, supersedes)| {
-                    ThreadCommand::Event(ThreadEvent::Proposal(ChatProposal {
+                    ThreadCommand::event(ThreadEvent::Proposal(ChatProposal {
                         object,
                         base,
                         content,
@@ -720,27 +733,27 @@ mod tests {
                         supersedes,
                     }))
                 }),
-            (arb_hash(), object, arb_hash()).prop_map(|(thread, object, edit)| {
-                ThreadCommand::Event(ThreadEvent::Resolution(ChatResolution::edit(
+            (arb_hash(), arb_object(), arb_hash()).prop_map(|(thread, object, edit)| {
+                ThreadCommand::event(ThreadEvent::Resolution(ChatResolution::edit(
                     thread, object, edit,
                 )))
             }),
             (arb_hash(), arb_blob()).prop_map(|(thread, summary)| {
-                ThreadCommand::Event(ThreadEvent::Resolution(
+                ThreadCommand::event(ThreadEvent::Resolution(
                     ChatResolution::decision(thread, summary).unwrap(),
                 ))
             }),
             arb_hash().prop_map(|thread| {
-                ThreadCommand::Event(ThreadEvent::Resolution(ChatResolution::no_action(thread)))
+                ThreadCommand::event(ThreadEvent::Resolution(ChatResolution::no_action(thread)))
             }),
             (arb_hash(), arb_blob()).prop_map(|(proposal, reason)| {
-                ThreadCommand::Event(ThreadEvent::Rejection(ChatProposalRejection {
+                ThreadCommand::event(ThreadEvent::Rejection(ChatProposalRejection {
                     proposal,
                     reason,
                 }))
             }),
             arb_hash().prop_map(|proposal| {
-                ThreadCommand::Event(ThreadEvent::Withdrawal(ChatProposalWithdrawal { proposal }))
+                ThreadCommand::event(ThreadEvent::Withdrawal(ChatProposalWithdrawal { proposal }))
             }),
             arb_hash().prop_map(|proposal| ThreadCommand::Accept { proposal }),
         ]
