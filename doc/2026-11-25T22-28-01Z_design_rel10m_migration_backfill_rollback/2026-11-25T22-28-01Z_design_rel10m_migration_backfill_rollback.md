@@ -311,15 +311,15 @@ a unit oracle, because it needs the old binary.
 
 ## 10. Requirement trace (design-level)
 
-| Requirement | Where                                                                                      |
-| ----------- | ------------------------------------------------------------------------------------------ |
-| C-R136      | §4 steps 4 and 6: restart reloads the stored receipt and recovery resumes from it          |
-| C-R137      | §3.1 and §5.1: the operation store, the claim and the remote state stay separate facts     |
-| C-R142      | §5.3 and §4 step 2: a remote success is never assumed from, or folded into, a local commit |
-| O-R011      | §5.2: legacy intent is never converted or replayed as a new request                        |
-| P-R008      | §2: no new store, service or scheduler; the broker owns storage                            |
-| P-R024      | §6 and §3.2: stable error codes; replay while off renders `uncertain`                      |
-| P-R037      | §4: interrupted work resumes from its stored receipt without a second effect               |
+| Requirement | Where                                                                                                                      |
+| ----------- | -------------------------------------------------------------------------------------------------------------------------- |
+| C-R136      | §4 steps 4 and 6: restart reloads the stored receipt and recovery resumes from it                                          |
+| C-R137      | §3.1 and §5.1: the operation store, the claim and the remote state stay separate facts                                     |
+| C-R142      | §5.3 and §4 step 2: a remote success is never assumed from, or folded into, a local commit                                 |
+| O-R011      | §3.2 and §4 step 4 only: an accepted request stays durable through disable and restart; do-now dispatch itself is DSP-08's |
+| P-R008      | §2: no new store, service or scheduler; the broker owns storage                                                            |
+| P-R024      | §6 and §3.2: stable error codes; replay while off renders `uncertain`                                                      |
+| P-R037      | §4: interrupted work resumes from its stored receipt without a second effect                                               |
 
 Design-level only. Each row still needs the implementation and stage
 evidence of §7.
