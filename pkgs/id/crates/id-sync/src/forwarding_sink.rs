@@ -29,7 +29,7 @@ use std::sync::Arc;
 use iroh::{Endpoint, EndpointAddr};
 
 use crate::chained_message::RelayedMessage;
-use crate::relay_ingest::{ChainedSink, forward_message};
+use crate::relay_ingest::{ChainedSink, RelayBoundaryGate, forward_message};
 
 /// Where a [`ForwardingSink`] hands each message it delivers locally.
 ///
@@ -91,6 +91,7 @@ pub struct ForwardingSink {
     endpoint: Endpoint,
     peers: Arc<dyn NextPeers>,
     local: Arc<dyn LocalSink>,
+    boundary_gate: Option<Arc<dyn RelayBoundaryGate>>,
 }
 
 impl ForwardingSink {
@@ -106,7 +107,16 @@ impl ForwardingSink {
             endpoint,
             peers: Arc::new(peers),
             local: Arc::new(local),
+            boundary_gate: None,
         }
+    }
+
+    /// Install the serving app's shared boundary evaluator adapter for
+    /// outbound relay transit.
+    #[must_use]
+    pub fn with_boundary_gate(mut self, gate: Arc<dyn RelayBoundaryGate>) -> Self {
+        self.boundary_gate = Some(gate);
+        self
     }
 
     /// A sink that fans out and keeps no local copy ([`DropLocal`]).
@@ -135,6 +145,19 @@ impl ForwardingSink {
             .filter(|(relay, _)| relay != &arrival && relay != &self.self_id)
             .collect()
     }
+
+    async fn forward_to(&self, target: EndpointAddr, msg: &RelayedMessage) -> Outcome {
+        if let Some(gate) = &self.boundary_gate {
+            let outcome = gate.check_relay(&msg.envelope.origin);
+            if !outcome.is_allow() {
+                return Outcome::Refused(format!(
+                    "relay boundary refused ({})",
+                    outcome.name()
+                ));
+            }
+        }
+        forward_message(&self.endpoint, target, msg).await
+    }
 }
 
 impl std::fmt::Debug for ForwardingSink {
@@ -149,10 +172,11 @@ impl ChainedSink for ForwardingSink {
     fn deliver(&self, forwarded: &RelayedMessage) {
         self.local.deliver(forwarded);
         for (relay, addr) in self.next_targets(forwarded) {
-            let endpoint = self.endpoint.clone();
             let msg = forwarded.clone();
+            let sink = self.clone();
             tokio::spawn(async move {
-                match forward_message(&endpoint, addr, &msg).await {
+                let outcome = sink.forward_to(addr, &msg).await;
+                match outcome {
                     crate::envelope_outbox::Outcome::Delivered => {}
                     other => tracing::warn!(
                         relay = %relay,
@@ -226,6 +250,38 @@ mod tests {
             received_at: 1_000,
             signature: String::new(),
         }
+    }
+
+    struct DenyRelayBoundary;
+
+    impl RelayBoundaryGate for DenyRelayBoundary {
+        fn check_relay(&self, _: &str) -> id_core::boundary_surfaces::FrameworkOutcome {
+            id_core::boundary_surfaces::FrameworkOutcome::Deny {
+                placement: Vec::new(),
+                assurance: Vec::new(),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn boundary_denial_stops_outbound_relay_before_transport_send() {
+        // Oracle: a denied RelayTransit outcome returns a permanent refusal
+        // before forward_message attempts to open the destination connection.
+        let ep = endpoint().await;
+        let sink = ForwardingSink::fanning_out(key_id(7), ep.clone(), Vec::new())
+            .with_boundary_gate(Arc::new(DenyRelayBoundary));
+        let msg = RelayedMessage {
+            envelope: envelope(),
+            hops: vec![hop(7, None)],
+        };
+
+        let result = sink.forward_to(addr_of(&ep), &msg).await;
+        assert_eq!(
+            result,
+            crate::envelope_outbox::Outcome::Refused(
+                "relay boundary refused (deny)".to_owned()
+            )
+        );
     }
 
     /// Oracle: the fan-out set is every peer minus the arrival neighbour
