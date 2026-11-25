@@ -19,10 +19,14 @@
 //!   design D1-D3): export, verify and fork, fully offline.
 //! - [`program_publish_state`]: draft / published journal facts per
 //!   program version (#13742), keyed to the #6278 bundle record.
+//! - [`safety_appeal`]: appeals against logged moderation actions,
+//!   linked by action hash and decided through the review queue (#14467).
 //! - [`safety_report`]: public-world safety reports — the signed
 //!   report fact and its operator-scoped intake (#14464).
 //! - [`safety_review_queue`]: the moderator review queue over report
 //!   facts, with signed closures (#14465).
+//! - [`safety_transparency`]: the read-only, replayable transparency
+//!   log view over the moderation record (#14466).
 //! - [`shell_contract`]: the F13.1 shell contract the native shell
 //!   speaks.
 //! - [`groups::worlds`]: seam 6 of the design — the groups→worlds
@@ -62,8 +66,10 @@ pub mod program_publish_state;
 pub mod program_registry;
 pub mod program_registry_net;
 pub mod program_registry_pkarr;
+pub mod safety_appeal;
 pub mod safety_report;
 pub mod safety_review_queue;
+pub mod safety_transparency;
 #[cfg(feature = "sandbox")]
 pub mod sandbox;
 mod session_host;
