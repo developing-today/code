@@ -537,3 +537,42 @@ fn a_public_grant_never_borrows_a_private_grants_scope() {
         Decision::Deny
     );
 }
+
+// A host checks grants against the resource owner: only grants rooted in
+// a grant the owner issued count, delegated ones included.
+#[test]
+fn rooted_check_counts_only_the_owners_lineage() {
+    let a = alice();
+    let b = bob();
+    let mut set = delegable_set();
+    set.insert_delegated(child("c", "parent"), &a, NOW).unwrap();
+    let request = AccessRequest {
+        requester: Some(&b),
+        object: "a",
+        collection: None,
+        operation: Operation::Read,
+        now: NOW,
+    };
+    assert_eq!(
+        set.authorize_rooted_in(&request, "owner"),
+        Decision::Allow(id("c"))
+    );
+    assert_eq!(set.authorize_rooted_in(&request, "mallory"), Decision::Deny);
+
+    // A root grant someone else issued never counts for the owner.
+    let mut stray = GrantSet::new();
+    let mut foreign = grant(
+        "g9",
+        Subject::Identity("bob".to_owned()),
+        &[object("a")],
+        &[Operation::Read],
+    );
+    foreign.issuer = "mallory".to_owned();
+    stray.insert_root(foreign).unwrap();
+    assert_eq!(stray.authorize_rooted_in(&request, "owner"), Decision::Deny);
+    assert_eq!(stray.authorize(&request), Decision::Allow(id("g9")));
+
+    // Revoking the owner's root still cascades under the rooted check.
+    set.revoke(&id("parent"));
+    assert_eq!(set.authorize_rooted_in(&request, "owner"), Decision::Deny);
+}
