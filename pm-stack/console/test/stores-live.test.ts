@@ -30,7 +30,7 @@ const answer = (values: (number | null)[][]) => ({
     response: {
       result: {
         cols: [{ name: "n" }],
-        rows: row.map((v) => ({ type: v === null ? "null" : "integer", value: v === null ? null : String(v) })),
+        rows: [row.map((v) => ({ type: v === null ? "null" : "integer", value: v === null ? null : String(v) }))],
       },
     },
   })),
