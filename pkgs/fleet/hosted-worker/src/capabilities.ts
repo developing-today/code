@@ -32,6 +32,10 @@
 // message bridge over its service binding, with the PM stack's own
 // credential: the PM service API and the console's edge share that
 // one send path, and the domain reports available for it.
+// The ingestion door then gained its backfill + divergence surface
+// (#14312, the #9074 remainder): recorded backfill runs and the
+// body-vs-DB divergence report ride the same door, so the door's
+// route list names them while its filling issue stays #12590.
 
 import { SERVICE_NAME, type HostedConfig } from "./config.ts";
 
@@ -84,7 +88,13 @@ export const HOSTED_DOORS: HostedDoor[] = [
   },
   {
     id: "ingestion",
-    routes: ["POST /v1/ingestion/github", "POST /v1/ingestion/sweep"],
+    routes: [
+      "POST /v1/ingestion/github",
+      "POST /v1/ingestion/sweep",
+      "POST /v1/ingestion/backfill",
+      "GET /v1/ingestion/backfill/runs",
+      "POST /v1/ingestion/divergence",
+    ],
     fillingIssue: "#12590",
     state: "live",
   },

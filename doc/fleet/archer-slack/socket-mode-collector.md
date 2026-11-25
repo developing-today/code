@@ -206,13 +206,13 @@ mandatory before the review job may skip its poll.
 
 ### Dependency-ordered slices and acceptance
 
-| Slice | Depends on | Acceptance |
-| --- | --- | --- |
-| S1: collector code, tests, launcher, and this record | — | Unit tests cover message/reaction mapping, channel filtering, envelope acknowledgement, dedupe, reconnect, and fatal auth; code writes the puller's schema. |
-| S2: laptop flake package/module and schedule registry | S1 | User service starts under systemd, reads the named token, writes the reviewer's configured DB, restarts on failure, and appears in the schedule registry. |
-| S3: review wake gate | S2 | Fresh collector heartbeat plus new rows causes delta review without a pull; stale/missing heartbeat always invokes the existing puller. |
-| S4: three-day parallel run | S2 (S3 may remain disabled) | A dated report compares the collector set with puller `seen` for the same window; zero missed Aster replies, all message/thread-reply differences explained, and no unexplained capture gap. Include uptime/restarts. |
-| S5: guarded cutover | S3 and passing S4 | Quiet-day review-agent wakes attributable to polling reach zero; puller fallback remains callable and verified. |
+| Slice                                                 | Depends on                  | Acceptance                                                                                                                                                                                                            |
+| ----------------------------------------------------- | --------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| S1: collector code, tests, launcher, and this record  | —                           | Unit tests cover message/reaction mapping, channel filtering, envelope acknowledgement, dedupe, reconnect, and fatal auth; code writes the puller's schema.                                                           |
+| S2: laptop flake package/module and schedule registry | S1                          | User service starts under systemd, reads the named token, writes the reviewer's configured DB, restarts on failure, and appears in the schedule registry.                                                             |
+| S3: review wake gate                                  | S2                          | Fresh collector heartbeat plus new rows causes delta review without a pull; stale/missing heartbeat always invokes the existing puller.                                                                               |
+| S4: three-day parallel run                            | S2 (S3 may remain disabled) | A dated report compares the collector set with puller `seen` for the same window; zero missed Aster replies, all message/thread-reply differences explained, and no unexplained capture gap. Include uptime/restarts. |
+| S5: guarded cutover                                   | S3 and passing S4           | Quiet-day review-agent wakes attributable to polling reach zero; puller fallback remains callable and verified.                                                                                                       |
 
 The S1/S2 implementation and PoC evidence are documented above and in the
 linked #2137 report. S3–S5 remain gated work, not implied by this design
@@ -236,7 +236,7 @@ window and restarts the three-day acceptance window after recovery.
   and the puller tests; verify package evaluation/build on the Fleet runner
   before changing deployment.
 - On the laptop, inspect `systemctl --user status
-  archer-slack-collector` and its journal; confirm the configured DB path,
+archer-slack-collector` and its journal; confirm the configured DB path,
   a fresh heartbeat, and no token disclosure.
 - During S4, compare event identities against the puller's `seen` set over
   identical timestamps/channels, separately account for Aster replies, and

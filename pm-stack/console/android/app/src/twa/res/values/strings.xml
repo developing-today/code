@@ -16,9 +16,11 @@
     <string name="sc_needs_long">What needs me</string>
     <string name="sc_now">Now</string>
     <string name="sc_now_long">What is in progress</string>
+    <string name="sc_messages">Messages</string>
+    <string name="sc_messages_long">The fleet\'s messages</string>
     <string name="widget_title">PM</string>
     <string name="widget_label">PM status</string>
-    <string name="widget_description">In progress, queued next and what needs you, with the task being worked on now.</string>
+    <string name="widget_description">In progress, queued next, what needs you and how many instructions are unread, with the task being worked on now.</string>
     <string name="widget_next">Next</string>
     <string name="widget_refresh">Read again</string>
     <string name="widget_unlinked">Tap to link this phone, so the counts can show here.</string>

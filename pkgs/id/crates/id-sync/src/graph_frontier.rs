@@ -55,7 +55,10 @@ use crate::relay_gate::MembershipFrontier;
 /// Group authorization backed by the signed graph: wraps the node's
 /// shared event store and answers [`MembershipFrontier`] from its
 /// resolved group rosters. Clones share the store, so a gate built on
-/// a clone sees membership changes as they are ingested.
+/// a clone sees membership changes as they are ingested. The store
+/// memoizes each group's resolved roster until the next committed
+/// ingest (#13043), so a gate decision costs a roster lookup rather
+/// than a whole-store fold per message.
 #[derive(Clone, Debug)]
 pub struct GraphFrontier {
     store: SharedEventStore<EventStore>,
@@ -244,6 +247,55 @@ mod tests {
     }
 
     #[test]
+    fn removal_ingested_after_the_frontier_opens_takes_effect() {
+        // The store's roster memo (#13043) must not freeze membership
+        // at first read: events ingested through the shared store
+        // after the frontier is built move the store generation, so
+        // the next gate question re-resolves.
+        let (alice, bob, carol) = (pkey(81), pkey(82), pkey(83));
+        let (_dir, store, group) = store_with_group(&alice, &bob);
+        // Carol's unrelated group, ingested later through the handle.
+        let carol_create = GroupAction::Create {
+            initial_members: vec![(individual(&carol), Access::manage())],
+        };
+        let (carol_event, carol_body) = group_op(&carol, 0, None, vec![], None, &carol_create);
+
+        let shared = SharedEventStore::new(store);
+        let frontier = GraphFrontier::new(shared.clone());
+        let group_text = group.to_string();
+        assert!(frontier.is_authorized(&pkey_id(&bob), &group_text));
+
+        // Unrelated ingest through the shared handle: the existing
+        // members' answers are unchanged.
+        shared
+            .ingest(&carol_event.bytes, Some(&carol_body), 0)
+            .unwrap();
+        assert!(frontier.is_authorized(&pkey_id(&alice), &group_text));
+        assert!(frontier.is_authorized(&pkey_id(&bob), &group_text));
+
+        // The removal, ingested the same way, refuses Bob at once.
+        let remove_bob = GroupAction::Remove {
+            member: individual(&bob),
+        };
+        let (remove_event, remove_body) = group_op(
+            &alice,
+            1,
+            Some(group),
+            vec![group],
+            Some(group),
+            &remove_bob,
+        );
+        shared
+            .ingest(&remove_event.bytes, Some(&remove_body), 0)
+            .unwrap();
+        assert!(frontier.is_authorized(&pkey_id(&alice), &group_text));
+        assert!(
+            !frontier.is_authorized(&pkey_id(&bob), &group_text),
+            "a removal ingested after the frontier opened must take effect"
+        );
+    }
+
+    #[test]
     fn malformed_ids_authorize_nobody() {
         let (_dir, store) = open_store();
         let frontier = GraphFrontier::new(SharedEventStore::new(store));
@@ -258,6 +310,53 @@ mod tests {
         assert!(!frontier.is_authorized(&origin, "group-1"));
         assert!(!frontier.is_authorized(&origin, "not-a-hash"));
         assert!(!frontier.is_authorized(&origin, ""));
+    }
+
+    #[test]
+    fn signed_unknown_group_flood_stays_unauthorized_and_bounded() {
+        // Oracle: valid self-signed nonmember envelopes naming distinct
+        // unknown groups are all refused, while the backing store's
+        // retained roster cache stays within its declared count/payload
+        // bounds without relying on an ingest to invalidate it.
+        let (_dir, store) = open_store();
+        let shared = SharedEventStore::new(store);
+        let frontier = GraphFrontier::new(shared.clone());
+        let mut gate = RelayGate::new(&key(7), frontier);
+        let origin = key(71);
+
+        for sequence in 0..(id_events::event_store::MAX_ROSTER_CACHE_ENTRIES + 64) as u64 {
+            let group = Hash::digest(sequence.to_be_bytes()).to_string();
+            let envelope = ChainedEnvelope::signed(
+                &origin,
+                &group,
+                sequence,
+                Vec::new(),
+                "durable",
+                ChainedContent::Inline {
+                    bytes: b"unknown group probe".to_vec(),
+                },
+                1_000,
+            )
+            .unwrap();
+            let decision = gate.decide(&RelayedMessage::new(envelope), 2_000 + sequence);
+            assert!(
+                matches!(
+                    decision,
+                    GateDecision::Refuse(GateRefusal::NotAuthorized { .. })
+                ),
+                "unknown group {group} must be refused as NotAuthorized, got {decision:?}"
+            );
+        }
+
+        let entries = shared
+            .read(|store| Ok(store.roster_cache_entries()))
+            .unwrap();
+        let payload_bytes = shared
+            .read(|store| Ok(store.roster_cache_payload_bytes()))
+            .unwrap();
+        assert_eq!(entries, id_events::event_store::MAX_ROSTER_CACHE_ENTRIES);
+        assert!(entries <= id_events::event_store::MAX_ROSTER_CACHE_ENTRIES);
+        assert!(payload_bytes <= id_events::event_store::MAX_ROSTER_CACHE_PAYLOAD_BYTES);
     }
 
     #[test]

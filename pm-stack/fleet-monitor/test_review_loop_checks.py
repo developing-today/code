@@ -345,7 +345,10 @@ class LiveCollectionTests(unittest.TestCase):
         self.assertEqual(
             rows,
             [
-                (22217, "repo-health:v1:second-pass:developing-today/code:12518:pass-2"),
+                (
+                    22217,
+                    "repo-health:v1:second-pass:developing-today/code:12518:pass-2",
+                ),
                 (22328, "repo-health:v1:triage:developing-today/code:issue:13492"),
             ],
         )
@@ -417,6 +420,7 @@ class LiveCollectionTests(unittest.TestCase):
         self.assertEqual(len(exact_reads), 1)  # triage row never read
         status_calls = [c for c in calls if "--status" in c]
         self.assertEqual(len(status_calls), 3)  # queued, claimed, parked
+
 
 if __name__ == "__main__":
     unittest.main()

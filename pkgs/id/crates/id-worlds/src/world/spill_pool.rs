@@ -10,7 +10,9 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-use super::{DO_WRITE_LEASE_HOLDER, WriteLease};
+use anyhow::{Context, Result, ensure};
+
+use super::{DO_WRITE_LEASE_HOLDER, JournalEntry, WriteLease};
 
 /// Default continuous reader observation window from design #5787 §2.
 pub const READER_OBSERVATION_CYCLES: u8 = 10;
@@ -322,6 +324,174 @@ impl FailoverPlan {
     }
 }
 
+/// Journal reason recorded on a failover revocation (design #5787 §1
+/// step 1): the fence exists because the standing holder's term expired
+/// on the authority clock.
+pub const FAILOVER_REVOKE_REASON: &str = "term expired";
+
+impl FailoverPlan {
+    /// Execute the plan against the lease it was planned from: assign
+    /// each action a durable lease position (#13711) continuing the
+    /// lease's own chain, build the ordered journal entries, and prove
+    /// the whole sequence against a scratch copy of the lease state
+    /// machine before any entry exists. A plan whose lease has moved
+    /// since planning — a different holder, an advanced epoch, a
+    /// position already consumed — is refused here, so a grant can
+    /// never be journaled ahead of its predecessor's fence and the
+    /// epoch chain stays a single per-world monotonic chain (design
+    /// #5787 §1 steps 1–3, §2).
+    ///
+    /// The successor's term is `term_ms` from `now_ms`; a DO self-grant
+    /// is unterminated, as at bootstrap. The returned execution's
+    /// `grant_position` is the replay barrier of §1 step 4: the
+    /// successor must replay through it before it may write.
+    ///
+    /// # Errors
+    ///
+    /// The lease state machine's refusal of a stale plan, a zero term
+    /// for a native successor, or an epoch/position/expiry overflow.
+    pub fn execute(
+        &self,
+        lease: &WriteLease,
+        now_ms: u64,
+        term_ms: u64,
+    ) -> Result<FailoverExecution> {
+        let mut scratch = lease.clone();
+        let mut intermediate_lease = lease.clone();
+        let mut entries = Vec::with_capacity(self.actions.len());
+        let mut successor = None;
+        let mut grant_epoch = 0;
+        let mut grant_position = 0;
+        let mut position = lease.last_position();
+        for action in &self.actions {
+            position = position
+                .checked_add(1)
+                .context("failover lease position overflow")?;
+            match action {
+                LeaseAction::Revoke {
+                    former_holder,
+                    epoch,
+                } => {
+                    scratch.apply_revoke(
+                        former_holder,
+                        *epoch,
+                        FAILOVER_REVOKE_REASON,
+                        position,
+                    )?;
+                    entries.push(JournalEntry::LeaseRevoked {
+                        former_holder: former_holder.clone(),
+                        epoch: *epoch,
+                        reason: FAILOVER_REVOKE_REASON.to_owned(),
+                        position,
+                    });
+                    intermediate_lease = scratch.clone();
+                }
+                LeaseAction::Grant { holder, epoch } => {
+                    let expires_at_ms = if holder == DO_WRITE_LEASE_HOLDER {
+                        None
+                    } else {
+                        ensure!(term_ms > 0, "a native failover grant requires a term");
+                        Some(
+                            now_ms
+                                .checked_add(term_ms)
+                                .context("failover grant expiry overflow")?,
+                        )
+                    };
+                    scratch.apply_grant(holder, *epoch, expires_at_ms, position)?;
+                    entries.push(JournalEntry::LeaseGranted {
+                        holder: holder.clone(),
+                        epoch: *epoch,
+                        expires_at_ms,
+                        position,
+                    });
+                    successor = Some(holder.clone());
+                    grant_epoch = *epoch;
+                    grant_position = position;
+                }
+            }
+        }
+        let successor = successor.context("failover plan carries no grant action")?;
+        Ok(FailoverExecution {
+            entries,
+            intermediate_lease,
+            resulting_lease: scratch,
+            successor,
+            grant_epoch,
+            grant_position,
+        })
+    }
+}
+
+/// A failover plan executed against its lease ([`FailoverPlan::execute`]):
+/// the journal entries to append, in order, and the lease state after
+/// every prefix of them. Appending the entries one at a time and
+/// adopting [`FailoverExecution::intermediate_lease`] after the revoke
+/// keeps live state equal to the journaled prefix at every step, so a
+/// crash between the revoke and the grant leaves the world
+/// unavailable — every writer refused `holder-lost` — never
+/// split-brained (design #5787 §1, §7).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FailoverExecution {
+    entries: Vec<JournalEntry>,
+    intermediate_lease: WriteLease,
+    resulting_lease: WriteLease,
+    successor: String,
+    grant_epoch: u64,
+    grant_position: u64,
+}
+
+impl FailoverExecution {
+    /// The ordered journal entries: the predecessor's fence first,
+    /// the successor's grant last, each stamped with its durable
+    /// lease position.
+    #[must_use]
+    pub fn entries(&self) -> &[JournalEntry] {
+        &self.entries
+    }
+
+    /// The lease after the fence but before the grant: the state of
+    /// the fence-to-grant window, in which no holder stands. For a
+    /// plan that needed no fence this is the pre-execution lease.
+    #[must_use]
+    pub const fn intermediate_lease(&self) -> &WriteLease {
+        &self.intermediate_lease
+    }
+
+    /// The lease after the full plan: the successor holds at
+    /// `grant_epoch`.
+    #[must_use]
+    pub const fn resulting_lease(&self) -> &WriteLease {
+        &self.resulting_lease
+    }
+
+    /// The identity the grant names.
+    #[must_use]
+    pub fn successor(&self) -> &str {
+        &self.successor
+    }
+
+    /// The epoch the grant establishes.
+    #[must_use]
+    pub const fn grant_epoch(&self) -> u64 {
+        self.grant_epoch
+    }
+
+    /// The grant entry's durable lease position: the replay barrier
+    /// the successor must reach before it may write (design #5787
+    /// §1 step 4).
+    #[must_use]
+    pub const fn grant_position(&self) -> u64 {
+        self.grant_position
+    }
+
+    /// Whether a node that has replayed through `replayed_position`
+    /// has reached the grant barrier and may resume as the successor.
+    #[must_use]
+    pub const fn resume_ready(&self, replayed_position: u64) -> bool {
+        replayed_position >= self.grant_position
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum FailoverPlanError {
     /// The current holder has not expired on the authority clock.
@@ -398,7 +568,7 @@ mod tests {
         eligible_member(&mut pool, "successor", 50, 0);
         let mut lease = WriteLease::bootstrap();
         lease
-            .apply_handoff(DO_WRITE_LEASE_HOLDER, "dead", 1, Some(30_000))
+            .apply_handoff(DO_WRITE_LEASE_HOLDER, "dead", 1, Some(30_000), 0)
             .unwrap();
 
         assert_eq!(
@@ -420,8 +590,8 @@ mod tests {
             ]
         );
         assert_eq!(plan.pre_grant_tip(), 50);
-        lease.apply_revoke("dead", 2, "term expired").unwrap();
-        lease.apply_grant("successor", 3, Some(60_000)).unwrap();
+        lease.apply_revoke("dead", 2, "term expired", 0).unwrap();
+        lease.apply_grant("successor", 3, Some(60_000), 0).unwrap();
         assert_eq!(lease.holder.as_deref(), Some("successor"));
         assert_eq!(lease.epoch, 3);
         assert!(lease.validate_history().is_ok());
@@ -432,7 +602,7 @@ mod tests {
         let pool = SpillPool::default();
         let mut lease = WriteLease::bootstrap();
         lease
-            .apply_handoff(DO_WRITE_LEASE_HOLDER, "dead", 1, Some(1))
+            .apply_handoff(DO_WRITE_LEASE_HOLDER, "dead", 1, Some(1), 0)
             .unwrap();
         assert_eq!(
             pool.plan_failover(&lease, 1, 50, 0).unwrap().actions(),
@@ -454,9 +624,9 @@ mod tests {
         let pool = SpillPool::default();
         let mut lease = WriteLease::bootstrap();
         lease
-            .apply_handoff(DO_WRITE_LEASE_HOLDER, "dead", 1, Some(1))
+            .apply_handoff(DO_WRITE_LEASE_HOLDER, "dead", 1, Some(1), 0)
             .unwrap();
-        lease.apply_revoke("dead", 2, "term expired").unwrap();
+        lease.apply_revoke("dead", 2, "term expired", 0).unwrap();
         assert_eq!(
             pool.plan_failover(&lease, 1, 50, 0).unwrap().actions(),
             vec![LeaseAction::Grant {
@@ -470,9 +640,9 @@ mod tests {
     fn writes_during_the_fence_window_are_retryable_holder_lost() {
         let mut lease = WriteLease::bootstrap();
         lease
-            .apply_handoff(DO_WRITE_LEASE_HOLDER, "old", 1, Some(10))
+            .apply_handoff(DO_WRITE_LEASE_HOLDER, "old", 1, Some(10), 0)
             .unwrap();
-        lease.apply_revoke("old", 2, "term expired").unwrap();
+        lease.apply_revoke("old", 2, "term expired", 0).unwrap();
         assert_eq!(
             lease.check_writer("old", 1, 10),
             Err(LeaseRejectionReason::HolderLost)
@@ -483,10 +653,10 @@ mod tests {
     fn fenced_holder_reconnect_is_rejected_and_auditable() {
         let mut lease = WriteLease::bootstrap();
         lease
-            .apply_handoff(DO_WRITE_LEASE_HOLDER, "old", 1, Some(10))
+            .apply_handoff(DO_WRITE_LEASE_HOLDER, "old", 1, Some(10), 0)
             .unwrap();
-        lease.apply_revoke("old", 2, "term expired").unwrap();
-        lease.apply_grant("new", 3, Some(30)).unwrap();
+        lease.apply_revoke("old", 2, "term expired", 0).unwrap();
+        lease.apply_grant("new", 3, Some(30), 0).unwrap();
         assert_eq!(
             lease.check_writer("old", 1, 11),
             Err(LeaseRejectionReason::NotHolder)
@@ -499,6 +669,7 @@ mod tests {
                 observed_epoch: 3,
                 reason: LeaseRejectionReason::NotHolder,
                 received_at_ms: 11,
+                position: 0,
             })
             .unwrap();
         assert_eq!(lease.rejections().count(), 1);
@@ -510,11 +681,11 @@ mod tests {
         // automatic failover from the old holder.
         let mut handback_first = WriteLease::bootstrap();
         handback_first
-            .apply_handoff(DO_WRITE_LEASE_HOLDER, "native", 1, Some(30))
+            .apply_handoff(DO_WRITE_LEASE_HOLDER, "native", 1, Some(30), 0)
             .unwrap();
         assert!(handback_first.check_writer("native", 1, 29).is_ok());
         handback_first
-            .apply_handoff("native", DO_WRITE_LEASE_HOLDER, 2, None)
+            .apply_handoff("native", DO_WRITE_LEASE_HOLDER, 2, None, 0)
             .unwrap();
         assert_eq!(
             SpillPool::default().plan_failover(&handback_first, 30, 0, 0),
@@ -525,7 +696,7 @@ mod tests {
         // back; automatic recovery uses revoke then grant from that state.
         let mut failover_first = WriteLease::bootstrap();
         failover_first
-            .apply_handoff(DO_WRITE_LEASE_HOLDER, "native", 1, Some(30))
+            .apply_handoff(DO_WRITE_LEASE_HOLDER, "native", 1, Some(30), 0)
             .unwrap();
         assert_eq!(
             failover_first.check_writer("native", 1, 30),
@@ -549,10 +720,10 @@ mod tests {
         let pool = SpillPool::default();
         let mut lease = WriteLease::bootstrap();
         lease
-            .apply_handoff(DO_WRITE_LEASE_HOLDER, "first", 1, Some(10))
+            .apply_handoff(DO_WRITE_LEASE_HOLDER, "first", 1, Some(10), 0)
             .unwrap();
-        lease.apply_revoke("first", 2, "term expired").unwrap();
-        lease.apply_grant("second", 3, Some(40)).unwrap();
+        lease.apply_revoke("first", 2, "term expired", 0).unwrap();
+        lease.apply_grant("second", 3, Some(40), 0).unwrap();
         assert_eq!(
             pool.plan_failover(&lease, 39, 0, 0),
             Err(FailoverPlanError::TermStillLive)
@@ -576,7 +747,7 @@ mod tests {
             let mut holder = DO_WRITE_LEASE_HOLDER.to_owned();
             for epoch in 1..=base_epoch {
                 let next_holder = format!("holder-{epoch}");
-                lease.apply_handoff(&holder, &next_holder, epoch, Some(1)).unwrap();
+                lease.apply_handoff(&holder, &next_holder, epoch, Some(1), 0).unwrap();
                 holder = next_holder;
             }
 
@@ -594,9 +765,140 @@ mod tests {
             prop_assert_eq!(*revoke_epoch, base_epoch + 1);
             prop_assert_eq!(*grant_epoch, base_epoch + 2);
 
-            lease.apply_revoke(former_holder, *revoke_epoch, "expired").unwrap();
-            lease.apply_grant(successor, *grant_epoch, Some(2)).unwrap();
+            lease.apply_revoke(former_holder, *revoke_epoch, "expired", 0).unwrap();
+            lease.apply_grant(successor, *grant_epoch, Some(2), 0).unwrap();
             prop_assert!(lease.validate_history().is_ok());
         }
+    }
+
+    fn stamped_expired_lease() -> (SpillPool, WriteLease) {
+        let mut pool = SpillPool::default();
+        eligible_member(&mut pool, "successor", 50, 0);
+        let mut lease = WriteLease::bootstrap();
+        lease
+            .apply_handoff(DO_WRITE_LEASE_HOLDER, "dead", 1, Some(30_000), 4)
+            .unwrap();
+        (pool, lease)
+    }
+
+    #[test]
+    fn execution_journals_fence_then_grant_and_names_the_barrier() {
+        // Oracle: design #5787 §7, holder death with a caught-up
+        // successor — revoke at e+1, grant at e+2, positions continuing
+        // the lease chain, and the grant position is the barrier.
+        let (pool, lease) = stamped_expired_lease();
+        let plan = pool.plan_failover(&lease, 30_000, 50, 0).unwrap();
+        let execution = plan.execute(&lease, 30_000, 30_000).unwrap();
+        assert_eq!(
+            execution.entries(),
+            vec![
+                JournalEntry::LeaseRevoked {
+                    former_holder: "dead".into(),
+                    epoch: 2,
+                    reason: FAILOVER_REVOKE_REASON.into(),
+                    position: 5,
+                },
+                JournalEntry::LeaseGranted {
+                    holder: "successor".into(),
+                    epoch: 3,
+                    expires_at_ms: Some(60_000),
+                    position: 6,
+                },
+            ]
+            .as_slice()
+        );
+        assert_eq!(execution.successor(), "successor");
+        assert_eq!(execution.grant_epoch(), 3);
+        assert_eq!(execution.grant_position(), 6);
+        assert!(!execution.resume_ready(5));
+        assert!(execution.resume_ready(6));
+
+        // Inside the fence-to-grant window no holder stands: every
+        // writer is refused holder-lost, never silently admitted.
+        let window = execution.intermediate_lease();
+        assert_eq!(window.holder, None);
+        assert_eq!(
+            window.check_writer("dead", 1, 30_000),
+            Err(LeaseRejectionReason::HolderLost)
+        );
+
+        let resulting = execution.resulting_lease();
+        assert_eq!(resulting.holder.as_deref(), Some("successor"));
+        assert_eq!(resulting.epoch, 3);
+        assert_eq!(resulting.last_position(), 6);
+        resulting.validate_history().unwrap();
+        // The fenced holder stays fenced at the new epoch.
+        assert_eq!(
+            resulting.check_writer("dead", 1, 30_001),
+            Err(LeaseRejectionReason::NotHolder)
+        );
+        assert_eq!(resulting.check_writer("successor", 3, 30_001), Ok(()));
+    }
+
+    #[test]
+    fn execution_without_an_eligible_successor_grants_the_do_untermed() {
+        // Oracle: design #5787 §7, holder death with no eligible
+        // successor — the DO takes the grant itself, unterminated,
+        // rather than granting a lagging replica.
+        let pool = SpillPool::default();
+        let mut lease = WriteLease::bootstrap();
+        lease
+            .apply_handoff(DO_WRITE_LEASE_HOLDER, "dead", 1, Some(1), 0)
+            .unwrap();
+        let plan = pool.plan_failover(&lease, 1, 50, 0).unwrap();
+        let execution = plan.execute(&lease, 1, 30_000).unwrap();
+        assert_eq!(execution.successor(), DO_WRITE_LEASE_HOLDER);
+        assert!(matches!(
+            execution.entries()[1],
+            JournalEntry::LeaseGranted {
+                expires_at_ms: None,
+                ..
+            }
+        ));
+        assert_eq!(execution.resulting_lease().expires_at_ms, None);
+    }
+
+    #[test]
+    fn execution_without_a_standing_holder_is_a_single_grant() {
+        let pool = SpillPool::default();
+        let mut lease = WriteLease::bootstrap();
+        lease
+            .apply_handoff(DO_WRITE_LEASE_HOLDER, "dead", 1, Some(1), 0)
+            .unwrap();
+        lease.apply_revoke("dead", 2, "term expired", 0).unwrap();
+        let plan = pool.plan_failover(&lease, 1, 50, 0).unwrap();
+        let execution = plan.execute(&lease, 1, 30_000).unwrap();
+        assert_eq!(execution.entries().len(), 1);
+        // No fence window opens: the intermediate state is the
+        // pre-execution lease, already holder-less.
+        assert_eq!(execution.intermediate_lease(), &lease);
+        assert_eq!(execution.grant_epoch(), 3);
+    }
+
+    #[test]
+    fn execution_refuses_a_plan_whose_lease_has_moved() {
+        // A plan is bound to the lease it was planned from: if the
+        // world moved on (here, recovery already happened by hand),
+        // executing the stale plan must fail before any entry exists,
+        // so no grant can ever be journaled from it.
+        let (pool, lease) = stamped_expired_lease();
+        let plan = pool.plan_failover(&lease, 30_000, 50, 0).unwrap();
+        let mut moved = lease.clone();
+        moved.apply_revoke("dead", 2, "term expired", 5).unwrap();
+        moved
+            .apply_grant(DO_WRITE_LEASE_HOLDER, 3, None, 6)
+            .unwrap();
+        assert!(plan.execute(&moved, 30_000, 30_000).is_err());
+        assert!(
+            plan.execute(&WriteLease::bootstrap(), 30_000, 30_000)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn execution_requires_a_term_for_a_native_successor() {
+        let (pool, lease) = stamped_expired_lease();
+        let plan = pool.plan_failover(&lease, 30_000, 50, 0).unwrap();
+        assert!(plan.execute(&lease, 30_000, 0).is_err());
     }
 }

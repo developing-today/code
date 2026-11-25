@@ -112,6 +112,15 @@
 //     stands). Fail-soft on the same terms: a detector failure
 //     never fails the tick, and a lost/corrupt state file simply
 //     re-baselines (no alert storm).
+//   - quota-forecast-alert-state.json beside quota-current.json —
+//     the C4.5 forecast push alerts (#13261, design §1/§8): the
+//     tick reads the C4 prediction log (quota-predictions.jsonl),
+//     evaluates the newest record per subject via
+//     src/quota-forecast-alerts.ts, and posts each NEW alertable
+//     prediction to the alerts ledger (AlertsStore.postIncident,
+//     source "quota-prediction", key = the record id). The state
+//     holds the fired record ids so repeat ticks do not re-alert.
+//     Fail-soft like the anomaly detectors.
 //
 // Fail-soft contract: if the subcommand cannot be run or its output
 // cannot be parsed, the tick writes a heartbeat carrying the error
@@ -193,6 +202,14 @@ import {
   runAnomalyTick,
   type AnomalyStateFile,
 } from "../src/quota-anomaly.ts";
+import {
+  emptyForecastAlertState,
+  evaluateForecastAlerts,
+  forecastAlertIncidentInput,
+  isForecastAlertState,
+  parseForecastAlertLog,
+} from "../src/quota-forecast-alerts.ts";
+import { sectionPoolIdsFromConfig } from "../src/aa.ts";
 import { renewMetaSession } from "../src/meta-renewal.ts";
 import { classEnabled, getAlertsStore } from "../src/alerts.ts";
 import { sendPush, type PushTarget } from "../src/push.ts";
@@ -249,6 +266,11 @@ const daytypeShadowPath =
 const anomalyStatePath = process.env.QUOTA_ANOMALY_STATE_PATH ?? join(dirname(currentPath), "quota-anomaly-state.json");
 const anomalyHistoryPath =
   process.env.QUOTA_ANOMALY_HISTORY_PATH ?? join(dirname(currentPath), "quota-anomaly-history.jsonl");
+// #13261 (C4.5): the forecast-alert tick state, beside the anomaly
+// state — the fired prediction record ids that suppress repeat
+// ticks (record-keyed dedupe, design §8).
+const forecastAlertStatePath =
+  process.env.QUOTA_FORECAST_ALERT_STATE_PATH ?? join(dirname(currentPath), "quota-forecast-alert-state.json");
 /** Strict millisecond parse for boot-time env (#2835 env-number contract):
  * digits only, 1..2^31-1, else fail naming the variable and the value
  * instead of coercing NaN/negative/huge values into a fetch deadline. */
@@ -1064,6 +1086,78 @@ async function runAnomalyDetectors(args: {
   }
 }
 
+/**
+ * The C4.5 forecast push alerts (#13261, component of #9572; C4
+ * design §1/§8), run beside the tick after the forecast + downtime
+ * publish. All selectivity/dedupe logic is
+ * src/quota-forecast-alerts.ts (pure); this wrapper does the
+ * prediction-log read, the workhorse join, the state-file IO and
+ * the alerts-ledger posts. Fail-soft throughout like
+ * runAnomalyDetectors: any failure is logged and the tick still
+ * succeeds; a missing or corrupt state file re-baselines from
+ * empty (the live predictions re-fire once — bounded to the
+ * newest per subject by the log reader, never the whole log).
+ * No alerts store (Turso unavailable) = the state still advances
+ * and the skip is logged, the meta-keeper posture.
+ */
+async function runForecastAlerts(args: { entries: QuotaCurrentEntry[]; tickAt: string }): Promise<void> {
+  try {
+    let state = emptyForecastAlertState();
+    try {
+      const raw: unknown = JSON.parse(await readFile(forecastAlertStatePath, "utf8"));
+      if (isForecastAlertState(raw)) state = raw;
+      else console.log("quota-gatherer: forecast-alert state file unreadable as a v1 state — re-baselining");
+    } catch {
+      // No state file yet (or unreadable): re-baseline from empty.
+    }
+    // The C4 prediction log holds every tick's appended records;
+    // the reader takes the newest per (kind, subject), so a fresh
+    // or re-baselined state fires the live predictions, never the
+    // log's superseded history.
+    const logText = await readFile(predictionsPath, "utf8").catch(() => "");
+    const records = parseForecastAlertLog(logText);
+    // The workhorse pool set joins the deployed OpenCode config's
+    // workhorse route section to this tick's pool ids (aa.ts
+    // sectionPoolIdsFromConfig) — the alert module names no roster
+    // of its own. An unreadable config yields no membership: pool
+    // walls stay silent while downtime windows still fire.
+    const poolIds = [...new Set(args.entries.flatMap((e) => [e.providerId, e.serviceId]))];
+    const configText = await readFile(
+      process.env.OPENCODE_CONFIG_PATH ?? join(HOME, ".local/state/opencode/opencode-runtime.jsonc"),
+      "utf8",
+    ).catch(() => "");
+    const workhorsePools = new Set(sectionPoolIdsFromConfig(configText, poolIds).workhorse ?? []);
+    const result = evaluateForecastAlerts({ records, state, workhorsePools, now: new Date(args.tickAt) });
+    if (result.findings.length) {
+      const store = await getAlertsStore();
+      if (!store) {
+        console.log(
+          `quota-gatherer: forecast alerts: ${result.findings.length} finding(s); no alerts store — no ledger post`,
+        );
+      } else {
+        for (const f of result.findings) {
+          try {
+            await store.postIncident(forecastAlertIncidentInput(f), { ...f.detail });
+          } catch (err) {
+            console.log(
+              `quota-gatherer: forecast alerts: ledger post failed-soft for ${f.key}: ${safeProviderReason(err instanceof Error ? err.message : String(err))}`,
+            );
+          }
+        }
+      }
+    }
+    await writeAtomic(forecastAlertStatePath, JSON.stringify(result.state, null, 2) + "\n");
+    const unevaluable = result.evaluations.filter((e) => e.state === "unevaluable").length;
+    console.log(
+      `quota-gatherer: forecast alerts: ${result.findings.length} new finding(s), ${result.evaluations.length} evaluations (${unevaluable} unevaluable)`,
+    );
+  } catch (err) {
+    console.error(
+      `quota-gatherer: forecast alerts failed-soft: ${safeProviderReason(err instanceof Error ? err.message : String(err))}`,
+    );
+  }
+}
+
 export async function main(): Promise<number> {
   const started = Date.now();
   const tickAt = new Date(started).toISOString();
@@ -1415,6 +1509,13 @@ export async function main(): Promise<number> {
       );
     }
   }
+
+  // C4.5 (#13261, component of #9572; C4 design §1/§8): the
+  // forecast push alerts over this tick's prediction log (the
+  // downtime records appended above, plus the C4.1/C4.2 producers'
+  // records as they publish). Fail-soft inside runForecastAlerts;
+  // the tick's own result never depends on it.
+  await runForecastAlerts({ entries, tickAt });
 
   // Stage-3 S5 (#12699, design D6): the anomaly detectors beside
   // the tick (burn spike / schema drift / plan change). Fail-soft

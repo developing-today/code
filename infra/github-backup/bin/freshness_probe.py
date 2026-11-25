@@ -108,7 +108,9 @@ def judge_head_pairs(pairs):
     problems = []
     for label, expected, actual in pairs:
         if not expected or not actual:
-            problems.append(f"{label}: missing head (expected {expected!r}, got {actual!r})")
+            problems.append(
+                f"{label}: missing head (expected {expected!r}, got {actual!r})"
+            )
         elif expected != actual:
             problems.append(f"{label}: head {actual} != expected {expected}")
     if problems:
@@ -286,9 +288,7 @@ def fetch_rehost_pairs(root, base):
     pairs = []
     for repo in FLEET_REPOS:
         local = _git_head(mirror_path(root, repo))
-        body = _fetch_advertisement(
-            f"{base}/{repo}/info/refs?service=git-upload-pack"
-        )
+        body = _fetch_advertisement(f"{base}/{repo}/info/refs?service=git-upload-pack")
         pairs.append((repo, local, parse_advertised_head(body)))
     return pairs
 
@@ -323,9 +323,7 @@ def collect_outcomes(root, bucket, now, rehost_base=DEFAULT_REHOST_BASE):
         if outcomes["cloudflare_rehost"]["ok"]:
             outcomes["cloudflare_rehost"]["verified_at"] = now
     except (OSError, RuntimeError, ValueError) as exc:
-        outcomes["cloudflare_rehost"] = outcome(
-            False, f"rehost check failed: {exc}"
-        )
+        outcomes["cloudflare_rehost"] = outcome(False, f"rehost check failed: {exc}")
     return outcomes
 
 
@@ -500,9 +498,7 @@ def main(argv=None):
         print(json.dumps({"results": results}, indent=2, sort_keys=True))
     else:
         for row in results:
-            print(
-                f"freshness_probe: {row['copy']}: {row['verdict']}: {row['detail']}"
-            )
+            print(f"freshness_probe: {row['copy']}: {row['verdict']}: {row['detail']}")
     if args.file_issues:
         try:
             print("freshness_probe: alert: " + sync_alert(results, now))

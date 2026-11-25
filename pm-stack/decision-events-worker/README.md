@@ -22,7 +22,7 @@ land in three places, all idempotent on `eventId`:
 | `GET /sets/<setId>/events?limit=&after=` | shared secret | Read a set's events back from D1, in `(ts, event_id)` order; the response's `nextAfter` is the composite cursor for the next page (see below).                                                                   |
 | `GET /sets/<setId>/state`                | shared secret | The set's Durable Object state merged with D1's stored count.                                                                                                                                                    |
 | `GET /sets/<setId>/stream`               | shared secret | WebSocket upgrade routed to the set's Durable Object; subscribers get `{type:"decision-events", setId, events}` per new batch, plus the current state on connect. Send `ping` → `pong`, `state` → current state. |
-| `GET /health`                            | none          | Liveness, whether the webhook secret is configured, and the deployed `VERSION` (or `unknown` until deployment supplies it).                                                                                                                                                             |
+| `GET /health`                            | none          | Liveness, whether the webhook secret is configured, and the deployed `VERSION` (or `unknown` until deployment supplies it).                                                                                      |
 
 Read-back pagination: pass the previous page's `nextAfter` value as
 `after` to get the next page. The cursor is composite — `<ts>|<eventId>`,

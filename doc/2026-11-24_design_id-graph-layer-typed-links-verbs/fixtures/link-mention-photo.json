@@ -1,1 +1,9 @@
-{"author":"ed25519:aaaa1111chat","created_claim":"2026-11-24T01:54:00Z","object_id":"lnk-mention-photographer","schema_version":1,"source":"msg-photo-answer","target":"img-group-photo","verb":"mention"}
+{
+  "author": "ed25519:aaaa1111chat",
+  "created_claim": "2026-11-24T01:54:00Z",
+  "object_id": "lnk-mention-photographer",
+  "schema_version": 1,
+  "source": "msg-photo-answer",
+  "target": "img-group-photo",
+  "verb": "mention"
+}

@@ -1,12 +1,6 @@
 [workspace]
 resolver = "3"
-members = [
-  "s1-transport",
-  "s2-auth",
-  "s4-blobs",
-  "s5-cbor",
-  "c1-connect",
-]
+members = ["s1-transport", "s2-auth", "s4-blobs", "s5-cbor", "c1-connect"]
 
 [workspace.package]
 edition = "2024"

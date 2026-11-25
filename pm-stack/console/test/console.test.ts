@@ -27,7 +27,7 @@ import {
   verifyJwt,
 } from "../src/auth.ts";
 import { type Config, ConfigError, type Issuer, readConfig } from "../src/config.ts";
-import { HOLDABLE } from "../src/edge-proto.ts";
+import { HOLDABLE, subjectOf } from "../src/edge-proto.ts";
 import { manageable, OpError, Ops, parseUnitFiles, parseUnits, type Run, triagePacket } from "../src/ops.ts";
 import { assetLinks, type Deps, handle, releaseSaid } from "../src/server.ts";
 
@@ -726,12 +726,33 @@ describe("operations", () => {
   });
 
   test("a message's text travels on stdin and targets are checked", async () => {
-    const r = recorder();
+    // The bridge answers every send with its match report (#14375).
+    const report = JSON.stringify({
+      batch: "b1",
+      messages: [],
+      unregistered: [],
+      matched: 2,
+      delivered: 2,
+      recipients: ["conductor", "opencode"],
+      remaining: 0,
+    });
+    const r = recorder(() => report);
     const ops = new Ops(CFG, r.run);
-    await ops.send(["group:opencode", "agent:conductor"], "--command do the thing\n$(reboot)", true);
+    const sent = await ops.send(["group:opencode", "agent:conductor"], "--command do the thing\n$(reboot)", true);
     expect(r.calls[0]).toEqual({
       argv: ["fleet", "bridge", "send", "--to", "group:opencode,agent:conductor", "--command", "-"],
       stdin: "--command do the thing\n$(reboot)",
+    });
+    // The answer is the bridge's report, field for field.
+    expect(sent).toEqual({
+      to: ["group:opencode", "agent:conductor"],
+      command: true,
+      batch: "b1",
+      matched: 2,
+      delivered: 2,
+      recipients: ["conductor", "opencode"],
+      remaining: 0,
+      unregistered: [],
     });
     await ops.send(["all"], "an idea", false);
     expect(r.calls[1].argv).toEqual(["fleet", "bridge", "send", "--to", "all", "-"]);
@@ -740,6 +761,471 @@ describe("operations", () => {
     }
     await expect(ops.send(["all"], "", false)).rejects.toThrow(/required/);
     expect(r.calls.length).toBe(2);
+  });
+
+  test("the composer: a pattern send's report, its broaden, and an offer, against fixture bridge answers", async () => {
+    // Fixture bridge answers, keyed by the verb in argv: a pattern
+    // send that matched two and reached one, a broaden that reached
+    // the other, an offer, and the offers list with a claim on it.
+    const r = recorder((argv) => {
+      if (argv[2] === "send" && argv.includes("--broaden")) {
+        return JSON.stringify({
+          batch: "b9", messages: [], unregistered: [], matched: 2, delivered: 1, recipients: ["felix-2"], remaining: 0,
+        });
+      }
+      if (argv[2] === "send") {
+        return JSON.stringify({
+          batch: "b9", messages: [], unregistered: [], matched: 2, delivered: 1, recipients: ["felix-1"], remaining: 1,
+        });
+      }
+      if (argv[2] === "offer") {
+        return JSON.stringify({
+          offer: { id: 7, batch: "b10", body: "take the next task", kind: "command", slots: 2, state: "open", claimed: 0, remaining: 2, claims: [] },
+        });
+      }
+      if (argv[2] === "offers") {
+        return JSON.stringify({
+          offers: [
+            {
+              id: 7, batch: "b10", body: "take the next task", kind: "command", slots: 2, state: "open", claimed: 1, remaining: 1,
+              claims: [{ agent: "felix-1", claimed_at: "2026-11-24T02:00:00Z", message_id: 42 }],
+            },
+          ],
+        });
+      }
+      return "";
+    });
+    const ops = new Ops(CFG, r.run);
+    const table = actions(ops, {} as never);
+
+    // Acceptance 1: agent:f* with limit 1 against two matching agents
+    // shows matched 2 / delivered 1 and names the recipient.
+    const report = (await table["message.send"].run({ to: ["agent:f*"], text: "do the thing", command: true, limit: 1 })) as {
+      batch: string | null;
+      matched: number;
+      delivered: number;
+      recipients: string[];
+      remaining: number;
+    };
+    expect(r.calls[0].argv).toEqual(["fleet", "bridge", "send", "--to", "agent:f*", "--command", "--limit", "1", "-"]);
+    expect(r.calls[0].stdin).toBe("do the thing");
+    expect(report).toMatchObject({ batch: "b9", matched: 2, delivered: 1, recipients: ["felix-1"], remaining: 1 });
+    // The audit names the targets and the limit, never the text.
+    expect(table["message.send"].audit({ to: ["agent:f*"], text: "do the thing", command: true, limit: 1 })).toEqual({
+      to: ["agent:f*"],
+      command: true,
+      limit: 1,
+    });
+
+    // Acceptance 2: Broaden is one follow-up call with the batch —
+    // no targets, no text — and its report shows nothing remaining.
+    const widened = (await table["message.broaden"].run({ batch: report.batch })) as {
+      matched: number;
+      delivered: number;
+      recipients: string[];
+      remaining: number;
+    };
+    expect(r.calls[1].argv).toEqual(["fleet", "bridge", "send", "--broaden", "b9"]);
+    expect(r.calls[1].stdin).toBeUndefined();
+    expect(widened).toMatchObject({ matched: 2, delivered: 1, recipients: ["felix-2"], remaining: 0 });
+    expect(table["message.broaden"].audit({ batch: "b9", text: "do the thing" })).toEqual({ batch: "b9", limit: null });
+    // A batch that is not a batch id is refused before anything runs.
+    const calls = r.calls.length;
+    await expect(ops.broaden("not a batch!")).rejects.toThrow(OpError);
+    expect(r.calls.length).toBe(calls);
+
+    // Acceptance 3 (console half): an offer posted from the composer,
+    // and the offers list showing its claim with the claimant named.
+    const offer = (await table["message.offer"].run({ to: ["agent:f*"], text: "take the next task", command: true, slots: 2 })) as {
+      id: number;
+      state: string;
+    };
+    expect(r.calls.at(-1)?.argv).toEqual(["fleet", "bridge", "offer", "--to", "agent:f*", "--slots", "2", "--command", "-"]);
+    expect(r.calls.at(-1)?.stdin).toBe("take the next task");
+    expect(offer).toMatchObject({ id: 7, state: "open" });
+    expect(table["message.offer"].audit({ to: ["agent:f*"], text: "take the next task", command: true, slots: 2 })).toEqual({
+      to: ["agent:f*"],
+      command: true,
+      slots: 2,
+    });
+    const offers = (await ops.offers()) as { id: number; claims: { agent: string }[] }[];
+    expect(offers).toHaveLength(1);
+    expect(offers[0].claims[0].agent).toBe("felix-1");
+
+    // A send whose answer carries no report is said so, not recounted.
+    const silent = new Ops(CFG, recorder(() => JSON.stringify({ batch: "b1" })).run);
+    await expect(silent.send(["all"], "hello", false)).rejects.toThrow(/did not say who that reached/);
+  });
+
+  test("the pipeline read carries the owner's filters as the bridge's own flags, and checks them first", async () => {
+    const rows = [
+      { surface: "fleet", kind: "command", sender_addr: "agent:felix", receiver: "agent:archer", body: "do it" },
+    ];
+    const r = recorder(() => JSON.stringify({ messages: rows }));
+    const ops = new Ops(CFG, r.run);
+    const got = await ops.pipelineFeed(
+      new URLSearchParams({ kind: "command", sender: "felix", surface: "fleet", unread: "1", limit: "25" }),
+    );
+    expect(got).toEqual(rows);
+    expect(r.calls[0].argv).toEqual([
+      "fleet",
+      "bridge",
+      "pipeline",
+      "--order",
+      "desc",
+      "--kind",
+      "command",
+      "--surface",
+      "fleet",
+      "--sender",
+      "felix",
+      "--unread",
+      "--limit",
+      "25",
+    ]);
+    // A filter the bridge has no such value for is refused here, and
+    // nothing is run for it.
+    await expect(ops.pipelineFeed(new URLSearchParams({ kind: "shout" }))).rejects.toThrow(OpError);
+    await expect(ops.pipelineFeed(new URLSearchParams({ surface: "smoke-signal" }))).rejects.toThrow(OpError);
+    await expect(ops.pipelineFeed(new URLSearchParams({ sender: "a b" }))).rejects.toThrow(OpError);
+    expect(r.calls.length).toBe(1);
+  });
+
+  test("the widget's count is the pipeline's unread instructions and nothing else (#14377)", async () => {
+    // The feed's unread page, as the bridge projects it: instructions
+    // and commands count; plain messages and notes do not.
+    const rows = [
+      { surface: "connector", kind: "instruction", body: "do it" },
+      { surface: "fleet", kind: "command", body: "and this" },
+      { surface: "fleet", kind: "command", body: "and this too" },
+      { surface: "fleet", kind: "message", body: "just word" },
+      { surface: "notes", kind: "note", body: "a note" },
+    ];
+    const r = recorder(() => JSON.stringify({ messages: rows }));
+    const ops = new Ops(CFG, r.run);
+    expect(await ops.unreadInstructions()).toEqual({ unreadInstructions: 3 });
+    expect(r.calls[0].argv).toEqual(["fleet", "bridge", "pipeline", "--order", "desc", "--unread", "--limit", "200"]);
+  });
+
+  test("the directory merges credential state in, and a revocation shows on the next read", async () => {
+    // The bridge's answers, as they stand: felix's credential live.
+    // The row shape mirrors what the bridge returns: revoked_at starts
+    // null and carries a timestamp after revocation (#12521).
+    let credentialState: {
+      agent: string;
+      state: string;
+      scopes: string[];
+      addr: null;
+      credentials: number;
+      live: number;
+      created: string;
+      revoked_at: string | null;
+    }[] = [
+      {
+        agent: "felix",
+        state: "active",
+        scopes: ["inbox", "send"],
+        addr: null,
+        credentials: 1,
+        live: 1,
+        created: "2026-11-24T00:00:00Z",
+        revoked_at: null,
+      },
+    ];
+    const r = recorder((argv) => {
+      if (argv[2] === "directory") {
+        return JSON.stringify({
+          agents: [
+            {
+              surface: "fleet",
+              name: "felix",
+              groups: ["muse"],
+              presence: "last_seen",
+              last_seen: "2026-11-24T01:00:00Z",
+              unread: 3,
+            },
+            {
+              surface: "notes",
+              name: "muse/scout",
+              identity: "muse/scout",
+              scopes: { can_send: true, can_inbox: false },
+              presence: "none",
+              first_seen: "2026-11-24T00:00:00Z",
+              last_seen: null,
+            },
+          ],
+        });
+      }
+      if (argv[2] === "credentials") return JSON.stringify({ credentials: credentialState });
+      if (argv[2] === "revoke") return JSON.stringify({ ok: true, revoked: 1 });
+      return "";
+    });
+    const ops = new Ops(CFG, r.run);
+    const before = (await ops.directory()) as {
+      name: string;
+      presence: string;
+      last_seen: string | null;
+      credential: {
+        state: string;
+        scopes: string[];
+        credentials: number | null;
+        created: string | null;
+        revoked_at: string | null;
+      } | null;
+    }[];
+    const felix = before.find((a) => a.name === "felix");
+    expect(felix?.credential).toEqual({
+      state: "active",
+      scopes: ["inbox", "send"],
+      credentials: 1,
+      created: "2026-11-24T00:00:00Z",
+      revoked_at: null,
+    });
+    // A notes-only identity is in the list, marked notes-only: no
+    // presence is invented for it, and its live token scopes are its
+    // credential state.
+    const scout = before.find((a) => a.name === "muse/scout");
+    expect(scout?.presence).toBe("none");
+    expect(scout?.last_seen).toBeNull();
+    expect(scout?.credential?.state).toBe("active");
+    expect(scout?.credential?.scopes).toEqual(["send"]);
+
+    // The revoke action runs the bridge's own verb, audits only the
+    // surface and the name, and the next directory read shows it.
+    const table = actions(ops, {} as never);
+    expect(table["agent.revoke"].audit({ surface: "fleet", name: "felix", secret: "x" })).toEqual({
+      surface: "fleet",
+      name: "felix",
+    });
+    const done = (await table["agent.revoke"].run({ surface: "fleet", name: "felix" })) as { revoked: number };
+    expect(done.revoked).toBe(1);
+    expect(r.calls.at(-1)?.argv).toEqual(["fleet", "bridge", "revoke", "--agent", "felix"]);
+    credentialState = [
+      {
+        agent: "felix",
+        state: "revoked",
+        scopes: [],
+        addr: null,
+        credentials: 1,
+        live: 0,
+        created: "2026-11-24T00:00:00Z",
+        revoked_at: "2026-11-24T02:00:00Z",
+      },
+    ];
+    const after = (await ops.directory()) as { name: string; credential: { state: string } | null }[];
+    expect(after.find((a) => a.name === "felix")?.credential?.state).toBe("revoked");
+    // A notes identity is revoked by its identity, and a surface that
+    // is neither is refused before anything runs.
+    await table["agent.revoke"].run({ surface: "notes", name: "muse/scout" });
+    expect(r.calls.at(-1)?.argv).toEqual(["fleet", "bridge", "revoke", "--identity", "muse/scout"]);
+    const calls = r.calls.length;
+    await expect(table["agent.revoke"].run({ surface: "smoke-signal", name: "felix" })).rejects.toThrow(OpError);
+    expect(r.calls.length).toBe(calls);
+  });
+
+  test("provisioning: a mint's value reaches the caller once and is kept nowhere", async () => {
+    // The bridge's answers, as fixtures: the values below are made up
+    // for this test, as everywhere in this suite.
+    const ENROLL_VALUE = "enroll-token-value-fixture";
+    const CRED_VALUE = "credential-value-fixture";
+    const r = recorder((argv) => {
+      if (argv[2] === "mint-enroll") {
+        return JSON.stringify({
+          agent: "new-1",
+          kind: "muse",
+          groups: ["muse"],
+          notes_identity: "muse/new-1",
+          expires_at: "2026-11-25T00:00:00Z",
+          bootstrap_token: ENROLL_VALUE,
+        });
+      }
+      if (argv[2] === "enroll-tokens") {
+        return JSON.stringify({
+          enroll_tokens: [
+            {
+              agent: "new-1",
+              kind: "muse",
+              groups: ["muse"],
+              notes_identity: "muse/new-1",
+              created: "2026-11-24T00:00:00Z",
+              expires_at: "2026-11-25T00:00:00Z",
+              used_at: null,
+              revoked_at: null,
+              state: "pending",
+            },
+          ],
+        });
+      }
+      if (argv[2] === "revoke-enroll") return JSON.stringify({ agent: "new-1", revoked: 1 });
+      if (argv[2] === "mint-credential") {
+        return JSON.stringify({
+          agent: "pm-stack",
+          scopes: ["send", "read"],
+          addr: "service:pm-stack",
+          credential: CRED_VALUE,
+        });
+      }
+      return "";
+    });
+    const ops = new Ops(CFG, r.run);
+    const table = actions(ops, {} as never);
+
+    // The enroll mint: the binding travels as flags, and the value
+    // comes back to the caller — the one screen that shows it.
+    const mint = (await table["agent.mint-enroll"].run({
+      agent: "new-1",
+      kind: "muse",
+      groups: ["muse"],
+      notesIdentity: "muse/new-1",
+      ttlSeconds: 3600,
+    })) as { bootstrap_token: string; expires_at: string };
+    expect(mint.bootstrap_token).toBe(ENROLL_VALUE);
+    expect(mint.expires_at).toBe("2026-11-25T00:00:00Z");
+    expect(r.calls[0].argv).toEqual([
+      "fleet",
+      "bridge",
+      "mint-enroll",
+      "--agent",
+      "new-1",
+      "--kind",
+      "muse",
+      "--groups",
+      "muse",
+      "--notes-identity",
+      "muse/new-1",
+      "--ttl",
+      "3600",
+    ]);
+    // The audit record keeps the binding and nothing of the value,
+    // even when the value is handed to it in the args.
+    expect(
+      table["agent.mint-enroll"].audit({
+        agent: "new-1",
+        kind: "muse",
+        groups: ["muse"],
+        notesIdentity: "muse/new-1",
+        ttlSeconds: 3600,
+        bootstrap_token: ENROLL_VALUE,
+      }),
+    ).toEqual({ agent: "new-1", kind: "muse", groups: ["muse"], notesIdentity: "muse/new-1", ttlSeconds: 3600 });
+    // A mint is never held to be done late: its answer is the secret.
+    expect(HOLDABLE.has("agent.mint-enroll")).toBe(false);
+    expect(HOLDABLE.has("agent.mint-credential")).toBe(false);
+
+    // After the mint, nothing the console can read holds the value:
+    // the state list is state only, and no call ever carried it.
+    const listed = await ops.enrollTokens();
+    expect(JSON.stringify(listed)).not.toContain(ENROLL_VALUE);
+    for (const call of r.calls) {
+      expect(JSON.stringify(call.argv)).not.toContain(ENROLL_VALUE);
+      expect(call.stdin ?? "").not.toContain(ENROLL_VALUE);
+    }
+
+    // The credential mint: same shape, scopes and the service binding
+    // checked here first.
+    const cred = (await table["agent.mint-credential"].run({
+      agent: "pm-stack",
+      scopes: ["send", "read"],
+      addr: "service:pm-stack",
+    })) as { credential: string };
+    expect(cred.credential).toBe(CRED_VALUE);
+    expect(r.calls.at(-1)?.argv).toEqual([
+      "fleet",
+      "bridge",
+      "mint-credential",
+      "--agent",
+      "pm-stack",
+      "--scopes",
+      "send,read",
+      "--addr",
+      "service:pm-stack",
+    ]);
+    expect(
+      table["agent.mint-credential"].audit({
+        agent: "pm-stack",
+        scopes: ["send", "read"],
+        addr: "service:pm-stack",
+        credential: CRED_VALUE,
+      }),
+    ).toEqual({
+      agent: "pm-stack",
+      scopes: ["send", "read"],
+      addr: "service:pm-stack",
+    });
+    const calls = r.calls.length;
+    await expect(table["agent.mint-credential"].run({ agent: "pm-stack", addr: "service:other" })).rejects.toThrow(
+      OpError,
+    );
+    await expect(table["agent.mint-credential"].run({ agent: "pm-stack", scopes: ["root"] })).rejects.toThrow(OpError);
+    await expect(table["agent.mint-enroll"].run({ agent: "a b" })).rejects.toThrow(OpError);
+    await expect(table["agent.mint-enroll"].run({ agent: "new-1", ttlSeconds: 30 })).rejects.toThrow(OpError);
+    expect(r.calls.length).toBe(calls);
+
+    // Taking tokens back is by agent name, carries no value, and —
+    // done late it is still the right act — is held for a machine.
+    const back = (await table["agent.revoke-enroll"].run({ agent: "new-1" })) as { revoked: number };
+    expect(back.revoked).toBe(1);
+    expect(r.calls.at(-1)?.argv).toEqual(["fleet", "bridge", "revoke-enroll", "--agent", "new-1"]);
+    expect(table["agent.revoke-enroll"].audit({ agent: "new-1", bootstrap_token: ENROLL_VALUE })).toEqual({
+      agent: "new-1",
+    });
+    expect(HOLDABLE.has("agent.revoke-enroll")).toBe(true);
+    expect(subjectOf("agent.revoke-enroll", { agent: "new-1" })).toBe("enroll:new-1");
+  });
+
+  test("wake hooks: listed, set from stdin JSON, and removed by address (#14544)", async () => {
+    // Oracle: the console drives `fleet bridge wake-hooks` — the list
+    // is the bridge's projection, a set's hook (token included) rides
+    // stdin and never an argument or the audit, and a remove posts
+    // the address alone. A set is never held (its token is a value);
+    // a remove is, like a revocation.
+    const r = recorder((argv) => {
+      if (argv[2] === "wake-hooks" && argv[3] === "--set") {
+        return JSON.stringify({ hook: { address: "agent:felix", kind: "webhook", host: "hooks.example", has_token: true, added: "2026-11-24T00:00:00.000Z" } });
+      }
+      if (argv[2] === "wake-hooks" && argv[3] === "--remove") return JSON.stringify({ removed: true });
+      if (argv[2] === "wake-hooks") {
+        return JSON.stringify({ hooks: [{ address: "agent:felix", kind: "webhook", host: "hooks.example", has_token: true, added: "2026-11-24T00:00:00.000Z" }] });
+      }
+      return "";
+    });
+    const ops = new Ops(CFG, r.run);
+    const table = actions(ops, {} as never);
+
+    expect(await ops.wakeHooks()).toEqual([
+      { address: "agent:felix", kind: "webhook", host: "hooks.example", has_token: true, added: "2026-11-24T00:00:00.000Z" },
+    ]);
+    expect(r.calls.at(-1)?.argv).toEqual(["fleet", "bridge", "wake-hooks"]);
+
+    const set = (await table["agent.wake-hook-set"].run({
+      address: "agent:felix",
+      url: "https://hooks.example/wake",
+      token: "hook-token-fixture",
+    })) as { hook: { address: string } };
+    expect(set.hook.address).toBe("agent:felix");
+    expect(r.calls.at(-1)?.argv).toEqual(["fleet", "bridge", "wake-hooks", "--set", "-"]);
+    expect(JSON.parse(r.calls.at(-1)?.stdin ?? "")).toEqual({
+      address: "agent:felix",
+      url: "https://hooks.example/wake",
+      token: "hook-token-fixture",
+    });
+    expect(table["agent.wake-hook-set"].audit({ address: "agent:felix", url: "https://hooks.example/wake", token: "hook-token-fixture" })).toEqual({
+      address: "agent:felix",
+    });
+    expect(HOLDABLE.has("agent.wake-hook-set")).toBe(false);
+
+    const removed = (await table["agent.wake-hook-remove"].run({ address: "agent:felix" })) as { removed: boolean };
+    expect(removed.removed).toBe(true);
+    expect(r.calls.at(-1)?.argv).toEqual(["fleet", "bridge", "wake-hooks", "--remove", "--address", "agent:felix"]);
+    expect(HOLDABLE.has("agent.wake-hook-remove")).toBe(true);
+    expect(subjectOf("agent.wake-hook-remove", { address: "agent:felix" })).toBe("wake-hook:agent:felix");
+
+    // Bad shapes are refused before anything runs.
+    const calls = r.calls.length;
+    await expect(table["agent.wake-hook-set"].run({ address: "drew", url: "https://hooks.example/wake" })).rejects.toThrow(OpError);
+    await expect(table["agent.wake-hook-set"].run({ address: "agent:felix", url: "http://hooks.example/wake" })).rejects.toThrow(OpError);
+    await expect(table["agent.wake-hook-remove"].run({ address: "no way" })).rejects.toThrow(OpError);
+    expect(r.calls.length).toBe(calls);
   });
 
   test("ranking an issue adds the new rank before it removes the others", async () => {
@@ -1741,7 +2227,12 @@ describe("HTTP surface", () => {
 
   test("each write route reaches its operation", async () => {
     const r = recorder((argv) =>
-      argv[1] === "gh" ? JSON.stringify({ number: 1, html_url: "u", merged: true, sha: "s", labels: [] }) : "",
+      argv[1] === "gh"
+        ? JSON.stringify({ number: 1, html_url: "u", merged: true, sha: "s", labels: [] })
+        : argv[1] === "bridge" && argv[2] === "send"
+          ? // A send's answer is its match report (#14375).
+            JSON.stringify({ batch: "b1", messages: [], unregistered: [], matched: 1, delivered: 1, recipients: ["lane-1"], remaining: 0 })
+          : "",
     );
     const d = deps("owner", r);
     const run = async (path: string, body: unknown) => (await handle(post(path, body), d)).status;
