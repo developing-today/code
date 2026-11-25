@@ -242,7 +242,7 @@ impl LocalStore {
                     let state: String = row.get(2)?;
                     Ok(ListEntry {
                         key: row.get(0)?,
-                        version: row.get(1)?,
+                        version: unsigned(row.get(1)?),
                         origin: if state == STATE_TOMBSTONE {
                             Origin::Masked
                         } else {
@@ -353,7 +353,7 @@ impl LocalStore {
                     identity.partition_id,
                     namespace,
                     key,
-                    to
+                    signed(to)
                 ],
                 |row| Ok((row.get(0)?, row.get(1)?)),
             )
@@ -400,9 +400,9 @@ impl LocalStore {
                     Ok(OutboxIntent {
                         id: row.get(0)?,
                         key: row.get(1)?,
-                        version: row.get(2)?,
+                        version: unsigned(row.get(2)?),
                         op: row.get(3)?,
-                        generation: row.get(4)?,
+                        generation: unsigned(row.get(4)?),
                         status: row.get(5)?,
                     })
                 },
@@ -517,7 +517,7 @@ fn append_head(
         namespace,
         key
     ];
-    let parent: Option<u64> = tx
+    let parent: Option<i64> = tx
         .query_row(
             "SELECT MAX(version) FROM kv_versions_local
              WHERE owner_user_id=?1 AND context_id=?2 AND partition_id=?3 AND namespace=?4 AND key=?5",
@@ -526,7 +526,7 @@ fn append_head(
         )
         .map_err(sql)?;
     let version = parent.map_or(1, |parent| parent + 1);
-    let generation: u64 = tx
+    let generation: i64 = tx
         .query_row(
             "SELECT generation FROM kv_fence
              WHERE owner_user_id=?1 AND context_id=?2 AND partition_id=?3 AND namespace=?4 AND key=?5",
@@ -580,7 +580,17 @@ fn append_head(
         params![ids.0, ids.1, ids.2, namespace, key, version, op, generation],
     )
     .map_err(sql)?;
-    Ok(version)
+    Ok(unsigned(version))
+}
+
+/// Versions and generations are stored as SQLite integers and are never
+/// negative; these keep the public API in `u64` without a lossy cast.
+fn unsigned(value: i64) -> u64 {
+    u64::try_from(value).unwrap_or(0)
+}
+
+fn signed(value: u64) -> i64 {
+    i64::try_from(value).unwrap_or(i64::MAX)
 }
 
 fn validate_namespace(namespace: &str) -> Result<(), KvError> {
