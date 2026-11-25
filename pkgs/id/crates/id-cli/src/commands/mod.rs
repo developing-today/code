@@ -80,6 +80,7 @@ pub mod serve;
 #[cfg(feature = "web")]
 pub mod serve_publications;
 pub mod tag;
+pub mod talk;
 pub mod text;
 pub mod walk;
 #[cfg(feature = "world")]
@@ -87,6 +88,7 @@ pub mod world;
 pub mod writer_set;
 
 pub use claim::cmd_claim;
+pub use talk::cmd_talk;
 pub use client::{create_local_client_endpoint, create_local_operator_endpoint};
 pub use doc::cmd_doc;
 pub use find::{

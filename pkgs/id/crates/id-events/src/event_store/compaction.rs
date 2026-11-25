@@ -70,15 +70,18 @@ pub struct CompactionPolicy {
 /// Whether `kind` is durable by construction, per the class table of the
 /// #2034 investigation (§3/§7): identity and membership material, signed
 /// durable content, attestations, writer-set and device operations, media,
-/// chat anchors, and session checkpoints are kept forever. Checkpoint events
+/// chat anchors, talk-page posts and session checkpoints are kept forever. Checkpoint events
 /// in particular are never deleted by live-data compaction (design §4.6).
 pub(super) fn is_durable_kind(kind: &str) -> bool {
-    const DURABLE_EXACT: [&str; 5] = [
+    const DURABLE_EXACT: [&str; 6] = [
         "identity",
         "issuer.rotation",
         "chat.anchor.v1",
         "session.checkpoint",
         "group",
+        // Talk-page posts are never edited or dropped (#5834 invariant 1):
+        // a superseded post stays stored, so compaction keeps it too.
+        id_store::talk_page::TALK_POST_KIND,
     ];
     const DURABLE_PREFIX: [&str; 8] = [
         "group.",

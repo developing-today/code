@@ -991,6 +991,54 @@ fn test_cli_parse_doc_content() {
 }
 
 #[test]
+fn test_cli_parse_talk_post_and_list() {
+    let cli = Cli::parse_from([
+        "id",
+        "talk",
+        "post",
+        "abc123",
+        "needs a source",
+        "--supersedes",
+        "content/raw-blake3-256.00",
+    ]);
+    match cli.command {
+        Some(Command::Talk {
+            json,
+            command:
+                TalkCommand::Post {
+                    object,
+                    body,
+                    reply_to,
+                    supersedes,
+                },
+        }) => {
+            assert!(!json);
+            assert_eq!(object, "abc123");
+            assert_eq!(body, "needs a source");
+            assert_eq!(reply_to, None);
+            assert_eq!(supersedes.as_deref(), Some("content/raw-blake3-256.00"));
+        }
+        _ => panic!("Expected Talk::Post command"),
+    }
+
+    // `--json` is global to `talk`: it may follow the subcommand.
+    let cli = Cli::parse_from(["id", "talk", "list", "abc123", "--json"]);
+    match cli.command {
+        Some(Command::Talk {
+            json,
+            command: TalkCommand::List { object },
+        }) => {
+            assert!(json);
+            assert_eq!(object, "abc123");
+        }
+        _ => panic!("Expected Talk::List command"),
+    }
+
+    // A post needs its body.
+    assert!(Cli::try_parse_from(["id", "talk", "post", "abc123"]).is_err());
+}
+
+#[test]
 fn test_cli_verify() {
     // Verify CLI structure is valid
     Cli::command().debug_assert();
