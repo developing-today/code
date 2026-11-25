@@ -47,8 +47,8 @@ pub use server::BrokerTlsServer;
 mod server {
     use super::IoStream;
     use rustls::ServerConfig;
-    use rustls::pki_types::{CertificateDer, PrivateKeyDer, pem::PemObject};
     use rustls::StreamOwned;
+    use rustls::pki_types::{CertificateDer, PrivateKeyDer, pem::PemObject};
     use rustls::server::ServerConnection;
     use std::io::{Read, Write};
     use std::net::TcpStream;

@@ -1456,20 +1456,20 @@ pub fn run() -> i32 {
 
     let pre_token = token.clone();
     let precheck = move |head: &crate::uds_http::HttpRequest| {
-            pre_body_refusal(
-                &head.method,
-                &head.target,
-                head.header("X-Agent-Token"),
-                &pre_token,
-                head.header("Content-Length")
-                    .and_then(|v| v.parse::<u64>().ok()),
+        pre_body_refusal(
+            &head.method,
+            &head.target,
+            head.header("X-Agent-Token"),
+            &pre_token,
+            head.header("Content-Length")
+                .and_then(|v| v.parse::<u64>().ok()),
+        )
+        .map(|(status, value)| {
+            (
+                status,
+                serde_json::to_vec(&value).unwrap_or_else(|_| b"{}".to_vec()),
             )
-            .map(|(status, value)| {
-                (
-                    status,
-                    serde_json::to_vec(&value).unwrap_or_else(|_| b"{}".to_vec()),
-                )
-            })
+        })
     };
     let handler = move |req: &crate::uds_http::HttpRequest| {
         let _ctx = request_ctx_scope(req);
