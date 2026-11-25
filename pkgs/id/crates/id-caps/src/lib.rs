@@ -29,6 +29,7 @@ pub mod mcp_policy;
 pub mod portal;
 pub mod role_config;
 pub mod used_caps;
+pub mod world_agents;
 pub mod world_caps;
 pub mod world_limits;
 pub mod world_manifest;
