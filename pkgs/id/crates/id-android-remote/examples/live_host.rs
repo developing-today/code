@@ -1,17 +1,14 @@
 //! Start a local Iroh world host for the Android emulator proof of concept.
 //!
-//! Oracle: the Android shell connects to the printed emulator-reachable
-//! EndpointAddr with the printed guest capability and renders the hosted
-//! tic-tac-toe view.
-
-use std::net::{Ipv4Addr, SocketAddr};
+//! Oracle: the Android shell connects to the printed Iroh node ID, uses the
+//! printed guest capability, and renders the hosted tic-tac-toe view.
 
 use id_worlds::world::{WorldCore, WorldHandle, WorldLimits, WorldScopes};
 use id_worlds::world_net::{WORLD_ALPN, WorldProtocol};
 use id_worlds::world_session::{WorldService, module_hash};
-use iroh::endpoint::{RelayMode, presets};
+use iroh::Endpoint;
+use iroh::endpoint::presets;
 use iroh::protocol::Router;
-use iroh::{Endpoint, EndpointAddr, TransportAddr};
 use iroh_blobs::store::mem::MemStore;
 
 const TIC_TAC_TOE: &[u8] = include_bytes!("../../../apps/tic-tac-toe/program/tic-tac-toe.wasm");
@@ -32,27 +29,11 @@ async fn main() -> anyhow::Result<()> {
         .map_err(|error| anyhow::anyhow!("could not install guest wasm: {error:?}"))?;
     let (_, capability) = world.issue("android-poc", WorldScopes::GUEST).await?;
 
-    let host = Endpoint::builder(presets::Minimal)
-        .relay_mode(RelayMode::Disabled)
-        .bind()
-        .await?;
+    let host = Endpoint::builder(presets::Minimal).bind().await?;
     let router = Router::builder(host.clone())
         .accept(WORLD_ALPN, WorldProtocol::new(service))
         .spawn();
-    let addr = EndpointAddr::from_parts(
-        host.id(),
-        host.bound_sockets()
-            .iter()
-            .filter(|socket| socket.is_ipv4())
-            .map(|socket| {
-                TransportAddr::Ip(SocketAddr::new(
-                    Ipv4Addr::new(10, 0, 2, 2).into(),
-                    socket.port(),
-                ))
-            }),
-    );
-
-    println!("ANDROID_ENDPOINT_ADDR={}", serde_json::to_string(&addr)?);
+    println!("ANDROID_ENDPOINT_ADDR={}", host.id());
     println!("ANDROID_JOIN_CAPABILITY={}", capability.expose());
     println!("Host ready; press Ctrl-C to stop.");
     tokio::signal::ctrl_c().await?;
