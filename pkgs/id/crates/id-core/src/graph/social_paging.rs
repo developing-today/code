@@ -1,7 +1,8 @@
-//! Paged, resumable social traversal (issue #13095 slice S2,
-//! remainder #14334; implementation design
+//! Paged, resumable social traversal.
+//!
+//! Issue #13095 slice S2 (remainder #14334); implementation design
 //! `doc/2026-11-24T05-55-00Z_design_id13095_social-object-envelope`
-//! §4 "Traversal contract"; parent design #9128 §7).
+//! §4 "Traversal contract"; parent design #9128 §7.
 //!
 //! [`super::social::traverse`] answers one bounded read and marks
 //! everything past the budget as truncated. This module answers the

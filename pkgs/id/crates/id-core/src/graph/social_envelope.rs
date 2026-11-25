@@ -1,7 +1,9 @@
 //! Social object envelope: profile tags, profile rules, validation
-//! and the strict canonical encoding (issue #13095, remainder #14334;
-//! implementation design `doc/2026-11-24T05-55-00Z_design_id13095_social-object-envelope`
-//! §4–§5 slice S1; parent design #9128 §§2–5).
+//! and the strict canonical encoding.
+//!
+//! Issue #13095 (remainder #14334); implementation design
+//! `doc/2026-11-24T05-55-00Z_design_id13095_social-object-envelope`
+//! §4–§5 slice S1; parent design #9128 §§2–5.
 //!
 //! [`SocialObject`] is the one envelope every social shape shares.
 //! This module adds what the graph layer leaves out:
@@ -580,7 +582,7 @@ mod tests {
             (
                 "unknown profile",
                 reencode(&base, |e| {
-                    set(e, FIELD_PROFILE, Value::Text("board".into()))
+                    set(e, FIELD_PROFILE, Value::Text("board".into()));
                 }),
                 EnvelopeError::UnknownProfile,
             ),
@@ -604,7 +606,7 @@ mod tests {
             (
                 "malformed object id",
                 reencode(&base, |e| {
-                    set(e, FIELD_OBJECT_ID, Value::Bytes(vec![1; 32]))
+                    set(e, FIELD_OBJECT_ID, Value::Bytes(vec![1; 32]));
                 }),
                 field(FIELD_OBJECT_ID, "is not an object reference"),
             ),
@@ -616,7 +618,7 @@ mod tests {
             (
                 "text claim",
                 reencode(&base, |e| {
-                    set(e, FIELD_CREATED_CLAIM, Value::Text("now".into()))
+                    set(e, FIELD_CREATED_CLAIM, Value::Text("now".into()));
                 }),
                 field(FIELD_CREATED_CLAIM, "is not an unsigned integer"),
             ),
