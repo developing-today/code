@@ -12,7 +12,7 @@ use atlas_core::version_projection::{
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 
-const FIXTURE: &str = include_str!("../../fixtures/id_projection_rows.json");
+const FIXTURE: &str = include_str!("../../../fixtures/id_projection_rows.json");
 
 struct Fixture {
     values: Vec<Value>,
@@ -60,7 +60,7 @@ fn fixture() -> Fixture {
 #[derive(Debug)]
 struct AuditReport {
     failures: Vec<String>,
-    checked: Vec<String>,
+    checked: Vec<&'static str>,
 }
 
 impl AuditReport {
@@ -69,10 +69,17 @@ impl AuditReport {
     }
 
     fn summary(&self) -> String {
+        let verdicts = self
+            .checked
+            .iter()
+            .map(|property| {
+                let status = if self.has(property) { "FAIL" } else { "PASS" };
+                format!("{property}={status}")
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
         format!(
-            "checked [{}]; failures [{}]; pending: signed complete-unit §6.4, pinned replay §6.1, correction §6.2, retirement §6.3 (#11182/#11184)",
-            self.checked.join(", "),
-            self.failures.join(", ")
+            "{verdicts}; pending: signed complete-unit §6.4, pinned replay §6.1, correction §6.2, retirement §6.3 (#11182/#11184)"
         )
     }
 }
@@ -365,14 +372,11 @@ fn real_projection_matches_fixture_oracle_and_permutations() {
         permuted_claims, claims,
         "oracle: real lineage projection is input-order invariant"
     );
+    let permuted_report = audit(&reversed, &permuted, &permuted_claims);
     assert!(
-        audit(&reversed, &permuted, &permuted_claims)
-            .failures
-            .is_empty(),
-        audit(&reversed, &permuted, &permuted_claims)
-            .failures
-            .is_empty(),
-        "permutation oracle: fixture-derived facts and key ordering"
+        permuted_report.failures.is_empty(),
+        "permutation oracle: fixture-derived facts and key ordering: {}",
+        permuted_report.summary()
     );
 }
 
