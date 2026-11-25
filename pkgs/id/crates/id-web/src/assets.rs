@@ -88,7 +88,9 @@ pub const SERVICE_WORKER_ASSET: &str = "sw.js";
 /// (its bytes change per build: build-manifest.ts prefixes the shell
 /// manifest). Design: doc/2026-11-25_design_id_service_worker_offline_13918.md.
 pub fn service_worker_handler() -> Response<Body> {
-    service_worker_response(Assets::get(SERVICE_WORKER_ASSET).map(|content| content.data.into_owned()))
+    service_worker_response(
+        Assets::get(SERVICE_WORKER_ASSET).map(|content| content.data.into_owned()),
+    )
 }
 
 /// Build the `/sw.js` response from the embedded bytes, or 404 when the
@@ -209,7 +211,10 @@ mod tests {
         let resp = service_worker_response(Some(b"self.x=1;".to_vec()));
         assert_eq!(resp.status(), StatusCode::OK);
         let headers = resp.headers();
-        assert_eq!(headers[header::CONTENT_TYPE], "text/javascript; charset=utf-8");
+        assert_eq!(
+            headers[header::CONTENT_TYPE],
+            "text/javascript; charset=utf-8"
+        );
         assert_eq!(headers[header::CACHE_CONTROL], "no-cache");
         assert_eq!(headers["service-worker-allowed"], "/");
     }

@@ -11,8 +11,8 @@ import {
   parseShellManifest,
   precacheUrls,
   registerShellServiceWorker,
-  shellCacheName,
   type ShellManifest,
+  shellCacheName,
 } from "./sw-policy";
 
 /**
