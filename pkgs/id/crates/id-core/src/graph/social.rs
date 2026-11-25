@@ -139,7 +139,7 @@ pub struct Traversal {
 
 /// Bytes one expanded object charges against the profile's byte
 /// budget: its two digests plus its author claim bytes.
-pub(super) fn entry_cost(object: &SocialObject) -> usize {
+pub(super) const fn entry_cost(object: &SocialObject) -> usize {
     32 + 32 + object.author.len()
 }
 
@@ -170,7 +170,7 @@ pub(super) fn authorized_index<'a>(
         }
     }
     for list in children.values_mut() {
-        list.sort_by_key(|id| ref_order_key(id));
+        list.sort_by_key(ref_order_key);
         list.dedup();
     }
     (by_id, children)
