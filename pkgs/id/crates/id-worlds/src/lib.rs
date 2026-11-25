@@ -19,6 +19,8 @@
 //!   design D1-D3): export, verify and fork, fully offline.
 //! - [`program_publish_state`]: draft / published journal facts per
 //!   program version (#13742), keyed to the #6278 bundle record.
+//! - [`safety_report`]: public-world safety reports — the signed
+//!   report fact and its operator-scoped intake (#14464).
 //! - [`shell_contract`]: the F13.1 shell contract the native shell
 //!   speaks.
 //! - [`groups::worlds`]: seam 6 of the design — the groups→worlds
@@ -58,6 +60,7 @@ pub mod program_publish_state;
 pub mod program_registry;
 pub mod program_registry_net;
 pub mod program_registry_pkarr;
+pub mod safety_report;
 #[cfg(feature = "sandbox")]
 pub mod sandbox;
 mod session_host;

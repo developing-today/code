@@ -516,6 +516,13 @@ impl Gallery {
         })
     }
 
+    /// Whether this gallery lists the record with `content_hash`: it
+    /// holds the bundle and the admission state lists it.
+    #[must_use]
+    pub fn lists(&self, content_hash: &str) -> bool {
+        self.admission.lists(content_hash) && self.registry.get(content_hash).is_some()
+    }
+
     /// The registry's fetch operation, for listed records only.
     #[must_use]
     pub fn fetch(&self, content_hash: &str) -> Option<Vec<u8>> {
