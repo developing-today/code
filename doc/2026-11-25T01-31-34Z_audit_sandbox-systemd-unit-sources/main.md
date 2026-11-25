@@ -9,7 +9,7 @@
 - Method: `systemctl cat` + `sha256sum` against the live units on this seat;
   `git grep` over current `origin/main` of developing-today/code; working-tree
   checks of dezren39/hatch (this home directory) and dezren39/hatch-personal.
-  Raw capture: `supplements/live-capture.txt`.
+  Raw capture: `transcript.txt`.
 
 ## Verdict per unit
 
@@ -160,7 +160,7 @@ f5d5b0692b8f4835167807827afde7debcb88433cf7fd7c3443ed72b79940389  /home/hatch/ha
  "stage": "delivery",
  "status": "complete",
  "transcript": {
-  "path": "supplements/live-capture.txt",
+  "path": "transcript.txt",
   "sha256": "75b45308a862306b0fe6c3b98c6caa36c068577d8328ef2fcb9fd9a47dcd5218"
  },
  "concepts": [
