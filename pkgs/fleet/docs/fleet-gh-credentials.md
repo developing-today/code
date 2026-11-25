@@ -211,6 +211,14 @@ reads also pass under any leg. Additional Apps and their owner lists
 can now be declared without code changes using `[[gh.apps]]` above
 (code#10311); add the needed owner explicitly rather than relying on hints.
 
+For an inventory of App installations beyond the configured owner
+lists, use `fleet gh tiers --all`. It lists every installation of each
+built-in and configured App (the App installation list is paginated),
+then probes each installation's rate-limit headroom; plain
+`fleet gh tiers` remains limited to the configured rotation. The
+`--all` command may make many API calls and can take longer for Apps
+with many installations.
+
 ## No caching across invocations
 
 Every call re-resolves secrets through the broker, re-signs the

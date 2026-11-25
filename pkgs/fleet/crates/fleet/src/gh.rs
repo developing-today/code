@@ -44,7 +44,9 @@
 //!
 //! `fleet gh tiers` (a shadow subcommand; real `gh` has none)
 //! prints every rotation source with its core and GraphQL
-//! rate-limit headroom and exits 3 when any source is down.
+//! rate-limit headroom; `tiers --all` instead enumerates every
+//! installation of every configured App, including owners omitted
+//! from the rotation lists. Both exit 3 when any source is down.
 //!
 //! `fleet gh cache-serve` (also a shadow subcommand) runs the
 //! credential/token cache daemon (code#10742): secret resolutions
@@ -175,7 +177,7 @@ const GITHUB_API: &str = "https://api.github.com";
 
 const USAGE: &str = "\
 Usage: fleet gh <gh args...>
-       fleet gh tiers
+       fleet gh tiers [--all]
        fleet gh cache-serve [--bind <addr>]
        fleet gh cache-status
        fleet gh closures [<item>]
@@ -1118,6 +1120,13 @@ impl FleetTokenProvider {
         }
     }
 
+    /// One App's live installation list, through the process-local
+    /// cache (the daemon wire has no installations-list op, so this
+    /// always mints in-process; the TTL still applies per call).
+    fn installations(&self, app: &GhApp) -> Result<Vec<(String, i64)>, String> {
+        self.cache.installations(app.slug())
+    }
+
     /// Resolve one cache request: the first answering daemon wins;
     /// when none answers, the process-local cache mints instead —
     /// with one visible note on stderr, never silence (code#10742).
@@ -1469,11 +1478,15 @@ fn emit(attempt: &Attempt) {
 }
 
 const TIERS_USAGE: &str = "\
-Usage: fleet gh tiers
+Usage: fleet gh tiers [--all]
 
 Probe every token-rotation source (built-in and configured GitHub Apps'
 installation tokens, then the personal token) and print each one's
-rate-limit headroom. Takes no arguments.";
+rate-limit headroom.
+
+  --all   List every installation of every configured App instead of
+          the configured rotation, so accounts outside the configured
+          owner lists get a row too.";
 
 const CLOSURES_USAGE: &str = "\
 Usage: fleet gh closures [<item>]
@@ -1486,11 +1499,21 @@ arguments.";
 /// core and GraphQL rate-limit headroom. Labels and numbers only —
 /// token values never leave the provider. Exit 0 when every source
 /// answers, EXIT_UNRESOLVED when any source is down.
-fn run_tiers(config: &Config, addrs: Vec<String>) -> i32 {
+///
+/// With `all`, the source set is every installation of every App
+/// (built-in and configured, resolved live and paginated) plus the
+/// personal token, instead of the configured rotation — so owners
+/// outside the configured owner lists still get a row (#10311 (c)).
+fn run_tiers(config: &Config, addrs: Vec<String>, all: bool) -> i32 {
     let gh_bin = std::env::var("FLEET_GH_BIN").unwrap_or_else(|_| "gh".to_string());
-    let sources = rotation(&[], config);
     let mut provider = FleetTokenProvider::new(config, addrs);
-    let mut any_down = false;
+    let mut listed_down = false;
+    let sources = if all {
+        tiers_all_sources(config, &mut provider, &mut listed_down)
+    } else {
+        rotation(&[], config)
+    };
+    let mut any_down = listed_down;
     for source in &sources {
         let label = source.label();
         let token = match provider.token_for(source) {
@@ -1531,6 +1554,62 @@ fn run_tiers(config: &Config, addrs: Vec<String>) -> i32 {
         }
     }
     if any_down { EXIT_UNRESOLVED } else { EXIT_OK }
+}
+
+/// Every App in tiers order: the built-ins, then the configured
+/// Apps in file order (the same order the rotation uses).
+fn all_apps(config: &Config) -> Vec<GhApp> {
+    GhApp::ALL.into_iter().chain(
+        config
+            .gh
+            .apps
+            .iter()
+            .map(|app| GhApp::Configured(app.slug.clone())),
+    )
+    .collect()
+}
+
+/// The `--all` source set: every installation of every App (live,
+/// paginated, sorted per App for stable output), then the personal
+/// token. A listing failure prints its DOWN row immediately and
+/// sets `listed_down`, so the probe loop below only handles token
+/// and `gh` failures.
+fn tiers_all_sources(
+    config: &Config,
+    provider: &FleetTokenProvider,
+    listed_down: &mut bool,
+) -> Vec<TokenSource> {
+    let mut lists: Vec<(GhApp, Vec<String>)> = Vec::new();
+    for app in all_apps(config) {
+        match provider.installations(&app) {
+            Ok(pairs) => {
+                lists.push((app, pairs.into_iter().map(|(login, _)| login).collect()));
+            }
+            Err(e) => {
+                println!("{}\tDOWN\t{e}", app.slug());
+                *listed_down = true;
+            }
+        }
+    }
+    tiers_all_from_lists(&lists)
+}
+
+/// Pure `--all` builder, so the ordering contract is testable
+/// without network: per-App owners sorted for stable output,
+/// exact duplicates dropped, personal last.
+fn tiers_all_from_lists(entries: &[(GhApp, Vec<String>)]) -> Vec<TokenSource> {
+    let mut out = Vec::new();
+    for (app, owners) in entries {
+        let mut sorted = owners.clone();
+        sorted.sort();
+        sorted.dedup();
+        out.extend(sorted.into_iter().map(|owner| TokenSource::AppInstallation {
+            app: app.clone(),
+            owner,
+        }));
+    }
+    out.push(TokenSource::Personal);
+    out
 }
 
 /// Raw-mode split: returns the arguments to hand the real `gh`
@@ -1618,13 +1697,16 @@ pub fn run(config: &Config, args: &[String]) -> i32 {
             println!("{TIERS_USAGE}");
             return EXIT_OK;
         }
+        if args.len() == 2 && args[1] == "--all" {
+            return run_tiers(config, cache_addrs(config, &flags), true);
+        }
         if args.len() > 1 {
             return usage_error(&format!(
                 "unexpected argument '{}' for 'fleet gh tiers'",
                 args[1]
             ));
         }
-        return run_tiers(config, cache_addrs(config, &flags));
+        return run_tiers(config, cache_addrs(config, &flags), false);
     }
     if args.first().is_some_and(|a| a == "cache-serve") {
         return run_cache_serve(config, &args[1..]);
@@ -2506,6 +2588,44 @@ mod tests {
             },
         ];
         config
+    }
+
+    // Oracle: #10311 (c) requires every installation, independently
+    // of the configured rotation owner set, in stable App/owner order.
+    #[test]
+    fn tiers_all_lists_every_installation_then_personal() {
+        let config = configured_apps_fixture();
+        let apps = all_apps(&config);
+        assert_eq!(apps.len(), 5);
+        assert_eq!(apps[3].slug(), "extra");
+        assert_eq!(apps[4].slug(), "secret-id");
+
+        let sources = tiers_all_from_lists(&[
+            (GhApp::Fleet, vec!["z-org".into(), "a-org".into()]),
+            (GhApp::Configured("extra".into()), vec!["a-org".into()]),
+        ]);
+        assert_eq!(
+            sources.iter().map(TokenSource::label).collect::<Vec<_>>(),
+            ["app:a-org", "app:z-org", "extra:a-org", "personal"]
+        );
+        assert_eq!(
+            rotation_with_config(&[], None, &Owners::default(), &config)
+                .iter()
+                .map(TokenSource::label)
+                .collect::<Vec<_>>(),
+            [
+                "app:developing-today",
+                "app:developing-today-forks",
+                "app:dezren39",
+                "devtoday:developing-today",
+                "devtoday:dezren39",
+                "backup:developing-today",
+                "extra:first-org",
+                "extra:layercloud",
+                "secret-id:second-org",
+                "personal"
+            ]
+        );
     }
 
     // Oracle: #10311's additive App contract: built-ins unchanged,
