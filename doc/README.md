@@ -315,3 +315,4 @@ setup some kind of monitoring
 setup ci/cd/build-farm
 setup service discovery (vpn names and gokrazy/caddy??)
 finish network setup, flash routers(update firmware, install os (r7-router or openwrt?)), build rails, rack up switches, plug it all in, ensure latest firmware/onie for switches
+- [AUDIT-7 Lane 4 merged-PR audit — batch 3 continuation (#7698–#7708)](20261125_merged-pr-audit_audit7-batch3-prs-7698-7708/20261125_merged-pr-audit_audit7-batch3-prs-7698-7708.md) — five merged PRs audited against their spawning issues; all five complete, bringing the batch to 46 valid PRs audited from 50 payload entries, with 200 remaining.
