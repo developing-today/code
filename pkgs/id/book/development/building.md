@@ -102,7 +102,7 @@ Tests run under cargo-nextest where the justfile uses it. The recipes:
 | `just test-unit` | `cargo nextest run --all-features --lib`. Alias: `test-lib`. |
 | `just test-crate-integration` | Five named integration targets in sub-crates the root shards do not cover: `id-caps` `roc_import_policy`, `id-cli` `aliases`, `id-core` `probe_petname_load`, `id-store` `store_traits`, `id-web` `web_router_security`. |
 | `just test-native-shell` | `cargo nextest run -p id-native-shell`. A separate recipe because the crate is not a default member. |
-| `just test-android-remote` | `cargo nextest run -p id-android-remote`. A separate recipe because the Android bridge is a non-default workspace member. |
+| `just test-android-remote` | `cargo test -p id-android-remote`. A separate recipe because the Android bridge is a non-default workspace member. |
 | `just test-hw-shell` | `cargo nextest run -p id-hw-shell`. Same reason. |
 | `just test-rust-examples` | `cargo test` against `examples/rust-world/Cargo.toml`, `examples/rust-counter/Cargo.toml`, `examples/rust-cells/Cargo.toml` and `examples/rust-orbit/Cargo.toml` — standalone crates outside the workspace. |
 | `just test-integration` | `cargo nextest run --all-features --test cli_integration`. Alias: `test-int`. |

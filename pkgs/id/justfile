@@ -312,7 +312,7 @@ test-native-shell:
 # Run the Android remote-drive session bridge's contract and loopback tests (#1831).
 [group('test')]
 test-android-remote:
-    cargo nextest run -p id-android-remote
+    cargo test -p id-android-remote
 
 # Run the id-tui-shell capability-statement tests (#12818): non-default workspace member, so the default-member test recipes never run it.
 [group('test')]

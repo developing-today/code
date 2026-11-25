@@ -2498,7 +2498,7 @@
     },
     "test-android-remote": {
       "attributes": [{ "group": "test" }],
-      "body": [["cargo nextest run -p id-android-remote"]],
+      "body": [["cargo test -p id-android-remote"]],
       "dependencies": [],
       "doc": "Run the Android remote-drive session bridge's contract and loopback tests (#1831).",
       "name": "test-android-remote",
