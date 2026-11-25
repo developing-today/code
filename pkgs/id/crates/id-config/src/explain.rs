@@ -135,11 +135,14 @@ fn top_level(
     Ok(())
 }
 
+/// Reads one ceiling out of a scope's override, widened to `u64`.
+type Narrowing = fn(&CeilingOverride) -> Option<u64>;
+
 /// Each ceiling with the scope that narrowed it last, or `document`.
 fn ceilings(document: &ConfigDocument, resolved: &ResolvedConfig, entries: &mut Vec<ExplainEntry>) {
     let mut ordered: Vec<_> = document.overrides.iter().collect();
     ordered.sort_by(|a, b| a.scope.cmp(&b.scope));
-    let fields: [(&str, u64, u64, fn(&CeilingOverride) -> Option<u64>); 4] = [
+    let fields: [(&str, u64, u64, Narrowing); 4] = [
         (
             "ceilings.max_hops",
             u64::from(document.ceilings.max_hops),
@@ -169,11 +172,11 @@ fn ceilings(document: &ConfigDocument, resolved: &ResolvedConfig, entries: &mut 
         let mut source = SOURCE_DOCUMENT.to_owned();
         let mut current = written;
         for scoped in &ordered {
-            if let Some(value) = narrowing(&scoped.ceilings) {
-                if value < current {
-                    current = value;
-                    source = format!("override:{}", scoped.scope);
-                }
+            if let Some(value) = narrowing(&scoped.ceilings)
+                && value < current
+            {
+                current = value;
+                source = format!("override:{}", scoped.scope);
             }
         }
         debug_assert_eq!(current, effective, "{path} narrows as resolve does");
@@ -246,7 +249,7 @@ fn fanout(written: &Value, resolved: &ResolvedConfig, entries: &mut Vec<ExplainE
         .get("fanout")
         .and_then(|f| f.get("per_peer_timeout_ms"))
         .and_then(Value::as_u64)
-        .unwrap_or(Fanout::default().per_peer_timeout_ms);
+        .unwrap_or_else(|| Fanout::default().per_peer_timeout_ms);
     let timeout_source = if given == fanout.per_peer_timeout_ms {
         source("per_peer_timeout_ms")
     } else {
