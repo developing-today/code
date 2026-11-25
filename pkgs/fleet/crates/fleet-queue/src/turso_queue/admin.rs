@@ -1606,10 +1606,19 @@ pub(crate) fn verb_list(t: &TursoBackend, req: &Value) -> Value {
         Err(e) => return fail(2, e),
     };
     let rich = req.get("rich").and_then(|r| r.as_bool()).unwrap_or(false);
+    // #14317: the rich projection is the read-back behind `queue
+    // show` and `list --json`, whose field list includes the park
+    // wait fields (park_kind, wait_kind, ready_condition) and
+    // last_error. Omitting them here dropped a parked task's
+    // stored ready_condition from every rich read-back — the row
+    // read `ready_condition: null` even though verb_park had
+    // persisted the supplied condition — so the projection must
+    // carry every column the show field list reads from the row.
     let select = if rich {
         "id, queue, title, priority, status, dedupe_key, created_at, not_before, \
          worker_id, claimed_at, lease_until, lane_id, platform, attempts, max_attempts, \
          claim_provider, claim_model, claim_variant, claim_session_id, progress, payload, \
+         park_kind, wait_kind, ready_condition, last_error, \
          blocked_deps, dep_next_recheck_at, dep_blocked_until, labels, labels_synced_at"
     } else {
         "id, queue, title, priority, status, dedupe_key, created_at, not_before, platform"
@@ -1687,7 +1696,7 @@ pub(crate) fn verb_list(t: &TursoBackend, req: &Value) -> Value {
         "SELECT {select} FROM tasks{conds} ORDER BY (priority IS NULL), priority ASC, created_at ASC, id ASC LIMIT {limit} OFFSET {offset}"
     );
     let json_cols: &[&str] = if rich {
-        &["progress", "payload", "blocked_deps", "labels"]
+        &["progress", "payload", "blocked_deps", "ready_condition", "labels"]
     } else {
         &[]
     };
