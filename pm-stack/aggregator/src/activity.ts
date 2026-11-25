@@ -643,7 +643,8 @@ export class IngestionStore {
     // A singleton stays on the scan path to avoid constructing an unused index.
     const seenBySource = new Map<string, Map<string, number>>();
     for (const d of deliveries) {
-      const seen = (this.data.seen[d.source] ??= []);
+      let seen = this.data.seen[d.source];
+      if (!seen) this.data.seen[d.source] = seen = [];
       let seenCounts = seenBySource.get(d.source);
       if (!seenCounts && deliveries.length > 1) {
         seenCounts = new Map();
@@ -652,14 +653,18 @@ export class IngestionStore {
         for (const id of seen) seenCounts.set(id, (seenCounts.get(id) ?? 0) + 1);
         seenBySource.set(d.source, seenCounts);
       }
-      const cp = (this.data.checkpoints[d.source] ??= {
-        source: d.source,
-        lastSourceId: null,
-        lastEventAt: null,
-        deliveries: 0,
-        duplicates: 0,
-        updatedAt: new Date().toISOString(),
-      });
+      let cp = this.data.checkpoints[d.source];
+      if (!cp) {
+        cp = {
+          source: d.source,
+          lastSourceId: null,
+          lastEventAt: null,
+          deliveries: 0,
+          duplicates: 0,
+          updatedAt: new Date().toISOString(),
+        };
+        this.data.checkpoints[d.source] = cp;
+      }
       if (seenCounts ? seenCounts.has(d.sourceId) : seen.includes(d.sourceId)) {
         duplicates++;
         cp.duplicates++;

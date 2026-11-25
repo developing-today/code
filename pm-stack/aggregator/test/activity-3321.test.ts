@@ -4,7 +4,7 @@
 // backfill flips. GitHub coverage is limited to retained #2072 hot-list
 // rows; pre-hot-list history and missed upstream deliveries stay explicit.
 import { describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -260,7 +260,7 @@ describe("ingestion store (#3321)", () => {
       summary: `event ${i}`,
     }));
     const events: Pick<EventsStore, "record"> = {
-      record: async () => ({} as Awaited<ReturnType<EventsStore["record"]>>),
+      record: async () => ({}) as Awaited<ReturnType<EventsStore["record"]>>,
     };
 
     // Oracle: the documented 2000-id FIFO window. Eviction must take effect
@@ -288,9 +288,16 @@ describe("ingestion store (#3321)", () => {
         return {} as Awaited<ReturnType<EventsStore["record"]>>;
       },
     };
-    const batch = ["new-1", "repeat", "new-2", "repeat"].map((sourceId): ActivityDelivery => ({
-      source: "kaneo", sourceId, at: iso(0), kind: "kaneo-change", ref: "card", summary: "changed",
-    }));
+    const batch = ["new-1", "repeat", "new-2", "repeat"].map(
+      (sourceId): ActivityDelivery => ({
+        source: "kaneo",
+        sourceId,
+        at: iso(0),
+        kind: "kaneo-change",
+        ref: "card",
+        summary: "changed",
+      }),
+    );
     // Oracle: Array.includes on the bounded FIFO still sees the second copy
     // after new-1, but neither copy after new-2.
     expect(await store.ingest(events, batch)).toEqual({ ingested: 3, duplicates: 1, failed: 0, failedIds: [] });
@@ -306,12 +313,23 @@ describe("ingestion store (#3321)", () => {
         return {} as Awaited<ReturnType<EventsStore["record"]>>;
       },
     };
-    const batch = ["kaneo", "watchdog", "kaneo", "kaneo", "watchdog"].map((source): ActivityDelivery => ({
-      source: source as ActivityDelivery["source"], sourceId: "same-id", at: iso(0),
-      kind: "activity", ref: "card", summary: "changed",
-    }));
+    const batch = ["kaneo", "watchdog", "kaneo", "kaneo", "watchdog"].map(
+      (source): ActivityDelivery => ({
+        source: source as ActivityDelivery["source"],
+        sourceId: "same-id",
+        at: iso(0),
+        kind: "activity",
+        ref: "card",
+        summary: "changed",
+      }),
+    );
     // Oracle: failed appends stay retryable; each source accepts the id once.
-    expect(await store.ingest(events, batch)).toEqual({ ingested: 2, duplicates: 2, failed: 1, failedIds: ["same-id"] });
+    expect(await store.ingest(events, batch)).toEqual({
+      ingested: 2,
+      duplicates: 2,
+      failed: 1,
+      failedIds: ["same-id"],
+    });
     expect(attempts).toBe(3);
   });
 

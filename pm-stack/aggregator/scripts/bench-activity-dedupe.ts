@@ -13,7 +13,11 @@ const moduleUrl = args.length ? pathToFileURL(args[1]!) : new URL("../src/activi
 const { IngestionStore } = (await import(moduleUrl.href)) as typeof import("../src/activity.ts");
 const at = "2026-11-25T00:00:00.000Z";
 const ids = Array.from({ length: 2000 }, (_, i) => `github:delivery:${i}`);
-const events = { record: async (): Promise<never> => { throw new Error("replay must not append"); } };
+const events = {
+  record: async (): Promise<never> => {
+    throw new Error("replay must not append");
+  },
+};
 
 // Measure the real public ingest boundary including lookup-index construction,
 // checkpoint updates and persist dispatch. No-op remote save isolates CPU from IO.
@@ -21,8 +25,12 @@ for (const size of [1, 100, 2000]) {
   const state: IngestionFile = { version: 1, checkpoints: {}, seen: { github: [...ids] }, gaps: [] };
   const store = new IngestionStore("unused", { load: async () => state, save: async () => {} });
   const batch: ActivityDelivery[] = Array.from({ length: size }, (_, i) => ({
-    source: "github", sourceId: ids[(i * 791 + 1999) % ids.length]!, at,
-    kind: "github-event", ref: "developing-today/code", summary: "replay",
+    source: "github",
+    sourceId: ids[(i * 791 + 1999) % ids.length]!,
+    at,
+    kind: "github-event",
+    ref: "developing-today/code",
+    summary: "replay",
   }));
   for (let i = 0; i < 10; i++) await store.ingest(events, batch);
   const samples: number[] = [];
