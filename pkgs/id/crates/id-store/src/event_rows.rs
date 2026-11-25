@@ -202,7 +202,7 @@ impl RowRead for ReadTransaction {
         }
         let table = self.open_table(TableDefinition::<&[u8], &[u8]>::new(table))?;
         table
-            .range::<&[u8]>(match after_key {
+            .range(match after_key {
                 Some(key) => (Bound::Excluded(key), Bound::Unbounded),
                 None => (Bound::Unbounded, Bound::Unbounded),
             })?
@@ -247,7 +247,7 @@ impl RowRead for WriteTransaction {
         }
         let table = self.open_table(TableDefinition::<&[u8], &[u8]>::new(table))?;
         table
-            .range::<&[u8]>(match after_key {
+            .range(match after_key {
                 Some(key) => (Bound::Excluded(key), Bound::Unbounded),
                 None => (Bound::Unbounded, Bound::Unbounded),
             })?
@@ -349,7 +349,7 @@ impl RowRead for &WriteTransaction {
         }
         let table = self.open_table(TableDefinition::<&[u8], &[u8]>::new(table))?;
         table
-            .range::<&[u8]>(match after_key {
+            .range(match after_key {
                 Some(key) => (Bound::Excluded(key), Bound::Unbounded),
                 None => (Bound::Unbounded, Bound::Unbounded),
             })?

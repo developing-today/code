@@ -102,3 +102,21 @@ shape remains a separate architectural decision and blocks full parity.
 The laptop and Codespace remain unreachable. This update does not change E6
 acceptance: the tenant backend and shared native/tenant conformance suite are
 still unimplemented; PR #14642 and issue #12801 remain open.
+
+## Bounded recovery port — 2026-11-25
+
+Device-operation recovery will use the shared row seam, retaining the native
+entry point as an adapter. It pages event rows in exclusive-key order, looks up
+each retained body on demand, and writes recovered operations in the same
+transaction. Only one page of event bytes and the capped waiting rows are held.
+The recovery marker is written last; errors still leave the enclosing
+transaction responsible for rollback. This preserves the native recovery policy
+without adding a tenant-only startup policy. A shared SQLite/redb helper test
+must cross a page boundary and compare recovery results and persisted bytes.
+
+Plain-Cargo verification of `727de7ab0d4` was dispatched as
+`developing-today-forks/fleet#45527102123`; it reached compilation and failed:
+redb 5's `range` takes `impl KeyRange` rather than an explicit generic argument.
+Removed the unsupported turbofish in all three native paging adapters. Earlier plain
+Cargo run `45519717589` reached compilation (rather than failing Nix setup),
+but predates the compiler fixes and is not evidence for the current head.

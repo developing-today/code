@@ -5,7 +5,9 @@ use std::sync::{Arc, Mutex};
 
 use base64::Engine as _;
 use id_store::chain::{ChainExt, sign};
-use id_store::event_rows::{EventWriteTransaction, RowWrite, TenantWrite, with_write_transaction};
+use id_store::event_rows::{
+    EventWriteTransaction, RowRead, RowWrite, TenantWrite, with_write_transaction,
+};
 use id_store::turso::{PipelineTransport, TenantStore, TursoError};
 use p2panda_core::SigningKey;
 use rusqlite::types::Value;
@@ -168,6 +170,129 @@ fn script(mut rows: impl RowWrite, events: &[Event; 3], body: &[u8]) {
 #[test]
 fn test_native_redb_oracle_shared_persistence_helpers() {
     compare_helpers(b"retained verified body", Hash::digest(b"original-group"));
+}
+
+/// Native recovery policy is the oracle: recover only verified retained
+/// bodies, skip existing rows, report missing bodies, and mark the pass once.
+/// The 258-event history crosses the shared recovery page boundary.
+#[test]
+fn test_native_redb_oracle_paged_device_recovery() {
+    use crate::groups::{Body, DeviceOp, Event as GroupEvent, Role};
+
+    let signer = SigningKey::from_bytes(&[73; 32]);
+    let group = Hash::digest(b"recovery-group");
+    let body = crate::groups::event::encode(&GroupEvent {
+        id: Hash::digest(b"grant"),
+        author: *signer.verifying_key().as_bytes(),
+        after: vec![],
+        group: Some(group),
+        at: None,
+        body: Body::Device(DeviceOp::Add {
+            device: [91; 32],
+            scope: Role::Admin,
+        }),
+    })
+    .unwrap();
+    let ext = event("group.event", Some(group)).header.extensions;
+    let mut events = Vec::new();
+    for seq in 0..259 {
+        let backlink = events.last().map(|event: &Event| event.id);
+        events.push(sign(&signer, seq, backlink, Some(&body), ext.clone()).unwrap());
+    }
+    let expected_op = resolve::encode_device_op(
+        &DeviceOp::Add {
+            device: [91; 32],
+            scope: Role::Admin,
+        },
+        Some(&group),
+    )
+    .unwrap();
+    let existing_op = resolve::encode_device_op(
+        &DeviceOp::Add {
+            device: [92; 32],
+            scope: Role::Admin,
+        },
+        Some(&group),
+    )
+    .unwrap();
+    let script = |mut rows: &mut dyn RowWrite| {
+        for (index, event) in events.iter().take(258).enumerate() {
+            store_event(&mut *rows, event).unwrap();
+            if index != 1 && index != 257 {
+                store_body(&mut *rows, &event.id, &body).unwrap();
+            }
+        }
+        rows.put("device_ops", events[0].id.as_bytes(), &existing_op)
+            .unwrap();
+        store_body(&mut *rows, &events[2].id, b"invalid commitment").unwrap();
+        let mut pool = id_core::waiting::WaitingPool::new(WaitingLimits::default());
+        let mut arrivals = 0;
+        let held = events[258].clone();
+        assert_eq!(
+            waiting_rows::Mirror {
+                txn: &mut rows,
+                pool: &mut pool,
+                arrivals: &mut arrivals,
+            }
+            .hold(held.clone(), vec![events[257].id], false, 0)
+            .unwrap(),
+            waiting_rows::Hold::Held
+        );
+        store_body(&mut *rows, &held.id, &body).unwrap();
+        assert_eq!(
+            ingest::recover_device_ops_rows(&mut rows).unwrap(),
+            (255, true)
+        );
+        let recovered = rows.scan_all("device_ops").unwrap();
+        assert_eq!(recovered.len(), 256);
+        assert_eq!(
+            rows.get("device_ops", events[0].id.as_bytes()).unwrap(),
+            Some(existing_op.clone())
+        );
+        assert_eq!(
+            rows.get("device_ops", events[2].id.as_bytes()).unwrap(),
+            None
+        );
+        assert_eq!(
+            rows.get("device_ops", held.id.as_bytes()).unwrap(),
+            Some(expected_op.clone())
+        );
+        assert!(recovered.iter().all(|(key, value)| value
+            == if key.as_slice() == events[0].id.as_bytes() {
+                &existing_op
+            } else {
+                &expected_op
+            }));
+        store_body(&mut *rows, &events[1].id, &body).unwrap();
+        assert_eq!(
+            ingest::recover_device_ops_rows(&mut rows).unwrap(),
+            (0, false)
+        );
+        assert_eq!(
+            rows.get("device_ops", events[1].id.as_bytes()).unwrap(),
+            None,
+            "the completed recovery marker suppresses later passes"
+        );
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let native = Database::create(dir.path().join("recovery.redb")).unwrap();
+    let mut tenant = TenantStore::open(SqliteEndpoint::new()).unwrap();
+    let txn = native.begin_write().unwrap();
+    script(&mut &txn);
+    txn.commit().unwrap();
+    let mut txn = TenantWrite::begin(&mut tenant).unwrap();
+    script(&mut &mut txn);
+    txn.commit().unwrap();
+
+    let mut native = native.begin_read().unwrap();
+    let mut tenant = TenantWrite::begin(&mut tenant).unwrap();
+    for table in ["device_ops", "meta"] {
+        assert_eq!(
+            RowRead::scan_all(&mut native, table).unwrap(),
+            RowRead::scan_all(&mut &mut tenant, table).unwrap(),
+            "native-redb committed recovery oracle: {table}",
+        );
+    }
 }
 
 fn compare_helpers(body: &[u8], group: Hash) {

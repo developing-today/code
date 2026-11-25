@@ -116,6 +116,7 @@ use id_core::rejection::Reason;
 use id_core::waiting::{AuthorKey, WaitingPool};
 use id_store::chain::{self, Event};
 use id_store::documents::{is_document_kind, is_removal_kind};
+use id_store::event_rows::RowWrite;
 use id_store::tag_claims::is_tag_kind;
 
 /// What the store decides for one event, before the waiting pool sees it.
@@ -141,33 +142,12 @@ impl EventStore {
     /// Bodies that were never retained cannot be recovered; the caller reports that limit.
     ///
     /// Memory stays bounded however long the stored history is (#11299): `EVENTS` is
-    /// scanned one row at a time and each recovered row is written as it is found, inside
+    /// scanned one page at a time and each recovered row is written as it is found, inside
     /// the same startup transaction, so nothing proportional to the history is held. Only
     /// the waiting rows are collected first, and the waiting pool is capped by
     /// [`WaitingLimits`](id_core::waiting::WaitingLimits).
     pub(super) fn recover_device_ops(txn: &WriteTransaction) -> Result<(usize, bool), StoreError> {
-        let mut meta = txn.open_table(super::META)?;
-        if meta.get(super::DEVICE_OPS_RECOVERED_KEY)?.is_some() {
-            return Ok((0, false));
-        }
-        let bodies = txn.open_table(super::BODIES)?;
-        let mut recovered = 0usize;
-        let mut incomplete = false;
-        {
-            let stored = txn.open_table(EVENTS)?;
-            for row in stored.iter()? {
-                let (_position, bytes) = row.map_err(StoreError::from)?;
-                let event = decode_stored(bytes.value())?;
-                recover_one(txn, &bodies, &event, &mut recovered, &mut incomplete)?;
-            }
-        }
-        let mut row_txn = txn;
-        for row in super::waiting_rows::all(&mut row_txn)? {
-            let event = chain::decode(&row.bytes).map_err(|err| corrupt(err.to_string()))?;
-            recover_one(txn, &bodies, &event, &mut recovered, &mut incomplete)?;
-        }
-        meta.insert(super::DEVICE_OPS_RECOVERED_KEY, b"1".as_slice())?;
-        Ok((recovered, incomplete))
+        recover_device_ops_rows(&mut &*txn)
     }
 
     /// Verifies one received event and applies what it allows.
@@ -825,35 +805,66 @@ fn settle(
     Ok(settled)
 }
 
+/// Shared startup recovery. The native adapter and tenant transactions run the
+/// same policy, retaining only one page of stored events at a time.
+pub(super) fn recover_device_ops_rows<T: RowWrite>(
+    txn: &mut T,
+) -> Result<(usize, bool), StoreError> {
+    if txn.get("meta", super::DEVICE_OPS_RECOVERED_KEY)?.is_some() {
+        return Ok((0, false));
+    }
+    let mut recovered = 0;
+    let mut incomplete = false;
+    let mut after_key = None;
+    const PAGE_SIZE: usize = 256;
+    loop {
+        let page = txn.scan_page("events", after_key.as_deref(), PAGE_SIZE)?;
+        let page_len = page.len();
+        for (_, bytes) in &page {
+            let event = decode_stored(bytes)?;
+            recover_one(txn, &event, &mut recovered, &mut incomplete)?;
+        }
+        if page_len < PAGE_SIZE {
+            break;
+        }
+        after_key = page.last().map(|(key, _)| key.clone());
+    }
+    for row in super::waiting_rows::all(txn)? {
+        let event = chain::decode(&row.bytes).map_err(|err| corrupt(err.to_string()))?;
+        recover_one(txn, &event, &mut recovered, &mut incomplete)?;
+    }
+    txn.put("meta", super::DEVICE_OPS_RECOVERED_KEY, b"1")?;
+    Ok((recovered, incomplete))
+}
+
 /// Recovers one event's device-operation row from its retained, verified body, if it has
 /// none yet. A group event whose body was never retained marks the recovery incomplete.
-fn recover_one(
-    txn: &WriteTransaction,
-    bodies: &redb::Table<'_, &'static [u8], &'static [u8]>,
+fn recover_one<T: RowWrite>(
+    txn: &mut T,
     event: &Event,
     recovered: &mut usize,
     incomplete: &mut bool,
 ) -> Result<(), StoreError> {
-    let has_device_op = txn
-        .open_table(DEVICE_OPS)?
-        .get(event.id.as_bytes().as_slice())?
-        .is_some();
+    let has_device_op = txn.get("device_ops", event.id.as_bytes())?.is_some();
     if has_device_op {
         return Ok(());
     }
-    let Some(body) = bodies.get(event.id.as_bytes().as_slice())? else {
+    let Some(body) = txn.get("bodies", event.id.as_bytes())? else {
         *incomplete |=
             event.header.payload_hash.is_some() && event.header.extensions.kind == "group.event";
         return Ok(());
     };
-    let body = body.value();
-    if committed(event, body).is_err() {
+    if committed(event, &body).is_err() {
         return Ok(());
     }
     if let Some((op, group)) =
-        body_device_op(event, Some(body)).map_err(|refusal| corrupt(format!("{refusal:?}")))?
+        body_device_op(event, Some(&body)).map_err(|refusal| corrupt(format!("{refusal:?}")))?
     {
-        store_device_op(txn, &event.id, &op, group.as_ref())?;
+        txn.put(
+            "device_ops",
+            event.id.as_bytes(),
+            &encode_device_op(&op, group.as_ref())?,
+        )?;
         *recovered += 1;
     }
     Ok(())
