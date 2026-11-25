@@ -71,6 +71,7 @@ import { NOTIFICATION_CLASS_DEFAULTS, NOTIFICATION_CLASSES } from "./notificatio
 import { FEED_STALE_MS, ageMsText, feedAgeText } from "./feed.ts";
 import { providerDisplayNames } from "./provider-display.ts";
 import { PROMPT_MODES, PROMPT_TARGETS, type PromptRecord } from "./prompts.ts";
+import { PRIMARY_PROMPT_PAGES, renderPromptDock, renderSectionPrompt } from "./prompt-widget.ts";
 import {
   reconciledInProgress,
   type InProgressSignal,
@@ -608,10 +609,19 @@ function layout(
   // the sections as <optgroup>s, and both list every page.
   const links = navLinks(active);
   const dropdown = pageDropdown(active);
+  // #10032 S1: the prompt dock. A page reports its own manifest id; a
+  // sub-page (item, project detail) reports the page that reaches it.
+  const exactPage = pageByRoute(active)?.id;
+  const promptPage = exactPage ?? pageByRoute(manifestRouteFor(active) ?? "/")?.id ?? "overview";
+  const promptDock = renderPromptDock({
+    page: promptPage,
+    pageScope: exactPage !== undefined && PRIMARY_PROMPT_PAGES.includes(exactPage),
+  });
   return `<!doctype html>
 <html lang="en" data-theme="dark"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>${esc(title)} · aggregator</title><link rel="manifest" href="/manifest.webmanifest"><meta name="theme-color" content="#161b22"><meta name="mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"><meta name="apple-mobile-web-app-title" content="PM Stack"><link rel="apple-touch-icon" href="/icons/apple-touch-icon.png"><script>try{var __pmTheme=localStorage.getItem('pm-theme');if(__pmTheme==='light'||__pmTheme==='dark')document.documentElement.setAttribute('data-theme',__pmTheme);}catch(e){}</script><link rel="stylesheet" href="/assets/app.css"><script type="module" src="/assets/datastar.js"></script></head>
 <body><nav class="navbar bg-base-200 shadow-md flex-wrap items-center gap-x-3 px-4">${links}${dropdown}<a class="badge prompt-unread" href="/chat" data-prompt-unread hidden>✉ <span data-prompt-unread-count>0</span> unread</a>${globalSearch()}${themeToggle()}</nav><main class="w-full">${chipsHtml}${body}
+${promptDock}
 <div class="foot"><details class="srcdetail"><summary>source detail</summary>board: ${esc(provenance.board)} · roadmap: ${esc(provenance.roadmap)} · items: ${esc(provenance.items)} · comments: ${esc(provenance.comments)} · quota: ${esc(provenance.quota)} · usage: ${esc(provenance.usage)} · attention: ${esc(provenance.attention)} · orchestration: ${esc(provenance.orchestration)} · dns: ${esc(provenance.dns)} · registry: ${esc(provenance.registry)} · aa: ${esc(provenance.aa)}</details><span class="kbd-hint">${KEY_HINT}</span> · tailnet: <a href="${TAILNET_URL}">${TAILNET_URL.replace("http://", "")}</a></div>
 </main><script src="/assets/push-client.js?v=push-ux-2026-11-01" defer></script><script src="/assets/freshness-client.js?v=freshness-3976" defer></script><script src="/assets/prompt-badge.js?v=prompt-badge-2026-11-23" defer></script>${extra}${paletteHtml()}${KEYBOARD_SCRIPT}</body></html>`;
 }
@@ -3900,7 +3910,7 @@ export function renderTodayBody(
     ? allObjectives
         .map(
           (o, i) =>
-            `<div class="card obj"><div class="n">${i + 1}</div><div><strong>${esc(o.title)}</strong> <span class="badge src">${esc(o.chip)}</span>${o.detail ? `<br><span class="muted">${esc(o.detail)}</span>` : ""}${o.statusNote ? `<br><span class="badge stale" title="Source status vs derived status disagree in the canonical taxonomy (#1198) — both are shown, neither is preferred">${esc(o.statusNote)}</span>` : ""}${o.ref ? `<br>${isValidRef(o.ref) ? `<a href="${esc(refUrl(o.ref))}">${esc(o.ref)}</a>` : `<code>${esc(o.ref)}</code>`}` : ""}</div></div>`,
+            `<div class="card obj"><div class="n">${i + 1}</div><div><strong>${esc(o.title)}</strong> <span class="badge src">${esc(o.chip)}</span>${o.detail ? `<br><span class="muted">${esc(o.detail)}</span>` : ""}${o.statusNote ? `<br><span class="badge stale" title="Source status vs derived status disagree in the canonical taxonomy (#1198) — both are shown, neither is preferred">${esc(o.statusNote)}</span>` : ""}${o.ref ? `<br>${isValidRef(o.ref) ? `<a href="${esc(refUrl(o.ref))}">${esc(o.ref)}</a>` : `<code>${esc(o.ref)}</code>`}` : ""}${renderSectionPrompt("today", o.ref || `objective:${i + 1}`)}</div></div>`,
         )
         .join("")
     : `<p class="muted">No objectives lined up for today.</p>`;
@@ -4016,7 +4026,7 @@ function queueRows(rows: QueueRow[], empty: string): string {
         : "";
       const horizon = item.horizon ? ` · ${esc(item.horizon)}` : "";
       const title = item.url ? `<a href="${esc(item.url)}">${esc(item.title)}</a>` : esc(item.title);
-      return `<article class="card"><span class="badge">${esc(area)}</span> <span class="badge">${esc(item.status)}${horizon}</span><br><strong>${title}</strong>${item.ref ? `<br><span class="muted">${esc(item.ref)}</span>` : ""}<br><span class="muted">${esc(age)} · ${esc(item.source)}</span>${signals}${clash}${epic}${why}${blockers}${worker}</article>`;
+      return `<article class="card"><span class="badge">${esc(area)}</span> <span class="badge">${esc(item.status)}${horizon}</span><br><strong>${title}</strong>${item.ref ? `<br><span class="muted">${esc(item.ref)}</span>` : ""}<br><span class="muted">${esc(age)} · ${esc(item.source)}</span>${signals}${clash}${epic}${why}${blockers}${worker}${renderSectionPrompt("queue", item.ref || item.title)}</article>`;
     })
     .join("")}</div>`;
 }
@@ -8254,8 +8264,7 @@ function incidentCard(i: Incident, events: IncidentEvent[] = [], all: Incident[]
   // §6.2 threshold earn a durable incident page; link it from the card.
   const ownEvents = events.filter((e) => e.incident_id === i.id);
   const pageLink =
-    ownEvents.some((e) => e.detail?.healthHook !== undefined) &&
-    incidentPageThreshold(i, ownEvents, all).qualifies
+    ownEvents.some((e) => e.detail?.healthHook !== undefined) && incidentPageThreshold(i, ownEvents, all).qualifies
       ? `<br><a href="/reports/incident/${esc(i.id)}">Incident page</a>`
       : "";
   return `<div class="card incident" id="incident-${esc(i.id)}">
