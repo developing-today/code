@@ -4,13 +4,13 @@
 // timer, units in pm-stack/systemd/, installed by install.sh) beside
 // the aggregator and the snapshot store.
 //
-// THE SINGLE SOURCE (Drew's order, 2026-11-05, #6125): every quota
-// reading in this tick comes from ONE producer — the opencode fork's
-// quota subcommand, `opencode quota --json`, whose per-provider quota
-// functions live in the providers that own the credentials
-// (developing-today-forks/opencode#1718). The gatherer invokes the
-// subcommand; it never fetches a provider itself. What the tick does
-// around that single read:
+// THE SINGLE SOURCE (Drew's order, 2026-11-05, #6125): quota readings
+// come from OpenCode-owned provider code. The configured listing and
+// ordinary asks use `opencode quota --json`; OpenDesign prefers the
+// server's provider-only quota endpoint when the deployed server and
+// its credential support it. The CLI result remains the compatibility
+// fallback during rollout. The gatherer never fetches a provider API
+// itself. What the tick does around those OpenCode reads:
 //
 //   1. The OpenDesign session keeper (src/opendesign-renewal.ts,
 //      Drew's 2026-11-05 provider browser-auth auto-renewal rule):
@@ -47,7 +47,10 @@
 //      pools are live are always fetched when named, the same
 //      discipline the gatherer's out-of-band asks kept before the
 //      rewire. An explicit-ask result replaces a listing result for
-//      the same provider + credential. The subcommand exits non-zero
+//      the same provider + credential. When available, the OpenDesign
+//      provider-only server answer replaces its CLI result; unavailable
+//      auth, route or credential leaves the CLI result as fallback. The
+//      subcommand exits non-zero
 //      when a requested provider produced no successful result; that
 //      is a per-provider failure, not a tick failure — stdout still
 //      carries the results, and only an unparseable/empty stdout
@@ -186,6 +189,7 @@ import {
 import { SnapshotStore, isSnapshotRecord, snapshotKey } from "../src/snapshots.ts";
 import { safeProviderReason } from "../src/credential-lifecycle.ts";
 import { renewOpenDesignSession, type OpenDesignCredentialLike } from "../src/opendesign-renewal.ts";
+import { fetchOpenCodeProviderQuota } from "../src/opencode-provider-quota.ts";
 import { ensureLibDependencies } from "../src/lib-deps.ts";
 import { loadOpenChamberLib, resolveLibDir as resolveOpenChamberLib } from "../src/openchamber-lib.ts";
 import { readProviderAuthAlerts } from "../src/provider-auth-alerts.ts";
@@ -726,6 +730,31 @@ function parseSubcommandResults(stdout: string, label: string): QuotaProviderRes
 }
 
 /**
+ * Prefer the provider-only OpenCode server surface for OpenDesign when
+ * the deployed server has it and holds the session-cookie credential.
+ * Missing auth, an older server, or an unbound credential returns null
+ * so the existing quota subcommand remains the rollout fallback.
+ */
+async function fetchServerOpenDesignQuota(): Promise<QuotaProviderResult | null> {
+  const authPath = process.env.OPENCODE_AUTH_FILE ?? join(HOME, ".local/state/opencode/service-prod.json");
+  let auth: { username?: unknown; password?: unknown };
+  try {
+    auth = JSON.parse(await readFile(authPath, "utf8")) as { username?: unknown; password?: unknown };
+  } catch {
+    return null;
+  }
+  if (typeof auth.password !== "string" || auth.password.length === 0) return null;
+  return fetchOpenCodeProviderQuota({
+    baseUrl: process.env.OPENCODE_URL ?? "http://127.0.0.1:13420",
+    auth: {
+      username: typeof auth.username === "string" && auth.username.length > 0 ? auth.username : "opencode",
+      password: auth.password,
+    },
+    providerId: "opendesign",
+  });
+}
+
+/**
  * THE tick's only quota read: the subcommand's configured listing,
  * plus the explicit ask for the route-disabled live pools
  * (EXPLICIT_ASK_PROVIDERS). Explicit results replace listing results
@@ -743,6 +772,10 @@ async function collectRuns(tickAt: string): Promise<ProviderRun[]> {
   const askStdout = await execSubcommand(subcommandArgv(EXPLICIT_ASK_PROVIDERS));
   const asked = parseSubcommandResults(askStdout, "explicit ask");
   const askMs = Date.now() - askT0;
+
+  const serverT0 = Date.now();
+  const serverOpenDesign = await fetchServerOpenDesignQuota().catch(() => null);
+  const serverMs = Date.now() - serverT0;
 
   // Per-provider group choice, the pre-rewire discipline generalized:
   // a listing group with an ok row wins (the ask is not consulted for
@@ -780,6 +813,14 @@ async function collectRuns(tickAt: string): Promise<ProviderRun[]> {
     // Both ok: the listing group stands — it is the canonical,
     // credential-keyed enumeration; the ask exists to rescue a
     // missing or errored listing group, not to override a good one.
+  }
+  // Once present, OpenCode's provider-only result outranks both CLI
+  // reads: the server uses its bound session-cookie credential itself.
+  // A missing route/auth/credential returns null above and leaves the
+  // established subcommand result as the compatibility fallback.
+  if (serverOpenDesign) {
+    byProvider.set("opendesign", { results: [serverOpenDesign], ms: serverMs });
+    console.log("quota-gatherer: opendesign quota answered by OpenCode provider API");
   }
 
   const runs: ProviderRun[] = [];
