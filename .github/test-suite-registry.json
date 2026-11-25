@@ -351,7 +351,7 @@
       "invocation": "nix flake check ./pkgs/id (check test-android-remote runs cargo test -p id-android-remote)",
       "venue": {
         "workflow": ".github/workflows/id-check.yml",
-        "job_step": "check_each / test-android-remote",
+        "job_step": "full-flake-check / Run full nix flake check",
         "state": "active",
         "dispatchable": true
       },

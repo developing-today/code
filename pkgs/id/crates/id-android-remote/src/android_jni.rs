@@ -101,6 +101,7 @@ fn spawn_session(address: String, world: String, capability: String) -> jlong {
                         endpoint.close().await;
                         return Ok::<(), anyhow::Error>(());
                     }
+                    let mut result: anyhow::Result<()> = Ok(());
                     loop {
                         tokio::select! {
                             changed = cancel_rx.changed() => {
@@ -111,20 +112,27 @@ fn spawn_session(address: String, world: String, capability: String) -> jlong {
                             next = session.next_view() => match next {
                                 Ok(view) => update(&session_control, "connected", Some(view), None),
                                 Err(error) => {
-                                    update(&session_control, "error", None, Some(format!("{error:#}")));
+                                    result = Err(error);
                                     break;
                                 }
                             }
                         }
                     }
                     endpoint.close().await;
-                    Ok(())
+                    result
                 })
             }));
             match outcome {
                 Ok(Ok(())) => update(&worker_control, "disconnected", None, None),
-                Ok(Err(error)) => update(&worker_control, "error", None, Some(format!("{error:#}"))),
-                Err(_) => update(&worker_control, "error", None, Some("native session panicked".to_owned())),
+                Ok(Err(error)) => {
+                    update(&worker_control, "error", None, Some(format!("{error:#}")))
+                }
+                Err(_) => update(
+                    &worker_control,
+                    "error",
+                    None,
+                    Some("native session panicked".to_owned()),
+                ),
             }
         });
     if let Err(error) = spawned {
@@ -209,7 +217,7 @@ pub extern "system" fn Java_org_developingtoday_id_NativeBridge_nativeStop(
 ) {
     if let Ok(mut sessions) = SESSIONS.lock() {
         if let Some(session) = sessions.remove(&id) {
-            let _ = session.cancel.send(true);
+            session.cancel.send_replace(true);
         }
     }
 }

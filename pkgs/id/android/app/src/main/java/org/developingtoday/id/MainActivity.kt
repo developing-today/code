@@ -20,6 +20,8 @@ class MainActivity : Activity() {
     private var bridge: NativeBridge? = null
     private var activeSession: Long? = null
     private var poller: Runnable? = null
+    private var statusView: TextView? = null
+    private var surfaceView: TextView? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -28,15 +30,15 @@ class MainActivity : Activity() {
             text = "Not connected"
             textSize = 18f
             gravity = Gravity.CENTER
-            contentDescription = "Connection status: disconnected"
         }
         val surface = TextView(this).apply {
             text = "Remote app surface\n\nConnect to a live app to view its screen."
             textSize = 16f
             gravity = Gravity.CENTER
             setBackgroundColor(0xffeeeeee.toInt())
-            contentDescription = "Remote app surface (disconnected)"
         }
+        statusView = status
+        surfaceView = surface
         val address = EditText(this).apply {
             hint = "Node ID, node-ID@IP:port, or Iroh EndpointAddr JSON"
             inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
@@ -115,7 +117,6 @@ class MainActivity : Activity() {
         activeSession = sessionId
         status.text = "Connecting to world host…"
         surface.text = "Remote app surface\n\nWaiting for a contract-valid host view."
-        surface.contentDescription = "Remote app surface (connecting)"
         poll(sessionId, status, surface)
     }
 
@@ -135,21 +136,17 @@ class MainActivity : Activity() {
                     when (state) {
                         "connected" -> {
                             status.text = "Connected to live app"
-                            status.contentDescription = "Connection status: connected"
                             val view = snapshot.optJSONObject("view")
                             val text = view?.optString("data").orEmpty()
                             surface.text = if (text.isBlank()) "Remote app returned an empty view." else text
-                            surface.contentDescription = "Remote app view"
                         }
                         "connecting" -> status.text = "Connecting to world host…"
                         "error" -> {
                             status.text = "Connection failed: ${snapshot.optString("error", "unknown error")}"
-                            surface.contentDescription = "Remote app surface (connection failed)"
                             return
                         }
                         else -> {
                             status.text = "Not connected"
-                            surface.contentDescription = "Remote app surface (disconnected)"
                             return
                         }
                     }
@@ -165,20 +162,27 @@ class MainActivity : Activity() {
     }
 
     private fun disconnect(status: TextView, surface: TextView) {
+        stopSession()
+        status.text = "Not connected"
+        surface.text = "Remote app surface\n\nConnect to a live app to view its screen."
+    }
+
+    private fun stopSession() {
         poller?.let(mainHandler::removeCallbacks)
         poller = null
         activeSession?.let { bridge?.nativeStop(it) }
         activeSession = null
-        status.text = "Not connected"
-        status.contentDescription = "Connection status: disconnected"
-        surface.text = "Remote app surface\n\nConnect to a live app to view its screen."
-        surface.contentDescription = "Remote app surface (disconnected)"
+    }
+
+    override fun onStop() {
+        stopSession()
+        statusView?.text = "Not connected"
+        surfaceView?.text = "Remote app surface\n\nConnect to a live app to view its screen."
+        super.onStop()
     }
 
     override fun onDestroy() {
-        val native = bridge
-        activeSession?.let { native?.nativeStop(it) }
-        poller?.let(mainHandler::removeCallbacks)
+        stopSession()
         super.onDestroy()
     }
 }
