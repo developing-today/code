@@ -172,7 +172,12 @@ describe("resolveBrokerAnswer (#14149 §2)", () => {
       { id: "deny", label: "Deny" },
     ];
     const map = { "tests-pass": true, "docs-updated": true, deny: false };
-    const extra = { answerType: "checkbox" as const, resolution: "all-approve" as const, options: opts, resolutionMap: map };
+    const extra = {
+      answerType: "checkbox" as const,
+      resolution: "all-approve" as const,
+      options: opts,
+      resolutionMap: map,
+    };
     const a = await brokerQuestion(extra, "s:aa1");
     const qa = await recordAnswer(a.file, a.ledgerId, { optionIds: ["tests-pass"], via: "test" });
     expect(resolveBrokerAnswer(qa!)).toEqual({ kind: "resolved", handle: "s:aa1", approve: false });

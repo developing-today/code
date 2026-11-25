@@ -92,15 +92,57 @@ describe("alerts surface", () => {
 });
 
 const SENDS: NotificationSendRow[] = [
-  { class: "incident", object_ref: "inc-1", incident_id: "inc-1", outcome: "sent", created_at: "2026-11-24T12:00:00Z", acted_on_at: "2026-11-24T13:00:00Z" },
-  { class: "incident", object_ref: "inc-2", incident_id: "inc-2", outcome: "sent", created_at: "2026-11-24T12:00:00Z", acted_on_at: null },
-  { class: "quota-wall", object_ref: "pool-1", incident_id: null, outcome: "sent", created_at: "2026-11-20T12:00:00Z", acted_on_at: "2026-11-22T12:00:00Z" },
-  { class: "incident", object_ref: "inc-3", incident_id: "inc-3", outcome: "gone", created_at: "2026-11-24T12:00:00Z", acted_on_at: null },
+  {
+    class: "incident",
+    object_ref: "inc-1",
+    incident_id: "inc-1",
+    outcome: "sent",
+    created_at: "2026-11-24T12:00:00Z",
+    acted_on_at: "2026-11-24T13:00:00Z",
+  },
+  {
+    class: "incident",
+    object_ref: "inc-2",
+    incident_id: "inc-2",
+    outcome: "sent",
+    created_at: "2026-11-24T12:00:00Z",
+    acted_on_at: null,
+  },
+  {
+    class: "quota-wall",
+    object_ref: "pool-1",
+    incident_id: null,
+    outcome: "sent",
+    created_at: "2026-11-20T12:00:00Z",
+    acted_on_at: "2026-11-22T12:00:00Z",
+  },
+  {
+    class: "incident",
+    object_ref: "inc-3",
+    incident_id: "inc-3",
+    outcome: "gone",
+    created_at: "2026-11-24T12:00:00Z",
+    acted_on_at: null,
+  },
   { class: "incident", object_ref: "inc-4", incident_id: "inc-4", outcome: "sent", acted_on_at: null },
-  { class: "incident", object_ref: "inc-5", incident_id: "inc-5", outcome: "sent", created_at: "2026-10-01T00:00:00Z", acted_on_at: null },
+  {
+    class: "incident",
+    object_ref: "inc-5",
+    incident_id: "inc-5",
+    outcome: "sent",
+    created_at: "2026-10-01T00:00:00Z",
+    acted_on_at: null,
+  },
   // The live Turso table's defaulted send-time column is `at`: a row
   // carrying only `at` is dated (2026-11-25 IW-339 probe).
-  { class: "incident", object_ref: "inc-6", incident_id: "inc-6", outcome: "sent", at: "2026-11-24T12:00:00Z", acted_on_at: "2026-11-24T12:30:00Z" },
+  {
+    class: "incident",
+    object_ref: "inc-6",
+    incident_id: "inc-6",
+    outcome: "sent",
+    at: "2026-11-24T12:00:00Z",
+    acted_on_at: "2026-11-24T12:30:00Z",
+  },
 ];
 
 describe("notifications roll-up (ported derivation)", () => {
@@ -188,9 +230,7 @@ describe("routing", () => {
   test("other paths and non-GET methods are not this module's", async () => {
     const io = ioWith({});
     expect(await ledgerPage(new Request("https://pm.security.cab/decisions"), io)).toBeNull();
-    expect(
-      await ledgerPage(new Request("https://pm.security.cab/alerts", { method: "POST" }), io),
-    ).toBeNull();
+    expect(await ledgerPage(new Request("https://pm.security.cab/alerts", { method: "POST" }), io)).toBeNull();
   });
 });
 
@@ -211,7 +251,7 @@ describe("ledger query client", () => {
                   rows: [
                     [
                       { type: "integer", value: "42" },
-                      { type: "text", value: "{\"via\":\"sentinel\"}" },
+                      { type: "text", value: '{"via":"sentinel"}' },
                     ],
                   ],
                 },

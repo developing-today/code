@@ -214,7 +214,14 @@ export interface EdgeOptions {
   /** C6 quota page (#15018): opt-in. Envelope + existing question sets
    * are supplied by the host; dispatchReset is the existing pool-steward
    * machinery. Absent/off: /console/api/quota answers 503. */
-  quota?: { enabled: boolean; envelope?: unknown; questions?: import("../../src/quota-page.ts").ExistingQuestionSet[]; dispatchReset?: (p: import("../../src/quota-page.ts").ResetProposal) => Promise<{ queueTaskId: string; result: string }> };
+  quota?: {
+    enabled: boolean;
+    envelope?: unknown;
+    questions?: import("../../src/quota-page.ts").ExistingQuestionSet[];
+    dispatchReset?: (
+      p: import("../../src/quota-page.ts").ResetProposal,
+    ) => Promise<{ queueTaskId: string; result: string }>;
+  };
   /** The live connections to the app, which the platform holds (they
    * stay open while this object is put away): take a request to be
    * one and give the answer for it, say something to all of them, and

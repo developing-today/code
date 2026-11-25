@@ -59,11 +59,7 @@ const JSON_COLUMNS = new Set(["detail", "author", "linked_identity"]);
  * supplies the address and the credential by name from the Worker's
  * environment; SQL here is fixed text with inline integer limits only —
  * no request input ever reaches a statement. */
-export function createLedgerQuery(
-  fetchImpl: typeof fetch,
-  url: string,
-  token?: string,
-): LedgerPagesIo["query"] {
+export function createLedgerQuery(fetchImpl: typeof fetch, url: string, token?: string): LedgerPagesIo["query"] {
   return async (sql: string): Promise<Record<string, unknown>[]> => {
     if (!url) throw new Error("ledger address not configured");
     if (!token) throw new Error("missing server credential");
@@ -104,8 +100,7 @@ export function createLedgerQuery(
             throw new Error("unsafe ledger numeric value");
         } else throw new Error("unsupported ledger cell");
         const name = result.cols[i].name as string;
-        row[name] =
-          JSON_COLUMNS.has(name) && typeof value === "string" ? safeJson(value) : value;
+        row[name] = JSON_COLUMNS.has(name) && typeof value === "string" ? safeJson(value) : value;
       });
       return row;
     });
@@ -289,8 +284,7 @@ function commentFromRow(row: Record<string, unknown>): LedgerComment {
     createdAt: String(row.created_at),
   };
   if (typeof row.provenance === "string") comment.provenance = row.provenance;
-  if (row.linked_identity && typeof row.linked_identity === "object")
-    comment.linkedIdentity = row.linked_identity;
+  if (row.linked_identity && typeof row.linked_identity === "object") comment.linkedIdentity = row.linked_identity;
   if (typeof row.triage_state === "string") comment.triageState = row.triage_state;
   if (typeof row.github_ref === "string") comment.githubRef = row.github_ref;
   if (typeof row.github_state === "string") comment.githubState = row.github_state;
@@ -314,24 +308,36 @@ function authorLabel(author: unknown): string {
 // --- Rendering ---------------------------------------------------------------
 
 function escapeHtml(value: unknown): string {
-  return String(value).replace(/[&<>"']/g, (char) => ({
-    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
-  })[char]!);
+  return String(value).replace(
+    /[&<>"']/g,
+    (char) =>
+      ({
+        "&": "&amp;",
+        "<": "&lt;",
+        ">": "&gt;",
+        '"': "&quot;",
+        "'": "&#39;",
+      })[char]!,
+  );
 }
 
 function page(title: string, body: string, status = 200): Response {
-  return new Response(`<!doctype html><html lang="en"><head><meta charset="utf-8">
+  return new Response(
+    `<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1"><title>${escapeHtml(title)} — PM Stack</title>
-<style>body{font:16px/1.5 system-ui,sans-serif;background:#0b0f14;color:#e6eaf0;max-width:58rem;margin:5vh auto;padding:0 1rem}a{color:#79c0ff}.context{color:#9da7b1}.item{border:1px solid #30363d;border-radius:.6rem;padding:1rem;margin:.8rem 0;background:#11161d}code{overflow-wrap:anywhere}table{border-collapse:collapse}td,th{border:1px solid #30363d;padding:.3rem .6rem;text-align:right}td:first-child,th:first-child{text-align:left}</style></head><body><main>${body}</main></body></html>`, {
-    status,
-    headers: {
-      "Content-Type": "text/html; charset=utf-8",
-      "Cache-Control": "no-store",
-      "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
-      "X-Content-Type-Options": "nosniff",
-      "Referrer-Policy": "no-referrer",
+<style>body{font:16px/1.5 system-ui,sans-serif;background:#0b0f14;color:#e6eaf0;max-width:58rem;margin:5vh auto;padding:0 1rem}a{color:#79c0ff}.context{color:#9da7b1}.item{border:1px solid #30363d;border-radius:.6rem;padding:1rem;margin:.8rem 0;background:#11161d}code{overflow-wrap:anywhere}table{border-collapse:collapse}td,th{border:1px solid #30363d;padding:.3rem .6rem;text-align:right}td:first-child,th:first-child{text-align:left}</style></head><body><main>${body}</main></body></html>`,
+    {
+      status,
+      headers: {
+        "Content-Type": "text/html; charset=utf-8",
+        "Cache-Control": "no-store",
+        "Content-Security-Policy":
+          "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
+        "X-Content-Type-Options": "nosniff",
+        "Referrer-Policy": "no-referrer",
+      },
     },
-  });
+  );
 }
 
 function unavailable(surface: string): Response {
@@ -382,8 +388,7 @@ function excerpt(text: string | null, max: number): string {
 
 // --- The handler ---------------------------------------------------------------
 
-const INCIDENTS_SQL =
-  "select * from alerts_incidents order by (status = 'closed'), first_seen_at desc limit 100";
+const INCIDENTS_SQL = "select * from alerts_incidents order by (status = 'closed'), first_seen_at desc limit 100";
 const EVENTS_SQL =
   "select e.*, i.source, i.incident_key, i.title from alerts_incident_events e join alerts_incidents i on i.id = e.incident_id order by e.id desc limit 100";
 const SENDS_SQL = "select * from alerts_notification_sends";
@@ -415,7 +420,9 @@ export async function ledgerPage(request: Request, io: LedgerPagesIo): Promise<R
     const now = io.now();
     const items = incidents
       .map(
-        (i) => `<div class="item"><strong>${escapeHtml(i.severity)} · ${escapeHtml(i.status)}</strong> — ${escapeHtml(i.title)}<br>
+        (
+          i,
+        ) => `<div class="item"><strong>${escapeHtml(i.severity)} · ${escapeHtml(i.status)}</strong> — ${escapeHtml(i.title)}<br>
 <span class="context">${escapeHtml(i.source)} / ${escapeHtml(i.incident_key)} · first seen ${ageLabel(i.first_seen_at, now)} ago · last seen ${ageLabel(i.last_seen_at, now)} ago · ${i.occurrences} occurrence${i.occurrences === 1 ? "" : "s"}</span>${
           i.body ? `<br>${escapeHtml(excerpt(i.body, 300))}` : ""
         }</div>`,
@@ -449,9 +456,7 @@ export async function ledgerPage(request: Request, io: LedgerPagesIo): Promise<R
     if (path === "/api/notifications.json") return json({ ...rollup, freshness });
     const rows = rollup.classes
       .map((c) => {
-        const weeks = c.weeks
-          .map((w) => `<td>${w.sent} / ${w.acted}</td>`)
-          .join("");
+        const weeks = c.weeks.map((w) => `<td>${w.sent} / ${w.acted}</td>`).join("");
         return `<tr><td>${escapeHtml(c.class)}</td>${weeks}<td>${c.sent} / ${c.acted}</td><td>${
           c.ratio === null ? "—" : `${Math.round(c.ratio * 100)}%`
         }</td><td>${c.proposal ? "default-off proposal (display only)" : ""}</td></tr>`;
@@ -481,7 +486,9 @@ export async function ledgerPage(request: Request, io: LedgerPagesIo): Promise<R
   const now = io.now();
   const items = comments
     .map(
-      (c) => `<div class="item"><strong>${escapeHtml(authorLabel(c.author))}</strong>${c.authorVerified ? " (verified)" : ""} · ${escapeHtml(c.kind)} · <code>${escapeHtml(c.objectRef)}</code><br>
+      (
+        c,
+      ) => `<div class="item"><strong>${escapeHtml(authorLabel(c.author))}</strong>${c.authorVerified ? " (verified)" : ""} · ${escapeHtml(c.kind)} · <code>${escapeHtml(c.objectRef)}</code><br>
 <span class="context">${escapeHtml(c.createdAt)} (${ageLabel(c.createdAt, now)} ago)${c.triageState ? ` · triage: ${escapeHtml(c.triageState)}` : ""}${c.githubState ? ` · github: ${escapeHtml(c.githubState)}` : ""}</span><br>${escapeHtml(excerpt(c.body, 400))}</div>`,
     )
     .join("");

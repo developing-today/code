@@ -53,8 +53,6 @@ mod gh;
 
 #[cfg(feature = "actions")]
 mod actions;
-#[cfg(feature = "kv")]
-mod kv;
 #[cfg(feature = "commander")]
 mod commander;
 #[cfg(any(
@@ -77,6 +75,8 @@ mod gh_sync;
 #[cfg(feature = "http")]
 mod http;
 mod invocation_ledger;
+#[cfg(feature = "kv")]
+mod kv;
 #[cfg(feature = "laptop")]
 mod laptop;
 mod session_state;

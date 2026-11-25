@@ -512,13 +512,9 @@ fn run(cli: Cli) -> Result<(), String> {
             Ok(())
         }
         Command::IngestMemoryFiles { db, unit, dir } => {
-            let item_ids = atlas_core::memory::scan_and_stage_memory_files_in_db(
-                &db,
-                &unit,
-                &dir,
-                &now_utc(),
-            )
-            .map_err(|e| e.to_string())?;
+            let item_ids =
+                atlas_core::memory::scan_and_stage_memory_files_in_db(&db, &unit, &dir, &now_utc())
+                    .map_err(|e| e.to_string())?;
             println!(
                 "{{\"unit\":{},\"items_staged\":{},\"item_ids\":{}}}",
                 json_str(&unit),
@@ -615,15 +611,11 @@ fn run(cli: Cli) -> Result<(), String> {
             Ok(())
         }
         Command::IngestReports { db, unit, root } => {
-            let reports = atlas_core::reports::collect_research_reports(&root)
-                .map_err(|e| e.to_string())?;
-            let item_ids = atlas_core::reports::stage_research_reports_in_db(
-                &db,
-                &unit,
-                &reports,
-                &now_utc(),
-            )
-            .map_err(|e| e.to_string())?;
+            let reports =
+                atlas_core::reports::collect_research_reports(&root).map_err(|e| e.to_string())?;
+            let item_ids =
+                atlas_core::reports::stage_research_reports_in_db(&db, &unit, &reports, &now_utc())
+                    .map_err(|e| e.to_string())?;
             println!(
                 "{{\"unit\":{},\"reports_collected\":{},\"items_staged\":{},\"item_ids\":{}}}",
                 json_str(&unit),

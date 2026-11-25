@@ -58,22 +58,59 @@ import { buildEpicRollups } from "./epics.ts";
 import { buildProgramData } from "./program.ts";
 import { buildReleaseSnapshots } from "./releases.ts";
 import { deriveGenealogy, enrichRoadmapRows } from "./genealogy.ts";
-import { PROJECT_CONFIGS, allProjectRefs, buildProjectDetail, buildProjectSummaries, projectDocTarget, projectConfigById } from "./project-config.ts";
+import {
+  PROJECT_CONFIGS,
+  allProjectRefs,
+  buildProjectDetail,
+  buildProjectSummaries,
+  projectDocTarget,
+  projectConfigById,
+} from "./project-config.ts";
 import { PHASE12_REPO, parsePhase12Steps, type Phase12Snapshot } from "./phase12.ts";
 import { PHASE_MAPPING_REPO, type PhaseMappingSnapshot } from "./phase-mapping.ts";
 import type { BuildHealthSnapshot } from "./build-health.ts";
 import { parseF12Items, type F12PrRef } from "./f12-readiness.ts";
 import { identitiesFromRecords } from "./registry.ts";
-import { attentionFragment, attentionSections, ghObjectRef, renderAa, renderAttention, renderAttentionShell, renderBoard, renderBoardBody, renderDiscuss, renderDns, renderConflicts, renderHealth, renderItem, deriveOverview, renderOverview, renderOverviewBody, renderOverviewShell, renderChat, renderCommentsQueue, renderPages, renderProgram, renderProgramProject, renderQuota, renderQueue, renderQueueBody, renderQueueShell, renderRoadmap, renderSearch, renderServiceDetail, renderSessions, renderToday, renderTodayBody, renderTodayShell, eventTableHtml } from "./render.ts";
+import {
+  attentionFragment,
+  attentionSections,
+  ghObjectRef,
+  renderAa,
+  renderAttention,
+  renderAttentionShell,
+  renderBoard,
+  renderBoardBody,
+  renderDiscuss,
+  renderDns,
+  renderConflicts,
+  renderHealth,
+  renderItem,
+  deriveOverview,
+  renderOverview,
+  renderOverviewBody,
+  renderOverviewShell,
+  renderChat,
+  renderCommentsQueue,
+  renderPages,
+  renderProgram,
+  renderProgramProject,
+  renderQuota,
+  renderQueue,
+  renderQueueBody,
+  renderQueueShell,
+  renderRoadmap,
+  renderSearch,
+  renderServiceDetail,
+  renderSessions,
+  renderToday,
+  renderTodayBody,
+  renderTodayShell,
+  eventTableHtml,
+} from "./render.ts";
 import { buildBriefs } from "./brief.ts";
 import { listDigestArchives, readDigestArchive } from "./digest.ts";
 import { classEnabled, getAlertsStore, startAlertEngine, type PushPayload } from "./alerts.ts";
-import {
-  buildIncidentEnvelope,
-  incidentPageThreshold,
-  incidentTarget,
-  renderIncidentPage,
-} from "./incident-page.ts";
+import { buildIncidentEnvelope, incidentPageThreshold, incidentTarget, renderIncidentPage } from "./incident-page.ts";
 import { recordSwProbe, sendPush, swProbeSummary } from "./push.ts";
 import { renderDigest, esc } from "./render.ts";
 import type { QueueSnapshot } from "./queue.ts";
@@ -89,12 +126,82 @@ import { createEscalationTicker, escalationDelivery, escalationJournalLine } fro
 import { emptyState } from "./remediation.ts";
 import { computeFlowAnalytics } from "./flow-analytics.ts";
 import { FORECAST_CONTRACT_VERSION } from "./forecast-contract.ts";
-import { cfg, dashboardResponseWithinDeadline, roadmapAnnotationsStore, itemHistoryStore, sloJournal, promptsStore, loadSpendCards, readyAgentDispatchStates, coverageSnapshot, actionsStore, commentsStore, viewsStore, eventsStore, freshnessStore, freshnessReconciler, activityStore, githubHotListConsumer, githubOutcomeConsumer, githubActivityStatus, activitySourceStatusHtml, recordActivity, source, quotaRefresher, briefCommentsFor, assembleConflicts, commentIdentities, commentFormOpts, discussTitle, emptyQuotaView, emptyUsageView } from "./server-wiring.ts";
+import {
+  cfg,
+  dashboardResponseWithinDeadline,
+  roadmapAnnotationsStore,
+  itemHistoryStore,
+  sloJournal,
+  promptsStore,
+  loadSpendCards,
+  readyAgentDispatchStates,
+  coverageSnapshot,
+  actionsStore,
+  commentsStore,
+  viewsStore,
+  eventsStore,
+  freshnessStore,
+  freshnessReconciler,
+  activityStore,
+  githubHotListConsumer,
+  githubOutcomeConsumer,
+  githubActivityStatus,
+  activitySourceStatusHtml,
+  recordActivity,
+  source,
+  quotaRefresher,
+  briefCommentsFor,
+  assembleConflicts,
+  commentIdentities,
+  commentFormOpts,
+  discussTitle,
+  emptyQuotaView,
+  emptyUsageView,
+} from "./server-wiring.ts";
 import { json, jsonCompact, html, serviceWorkerResponse } from "./server-respond.ts";
 import { questionsHtml, PWA_MANIFEST } from "./server-pages.ts";
-import { boardContext, allForecastContracts, roadmapContext, searchContext, deriveWatchdogItems, attentionContext, ssePatch, sseResponse, boardRender, attentionRender, todaySignals, todayContext, queueContext, overviewContext, programSources, resolveView, poolItemLike, eventContextByRef, eventFilterFromUrl, digestContext, GRAINS, healthContext, sloSummaries, withSearchTiming, withSearchTimings } from "./server-contexts.ts";
-import { handleReportsRead, handleReportWriteRoutes, handleIdentityRoutes, handleWriteRoutes } from "./server-write-routes.ts";
-import { handleAlertIntakeRoutes, handleAlertAction, handleAlertRead, handleAlertsList, handleAlertPreferences, handleNotificationsPage, UUID_RE } from "./server-alert-routes.ts";
+import {
+  boardContext,
+  allForecastContracts,
+  roadmapContext,
+  searchContext,
+  deriveWatchdogItems,
+  attentionContext,
+  ssePatch,
+  sseResponse,
+  boardRender,
+  attentionRender,
+  todaySignals,
+  todayContext,
+  queueContext,
+  overviewContext,
+  programSources,
+  resolveView,
+  poolItemLike,
+  eventContextByRef,
+  eventFilterFromUrl,
+  digestContext,
+  GRAINS,
+  healthContext,
+  sloSummaries,
+  withSearchTiming,
+  withSearchTimings,
+} from "./server-contexts.ts";
+import {
+  handleReportsRead,
+  handleReportWriteRoutes,
+  handleIdentityRoutes,
+  handleWriteRoutes,
+} from "./server-write-routes.ts";
+import {
+  handleAlertIntakeRoutes,
+  handleAlertAction,
+  handleAlertRead,
+  handleAlertsList,
+  handleAlertPreferences,
+  handleNotificationsPage,
+  UUID_RE,
+} from "./server-alert-routes.ts";
 import { handleDecisionRoutes, handleDecisionsIndex, handleDecisionTailRoutes } from "./server-decision-routes.ts";
 
 function runMetadataFleet(args: string[], input?: string): Promise<string> {
@@ -207,9 +314,7 @@ async function handler(req: Request, remoteAddress?: string): Promise<Response> 
       return json({ error: "incident has no healthHook evidence records", id }, 404);
     }
     const target = incidentTarget(incident);
-    const related = (await store.listIncidents(200)).filter(
-      (r) => target !== null && incidentTarget(r) === target,
-    );
+    const related = (await store.listIncidents(200)).filter((r) => target !== null && incidentTarget(r) === target);
     if (!incidentPageThreshold(incident, events, related).qualifies) {
       return json({ error: "incident does not meet the C6 section 6.2 page threshold", id }, 404);
     }
@@ -868,7 +973,9 @@ async function handler(req: Request, remoteAddress?: string): Promise<Response> 
   if (path === "/search") {
     const started = performance.now();
     const { query, results, items, timings } = await searchContext(url.searchParams.get("q") ?? "");
-    const body = await withSearchTiming(timings, "render", () => renderSearch(query, results, items, prov(), provDetail()));
+    const body = await withSearchTiming(timings, "render", () =>
+      renderSearch(query, results, items, prov(), provDetail()),
+    );
     timings.total = performance.now() - started;
     return withSearchTimings(html(body), timings);
   }

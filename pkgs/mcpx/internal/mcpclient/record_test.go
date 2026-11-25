@@ -75,8 +75,9 @@ func (s *stubTransport) Recv() ([]byte, error) {
 	s.recvQ = s.recvQ[1:]
 	return msg, nil
 }
-func (s *stubTransport) Close() error   { return nil }
-func (s *stubTransport) Info() string   { return "stub" }
+func (s *stubTransport) Close() error { return nil }
+func (s *stubTransport) Info() string { return "stub" }
+
 var _ mcpclient.Transport = (*stubTransport)(nil)
 
 func TestRecordTransportRecordsAcceptedFramesInOrder(t *testing.T) {

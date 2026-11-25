@@ -1899,7 +1899,13 @@ pub(crate) fn verb_list(t: &TursoBackend, req: &Value) -> Value {
         "SELECT {select} FROM tasks{conds} ORDER BY (priority IS NULL), priority ASC, created_at ASC, id ASC LIMIT {limit} OFFSET {offset}"
     );
     let json_cols: &[&str] = if rich {
-        &["progress", "payload", "blocked_deps", "ready_condition", "labels"]
+        &[
+            "progress",
+            "payload",
+            "blocked_deps",
+            "ready_condition",
+            "labels",
+        ]
     } else {
         &[]
     };

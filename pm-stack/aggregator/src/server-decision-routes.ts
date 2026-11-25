@@ -4,14 +4,64 @@
 // routes do not match. Split out of server.ts (#13052).
 import { decodePathSegment } from "./path-segment.ts";
 import { getNeedsDrew, listOpenNeedsDrew, needsDrewIncidentKey, recordAnswer } from "./needs-drew.ts";
-import { decisionSetAging, decisionSetOpenState, deferWithSubmissions, getDecisionDrafts, getDecisionSet, dismissDecisionSets, isDeferLean, isDecisionSetView, listDecisionSets, raiseDecisionSet, refreshDecisionSet, recordResolutions, requestInfoOpenQuestions, sweepDecisionSets, upsertDecisionDrafts, validateDecisionDraftUpsert, validateDecisionSet, withGeneratedSetId, type DecisionSet, type DecisionSetView, type DecisionSubmission } from "./decisions.ts";
-import { buildNeedsUserList, onQuestionAnswered, parseBlockedByCount, parsePriority, questionOptions, setQuestionBlockedByCount, setQuestionPriority, stageRowsFor, type NeedsUserListItem } from "./needs-user.ts";
-import { appendDecisionEvents, readDecisionEvents, validateDecisionEventInput, type DecisionEventInput } from "./decision-events.ts";
+import {
+  decisionSetAging,
+  decisionSetOpenState,
+  deferWithSubmissions,
+  getDecisionDrafts,
+  getDecisionSet,
+  dismissDecisionSets,
+  isDeferLean,
+  isDecisionSetView,
+  listDecisionSets,
+  raiseDecisionSet,
+  refreshDecisionSet,
+  recordResolutions,
+  requestInfoOpenQuestions,
+  sweepDecisionSets,
+  upsertDecisionDrafts,
+  validateDecisionDraftUpsert,
+  validateDecisionSet,
+  withGeneratedSetId,
+  type DecisionSet,
+  type DecisionSetView,
+  type DecisionSubmission,
+} from "./decisions.ts";
+import {
+  buildNeedsUserList,
+  onQuestionAnswered,
+  parseBlockedByCount,
+  parsePriority,
+  questionOptions,
+  setQuestionBlockedByCount,
+  setQuestionPriority,
+  stageRowsFor,
+  type NeedsUserListItem,
+} from "./needs-user.ts";
+import {
+  appendDecisionEvents,
+  readDecisionEvents,
+  validateDecisionEventInput,
+  type DecisionEventInput,
+} from "./decision-events.ts";
 import { getAlertsStore, requestAlertTick } from "./alerts.ts";
 import { readJsonBody } from "./request-body.ts";
 import { cfg, source } from "./server-wiring.ts";
 import { json, html } from "./server-respond.ts";
-import { renderAnswerPage, renderAnswerForbidden, decisionsPageUrl, logDecisionEvents, questionRefFor, eventTypeForKind, submissionEventPayload, parseDecisionSubmissions, renderDecisionsPage, renderDecisionsIndex, renderNeedsUserPage, renderDecisionsForbidden } from "./server-pages.ts";
+import {
+  renderAnswerPage,
+  renderAnswerForbidden,
+  decisionsPageUrl,
+  logDecisionEvents,
+  questionRefFor,
+  eventTypeForKind,
+  submissionEventPayload,
+  parseDecisionSubmissions,
+  renderDecisionsPage,
+  renderDecisionsIndex,
+  renderNeedsUserPage,
+  renderDecisionsForbidden,
+} from "./server-pages.ts";
 import { alertsIntakeAuthorized } from "./server-alert-routes.ts";
 
 export async function handleDecisionRoutes(req: Request, url: URL, path: string): Promise<Response | null> {
@@ -301,9 +351,9 @@ export async function handleDecisionRoutes(req: Request, url: URL, path: string)
 export async function handleDecisionsIndex(url: URL): Promise<Response> {
   const sets = await listDecisionSets(cfg.decisionsFile).catch(() => [] as DecisionSet[]);
   const viewParam = url.searchParams.get("view");
-    // Default is the rolling last-7-days window (#14064): the landing
-    // view is the current workload, with all-time behind the toggle.
-    const view: DecisionSetView = isDecisionSetView(viewParam) ? viewParam : "recent";
+  // Default is the rolling last-7-days window (#14064): the landing
+  // view is the current workload, with all-time behind the toggle.
+  const view: DecisionSetView = isDecisionSetView(viewParam) ? viewParam : "recent";
   return html(renderDecisionsIndex(sets, view, url.searchParams.get("open") === "1"));
 }
 

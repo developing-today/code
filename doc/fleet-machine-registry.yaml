@@ -95,10 +95,10 @@ machines:
       # scripts/fleet-machine-watchdog.py; never hand-edited (the
       # validator requires the earned checks record below).
       source: watchdog
-      last_seen: '2026-11-25T12:24:06Z'
+      last_seen: "2026-11-25T12:24:06Z"
       status: unreachable
       checks:
-        reported_at: '2026-11-25T19:54:19Z'
+        reported_at: "2026-11-25T19:54:19Z"
         reachable:
           state: failed
           ssh: true
@@ -120,5 +120,6 @@ machines:
           source: openchamber attach api
         last_queue_job:
           state: unknown
-          reason: 'queue store unreachable at token mint: Remote end closed connection without
-            response'
+          reason:
+            "queue store unreachable at token mint: Remote end closed connection without
+            response"
