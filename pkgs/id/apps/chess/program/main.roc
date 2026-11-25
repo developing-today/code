@@ -699,7 +699,6 @@ roster_name = |model, pid|
 
 ## Host presence events from the `players` subscription:
 ## `{"cap":"players","event":"joined"|"left","participant":{"id":..,"name":..}}`.
-presence : Model, RocJson.Value -> Model
 presence = |model, event| {
     part = field(event, "participant")
     pid = num_field(part, "id", 0)
