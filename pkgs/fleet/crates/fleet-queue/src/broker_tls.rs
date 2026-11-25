@@ -45,7 +45,6 @@ pub use server::BrokerTlsServer;
 
 #[cfg(feature = "queue-broker")]
 mod server {
-    use super::IoStream;
     use rustls::ServerConfig;
     use rustls::StreamOwned;
     use rustls::pki_types::{CertificateDer, PrivateKeyDer, pem::PemObject};
@@ -94,8 +93,6 @@ mod server {
             }
         }
     }
-
-    impl IoStream for BrokerStream {}
 
     impl BrokerTlsServer {
         /// From the broker's environment: both
@@ -773,7 +770,9 @@ mod tests {
         let estate = build_estate(&tmp, "a", "Test Org A LLC");
         let staged_store = tmp.path().join("staged-store");
         stage_bundle(&staged_store, &estate.bundle_dir).unwrap();
-        let err = BrokerTlsClient::validate_from_store(&staged_store).unwrap_err();
+        let Err(err) = BrokerTlsClient::validate_from_store(&staged_store) else {
+            panic!("a staged-only store must not yield a validating client");
+        };
         assert!(err.contains("trust store"), "{err}");
     }
 }
