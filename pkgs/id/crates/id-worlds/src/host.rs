@@ -556,6 +556,43 @@ impl Supervisor {
         Ok(())
     }
 
+    /// Shut the host down: drain every held world (actor shutdown, so
+    /// each journal's last append is fsynced and no input is in flight)
+    /// while leaving the host file exactly as it stands. A world recorded
+    /// live stays recorded live, so the next [`Supervisor::open`] replays
+    /// it back to live: host restart returns live worlds to live, asleep
+    /// to asleep and archived to archived (design §5). This is the host
+    /// going away, not an operator stop; use [`Supervisor::stop`] or
+    /// [`Supervisor::stop_all`] to record worlds asleep.
+    ///
+    /// Every held world is drained even when one fails, so one stuck
+    /// world never leaves the others running.
+    ///
+    /// # Errors
+    ///
+    /// Fails after draining when any world's shutdown failed; the error
+    /// names every failed world.
+    pub async fn shutdown(mut self) -> Result<()> {
+        let mut names: Vec<String> = self.live.keys().cloned().collect();
+        names.sort();
+        let mut failures = Vec::new();
+        for name in names {
+            if let Some(held) = self.live.remove(&name)
+                && let Err(error) = held.service.world().shutdown().await
+            {
+                failures.push(format!("{name}: {error:#}"));
+            }
+        }
+        if !failures.is_empty() {
+            bail!(
+                "shutdown failed for {} world(s): {}",
+                failures.len(),
+                failures.join("; ")
+            );
+        }
+        Ok(())
+    }
+
     /// Per-state counts + bytes over the worlds in the host file.
     /// Missing directories census as zero-byte rows, never as errors.
     pub fn census(&self) -> Census {
@@ -792,6 +829,46 @@ mod tests {
         sup.restore("vault", actor()).unwrap();
         sup.start("vault", actor()).await.unwrap();
         assert_eq!(sup.file().worlds["vault"].state, LifecycleState::Live);
+    }
+
+    #[tokio::test]
+    async fn clean_shutdown_returns_every_world_to_its_recorded_state() {
+        let root = data_root_with(&["live-one", "sleepy", "vault"]);
+        let mut sup = Supervisor::open(root.path()).await.unwrap();
+        sup.start("live-one", actor()).await.unwrap();
+        sup.live
+            .get("live-one")
+            .unwrap()
+            .service
+            .world()
+            .set_isolation(Authority::Admin, Isolation::Unisolated)
+            .await
+            .unwrap();
+        sup.archive("vault", actor()).unwrap();
+        let file_before = sup.file().clone();
+        let journal_before =
+            std::fs::read(root.path().join("live-one").join("journal.jsonl")).unwrap();
+        assert!(!journal_before.is_empty());
+
+        sup.shutdown().await.unwrap();
+
+        // Shutdown records nothing: the host file is byte-for-byte the
+        // file the running host last saved, and the drained journal is
+        // what the world appended.
+        assert_eq!(HostFile::load(root.path()).unwrap(), file_before);
+        assert_eq!(
+            std::fs::read(root.path().join("live-one").join("journal.jsonl")).unwrap(),
+            journal_before
+        );
+
+        // Restart: live replays back to live, asleep and archived stay put.
+        let sup2 = Supervisor::open(root.path()).await.unwrap();
+        assert_eq!(sup2.live_names(), vec!["live-one".to_owned()]);
+        assert_eq!(sup2.file().worlds["live-one"].state, LifecycleState::Live);
+        assert_eq!(sup2.file().worlds["sleepy"].state, LifecycleState::Asleep);
+        assert_eq!(sup2.file().worlds["vault"].state, LifecycleState::Archived);
+        assert!(sup2.live_report("live-one").unwrap().journal_entries >= 1);
+        assert_eq!(sup2.file(), &file_before);
     }
 
     #[tokio::test]
