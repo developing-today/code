@@ -902,15 +902,24 @@ mod tests {
         assert_eq!(lines[0], "World directory - default: lobby");
         // One row per world plus header and hint lines.
         assert_eq!(lines.len(), 1 + 4 + 1);
+        // Rows are lines[1..]; find each world's row by its name
+        // as a whole word (the header also names the default).
+        let row_of = |name: &str| {
+            lines[1..]
+                .iter()
+                .find(|line| line.split_whitespace().any(|word| word == name))
+                .copied()
+                .unwrap()
+        };
         // The cursor row is the default world (lobby), starred.
-        let lobby_row = lines.iter().find(|line| line.contains("lobby")).unwrap();
+        let lobby_row = row_of("lobby");
         assert!(lobby_row.starts_with(">*"), "row: {lobby_row}");
         assert!(lobby_row.contains("[discovered]"));
         assert!(lobby_row.contains("loaded"));
         assert!(lobby_row.contains("2 here"));
-        let annex_row = lines.iter().find(|line| line.contains("annex")).unwrap();
+        let annex_row = row_of("annex");
         assert!(annex_row.contains("(in session)"), "row: {annex_row}");
-        let workshop_row = lines.iter().find(|line| line.contains("workshop")).unwrap();
+        let workshop_row = row_of("workshop");
         assert!(workshop_row.contains("stored"));
         assert!(workshop_row.contains("0 here"));
     }
