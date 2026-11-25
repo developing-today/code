@@ -92,6 +92,14 @@ mod persistence_tests;
 pub use author_events::{AuthorEvent, CandidateQuery, Candidates};
 pub use compaction::CompactionPolicy;
 use id_core::waiting::{AuthorKey, WaitRefusal, WaitingLimits, WaitingPool};
+
+/// Maximum number of group rosters retained by the per-generation memo.
+pub const MAX_ROSTER_CACHE_ENTRIES: usize = 128;
+/// Roster results larger than this are returned but are not memoized.
+pub const MAX_CACHED_ROSTER_AUTHORS: usize = 128;
+/// Maximum key and author payload bytes retained by the roster memo.
+pub const MAX_ROSTER_CACHE_PAYLOAD_BYTES: usize = MAX_ROSTER_CACHE_ENTRIES
+    * (std::mem::size_of::<Hash>() + MAX_CACHED_ROSTER_AUTHORS * std::mem::size_of::<AuthorKey>());
 pub use id_store::event_types::{
     Block, BlockKind, BlockList, BlockLookup, BlockLookupFailure, Chain, FILE_NAME, StoreError,
 };
@@ -433,6 +441,8 @@ struct RosterCache {
     generation: u64,
     /// The resolved roster of each group read at `generation`.
     entries: HashMap<Hash, Vec<AuthorKey>>,
+    /// FIFO insertion order, kept in sync with `entries` for bounded eviction.
+    order: VecDeque<Hash>,
     /// How many full load-and-resolve runs roster reads have performed.
     /// A diagnostic: it grows only when a roster is read at a generation
     /// no entry covers, never per cached read.
@@ -601,7 +611,10 @@ impl EventStore {
     /// moves the generation, and only the first read at a new
     /// generation pays the fold. A membership change therefore takes
     /// effect on the first read after it is ingested, exactly as it
-    /// did when every read resolved the store.
+    /// did when every read resolved the store. The memo retains at
+    /// most [`MAX_ROSTER_CACHE_ENTRIES`] results and skips rosters
+    /// larger than [`MAX_CACHED_ROSTER_AUTHORS`], bounding attacker-
+    /// selected negative entries and cached roster payload.
     ///
     /// # Errors
     ///
@@ -618,9 +631,18 @@ impl EventStore {
         let mut cache = self.lock_roster_cache();
         if cache.generation != self.generation {
             cache.entries.clear();
+            cache.order.clear();
             cache.generation = self.generation;
         }
-        cache.entries.insert(*group, roster.clone());
+        if roster.len() <= MAX_CACHED_ROSTER_AUTHORS && !cache.entries.contains_key(group) {
+            while cache.entries.len() >= MAX_ROSTER_CACHE_ENTRIES {
+                if let Some(oldest) = cache.order.pop_front() {
+                    cache.entries.remove(&oldest);
+                }
+            }
+            cache.order.push_back(*group);
+            cache.entries.insert(*group, roster.clone());
+        }
         cache.resolutions = cache.resolutions.saturating_add(1);
         Ok(roster)
     }
@@ -652,6 +674,23 @@ impl EventStore {
     /// turning into whole-store folds.
     pub fn roster_resolutions(&self) -> u64 {
         self.lock_roster_cache().resolutions
+    }
+
+    /// Number of roster results retained by the memo at the current generation.
+    pub fn roster_cache_entries(&self) -> usize {
+        self.lock_roster_cache().entries.len()
+    }
+
+    /// Key and author payload bytes retained by the memo. Allocator bookkeeping is excluded;
+    /// both the number of entries and authors per entry have fixed limits.
+    pub fn roster_cache_payload_bytes(&self) -> usize {
+        let cache = self.lock_roster_cache();
+        cache.entries.len() * std::mem::size_of::<Hash>()
+            + cache
+                .entries
+                .values()
+                .map(|roster| roster.len() * std::mem::size_of::<AuthorKey>())
+                .sum::<usize>()
     }
 
     /// The stored event at `(author, seq)`, applied or not.
@@ -1754,6 +1793,33 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = EventStore::open(dir.path(), WaitingLimits::default(), 0).unwrap();
         (dir, store)
+    }
+
+    #[test]
+    fn unknown_group_rosters_stay_empty_and_cache_is_bounded() {
+        // Oracle: unknown group hashes have empty rosters, and querying
+        // more distinct hashes than the memo capacity cannot increase
+        // retained cache payload beyond its declared bound.
+        let (_dir, store) = open_temp();
+        for n in 0u64..(MAX_ROSTER_CACHE_ENTRIES as u64 + 64) {
+            let group = Hash::digest(n.to_be_bytes());
+            assert!(store.roster(&group).unwrap().is_empty());
+            assert!(store.roster_cache_entries() <= MAX_ROSTER_CACHE_ENTRIES);
+            assert!(store.roster_cache_payload_bytes() <= MAX_ROSTER_CACHE_PAYLOAD_BYTES);
+        }
+        assert_eq!(store.roster_cache_entries(), MAX_ROSTER_CACHE_ENTRIES);
+        assert_eq!(
+            store.roster_cache_payload_bytes(),
+            MAX_ROSTER_CACHE_ENTRIES * std::mem::size_of::<Hash>()
+        );
+        let last_group = Hash::digest((MAX_ROSTER_CACHE_ENTRIES as u64 + 63).to_be_bytes());
+        let resolutions = store.roster_resolutions();
+        assert!(store.roster(&last_group).unwrap().is_empty());
+        assert_eq!(
+            store.roster_resolutions(),
+            resolutions,
+            "a retained negative result must remain a cache hit"
+        );
     }
 
     #[test]

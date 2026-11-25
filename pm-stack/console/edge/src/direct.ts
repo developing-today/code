@@ -821,6 +821,14 @@ async function bridgeCall(
   } else if (what === "enroll-tokens") {
     if (rest.length > 0) throw new OpError(502, "fleet bridge enroll-tokens takes no arguments here");
     path = `/fleet/${token}/enroll-tokens`;
+  } else if (what === "wake-hooks") {
+    // The wake hooks' list is a read of the same binding (#14544),
+    // through the bridge's read-scope view. Setting and removing are
+    // owner-token acts, never translated: a set asked at the edge is
+    // refused (its token must not be held, edge-proto.ts), a remove
+    // is held for a machine.
+    if (rest.length > 0) throw new OpError(502, "needs a machine");
+    path = `/fleet/${token}/wake-hooks`;
   } else if (what === "send") {
     const to: string[] = [];
     let kind = "message";

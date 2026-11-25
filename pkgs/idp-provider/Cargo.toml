@@ -28,6 +28,7 @@ reqwest = { version = "0.12", default-features = false, features = [
 ] }
 
 [dev-dependencies]
+proptest = { version = "1", default-features = false, features = ["std"] }
 tower = { version = "0.5", features = ["util"] }
 x509-cert = "0.2"
 der = "0.7"
