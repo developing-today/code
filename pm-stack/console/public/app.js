@@ -3150,6 +3150,83 @@ export function keptGroups(entries) {
   ].filter((g) => g.entries.length > 0);
 }
 
+/** Read every screen once, so the device has a copy of each. One at a
+ * time, and unhurried: some of it is searched for. Says how many could
+ * not be read; `step(i, n)` is told as each one starts. */
+async function keepEveryScreen(step = () => {}) {
+  const caps = await api("roadmaps").catch(() => []);
+  const reads = everyRead(caps, me.edge);
+  let failed = 0;
+  for (const [i, path] of reads.entries()) {
+    step(i, reads.length);
+    await api(path).catch(() => failed++);
+    if (offline) break;
+    await new Promise((resolve) => setTimeout(resolve, path.startsWith("roadmap?") ? 1200 : 150));
+  }
+  await fetch("/console/health", { cache: "no-store" }).catch(() => failed++);
+  return failed;
+}
+
+/** Where this browser notes when it last kept every screen unasked. */
+const KEPT_ALL_KEY = "pm-console-kept-all";
+
+/** After a sign-in, on Wi-Fi or a cable, keep a copy of every screen in
+ * the background, so a screen never visited still has one when the
+ * connection goes (#13501). Once in a while, not on every page load;
+ * never on a metered connection; and only once this browser keeps
+ * copies at all (the worker has taken the page). Quiet: nothing is
+ * said unless the owner asks, on More, On this device. */
+async function keepAllInBackground() {
+  if (!navigator.serviceWorker?.controller || offline || signedOut) return;
+  if (!unmetered(navigator.connection)) return;
+  let last = null;
+  try {
+    last = localStorage.getItem(KEPT_ALL_KEY);
+  } catch {
+    return;
+  }
+  if (!keepAllDue(last)) return;
+  // After the first screen has been drawn and read, not in its way.
+  await new Promise((resolve) => setTimeout(resolve, 30_000));
+  if (offline || signedOut || document.visibilityState !== "visible" || !unmetered(navigator.connection)) return;
+  const failed = await keepEveryScreen();
+  // Kept whole, it is not kept again for a while. Part-way, it is tried
+  // again on the next load.
+  if (failed === 0 && !offline) {
+    try {
+      localStorage.setItem(KEPT_ALL_KEY, String(Date.now()));
+    } catch {
+      // Nowhere to note it: it is kept again on the next load.
+    }
+  }
+}
+
+/** Whether the connection is one to read every screen on unasked: one
+ * the browser says is Wi-Fi or a cable, or, where it does not say which,
+ * a fast one. A metered one, one the owner asked to save data on, and
+ * one the browser says nothing of (Safari, Firefox) are left alone: the
+ * owner can still keep every screen by hand (#13501). */
+export function unmetered(connection) {
+  if (!connection || connection.saveData === true) return false;
+  const type = typeof connection.type === "string" ? connection.type : "unknown";
+  if (["wifi", "ethernet", "wimax"].includes(type)) return true;
+  if (type !== "unknown") return false;
+  return connection.effectiveType === "4g";
+}
+
+/** How long a copy of every screen kept unasked stands before it is
+ * kept again unasked. */
+export const KEEP_ALL_EVERY_MS = 12 * 60 * 60_000;
+
+/** Whether every screen is due to be kept unasked: never yet on this
+ * browser, or not for a while. A time that cannot be read, or one ahead
+ * of the clock, is taken as never. */
+export function keepAllDue(last, now = Date.now()) {
+  const at = Number(last);
+  if (last === null || last === undefined || last === "" || !Number.isFinite(at) || at > now) return true;
+  return now - at >= KEEP_ALL_EVERY_MS;
+}
+
 /** Everything the app's screens read, by the address each asks for it
  * under: what "keep a copy of every screen" fetches. What is read only
  * for one item when it is opened (a question's background, a pull
@@ -3244,20 +3321,13 @@ async function viewDevice() {
     toast("Forgotten. It keeps again from the next thing you look at.");
   };
   // Before a flight: read every screen once, so the device has a copy
-  // of each. One at a time, and unhurried: some of it is searched for.
+  // of each.
   const keepAll = async (e) => {
     const button = e.target;
     button.disabled = true;
-    const caps = await api("roadmaps").catch(() => []);
-    const reads = everyRead(caps, me.edge);
-    let failed = 0;
-    for (const [i, path] of reads.entries()) {
-      button.textContent = `${i + 1} of ${reads.length}…`;
-      await api(path).catch(() => failed++);
-      if (offline) break;
-      await new Promise((resolve) => setTimeout(resolve, path.startsWith("roadmap?") ? 1200 : 150));
-    }
-    await fetch("/console/health", { cache: "no-store" }).catch(() => failed++);
+    const failed = await keepEveryScreen((i, n) => {
+      button.textContent = `${i + 1} of ${n}…`;
+    });
     button.textContent = "Keep a copy of every screen now";
     button.disabled = false;
     toast(
@@ -4852,6 +4922,9 @@ if (typeof document !== "undefined" && view) {
     .then((m) => {
       me = m;
       connectLive();
+      // Signed in: a copy of every screen, in the background, where the
+      // connection allows it.
+      keepAllInBackground().catch(() => {});
     })
     .catch(() => {});
   // The worker shows notifications, keeps the app and what it last saw

@@ -104,6 +104,8 @@ import {
   machineReport,
   type PublicKey,
   publicKey,
+  STALE_ACT_ERROR,
+  staleAct,
   subjectOf,
   SYNC_SKEW_MS,
   type SyncRequest,
@@ -2306,7 +2308,7 @@ export class Edge {
       if (!sameSiteWrite(req)) return json({ error: "this request did not come from the console" }, 403);
       if (!(seg.length === 1 && seg[0] === "act")) return next("relay", { mode: "live" });
       if (Number(req.headers.get("content-length") ?? "0") > ACT_LIMIT) return json({ error: "too large" }, 413);
-      let body: { kind?: unknown; args?: unknown; id?: unknown };
+      let body: { kind?: unknown; args?: unknown; id?: unknown; at?: unknown; sent?: unknown; sure?: unknown };
       try {
         const text = await req.text();
         if (text.length > ACT_LIMIT) return json({ error: "too large" }, 413);
@@ -2323,6 +2325,16 @@ export class Edge {
       // The name the device gave this, if it gave one: whatever does
       // it, here or on a machine, does it once under that name.
       const id = typeof body.id === "string" && ACT_ID.test(body.id) ? body.id : null;
+      // Something that may have changed is not done unasked once it is
+      // more than ten minutes old, by whoever sends it (#13501). One
+      // this side has met under its name before is answered as it was:
+      // its answer may only have been lost on the way back.
+      if (
+        staleAct(kind, body, this.now()) &&
+        (id === null || (((await this.kv.get(`a:${id}`)) as Acted | undefined) ?? null) === null)
+      ) {
+        return json({ error: STALE_ACT_ERROR, stale: true }, 409);
+      }
       if (!Object.hasOwn(this.table, kind)) {
         // One this side does itself: it runs here, through the
         // console's own classes, and is never sent to a machine, so no

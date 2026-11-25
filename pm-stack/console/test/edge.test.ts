@@ -34,6 +34,7 @@ import {
   machineReport,
   newKeyPair,
   sign,
+  STALE_ACT_ERROR,
 } from "../src/edge-proto.ts";
 import { OpError } from "../src/errors.ts";
 import { Ops } from "../src/ops.ts";
@@ -4873,6 +4874,60 @@ describe("the edge does the core itself", () => {
     expect(w.ghMerged).toHaveLength(1);
     // The name is free again afterwards: asked once more, it is answered from what was written down.
     expect(await (await w.act("pr.merge", { pr: 55 }, id)).json()).toMatchObject({ ok: true, again: true });
+    expect(w.ghMerged).toHaveLength(1);
+  });
+
+  test("a timely action more than ten minutes old is not done unasked, by this side's clock or the device's (#13501)", async () => {
+    const w = await primary();
+    const MIN = 60_000;
+    const send = (body: Record<string, unknown>) => w.browse("/console/api/act", { body });
+    const refused = { error: STALE_ACT_ERROR, stale: true };
+    const t = w.now.t;
+    // Done eleven minutes ago by this side's clock: a device whose
+    // clock runs slow cannot talk it round by saying it sent it at once.
+    const slow = await send({
+      kind: "pr.merge",
+      args: { pr: 55 },
+      id: "0b000000-0000-4000-8000-000000000101",
+      at: t - 11 * MIN,
+      sent: t - 11 * MIN,
+    });
+    expect([slow.status, await slow.json()]).toEqual([409, refused]);
+    // Recent by this side's clock, old by the device's own: a clock
+    // that runs fast cannot hide that it waited.
+    const fast = await send({
+      kind: "pr.merge",
+      args: { pr: 55 },
+      id: "0b000000-0000-4000-8000-000000000102",
+      at: t + 60 * MIN,
+      sent: t + 72 * MIN,
+    });
+    expect([fast.status, await fast.json()]).toEqual([409, refused]);
+    // Neither was done, and neither name was written down: the owner
+    // may look again and send either under it.
+    expect(w.ghMerged).toEqual([]);
+    expect(w.stored.has("a:0b000000-0000-4000-8000-000000000101")).toBe(false);
+    // What the owner says of what is late is never held to it.
+    const comment = await send({
+      kind: "issue.comment",
+      args: { issue: 301, text: "Late, and still meant." },
+      at: t - 60 * MIN,
+      sent: t,
+    });
+    expect(comment.status).toBe(200);
+    // Looked at again and sent anyway: done.
+    const id = "0b000000-0000-4000-8000-000000000101";
+    const sure = await send({ kind: "pr.merge", args: { pr: 55 }, id, at: t - 11 * MIN, sent: t, sure: true });
+    expect(sure.status).toBe(200);
+    expect(w.ghMerged).toHaveLength(1);
+    // A name met before is answered as it was, however late it is
+    // asked about again: its answer may only have been lost on the way.
+    w.now.t += 30 * MIN;
+    const again = await send({ kind: "pr.merge", args: { pr: 55 }, id, at: t - 11 * MIN, sent: w.now.t });
+    expect([again.status, await again.json()]).toEqual([
+      200,
+      { ok: true, result: { number: 55, merged: true, sha: "5a5a5a5a5a5a" }, again: true },
+    ]);
     expect(w.ghMerged).toHaveLength(1);
   });
 
