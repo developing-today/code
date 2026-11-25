@@ -1,4 +1,4 @@
-# Store migration plan — Kaneo / Grist / Pad host-independent native stores
+# Store migration plan — Kaneo / Grist / Pad cluster-native store targets
 
 Issue: #6816 (step 1 — inventory and plan only). Parent: #3989. Rulings: #1258
 (2026-11-03). Backups routine: #1514; empty-generation handling: #3869.
@@ -100,8 +100,10 @@ promotion; no configuration permits two active writers.**
    (smallest blast radius first, Kaneo last because it is the public UI).
 3. Final delta: Kaneo dump-diff or dump/reload (80 MB — minutes), Grist/Pad
    final file sync with checksums.
-4. Verify: Kaneo table counts + a read-only UI smoke; Grist home doc list;
-   Pad DB integrity check (`PRAGMA integrity_check`) on a copy.
+4. Verify: Kaneo table counts + a read-only UI smoke; Grist home document
+   list plus SQLite `PRAGMA integrity_check` against the fenced final
+   `home.sqlite3` copy; Pad DB integrity check (`PRAGMA integrity_check`) on
+   a copy. A failed integrity check refuses promotion.
 5. Promote: Kaneo DSN → cluster PostgreSQL, start Kaneo; Grist/Pad start
    against their cluster persistent homes. Cloudflare hostname and Access
    policy stay unchanged; validate the origin route and Access separately.
@@ -131,7 +133,7 @@ two active writers" is mechanical instead of advisory:
   record (`--backup-record-file`) describes a complete generation with a
   valid archive identity and verified local, R2, and Drive copies, finished
   no more than 36 hours ago by default (`--max-backup-age-hours` can set a
-  stricter window); `pm-stack/scripts/fence-check.sh` reports **FENCED** (fail
+  stricter window). That 36-hour archive bound is not sufficient to claim Kaneo's 1-hour RPO: promotion additionally requires a separately verified Kaneo recovery point no older than 1 hour, or the window record must report that RPO as unmet and must not describe the cutover as meeting it. `pm-stack/scripts/fence-check.sh` reports **FENCED** (fail
   closed on anything unreadable) **and** the target's exact table count and row
   count equal the source's. A refused promotion touches no store. Only a pass
   writes a cutover receipt (fence verdict, both counts, verdict line) with
@@ -156,10 +158,16 @@ never enter a subprocess argument. Suites:
   source, demands exact table/row parity, and writes a receipt with no
   DSN. The DSN flip and restarts stay window operator steps; the first
   window records a run.
-- **Grist / Pad:** stop the promoted instance, point the data directory
-  back at the untouched laptop volume, restart. Writes made in the
-  cluster persistent home sync back before the restart — the sync is
-  bidirectional-checked by checksum at cutover and rollback alike.
+- **Grist / Pad:** stop and fence the promoted instance before touching the
+  old volume. Do not bidirectionally sync SQLite files or treat checksum
+  parity as a merge: divergent writes require a recorded, operator-reviewed
+  reconciliation. For a straightforward rollback, preserve a copy of the
+  promoted home, verify SQLite integrity (and Pad's WAL/checkpoint state),
+  restore the selected authoritative generation to the old volume, verify
+  checksums and application readability, then reopen only the single old
+  writer. Where reconciliation is needed, keep both writers stopped until
+  the selected data and recoverable writes are verified; neither volume is
+  disposable during this process.
 - Rollback is abandoned (volumes eligible for cleanup) only after 7 stable
   days and a recorded drill per the cold-restore runbook.
 
