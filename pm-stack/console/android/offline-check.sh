@@ -122,6 +122,11 @@ for node in root.iter("node"):
             x1, y1, x2, y2 = (int(n) for n in nums)
             print((x1 + x2) // 2, (y1 + y2) // 2)
             sys.exit(0)
+# No tappable node matched: say what the screen did hold, so a miss
+# is diagnosable from the run log (run 45574682050 missed a tab five
+# times that the failure dump, seconds later, showed plainly).
+seen = [n.get("text") for n in root.iter("node") if n.get("text")]
+print("tap_xy: no node starts with %r; screen texts: %s" % (needle, seen[:40]), file=sys.stderr)
 sys.exit(1)
 ' "$1"
 }
