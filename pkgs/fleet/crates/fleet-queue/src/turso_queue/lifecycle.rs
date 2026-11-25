@@ -480,7 +480,7 @@ pub(crate) fn claim_pick_once(
         // and no timer gating — Rule 1's default collection
         // path for the claimant.
         let pick_predicate = if handoff_pick {
-            HANDOFF_SQL.to_string()
+            handoff_pick_predicate()
         } else {
             default_pick_predicate()
         };

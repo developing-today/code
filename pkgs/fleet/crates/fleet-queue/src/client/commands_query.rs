@@ -334,7 +334,15 @@ pub(super) fn list_row_cells(r: &Value) -> Vec<String> {
     vec![
         format!("task {}", fmt_cell(r.get("id"))),
         fmt_cell(r.get("priority")),
-        fmt_cell(r.get("status")),
+        format!(
+            "{}{}",
+            fmt_cell(r.get("status")),
+            if r.get("manual_only").and_then(Value::as_bool) == Some(true) {
+                " (manual-only)"
+            } else {
+                ""
+            }
+        ),
         age_str(&r.get("created_at").cloned().unwrap_or(Value::Null)),
         fmt_cell(r.get("dedupe_key")),
         truncate(&fmt_cell(r.get("title")), 72),

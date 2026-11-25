@@ -159,6 +159,19 @@ mod tests {
     use proptest::prelude::*;
 
     #[test]
+    fn list_marks_manual_only_rows_9178() {
+        let cells = list_row_cells(&json!({
+            "id": 7,
+            "priority": 10,
+            "status": "queued",
+            "manual_only": true,
+            "created_at": "2026-11-25T00:00:00Z",
+            "title": "manual item",
+        }));
+        assert_eq!(cells[2], "queued (manual-only)");
+    }
+
+    #[test]
     fn execution_lane_split_7598() {
         // Oracle (#7598): a worker passing its own lane id in
         // --execution.lane is accepted; the recorded execution

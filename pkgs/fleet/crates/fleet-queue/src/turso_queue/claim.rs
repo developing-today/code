@@ -160,11 +160,16 @@ pub(crate) fn verb_enqueue(t: &TursoBackend, req: &Value) -> Value {
             }
         }
         let ins = t.exec(
-            "INSERT INTO tasks (queue, title, body, payload, metadata, dedupe_key, priority, \
+            "INSERT INTO tasks (queue, manual_only, title, body, payload, metadata, dedupe_key, priority, \
                status, not_before, max_attempts, required_budget_minutes, platform, progress, result, created_at, updated_at) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, '{}', '{}', ?, ?)",
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, '{}', '{}', ?, ?)",
             &[
                 Arg::Text(queue.clone()),
+                Arg::Int(if task.get("manual_only").and_then(Value::as_bool).unwrap_or(false) {
+                    1
+                } else {
+                    0
+                }),
                 arg_str(task.get("title").and_then(|v| v.as_str())),
                 arg_str(task.get("body").and_then(|v| v.as_str())),
                 Arg::Text(
@@ -204,7 +209,7 @@ pub(crate) fn verb_enqueue(t: &TursoBackend, req: &Value) -> Value {
             Some("enqueue_repo_task"),
             Some(id),
             "enqueued",
-            &json!({"queue": queue, "dedupe_key": dedupe, "platform": platform}),
+            &json!({"queue": queue, "dedupe_key": dedupe, "platform": platform, "manual_only": task.get("manual_only").and_then(Value::as_bool).unwrap_or(false)}),
         )?;
         // Revive-on-enqueue (#6838): the key's only prior row(s) are
         // terminal, so this fresh task is a revival, not a first
@@ -2248,13 +2253,17 @@ pub(crate) fn default_pick_predicate() -> String {
     let gate = budget_gate_sql();
     let bypass = budget_bypass_sql();
     format!(
-        "(((status = 'queued' AND attempts < max_attempts \
+        "manual_only = 0 AND ((((status = 'queued' AND attempts < max_attempts \
          AND (not_before IS NULL OR not_before <= ?)) \
        OR (status = 'parked' AND ((not_before IS NOT NULL AND not_before <= ?) \
          OR (wait_kind = 'capacity' AND {bypass})) AND {PARKED_TERM_EXCLUSION})) \
        AND {gate}) \
-       OR ({HANDOFF_SQL})"
+       OR ({HANDOFF_SQL}))"
     )
+}
+
+pub(crate) fn handoff_pick_predicate() -> String {
+    format!("manual_only = 0 AND ({HANDOFF_SQL})")
 }
 
 /// The lane a FRESH ledger assignment gets (#8187): `direct` by
