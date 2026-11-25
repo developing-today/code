@@ -907,6 +907,9 @@ mod tests {
         let shared = Arc::new(Mutex::new((surfaces, tasks)));
         let registry = Arc::new(registry);
         let barrier = Arc::new(Barrier::new(3));
+        // Collected on purpose: every thread must be spawned before any is
+        // joined, or the barrier never releases.
+        #[allow(clippy::needless_collect)]
         let handles: Vec<_> = (1..=3)
             .map(|byte| {
                 let shared = Arc::clone(&shared);
