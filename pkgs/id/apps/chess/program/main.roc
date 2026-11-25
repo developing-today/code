@@ -1119,9 +1119,9 @@ mate1 = play(start_pos, "white", 52, 36, 0)
 mate2 = play(mate1, "black", 12, 28, 0)
 mate3 = play(mate2, "white", 61, 34, 0)
 mate4 = play(mate3, "black", 1, 18, 0)
-mate5 = play(mate4, "white", 59, 39, 0)
+mate5 = play(mate4, "white", 59, 31, 0)
 mate6 = play(mate5, "black", 6, 21, 0)
-mate7 = play(mate6, "white", 39, 13, 0)
+mate7 = play(mate6, "white", 31, 13, 0)
 
 expect position_status(mate6, "white") == "playing"
 expect in_check(mate7.board, "black") and position_status(mate7, "black") == "checkmate"
