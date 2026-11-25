@@ -341,8 +341,10 @@ reject_identity() {
   shift
   for mode in preflight presync promote rollback; do
     reset_log
+    args=(--target-home cluster-postgres --target-host target-db)
+    [ "$#" -eq 0 ] || args=("$@")
     status=0
-    run --mode "$mode" "${safe[@]}" "$@" >"$TMP/out" 2>&1 || status=$?
+    run --mode "$mode" "${safe[@]}" "${args[@]}" >"$TMP/out" 2>&1 || status=$?
     if [ "$status" -eq 2 ] && log_is_empty && [ ! -e "$TMP/safety.dump" ] && [ ! -e "$TMP/safety.md" ]; then
       pass "$mode rejects $label without effects"
     else
@@ -361,7 +363,7 @@ for syntax in split equals; do
     fail "offline preflight ($syntax) (got: $(cat "$TMP/out"))"
   fi
 done
-reject_identity 'missing identity'
+reject_identity 'missing identity' --target-home cluster-postgres --target-host other-db
 reject_identity 'wrong home' --target-home supabase --target-host target-db
 reject_identity 'mismatched host' --target-home cluster-postgres --target-host other-db
 reject_identity 'empty host' --target-home=cluster-postgres --target-host=
