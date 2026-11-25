@@ -118,10 +118,12 @@ export class PersistentHostedAccountDirectory {
     return row ? fromRow(row) : undefined;
   }
 
-  private async getByBindingId(bindingId: string): Promise<HostedAccountRecord | undefined> {
+  /** Read a validated stable account by its minted routing key. */
+  async getByBindingId(bindingId: string): Promise<HostedAccountRecord | undefined> {
+    const validatedBindingId = parseBindingId(bindingId);
     const row = await this.database
       .prepare(`SELECT ${COLUMNS} FROM hosted_accounts WHERE binding_id = ?`)
-      .bind(bindingId)
+      .bind(validatedBindingId)
       .first<StoredAccountRow>();
     return row ? fromRow(row) : undefined;
   }

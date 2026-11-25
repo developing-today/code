@@ -12,6 +12,7 @@
 // No Iroh QUIC runs inside the Worker (issue excludes).
 
 import { FailClosed, parseBindingId, parseJurisdiction, userStub, type ObjectNamespaceLike } from "./routing.ts";
+import { PersistentHostedAccountDirectory, type HostedDirectoryDatabase } from "./persistent-account-directory.ts";
 import { HDR_BINDING, HDR_IROH, HDR_JURISDICTION, HDR_ROUTED, bodyTooLarge, requestBodyLimit } from "./user-do.ts";
 
 export { UserDO } from "./user-do.ts";
@@ -23,6 +24,9 @@ export { TenantOpsDO } from "./tenant-ops.ts";
 
 interface Env {
   USERS: ObjectNamespaceLike;
+  /** Optional structural adapter. Raw D1 is not compatible: its `.all()`
+   * result must be unwrapped from `{ results }` by an adapter first. */
+  HOSTED_DIRECTORY?: HostedDirectoryDatabase;
   USER_CEILING_BYTES?: string;
 }
 
@@ -38,6 +42,21 @@ export default {
     try {
       const bindingId = parseBindingId(req.headers.get("x-binding-id"));
       const jurisdiction = parseJurisdiction(req.headers.get("x-jurisdiction"));
+      if (env.HOSTED_DIRECTORY) {
+        let record;
+        try {
+          record = await new PersistentHostedAccountDirectory(env.HOSTED_DIRECTORY).getByBindingId(bindingId);
+        } catch (error) {
+          if (error instanceof FailClosed) throw error;
+          throw new FailClosed(503, "directory_unavailable", "hosted account directory unavailable; failing closed");
+        }
+        if (!record) {
+          throw new FailClosed(403, "directory_account_missing", "no validated hosted account record; failing closed");
+        }
+        if (record.jurisdiction !== jurisdiction) {
+          throw new FailClosed(403, "directory_jurisdiction_mismatch", "request jurisdiction does not match the persisted account; failing closed");
+        }
+      }
       const hasBody = req.method !== "GET" && req.method !== "HEAD";
       if (hasBody) {
         // Front-door memory bound (#11337): refuse a declared
