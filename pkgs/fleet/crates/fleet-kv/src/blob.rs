@@ -204,7 +204,7 @@ impl KvBlobRefV1 {
         if lines.next().is_some() {
             return Err(BlobError::MalformedRef("encoding"));
         }
-        let [
+        let &[
             profile,
             digest,
             bytes_len,
@@ -212,7 +212,7 @@ impl KvBlobRefV1 {
             tier,
             locator,
             state,
-        ] = values[..]
+        ] = &values[..]
         else {
             return Err(BlobError::MalformedRef("encoding"));
         };
