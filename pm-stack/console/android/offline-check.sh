@@ -131,8 +131,8 @@ dump_for_log() {
   screen_text >&2 || true
   echo "--- end screen ---" >&2
   echo "--- foreground: $(adb shell dumpsys activity activities 2>/dev/null | grep -m 1 'topResumedActivity' | tr -d '[:space:]') ---" >&2
-  echo "--- logcat (app and runtime lines) ---" >&2
-  adb logcat -d -t 400 2>/dev/null | grep -aE 'AndroidRuntime|FATAL EXCEPTION|pmconsole|LauncherActivity' | tail -15 >&2 || true
+  echo "--- logcat (app, launcher and activity lines) ---" >&2
+  adb logcat -d -t 3000 2>/dev/null | grep -aE 'AndroidRuntime|FATAL EXCEPTION|pmconsole|LauncherActivity|TwaLauncher|CustomTabs|ActivityTaskManager|ActivityManager' | tail -40 >&2 || true
   echo "--- end logcat ---" >&2
 }
 
