@@ -70,7 +70,7 @@ Term := {}.{
                 { out: Str.concat(acc.out, emit_run(acc.open, acc.x, acc.y, acc.len, acc.text, acc.spaces, acc.fg, acc.bg, acc.bold, width)), open: Bool.True, x: cell.x, y: cell.y, len: 1, text: cell.ch, spaces: cell.ch == " ", fg: cell.fg, bg: cell.bg, bold: cell.bold }
             }
         })
-        out = Str.concat(folded.out, emit_run(folded, width))
+        out = Str.concat(folded.out, emit_run(folded.open, folded.x, folded.y, folded.len, folded.text, folded.spaces, folded.fg, folded.bg, folded.bold, width))
         if out == "" {
             ""
         } else {
@@ -87,16 +87,19 @@ Term := {}.{
         Str.concat("\u(1b)[2J", paint_primary(Screen.new(dims.width, dims.height), next))
     }
 
-    emit_run : { open : Bool, x : U64, y : U64, len : U64, text : Str, spaces : Bool, fg : U8, bg : U8, bold : Bool }*, U64 -> Str
-    emit_run = |run, width| {
-        if !run.open {
+    ## The run fields travel as separate arguments, not as the fold's
+    ## accumulator record: the pinned dialect's record annotations are
+    ## closed, so a helper cannot take "the accumulator minus `out`".
+    emit_run : Bool, U64, U64, U64, Str, Bool, U8, U8, Bool, U64 -> Str
+    emit_run = |open, x, y, len, text, spaces, fg, bg, bold, width| {
+        if !open {
             ""
         } else {
-            cursor = "\u(1b)[${U64.to_str(run.y + 1)};${U64.to_str(run.x + 1)}H"
-            if run.spaces and run.fg == 0 and run.bg == 0 and run.bold == Bool.False and run.x + run.len == width {
+            cursor = "\u(1b)[${U64.to_str(y + 1)};${U64.to_str(x + 1)}H"
+            if spaces and fg == 0 and bg == 0 and bold == Bool.False and x + len == width {
                 Str.concat(cursor, "\u(1b)[K")
             } else {
-                Str.concat(cursor, Str.concat("\u(1b)[0m", Str.concat(sgr(run.fg, run.bg, run.bold), run.text)))
+                Str.concat(cursor, Str.concat("\u(1b)[0m", Str.concat(sgr(fg, bg, bold), text)))
             }
         }
     }
