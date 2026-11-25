@@ -912,11 +912,12 @@ pub fn evaluate_precision(data: &EvalData, split: Split, k: usize) -> Result<Pre
                     .take(k)
                     .filter(|doc| grades.get(*doc).copied().unwrap_or(0) >= 1)
                     .count();
-                let precision = round6(hits as f64 / k as f64);
-                sum += precision;
+                let raw_precision = hits as f64 / k as f64;
+                let precision = round6(raw_precision);
+                sum += raw_precision;
                 let class = class_sums.entry(query.class.clone()).or_default();
                 class.0 += 1;
-                class.1 += precision;
+                class.1 += raw_precision;
                 per_query.push(PrecisionQuery {
                     query: query.id.clone(),
                     class: query.class.clone(),
@@ -1113,10 +1114,11 @@ mod tests {
             "qrels": [
                 {"query": "q1", "doc": "a", "grade": 1},
                 {"query": "q2", "doc": "b", "grade": 0},
-                {"query": "q3", "doc": "b", "grade": 2}
+                {"query": "q3", "doc": "b", "grade": 2},
+                {"query": "q3", "doc": "c", "grade": 1}
             ],
             "runs": [
-                {"signal": "zeta", "results": {"q1": ["a"], "q2": [], "q3": ["x", "b"]}},
+                {"signal": "zeta", "results": {"q1": ["a"], "q2": [], "q3": ["x", "b", "c"]}},
                 {"signal": "alpha", "results": {"q1": ["x"], "q2": ["b"], "q3": []}}
             ]
         }));
@@ -1135,6 +1137,28 @@ mod tests {
         assert_eq!(zeta.per_query[0].precision, 0.5);
         assert_eq!(zeta.per_query[1].precision, 0.0);
         assert_eq!(zeta.per_query[2].precision, 0.5);
+    }
+
+    // Oracle: macro means are rounded only after averaging the exact
+    // per-query ratios. With k=3, scores 0 and 1/3 average to 1/6,
+    // which rounds to 0.166667 (not 0.166666 from averaging rounded rows).
+    #[test]
+    fn precision_macro_means_round_after_averaging() {
+        let d = data(serde_json::json!({
+            "format": "atlas-eval/v1",
+            "queries": [
+                {"id": "q1", "class": "code", "split": "dev"},
+                {"id": "q2", "class": "code", "split": "dev"}
+            ],
+            "qrels": [{"query": "q2", "doc": "relevant", "grade": 1}],
+            "runs": [{"signal": "s", "results": {"q1": [], "q2": ["relevant"]}}]
+        }));
+        let report = evaluate_precision(&d, Split::Dev, 3).unwrap();
+        let signal = &report.signals[0];
+        assert_eq!(signal.per_query[0].precision, 0.0);
+        assert_eq!(signal.per_query[1].precision, 0.333333);
+        assert_eq!(signal.precision, 0.166667);
+        assert_eq!(signal.per_class["code"], 0.166667);
     }
 
     // Oracle: public bound is inclusive at 1 and MAX_PRECISION_K and
