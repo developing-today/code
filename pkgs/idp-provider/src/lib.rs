@@ -7,9 +7,11 @@
 //! RS256 with the Slice 2 OIDC private key.
 //!
 //! The federated doors (#13411 GitHub, #13412 Google, #13414
-//! Microsoft) hang off `/door/{name}/start|callback` and link into
-//! the same account row; link state lives in the runtime identity
-//! store (#13415), seeded from the provider config. Signing keys
+//! Microsoft) hang off `/door/{name}/start|callback`; link state
+//! lives in the runtime identity store (#13415), seeded from the
+//! provider config. The config account's declared identities link
+//! to that account; any other allowlisted identity enrolls at
+//! first login into its own read-only account (#15249). Signing keys
 //! are a set (Slice 5 rollover): the JWKS can publish several
 //! certificates at once, tokens are signed with the configured
 //! active kid, and verification accepts every published kid.
@@ -36,13 +38,13 @@ pub mod upstream;
 pub mod verify;
 
 use audit::AuditLog;
-use axum::{Json, Router, routing::get};
-use base64::{Engine as _, engine::general_purpose::STANDARD as B64_STD};
+use axum::{routing::get, Json, Router};
+use base64::{engine::general_purpose::STANDARD as B64_STD, Engine as _};
 use der::Decode;
 use flow::FlowState;
 use identities::IdentityStore;
 use pkcs1::DecodeRsaPublicKey;
-use rsa::{RsaPublicKey, traits::PublicKeyParts};
+use rsa::{traits::PublicKeyParts, RsaPublicKey};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::path::PathBuf;
@@ -336,14 +338,14 @@ pub fn app_from_config(config: Config) -> Result<Router, String> {
             let registry = registry::ProviderConfig::load(cfg_path)?;
             // The key list is parallel to the certificate list;
             // with no list configured it is the single key path.
-            let key_paths: Vec<PathBuf> =
-                if !config.signing_key_paths.is_empty() {
-                    config.signing_key_paths.clone()
-                } else {
-                    vec![config.signing_key_path.clone().ok_or(
-                        "IDP_PROVIDER_OIDC_KEY is required when IDP_PROVIDER_CONFIG is set",
-                    )?]
-                };
+            let key_paths: Vec<PathBuf> = if !config.signing_key_paths.is_empty() {
+                config.signing_key_paths.clone()
+            } else {
+                vec![config
+                    .signing_key_path
+                    .clone()
+                    .ok_or("IDP_PROVIDER_OIDC_KEY is required when IDP_PROVIDER_CONFIG is set")?]
+            };
             if key_paths.len() != cert_paths.len() {
                 return Err(format!(
                     "signing key count ({}) does not match certificate count ({})",
