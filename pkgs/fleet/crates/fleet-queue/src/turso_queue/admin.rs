@@ -1360,7 +1360,7 @@ pub(crate) fn verb_complete(t: &TursoBackend, req: &Value) -> Value {
         {
             return fail(
                 2,
-                "complete_task: explicit resolution conflicts with the verified disposition".into(),
+                "complete_task: explicit resolution conflicts with the verified disposition",
             );
         }
         resolution = Some(mapped_resolution.to_string());
@@ -1375,7 +1375,7 @@ pub(crate) fn verb_complete(t: &TursoBackend, req: &Value) -> Value {
     {
         return fail(
             2,
-            "complete_task: substatus verified requires a verified disposition readback".into(),
+            "complete_task: substatus verified requires a verified disposition readback",
         );
     }
     let fields = match crate::validate::validate_resolution(

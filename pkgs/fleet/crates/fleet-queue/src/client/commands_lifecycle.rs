@@ -1406,6 +1406,18 @@ pub(super) fn cmd_cancel(rest: &[String]) -> i32 {
     let reason = args
         .get("reason")
         .unwrap_or_else(|| die(2, "cancel: --reason is required"));
+    let resolution = args
+        .get("resolution")
+        .unwrap_or_else(|| die(2, "cancel: --resolution is required"));
+    if let Err(e) = crate::validate::validate_resolution(
+        "cancelled",
+        Some(&resolution),
+        args.get("substatus").as_deref(),
+        Some(&reason),
+        args.get("ref").as_deref(),
+    ) {
+        die(2, &format!("cancel: {e}"));
+    }
     let worker = args
         .get("worker")
         .unwrap_or_else(|| "fleet-monitor".to_string());
@@ -1541,6 +1553,15 @@ pub(super) fn cmd_complete(rest: &[String]) -> i32 {
                 die(2, "--result must be a JSON object");
             }
         }
+    }
+    if let Err(e) = crate::validate::validate_resolution(
+        "done",
+        args.get("resolution").as_deref().or(Some("done")),
+        args.get("substatus").as_deref(),
+        args.get("reason").as_deref(),
+        args.get("ref").as_deref(),
+    ) {
+        die(2, &format!("complete: {e}"));
     }
     check_telemetry_fields(&result_obj, "--result");
     if let Some(tel_raw) = args.get("telemetry") {
