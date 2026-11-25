@@ -328,7 +328,7 @@ impl IdentityStore {
             .transaction()
             .map_err(|e| format!("identity enroll transaction failed: {e}"))?;
         let account_id = enrolled_account_id(provider, subject);
-        let roles = serde_json::to_string(ENROLLED_ACCOUNT_ROLES)
+        let roles = serde_json::to_string(&ENROLLED_ACCOUNT_ROLES)
             .map_err(|e| format!("account roles encode failed: {e}"))?;
         tx.execute(
             "INSERT OR IGNORE INTO accounts (account_id, display_name, roles)
