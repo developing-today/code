@@ -46,7 +46,9 @@ Three properties follow, and each answers part of #13889's "a bundle must not
 become a way to mint permanent authority":
 
 1. **Scoped to these objects.** A grant releases only the pairs in the same
-   bundle. It does not make the area readable for later bundles, and it never
+   bundle. A pair counts as in the bundle when its envelope is: the object
+   may have arrived earlier in another bundle and waited unplaced (slice 4
+   §2). It does not make the area readable for later bundles, and it never
    lets sync deliver the area. Sync still needs the receiver's own read
    capability from the broker.
 2. **Bounded by renewal.** A grant can never last longer than the parent's

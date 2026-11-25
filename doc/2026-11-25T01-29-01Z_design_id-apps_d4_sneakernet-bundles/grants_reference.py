@@ -134,7 +134,7 @@ def decode_grants(raw: bytes) -> list[tuple[int, dict]]:
         last = (mode, body)
         try:
             value = json.loads(body)
-        except ValueError:
+        except (ValueError, RecursionError):
             raise GrantError("grants_malformed") from None
         if not isinstance(value, dict) or _canon(value) != body:
             raise GrantError("grants_malformed")
@@ -243,12 +243,16 @@ class GrantHost(mr.Host):
         pick=lambda d, o, e: True,
         created_at: int = T0 + 3600,
         expires_at: int | None = None,
+        bodies: bool = True,
+        envelopes: bool = True,
     ) -> list[bytes]:
         objects = {}
         for d, (o, e) in self.store.items():
             if pick(d, o, e):
-                objects[bytes.fromhex(d)] = (2 if b'"verb"' in o else 1, o)
-                objects[br.blake3_256(e)] = (4, e)
+                if bodies:
+                    objects[bytes.fromhex(d)] = (2 if b'"verb"' in o else 1, o)
+                if envelopes:
+                    objects[br.blake3_256(e)] = (4, e)
         template = br.Manifest(
             creator_identity="keyset:" + self.chain[0]["entry"]["admin_key"],
             signing_key=br.ed25519_public(self.owner_device),
@@ -304,21 +308,27 @@ class GrantHost(mr.Host):
             else:
                 objs[e.digest.hex()] = data
         self._grant_areas = tuple(applied)
+
+        def place(obj: bytes, env: bytes) -> None:
+            # offer() validates the envelope before its area is read here.
+            if self.offer(obj, env, "bundle") == "admitted" and not mr.Host.readable(
+                self, json.loads(env)["area"]
+            ):
+                report.released.append(mr.did(obj))
+
         try:
             for d in sorted(objs):
-                area = json.loads(envs[d])["area"] if d in envs else None
                 if d in envs:
-                    base = mr.Host.readable(self, area)
-                    if (
-                        self.offer(objs[d], envs[d], "bundle") == "admitted"
-                        and not base
-                    ):
-                        report.released.append(d)
+                    place(objs[d], envs[d])
                 elif d not in self.store and d not in self.pruned:
                     self.unplaced[d] = objs[d]
+            # An envelope whose object arrived earlier, in another bundle.
+            for d in sorted(set(envs) - set(objs)):
+                if d in self.unplaced:
+                    place(self.unplaced[d], envs[d])
         finally:
             self._grant_areas = ()
-        report.held = sorted(d for d in objs if d in self.held)
+        report.held = sorted(d for d in set(objs) | set(envs) if d in self.held)
         return report
 
 
@@ -387,6 +397,7 @@ def self_test() -> int:
         return fail(f"recipient-bound grant: {r}")
     if private not in ana.store or ana.held:
         return fail("note not admitted on the recipient's host")
+    granted = ana
 
     # 2. The same file on Cat's host (a copied stick): not for Cat, still held.
     cat = copy.deepcopy(cat0)
@@ -415,6 +426,42 @@ def self_test() -> int:
     cat.sync_from(ben)
     if mr.did(later) in cat.store:
         return fail("a bundle grant let sync deliver the area")
+
+    # The object and its envelope may arrive in separate bundles: the grant
+    # travels with the envelope and still releases the object.
+    ana = copy.deepcopy(ana0)
+    (objs_only,) = ben0.export_with_grants([], notes_only, envelopes=False)
+    (env_only,) = ben0.export_with_grants([to_ana], notes_only, bodies=False)
+    if ana.import_with_grants(objs_only, now).result != "imported":
+        return fail("object-only bundle")
+    if private not in ana.unplaced:
+        return fail("an object without its envelope was not kept unplaced")
+    r = ana.import_with_grants(env_only, now)
+    if r.released != [private] or private not in ana.store or ana.unplaced:
+        return fail(f"envelope-only bundle with a grant: {r}")
+
+    # An envelope missing its fields, from an enrolled device, is refused by
+    # admission and does not crash the importer.
+    ana = copy.deepcopy(ana0)
+    bad_env = mr._json({"payload": private})
+    m_bad = br.Manifest(
+        creator_identity=ben0.identity,
+        signing_key=br.ed25519_public(mr.BEN_DEV),
+        created_at=T0 + 3600,
+        entries=[],
+        creator_binding=ir.encode_binding(ben0.chain),
+        grants=encode_grants([to_ana]),
+    )
+    note = ben0.store[private][0]
+    (bad,) = cp.split(
+        m_bad,
+        mr.BEN_DEV,
+        {bytes.fromhex(private): (1, note), br.blake3_256(bad_env): (4, bad_env)},
+        cp.CARRIERS["removable-media"],
+    )
+    r = ana.import_with_grants(bad, now)
+    if r.result != "imported" or r.released or private in ana.store:
+        return fail(f"malformed envelope: {r}")
 
     # 4. Renewal-collision and validity cases: one change each from case 1.
     other_dev = read_cap(mr.ANA_DEV, "ben/", T0 - DAY, T0 + 30 * DAY)
@@ -545,7 +592,7 @@ def self_test() -> int:
             return fail(f"{name}: release does not match the verdict")
 
     # 5. No onward delegation: Ana lifts Ben's grant into her own bundle.
-    ana2 = copy.deepcopy(ana)  # holds the released note from case 1
+    ana2 = copy.deepcopy(granted)  # holds the released note from case 1
     cat = copy.deepcopy(cat0)
     cat.rx.trust(ana2.chain[0])
     lifted = grant(MODE_BEARER, NOTES, T0, T0 + 3 * DAY, BEN_READ)
@@ -612,6 +659,11 @@ def self_test() -> int:
             "grants_not_ascending",
         ),
         ("trailing bytes", good_raw + b"\x00", "grants_malformed"),
+        (
+            "deep nesting",
+            bytes([1, 1]) + struct.pack(">I", 200000) + b"[" * 100000 + b"]" * 100000,
+            "grants_malformed",
+        ),
         (
             "bad recipient",
             encode_grants(
