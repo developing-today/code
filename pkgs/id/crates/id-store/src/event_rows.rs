@@ -78,14 +78,6 @@ pub trait RowWrite: RowRead {
 /// The transaction decides how rows are read and written, and owns its commit
 /// or abort lifecycle; event semantics run only through [`RowWrite`].
 pub trait EventWriteTransaction: Sized {
-    /// The row handle borrowed from this transaction.
-    type Rows<'a>: RowWrite
-    where
-        Self: 'a;
-
-    /// Borrows the transaction's row operations.
-    fn rows(&mut self) -> Self::Rows<'_>;
-
     /// Commits the transaction.
     fn commit(self) -> Result<(), StoreError>;
 
@@ -98,12 +90,16 @@ pub trait EventWriteTransaction: Sized {
 /// The operation's change bit selects commit or abort. An operation error
 /// leaves the transaction uncommitted, so dropping its backend guard performs
 /// rollback where required.
-pub fn with_write_transaction<T, Tx: EventWriteTransaction>(
+pub fn with_write_transaction<T, Tx>(
     mut txn: Tx,
-    op: impl FnOnce(&mut Tx::Rows<'_>) -> Result<(T, bool), StoreError>,
-) -> Result<(T, bool), StoreError> {
+    op: impl FnOnce(&mut &mut Tx) -> Result<(T, bool), StoreError>,
+) -> Result<(T, bool), StoreError>
+where
+    Tx: EventWriteTransaction,
+    for<'a> &'a mut Tx: RowWrite,
+{
     let result = {
-        let mut rows = txn.rows();
+        let mut rows = &mut txn;
         op(&mut rows)
     };
     match result {
@@ -297,15 +293,6 @@ impl RowWrite for WriteTransaction {
 }
 
 impl EventWriteTransaction for WriteTransaction {
-    type Rows<'a>
-        = &'a mut WriteTransaction
-    where
-        Self: 'a;
-
-    fn rows(&mut self) -> Self::Rows<'_> {
-        self
-    }
-
     fn commit(self) -> Result<(), StoreError> {
         WriteTransaction::commit(self)?;
         Ok(())
@@ -451,15 +438,6 @@ impl<'a, T: PipelineTransport> TenantWrite<'a, T> {
 }
 
 impl<'txn, T: PipelineTransport> EventWriteTransaction for TenantWrite<'txn, T> {
-    type Rows<'a>
-        = &'a mut TenantWrite<'txn, T>
-    where
-        Self: 'a;
-
-    fn rows(&mut self) -> Self::Rows<'_> {
-        self
-    }
-
     fn commit(self) -> Result<(), StoreError> {
         TenantWrite::commit(self)
     }

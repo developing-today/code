@@ -588,9 +588,37 @@ fn test_native_redb_oracle_nested_begin_preserves_transaction() {
 /// Inject failure after event and hash rows have been written, before group
 /// indexing. The enclosing transaction must leave no rows from any helper.
 struct FailMulti<R>(R);
-impl<R: RowWrite> RowWrite for FailMulti<R> {
+impl<R: RowRead> RowRead for FailMulti<R> {
     fn get(&mut self, table: &'static str, key: &[u8]) -> Result<Option<Vec<u8>>, StoreError> {
         self.0.get(table, key)
+    }
+    fn multi_values(
+        &mut self,
+        table: &'static str,
+        key: &[u8],
+    ) -> Result<Vec<Vec<u8>>, StoreError> {
+        self.0.multi_values(table, key)
+    }
+    fn scan_page(
+        &mut self,
+        table: &'static str,
+        after_key: Option<&[u8]>,
+        limit: usize,
+    ) -> Result<Vec<(Vec<u8>, Vec<u8>)>, StoreError> {
+        self.0.scan_page(table, after_key, limit)
+    }
+}
+impl<R: RowWrite> RowWrite for FailMulti<R> {
+    fn remove(&mut self, table: &'static str, key: &[u8]) -> Result<(), StoreError> {
+        self.0.remove(table, key)
+    }
+    fn multi_remove(
+        &mut self,
+        table: &'static str,
+        key: &[u8],
+        value: &[u8],
+    ) -> Result<(), StoreError> {
+        self.0.multi_remove(table, key, value)
     }
     fn put(&mut self, table: &'static str, key: &[u8], value: &[u8]) -> Result<(), StoreError> {
         self.0.put(table, key, value)
@@ -656,9 +684,37 @@ struct FailFourthPut<R> {
     puts: usize,
 }
 
-impl<R: RowWrite> RowWrite for FailFourthPut<R> {
+impl<R: RowRead> RowRead for FailFourthPut<R> {
     fn get(&mut self, table: &'static str, key: &[u8]) -> Result<Option<Vec<u8>>, StoreError> {
         self.rows.get(table, key)
+    }
+    fn multi_values(
+        &mut self,
+        table: &'static str,
+        key: &[u8],
+    ) -> Result<Vec<Vec<u8>>, StoreError> {
+        self.rows.multi_values(table, key)
+    }
+    fn scan_page(
+        &mut self,
+        table: &'static str,
+        after_key: Option<&[u8]>,
+        limit: usize,
+    ) -> Result<Vec<(Vec<u8>, Vec<u8>)>, StoreError> {
+        self.rows.scan_page(table, after_key, limit)
+    }
+}
+impl<R: RowWrite> RowWrite for FailFourthPut<R> {
+    fn remove(&mut self, table: &'static str, key: &[u8]) -> Result<(), StoreError> {
+        self.rows.remove(table, key)
+    }
+    fn multi_remove(
+        &mut self,
+        table: &'static str,
+        key: &[u8],
+        value: &[u8],
+    ) -> Result<(), StoreError> {
+        self.rows.multi_remove(table, key, value)
     }
     fn put(&mut self, table: &'static str, key: &[u8], value: &[u8]) -> Result<(), StoreError> {
         self.puts += 1;
