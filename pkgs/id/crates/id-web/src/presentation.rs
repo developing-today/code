@@ -960,4 +960,140 @@ mod tests {
         assert_eq!(document["pages"], "single");
         assert_eq!(document["assets"].as_array().unwrap().len(), 5);
     }
+
+    mod http {
+        use std::collections::BTreeMap;
+        use std::net::SocketAddr;
+        use std::path::PathBuf;
+
+        use axum::body::Body;
+        use axum::extract::ConnectInfo;
+        use axum::http::Request as HttpRequest;
+        use tower::ServiceExt as _;
+
+        use super::*;
+        use crate::runs::runs_routes;
+
+        async fn get(
+            manifest: &RunManifest,
+            uri: &str,
+            peer: [u8; 4],
+        ) -> (StatusCode, HeaderMap, Vec<u8>) {
+            let apps = Arc::new(BTreeMap::from([(manifest.app.clone(), manifest.clone())]));
+            let router: Router = runs_routes(RunsConfig::new(PathBuf::from("sh")).with_apps(apps));
+            let mut request = HttpRequest::get(uri).body(Body::empty()).unwrap();
+            request
+                .extensions_mut()
+                .insert(ConnectInfo(SocketAddr::from((peer, 40_000))));
+            let response = router.oneshot(request).await.unwrap();
+            let status = response.status();
+            let headers = response.headers().clone();
+            let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            (status, headers, body.to_vec())
+        }
+
+        const LOCAL: [u8; 4] = [127, 0, 0, 1];
+
+        #[tokio::test]
+        async fn manifest_lists_hashed_assets_served_by_hash() {
+            let dir = tempfile::tempdir().unwrap();
+            let manifest = demo_app(dir.path());
+            let (status, _, body) = get(&manifest, "/v1/apps/demo/manifest", LOCAL).await;
+            assert_eq!(status, StatusCode::OK);
+            let document: serde_json::Value = serde_json::from_slice(&body).unwrap();
+            assert_eq!(document["pages"], "single");
+            assert!(document.get("root").is_none(), "{document}");
+            let css = document["assets"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|asset| asset["path"] == "assets/app.css")
+                .unwrap()
+                .clone();
+            let url = css["url"].as_str().unwrap();
+            let (status, headers, body) = get(&manifest, url, LOCAL).await;
+            assert_eq!(status, StatusCode::OK);
+            assert_eq!(body, b"body { color: red }");
+            assert_eq!(headers[header::CONTENT_TYPE], "text/css");
+            assert!(
+                headers[header::CACHE_CONTROL]
+                    .to_str()
+                    .unwrap()
+                    .contains("immutable")
+            );
+            let (status, headers, _) =
+                get(&manifest, "/v1/apps/demo/assets/assets/app.css", LOCAL).await;
+            assert_eq!(status, StatusCode::OK);
+            assert_eq!(headers[header::CACHE_CONTROL], "no-cache");
+            let (status, _, _) = get(
+                &manifest,
+                "/v1/apps/demo/assets/assets/app.css?v=0000",
+                LOCAL,
+            )
+            .await;
+            assert_eq!(status, StatusCode::NOT_FOUND);
+        }
+
+        #[tokio::test]
+        async fn undeclared_remote_and_unknown_requests_are_refused() {
+            let dir = tempfile::tempdir().unwrap();
+            let manifest = demo_app(dir.path());
+            std::fs::write(dir.path().join("secret.txt"), "no").unwrap();
+            for (uri, peer, want) in [
+                (
+                    "/v1/apps/demo/assets/secret.txt",
+                    LOCAL,
+                    StatusCode::NOT_FOUND,
+                ),
+                (
+                    "/v1/apps/demo/assets/index.html",
+                    [192, 0, 2, 7],
+                    StatusCode::FORBIDDEN,
+                ),
+                (
+                    "/v1/apps/nope/assets/index.html",
+                    LOCAL,
+                    StatusCode::NOT_FOUND,
+                ),
+                (
+                    "/v1/apps/demo/bundle?format=rar",
+                    LOCAL,
+                    StatusCode::BAD_REQUEST,
+                ),
+                (
+                    "/v1/apps/demo/bundle.html",
+                    [192, 0, 2, 7],
+                    StatusCode::FORBIDDEN,
+                ),
+            ] {
+                let (status, _, _) = get(&manifest, uri, peer).await;
+                assert_eq!(status, want, "{uri}");
+            }
+        }
+
+        #[tokio::test]
+        async fn bundle_routes_answer_archives_and_one_page() {
+            let dir = tempfile::tempdir().unwrap();
+            let manifest = demo_app(dir.path());
+            let (status, _, body) = get(&manifest, "/v1/apps/demo/bundle?format=zip", LOCAL).await;
+            assert_eq!(status, StatusCode::OK);
+            assert_eq!(&body[..4], b"PK\x03\x04");
+            let (status, _, body) = get(&manifest, "/v1/apps/demo/bundle", LOCAL).await;
+            assert_eq!(status, StatusCode::OK);
+            assert_eq!(&body[..4], &0xFD2F_B528_u32.to_le_bytes());
+            let (status, headers, body) = get(&manifest, "/v1/apps/demo/bundle.html", LOCAL).await;
+            assert_eq!(status, StatusCode::OK);
+            assert!(
+                headers[header::CONTENT_TYPE]
+                    .to_str()
+                    .unwrap()
+                    .starts_with("text/html")
+            );
+            let html = String::from_utf8(body).unwrap();
+            assert!(html.contains("color: red"), "{html}");
+            assert!(!html.contains("src=\"assets/app.js\""), "{html}");
+        }
+    }
 }
