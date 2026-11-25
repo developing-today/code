@@ -177,7 +177,7 @@ pub fn expected_values() -> Vec<(&'static str, MappedValue)> {
         ),
         ("date_v", tag("pg.date", "2024-02-29")),
         ("time_v", tag("pg.time", "12:34:56.123456")),
-        ("timetz_v", tag("pg.timetz", "12:34:56+02:00")),
+        ("timetz_v", tag("pg.timetz", "12:34:56+02")),
         ("interval_v", tag("pg.interval", "1 day 02:03:04")),
         ("json_v", tag("pg.json", "{\"n\":7}")),
         ("jsonb_v", tag("pg.jsonb", "{\"ok\":true}")),
@@ -202,7 +202,7 @@ pub fn expected_values() -> Vec<(&'static str, MappedValue)> {
 }
 
 /// Offline bytes mirror wire values, but expected mappings are specified separately above.
-pub const HEALTHY_BODY: &str = r#"[{"id":1,"bool_v":true,"int2_v":7,"int4_v":70000,"int8_v":9223372036854775000,"float4_v":1.25,"float8_v":2.5,"numeric_v":12345678901234567890.123456789,"text_v":"hello","varchar_v":"varchar","char_v":"x","enum_v":"ready","bytea_v":"\\x00ff1042","timestamptz_v":"2024-02-03T04:05:06.123456+02:00","date_v":"2024-02-29","time_v":"12:34:56.123456","timetz_v":"12:34:56+02:00","interval_v":"1 day 02:03:04","json_v":{"n":7},"jsonb_v":{"ok":true},"json_record_v":{"label":"row"},"jsonb_list_v":[1,2,3],"uuid_v":"a0b1c2d3-e4f5-4678-9abc-0123456789ab","int4_array_v":[1,2,3],"null_v":null}]"#;
+pub const HEALTHY_BODY: &str = r#"[{"id":1,"bool_v":true,"int2_v":7,"int4_v":70000,"int8_v":9223372036854775000,"float4_v":1.25,"float8_v":2.5,"numeric_v":12345678901234567890.123456789,"text_v":"hello","varchar_v":"varchar","char_v":"x","enum_v":"ready","bytea_v":"\\x00ff1042","timestamptz_v":"2024-02-03T04:05:06.123456+02:00","date_v":"2024-02-29","time_v":"12:34:56.123456","timetz_v":"12:34:56+02","interval_v":"1 day 02:03:04","json_v":{"n":7},"jsonb_v":{"ok":true},"json_record_v":{"label":"row"},"jsonb_list_v":[1,2,3],"uuid_v":"a0b1c2d3-e4f5-4678-9abc-0123456789ab","int4_array_v":[1,2,3],"null_v":null}]"#;
 
 pub fn assert_healthy<T: Transport>(base: &str, transport: &mut T) {
     let mut modes = ModeChoices::new();
