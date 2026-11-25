@@ -318,7 +318,9 @@ impl Grant {
 }
 
 /// Check that `child` is a valid attenuation of `parent`, delegated by
-/// `delegator`. A child scope must appear in the parent's scope set as
+/// `delegator`.
+///
+/// A child scope must appear in the parent's scope set as
 /// is: an object grant cannot be cut from a collection grant here,
 /// because collection membership is not this crate's to know.
 pub fn check_attenuation(
