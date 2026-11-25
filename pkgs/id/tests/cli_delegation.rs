@@ -199,6 +199,49 @@ fn test_delegate_sets_the_delegation_mode_that_policy_shows() {
     );
 }
 
+/// A refused grant with `--mode` records neither event (#14877): the mode change and the grant
+/// are one atomic pair, so the group's delegation mode never changes under a grant that did not
+/// happen. A grant to oneself is refused by the fold as `BadGrantee`.
+#[test]
+fn test_a_refused_grant_with_a_mode_change_records_neither_event() {
+    let root = TempDir::new().unwrap();
+    let log = root.path().join("groups.jsonl");
+    let owner = node(root.path(), "owner", &log);
+    let ann = node(root.path(), "ann", &log);
+    let group = group_with_reader(&owner, &ann);
+    let before = GroupLog::open(&log).unwrap().events().len();
+
+    let refused = owner.run(&[
+        "delegate",
+        &group,
+        &owner.key(),
+        "--scope",
+        "read",
+        "--mode",
+        "keep_prior",
+    ]);
+    assert!(
+        !refused.status.success(),
+        "a grant to oneself was accepted"
+    );
+    let stderr = String::from_utf8_lossy(&refused.stderr);
+    assert!(stderr.contains("BadGrantee"), "{stderr}");
+    assert!(
+        !String::from_utf8_lossy(&refused.stdout).contains("policy"),
+        "a mode change was reported for a refused grant"
+    );
+    assert_eq!(
+        GroupLog::open(&log).unwrap().events().len(),
+        before,
+        "a refused grant with --mode recorded an event"
+    );
+    assert_eq!(
+        group_view(&log, &group).policy.delegation_mode(),
+        Delegation::Cascade,
+        "the mode change stayed in the log after the grant was refused"
+    );
+}
+
 /// Attenuation (design §7.2): a grantor passes on no more than it holds at that position. Ann
 /// holds a delegated Read, so the real `id delegate ... --scope write` is refused by the fold as
 /// `Attenuated`, and no grant is recorded for Bob.

@@ -131,6 +131,7 @@ import { contact, Push } from "../../src/push.ts";
 import { goesBy, platformSettings, settingsDifferences, settingsThatDiffer } from "../../src/settings.ts";
 import { timed, unread } from "../../src/timed.ts";
 import appFiles from "../../public/files.json";
+import { createLedgerQuery, LEDGER_PAGE_PATHS, ledgerPage } from "./ledger-pages.ts";
 
 /** The app's files and what each is served as: public/files.json is the
  * one list of them, and this Worker's build ships exactly those. */
@@ -141,6 +142,7 @@ export class Edge {
   private now: () => number;
   private fetchImpl: typeof fetch;
   private direct?: EdgeOptions["direct"];
+  private ledgerPages?: EdgeOptions["ledgerPages"];
   /** The console's own classes, wired for the edge and kept for as long
    * as the settings they were made for stand. */
   private kept: (DirectClasses & { cfg: EdgeConfig; table: Record<string, Action>; recalled: boolean }) | null = null;
@@ -289,6 +291,7 @@ export class Edge {
     this.takenRecords = new StoredRecords(this.kv, "taken", (id) => `taken:${id}`);
     this.actRecords = new StoredRecords(this.kv, "acts", (id) => `act:${id}`);
     this.direct = options.direct;
+    this.ledgerPages = options.ledgerPages;
     this.sockets = options.sockets ?? null;
     const setAlarm = options.setAlarm ?? (async () => {});
     this.setAlarm = async (at) => {
@@ -1986,6 +1989,17 @@ export class Edge {
       return next("relay", { mode: "page" });
     }
     const by = who.email ?? who.certName ?? who.sub ?? who.via;
+    // Hosted ledger surfaces (#14968, CF-5b), when the flag is on: the
+    // owner is verified (above), so this side answers from the
+    // fleet-platform ledger itself. Off, or for any other path, the
+    // request goes on exactly as it did before.
+    if (this.ledgerPages && LEDGER_PAGE_PATHS.has(path)) {
+      const response = await ledgerPage(req, {
+        query: createLedgerQuery(this.fetchImpl, this.ledgerPages.url, this.ledgerPages.token),
+        now: () => this.now(),
+      });
+      if (response) return response;
+    }
     const ours = path === BASE || path.startsWith(`${BASE}/`);
     if (!ours) {
       // The front door is the app; every other page is the host's.

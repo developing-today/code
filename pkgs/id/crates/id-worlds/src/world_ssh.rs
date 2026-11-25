@@ -368,6 +368,10 @@ impl Server for SshServer {
 enum ShellMode {
     Raw,
     Command,
+    /// A raw session that negotiated the text display mode (#14937):
+    /// painting is the mode's Tier 3 text presentation, and input is
+    /// line oriented, parsed exactly like command mode's lines.
+    Text,
 }
 
 struct Login {
@@ -661,6 +665,8 @@ impl Handler for SshClient {
         self.input = Some(input);
         let mode = if login.command_mode {
             ShellMode::Command
+        } else if display_mode == DisplayMode::Text {
+            ShellMode::Text
         } else {
             ShellMode::Raw
         };
@@ -1492,6 +1498,17 @@ impl SshIo {
         }
         recv_bytes_through_probe(&mut self.frames, &mut self.probe, &mut self.probe_outcome).await
     }
+
+    /// The full-repaint prefix for a frame this shell paints itself:
+    /// home + erase, except in text mode, which never writes an escape
+    /// byte (#14861 D2).
+    fn repaint_prefix(&self) -> &'static str {
+        if self.display_mode == DisplayMode::Text {
+            ""
+        } else {
+            "\x1b[H\x1b[2J"
+        }
+    }
 }
 
 impl SessionIo for SshIo {
@@ -1520,7 +1537,9 @@ impl SessionIo for SshIo {
             let bytes: Vec<_> = self.form_backlog.drain(..).collect();
             match self.mode {
                 ShellMode::Raw => return Inbound::Text(raw_frame(&SshInputFrame::Bytes(bytes))),
-                ShellMode::Command => self.commands.extend(self.lines.push(&bytes)),
+                ShellMode::Command | ShellMode::Text => {
+                    self.commands.extend(self.lines.push(&bytes));
+                }
             }
         }
         if self.active_form.is_some() {
@@ -1605,7 +1624,10 @@ impl SessionIo for SshIo {
                     }
                 }
             }
-            ShellMode::Command => loop {
+            // Text mode shares command mode's line parsing wholesale
+            // (#14937): the same line buffer, the same commands, the
+            // same shell-answered replies. Only painting differs.
+            ShellMode::Command | ShellMode::Text => loop {
                 if let Some(command) = self.commands.pop_front() {
                     if let Some(frame) = command_frame(&command, &self.capability) {
                         if let WorldCommand::Records { prefix } = &command {
@@ -1838,7 +1860,7 @@ impl SessionIo for SshIo {
         let mut next_screen = None;
         let text = match value["type"].as_str() {
             Some("snapshot") => {
-                if matches!(self.mode, ShellMode::Command) {
+                if matches!(self.mode, ShellMode::Command | ShellMode::Text) {
                     "World chat: type a line to chat; /help lists commands.\r\nworld> ".to_owned()
                 } else {
                     return true;
@@ -1849,7 +1871,11 @@ impl SessionIo for SshIo {
                     if let Ok(crate::world_presentation::WorldSurface::Screen(screen)) =
                         serde_json::from_value(surface.clone())
                     {
-                        let raw_mode = matches!(self.mode, ShellMode::Raw);
+                        // Raw and text sessions paint through the
+                        // presenter path (text's presenter is the eager
+                        // Tier 3 one its mode selected); command sessions
+                        // take the plain full render below.
+                        let raw_mode = matches!(self.mode, ShellMode::Raw | ShellMode::Text);
                         let rendered = if raw_mode {
                             if let Some(presenter) = self.presenter.as_mut() {
                                 Some(presenter.render_screen(&screen))
@@ -2061,17 +2087,6 @@ impl SessionIo for SshIo {
             self.previous_screen = next_screen;
         }
         written
-    }
-
-    /// The full-repaint prefix for a frame this shell paints itself:
-    /// home + erase, except in text mode, which never writes an escape
-    /// byte (#14861 D2).
-    fn repaint_prefix(&self) -> &'static str {
-        if self.display_mode == DisplayMode::Text {
-            ""
-        } else {
-            "\x1b[H\x1b[2J"
-        }
     }
 }
 
@@ -3268,6 +3283,89 @@ mod tests {
         );
 
         drop(channel);
+        drop(session);
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn a_text_shell_parses_typed_lines_with_the_command_parsing() {
+        let hub = lobby_hub();
+        let world = hub
+            .lease(None, Some("admin"))
+            .await
+            .unwrap()
+            .service()
+            .world()
+            .clone();
+        let mut events = world.subscribe();
+        let capability = invite_capability(&hub, "ssh-text-lines").await;
+        let (port, server) = start(hub).await;
+        let session = connect(port, &capability).await;
+        let mut channel = shell_with_display(&session, "text").await;
+
+        // Oracle: issue #14937 — input in text mode stays line
+        // oriented, parsed exactly like command mode's lines. The join
+        // banner is the command mode's, in plain text.
+        let banner = read_until_bytes(
+            &mut channel,
+            b"world> ",
+            Duration::from_secs(10),
+        )
+        .await;
+        assert!(
+            String::from_utf8_lossy(&banner).contains("world> "),
+            "text session never showed its banner: {banner:?}"
+        );
+        assert!(
+            !banner.contains(&0x1b),
+            "text banner wrote an escape byte: {banner:?}"
+        );
+
+        // A typed line reaches the world as a chat line. Under raw
+        // keystroke forwarding no Chat event would ever fire.
+        channel.data(&b"hello from text mode\r"[..]).await.unwrap();
+        tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                if let Ok(event) = events.recv().await {
+                    if matches!(event.kind, crate::world::WorldEventKind::Chat { .. }) {
+                        break;
+                    }
+                }
+            }
+        })
+        .await
+        .expect("typed line was not sent to the world as chat");
+
+        // Slash commands are the shell's own, answered in plain text.
+        channel.data(&b"/help\r"[..]).await.unwrap();
+        let help = read_until_bytes(
+            &mut channel,
+            b"Commands:",
+            Duration::from_secs(10),
+        )
+        .await;
+        assert!(
+            String::from_utf8_lossy(&help).contains("Commands:"),
+            "shell did not answer /help: {help:?}"
+        );
+        assert!(
+            !help.contains(&0x1b),
+            "text /help wrote an escape byte: {help:?}"
+        );
+
+        // And /quit ends the session, as in command mode.
+        channel.data(&b"/quit\r"[..]).await.unwrap();
+        tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                match channel.wait().await {
+                    Some(_) => {}
+                    None => break,
+                }
+            }
+        })
+        .await
+        .expect("text session did not close on /quit");
+
         drop(session);
         server.abort();
     }
