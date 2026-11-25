@@ -141,7 +141,7 @@ where
     async fn accept(&self, conn: Connection) -> Result<(), AcceptError> {
         let gate = Arc::clone(&self.gate);
         let sink = self.sink.clone();
-        let boundary_gate = Arc::clone(&self.boundary_gate);
+        let boundary_gate = self.boundary_gate.clone();
         answer_frames(&conn, move |body| {
             let gate = Arc::clone(&gate);
             let sink = sink.clone();
