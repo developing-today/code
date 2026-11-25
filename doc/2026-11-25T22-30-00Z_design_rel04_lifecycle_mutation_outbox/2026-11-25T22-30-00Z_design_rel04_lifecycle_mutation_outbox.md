@@ -234,10 +234,25 @@ bug REL-03 and REL-06 exist to prevent.
 
 ## 6. Status transition table
 
-The operation's status is derived from its intents: `confirmed` when
-every required intent is `confirmed`, otherwise the least advanced
-intent status in the order below. REL-03 §5.2 renders outcomes from
-it unchanged. The table below is for one intent.
+The operation's status is derived from its required intents by a
+total precedence. It is the **first** status in this list that any
+required intent holds:
+
+1. `unknown` (the remote truth of some effect is not known, so the
+   operation's is not either)
+2. `conflict`
+3. `terminal_failure`
+4. `retryable_failure`
+5. `delivering`
+6. `pending`
+7. `confirmed` (reached only when every required intent is
+   `confirmed`)
+
+Every combination of intent statuses selects exactly one operation
+status, and REL-03 §5.2 renders an outcome from it unchanged. For
+example, one intent `conflict` and another `terminal_failure` gives
+`conflict`, and one `confirmed` with one `pending` gives `pending`.
+The table below is for one intent.
 
 | From | To | Who | Condition |
 | --- | --- | --- | --- |
@@ -246,10 +261,11 @@ it unchanged. The table below is for one intent.
 | `delivering` | `confirmed` | REL-06 read-back | the effect is observed and verified |
 | `delivering` | `retryable_failure` | the sender | a failure that provably happened before the remote accepted anything (connection refused, 429, 5xx with no side effect per REL-06) |
 | `delivering` | `unknown` | the sender | a timeout or lost response after the request may have reached the remote |
+| `delivering` | `unknown` | the next sender | the holder's send lease on the target has lapsed. Whether the request was ever issued is not known, so the intent goes to read-back (§9) |
 | `delivering` | `conflict` | the sender | a REL-06 precondition failed |
 | `delivering` | `terminal_failure` | the sender | a non-retryable error, attempts exhausted, or `INTENT_PAYLOAD_TAMPERED` |
 | `retryable_failure` | `delivering` | the sender | `next_attempt_at` reached, same lease and order rules as `pending` |
-| `unknown` | `confirmed` / `retryable_failure` / `conflict` | REL-06 read-back only | read-back shows the effect present, absent and safe to retry, or a precondition now false |
+| `unknown` | `confirmed` / `retryable_failure` / `conflict` | REL-06 read-back only | read-back shows the effect present, absent and safe to retry under §9.1, or a precondition now false |
 | `conflict`, `terminal_failure` | none | — | terminal. An operator can only start a new operation (REL-08) |
 | `confirmed` | none | — | terminal. **No transition leaves `confirmed`**, whatever a late or replayed acknowledgement says |
 
@@ -288,12 +304,27 @@ timeline row for each waiting transition names the blocking
 
 ## 8. Attempt log and event order
 
-Each delivery attempt appends one immutable attempt row:
-`(intent_id, attempt_no, started_at, finished_at, from_status,
-to_status, error_code, remote_status, remote_ref)`. `attempt_no` is
-dense from 1 and unique per intent. The row is written in the same
-transaction as the status transition it reports (§6), so the log and
-the status can never disagree.
+Two records, with different jobs:
+
+- **The attempt row**, one per delivery attempt:
+  `(intent_id, attempt_no, started_at, finished_at, outcome_status,
+  error_code, remote_status, remote_ref)`. `attempt_no` is dense from
+  1 and unique per intent. The row is **opened** in the same
+  transaction as the move to `delivering`, with the outcome fields
+  empty. It is **closed exactly once**, in the same transaction as
+  the sender's outcome transition (`retryable_failure`, `unknown`,
+  `conflict`, `terminal_failure`, or `confirmed` when the sender's
+  own read-back verifies), or by the lease-lapse recovery to
+  `unknown`. A closed row is never rewritten. There is at most one
+  open row per intent.
+- **The timeline row** in `events`, one per status transition of any
+  kind, written in the same transaction as that transition. Read-back
+  transitions out of `unknown` are not attempts: they write a
+  timeline row and no attempt row.
+
+So the log and the status cannot disagree: an intent is `delivering`
+exactly when it has an open attempt row, and every transition has
+exactly one timeline row.
 
 For one operation, the timeline order is fixed: `accepted` (in the
 local mutation), then for each attempt `delivering` and its outcome,
@@ -321,7 +352,46 @@ carries `operation_id`, `intent_id` and `attempt_no` in `detail`, so
 - **Crash during delivering.** The sender's lease on the target
   expires, and the next sender treats a `delivering` intent whose
   lease lapsed as `unknown`, never as `pending`. Only read-back moves
-  it on.
+  it on, under §9.1.
+
+### 9.1 A stale send that lands after read-back
+
+#9209 §3.2 names the case: a request authorized locally is paused,
+the lease expires, and the request later takes effect. REL-06
+defines no remote fence, and revoking a lease does not cancel a
+request already sent. So a sender that lost its lease can still land
+its request after a replacement sender has read back absence. REL-04
+states the required behavior. The mechanism that meets it is left to
+the implementation issue, with REL-01 and REL-06.
+
+- **Which effect kinds a stale send can harm.** _Additive_ kinds,
+  where each request creates something new (a comment, an issue, a
+  pull request, a review), can be duplicated. _Set-to-value_ kinds
+  (a label, an assignee, a project field, a body edit) cannot be
+  duplicated, but a late send can overwrite a newer value. Each
+  registered `contracts::Effect` kind is classified as one or the
+  other in the effect registry, and an unclassified kind is treated
+  as additive.
+- **Lease check before sending.** A sender re-checks its send lease
+  immediately before it issues the remote request, and does not send
+  if the lease has lapsed. This narrows the window. It does **not**
+  close it: the process can still pause between the check and the
+  request, and this record makes no claim that it does.
+- **Absence alone does not permit a retry of an additive kind.** For
+  an additive kind, `unknown` → `retryable_failure` on read-back
+  absence is allowed only when something stops the stale request
+  from creating a second effect, or bounds when it can land. Either a
+  REL-06 precondition that the stale request carries and the remote
+  enforces, or a stale-send horizon that the implementation proves
+  bounds every request issued under the lapsed lease. Without either,
+  the intent stays `unknown` for REL-08's operator to decide. REL-06's
+  marker read-back reports a duplicate as `conflict`; it detects the
+  duplicate, it does not prevent it.
+- **Set-to-value kinds** may retry on absence, because a duplicate
+  is harmless. A late overwrite of a newer value is caught only where
+  the request carries a REL-06 precondition on the prior value. Where
+  the remote offers none, the drift shows in the next read-back of
+  the newer operation, and that operation goes to `unknown`.
 
 ## 10. Acceptance oracle
 
@@ -357,9 +427,14 @@ Tests a separately scoped implementation must add. Names follow the
 9. `pmo_rel_busy_store_leaves_no_partial_mutation` — inject
    `SQLITE_BUSY` at each step; then a same-key retry succeeds once.
 10. `pmo_rel_attempt_log_matches_status` — after a random schedule of
-    transitions, the latest attempt row's `to_status` equals the
-    intent's status, and `attempt_no` is dense.
-11. `pmo_rel_creation_outbox_unchanged` — the creation pilot's
+    transitions, an intent is `delivering` exactly when it has one
+    open attempt row, no closed row is ever rewritten, `attempt_no`
+    is dense, and every transition has exactly one timeline row.
+11. `pmo_rel_additive_effect_not_retried_on_absence_alone` — an
+    additive intent in `unknown` whose read-back shows absence stays
+    `unknown` unless a remote precondition or a proven stale-send
+    horizon applies; a set-to-value intent may retry.
+12. `pmo_rel_creation_outbox_unchanged` — the creation pilot's
     existing tests pass unchanged, and no REL-04 row references its
     tables.
 
