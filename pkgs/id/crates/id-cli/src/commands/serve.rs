@@ -928,6 +928,8 @@ fn allowed_caps(names: Option<&[String]>) -> Result<std::collections::BTreeSet<S
 struct ServeWorlds {
     ephemeral: bool,
     admin_token: Option<String>,
+    boundary_config: Option<crate::server_config::Boundaries>,
+    boundary_server: String,
     blobs: iroh_blobs::api::Store,
     docs: Docs,
     checkpoint_every: u64,
@@ -992,6 +994,18 @@ impl ServeWorlds {
             ..WorldLimits::default()
         };
         let runtime = self.runtime;
+        // Until the serving process has live placement evidence sources, an
+        // enabled boundary receives no claims and therefore fails closed.
+        let boundary_gate = self.boundary_config.as_ref().map(|boundaries| {
+            Arc::new(
+                crate::boundary_gate::ServerBoundaryGate::without_hop_evidence(
+                    boundaries.clone(),
+                    self.boundary_server.clone(),
+                    Some(name.to_owned()),
+                    Arc::new(crate::boundary_evidence::AppEvidenceVerifier::default()),
+                ),
+            ) as Arc<dyn id_directory::directory::BoundaryGate>
+        });
         let make = {
             let admin_token = self.admin_token.clone();
             let blobs = self.blobs.clone();
@@ -1026,15 +1040,27 @@ impl ServeWorlds {
             "serve startup: records ready, building world service (#190 breadcrumb)"
         );
         let service = if self.ephemeral {
+            let mut core = WorldCore::new(name, limits)?;
+            if let Some(gate) = boundary_gate {
+                core.directory_mut().set_boundary_gate(Arc::clone(&gate));
+                core.set_world_boundary_gate(gate);
+            }
             make(WorldHandle::spawn_with_device_manifest(
-                WorldCore::new(name, limits)?,
+                core,
                 Box::<id_worlds::world::EmptyWorldProgram>::default(),
                 Some(WorldHandle::host_device_manifest()),
             ))
             .with_records_store(records)
         } else {
-            let (service, report) =
-                id_worlds::world_store::open_world(&dir, name, limits, runtime, make).await?;
+            let (service, report) = id_worlds::world_store::open_world_with_directory_gate(
+                &dir,
+                name,
+                limits,
+                runtime,
+                boundary_gate,
+                make,
+            )
+            .await?;
             status!(
                 "world {name}: restored {} at sequence {} ({} input(s) replayed)",
                 dir.display(),
@@ -1392,6 +1418,10 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("apps"));
     let app_discovery = crate::app_manifest::discover_apps(&apps_root);
+    // #14226: the discovered apps' run manifests, which the web
+    // surface's `POST /v1/runs` loader checks app runs against.
+    #[cfg(feature = "web")]
+    let run_apps = crate::app_manifest::run_apps(&app_discovery.apps);
     for app in app_discovery.apps {
         info!(app = %app.manifest.app.id, path = %app.path.display(), "serve: discovered app");
     }
@@ -1556,7 +1586,22 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
     #[cfg(feature = "web")]
     let blob_gate: Option<Arc<crate::blob_gate::RefreshingWorlds>> = match &event_events {
         Some(events) => {
-            let folded = build_blob_gate(events, &store_handle, &groups_log).await;
+            // A failed first build has no previous fold to keep: the gate
+            // starts empty — fail-closed, as before — and the refresh task
+            // below retries on its cadence (#13821).
+            let folded = match build_blob_gate(events, &store_handle, &groups_log).await {
+                Ok(folded) => folded,
+                Err(error) => {
+                    tracing::error!(
+                        "blob gate: initial build failed: {error:#}; \
+                         starting with an empty gate until a refresh succeeds"
+                    );
+                    crate::blob_gate::FoldedWorlds::new(
+                        crate::groups::worlds::Worlds::empty(),
+                        std::collections::HashMap::new(),
+                    )
+                }
+            };
             Some(Arc::new(crate::blob_gate::RefreshingWorlds::new(folded)))
         }
         None => None,
@@ -1633,6 +1678,10 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
         let opener = Arc::new(ServeWorlds {
             ephemeral,
             admin_token: world_admin_token.clone(),
+            boundary_config: started_server_config
+                .as_ref()
+                .map(|started| started.config.boundaries().clone()),
+            boundary_server: node_id.to_string(),
             blobs: store_handle.clone(),
             docs: docs.clone(),
             checkpoint_every: world_checkpoint_every,
@@ -2210,6 +2259,7 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
                 Some(endpoint.clone()),
                 Some(std::sync::Arc::clone(&transport_ad_minter)),
                 gallery,
+                Some(run_apps),
             )
             .await?;
             publication_surface = Some(surface);
@@ -2431,8 +2481,15 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
                 interval.tick().await;
                 loop {
                     interval.tick().await;
-                    let folded = build_blob_gate(&events, &store, &groups_log).await;
-                    gate.refresh(folded);
+                    // A failed rebuild keeps the previous fold (#13821):
+                    // a transient read error must not empty the live gate.
+                    if let Err(error) =
+                        gate.try_refresh(build_blob_gate(&events, &store, &groups_log).await)
+                    {
+                        tracing::error!(
+                            "blob gate: refresh failed: {error:#}; keeping the previous fold"
+                        );
+                    }
                 }
             }))
         }

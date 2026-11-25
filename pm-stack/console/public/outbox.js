@@ -27,6 +27,21 @@
     "issue.rank",
     "task.move",
     "message.send",
+    // The composer's broaden and offer are the owner's words too
+    // (#14375): done late they still do what was meant.
+    "message.broaden",
+    "message.offer",
+    // A revocation done late is still the right act (#14374).
+    "agent.revoke",
+    // Taking back unused enroll tokens, the same (#14376). The
+    // provisioning mints are NOT here: their answer is a secret shown
+    // once, so they are "now" — done with a connection or not at all,
+    // never kept on this device to be done late.
+    "agent.revoke-enroll",
+    // Removing a wake hook, the same (#14544). Setting one is NOT
+    // here: its arguments carry the hook's token, so it is "now",
+    // never kept on this device to be done late.
+    "agent.wake-hook-remove",
     "intake.send",
   ]);
   /** Actions on something that may have changed by the time they are
@@ -83,6 +98,17 @@
         return of("pr", a.pr);
       case "unit.act":
         return of("unit", a.unit);
+      case "agent.revoke": {
+        const surface = typeof a.surface === "string" ? a.surface : "";
+        const name = typeof a.name === "string" ? a.name : "";
+        return surface === "" || name === "" ? null : `agent:${surface}:${name}`;
+      }
+      case "message.broaden":
+        return of("batch", a.batch);
+      case "agent.revoke-enroll":
+        return of("enroll", a.agent);
+      case "agent.wake-hook-remove":
+        return of("wake-hook", a.address);
       default:
         return null;
     }
@@ -140,6 +166,22 @@
         return "Accept the recommended answers";
       case "message.send":
         return `Message to ${Array.isArray(a.to) ? a.to.join(", ") : a.to}${quoted(a.text)}`;
+      case "message.broaden":
+        return `Broaden the send on batch ${a.batch ?? "?"}`;
+      case "message.offer":
+        return `Offer to ${Array.isArray(a.to) ? a.to.join(", ") : a.to} (${a.slots ?? "?"} slots)${quoted(a.text)}`;
+      case "agent.revoke":
+        return `Revoke ${a.name ?? "an agent"}'s ${a.surface === "notes" ? "notes tokens" : "bridge credentials"}`;
+      case "agent.revoke-enroll":
+        return `Take back ${a.agent ?? "an agent"}'s unused enroll tokens`;
+      case "agent.wake-hook-set":
+        return `Set the wake hook for ${a.address ?? "an address"}`;
+      case "agent.wake-hook-remove":
+        return `Remove the wake hook for ${a.address ?? "an address"}`;
+      case "agent.mint-enroll":
+        return `Mint an enroll token for ${a.agent ?? "a new agent"}`;
+      case "agent.mint-credential":
+        return `Mint a credential for ${a.agent ?? "an agent"}`;
       case "unit.act":
         return `${a.action} ${a.unit}`;
       // The platform's own second half of something it filed itself:

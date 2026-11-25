@@ -275,6 +275,88 @@ export function evaluateForecastAlerts(input: ForecastAlertInput): ForecastAlert
   return { findings, evaluations, state: { version: 1, fired } };
 }
 
+// --- Tick-hook inputs: the prediction log + the persisted state ------
+
+const KINDS: readonly ForecastPredictionKind[] = [
+  "pool_exhaustion",
+  "downtime_window",
+  "reset_duration",
+  "model_plan_arrival",
+];
+const STATES: readonly ForecastPredictionState[] = [
+  "predicted",
+  "insufficient_history",
+  "no_basis",
+  "adjustment_unavailable",
+];
+
+function isPredictionRecord(v: unknown): v is ForecastPredictionRecord {
+  if (!v || typeof v !== "object") return false;
+  const r = v as Record<string, unknown>;
+  if (r.record_version !== 1) return false;
+  if (typeof r.id !== "string" || r.id === "") return false;
+  if (!KINDS.includes(r.kind as ForecastPredictionKind)) return false;
+  if (!STATES.includes(r.state as ForecastPredictionState)) return false;
+  if (typeof r.issued_at !== "string") return false;
+  if (typeof r.methodology_version !== "string") return false;
+  if (!r.subject || typeof r.subject !== "object") return false;
+  // A predicted record must carry the range object; the evaluation
+  // module judges the rest of it (missing/empty rendered text is
+  // "unevaluable" there, never silently dropped here).
+  if (r.prediction !== null && r.prediction !== undefined && typeof r.prediction !== "object") return false;
+  return true;
+}
+
+/**
+ * Parse the C4 prediction log (JSONL, design §1) into the records
+ * this tick evaluates: the appended records, newest per subject.
+ *
+ * Every tick appends its records, so the log accumulates superseded
+ * predictions; firing on an old record whose range has passed would
+ * page Drew about a wall that already happened. Taking the newest
+ * record per (kind, subject) keeps the log as the history the design
+ * wants while evaluating only the live prediction — a record's own
+ * `supersedes` chain is the log's, not a re-derivation here.
+ *
+ * A torn or unparseable line is skipped (a torn last line is the
+ * expected torn-write shape); a line that is not a prediction record
+ * is skipped too. An unreadable log yields [] — the caller names that
+ * in its log line rather than erroring the tick.
+ */
+export function parseForecastAlertLog(text: string, maxLines = 500): ForecastPredictionRecord[] {
+  const newest = new Map<string, ForecastPredictionRecord>();
+  for (const line of text.split("\n").slice(-maxLines)) {
+    if (!line.trim()) continue;
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if (!isPredictionRecord(parsed)) continue;
+    newest.set(`${parsed.kind}|${forecastAlertSubjectKey(parsed)}`, parsed);
+  }
+  return [...newest.values()];
+}
+
+export function isForecastAlertState(v: unknown): v is ForecastAlertState {
+  if (!v || typeof v !== "object") return false;
+  const s = v as Record<string, unknown>;
+  if (s.version !== 1 || !Array.isArray(s.fired)) return false;
+  return s.fired.every((e) => {
+    if (!e || typeof e !== "object") return false;
+    const f = e as Record<string, unknown>;
+    return (
+      typeof f.recordId === "string" &&
+      KINDS.includes(f.kind as ForecastPredictionKind) &&
+      typeof f.subjectKey === "string" &&
+      typeof f.earliest === "string" &&
+      typeof f.latest === "string" &&
+      typeof f.firedAt === "string"
+    );
+  });
+}
+
 // --- Ledger posting (the S5 precedent's shape) ------------------------
 
 export const FORECAST_ALERT_SOURCE = "quota-prediction";

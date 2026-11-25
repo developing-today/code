@@ -94,6 +94,16 @@ For a detached laptop command, add `--detach` and track the returned job ID with
 
 Random `fp_...` handles and their records live in `~/.local/state/fleet-place/sessions.json` and mirror best-effort to the queue backend's `placement_sessions` table, so a handle resolves from any seat whose client can reach the broker; the local store remains the offline fallback (and the only input to placement decisions). For a follow-up from another agent or workspace, the portable `OWNER/REPO#RUN_ID` identifier also works; Fleet resolves it through GitHub without the local session record. If dispatch has not correlated a run ID yet, keep using the local handle.
 
+## Placement coordinator (central seat)
+
+Since #13765 a dispatch consults the **central placement coordinator** before it submits anything: the broker holds the fleet-wide true load view, the shared Blacksmith budget, and the waitlist, so two seats cannot both take the last slot or spend the same Blacksmith minutes.
+
+- **Claim before dispatch.** After a surface is chosen the client claims it (`/placement-claim`). `claimed` holds the seat, the run is dispatched, and the slot is confirmed with the run id. `queued` means the owner is full at the fleet level: the session is recorded `queued` with its `claim_handle` and **nothing is dispatched**. `refused` means the Blacksmith budget is spent: the client re-decides once without Blacksmith and claims the replacement.
+- **Queued sessions finish themselves.** `fleet queue session status <handle>` polls the claim; when the coordinator grants it, the stored job is dispatched, the slot confirmed, and the recorded handle becomes the run handle as usual. Blacksmith slots settle with the run's reconciled minutes when the session turns terminal.
+- **Every record names `placement_path`.** `coordinator` for granted/queued/refused-then-placed, `singular-fallback` (plus `coord_error`) when the coordinator is unreachable — in that case dispatch proceeds exactly as before the coordinator existed, so a broker outage never blocks a build.
+- **Operator escape hatch.** `FLEET_PLACE_COORD=off` disables the client (`/placement-*` calls all fail), restoring the pre-coordinator singular path for that process.
+- **Broker side.** The five verbs (`/placement-claim`, `/placement-confirm`, `/placement-release`, `/placement-claim-status`, `/placement-load`) live in `turso_queue::placement_coord`; budgets and caps come from the embedded registry only. A background sweep in `queue_broker::run()` refreshes GitHub counts, expires stale holds, grants queued claims FIFO, and recomputes Blacksmith spend.
+
 ## Sandbox seats
 
 Sandbox seats run the static `fleet` build (installed by `scripts/muse/bootstrap.sh`). Dispatch and `dispatch-test` call the GitHub API directly from the seat, and the binary validates TLS against the platform root store, so both work under the sandbox's TLS-intercepting egress proxy with the ambient environment — no proxy overrides needed.

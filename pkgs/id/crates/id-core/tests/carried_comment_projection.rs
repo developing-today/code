@@ -51,6 +51,7 @@ fn comment(id: u8, target: Option<u8>) -> SocialObject {
         content_ref: oid(100 + id),
         schema_version: 1,
         succeeds_ref: None,
+        target_ref: None,
     }
 }
 

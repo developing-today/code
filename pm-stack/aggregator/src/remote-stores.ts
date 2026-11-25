@@ -189,7 +189,43 @@ export function createTursoActionsRemote(getClient: GetClient = getTursoStoreCli
 // activity-ingestion.json -> public.agg_activity_ingestion + gaps
 // ---------------------------------------------------------------------
 
+// The activity store persists the WHOLE ingestion file on every event, and
+// the file holds every gap ever recorded (thousands of rows). Sending all of
+// them each time made the aggregator the largest Turso writer (#turso-writes,
+// Nov 25: ~1.2M rows/hour, every gap row rewritten on every event). The
+// remote now remembers what it last wrote (or loaded) per row and sends only
+// rows whose content changed; the upsert's change guard stays as a backstop.
+function ingestionRowKey(data: IngestionFile, source: string): string {
+  const checkpoint = data.checkpoints[source];
+  const status = data.sourceStatus?.[source];
+  return (
+    `(${sqlStr(source)}, ${checkpoint ? sqlJson(checkpoint) : "null"}, ` +
+    `${textArray(data.seen[source] ?? [])}, ${status ? sqlJson(status) : "null"}`
+  );
+}
+
+function gapRowKey(gap: GapRecord): string {
+  return (
+    `(${sqlStr(gap.id)}, ${sqlStr(gap.source)}, ${sqlStr(gap.from)}::timestamptz, ` +
+    `${sqlStr(gap.to)}::timestamptz, ${sqlStr(gap.status)}, ${sqlStr(gap.detectedAt)}::timestamptz, ` +
+    `${optTs(gap.resolvedAt)}`
+  );
+}
+
+function ingestionSources(data: IngestionFile): string[] {
+  return [
+    ...new Set<string>([
+      ...Object.keys(data.checkpoints),
+      ...Object.keys(data.seen),
+      ...Object.keys(data.sourceStatus ?? {}),
+    ]),
+  ];
+}
+
 export function createTursoActivityRemote(getClient: GetClient = getTursoStoreClient): ActivityRemote {
+  // Last content known to be in Turso, keyed by source / gap id.
+  const writtenSources = new Map<string, string>();
+  const writtenGaps = new Map<string, string>();
   return {
     async load(): Promise<IngestionFile | null> {
       const db = await requireClient(getClient);
@@ -228,28 +264,22 @@ export function createTursoActivityRemote(getClient: GetClient = getTursoStoreCl
         if (resolvedAt) gap.resolvedAt = resolvedAt;
         data.gaps.push(gap);
       }
+      writtenSources.clear();
+      writtenGaps.clear();
+      for (const source of ingestionSources(data)) writtenSources.set(source, ingestionRowKey(data, source));
+      for (const gap of data.gaps) writtenGaps.set(gap.id, gapRowKey(gap));
       return data;
     },
 
     async save(data: IngestionFile): Promise<void> {
       const db = await requireClient(getClient);
-      const sources = new Set<string>([
-        ...Object.keys(data.checkpoints),
-        ...Object.keys(data.seen),
-        ...Object.keys(data.sourceStatus ?? {}),
-      ]);
-      const sourceRows = [...sources].map((source) => {
-        const checkpoint = data.checkpoints[source];
-        const status = data.sourceStatus?.[source];
-        return (
-          `(${sqlStr(source)}, ${checkpoint ? sqlJson(checkpoint) : "null"}, ` +
-          `${textArray(data.seen[source] ?? [])}, ${status ? sqlJson(status) : "null"}, now())`
-        );
-      });
-      for (const chunk of chunks(sourceRows)) {
+      const changedSources = ingestionSources(data)
+        .map((source) => ({ key: source, row: ingestionRowKey(data, source) }))
+        .filter(({ key, row }) => writtenSources.get(key) !== row);
+      for (const chunk of chunks(changedSources)) {
         await db.query(
           `insert into public.agg_activity_ingestion (source, checkpoint, seen_ids, source_status, updated_at) values\n` +
-            `${chunk.join(",\n")}\n` +
+            `${chunk.map(({ row }) => `${row}, now())`).join(",\n")}\n` +
             `on conflict (source) ${updateChanged(
               "agg_activity_ingestion",
               ["checkpoint", "seen_ids", "source_status"],
@@ -257,20 +287,19 @@ export function createTursoActivityRemote(getClient: GetClient = getTursoStoreCl
             )}`,
           { operation: "activity.ingestion", candidates: chunk.length },
         );
+        for (const { key, row } of chunk) writtenSources.set(key, row);
       }
-      const gapRows = data.gaps.map(
-        (gap) =>
-          `(${sqlStr(gap.id)}, ${sqlStr(gap.source)}, ${sqlStr(gap.from)}::timestamptz, ` +
-          `${sqlStr(gap.to)}::timestamptz, ${sqlStr(gap.status)}, ${sqlStr(gap.detectedAt)}::timestamptz, ` +
-          `${optTs(gap.resolvedAt)}, now())`,
-      );
-      for (const chunk of chunks(gapRows)) {
+      const changedGaps = data.gaps
+        .map((gap) => ({ key: gap.id, row: gapRowKey(gap) }))
+        .filter(({ key, row }) => writtenGaps.get(key) !== row);
+      for (const chunk of chunks(changedGaps)) {
         await db.query(
           `insert into public.agg_activity_gaps (id, source, gap_from, gap_to, status, detected_at, resolved_at, updated_at) values\n` +
-            `${chunk.join(",\n")}\n` +
+            `${chunk.map(({ row }) => `${row}, now())`).join(",\n")}\n` +
             `on conflict (id) ${updateChanged("agg_activity_gaps", ["status", "gap_to", "resolved_at"], true)}`,
           { operation: "activity.gaps", candidates: chunk.length },
         );
+        for (const { key, row } of chunk) writtenGaps.set(key, row);
       }
     },
   };

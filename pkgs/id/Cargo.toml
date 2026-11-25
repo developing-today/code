@@ -36,7 +36,11 @@ members = [
   "crates/id-import-notion",
   "crates/id-client",
   "crates/id-pg",
+<<<<<<< HEAD
   "crates/id-bevy-bridge",
+=======
+  "crates/id-grants",
+>>>>>>> origin/main
 ]
 # The vendored crates stay OUT of the workspace: as path dependencies inside
 # this directory Cargo would otherwise treat them as members, and a member's
@@ -61,6 +65,7 @@ default-members = [
   "crates/id-cli",
   "crates/id-import-notion",
   "crates/id-pg",
+  "crates/id-grants",
   "crates/id-client",
 ]
 
@@ -122,6 +127,10 @@ id-cli = { path = "crates/id-cli", default-features = false }
 # Directory-family modules extracted in step 6b of the crate split
 # (#4409). Re-exported at their historical crate:: paths in src/lib.rs.
 id-directory = { path = "crates/id-directory", default-features = false }
+# The public-shares grants model (#5802): the libsql adapter builds its
+# published set from the real publication record (#14781, #14784) in
+# src/foreign_libsql.rs.
+id-grants = { path = "crates/id-grants" }
 # Currency registry + account factory (F1 #2317, F2 #2318); composed
 # with the gateway envelope by the #2321 PoC (src/currency/gateway_poc.rs).
 id-currency-registry = { path = "crates/id-currency-registry", default-features = false }
@@ -146,9 +155,9 @@ iroh-tickets = "1"
 # against: Docs::spawn takes their Store and Gossip types, so a newer
 # release cannot be mixed in until iroh-docs moves to it (iroh-docs 0.101
 # needs iroh-blobs 0.103 and iroh-gossip 0.101).
-iroh-blobs = "0.105"
+iroh-blobs = "0.103"
 iroh-docs = "0.101"
-iroh-gossip = { version = "0.103", features = ["net"] }
+iroh-gossip = { version = "0.101", features = ["net"] }
 p2panda-core = { git = "https://github.com/p2panda/p2panda", rev = "da80c05b95269926bf58121cf6a2d3dd5ca41dfc" }
 # Store traits only. The default features would pull in SQLite (explainers section 14).
 p2panda-store = { git = "https://github.com/p2panda/p2panda", rev = "da80c05b95269926bf58121cf6a2d3dd5ca41dfc", default-features = false }
@@ -249,7 +258,7 @@ iroh = { version = "1", features = ["test-utils"] }
 # In-memory blob store for the MCP bridge end-to-end test's world host
 # (tests/mcp_bridge_e2e.rs, #7914). Dev only; already in the lock via the
 # root package's own iroh-blobs dependency.
-iroh-blobs = "0.105"
+iroh-blobs = "0.103"
 # Parses the relay kit's configs in tests/relay_ops.rs. Dev only.
 toml = "1"
 # Local mainline DHT testnet for tests/dht_testnet.rs (P7.3). Dev only; already in the lock via the `dht` feature.

@@ -271,7 +271,7 @@ impl Storage for SimDir {
                 .cloned()
                 .ok_or_else(|| io::Error::from(io::ErrorKind::NotFound))?
         };
-        handle.sync_data()
+        handle.sync_data().map_err(io::Error::from)
     }
 
     fn sync_dir(&self) -> io::Result<()> {

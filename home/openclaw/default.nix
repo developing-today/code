@@ -103,6 +103,7 @@ in
       "${acpxPlugin}/node_modules/@agentclientprotocol/codex-acp/dist/index.js";
     ".openclaw/acpx/managed-codex-acp-wrapper.mjs".source = ./acpx/codex-acp-wrapper.mjs;
     ".openclaw/acpx/managed-muse-agent-acp-wrapper.mjs".source = ./acpx/muse-agent-acp-wrapper.mjs;
+    ".openclaw/acpx/home-dir.mjs".source = ./acpx/home-dir.mjs;
   };
   home.file.".acpx/config.json".text = builtins.toJSON {
     agents = {
@@ -181,6 +182,9 @@ in
       # and it starts by itself the moment the host declares the
       # secrets. Delete this when every host carrying the user env also
       # carries its own openclaw secrets.
+      # Guarded by .github/scripts/check-openclaw-unit-wants.sh (#2875):
+      # while any host block in nixos/hosts/default.nix lacks an
+      # openclaw secrets import, dropping this condition fails CI.
       ConditionPathExists = "/run/secrets/openclaw/gateway-token";
       StartLimitIntervalSec = "600";
       StartLimitBurst = 30;

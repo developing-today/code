@@ -27,10 +27,20 @@
       "properties": {
         "max_bytes": { "minimum": 1, "type": "integer" },
         "max_fan_out": { "minimum": 1, "type": "integer" },
-        "max_hops": { "minimum": 1, "type": "integer" },
+        "max_hops": { "maximum": 8, "minimum": 1, "type": "integer" },
         "max_time_ms": { "minimum": 1, "type": "integer" }
       },
       "required": ["max_hops", "max_bytes", "max_time_ms", "max_fan_out"],
+      "type": "object"
+    },
+    "fanout": {
+      "additionalProperties": false,
+      "description": "Fan-out keys (#9111 record section 7.1, from #9144). Every key has a default; a value outside 1..=limit rejects the document, never clamped. per_peer_timeout_ms above deadline_ms is clamped to it at resolution.",
+      "properties": {
+        "deadline_ms": { "default": 5000, "maximum": 60000, "minimum": 1, "type": "integer" },
+        "peer_breadth": { "default": 4, "maximum": 16, "minimum": 1, "type": "integer" },
+        "per_peer_timeout_ms": { "default": 2000, "maximum": 30000, "minimum": 1, "type": "integer" }
+      },
       "type": "object"
     },
     "fixed_gates": {
@@ -73,6 +83,7 @@
       },
       "type": "object"
     },
+    "fanout": { "$ref": "#/$defs/fanout" },
     "gates": { "$ref": "#/$defs/fixed_gates" },
     "mode": {
       "description": "Named mode: a coherent behavior bundle that contributes behavioral defaults only. A mode cannot confer identity or privilege.",

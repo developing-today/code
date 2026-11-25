@@ -59,19 +59,27 @@ Prints all 16 kinds with their groups, seats, and enrolment notes as one JSON ob
 
 ```
 fleet agent enroll --kind K --name N [--groups a,b] [--dry-run] [--profile PATH]
+fleet agent enroll --kind K --name N --bootstrap TOKEN
+                     [--model-provider P] [--model-id M] [--model-variant V]
 ```
 
-| Flag        | Argument | Default                | Meaning                                                                                                                                                   |
-| ----------- | -------- | ---------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `--kind`    | `K`      | required               | One of the 16 kinds (see `kinds`). An unknown kind is a usage error listing all kinds, with "use generic for anything with a shell".                      |
-| `--name`    | `N`      | required               | The agent's name (its bridge mailbox name). The shared USAGE spells this `--name`; the domain help line abbreviates it as the enroll line's second value. |
-| `--groups`  | `a,b`    | kind's built-in groups | Additional bridge groups; adds to the kind's groups, never replaces them.                                                                                 |
-| `--dry-run` | —        | off                    | Probe nothing and register nothing.                                                                                                                       |
-| `--profile` | `PATH`   | default profile path   | Where to save the profile.                                                                                                                                |
+| Flag          | Argument | Default                | Meaning                                                                                                                                                             |
+| ------------- | -------- | ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--kind`      | `K`      | required               | One of the 16 kinds (see `kinds`). An unknown kind is a usage error listing all kinds, with "use generic for anything with a shell".                                |
+| `--name`      | `N`      | required               | The agent's name (its bridge mailbox name). The shared USAGE spells this `--name`; the domain help line abbreviates it as the enroll line's second value.           |
+| `--groups`    | `a,b`    | kind's built-in groups | Additional bridge groups; adds to the kind's groups, never replaces them.                                                                                           |
+| `--dry-run`   | —        | off                    | Probe nothing and register nothing.                                                                                                                                 |
+| `--profile`   | `PATH`   | default profile path   | Where to save the profile.                                                                                                                                          |
+| `--bootstrap` | `TOKEN`  | —                      | Provision from the owner's single-use bootstrap token instead of the shared fleet token (binary seats only; never with `--dry-run` — the exchange burns the token). |
+| `--model-provider` | `P` | —                      | The lane's serving-model provider, recorded in the profile as its model stamp (#4919). Requires `--model-id`; re-enrolling without the model flags keeps a recorded stamp. |
+| `--model-id`  | `M`      | —                      | The lane's serving model (or the `muse-lane` marker for a lane that cannot name a leaf). Requires `--model-provider`. |
+| `--model-variant` | `V`  | —                      | The lane's effort variant. Requires `--model-provider` and `--model-id`. This is the effort producer: `next` stamps it on every queue claim, so completions carry a non-null effort. |
 
 ### Behaviour
 
 Registers an agent and saves its profile. Flow: the kind is validated; `--groups` adds to the kind's built-in groups; for a binary/http seat the bridge leg is probed in **Register** mode — `bridge hello` with the name and groups, which is what actually registers the mailbox; connector kinds instead get the "attach the connector" instruction and a fixed channel address. The four legs are probed (see `doctor`) and the saved profile records agent, kind, groups, and leg state.
+
+With `--bootstrap`, provisioning comes first: [`fleet bridge exchange`](bridge.md#fleet-bridge-exchange) trades the token — minted by the owner bound to this name, kind and groups — for the agent's own credentials, which land in the vault by name (`bridge.<agent>-fleet-token`, `bridge.<agent>-token`). The mint-bound groups replace the kind/`--groups` set (they are the truth a credentialed hello cannot change), the profile is saved early so the probe's hello resolves the new credential by its recorded name, and the profile records the credential **names** and the notes identity — never a value. For a `muse` seat whose mint carried a notes identity, enrolment also writes the wake hookup (the signal-poll detector under `~/hooks/scripts/` and the hook definition under `~/hooks/definitions/`, the hatch-personal `scripts/messages-hook/` pattern), so the agent is woken when a note lands. A refused exchange enrols nothing: no vault write, no profile, no hook.
 
 The JSON answer carries: the profile, `registered` (true only when not a dry run _and_ the bridge leg answered), the legs, the **rungs** map, and seat-specific next-step lines — for a binary seat the run loop (`fleet agent next --agent <name>`, do the task, run its `then` lines, repeat while the run has budget) and the `fleet shell` line ("runs where builds belong; never build in a limited sandbox"); for an http seat the token-by-name note and the reference-client commands; for central, the `fleet bridge send --to <address> [--command]` lines.
 
@@ -127,7 +135,7 @@ Probes all four legs in parallel and prints the legs, the rungs map, and the bui
 ## fleet agent next
 
 ```
-fleet agent next [--agent N] [--lane L] [--repo OWNER/NAME] [--low-water N] [--shortlist PATH] [--platform P] [--pool P] [--remaining-budget-minutes N] [--filter EXPR] [--queue Q] [--no-push] [--no-queue] [--no-shortlist] [--no-priority]
+fleet agent next [--agent N] [--lane L] [--repo OWNER/NAME] [--low-water N] [--shortlist PATH] [--platform P] [--pool P] [--remaining-budget-minutes N] [--filter EXPR] [--queue Q] [--model-provider P] [--model-id M] [--model-variant V] [--no-push] [--no-queue] [--no-shortlist] [--no-priority]
 ```
 
 | Flag                         | Argument     | Default                     | Meaning                                         |
@@ -142,6 +150,7 @@ fleet agent next [--agent N] [--lane L] [--repo OWNER/NAME] [--low-water N] [--s
 | `--remaining-budget-minutes` | `N`          | —                           | Carried into the queue claim.                   |
 | `--filter`                   | `EXPR`       | —                           | Carried into the queue claim.                   |
 | `--queue`                    | `Q`          | —                           | Queue name for the queue rung's claim.          |
+| `--model-provider` / `--model-id` / `--model-variant` | `P` / `M` / `V` | profile stamp | The claim's model stamp (#4919). Explicit flags win as given; with none, the stamp recorded in the agent's profile at enrolment is carried into the claim whole. |
 | `--no-push`                  | —            | off                         | Skip rung 1 (recorded as `skipped` in `tried`). |
 | `--no-queue`                 | —            | off                         | Skip rung 2.                                    |
 | `--no-shortlist`             | —            | off                         | Skip rung 3.                                    |
