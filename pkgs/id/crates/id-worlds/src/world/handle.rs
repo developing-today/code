@@ -1707,7 +1707,9 @@ impl WorldHandle {
     /// immediately before returning the bytes; callers must authenticate the
     /// holder and cursor and pass the residency gate before invoking this
     /// method, then send only returned bytes. A refused copy is never
-    /// released for dispatch.
+    /// released for dispatch. The sanctioned production caller is
+    /// [`super::spill_controller::SpillController`], which fixes that
+    /// authenticate → residency → dispatch order with no bypass.
     pub async fn dispatch_spill_copy(
         &self,
         holder: impl Into<String>,
