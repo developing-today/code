@@ -3230,6 +3230,61 @@ mod tests {
         (handle, token)
     }
 
+    /// A fuel-rate admission refusal is recoverable at the actor level
+    /// (#1067, Codex review on #12557): exhausting the budget must not
+    /// mark the program unhealthy, so the same input succeeds once the
+    /// window rolls instead of requiring a program replacement.
+    #[tokio::test]
+    async fn a_fuel_rate_refusal_keeps_the_actor_healthy() {
+        use crate::sandbox::{Sandbox, SandboxLimits};
+
+        // The same echo program as the sandbox tests: `plaza_update`
+        // returns the participant id and never traps.
+        const ECHO: &str = r#"
+        (module
+          (memory (export "memory") 1 1)
+          (data (i32.const 32) "hello")
+          (func (export "plaza_alloc") (param i32) (result i32) (i32.const 0))
+          (func (export "plaza_free") (param i32 i32))
+          (func (export "plaza_init") (param i64) (result i32) (i32.const 0))
+          (func (export "plaza_update") (param i32 i32 i32 i32) (result i32)
+            local.get 0)
+          (func (export "plaza_view") (param i32) (result i32)
+            (i32.const 32))
+          (func (export "plaza_out_len") (result i32) (i32.const 5)))
+    "#;
+        let limits = SandboxLimits {
+            fuel: 10_000,
+            ..SandboxLimits::default()
+        };
+        let wasm = wat::parse_str(ECHO).unwrap();
+        let runner = Sandbox::compile(&wasm, limits).unwrap();
+        let mut program = runner.instantiate(123).unwrap();
+        // One allowance exactly fills the account's window.
+        program.set_fuel_rate_budget(id_caps::account_quota::FuelRateBudget::new(limits.fuel));
+        let core = WorldCore::new("fuel-rate", WorldLimits::default()).unwrap();
+        let world = WorldHandle::spawn_with_program(core, Box::new(program));
+        let (_, token) = world.issue("ann", WorldScopes::GUEST).await.unwrap();
+        world.input(token.clone(), b"event".to_vec()).await.unwrap();
+        // The next input is refused at admission — but the actor stays
+        // healthy: the error names the fuel rate, not an unavailable
+        // program.
+        let refusal = world
+            .input(token.clone(), b"event".to_vec())
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(refusal.contains("fuel rate"), "{refusal}");
+        assert!(
+            !refusal.contains("unavailable after a previous failure"),
+            "{refusal}"
+        );
+        // Once the window rolls, the same input succeeds: the refusal
+        // did not poison the program.
+        tokio::time::sleep(Duration::from_millis(1100)).await;
+        world.input(token, b"event".to_vec()).await.unwrap();
+    }
+
     #[tokio::test]
     async fn an_ungranted_request_is_refused_and_counted() {
         let (world, token) = caps_world_sync(false).await;
@@ -9278,6 +9333,327 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn failover_measurements_match_the_q2_design_bounds() {
+        // Q2 measurements (design #5787 Q2, #7572): the §7
+        // holder-death walkthrough on the authority clock with the
+        // standing defaults (30 s term, 10 s renewal), measuring
+        // detection, grant, and replay-to-ready instead of only the
+        // outcome. The clock starts at 1_000; the holder's term is
+        // stamped to expire at 31_000 and the holder dies at the
+        // stamp — the worst case for detection.
+        let w = lease_world().await;
+        w.handle
+            .handoff_write_lease("native-1", 1, Some(31_000))
+            .await
+            .unwrap();
+
+        // native-2 has served as a reader at the tip for the full
+        // observation window; the grantor's tip for this grant is 2.
+        let mut pool = spill_pool::SpillPool::default();
+        pool.configure("native-2");
+        for cycle in 0..u64::from(spill_pool::READER_OBSERVATION_CYCLES) {
+            assert!(pool.observe("native-2", cycle, true, true, true, 2, 2, 0, 0));
+        }
+
+        // Detection: one millisecond before expiry the failover is
+        // still refused — no fence can exist before the term lapses,
+        // and the refused attempt journals nothing (the successful
+        // failover below still lands at positions 2 and 3). At
+        // expiry it proceeds. Measured detection latency for a death
+        // at the stamp: 31_000 - 1_000 = 30_000 ms — exactly one
+        // term, the design's stated worst-case bound.
+        w.clock.advance(29_999);
+        assert!(
+            w.handle
+                .failover_write_lease(pool.clone(), 2, 0, 30_000)
+                .await
+                .is_err()
+        );
+        w.clock.advance(1);
+        let execution = w
+            .handle
+            .failover_write_lease(pool, 2, 0, 30_000)
+            .await
+            .unwrap();
+
+        // Grant: the fence and the grant are two consecutive journal
+        // appends (positions 2 and 3) — the grant lands one append
+        // after the fence, at the same authority instant.
+        assert_eq!(execution.entries().len(), 2);
+        assert_eq!(execution.grant_position(), 3);
+        assert_eq!(execution.grant_epoch(), 3);
+
+        // Replay-to-ready: the caught-up successor, observed at
+        // position 2, replays exactly one entry — far less than a
+        // cold replay — before it may write: the grant record
+        // itself is its barrier.
+        assert!(!execution.resume_ready(2));
+        assert!(execution.resume_ready(3));
+
+        // The successor's fresh term runs a full 30 s from the
+        // failover instant.
+        assert_eq!(execution.resulting_lease().expires_at_ms, Some(61_000));
+    }
+
+    #[tokio::test]
+    async fn spill_copy_dispatch_waits_for_live_successor_replay_and_epoch() {
+        let w = lease_world().await;
+        w.handle
+            .handoff_write_lease("native-1", 1, Some(31_000))
+            .await
+            .unwrap();
+        let mut pool = spill_pool::SpillPool::default();
+        pool.configure("native-2");
+        for cycle in 0..u64::from(spill_pool::READER_OBSERVATION_CYCLES) {
+            assert!(pool.observe("native-2", cycle, true, true, true, 2, 2, 0, 0));
+        }
+        w.clock.advance(60_000);
+        let execution = w
+            .handle
+            .failover_write_lease(pool, 2, 0, 30_000)
+            .await
+            .unwrap();
+        assert_eq!(execution.successor(), "native-2");
+        assert_eq!(execution.grant_epoch(), 3);
+
+        let stale_replay = w
+            .handle
+            .dispatch_spill_copy("native-2", 3, 2, b"journal-copy".to_vec())
+            .await;
+        assert!(
+            stale_replay
+                .unwrap_err()
+                .to_string()
+                .contains("ReplayPending")
+        );
+        assert_eq!(
+            w.handle
+                .dispatch_spill_copy(
+                    "native-2",
+                    3,
+                    execution.grant_position(),
+                    b"journal-copy".to_vec()
+                )
+                .await
+                .unwrap(),
+            b"journal-copy"
+        );
+
+        w.handle
+            .handoff_write_lease(DO_WRITE_LEASE_HOLDER, 4, None)
+            .await
+            .unwrap();
+        assert!(
+            w.handle
+                .dispatch_spill_copy(
+                    "native-2",
+                    3,
+                    execution.grant_position(),
+                    b"stale".to_vec()
+                )
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn spill_controller_dispatches_only_an_authenticated_cursor_at_the_boundary() {
+        // Oracle: #7572 successor slice (design #5787 §1 step 4) — the
+        // production host/controller path must send journal bytes only
+        // for a cursor that (a) authenticates for its exact
+        // holder/epoch/position triple, (b) passes the residency gate,
+        // and (c) still passes the actor's serialized live
+        // holder/epoch/term/replay check at dispatch time. Every
+        // refusal sends zero bytes.
+        use id_core::residency::{
+            Evidence, EvidenceVerifier, Hop, Jurisdiction, Plane, Policy, ResourceId, Scope,
+        };
+        use spill_controller::{CursorAuthenticator, SpillController, SpillDispatchRefusal};
+        use std::cell::RefCell;
+
+        struct MintingAuthenticator;
+        fn minted_proof(holder: &str, epoch: u64, position: u64) -> Vec<u8> {
+            format!("proof:{holder}:{epoch}:{position}").into_bytes()
+        }
+        impl CursorAuthenticator for MintingAuthenticator {
+            fn authenticate_cursor(
+                &self,
+                holder: &str,
+                epoch: u64,
+                replayed_position: u64,
+                proof: &[u8],
+            ) -> bool {
+                proof == minted_proof(holder, epoch, replayed_position).as_slice()
+            }
+        }
+        struct AcceptingVerifier;
+        impl EvidenceVerifier for AcceptingVerifier {
+            fn signature_valid(&self, _evidence: &Evidence) -> bool {
+                true
+            }
+            fn revoked(&self, _evidence: &Evidence) -> bool {
+                false
+            }
+        }
+
+        let w = lease_world().await;
+        w.handle
+            .handoff_write_lease("native-1", 1, Some(31_000))
+            .await
+            .unwrap();
+        let mut pool = spill_pool::SpillPool::default();
+        pool.configure("native-2");
+        for cycle in 0..u64::from(spill_pool::READER_OBSERVATION_CYCLES) {
+            assert!(pool.observe("native-2", cycle, true, true, true, 2, 2, 0, 0));
+        }
+        w.clock.advance(60_000);
+        let execution = w
+            .handle
+            .failover_write_lease(pool, 2, 0, 30_000)
+            .await
+            .unwrap();
+        assert_eq!(execution.successor(), "native-2");
+        assert_eq!(execution.grant_epoch(), 3);
+        let boundary = execution.grant_position();
+
+        let controller = SpillController::new(&MintingAuthenticator);
+        let verifier = AcceptingVerifier;
+        let sent: RefCell<Vec<Vec<u8>>> = RefCell::new(Vec::new());
+        macro_rules! dispatch {
+            ($holder:expr, $epoch:expr, $position:expr, $proof:expr, $scope:expr, $hops:expr) => {
+                controller
+                    .dispatch_presented_copy(
+                        &w.handle,
+                        $scope,
+                        $hops,
+                        1_000_000,
+                        &verifier,
+                        $holder,
+                        $epoch,
+                        $position,
+                        $proof,
+                        b"journal-copy".to_vec(),
+                        |copy| sent.borrow_mut().push(copy.to_vec()),
+                    )
+                    .await
+            };
+        }
+
+        // Forged proof at the boundary position: no cursor, no bytes.
+        let forged = dispatch!(
+            "native-2",
+            3,
+            boundary,
+            b"forged".as_slice(),
+            &Scope::Unscoped,
+            &[]
+        );
+        assert!(matches!(
+            forged,
+            Err(SpillDispatchRefusal::UnauthenticatedCursor { .. })
+        ));
+        assert!(sent.borrow().is_empty());
+
+        // Authenticated but stale cursor (below the ownership
+        // boundary): the actor's final gate refuses, no bytes.
+        let stale = dispatch!(
+            "native-2",
+            3,
+            2,
+            &minted_proof("native-2", 3, 2),
+            &Scope::Unscoped,
+            &[]
+        );
+        assert!(
+            matches!(&stale, Err(SpillDispatchRefusal::Authority(reason)) if reason.contains("ReplayPending")),
+            "stale cursor must hit the replay gate, got {stale:?}"
+        );
+        assert!(sent.borrow().is_empty());
+
+        // Authenticated cursor for the wrong epoch: no bytes.
+        let wrong_epoch = dispatch!(
+            "native-2",
+            2,
+            boundary,
+            &minted_proof("native-2", 2, boundary),
+            &Scope::Unscoped,
+            &[]
+        );
+        assert!(matches!(
+            wrong_epoch,
+            Err(SpillDispatchRefusal::Authority(_))
+        ));
+        assert!(sent.borrow().is_empty());
+
+        // Authenticated cursor at the boundary, but the residency gate
+        // denies the path (expired host evidence): no bytes.
+        let policy = Policy::new(["operator-ca".to_string()])
+            .allow(Plane::Processing, &["eu"], &["spill-eu"])
+            .trust_evidence_source(Plane::Processing, "provider-control-plane");
+        let expired = Evidence {
+            issuer: "operator-ca".to_string(),
+            resource: ResourceId("spill-eu".to_string()),
+            plane: Plane::Processing,
+            jurisdiction: Jurisdiction("eu".to_string()),
+            source: "provider-control-plane".to_string(),
+            expires_at: 999_999,
+            serial: "spill-eu-1".to_string(),
+            signature: vec![1],
+        };
+        let hops = [Hop {
+            plane: Plane::Processing,
+            resource: ResourceId("spill-eu".to_string()),
+            evidence: Some(&expired),
+        }];
+        let residency = dispatch!(
+            "native-2",
+            3,
+            boundary,
+            &minted_proof("native-2", 3, boundary),
+            &Scope::Scoped(policy),
+            &hops
+        );
+        assert!(matches!(
+            residency,
+            Err(SpillDispatchRefusal::Residency(_))
+        ));
+        assert!(sent.borrow().is_empty());
+
+        // The cursor at the current ownership boundary dispatches:
+        // exactly one send, with the actor-released bytes.
+        let dispatched = dispatch!(
+            "native-2",
+            3,
+            boundary,
+            &minted_proof("native-2", 3, boundary),
+            &Scope::Unscoped,
+            &[]
+        );
+        assert_eq!(dispatched, Ok(()));
+        assert_eq!(sent.borrow().as_slice(), [b"journal-copy".to_vec()]);
+
+        // After handback, the previously valid epoch-3 cursor is stale
+        // at the actor's serialized gate: no further bytes.
+        w.handle
+            .handoff_write_lease(DO_WRITE_LEASE_HOLDER, 4, None)
+            .await
+            .unwrap();
+        let after_handback = dispatch!(
+            "native-2",
+            3,
+            boundary,
+            &minted_proof("native-2", 3, boundary),
+            &Scope::Unscoped,
+            &[]
+        );
+        assert!(matches!(
+            after_handback,
+            Err(SpillDispatchRefusal::Authority(_))
+        ));
+        assert_eq!(sent.borrow().len(), 1);
+    }
+
+    #[tokio::test]
     async fn failover_with_no_eligible_successor_recovers_to_the_do() {
         // Oracle: design #5787 §7 — no eligible successor: the DO
         // grants to itself rather than to a lagging replica, and the
@@ -10008,6 +10384,8 @@ mod isolation_tests {
 mod schedule_tests {
     use super::*;
     use crate::world::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::Duration;
 
     fn world(retained_events: usize) -> WorldCore {
         WorldCore::new(
@@ -10236,6 +10614,14 @@ mod schedule_tests {
         id: &str,
         bounds: CapabilityBounds,
     ) -> (WorldActor, JoinCapability, BatchJournal) {
+        batch_actor_with(id, bounds, Box::new(BatchProgram))
+    }
+
+    fn batch_actor_with(
+        id: &str,
+        bounds: CapabilityBounds,
+        program: Box<dyn WorldProgram>,
+    ) -> (WorldActor, JoinCapability, BatchJournal) {
         let journal = BatchJournal::for_world(id);
         let mut core = WorldCore::new(id, WorldLimits::default()).unwrap();
         let (ann, token) = core
@@ -10243,11 +10629,7 @@ mod schedule_tests {
             .unwrap();
         let issued = core.issued_entry(ann.id).unwrap();
         journal.entries.lock().unwrap().push(issued);
-        let actor = WorldActor::for_test(
-            core,
-            Box::new(BatchProgram),
-            Some(Box::new(journal.clone())),
-        );
+        let actor = WorldActor::for_test(core, program, Some(Box::new(journal.clone())));
         (actor, token, journal)
     }
 
@@ -10322,6 +10704,363 @@ mod schedule_tests {
         assert_eq!(journal.committed().len(), 1);
         assert_eq!(*journal.batches.lock().unwrap(), vec![1]);
         assert!(!actor.program_healthy);
+    }
+
+    /// A program that refuses the input `limited` at the account's
+    /// fuel rate and accepts everything else (#1067).
+    struct FuelLimitedBatchProgram;
+
+    impl WorldProgram for FuelLimitedBatchProgram {
+        fn update(&mut self, event: &WorldEvent) -> Result<()> {
+            if let WorldEventKind::Input(input) = &event.kind {
+                if input == b"limited" {
+                    return Err(anyhow::Error::new(
+                        id_caps::account_quota::FuelRateRefusal {
+                            limit_per_second: 10_000,
+                            charged_in_window: 10_000,
+                            requested_fuel: 10_000,
+                        },
+                    ));
+                }
+            }
+            Ok(())
+        }
+    }
+
+    // #1067 oracle: a fuel-rate refusal inside a batch is recoverable -
+    // the staged prefix commits, the refused input is answered with the
+    // refusal, and the input after it goes through the single path, where
+    // the still-healthy program accepts it instead of refusing it as
+    // unavailable.
+    #[tokio::test]
+    async fn a_fuel_rate_refusal_in_a_batch_keeps_the_actor_healthy() {
+        let (mut actor, token, journal) = batch_actor_with(
+            "batch-fuel-rate",
+            CapabilityBounds::default(),
+            Box::new(FuelLimitedBatchProgram),
+        );
+        let results = batch_replies(&mut actor, &token, &[b"one", b"limited", b"two"]).await;
+        assert!(results[0].is_ok(), "{:?}", results[0]);
+        let refused = format!("{:#}", results[1].as_ref().unwrap_err());
+        assert!(refused.contains("fuel rate"), "{refused}");
+        assert!(
+            !refused.contains("unavailable after a previous failure"),
+            "{refused}"
+        );
+        assert!(results[2].is_ok(), "{:?}", results[2]);
+        assert!(actor.program_healthy);
+        assert_eq!(journal.committed().len(), 2);
+        assert_eq!(*journal.batches.lock().unwrap(), vec![1]);
+    }
+
+    /// A program that refuses host (system) events at the account's
+    /// fuel rate and accepts everything else (#1067).
+    struct FuelLimitedSystemProgram;
+
+    impl WorldProgram for FuelLimitedSystemProgram {
+        fn update(&mut self, event: &WorldEvent) -> Result<()> {
+            if let WorldEventKind::System { .. } = &event.kind {
+                return Err(anyhow::Error::new(
+                    id_caps::account_quota::FuelRateRefusal {
+                        limit_per_second: 10_000,
+                        charged_in_window: 10_000,
+                        requested_fuel: 10_000,
+                    },
+                ));
+            }
+            Ok(())
+        }
+    }
+
+    // #1067 oracle: a fuel-rate refusal of a host event is
+    // recoverable — a refused schedule fire leaves the schedule
+    // pending and the program healthy, and the next participant
+    // input still succeeds.
+    #[tokio::test]
+    async fn a_fuel_rate_refusal_of_a_host_event_keeps_the_actor_healthy() {
+        let journal = Recorded::for_world("system-fuel-rate");
+        let clock: Arc<ManualClock> = Arc::new(ManualClock::new(EPOCH_MS));
+        let mut core = WorldCore::new_with_clock(
+            "system-fuel-rate",
+            WorldLimits::default(),
+            clock.clone(),
+        )
+        .unwrap();
+        let (ann, token) = core
+            .issue_capability("ann", WorldScopes::GUEST, CapabilityBounds::default())
+            .unwrap();
+        let issued = core.issued_entry(ann.id).unwrap();
+        super::tests::push_bumped(&mut journal.0.lock().unwrap(), &issued);
+        let mut actor = WorldActor::for_test(
+            core,
+            Box::new(FuelLimitedSystemProgram),
+            Some(Box::new(journal.clone())),
+        );
+        actor.core.schedules.insert("tick".to_owned(), PendingSchedule::one_shot(EPOCH_MS));
+        actor.fire_schedules().await;
+        assert!(actor.program_healthy);
+        assert!(actor.core.schedules.contains_key("tick"));
+        let results = batch_replies(&mut actor, &token, &[b"after"]).await;
+        assert!(results[0].is_ok(), "{:?}", results[0]);
+    }
+
+    /// A program for the #1067 fuel-window tests: it asks for one
+    /// `time.now` result, records every result and schedule fire it
+    /// receives, and refuses system events at the account's fuel rate
+    /// while the manual clock is before `refuse_until_ms` — so the
+    /// test drives the rollover by advancing the clock, not the wall.
+    /// The attempt counters are shared with the test, so a refused
+    /// delivery that must not have been attempted is observable.
+    struct FuelWindowProgram {
+        clock: Arc<ManualClock>,
+        refuse_until_ms: u64,
+        requests: Vec<serde_json::Value>,
+        answered: BTreeSet<String>,
+        results: BTreeMap<String, serde_json::Value>,
+        result_deliveries: Arc<AtomicUsize>,
+        fire_attempts: Arc<AtomicUsize>,
+        fires: Vec<serde_json::Value>,
+    }
+
+    impl FuelWindowProgram {
+        fn fuel_refusal() -> anyhow::Error {
+            anyhow::Error::new(id_caps::account_quota::FuelRateRefusal {
+                limit_per_second: 10_000,
+                charged_in_window: 10_000,
+                requested_fuel: 10_000,
+            })
+        }
+    }
+
+    impl WorldProgram for FuelWindowProgram {
+        fn update(&mut self, event: &WorldEvent) -> Result<()> {
+            match &event.kind {
+                WorldEventKind::Input(bytes) => {
+                    let document: serde_json::Value = serde_json::from_slice(bytes)?;
+                    self.requests = document["requests"].as_array().cloned().unwrap_or_default();
+                }
+                WorldEventKind::EntityInput { input, .. } => {
+                    let document: serde_json::Value = serde_json::from_slice(input)?;
+                    self.requests = document["requests"].as_array().cloned().unwrap_or_default();
+                }
+                WorldEventKind::System { event: text } => {
+                    let Ok(value) = serde_json::from_str::<serde_json::Value>(text) else {
+                        return Ok(());
+                    };
+                    let refused = self.clock.now_ms() < self.refuse_until_ms;
+                    match value["cap"].as_str() {
+                        Some("result") => {
+                            if refused {
+                                return Err(Self::fuel_refusal());
+                            }
+                            if let Some(id) = value["id"].as_str() {
+                                self.answered.insert(id.to_owned());
+                                self.results.insert(id.to_owned(), value.clone());
+                                self.result_deliveries.fetch_add(1, Ordering::SeqCst);
+                            }
+                        }
+                        Some("schedule") => {
+                            self.fire_attempts.fetch_add(1, Ordering::SeqCst);
+                            if refused {
+                                return Err(Self::fuel_refusal());
+                            }
+                            self.fires.push(value.clone());
+                        }
+                        _ => {}
+                    }
+                }
+                WorldEventKind::Chat(_)
+                | WorldEventKind::ProgramInstalled { .. }
+                | WorldEventKind::Notification { .. } => {}
+            }
+            Ok(())
+        }
+
+        fn wants(&mut self) -> Result<Option<String>> {
+            let pending: Vec<&serde_json::Value> = self
+                .requests
+                .iter()
+                .filter(|request| {
+                    !request["id"]
+                        .as_str()
+                        .is_some_and(|id| self.answered.contains(id))
+                })
+                .collect();
+            Ok(Some(
+                serde_json::json!({"v": 1, "requests": pending}).to_string(),
+            ))
+        }
+
+        fn records(&mut self) -> Result<Option<String>> {
+            Ok(Some(
+                serde_json::json!({"fired": self.fires, "results": self.results}).to_string(),
+            ))
+        }
+    }
+
+    /// A `FuelWindowProgram` actor on a manual clock, with `time.now`
+    /// granted and one participant. Mirrors the
+    /// `FuelLimitedSystemProgram` setup above; the test drives
+    /// [`WorldActor::handle`], [`WorldActor::after_change`] and
+    /// [`WorldActor::fire_schedules`] directly.
+    #[allow(clippy::type_complexity)]
+    fn fuel_window_actor(
+        id: &str,
+        refuse_until_ms: u64,
+    ) -> (
+        WorldActor,
+        Arc<ManualClock>,
+        JoinCapability,
+        Recorded,
+        Arc<AtomicUsize>,
+        Arc<AtomicUsize>,
+    ) {
+        let journal = Recorded::for_world(id);
+        let clock: Arc<ManualClock> = Arc::new(ManualClock::new(EPOCH_MS));
+        let mut core =
+            WorldCore::new_with_clock(id, WorldLimits::default(), clock.clone()).unwrap();
+        core.ledger
+            .set_granted(BTreeSet::from(["time.now".to_owned()]));
+        let (ann, token) = core
+            .issue_capability("ann", WorldScopes::GUEST, CapabilityBounds::default())
+            .unwrap();
+        let issued = core.issued_entry(ann.id).unwrap();
+        super::tests::push_bumped(&mut journal.0.lock().unwrap(), &issued);
+        let result_deliveries = Arc::new(AtomicUsize::new(0));
+        let fire_attempts = Arc::new(AtomicUsize::new(0));
+        let program = FuelWindowProgram {
+            clock: clock.clone(),
+            refuse_until_ms,
+            requests: Vec::new(),
+            answered: BTreeSet::new(),
+            results: BTreeMap::new(),
+            result_deliveries: result_deliveries.clone(),
+            fire_attempts: fire_attempts.clone(),
+            fires: Vec::new(),
+        };
+        let actor = WorldActor::for_test(core, Box::new(program), Some(Box::new(journal.clone())));
+        (
+            actor,
+            clock,
+            token,
+            journal,
+            result_deliveries,
+            fire_attempts,
+        )
+    }
+
+    /// How many capability results for request `id` the journal
+    /// delivered to the program: the exactly-once oracle for a
+    /// fuel-refused result.
+    fn journaled_results(journal: &Recorded, id: &str) -> usize {
+        journal
+            .entries()
+            .into_iter()
+            .filter(|entry| match entry {
+                JournalEntry::System { event } => match &event.kind {
+                    WorldEventKind::System { event: text } => {
+                        serde_json::from_str::<serde_json::Value>(text)
+                            .is_ok_and(|value| {
+                                value["cap"] == "result" && value["id"] == id
+                            })
+                    }
+                    _ => false,
+                },
+                _ => false,
+            })
+            .count()
+    }
+
+    // #1067 oracle (Codex review on #12557): a capability result
+    // whose delivery is refused at the fuel rate is queued, not
+    // lost — the side effect already ran, so the result must not be
+    // re-executed — and is delivered exactly once after the window
+    // rolls, without another attempt before then.
+    #[tokio::test]
+    async fn a_fuel_refused_capability_result_is_queued_and_retried_after_rollover() {
+        let (mut actor, clock, token, journal, result_deliveries, _) =
+            fuel_window_actor("fuel-result", EPOCH_MS + 1_000);
+        ask(
+            &mut actor,
+            &token,
+            serde_json::json!({"requests": [
+                {"id": "now-1", "cap": "time.now"},
+            ]}),
+        )
+        .await;
+        // The request executed — its id is handled — but the program
+        // never saw the result: it waits in the queue instead.
+        assert!(actor.program_healthy);
+        assert!(actor.handled_requests.contains("now-1"));
+        assert_eq!(actor.pending_results.len(), 1);
+        assert_eq!(result_deliveries.load(Ordering::SeqCst), 0);
+        assert_eq!(journaled_results(&journal, "now-1"), 0);
+        // No retry before the window rolls, however often the actor
+        // settles: the queue is not a hot loop.
+        actor.after_change().await;
+        clock.advance(500);
+        actor.after_change().await;
+        assert_eq!(actor.pending_results.len(), 1);
+        assert_eq!(result_deliveries.load(Ordering::SeqCst), 0);
+        // Past the rollover the queued result is delivered, exactly
+        // once, and the program answers with it — no re-execution, no
+        // duplicate on a further settle.
+        clock.advance(600);
+        actor.after_change().await;
+        assert_eq!(result_deliveries.load(Ordering::SeqCst), 1);
+        assert!(actor.pending_results.is_empty());
+        assert!(actor.fuel_retry_not_before.is_none());
+        let result = schedule_result(&actor, "now-1").expect("the result arrived");
+        assert_eq!(result["ok"], true, "{result}");
+        assert_eq!(journaled_results(&journal, "now-1"), 1);
+        actor.after_change().await;
+        assert_eq!(result_deliveries.load(Ordering::SeqCst), 1);
+        assert_eq!(journaled_results(&journal, "now-1"), 1);
+    }
+
+    // #1067 oracle (Codex review on #12557): a schedule fire refused
+    // at the fuel rate backs off until the window rolls instead of
+    // waking the loop now — no retry is attempted before the retry
+    // deadline — and the same occurrence then fires exactly once.
+    #[tokio::test]
+    async fn a_fuel_refused_schedule_fire_backs_off_until_rollover() {
+        let (mut actor, clock, _token, _journal, _, fire_attempts) =
+            fuel_window_actor("fuel-schedule", EPOCH_MS + 1_500);
+        actor
+            .core
+            .schedules
+            .insert("tick".to_owned(), PendingSchedule::one_shot(EPOCH_MS));
+        // Before any refusal the overdue schedule wakes the loop now.
+        assert_eq!(actor.next_deadline(), Some(clock.now_instant()));
+        actor.fire_schedules().await;
+        assert!(actor.program_healthy);
+        assert!(actor.core.schedules.contains_key("tick"));
+        assert_eq!(fire_attempts.load(Ordering::SeqCst), 1);
+        // The refusal backs the next attempt off a full window.
+        assert_eq!(
+            actor.next_deadline(),
+            Some(clock.now_instant() + Duration::from_secs(1))
+        );
+        // A second fire without advancing the clock attempts nothing.
+        actor.fire_schedules().await;
+        assert_eq!(fire_attempts.load(Ordering::SeqCst), 1);
+        assert!(actor.core.schedules.contains_key("tick"));
+        // At the retry deadline the fire is attempted again — refused
+        // again while the window is still closed — and backs off
+        // another full window.
+        clock.advance(1_000);
+        actor.fire_schedules().await;
+        assert_eq!(fire_attempts.load(Ordering::SeqCst), 2);
+        assert_eq!(
+            actor.next_deadline(),
+            Some(clock.now_instant() + Duration::from_secs(1))
+        );
+        // Once the window rolls, the same occurrence fires exactly once.
+        clock.advance(1_000);
+        actor.fire_schedules().await;
+        assert_eq!(fire_attempts.load(Ordering::SeqCst), 3);
+        assert!(!actor.core.schedules.contains_key("tick"));
+        assert_eq!(schedule_fires(&actor).len(), 1);
     }
 
     // #8239 oracle: staged spends count against the uses limit before
@@ -11090,6 +11829,68 @@ mod schedule_tests {
                 .count(),
             1,
             "deleting an absent blob journals nothing"
+        );
+    }
+
+    struct DenyBlobGate;
+
+    impl id_directory::directory::BoundaryGate for DenyBlobGate {
+        fn check(
+            &self,
+            point: id_core::boundary::EnforcementPoint,
+            _: &str,
+        ) -> id_core::boundary_surfaces::FrameworkOutcome {
+            if point == id_core::boundary::EnforcementPoint::BlobStorage {
+                id_core::boundary_surfaces::FrameworkOutcome::Deny {
+                    placement: Vec::new(),
+                    assurance: Vec::new(),
+                }
+            } else {
+                id_core::boundary_surfaces::FrameworkOutcome::Allow
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn blob_boundary_denial_blocks_put_get_and_delete_before_effects() {
+        // Oracle: a denied BlobStorage outcome refuses all three actor
+        // operations and leaves both the in-memory blob set and journal intact.
+        let (mut actor, _clock, token, journal) = scheduling_actor(
+            "blob-boundary-denied",
+            &["blob.put", "blob.get", "blob.delete"],
+            false,
+        );
+        let bytes = b"protected blob".to_vec();
+        let hash = blob_id(&bytes);
+        actor.core.blobs.insert(hash.clone(), bytes.clone());
+        actor.core.set_world_boundary_gate(Arc::new(DenyBlobGate));
+
+        ask(
+            &mut actor,
+            &token,
+            serde_json::json!({"requests": [
+                {"id": "put", "cap": "blob.put", "args": {"data": blob_encode(b"new blob")}},
+                {"id": "get", "cap": "blob.get", "args": {"hash": hash}},
+                {"id": "delete", "cap": "blob.delete", "args": {"hash": hash}},
+            ]}),
+        )
+        .await;
+
+        for id in ["put", "get", "delete"] {
+            assert_eq!(schedule_result(&actor, id).unwrap()["error"], "bad_args");
+        }
+        assert_eq!(actor.core.blobs.get(&hash), Some(&bytes));
+        assert_eq!(
+            journal
+                .entries()
+                .iter()
+                .filter(|entry| matches!(
+                    entry,
+                    JournalEntry::BlobStored { .. } | JournalEntry::BlobRemoved { .. }
+                ))
+                .count(),
+            0,
+            "refused blob operations have no journal effects"
         );
     }
 
@@ -12653,16 +13454,50 @@ mod schedule_tests {
         let mut schedules = BTreeMap::new();
         schedules.insert("a".to_owned(), PendingSchedule::one_shot(2_000));
         let now = std::time::Instant::now();
-        assert!(next_schedule_wake(&schedules, 1_000, now, true).is_some());
+        assert!(next_schedule_wake(&schedules, 1_000, now, true, None).is_some());
         assert!(
-            next_schedule_wake(&schedules, 3_000, now, true).is_some(),
+            next_schedule_wake(&schedules, 3_000, now, true, None).is_some(),
             "an overdue schedule wakes the loop now"
         );
         assert!(
-            next_schedule_wake(&schedules, 3_000, now, false).is_none(),
+            next_schedule_wake(&schedules, 3_000, now, false, None).is_none(),
             "a program that refuses fires never wakes the loop for one"
         );
-        assert!(next_schedule_wake(&BTreeMap::new(), 1_000, now, true).is_none());
+        assert!(next_schedule_wake(&BTreeMap::new(), 1_000, now, true, None).is_none());
+        // #1067: a due schedule whose fire was refused at the fuel rate
+        // waits until the retry deadline instead of waking the loop now.
+        assert_eq!(
+            next_schedule_wake(
+                &schedules,
+                3_000,
+                now,
+                true,
+                Some(now + Duration::from_secs(1))
+            ),
+            Some(now + Duration::from_secs(1)),
+        );
+        // A schedule that is not due yet keeps its own wake, and a
+        // spent retry deadline holds nothing back.
+        assert_eq!(
+            next_schedule_wake(
+                &schedules,
+                1_000,
+                now,
+                true,
+                Some(now + Duration::from_secs(1))
+            ),
+            Some(now + Duration::from_millis(1_000)),
+        );
+        assert_eq!(
+            next_schedule_wake(
+                &schedules,
+                3_000,
+                now,
+                true,
+                Some(now - Duration::from_secs(1))
+            ),
+            Some(now),
+        );
     }
 
     #[test]

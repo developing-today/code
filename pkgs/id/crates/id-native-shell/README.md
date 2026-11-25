@@ -51,11 +51,14 @@ cargo test -p id-native-shell    # unit + transcript + parity tests
   placed controls and an initial focus marker ([widget.rs](src/widget.rs));
   keyboard and pointer activation of those controls remains future work.
 
-## Recorded shells v1 capability statement
+## Recorded shells v1 capability statements
 
 Per the shells v1 record (`doc/2026-11-10T20-40-00Z_design_more_shells_v1`,
 §2 and "The one gate"), this shell's capability statement is recorded
-in [`capability-statement.json`](capability-statement.json): the client
+for Linux in [`capability-statement.json`](capability-statement.json)
+and for macOS in [`capability-statement.macos.json`](capability-statement.macos.json).
+The target test selects its matching statement and checks that both target
+records make the same contract and capability claims: the client
 frames it sends (`join`, `input`, `paste`, `resize`, `chat`,
 `screen_subscribe`, `form_result`, `provider_offer`, `provider_reply`),
 the server frames it presents (the `SessionState` fold, with `error`

@@ -80,6 +80,18 @@ fn authority_identity(authority: &Authority) -> String {
 /// before it persists, and how much one sync must cover.
 const MAX_INPUT_BATCH: usize = 64;
 
+/// Whether `error` is a fuel-rate admission refusal (#1067): the
+/// program never ran, so the actor stays healthy and the input may
+/// be retried once the account's window rolls. Every other program
+/// error is a guest failure and poisons the program.
+///
+/// Checked before any `.context(...)` is applied: the bare program
+/// error carries the refusal at its outermost layer.
+fn is_fuel_rate_refusal(error: &anyhow::Error) -> bool {
+    error
+        .downcast_ref::<id_caps::account_quota::FuelRateRefusal>()
+        .is_some()
+}
 /// Trim `journal` behind a verified snapshot of `program`. `Ok(false)` means
 /// the program cannot snapshot.
 pub(crate) fn compact_journal(
@@ -167,6 +179,19 @@ pub(crate) struct WorldActor {
     pub(crate) active_subs: BTreeSet<Subscription>,
     /// Request ids already executed, so `wants` states intent, not polling.
     pub(crate) handled_requests: BTreeSet<String>,
+    /// Capability results whose delivery was refused at the account's
+    /// fuel rate (#1067): the side effect already ran, so the result
+    /// event waits here — never re-executed — until the window rolls
+    /// and `retry_pending_results` delivers it. Actor lifetime only,
+    /// like `handled_requests`: a restart falls back to the existing
+    /// restarted-refusal path for the same id.
+    pub(crate) pending_results: std::collections::VecDeque<String>,
+    /// Earliest actor-clock instant a fuel-refused delivery may be
+    /// retried (#1067): one full window past the refusal, which is
+    /// guaranteed to land in a fresh budget window — the refused
+    /// window started no later than the refusal. `None` while no
+    /// refusal is outstanding.
+    pub(crate) fuel_retry_not_before: Option<std::time::Instant>,
     /// Forms registered by `form.present`; actor-lifetime only, so a restart
     /// invalidates outstanding UI submissions instead of replaying stale input.
     pub(crate) pending_forms: BTreeMap<String, PendingForm>,
@@ -315,6 +340,9 @@ impl WorldActor {
                     continue;
                 },
                 () = Self::sleep_until(deadline) => {
+                    // Give already-executed capability results first claim
+                    // on the fresh fuel window, before recurring timers.
+                    self.after_change().await;
                     self.fire_ticks().await;
                     self.fire_loc_watches().await;
                     self.fire_schedules().await;
@@ -419,6 +447,14 @@ impl WorldActor {
         }
         let deliverable = self.program_healthy && !self.storage_failed;
         let clock = self.core.clock();
+        let now_instant = clock.now_instant();
+        // A fuel-rate refusal backs delivery off until one full window
+        // past the refusal (#1067): the budget's window started no
+        // later than the refusal, so that instant is guaranteed to
+        // land in a fresh window.
+        let fuel_backoff = self
+            .fuel_retry_not_before
+            .filter(|deadline| *deadline > now_instant);
         self.ticks
             .values()
             .min()
@@ -427,11 +463,16 @@ impl WorldActor {
             .chain(next_schedule_wake(
                 &self.core.schedules,
                 clock.now_ms(),
-                clock.now_instant(),
+                now_instant,
                 deliverable,
+                fuel_backoff,
             ))
             .chain(self.loc_watches.values().min().copied())
             .chain(self.provider_broker.next_deadline())
+            // A queued capability result needs a wake at the retry
+            // deadline too, or the loop would sleep past the rollover
+            // with a result still waiting (#1067).
+            .chain(fuel_backoff.filter(|_| !self.pending_results.is_empty()))
             .min()
     }
 
@@ -1003,8 +1044,19 @@ impl WorldActor {
                                     })
                             }
                             Err(error) => {
-                                self.program_healthy = false;
-                                Err(error.context("world program rejected input"))
+                                if is_fuel_rate_refusal(&error) {
+                                    // Recoverable admission refusal
+                                    // (#1067): the program never ran
+                                    // and stays healthy; the same
+                                    // input can succeed once the
+                                    // account's window rolls.
+                                    Err(error.context(
+                                        "world program refused input at its fuel rate",
+                                    ))
+                                } else {
+                                    self.program_healthy = false;
+                                    Err(error.context("world program rejected input"))
+                                }
                             }
                         }
                     }
@@ -1050,8 +1102,19 @@ impl WorldActor {
                                     self.republished(records.unwrap_or_default(), event.sequence);
                                 }),
                             Err(error) => {
-                                self.program_healthy = false;
-                                Err(error.context("world program rejected entity input"))
+                                if is_fuel_rate_refusal(&error) {
+                                    // Recoverable admission refusal
+                                    // (#1067): the program never ran
+                                    // and stays healthy; the same
+                                    // input can succeed once the
+                                    // account's window rolls.
+                                    Err(error.context(
+                                        "world program refused entity input at its fuel rate",
+                                    ))
+                                } else {
+                                    self.program_healthy = false;
+                                    Err(error.context("world program rejected entity input"))
+                                }
                             }
                         }
                     }
@@ -1100,6 +1163,18 @@ impl WorldActor {
             } => {
                 let result =
                     self.failover_write_lease(&pool, journal_tip, max_catch_up_lag, term_ms);
+                let _ = reply.send(result);
+            }
+            WorldCommand::DispatchSpillCopy {
+                holder,
+                epoch,
+                replayed_position,
+                journal_copy,
+                reply,
+            } => {
+                let result =
+                    self.core
+                        .dispatch_spill_copy(&holder, epoch, replayed_position, journal_copy);
                 let _ = reply.send(result);
             }
             WorldCommand::ImportEntity {
@@ -3883,6 +3958,8 @@ impl WorldActor {
             presence: HashMap::new(),
             active_subs: BTreeSet::new(),
             handled_requests: BTreeSet::new(),
+            pending_results: std::collections::VecDeque::new(),
+            fuel_retry_not_before: None,
             pending_forms: BTreeMap::new(),
             denied_subs: BTreeSet::new(),
             ticks: BTreeMap::new(),

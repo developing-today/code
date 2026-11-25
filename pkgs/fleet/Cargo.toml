@@ -16,6 +16,7 @@
 # atlas-proto by path, ../atlas-search/crates/*, untouched).
 [workspace]
 members = [
+  "crates/fleet-pool",
   "crates/fleet-registry",
   "crates/fleet-config",
   "crates/fleet-secrets",
@@ -42,6 +43,7 @@ rust-version = "1.85"
 license = "MIT OR Apache-2.0"
 
 [workspace.dependencies]
+fleet-pool = { path = "crates/fleet-pool" }
 fleet-registry = { path = "crates/fleet-registry" }
 fleet-config = { path = "crates/fleet-config" }
 fleet-secrets = { path = "crates/fleet-secrets" }

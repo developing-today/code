@@ -59,6 +59,20 @@
 # Cloudflare: kaneo.security.cab -> http://localhost:5173 and
 # dispatch.security.cab -> http://localhost:4879.)
 #
+# CF-8 (code#14948, 2026-11-25): the beside-products joined the tunnel
+# tier at their canonical names — pad.security.cab ->
+# http://localhost:7777, grist.security.cab -> http://localhost:8484,
+# ready-for-agent.security.cab -> http://localhost:6056 (the pm-apps
+# module's ports; their stores did not move — #6816/#3142 own those).
+# All four beside-product names sit behind one Cloudflare Access
+# application, "PM beside-products" (the beside-products name class,
+# per the #14107 design's D4 ruling: one application per name class),
+# with the same identity providers and owner allow policy as the
+# "PM stack" application; each app's own login stays as the second
+# door. Tunnel configuration version 6 carries the three new ingress
+# rules; the proxied CNAMEs point at the amd-6-pm-stack tunnel like
+# the names above.
+#
 # The projector is ENABLED: the aggregator's environment pins
 # PM_PROJECTOR_URL to the local projector service (the env file said
 # "off" from the install.sh era, when no projector had ever been

@@ -3032,6 +3032,26 @@ export function workerSaid(w, now = Date.now()) {
   return { text: `In service. A deploy of ${commit} is ${run.state.replace("_", " ")}, started ${when}.`, tone: "" };
 }
 
+/** One store token's line on the Platform screen: when it runs out and
+ * whether that needs looking at. Only its name and its date are ever
+ * known here, never the token. */
+export function tokenSaid(t, now = Date.now()) {
+  const day = typeof t.expiresAt === "string" ? t.expiresAt.slice(0, 10) : "";
+  const left = day ? Math.floor((Date.parse(t.expiresAt) - now) / 86_400_000) : 0;
+  switch (t.state) {
+    case "expired":
+      return { text: `Ran out on ${day}. What uses it cannot reach its store until it is rotated.`, tone: "warn" };
+    case "soon":
+      return { text: `Runs out on ${day}, in ${left <= 0 ? "less than a day" : left === 1 ? "1 day" : `${left} days`}. Rotate it before then.`, tone: "warn" };
+    case "fine":
+      return { text: `Runs out on ${day}.`, tone: "good" };
+    case "none":
+      return { text: "Carries no date: it does not run out by itself.", tone: "" };
+    default:
+      return { text: "Could not be read from here, so when it runs out is not known.", tone: "" };
+  }
+}
+
 /** The counts the Platform screen opens with. */
 export function platformCounts(workers) {
   const live = workers.filter((w) => w.state === "in service");
@@ -3049,7 +3069,12 @@ export function platformCounts(workers) {
  * how its last deploy went; and what joining the one platform means
  * for each that has not yet. */
 async function viewPlatform() {
-  const p = await api(freshly("platform"));
+  // When the store tokens run out is a machine's to read; with none
+  // reporting, the Workers still show.
+  const [p, held] = await Promise.all([
+    api(freshly("platform")),
+    api("tokens").catch((error) => ({ error: error.message })),
+  ]);
   const workers = Array.isArray(p.workers) ? p.workers : [];
   const n = platformCounts(workers);
   const repo = `https://github.com/${me.repo || "developing-today/code"}`;
@@ -3070,6 +3095,20 @@ async function viewPlatform() {
       p.malformed ? h("p", { class: "why" }, `${p.malformed} entr${p.malformed === 1 ? "y" : "ies"} in the list could not be read and ${p.malformed === 1 ? "is" : "are"} not shown.`) : null,
     ),
   ];
+  const tokens = Array.isArray(held?.tokens) ? held.tokens : [];
+  out.push(h("h2", {}, `Store tokens${tokens.length ? ` (${tokens.length})` : ""}`));
+  if (held?.error) out.push(card(h("p", { class: "why" }, `When the store tokens run out could not be read: ${held.error}`)));
+  for (const t of tokens) {
+    const s = tokenSaid(t);
+    out.push(
+      card(
+        h("div", { class: "row" }, chip(t.state === "fine" ? "in date" : t.state === "soon" ? "runs out soon" : t.state === "expired" ? "ran out" : t.state === "none" ? "no date" : "not read", s.tone)),
+        h("h3", {}, t.name),
+        h("p", { class: "meta" }, `Used by ${(t.stores || []).join(", ")}.`),
+        h("p", { class: s.tone === "warn" ? "why" : "meta" }, s.text),
+      ),
+    );
+  }
   for (const group of Object.keys(GROUP_SAID)) {
     const rows = workers.filter((w) => w.group === group);
     if (rows.length === 0) continue;
@@ -3128,6 +3167,7 @@ export function everyRead(caps, edge) {
     ...["blocked", "queued", "claimed", "parked"].map((status) => `queue?status=${status}&q=`),
     "releases",
     "platform",
+    "tokens",
     "messages?limit=15",
     "push",
     "devices",
@@ -4289,6 +4329,73 @@ async function viewAgents(sub) {
       );
     }
   }
+  // ---- wake hooks (#14544) ---------------------------------------------
+  // The bridge wakes an address's reader through its hook. The list
+  // is the bridge's own view of a hook — address, kind, host, whether
+  // it holds a token — never the token or the path. Setting and
+  // removing go through the wake-hooks API the retired bridge page
+  // used; this screen is its owner surface now.
+  let hooks = null;
+  try {
+    const got = await api("wake-hooks");
+    if (Array.isArray(got)) hooks = got;
+  } catch {
+    hooks = null;
+  }
+  const hookRow = (hk) =>
+    card(
+      h("div", { class: "row" }, h("h3", {}, hk.address), chip(hk.kind, "good")),
+      h("p", { class: "meta" }, `${hk.host} · ${hk.has_token ? "with a token" : "no token"} · added ${ago(hk.added) || hk.added}`),
+      h(
+        "div",
+        { class: "row end" },
+        h(
+          "button",
+          {
+            class: "small ghost",
+            onclick: async (e) => {
+              const yes = await ask({
+                title: `Remove the wake hook for ${hk.address}?`,
+                text: "Messages for that address stop waking its reader; they wait for its next poll instead.",
+                okLabel: "Remove",
+                danger: true,
+              });
+              if (yes !== null) act("agent.wake-hook-remove", { address: hk.address }, `Removed the wake hook for ${hk.address}`, e.target);
+            },
+          },
+          "Remove",
+        ),
+      ),
+    );
+  const wAddress = h("input", { type: "text", "aria-label": "Wake hook address", placeholder: "agent:<name>, channel:claude or channel:chatgpt" });
+  const wUrl = h("input", { type: "url", "aria-label": "Wake hook URL", placeholder: "https://… the URL the bridge calls" });
+  const wToken = h("input", { type: "password", "aria-label": "Wake hook token", placeholder: "token, if the URL needs one (a routine's fire URL does)" });
+  const newHook = card(
+    h("h3", {}, "Set a wake hook"),
+    h("p", { class: "meta" }, "One hook per address; setting one for an address replaces it. The token is sent to the bridge and never shown again."),
+    wAddress,
+    wUrl,
+    wToken,
+    h(
+      "div",
+      { class: "row end" },
+      h(
+        "button",
+        {
+          onclick: (e) => {
+            const address = wAddress.value.trim();
+            const url = wUrl.value.trim();
+            if (!address) return toast("Name the address first", true);
+            if (!url) return toast("Give the hook's URL first", true);
+            const args = { address, url };
+            if (wToken.value) args.token = wToken.value;
+            act("agent.wake-hook-set", args, `Wake hook set for ${address}`, e.target);
+          },
+        },
+        "Set hook",
+      ),
+    ),
+  );
   return [
     ...notices(docs.ops, ["agents"]),
     handed,
@@ -4296,6 +4403,10 @@ async function viewAgents(sub) {
     h("h2", {}, `Agents (${roster.length})`),
     directory === null ? empty("The unified directory could not be read just now; the fleet roster is shown, without credential state.") : null,
     ...roster.map(agentCard),
+    h("h2", {}, "Wake hooks"),
+    newHook,
+    hooks === null ? empty("The wake hooks could not be read just now.") : null,
+    ...(hooks ?? []).map(hookRow),
     h("h2", {}, "Provisioning"),
     newAgent,
     newCredential,

@@ -52,6 +52,16 @@ pub struct AgentQuotaLedger {
     replenishment: Option<Replenishment>,
     spend: Quota,
     last_replenished_at: u64,
+    /// The checkout generation this handle was opened under
+    /// (#14602). [`QuotaLedgerStore::open`] stamps each handle
+    /// with the pair's next generation; [`QuotaLedgerStore::close`]
+    /// only hands back a handle whose generation is still current,
+    /// so a stale handle closed after a [`QuotaLedgerStore::release`]
+    /// and re-open can neither clear the new holder's checkout nor
+    /// overwrite its spend. Runtime-only, like the store's
+    /// checkout set: never part of a snapshot.
+    #[serde(skip, default)]
+    checkout_gen: u64,
 }
 
 impl AgentQuotaLedger {
@@ -74,6 +84,9 @@ impl AgentQuotaLedger {
             replenishment: class.replenishment,
             spend: Quota::zero(),
             last_replenished_at: now,
+            // A freestanding ledger was never checked out of a
+            // store; the store stamps the generation on open.
+            checkout_gen: 0,
         }
     }
 
@@ -240,6 +253,14 @@ pub struct QuotaLedgerStore {
     /// checked out.
     #[serde(default)]
     checked_out: BTreeSet<([u8; 32], String)>,
+    /// The last checkout generation issued per pair (#14602). A
+    /// [`Self::release`] clears the checkout without issuing a new
+    /// generation, so a stale handle closed afterwards still
+    /// carries an older generation than any re-open and its close
+    /// is ignored instead of clobbering the new holder. Runtime
+    /// state, like [`Self::checked_out`].
+    #[serde(default)]
+    generations: BTreeMap<([u8; 32], String), u64>,
 }
 
 impl QuotaLedgerStore {
@@ -282,13 +303,20 @@ impl QuotaLedgerStore {
         if self.checked_out.contains(&key) {
             return Err(LedgerCheckedOut { agent_key, world });
         }
-        let ledger = match self.ledgers.get_mut(&key) {
+        let mut ledger = match self.ledgers.get_mut(&key) {
             Some(ledger) => {
                 ledger.reopen(role, class, now);
                 ledger.clone()
             }
             None => AgentQuotaLedger::open(agent_key, world, role, class, now),
         };
+        // Stamp the handle with the pair's next generation (#14602):
+        // only the holder of the current generation can hand the
+        // ledger back, so a handle left over from before a release
+        // can never clear a newer holder's checkout.
+        let generation = self.generations.get(&key).copied().unwrap_or(0) + 1;
+        ledger.checkout_gen = generation;
+        self.generations.insert(key.clone(), generation);
         // The ledger lives in the store from the open on (#14580):
         // if the handle is dropped without close, the pair's
         // ledger -- with every earlier session's banked spend --
@@ -304,10 +332,37 @@ impl QuotaLedgerStore {
     /// role edit keeps the ledger under its new role. Closing a
     /// ledger that was never checked out (e.g. via [`Self::restore`])
     /// simply upserts it.
-    pub fn close(&mut self, ledger: AgentQuotaLedger) {
+    ///
+    /// Only the current generation hands back (#14602): a stale
+    /// handle -- one opened before a [`Self::release`] and closed
+    /// after the pair was re-opened -- is ignored, returning
+    /// `false`, so it can neither clear the new holder's checkout
+    /// nor overwrite the new holder's spend. Returns `true` when
+    /// the ledger was handed back.
+    pub fn close(&mut self, ledger: AgentQuotaLedger) -> bool {
         let key = (*ledger.agent_key(), ledger.world().to_owned());
-        self.checked_out.remove(&key);
+        if self.checked_out.contains(&key) {
+            if ledger.checkout_gen != self.generations.get(&key).copied().unwrap_or(0) {
+                return false;
+            }
+            self.checked_out.remove(&key);
+            self.ledgers.insert(key, ledger);
+            return true;
+        }
+        // Not checked out: either a ledger that was never checked
+        // out (restore path) or a late close after a release. The
+        // latter is only legitimate when no newer generation has
+        // been issued since -- otherwise the handle predates a
+        // re-open and its older spend must not clobber the store.
+        if self
+            .generations
+            .get(&key)
+            .is_some_and(|last| *last != ledger.checkout_gen)
+        {
+            return false;
+        }
         self.ledgers.insert(key, ledger);
+        true
     }
 
     /// Recover a pair whose handle was dropped without
@@ -319,6 +374,15 @@ impl QuotaLedgerStore {
     /// handle owned them, and only a close banks a session's
     /// spend. Returns `None`, changing nothing, when the pair is
     /// not checked out.
+    ///
+    /// A release while the handle is still live does not create a
+    /// second live handle's worth of danger (#14602): the next
+    /// open issues a newer generation, and the leftover handle's
+    /// later close is ignored -- it can neither clear the new
+    /// holder's checkout nor overwrite the new holder's spend.
+    /// Reserve release for the orphan case all the same: a live
+    /// handle's unbanked charges are still lost to the store when
+    /// its checkout is cleared this way.
     pub fn release(&mut self, agent_key: &[u8; 32], world: &str) -> Option<AgentQuotaLedger> {
         let key = (*agent_key, world.to_owned());
         if self.checked_out.remove(&key) {
@@ -797,5 +861,48 @@ mod tests {
             store.spend_for_agent(&AGENT, "w", 0).unwrap().tool_calls,
             1
         );
+    }
+
+    #[test]
+    fn store_stale_close_after_release_cannot_clobber_the_new_holder() {
+        // The #14602 repro: release while the handle is still live
+        // used to let the leftover handle's later close clear the
+        // new holder's checkout and overwrite its spend, admitting
+        // a third live handle. Generations make the stale close a
+        // no-op: the pair stays checked out to the new holder with
+        // its spend intact.
+        let mut store = QuotaLedgerStore::new();
+        let stale = store
+            .open(AGENT, "w", "archivist", class(2, None), 0)
+            .unwrap();
+
+        // Recovery while the handle is still live: the checkout is
+        // cleared, but the live handle keeps its older generation.
+        assert!(store.release(&AGENT, "w").is_some());
+        assert!(!store.is_checked_out(&AGENT, "w"));
+
+        let mut holder = store
+            .open(AGENT, "w", "archivist", class(2, None), 1)
+            .unwrap();
+        holder.charge(1, call()).unwrap();
+
+        // The leftover handle closes after the re-open: ignored.
+        assert!(!store.close(stale));
+        assert!(store.is_checked_out(&AGENT, "w"));
+        // The new holder keeps its own charges on its handle (owner
+        // reads see banked spend only, as before); the pair refuses
+        // a third live open while it is outstanding.
+        assert_eq!(holder.spend_at(1).tool_calls, 1);
+        assert!(
+            store
+                .open(AGENT, "w", "archivist", class(2, None), 1)
+                .is_err()
+        );
+
+        // The current holder still hands back normally, with its
+        // spend banked.
+        assert!(store.close(holder));
+        assert!(!store.is_checked_out(&AGENT, "w"));
+        assert_eq!(store.spend_for_agent(&AGENT, "w", 1).unwrap().tool_calls, 1);
     }
 }

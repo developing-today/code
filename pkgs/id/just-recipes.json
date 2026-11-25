@@ -827,7 +827,7 @@
         "windows_shell": null,
         "working_directory": null
       },
-      "source": "/home/user/git/fleet/14257-7904-rust-sdk-venue/root.just",
+      "source": "/home/user/git/fleet/oc-code-02-14665-20261124T234002Z-9e2a2dcb/root.just",
       "unexports": [],
       "warnings": []
     }
@@ -1481,7 +1481,7 @@
       "doc": "CI-safe checks (read-only, no modifications) [bun]",
       "name": "ci",
       "parameters": [],
-      "priors": 16,
+      "priors": 17,
       "private": false,
       "quiet": false,
       "namepath": "ci",
@@ -2652,9 +2652,9 @@
     },
     "test-nix": {
       "attributes": [{ "group": "test" }],
-      "body": [["nix flake check"], ["@echo \"✓ nix flake check passed (27 checks — runs everything)\""]],
+      "body": [["nix flake check"], ["@echo \"✓ nix flake check passed (all checks — runs everything)\""]],
       "dependencies": [],
-      "doc": "Run nix flake check (27 sandboxed checks: lint, test, E2E, NixOS VM tests, VM Playwright)",
+      "doc": "Run nix flake check (all sandboxed checks: lint, test, E2E, NixOS VM tests, VM Playwright)",
       "name": "test-nix",
       "parameters": [],
       "priors": 0,
@@ -2779,10 +2779,14 @@
       "attributes": [{ "group": "test" }],
       "body": [
         ["cargo test --manifest-path examples/rust-world/Cargo.toml"],
-        ["cargo test --manifest-path examples/rust-counter/Cargo.toml"]
+        ["cargo test --manifest-path examples/rust-counter/Cargo.toml"],
+        ["cargo test --manifest-path examples/rust-cells/Cargo.toml --locked"],
+        ["cargo test --manifest-path examples/rust-orbit/Cargo.toml --locked"],
+        ["cargo test --manifest-path examples/rust-colony/Cargo.toml --locked"],
+        ["cargo test --manifest-path examples/rust-sketch/Cargo.toml"]
       ],
       "dependencies": [],
-      "doc": "Run the Rust example-guest unit tests (#7904): plaza-sdk (examples/rust-world, 9 tests) and rust-counter (examples/rust-counter, 2 tests) are standalone crates outside the pkgs/id workspace, so the workspace test recipes never run them.",
+      "doc": "Run the Rust example-guest unit tests (#7904, #13656): plaza-sdk (examples/rust-world, 9 tests), rust-counter (examples/rust-counter, 2 tests), rust-cells (examples/rust-cells), rust-orbit (examples/rust-orbit; the #13606 Orbit Arcade guest), rust-colony (examples/rust-colony; the #13605 Colony guest) and rust-sketch (examples/rust-sketch; the literal-vector guest slice of #13608) are standalone crates outside the pkgs/id workspace, so the workspace test recipes never run them.",
       "name": "test-rust-examples",
       "parameters": [],
       "priors": 0,
@@ -2846,6 +2850,19 @@
       "private": false,
       "quiet": false,
       "namepath": "test-shard-sandbox",
+      "shebang": false
+    },
+    "test-sketch": {
+      "attributes": [{ "group": "test" }],
+      "body": [["cargo nextest run --all-features -p id --test sketch_host_play"]],
+      "dependencies": [],
+      "doc": "Run the Sketch host load/play fixture (#13656): the regular ID host loads the checked-in examples/rust-sketch/sketch.wasm, plays the six-step #13608 vector, and asserts snapshot/restore plus next-operation equivalence.",
+      "name": "test-sketch",
+      "parameters": [],
+      "priors": 0,
+      "private": false,
+      "quiet": false,
+      "namepath": "test-sketch",
       "shebang": false
     },
     "test-tui-shell": {
@@ -3403,7 +3420,7 @@
     "windows_shell": null,
     "working_directory": null
   },
-  "source": "/home/user/git/fleet/14257-7904-rust-sdk-venue/pkgs/id/justfile",
+  "source": "/home/user/git/fleet/oc-code-02-14665-20261124T234002Z-9e2a2dcb/pkgs/id/justfile",
   "unexports": [],
   "warnings": []
 }

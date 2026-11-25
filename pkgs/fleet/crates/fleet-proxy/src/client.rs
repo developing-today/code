@@ -463,6 +463,8 @@ pub fn run_connect(
             trip: None,
             transport: None,
             cf_ok: None,
+            // #14188: the caller's FLEET_CTX_* record rides the frame.
+            ctx: fleet_config::ctx::Ctx::from_env().to_frame(),
         };
         // A legacy broker already spent its first reply eating the
         // hello; the round-trip proceeds identically from here.

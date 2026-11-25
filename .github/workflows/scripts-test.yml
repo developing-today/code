@@ -40,8 +40,14 @@ jobs:
         run: |
           test -f scripts/tests/test_muse_bootstrap_check_op.py
           python3 -m unittest discover -s scripts/tests -p 'test_muse_bootstrap_check_op.py' -v
+      - name: Run fleet binary keeper contract tests (#14999)
+        run: |
+          test -f scripts/tests/test_fleet_binary_keeper.py
+          python3 -m unittest discover -s scripts/tests -p 'test_fleet_binary_keeper.py' -v
       - name: Run worker preflight contract tests (#4862)
         run: python3 -m unittest discover -s scripts/tests -p 'test_worker_preflight.py' -v
+      - name: Run Dependabot npm target regression tests (#14164)
+        run: python3 -m unittest discover -s scripts/tests -p 'test_dependabot_npm_targets.py' -v
       - name: Run orchestration-pass retirement record contract tests (#2136)
         run: |
           test -f scripts/tests/test_orchestration_pass_retirement.py
@@ -74,6 +80,10 @@ jobs:
         run: |
           test -f scripts/fleet/flow-report/test_flow_report.py
           python3 -I -m unittest discover -s scripts/fleet/flow-report -p 'test_flow_report.py' -v
+      - name: Run completed-cohort usage measurement tests (#2140)
+        run: |
+          test -f scripts/test_fleet_completion_usage.py
+          python3 -I -m unittest discover -s scripts -p 'test_fleet_completion_usage.py' -v
       - name: Run graph encoding bake-off report check (#10219)
         run: |
           test -f doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-a-graph/test_validate_real_encoding_bakeoff.py

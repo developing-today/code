@@ -8,11 +8,12 @@
 // apply actions; the dashboard only records them.
 import { execFile } from "node:child_process";
 import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
-import { homedir, tmpdir } from "node:os";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Database } from "bun:sqlite";
 import { createQuotaRefresher, systemdTrigger } from "./quota-refresh.ts";
 import { buildQuotaAnalytics, primeAttemptAggregates, type QuotaAnalytics } from "./analytics-store.ts";
+import { readRouteApiTarget } from "./route-rollup.ts";
 import { decodePathSegment } from "./path-segment.ts";
 import { errorBoundaryResponse, notFoundResponse } from "./error-boundary.ts";
 import { ACTION_STATES, ActionsStore, validateNewAction, type DashAction, type NewAction } from "./actions.ts";
@@ -103,6 +104,18 @@ import {
   type NeedsDrewQuestion,
 } from "./needs-drew.ts";
 import {
+  buildNeedsUserList,
+  onQuestionAnswered,
+  onQuestionRaised,
+  parseBlockedByCount,
+  parsePriority,
+  questionOptions,
+  setQuestionBlockedByCount,
+  setQuestionPriority,
+  stageRowsFor,
+  type NeedsUserListItem,
+} from "./needs-user.ts";
+import {
   decisionSetAging,
   decisionSetOpenState,
   decisionSetProgress,
@@ -144,10 +157,12 @@ import {
   buildHealth,
   pageRenderHealth,
   recordRender,
+  resolveBuildVersion,
   summarizeItemCoverage,
   type HealthView,
   type ItemsCoverage,
 } from "./health.ts";
+import { computeEditionDrift, type EditionDrift } from "./edition-drift.ts";
 import { manifestRouteFor } from "./pages.ts";
 import { conflictInbox, type ConflictInbox } from "./conflicts.ts";
 import { watchdogTierItems, WATCHDOG_PROBE_SERVICE_IDS } from "./watchdog.ts";
@@ -302,6 +317,7 @@ import {
   subjectForecastContracts,
   type ForecastContract,
 } from "./forecast-contract.ts";
+import { requireHome } from "./home.ts";
 
 // Cap `t` at `max` UTF-16 code units, but never leave half of a surrogate
 // pair at the cut (#7740, mirroring the #7694-family capUnits guard): an
@@ -698,6 +714,7 @@ async function healthContext(prime = true): Promise<HealthView> {
     conflicts: await assembleConflicts().catch(() => null),
     pushHealth: cfg.source === "fixtures" ? null : freshnessReconciler.health(new Date()),
     slo: cfg.source === "fixtures" ? null : await sloSummaries(),
+    edition: cfg.source === "fixtures" ? null : await editionDrift(),
   });
 }
 
@@ -711,6 +728,27 @@ async function sloSummaries(nowMs = Date.now()): Promise<SloFacetSummary[]> {
     summarizeSloFacet(definition, byFacet.get(definition.id) ?? [], nowMs),
   );
   sloSummaryCache = { at: nowMs, value };
+  return value;
+}
+
+// Edition drift (CF-9, #14949): how far this process's deployed build
+// has fallen behind origin/main, measured from the build marker
+// (PM_AGG_BUILD_VERSION) against the primary checkout's refs
+// (PM_AGG_EDITION_REPO_DIR overrides the checkout; default ~/git/code,
+// the clone pm-git-sync keeps on main). Cached five minutes: the
+// inputs move at merge cadence and each measurement is a handful of
+// local git calls. A failed measurement is null — the health view
+// renders it as unassembled, never as an invented in-sync.
+const EDITION_DRIFT_CACHE_MS = 300_000;
+let editionDriftCache: { at: number; value: EditionDrift | null } | null = null;
+async function editionDrift(nowMs = Date.now()): Promise<EditionDrift | null> {
+  if (editionDriftCache && nowMs - editionDriftCache.at < EDITION_DRIFT_CACHE_MS) {
+    return editionDriftCache.value;
+  }
+  const repoDir =
+    process.env.PM_AGG_EDITION_REPO_DIR?.trim() || join(requireHome("PM_AGG_EDITION_REPO_DIR"), "git", "code");
+  const value = await computeEditionDrift(resolveBuildVersion(), repoDir).catch(() => null);
+  editionDriftCache = { at: nowMs, value };
   return value;
 }
 
@@ -850,6 +888,48 @@ const ANSWER_PAGE_STYLE = `<style>
   .confirm { border: 1px solid #238636; border-radius: 0.5rem; padding: 1rem; }
 </style>`;
 
+/** Render GET /needs-user: open questions in answering order, each
+ * with its blocked-by count and a priority setting. */
+function renderNeedsUserPage(items: NeedsUserListItem[], stagesAvailable: boolean): string {
+  const priorityOptions = (current: number | null) =>
+    [`<option value=""${current === null ? " selected" : ""}>No priority</option>`]
+      .concat([1, 2, 3, 4, 5].map((p) => `<option value="${p}"${current === p ? " selected" : ""}>P${p}</option>`))
+      .join("");
+  const rows = items
+    .map(
+      (i) => `<li class="item"><p class="q">${esc(i.question)}</p>
+<p class="context">Raised ${esc(i.raisedAt)} by ${esc(i.source)} · <strong>${i.blockedByCount}</strong> ${
+        i.blockedByCount === 1 ? "issue waits" : "issues wait"
+      } on this answer</p>
+<label>Priority <select data-ledger="${esc(i.ledgerId)}"${stagesAvailable ? "" : " disabled"}>${priorityOptions(
+        i.priority,
+      )}</select></label></li>`,
+    )
+    .join("");
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1"><title>Needs user — PM Stack</title>${ANSWER_PAGE_STYLE}
+<style>ol { padding-left: 1.2rem; } .item { margin: 0 0 1.2rem; } .q { margin: 0 0 0.3rem; font-size: 1.05rem; }
+select { background: #161b22; color: #e6edf3; border: 1px solid #30363d; border-radius: 0.4rem; padding: 0.3rem; }</style></head>
+<body><main><h1>Needs user (${items.length})</h1>
+${stagesAvailable ? "" : `<p class="context">The stage store is unavailable, so priorities can't be set right now.</p>`}
+${items.length ? `<ol>${rows}</ol>` : `<p class="context">Nothing is waiting on you.</p>`}
+<p id="status" class="context"></p>
+<script>
+document.querySelectorAll('select[data-ledger]').forEach((sel) => {
+  sel.addEventListener('change', async () => {
+    const status = document.getElementById('status');
+    const priority = sel.value === '' ? null : Number(sel.value);
+    try {
+      const res = await fetch('/api/needs-user/' + encodeURIComponent(sel.dataset.ledger) + '/priority', {
+        method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ priority }) });
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      status.textContent = 'Priority saved.';
+    } catch { status.textContent = 'Saving the priority failed. Please try again.'; }
+  });
+});
+</script></main></body></html>`;
+}
+
 /** Render GET /answer/<ledgerId>. The caller has already verified the
  * token; the 403 shape renders nothing about the question. */
 function renderAnswerPage(item: NeedsDrewQuestion): string {
@@ -859,7 +939,7 @@ function renderAnswerPage(item: NeedsDrewQuestion): string {
     .join("");
   if (item.answer) {
     const chosen = item.answer.optionId
-      ? (item.options.find((o) => o.id === item.answer?.optionId)?.label ?? item.answer.optionId)
+      ? (questionOptions(item).find((o) => o.id === item.answer?.optionId)?.label ?? item.answer.optionId)
       : null;
     return `<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1"><title>Answered — PM Stack</title>${ANSWER_PAGE_STYLE}</head>
@@ -869,7 +949,7 @@ ${item.answer.freeText ? `<p>${esc(item.answer.freeText)}</p>` : ""}
 <p class="context">Recorded at ${esc(item.answer.at)} — the fleet worker has been unblocked.</p></div>
 </main></body></html>`;
   }
-  const buttons = item.options
+  const buttons = questionOptions(item)
     .map((o) => `<button class="option" type="button" data-option="${esc(o.id)}">${esc(o.label)}</button>`)
     .join("");
   return `<!doctype html><html lang="en"><head><meta charset="utf-8">
@@ -2263,7 +2343,8 @@ async function withMetadataTempFile<T>(prefix: string, content: string, run: (pa
 }
 
 const metadataDbPath =
-  process.env.PM_METADATA_DB_PATH ?? join(homedir(), ".local/state/pm-aggregator/pm-metadata.sqlite");
+  process.env.PM_METADATA_DB_PATH ??
+  join(requireHome("PM_METADATA_DB_PATH"), ".local/state/pm-aggregator/pm-metadata.sqlite");
 const metadataDb = openMetadataStore(metadataDbPath, (path) => new Database(path));
 const metadataWebhookHandler = createMetadataWebhookHandler({
   secret: () => resolveBwsSecret("pm-aggregator.github-webhook-secret"),
@@ -3739,6 +3820,7 @@ async function handler(req: Request, remoteAddress?: string): Promise<Response> 
           quota,
           usage,
           quotaCurrentPath: cfg.quotaCurrentFile,
+          routeApi: readRouteApiTarget(cfg.opencodeServerStateFile),
           mcpxCallLedgerDir: cfg.mcpxCallLedgerDir,
           fleetInvocationLedgerFile: cfg.fleetInvocationLedgerFile,
         }),
@@ -3764,6 +3846,7 @@ async function handler(req: Request, remoteAddress?: string): Promise<Response> 
         quota,
         usage,
         quotaCurrentPath: cfg.quotaCurrentFile,
+        routeApi: readRouteApiTarget(cfg.opencodeServerStateFile),
         mcpxCallLedgerDir: cfg.mcpxCallLedgerDir,
         fleetInvocationLedgerFile: cfg.fleetInvocationLedgerFile,
       });
@@ -4588,6 +4671,14 @@ async function handler(req: Request, remoteAddress?: string): Promise<Response> 
         if (!v.ok) return json({ error: v.error }, 400);
         try {
           const item = await raiseNeedsDrew(cfg.needsDrewFile, v.value, parsed.value.source, parsed.value.key);
+          // #14084 S1: the question enters the staged pipeline at
+          // needs-user. Best-effort: a store failure never fails the raise.
+          try {
+            const store = await getAlertsStore();
+            if (store) await onQuestionRaised(store.itemStages(), item);
+          } catch (err) {
+            console.error(`alerts intake: needs-user stage failed (${err instanceof Error ? err.message : "error"})`);
+          }
           requestAlertTick();
           return json(
             { incident, created, needsDrew: { ledgerId: item.ledgerId, answerUrl: needsDrewAnswerUrl(item) } },
@@ -4682,7 +4773,7 @@ async function handler(req: Request, remoteAddress?: string): Promise<Response> 
       return json({ error: "unknown question or bad token" }, 403);
     }
     const optionId = typeof body.optionId === "string" ? body.optionId : undefined;
-    if (optionId !== undefined && !item.options.some((o) => o.id === optionId)) {
+    if (optionId !== undefined && !questionOptions(item).some((o) => o.id === optionId)) {
       return json({ error: "optionId is not one of the question options" }, 400);
     }
     const freeText = typeof body.freeText === "string" ? body.freeText : undefined;
@@ -4712,6 +4803,14 @@ async function handler(req: Request, remoteAddress?: string): Promise<Response> 
     } catch (err) {
       console.error(`needs-drew answer: incident close failed (${err instanceof Error ? err.message : "error"})`);
     }
+    // #14084 S1: "Send back" returns the item to review; any other
+    // answer resolves it. Keyed on the recorded (first) answer.
+    try {
+      const store = await getAlertsStore();
+      if (store) await onQuestionAnswered(store.itemStages(), ledgerId, updated.answer.optionId);
+    } catch (err) {
+      console.error(`needs-drew answer: stage update failed (${err instanceof Error ? err.message : "error"})`);
+    }
     return json({
       ledgerId,
       answered: true,
@@ -4722,6 +4821,61 @@ async function handler(req: Request, remoteAddress?: string): Promise<Response> 
         via: updated.answer.via,
       },
     });
+  }
+  // --- Needs-user list (#14084 S1) ------------------------------------
+  // Open ledger questions in answering order (priority, then issues
+  // waiting on the answer, then age). Answer tokens never appear here.
+  if (path === "/api/needs-user" || path === "/needs-user") {
+    if (req.method !== "GET") return json({ error: "method not allowed" }, 405);
+    const store = await getAlertsStore();
+    const questions = await listOpenNeedsDrew(cfg.needsDrewFile).catch(() => []);
+    let items: NeedsUserListItem[];
+    let stagesAvailable = true;
+    try {
+      items = buildNeedsUserList(questions, store ? await stageRowsFor(store.itemStages(), questions) : new Map());
+      if (!store) stagesAvailable = false;
+    } catch (err) {
+      console.error(`needs-user list: stage read failed (${err instanceof Error ? err.message : "error"})`);
+      items = buildNeedsUserList(questions, new Map());
+      stagesAvailable = false;
+    }
+    if (path === "/needs-user") return html(renderNeedsUserPage(items, stagesAvailable));
+    return json({ items, stagesAvailable });
+  }
+  const needsUserSetMatch = /^\/api\/needs-user\/([^/]+)\/(priority|blocked-by)$/.exec(path);
+  if (needsUserSetMatch) {
+    if (req.method !== "POST") return json({ error: "method not allowed" }, 405);
+    const ledgerId = decodePathSegment(needsUserSetMatch[1]);
+    if (ledgerId === null) return json({ error: "bad ledgerId" }, 400);
+    const field = needsUserSetMatch[2];
+    // The blocked-by count is the fleet's to report (intake bearer);
+    // priority is set from the list, like the push preferences.
+    if (field === "blocked-by" && !(await alertsIntakeAuthorized(req))) {
+      return json({ error: "unauthorized" }, 401);
+    }
+    let body: { priority?: unknown; count?: unknown };
+    try {
+      body = (await readJsonBody(req)) as typeof body;
+    } catch {
+      return json({ error: "invalid body" }, 400);
+    }
+    const item = await getNeedsDrew(cfg.needsDrewFile, ledgerId).catch(() => null);
+    if (!item) return json({ error: "unknown question" }, 404);
+    if (item.answer) return json({ error: "question already answered" }, 409);
+    const store = await getAlertsStore();
+    if (!store) return json({ error: "alerts store unavailable" }, 503);
+    if (field === "priority") {
+      const p = parsePriority(body.priority);
+      if (!p.ok) return json({ error: p.error }, 400);
+      const row = await setQuestionPriority(store.itemStages(), ledgerId, p.value);
+      if (!row) return json({ error: "priority not recorded" }, 500);
+      return json({ ledgerId, priority: row.priority === null ? null : Number(row.priority) });
+    }
+    const c = parseBlockedByCount(body.count);
+    if (!c.ok) return json({ error: c.error }, 400);
+    const row = await setQuestionBlockedByCount(store.itemStages(), ledgerId, c.value);
+    if (!row) return json({ error: "count not recorded" }, 500);
+    return json({ ledgerId, blockedByCount: Number(row.blocked_by_count) });
   }
   const answerPageMatch = /^\/answer\/([^/]+)$/.exec(path);
   if (req.method === "GET" && answerPageMatch) {
@@ -5537,9 +5691,10 @@ for (const server of servers) {
 // restart measured 26.4 s against ~0.03 s warm (2026-11-13
 // follow-up). primeAttemptAggregates fills the same cache through
 // the day-sliced stale-while-revalidate refresh instead, so the loop
-// stays responsive; later builds ride that cache as before, and a
-// /quota request landing before the prime settles still pays the
-// synchronous cold build on its own path (unchanged semantics).
+// stays responsive; later builds ride that cache as before. Since
+// #2795 the aggregates come from the OpenCode server's rollup API, so
+// there is no synchronous cold build at all: a /quota request landing
+// before the prime settles shows the section as unavailable.
 // programSources joins the warmed assemblies in the same follow-up:
 // it was the one major assembly left out, so /program's first
 // post-restart request always paid its cold fan-out on the request
@@ -5547,7 +5702,7 @@ for (const server of servers) {
 setTimeout(() => {
   void (async () => {
     try {
-      primeAttemptAggregates();
+      primeAttemptAggregates(readRouteApiTarget(cfg.opencodeServerStateFile));
       await Promise.allSettled([
         boardContext(),
         overviewContext(),

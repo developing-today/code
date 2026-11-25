@@ -145,7 +145,9 @@ test("each action is said in a line the owner will know it by", () => {
   expect(said("questions.accept", { set: "s" })).toBe("Accept the recommended answers");
   expect(said("message.send", { to: ["xaltha"], text: "hello" })).toBe("Message to xaltha: “hello”");
   expect(said("message.broaden", { batch: "b9" })).toBe("Broaden the send on batch b9");
-  expect(said("message.offer", { to: ["agent:f*"], slots: 2, text: "take it" })).toBe("Offer to agent:f* (2 slots): “take it”");
+  expect(said("message.offer", { to: ["agent:f*"], slots: 2, text: "take it" })).toBe(
+    "Offer to agent:f* (2 slots): “take it”",
+  );
   expect(said("unit.act", { unit: "pm-console.service", action: "restart" })).toBe("restart pm-console.service");
   // One it does not know is still said, as it came; and no arguments are no reason to fail.
   expect(said("something.new", { a: 1 })).toBe("something.new");

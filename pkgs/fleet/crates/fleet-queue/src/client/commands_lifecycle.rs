@@ -1396,26 +1396,60 @@ pub(super) fn cmd_repair(rest: &[String]) -> i32 {
 }
 
 pub(super) fn cmd_cancel(rest: &[String]) -> i32 {
-    let args = parse_verb_args("cancel", rest, &["worker", "reason"], &[]);
+    let args = parse_verb_args(
+        "cancel",
+        rest,
+        &["worker", "reason", "resolution", "substatus", "ref"],
+        &[],
+    );
     reject_extra_pos("cancel", &args, 1);
     let reason = args
         .get("reason")
         .unwrap_or_else(|| die(2, "cancel: --reason is required"));
+    let resolution = args
+        .get("resolution")
+        .unwrap_or_else(|| die(2, "cancel: --resolution is required"));
+    if let Err(e) = crate::validate::validate_resolution(
+        "cancelled",
+        Some(&resolution),
+        args.get("substatus").as_deref(),
+        Some(&reason),
+        args.get("ref").as_deref(),
+    ) {
+        die(2, &format!("cancel: {e}"));
+    }
     let worker = args
         .get("worker")
         .unwrap_or_else(|| "fleet-monitor".to_string());
-    let resp = unwrap_ok(call(
-        "/cancel",
-        &json!({
-            "task_id": args.pos_i64(0, "task_id"),
-            "worker": worker,
-            "reason": reason,
-        }),
-    ));
+    let mut body = json!({
+        "task_id": args.pos_i64(0, "task_id"),
+        "worker": worker,
+        "reason": reason,
+    });
+    for (flag, field) in [
+        ("resolution", "resolution"),
+        ("substatus", "substatus"),
+        ("ref", "resolution_ref"),
+    ] {
+        if let Some(value) = args.get(flag) {
+            body[field] = json!(value);
+        }
+    }
+    let resp = unwrap_ok(call("/cancel", &body));
     let row = served_row(require_row(&resp, "cancel_repo_task"), "cancel");
     // #9046: a cancel closes the binding window on the timeline.
     unbound_append(&worker, &row, "cancel");
     print_json(&row);
+    0
+}
+
+/// Run the idempotent, evidence-only terminal-resolution backfill and
+/// print the baseline census for #14170 Q2.
+pub(super) fn cmd_resolution_backfill(rest: &[String]) -> i32 {
+    let args = parse_verb_args("resolution-backfill", rest, &[], &[]);
+    reject_extra_pos("resolution-backfill", &args, 0);
+    let resp = unwrap_ok(call("/resolution-backfill", &json!({})));
+    print_json(&require_row(&resp, "resolution_backfill"));
     0
 }
 
@@ -1493,6 +1527,10 @@ pub(super) fn cmd_complete(rest: &[String]) -> i32 {
             "result-file",
             "telemetry",
             "execution",
+            "resolution",
+            "substatus",
+            "reason",
+            "ref",
         ],
         &[],
     );
@@ -1515,6 +1553,15 @@ pub(super) fn cmd_complete(rest: &[String]) -> i32 {
                 die(2, "--result must be a JSON object");
             }
         }
+    }
+    if let Err(e) = crate::validate::validate_resolution(
+        "done",
+        args.get("resolution").as_deref().or(Some("done")),
+        args.get("substatus").as_deref(),
+        args.get("reason").as_deref(),
+        args.get("ref").as_deref(),
+    ) {
+        die(2, &format!("complete: {e}"));
     }
     check_telemetry_fields(&result_obj, "--result");
     if let Some(tel_raw) = args.get("telemetry") {
@@ -1604,6 +1651,16 @@ pub(super) fn cmd_complete(rest: &[String]) -> i32 {
         "lane": lane_arg(&args),
         "result": result_obj,
     });
+    for (flag, field) in [
+        ("resolution", "resolution"),
+        ("substatus", "substatus"),
+        ("reason", "resolution_reason"),
+        ("ref", "resolution_ref"),
+    ] {
+        if let Some(value) = args.get(flag) {
+            body[field] = json!(value);
+        }
+    }
     if let Some(ex) = ex {
         body["execution"] = ex;
     }

@@ -64,7 +64,10 @@ Owns the `cert` domain (`fleet cert`, alias `fleet pki`), entry point
 `fleet_cert::run`, with the domain's own usage text in `fleet_cert::cli`.
 The verb surface covers roots, issuers, leaves, chains, bundles and
 profiles; the OCSP verb group (sign, inspect, test) and the
-`ocsp-responder` profile landed in #13722.
+`ocsp-responder` profile landed in #13722. The broker TLS profiles
+`broker-server` and `broker-client` (CSR-only, Base issuer set,
+`.internal` DNS + tailnet IP SANs, 90 days) and CSR issuance
+(`leaf issue --csr`, `--ip`) landed in #14399.
 
 ### `fleet-config`
 

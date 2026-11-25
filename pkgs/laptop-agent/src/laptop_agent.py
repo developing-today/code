@@ -226,9 +226,7 @@ def _extract_ctx(env):
     return {
         k: v
         for k, v in env.items()
-        if isinstance(k, str)
-        and k.startswith(FLEET_CTX_PREFIX)
-        and isinstance(v, str)
+        if isinstance(k, str) and k.startswith(FLEET_CTX_PREFIX) and isinstance(v, str)
     }
 
 
@@ -331,7 +329,15 @@ def _group_alive(pid: int) -> bool:
 
 
 def log_trip(
-    trip, kind, cmd_str, duration_ms, exit_code, out_bytes, err_bytes, t_received=None
+    trip,
+    kind,
+    cmd_str,
+    duration_ms,
+    exit_code,
+    out_bytes,
+    err_bytes,
+    t_received=None,
+    ctx_id=None,
 ):
     """Append one trip record (single O_APPEND write) to trips.jsonl.
 
@@ -343,7 +349,11 @@ def log_trip(
     Trip logging v2 (code#5702): t_received is the millisecond epoch
     stamped at request entry in do_POST; with the client's t_sent /
     t_returned it splits the trip into outbound / daemon / return
-    legs. v1 fields are kept verbatim for v1 readers."""
+    legs. v1 fields are kept verbatim for v1 readers.
+
+    #14188: ctx_id is the command's FLEET_CTX_ID (the context join key,
+    an id, never a secret), recorded so the trip joins the client's
+    trip line and the brokers' per-trip context lines."""
     try:
         parts = (cmd_str or "").split()
         rec = {
@@ -362,6 +372,8 @@ def log_trip(
         }
         if t_received is not None:
             rec["t_received"] = t_received
+        if isinstance(ctx_id, str) and ctx_id:
+            rec["ctx_id"] = ctx_id
         fd = os.open(TRIPS_FILE, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
         try:
             os.write(fd, (json.dumps(rec) + "\n").encode())
@@ -742,7 +754,10 @@ def _restore_persisted_job(meta, dir_name):
     _raw_ctx = meta.get("ctx")
     if _raw_ctx is not None and (
         not isinstance(_raw_ctx, dict)
-        or any(not isinstance(k, str) or not isinstance(v, str) for k, v in _raw_ctx.items())
+        or any(
+            not isinstance(k, str) or not isinstance(v, str)
+            for k, v in _raw_ctx.items()
+        )
     ):
         return None, False, "non-string-map ctx in meta.json"
     state = _raw_state or "done"
@@ -1209,10 +1224,15 @@ class Handler(BaseHTTPRequestHandler):
                 cancel_event.set()
                 watcher.join(timeout=1)
                 SEMA.release()
-            for r in results:
+            for c, r in zip(cmds, results):
                 cmd_str = r.pop("_cmd", "")
                 out_b = r.pop("_out_bytes", 0)
                 err_b = r.pop("_err_bytes", 0)
+                # #14188: the command's effective context (daemon env
+                # merged with the request's, request wins) — its id
+                # only, as the job spool records the full subset.
+                merged = dict(os.environ)
+                merged.update(c.get("env") or {})
                 log_trip(
                     trip,
                     "exec",
@@ -1222,6 +1242,7 @@ class Handler(BaseHTTPRequestHandler):
                     out_b,
                     err_b,
                     t_received=t_received_ms,
+                    ctx_id=_extract_ctx(merged).get("FLEET_CTX_ID"),
                 )
             try:
                 return self._send(
@@ -1552,7 +1573,11 @@ class Handler(BaseHTTPRequestHandler):
                 f.write(data[overlap:])
                 f.flush()
                 os.fsync(f.fileno())
-                size = offset + len(data)
+                # Report the durable temp length, not the end of this
+                # write: a chunk fully interior to the temp (an
+                # identical replay of already-durable bytes) leaves the
+                # longer tail intact, so `have` wins (#14601).
+                size = max(have, offset + len(data))
             return {"size": size}
         except OSError as e:
             return {"error": f"write {temp}: {e}"}
