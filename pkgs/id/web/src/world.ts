@@ -1,7 +1,13 @@
 /** Browser presentation for the server-authoritative world session. */
 
 import { createFormPresenter, type FormPresenter, type FormSurface } from "./world-form";
-import { advanceHostViewCursor, parseWorldHostViewPage, parseWorldInviteResponse } from "./world-http";
+import { renderCapabilityGrants } from "./capability-grants";
+import {
+  advanceHostViewCursor,
+  parseGrantPageResponse,
+  parseWorldHostViewPage,
+  parseWorldInviteResponse,
+} from "./world-http";
 import { richTerminalBytesForKey, terminalBytesForKey } from "./world-keyboard";
 import { decodeViewPatchAsync } from "./screen-codec";
 import { parseWorldSeed } from "./world-seed";
@@ -100,6 +106,10 @@ function initWorld(): void {
   const recordsRefresh = element<HTMLButtonElement>(root, "[data-world-records-refresh]");
   const copyButton = element<HTMLButtonElement>(root, "[data-world-copy]");
   const inviteOutput = element<HTMLElement>(root, "[data-world-invite-output]");
+  const grantPage = element<HTMLDetailsElement>(root, "[data-world-grant-page]");
+  const grantPageRefresh = element<HTMLButtonElement>(root, "[data-world-grant-page-refresh]");
+  const grantPageStatus = element<HTMLElement>(root, "[data-world-grant-page-status]");
+  const grantPageList = element<HTMLElement>(root, "[data-world-grant-page-list]");
   // The host controls (admin token, invite minting, module install,
   // host view) are optional: the program-only surface (#2146 phase 2)
   // renders a guest page without them, and their wiring below is
@@ -213,6 +223,54 @@ function initWorld(): void {
     appendLine(log, `Showing ${stored.world_id} from the saved snapshot at event ${stored.sequence} (offline, read-only)`);
     setStatus("Offline — saved snapshot");
   };
+
+  const refreshGrantPage = async () => {
+    if (!grantPageRefresh || !grantPageStatus || !grantPageList) return;
+    grantPageRefresh.disabled = true;
+    grantPageStatus.textContent = "Loading remembered permissions…";
+    try {
+      const clientId = localStorage.getItem("id_identity_client_id")?.trim() || "unregistered";
+      const key = `id-capability-baselines:${window.location.host}:${clientId}`;
+      let baselineStore: unknown = { baselines: {} };
+      const stored = localStorage.getItem(key);
+      if (stored) {
+        try {
+          const parsed: unknown = JSON.parse(stored);
+          if (
+            typeof parsed === "object" &&
+            parsed !== null &&
+            !Array.isArray(parsed) &&
+            "baselines" in parsed &&
+            typeof parsed.baselines === "object" &&
+            parsed.baselines !== null &&
+            !Array.isArray(parsed.baselines)
+          ) {
+            baselineStore = parsed;
+          }
+        } catch {
+          baselineStore = { baselines: {} };
+        }
+      }
+      const response = await fetch("/api/world/grant-page", {
+        method: "POST",
+        headers: { "content-type": "application/json", accept: "application/json" },
+        body: JSON.stringify({ baseline_store: baselineStore }),
+      });
+      if (!response.ok) throw new Error(`grant-page request failed (${response.status})`);
+      const listing = parseGrantPageResponse(await response.json());
+      if (!root.isConnected) return;
+      renderCapabilityGrants(grantPageList, listing.worlds);
+      grantPageStatus.textContent = `${listing.worlds.length} world${listing.worlds.length === 1 ? "" : "s"} with remembered decisions.`;
+    } catch {
+      if (root.isConnected) grantPageStatus.textContent = "Remembered permissions are unavailable.";
+    } finally {
+      if (grantPageRefresh) grantPageRefresh.disabled = false;
+    }
+  };
+  grantPage?.addEventListener("toggle", () => {
+    if (grantPage.open) void refreshGrantPage();
+  });
+  grantPageRefresh?.addEventListener("click", () => void refreshGrantPage());
 
   const setStatus = (text: string, state: "idle" | "good" | "error" = "idle") => {
     status.textContent = text;

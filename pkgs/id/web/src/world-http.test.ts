@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   advanceHostViewCursor,
   HOST_VIEW_MAX_PAGES,
+  parseGrantPageResponse,
   parseWorldHostViewPage,
   parseWorldInviteResponse,
 } from "./world-http";
@@ -98,6 +99,28 @@ describe("parseWorldInviteResponse", () => {
       display_name: null,
     });
   });
+});
+
+describe("parseGrantPageResponse", () => {
+  it("accepts the fixed-text current permissions and baseline history", () => {
+    const payload = {
+      worlds: [
+        {
+          world_id: "arena",
+          current: [
+            { class: "device.location", message: "Use this device's location.", deniable: true, load_bearing: false },
+          ],
+          history: [{ at: "2026-11-25T08:00:00Z", kind: "accept", message_set: ["device.location"] }],
+        },
+      ],
+    };
+    expect(parseGrantPageResponse(payload)).toEqual(payload);
+  });
+
+  it.each([null, {}, { worlds: [{}] }, { worlds: [{ world_id: "arena", current: [null], history: [] }] }])(
+    "rejects malformed listing data without returning a partial page: %j",
+    (payload) => expect(() => parseGrantPageResponse(payload)).toThrow(/^Grant page unavailable:/),
+  );
 });
 
 describe("advanceHostViewCursor (#9043)", () => {

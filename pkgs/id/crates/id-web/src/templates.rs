@@ -918,6 +918,13 @@ pub fn render_world_page(assets: &AssetUrls, world_socket: Option<&str>) -> Stri
     </section>
   </section>
 
+  <details data-world-grant-page class="card border border-base-300 bg-base-100 p-4 space-y-3">
+    <summary class="cursor-pointer font-bold">My remembered permissions</summary>
+    <p data-world-grant-page-status role="status" class="text-sm opacity-70">Expand to review permissions remembered for this client identity.</p>
+    <div data-world-grant-page-list class="space-y-3"></div>
+    <button data-world-grant-page-refresh class="btn btn-ghost btn-sm self-start" type="button">Refresh</button>
+  </details>
+
   <section class="grid gap-4 md:grid-cols-2">
     <div class="card border border-base-300 bg-base-100 p-4 space-y-3">
       <h2 class="font-bold">World view</h2>
@@ -1571,6 +1578,8 @@ mod tests {
         assert!(html.contains("aria-label=\"Display name\""));
         assert!(html.contains("aria-label=\"World name\""));
         assert!(html.contains("aria-label=\"Guest capability\""));
+        assert!(html.contains("data-world-grant-page"));
+        assert!(html.contains("data-world-grant-page-list"));
     }
 
     #[test]

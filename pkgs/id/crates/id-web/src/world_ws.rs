@@ -17,6 +17,8 @@ use futures::{
     SinkExt, StreamExt,
     stream::{SplitSink, SplitStream},
 };
+use id_caps::cap_baseline::BaselineStore;
+use id_caps::cap_notice::{GrantPageWorld, grant_page_listing};
 use serde::{Deserialize, Serialize};
 use std::sync::{Arc, Mutex};
 
@@ -75,6 +77,10 @@ pub fn world_routes_at(socket: &str) -> axum::Router<WorldWebState> {
 /// session as the WSS bridge above — degraded timing only.
 pub fn world_http_routes() -> axum::Router<WorldWebState> {
     axum::Router::new()
+        .route(
+            "/api/world/grant-page",
+            axum::routing::post(grant_page_handler),
+        )
         .route("/api/world/invite", axum::routing::post(invite_handler))
         .route(
             "/api/world/host-view",
@@ -94,6 +100,28 @@ pub fn world_http_routes() -> axum::Router<WorldWebState> {
             "/id/session/{id}/stream",
             axum::routing::get(https_session_sse_handler),
         )
+}
+
+#[derive(Debug, Deserialize)]
+struct GrantPageRequest {
+    /// The caller owns this client-side state; the server only maps it to the
+    /// fixed-text listing model and never stores or changes the baseline.
+    baseline_store: BaselineStore,
+}
+
+#[derive(Debug, Serialize)]
+struct GrantPageResponse {
+    worlds: Vec<GrantPageWorld>,
+}
+
+async fn grant_page_handler(Json(request): Json<GrantPageRequest>) -> Response {
+    (
+        [(header::CACHE_CONTROL, "no-store")],
+        Json(GrantPageResponse {
+            worlds: grant_page_listing(&request.baseline_store),
+        }),
+    )
+        .into_response()
 }
 
 #[derive(Debug, Deserialize)]
