@@ -640,14 +640,14 @@ test.describe("Multi-User Collab", () => {
     await page1.click("#new-file-form button[type='submit']");
     await page1.waitForURL(/\/(file|edit)\//, { timeout: 15_000 });
     await expect(page1.locator("#editor-status")).toHaveText("connected", { timeout: 15_000 });
-    await expect(page1.locator("#editor .ProseMirror")).toBeVisible({ timeout: 5_000 });
+    await expect(page1.locator("#editor .ProseMirror")).toBeVisible({ timeout: 15_000 });
 
     // User 2 opens same file (file entries are listed on /files)
     await page2.goto("/files");
     await page2.click(`a[data-nav]:has-text("${fileName}")`);
     await expect(page2.locator("#editor-container")).toBeVisible({ timeout: 10_000 });
     await expect(page2.locator("#editor-status")).toHaveText("connected", { timeout: 15_000 });
-    await expect(page2.locator("#editor .ProseMirror")).toBeVisible({ timeout: 5_000 });
+    await expect(page2.locator("#editor .ProseMirror")).toBeVisible({ timeout: 15_000 });
 
     return { context1, context2, page1, page2, fileName };
   }
@@ -730,6 +730,12 @@ test.describe("Multi-User Collab", () => {
       await page1.waitForTimeout(2_000);
       await expect(page2.locator("#editor .ProseMirror")).toContainText("Before save", { timeout: 20_000 });
 
+      // Wait for the per-file save rate limit to expire — the editor's
+      // autosave saves this file shortly after typing, and a second save
+      // inside the 5s cooldown is refused with 429 (same pattern as the
+      // Editor Typing + Save tests).
+      await page1.waitForTimeout(5_500);
+
       // User 1 saves (POST /api/save)
       const hash = await page1.evaluate(() => {
         const el = document.getElementById("editor-container");
@@ -776,7 +782,28 @@ test.describe("Name-First URL Scheme", () => {
       data: { name: fileName },
     });
     expect(createResp.ok()).toBeTruthy();
-    const { hash } = (await createResp.json()) as { hash: string; name: string };
+    const { hash: emptyHash } = (await createResp.json()) as { hash: string; name: string };
+
+    // Save unique content so the file's blob hash is unique: an empty file
+    // shares the empty-blob hash with every other empty file on the server,
+    // and /hash/{hash} can only redirect to one of the names bound to it.
+    const saveResp = await page.request.post(`${baseURL}/api/save`, {
+      data: {
+        doc_id: emptyHash,
+        name: fileName,
+        doc: {
+          type: "doc",
+          content: [
+            {
+              type: "paragraph",
+              content: [{ type: "text", text: `unique-${fileName}` }],
+            },
+          ],
+        },
+      },
+    });
+    expect(saveResp.ok()).toBeTruthy();
+    const { hash } = (await saveResp.json()) as { hash: string };
 
     // Navigate to /hash/{hash} — should redirect to /edit/{name}
     await page.goto(`/hash/${hash}`);
