@@ -259,7 +259,9 @@ describe("ingestion store (#3321)", () => {
       ref: "developing-today/code",
       summary: `event ${i}`,
     }));
-    const events = { record: async () => ({}) };
+    const events: Pick<EventsStore, "record"> = {
+      record: async () => ({} as Awaited<ReturnType<EventsStore["record"]>>),
+    };
 
     const initial = await store.ingest(events, deliveries);
     expect(initial.ingested).toBe(2001);
