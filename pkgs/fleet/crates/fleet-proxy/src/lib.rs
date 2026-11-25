@@ -43,6 +43,9 @@ pub mod stdio;
 pub mod tunnel;
 
 #[cfg(feature = "serve")]
+pub mod mux;
+
+#[cfg(feature = "serve")]
 pub mod serve;
 
 #[cfg(feature = "serve")]
