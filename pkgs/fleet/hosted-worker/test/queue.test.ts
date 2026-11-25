@@ -503,9 +503,11 @@ test("the claim guard quarantines a stored packet that no longer validates (#544
   // corrupted in place).
   const row = await store.insertTask({
     queue: "repo-health",
+    manual_only: false,
     title: "rotten",
     body: null,
     payload: { schema: "repo-task/v1", kind: "small_fix" },
+    metadata: {},
     dedupe_key: null,
     priority: 30,
     status: "queued",

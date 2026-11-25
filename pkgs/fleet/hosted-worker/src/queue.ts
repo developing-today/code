@@ -865,6 +865,7 @@ async function scopeMatch(
 }
 
 function eligibleDefault(row: TaskRow, now: string, claimer: ClaimerCtx): boolean {
+  if (row.manual_only) return false;
   const required = requiredBudget(row);
   const remaining = claimer.remaining ?? -1;
   const gate = required === null || remaining >= required;
@@ -1035,7 +1036,7 @@ async function claimPickOnce(
     const candidates: TaskRow[] = [];
     for (const t of await store.allTasks()) {
       if (
-        payloadNonEmpty(t) &&
+        !t.manual_only && payloadNonEmpty(t) &&
         (pickMode === "handoff" ? isHandedOff(t) : eligibleDefault(t, now, scope.claimer)) &&
         (await scopeMatch(store, t, scope, true))
       ) {
@@ -1581,6 +1582,8 @@ function dedupePartition(rows: TaskRow[]): { live: TaskRow | null; terminal: Tas
 
 function emptyTaskRow(fields: Partial<TaskRow> & { queue: string }): Omit<TaskRow, "id"> {
   return {
+    manual_only: false,
+    metadata: {},
     title: null,
     body: null,
     payload: {},
@@ -1651,6 +1654,7 @@ async function verbEnqueue(store: QueueStore, env: QueueEnv, req: Req): Promise<
     );
   }
   const packet = clone(packetRaw) as JsonObject;
+  const metadata: JsonObject = req["metadata"] === undefined ? {} : isObj(req["metadata"]) ? req["metadata"] : fail(2, "enqueue: metadata must be a JSON object");
   const warnings = [...warnings0];
   await enrichPayloadLabels(
     store,
@@ -1705,6 +1709,8 @@ async function verbEnqueue(store: QueueStore, env: QueueEnv, req: Req): Promise<
   const row = await store.insertTask(
     emptyTaskRow({
       queue,
+      manual_only: task["manual_only"] === true,
+      metadata,
       title: typeof task["title"] === "string" ? task["title"] : null,
       body: typeof task["body"] === "string" ? task["body"] : null,
       payload: (task["payload"] ?? {}) as Json,
@@ -1739,6 +1745,11 @@ async function verbEnqueue(store: QueueStore, env: QueueEnv, req: Req): Promise<
       identity: identity?.key ?? null,
     });
   }
+  await emit(store, env, "enqueue_repo_task", row.id, "enqueued", {
+    queue,
+    dedupe_key: dedupeKey,
+    manual_only: row.manual_only,
+  });
   const resp = ok({ row, rpc: "enqueue_repo_task_turso", warnings });
   if (predecessor) {
     resp["revived_from"] = { task_id: predecessor.id, status: predecessor.status };

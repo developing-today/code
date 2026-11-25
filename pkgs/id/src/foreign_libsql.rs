@@ -33,6 +33,12 @@
 //!   see only the two named outcomes of [`PublicReadError`] — refused
 //!   or unavailable — never a credential, a locator, or stale data
 //!   served as current.
+//! - Materialized replicas are maintained by [`ReplicaMaintainer`],
+//!   a separate owner-side type: the read adapter above stays
+//!   read-only by construction, and every write the maintainer
+//!   makes is built from validated identifiers, the source's own
+//!   schema, and wire values — never caller-supplied SQL
+//!   (decision record #5802 D4/D5).
 //! - A slow or dead foreign store never blocks native ID operations:
 //!   calls are isolated behind per-alias circuit breakers with bounded
 //!   retries for reads only; auth failure is fatal and never retried.
@@ -786,6 +792,13 @@ impl PublicationScope {
     pub fn is_published(&self, name: &str) -> bool {
         self.collections.contains_key(name)
     }
+
+    /// Every published collection in the scope, in name order. The
+    /// replica maintainer's drivers walk this set; the read path
+    /// looks collections up by name instead.
+    pub fn collections(&self) -> impl Iterator<Item = &PublishedCollection> {
+        self.collections.values()
+    }
 }
 
 /// Why a public read did not serve rows. The public outcome vocabulary
@@ -1115,6 +1128,1349 @@ impl PublicServing {
     pub fn prune(&self, now_ms: u64) {
         let mut gate = self.gate.lock().unwrap_or_else(|p| p.into_inner());
         gate.prune(now_ms);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Replica maintenance: the owner-side write seam (decision record #5802
+// D4/D5; issue #14784)
+// ---------------------------------------------------------------------------
+
+/// Source-read page size for a materialization copy: rows are pulled
+/// from the source in pages of this many rows, so a large collection
+/// is never held whole on either side of the copy.
+pub const REPLICA_PAGE_ROWS: u32 = 500;
+
+/// Rows per INSERT statement in a materialization copy.
+pub const REPLICA_INSERT_ROWS_PER_STATEMENT: usize = 100;
+
+/// Statements per pipeline call in a materialization copy. A call is
+/// the unit the remote executes in order; chunking bounds request
+/// size without changing the copy's outcome.
+pub const REPLICA_STATEMENTS_PER_CALL: usize = 25;
+
+/// The copy/maintenance policy for materialized replicas: batching
+/// only. What triggers a copy is the driver's business (see
+/// [`ReplicaMaintainer::publish_effects`]); these numbers shape how a
+/// copy crosses the wire, never what it contains.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ReplicaPolicy {
+    /// Source rows fetched per read page.
+    pub page_rows: u32,
+    /// Rows carried by one INSERT statement.
+    pub insert_rows_per_statement: usize,
+    /// Statements carried by one pipeline call.
+    pub statements_per_call: usize,
+}
+
+impl Default for ReplicaPolicy {
+    fn default() -> Self {
+        Self {
+            page_rows: REPLICA_PAGE_ROWS,
+            insert_rows_per_statement: REPLICA_INSERT_ROWS_PER_STATEMENT,
+            statements_per_call: REPLICA_STATEMENTS_PER_CALL,
+        }
+    }
+}
+
+/// The record of one completed materialization: the cut a manifest
+/// states for a replica-served collection (decision record #5802 D4 —
+/// a materialized replica is a declared mode, and its manifest states
+/// its cut/epoch). Carries names and counts only: no credential, no
+/// credential reference, no resolved URL.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Materialization {
+    /// The collection that was copied.
+    pub collection: String,
+    /// Alias of the replica store now holding the copy.
+    pub replica_alias: String,
+    /// Rows copied into the replica.
+    pub rows: u64,
+    /// The publication epoch this copy belongs to, as supplied by the
+    /// caller (the manifest epoch the publish action advanced).
+    pub epoch: u64,
+    /// When the copy completed (Unix seconds, UTC), as supplied by
+    /// the caller.
+    pub completed_at: u64,
+}
+
+/// One owner-side statement: SQL built by this module from validated
+/// identifiers, the source store's own schema text, and wire values —
+/// never caller-supplied SQL text.
+#[derive(Debug, Clone, PartialEq)]
+struct OwnerStatement {
+    sql: String,
+    args: Vec<WireValue>,
+}
+
+/// One owner-side statement result, at the wire level: column names
+/// and wire values, with no contract decode. The maintainer copies
+/// values source-to-replica exactly as they crossed, so no column
+/// contract is needed — or invented — on this path.
+#[derive(Debug, Clone, PartialEq)]
+struct RawResult {
+    cols: Vec<String>,
+    rows: Vec<Vec<WireValue>>,
+}
+
+/// The shadow table a materialization builds before the atomic swap:
+/// `<collection>__id_materializing`. Readers never see this name in a
+/// scope; it exists only inside one materialization.
+fn shadow_name(collection: &str) -> String {
+    format!("{collection}__id_materializing")
+}
+
+/// The owner-side maintainer for materialized public replicas
+/// (decision record #5802 D4/D5; issue #14784).
+///
+/// This is the write seam the read adapter deliberately does not
+/// have: [`LibsqlAdapter`]'s statement path stays read-only by
+/// construction, and no method here is reachable from it. The
+/// maintainer is a separate type, built from the same operator config
+/// and the same transport/credential plumbing, and it is the only
+/// writer in this module. Its rules:
+///
+/// - It never accepts caller-supplied SQL. Every statement is built
+///   from a validated bare identifier, the source store's own schema
+///   text (renamed token-by-token and verified, never trusted
+///   blindly), and wire values copied from the source.
+/// - It writes only to replica aliases. A materialization whose
+///   replica alias equals its source alias is a config error, refused
+///   before any I/O: the source store is never a write target.
+/// - It touches only collections a [`PublicationScope`] names as
+///   replica-served. Live-served collections are refused here (their
+///   serving path is the read adapter), and a collection outside the
+///   scope is not the maintainer's business at all.
+/// - Every operation is idempotent as a whole, so a failed operation
+///   is retried by calling it again, never resumed mid-way: a
+///   materialization builds a shadow table and swaps it in with one
+///   rename only after the copy completes, so a failed copy leaves
+///   the previous replica — or its absence — exactly as it was, and
+///   readers never see a partial copy. A deletion drops if present.
+/// - No call is retried internally and no circuit breaker is kept:
+///   maintenance is owner-driven, not reader-driven, and a failure
+///   surfaces to the owner as the classified [`AdapterError`]
+///   immediately. Errors name aliases and credential references only.
+///
+/// Maintenance policy (what triggers what):
+///
+/// - **Publish** (and any amendment that changes the published set):
+///   [`publish_effects`](Self::publish_effects) materializes every
+///   replica-served collection in the scope. The publish/unpublish
+///   actions (#14781) own the record and the trigger; these methods
+///   are the effect they drive.
+/// - **Refresh**: re-running
+///   [`materialize`](Self::materialize) for a collection is the
+///   maintenance operation — a fresh atomic copy under a new cut.
+///   There is no scheduler and no change tracking in this crate: the
+///   owner refreshes when it wants a newer cut, and the returned
+///   [`Materialization`] is the record of the cut it got. The copy is
+///   a paged read pass over the source, not a cross-request snapshot
+///   transaction; the cut's epoch and completion time state honestly
+///   when the copy was taken.
+/// - **Unpublish**: [`unpublish_effects`](Self::unpublish_effects)
+///   deletes the replica of every replica-served collection in the
+///   scope (D4: a materialized public replica is deleted on
+///   unpublish). Call it with the scope as built while the record was
+///   live — unpublish retires the record, and a retired record builds
+///   no scope ([`PublicationScope::from_record`]).
+pub struct ReplicaMaintainer<T: Transport, C: CredentialResolver> {
+    config: ForeignConfig,
+    transport: T,
+    credentials: C,
+}
+
+impl ReplicaMaintainer<HttpTransport, EnvCredentialResolver> {
+    /// The production maintainer: HTTP transport, environment
+    /// credentials.
+    #[must_use]
+    pub fn new(config: ForeignConfig) -> Self {
+        Self::with_parts(config, HttpTransport, EnvCredentialResolver)
+    }
+}
+
+impl<T: Transport, C: CredentialResolver> ReplicaMaintainer<T, C> {
+    /// Build a maintainer from explicit parts (tests, alternate
+    /// resolvers).
+    #[must_use]
+    pub fn with_parts(config: ForeignConfig, transport: T, credentials: C) -> Self {
+        Self {
+            config,
+            transport,
+            credentials,
+        }
+    }
+
+    /// Run one batch of owner statements against `alias`, in order,
+    /// in a single pipeline call. Every statement must report an `ok`
+    /// result; the first error result fails the whole call with
+    /// [`AdapterError::RemoteStatement`] (status 0), and its message
+    /// is not copied out — the same no-leak classification as the read
+    /// path.
+    async fn run(
+        &self,
+        alias: &str,
+        statements: &[OwnerStatement],
+    ) -> Result<Vec<RawResult>, AdapterError> {
+        let alias_config = self.config.alias(alias)?.clone();
+        // The token is resolved per call and never stored.
+        let token = self.credentials.resolve(&alias_config.credential_ref)?;
+        let body = multi_pipeline_body(statements);
+        let outcome = self
+            .transport
+            .post_pipeline(
+                &alias_config.url,
+                &token,
+                &body,
+                CONNECT_TIMEOUT,
+                alias_config.statement_timeout,
+            )
+            .await;
+        let response = match outcome {
+            Ok(response) => response,
+            Err(TransportError::Timeout) => return Err(AdapterError::Timeout),
+            Err(other) => return Err(AdapterError::Transient(other.to_string())),
+        };
+        match response.status {
+            200 => parse_owner_results(&response.body, statements.len()),
+            401 | 403 => Err(AdapterError::Auth {
+                credential_ref: alias_config.credential_ref.clone(),
+            }),
+            400..=499 => Err(AdapterError::RemoteStatement {
+                status: response.status,
+            }),
+            _ => Err(AdapterError::Transient(format!(
+                "remote status {}",
+                response.status
+            ))),
+        }
+    }
+
+    /// Run owner statements in pipeline calls of at most
+    /// `statements_per_call`, discarding results.
+    async fn run_chunked(
+        &self,
+        alias: &str,
+        statements: &[OwnerStatement],
+        statements_per_call: usize,
+    ) -> Result<(), AdapterError> {
+        for chunk in statements.chunks(statements_per_call.max(1)) {
+            self.run(alias, chunk).await?;
+        }
+        Ok(())
+    }
+
+    /// The replica alias a published collection is maintained under,
+    /// with the maintainer's guards: the collection must be
+    /// replica-served and name its replica alias, and the name must be
+    /// a bare identifier. Live-served collections are refused — they
+    /// have no replica to maintain.
+    fn replica_alias(published: &PublishedCollection) -> Result<String, AdapterError> {
+        if !is_identifier(&published.name) {
+            return Err(AdapterError::Config(format!(
+                "published collection name is not a bare identifier: {}",
+                published.name
+            )));
+        }
+        match (published.mode, &published.replica_alias) {
+            (PublicServingMode::MaterializedReplica, Some(alias)) => Ok(alias.clone()),
+            (PublicServingMode::MaterializedReplica, None) => Err(AdapterError::Config(format!(
+                "published collection {} is replica-served but names no replica alias",
+                published.name
+            ))),
+            (PublicServingMode::Live, _) => Err(AdapterError::Config(format!(
+                "published collection {} is live-served; only replica-served \
+                 collections are maintained",
+                published.name
+            ))),
+        }
+    }
+
+    /// Materialize one replica-served collection: copy its schema and
+    /// rows from the source store into its replica store, as one
+    /// atomic swap (see the type's policy). Re-running this method is
+    /// the refresh operation. Returns the cut record.
+    pub async fn materialize(
+        &self,
+        source_alias: &str,
+        published: &PublishedCollection,
+        policy: &ReplicaPolicy,
+        epoch: u64,
+        now: u64,
+    ) -> Result<Materialization, AdapterError> {
+        let replica_alias = Self::replica_alias(published)?;
+        if replica_alias == source_alias {
+            return Err(AdapterError::Config(format!(
+                "published collection {} names its source alias {source_alias} as its \
+                 replica alias; the source store is never a write target",
+                published.name
+            )));
+        }
+        if policy.page_rows == 0 || policy.insert_rows_per_statement == 0 {
+            return Err(AdapterError::Config(
+                "replica policy batch sizes must be non-zero".to_owned(),
+            ));
+        }
+        let name = published.name.as_str();
+        let shadow = shadow_name(name);
+
+        // Plan first: read the source's own schema for this collection
+        // and build every DDL statement before any write happens, so
+        // a schema this module cannot rename faithfully refuses the
+        // whole materialization with the replica untouched.
+        let schema = self
+            .run(
+                source_alias,
+                &[OwnerStatement {
+                    sql: "SELECT \"type\", \"name\", \"sql\" FROM \"sqlite_master\" \
+                          WHERE \"tbl_name\" = ? AND \"sql\" IS NOT NULL ORDER BY \"rowid\""
+                        .to_owned(),
+                    args: vec![WireValue::Text(name.to_owned())],
+                }],
+            )
+            .await?;
+        let (table_ddl, index_ddls) = plan_replica_schema(&schema[0], name, &shadow)?;
+
+        // Phase 1: (re)build the shadow table under the source schema.
+        let mut build = vec![OwnerStatement {
+            sql: format!("DROP TABLE IF EXISTS \"{shadow}\""),
+            args: Vec::new(),
+        }];
+        build.push(OwnerStatement {
+            sql: table_ddl,
+            args: Vec::new(),
+        });
+        build.extend(index_ddls.into_iter().map(|sql| OwnerStatement {
+            sql,
+            args: Vec::new(),
+        }));
+        self.run_chunked(&replica_alias, &build, policy.statements_per_call)
+            .await?;
+
+        // Phase 2: copy the rows, page by page, values exactly as
+        // they crossed the wire.
+        let replica_max_blob = self.config.alias(&replica_alias)?.max_blob_bytes;
+        let mut total: u64 = 0;
+        let mut offset: u64 = 0;
+        loop {
+            let page = self
+                .run(
+                    source_alias,
+                    &[OwnerStatement {
+                        sql: format!("SELECT * FROM \"{name}\" LIMIT ? OFFSET ?"),
+                        args: vec![
+                            WireValue::Integer(i64::from(policy.page_rows)),
+                            WireValue::Integer(i64::try_from(offset).map_err(|_| {
+                                AdapterError::Config(
+                                    "replica copy offset exceeds the wire integer range".to_owned(),
+                                )
+                            })?),
+                        ],
+                    }],
+                )
+                .await?;
+            let result = &page[0];
+            if result.rows.is_empty() {
+                break;
+            }
+            let mut inserts = Vec::new();
+            for chunk in result.rows.chunks(policy.insert_rows_per_statement) {
+                let mut sql = format!("INSERT INTO \"{shadow}\" VALUES ");
+                let mut args = Vec::with_capacity(chunk.len() * result.cols.len());
+                for (row_index, row) in chunk.iter().enumerate() {
+                    if row.len() != result.cols.len() {
+                        return Err(AdapterError::MalformedResponse);
+                    }
+                    if row_index > 0 {
+                        sql.push(',');
+                    }
+                    sql.push('(');
+                    for (cell_index, cell) in row.iter().enumerate() {
+                        if let WireValue::Blob(bytes) = cell {
+                            if bytes.len() > replica_max_blob {
+                                return Err(AdapterError::SizeRefused {
+                                    size: bytes.len(),
+                                    max: replica_max_blob,
+                                });
+                            }
+                        }
+                        if cell_index > 0 {
+                            sql.push(',');
+                        }
+                        sql.push('?');
+                        args.push(cell.clone());
+                    }
+                    sql.push(')');
+                }
+                inserts.push(OwnerStatement { sql, args });
+            }
+            self.run_chunked(&replica_alias, &inserts, policy.statements_per_call)
+                .await?;
+            total += result.rows.len() as u64;
+            if (result.rows.len() as u64) < u64::from(policy.page_rows) {
+                break;
+            }
+            offset += u64::from(policy.page_rows);
+        }
+
+        // Phase 3: the swap. One call, in order: drop the previous
+        // replica, rename the shadow in. Until this call the previous
+        // replica (or its absence) is exactly what readers see.
+        self.run(
+            &replica_alias,
+            &[
+                OwnerStatement {
+                    sql: format!("DROP TABLE IF EXISTS \"{name}\""),
+                    args: Vec::new(),
+                },
+                OwnerStatement {
+                    sql: format!("ALTER TABLE \"{shadow}\" RENAME TO \"{name}\""),
+                    args: Vec::new(),
+                },
+            ],
+        )
+        .await?;
+
+        Ok(Materialization {
+            collection: name.to_owned(),
+            replica_alias,
+            rows: total,
+            epoch,
+            completed_at: now,
+        })
+    }
+
+    /// Delete one collection's materialized replica (decision record
+    /// #5802 D4: a materialized public replica is deleted on
+    /// unpublish). Idempotent: returns whether a replica table was
+    /// present. A leftover shadow from an interrupted materialization
+    /// is dropped with it.
+    pub async fn delete_replica(
+        &self,
+        published: &PublishedCollection,
+    ) -> Result<bool, AdapterError> {
+        let replica_alias = Self::replica_alias(published)?;
+        let name = published.name.as_str();
+        let present = self
+            .run(
+                &replica_alias,
+                &[OwnerStatement {
+                    sql: "SELECT \"name\" FROM \"sqlite_master\" \
+                          WHERE \"type\" = 'table' AND \"name\" = ?"
+                        .to_owned(),
+                    args: vec![WireValue::Text(name.to_owned())],
+                }],
+            )
+            .await?;
+        let existed = !present[0].rows.is_empty();
+        self.run(
+            &replica_alias,
+            &[
+                OwnerStatement {
+                    sql: format!("DROP TABLE IF EXISTS \"{}\"", shadow_name(name)),
+                    args: Vec::new(),
+                },
+                OwnerStatement {
+                    sql: format!("DROP TABLE IF EXISTS \"{name}\""),
+                    args: Vec::new(),
+                },
+            ],
+        )
+        .await?;
+        Ok(existed)
+    }
+
+    /// The publish effect: materialize every replica-served
+    /// collection in `scope` from `source_alias`. Live-served
+    /// collections are skipped — they have no replica. Driven by the
+    /// publish action (#14781), which owns the record and the
+    /// trigger; call it after the record is live.
+    pub async fn publish_effects(
+        &self,
+        source_alias: &str,
+        scope: &PublicationScope,
+        policy: &ReplicaPolicy,
+        epoch: u64,
+        now: u64,
+    ) -> Result<Vec<Materialization>, AdapterError> {
+        let mut done = Vec::new();
+        for published in scope.collections() {
+            if published.mode == PublicServingMode::MaterializedReplica {
+                done.push(
+                    self.materialize(source_alias, published, policy, epoch, now)
+                        .await?,
+                );
+            }
+        }
+        Ok(done)
+    }
+
+    /// The unpublish effect: delete the replica of every
+    /// replica-served collection in `scope` (decision record #5802
+    /// D4/D5). Returns the names of the collections whose replicas
+    /// were deleted. Call it with the scope as built while the record
+    /// was live — unpublish retires the record, and a retired record
+    /// builds no scope.
+    pub async fn unpublish_effects(
+        &self,
+        scope: &PublicationScope,
+    ) -> Result<Vec<String>, AdapterError> {
+        let mut deleted = Vec::new();
+        for published in scope.collections() {
+            if published.mode == PublicServingMode::MaterializedReplica
+                && self.delete_replica(published).await?
+            {
+                deleted.push(published.name.clone());
+            }
+        }
+        Ok(deleted)
+    }
+}
+
+/// The pipeline body for a batch of owner statements: one `execute`
+/// request per statement, then `close` — the same v2 pipeline shape
+/// as [`pipeline_body`], with more than one statement in it.
+fn multi_pipeline_body(statements: &[OwnerStatement]) -> String {
+    let requests: Vec<Json> = statements
+        .iter()
+        .map(|statement| {
+            let args_json: Vec<Json> = statement.args.iter().map(WireValue::to_json).collect();
+            json!({"type": "execute", "stmt": {"sql": statement.sql, "args": args_json}})
+        })
+        .chain(std::iter::once(json!({"type": "close"})))
+        .collect();
+    json!({"baton": null, "requests": requests}).to_string()
+}
+
+/// Parse a pipeline response for [`ReplicaMaintainer::run`]: the
+/// first `expected` results must all be `ok` execute results. Column
+/// names and wire values are returned uninterpreted; a row whose
+/// width disagrees with its columns is malformed.
+fn parse_owner_results(body: &str, expected: usize) -> Result<Vec<RawResult>, AdapterError> {
+    let parsed: Json = id_core::json_unique::parse_json_without_duplicate_keys(body)
+        .map_err(|_| AdapterError::MalformedResponse)?;
+    let results = parsed
+        .get("results")
+        .and_then(Json::as_array)
+        .ok_or(AdapterError::MalformedResponse)?;
+    if results.len() < expected {
+        return Err(AdapterError::MalformedResponse);
+    }
+    let mut out = Vec::with_capacity(expected);
+    for entry in &results[..expected] {
+        if entry.get("type").and_then(Json::as_str) != Some("ok") {
+            // A pipeline-level error result is a deterministic
+            // statement failure; its message is deliberately not
+            // copied out.
+            return Err(AdapterError::RemoteStatement { status: 0 });
+        }
+        let result = entry
+            .get("response")
+            .and_then(|r| r.get("result"))
+            .ok_or(AdapterError::MalformedResponse)?;
+        let cols_json = result
+            .get("cols")
+            .and_then(Json::as_array)
+            .ok_or(AdapterError::MalformedResponse)?;
+        let mut cols = Vec::with_capacity(cols_json.len());
+        for col in cols_json {
+            cols.push(
+                col.get("name")
+                    .and_then(Json::as_str)
+                    .ok_or(AdapterError::MalformedResponse)?
+                    .to_owned(),
+            );
+        }
+        let raw_rows = result
+            .get("rows")
+            .and_then(Json::as_array)
+            .ok_or(AdapterError::MalformedResponse)?;
+        let mut rows = Vec::with_capacity(raw_rows.len());
+        for raw_row in raw_rows {
+            let cells = raw_row.as_array().ok_or(AdapterError::MalformedResponse)?;
+            if cells.len() != cols.len() {
+                return Err(AdapterError::MalformedResponse);
+            }
+            let mut values = Vec::with_capacity(cells.len());
+            for cell in cells {
+                values.push(WireValue::from_json(cell)?);
+            }
+            rows.push(values);
+        }
+        out.push(RawResult { cols, rows });
+    }
+    Ok(out)
+}
+
+/// Build the replica DDL from the source's schema rows for one
+/// collection: the table's own CREATE statement renamed onto the
+/// shadow table, plus each index's CREATE statement renamed onto the
+/// shadow (index names are prefixed with the shadow name, so a
+/// refresh never collides with the live replica's indexes). Every
+/// rename is verified against the name the schema row claims; a
+/// statement this module cannot rename faithfully is a config error,
+/// refused before any write (invariant 8).
+fn plan_replica_schema(
+    schema: &RawResult,
+    collection: &str,
+    shadow: &str,
+) -> Result<(String, Vec<String>), AdapterError> {
+    let mut table_ddl = None;
+    let mut index_ddls = Vec::new();
+    for row in &schema.rows {
+        let (kind, obj_name, sql) = match row.as_slice() {
+            [WireValue::Text(kind), WireValue::Text(obj_name), WireValue::Text(sql)] => {
+                (kind.as_str(), obj_name.as_str(), sql.as_str())
+            }
+            _ => return Err(AdapterError::MalformedResponse),
+        };
+        match kind {
+            "table" if obj_name == collection => {
+                table_ddl = Some(rename_table_ddl(sql, collection, shadow)?);
+            }
+            "index" => {
+                let renamed_index = format!("{shadow}__{obj_name}");
+                index_ddls.push(rename_index_ddl(
+                    sql,
+                    obj_name,
+                    &renamed_index,
+                    collection,
+                    shadow,
+                )?);
+            }
+            _ => {}
+        }
+    }
+    let table_ddl = table_ddl.ok_or_else(|| {
+        AdapterError::Config(format!(
+            "source store has no table named {collection} to materialize"
+        ))
+    })?;
+    Ok((table_ddl, index_ddls))
+}
+
+/// One name token in DDL text: byte range and its unquoted value. The
+/// token may be bare or quoted with `"`, `` ` ``, or `[`.
+fn ddl_name_token(sql: &str, start: usize) -> Option<(usize, usize, String)> {
+    let bytes = sql.as_bytes();
+    let mut i = start;
+    while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+        i += 1;
+    }
+    if i >= bytes.len() {
+        return None;
+    }
+    let token_start = i;
+    match bytes[i] {
+        b'"' | b'`' => {
+            let quote = bytes[i];
+            i += 1;
+            let mut raw = Vec::new();
+            while i < bytes.len() {
+                if bytes[i] == quote {
+                    // A doubled quote inside a quoted name is an
+                    // escaped quote, not the end of the token.
+                    if quote == b'"' && bytes.get(i + 1) == Some(&b'"') {
+                        raw.push(b'"');
+                        i += 2;
+                        continue;
+                    }
+                    return String::from_utf8(raw)
+                        .ok()
+                        .map(|value| (token_start, i + 1, value));
+                }
+                raw.push(bytes[i]);
+                i += 1;
+            }
+            None
+        }
+        b'[' => {
+            i += 1;
+            let value_start = i;
+            while i < bytes.len() && bytes[i] != b']' {
+                i += 1;
+            }
+            if i < bytes.len() {
+                Some((token_start, i + 1, sql[value_start..i].to_owned()))
+            } else {
+                None
+            }
+        }
+        _ => {
+            while i < bytes.len()
+                && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_' || bytes[i] == b'$')
+            {
+                i += 1;
+            }
+            if i == token_start {
+                None
+            } else {
+                Some((token_start, i, sql[token_start..i].to_owned()))
+            }
+        }
+    }
+}
+
+/// Skip whitespace, then consume the bare word at the cursor if it is
+/// `word` (case-insensitive). Returns the cursor past the word.
+fn ddl_expect_word(sql: &str, start: usize, word: &str) -> Option<usize> {
+    let bytes = sql.as_bytes();
+    let mut i = start;
+    while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+        i += 1;
+    }
+    let word_start = i;
+    while i < bytes.len() && bytes[i].is_ascii_alphabetic() {
+        i += 1;
+    }
+    if i > word_start && sql[word_start..i].eq_ignore_ascii_case(word) {
+        Some(i)
+    } else {
+        None
+    }
+}
+
+/// Consume an optional `IF NOT EXISTS` clause at the cursor.
+fn ddl_skip_if_not_exists(sql: &str, start: usize) -> usize {
+    if let Some(after_if) = ddl_expect_word(sql, start, "IF") {
+        if let Some(after_not) = ddl_expect_word(sql, after_if, "NOT") {
+            if let Some(after_exists) = ddl_expect_word(sql, after_not, "EXISTS") {
+                return after_exists;
+            }
+        }
+    }
+    start
+}
+
+/// Replace the name token at `token` with `replacement`, quoted.
+fn ddl_splice_name(sql: &str, token: (usize, usize, String), replacement: &str) -> String {
+    let mut out = String::with_capacity(sql.len() + replacement.len());
+    out.push_str(&sql[..token.0]);
+    out.push('"');
+    out.push_str(replacement);
+    out.push('"');
+    out.push_str(&sql[token.1..]);
+    out
+}
+
+/// Rename a `CREATE TABLE` statement onto the shadow table: the name
+/// token after `CREATE TABLE [IF NOT EXISTS]` must be the collection
+/// name; anything else is refused rather than guessed at.
+fn rename_table_ddl(sql: &str, collection: &str, shadow: &str) -> Result<String, AdapterError> {
+    let refused = || {
+        AdapterError::Config(format!(
+            "source schema for collection {collection} is not a renamable CREATE TABLE statement"
+        ))
+    };
+    let after_create = ddl_expect_word(sql, 0, "CREATE").ok_or_else(refused)?;
+    let after_table = ddl_expect_word(sql, after_create, "TABLE").ok_or_else(refused)?;
+    let name_at = ddl_skip_if_not_exists(sql, after_table);
+    let token = ddl_name_token(sql, name_at).ok_or_else(refused)?;
+    if !token.2.eq_ignore_ascii_case(collection) {
+        return Err(refused());
+    }
+    Ok(ddl_splice_name(sql, token, shadow))
+}
+
+/// Rename a `CREATE INDEX` statement onto the shadow table: the
+/// index name token is replaced with `renamed_index`, and the table
+/// token after `ON` — which must be the collection name — with the
+/// shadow name.
+fn rename_index_ddl(
+    sql: &str,
+    index_name: &str,
+    renamed_index: &str,
+    collection: &str,
+    shadow: &str,
+) -> Result<String, AdapterError> {
+    let refused = || {
+        AdapterError::Config(format!(
+            "source index {index_name} on collection {collection} is not a renamable \
+             CREATE INDEX statement"
+        ))
+    };
+    let mut at = ddl_expect_word(sql, 0, "CREATE").ok_or_else(refused)?;
+    if let Some(after_unique) = ddl_expect_word(sql, at, "UNIQUE") {
+        at = after_unique;
+    }
+    let after_index = ddl_expect_word(sql, at, "INDEX").ok_or_else(refused)?;
+    let name_at = ddl_skip_if_not_exists(sql, after_index);
+    let index_token = ddl_name_token(sql, name_at).ok_or_else(refused)?;
+    if !index_token.2.eq_ignore_ascii_case(index_name) {
+        return Err(refused());
+    }
+    let after_on = ddl_expect_word(sql, index_token.1, "ON").ok_or_else(refused)?;
+    let table_token = ddl_name_token(sql, after_on).ok_or_else(refused)?;
+    if !table_token.2.eq_ignore_ascii_case(collection) {
+        return Err(refused());
+    }
+    // Splice the later token first so the earlier offset stays valid.
+    let renamed = ddl_splice_name(sql, table_token, shadow);
+    // The table token came after the index token, and both splices
+    // before it leave its own range untouched.
+    Ok(ddl_splice_name(&renamed, index_token, renamed_index))
+}
+
+// ---------------------------------------------------------------------------
+// Replica maintenance tests. Every test names its oracle: the #5802
+// decision record (D4/D5) or the #14784 checkpoint that fixes the
+// expected behaviour.
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod replica_tests {
+    use std::collections::{BTreeMap, VecDeque};
+    use std::future::Future;
+    use std::pin::Pin;
+    use std::sync::{Arc, Mutex as StdMutex};
+    use std::time::Duration;
+
+    use serde_json::{json, Value as Json};
+
+    use super::*;
+
+    /// Transport routed by base URL: each URL has its own scripted
+    /// outcome queue; every request is captured for inspection.
+    #[derive(Debug, Clone, Default)]
+    struct RouterTransport {
+        outcomes:
+            Arc<StdMutex<BTreeMap<String, VecDeque<Result<TransportResponse, TransportError>>>>>,
+        captured: Arc<StdMutex<Vec<(String, String)>>>,
+    }
+
+    impl RouterTransport {
+        fn push(&self, url: &str, outcome: Result<TransportResponse, TransportError>) {
+            self.outcomes
+                .lock()
+                .unwrap()
+                .entry(url.to_owned())
+                .or_default()
+                .push_back(outcome);
+        }
+
+        /// Every SQL string sent to `url`, in send order.
+        fn sql_sent_to(&self, url: &str) -> Vec<String> {
+            let mut sql = Vec::new();
+            for (captured_url, body) in self.captured.lock().unwrap().iter() {
+                if captured_url != url {
+                    continue;
+                }
+                let parsed: Json = serde_json::from_str(body).unwrap();
+                for request in parsed["requests"].as_array().unwrap() {
+                    if let Some(stmt) = request.get("stmt") {
+                        sql.push(stmt["sql"].as_str().unwrap().to_owned());
+                    }
+                }
+            }
+            sql
+        }
+
+        /// Every request body sent to `url`, in send order.
+        fn bodies_sent_to(&self, url: &str) -> Vec<String> {
+            self.captured
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|(captured_url, _)| captured_url == url)
+                .map(|(_, body)| body.clone())
+                .collect()
+        }
+    }
+
+    impl Transport for RouterTransport {
+        fn post_pipeline<'a>(
+            &'a self,
+            base_url: &'a str,
+            _token: &'a str,
+            body: &'a str,
+            _connect_timeout: Duration,
+            _deadline: Duration,
+        ) -> Pin<Box<dyn Future<Output = Result<TransportResponse, TransportError>> + Send + 'a>>
+        {
+            self.captured
+                .lock()
+                .unwrap()
+                .push((base_url.to_owned(), body.to_owned()));
+            let outcome = self
+                .outcomes
+                .lock()
+                .unwrap()
+                .get_mut(base_url)
+                .and_then(VecDeque::pop_front);
+            Box::pin(async move {
+                outcome.unwrap_or_else(|| {
+                    Ok(TransportResponse {
+                        status: 500,
+                        body: String::new(),
+                    })
+                })
+            })
+        }
+    }
+
+    #[derive(Debug)]
+    struct MapCredentials;
+
+    impl CredentialResolver for MapCredentials {
+        fn resolve(&self, reference: &str) -> Result<String, AdapterError> {
+            match reference {
+                "env:SRC_TOKEN" => Ok("source-token-value".to_owned()),
+                "env:REP_TOKEN" => Ok("replica-token-value".to_owned()),
+                _ => Err(AdapterError::Auth {
+                    credential_ref: reference.to_owned(),
+                }),
+            }
+        }
+    }
+
+    const SOURCE_URL: &str = "https://source.invalid";
+    const REPLICA_URL: &str = "https://replica.invalid";
+
+    fn maintainer_config() -> ForeignConfig {
+        let mut aliases = BTreeMap::new();
+        aliases.insert(
+            "src".to_owned(),
+            AliasConfig {
+                url: SOURCE_URL.to_owned(),
+                credential_ref: "env:SRC_TOKEN".to_owned(),
+                ..AliasConfig::default()
+            },
+        );
+        aliases.insert(
+            "rep".to_owned(),
+            AliasConfig {
+                url: REPLICA_URL.to_owned(),
+                credential_ref: "env:REP_TOKEN".to_owned(),
+                ..AliasConfig::default()
+            },
+        );
+        ForeignConfig { aliases }
+    }
+
+    fn maintainer(
+        transport: RouterTransport,
+    ) -> ReplicaMaintainer<RouterTransport, MapCredentials> {
+        ReplicaMaintainer::with_parts(maintainer_config(), transport, MapCredentials)
+    }
+
+    fn replica_collection() -> PublishedCollection {
+        PublishedCollection {
+            name: "objects".to_owned(),
+            mode: PublicServingMode::MaterializedReplica,
+            replica_alias: Some("rep".to_owned()),
+        }
+    }
+
+    fn text_cell(value: &str) -> Json {
+        json!({"type": "text", "value": value})
+    }
+
+    fn int_cell(value: i64) -> Json {
+        json!({"type": "integer", "value": value.to_string()})
+    }
+
+    fn exec_result(cols: &[&str], rows: Json) -> Json {
+        json!({"type": "ok", "response": {"type": "execute", "result": {
+            "cols": cols.iter().map(|name| json!({"name": name, "decltype": null})).collect::<Vec<_>>(),
+            "rows": rows,
+            "affected_row_count": 0,
+            "last_insert_rowid": null
+        }}})
+    }
+
+    fn pipeline_ok(results: Vec<Json>) -> Result<TransportResponse, TransportError> {
+        let mut results = results;
+        results.push(json!({"type": "ok", "response": {"type": "close"}}));
+        Ok(TransportResponse {
+            status: 200,
+            body: json!({"baton": null, "base_url": null, "results": results}).to_string(),
+        })
+    }
+
+    fn empty_execs(count: usize) -> Result<TransportResponse, TransportError> {
+        pipeline_ok((0..count).map(|_| exec_result(&[], json!([]))).collect())
+    }
+
+    /// The source's schema answer for the `objects` collection: its
+    /// CREATE TABLE plus one index.
+    fn schema_outcome() -> Result<TransportResponse, TransportError> {
+        pipeline_ok(vec![exec_result(
+            &["type", "name", "sql"],
+            json!([
+                [
+                    text_cell("table"),
+                    text_cell("objects"),
+                    text_cell(
+                        "CREATE TABLE \"objects\" (\"id\" INTEGER PRIMARY KEY, \"label\" TEXT)"
+                    )
+                ],
+                [
+                    text_cell("index"),
+                    text_cell("idx_objects_label"),
+                    text_cell("CREATE INDEX \"idx_objects_label\" ON \"objects\" (\"label\")")
+                ]
+            ]),
+        )])
+    }
+
+    fn page_outcome(rows: Json) -> Result<TransportResponse, TransportError> {
+        pipeline_ok(vec![exec_result(&["id", "label"], rows)])
+    }
+
+    fn test_policy() -> ReplicaPolicy {
+        ReplicaPolicy {
+            page_rows: 2,
+            insert_rows_per_statement: 2,
+            statements_per_call: 25,
+        }
+    }
+
+    /// Script a full successful materialization of a 3-row `objects`
+    /// collection (pages of 2 + 1 under `test_policy`).
+    fn script_successful_copy(transport: &RouterTransport) {
+        transport.push(SOURCE_URL, schema_outcome());
+        transport.push(
+            SOURCE_URL,
+            page_outcome(json!([
+                [int_cell(1), text_cell("a")],
+                [int_cell(2), text_cell("b")]
+            ])),
+        );
+        transport.push(
+            SOURCE_URL,
+            page_outcome(json!([[int_cell(3), text_cell("c")]])),
+        );
+        transport.push(REPLICA_URL, empty_execs(3)); // build: drop + create + index
+        transport.push(REPLICA_URL, empty_execs(1)); // insert page 1
+        transport.push(REPLICA_URL, empty_execs(1)); // insert page 2
+        transport.push(REPLICA_URL, empty_execs(2)); // swap: drop + rename
+    }
+
+    /// Oracle: decision record #5802 D4 — a materialized replica is a
+    /// copy of exactly the published collection (its schema and rows),
+    /// built on the owner's side and swapped in atomically; the cut
+    /// record states rows, epoch, and completion time.
+    #[tokio::test]
+    async fn test_materialize_copies_schema_and_rows_then_swaps() {
+        let transport = RouterTransport::default();
+        script_successful_copy(&transport);
+        let maintainer = maintainer(transport.clone());
+
+        let cut = maintainer
+            .materialize(
+                "src",
+                &replica_collection(),
+                &test_policy(),
+                7,
+                1_700_000_000,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            cut,
+            Materialization {
+                collection: "objects".to_owned(),
+                replica_alias: "rep".to_owned(),
+                rows: 3,
+                epoch: 7,
+                completed_at: 1_700_000_000,
+            }
+        );
+
+        // The source saw the schema read and two paged row reads —
+        // and nothing else.
+        let source_sql = transport.sql_sent_to(SOURCE_URL);
+        assert_eq!(source_sql.len(), 3);
+        assert!(source_sql[0].contains("sqlite_master"));
+        assert_eq!(source_sql[1], "SELECT * FROM \"objects\" LIMIT ? OFFSET ?");
+        assert_eq!(source_sql[2], "SELECT * FROM \"objects\" LIMIT ? OFFSET ?");
+
+        // The replica saw: shadow build under the renamed schema,
+        // the row inserts, and only then the swap.
+        assert_eq!(
+            transport.sql_sent_to(REPLICA_URL),
+            vec![
+                "DROP TABLE IF EXISTS \"objects__id_materializing\"",
+                "CREATE TABLE \"objects__id_materializing\" (\"id\" INTEGER PRIMARY KEY, \"label\" TEXT)",
+                "CREATE INDEX \"objects__id_materializing__idx_objects_label\" ON \"objects__id_materializing\" (\"label\")",
+                "INSERT INTO \"objects__id_materializing\" VALUES (?,?),(?,?)",
+                "INSERT INTO \"objects__id_materializing\" VALUES (?,?)",
+                "DROP TABLE IF EXISTS \"objects\"",
+                "ALTER TABLE \"objects__id_materializing\" RENAME TO \"objects\"",
+            ]
+        );
+
+        // Values crossed exactly as wire values, in row order.
+        let replica_bodies = transport.bodies_sent_to(REPLICA_URL);
+        let insert_body: Json = serde_json::from_str(&replica_bodies[1]).unwrap();
+        assert_eq!(
+            insert_body["requests"][0]["stmt"]["args"],
+            json!([
+                {"type": "integer", "value": "1"},
+                {"type": "text", "value": "a"},
+                {"type": "integer", "value": "2"},
+                {"type": "text", "value": "b"}
+            ])
+        );
+    }
+
+    /// Oracle: #14784 checkpoint — the maintainer's seam is for
+    /// replica-served collections only; a live-served collection is
+    /// refused before any I/O.
+    #[tokio::test]
+    async fn test_materialize_refuses_live_collection() {
+        let transport = RouterTransport::default();
+        let maintainer = maintainer(transport.clone());
+        let live = PublishedCollection {
+            name: "objects".to_owned(),
+            mode: PublicServingMode::Live,
+            replica_alias: None,
+        };
+        let error = maintainer
+            .materialize("src", &live, &test_policy(), 1, 1)
+            .await
+            .unwrap_err();
+        assert!(matches!(error, AdapterError::Config(_)), "{error:?}");
+        assert!(transport.sql_sent_to(SOURCE_URL).is_empty());
+        assert!(transport.sql_sent_to(REPLICA_URL).is_empty());
+    }
+
+    /// Oracle: D4 + the seam's guard — the source store is never a
+    /// write target, so a replica alias equal to the source alias is
+    /// refused before any I/O.
+    #[tokio::test]
+    async fn test_materialize_refuses_replica_alias_equal_to_source() {
+        let transport = RouterTransport::default();
+        let maintainer = maintainer(transport.clone());
+        let mut collection = replica_collection();
+        collection.replica_alias = Some("src".to_owned());
+        let error = maintainer
+            .materialize("src", &collection, &test_policy(), 1, 1)
+            .await
+            .unwrap_err();
+        assert!(matches!(error, AdapterError::Config(_)), "{error:?}");
+        assert!(transport.sql_sent_to(SOURCE_URL).is_empty());
+    }
+
+    /// Oracle: invariant 8 — a collection the source does not have is
+    /// a loud config error, and the replica is never touched.
+    #[tokio::test]
+    async fn test_materialize_missing_source_table_is_config_error() {
+        let transport = RouterTransport::default();
+        transport.push(
+            SOURCE_URL,
+            pipeline_ok(vec![exec_result(&["type", "name", "sql"], json!([]))]),
+        );
+        let maintainer = maintainer(transport.clone());
+        let error = maintainer
+            .materialize("src", &replica_collection(), &test_policy(), 1, 1)
+            .await
+            .unwrap_err();
+        assert!(matches!(error, AdapterError::Config(_)), "{error:?}");
+        assert!(transport.sql_sent_to(REPLICA_URL).is_empty());
+    }
+
+    /// Oracle: the atomic-swap policy — a copy that fails mid-way
+    /// never swaps, so readers keep the previous replica (or its
+    /// absence); the failure is the classified statement error, with
+    /// no server message copied out.
+    #[tokio::test]
+    async fn test_failed_copy_never_swaps() {
+        let transport = RouterTransport::default();
+        transport.push(SOURCE_URL, schema_outcome());
+        transport.push(
+            SOURCE_URL,
+            page_outcome(json!([[int_cell(1), text_cell("a")]])),
+        );
+        transport.push(REPLICA_URL, empty_execs(3));
+        transport.push(
+            REPLICA_URL,
+            pipeline_ok(vec![json!({
+                "type": "error",
+                "error": {"message": "constraint failed in secret detail", "code": "SQLITE_CONSTRAINT"}
+            })]),
+        );
+        let maintainer = maintainer(transport.clone());
+        let error = maintainer
+            .materialize("src", &replica_collection(), &test_policy(), 1, 1)
+            .await
+            .unwrap_err();
+        assert_eq!(error, AdapterError::RemoteStatement { status: 0 });
+        assert!(!error.to_string().contains("secret detail"));
+        let replica_sql = transport.sql_sent_to(REPLICA_URL);
+        assert!(
+            !replica_sql.iter().any(|sql| sql.contains("RENAME")),
+            "{replica_sql:?}"
+        );
+    }
+
+    /// Oracle: invariant 5 — an auth failure on the replica names the
+    /// credential reference, never a token value.
+    #[tokio::test]
+    async fn test_replica_auth_error_names_reference_not_token() {
+        let transport = RouterTransport::default();
+        transport.push(SOURCE_URL, schema_outcome());
+        let mut config = maintainer_config();
+        config.aliases.get_mut("rep").unwrap().credential_ref = "env:MISSING_TOKEN".to_owned();
+        let maintainer = ReplicaMaintainer::with_parts(config, transport.clone(), MapCredentials);
+        let error = maintainer
+            .materialize("src", &replica_collection(), &test_policy(), 1, 1)
+            .await
+            .unwrap_err();
+        assert_eq!(
+            error,
+            AdapterError::Auth {
+                credential_ref: "env:MISSING_TOKEN".to_owned()
+            }
+        );
+        assert!(!error.to_string().contains("token-value"));
+    }
+
+    /// Oracle: decision record #5802 D4 — unpublish deletes the
+    /// materialized replica; deletion is idempotent and also clears
+    /// any leftover shadow.
+    #[tokio::test]
+    async fn test_delete_replica_drops_table_and_shadow() {
+        let transport = RouterTransport::default();
+        transport.push(
+            REPLICA_URL,
+            pipeline_ok(vec![exec_result(
+                &["name"],
+                json!([[text_cell("objects")]]),
+            )]),
+        );
+        transport.push(REPLICA_URL, empty_execs(2));
+        let maintainer = maintainer(transport.clone());
+        assert!(maintainer
+            .delete_replica(&replica_collection())
+            .await
+            .unwrap());
+        assert_eq!(
+            transport.sql_sent_to(REPLICA_URL)[1..],
+            [
+                "DROP TABLE IF EXISTS \"objects__id_materializing\"",
+                "DROP TABLE IF EXISTS \"objects\"",
+            ]
+        );
+    }
+
+    /// Oracle: D4/D5 — deleting an absent replica is a no-op outcome,
+    /// not an error (unpublish of a share whose replica never
+    /// materialized still completes).
+    #[tokio::test]
+    async fn test_delete_replica_absent_is_false_not_error() {
+        let transport = RouterTransport::default();
+        transport.push(
+            REPLICA_URL,
+            pipeline_ok(vec![exec_result(&["name"], json!([]))]),
+        );
+        transport.push(REPLICA_URL, empty_execs(2));
+        let maintainer = maintainer(transport.clone());
+        assert!(!maintainer
+            .delete_replica(&replica_collection())
+            .await
+            .unwrap());
+    }
+
+    /// Oracle: D4/D5 drivers — publish materializes only the
+    /// replica-served collections of the scope; unpublish deletes
+    /// only those, and live-served collections are untouched by both.
+    #[tokio::test]
+    async fn test_publish_and_unpublish_effects_touch_only_replica_collections() {
+        let scope = PublicationScope::new([
+            PublishedCollection {
+                name: "notes".to_owned(),
+                mode: PublicServingMode::Live,
+                replica_alias: None,
+            },
+            replica_collection(),
+        ])
+        .unwrap();
+
+        let transport = RouterTransport::default();
+        script_successful_copy(&transport);
+        transport.push(
+            REPLICA_URL,
+            pipeline_ok(vec![exec_result(
+                &["name"],
+                json!([[text_cell("objects")]]),
+            )]),
+        );
+        transport.push(REPLICA_URL, empty_execs(2));
+        let maintainer = maintainer(transport.clone());
+
+        let cuts = maintainer
+            .publish_effects("src", &scope, &test_policy(), 3, 42)
+            .await
+            .unwrap();
+        assert_eq!(cuts.len(), 1);
+        assert_eq!(cuts[0].collection, "objects");
+        assert_eq!(cuts[0].epoch, 3);
+
+        let deleted = maintainer.unpublish_effects(&scope).await.unwrap();
+        assert_eq!(deleted, vec!["objects".to_owned()]);
+        // No statement ever named the live-served collection.
+        assert!(!transport
+            .sql_sent_to(REPLICA_URL)
+            .iter()
+            .any(|sql| sql.contains("notes")));
+        assert!(!transport
+            .sql_sent_to(SOURCE_URL)
+            .iter()
+            .any(|sql| sql.contains("notes")));
+    }
+
+    /// Oracle: the DDL rename is verified, never guessed — a CREATE
+    /// TABLE naming a different table, or a shape that is not a
+    /// CREATE TABLE at all, is refused.
+    #[test]
+    fn test_rename_table_ddl_is_verified() {
+        assert_eq!(
+            rename_table_ddl(
+                "CREATE TABLE objects (id INTEGER PRIMARY KEY)",
+                "objects",
+                "objects__id_materializing",
+            )
+            .unwrap(),
+            "CREATE TABLE \"objects__id_materializing\" (id INTEGER PRIMARY KEY)"
+        );
+        assert_eq!(
+            rename_table_ddl(
+                "create table if not exists \"Objects\" (id integer)",
+                "objects",
+                "shadow",
+            )
+            .unwrap(),
+            "create table if not exists \"shadow\" (id integer)"
+        );
+        assert!(rename_table_ddl("CREATE TABLE other (id INTEGER)", "objects", "s").is_err());
+        assert!(rename_table_ddl("DROP TABLE objects", "objects", "s").is_err());
+    }
+
+    /// Oracle: the index rename moves both the index name and the
+    /// table it is built on, and refuses an index over another table.
+    #[test]
+    fn test_rename_index_ddl_is_verified() {
+        assert_eq!(
+            rename_index_ddl(
+                "CREATE UNIQUE INDEX idx ON objects (label)",
+                "idx",
+                "shadow__idx",
+                "objects",
+                "shadow",
+            )
+            .unwrap(),
+            "CREATE UNIQUE INDEX \"shadow__idx\" ON \"shadow\" (label)"
+        );
+        assert!(rename_index_ddl(
+            "CREATE INDEX idx ON other (label)",
+            "idx",
+            "shadow__idx",
+            "objects",
+            "shadow",
+        )
+        .is_err());
     }
 }
 

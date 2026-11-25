@@ -1042,7 +1042,8 @@ impl ServeWorlds {
         let service = if self.ephemeral {
             let mut core = WorldCore::new(name, limits)?;
             if let Some(gate) = boundary_gate {
-                core.directory_mut().set_boundary_gate(gate);
+                core.directory_mut().set_boundary_gate(Arc::clone(&gate));
+                core.set_world_boundary_gate(gate);
             }
             make(WorldHandle::spawn_with_device_manifest(
                 core,
