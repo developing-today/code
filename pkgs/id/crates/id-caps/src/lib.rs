@@ -29,6 +29,7 @@ pub mod mcp_policy;
 pub mod owner_review;
 pub mod portal;
 pub mod role_config;
+pub mod surface_host;
 pub mod used_caps;
 pub mod work_surfaces;
 pub mod world_agents;
