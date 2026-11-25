@@ -1909,12 +1909,13 @@ mod history_since_cursor_contract_tests {
 
     #[test]
     fn history_since_accepts_after_id_and_returns_page_cursor() {
+        let marker = ["fn dispatch_history_", "since_cursor("].concat();
         let start = SRC
-            .find("fn dispatch_history_since_cursor(")
+            .find(&marker)
             .expect("queue-broker cursor route must exist");
         let rest = &SRC[start..];
         let end = rest
-            .find("\nfn ")
+            .find("\nfn dispatch(")
             .expect("cursor route must end at the next function");
         let route = &rest[..end];
         assert!(route.contains("id > ?"), "cursor excludes ids already seen: {route}");
