@@ -7424,7 +7424,7 @@ dependencies = [
 [[package]]
 name = "p2panda-auth"
 version = "0.7.1"
-source = "git+https://github.com/p2panda/p2panda?rev=da80c05b95269926bf58121cf6a2d3dd5ca41dfc#da80c05b95269926bf58121cf6a2d3dd5ca41dfc"
+source = "git+https://github.com/dezren39/p2panda?rev=4a8a7ea4b6e0da187108fba9a0085e0f9679aded#4a8a7ea4b6e0da187108fba9a0085e0f9679aded"
 dependencies = [
  "p2panda-core",
  "petgraph",
@@ -7436,7 +7436,7 @@ dependencies = [
 [[package]]
 name = "p2panda-core"
 version = "0.7.1"
-source = "git+https://github.com/p2panda/p2panda?rev=da80c05b95269926bf58121cf6a2d3dd5ca41dfc#da80c05b95269926bf58121cf6a2d3dd5ca41dfc"
+source = "git+https://github.com/dezren39/p2panda?rev=4a8a7ea4b6e0da187108fba9a0085e0f9679aded#4a8a7ea4b6e0da187108fba9a0085e0f9679aded"
 dependencies = [
  "blake3",
  "cbor-core",
@@ -7473,7 +7473,7 @@ dependencies = [
 [[package]]
 name = "p2panda-store"
 version = "0.7.1"
-source = "git+https://github.com/p2panda/p2panda?rev=da80c05b95269926bf58121cf6a2d3dd5ca41dfc#da80c05b95269926bf58121cf6a2d3dd5ca41dfc"
+source = "git+https://github.com/dezren39/p2panda?rev=4a8a7ea4b6e0da187108fba9a0085e0f9679aded#4a8a7ea4b6e0da187108fba9a0085e0f9679aded"
 dependencies = [
  "async-stream",
  "futures-util",

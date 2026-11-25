@@ -46,8 +46,8 @@ idna = "1"
 iroh = "1"
 iroh-base = "1"
 iroh-blobs = "0.103"
-p2panda-core = { git = "https://github.com/p2panda/p2panda", rev = "da80c05b95269926bf58121cf6a2d3dd5ca41dfc" }
-p2panda-auth = { git = "https://github.com/p2panda/p2panda", rev = "da80c05b95269926bf58121cf6a2d3dd5ca41dfc", features = [
+p2panda-core = { git = "https://github.com/dezren39/p2panda", rev = "4a8a7ea4b6e0da187108fba9a0085e0f9679aded" }
+p2panda-auth = { git = "https://github.com/dezren39/p2panda", rev = "4a8a7ea4b6e0da187108fba9a0085e0f9679aded", features = [
   "serde",
 ] }
 postcard = { version = "1", features = ["alloc"] }

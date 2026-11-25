@@ -34,9 +34,9 @@ iroh = "1"
 iroh-base = "1"
 iroh-blobs = "0.103"
 iroh-docs = "0.101"
-p2panda-core = { git = "https://github.com/p2panda/p2panda", rev = "da80c05b95269926bf58121cf6a2d3dd5ca41dfc" }
+p2panda-core = { git = "https://github.com/dezren39/p2panda", rev = "4a8a7ea4b6e0da187108fba9a0085e0f9679aded" }
 # Store traits only. The default features would pull in SQLite.
-p2panda-store = { git = "https://github.com/p2panda/p2panda", rev = "da80c05b95269926bf58121cf6a2d3dd5ca41dfc", default-features = false }
+p2panda-store = { git = "https://github.com/dezren39/p2panda", rev = "4a8a7ea4b6e0da187108fba9a0085e0f9679aded", default-features = false }
 postcard = { version = "1", features = ["alloc"] }
 redb = "=5.0.0"
 # The tenant DB store adapter (turso.rs, E6 of #9083): SQLite-over-HTTP
