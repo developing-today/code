@@ -16,6 +16,7 @@
 pub mod archive;
 pub mod backup;
 pub mod blob;
+pub mod blob_central;
 pub mod catalog;
 pub mod central;
 pub mod cli;
@@ -23,9 +24,9 @@ pub mod grants;
 #[cfg(feature = "http")]
 pub mod http;
 pub mod launch;
-pub mod plane;
 #[cfg(test)]
 mod load_probe;
+pub mod plane;
 pub mod read;
 pub mod sweep;
 pub mod sync;

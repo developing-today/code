@@ -22,7 +22,7 @@
 //! `FLEET_KV_WRITE_CATALOG=1 cargo test -p fleet-kv central_catalog` rewrites
 //! the copy after a statement changes.
 
-use crate::{archive, central, grants};
+use crate::{archive, blob_central, central, grants};
 
 /// What a statement may do, for the door's authorization.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -143,6 +143,34 @@ pub fn entries() -> Vec<Entry> {
             PARTITION,
         ),
         entry("archive.read", Read, archive::ARCHIVE_READ, PARTITION),
+        entry(
+            "blob.cas_receipt_insert",
+            Write,
+            central::BLOB_RECEIPT_INSERT,
+            CAS,
+        ),
+        entry("blob.ref_insert", Write, blob_central::BLOB_REF_INSERT, CAS),
+        entry("blob.publish", Admin, blob_central::BLOB_PUBLISH, NONE),
+        entry(
+            "blob.roots_read",
+            Admin,
+            blob_central::BLOB_ROOTS_READ,
+            NONE,
+        ),
+        entry("blobs.read", Admin, blob_central::BLOBS_READ, NONE),
+        entry(
+            "blob.deletion_insert",
+            Admin,
+            blob_central::BLOB_DELETION_INSERT,
+            NONE,
+        ),
+        entry("blob.delete", Admin, blob_central::BLOB_DELETE, NONE),
+        entry(
+            "blob.deletion_read",
+            Admin,
+            blob_central::BLOB_DELETION_READ,
+            NONE,
+        ),
     ]
 }
 

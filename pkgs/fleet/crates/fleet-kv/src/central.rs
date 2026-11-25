@@ -44,6 +44,7 @@ pub const BACKOFF_CAP: Duration = Duration::from_secs(1);
 pub const MIGRATIONS: &[(i64, &str)] = &[
     (1, include_str!("../migrations/0001_central.sql")),
     (2, include_str!("../migrations/0002_archive.sql")),
+    (3, include_str!("../migrations/0003_blobs.sql")),
 ];
 
 /// A bound SQL value, in the shapes both the libSQL pipeline and SQLite use.
@@ -92,11 +93,11 @@ impl rusqlite::ToSql for Value {
     }
 }
 
-fn text(value: &str) -> Value {
+pub(crate) fn text(value: &str) -> Value {
     Value::Text(value.to_string())
 }
 
-fn integer(value: u64) -> Value {
+pub(crate) fn integer(value: u64) -> Value {
     Value::Integer(i64::try_from(value).unwrap_or(i64::MAX))
 }
 
@@ -380,7 +381,7 @@ pub fn migrate(primary: &dyn Pipeline) -> Result<()> {
     Ok(())
 }
 
-fn now_ms() -> i64 {
+pub(crate) fn now_ms() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|elapsed| i64::try_from(elapsed.as_millis()).unwrap_or(i64::MAX))
@@ -416,14 +417,14 @@ pub enum Op {
 }
 
 impl Op {
-    fn state(&self) -> &'static str {
+    pub(crate) fn state(&self) -> &'static str {
         match self {
             Self::Set(_) => "live",
             Self::Tombstone => "tombstone",
         }
     }
 
-    fn value(&self) -> &[u8] {
+    pub(crate) fn value(&self) -> &[u8] {
         match self {
             Self::Set(value) => value,
             Self::Tombstone => &[],
@@ -494,7 +495,10 @@ pub struct Receipt {
     pub replayed: bool,
 }
 
-pub(crate) const RECEIPT_INSERT: &str = "INSERT OR IGNORE INTO idem_receipts (
+/// The receipt insert as a literal, so the publish-CAS can extend it.
+macro_rules! receipt_insert {
+    () => {
+        "INSERT OR IGNORE INTO idem_receipts (
         writer, host_incarnation, outbox_id, request_fingerprint, attempt,
         scope_id, registry_id, namespace, key, expected_version,
         outcome, version, recorded_at_ms)
@@ -503,7 +507,20 @@ pub(crate) const RECEIPT_INSERT: &str = "INSERT OR IGNORE INTO idem_receipts (
         CASE WHEN head.version = ?5 THEN ?5 + 1 ELSE head.version END,
         ?13
     FROM (SELECT COALESCE((SELECT version FROM kv_heads
-        WHERE scope_id = ?1 AND registry_id = ?2 AND namespace = ?3 AND key = ?4), 0) AS version) AS head";
+        WHERE scope_id = ?1 AND registry_id = ?2 AND namespace = ?3 AND key = ?4), 0) AS version) AS head"
+    };
+}
+
+pub(crate) const RECEIPT_INSERT: &str = receipt_insert!();
+
+/// The publish-CAS receipt (#13318, design §8): decided only while the
+/// blob it names is published in its partition (`?14` jurisdiction, `?15`
+/// tier, `?16` content id). With no published row no receipt is written,
+/// so nothing else in the transaction moves.
+pub(crate) const BLOB_RECEIPT_INSERT: &str = concat!(
+    receipt_insert!(),
+    "\n    WHERE EXISTS (SELECT 1 FROM kv_blobs AS blob\n        WHERE blob.jurisdiction = ?14 AND blob.tier = ?15 AND blob.content_id = ?16)"
+);
 
 macro_rules! this_attempt {
     () => {
@@ -560,7 +577,7 @@ pub(crate) const RECEIPT_READ: &str =
     WHERE receipt.writer = ?8 AND receipt.host_incarnation = ?9 AND receipt.outbox_id = ?10";
 
 /// A nonce for one transaction attempt; unique per process and call.
-fn attempt_nonce() -> String {
+pub(crate) fn attempt_nonce() -> String {
     use std::sync::atomic::{AtomicU64, Ordering};
     static COUNTER: AtomicU64 = AtomicU64::new(0);
     let mut hasher = blake3::Hasher::new();
@@ -578,7 +595,19 @@ fn attempt_nonce() -> String {
 
 /// The statements of one CAS transaction, for `attempt`.
 pub fn cas_statements(intent: &Intent, attempt: &str) -> Vec<Statement> {
-    let args = [
+    let args = cas_args(intent, attempt);
+    vec![
+        Statement::numbered(RECEIPT_INSERT, &args),
+        Statement::numbered(CONFLICT_INSERT, &args),
+        Statement::numbered(VERSION_INSERT, &args),
+        Statement::numbered(HEAD_UPSERT, &args),
+        Statement::numbered(RECEIPT_READ, &args),
+    ]
+}
+
+/// The thirteen positional arguments every CAS statement shares.
+pub(crate) fn cas_args(intent: &Intent, attempt: &str) -> Vec<Value> {
+    vec![
         text(&intent.address.scope_id),
         text(&intent.address.registry_id),
         text(&intent.address.namespace),
@@ -592,13 +621,6 @@ pub fn cas_statements(intent: &Intent, attempt: &str) -> Vec<Statement> {
         text(&intent.fingerprint()),
         text(attempt),
         Value::Integer(now_ms()),
-    ];
-    vec![
-        Statement::numbered(RECEIPT_INSERT, &args),
-        Statement::numbered(CONFLICT_INSERT, &args),
-        Statement::numbered(VERSION_INSERT, &args),
-        Statement::numbered(HEAD_UPSERT, &args),
-        Statement::numbered(RECEIPT_READ, &args),
     ]
 }
 
@@ -606,11 +628,22 @@ pub fn cas_statements(intent: &Intent, attempt: &str) -> Vec<Statement> {
 pub fn cas(primary: &dyn Pipeline, intent: &Intent) -> Result<Receipt> {
     validate(&intent.address)?;
     let attempt = attempt_nonce();
-    let results = primary.transaction(&cas_statements(intent, &attempt))?;
-    let row = results
-        .last()
-        .and_then(|rows| rows.rows.first())
-        .ok_or_else(|| CentralError::Store("the CAS transaction returned no receipt".into()))?;
+    decide(primary, intent, &cas_statements(intent, &attempt), &attempt)?
+        .ok_or_else(|| CentralError::Store("the CAS transaction returned no receipt".into()))
+}
+
+/// Run one CAS-shaped transaction whose last statement reads the receipt,
+/// and decode it. `None` when no receipt was recorded for the key.
+pub(crate) fn decide(
+    primary: &dyn Pipeline,
+    intent: &Intent,
+    statements: &[Statement],
+    attempt: &str,
+) -> Result<Option<Receipt>> {
+    let results = primary.transaction(statements)?;
+    let Some(row) = results.last().and_then(|rows| rows.rows.first()) else {
+        return Ok(None);
+    };
     let field = |index: usize| row.get(index).cloned().unwrap_or(Value::Null);
     let recorded_fingerprint = field(0).as_str().unwrap_or_default().to_string();
     let fingerprint = intent.fingerprint();
@@ -620,7 +653,7 @@ pub fn cas(primary: &dyn Pipeline, intent: &Intent) -> Result<Receipt> {
             fingerprint,
         });
     }
-    let replayed = field(1).as_str() != Some(attempt.as_str());
+    let replayed = field(1).as_str() != Some(attempt);
     let expected = field(3).as_i64().unwrap_or(0).max(0) as u64;
     let version = field(4).as_i64().unwrap_or(0).max(0) as u64;
     let outcome = match field(2).as_str() {
@@ -638,7 +671,7 @@ pub fn cas(primary: &dyn Pipeline, intent: &Intent) -> Result<Receipt> {
             )));
         }
     };
-    Ok(Receipt { outcome, replayed })
+    Ok(Some(Receipt { outcome, replayed }))
 }
 
 /// Bounded retries for one CAS (design §5): at most [`MAX_ATTEMPTS`]
@@ -795,7 +828,7 @@ fn address_args(address: &Address) -> [Value; 4] {
     ]
 }
 
-fn read(primary: &dyn Pipeline, sql: &str, args: &[Value]) -> Result<Vec<Vec<Value>>> {
+pub(crate) fn read(primary: &dyn Pipeline, sql: &str, args: &[Value]) -> Result<Vec<Vec<Value>>> {
     Ok(primary
         .transaction(&[Statement::numbered(sql, args)])?
         .into_iter()
@@ -1099,7 +1132,7 @@ pub fn resolve(primary: &dyn Pipeline, registry_id: &str, namespace: &str) -> Re
         })
 }
 
-fn validate(address: &Address) -> Result<()> {
+pub(crate) fn validate(address: &Address) -> Result<()> {
     crate::validate_namespace(&address.namespace)
         .map_err(|_| CentralError::Malformed("malformed_namespace"))?;
     crate::validate_key(&address.key).map_err(|_| CentralError::Malformed("malformed_key"))?;
