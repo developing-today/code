@@ -748,18 +748,18 @@ fn group_programs(
             Grouping::World => groups
                 .entry(program.world_id.clone())
                 .or_default()
-                .push(row(*program)),
+                .push(row(program)),
             Grouping::State => groups
                 .entry(state_name(program.state).to_owned())
                 .or_default()
-                .push(row(*program)),
+                .push(row(program)),
             Grouping::Tag if program.tags.is_empty() => groups
                 .entry(UNTAGGED_GROUP.to_owned())
                 .or_default()
-                .push(row(*program)),
+                .push(row(program)),
             Grouping::Tag => {
                 for tag in &program.tags {
-                    groups.entry(tag.clone()).or_default().push(row(*program));
+                    groups.entry(tag.clone()).or_default().push(row(program));
                 }
             }
         }
