@@ -144,6 +144,7 @@ import {
   type OwnerSettings,
   platformSettings,
   settingsDifferences,
+  settingsInForce,
   settingsThatDiffer,
 } from "../../src/settings.ts";
 import { timed, unread } from "../../src/timed.ts";
@@ -1066,6 +1067,9 @@ export class Edge {
         ],
         sections: primary ? this.owned(cfg) : [],
         refused: [...refused, ...this.refusedReads().map((name) => `read.${name}`)],
+        // Which settings are in force, from where, since when, with
+        // their values: this answer is the owner's alone.
+        settings: settingsInForce(told, await this.ownerSettings()),
       },
       // One machine can report today: the one whose key this side holds.
       machines:
@@ -2095,6 +2099,16 @@ export class Edge {
         // A machine on other code than this, or with an environment of
         // its own, shows here. This side goes by its own all the same.
         machineSettingsDiffer: told === null ? null : settingsThatDiffer(told),
+        // Which source each of the platform's settings is in force from
+        // (the owner's change, a machine's word, or the repository's),
+        // and since when for an owner's change: by name and source,
+        // never by value or by whom. The values are on the owner's
+        // Machines screen (#14955).
+        settingsInForce: settingsInForce(told, await this.ownerSettings()).map(({ name, source, since }) => ({
+          name,
+          source,
+          since,
+        })),
         // The copy of the Android build kept here: when it was built,
         // and whether it is the host's newest. Null if there is none.
         androidBuild: await this.builds.apkState(),

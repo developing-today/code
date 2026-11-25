@@ -18,7 +18,7 @@
 // near the edge's own clock, and that time is later than the last sync
 // accepted.
 import type { Issuer } from "./config.ts";
-import type { SettingDiffers } from "./settings.ts";
+import type { SettingDiffers, SettingInForce } from "./settings.ts";
 
 /** What a machine tells the edge in every sync. Who may sign in (the
  * owners, the certificate names, the issuers, the Android signing
@@ -138,7 +138,18 @@ export interface MachinesAnswer {
   served: "edge" | "machine";
   /** What the platform does with no machine: null when it is not in
    * front, and an empty list of each when it only serves and waits. */
-  platform: { primary: boolean; actions: string[]; sections: string[]; refused: string[] } | null;
+  platform: {
+    primary: boolean;
+    actions: string[];
+    sections: string[];
+    refused: string[];
+    /** Which source each of the platform's settings is in force from,
+     * with its value, the repository's beside it, and for an owner's
+     * change who made it, when, and at which revision: the one place
+     * the owner reads which settings are in force and since when
+     * (#14955). Absent from an answer older than the saying. */
+    settings?: SettingInForce[];
+  } | null;
   machines: {
     name: string;
     /** When it last reported, in milliseconds; null if it never has. */

@@ -21,7 +21,7 @@ import { forgetPoke, type Io, route } from "../edge/src/entry.ts";
 import type { Action } from "../src/actions.ts";
 import { clearJwksCache, identify } from "../src/auth.ts";
 import { readConfig } from "../src/config.ts";
-import { platformSettings } from "../src/settings.ts";
+import { PLATFORM_SETTING_NAMES, platformSettings } from "../src/settings.ts";
 import { Devices, Limiter } from "../src/devices.ts";
 import { Docs } from "../src/docs.ts";
 import { NEEDS_LABELS } from "../src/needs.ts";
@@ -1446,6 +1446,7 @@ describe("before the host's first report", () => {
       hostVersion: null,
       listening: 0,
       machineSettingsDiffer: null,
+      settingsInForce: PLATFORM_SETTING_NAMES.map((name) => ({ name, source: "repository", since: null })),
       androidBuild: null,
       androidRelease: null,
       androidReleaseTrouble: null,
@@ -2161,6 +2162,7 @@ describe("actions", () => {
       ],
       sections: [],
       refused: [],
+      settings: expect.any(Array),
     });
     expect(first.machines).toEqual([
       {
@@ -4091,6 +4093,96 @@ describe("the owner's changed settings are kept at the edge and gone by", () => 
   });
 });
 
+// Which settings are in force, from where and since when, is said in
+// one place on two surfaces: by name and source on the public health
+// answer, and with values, main's value beside an owner's, who and at
+// which revision on the owner's Machines answer (#14955, S3 of
+// doc/2026-11-25T08-48-36Z_design_pm-owner-settings-at-edge.md §4).
+describe("which settings are in force is said, and since when", () => {
+  const health = async (w: Awaited<ReturnType<typeof setup>>) =>
+    (await (await w.browse("/console/health", { token: null })).json()) as {
+      settingsInForce: { name: string; source: string; since: number | null }[];
+    };
+  const machines = async (w: Awaited<ReturnType<typeof setup>>) =>
+    (await (await w.browse("/console/api/machines")).json()) as MachinesAnswer;
+  const source = (list: { name: string; source: string }[], name: string) =>
+    list.find((entry) => entry.name === name)?.source;
+
+  test("health says each setting's source and since when, and no value and nobody", async () => {
+    const w = await setup({ direct: true });
+    const theirs = ["developing-today/code", "developing-today/opencode"];
+    w.edgeConfig.needsRepos = theirs;
+    await w.hostReads();
+    await w.link.now.once();
+    // A machine's list is in force for the list; main's for the rest.
+    let said = (await health(w)).settingsInForce;
+    expect(said.map((entry) => entry.name)).toEqual([...PLATFORM_SETTING_NAMES]);
+    expect(said.filter((entry) => entry.source !== "repository")).toEqual([
+      { name: "needsRepos", source: "machine", since: null },
+    ]);
+    // The owner changes the label: it is the owner's from then.
+    const at = w.now.t;
+    await w.edge.now.setOwnerSetting(OWNER, "promptLabel", "owner/label");
+    said = (await health(w)).settingsInForce;
+    expect(said.find((entry) => entry.name === "promptLabel")).toEqual({
+      name: "promptLabel",
+      source: "owner",
+      since: at,
+    });
+    // Nothing of what the value is, or who changed it, is in the public answer.
+    const text = JSON.stringify(await health(w));
+    expect(text).not.toContain("owner/label");
+    expect(text).not.toContain(OWNER);
+    expect(text).not.toContain("developing-today/opencode");
+    for (const entry of said) expect(Object.keys(entry).sort()).toEqual(["name", "since", "source"]);
+    // And cleared, main's is in force again.
+    w.now.t += 60_000;
+    await w.edge.now.clearOwnerSetting(OWNER, "promptLabel");
+    expect(source((await health(w)).settingsInForce, "promptLabel")).toBe("repository");
+  });
+
+  test("the owner's Machines answer has the values, main's beside an owner's change, who and the revision", async () => {
+    const w = await setup({ direct: true });
+    const mains = platformSettings();
+    await w.hostReads();
+    await w.link.now.once();
+    const before = (await machines(w)).platform?.settings ?? [];
+    expect(before.map((entry) => entry.name)).toEqual([...PLATFORM_SETTING_NAMES]);
+    expect(before.find((entry) => entry.name === "queue")).toEqual({
+      name: "queue",
+      source: "repository",
+      since: null,
+      value: mains.queue,
+      repository: mains.queue,
+    });
+    const at = w.now.t;
+    await w.edge.now.setOwnerSetting(OWNER, "promptLabel", "owner/label");
+    w.now.t += 1_000;
+    await w.edge.now.setOwnerSetting(OWNER, "needsRepos", ["developing-today/code"]);
+    const after = (await machines(w)).platform?.settings ?? [];
+    expect(after.find((entry) => entry.name === "promptLabel")).toEqual({
+      name: "promptLabel",
+      source: "owner",
+      since: at + 1_000,
+      value: "owner/label",
+      repository: mains.promptLabel,
+      by: OWNER,
+      rev: 2,
+    });
+    expect(after.find((entry) => entry.name === "needsRepos")).toMatchObject({
+      source: "owner",
+      value: ["developing-today/code"],
+      repository: mains.needsRepos,
+      rev: 2,
+    });
+    // The two surfaces say the same sources.
+    const said = (await health(w)).settingsInForce;
+    expect(after.map(({ name, source, since }) => ({ name, source, since }))).toEqual(said);
+    // Nobody not signed in is told the values.
+    expect((await w.browse("/console/api/machines", { token: null })).status).toBe(401);
+  });
+});
+
 describe("the edge does the core itself", () => {
   type World = Awaited<ReturnType<typeof setup>>;
   /** The switch is on, the tokens are there, and a machine has said
@@ -4960,6 +5052,7 @@ describe("the edge does the core itself", () => {
       ],
       sections: ["board", "prs", "priorities", "asks", "census", "done"],
       refused: [],
+      settings: expect.any(Array),
     });
     expect(first.machines.map((m) => m.name)).toEqual(["nixos"]);
     // Turned away for merging: that is a machine's for the hour, and said so.
