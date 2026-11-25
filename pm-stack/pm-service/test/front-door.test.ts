@@ -293,6 +293,35 @@ describe("surface C agent front door (H4 slice)", () => {
     }
   });
 
+  test("lifetime boundaries are inclusive at 15 minutes and 30 days, never one second over", async () => {
+    const exactToken = await mintAgentToken({ exp: AGENT_NOW + 900 });
+    const exact = agentFixture();
+    exact.set({ ...exact.metadata(), issuedAt: AGENT_NOW - (30 * 86400 - 900), expiresAt: AGENT_NOW + 900 });
+    expect((await resolveAgentFrontDoor(exactToken, "binding-1", exact.deps)).ok).toBe(true);
+
+    const tooLongToken = await mintAgentToken({ exp: AGENT_NOW + 901 });
+    expect((await resolveAgentFrontDoor(tooLongToken, "binding-1", agentFixture().deps)).ok).toBe(false);
+
+    const tooLongMetadata = agentFixture();
+    tooLongMetadata.set({ ...tooLongMetadata.metadata(), issuedAt: AGENT_NOW - 30 * 86400, expiresAt: AGENT_NOW + 1 });
+    expect((await resolveAgentFrontDoor(await mintAgentToken({ exp: AGENT_NOW + 1 }), "binding-1", tooLongMetadata.deps)).ok).toBe(false);
+  });
+
+  test("forged tokens and a non-agent live role do not read credential metadata or audit", async () => {
+    const fixture = agentFixture();
+    const signed = await mintAgentToken();
+    const parts = signed.split(".");
+    const forged = `${parts[0]}.${parts[1]}.${Buffer.from("not-a-signature").toString("base64url")}`;
+    expect((await resolveAgentFrontDoor(forged, "binding-1", fixture.deps)).ok).toBe(false);
+    expect(fixture.reads()).toBe(0);
+    expect(fixture.audits).toEqual([]);
+
+    const ownerOnly = agentFixture();
+    expect((await resolveAgentFrontDoor(signed, "binding-1", { ...ownerOnly.deps, loadRoles: async () => ["owner"] })).ok).toBe(false);
+    expect(ownerOnly.reads()).toBe(0);
+    expect(ownerOnly.audits).toEqual([]);
+  });
+
   test("live credential metadata must match every owner/scope/lifetime constraint", async () => {
     const token = await mintAgentToken();
     const mutations: Partial<AgentCredentialMetadata>[] = [
