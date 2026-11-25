@@ -59,7 +59,7 @@ OUT_DIR = os.path.expanduser(
     "/hidden_files/visibility"
 )
 SUBSCRIPTION_STATUS = "/opt/hatch/bin/subscription-status"
-TURSO_URL = "https://fleet-platform-dezren39.aws-us-east-1.turso.io"
+TURSO_URL = "https://d1-gateway.developing-today.workers.dev/db/fleet-platform"
 TURSO_TOKEN_SECRET = "turso.fleet-platform-rw-token"
 TABLE = "agent_quota_records"
 

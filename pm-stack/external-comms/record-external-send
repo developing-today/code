@@ -84,7 +84,7 @@ HEALTH = os.path.join(STATE_DIR, "pusher-health.json")
 QUARANTINE = os.path.join(STATE_DIR, "quarantine.jsonl")
 LOCK = os.path.join(STATE_DIR, "pusher.lock")
 TABLE = "agent_external_comms"
-DB_URL = "https://fleet-platform-dezren39.aws-us-east-1.turso.io"
+DB_URL = "https://d1-gateway.developing-today.workers.dev/db/fleet-platform"
 TIMEOUT = 8  # seconds; a send-time caller must never hang on the ledger
 
 

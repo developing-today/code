@@ -910,7 +910,7 @@ async function collectRuns(tickAt: string): Promise<ProviderRun[]> {
 }
 
 const TURSO_TOKEN_NAME = "turso.fleet-platform-rw-token";
-const TURSO_URL = "https://fleet-platform-dezren39.aws-us-east-1.turso.io";
+const TURSO_URL = "https://d1-gateway.developing-today.workers.dev/db/fleet-platform";
 
 function sqlString(v: string): string {
   return `'${v.replace(/'/g, "''")}'`;

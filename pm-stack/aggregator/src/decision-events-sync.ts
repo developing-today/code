@@ -83,7 +83,7 @@ export const LEGACY_DECISION_EVENT_TYPES: readonly string[] = [
   "set-submitted",
 ];
 
-export const DECISION_EVENTS_TURSO_URL = "https://fleet-platform-dezren39.aws-us-east-1.turso.io";
+export const DECISION_EVENTS_TURSO_URL = "https://d1-gateway.developing-today.workers.dev/db/fleet-platform";
 export const DECISION_EVENTS_TURSO_TOKEN_NAME = "turso.fleet-platform-rw-token";
 export const DECISION_EVENTS_WEBHOOK_SECRET_NAME = "cloudflare.decision-events.webhook-secret";
 export const DECISION_SET_EVENTS_TABLE = "decision_set_events";
