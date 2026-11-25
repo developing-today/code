@@ -104,9 +104,7 @@ impl Shadow {
 
     fn effective(&self, member: &str) -> MemberState {
         if self.walls.contains(member)
-            || ancestors_of(member)
-                .iter()
-                .any(|a| self.walls.contains(*a))
+            || ancestors_of(member).iter().any(|a| self.walls.contains(*a))
         {
             return MemberState::Walled;
         }
@@ -198,7 +196,11 @@ fn the_full_outcome_sequence_reconstructs_from_the_log_alone() {
             DecisionKind::WallRemoved => "wall-removed",
         })
         .collect();
-    assert_eq!(kinds.len(), 5, "scenario must produce every kind: {kinds:?}");
+    assert_eq!(
+        kinds.len(),
+        5,
+        "scenario must produce every kind: {kinds:?}"
+    );
 
     // Replay: the shadow sees only the log.
     let mut shadow = Shadow::default();

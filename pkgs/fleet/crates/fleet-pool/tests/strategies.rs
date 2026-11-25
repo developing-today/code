@@ -18,10 +18,16 @@ fn cand(id: &str, cost_class: u32) -> Candidate {
     }
 }
 
-fn count_picks<S: PoolStrategy>(strategy: &mut S, candidates: &[Candidate], n: usize) -> BTreeMap<String, usize> {
+fn count_picks<S: PoolStrategy>(
+    strategy: &mut S,
+    candidates: &[Candidate],
+    n: usize,
+) -> BTreeMap<String, usize> {
     let mut counts: BTreeMap<String, usize> = BTreeMap::new();
     for _ in 0..n {
-        let idx = strategy.select(candidates).expect("candidates are non-empty");
+        let idx = strategy
+            .select(candidates)
+            .expect("candidates are non-empty");
         *counts.entry(candidates[idx].id.to_string()).or_insert(0) += 1;
     }
     counts
@@ -139,10 +145,11 @@ fn pool_select_with_tiered_weighted_stays_in_the_free_class() {
     assert_eq!(counts["free-a"], 10);
     assert_eq!(counts["free-b"], 30);
     // The decision log names the composed strategy.
-    assert!(pool
-        .decisions()
-        .iter()
-        .all(|d| d.strategy == "tiered(weighted)"));
+    assert!(
+        pool.decisions()
+            .iter()
+            .all(|d| d.strategy == "tiered(weighted)")
+    );
 }
 
 proptest! {

@@ -804,7 +804,10 @@ impl Pool {
                         DecisionKind::WallPlaced,
                         Some(supporter.clone()),
                         Some(MemberState::Walled),
-                        format!("wall narrowed from {scope} to {supporter}: {}", wall.evidence),
+                        format!(
+                            "wall narrowed from {scope} to {supporter}: {}",
+                            wall.evidence
+                        ),
                     );
                 }
             }

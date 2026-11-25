@@ -112,7 +112,8 @@ fn walk(pool: &mut Pool, script: &dyn Fn(&NodeId) -> FormResult, now: u64) -> Wa
                 };
             }
             FormResult::ServedTerminal => {
-                let fx = pool.record_outcome(&form, &served_failure(&form, false, "served result"), now);
+                let fx =
+                    pool.record_outcome(&form, &served_failure(&form, false, "served result"), now);
                 assert!(!fx.advance, "a terminal served result must not advance");
                 return WalkOutcome {
                     serving: Some(form),
@@ -120,7 +121,8 @@ fn walk(pool: &mut Pool, script: &dyn Fn(&NodeId) -> FormResult, now: u64) -> Wa
                 };
             }
             FormResult::ServedAdvance => {
-                let fx = pool.record_outcome(&form, &served_failure(&form, true, "served failure"), now);
+                let fx =
+                    pool.record_outcome(&form, &served_failure(&form, true, "served failure"), now);
                 assert!(fx.advance, "the classifier said advance");
             }
             FormResult::FailedToServe => {
@@ -261,9 +263,10 @@ fn walker_names_the_serving_form_in_the_log() {
             Some(NodeId::new("t3")),
         ]
     );
-    assert!(pool
-        .decisions()
-        .iter()
-        .filter(|d| d.kind == fleet_pool::DecisionKind::Selection)
-        .all(|d| d.strategy == "walker-ordered"));
+    assert!(
+        pool.decisions()
+            .iter()
+            .filter(|d| d.kind == fleet_pool::DecisionKind::Selection)
+            .all(|d| d.strategy == "walker-ordered")
+    );
 }
