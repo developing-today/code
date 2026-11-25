@@ -1098,7 +1098,10 @@ export class Ops {
     let state: Record<string, unknown>;
     try {
       const binary = atob(current.content.replace(/\s/g, ""));
-      state = JSON.parse(new TextDecoder().decode(Uint8Array.from(binary, (c) => c.charCodeAt(0)))) as Record<string, unknown>;
+      state = JSON.parse(new TextDecoder().decode(Uint8Array.from(binary, (c) => c.charCodeAt(0)))) as Record<
+        string,
+        unknown
+      >;
     } catch {
       throw new OpError(502, "the Cloudflare repository state was not valid JSON");
     }

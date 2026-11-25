@@ -1165,6 +1165,18 @@ impl WorldActor {
                     self.failover_write_lease(&pool, journal_tip, max_catch_up_lag, term_ms);
                 let _ = reply.send(result);
             }
+            WorldCommand::DispatchSpillCopy {
+                holder,
+                epoch,
+                replayed_position,
+                journal_copy,
+                reply,
+            } => {
+                let result =
+                    self.core
+                        .dispatch_spill_copy(&holder, epoch, replayed_position, journal_copy);
+                let _ = reply.send(result);
+            }
             WorldCommand::ImportEntity {
                 handoff_id,
                 entity_ref,
