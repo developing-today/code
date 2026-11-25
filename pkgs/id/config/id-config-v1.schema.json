@@ -74,6 +74,47 @@
       },
       "type": "object"
     },
+    "link_adapter": { "default": "iroh", "enum": ["iroh", null], "type": ["string", "null"] },
+    "links": {
+      "additionalProperties": false,
+      "description": "The link plane (#9111 record section 3.3): per-kind link defaults. An absent key or null takes the built-in default: every configurable kind off, adapter iroh, retention_class default. Who may use a link stays with peers[]; no link setting widens a class. Load rejects an adapter this build does not advertise (record section 6.5 step 4); this build advertises iroh.",
+      "properties": {
+        "control": {
+          "additionalProperties": false,
+          "description": "Emergency peer disable and key revocation. Always on and not configurable: only {} or null is accepted.",
+          "properties": {},
+          "type": ["object", "null"]
+        },
+        "query": {
+          "additionalProperties": false,
+          "properties": {
+            "enabled": { "default": false, "type": ["boolean", "null"] },
+            "timeout_ms": { "description": "A direct query's timeout. Default: fanout.per_peer_timeout_ms.", "maximum": 30000, "minimum": 1, "type": ["integer", "null"] }
+          },
+          "type": ["object", "null"]
+        },
+        "send_only": {
+          "additionalProperties": false,
+          "properties": {
+            "adapter": { "$ref": "#/$defs/link_adapter" },
+            "enabled": { "default": false, "type": ["boolean", "null"] },
+            "retention_class": { "default": "default", "minLength": 1, "type": ["string", "null"] }
+          },
+          "type": ["object", "null"]
+        },
+        "sync": {
+          "additionalProperties": false,
+          "properties": {
+            "adapter": { "$ref": "#/$defs/link_adapter" },
+            "enabled": { "default": false, "type": ["boolean", "null"] },
+            "retention_class": { "default": "default", "minLength": 1, "type": ["string", "null"] },
+            "sync_scope": { "description": "Default: behavior.sync_scope.", "enum": ["metadata", "full", null], "type": ["string", "null"] }
+          },
+          "type": ["object", "null"]
+        }
+      },
+      "type": "object"
+    },
     "peer": {
       "additionalProperties": false,
       "description": "One peer relationship (#9111 record section 3.2; the #9141 PeerPolicy plus fan-out fields). The class is a ceiling and operations is the grant. Load rejects: relay_granted without fully_trusted; the relay operation without relay_granted; sync.accept on send_only; sync.send on accept_signed_from; any operation on unknown; a repeated operation; expires_at not after valid_from. peer_id is unique in the document.",
@@ -169,6 +210,7 @@
     },
     "fanout": { "$ref": "#/$defs/fanout" },
     "gates": { "$ref": "#/$defs/fixed_gates" },
+    "links": { "$ref": "#/$defs/links" },
     "mode": {
       "description": "Named mode: a coherent behavior bundle that contributes behavioral defaults only. A mode cannot confer identity or privilege.",
       "enum": ["single-node", "hosted-tenant", "federated-relay"],
