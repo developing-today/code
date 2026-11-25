@@ -2686,6 +2686,135 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "needs ORBIT_WASM=FILE, the built examples/rust-orbit module"]
+    fn built_orbit_arcade_replays_edge_descent() {
+        // Oracle: orbit-arcade/edge-descent in app-vectors.json (revision
+        // b9d8177), played by the regular host. The guest is built from
+        // source, so this test reads the module named by ORBIT_WASM. The
+        // after-states are literal copies of the vector projections; the
+        // outcome is asserted beside them.
+        let Some(path) = std::env::var_os("ORBIT_WASM") else {
+            panic!("set ORBIT_WASM to the built rust_orbit.wasm");
+        };
+        let wasm = std::fs::read(path).unwrap();
+        let runner = Sandbox::compile(&wasm, SandboxLimits::default()).unwrap();
+        let records = |world: &mut WorldInstance| -> serde_json::Value {
+            serde_json::from_slice(&world.records().unwrap().unwrap()).unwrap()
+        };
+        let expected = |after: &serde_json::Value, outcome: &str| -> serde_json::Value {
+            let mut doc = after.clone();
+            doc["outcome"] = serde_json::json!(outcome);
+            doc
+        };
+        let queued = serde_json::json!({
+            "tick": 3, "cannon": [2, 3], "targets": [{"id": "T", "at": [3, 0]}],
+            "formation_direction": "E", "shots": [],
+            "pending": [{"id": "q4", "for_tick": 4, "steer": 1, "fire": true}],
+            "score": 0, "phase": "active"
+        });
+        let after_t4 = serde_json::json!({
+            "tick": 4, "cannon": [3, 3], "targets": [{"id": "T", "at": [3, 1]}],
+            "formation_direction": "W", "shots": [{"id": "q4", "at": [3, 2]}],
+            "pending": [], "score": 0, "phase": "active"
+        });
+        let after_t5 = serde_json::json!({
+            "tick": 5, "cannon": [3, 3], "targets": [], "formation_direction": "W",
+            "shots": [], "pending": [], "score": 10, "phase": "wave-clear"
+        });
+        let steps = [
+            (
+                r#"{"kind":"QueueControls","id":"q4","for_tick":4,"steer":1,"fire":true}"#,
+                "queued",
+                &queued,
+            ),
+            (
+                r#"{"kind":"Redeliver","ref":"q4"}"#,
+                "already-folded",
+                &queued,
+            ),
+            (
+                r#"{"kind":"Tick","number":4,"event":"t4"}"#,
+                "steer-fire-and-descend",
+                &after_t4,
+            ),
+            (
+                r#"{"kind":"RenderFrames","count":120}"#,
+                "presentation-only",
+                &after_t4,
+            ),
+            (
+                r#"{"kind":"Tick","number":5,"event":"t5"}"#,
+                "hit-T-and-clear",
+                &after_t5,
+            ),
+        ];
+        let mut live = runner.instantiate(7).unwrap();
+        assert_eq!(
+            records(&mut live),
+            serde_json::json!({
+                "tick": 3, "cannon": [2, 3], "targets": [{"id": "T", "at": [3, 0]}],
+                "formation_direction": "E", "shots": [], "pending": [],
+                "score": 0, "phase": "active", "outcome": ""
+            })
+        );
+        for (input, outcome, after) in steps {
+            live.update(1, input.as_bytes()).unwrap();
+            assert_eq!(records(&mut live), expected(after, outcome), "{input}");
+        }
+
+        // Restore a mid-wave snapshot into a new instance and compare the
+        // next accepted operation through the regular host.
+        let mut first = runner.instantiate(7).unwrap();
+        for input in [steps[0].0, steps[2].0] {
+            first.update(1, input.as_bytes()).unwrap();
+        }
+        let snapshot = first.snapshot().unwrap().unwrap();
+        let mut restored = runner.instantiate(7).unwrap();
+        restored.restore(&snapshot).unwrap();
+        assert_eq!(records(&mut restored), records(&mut first));
+        assert_eq!(restored.view().unwrap(), first.view().unwrap());
+        assert_eq!(restored.snapshot().unwrap().unwrap(), snapshot);
+        for input in [steps[1].0, steps[4].0] {
+            first.update(1, input.as_bytes()).unwrap();
+            restored.update(1, input.as_bytes()).unwrap();
+            assert_eq!(records(&mut restored), records(&mut first), "{input}");
+        }
+        assert_eq!(
+            records(&mut restored),
+            expected(&after_t5, "hit-T-and-clear")
+        );
+
+        // Scope: views never tick, host deliveries never drive the wave, the
+        // records hold only domain keys, and the snapshot alone carries the
+        // folded-id deduplication memory.
+        let settled = records(&mut live);
+        for _ in 0..120 {
+            live.view().unwrap();
+        }
+        live.update(0, br#"{"kind":"Tick","number":6}"#).unwrap();
+        assert_eq!(records(&mut live), settled);
+        let mut keys: Vec<String> = settled.as_object().unwrap().keys().cloned().collect();
+        keys.sort_unstable();
+        assert_eq!(
+            keys,
+            [
+                "cannon",
+                "formation_direction",
+                "outcome",
+                "pending",
+                "phase",
+                "score",
+                "shots",
+                "targets",
+                "tick"
+            ]
+        );
+        let memory: serde_json::Value =
+            serde_json::from_slice(&live.snapshot().unwrap().unwrap()).unwrap();
+        assert_eq!(memory["folded"], serde_json::json!(["q4"]));
+    }
+
+    #[test]
     fn checked_in_chat_example_sends_and_reads_history() {
         use crate::world::{WorldEvent, WorldEventKind};
 
