@@ -52,6 +52,17 @@ test("slash-containing set IDs remain one encoded upstream route segment", async
   expect(seen[0].url).toBe("https://decision-events.internal/sets/set%2Fone/events?limit=200");
 });
 
+test("dot-only set IDs are disclosed but never sent through a normalized path", async () => {
+  const seen: Request[] = [];
+  const index = await decisionPage(req("/decisions"), io({ sets: [
+    { setId: "..", events: 1, lastTs: stamp, lastType: "submit" },
+  ] }, seen));
+  expect(index?.status).toBe(200);
+  expect(await index!.text()).toContain("not addressable by the upstream path contract");
+  expect(await decisionPage(req("/decisions?set=.."), io(null, seen))).toMatchObject({ status: 400 });
+  expect(seen).toHaveLength(1);
+});
+
 test("page cursor is forwarded but browser cookies and credentials are not", async () => {
   const seen: Request[] = [];
   await decisionPage(new Request(`https://pm.security.cab/decisions/set-1?after=${encodeURIComponent(stamp + "|event-1")}`, {

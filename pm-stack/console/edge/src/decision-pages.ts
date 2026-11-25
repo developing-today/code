@@ -38,6 +38,12 @@ function validSetId(value: string): boolean {
   return value.length > 0 && value.length <= 128 && !/[\u0000-\u0020\u007f]/.test(value);
 }
 
+// The upstream GET contract places IDs in a path segment. WHATWG URL
+// parsing normalizes these exact segments before the Worker receives them.
+function addressableSetId(value: string): boolean {
+  return validSetId(value) && value !== "." && value !== "..";
+}
+
 function validCursor(value: string): boolean {
   const sep = value.indexOf("|");
   const ts = sep < 0 ? value : value.slice(0, sep);
@@ -80,7 +86,9 @@ export async function decisionPage(request: Request, io: DecisionPagesIo): Promi
       if (!Array.isArray(data?.sets) || data.sets.some((s) => !s || typeof s.setId !== "string" || !validSetId(s.setId) ||
         !Number.isFinite(s.events) || Number(s.events) < 1 || typeof s.lastTs !== "string" || Number.isNaN(Date.parse(s.lastTs)) || typeof s.lastType !== "string")) return unavailable();
       const fetchedAt = new Date(io.now()).toISOString();
-      const rows = data.sets.map((set) => `<div class="item"><h2><a href="https://pm.security.cab/decisions?set=${encodeURIComponent(set.setId as string)}">Decision set ${escapeHtml(set.setId)}</a></h2>
+      const rows = data.sets.map((set) => `<div class="item"><h2>${addressableSetId(set.setId as string)
+        ? `<a href="https://pm.security.cab/decisions?set=${encodeURIComponent(set.setId as string)}">Decision set ${escapeHtml(set.setId)}</a>`
+        : `Decision set ${escapeHtml(set.setId)} (not addressable by the upstream path contract)`}</h2>
 <p class="context">${escapeHtml(set.events)} events · latest ${escapeHtml(set.lastType)} at ${escapeHtml(set.lastTs)} (${escapeHtml(ageLabel(set.lastTs as string, io.now()))} ago)</p></div>`).join("");
       return page(`<h1>Decision activity</h1><p class="context">Read from D1 decision-events at ${escapeHtml(fetchedAt)}. Showing at most ${PAGE_SIZE} recent sets, not a complete index. Activity is current as of each event time; question definitions are not in this event feed.</p>
 ${rows || '<p class="context">No decision-event activity is recorded.</p>'}`);
@@ -91,7 +99,7 @@ ${rows || '<p class="context">No decision-event activity is recorded.</p>'}`);
 
   let setId: string;
   try { setId = querySetId ?? decodeURIComponent(url.pathname.slice("/decisions/".length)); } catch { return page("<h1>Invalid decision set</h1>", 400); }
-  if (!validSetId(setId)) return page("<h1>Invalid decision set</h1>", 400);
+  if (!addressableSetId(setId)) return page("<h1>Invalid or unsupported decision set</h1>", 400);
   const after = url.searchParams.get("after");
   if (after !== null && (!validCursor(after) || after.length > 256)) return page("<h1>Invalid page cursor</h1>", 400);
   const query = new URLSearchParams({ limit: String(PAGE_SIZE) });
