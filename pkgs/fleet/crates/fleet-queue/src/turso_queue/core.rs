@@ -1051,7 +1051,7 @@ impl Clone for Arg {
     }
 }
 
-pub(crate) const SCHEMA: [&str; 45] = [
+pub(crate) const SCHEMA: [&str; 44] = [
     "CREATE TABLE IF NOT EXISTS tasks (\
         id INTEGER PRIMARY KEY AUTOINCREMENT, \
         queue TEXT NOT NULL, manual_only INTEGER NOT NULL DEFAULT 0, title TEXT, body TEXT, \
