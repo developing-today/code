@@ -909,6 +909,12 @@ impl TursoBackend {
             ("dep_blocked_until", "TEXT"),
             ("dep_recheck_seconds", "INTEGER"),
             ("required_budget_minutes", "INTEGER"),
+            // #14170 Q5: the label cache (mirror's JSON array of
+            // names) and its sync stamp. Existing rows read `[]` and
+            // NULL — "never synced" — until a transition or the
+            // label sweep copies them from the mirror.
+            ("labels", "TEXT NOT NULL DEFAULT '[]'"),
+            ("labels_synced_at", "TEXT"),
         ] {
             let has = cols
                 .iter()
@@ -1041,7 +1047,8 @@ pub(crate) const SCHEMA: [&str; 34] = [
         created_at TEXT NOT NULL, updated_at TEXT NOT NULL, \
         completed_at TEXT, \
         blocked_deps TEXT, dep_next_recheck_at TEXT, dep_blocked_until TEXT, \
-        dep_recheck_seconds INTEGER)",
+        dep_recheck_seconds INTEGER, \
+        labels TEXT NOT NULL DEFAULT '[]', labels_synced_at TEXT)",
     // NOT unique: the PG data itself carries duplicate (queue, dedupe_key)
     // pairs from before dedupe was enforced, and the backup load must
     // accept them as-is; enqueue dedupe is a read-then-insert check.
@@ -1551,6 +1558,13 @@ pub(crate) fn event(
         (HISTORY_INSERT_SQL, vec![arg_str(from), arg_str(to)]),
         ("COMMIT", vec![]),
     ])?;
+    // #14170 Q5: every transition refreshes the task's label cache
+    // from the mirror, after the transition has committed. Fail-open:
+    // the mirror never gates work (#8575), so a missing mirror table
+    // or a failed read leaves the cache as it was.
+    if let Some(id) = task_id {
+        let _ = refresh_task_labels(t, id);
+    }
     Ok(())
 }
 
@@ -2058,6 +2072,18 @@ pub(crate) fn verb_sweep(t: &TursoBackend, req: &Value) -> Value {
             .unwrap_or(0);
         if let Some(s) = closed_bound_summary {
             out["closed_bound"] = s;
+        }
+        // #14170 Q5: the label cache sweep rides the sweep, at most
+        // hourly (a checkpoint records the last pass), over
+        // actionable statuses only. It never fails the sweep. Opt
+        // out per call: labels_sync=false; labels_sync_force=true
+        // runs it regardless of the interval.
+        if req_bool(req, "labels_sync").unwrap_or(true) {
+            if let Some(s) =
+                sweep_task_labels(t, req_bool(req, "labels_sync_force").unwrap_or(false))
+            {
+                out["labels_sync"] = s;
+            }
         }
         if expired > 0
             || do_revalidate

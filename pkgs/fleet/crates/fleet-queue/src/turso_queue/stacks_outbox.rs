@@ -1057,6 +1057,7 @@ pub fn dispatch(t: &TursoBackend, path: &str, req: &Value) -> Value {
         "/history-since" => verb_history_since(t, req),
         "/history-backfill" => verb_history_backfill(t, req),
         "/meta" => verb_meta(t, req),
+        "/labels-sync" => verb_labels_sync(t, req),
         "/outbox-enqueue" => verb_outbox_enqueue(t, req),
         "/outbox-claim" => verb_outbox_claim(t, req),
         "/outbox-resolve" => verb_outbox_resolve(t, req),

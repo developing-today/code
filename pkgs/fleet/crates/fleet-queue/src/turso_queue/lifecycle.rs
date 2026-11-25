@@ -3057,3 +3057,168 @@ mod task_history_tests {
         assert_eq!(since["rows"].as_array().unwrap().len(), 2, "{since}");
     }
 }
+
+#[cfg(test)]
+mod task_labels_tests {
+    use super::reprioritize_tests::fake_backend;
+    use super::*;
+    use std::sync::{Arc, Mutex};
+
+    const QUEUE: &str = "repo-health-code-pilot";
+
+    fn packet(number: i64) -> Value {
+        json!({
+            "title": format!("labels oracle {number}"), "priority": 50,
+            "dedupe_key": format!("repo-health:v1:fix:developing-today/code:issue:{number}"),
+            "payload": {
+                "schema": "repo-task/v1", "kind": "small_fix",
+                "repo": "developing-today/code", "problem": "p", "priority_reason": "r",
+                "evidence": ["e"], "acceptance": ["a"], "tests": ["t"], "context_refs": [],
+                "scope": {"include": ["x"], "exclude": ["y"]}, "risk": {"level": "low", "flags": []},
+                "timebox_minutes": 45, "issue": {"number": number},
+                "dedupe": {"checked_at": "2026-11-14T00:00:00Z", "basis": "test"}
+            }
+        })
+    }
+
+    fn mirror(conn: &Arc<Mutex<rusqlite::Connection>>) {
+        conn.lock()
+            .unwrap()
+            .execute_batch(
+                "CREATE TABLE github_mirror_issues (repo TEXT NOT NULL, number INTEGER NOT NULL, \
+                 labels TEXT, PRIMARY KEY (repo, number))",
+            )
+            .unwrap();
+    }
+
+    fn set_mirror_labels(conn: &Arc<Mutex<rusqlite::Connection>>, number: i64, labels: &str) {
+        conn.lock()
+            .unwrap()
+            .execute(
+                "INSERT INTO github_mirror_issues (repo, number, labels) VALUES ('developing-today/code', ?1, ?2) \
+                 ON CONFLICT(repo, number) DO UPDATE SET labels = excluded.labels",
+                rusqlite::params![number, labels],
+            )
+            .unwrap();
+    }
+
+    fn cache(t: &TursoBackend, id: i64) -> (Value, Value) {
+        let rows = t
+            .query_objs(
+                "SELECT labels, labels_synced_at FROM tasks WHERE id = ?",
+                &[Arg::Int(id)],
+                &["labels"],
+            )
+            .unwrap();
+        (rows[0]["labels"].clone(), rows[0]["labels_synced_at"].clone())
+    }
+
+    fn enqueue(t: &TursoBackend, number: i64) -> i64 {
+        let out = verb_enqueue(t, &json!({"queue": QUEUE, "packet": packet(number)}));
+        assert_eq!(out["ok"], true, "{out}");
+        out["row"]["id"].as_i64().expect("task id")
+    }
+
+    fn listed(t: &TursoBackend, label: &str) -> Vec<i64> {
+        let out = verb_list(t, &json!({"queue": QUEUE, "label": label, "limit": 100}));
+        assert_eq!(out["ok"], true, "{out}");
+        let mut ids: Vec<i64> = list_rows(&out)
+            .unwrap()
+            .iter()
+            .filter_map(|r| r["id"].as_i64())
+            .collect();
+        ids.sort();
+        ids
+    }
+
+    fn list_rows(out: &Value) -> Result<Vec<Value>, String> {
+        crate::client::list_rows(out)
+    }
+
+    /// Oracle (#14170 Q5, broker half): enqueue copies the mirror's
+    /// labels into the cache with a sync stamp; a label change on the
+    /// mirror reaches the cache through the sweep with no queue write;
+    /// an issue with no mirror row reads `[]` and "never synced"; and
+    /// `--label user/*` lists exactly the held set.
+    #[test]
+    fn label_cache_follows_mirror_and_filters_held_set() {
+        let (t, conn) = fake_backend();
+        mirror(&conn);
+        set_mirror_labels(&conn, 14170, r#"["priority/high","user/hold"]"#);
+        set_mirror_labels(&conn, 14171, r#"["priority/high"]"#);
+
+        let held = enqueue(&t, 14170);
+        let plain = enqueue(&t, 14171);
+        let unmirrored = enqueue(&t, 14172);
+
+        let (labels, synced) = cache(&t, held);
+        assert_eq!(labels, json!(["priority/high", "user/hold"]));
+        assert!(synced.is_string(), "enqueue stamps the sync time: {synced}");
+        let (labels, synced) = cache(&t, unmirrored);
+        assert_eq!(labels, json!([]));
+        assert!(synced.is_null(), "no mirror row reads as never synced");
+
+        assert_eq!(listed(&t, "user/*"), vec![held]);
+        assert_eq!(listed(&t, "user/hold"), vec![held]);
+        let mut both = vec![held, plain];
+        both.sort();
+        assert_eq!(listed(&t, "priority/high"), both);
+        assert!(listed(&t, "user/hol").is_empty(), "exact names do not prefix-match");
+
+        // A label change on GitHub lands in the mirror only; the sweep
+        // carries it into the cache without any queue transition.
+        set_mirror_labels(&conn, 14171, r#"["user/hold"]"#);
+        set_mirror_labels(&conn, 14170, r#"[]"#);
+        let sync = verb_labels_sync(&t, &json!({}));
+        assert_eq!(sync["ok"], true, "{sync}");
+        assert_eq!(sync["row"]["scanned"], 3, "{sync}");
+        assert_eq!(sync["row"]["with_issue_ref"], 3, "{sync}");
+        assert_eq!(sync["row"]["stamped"], 2, "{sync}");
+        assert_eq!(listed(&t, "user/*"), vec![plain]);
+        assert_eq!(cache(&t, held).0, json!([]));
+
+        // A transition refreshes too: the claim re-reads the mirror.
+        set_mirror_labels(&conn, 14170, r#"["user/hold"]"#);
+        let c = verb_claim(&t, &json!({"worker": "w", "queue": QUEUE, "lane": "code-oracle",
+                    "session_id": "ses_labels", "model_provider": "anthropic",
+                    "model_id": "claude-haiku-5-5", "model_variant": "default"}));
+        assert_eq!(c["ok"], true, "{c}");
+        assert_eq!(c["row"]["id"].as_i64(), Some(held), "oldest equal-priority task is claimed first: {c}");
+        assert_eq!(cache(&t, held).0, json!(["user/hold"]));
+
+        // The rich row carries the cache and its stamp for `show`.
+        let rich = verb_list(&t, &json!({"rich": true, "task": held, "limit": 1}));
+        let row = &list_rows(&rich).unwrap()[0];
+        assert_eq!(row["labels"], json!(["user/hold"]), "{rich}");
+        assert!(row["labels_synced_at"].is_string(), "{rich}");
+    }
+
+    /// The sweep's label pass runs at most hourly unless forced, and
+    /// a missing mirror table never fails a transition or the sweep.
+    #[test]
+    fn label_sweep_is_hourly_and_fail_open() {
+        let (t, conn) = fake_backend();
+        // No mirror table yet: transitions still succeed.
+        let id = enqueue(&t, 14180);
+        assert_eq!(cache(&t, id), (json!([]), Value::Null));
+        let s = sweep_task_labels(&t, false).expect("first pass reports");
+        assert!(s.get("error").is_some(), "missing mirror is reported, not raised: {s}");
+
+        mirror(&conn);
+        set_mirror_labels(&conn, 14180, r#"["user/hold"]"#);
+        let s = sweep_task_labels(&t, false).expect("no pass recorded yet, so it runs");
+        assert_eq!(s["stamped"], 1, "{s}");
+        assert!(sweep_task_labels(&t, false).is_none(), "within the hour it waits");
+        let forced = sweep_task_labels(&t, true).expect("force runs regardless");
+        assert_eq!(forced["stamped"], 1, "{forced}");
+        assert_eq!(cache(&t, id).0, json!(["user/hold"]));
+
+        let full = verb_sweep(
+            &t,
+            &json!({"labels_sync_force": true, "dep_recheck": false,
+                    "quarantine_recheck": false, "closed_bound": false}),
+        );
+        assert_eq!(full["ok"], true, "{full}");
+        assert_eq!(full["row"]["labels_sync"]["scope"], "actionable", "{full}");
+    }
+}

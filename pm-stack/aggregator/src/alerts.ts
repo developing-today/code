@@ -30,6 +30,7 @@ import {
   isPushClient,
   MAX_DEVICE_ID_LENGTH,
   MAX_LABEL_LENGTH,
+  ItemStageStore,
   mergeDelivery,
   nowIso,
   readDelivery,
@@ -538,7 +539,16 @@ export class AlertsStore {
   private readonly deliveryCursor: { last: PendingIncidentCursor | null } = { last: null };
   private readonly escalationCursor: { last: PendingIncidentCursor | null } = { last: null };
 
+  private stages: ItemStageStore | null = null;
+
   constructor(private readonly db: SqlClient) {}
+
+  /** The staged pipeline for answerable items (#14084 S1), over the
+   * same store connection. */
+  itemStages(): ItemStageStore {
+    if (!this.stages) this.stages = new ItemStageStore(this.db);
+    return this.stages;
+  }
 
   private async pendingBatch(
     eligibility: string,

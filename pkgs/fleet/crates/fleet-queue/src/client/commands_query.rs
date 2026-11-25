@@ -386,6 +386,7 @@ pub(super) fn cmd_list(rest: &[String]) -> i32 {
             "worker",
             "task",
             "meta",
+            "label",
         ],
         &["json"],
     );
@@ -397,6 +398,9 @@ pub(super) fn cmd_list(rest: &[String]) -> i32 {
     if args.has("json") {
         if !metadata_filter.as_object().is_some_and(|m| m.is_empty()) {
             usage_error("list", "--json exact status does not support --meta");
+        }
+        if args.get("label").is_some() {
+            usage_error("list", "--json exact status does not support --label");
         }
         return cmd_list_exact_status(&args, queue);
     }
@@ -440,6 +444,7 @@ pub(super) fn cmd_list(rest: &[String]) -> i32 {
                 "worker": args.get("worker"),
                 "task": args.get_i64("task"),
                 "meta": metadata_filter.clone(),
+                "label": args.get("label"),
             }),
         );
         let resp = unwrap_ok(resp);
@@ -586,6 +591,8 @@ pub(super) fn cmd_show(rest: &[String]) -> i32 {
         "claim_session_id",
         "issue",
         "pr",
+        "labels",
+        "labels_synced_at",
         "progress",
     ] {
         let payload = task.get("payload");

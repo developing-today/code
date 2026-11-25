@@ -1432,7 +1432,7 @@ pub(crate) fn verb_list(t: &TursoBackend, req: &Value) -> Value {
         "id, queue, title, priority, status, dedupe_key, created_at, not_before, \
          worker_id, claimed_at, lease_until, lane_id, platform, attempts, max_attempts, \
          claim_provider, claim_model, claim_variant, claim_session_id, progress, payload, \
-         blocked_deps, dep_next_recheck_at, dep_blocked_until"
+         blocked_deps, dep_next_recheck_at, dep_blocked_until, labels, labels_synced_at"
     } else {
         "id, queue, title, priority, status, dedupe_key, created_at, not_before, platform"
     };
@@ -1494,13 +1494,21 @@ pub(crate) fn verb_list(t: &TursoBackend, req: &Value) -> Value {
             args.push(Arg::Text(format!("$.\"{key}\"")));
             args.push(Arg::Text(encoded));
         }
+    // #14170 Q5: --label narrows to tasks whose cached label set
+    // holds that label; a trailing `*` matches a prefix (`user/*`).
+    // The cache is refreshed at every transition and by the hourly
+    // sweep; `labels_synced_at` on the rich row shows its age.
+    if let Some(l) = req_str(req, "label").filter(|l| !l.is_empty()) {
+        let (cond, arg) = label_filter_cond(l);
+        conds += cond;
+        args.push(arg);
     }
     let offset = crate::client::list_offset_or_default(req_i64(req, "offset"));
     let sql = format!(
         "SELECT {select} FROM tasks{conds} ORDER BY (priority IS NULL), priority ASC, created_at ASC, id ASC LIMIT {limit} OFFSET {offset}"
     );
     let json_cols: &[&str] = if rich {
-        &["progress", "payload", "blocked_deps"]
+        &["progress", "payload", "blocked_deps", "labels"]
     } else {
         &[]
     };
