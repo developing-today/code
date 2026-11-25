@@ -1,0 +1,1232 @@
+{
+  "measured_at_utc": "2026-11-25T11:18Z-11:31Z",
+  "measurement_scope": "atlas monolith plus all 29 vector topic stores and both tier content stores found by the live Turso list; aggregate metadata and byte counts only",
+  "monolith": {
+    "database": "atlas",
+    "host": "atlas-dezren39.aws-us-east-1.turso.io",
+    "page_count": 1776951,
+    "page_size": 4096,
+    "freelist_pages": 0,
+    "page_bytes": 7278391296,
+    "vector_rows": 107639,
+    "vector_data_bytes": 330667008,
+    "vector_index_shadow_rows": 37359,
+    "vector_index_shadow_data_bytes": 5998958784,
+    "chunk_rows": 107639,
+    "chunk_text_bytes": 173633287,
+    "message_rows": 71551,
+    "message_text_bytes": 465554580,
+    "fts_data_rows": 16392,
+    "fts_data_blob_bytes": 64470246,
+    "fts_docsize_rows": 107639,
+    "fts_docsize_blob_bytes": 164205,
+    "fts_idx_rows": 10604,
+    "fts_idx_term_bytes": 69827,
+    "fts_payload_bytes": 64704278,
+    "vector_plus_vector_index_bytes": 6329625792,
+    "raw_text_bytes": 639187867,
+    "other_page_bytes": 244873359,
+    "fractions": {
+      "vectors_plus_vector_index": 0.8696462631074239,
+      "raw_chunk_and_message_text": 0.08781993726433474,
+      "fts_payload": 0.008889914730959802,
+      "other_pages": 0.03364388489728157
+    },
+    "query_evidence": [
+      {
+        "sql": "PRAGMA page_count; PRAGMA page_size; PRAGMA freelist_count",
+        "page_count": 1776951,
+        "page_size": 4096,
+        "freelist_pages": 0
+      },
+      {
+        "sql": "SELECT count(*), sum(length(vec)) FROM vec_snowflake_m_v2_768_f32",
+        "rows": 107639,
+        "bytes": 330667008,
+        "rows_read": 107639,
+        "query_duration_ms": 2678.138
+      },
+      {
+        "sql": "SELECT count(*), sum(length(data)) FROM vec_snowflake_m_v2_768_f32_idx_shadow",
+        "rows": 37359,
+        "bytes": 5998958784,
+        "rows_read": 37359,
+        "query_duration_ms": 4534.279
+      },
+      {
+        "sql": "SELECT count(*), sum(length(CAST(text AS BLOB))) FROM chunks",
+        "rows": 107639,
+        "bytes": 173633287,
+        "rows_read": 107639,
+        "query_duration_ms": 1829.007
+      },
+      {
+        "sql": "SELECT count(*), sum(length(CAST(text AS BLOB))) FROM messages",
+        "rows": 71551,
+        "bytes": 465554580,
+        "rows_read": 71551,
+        "query_duration_ms": 12401.663
+      },
+      {
+        "sql": "SELECT count(*), sum(length(block)) FROM chunks_fts_data",
+        "rows": 16392,
+        "bytes": 64470246,
+        "rows_read": 16392,
+        "query_duration_ms": 370.55
+      },
+      {
+        "sql": "SELECT count(*), sum(length(sz)) FROM chunks_fts_docsize",
+        "rows": 107639,
+        "bytes": 164205,
+        "rows_read": 107639,
+        "query_duration_ms": 10.594
+      },
+      {
+        "sql": "SELECT count(*), sum(length(CAST(term AS BLOB))) FROM chunks_fts_idx",
+        "rows": 10604,
+        "bytes": 69827,
+        "rows_read": 10604,
+        "query_duration_ms": 1.688
+      }
+    ],
+    "fts_payload_definition": "Sum of FTS data block BLOB bytes, docsize BLOB bytes, and term-key text bytes; excludes segid/pgno fields and all SQLite B-tree/page overhead, so it is a lower bound on physical FTS allocation.",
+    "payload_shares_are_lower_bounds": true
+  },
+  "tier_stores": [
+    {
+      "database": "atlas-core-internal-agent-tooling-03",
+      "page_count": 5427,
+      "page_size": 4096,
+      "freelist_pages": 0,
+      "page_bytes": 22228992,
+      "indexes": [
+        "sqlite_autoindex_atlas_manifest_1",
+        "sqlite_autoindex_chunks_1"
+      ],
+      "tables": [
+        "__turso_internal_mvcc_meta",
+        "atlas_manifest",
+        "chunks",
+        "vec_snowflake_m_v2_768_f32"
+      ],
+      "vectors": {
+        "rows": 3866,
+        "bytes": 11876352,
+        "rows_read": 3866,
+        "query_duration_ms": 188.464,
+        "sql": "SELECT count(*), sum(length(vec)) FROM vec_snowflake_m_v2_768_f32"
+      },
+      "chunk_text": {
+        "rows": 3866,
+        "bytes": 4528465,
+        "rows_read": 3866,
+        "query_duration_ms": 99.981,
+        "sql": "SELECT count(*), sum(length(CAST(text AS BLOB))) FROM chunks"
+      },
+      "page_queries": {
+        "page_count": "PRAGMA page_count",
+        "page_size": "PRAGMA page_size",
+        "freelist_pages": "PRAGMA freelist_count"
+      },
+      "schema_query": "SELECT name, type FROM sqlite_master WHERE type IN ('table','index') ORDER BY type,name"
+    },
+    {
+      "database": "atlas-core-internal-agent-tooling-02",
+      "page_count": 5558,
+      "page_size": 4096,
+      "freelist_pages": 0,
+      "page_bytes": 22765568,
+      "indexes": [
+        "sqlite_autoindex_atlas_manifest_1",
+        "sqlite_autoindex_chunks_1"
+      ],
+      "tables": [
+        "__turso_internal_mvcc_meta",
+        "atlas_manifest",
+        "chunks",
+        "vec_snowflake_m_v2_768_f32"
+      ],
+      "vectors": {
+        "rows": 3801,
+        "bytes": 11676672,
+        "rows_read": 3801,
+        "query_duration_ms": 188.675,
+        "sql": "SELECT count(*), sum(length(vec)) FROM vec_snowflake_m_v2_768_f32"
+      },
+      "chunk_text": {
+        "rows": 3801,
+        "bytes": 4764986,
+        "rows_read": 3801,
+        "query_duration_ms": 106.846,
+        "sql": "SELECT count(*), sum(length(CAST(text AS BLOB))) FROM chunks"
+      },
+      "page_queries": {
+        "page_count": "PRAGMA page_count",
+        "page_size": "PRAGMA page_size",
+        "freelist_pages": "PRAGMA freelist_count"
+      },
+      "schema_query": "SELECT name, type FROM sqlite_master WHERE type IN ('table','index') ORDER BY type,name"
+    },
+    {
+      "database": "atlas-core-internal-agent-tooling-01",
+      "page_count": 5676,
+      "page_size": 4096,
+      "freelist_pages": 0,
+      "page_bytes": 23248896,
+      "indexes": [
+        "sqlite_autoindex_atlas_manifest_1",
+        "sqlite_autoindex_chunks_1"
+      ],
+      "tables": [
+        "__turso_internal_mvcc_meta",
+        "atlas_manifest",
+        "chunks",
+        "vec_snowflake_m_v2_768_f32"
+      ],
+      "vectors": {
+        "rows": 3738,
+        "bytes": 11483136,
+        "rows_read": 3738,
+        "query_duration_ms": 192.287,
+        "sql": "SELECT count(*), sum(length(vec)) FROM vec_snowflake_m_v2_768_f32"
+      },
+      "chunk_text": {
+        "rows": 3738,
+        "bytes": 4976640,
+        "rows_read": 3738,
+        "query_duration_ms": 130.911,
+        "sql": "SELECT count(*), sum(length(CAST(text AS BLOB))) FROM chunks"
+      },
+      "page_queries": {
+        "page_count": "PRAGMA page_count",
+        "page_size": "PRAGMA page_size",
+        "freelist_pages": "PRAGMA freelist_count"
+      },
+      "schema_query": "SELECT name, type FROM sqlite_master WHERE type IN ('table','index') ORDER BY type,name"
+    },
+    {
+      "database": "atlas-core-internal-fleet-repos-01",
+      "page_count": 4835,
+      "page_size": 4096,
+      "freelist_pages": 0,
+      "page_bytes": 19804160,
+      "indexes": [
+        "sqlite_autoindex_atlas_manifest_1",
+        "sqlite_autoindex_chunks_1"
+      ],
+      "tables": [
+        "__turso_internal_mvcc_meta",
+        "atlas_manifest",
+        "chunks",
+        "vec_snowflake_m_v2_768_f32"
+      ],
+      "vectors": {
+        "rows": 3458,
+        "bytes": 10622976,
+        "rows_read": 3458,
+        "query_duration_ms": 123.382,
+        "sql": "SELECT count(*), sum(length(vec)) FROM vec_snowflake_m_v2_768_f32"
+      },
+      "chunk_text": {
+        "rows": 3458,
+        "bytes": 4211004,
+        "rows_read": 3458,
+        "query_duration_ms": 92.527,
+        "sql": "SELECT count(*), sum(length(CAST(text AS BLOB))) FROM chunks"
+      },
+      "page_queries": {
+        "page_count": "PRAGMA page_count",
+        "page_size": "PRAGMA page_size",
+        "freelist_pages": "PRAGMA freelist_count"
+      },
+      "schema_query": "SELECT name, type FROM sqlite_master WHERE type IN ('table','index') ORDER BY type,name"
+    },
+    {
+      "database": "atlas-core-internal-agent-tooling-04",
+      "page_count": 5535,
+      "page_size": 4096,
+      "freelist_pages": 0,
+      "page_bytes": 22671360,
+      "indexes": [
+        "sqlite_autoindex_atlas_manifest_1",
+        "sqlite_autoindex_chunks_1"
+      ],
+      "tables": [
+        "__turso_internal_mvcc_meta",
+        "atlas_manifest",
+        "chunks",
+        "vec_snowflake_m_v2_768_f32"
+      ],
+      "vectors": {
+        "rows": 3866,
+        "bytes": 11876352,
+        "rows_read": 3866,
+        "query_duration_ms": 136.441,
+        "sql": "SELECT count(*), sum(length(vec)) FROM vec_snowflake_m_v2_768_f32"
+      },
+      "chunk_text": {
+        "rows": 3866,
+        "bytes": 4857308,
+        "rows_read": 3866,
+        "query_duration_ms": 90.799,
+        "sql": "SELECT count(*), sum(length(CAST(text AS BLOB))) FROM chunks"
+      },
+      "page_queries": {
+        "page_count": "PRAGMA page_count",
+        "page_size": "PRAGMA page_size",
+        "freelist_pages": "PRAGMA freelist_count"
+      },
+      "schema_query": "SELECT name, type FROM sqlite_master WHERE type IN ('table','index') ORDER BY type,name"
+    },
+    {
+      "database": "atlas-core-internal-cloudflare-01",
+      "page_count": 1922,
+      "page_size": 4096,
+      "freelist_pages": 0,
+      "page_bytes": 7872512,
+      "indexes": [
+        "sqlite_autoindex_atlas_manifest_1",
+        "sqlite_autoindex_chunks_1"
+      ],
+      "tables": [
+        "__turso_internal_mvcc_meta",
+        "atlas_manifest",
+        "chunks",
+        "vec_snowflake_m_v2_768_f32"
+      ],
+      "vectors": {
+        "rows": 1250,
+        "bytes": 3840000,
+        "rows_read": 1250,
+        "query_duration_ms": 55.203,
+        "sql": "SELECT count(*), sum(length(vec)) FROM vec_snowflake_m_v2_768_f32"
+      },
+      "chunk_text": {
+        "rows": 1250,
+        "bytes": 2849749,
+        "rows_read": 1250,
+        "query_duration_ms": 28.036,
+        "sql": "SELECT count(*), sum(length(CAST(text AS BLOB))) FROM chunks"
+      },
+      "page_queries": {
+        "page_count": "PRAGMA page_count",
+        "page_size": "PRAGMA page_size",
+        "freelist_pages": "PRAGMA freelist_count"
+      },
+      "schema_query": "SELECT name, type FROM sqlite_master WHERE type IN ('table','index') ORDER BY type,name"
+    },
+    {
+      "database": "atlas-core-internal-fleet-repos-02",
+      "page_count": 5392,
+      "page_size": 4096,
+      "freelist_pages": 0,
+      "page_bytes": 22085632,
+      "indexes": [
+        "sqlite_autoindex_atlas_manifest_1",
+        "sqlite_autoindex_chunks_1"
+      ],
+      "tables": [
+        "__turso_internal_mvcc_meta",
+        "atlas_manifest",
+        "chunks",
+        "vec_snowflake_m_v2_768_f32"
+      ],
+      "vectors": {
+        "rows": 3457,
+        "bytes": 10619904,
+        "rows_read": 3457,
+        "query_duration_ms": 93.381,
+        "sql": "SELECT count(*), sum(length(vec)) FROM vec_snowflake_m_v2_768_f32"
+      },
+      "chunk_text": {
+        "rows": 3457,
+        "bytes": 5933704,
+        "rows_read": 3457,
+        "query_duration_ms": 94.262,
+        "sql": "SELECT count(*), sum(length(CAST(text AS BLOB))) FROM chunks"
+      },
+      "page_queries": {
+        "page_count": "PRAGMA page_count",
+        "page_size": "PRAGMA page_size",
+        "freelist_pages": "PRAGMA freelist_count"
+      },
+      "schema_query": "SELECT name, type FROM sqlite_master WHERE type IN ('table','index') ORDER BY type,name"
+    },
+    {
+      "database": "atlas-core-internal-home-lab-01",
+      "page_count": 5497,
+      "page_size": 4096,
+      "freelist_pages": 0,
+      "page_bytes": 22515712,
+      "indexes": [
+        "sqlite_autoindex_atlas_manifest_1",
+        "sqlite_autoindex_chunks_1"
+      ],
+      "tables": [
+        "__turso_internal_mvcc_meta",
+        "atlas_manifest",
+        "chunks",
+        "vec_snowflake_m_v2_768_f32"
+      ],
+      "vectors": {
+        "rows": 4070,
+        "bytes": 12503040,
+        "rows_read": 4070,
+        "query_duration_ms": 155.868,
+        "sql": "SELECT count(*), sum(length(vec)) FROM vec_snowflake_m_v2_768_f32"
+      },
+      "chunk_text": {
+        "rows": 4070,
+        "bytes": 3794981,
+        "rows_read": 4070,
+        "query_duration_ms": 168.176,
+        "sql": "SELECT count(*), sum(length(CAST(text AS BLOB))) FROM chunks"
+      },
+      "page_queries": {
+        "page_count": "PRAGMA page_count",
+        "page_size": "PRAGMA page_size",
+        "freelist_pages": "PRAGMA freelist_count"
+      },
+      "schema_query": "SELECT name, type FROM sqlite_master WHERE type IN ('table','index') ORDER BY type,name"
+    },
+    {
+      "database": "atlas-core-internal-fleet-repos-03",
+      "page_count": 5554,
+      "page_size": 4096,
+      "freelist_pages": 0,
+      "page_bytes": 22749184,
+      "indexes": [
+        "sqlite_autoindex_atlas_manifest_1",
+        "sqlite_autoindex_chunks_1"
+      ],
+      "tables": [
+        "__turso_internal_mvcc_meta",
+        "atlas_manifest",
+        "chunks",
+        "vec_snowflake_m_v2_768_f32"
+      ],
+      "vectors": {
+        "rows": 3457,
+        "bytes": 10619904,
+        "rows_read": 3457,
+        "query_duration_ms": 232.11,
+        "sql": "SELECT count(*), sum(length(vec)) FROM vec_snowflake_m_v2_768_f32"
+      },
+      "chunk_text": {
+        "rows": 3457,
+        "bytes": 6411233,
+        "rows_read": 3457,
+        "query_duration_ms": 81.791,
+        "sql": "SELECT count(*), sum(length(CAST(text AS BLOB))) FROM chunks"
+      },
+      "page_queries": {
+        "page_count": "PRAGMA page_count",
+        "page_size": "PRAGMA page_size",
+        "freelist_pages": "PRAGMA freelist_count"
+      },
+      "schema_query": "SELECT name, type FROM sqlite_master WHERE type IN ('table','index') ORDER BY type,name"
+    },
+    {
+      "database": "atlas-core-internal-home-lab-02",
+      "page_count": 5172,
+      "page_size": 4096,
+      "freelist_pages": 0,
+      "page_bytes": 21184512,
+      "indexes": [
+        "sqlite_autoindex_atlas_manifest_1",
+        "sqlite_autoindex_chunks_1"
+      ],
+      "tables": [
+        "__turso_internal_mvcc_meta",
+        "atlas_manifest",
+        "chunks",
+        "vec_snowflake_m_v2_768_f32"
+      ],
+      "vectors": {
+        "rows": 4069,
+        "bytes": 12499968,
+        "rows_read": 4069,
+        "query_duration_ms": 109.612,
+        "sql": "SELECT count(*), sum(length(vec)) FROM vec_snowflake_m_v2_768_f32"
+      },
+      "chunk_text": {
+        "rows": 4069,
+        "bytes": 2984340,
+        "rows_read": 4069,
+        "query_duration_ms": 31.935,
+        "sql": "SELECT count(*), sum(length(CAST(text AS BLOB))) FROM chunks"
+      },
+      "page_queries": {
+        "page_count": "PRAGMA page_count",
+        "page_size": "PRAGMA page_size",
+        "freelist_pages": "PRAGMA freelist_count"
+      },
+      "schema_query": "SELECT name, type FROM sqlite_master WHERE type IN ('table','index') ORDER BY type,name"
+    },
+    {
+      "database": "atlas-core-internal-infra-nix-02",
+      "page_count": 6088,
+      "page_size": 4096,
+      "freelist_pages": 0,
+      "page_bytes": 24936448,
+      "indexes": [
+        "sqlite_autoindex_atlas_manifest_1",
+        "sqlite_autoindex_chunks_1"
+      ],
+      "tables": [
+        "__turso_internal_mvcc_meta",
+        "atlas_manifest",
+        "chunks",
+        "vec_snowflake_m_v2_768_f32"
+      ],
+      "vectors": {
+        "rows": 4094,
+        "bytes": 12576768,
+        "rows_read": 4094,
+        "query_duration_ms": 123.916,
+        "sql": "SELECT count(*), sum(length(vec)) FROM vec_snowflake_m_v2_768_f32"
+      },
+      "chunk_text": {
+        "rows": 4094,
+        "bytes": 5524473,
+        "rows_read": 4094,
+        "query_duration_ms": 93.983,
+        "sql": "SELECT count(*), sum(length(CAST(text AS BLOB))) FROM chunks"
+      },
+      "page_queries": {
+        "page_count": "PRAGMA page_count",
+        "page_size": "PRAGMA page_size",
+        "freelist_pages": "PRAGMA freelist_count"
+      },
+      "schema_query": "SELECT name, type FROM sqlite_master WHERE type IN ('table','index') ORDER BY type,name"
+    },
+    {
+      "database": "atlas-core-internal-infra-nix-01",
+      "page_count": 6371,
+      "page_size": 4096,
+      "freelist_pages": 0,
+      "page_bytes": 26095616,
+      "indexes": [
+        "sqlite_autoindex_atlas_manifest_1",
+        "sqlite_autoindex_chunks_1"
+      ],
+      "tables": [
+        "__turso_internal_mvcc_meta",
+        "atlas_manifest",
+        "chunks",
+        "vec_snowflake_m_v2_768_f32"
+      ],
+      "vectors": {
+        "rows": 4094,
+        "bytes": 12576768,
+        "rows_read": 4094,
+        "query_duration_ms": 159.272,
+        "sql": "SELECT count(*), sum(length(vec)) FROM vec_snowflake_m_v2_768_f32"
+      },
+      "chunk_text": {
+        "rows": 4094,
+        "bytes": 6368177,
+        "rows_read": 4094,
+        "query_duration_ms": 68.488,
+        "sql": "SELECT count(*), sum(length(CAST(text AS BLOB))) FROM chunks"
+      },
+      "page_queries": {
+        "page_count": "PRAGMA page_count",
+        "page_size": "PRAGMA page_size",
+        "freelist_pages": "PRAGMA freelist_count"
+      },
+      "schema_query": "SELECT name, type FROM sqlite_master WHERE type IN ('table','index') ORDER BY type,name"
+    },
+    {
+      "database": "atlas-core-internal-media-01",
+      "page_count": 3031,
+      "page_size": 4096,
+      "freelist_pages": 0,
+      "page_bytes": 12414976,
+      "indexes": [
+        "sqlite_autoindex_atlas_manifest_1",
+        "sqlite_autoindex_chunks_1"
+      ],
+      "tables": [
+        "__turso_internal_mvcc_meta",
+        "atlas_manifest",
+        "chunks",
+        "vec_snowflake_m_v2_768_f32"
+      ],
+      "vectors": {
+        "rows": 1607,
+        "bytes": 4936704,
+        "rows_read": 1607,
+        "query_duration_ms": 40.483,
+        "sql": "SELECT count(*), sum(length(vec)) FROM vec_snowflake_m_v2_768_f32"
+      },
+      "chunk_text": {
+        "rows": 1607,
+        "bytes": 4425462,
+        "rows_read": 1607,
+        "query_duration_ms": 37.5,
+        "sql": "SELECT count(*), sum(length(CAST(text AS BLOB))) FROM chunks"
+      },
+      "page_queries": {
+        "page_count": "PRAGMA page_count",
+        "page_size": "PRAGMA page_size",
+        "freelist_pages": "PRAGMA freelist_count"
+      },
+      "schema_query": "SELECT name, type FROM sqlite_master WHERE type IN ('table','index') ORDER BY type,name"
+    },
+    {
+      "database": "atlas-core-internal-misc-01",
+      "page_count": 1283,
+      "page_size": 4096,
+      "freelist_pages": 0,
+      "page_bytes": 5255168,
+      "indexes": [
+        "sqlite_autoindex_atlas_manifest_1",
+        "sqlite_autoindex_chunks_1"
+      ],
+      "tables": [
+        "__turso_internal_mvcc_meta",
+        "atlas_manifest",
+        "chunks",
+        "vec_snowflake_m_v2_768_f32"
+      ],
+      "vectors": {
+        "rows": 841,
+        "bytes": 2583552,
+        "rows_read": 841,
+        "query_duration_ms": 17.462,
+        "sql": "SELECT count(*), sum(length(vec)) FROM vec_snowflake_m_v2_768_f32"
+      },
+      "chunk_text": {
+        "rows": 841,
+        "bytes": 1465862,
+        "rows_read": 841,
+        "query_duration_ms": 16.562,
+        "sql": "SELECT count(*), sum(length(CAST(text AS BLOB))) FROM chunks"
+      },
+      "page_queries": {
+        "page_count": "PRAGMA page_count",
+        "page_size": "PRAGMA page_size",
+        "freelist_pages": "PRAGMA freelist_count"
+      },
+      "schema_query": "SELECT name, type FROM sqlite_master WHERE type IN ('table','index') ORDER BY type,name"
+    },
+    {
+      "database": "atlas-core-internal-models-and-plans-01",
+      "page_count": 6465,
+      "page_size": 4096,
+      "freelist_pages": 0,
+      "page_bytes": 26480640,
+      "indexes": [
+        "sqlite_autoindex_atlas_manifest_1",
+        "sqlite_autoindex_chunks_1"
+      ],
+      "tables": [
+        "__turso_internal_mvcc_meta",
+        "atlas_manifest",
+        "chunks",
+        "vec_snowflake_m_v2_768_f32"
+      ],
+      "vectors": {
+        "rows": 4551,
+        "bytes": 13980672,
+        "rows_read": 4551,
+        "query_duration_ms": 194.374,
+        "sql": "SELECT count(*), sum(length(vec)) FROM vec_snowflake_m_v2_768_f32"
+      },
+      "chunk_text": {
+        "rows": 4551,
+        "bytes": 5281524,
+        "rows_read": 4551,
+        "query_duration_ms": 248.869,
+        "sql": "SELECT count(*), sum(length(CAST(text AS BLOB))) FROM chunks"
+      },
+      "page_queries": {
+        "page_count": "PRAGMA page_count",
+        "page_size": "PRAGMA page_size",
+        "freelist_pages": "PRAGMA freelist_count"
+      },
+      "schema_query": "SELECT name, type FROM sqlite_master WHERE type IN ('table','index') ORDER BY type,name"
+    },
+    {
+      "database": "atlas-core-internal-models-and-plans-02",
+      "page_count": 8200,
+      "page_size": 4096,
+      "freelist_pages": 0,
+      "page_bytes": 33587200,
+      "indexes": [
+        "sqlite_autoindex_atlas_manifest_1",
+        "sqlite_autoindex_chunks_1"
+      ],
+      "tables": [
+        "__turso_internal_mvcc_meta",
+        "atlas_manifest",
+        "chunks",
+        "vec_snowflake_m_v2_768_f32"
+      ],
+      "vectors": {
+        "rows": 4551,
+        "bytes": 13980672,
+        "rows_read": 4551,
+        "query_duration_ms": 253.758,
+        "sql": "SELECT count(*), sum(length(vec)) FROM vec_snowflake_m_v2_768_f32"
+      },
+      "chunk_text": {
+        "rows": 4551,
+        "bytes": 11264469,
+        "rows_read": 4551,
+        "query_duration_ms": 291.562,
+        "sql": "SELECT count(*), sum(length(CAST(text AS BLOB))) FROM chunks"
+      },
+      "page_queries": {
+        "page_count": "PRAGMA page_count",
+        "page_size": "PRAGMA page_size",
+        "freelist_pages": "PRAGMA freelist_count"
+      },
+      "schema_query": "SELECT name, type FROM sqlite_master WHERE type IN ('table','index') ORDER BY type,name"
+    },
+    {
+      "database": "atlas-core-internal-people-pets-01",
+      "page_count": 9091,
+      "page_size": 4096,
+      "freelist_pages": 0,
+      "page_bytes": 37236736,
+      "indexes": [
+        "sqlite_autoindex_atlas_manifest_1",
+        "sqlite_autoindex_chunks_1"
+      ],
+      "tables": [
+        "__turso_internal_mvcc_meta",
+        "atlas_manifest",
+        "chunks",
+        "vec_snowflake_m_v2_768_f32"
+      ],
+      "vectors": {
+        "rows": 4502,
+        "bytes": 13830144,
+        "rows_read": 4502,
+        "query_duration_ms": 225.441,
+        "sql": "SELECT count(*), sum(length(vec)) FROM vec_snowflake_m_v2_768_f32"
+      },
+      "chunk_text": {
+        "rows": 4502,
+        "bytes": 14606110,
+        "rows_read": 4502,
+        "query_duration_ms": 154.958,
+        "sql": "SELECT count(*), sum(length(CAST(text AS BLOB))) FROM chunks"
+      },
+      "page_queries": {
+        "page_count": "PRAGMA page_count",
+        "page_size": "PRAGMA page_size",
+        "freelist_pages": "PRAGMA freelist_count"
+      },
+      "schema_query": "SELECT name, type FROM sqlite_master WHERE type IN ('table','index') ORDER BY type,name"
+    },
+    {
+      "database": "atlas-core-internal-personal-admin-01",
+      "page_count": 7307,
+      "page_size": 4096,
+      "freelist_pages": 0,
+      "page_bytes": 29929472,
+      "indexes": [
+        "sqlite_autoindex_atlas_manifest_1",
+        "sqlite_autoindex_chunks_1"
+      ],
+      "tables": [
+        "__turso_internal_mvcc_meta",
+        "atlas_manifest",
+        "chunks",
+        "vec_snowflake_m_v2_768_f32"
+      ],
+      "vectors": {
+        "rows": 4357,
+        "bytes": 13384704,
+        "rows_read": 4357,
+        "query_duration_ms": 124.433,
+        "sql": "SELECT count(*), sum(length(vec)) FROM vec_snowflake_m_v2_768_f32"
+      },
+      "chunk_text": {
+        "rows": 4357,
+        "bytes": 9123482,
+        "rows_read": 4357,
+        "query_duration_ms": 83.331,
+        "sql": "SELECT count(*), sum(length(CAST(text AS BLOB))) FROM chunks"
+      },
+      "page_queries": {
+        "page_count": "PRAGMA page_count",
+        "page_size": "PRAGMA page_size",
+        "freelist_pages": "PRAGMA freelist_count"
+      },
+      "schema_query": "SELECT name, type FROM sqlite_master WHERE type IN ('table','index') ORDER BY type,name"
+    },
+    {
+      "database": "atlas-core-internal-personal-admin-02",
+      "page_count": 8556,
+      "page_size": 4096,
+      "freelist_pages": 0,
+      "page_bytes": 35045376,
+      "indexes": [
+        "sqlite_autoindex_atlas_manifest_1",
+        "sqlite_autoindex_chunks_1"
+      ],
+      "tables": [
+        "__turso_internal_mvcc_meta",
+        "atlas_manifest",
+        "chunks",
+        "vec_snowflake_m_v2_768_f32"
+      ],
+      "vectors": {
+        "rows": 4360,
+        "bytes": 13393920,
+        "rows_read": 4360,
+        "query_duration_ms": 135.312,
+        "sql": "SELECT count(*), sum(length(vec)) FROM vec_snowflake_m_v2_768_f32"
+      },
+      "chunk_text": {
+        "rows": 4360,
+        "bytes": 14210057,
+        "rows_read": 4360,
+        "query_duration_ms": 117.407,
+        "sql": "SELECT count(*), sum(length(CAST(text AS BLOB))) FROM chunks"
+      },
+      "page_queries": {
+        "page_count": "PRAGMA page_count",
+        "page_size": "PRAGMA page_size",
+        "freelist_pages": "PRAGMA freelist_count"
+      },
+      "schema_query": "SELECT name, type FROM sqlite_master WHERE type IN ('table','index') ORDER BY type,name"
+    },
+    {
+      "database": "atlas-core-internal-personal-admin-03",
+      "page_count": 8594,
+      "page_size": 4096,
+      "freelist_pages": 0,
+      "page_bytes": 35201024,
+      "indexes": [
+        "sqlite_autoindex_atlas_manifest_1",
+        "sqlite_autoindex_chunks_1"
+      ],
+      "tables": [
+        "__turso_internal_mvcc_meta",
+        "atlas_manifest",
+        "chunks",
+        "vec_snowflake_m_v2_768_f32"
+      ],
+      "vectors": {
+        "rows": 4360,
+        "bytes": 13393920,
+        "rows_read": 4360,
+        "query_duration_ms": 139.16,
+        "sql": "SELECT count(*), sum(length(vec)) FROM vec_snowflake_m_v2_768_f32"
+      },
+      "chunk_text": {
+        "rows": 4360,
+        "bytes": 14311058,
+        "rows_read": 4360,
+        "query_duration_ms": 160.746,
+        "sql": "SELECT count(*), sum(length(CAST(text AS BLOB))) FROM chunks"
+      },
+      "page_queries": {
+        "page_count": "PRAGMA page_count",
+        "page_size": "PRAGMA page_size",
+        "freelist_pages": "PRAGMA freelist_count"
+      },
+      "schema_query": "SELECT name, type FROM sqlite_master WHERE type IN ('table','index') ORDER BY type,name"
+    },
+    {
+      "database": "atlas-core-internal-personal-admin-04",
+      "page_count": 8560,
+      "page_size": 4096,
+      "freelist_pages": 0,
+      "page_bytes": 35061760,
+      "indexes": [
+        "sqlite_autoindex_atlas_manifest_1",
+        "sqlite_autoindex_chunks_1"
+      ],
+      "tables": [
+        "__turso_internal_mvcc_meta",
+        "atlas_manifest",
+        "chunks",
+        "vec_snowflake_m_v2_768_f32"
+      ],
+      "vectors": {
+        "rows": 4359,
+        "bytes": 13390848,
+        "rows_read": 4359,
+        "query_duration_ms": 152.199,
+        "sql": "SELECT count(*), sum(length(vec)) FROM vec_snowflake_m_v2_768_f32"
+      },
+      "chunk_text": {
+        "rows": 4359,
+        "bytes": 14224781,
+        "rows_read": 4359,
+        "query_duration_ms": 151.314,
+        "sql": "SELECT count(*), sum(length(CAST(text AS BLOB))) FROM chunks"
+      },
+      "page_queries": {
+        "page_count": "PRAGMA page_count",
+        "page_size": "PRAGMA page_size",
+        "freelist_pages": "PRAGMA freelist_count"
+      },
+      "schema_query": "SELECT name, type FROM sqlite_master WHERE type IN ('table','index') ORDER BY type,name"
+    },
+    {
+      "database": "atlas-core-internal-security-01",
+      "page_count": 5409,
+      "page_size": 4096,
+      "freelist_pages": 0,
+      "page_bytes": 22155264,
+      "indexes": [
+        "sqlite_autoindex_atlas_manifest_1",
+        "sqlite_autoindex_chunks_1"
+      ],
+      "tables": [
+        "__turso_internal_mvcc_meta",
+        "atlas_manifest",
+        "chunks",
+        "vec_snowflake_m_v2_768_f32"
+      ],
+      "vectors": {
+        "rows": 3486,
+        "bytes": 10708992,
+        "rows_read": 3486,
+        "query_duration_ms": 123.469,
+        "sql": "SELECT count(*), sum(length(vec)) FROM vec_snowflake_m_v2_768_f32"
+      },
+      "chunk_text": {
+        "rows": 3486,
+        "bytes": 5310830,
+        "rows_read": 3486,
+        "query_duration_ms": 81.921,
+        "sql": "SELECT count(*), sum(length(CAST(text AS BLOB))) FROM chunks"
+      },
+      "page_queries": {
+        "page_count": "PRAGMA page_count",
+        "page_size": "PRAGMA page_size",
+        "freelist_pages": "PRAGMA freelist_count"
+      },
+      "schema_query": "SELECT name, type FROM sqlite_master WHERE type IN ('table','index') ORDER BY type,name"
+    },
+    {
+      "database": "atlas-core-internal-work-engineering-01",
+      "page_count": 5426,
+      "page_size": 4096,
+      "freelist_pages": 0,
+      "page_bytes": 22224896,
+      "indexes": [
+        "sqlite_autoindex_atlas_manifest_1",
+        "sqlite_autoindex_chunks_1"
+      ],
+      "tables": [
+        "__turso_internal_mvcc_meta",
+        "atlas_manifest",
+        "chunks",
+        "vec_snowflake_m_v2_768_f32"
+      ],
+      "vectors": {
+        "rows": 4435,
+        "bytes": 13624320,
+        "rows_read": 4435,
+        "query_duration_ms": 145.404,
+        "sql": "SELECT count(*), sum(length(vec)) FROM vec_snowflake_m_v2_768_f32"
+      },
+      "chunk_text": {
+        "rows": 4435,
+        "bytes": 2859440,
+        "rows_read": 4435,
+        "query_duration_ms": 35.026,
+        "sql": "SELECT count(*), sum(length(CAST(text AS BLOB))) FROM chunks"
+      },
+      "page_queries": {
+        "page_count": "PRAGMA page_count",
+        "page_size": "PRAGMA page_size",
+        "freelist_pages": "PRAGMA freelist_count"
+      },
+      "schema_query": "SELECT name, type FROM sqlite_master WHERE type IN ('table','index') ORDER BY type,name"
+    },
+    {
+      "database": "atlas-core-internal-work-engineering-02",
+      "page_count": 5757,
+      "page_size": 4096,
+      "freelist_pages": 0,
+      "page_bytes": 23580672,
+      "indexes": [
+        "sqlite_autoindex_atlas_manifest_1",
+        "sqlite_autoindex_chunks_1"
+      ],
+      "tables": [
+        "__turso_internal_mvcc_meta",
+        "atlas_manifest",
+        "chunks",
+        "vec_snowflake_m_v2_768_f32"
+      ],
+      "vectors": {
+        "rows": 4434,
+        "bytes": 13621248,
+        "rows_read": 4434,
+        "query_duration_ms": 125.965,
+        "sql": "SELECT count(*), sum(length(vec)) FROM vec_snowflake_m_v2_768_f32"
+      },
+      "chunk_text": {
+        "rows": 4434,
+        "bytes": 3314787,
+        "rows_read": 4434,
+        "query_duration_ms": 41.014,
+        "sql": "SELECT count(*), sum(length(CAST(text AS BLOB))) FROM chunks"
+      },
+      "page_queries": {
+        "page_count": "PRAGMA page_count",
+        "page_size": "PRAGMA page_size",
+        "freelist_pages": "PRAGMA freelist_count"
+      },
+      "schema_query": "SELECT name, type FROM sqlite_master WHERE type IN ('table','index') ORDER BY type,name"
+    },
+    {
+      "database": "atlas-core-internal-work-engineering-03",
+      "page_count": 5701,
+      "page_size": 4096,
+      "freelist_pages": 0,
+      "page_bytes": 23351296,
+      "indexes": [
+        "sqlite_autoindex_atlas_manifest_1",
+        "sqlite_autoindex_chunks_1"
+      ],
+      "tables": [
+        "__turso_internal_mvcc_meta",
+        "atlas_manifest",
+        "chunks",
+        "vec_snowflake_m_v2_768_f32"
+      ],
+      "vectors": {
+        "rows": 4435,
+        "bytes": 13624320,
+        "rows_read": 4435,
+        "query_duration_ms": 244.915,
+        "sql": "SELECT count(*), sum(length(vec)) FROM vec_snowflake_m_v2_768_f32"
+      },
+      "chunk_text": {
+        "rows": 4435,
+        "bytes": 3650393,
+        "rows_read": 4435,
+        "query_duration_ms": 98.439,
+        "sql": "SELECT count(*), sum(length(CAST(text AS BLOB))) FROM chunks"
+      },
+      "page_queries": {
+        "page_count": "PRAGMA page_count",
+        "page_size": "PRAGMA page_size",
+        "freelist_pages": "PRAGMA freelist_count"
+      },
+      "schema_query": "SELECT name, type FROM sqlite_master WHERE type IN ('table','index') ORDER BY type,name"
+    },
+    {
+      "database": "atlas-core-internal-work-engineering-04",
+      "page_count": 5646,
+      "page_size": 4096,
+      "freelist_pages": 0,
+      "page_bytes": 23126016,
+      "indexes": [
+        "sqlite_autoindex_atlas_manifest_1",
+        "sqlite_autoindex_chunks_1"
+      ],
+      "tables": [
+        "__turso_internal_mvcc_meta",
+        "atlas_manifest",
+        "chunks",
+        "vec_snowflake_m_v2_768_f32"
+      ],
+      "vectors": {
+        "rows": 4435,
+        "bytes": 13624320,
+        "rows_read": 4435,
+        "query_duration_ms": 232.473,
+        "sql": "SELECT count(*), sum(length(vec)) FROM vec_snowflake_m_v2_768_f32"
+      },
+      "chunk_text": {
+        "rows": 4435,
+        "bytes": 3532467,
+        "rows_read": 4435,
+        "query_duration_ms": 91.611,
+        "sql": "SELECT count(*), sum(length(CAST(text AS BLOB))) FROM chunks"
+      },
+      "page_queries": {
+        "page_count": "PRAGMA page_count",
+        "page_size": "PRAGMA page_size",
+        "freelist_pages": "PRAGMA freelist_count"
+      },
+      "schema_query": "SELECT name, type FROM sqlite_master WHERE type IN ('table','index') ORDER BY type,name"
+    },
+    {
+      "database": "atlas-core-internal-work-engineering-05",
+      "page_count": 5685,
+      "page_size": 4096,
+      "freelist_pages": 0,
+      "page_bytes": 23285760,
+      "indexes": [
+        "sqlite_autoindex_atlas_manifest_1",
+        "sqlite_autoindex_chunks_1"
+      ],
+      "tables": [
+        "__turso_internal_mvcc_meta",
+        "atlas_manifest",
+        "chunks",
+        "vec_snowflake_m_v2_768_f32"
+      ],
+      "vectors": {
+        "rows": 4434,
+        "bytes": 13621248,
+        "rows_read": 4434,
+        "query_duration_ms": 124.65,
+        "sql": "SELECT count(*), sum(length(vec)) FROM vec_snowflake_m_v2_768_f32"
+      },
+      "chunk_text": {
+        "rows": 4434,
+        "bytes": 3618273,
+        "rows_read": 4434,
+        "query_duration_ms": 42.718,
+        "sql": "SELECT count(*), sum(length(CAST(text AS BLOB))) FROM chunks"
+      },
+      "page_queries": {
+        "page_count": "PRAGMA page_count",
+        "page_size": "PRAGMA page_size",
+        "freelist_pages": "PRAGMA freelist_count"
+      },
+      "schema_query": "SELECT name, type FROM sqlite_master WHERE type IN ('table','index') ORDER BY type,name"
+    },
+    {
+      "database": "atlas-core-secret-main-01",
+      "page_count": 1127,
+      "page_size": 4096,
+      "freelist_pages": 0,
+      "page_bytes": 4616192,
+      "indexes": [
+        "sqlite_autoindex_atlas_manifest_1",
+        "sqlite_autoindex_chunks_1"
+      ],
+      "tables": [
+        "__turso_internal_mvcc_meta",
+        "atlas_manifest",
+        "chunks",
+        "vec_snowflake_m_v2_768_f32"
+      ],
+      "vectors": {
+        "rows": 838,
+        "bytes": 2574336,
+        "rows_read": 838,
+        "query_duration_ms": 21.228,
+        "sql": "SELECT count(*), sum(length(vec)) FROM vec_snowflake_m_v2_768_f32"
+      },
+      "chunk_text": {
+        "rows": 838,
+        "bytes": 1379409,
+        "rows_read": 838,
+        "query_duration_ms": 40.301,
+        "sql": "SELECT count(*), sum(length(CAST(text AS BLOB))) FROM chunks"
+      },
+      "page_queries": {
+        "page_count": "PRAGMA page_count",
+        "page_size": "PRAGMA page_size",
+        "freelist_pages": "PRAGMA freelist_count"
+      },
+      "schema_query": "SELECT name, type FROM sqlite_master WHERE type IN ('table','index') ORDER BY type,name"
+    },
+    {
+      "database": "atlas-core-internal-work-engineering-06",
+      "page_count": 5730,
+      "page_size": 4096,
+      "freelist_pages": 0,
+      "page_bytes": 23470080,
+      "indexes": [
+        "sqlite_autoindex_atlas_manifest_1",
+        "sqlite_autoindex_chunks_1"
+      ],
+      "tables": [
+        "__turso_internal_mvcc_meta",
+        "atlas_manifest",
+        "chunks",
+        "vec_snowflake_m_v2_768_f32"
+      ],
+      "vectors": {
+        "rows": 4434,
+        "bytes": 13621248,
+        "rows_read": 4434,
+        "query_duration_ms": 215.265,
+        "sql": "SELECT count(*), sum(length(vec)) FROM vec_snowflake_m_v2_768_f32"
+      },
+      "chunk_text": {
+        "rows": 4434,
+        "bytes": 3761783,
+        "rows_read": 4434,
+        "query_duration_ms": 86.141,
+        "sql": "SELECT count(*), sum(length(CAST(text AS BLOB))) FROM chunks"
+      },
+      "page_queries": {
+        "page_count": "PRAGMA page_count",
+        "page_size": "PRAGMA page_size",
+        "freelist_pages": "PRAGMA freelist_count"
+      },
+      "schema_query": "SELECT name, type FROM sqlite_master WHERE type IN ('table','index') ORDER BY type,name"
+    },
+    {
+      "database": "atlas-core-secret-content",
+      "page_count": 397,
+      "page_size": 4096,
+      "freelist_pages": 0,
+      "page_bytes": 1626112,
+      "indexes": [
+        "sqlite_autoindex_atlas_manifest_1",
+        "sqlite_autoindex_messages_1",
+        "sqlite_autoindex_sessions_1"
+      ],
+      "tables": [
+        "__turso_internal_mvcc_meta",
+        "atlas_manifest",
+        "messages",
+        "sessions"
+      ],
+      "messages": {
+        "rows": 573,
+        "bytes": 1399999,
+        "rows_read": 573,
+        "query_duration_ms": 27.405,
+        "sql": "SELECT count(*), sum(length(CAST(text AS BLOB))) FROM messages"
+      },
+      "page_queries": {
+        "page_count": "PRAGMA page_count",
+        "page_size": "PRAGMA page_size",
+        "freelist_pages": "PRAGMA freelist_count"
+      },
+      "schema_query": "SELECT name, type FROM sqlite_master WHERE type IN ('table','index') ORDER BY type,name"
+    },
+    {
+      "database": "atlas-core-internal-content",
+      "page_count": 124210,
+      "page_size": 4096,
+      "freelist_pages": 0,
+      "page_bytes": 508764160,
+      "indexes": [
+        "sqlite_autoindex_atlas_manifest_1",
+        "sqlite_autoindex_messages_1",
+        "sqlite_autoindex_sessions_1"
+      ],
+      "tables": [
+        "__turso_internal_mvcc_meta",
+        "atlas_manifest",
+        "messages",
+        "sessions"
+      ],
+      "messages": {
+        "rows": 70978,
+        "bytes": 463559915,
+        "rows_read": 70978,
+        "query_duration_ms": 5257.019,
+        "sql": "SELECT count(*), sum(length(CAST(text AS BLOB))) FROM messages"
+      },
+      "page_queries": {
+        "page_count": "PRAGMA page_count",
+        "page_size": "PRAGMA page_size",
+        "freelist_pages": "PRAGMA freelist_count"
+      },
+      "schema_query": "SELECT name, type FROM sqlite_master WHERE type IN ('table','index') ORDER BY type,name"
+    }
+  ]
+}
