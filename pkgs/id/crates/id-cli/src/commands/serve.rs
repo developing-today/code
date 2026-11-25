@@ -1392,6 +1392,10 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("apps"));
     let app_discovery = crate::app_manifest::discover_apps(&apps_root);
+    // #14226: the discovered apps' run manifests, which the web
+    // surface's `POST /v1/runs` loader checks app runs against.
+    #[cfg(feature = "web")]
+    let run_apps = crate::app_manifest::run_apps(&app_discovery.apps);
     for app in app_discovery.apps {
         info!(app = %app.manifest.app.id, path = %app.path.display(), "serve: discovered app");
     }
@@ -2225,6 +2229,7 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
                 Some(endpoint.clone()),
                 Some(std::sync::Arc::clone(&transport_ad_minter)),
                 gallery,
+                Some(run_apps),
             )
             .await?;
             publication_surface = Some(surface);
