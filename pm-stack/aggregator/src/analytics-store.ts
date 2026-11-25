@@ -25,7 +25,6 @@
 
 import { Database } from "bun:sqlite";
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
-import { homedir } from "node:os";
 import { join } from "node:path";
 import type { QuotaPool, QuotaView, SnapshotRecord, UsageView } from "./model.ts";
 import {
@@ -40,8 +39,11 @@ import {
   type WindowProjection,
   type WowDelta,
 } from "./quota-analytics.ts";
+import { requireHome } from "./home.ts";
 
-export const OPENCODE_DB_DEFAULT = join(homedir(), ".local", "share", "opencode", "opencode.db");
+/** The OpenCode database under HOME; HomeUnresolvedError when HOME is unset or empty (#8220). */
+export const opencodeDbDefault = (): string =>
+  join(requireHome("the OpenCode database path"), ".local", "share", "opencode", "opencode.db");
 
 const HOUR_MS = 3_600_000;
 const DAY_MS = 24 * HOUR_MS;
@@ -554,7 +556,7 @@ function loadAttemptAggregates(db: Database, path: string, now: number): Attempt
  * immediately, so an awaiting caller never hangs; when a prime is
  * started, `onSettled` fires once it lands or aborts fail-soft.
  */
-export function primeAttemptAggregates(opencodeDbPath: string = OPENCODE_DB_DEFAULT, onSettled?: () => void): boolean {
+export function primeAttemptAggregates(opencodeDbPath: string = opencodeDbDefault(), onSettled?: () => void): boolean {
   if (aggregatesCache && aggregatesCache.path === opencodeDbPath) {
     onSettled?.();
     return false;
@@ -1028,7 +1030,7 @@ export function buildQuotaAnalytics(args: {
   now?: number;
 }): QuotaAnalytics {
   const now = args.now ?? Date.now();
-  const dbPath = args.opencodeDbPath ?? OPENCODE_DB_DEFAULT;
+  const dbPath = args.opencodeDbPath ?? opencodeDbDefault();
   const db = getDb(dbPath);
   const base: QuotaAnalytics = {
     generatedAt: new Date(now).toISOString(),
@@ -1214,8 +1216,9 @@ export function buildQuotaAnalytics(args: {
     base.activity7d = loadActivity(
       db,
       now,
-      args.mcpxCallLedgerDir ?? join(homedir(), ".local", "state", "mcpx", "call-ledger"),
-      args.fleetInvocationLedgerFile ?? join(homedir(), ".local", "state", "fleet", "invocations.jsonl"),
+      args.mcpxCallLedgerDir ?? join(requireHome("PM_AGG_MCPX_CALL_LEDGER_DIR"), ".local", "state", "mcpx", "call-ledger"),
+      args.fleetInvocationLedgerFile ??
+        join(requireHome("PM_AGG_FLEET_INVOCATION_LEDGER_FILE"), ".local", "state", "fleet", "invocations.jsonl"),
     );
     return base;
   } catch {

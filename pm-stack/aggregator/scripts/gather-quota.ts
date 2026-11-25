@@ -159,7 +159,6 @@
 //      turso.fleet-platform-rw-token).
 import { execFile } from "node:child_process";
 import { access, appendFile, mkdir, readFile, rename, writeFile } from "node:fs/promises";
-import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { QuotaCurrentEntry, QuotaCurrentFile, QuotaGatherHeartbeat, SnapshotRecord } from "../src/model.ts";
@@ -213,9 +212,10 @@ import { sectionPoolIdsFromConfig } from "../src/aa.ts";
 import { renewMetaSession } from "../src/meta-renewal.ts";
 import { classEnabled, getAlertsStore } from "../src/alerts.ts";
 import { sendPush, type PushTarget } from "../src/push.ts";
+import { requireHome } from "../src/home.ts";
 
 const PKG = join(dirname(fileURLToPath(import.meta.url)), "..");
-const HOME = homedir();
+const HOME = requireHome("the gather-quota paths");
 const HIDDEN = join(HOME, "workspace/goals/keep-the-four-repos-healthy/hidden_files");
 
 /** Candidate checkouts for the OpenDesign keeper's managed credential
