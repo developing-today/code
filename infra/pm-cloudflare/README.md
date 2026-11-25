@@ -30,10 +30,11 @@ Run the tests: `python3 -I infra/pm-cloudflare/test_apply.py`.
 
 | Variable | Repository secret | What it is |
 |---|---|---|
-| `PMCF_CLOUDFLARE_TOKEN` | `CLOUDFLARE_API_TOKEN` | the Cloudflare API token |
+| `PMCF_CLOUDFLARE_TOKEN` | `PMCF_CLOUDFLARE_TOKEN` | the Cloudflare API token; source it from `cloudflare.api-token-account-wide` |
 | `PMCF_OWNER_EMAIL` | `PMCF_OWNER_EMAIL` | whose sign-in is let in |
-| `PMCF_GITHUB_TOKEN` | `PMCF_GITHUB_TOKEN` | the Worker automation token |
-| `PMCF_QUEUE_TOKEN` | `PMCF_QUEUE_TOKEN` | the Worker queue store token |
+| `PMCF_GITHUB_TOKEN` | `PMCF_GITHUB_TOKEN` | the Worker automation token; source it from `github.developing-today-code-automation` |
+| `PMCF_QUEUE_TOKEN` | `PMCF_QUEUE_TOKEN` | the Worker queue store token; source it from `turso.fleet-queue-rw-token` |
+| `PMCF_BRIDGE_TOKEN` | `PMCF_BRIDGE_TOKEN` (optional) | the PM stack bridge token; source it from `bridge.pm-stack-token` |
 | `PMCF_GOOGLE_CLIENT_ID` / `PMCF_GOOGLE_CLIENT_SECRET` | same names | Google sign-in (optional) |
 
 ## What this does not do yet (the follow-on)
