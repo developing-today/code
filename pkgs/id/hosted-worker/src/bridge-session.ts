@@ -143,10 +143,56 @@ export function detectWithholding(
 
 // ----- batch codec ---------------------------------------------------
 
-export function encodeBatch(events: Uint8Array[]): Uint8Array<ArrayBuffer> {
+/** Bytes one event occupies inside an encoded batch: its 4-byte
+ * length prefix plus its payload. Senders budget this framed size —
+ * receivers enforce maxBatchBytes against the encoded batch, not
+ * the payload sum (#14644). */
+export function encodedEventBytes(event: Uint8Array): number {
+  return 4 + event.length;
+}
+
+/** The encoded size of a batch of `events`: the 4-byte count prefix
+ * plus every event's framed size — exactly what encodeBatch emits
+ * and what decodeBatch bounds. */
+export function encodedBatchBytes(events: Uint8Array[]): number {
   let size = 4;
-  for (const e of events) size += 4 + e.length;
-  const out = new Uint8Array(size);
+  for (const e of events) size += encodedEventBytes(e);
+  return size;
+}
+
+/** Splits `events` into batches that each fit `limits` by count and
+ * by encoded size, preserving order: a batch closes before the
+ * first event that would cross either bound. An event whose framed
+ * size alone exceeds maxBatchBytes can never be sent under these
+ * limits — that is a named error, never an oversized batch. */
+export function splitBatches(events: Uint8Array[], limits: BridgeLimits): Uint8Array[][] {
+  const batches: Uint8Array[][] = [];
+  let batch: Uint8Array[] = [];
+  let batchBytes = 4; // the encoded count prefix
+  for (const event of events) {
+    const framed = encodedEventBytes(event);
+    if (
+      batch.length > 0 &&
+      (batch.length >= limits.maxBatchEvents || batchBytes + framed > limits.maxBatchBytes)
+    ) {
+      batches.push(batch);
+      batch = [];
+      batchBytes = 4;
+    }
+    if (batchBytes + framed > limits.maxBatchBytes) {
+      throw new Error(
+        `event of ${event.length} bytes cannot fit the ${limits.maxBatchBytes}-byte batch bound`,
+      );
+    }
+    batch.push(event);
+    batchBytes += framed;
+  }
+  if (batch.length > 0) batches.push(batch);
+  return batches;
+}
+
+export function encodeBatch(events: Uint8Array[]): Uint8Array<ArrayBuffer> {
+  const out = new Uint8Array(encodedBatchBytes(events));
   const view = new DataView(out.buffer);
   view.setUint32(0, events.length);
   let at = 4;
@@ -417,22 +463,21 @@ export class BridgeSessionServer {
   }
 
   private sendBatches(events: Uint8Array[]): void {
-    let batch: Uint8Array[] = [];
-    let batchBytes = 0;
-    const flush = () => {
-      if (batch.length === 0) return;
-      this.send(frame(TAG.batch, encodeBatch(batch)));
-      batch = [];
-      batchBytes = 0;
-    };
-    for (const event of events) {
-      if (batch.length >= this.limits.maxBatchEvents || batchBytes + event.length > this.limits.maxBatchBytes) {
-        flush();
-      }
-      batch.push(event);
-      batchBytes += event.length;
+    let batches: Uint8Array[][];
+    try {
+      batches = splitBatches(events, this.limits);
+    } catch (e) {
+      // A held event that cannot fit any batch under these limits:
+      // name it and close, rather than emit a batch the peer's
+      // decoder is bound to reject (#14644).
+      return this.fail(
+        "event_too_large",
+        e instanceof Error ? e.message : "an event cannot fit the batch bound",
+      );
     }
-    flush();
+    for (const batch of batches) {
+      this.send(frame(TAG.batch, encodeBatch(batch)));
+    }
   }
 
   private async onBatch(payload: Uint8Array): Promise<void> {
@@ -637,21 +682,11 @@ export class BridgeClient {
       const held = store.heldEvent(id);
       if (held) answer.push(held.bytes);
     }
-    let batch: Uint8Array[] = [];
-    let batchBytes = 0;
-    const flush = () => {
-      if (batch.length === 0) return;
+    // Batches are cut on the encoded size (splitBatches throws
+    // on an event that cannot fit any batch under these limits).
+    for (const batch of splitBatches(answer, this.limits)) {
       this.transport.send(frame(TAG.batch, encodeBatch(batch)));
-      batch = [];
-      batchBytes = 0;
-    };
-    for (const eventBytes of answer) {
-      if (batch.length >= this.limits.maxBatchEvents || batchBytes + eventBytes.length > this.limits.maxBatchBytes)
-        flush();
-      batch.push(eventBytes);
-      batchBytes += eventBytes.length;
     }
-    flush();
     this.transport.send(frame(TAG.wantEnd, new Uint8Array(0)));
     // The server's ACK for our answer batches may arrive; drain one
     // ack per batch sent (acks are informational for the client).
