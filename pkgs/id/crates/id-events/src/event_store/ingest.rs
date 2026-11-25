@@ -2030,7 +2030,7 @@ mod tests {
             .write(|txn| {
                 txn.open_table(super::super::META)?
                     .remove(super::super::DEVICE_OPS_RECOVERED_KEY)?;
-                EventStore::recover_device_ops(txn)
+                EventStore::<redb::Database>::recover_device_ops(txn)
             })
             .unwrap();
         assert_eq!(
@@ -2080,7 +2080,7 @@ mod tests {
     fn refresh_all(store: &mut EventStore) {
         store
             .transact(0, |m| {
-                refresh(m.txn)?;
+                refresh_rows(m.txn)?;
                 Ok(((), true))
             })
             .unwrap();
