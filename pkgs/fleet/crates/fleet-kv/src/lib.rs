@@ -21,6 +21,8 @@ pub mod grants;
 #[cfg(feature = "http")]
 pub mod http;
 pub mod launch;
+#[cfg(test)]
+mod load_probe;
 pub mod read;
 pub mod sweep;
 pub mod sync;
