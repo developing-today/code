@@ -19,7 +19,13 @@
 //!   is committed to by its hash and carried beside the record.
 //!
 //! Nothing here mutates a record: every accessor is read-only, and a
-//! changed byte changes the record's identity. [`verify_chain`] replays one
+//! changed byte changes the record's identity. The one removal is
+//! redaction (slice 3, #14276): a `redact` changelog entry, itself signed
+//! and chained, names a post or entry and a [`RedactionReason`]. The
+//! redacted body or summary may then be dropped from storage while its
+//! signed hash, its author and the chain stay intact, and readers render a
+//! [`Tombstone`] showing that something was there, by whom, when it was
+//! removed, by whom and why. [`verify_chain`] replays one
 //! object's changelog from its first entry or from any retained
 //! [`Checkpoint`] and reports the first gap, broken link, foreign entry or
 //! bad signature it meets; [`verify_chain_bytes`] does the same for stored
@@ -404,6 +410,9 @@ pub enum EntryRef {
     /// The user a proxy acts for. The proxy is the entry's actor and signs
     /// it; this names who it acted on behalf of.
     OnBehalfOf([u8; 32]),
+    /// What a `redact` entry removes and why. A `redact` entry carries
+    /// exactly one; no other kind carries any.
+    Redacts(Redaction),
 }
 
 impl EntryRef {
@@ -412,6 +421,20 @@ impl EntryRef {
             Self::Content(id) => Value::Map(vec![(text("content"), id_value(id))]),
             Self::OnBehalfOf(user) => {
                 Value::Map(vec![(text("on_behalf_of"), Value::Bytes(user.to_vec()))])
+            }
+            Self::Redacts(redaction) => {
+                let (kind, target) = match redaction.target {
+                    RedactionTarget::Post(id) => ("post", id),
+                    RedactionTarget::Entry(id) => ("entry", id),
+                };
+                Value::Map(vec![(
+                    text("redacts"),
+                    Value::Map(vec![
+                        (text("kind"), text(kind)),
+                        (text("reason"), text(redaction.reason.token())),
+                        (text("target"), id_value(&target)),
+                    ]),
+                )])
             }
         }
     }
@@ -424,6 +447,18 @@ impl EntryRef {
             [(Value::Text(key), id)] if key == "content" => Ok(Self::Content(id_from(id)?)),
             [(Value::Text(key), Value::Bytes(user))] if key == "on_behalf_of" => {
                 Ok(Self::OnBehalfOf(key_bytes(user)?))
+            }
+            [(Value::Text(key), redaction)] if key == "redacts" => {
+                let fields = Fields::of(redaction, &["kind", "reason", "target"])?;
+                let target = id_from(fields.get("target")?)?;
+                let target = match fields.text("kind")? {
+                    "post" => RedactionTarget::Post(target),
+                    "entry" => RedactionTarget::Entry(target),
+                    _ => return Err(TalkPageError::Invalid("unknown redaction target kind")),
+                };
+                let reason = RedactionReason::from_token(fields.text("reason")?)
+                    .ok_or(TalkPageError::Invalid("unknown redaction reason"))?;
+                Ok(Self::Redacts(Redaction { target, reason }))
             }
             _ => Err(TalkPageError::Invalid("unknown reference shape")),
         }
@@ -489,6 +524,13 @@ impl EntryDraft {
     #[must_use]
     pub fn with_refs(mut self, refs: Vec<EntryRef>) -> Self {
         self.refs = refs;
+        self
+    }
+
+    /// Add the redaction a `redact` entry carries.
+    #[must_use]
+    pub fn with_redaction(mut self, redaction: Redaction) -> Self {
+        self.refs.push(EntryRef::Redacts(redaction));
         self
     }
 
@@ -609,7 +651,15 @@ impl SignedEntry {
     pub fn on_behalf_of(&self) -> Option<&[u8; 32]> {
         self.refs.iter().find_map(|reference| match reference {
             EntryRef::OnBehalfOf(user) => Some(user),
-            EntryRef::Content(_) => None,
+            EntryRef::Content(_) | EntryRef::Redacts(_) => None,
+        })
+    }
+
+    /// What this entry redacts, if it is a `redact` entry.
+    pub fn redaction(&self) -> Option<Redaction> {
+        self.refs.iter().find_map(|reference| match reference {
+            EntryRef::Redacts(redaction) => Some(*redaction),
+            EntryRef::Content(_) | EntryRef::OnBehalfOf(_) => None,
         })
     }
 
@@ -641,6 +691,16 @@ impl SignedEntry {
         if proxies > 1 {
             return Err(TalkPageError::Invalid(
                 "an entry has one actor and names at most one user it acts for",
+            ));
+        }
+        let redactions = self
+            .refs
+            .iter()
+            .filter(|reference| matches!(reference, EntryRef::Redacts(_)))
+            .count();
+        if redactions != usize::from(self.kind == ChangeKind::Redact) {
+            return Err(TalkPageError::Invalid(
+                "a redact entry names exactly one redaction and no other entry names any",
             ));
         }
         if self.on_behalf_of() == Some(&self.actor) {
@@ -800,6 +860,259 @@ impl ChangelogEntry {
         signed.verify()?;
         Ok(signed.receive(fields.uint("received_at")?))
     }
+}
+
+/// Why something was redacted: a closed set of reason codes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum RedactionReason {
+    /// Personal information that should not be shown.
+    Privacy,
+    /// Harassment or other abuse.
+    Abuse,
+    /// Spam.
+    Spam,
+    /// A legal requirement.
+    Legal,
+    /// The original author asked for it.
+    AuthorRequest,
+    /// Any other reason.
+    Other,
+}
+
+impl RedactionReason {
+    /// Every reason, in declaration order.
+    pub const ALL: [Self; 6] = [
+        Self::Privacy,
+        Self::Abuse,
+        Self::Spam,
+        Self::Legal,
+        Self::AuthorRequest,
+        Self::Other,
+    ];
+
+    /// The reason's wire token.
+    pub const fn token(self) -> &'static str {
+        match self {
+            Self::Privacy => "privacy",
+            Self::Abuse => "abuse",
+            Self::Spam => "spam",
+            Self::Legal => "legal",
+            Self::AuthorRequest => "author_request",
+            Self::Other => "other",
+        }
+    }
+
+    /// Parse a wire token.
+    pub fn from_token(token: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|reason| reason.token() == token)
+    }
+}
+
+/// The record a `redact` entry removes the body or summary of.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum RedactionTarget {
+    /// A talk-page post, by its post id.
+    Post(ContentId),
+    /// A changelog entry, by its entry hash.
+    Entry(ContentId),
+}
+
+/// What a `redact` entry removes and why.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct Redaction {
+    /// The post or entry whose body or summary is removed.
+    pub target: RedactionTarget,
+    /// The reason code.
+    pub reason: RedactionReason,
+}
+
+/// What a reader shows in place of a redacted body or summary. Every field
+/// survives redaction: the removed text's signed hash, who wrote it and
+/// when, and who removed it, when and why.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct Tombstone {
+    /// The post or entry whose text was removed.
+    pub target: RedactionTarget,
+    /// The signed hash of the removed text.
+    pub removed_hash: ContentId,
+    /// Who wrote the removed text.
+    pub original_actor: [u8; 32],
+    /// When they wrote it, by their clock.
+    pub original_at: u64,
+    /// Who redacted it: the `redact` entry's actor.
+    pub redacted_by: [u8; 32],
+    /// When the redaction was received.
+    pub redacted_at: u64,
+    /// Why it was redacted.
+    pub reason: RedactionReason,
+}
+
+impl fmt::Display for Tombstone {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let what = match self.target {
+            RedactionTarget::Post(_) => "post",
+            RedactionTarget::Entry(_) => "summary",
+        };
+        write!(
+            f,
+            "[{what} removed: written by {} at {}, removed by {} at {}, reason: {}]",
+            short_key(&self.original_actor),
+            self.original_at,
+            short_key(&self.redacted_by),
+            self.redacted_at,
+            self.reason.token(),
+        )
+    }
+}
+
+/// A body or summary as a reader shows it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Rendered<'a> {
+    /// The text, unredacted.
+    Text(&'a str),
+    /// The text was redacted.
+    Removed(Tombstone),
+}
+
+impl TalkPost {
+    /// This post without its body, after checking that `redaction` is a
+    /// valid `redact` entry for it. The signed record, and so the post id,
+    /// is unchanged.
+    pub fn redacted(&self, redaction: &ChangelogEntry) -> Result<Self, TalkPageError> {
+        self.tombstone(redaction)?;
+        let mut post = self.clone();
+        post.body = None;
+        Ok(post)
+    }
+
+    fn tombstone(&self, redaction: &ChangelogEntry) -> Result<Tombstone, TalkPageError> {
+        let target = RedactionTarget::Post(self.post_id()?);
+        let reason = redaction_for(redaction, &self.object_id, target)?;
+        Ok(Tombstone {
+            target,
+            removed_hash: self.body_hash,
+            original_actor: self.author,
+            original_at: self.authored_at,
+            redacted_by: redaction.signed.actor,
+            redacted_at: redaction.received_at,
+            reason,
+        })
+    }
+}
+
+impl ChangelogEntry {
+    /// This entry without its summary, after checking that `redaction` is
+    /// a later valid `redact` entry for it. The chained record, and so the
+    /// entry hash and the chain, is unchanged.
+    pub fn summary_redacted(&self, redaction: &Self) -> Result<Self, TalkPageError> {
+        self.tombstone(redaction)?;
+        let mut entry = self.clone();
+        entry.signed.summary = None;
+        Ok(entry)
+    }
+
+    fn tombstone(&self, redaction: &Self) -> Result<Tombstone, TalkPageError> {
+        let removed_hash = self
+            .signed
+            .summary_hash
+            .ok_or(TalkPageError::Invalid("entry has no summary to redact"))?;
+        if redaction.signed.seq <= self.signed.seq {
+            return Err(TalkPageError::Invalid(
+                "a redaction must come after the entry it redacts",
+            ));
+        }
+        let target = RedactionTarget::Entry(self.entry_hash()?);
+        let reason = redaction_for(redaction, &self.signed.object_id, target)?;
+        Ok(Tombstone {
+            target,
+            removed_hash,
+            original_actor: self.signed.actor,
+            original_at: self.signed.authored_at,
+            redacted_by: redaction.signed.actor,
+            redacted_at: redaction.received_at,
+            reason,
+        })
+    }
+}
+
+/// Render a post's body against its object's changelog. The changelog
+/// should already have been checked with [`verify_chain`]; each matching
+/// `redact` entry is verified again here. The first one that redacts this
+/// post wins.
+pub fn render_post<'a>(
+    post: &'a TalkPost,
+    changelog: &[ChangelogEntry],
+) -> Result<Rendered<'a>, TalkPageError> {
+    post.verify()?;
+    let target = RedactionTarget::Post(post.post_id()?);
+    if let Some(redaction) = find_redaction(changelog, target) {
+        return Ok(Rendered::Removed(post.tombstone(redaction)?));
+    }
+    post.body()
+        .map(Rendered::Text)
+        .ok_or(TalkPageError::Invalid(
+            "post body is missing and no redaction covers it",
+        ))
+}
+
+/// Render an entry's summary against its object's changelog, as
+/// [`render_post`] does for a post. `None` means the entry never had one.
+pub fn render_summary<'a>(
+    entry: &'a ChangelogEntry,
+    changelog: &[ChangelogEntry],
+) -> Result<Option<Rendered<'a>>, TalkPageError> {
+    entry.verify()?;
+    if entry.signed.summary_hash.is_none() {
+        return Ok(None);
+    }
+    let target = RedactionTarget::Entry(entry.entry_hash()?);
+    if let Some(redaction) = find_redaction(changelog, target) {
+        return Ok(Some(Rendered::Removed(entry.tombstone(redaction)?)));
+    }
+    entry
+        .signed
+        .summary()
+        .map(|summary| Some(Rendered::Text(summary)))
+        .ok_or(TalkPageError::Invalid(
+            "entry summary is missing and no redaction covers it",
+        ))
+}
+
+fn find_redaction(
+    changelog: &[ChangelogEntry],
+    target: RedactionTarget,
+) -> Option<&ChangelogEntry> {
+    changelog.iter().find(|entry| {
+        entry
+            .signed
+            .redaction()
+            .is_some_and(|redaction| redaction.target == target)
+    })
+}
+
+/// Check that `entry` is a valid `redact` entry on `object_id` for
+/// `target`, and return its reason.
+fn redaction_for(
+    entry: &ChangelogEntry,
+    object_id: &[u8],
+    target: RedactionTarget,
+) -> Result<RedactionReason, TalkPageError> {
+    entry.verify()?;
+    if entry.signed.object_id != object_id {
+        return Err(TalkPageError::Invalid(
+            "a redaction belongs to the redacted record's object",
+        ));
+    }
+    match entry.signed.redaction() {
+        Some(redaction) if redaction.target == target => Ok(redaction.reason),
+        _ => Err(TalkPageError::Invalid(
+            "entry is not a redaction of this record",
+        )),
+    }
+}
+
+fn short_key(key: &[u8; 32]) -> String {
+    hex::encode(&key[..4])
 }
 
 /// A retained point in an object's chain to replay from: the sequence

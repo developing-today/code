@@ -11,8 +11,9 @@
 use ed25519_dalek::SigningKey;
 use id_core::id_shape::{ContentId, HashProfile};
 use id_store::talk_page::{
-    ChainError, ChangeKind, ChangelogEntry, EntryDraft, EntryRef, PostDraft, SignedEntry,
-    TalkPageError, TalkPost, verify_chain, verify_chain_bytes, verify_chain_to_head,
+    ChainError, ChangeKind, ChangelogEntry, EntryDraft, EntryRef, PostDraft, Redaction,
+    RedactionReason, RedactionTarget, Rendered, SignedEntry, TalkPageError, TalkPost, render_post,
+    render_summary, verify_chain, verify_chain_bytes, verify_chain_to_head,
 };
 
 const OBJECT: &[u8] = b"object-1";
@@ -35,11 +36,23 @@ fn post(body: &str, key: &SigningKey) -> TalkPost {
     .unwrap()
 }
 
+/// Every kind but `redact`, which must name what it redacts.
+const PLAIN_KINDS: [ChangeKind; 8] = [
+    ChangeKind::Edit,
+    ChangeKind::Fork,
+    ChangeKind::Mark,
+    ChangeKind::MergeProposal,
+    ChangeKind::Merge,
+    ChangeKind::Approval,
+    ChangeKind::Reject,
+    ChangeKind::Session,
+];
+
 /// A chain of `len` entries on [`OBJECT`], alternating two actors.
 fn chain(len: u64) -> Vec<ChangelogEntry> {
     let mut entries: Vec<ChangelogEntry> = Vec::new();
     for seq in 0..len {
-        let kind = ChangeKind::ALL[usize::try_from(seq).unwrap() % ChangeKind::ALL.len()];
+        let kind = PLAIN_KINDS[usize::try_from(seq).unwrap() % PLAIN_KINDS.len()];
         let draft = entries.last().map_or_else(
             || EntryDraft::genesis(OBJECT.to_vec(), kind, 10),
             |previous| EntryDraft::after(previous, kind, 10 + seq).unwrap(),
@@ -223,7 +236,7 @@ fn a_changed_entry_breaks_the_next_link() {
     // Re-sign entry 1 with different content: it verifies on its own, but
     // entry 2 still names the original entry 1's hash.
     let forged = SignedEntry::sign(
-        EntryDraft::after(&entries[0], ChangeKind::Redact, 999).unwrap(),
+        EntryDraft::after(&entries[0], ChangeKind::Merge, 999).unwrap(),
         &key(9),
     )
     .unwrap()
@@ -419,4 +432,237 @@ fn a_bad_signature_is_reported_with_its_sequence_number() {
         decoded,
         Err(TalkPageError::BadSignature | TalkPageError::BadKey)
     ));
+}
+
+/// Append a `redact` entry for `target` to `entries`, signed by `moderator`.
+fn redact(
+    entries: &mut Vec<ChangelogEntry>,
+    target: RedactionTarget,
+    reason: RedactionReason,
+    moderator: &SigningKey,
+) -> ChangelogEntry {
+    let entry = SignedEntry::sign(
+        EntryDraft::after(entries.last().unwrap(), ChangeKind::Redact, 5_000)
+            .unwrap()
+            .with_redaction(Redaction { target, reason }),
+        moderator,
+    )
+    .unwrap()
+    .receive(6_000);
+    entries.push(entry.clone());
+    entry
+}
+
+#[test]
+fn every_reason_round_trips_its_token() {
+    for reason in RedactionReason::ALL {
+        assert_eq!(RedactionReason::from_token(reason.token()), Some(reason));
+    }
+    assert_eq!(RedactionReason::from_token("author-request"), None);
+}
+
+#[test]
+fn a_redacted_post_renders_as_a_tombstone_with_both_actors() {
+    let author = key(1);
+    let moderator = key(7);
+    let original = post("my phone number is …", &author);
+    let post_id = original.post_id().unwrap();
+    let mut entries = chain(3);
+    assert_eq!(
+        render_post(&original, &entries),
+        Ok(Rendered::Text("my phone number is …"))
+    );
+
+    let redaction = redact(
+        &mut entries,
+        RedactionTarget::Post(post_id),
+        RedactionReason::Privacy,
+        &moderator,
+    );
+    // The chain, now carrying the redaction, still verifies end to end.
+    verify_chain(OBJECT, None, &entries).unwrap();
+
+    // Dropping the body leaves the signed record and post id as they were.
+    let stored = original.redacted(&redaction).unwrap();
+    assert_eq!(stored.body(), None);
+    stored.verify().unwrap();
+    assert_eq!(stored.post_id().unwrap(), post_id);
+    assert_eq!(stored.record_bytes(), original.record_bytes());
+    let reread = TalkPost::from_canonical_bytes(&stored.canonical_bytes().unwrap()).unwrap();
+    assert_eq!(reread, stored);
+
+    let Ok(Rendered::Removed(tombstone)) = render_post(&stored, &entries) else {
+        panic!("a redacted post renders as a tombstone");
+    };
+    assert_eq!(tombstone.target, RedactionTarget::Post(post_id));
+    assert_eq!(tombstone.removed_hash, original.body_hash());
+    assert_eq!(tombstone.original_actor, author.verifying_key().to_bytes());
+    assert_eq!(tombstone.original_at, 1_000);
+    assert_eq!(tombstone.redacted_by, moderator.verifying_key().to_bytes());
+    assert_eq!(tombstone.redacted_at, 6_000);
+    assert_eq!(tombstone.reason, RedactionReason::Privacy);
+    // Readers that still hold the body render the same tombstone.
+    assert_eq!(
+        render_post(&original, &entries),
+        Ok(Rendered::Removed(tombstone))
+    );
+
+    let shown = tombstone.to_string();
+    assert!(shown.contains("post removed"), "{shown}");
+    assert!(shown.contains(&hex_prefix(&author)), "{shown}");
+    assert!(shown.contains(&hex_prefix(&moderator)), "{shown}");
+    assert!(shown.contains("reason: privacy"), "{shown}");
+}
+
+fn hex_prefix(key: &SigningKey) -> String {
+    hex::encode(&key.verifying_key().to_bytes()[..4])
+}
+
+#[test]
+fn a_redacted_summary_keeps_the_chain_and_its_attribution() {
+    let actor = key(2);
+    let moderator = key(7);
+    let mut entries = chain(1);
+    entries.push(
+        SignedEntry::sign(
+            EntryDraft::after(&entries[0], ChangeKind::Edit, 30)
+                .unwrap()
+                .with_summary("renamed to something rude"),
+            &actor,
+        )
+        .unwrap()
+        .receive(31),
+    );
+    let target = RedactionTarget::Entry(entries[1].entry_hash().unwrap());
+    let redaction = redact(&mut entries, target, RedactionReason::Abuse, &moderator);
+
+    let mut stored = entries.clone();
+    stored[1] = entries[1].summary_redacted(&redaction).unwrap();
+    assert_eq!(stored[1].signed().summary(), None);
+    assert_eq!(stored[1].entry_hash(), entries[1].entry_hash());
+    // The chain verifies both before and after the summary is dropped,
+    // also when read back from storage.
+    let head = verify_chain(OBJECT, None, &entries).unwrap();
+    assert_eq!(verify_chain(OBJECT, None, &stored), Ok(head));
+    let bytes: Vec<Vec<u8>> = stored
+        .iter()
+        .map(|entry| entry.canonical_bytes().unwrap())
+        .collect();
+    assert_eq!(verify_chain_bytes(OBJECT, None, &bytes), Ok(head));
+
+    let Ok(Some(Rendered::Removed(tombstone))) = render_summary(&stored[1], &stored) else {
+        panic!("a redacted summary renders as a tombstone");
+    };
+    assert_eq!(tombstone.original_actor, actor.verifying_key().to_bytes());
+    assert_eq!(tombstone.redacted_by, moderator.verifying_key().to_bytes());
+    assert_eq!(tombstone.reason, RedactionReason::Abuse);
+    // Everything but the summary text survives.
+    assert_eq!(stored[1].signed().actor(), entries[1].signed().actor());
+    assert_eq!(stored[1].signed().kind(), ChangeKind::Edit);
+
+    // An entry that never had a summary renders none.
+    assert_eq!(render_summary(&stored[0], &stored), Ok(None));
+}
+
+#[test]
+fn redaction_rules_are_enforced() {
+    let moderator = key(7);
+    let original = post("hello", &key(1));
+    let target = RedactionTarget::Post(original.post_id().unwrap());
+
+    // A redact entry must name what it redacts, and only redact entries may.
+    let entries = chain(2);
+    let bare = EntryDraft::after(&entries[1], ChangeKind::Redact, 1);
+    assert!(SignedEntry::sign(bare.unwrap(), &moderator).is_err());
+    let smuggled = EntryDraft::after(&entries[1], ChangeKind::Edit, 1)
+        .unwrap()
+        .with_redaction(Redaction {
+            target,
+            reason: RedactionReason::Spam,
+        });
+    assert!(SignedEntry::sign(smuggled, &moderator).is_err());
+    let twice = EntryDraft::after(&entries[1], ChangeKind::Redact, 1)
+        .unwrap()
+        .with_redaction(Redaction {
+            target,
+            reason: RedactionReason::Spam,
+        })
+        .with_redaction(Redaction {
+            target,
+            reason: RedactionReason::Abuse,
+        });
+    assert!(SignedEntry::sign(twice, &moderator).is_err());
+
+    // A redaction of another post does not redact this one.
+    let mut entries = chain(2);
+    let other = post("other", &key(1));
+    let unrelated = redact(
+        &mut entries,
+        RedactionTarget::Post(other.post_id().unwrap()),
+        RedactionReason::Spam,
+        &moderator,
+    );
+    assert!(original.redacted(&unrelated).is_err());
+    assert_eq!(
+        render_post(&original, &entries),
+        Ok(Rendered::Text("hello"))
+    );
+
+    // A body cannot be dropped without a redaction covering it.
+    let dropped = other.redacted(&unrelated).unwrap();
+    assert!(render_post(&dropped, &chain(2)).is_err());
+
+    // A redaction on another object's chain does not apply.
+    let foreign = SignedEntry::sign(
+        EntryDraft::genesis(b"object-2".to_vec(), ChangeKind::Redact, 1).with_redaction(
+            Redaction {
+                target,
+                reason: RedactionReason::Legal,
+            },
+        ),
+        &moderator,
+    )
+    .unwrap()
+    .receive(1);
+    assert!(original.redacted(&foreign).is_err());
+
+    // A summary redaction names exactly the entry it redacts.
+    let mut entries = chain(1);
+    entries.push(
+        SignedEntry::sign(
+            EntryDraft::after(&entries[0], ChangeKind::Edit, 1)
+                .unwrap()
+                .with_summary("note"),
+            &key(2),
+        )
+        .unwrap()
+        .receive(2),
+    );
+    let target = RedactionTarget::Entry(entries[1].entry_hash().unwrap());
+    let redaction = redact(&mut entries, target, RedactionReason::Other, &moderator);
+    assert!(entries[1].summary_redacted(&redaction).is_ok());
+    // It names entry 1, so it does not redact entry 0.
+    assert!(entries[0].summary_redacted(&redaction).is_err());
+}
+
+#[test]
+fn redact_entries_round_trip_through_storage() {
+    let mut entries = chain(2);
+    let target = RedactionTarget::Entry(entries[1].entry_hash().unwrap());
+    let redaction = redact(
+        &mut entries,
+        target,
+        RedactionReason::AuthorRequest,
+        &key(7),
+    );
+    let decoded =
+        ChangelogEntry::from_canonical_bytes(&redaction.canonical_bytes().unwrap()).unwrap();
+    assert_eq!(decoded, redaction);
+    assert_eq!(
+        decoded.signed().redaction(),
+        Some(Redaction {
+            target,
+            reason: RedactionReason::AuthorRequest,
+        })
+    );
 }
