@@ -31,3 +31,16 @@ based on these unit tests, or tune the 30s/10s defaults from synthetic timings.
 - [Spill v2 design](../2026-11-08_design_id5787.md)
 - `crates/id-worlds/src/world/spill_gate.rs`
 - `crates/id-worlds/src/world/spill_pool.rs`
+
+---
+
+## 2026-11-25T01-52-00Z Update: Admission implementation
+
+The gate now derives the current epoch's grant/handoff position and returns
+`SpillDeny::ReplayPending` below it. An acceptance case checks refusal and zero
+dispatches below the boundary, and a property test varies handoff/grant boundaries
+and cursors while renewing the term. The red checkpoint is commit
+`31eeaf90bbab26a7085a4565919d8c2f565b2c1b`; remote execution is still pending
+confirmation, not evidence of a passing test. The first dispatch failed checkout
+because the abbreviated SHA was treated as a branch name; a full-SHA retry was
+submitted. Synthetic unit-test timing is not a game-day measurement.
