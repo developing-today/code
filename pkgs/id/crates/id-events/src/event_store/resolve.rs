@@ -606,7 +606,7 @@ fn causal_order(nodes: &[Node], position: &HashMap<Hash, usize>) -> Result<Vec<u
 pub(super) type Loaded = (Vec<Stored>, HashMap<AuthorKey, SeqNum>, Vec<Event>);
 
 /// Reads every stored event with its action, the fork points, and the kept fork proof headers.
-pub(super) fn load<T: RowRead>(rows: &mut T) -> Result<Loaded, StoreError> {
+pub(super) fn load<T: RowRead + ?Sized>(rows: &mut T) -> Result<Loaded, StoreError> {
     let actions: HashMap<_, _> = rows.scan_all("actions")?.into_iter().collect();
     let device_ops: HashMap<_, _> = rows.scan_all("device_ops")?.into_iter().collect();
     let mut stored = Vec::new();

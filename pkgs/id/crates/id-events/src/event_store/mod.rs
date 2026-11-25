@@ -70,12 +70,12 @@ use redb::{
 };
 
 use id_store::chain::{self, Event};
-use id_store::event_rows::{RowWrite, with_write_transaction};
+use id_store::event_rows::{RowRead, RowWrite, with_write_transaction};
 use id_store::turso::PipelineTransport;
 
-mod backend;
 mod anchors;
 mod author_events;
+mod backend;
 mod chat;
 mod claims;
 mod compaction;
@@ -209,6 +209,9 @@ pub const TEMP_NAME: &str = "events.redb.tmp";
 /// The format row in `meta`. A store with another format is refused.
 const FORMAT: &[u8] = b"id.events.store.v9";
 const FORMAT_KEY: &[u8] = b"format";
+/// The row store's `format` key belongs to `TenantStore`; keep the shared
+/// event-store version in a separate metadata slot on that backend.
+const TENANT_EVENT_FORMAT_KEY: &[u8] = b"event_format";
 /// The format before the `bodies` table (#4837). A v8 store is a v9 store
 /// with no `bodies` table and nothing else different, and v9 allows an event
 /// with no body row. So a v8 store is upgraded in place when it is opened:
@@ -445,19 +448,19 @@ impl<T: PipelineTransport> EventStore<TenantBackend<T>> {
         let backend = TenantBackend::open(transport)?;
         backend.with_write(|rows| {
             let mut txn = &mut *rows;
-            match txn.get("meta", FORMAT_KEY)? {
+            match txn.get("meta", TENANT_EVENT_FORMAT_KEY)? {
                 None => {
-                    if !txn.scan_page(EVENTS, None, 1)?.is_empty() {
+                    if !txn.scan_page("events", None, 1)?.is_empty() {
                         return Err(StoreError::NotAStore(
                             "event rows exist without a format marker".to_owned(),
                         ));
                     }
-                    txn.put("meta", FORMAT_KEY, FORMAT)?;
+                    txn.put("meta", TENANT_EVENT_FORMAT_KEY, FORMAT)?;
                     Ok(((), true))
                 }
                 Some(found) if found == FORMAT => Ok(((), false)),
                 Some(found) if found == FORMAT_V8 => {
-                    txn.put("meta", FORMAT_KEY, FORMAT)?;
+                    txn.put("meta", TENANT_EVENT_FORMAT_KEY, FORMAT)?;
                     Ok(((), true))
                 }
                 Some(found) => Err(StoreError::NotAStore(format!(
@@ -474,11 +477,7 @@ impl<B: EventStoreStorage> EventStore<B> {
     /// Builds the shared event-store logic over a backend whose event tables
     /// are already initialized. Both native and tenant stores use this path
     /// for device-operation recovery and waiting-pool reconstruction.
-    pub fn from_backend(
-        db: B,
-        limits: WaitingLimits,
-        now_ms: u64,
-    ) -> Result<Self, StoreError> {
+    pub fn from_backend(db: B, limits: WaitingLimits, now_ms: u64) -> Result<Self, StoreError> {
         let (recovered, recovery_incomplete) = db.with_write(|rows| {
             let mut txn = &mut *rows;
             let needs_recovery = txn.get("meta", DEVICE_OPS_RECOVERED_KEY)?.is_none();
@@ -699,7 +698,6 @@ impl EventStore<Database> {
 }
 
 impl<B: EventStoreStorage> EventStore<B> {
-
     /// The applied state of `author`'s chain, or `None` if the author has no events.
     ///
     /// # Errors
@@ -876,10 +874,11 @@ impl<B: EventStoreStorage> EventStore<B> {
     /// Returns [`StoreError::MissingBody`] when the event is header-only, its body never
     /// arrived, or no event with this ID is stored; a redb error if the read fails.
     pub fn event_body(&self, id: &Hash) -> Result<Vec<u8>, StoreError> {
-        self.db.with_read(|rows| match rows.get("bodies", id.as_bytes())? {
-            Some(body) => Ok(body),
-            None => Err(StoreError::MissingBody { id: *id }),
-        })
+        self.db
+            .with_read(|rows| match rows.get("bodies", id.as_bytes())? {
+                Some(body) => Ok(body),
+                None => Err(StoreError::MissingBody { id: *id }),
+            })
     }
 
     /// The stored body of the event with this ID, or `None` when there is none. The range
@@ -919,10 +918,40 @@ impl<B: EventStoreStorage> EventStore<B> {
             Ok(members)
         })
     }
+
+    /// Runs one ingest operation inside the backend's owned write transaction.
+    /// On an error the in-memory waiting pool may have moved ahead of storage,
+    /// so rebuild it from the committed rows before allowing another call.
+    fn transact_shared<T>(
+        &mut self,
+        now_ms: u64,
+        op: impl FnOnce(&mut Mirror<'_>) -> Result<(T, bool), StoreError>,
+    ) -> Result<T, StoreError> {
+        if self.unusable {
+            return Err(StoreError::Unusable);
+        }
+        let mut changed = false;
+        let result = self.db.with_write(|txn| {
+            let mut mirror = Mirror {
+                txn: &mut *txn,
+                pool: &mut self.waiting,
+                arrivals: &mut self.next_arrival,
+            };
+            let (value, did_change) = op(&mut mirror)?;
+            changed = did_change;
+            Ok((value, did_change))
+        });
+        if result.is_err() && self.reload(now_ms).is_err() {
+            self.unusable = true;
+        }
+        if changed {
+            self.generation = self.generation.wrapping_add(1);
+        }
+        result
+    }
 }
 
 impl EventStore<Database> {
-
     /// Prunes events behind a causal cut that are not in the protected causal past.
     ///
     /// What must survive:
@@ -1774,7 +1803,33 @@ pub(super) fn lowest_proof(
     }
 }
 
-impl EventStore {
+/// The fork proof at `(author, seq)`, through the shared event-row interface.
+pub(super) fn proof_at_rows<T: RowRead + ?Sized>(
+    rows: &mut T,
+    author: &AuthorKey,
+    seq: SeqNum,
+) -> Result<Option<ForkProof>, StoreError> {
+    let key = position_key(author, seq);
+    rows.get("forks", &key)?
+        .map(|bytes| decode_proof(&bytes))
+        .transpose()
+}
+
+/// The lowest fork proof for `author`, through the shared event-row interface.
+pub(super) fn lowest_proof_rows<T: RowRead + ?Sized>(
+    rows: &mut T,
+    author: &AuthorKey,
+) -> Result<Option<ForkProof>, StoreError> {
+    for (key, bytes) in rows.scan_all("forks")? {
+        let (found_author, _seq) = split_position(&key)?;
+        if &found_author == author {
+            return Ok(Some(decode_proof(&bytes)?));
+        }
+    }
+    Ok(None)
+}
+
+impl<B: EventStoreStorage> EventStore<B> {
     /// The applied events of `author` with sequence numbers in `(after, until]`, in sequence
     /// order, at most `limit` of them. `after` is exclusive and `until` is inclusive. `None`
     /// leaves that side open. Events past a fork point are stored but not applied, so they are
@@ -1790,7 +1845,6 @@ impl EventStore {
         until: Option<SeqNum>,
         limit: usize,
     ) -> Result<Vec<Event>, StoreError> {
-        let txn = self.db.begin_read()?;
         let first = match after {
             Some(after) => after.checked_add(1),
             None => Some(0),
@@ -1798,25 +1852,35 @@ impl EventStore {
         let Some(first) = first else {
             return Ok(Vec::new());
         };
-        let last = until.unwrap_or(SeqNum::MAX);
-        if first > last {
-            return Ok(Vec::new());
-        }
-        let applied = txn.open_table(APPLIED)?;
-        let events = txn.open_table(EVENTS)?;
-        let (start, end) = (position_key(author, first), position_key(author, last));
-        let mut found = Vec::new();
-        for row in events.range(start.as_slice()..=end.as_slice())? {
-            if found.len() >= limit {
-                break;
+        self.db.with_read(|rows| {
+            let Some(chain_bytes) = rows.get("chains", author.as_slice())? else {
+                return Ok(Vec::new());
+            };
+            let chain = Chain::decode(&chain_bytes)?;
+            let Some(chain_last) = chain.next_seq.checked_sub(1) else {
+                return Ok(Vec::new());
+            };
+            let last = until.unwrap_or(SeqNum::MAX).min(chain_last);
+            if first > last {
+                return Ok(Vec::new());
             }
-            let (_position, bytes) = row?;
-            let event = decode_stored(bytes.value())?;
-            if applied.get(event.id.as_bytes().as_slice())?.is_some() {
-                found.push(event);
+            let mut found = Vec::new();
+            let mut seq = first;
+            while seq <= last && found.len() < limit {
+                let key = position_key(author, seq);
+                if let Some(bytes) = rows.get("events", &key)? {
+                    let event = decode_stored(&bytes)?;
+                    if rows.get("applied", event.id.as_bytes())?.is_some() {
+                        found.push(event);
+                    }
+                }
+                seq = match seq.checked_add(1) {
+                    Some(next) => next,
+                    None => break,
+                };
             }
-        }
-        Ok(found)
+            Ok(found)
+        })
     }
 }
 

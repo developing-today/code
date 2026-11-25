@@ -105,13 +105,13 @@ impl Row {
 }
 
 /// The row for `id`, if one is held.
-pub(super) fn get<T: RowWrite>(txn: &mut T, id: &Hash) -> Result<Option<Row>, StoreError> {
+pub(super) fn get<T: RowWrite + ?Sized>(txn: &mut T, id: &Hash) -> Result<Option<Row>, StoreError> {
     let found = txn.get(WAITING, id.as_bytes().as_slice())?;
     found.map(|found| Row::decode(*id, &found)).transpose()
 }
 
 /// Every row, in arrival order.
-pub(super) fn all<T: RowWrite>(txn: &mut T) -> Result<Vec<Row>, StoreError> {
+pub(super) fn all<T: RowWrite + ?Sized>(txn: &mut T) -> Result<Vec<Row>, StoreError> {
     let mut all = Vec::new();
     for (key, value) in txn.scan_all(WAITING)? {
         all.push(Row::decode(hash_of(&key)?, &value)?);
@@ -121,7 +121,7 @@ pub(super) fn all<T: RowWrite>(txn: &mut T) -> Result<Vec<Row>, StoreError> {
 }
 
 /// Writes `row` in place of any row with its ID, and indexes the dependencies it waits for.
-pub(super) fn put<T: RowWrite>(txn: &mut T, row: &Row) -> Result<(), StoreError> {
+pub(super) fn put<T: RowWrite + ?Sized>(txn: &mut T, row: &Row) -> Result<(), StoreError> {
     if let Some(old) = get(txn, &row.id)? {
         unindex(txn, &old)?;
     }
@@ -141,14 +141,14 @@ pub(super) fn put<T: RowWrite>(txn: &mut T, row: &Row) -> Result<(), StoreError>
 /// it: a held device operation is only kept while the event is held, so its row and its
 /// operation go together (#8160). Every drop of a held-but-not-stored event uses this, so no
 /// caller can leave the operation behind.
-pub(super) fn drop_held<T: RowWrite>(txn: &mut T, id: &Hash) -> Result<(), StoreError> {
+pub(super) fn drop_held<T: RowWrite + ?Sized>(txn: &mut T, id: &Hash) -> Result<(), StoreError> {
     delete(txn, id)?;
     txn.remove(DEVICE_OPS, id.as_bytes().as_slice())?;
     Ok(())
 }
 
 /// Removes the row for `id`, if there is one.
-pub(super) fn delete<T: RowWrite>(txn: &mut T, id: &Hash) -> Result<(), StoreError> {
+pub(super) fn delete<T: RowWrite + ?Sized>(txn: &mut T, id: &Hash) -> Result<(), StoreError> {
     let Some(old) = get(txn, id)? else {
         return Ok(());
     };
@@ -157,7 +157,7 @@ pub(super) fn delete<T: RowWrite>(txn: &mut T, id: &Hash) -> Result<(), StoreErr
     Ok(())
 }
 
-fn unindex<T: RowWrite>(txn: &mut T, row: &Row) -> Result<(), StoreError> {
+fn unindex<T: RowWrite + ?Sized>(txn: &mut T, row: &Row) -> Result<(), StoreError> {
     for dep in &row.deps {
         txn.multi_remove(
             WAITING_BY_DEP,
@@ -169,7 +169,7 @@ fn unindex<T: RowWrite>(txn: &mut T, row: &Row) -> Result<(), StoreError> {
 }
 
 /// The IDs of the rows that wait for `dep`.
-fn waiters_of<T: RowWrite>(txn: &mut T, dep: &Hash) -> Result<Vec<Hash>, StoreError> {
+fn waiters_of<T: RowWrite + ?Sized>(txn: &mut T, dep: &Hash) -> Result<Vec<Hash>, StoreError> {
     let mut waiters = Vec::new();
     for value in txn.multi_values(WAITING_BY_DEP, dep.as_bytes().as_slice())? {
         waiters.push(hash_of(&value)?);

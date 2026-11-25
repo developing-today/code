@@ -82,26 +82,6 @@ pub struct DiscoveredWriterSet {
 }
 
 impl EventStore {
-    /// Retains the body of a writer-set or rescind event, keyed by the
-    /// event's ID. Called from the ingest path once the body has been
-    /// verified against the header's payload commitment; a body retained for
-    /// an event that is later superseded by a fork proof is harmless, as
-    /// every read cross-checks the body against the stored header and the
-    /// applied state.
-    ///
-    /// # Errors
-    ///
-    /// Returns a redb error if the write fails.
-    pub(super) fn record_writer_body(&self, id: &Hash, body: &[u8]) -> Result<(), StoreError> {
-        let txn = self.db.begin_write()?;
-        {
-            let mut bodies = txn.open_table(WRITER_SET_BODIES)?;
-            bodies.insert(id.as_bytes().as_slice(), body)?;
-        }
-        txn.commit()?;
-        Ok(())
-    }
-
     /// The retained body of the event with this ID, when one was ingested
     /// with the event. Only writer-set and rescind events retain bodies.
     ///
@@ -299,5 +279,16 @@ impl EventStore {
             });
         }
         Ok(hits)
+    }
+}
+
+impl<B: super::EventStoreStorage> EventStore<B> {
+    /// Retains a verified writer-set or rescind body on any event-store
+    /// backend. The row write shares the backend's transaction ownership.
+    pub(super) fn record_writer_body(&self, id: &Hash, body: &[u8]) -> Result<(), StoreError> {
+        self.db.with_write(|rows| {
+            rows.put("writer_set_bodies", id.as_bytes(), body)?;
+            Ok(((), true))
+        })
     }
 }

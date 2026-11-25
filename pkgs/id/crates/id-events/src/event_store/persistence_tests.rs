@@ -826,15 +826,16 @@ fn tenant_backend_transaction_round_trip_and_abort_match_native() {
                 Ok(((), true))
             })
             .unwrap();
-        let aborted: Result<(), StoreError> = backend.with_write(
-            |rows| -> Result<((), bool), StoreError> {
+        let aborted: Result<(), StoreError> =
+            backend.with_write(|rows| -> Result<((), bool), StoreError> {
                 rows.put("meta", b"rollback-key", b"partial")?;
                 Err(corrupt("forced transaction abort"))
-            },
-        );
+            });
         assert!(aborted.is_err());
         assert_eq!(
-            backend.with_read(|rows| rows.get("meta", b"rollback-key")).unwrap(),
+            backend
+                .with_read(|rows| rows.get("meta", b"rollback-key"))
+                .unwrap(),
             None,
             "a failed batch must leave no partial row"
         );
@@ -847,4 +848,24 @@ fn tenant_backend_transaction_round_trip_and_abort_match_native() {
     let native = Database::create(dir.path().join("driver.redb")).unwrap();
     let tenant = TenantBackend::open(SqliteEndpoint::new()).unwrap();
     assert_eq!(exercise(&tenant), exercise(&native));
+}
+
+/// The tenant row store and the shared event store have independent format
+/// markers; reopening must preserve both markers and accept the same database.
+#[test]
+fn tenant_event_store_reopens_without_replacing_tenant_format() {
+    let transport = SqliteEndpoint::new();
+    let first = TenantEventStore::open_tenant(
+        transport.clone(),
+        id_core::waiting::WaitingLimits::default(),
+        0,
+    )
+    .unwrap();
+    assert!(first.blocks().unwrap().is_empty());
+    drop(first);
+
+    let reopened =
+        TenantEventStore::open_tenant(transport, id_core::waiting::WaitingLimits::default(), 0)
+            .unwrap();
+    assert!(reopened.blocks().unwrap().is_empty());
 }
