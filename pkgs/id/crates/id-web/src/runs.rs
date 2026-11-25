@@ -160,6 +160,7 @@ where
         .route(RUNS_PATH, post(run_handler))
         .route(APP_MANIFEST_PATH, get(manifest_handler))
         .merge(crate::sessions::session_routes())
+        .merge(crate::presentation::presentation_routes())
         .with_state(Arc::new(config))
 }
 
@@ -201,6 +202,13 @@ pub struct RunManifest {
     /// Required and optional capabilities.
     #[serde(default)]
     pub capabilities: ManifestCapabilities,
+    /// How the app's pages reach the client (§4.6).
+    #[serde(default)]
+    pub pages: crate::presentation::Pages,
+    /// The app folder its client-side assets are served from. Never
+    /// serialized: clients see asset URLs, not server paths.
+    #[serde(skip)]
+    pub root: Option<std::path::PathBuf>,
 }
 
 /// The run manifests a server knows, keyed by app id.
@@ -1048,7 +1056,13 @@ async fn manifest_handler(
         );
     }
     match config.apps.get(&app) {
-        Some(manifest) => Json(manifest).into_response(),
+        Some(manifest) => match crate::presentation::manifest_document(manifest) {
+            Ok(document) => Json(document).into_response(),
+            Err(error) => error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("app {app:?} assets are unreadable: {error}"),
+            ),
+        },
         None => error_response(StatusCode::NOT_FOUND, format!("unknown app {app:?}")),
     }
 }
@@ -1256,6 +1270,8 @@ mod tests {
                 required: vec!["fs.read".to_owned(), "net".to_owned()],
                 optional: vec!["device.audio".to_owned()],
             },
+            pages: crate::presentation::Pages::default(),
+            root: None,
         };
         Arc::new(BTreeMap::from([("notes".to_owned(), manifest)]))
     }

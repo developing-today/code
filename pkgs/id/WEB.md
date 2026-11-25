@@ -126,6 +126,7 @@ crates/id-web/src/
 ├── gallery.rs            # Program gallery routes
 ├── runs.rs               # POST /v1/runs: argv parity, SSE output, app loader
 ├── sessions.rs           # /v1/sessions: event log, input frames, replay, socket
+├── presentation.rs       # App assets, offline bundles, single-file HTML
 ├── groups.rs             # Groups page
 ├── identity.rs           # Web client identity routes
 ├── seitan.rs             # Seitan admission (invite / admit)
@@ -383,14 +384,26 @@ attach with `since`, `after`, `before` + `after` or `all=1`; when retention
 event `{truncated, first_retained_seq}` comes first. The socket carries the
 same event and input objects.
 
-| Route                      | Method | Description                                  |
-| -------------------------- | ------ | -------------------------------------------- |
-| `/v1/runs`                 | POST   | Run one subcommand; JSON when done, or SSE   |
-| `/v1/apps/{app}/manifest`  | GET    | An app's run manifest (capabilities, assets) |
-| `/v1/sessions`             | POST   | Create a session; answers `{id}`             |
-| `/v1/sessions/{id}/input`  | POST   | One numbered input frame                     |
-| `/v1/sessions/{id}/events` | GET    | Attach or replay as SSE                      |
-| `/v1/sessions/{id}/socket` | GET    | Attach over a WebSocket (events and input)   |
+Presentation (§6.5): an app lists its client-side files in
+`[interfaces.web] assets` and picks `pages = "multi"` (default) or `"single"`.
+The manifest answer adds `assets`, each with a content-hashed URL; a request
+with the current `?v=` is cached as immutable, a stale one is 404. Only
+declared files inside the app folder are served. `bundle?format=tar.zst` (or
+`zip`) packs every asset and `manifest.json` for offline use, and
+`bundle.html` inlines scripts, styles and images into one file, each page in
+a `<template data-page>`.
+
+| Route                           | Method | Description                                  |
+| ------------------------------- | ------ | -------------------------------------------- |
+| `/v1/runs`                      | POST   | Run one subcommand; JSON when done, or SSE   |
+| `/v1/apps/{app}/manifest`       | GET    | An app's run manifest (capabilities, assets) |
+| `/v1/sessions`                  | POST   | Create a session; answers `{id}`             |
+| `/v1/sessions/{id}/input`       | POST   | One numbered input frame                     |
+| `/v1/sessions/{id}/events`      | GET    | Attach or replay as SSE                      |
+| `/v1/sessions/{id}/socket`      | GET    | Attach over a WebSocket (events and input)   |
+| `/v1/apps/{app}/assets/{*path}` | GET    | One declared asset, by content hash          |
+| `/v1/apps/{app}/bundle`         | GET    | Offline bundle (`format=tar.zst` or `zip`)   |
+| `/v1/apps/{app}/bundle.html`    | GET    | The web version as one HTML file             |
 
 ### WebSocket
 

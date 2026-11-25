@@ -54,6 +54,7 @@ mod groups;
 mod home;
 mod identity;
 mod markdown;
+pub mod presentation;
 mod routes;
 pub mod runs;
 mod security;
