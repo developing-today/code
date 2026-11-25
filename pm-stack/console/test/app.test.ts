@@ -54,6 +54,7 @@ import {
   machinesMark,
   reposTyped,
   settingSaid,
+  settingsTakenSaid,
   matchReportSaid,
   mergeMatchReport,
   offerSaid,
@@ -882,6 +883,8 @@ test("a machine, as the Machines screen says it: what only it reports and does, 
     // Nothing said of the code Cloudflare runs, and it is on main's settings.
     otherCode: "",
     differs: [],
+    // The owner has changed no setting: nothing to take.
+    settings: "",
   });
   // Cloudflare's own commit, where it is known: said when the machine runs another, and only then.
   expect(machineSaid(machine, platform, now, "0123abcd4567").otherCode).toBe("");
@@ -965,6 +968,7 @@ test("the Machines screen is drawn again when what it shows has changed, and not
     ["it can do something more", answer({ machines: [{ ...machine, actions: ["a.b", "c.d"] }] })],
     ["it is called something else", answer({ machines: [{ ...machine, name: "amd" }] })],
     ["there is another", answer({ machines: [machine, { ...machine, name: "amd" }] })],
+    ["it took the owner's settings", answer({ machines: [{ ...machine, settingsRev: 2 }] })],
     ["there is none", answer({ machines: [] })],
     ["something else waits", answer({ held: [{ id: "h1" }, { id: "h2" }] })],
     ["what waits now waits for someone else", answer({ held: [{ id: "h1", kind: "task.move", waits: "asked" }] })],
@@ -1822,4 +1826,19 @@ test("a list of repositories is read as typed: commas, spaces or lines between t
   expect(reposTyped("a/b, c/d\ne/f  g/h,,")).toEqual(["a/b", "c/d", "e/f", "g/h"]);
   expect(reposTyped("")).toEqual([]);
   expect(reposTyped(undefined)).toEqual([]);
+});
+
+test("a machine that has not taken the owner's latest change to the settings is said to, and one that has is not", () => {
+  // The owner has changed none: nothing to say, whatever the machine says.
+  expect(settingsTakenSaid(0, 0)).toBe("");
+  expect(settingsTakenSaid(null, 0)).toBe("");
+  expect(settingsTakenSaid(undefined, undefined)).toBe("");
+  // It runs with the latest.
+  expect(settingsTakenSaid(3, 3)).toBe("");
+  // It is behind: it takes it with its next report.
+  expect(settingsTakenSaid(2, 3)).toBe("It has not taken your latest change to the settings yet: it will with its next report.");
+  expect(settingsTakenSaid(0, 1)).toBe("It has not taken your latest change to the settings yet: it will with its next report.");
+  // Its console does not take them at all.
+  expect(settingsTakenSaid(null, 1)).toBe("Its console is older than changing the settings from here: it runs with its own.");
+  expect(settingsTakenSaid(undefined, 1)).toBe("Its console is older than changing the settings from here: it runs with its own.");
 });

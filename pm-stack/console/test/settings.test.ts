@@ -10,6 +10,7 @@ import {
   NEEDS_REPOS_MAX,
   OWNER_CHANGEABLE,
   ownerSettingChange,
+  ownerSettingsAdopted,
   PLATFORM_OWN,
   PLATFORM_SETTING_NAMES,
   PROMPT_LABEL_MAX,
@@ -348,5 +349,50 @@ describe("a change the owner asks for is checked whole", () => {
     expect(refused("needsRepos", Array.from({ length: NEEDS_REPOS_MAX + 5 }, () => "o/r"))).toBe("taken");
     const said = ownerSettingChange("promptLabel", "secret,label");
     expect(JSON.stringify(said)).not.toContain("secret");
+  });
+});
+
+// The oracle is the design's D6: a machine runs with the owner's changes
+// as the edge said them, its own for what was not changed, and keeps
+// what it runs with when what was said is not the owner's changes.
+describe("a machine takes the owner's changes as the edge says them", () => {
+  const own = { promptLabel: "owner/prompt", needsRepos: ["developing-today/code"] };
+
+  test("nothing said is its own, at revision 0", () => {
+    expect(ownerSettingsAdopted(own, undefined)).toEqual({ rev: 0, values: own });
+    expect(ownerSettingsAdopted(own, null)).toEqual({ rev: 0, values: own });
+  });
+
+  test("what the owner changed is run with; what the owner did not is its own", () => {
+    expect(ownerSettingsAdopted(own, { rev: 3, values: { promptLabel: "owner/now" } })).toEqual({
+      rev: 3,
+      values: { promptLabel: "owner/now", needsRepos: ["developing-today/code"] },
+    });
+    expect(ownerSettingsAdopted(own, { rev: 4, values: { needsRepos: ["a/b", "a/b", "c/d"] } })).toEqual({
+      rev: 4,
+      values: { promptLabel: "owner/prompt", needsRepos: ["a/b", "c/d"] },
+    });
+    // Every change put back: its own again, at the revision that says so.
+    expect(ownerSettingsAdopted(own, { rev: 5, values: {} })).toEqual({ rev: 5, values: own });
+    // What it is given back is its own to change.
+    const taken = ownerSettingsAdopted(own, { rev: 5, values: {} });
+    taken?.values.needsRepos.push("x/y");
+    expect(own.needsRepos).toEqual(["developing-today/code"]);
+  });
+
+  test("what does not read as the owner's changes is not taken at all", () => {
+    for (const said of [
+      { rev: 0, values: {} },
+      { rev: 1.5, values: {} },
+      { rev: "2", values: {} },
+      { rev: 2 },
+      { rev: 2, values: [] },
+      { rev: 2, values: { queue: "another" } },
+      { rev: 2, values: { promptLabel: "" } },
+      { rev: 2, values: { promptLabel: "ok", needsRepos: ["not a repository"] } },
+      "settings",
+    ]) {
+      expect([said, ownerSettingsAdopted(own, said)]).toEqual([said, null]);
+    }
   });
 });

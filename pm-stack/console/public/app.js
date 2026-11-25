@@ -2904,7 +2904,18 @@ export function machineSaid(machine, platform, now = Date.now(), serving = null)
     otherCode: version && cloud && version !== cloud ? `Cloudflare runs ${cloud}: the two are on different code.` : "",
     // The platform's settings it runs with others of, each in a sentence.
     differs: (Array.isArray(machine.differs) ? machine.differs : []).map(differsSaid),
+    settings: settingsTakenSaid(machine.settingsRev, platform?.settingsRev),
   };
+}
+
+/** Whether a machine runs with the owner's latest change to the
+ * settings, in a sentence; empty when it does, or when the owner has
+ * changed none (#14957). Until it has, Cloudflare goes by the change
+ * all the same: a machine is told it with its next report. */
+export function settingsTakenSaid(machineRev, platformRev) {
+  if (!Number.isSafeInteger(platformRev) || platformRev < 1 || machineRev === platformRev) return "";
+  if (!Number.isSafeInteger(machineRev)) return "Its console is older than changing the settings from here: it runs with its own.";
+  return "It has not taken your latest change to the settings yet: it will with its next report.";
 }
 
 /** What the Machines screen shows that can change with nothing else
@@ -2926,6 +2937,7 @@ export function machinesMark(m, now = Date.now()) {
       (x.sections || []).length,
       x.quiet && x.seen ? Math.floor((now - x.seen) / 60_000) : 0,
       Array.isArray(x.differs) ? x.differs : [],
+      x.settingsRev ?? null,
     ]),
     // Who each waits for is drawn too, and changes while it waits.
     held: (m?.held || []).map((item) => [item.id, item.waits ?? ""]),
@@ -3005,6 +3017,7 @@ async function viewMachines() {
         h("div", { class: "row" }, chip(s.reporting ? "reporting" : "away", s.reporting ? "good" : "warn")),
         h("h3", {}, s.name),
         h("p", { class: "meta" }, [s.state, s.version ? `Running ${s.version}.` : "", s.otherCode].filter(Boolean).join(" ")),
+        s.settings ? h("p", { class: "why" }, s.settings) : null,
         s.differs.length
           ? h(
               "details",

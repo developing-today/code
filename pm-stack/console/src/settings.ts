@@ -165,6 +165,31 @@ export function goesBy<T extends PlatformSettings>(told: T, platform: PlatformSe
   return { ...told, ...own };
 }
 
+/** What a machine runs with for the settings the owner may change (#14957):
+ * its own (its environment's, or main's), with the owner's changes as the
+ * edge said them on top, and the revision of the owner's changes that
+ * gives. Nothing said is revision 0, the machine's own. What the edge
+ * said that does not read as the owner's changes is null: the machine
+ * keeps what it runs with now, and says the revision it last applied. */
+export function ownerSettingsAdopted(
+  own: Pick<PlatformSettings, OwnerChangeableName>,
+  said: unknown,
+): { rev: number; values: Pick<PlatformSettings, OwnerChangeableName> } | null {
+  const values = { promptLabel: own.promptLabel, needsRepos: [...own.needsRepos] };
+  if (said === undefined || said === null) return { rev: 0, values };
+  const v = said as { rev?: unknown; values?: unknown };
+  if (typeof v !== "object" || !Number.isSafeInteger(v.rev) || (v.rev as number) < 1) return null;
+  const raw = v.values as Record<string, unknown> | null;
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  for (const [name, value] of Object.entries(raw)) {
+    const change = ownerSettingChange(name, value);
+    if ("error" in change) return null;
+    if (change.name === "promptLabel") values.promptLabel = change.value;
+    else values.needsRepos = change.value;
+  }
+  return { rev: v.rev as number, values };
+}
+
 /** Effective settings in repository → machine (needsRepos only) → owner order.
  * Neither input is changed; absent owner values leave the existing merge in force. */
 export function effectiveSettings<T extends PlatformSettings>(

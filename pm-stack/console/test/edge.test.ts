@@ -21,7 +21,7 @@ import { forgetPoke, type Io, route } from "../edge/src/entry.ts";
 import type { Action } from "../src/actions.ts";
 import { clearJwksCache, identify } from "../src/auth.ts";
 import { readConfig } from "../src/config.ts";
-import { PLATFORM_SETTING_NAMES, platformSettings } from "../src/settings.ts";
+import { ownerSettingsAdopted, PLATFORM_SETTING_NAMES, platformSettings } from "../src/settings.ts";
 import { Devices, Limiter } from "../src/devices.ts";
 import { Docs } from "../src/docs.ts";
 import { NEEDS_LABELS } from "../src/needs.ts";
@@ -1244,6 +1244,9 @@ async function setup(options: { direct?: boolean; kinds?: readonly string[]; bri
   const done = memoryStore();
   /** What the machine says of itself in each report; null for a console
    * older than the saying, which says nothing. */
+  /** How the machine takes the owner's changed settings, when it does:
+   * a console older than that has none. */
+  const adopts: { now: ((said: unknown) => number | null) | null } = { now: null };
   const machineSays: { now: { name: string; actions: string[] } | null } = {
     now: { name: "nixos", actions: Object.keys(table).sort() },
   };
@@ -1251,6 +1254,7 @@ async function setup(options: { direct?: boolean; kinds?: readonly string[]; bri
     new EdgeLink({
       version: "0123abcd4567",
       ...(machineSays.now ? { machine: () => machineSays.now as { name: string; actions: string[] } } : {}),
+      ...(adopts.now ? { adopt: adopts.now } : {}),
       apk: async () => {
         if (!build.bytes) return null;
         const bytes = build.bytes;
@@ -1368,6 +1372,7 @@ async function setup(options: { direct?: boolean; kinds?: readonly string[]; bri
     link,
     makeLink,
     machineSays,
+    adopts,
     later,
     token,
     browse,
@@ -2187,6 +2192,8 @@ describe("actions", () => {
           "triage.enqueue",
         ],
         sections: [...SECTION_NAMES].sort(),
+        // A console that does not take the owner's settings says no revision.
+        settingsRev: null,
       },
     ]);
     // The machine goes away. What the owner does that may wait, waits; the list says what.
@@ -2261,7 +2268,15 @@ describe("actions", () => {
     await w.link.now.once();
     const machines = async () => (await (await w.browse("/console/api/machines")).json()) as MachinesAnswer;
     expect((await machines()).machines).toEqual([
-      { name: "A machine", seen: w.now.t, quiet: false, version: "0123abcd4567", actions: [], sections: [] },
+      {
+        name: "A machine",
+        seen: w.now.t,
+        quiet: false,
+        version: "0123abcd4567",
+        actions: [],
+        sections: [],
+        settingsRev: null,
+      },
     ]);
     // A name that is not one, or a list that is not a list of kinds.
     for (const says of [
@@ -4301,6 +4316,76 @@ describe("which settings are in force is said, and since when", () => {
     });
     expect(res.status).not.toBe(200);
     expect((await machines(w)).platform?.settingsRev).toBe(0);
+  });
+
+  test("a machine is told the owner's changes, runs with them, and says so; until then the screen says it has not", async () => {
+    const w = await setup({ direct: true });
+    // The machine's own: main's label and its own list.
+    const own = { promptLabel: w.edgeConfig.promptLabel, needsRepos: [...w.edgeConfig.needsRepos] };
+    const runs = { ...own, rev: 0 };
+    const said: unknown[] = [];
+    w.adopts.now = (settings) => {
+      said.push(settings);
+      const adopted = ownerSettingsAdopted(own, settings);
+      if (adopted === null) return null;
+      Object.assign(runs, adopted.values, { rev: adopted.rev });
+      // It reports what it runs with, as a console does.
+      w.edgeConfig.promptLabel = adopted.values.promptLabel;
+      w.edgeConfig.needsRepos = adopted.values.needsRepos;
+      return adopted.rev;
+    };
+    w.link.now = w.makeLink();
+    await w.hostReads();
+    await w.link.now.once();
+    // Before the owner changes anything, nothing is said, and it runs with its own.
+    expect(said).toEqual([undefined]);
+    expect((w.reports.at(-1) as { settingsRev?: number } | undefined)?.settingsRev).toBe(0);
+    let answer = await machines(w);
+    expect([answer.platform?.settingsRev, answer.machines[0].settingsRev]).toEqual([0, 0]);
+    // The owner changes the label from the app: Cloudflare goes by it at
+    // once, and the machine has not taken it yet.
+    await w.act("settings.set", { name: "promptLabel", value: "owner/label", baseRev: 0 });
+    answer = await machines(w);
+    expect([answer.platform?.settingsRev, answer.machines[0].settingsRev]).toEqual([1, 0]);
+    // With its next report it is told, runs with it and says so.
+    w.now.t += 1_000;
+    await w.link.now.once();
+    expect(said.at(-1)).toEqual({ rev: 1, values: { promptLabel: "owner/label" } });
+    expect(runs).toMatchObject({ promptLabel: "owner/label", needsRepos: own.needsRepos, rev: 1 });
+    w.now.t += 1_000;
+    await w.link.now.once();
+    expect((w.reports.at(-1) as { settingsRev?: number } | undefined)?.settingsRev).toBe(1);
+    answer = await machines(w);
+    expect(answer.machines[0].settingsRev).toBe(1);
+    // Running with the owner's label is not a difference from main.
+    expect(answer.machines[0].differs ?? []).toEqual([]);
+    const differ = ((await (await w.browse("/console/health", { token: null })).json()) as { machineSettingsDiffer: string[] })
+      .machineSettingsDiffer;
+    expect(differ).toEqual([]);
+    // Put back, the machine is told the record with nothing in it and runs with its own again.
+    await w.act("settings.clear", { name: "promptLabel" });
+    w.now.t += 1_000;
+    await w.link.now.once();
+    expect(said.at(-1)).toEqual({ rev: 2, values: {} });
+    expect(runs).toMatchObject({ ...own, rev: 2 });
+    // The machine's word survives the object being put away.
+    w.now.t += 1_000;
+    await w.link.now.once();
+    w.edge.now = w.makeEdge();
+    expect((await machines(w)).machines[0].settingsRev).toBe(2);
+  });
+
+  test("a machine's own label, other than main's, is still said as one where the owner has not changed it", async () => {
+    const w = await setup({ direct: true });
+    w.edgeConfig.promptLabel = "machine/label";
+    await w.hostReads();
+    await w.link.now.once();
+    expect((await machines(w)).machines[0].differs?.map((d) => d.name)).toEqual(["promptLabel"]);
+    // Once the owner has changed it, the machine is compared with the change by its revision instead.
+    await w.act("settings.set", { name: "promptLabel", value: "owner/label" });
+    expect((await machines(w)).machines[0].differs ?? []).toEqual([]);
+    // A console older than taking the owner's settings says no revision.
+    expect((await machines(w)).machines[0].settingsRev).toBeNull();
   });
 });
 

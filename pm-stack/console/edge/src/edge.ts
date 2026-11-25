@@ -184,6 +184,17 @@ export function ownerSettingsRecord(value: unknown): OwnerSettings | null {
   return { rev: v.rev as number, at: v.at, by: v.by, values };
 }
 
+/** Whether the owner changed this setting: a machine is then compared
+ * with the owner's change by the revision it has taken, not with main. */
+function ownerChanged(owner: OwnerSettings | null, name: string): boolean {
+  return owner !== null && Object.prototype.hasOwnProperty.call(owner.values, name);
+}
+
+/** A revision of the owner's settings as a machine said it, or null. */
+function settingsRevSaid(value: unknown): number | null {
+  return Number.isSafeInteger(value) && (value as number) >= 0 ? (value as number) : null;
+}
+
 /** The app's files and what each is served as: public/files.json is the
  * one list of them, and this Worker's build ships exactly those. */
 const STATIC: Record<string, string> = Object.fromEntries(appFiles.files.map((f) => [f.path, f.type]));
@@ -312,6 +323,10 @@ export class Edge {
    * it can do. Null until one has said, or from a console older than
    * the saying. */
   private machine: MachineReport | null = null;
+  /** The revision of the owner's changed settings the machine that
+   * reports last said it runs with; null from a console older than the
+   * saying (#14957). */
+  private hostSettingsRev: number | null = null;
   /** The Android build: the newest released, and the copy kept here. */
   private builds: Builds;
   /** Reports refused per address. Memory only, by decision: a flood
@@ -1111,7 +1126,8 @@ export class Edge {
     const refused = this.refusedKinds();
     const seen = this.hostSeen || null;
     const told = await this.toldConfig();
-    const differs = told === null ? [] : settingsDifferences(told);
+    const owner = await this.ownerSettings();
+    const differs = told === null ? [] : settingsDifferences(told).filter((d) => !ownerChanged(owner, d.name));
     return {
       served: "edge",
       platform: {
@@ -1127,8 +1143,8 @@ export class Edge {
         refused: [...refused, ...this.refusedReads().map((name) => `read.${name}`)],
         // Which settings are in force, from where, since when, with
         // their values: this answer is the owner's alone.
-        settings: settingsInForce(told, await this.ownerSettings()),
-        settingsRev: (await this.ownerSettings())?.rev ?? 0,
+        settings: settingsInForce(told, owner),
+        settingsRev: owner?.rev ?? 0,
       },
       // One machine can report today: the one whose key this side holds.
       machines:
@@ -1143,6 +1159,7 @@ export class Edge {
                 actions: this.machine?.actions ?? [],
                 sections: this.machine?.sections ?? [],
                 ...(differs.length > 0 ? { differs } : {}),
+                settingsRev: this.hostSettingsRev,
               },
             ],
       held: await this.heldSaid(cfg),
@@ -1241,6 +1258,7 @@ export class Edge {
             confirmed?: Record<string, { hash: string; at: number; error: string | null }>;
             version?: string | null;
             machine?: unknown;
+            settingsRev?: number | null;
           }
         | undefined;
       this.hostSeen = host?.seen ?? 0;
@@ -1248,6 +1266,7 @@ export class Edge {
       this.confirmed = host?.confirmed ?? {};
       this.hostVersion = host?.version ?? null;
       this.machine = machineReport(host?.machine);
+      this.hostSettingsRev = settingsRevSaid(host?.settingsRev);
     }
     if (!this.awayRead) {
       this.awayRead = true;
@@ -1842,12 +1861,14 @@ export class Edge {
     this.hostSeq = msg.at;
     this.hostVersion = typeof msg.version === "string" && /^[0-9a-f]{7,40}$/.test(msg.version) ? msg.version : null;
     this.machine = machineReport(msg.machine);
+    this.hostSettingsRev = settingsRevSaid(msg.settingsRev);
     await this.kv.put("host", {
       seen: now,
       seq: msg.at,
       confirmed: this.confirmed,
       version: this.hostVersion,
       machine: this.machine,
+      settingsRev: this.hostSettingsRev,
     });
     if (wasSilent) {
       try {
@@ -1910,6 +1931,10 @@ export class Edge {
       }
     }
     if (marked) await this.saveHanded();
+    // The settings the owner changed, for the machine to run with: once
+    // the owner has changed any, every answer says them, so a machine
+    // that missed one answer has them from the next (#14957).
+    const owner = await this.ownerSettings();
     const answer: SyncResponse = {
       ok: true,
       watching,
@@ -1919,6 +1944,7 @@ export class Edge {
       phones,
       // What this side reads itself, and so need not be sent.
       owns: this.owned(settings),
+      ...(owner ? { settings: { rev: owner.rev, values: owner.values } } : {}),
     };
     return json(answer);
   }
@@ -2092,6 +2118,7 @@ export class Edge {
     if (path === `${BASE}/health` && method === "GET") {
       await this.ready();
       const told = await this.toldConfig();
+      const owner = await this.ownerSettings();
       // The self-check runs when the capability is there: one direct
       // read of each kind, and how it went. Nothing here is a secret.
       await this.maybeSelfCheck(cfg);
@@ -2157,13 +2184,19 @@ export class Edge {
         // name and never by value; null while no machine has said any.
         // A machine on other code than this, or with an environment of
         // its own, shows here. This side goes by its own all the same.
-        machineSettingsDiffer: told === null ? null : settingsThatDiffer(told),
+        // A setting the owner changed is left out: whether a machine runs
+        // with the owner's change is said by the revision it has taken
+        // (#14957), not as a difference from main.
+        machineSettingsDiffer:
+          told === null
+            ? null
+            : settingsThatDiffer(told).filter((name) => !ownerChanged(owner, name)),
         // Which source each of the platform's settings is in force from
         // (the owner's change, a machine's word, or the repository's),
         // and since when for an owner's change: by name and source,
         // never by value or by whom. The values are on the owner's
         // Machines screen (#14955).
-        settingsInForce: settingsInForce(told, await this.ownerSettings()).map(({ name, source, since }) => ({
+        settingsInForce: settingsInForce(told, owner).map(({ name, source, since }) => ({
           name,
           source,
           since,
