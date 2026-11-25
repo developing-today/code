@@ -15620,4 +15620,66 @@ mod presentation_policy_tests {
         );
         assert_eq!(handle.presentation_policy().await.unwrap(), opted_in());
     }
+    /// The largest policy the parser accepts: every list and map full,
+    /// every name and key at its longest, and keys and glyphs made of
+    /// quotes so JSON escaping doubles them.
+    fn largest() -> PresentationPolicy {
+        use id_core::presentation_asset::MAX_NAME_LEN;
+        use id_core::presentation_policy::{MAX_CELL_KIND_BYTES, MAX_GLYPH_BYTES};
+        let name = |i: usize| format!("{i:03}{}", "n".repeat(MAX_NAME_LEN - 3));
+        let reference = |i: usize| format!("{}@{}", name(i), u32::MAX);
+        let refs: Vec<String> = (0..MAX_POLICY_ENTRIES).map(reference).collect();
+        let glyphs: serde_json::Map<String, serde_json::Value> = (0..MAX_POLICY_ENTRIES)
+            .map(|i| {
+                let kind = format!("{i:03}{}", "\"".repeat(MAX_CELL_KIND_BYTES - 3));
+                (kind, "\"".repeat(MAX_GLYPH_BYTES).into())
+            })
+            .collect();
+        let substitutes: serde_json::Map<String, serde_json::Value> = (0..MAX_POLICY_ENTRIES)
+            .map(|i| (name(i), reference(i).into()))
+            .collect();
+        let policy: PresentationPolicy = serde_json::from_value(serde_json::json!({
+            "filters": {"allowed": refs, "denied": refs, "disguise": "allow"},
+            "shaders": {
+                "enabled": true,
+                "formats": vec!["shadertoy.glsl.fragment/v1"; MAX_POLICY_ENTRIES],
+            },
+            "fallback": {
+                "world_glyphs": glyphs,
+                "world_substitutes": substitutes,
+                "tileset": reference(0),
+            },
+        }))
+        .unwrap();
+        policy.validate().unwrap();
+        policy
+    }
+
+    #[test]
+    fn the_largest_valid_policy_fits_one_replication_payload() {
+        let entry = JournalEntry::PresentationPolicy { policy: largest() };
+        let line = serde_json::to_vec(&entry).unwrap().len() + 1;
+        assert!(
+            line <= crate::world::replication::MAX_REPLICATION_PAYLOAD_BYTES,
+            "the largest policy's journal line is {line} bytes"
+        );
+    }
+
+    #[test]
+    fn restore_refuses_a_policy_with_an_overlong_cell_kind() {
+        let kind = "k".repeat(id_core::presentation_policy::MAX_CELL_KIND_BYTES + 1);
+        let policy: PresentationPolicy = serde_json::from_value(
+            serde_json::json!({"fallback": {"world_glyphs": {(kind): "T"}}}),
+        )
+        .unwrap();
+        let entries = [
+            header(JOURNAL_VERSION_PRESENTATION_POLICY),
+            JournalEntry::PresentationPolicy { policy },
+        ];
+        let error = WorldCore::restore("w", WorldLimits::default(), entries).unwrap_err();
+        assert!(
+            format!("{error:#}").contains("invalid presentation policy"),
+            "{error:#}"
+        );
+    }
 }
