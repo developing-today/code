@@ -111,7 +111,7 @@ pub use validity::Validity;
 use waiting_rows::{Mirror, Row};
 pub use writer_set::{DiscoveredWriterSet, WriterSetStoreError};
 
-impl EventStore {
+impl<B: EventStoreStorage> EventStore<B> {
     /// Adds `block` to the operator block list, replacing any row that names
     /// the same kind and value.
     ///
@@ -119,13 +119,12 @@ impl EventStore {
     ///
     /// Returns a redb error if the write fails.
     pub fn add_block(&self, block: &Block) -> Result<(), StoreError> {
-        let txn = self.db.begin_write()?;
-        {
-            let mut blocks = txn.open_table(BLOCKS)?;
-            blocks.insert(block.key().as_slice(), block.encode().as_slice())?;
-        }
-        txn.commit()?;
-        Ok(())
+        let key = block.key();
+        let value = block.encode();
+        self.db.with_write(|rows| {
+            rows.put("blocks", &key, &value)?;
+            Ok(((), true))
+        })
     }
 
     /// Removes the block naming (`kind`, `value`), returning whether a row
@@ -138,13 +137,13 @@ impl EventStore {
         let mut key = Vec::with_capacity(1 + value.len());
         key.push(kind.tag());
         key.extend_from_slice(value);
-        let txn = self.db.begin_write()?;
-        let removed = {
-            let mut blocks = txn.open_table(BLOCKS)?;
-            blocks.remove(key.as_slice())?.is_some()
-        };
-        txn.commit()?;
-        Ok(removed)
+        self.db.with_write(|rows| {
+            let removed = rows.get("blocks", &key)?.is_some();
+            if removed {
+                rows.remove("blocks", &key)?;
+            }
+            Ok((removed, removed))
+        })
     }
 
     /// Every block on the list, expired ones included, in (kind, value)
@@ -154,14 +153,12 @@ impl EventStore {
     ///
     /// Returns a redb error if the read fails, or `StoreError::Corrupt`.
     pub fn blocks(&self) -> Result<Vec<Block>, StoreError> {
-        let txn = self.db.begin_read()?;
-        let blocks = txn.open_table(BLOCKS)?;
-        let mut found = Vec::new();
-        for row in blocks.iter()? {
-            let (key, value) = row?;
-            found.push(Block::decode(key.value(), value.value())?);
-        }
-        Ok(found)
+        self.db.with_read(|rows| {
+            rows.scan_all("blocks")?
+                .into_iter()
+                .map(|(key, value)| Block::decode(&key, &value))
+                .collect()
+        })
     }
 
     /// The block naming (`kind`, `value`) if one is on the list and still
@@ -179,13 +176,13 @@ impl EventStore {
         let mut key = Vec::with_capacity(1 + value.len());
         key.push(kind.tag());
         key.extend_from_slice(value);
-        let txn = self.db.begin_read()?;
-        let blocks = txn.open_table(BLOCKS)?;
-        let Some(row) = blocks.get(key.as_slice())? else {
-            return Ok(None);
-        };
-        let block = Block::decode(&key, row.value())?;
-        Ok(block.is_active(now_ms).then_some(block))
+        self.db.with_read(|rows| {
+            let Some(row) = rows.get("blocks", &key)? else {
+                return Ok(None);
+            };
+            let block = Block::decode(&key, &row)?;
+            Ok(block.is_active(now_ms).then_some(block))
+        })
     }
 
     /// Whether (`kind`, `value`) is blocked at `now_ms`.
@@ -413,8 +410,8 @@ pub struct ForkProof {
 
 /// The event store. One redb file, opened by one process at a time.
 #[derive(Debug)]
-pub struct EventStore {
-    db: Database,
+pub struct EventStore<B = Database> {
+    db: B,
     /// The caps the pool enforces. Kept, so the pool can be rebuilt from its rows.
     limits: WaitingLimits,
     /// The events held waiting or parked. The `waiting` rows mirror them.
@@ -431,6 +428,9 @@ pub struct EventStore {
     /// Group rosters memoized at a store generation (#13043).
     roster_cache: Mutex<RosterCache>,
 }
+
+/// Event-store semantics over a tenant-backed row transaction driver.
+pub type TenantEventStore<T> = EventStore<TenantBackend<T>>;
 
 /// Group rosters memoized by [`EventStore::roster`]: resolving a roster
 /// folds the whole store, so a read-heavy caller (the relay gate asks

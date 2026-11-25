@@ -5,9 +5,7 @@ use std::sync::{Arc, Mutex};
 
 use base64::Engine as _;
 use id_store::chain::{ChainExt, sign};
-use id_store::event_rows::{
-    EventWriteTransaction, RowRead, RowWrite, TenantWrite, with_write_transaction,
-};
+use id_store::event_rows::{RowRead, RowWrite, TenantWrite, with_write_transaction};
 use id_store::turso::{PipelineTransport, TenantStore, TursoError};
 use p2panda_core::SigningKey;
 use rusqlite::types::Value;
@@ -817,40 +815,6 @@ fn test_native_redb_oracle_partial_fork_preserves_committed_rows() {
 
 /// The native redb database is the oracle for the transaction-owned backend
 /// seam: reads see committed rows, and a failed write leaves no partial row.
-#[test]
-fn tenant_backend_transaction_round_trip_and_abort_match_native() {
-    fn exercise<B: EventStoreStorage>(backend: &B) -> Option<Vec<u8>> {
-        backend
-            .with_write(|rows| {
-                rows.put("meta", b"driver-key", b"committed")?;
-                Ok(((), true))
-            })
-            .unwrap();
-        assert!(
-            backend
-                .with_write(|rows| {
-                    rows.put("meta", b"rollback-key", b"partial")?;
-                    Err(corrupt("forced transaction abort"))
-                })
-                .is_err()
-        );
-        assert_eq!(
-            backend.with_read(|rows| rows.get("meta", b"rollback-key")).unwrap(),
-            None,
-            "a failed batch must leave no partial row"
-        );
-        backend
-            .with_read(|rows| rows.get("meta", b"driver-key"))
-            .unwrap()
-    }
-
-    let dir = tempfile::tempdir().unwrap();
-    let native = Database::create(dir.path().join("driver.redb")).unwrap();
-    let tenant = TenantBackend::open(SqliteEndpoint::new()).unwrap();
-
-    assert_eq!(exercise(&tenant), exercise(&native));
-}
-
 /// Native redb is the oracle for the transaction-owned storage seam: both
 /// backends commit the same row and roll back a failed operation completely.
 #[test]
@@ -862,14 +826,13 @@ fn tenant_backend_transaction_round_trip_and_abort_match_native() {
                 Ok(((), true))
             })
             .unwrap();
-        assert!(
-            backend
-                .with_write(|rows| {
-                    rows.put("meta", b"rollback-key", b"partial")?;
-                    Err(corrupt("forced transaction abort"))
-                })
-                .is_err()
+        let aborted: Result<(), StoreError> = backend.with_write(
+            |rows| -> Result<((), bool), StoreError> {
+                rows.put("meta", b"rollback-key", b"partial")?;
+                Err(corrupt("forced transaction abort"))
+            },
         );
+        assert!(aborted.is_err());
         assert_eq!(
             backend.with_read(|rows| rows.get("meta", b"rollback-key")).unwrap(),
             None,
