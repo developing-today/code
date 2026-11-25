@@ -362,6 +362,9 @@ def self_test() -> int:
         return fail("two corpus URIs share a display label")
 
     # Two URIs in one line keep their order; non-URIs and damaged ones are skipped.
+    huge = f"<{obj}/bytes/{'9' * 5000}-> and {obj}"
+    if extract(huge) != [obj]:
+        return fail("an oversized decimal stopped extraction")
     two = f"{delimit(obj)} and {obj}/bytes/1-2, not id://any/graph/v2/obj/xyz or <id://nope>"
     if extract(two) != [obj, obj + "/bytes/1-2"]:
         return fail(f"two in one line: {extract(two)}")
