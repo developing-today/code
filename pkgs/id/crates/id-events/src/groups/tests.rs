@@ -534,6 +534,21 @@ fn test_a_non_manager_may_not_add_or_remove_a_member() {
 }
 
 #[test]
+fn test_delegated_manage_can_add_and_remove_members() {
+    let g = id("g");
+    let events = vec![
+        custom("g", 1, &[(2, Role::Read)], Policy::default()),
+        delegate("d0", 1, g, 2, Role::Manage, false, &["g"]),
+        add("a0", 2, g, 3, Role::Read, &["g", "d0"]),
+        remove("r0", 2, g, 3, &["a0"]),
+    ];
+    let projection = project(&events);
+    assert_eq!(outcome(&projection, "a0"), Outcome::Applied);
+    assert_eq!(outcome(&projection, "r0"), Outcome::Applied);
+    assert_eq!(role_of(&projection, g, 3), None);
+}
+
+#[test]
 fn test_only_an_invitee_may_accept_a_friendship_request() {
     let g = pair_group(1, 2, 0);
     let p = project(&[
