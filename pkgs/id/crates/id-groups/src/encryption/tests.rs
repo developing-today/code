@@ -2961,7 +2961,9 @@ fn test_keyset_newly_enrolled_device_is_added_without_a_membership_change() {
         .expect("session")
         .create(&view, &sets, &cast.rng)
         .expect("create");
-    cast.deliver(&create, &[21]);
+    // The create goes to the whole cast, as in the other tests: a joiner needs the control
+    // history to take its welcome, so device 12 hears the create before it is added.
+    cast.deliver(&create, &[12, 21]);
 
     sets.insert(id(1), BTreeSet::from([id(11), id(12)]));
     let add = cast
