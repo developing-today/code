@@ -32,7 +32,7 @@ use std::fmt;
 use ed25519_dalek::SigningKey;
 use serde::{Deserialize, Serialize};
 
-use crate::agent_quota_ledger::{LedgerCheckedOut, QuotaLedgerStore};
+use crate::agent_quota_ledger::QuotaLedgerStore;
 use crate::mcp_bridge::BridgeSession;
 use crate::mcp_policy::{
     AuditEvent, CapabilityCeiling, PolicyOutcome, PolicyRefusal, PolicySession, Quota, RoleGrant,
@@ -234,23 +234,21 @@ impl WorldAgents {
             return Err(refusal);
         }
         let event_grant = grant.clone();
-        match PolicySession::open_stored(grant, bridge, host_key, store, now) {
-            Ok(session) => {
-                self.sessions.insert(event_grant.agent_key, session);
-                self.record(EVENT_AGENT_JOIN, &event_grant, None, now);
-                Ok(())
-            }
-            Err(LedgerCheckedOut { .. }) => {
-                let refusal = JoinRefusal::LedgerCheckedOut;
-                self.record(
-                    EVENT_AGENT_JOIN_REFUSED,
-                    &event_grant,
-                    Some(refusal.clone()),
-                    now,
-                );
-                Err(refusal)
-            }
-        }
+        // The one way opening fails is the agent's spend ledger being
+        // checked out by a live session elsewhere.
+        let Ok(session) = PolicySession::open_stored(grant, bridge, host_key, store, now) else {
+            let refusal = JoinRefusal::LedgerCheckedOut;
+            self.record(
+                EVENT_AGENT_JOIN_REFUSED,
+                &event_grant,
+                Some(refusal.clone()),
+                now,
+            );
+            return Err(refusal);
+        };
+        self.sessions.insert(event_grant.agent_key, session);
+        self.record(EVENT_AGENT_JOIN, &event_grant, None, now);
+        Ok(())
     }
 
     fn join_refusal(&self, grant: &RoleGrant) -> Option<JoinRefusal> {
