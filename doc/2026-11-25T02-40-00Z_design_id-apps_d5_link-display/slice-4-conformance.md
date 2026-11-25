@@ -66,34 +66,34 @@ The floor is reached three ways, and all three are tested: as the no-TTY output
 
 ## 4. The checklist
 
-| Id   | Area     | Surfaces          | Requirement                                                                                    | Test   |
-| ---- | -------- | ----------------- | ---------------------------------------------------------------------------------------------- | ------ |
-| C-01 | model    | floor, web, kitty | The frame builder produces the golden frame for every case.                                    | check  |
-| C-02 | model    | floor, web, kitty | Every frame keeps the slice 1 invariants.                                                      | check  |
-| C-03 | privacy  | floor, web, kitty | An unreadable object is never drawn, listed or counted in `+N more`.                           | check  |
-| C-04 | privacy  | floor, web, kitty | An intent outside the frame is refused with `target_not_in_frame`.                             | check  |
-| C-05 | layout   | web, kitty        | Ring order and clockwise angle order hold on screen, after any relaxation.                     | check  |
-| C-06 | keyboard | floor, web, kitty | Keyboard order is the floor's line order.                                                      | check  |
-| C-07 | keyboard | floor, web, kitty | All five intents are reachable from the keyboard.                                              | check  |
-| C-08 | intents  | web, kitty        | A plain click opens where the pointer can hover; without hover the first click identifies.     | check  |
-| C-09 | intents  | web, kitty        | `focus` is never the plain click.                                                              | check  |
-| C-10 | intents  | floor, web, kitty | The four looking intents never change the frame.                                               | check  |
-| C-11 | intents  | floor, web, kitty | Claimed times are shown as claims; a time-filtered frame says so.                              | check  |
-| C-12 | intents  | floor, web, kitty | `open` on an edited node goes to the head form.                                                | check  |
-| C-13 | floor    | floor             | The floor matches `floor_expected.json` byte for byte.                                         | check  |
-| C-14 | floor    | floor, web, kitty | Labels are sanitised (§3).                                                                     | check  |
-| C-15 | floor    | floor, kitty      | No TTY prints the floor lines with no escape bytes.                                            | check  |
-| C-16 | fallback | kitty             | Each probe profile chooses the named surface and mouse mode.                                   | check  |
-| C-17 | fallback | kitty             | Teardown deletes every image and resets every mode, on every path.                             | check  |
-| C-18 | fallback | kitty             | Graphics payloads are chunked at 4096 base64 characters with `m=` continuation.                | check  |
-| C-19 | pointer  | web, kitty        | A pointer at a node's centre hits the node, never an edge.                                     | check  |
-| C-20 | pointer  | floor, web, kitty | Every node can be reached by pointer or keyboard.                                              | check  |
-| C-21 | scale    | floor, web, kitty | No frame exceeds 2000 nodes; a cut says so and leaves `+N more`.                               | check  |
-| C-22 | motion   | web, kitty        | Refocus keeps node identities for the transition.                                              | check  |
-| C-23 | motion   | web, kitty        | Reduced motion swaps the frame at once and keeps the selection highlighted.                    | manual |
+| Id   | Area     | Surfaces          | Requirement                                                                                     | Test   |
+| ---- | -------- | ----------------- | ----------------------------------------------------------------------------------------------- | ------ |
+| C-01 | model    | floor, web, kitty | The frame builder produces the golden frame for every case.                                     | check  |
+| C-02 | model    | floor, web, kitty | Every frame keeps the slice 1 invariants.                                                       | check  |
+| C-03 | privacy  | floor, web, kitty | An unreadable object is never drawn, listed or counted in `+N more`.                            | check  |
+| C-04 | privacy  | floor, web, kitty | An intent outside the frame is refused with `target_not_in_frame`.                              | check  |
+| C-05 | layout   | web, kitty        | Ring order and clockwise angle order hold on screen, after any relaxation.                      | check  |
+| C-06 | keyboard | floor, web, kitty | Keyboard order is the floor's line order.                                                       | check  |
+| C-07 | keyboard | floor, web, kitty | All five intents are reachable from the keyboard.                                               | check  |
+| C-08 | intents  | web, kitty        | A plain click opens where the pointer can hover; without hover the first click identifies.      | check  |
+| C-09 | intents  | web, kitty        | `focus` is never the plain click.                                                               | check  |
+| C-10 | intents  | floor, web, kitty | The four looking intents never change the frame.                                                | check  |
+| C-11 | intents  | floor, web, kitty | Claimed times are shown as claims; a time-filtered frame says so.                               | check  |
+| C-12 | intents  | floor, web, kitty | `open` on an edited node goes to the head form.                                                 | check  |
+| C-13 | floor    | floor             | The floor matches `floor_expected.json` byte for byte.                                          | check  |
+| C-14 | floor    | floor, web, kitty | Labels are sanitised (§3).                                                                      | check  |
+| C-15 | floor    | floor, kitty      | No TTY prints the floor lines with no escape bytes.                                             | check  |
+| C-16 | fallback | kitty             | Each probe profile chooses the named surface and mouse mode.                                    | check  |
+| C-17 | fallback | kitty             | Teardown deletes every image and resets every mode, on every path.                              | check  |
+| C-18 | fallback | kitty             | Graphics payloads are chunked at 4096 base64 characters with `m=` continuation.                 | check  |
+| C-19 | pointer  | web, kitty        | A pointer at a node's centre hits the node, never an edge.                                      | check  |
+| C-20 | pointer  | floor, web, kitty | Every node can be reached by pointer or keyboard.                                               | check  |
+| C-21 | scale    | floor, web, kitty | No frame exceeds 2000 nodes; a cut says so and leaves `+N more`.                                | check  |
+| C-22 | motion   | web, kitty        | Refocus keeps node identities for the transition.                                               | check  |
+| C-23 | motion   | web, kitty        | Reduced motion swaps the frame at once and keeps the selection highlighted.                     | manual |
 | C-24 | access   | web               | The floor is a `role="tree"` list beside an `aria-hidden` canvas, same order, shared selection. | manual |
-| C-25 | access   | web, kitty        | Dimmed context is fainter and never takes label space before a bright node on its ring.        | manual |
-| C-26 | fallback | kitty             | A runtime graphics error moves the view to the floor after a clean reset.                      | manual |
+| C-25 | access   | web, kitty        | Dimmed context is fainter and never takes label space before a bright node on its ring.         | manual |
+| C-26 | fallback | kitty             | A runtime graphics error moves the view to the floor after a clean reset.                       | manual |
 
 `conformance.json` holds the full wording, the source section of each item and
 each manual procedure.
@@ -117,12 +117,12 @@ changes behaviour adds or edits an item here in the same pull request.
 
 ## 6. Alternatives
 
-| Alternative                               | Verdict  | Why                                                                                                                       |
-| ----------------------------------------- | -------- | ------------------------------------------------------------------------------------------------------------------------- |
-| A prose checklist only                    | Rejected | Nothing fails when a renderer drifts or when the list and the tests disagree.                                             |
+| Alternative                                | Verdict  | Why                                                                                                                              |
+| ------------------------------------------ | -------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| A prose checklist only                     | Rejected | Nothing fails when a renderer drifts or when the list and the tests disagree.                                                    |
 | Pixel snapshots of the web and the picture | Rejected | Fragile across fonts, GPUs and terminals, and they test drawing taste rather than the contract. Orders and hits are what matter. |
-| Strip unsafe label characters silently    | Rejected | A reader then cannot tell that a label was altered; U+FFFD shows where something was removed.                             |
-| Escape labels as `\x1b` text              | Rejected | Readable to developers, noise to everyone else, and it changes line widths more than one replacement character does.     |
+| Strip unsafe label characters silently     | Rejected | A reader then cannot tell that a label was altered; U+FFFD shows where something was removed.                                    |
+| Escape labels as `\x1b` text               | Rejected | Readable to developers, noise to everyone else, and it changes line widths more than one replacement character does.             |
 
 ## 7. Open questions
 
@@ -134,8 +134,7 @@ changes behaviour adds or edits an item here in the same pull request.
 
 All four slices are written, each with an executable reference, and together
 they meet the issue's acceptance: both use-case graphs are expressed in the
-model (slice 1), the contract is mapped feature by feature onto the web (slice
-2) and onto Kitty with the fallback triggers named and #13623 cited (slice 3),
+model (slice 1), the contract is mapped feature by feature onto the web (slice 2) and onto Kitty with the fallback triggers named and #13623 cited (slice 3),
 and the checklist is written so an implementer can test against it (this
 slice). Building the renderers is implementation work for the issues that
 follow from this record.

@@ -5384,9 +5384,7 @@ describe("the edge does the core itself", () => {
     expect(w.ghLabels[501]).toEqual(["owner/prompt", "expedite", "source/human", "owner/intake", "app/fleet"]);
     // Three tasks wait for a machine, each as the action that builds it there.
     const at = new Date(w.now.t).toISOString();
-    expect(
-      (heldStored(w) as { kind: string; args: Record<string, unknown> }[]).map((h) => [h.kind, h.args]),
-    ).toEqual([
+    expect((heldStored(w) as { kind: string; args: Record<string, unknown> }[]).map((h) => [h.kind, h.args])).toEqual([
       ["triage.enqueue", { issue: 500, title: body.title, rank: "now", at }],
       ["triage.enqueue", { issue: 301, title: "do this first", rank: "expedite", at, note: true }],
       ["prompt.enqueue", { issue: 501, text: "pick these up first\n\n(note, Fleet; from the PM app)", at }],
@@ -6901,9 +6899,7 @@ describe("the edge does the core itself", () => {
     const done = (await second.json()) as { ok?: boolean; held?: boolean };
     expect(done).toMatchObject({ ok: true });
     expect(done.held).toBeUndefined();
-    expect(
-      (heldStored(w) as { kind: string; args: Record<string, unknown> }[]).map((h) => h.args.issue),
-    ).toEqual([7]);
+    expect((heldStored(w) as { kind: string; args: Record<string, unknown> }[]).map((h) => h.args.issue)).toEqual([7]);
     const posted = w.githubCalls
       .filter((c) => comment(c.method, c.url))
       .map((c) => (JSON.parse(c.body ?? "{}") as { body?: string }).body);
@@ -7119,10 +7115,7 @@ describe("the edge does the core itself", () => {
     const waking = w.edge.now.alarm();
     for (let turn = 0; turn < 200 && commented(w).length < 2; turn++) await new Promise((r) => setTimeout(r, 1));
     expect(commented(w)).toEqual(["A", "A"]);
-    expect([heldIds(w), (takenStored(w) as { id: string }[]).map((t) => t.id)]).toEqual([
-      [ID(32), ID(33)],
-      [ID(31)],
-    ]);
+    expect([heldIds(w), (takenStored(w) as { id: string }[]).map((t) => t.id)]).toEqual([[ID(32), ID(33)], [ID(31)]]);
     // The laptop is back, and reports while A is still being done.
     w.net.hostUp = true;
     w.net.edgeUp = true;

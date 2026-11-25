@@ -111,7 +111,13 @@ interface SentinelStateFile {
 
 const STATE_FILE =
   process.env.PM_AGG_STACK_SENTINEL_STATE_FILE?.trim() ||
-  join(requireHome("PM_AGG_STACK_SENTINEL_STATE_FILE"), ".local", "state", "pm-aggregator", "stack-sentinel-state.json");
+  join(
+    requireHome("PM_AGG_STACK_SENTINEL_STATE_FILE"),
+    ".local",
+    "state",
+    "pm-aggregator",
+    "stack-sentinel-state.json",
+  );
 
 let writeSeq = 0;
 
@@ -227,7 +233,14 @@ async function round(state: SentinelStateFile): Promise<void> {
       console.log(`stack-sentinel: ${hookTarget} hook still running; ${entry.state} dispatch waits`);
     } else if (hookTarget && shouldDispatchHealthHook(state.hookDispatchedStates, hookTarget, entry.state)) {
       const caller = "stack-sentinel";
-      const hookPath = join(requireHome("the health hooks directory"), "git", "code", "pm-stack", "health-hooks", `${hookTarget}.sh`);
+      const hookPath = join(
+        requireHome("the health hooks directory"),
+        "git",
+        "code",
+        "pm-stack",
+        "health-hooks",
+        `${hookTarget}.sh`,
+      );
       try {
         const proc = Bun.spawn([hookPath, "--caller", caller, "--detail", entry.detail ?? ""], {
           stdout: "ignore",

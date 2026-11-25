@@ -872,9 +872,7 @@ export class EventsStore {
    *  result also carries any checkpoint violation the manifest
    *  attests to; the caller folds it into the integrity verdict. */
   private async gatherStoredRecords(): Promise<
-    | { kind: "empty" }
-    | { kind: "damaged" }
-    | { kind: "ok"; records: AuditEvent[]; checkpointError: string | null }
+    { kind: "empty" } | { kind: "damaged" } | { kind: "ok"; records: AuditEvent[]; checkpointError: string | null }
   > {
     let raw: string;
     try {

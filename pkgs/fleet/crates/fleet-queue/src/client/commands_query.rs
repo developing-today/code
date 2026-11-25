@@ -1211,7 +1211,9 @@ pub(super) fn cmd_timeline(verb: &str, rest: &[String]) -> i32 {
     let json_out = args.has("json");
     if events.is_empty() && notes.is_empty() {
         if json_out {
-            print_json(&json!({"task_id": task_id, "events": [], "notes": [], "story": [], "served": []}));
+            print_json(
+                &json!({"task_id": task_id, "events": [], "notes": [], "story": [], "served": []}),
+            );
             return 0;
         }
         println!("task {task_id}: no timeline records");

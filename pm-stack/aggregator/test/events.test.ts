@@ -464,7 +464,9 @@ describe("events audit v2 (#3322 slice A)", () => {
     // #14958: the records live in the segment files now; tamper
     // with the stored record where it actually lies.
     const segPath = join(store.segmentsDir, readdirSync(store.segmentsDir)[0]!);
-    const lines = readFileSync(segPath, "utf8").split("\n").filter((l) => l !== "");
+    const lines = readFileSync(segPath, "utf8")
+      .split("\n")
+      .filter((l) => l !== "");
     const first = JSON.parse(lines[0]!) as { summary: string };
     first.summary = "tampered";
     lines[0] = JSON.stringify(first);
@@ -555,7 +557,9 @@ describe("events audit v2 (#3322 slice A)", () => {
     await store.record({ ...base, summary: "second" });
     // #14958: tamper with the stored record in its segment file.
     const segPath = join(store.segmentsDir, readdirSync(store.segmentsDir)[0]!);
-    const lines = readFileSync(segPath, "utf8").split("\n").filter((l) => l !== "");
+    const lines = readFileSync(segPath, "utf8")
+      .split("\n")
+      .filter((l) => l !== "");
     const first = JSON.parse(lines[0]!) as { summary: string };
     first.summary = "tampered";
     lines[0] = JSON.stringify(first);

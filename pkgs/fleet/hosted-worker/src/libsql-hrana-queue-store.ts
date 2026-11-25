@@ -210,10 +210,16 @@ export class HranaQueueStore implements QueueStore {
       // determinations in test/queue-live-generation-fixture.ts.
       const cols = await this.client.execute({ sql: "SELECT name FROM pragma_table_info('tasks')", args: [] });
       if (!cols.rows.some((col) => col["name"] === "manual_only")) {
-        await this.client.execute({ sql: "ALTER TABLE tasks ADD COLUMN manual_only INTEGER NOT NULL DEFAULT 0", args: [] });
+        await this.client.execute({
+          sql: "ALTER TABLE tasks ADD COLUMN manual_only INTEGER NOT NULL DEFAULT 0",
+          args: [],
+        });
       }
       if (!cols.rows.some((col) => col["name"] === "metadata")) {
-        await this.client.execute({ sql: "ALTER TABLE tasks ADD COLUMN metadata TEXT NOT NULL DEFAULT '{}'", args: [] });
+        await this.client.execute({
+          sql: "ALTER TABLE tasks ADD COLUMN metadata TEXT NOT NULL DEFAULT '{}'",
+          args: [],
+        });
       }
     })();
     return this.schemaReady;

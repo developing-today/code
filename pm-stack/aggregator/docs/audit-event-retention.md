@@ -14,7 +14,7 @@ backup generations support.
   through one gate, `partitionRetention`.
 - **On-disk layout** (#14958): since the segmented layout landed,
   `events.json` is a small **v3 manifest** (`{version: 3, segments,
-  checkpoint}`) and the records live one JSON object per line in
+checkpoint}`) and the records live one JSON object per line in
   append-only segment files under `events.json.segments/`
   (`seg-NNNNNN.jsonl`, rolling every 1000 records). A persist
   appends only the new records' lines plus the manifest — the

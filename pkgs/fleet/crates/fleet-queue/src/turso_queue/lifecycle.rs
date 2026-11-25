@@ -3167,7 +3167,9 @@ mod task_history_tests {
             (
                 asked,
                 r#"{"question": {"ledger_id": "L-1", "state": "open"}}"#,
-                Some(r#"[{"kind":"issue","ref":"developing-today/code#1"},{"kind":"task","ref":"2"}]"#),
+                Some(
+                    r#"[{"kind":"issue","ref":"developing-today/code#1"},{"kind":"task","ref":"2"}]"#,
+                ),
             ),
             (
                 answered,
@@ -3588,7 +3590,14 @@ mod task_notes_tests {
              VALUES ('repo-health-code-pilot', 't', '{}', 50, ?, ?, ?, ?, NULL, ?, '{}', \
              '2026-11-25T00:00:00Z', '2026-11-25T00:00:00Z')",
             &[
-                Arg::Text(if worker.is_some() { "claimed" } else { "queued" }.into()),
+                Arg::Text(
+                    if worker.is_some() {
+                        "claimed"
+                    } else {
+                        "queued"
+                    }
+                    .into(),
+                ),
                 arg_str(worker),
                 arg_str(worker.map(|_| "anthropic")),
                 arg_str(worker.map(|_| "claude-opus")),
@@ -3601,7 +3610,10 @@ mod task_notes_tests {
     }
 
     fn add(t: &TursoBackend, task_id: i64, worker: &str, body: &str) -> Value {
-        verb_note_add(t, &json!({"task_id": task_id, "worker": worker, "body": body}))
+        verb_note_add(
+            t,
+            &json!({"task_id": task_id, "worker": worker, "body": body}),
+        )
     }
 
     fn history(t: &TursoBackend, task_id: i64) -> Vec<Value> {
@@ -3636,7 +3648,9 @@ mod task_notes_tests {
         let rows = listed["row"]["rows"].as_array().unwrap().clone();
         assert_eq!(listed["row"]["count"], 2);
         assert_eq!(
-            rows.iter().map(|r| r["id"].as_i64().unwrap()).collect::<Vec<_>>(),
+            rows.iter()
+                .map(|r| r["id"].as_i64().unwrap())
+                .collect::<Vec<_>>(),
             written,
             "both notes survive, oldest first"
         );
@@ -3674,7 +3688,10 @@ mod task_notes_tests {
         );
         assert_eq!(refused["ok"], false);
         assert!(
-            refused["error"].as_str().unwrap().contains("only its author"),
+            refused["error"]
+                .as_str()
+                .unwrap()
+                .contains("only its author"),
             "{refused}"
         );
 
@@ -3688,7 +3705,11 @@ mod task_notes_tests {
 
         let h = history(&t, id);
         let kinds: Vec<&str> = h.iter().map(|r| r["kind"].as_str().unwrap()).collect();
-        assert_eq!(kinds, ["note_added", "note_edited"], "the refused edit wrote no history");
+        assert_eq!(
+            kinds,
+            ["note_added", "note_edited"],
+            "the refused edit wrote no history"
+        );
         assert_eq!(h[1]["detail"]["previous_body"], "first draft");
         assert_eq!(h[1]["detail"]["note_id"], note_id);
         assert_eq!(h[1]["session_id"], "ses_claim");
@@ -3697,12 +3718,18 @@ mod task_notes_tests {
         assert_eq!(removed["ok"], true, "{removed}");
         assert!(!removed["row"]["deleted_at"].is_null());
         let again = verb_note_remove(&t, &json!({"note_id": note_id, "worker": "lane-9"}));
-        assert!(again["error"].as_str().unwrap().contains("was removed"), "{again}");
+        assert!(
+            again["error"].as_str().unwrap().contains("was removed"),
+            "{again}"
+        );
         let live = verb_note_list(&t, &json!({"task_id": id}));
         assert_eq!(live["row"]["count"], 0);
         assert_eq!(live["row"]["rows"].as_array().unwrap().len(), 0);
         let all = verb_note_list(&t, &json!({"task_id": id, "include_removed": true}));
-        assert_eq!(all["row"]["rows"][0]["body"], "second draft", "soft delete keeps the row");
+        assert_eq!(
+            all["row"]["rows"][0]["body"], "second draft",
+            "soft delete keeps the row"
+        );
         let h = history(&t, id);
         assert_eq!(h[2]["kind"], "note_removed");
         assert_eq!(h[2]["detail"]["previous_body"], "second draft");
@@ -3717,14 +3744,30 @@ mod task_notes_tests {
         let long = add(&t, id, "w", &"x".repeat(NOTE_BODY_MAX_CHARS + 1));
         assert!(long["error"].as_str().unwrap().contains("4096"), "{long}");
         let at_limit = add(&t, id, "w", &"é".repeat(NOTE_BODY_MAX_CHARS));
-        assert_eq!(at_limit["ok"], true, "the limit counts characters, not bytes");
+        assert_eq!(
+            at_limit["ok"], true,
+            "the limit counts characters, not bytes"
+        );
         let no_author = verb_note_add(&t, &json!({"task_id": id, "body": "b"}));
-        assert!(no_author["error"].as_str().unwrap().contains("worker is required"));
-        let bad_kind =
-            verb_note_add(&t, &json!({"task_id": id, "worker": "w", "body": "b", "author_kind": "robot"}));
+        assert!(
+            no_author["error"]
+                .as_str()
+                .unwrap()
+                .contains("worker is required")
+        );
+        let bad_kind = verb_note_add(
+            &t,
+            &json!({"task_id": id, "worker": "w", "body": "b", "author_kind": "robot"}),
+        );
         assert_eq!(bad_kind["exit"], 2, "{bad_kind}");
         let missing = add(&t, id + 999, "w", "b");
-        assert!(missing["error"].as_str().unwrap().contains("does not exist"), "{missing}");
+        assert!(
+            missing["error"]
+                .as_str()
+                .unwrap()
+                .contains("does not exist"),
+            "{missing}"
+        );
         // A non-holder's note carries no claim marks.
         let plain = add(&t, id, "w", "plain");
         assert!(plain["row"]["session_id"].is_null());

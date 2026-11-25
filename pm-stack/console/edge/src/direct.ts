@@ -399,7 +399,7 @@ export function githubMemory(
           }
           const record = raw as Partial<EntryRecord> | undefined;
           const entry = record && typeof record.u === "string" && record.u !== "" ? fitLine(record) : null;
-          if (entry && entry.id === id && !(record!.u as string in entries)) {
+          if (entry && entry.id === id && !((record!.u as string) in entries)) {
             entries[record!.u as string] = entry;
           }
         }
@@ -428,7 +428,10 @@ export function githubMemory(
             for (const [url, entry] of Object.entries(index.entries)) {
               await store.put(line(entry.id), { u: url, ...entry });
             }
-            await store.put(LINES, [...ids].sort((a, b) => a - b));
+            await store.put(
+              LINES,
+              [...ids].sort((a, b) => a - b),
+            );
             await store.delete("gh:index");
           } catch {
             // Stopped part-way, as said: the next to start tries again.

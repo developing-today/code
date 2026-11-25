@@ -88,7 +88,19 @@ describe("parsePhaseMapping (#9923)", () => {
     // Step counts from plan-phases.md (Phases 0-8) and the phase-9
     // plan's P9/P10 lists (Phases 9-10), F-numbered in order.
     expect(Object.fromEntries(counts)).toMatchObject({
-      0: 12, 1: 10, 2: 9, 3: 11, 4: 13, 5: 7, 6: 10, 7: 5, 8: 8, 9: 11, 10: 3, 11: 18, 13: 8,
+      0: 12,
+      1: 10,
+      2: 9,
+      3: 11,
+      4: 13,
+      5: 7,
+      6: 10,
+      7: 5,
+      8: 8,
+      9: 11,
+      10: 3,
+      11: 18,
+      13: 8,
     });
     const byItem = new Map(entries.map((e) => [e.item, e]));
     // Each Phase 0-10 item's ref is its phase's validation audit.

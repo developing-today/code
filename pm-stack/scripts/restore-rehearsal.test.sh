@@ -3,7 +3,10 @@
 # Oracle: injected failure => nonzero + resource cleanup; healthy => zero;
 # invalid argv => usage exit 2 before any external command or scratch write.
 set -euo pipefail
-if (($#)); then echo "unexpected argument: $1" >&2; exit 2; fi
+if (($#)); then
+  echo "unexpected argument: $1" >&2
+  exit 2
+fi
 SCRIPT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/restore-rehearsal.sh"
 ROOT=$(mktemp -d)
 trap 'rm -rf "$ROOT"' EXIT
@@ -49,7 +52,8 @@ chmod +x "$ROOT/bin/fake"
 for cmd in docker sqlite3 curl tar sleep date; do ln -s fake "$ROOT/bin/$cmd"; done
 failed=0
 run_case() {
-  local scenario=$1 expected=$2; shift 2
+  local scenario=$1 expected=$2
+  shift 2
   local home="$ROOT/$scenario" rc=0
   mkdir -p "$home/backups/pm-stack/2026-11-24"
   touch "$home/backups/pm-stack/2026-11-24/pm-stack-2026-11-24.tar.zst"
@@ -58,18 +62,20 @@ run_case() {
     bash "$SCRIPT" "$@" >"$home/output" 2>&1 || rc=$?
   local ok=1
   case "$expected" in
-    success) [[ $rc == 0 ]] || ok=0 ;;
-    failure) [[ $rc != 0 ]] || ok=0 ;;
-    usage)
-      [[ $rc == 2 && ! -s "$home/calls" && ! -e "$home/restore-rehearsal-6816" ]] || ok=0
-      ;;
+  success) [[ $rc == 0 ]] || ok=0 ;;
+  failure) [[ $rc != 0 ]] || ok=0 ;;
+  usage)
+    [[ $rc == 2 && ! -s "$home/calls" && ! -e "$home/restore-rehearsal-6816" ]] || ok=0
+    ;;
   esac
   if [[ $expected != usage ]]; then
     grep -q '^docker rm -f rehearsal-pg rehearsal-grist rehearsal-pad rehearsal-kaneo$' "$home/calls" || ok=0
     grep -q '^docker network rm rehearsal-net$' "$home/calls" || ok=0
   fi
   if [[ $ok == 1 ]]; then echo "PASS $scenario"; else
-    echo "FAIL $scenario (exit $rc; expected $expected)"; cat "$home/output"; failed=$((failed+1))
+    echo "FAIL $scenario (exit $rc; expected $expected)"
+    cat "$home/output"
+    failed=$((failed + 1))
   fi
 }
 run_case healthy success 2026-11-24

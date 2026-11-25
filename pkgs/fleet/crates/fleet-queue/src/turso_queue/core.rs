@@ -1482,10 +1482,11 @@ pub(crate) fn verb_staleness(t: &TursoBackend, req: &Value) -> Value {
         Ok(rows) => rows,
         Err(e) => return fail(2, e),
     };
-    let mut lease_sql = "SELECT id, queue, status, title, worker_id, priority, claimed_at, lease_until \
+    let mut lease_sql =
+        "SELECT id, queue, status, title, worker_id, priority, claimed_at, lease_until \
                    FROM tasks \
                    WHERE status = 'claimed' AND lease_until IS NOT NULL AND lease_until <= ?"
-        .to_string();
+            .to_string();
     let mut lease_args: Vec<Arg> = vec![Arg::Text(lease_cutoff)];
     if let Some(q) = queue {
         lease_sql += " AND queue = ?";
@@ -1536,9 +1537,7 @@ pub(crate) fn verb_needs_user(t: &TursoBackend, req: &Value) -> Value {
         sql += " AND json_extract(t.metadata, '$.question.state') = ?";
         args.push(Arg::Text(s.to_string()));
     }
-    sql += &format!(
-        " ORDER BY COALESCE(last_transition_at, t.updated_at) ASC LIMIT {limit}"
-    );
+    sql += &format!(" ORDER BY COALESCE(last_transition_at, t.updated_at) ASC LIMIT {limit}");
     match t.query_objs(&sql, &args, &["question"]) {
         Ok(rows) => ok(json!({"rows": rows, "queue": queue})),
         Err(e) => fail(2, e),

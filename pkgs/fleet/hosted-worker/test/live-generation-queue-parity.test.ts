@@ -36,7 +36,12 @@ import { executeQueueVerb, nativeQueueEnv, type QueueEnv } from "../src/queue.ts
 import { NO_DEP_PROBE, type QueueStore } from "../src/queue-store.ts";
 import { LibSQLQueueStore, type SyncSqlDb } from "../src/libsql-queue-store.ts";
 import { D1QueueStore, type D1Client, type D1Result, type D1Statement } from "../src/d1-queue-store.ts";
-import { HranaQueueStore, type HranaClient, type HranaResult, type HranaStatement } from "../src/libsql-hrana-queue-store.ts";
+import {
+  HranaQueueStore,
+  type HranaClient,
+  type HranaResult,
+  type HranaStatement,
+} from "../src/libsql-hrana-queue-store.ts";
 import { iso, type JsonObject } from "../src/queue-validate.ts";
 import { BINDING_A } from "./helpers.ts";
 import { LIVE_GENERATION_QUEUE_SCHEMA } from "./queue-live-generation-fixture.ts";
@@ -202,18 +207,17 @@ async function runLiveGenerationScenario(open: (db: DatabaseSync) => QueueStore)
     assert.equal(enq["ok"], true);
     const fresh = (await store.allTasks()).find((r) => r.title === "fix issue 4242");
     assert.ok(fresh, "the enqueued task must be readable through the store");
-    assert.equal(fresh.max_attempts, 1000, "a store-enqueued task carries max_attempts 1000 despite the table default 4");
+    assert.equal(
+      fresh.max_attempts,
+      1000,
+      "a store-enqueued task carries max_attempts 1000 despite the table default 4",
+    );
 
     // (e) Claim both rows (the exported one and the new one) and
     // complete both through the verb engine.
     const claimedIds = new Set<number>();
     for (let i = 0; i < 2; i++) {
-      const claimed = await executeQueueVerb(
-        store,
-        "claim",
-        { queue: "repo-health", worker: "worker-a" },
-        nativeEnv(),
-      );
+      const claimed = await executeQueueVerb(store, "claim", { queue: "repo-health", worker: "worker-a" }, nativeEnv());
       assert.equal(claimed["ok"], true);
       const row = claimed["row"] as JsonObject;
       claimedIds.add(row["id"] as number);

@@ -14,16 +14,24 @@
 # gristlabs/grist-oss, ghcr.io/perpetualsoftware/pad,
 # ghcr.io/usekaneo/kaneo (present on the laptop).
 set -euo pipefail
-usage_error() { echo "invalid argument: $1; usage: restore-rehearsal.sh [YYYY-MM-DD]" >&2; exit 2; }
+usage_error() {
+  echo "invalid argument: $1; usage: restore-rehearsal.sh [YYYY-MM-DD]" >&2
+  exit 2
+}
 if (($# > 1)); then usage_error "$2"; fi
 if (($# == 1)); then
   [[ $1 =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] || usage_error "$1"
-  year=$((10#${1:0:4})); month=$((10#${1:5:2})); day=$((10#${1:8:2}))
+  year=$((10#${1:0:4}))
+  month=$((10#${1:5:2}))
+  day=$((10#${1:8:2}))
   ((year >= 1 && month >= 1 && month <= 12 && day >= 1)) || usage_error "$1"
   max_day=31
   case $month in
-    4|6|9|11) max_day=30 ;;
-    2) max_day=28; if ((year % 4 == 0 && (year % 100 != 0 || year % 400 == 0))); then max_day=29; fi ;;
+  4 | 6 | 9 | 11) max_day=30 ;;
+  2)
+    max_day=28
+    if ((year % 4 == 0 && (year % 100 != 0 || year % 400 == 0))); then max_day=29; fi
+    ;;
   esac
   ((day <= max_day)) || usage_error "$1"
   DAY=$1
@@ -36,7 +44,10 @@ BK="$HOME/backups/pm-stack/$DAY/pm-stack-$DAY.tar.zst"
 T_ALL=$(date +%s)
 say() { echo "== $* =="; }
 elapsed() { echo "[$1] $(($(date +%s) - $2))s"; }
-fail() { echo "$*" >&2; exit 1; }
+fail() {
+  echo "$*" >&2
+  exit 1
+}
 cleanup() {
   local rc=$?
   trap - EXIT
@@ -53,9 +64,9 @@ integrity_check() {
 }
 http_ready() {
   local label=$1 attempts=$2 url=$3 allow_redirect=${4:-no} code i
-  for ((i=0; i<attempts; i++)); do
+  for ((i = 0; i < attempts; i++)); do
     if code=$(curl --connect-timeout 2 --max-time 5 -s -o /dev/null -w "%{http_code}" "$url" 2>/dev/null); then
-      if [[ $code == 200 || ( $allow_redirect == yes && $code == 302 ) ]]; then
+      if [[ $code == 200 || ($allow_redirect == yes && $code == 302) ]]; then
         echo "$label http: $code"
         return 0
       fi
@@ -89,8 +100,11 @@ docker run -d --name rehearsal-pg -e POSTGRES_USER=kaneo -e POSTGRES_PASSWORD=re
   exit 1
 }
 PG_READY=no
-for ((i=0; i<30; i++)); do
-  if docker exec rehearsal-pg pg_isready -U kaneo -d kaneo >/dev/null 2>&1; then PG_READY=yes; break; fi
+for ((i = 0; i < 30; i++)); do
+  if docker exec rehearsal-pg pg_isready -U kaneo -d kaneo >/dev/null 2>&1; then
+    PG_READY=yes
+    break
+  fi
   sleep 1
 done
 [[ $PG_READY == yes ]] || fail "PG READINESS TIMEOUT"

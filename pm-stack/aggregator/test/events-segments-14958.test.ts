@@ -166,7 +166,12 @@ describe("events segmented layout (#14958)", () => {
     const reloaded = new EventsStore(file);
     const list = await reloaded.list();
     expect(list.length).toBe(3);
-    expect(list.filter((e) => e.migratedFromVersion === 1).map((e) => e.id).sort()).toEqual(migratedIds);
+    expect(
+      list
+        .filter((e) => e.migratedFromVersion === 1)
+        .map((e) => e.id)
+        .sort(),
+    ).toEqual(migratedIds);
     expect((await reloaded.health()).integrity.ok).toBe(true);
   });
 
@@ -179,7 +184,9 @@ describe("events segmented layout (#14958)", () => {
     // the loss.
     const segName = segmentNames(store)[0]!;
     const segPath = join(store.segmentsDir, segName);
-    const lines = readFileSync(segPath, "utf8").split("\n").filter((l) => l !== "");
+    const lines = readFileSync(segPath, "utf8")
+      .split("\n")
+      .filter((l) => l !== "");
     writeFileSync(segPath, `${lines.slice(0, 3).join("\n")}\n`);
     const reloaded = new EventsStore(file);
     const health = await reloaded.health();
@@ -208,7 +215,9 @@ describe("events segmented layout (#14958)", () => {
     for (let i = 0; i < 3; i++) await store.record({ ...base, summary: `event ${i}` });
     const segName = segmentNames(store)[0]!;
     const segPath = join(store.segmentsDir, segName);
-    const lines = readFileSync(segPath, "utf8").split("\n").filter((l) => l !== "");
+    const lines = readFileSync(segPath, "utf8")
+      .split("\n")
+      .filter((l) => l !== "");
     lines[1] = "this is not json";
     writeFileSync(segPath, `${lines.join("\n")}\n`);
     const reloaded = new EventsStore(file);

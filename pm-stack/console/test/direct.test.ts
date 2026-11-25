@@ -1084,7 +1084,13 @@ describe("what the edge remembers of GitHub", () => {
     for (const id of [...ids].sort((a, b) => a - b)) {
       const record = kept.get(`gh:index:${id}`) as ({ u: string } & Line) | undefined;
       if (record && !(record.u in entries)) {
-        entries[record.u] = { id: record.id, etag: record.etag, pieces: record.pieces, size: record.size, at: record.at };
+        entries[record.u] = {
+          id: record.id,
+          etag: record.etag,
+          pieces: record.pieces,
+          size: record.size,
+          at: record.at,
+        };
       }
     }
     return { entries };

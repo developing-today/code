@@ -414,7 +414,10 @@ export class StoredRecords<T extends { id: string }> {
         await this.kv.put(this.entryKey(item.id), item);
         this.stored.set(item.id, JSON.stringify(item));
       }
-      await this.kv.put(this.indexKey(), items.map((item) => item.id));
+      await this.kv.put(
+        this.indexKey(),
+        items.map((item) => item.id),
+      );
       this.index = JSON.stringify(items.map((item) => item.id));
       await this.kv.delete(this.name);
       return items;
@@ -438,7 +441,10 @@ export class StoredRecords<T extends { id: string }> {
     }
     const index = JSON.stringify(items.map((item) => item.id));
     if (this.index !== index) {
-      await this.kv.put(this.indexKey(), items.map((item) => item.id));
+      await this.kv.put(
+        this.indexKey(),
+        items.map((item) => item.id),
+      );
       this.index = index;
     }
     for (const id of [...this.stored.keys()]) {
