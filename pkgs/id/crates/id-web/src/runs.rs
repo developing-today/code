@@ -151,7 +151,6 @@ impl RunsConfig {
 }
 
 /// The run endpoint as a router, ready to merge into any router state.
-#[must_use]
 pub fn runs_routes<S>(config: RunsConfig) -> Router<S>
 where
     S: Clone + Send + Sync + 'static,
@@ -1073,16 +1072,16 @@ pub(crate) struct ConnectInfoPeer(pub(crate) Option<SocketAddr>);
 impl<S: Send + Sync> axum::extract::FromRequestParts<S> for ConnectInfoPeer {
     type Rejection = std::convert::Infallible;
 
-    async fn from_request_parts(
+    fn from_request_parts(
         parts: &mut axum::http::request::Parts,
         _state: &S,
-    ) -> Result<Self, Self::Rejection> {
-        Ok(Self(
+    ) -> impl Future<Output = Result<Self, Self::Rejection>> + Send {
+        std::future::ready(Ok(Self(
             parts
                 .extensions
                 .get::<ConnectInfo<SocketAddr>>()
                 .map(|info| info.0),
-        ))
+        )))
     }
 }
 
@@ -1504,11 +1503,11 @@ mod tests {
         let ids: Vec<u64> = events.iter().map(|(id, _, _)| *id).collect();
         let expected: Vec<u64> = (1..=u64::try_from(ids.len()).unwrap()).collect();
         assert_eq!(ids, expected, "{text}");
-        let exits: Vec<_> = events
+        let exits = events
             .iter()
             .filter(|(_, event, _)| event == "exit")
-            .collect();
-        assert_eq!(exits.len(), 1, "{text}");
+            .count();
+        assert_eq!(exits, 1, "{text}");
         let (_, last, exit) = events.last().unwrap();
         assert_eq!(last, "exit");
         assert_eq!(exit["exit_code"], 3);

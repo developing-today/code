@@ -330,7 +330,7 @@ pub fn parse_app_manifest(source: &str, folder_name: &str) -> Result<AppManifest
         ensure!(
             web.pages
                 .as_deref()
-                .map_or(true, |pages| matches!(pages, "multi" | "single")),
+                .is_none_or(|pages| matches!(pages, "multi" | "single")),
             "interfaces.web.pages must be multi or single when present"
         );
         ensure_distinct_entries(&web.assets, "interfaces.web.assets")?;
@@ -500,8 +500,9 @@ impl WebBindingIndex {
     }
 }
 
-/// The run manifests (#10392 §4.5, #14226) of discovered apps, keyed by app
-/// id, for the web surface's run loader. An app's `capabilities.request`
+/// The run manifests (#10392 §4.5, #14226) of discovered apps, keyed by app id.
+///
+/// The web surface's run loader reads them. An app's `capabilities.request`
 /// becomes its required capabilities: the manifest declares no optional
 /// ones, so the loader never starts an app without every capability it
 /// asks for. `interfaces.web.assets` and `pages` become the presentation

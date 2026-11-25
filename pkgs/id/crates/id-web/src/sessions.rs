@@ -70,9 +70,9 @@ pub const SESSION_SOCKET_PATH: &str = "/v1/sessions/{id}/socket";
 /// Default byte cap of one session's event log (§4.4).
 pub const DEFAULT_SESSION_BYTE_CAP: usize = 16 * 1024 * 1024;
 /// Default idle time after which a session is dropped (§4.4).
-pub const DEFAULT_SESSION_IDLE_TTL: Duration = Duration::from_secs(60 * 60);
+pub const DEFAULT_SESSION_IDLE_TTL: Duration = Duration::from_hours(1);
 /// The longest idle TTL a store accepts (§4.4).
-pub const MAX_SESSION_IDLE_TTL: Duration = Duration::from_secs(24 * 60 * 60);
+pub const MAX_SESSION_IDLE_TTL: Duration = Duration::from_hours(24);
 
 /// Bytes counted for each event on top of its payload.
 const EVENT_OVERHEAD: usize = 32;
@@ -284,7 +284,9 @@ impl InputFrames {
             return Err(InputRefusal::Gap { expected: next });
         }
         if frame.seq < next {
-            let index = usize::try_from(frame.seq - 1).map_err(|_| InputRefusal::Conflict)?;
+            let Ok(index) = usize::try_from(frame.seq - 1) else {
+                return Err(InputRefusal::Conflict);
+            };
             return if self.digests.get(index) == Some(&digest) {
                 Ok(InputOutcome::Repeated)
             } else {
@@ -756,7 +758,7 @@ struct InputAnswer {
 }
 
 impl InputAnswer {
-    fn refused(seq: u64, kind: &'static str, error: String) -> Self {
+    const fn refused(seq: u64, kind: &'static str, error: String) -> Self {
         Self {
             seq,
             status: "refused",
@@ -1203,7 +1205,7 @@ mod tests {
             let (id, event, data) = &first[0];
             assert_eq!((*id, event.as_str()), (Some(1), "app"));
             let session = data["session"].as_str().unwrap().to_owned();
-            let input = SESSION_INPUT_PATH.replace("{id}", &session);
+            let input = format!("/v1/sessions/{session}/input");
 
             let post = |body: serde_json::Value| {
                 let router = router.clone();
@@ -1253,7 +1255,7 @@ mod tests {
             assert_eq!(exit["exit_code"], 0);
 
             // Replay: since=1 skips the session event; a window reads a slice.
-            let events_path = SESSION_EVENTS_PATH.replace("{id}", &session);
+            let events_path = format!("/v1/sessions/{session}/events");
             let get = |query: &str| {
                 let router = router.clone();
                 let uri = format!("{events_path}{query}");
@@ -1305,7 +1307,7 @@ mod tests {
             let events = parse(&body_text(response).await);
             assert_eq!(events.last().unwrap().1, "exit");
 
-            let uri = format!("{}?since=0", SESSION_EVENTS_PATH.replace("{id}", &session));
+            let uri = format!("/v1/sessions/{session}/events?since=0");
             let request = local(HttpRequest::get(uri).body(Body::empty()).unwrap());
             let replayed = parse(&body_text(router.clone().oneshot(request).await.unwrap()).await);
             let (id, event, marker) = &replayed[0];
@@ -1344,7 +1346,7 @@ mod tests {
             let unknown = router
                 .clone()
                 .oneshot(post_json(
-                    &SESSION_INPUT_PATH.replace("{id}", "nope"),
+                    "/v1/sessions/nope/input",
                     &frame(1, "x", false),
                     false,
                 ))
@@ -1359,7 +1361,7 @@ mod tests {
                     .unwrap(),
             )
             .await;
-            let input = SESSION_INPUT_PATH.replace("{id}", created["id"].as_str().unwrap());
+            let input = format!("/v1/sessions/{}/input", created["id"].as_str().unwrap());
             let (status, no_input) = json_of(
                 router
                     .clone()

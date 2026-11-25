@@ -209,13 +209,15 @@ fn io_response(err: &std::io::Error) -> Response {
 }
 
 /// The app's manifest, or the answer that refuses the request.
+// The refusal is the answer itself, so it is returned whole.
+#[allow(clippy::result_large_err)]
 fn app_manifest<'a>(
     config: &'a RunsConfig,
     app: &str,
-    peer: ConnectInfoPeer,
+    peer: Option<std::net::SocketAddr>,
     headers: &HeaderMap,
 ) -> Result<&'a RunManifest, Response> {
-    if !peer_allowed(peer.0, headers) {
+    if !peer_allowed(peer, headers) {
         return Err(refuse_non_local());
     }
     config
@@ -237,7 +239,7 @@ async fn asset_handler(
     headers: HeaderMap,
     params: Result<Query<AssetParams>, QueryRejection>,
 ) -> Response {
-    let manifest = match app_manifest(&config, &app, peer, &headers) {
+    let manifest = match app_manifest(&config, &app, peer.0, &headers) {
         Ok(manifest) => manifest,
         Err(refusal) => return refusal,
     };
@@ -329,7 +331,7 @@ async fn bundle_handler(
     headers: HeaderMap,
     params: Result<Query<BundleParams>, QueryRejection>,
 ) -> Response {
-    let manifest = match app_manifest(&config, &app, peer, &headers) {
+    let manifest = match app_manifest(&config, &app, peer.0, &headers) {
         Ok(manifest) => manifest,
         Err(refusal) => return refusal,
     };
@@ -363,7 +365,7 @@ async fn bundle_html_handler(
     peer: ConnectInfoPeer,
     headers: HeaderMap,
 ) -> Response {
-    let manifest = match app_manifest(&config, &app, peer, &headers) {
+    let manifest = match app_manifest(&config, &app, peer.0, &headers) {
         Ok(manifest) => manifest,
         Err(refusal) => return refusal,
     };
@@ -386,11 +388,12 @@ fn is_html(path: &str) -> bool {
         .is_some_and(|extension| extension.eq_ignore_ascii_case("html"))
 }
 
-/// The single-file HTML bundle (§4.6): the entry page (`index.html` when
-/// declared, else the first `.html` asset) with scripts and stylesheets
-/// inlined, other referenced assets as `data:` URLs, and every other page
-/// as a `<template data-page="...">` before `</body>`. `None` when there
-/// is no UTF-8 HTML asset.
+/// The single-file HTML bundle (§4.6).
+///
+/// The entry page (`index.html` when declared, else the first `.html`
+/// asset) has its scripts and stylesheets inlined, other referenced assets
+/// as `data:` URLs, and every other page as a `<template data-page="...">`
+/// before `</body>`. `None` when there is no UTF-8 HTML asset.
 #[must_use]
 pub fn single_file(assets: &[Asset]) -> Option<String> {
     let entry = assets
@@ -406,9 +409,9 @@ pub fn single_file(assets: &[Asset]) -> Option<String> {
         let Ok(text) = std::str::from_utf8(&page.bytes) else {
             continue;
         };
-        let _ = write!(
+        let _ = writeln!(
             templates,
-            "<template data-page=\"{}\">{}</template>\n",
+            "<template data-page=\"{}\">{}</template>",
             attribute_escape(&page.entry.path),
             inline_page(text, assets)
         );
@@ -545,8 +548,8 @@ pub fn crc32(bytes: &[u8]) -> u32 {
     !crc
 }
 
-fn too_large(what: &str) -> std::io::Error {
-    std::io::Error::other(format!("bundle too large for {what}"))
+fn too_large(what: &str, err: std::num::TryFromIntError) -> std::io::Error {
+    std::io::Error::other(format!("bundle too large for {what}: {err}"))
 }
 
 /// A zip archive of `files`, stored without compression.
@@ -562,9 +565,9 @@ pub fn zip(files: &[(String, Vec<u8>)]) -> std::io::Result<Vec<u8>> {
     let mut archive = Vec::new();
     let mut directory = Vec::new();
     for (name, bytes) in files {
-        let offset = u32::try_from(archive.len()).map_err(|_| too_large("zip"))?;
-        let size = u32::try_from(bytes.len()).map_err(|_| too_large("zip"))?;
-        let name_len = u16::try_from(name.len()).map_err(|_| too_large("zip names"))?;
+        let offset = u32::try_from(archive.len()).map_err(|err| too_large("zip", err))?;
+        let size = u32::try_from(bytes.len()).map_err(|err| too_large("zip", err))?;
+        let name_len = u16::try_from(name.len()).map_err(|err| too_large("zip names", err))?;
         let crc = crc32(bytes);
         archive.extend_from_slice(&0x0403_4b50_u32.to_le_bytes());
         for field in [20, UTF8_NAMES, 0, 0, DOS_DATE] {
@@ -592,9 +595,9 @@ pub fn zip(files: &[(String, Vec<u8>)]) -> std::io::Result<Vec<u8>> {
         directory.extend_from_slice(&offset.to_le_bytes());
         directory.extend_from_slice(name.as_bytes());
     }
-    let count = u16::try_from(files.len()).map_err(|_| too_large("zip entries"))?;
-    let directory_offset = u32::try_from(archive.len()).map_err(|_| too_large("zip"))?;
-    let directory_size = u32::try_from(directory.len()).map_err(|_| too_large("zip"))?;
+    let count = u16::try_from(files.len()).map_err(|err| too_large("zip entries", err))?;
+    let directory_offset = u32::try_from(archive.len()).map_err(|err| too_large("zip", err))?;
+    let directory_size = u32::try_from(directory.len()).map_err(|err| too_large("zip", err))?;
     archive.extend_from_slice(&directory);
     archive.extend_from_slice(&0x0605_4b50_u32.to_le_bytes());
     for field in [0, 0, count, count] {
@@ -623,7 +626,9 @@ pub fn tar(files: &[(String, Vec<u8>)]) -> std::io::Result<Vec<u8>> {
         header[116..124].copy_from_slice(b"0000000\0");
         let size = format!("{:011o}\0", bytes.len());
         if size.len() != 12 {
-            return Err(too_large("tar"));
+            return Err(std::io::Error::other(format!(
+                "{name:?} is too large for tar"
+            )));
         }
         header[124..136].copy_from_slice(size.as_bytes());
         header[136..148].copy_from_slice(b"00000000000\0");
