@@ -2100,22 +2100,26 @@ pub(super) fn cmd_link(rest: &[String]) -> i32 {
         println!("{}", usage("link"));
         return if rest.is_empty() { 2 } else { 0 };
     }
-    let rest = &rest[1..];
-    match rest[0].as_str() {
-        "add" => cmd_link_add(rest),
-        "remove" => cmd_link_remove(rest),
+    let (subcommand, args) = rest.split_first().expect("link subcommand is present");
+    if is_help_arg(subcommand) {
+        println!("{}", usage("link"));
+        return 0;
+    }
+    match subcommand.as_str() {
+        "add" => cmd_link_add(args),
+        "remove" => cmd_link_remove(args),
         "list" => {
-            let args = parse_verb_args("link list", rest, &[], &["include-removed", "json"]);
-            reject_extra_pos("link list", &args, 1);
-            let task_id = args.pos_i64(0, "task_id");
+            let parsed = parse_verb_args("link list", args, &[], &["include-removed", "json"]);
+            reject_extra_pos("link list", &parsed, 1);
+            let task_id = parsed.pos_i64(0, "task_id");
             let resp = unwrap_ok(call(
                 "/link-list",
                 &json!({
                     "task_id": task_id,
-                    "include_removed": args.has("include-removed"),
+                    "include_removed": parsed.has("include-removed"),
                 }),
             ));
-            if args.has("json") {
+            if parsed.has("json") {
                 print_json(&resp);
             } else {
                 println!(
