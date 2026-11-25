@@ -149,6 +149,140 @@ pub const KINDS: [&str; 6] = [
     "second_pass",
     "feature_slice",
 ];
+
+/// Structured terminal verdicts for queue tasks (#14170 Q2). Keep the
+/// category and substatus table here so broker transitions and tests use
+/// one vocabulary.
+pub const RESOLUTIONS: [&str; 9] = [
+    "done",
+    "already_solved",
+    "answered",
+    "duplicate",
+    "superseded",
+    "split_out",
+    "wontfix",
+    "obsolete",
+    "invalid",
+];
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolutionFields {
+    pub resolution: String,
+    pub category: String,
+    pub substatus: Option<String>,
+    pub reason: Option<String>,
+    pub reference: Option<String>,
+}
+
+pub fn resolution_category(resolution: &str) -> Option<&'static str> {
+    match resolution {
+        "done" | "already_solved" | "answered" => Some("success"),
+        "duplicate" | "superseded" | "split_out" => Some("redirection"),
+        "wontfix" | "obsolete" | "invalid" => Some("rejection"),
+        _ => None,
+    }
+}
+
+pub fn resolution_substatuses(resolution: &str) -> Option<&'static [&'static str]> {
+    match resolution {
+        "done" => Some(&["verified", "unverified", "partial_with_followup"]),
+        "already_solved" => Some(&["solved_elsewhere", "premise_already_met"]),
+        "answered" => Some(&["answered_from_record", "answered_by_decision"]),
+        "superseded" => Some(&["by_task", "by_issue", "by_pr"]),
+        "wontfix" => Some(&["decided_by_drew", "decided_by_agent", "out_of_scope"]),
+        "obsolete" => Some(&["issue_closed_elsewhere", "premise_gone", "expired"]),
+        "invalid" => Some(&["malformed_packet", "wrong_queue", "not_a_task"]),
+        "duplicate" | "split_out" => Some(&[]),
+        _ => None,
+    }
+}
+
+/// Validate and normalize a terminal resolution. `done` defaults to
+/// `unverified`; the broker upgrades it to `verified` only from a fresh
+/// disposition readback. Other resolutions require an explicit
+/// substatus when their taxonomy defines one.
+pub fn validate_resolution(
+    status: &str,
+    resolution: Option<&str>,
+    substatus: Option<&str>,
+    reason: Option<&str>,
+    reference: Option<&str>,
+) -> Result<Option<ResolutionFields>, String> {
+    let Some(resolution) = resolution.map(str::trim).filter(|s| !s.is_empty()) else {
+        return match status {
+            "done" => Ok(Some(ResolutionFields {
+                resolution: "done".into(),
+                category: "success".into(),
+                substatus: Some("unverified".into()),
+                reason: None,
+                reference: None,
+            })),
+            "cancelled" => Err("resolution is required for cancellation".into()),
+            "failed" => Ok(None),
+            other => Err(format!(
+                "resolution is not valid for terminal status {other:?}"
+            )),
+        };
+    };
+    let category = resolution_category(resolution).ok_or_else(|| {
+        format!(
+            "unknown resolution {resolution:?}; allowed: {}",
+            RESOLUTIONS.join(", ")
+        )
+    })?;
+    match status {
+        "done" if category != "success" => {
+            return Err(
+                "done requires a success resolution (done, already_solved, answered)".into(),
+            );
+        }
+        "cancelled" if category == "success" => {
+            return Err("cancelled requires a redirection or rejection resolution".into());
+        }
+        "failed" if category != "rejection" => {
+            return Err("failed may only carry a rejection resolution".into());
+        }
+        "done" | "cancelled" | "failed" => {}
+        other => {
+            return Err(format!(
+                "resolution is not valid for terminal status {other:?}"
+            ));
+        }
+    }
+    let allowed =
+        resolution_substatuses(resolution).expect("registered resolution has substatuses");
+    let normalized_substatus = match substatus.map(str::trim).filter(|s| !s.is_empty()) {
+        Some(value) if allowed.contains(&value) => Some(value.to_string()),
+        Some(value) => {
+            return Err(format!(
+                "resolution {resolution:?} does not allow substatus {value:?}; allowed: {}",
+                allowed.join(", ")
+            ));
+        }
+        None => match resolution {
+            "done" => Some("unverified".into()),
+            "already_solved" => Some("premise_already_met".into()),
+            "answered" => Some("answered_by_decision".into()),
+            "duplicate" | "split_out" => None,
+            _ => return Err(format!("resolution {resolution:?} requires a substatus")),
+        },
+    };
+    let reason = reason.map(str::trim).filter(|s| !s.is_empty());
+    let reference = reference.map(str::trim).filter(|s| !s.is_empty());
+    if category == "rejection" && reason.is_none() {
+        return Err(format!("resolution {resolution:?} requires a reason"));
+    }
+    if category == "redirection" && reference.is_none() {
+        return Err(format!("resolution {resolution:?} requires a reference"));
+    }
+    Ok(Some(ResolutionFields {
+        resolution: resolution.to_string(),
+        category: category.to_string(),
+        substatus: normalized_substatus,
+        reason: reason.map(str::to_string),
+        reference: reference.map(str::to_string),
+    }))
+}
 // Both the old and the current names of the two repos that moved to the
 // developing-today-forks org (2026-11-04) stay allowlisted: in-flight queue
 // tasks carry dedupe keys with the old names and must keep validating,
@@ -1428,6 +1562,67 @@ pub fn task_from_packet(packet: &Value, queue: &str) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn resolution_registry_enforces_terminal_taxonomy() {
+        assert_eq!(RESOLUTIONS.len(), 9);
+        assert_eq!(resolution_category("done"), Some("success"));
+        assert_eq!(resolution_category("superseded"), Some("redirection"));
+        assert_eq!(resolution_category("invalid"), Some("rejection"));
+        assert_eq!(
+            validate_resolution("done", None, None, None, None).unwrap(),
+            Some(ResolutionFields {
+                resolution: "done".into(),
+                category: "success".into(),
+                substatus: Some("unverified".into()),
+                reason: None,
+                reference: None,
+            })
+        );
+        assert!(
+            validate_resolution("cancelled", None, None, None, None)
+                .unwrap_err()
+                .contains("required")
+        );
+        assert!(validate_resolution("done", Some("wontfix"), None, Some("no"), None).is_err());
+        assert!(validate_resolution("cancelled", Some("done"), None, None, None).is_err());
+        assert!(
+            validate_resolution("cancelled", Some("superseded"), Some("by_pr"), None, None)
+                .is_err()
+        );
+        assert!(
+            validate_resolution(
+                "cancelled",
+                Some("wontfix"),
+                Some("out_of_scope"),
+                None,
+                None
+            )
+            .is_err()
+        );
+        let redirected = validate_resolution(
+            "cancelled",
+            Some("superseded"),
+            Some("by_pr"),
+            None,
+            Some("pr:14700"),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(redirected.category, "redirection");
+        assert_eq!(redirected.reference.as_deref(), Some("pr:14700"));
+        let rejected = validate_resolution(
+            "cancelled",
+            Some("wontfix"),
+            Some("out_of_scope"),
+            Some("outside current scope"),
+            None,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(rejected.category, "rejection");
+    }
+
     #[test]
     fn reprioritize_scale_and_category_mapping() {
         // #14100: the design scale is exactly these seven numbers.
