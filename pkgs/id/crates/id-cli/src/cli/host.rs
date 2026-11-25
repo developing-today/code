@@ -1,0 +1,45 @@
+//! `id host` subcommand definitions: host mode over a data root of
+//! world directories (#10693, packet P1 of the hosted-worlds v1 design
+//! `doc/2026-11-16_design_id6283_hosted_worlds_v1.md`).
+
+use std::path::PathBuf;
+
+use clap::Subcommand;
+
+/// Subcommands for `id host`.
+///
+/// A data root holds one directory per world (`journal.jsonl` +
+/// `modules/`, the same layout a laptop host uses) and the host file
+/// `host.json` recording each world's lifecycle state: live, asleep
+/// or archived.
+#[derive(Subcommand, Debug)]
+pub enum HostCommand {
+    /// Run host mode over a data root until Ctrl-C.
+    ///
+    /// Replays every world the host file records live, then starts
+    /// each `--start` world. Ctrl-C drains every live world and leaves
+    /// the host file as it stands, so the next run replays the same
+    /// worlds back to live. A data root without a host file gets one
+    /// rebuilt from its directories, every world asleep.
+    Run {
+        /// The data root.
+        root: PathBuf,
+        /// An asleep world to start once the recorded-live worlds have
+        /// replayed; repeat to start several.
+        #[arg(long = "start", value_name = "WORLD")]
+        start: Vec<String>,
+        /// The actor recorded on the transitions this run makes.
+        #[arg(long, default_value = "operator")]
+        actor: String,
+    },
+    /// List every world under a data root with its lifecycle state,
+    /// storage bytes and last state change, without opening any world
+    /// and without writing the host file.
+    List {
+        /// The data root.
+        root: PathBuf,
+        /// Print the census as JSON instead of lines.
+        #[arg(long)]
+        json: bool,
+    },
+}

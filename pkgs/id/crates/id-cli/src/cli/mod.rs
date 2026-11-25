@@ -36,6 +36,7 @@
 //!   petname      List the petnames one owner gave, read-only, from a petnames journal
 //!   match-audit Export and verify signed match-audit v0 logs
 //!   walk       The #9106 walking skeleton, driven by hand (stored nodes, sync, reports)
+//!   host       Host mode: run, or list, a data root of world directories
 //!   group        Groups: create, policy, add, remove, set roles, list, join
 //!   delegate     Grant a delegate a scope in a group
 //!   revoke       Revoke a delegation by its grant's event ID
@@ -110,6 +111,7 @@ pub mod claim;
 pub mod doc;
 pub mod gallery;
 pub mod groups;
+pub mod host;
 pub mod match_audit;
 pub mod petname;
 pub mod tag;
@@ -121,6 +123,7 @@ pub use claim::{ClaimCommand, ClaimScope};
 pub use doc::DocCommand;
 pub use gallery::{GalleryArgs, GalleryCommand};
 pub use groups::{DelegateArgs, GroupCommand, GroupRemoveMode, GroupTemplate, RevokeArgs};
+pub use host::HostCommand;
 pub use match_audit::MatchAuditCommand;
 pub use petname::PetnameCommand;
 pub use tag::TagCommand;
@@ -1416,6 +1419,11 @@ pub enum Command {
     /// federation exchange protocol, conflict reports (#12232).
     #[command(subcommand)]
     Walk(WalkCommand),
+    /// Host mode over a data root of world directories (#10693): run
+    /// the root's live worlds until Ctrl-C, or list every world's
+    /// lifecycle state and storage without opening any world.
+    #[command(subcommand)]
+    Host(HostCommand),
     /// Groups: create, show the policy, add, remove, set roles, and list (P6.7a).
     ///
     /// Each action records one event in the group log and prints one line, or one JSON object with
