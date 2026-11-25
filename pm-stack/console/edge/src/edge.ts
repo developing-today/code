@@ -81,6 +81,7 @@ import {
   kvStore,
   HandOver,
   Mirrors,
+  StoredRecords,
   withMachine,
   heldAbout,
   insertHeld,
@@ -217,7 +218,19 @@ export class Edge {
    * out, and the edge may do it itself first. Kept in storage under
    * "handed", so an object that starts again knows. */
   private handed: Set<string> | null = null;
+  /** The handed names as storage holds them, kept beside `handed`
+   * so a save writes only the names that changed (#14960). */
+  private handedStored: Set<string> | null = null;
   private ownActs: Act[] | null = null;
+  /** The next audit entry's number, once read: the log is kept one
+   * entry per key under it, so an event writes one entry, never the
+   * whole log (#14960). */
+  private auditNext: number | null = null;
+  /** What is held, what this side has taken, and its own acts, each
+   * kept one record per key with a small index (#14960). */
+  private heldRecords: StoredRecords<Held>;
+  private takenRecords: StoredRecords<Held>;
+  private actRecords: StoredRecords<Act>;
   private hostActs: Act[] = [];
   /** When a document was last read. The app reads while it is open
    * (every 20 s), far more often than an object lasts once idle, so a
@@ -272,6 +285,9 @@ export class Edge {
       () => this.ready(),
       () => this.confirmed,
     );
+    this.heldRecords = new StoredRecords(this.kv, "held", (id) => `held:${id}`);
+    this.takenRecords = new StoredRecords(this.kv, "taken", (id) => `taken:${id}`);
+    this.actRecords = new StoredRecords(this.kv, "acts", (id) => `act:${id}`);
     this.direct = options.direct;
     this.sockets = options.sockets ?? null;
     const setAlarm = options.setAlarm ?? (async () => {});
@@ -447,26 +463,58 @@ export class Edge {
   }
 
   private async heldList(): Promise<Held[]> {
-    if (this.held === null) this.held = ((await this.kv.get("held")) as Held[] | undefined) ?? [];
+    if (this.held === null) this.held = await this.heldRecords.load();
     return this.held;
   }
 
   private async saveHeld(): Promise<void> {
-    await this.kv.put("held", this.held ?? []);
+    await this.heldRecords.save(this.held ?? []);
     await this.showEdge();
   }
 
-  /** Names of held actions already handed to a machine. */
+  /** Names of held actions already handed to a machine. Kept one
+   * name per key (`handed:<id>`) with a small index of the names, so
+   * a change writes the names that changed, never the whole set
+   * (#14960); what an older copy kept as one array under "handed" is
+   * taken in on first read and kept the new way from then on. */
   private async handedList(): Promise<Set<string>> {
     if (this.handed === null) {
-      const stored = ((await this.kv.get("handed")) as string[] | undefined) ?? [];
-      this.handed = new Set(stored.filter((id) => typeof id === "string"));
+      const index = await this.kv.get("handed:index");
+      if (Array.isArray(index)) {
+        this.handed = new Set(index.filter((id) => typeof id === "string"));
+      } else {
+        const stored = await this.kv.get("handed");
+        const names = ((stored as string[] | undefined) ?? []).filter((id) => typeof id === "string");
+        this.handed = new Set(names);
+        if (Array.isArray(stored)) {
+          for (const id of this.handed) await this.kv.put(`handed:${id}`, id);
+          await this.kv.put("handed:index", [...this.handed]);
+          await this.kv.delete("handed");
+        }
+      }
+      this.handedStored = new Set(this.handed);
     }
     return this.handed;
   }
 
   private async saveHanded(): Promise<void> {
-    await this.kv.put("handed", [...(this.handed ?? [])]);
+    if (this.handedStored === null) await this.handedList();
+    const handed = this.handed ?? new Set<string>();
+    const stored = this.handedStored as Set<string>;
+    let changed = false;
+    for (const id of handed) {
+      if (!stored.has(id)) {
+        await this.kv.put(`handed:${id}`, id);
+        stored.add(id);
+        changed = true;
+      }
+    }
+    const gone = [...stored].filter((id) => !handed.has(id));
+    if (changed || gone.length > 0) await this.kv.put("handed:index", [...handed]);
+    for (const id of gone) {
+      await this.kv.delete(`handed:${id}`);
+      stored.delete(id);
+    }
   }
 
   /** Forget handed names that are no longer held (acknowledged, dropped,
@@ -552,6 +600,11 @@ export class Edge {
     return waits;
   }
 
+  /** Keep what this side has taken as it now stands (#14960). */
+  private async saveTaken(): Promise<void> {
+    await this.takenRecords.save(this.taken ?? []);
+  }
+
   /** What this side has taken, read back when an object starts, and each
    * settled by what its record says. One that is in the held list again
    * (or never left it) is not taken. One whose record says it ended,
@@ -560,9 +613,9 @@ export class Edge {
    * it again; the owner is told to look. One never begun waits again,
    * where it was. */
   private async recoverTaken(): Promise<void> {
-    const stored = (await this.kv.get("taken")) as unknown;
+    const stored = await this.takenRecords.load();
     this.taken = [];
-    if (!Array.isArray(stored) || stored.length === 0) return;
+    if (stored.length === 0) return;
     const held = await this.heldList();
     let back = false;
     for (const item of stored as Partial<Held>[]) {
@@ -598,7 +651,7 @@ export class Edge {
       await this.kv.put(key, { at: this.now(), kind: was.kind, state: "given" } satisfies Acted);
     }
     if (back) await this.saveHeld();
-    await this.kv.delete("taken");
+    await this.saveTaken();
   }
 
   /** Take a held action to do here: out of the held list before anything
@@ -630,7 +683,7 @@ export class Edge {
     try {
       // Written down as taken before it leaves the held list: an object
       // put away between the two finds it in both, and it was not begun.
-      await this.kv.put("taken", taken);
+      await this.saveTaken();
       await this.saveHeld();
     } catch (error) {
       // It could not be written down: it was not taken, and waits as
@@ -672,7 +725,7 @@ export class Edge {
         await this.saveHeld();
       }
       this.taken = (this.taken ?? []).filter((t) => t.id !== taken.id);
-      await this.kv.put("taken", this.taken);
+      await this.saveTaken();
       return outcome;
     } finally {
       ended();
@@ -901,30 +954,57 @@ export class Edge {
   /** What the owner did lately: this side's own record (what it ran or
    * is holding) together with the host's, newest first. */
   private async showActs(): Promise<void> {
-    if (this.ownActs === null) this.ownActs = ((await this.kv.get("acts")) as Act[] | undefined) ?? [];
+    if (this.ownActs === null) this.ownActs = await this.actRecords.load();
     const merged = [...this.ownActs, ...this.hostActs.filter((h) => !this.ownActs?.some((o) => o.id === h.id))];
     merged.sort((a, b) => (a.at < b.at ? 1 : a.at > b.at ? -1 : 0));
     this.docs.restoreActs(merged);
   }
 
   private async logAct(act: Act): Promise<void> {
-    if (this.ownActs === null) this.ownActs = ((await this.kv.get("acts")) as Act[] | undefined) ?? [];
+    if (this.ownActs === null) this.ownActs = await this.actRecords.load();
     this.ownActs = [act, ...this.ownActs.filter((a) => a.id !== act.id)].slice(0, ACTS_KEPT);
-    await this.kv.put("acts", this.ownActs);
+    await this.actRecords.save(this.ownActs);
     await this.showActs();
   }
 
   private async dropAct(id: string): Promise<void> {
-    if (this.ownActs === null) this.ownActs = ((await this.kv.get("acts")) as Act[] | undefined) ?? [];
+    if (this.ownActs === null) this.ownActs = await this.actRecords.load();
     this.ownActs = this.ownActs.filter((a) => a.id !== id);
-    await this.kv.put("acts", this.ownActs);
+    await this.actRecords.save(this.ownActs);
     await this.showActs();
   }
 
+  /** One entry in the audit log. The log is kept one entry per key
+   * under its number (`audit:<n>`), with the next number kept beside
+   * it: an event writes its entry and the number, and forgets the
+   * entry that fell out of the kept window — never the whole log
+   * (#14960). What an older copy kept as one array under "audit" is
+   * taken in on first use and kept the new way from then on. */
   private async audit(entry: Record<string, unknown>): Promise<void> {
-    const log = ((await this.kv.get("audit")) as Record<string, unknown>[] | undefined) ?? [];
-    log.push(entry);
-    await this.kv.put("audit", log.slice(-AUDIT_KEPT));
+    if (this.auditNext === null) this.auditNext = await this.auditStart();
+    const at = this.auditNext;
+    await this.kv.put(`audit:${at}`, entry);
+    await this.kv.put("audit:next", at + 1);
+    this.auditNext = at + 1;
+    const out = at - AUDIT_KEPT;
+    if (out >= 0) await this.kv.delete(`audit:${out}`);
+  }
+
+  /** The number the next audit entry takes: the one kept beside the
+   * entries, or, for a log an older copy kept as one array, the
+   * count of its kept entries once they are kept the new way. */
+  private async auditStart(): Promise<number> {
+    const next = await this.kv.get("audit:next");
+    if (typeof next === "number") return next;
+    const legacy = await this.kv.get("audit");
+    if (Array.isArray(legacy)) {
+      const kept = legacy.slice(-AUDIT_KEPT) as Record<string, unknown>[];
+      for (let i = 0; i < kept.length; i++) await this.kv.put(`audit:${i}`, kept[i]);
+      await this.kv.put("audit:next", kept.length);
+      await this.kv.delete("audit");
+      return kept.length;
+    }
+    return 0;
   }
 
   private async ready(): Promise<void> {

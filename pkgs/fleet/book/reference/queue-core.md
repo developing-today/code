@@ -1,6 +1,6 @@
 # fleet queue: core verbs
 
-`fleet queue` is the repo work queue: enqueue, claim, and complete tasks through the queue broker. Inside the binary the same surface is the standalone `repo-queue` program, and every per-verb usage string says `repo-queue`, not `fleet queue`; the two spellings are identical. The full command list is: `validate, enqueue, list, claim, release, lane, bind, heartbeat, checkpoint, park, wake, block, unblock, dep-recheck, quarantine-recheck, cancel, revive, fail, complete, verify-disposition, timeline, history, show, models, health, signal, fallback, dispatch, session, surfaces, outbox, stack`.
+`fleet queue` is the repo work queue: enqueue, claim, and complete tasks through the queue broker. Inside the binary the same surface is the standalone `repo-queue` program, and every per-verb usage string says `repo-queue`, not `fleet queue`; the two spellings are identical. The full command list is: `validate, enqueue, list, claim, release, lane, bind, heartbeat, checkpoint, park, wake, block, unblock, dep-recheck, quarantine-recheck, cancel, revive, fail, complete, verify-disposition, timeline, history, show, staleness, needs-user, models, health, signal, fallback, dispatch, session, surfaces, outbox, stack`.
 
 Task states are `queued`, `claimed`, `parked`, `blocked`, `needs_review` (live) and `done`, `failed`, `cancelled` (terminal).
 
