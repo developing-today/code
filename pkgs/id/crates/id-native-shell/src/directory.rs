@@ -537,8 +537,7 @@ impl DirectoryApp {
             ));
         }
         lines.push(
-            "Up/Down move, Enter open, P pin, X close session, Esc back to this list."
-                .to_string(),
+            "Up/Down move, Enter open, P pin, X close session, Esc back to this list.".to_string(),
         );
         lines.join("\n")
     }
@@ -781,7 +780,10 @@ mod tests {
         }));
         assert_eq!(damaged.pinned, vec!["a".to_string(), "b".to_string()]);
         assert!(damaged.recent.is_empty());
-        assert_eq!(DirectoryMarks::from_json(&Value::Null), DirectoryMarks::default());
+        assert_eq!(
+            DirectoryMarks::from_json(&Value::Null),
+            DirectoryMarks::default()
+        );
     }
 
     #[test]
@@ -849,10 +851,7 @@ mod tests {
         // Cursor starts on the default (lobby); move up to annex
         // and pin it: it jumps to the pinned section, cursor follows.
         app.handle_key(DirectoryKey::Up);
-        assert_eq!(
-            app.directory().unwrap().selected().unwrap().name,
-            "annex"
-        );
+        assert_eq!(app.directory().unwrap().selected().unwrap().name, "annex");
         app.handle_key(DirectoryKey::TogglePin);
         let directory = app.directory().unwrap();
         assert_eq!(directory.entries()[0].name, "annex");
@@ -892,7 +891,10 @@ mod tests {
     #[test]
     fn text_table_is_the_accessible_projection_of_the_list() {
         let mut app = DirectoryApp::default();
-        assert!(app.text_table().contains("Waiting for the host world list."));
+        assert!(
+            app.text_table()
+                .contains("Waiting for the host world list.")
+        );
         app.set_listing("lobby", &listing());
         app.registry.enter("annex");
         let table = app.text_table();
@@ -908,10 +910,7 @@ mod tests {
         assert!(lobby_row.contains("2 here"));
         let annex_row = lines.iter().find(|line| line.contains("annex")).unwrap();
         assert!(annex_row.contains("(in session)"), "row: {annex_row}");
-        let workshop_row = lines
-            .iter()
-            .find(|line| line.contains("workshop"))
-            .unwrap();
+        let workshop_row = lines.iter().find(|line| line.contains("workshop")).unwrap();
         assert!(workshop_row.contains("stored"));
         assert!(workshop_row.contains("0 here"));
     }
