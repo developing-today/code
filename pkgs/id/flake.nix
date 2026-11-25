@@ -570,7 +570,17 @@
                 "test-shard-2"
                 "test-shard-3"
               ];
-              test-unit = mkCheck "test-unit" "test-unit";
+              test-unit = mkCheckWith {
+                name = "test-unit";
+                justCmd = "test-unit";
+                # The Nix check source is pkgs/id alone; stage the shared
+                # research oracle where store_authority_contract resolves it.
+                beforeCheck = ''
+                  rm -f doc
+                  mkdir -p doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-c
+                  cp ${../../doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-c/store-placement-research-report.json} doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-c/store-placement-research-report.json
+                '';
+              };
               test-crate-integration = mkCheck "test-crate-integration" "test-crate-integration";
               test-native-shell = mkCheckCargoOnly "test-native-shell" "test-native-shell";
               test-tui-shell = mkCheck "test-tui-shell" "test-tui-shell";
