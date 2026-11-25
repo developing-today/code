@@ -3877,6 +3877,16 @@ describe("the platform goes by its own settings, whatever a machine says", () =>
 describe("the owner's changed settings are kept at the edge and gone by", () => {
   const labelCalls = (w: Awaited<ReturnType<typeof setup>>, label: string) =>
     w.githubCalls.filter((call) => call.url.includes(`labels=${encodeURIComponent(label)}`));
+  /** Look again once what was read has gone stale, and wait for what
+   * that look started reading behind its answer. */
+  const lookAgain = async (w: Awaited<ReturnType<typeof setup>>) => {
+    w.githubCalls.length = 0;
+    for (let i = 0; i < 2; i++) {
+      w.now.t += 150_000;
+      await w.core();
+      await Promise.all(w.behind.splice(0));
+    }
+  };
 
   test("an owner's label is read by, above main's, and above a machine that says another", async () => {
     const w = await setup({ direct: true });
@@ -3932,10 +3942,9 @@ describe("the owner's changed settings are kept at the edge and gone by", () => 
     expect(JSON.stringify(w.stored.get("ownerSettings"))).toBe(kept);
     // A new object reads it back and goes by it.
     w.edge.now = w.makeEdge(true);
-    w.githubCalls.length = 0;
     w.net.hostUp = false;
     w.net.edgeUp = false;
-    await w.core();
+    await lookAgain(w);
     expect(labelCalls(w, "owner/label").length).toBeGreaterThan(0);
     expect(labelCalls(w, "machine/label")).toEqual([]);
   });
@@ -4027,8 +4036,7 @@ describe("the owner's changed settings are kept at the edge and gone by", () => 
     ]);
     expect(JSON.stringify(settings)).not.toContain("owner/label");
     // Cleared, the repository speaks again at once.
-    w.githubCalls.length = 0;
-    await w.core();
+    await lookAgain(w);
     expect(labelCalls(w, platformSettings().promptLabel).length).toBeGreaterThan(0);
     expect(labelCalls(w, "owner/label")).toEqual([]);
   });
