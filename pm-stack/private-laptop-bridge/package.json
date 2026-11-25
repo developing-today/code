@@ -6,7 +6,7 @@
     "node": ">=24.22.0"
   },
   "devDependencies": {
-    "cf": "1.0.0-rc.1",
+    "cf": "1.0.0-rc.2",
     "wrangler": "4.166.0"
   }
 }
