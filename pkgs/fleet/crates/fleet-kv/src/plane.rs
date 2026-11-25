@@ -445,6 +445,16 @@ mod tests {
             .expect("stage")
     }
 
+    fn published(
+        plane: &mut MemoryPlane,
+        partition: &Partition,
+        bytes: &[u8],
+        now: i64,
+    ) -> KvBlobRefV1 {
+        let receipt = staged(plane, partition, bytes, now);
+        plane.publish(&receipt, now).expect("publish")
+    }
+
     fn read_all(
         plane: &MemoryPlane,
         capability: &Capability,
@@ -567,13 +577,9 @@ mod tests {
     fn blob_retained_history_pins_survive_sweeps() {
         let mut plane = MemoryPlane::new([7; 32]);
         let mut refs = Refs::default();
-        let old = plane
-            .publish(&staged(&mut plane, &eu(), b"version one", 0), 0)
-            .expect("publish");
+        let old = published(&mut plane, &eu(), b"version one", 0);
         assert!(refs.publish_cas(&plane, &old));
-        let new = plane
-            .publish(&staged(&mut plane, &eu(), b"version two", 1), 1)
-            .expect("publish");
+        let new = published(&mut plane, &eu(), b"version two", 1);
         assert!(refs.publish_cas(&plane, &new));
         // The head moved to version two; version one stays a root because
         // its version row is retained.
@@ -594,9 +600,7 @@ mod tests {
     #[test]
     fn blob_capabilities_need_a_live_reference_and_expire_at_five_minutes() {
         let mut plane = MemoryPlane::new([7; 32]);
-        let reference = plane
-            .publish(&staged(&mut plane, &eu(), b"secret bytes", 0), 0)
-            .expect("publish");
+        let reference = published(&mut plane, &eu(), b"secret bytes", 0);
         // Knowing the hash is not enough: no reference, no capability.
         let refused = plane
             .mint(&reference, Operation::Read, &Refs::default(), 0)
@@ -628,12 +632,8 @@ mod tests {
     fn blob_capabilities_cannot_be_retargeted_or_forged() {
         let mut plane = MemoryPlane::new([7; 32]);
         let mut refs = Refs::default();
-        let mine = plane
-            .publish(&staged(&mut plane, &eu(), b"mine", 0), 0)
-            .expect("publish");
-        let theirs = plane
-            .publish(&staged(&mut plane, &eu(), b"theirs", 0), 0)
-            .expect("publish");
+        let mine = published(&mut plane, &eu(), b"mine", 0);
+        let theirs = published(&mut plane, &eu(), b"theirs", 0);
         assert!(refs.publish_cas(&plane, &mine) && refs.publish_cas(&plane, &theirs));
         let capability = plane.mint(&mine, Operation::Read, &refs, 0).expect("mint");
 
@@ -656,9 +656,7 @@ mod tests {
 
     fn plane_with_other_key_mint(reference: &KvBlobRefV1) -> Capability {
         let mut other = MemoryPlane::new([9; 32]);
-        let reference = other
-            .publish(&staged(&mut other, &reference.partition, b"mine", 0), 0)
-            .expect("publish");
+        let reference = published(&mut other, &reference.partition, b"mine", 0);
         let mut refs = Refs::default();
         assert!(refs.publish_cas(&other, &reference));
         other
@@ -670,9 +668,7 @@ mod tests {
     fn blob_corrupt_replicas_are_never_served() {
         let mut plane = MemoryPlane::new([7; 32]);
         let mut refs = Refs::default();
-        let reference = plane
-            .publish(&staged(&mut plane, &eu(), b"fragile", 0), 0)
-            .expect("publish");
+        let reference = published(&mut plane, &eu(), b"fragile", 0);
         assert!(refs.publish_cas(&plane, &reference));
         let capability = plane
             .mint(&reference, Operation::Read, &refs, 0)
@@ -689,12 +685,8 @@ mod tests {
         let mut plane = MemoryPlane::new([7; 32]);
         let us = Partition::new("us", "standard");
         let mut refs = Refs::default();
-        let in_eu = plane
-            .publish(&staged(&mut plane, &eu(), b"same bytes", 0), 0)
-            .expect("publish");
-        let in_us = plane
-            .publish(&staged(&mut plane, &us, b"same bytes", 0), 0)
-            .expect("publish");
+        let in_eu = published(&mut plane, &eu(), b"same bytes", 0);
+        let in_us = published(&mut plane, &us, b"same bytes", 0);
         assert_eq!(in_eu.digest, in_us.digest);
         assert_ne!(
             in_eu.locator, in_us.locator,
