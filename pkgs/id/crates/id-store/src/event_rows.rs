@@ -298,7 +298,7 @@ impl RowWrite for WriteTransaction {
 
 impl EventWriteTransaction for WriteTransaction {
     type Rows<'a>
-        = &'a WriteTransaction
+        = &'a mut WriteTransaction
     where
         Self: 'a;
 

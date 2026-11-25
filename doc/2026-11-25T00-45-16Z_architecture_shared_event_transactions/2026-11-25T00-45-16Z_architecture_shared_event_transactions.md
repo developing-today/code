@@ -150,3 +150,11 @@ tenant must also be enforced before claiming restart/concurrency parity.
 The earlier lifecycle test also needs the allowlisted `meta` table rather than
 the invented `driver_rows` name, and explicit error-only closure result types.
 These are fixture/compiler corrections, not a relaxation of table validation.
+
+Inspection of the previously uncompiled native transaction-driver call site
+also found a mismatched shared borrow for `Mirror<WriteTransaction>` and a tail
+`?` that produced a tuple instead of the closure's `Result`. The native row
+borrow is now mutable, `attempt` explicitly reborrows its underlying transaction,
+and the operation result is returned directly. Read-only review agrees this
+keeps commit/abort, error-drop rollback, pool reload and generation behavior.
+Runtime evidence for these corrections remains required.

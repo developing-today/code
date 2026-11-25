@@ -1323,11 +1323,11 @@ impl EventStore {
         let txn = self.db.begin_write()?;
         let (value, changed) = with_write_transaction(txn, |rows| {
             let mut mirror = Mirror {
-                txn: rows,
+                txn: &mut **rows,
                 pool: &mut self.waiting,
                 arrivals: &mut self.next_arrival,
             };
-            op(&mut mirror)?
+            op(&mut mirror)
         })?;
         if changed {
             // A committed change moves the stored-state generation, so
@@ -1661,10 +1661,22 @@ pub fn store_fork(
     b: &Event,
 ) -> Result<(), StoreError> {
     let proof = encode_proof(seq, a, b)?;
-    txn.put("forks", position_key(author, seq).as_slice(), proof.as_slice())?;
+    txn.put(
+        "forks",
+        position_key(author, seq).as_slice(),
+        proof.as_slice(),
+    )?;
     for header in [a, b] {
-        txn.put("proof_ids", header.id.as_bytes().as_slice(), author.as_slice())?;
-        txn.put("proof_headers", header.id.as_bytes().as_slice(), header.bytes.as_slice())?;
+        txn.put(
+            "proof_ids",
+            header.id.as_bytes().as_slice(),
+            author.as_slice(),
+        )?;
+        txn.put(
+            "proof_headers",
+            header.id.as_bytes().as_slice(),
+            header.bytes.as_slice(),
+        )?;
     }
     Ok(())
 }
