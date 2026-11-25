@@ -88,6 +88,40 @@ impl HttpRequest {
     }
 }
 
+/// #14188 (fleet context propagation build 2/5): the per-trip
+/// context line both brokers log — `trip <METHOD> <path> status=<s>
+/// FLEET_CTX_ID=<id> …` — or `None` when the request carried no
+/// `X-Fleet-Ctx-*` header (absence is representable: no line, no
+/// error) or was refused as unauthorized (an unauthenticated caller
+/// must not be able to write the brokers' logs). The query string is
+/// never logged; the fields are fleet-config's canonical rendering,
+/// so the id is byte-identical to every other leg's log.
+pub fn ctx_trip_line(req: &HttpRequest, status: u16) -> Option<String> {
+    if status == 401 {
+        return None;
+    }
+    let ctx = fleet_config::ctx::Ctx::from_headers(
+        req.headers.iter().map(|(k, v)| (k.as_str(), v.as_str())),
+    );
+    if ctx.is_empty() {
+        return None;
+    }
+    let path = req.target.split('?').next().unwrap_or("");
+    Some(format!(
+        "trip {} {} status={status} {}",
+        req.method,
+        path,
+        ctx.log_fields()
+    ))
+}
+
+/// Log [`ctx_trip_line`] for one served request under `domain`.
+pub fn log_ctx_trip(domain: &str, req: &HttpRequest, status: u16) {
+    if let Some(line) = ctx_trip_line(req, status) {
+        crate::log::info(domain, &line);
+    }
+}
+
 /// RAII guard for the bind lock file: flock held until drop.
 struct BindLock(std::fs::File);
 
