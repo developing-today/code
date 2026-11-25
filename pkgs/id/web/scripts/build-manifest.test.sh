@@ -10,7 +10,8 @@
 #      old hashed file and the manifest points at the new one;
 #   4. adoption from scratch: a dist holding only a contract-valid
 #      styles.<8-hex>.css adopts it into the manifest untouched;
-#   5. a non-contract name (styles.darkmode.css) is never deleted.
+#   5. a non-contract name (styles.darkmode.css) is never deleted;
+#   6. dist/sw.js gets exactly one shell-manifest line (#13918).
 #
 # Run: sh pkgs/id/web/scripts/build-manifest.test.sh   (needs bun)
 set -eu
@@ -76,5 +77,22 @@ run_manifest "$A"
 [ -f "$A/dist/styles.darkmode.css" ] || fail "non-contract: styles.darkmode.css was deleted"
 [ "$(manifest_styles "$A")" = "styles.deadbeef.css" ] || fail "non-contract: adopted entry changed"
 echo "ok: non-contract stylesheet untouched"
+
+# --- case 6: sw.js shell manifest injection (#13918) ----------------------
+W=$TMP/sw
+mkdir -p "$W/dist"
+printf 'body { color: green; }\n' >"$W/dist/styles.css"
+printf 'console.log(2);\n' >"$W/dist/main.def34uvw.js"
+printf 'self.addEventListener("fetch",()=>{});\n' >"$W/dist/sw.js"
+run_manifest "$W"
+SW_CSS=$(manifest_styles "$W")
+head -n 1 "$W/dist/sw.js" | grep -q "^self.__ID_SHELL_MANIFEST__={\"main.js\":\"main.def34uvw.js\",\"styles.css\":\"$SW_CSS\"};\$" ||
+  fail "sw: first line does not carry the shell manifest"
+grep -q 'self.addEventListener("fetch"' "$W/dist/sw.js" || fail "sw: worker body lost"
+run_manifest "$W"
+[ "$(grep -c '^self.__ID_SHELL_MANIFEST__=' "$W/dist/sw.js")" = 1 ] || fail "sw: manifest line stacked on re-run"
+grep -q 'self.addEventListener("fetch"' "$W/dist/sw.js" || fail "sw: worker body lost on re-run"
+[ ! -e "$D/dist/sw.js" ] || fail "sw: sw.js created where none was built"
+echo "ok: sw.js carries the shell manifest exactly once"
 
 echo "build-manifest double-run fixture: all cases passed"
