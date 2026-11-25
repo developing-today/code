@@ -1967,11 +1967,38 @@ func TestEventsReconnectWaitsForTheConfiguredDelay(t *testing.T) {
 				return
 			}
 			accepted <- time.Now()
+			// Do not answer merely because TCP connected. The HTTP transport
+			// has not necessarily registered the response yet, so an immediate
+			// response can be discarded as unsolicited and make this fixture
+			// race the client's request path (especially under -race).
+			if err := conn.SetReadDeadline(time.Now().Add(3 * time.Second)); err != nil {
+				_ = conn.Close()
+				serveErr <- err
+				return
+			}
+			request, err := http.ReadRequest(bufio.NewReader(conn))
+			if err != nil {
+				_ = conn.Close()
+				serveErr <- fmt.Errorf("read event request %d: %w", attempt+1, err)
+				return
+			}
+			wantSince := ""
+			if attempt == 1 {
+				wantSince = "1"
+			}
+			if request.Method != http.MethodGet || request.URL.Path != "/v1/events" || request.URL.Query().Get("since") != wantSince {
+				_ = request.Body.Close()
+				_ = conn.Close()
+				serveErr <- fmt.Errorf("event request %d = %s %s, want GET /v1/events?since=%s", attempt+1, request.Method, request.URL, wantSince)
+				return
+			}
+			_ = request.Body.Close()
 			body := fmt.Sprintf("id: %d\ndata: {\"seq\":%d,\"kind\":\"call.finished\"}\n\n", attempt+1, attempt+1)
 			_, err = fmt.Fprintf(conn, "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s", len(body), body)
 			_ = conn.Close()
 			if err != nil {
 				serveErr <- err
+				return
 			}
 		}
 	}()
