@@ -35,6 +35,8 @@ verbs:
   list           --namespace NS                list keys (--include-tombstones)
   delete         --namespace NS KEY            write a masking tombstone
   clear-override --namespace NS KEY            drop the local overlay row
+  rebase         --namespace NS KEY            build a conflicted key on central's
+                                               head and re-queue the overlay
   revert         --namespace NS KEY --to V     append a copy of version V
   sync                                         pull namespace definitions, then
                                                sweep this session's intents
@@ -79,6 +81,7 @@ const LIST_USAGE: &str = "usage: fleet kv list [--global | --allow-stale] [--ver
 const DELETE_USAGE: &str = "usage: fleet kv delete [--global [--expect VERSION]] --namespace NS KEY\n\nWrite a masking tombstone: the key reads absent here and sweeps as a mask.\n--global writes the tombstone to central directly by compare-and-swap.\n";
 const SYNC_USAGE: &str = "usage: fleet kv sync [--archive]\n\nPull this host's namespace definitions from central, then sweep this session's\npending intents into central by compare-and-swap. Prints a summary line, then\none line per conflict or waiting key. When the last archive checkpoint is over\n15 min old (or --archive), it then archives the writes that did not sweep:\ninline values up to the namespace threshold only; larger values are listed as\nprotection_unavailable_needs_phase3 and never uploaded. 15 min is an online\ntarget, not a recovery point: unarchived writes die with this disk.\n";
 const BACKUP_USAGE: &str = "usage: fleet kv backup\n\nThe same as `fleet kv sync --archive`: sync, then checkpoint this session's\nunswept writes to the central survival archive now.\n";
+const REBASE_USAGE: &str = "usage: fleet kv rebase --namespace NS KEY\n\nResolve a conflicted key: read central's head, make it the key's base, cancel\nthe key's pending intents and queue one new intent for this session's overlay\nvalue against that base (none after clear-override: the key follows central).\nPrints `rebased onto=VERSION requeued=VERSION|none`. Run `fleet kv sync` next.\n";
 const CLEAR_USAGE: &str = "usage: fleet kv clear-override --namespace NS KEY\n\nDrop the local overlay row, advance the key's fence and cancel unsent sweep\nintents. History is kept. Busy for over 5 s: clear_busy_try_again.\n";
 const SNAPSHOT_USAGE: &str = "usage: fleet kv snapshot DEST\n\nWrite a consistent one-file snapshot of this host's whole store (WAL included)\nto DEST, with a manifest row inside it. Never overwrites DEST. Prints the manifest.\n";
 const RESTORE_USAGE: &str = "usage: fleet kv restore SNAPSHOT\n       fleet kv restore --archive\n\nRestore SNAPSHOT as this host's store after checking its manifest, schema\nversion and integrity. Refuses when a store (or its WAL) already exists.\nPrints the manifest.\n\n--archive instead adopts this session's last central archive checkpoint as new\nlocal writes (queued to sweep). Keys this store already has history for keep\ntheir local rows; keys the archive holds no bytes for are listed as\nprotection_unavailable_needs_phase3. No checkpoint: archive_not_found.\n";
@@ -91,6 +94,7 @@ enum Verb {
     List,
     Delete,
     ClearOverride,
+    Rebase,
     Revert,
     Sync,
     Backup,
@@ -106,6 +110,7 @@ impl Verb {
             "list" => Self::List,
             "delete" => Self::Delete,
             "clear-override" => Self::ClearOverride,
+            "rebase" => Self::Rebase,
             "revert" => Self::Revert,
             "sync" => Self::Sync,
             "backup" => Self::Backup,
@@ -122,6 +127,7 @@ impl Verb {
             Self::List => LIST_USAGE,
             Self::Delete => DELETE_USAGE,
             Self::ClearOverride => CLEAR_USAGE,
+            Self::Rebase => REBASE_USAGE,
             Self::Revert => REVERT_USAGE,
             Self::Sync => SYNC_USAGE,
             Self::Backup => BACKUP_USAGE,
@@ -202,6 +208,10 @@ enum Command {
         namespace: String,
         key: String,
     },
+    Rebase {
+        namespace: String,
+        key: String,
+    },
     Revert {
         namespace: String,
         key: String,
@@ -224,6 +234,7 @@ impl Command {
             Self::List { .. } => "list",
             Self::Delete { .. } => "delete",
             Self::ClearOverride { .. } => "clear-override",
+            Self::Rebase { .. } => "rebase",
             Self::Revert { .. } => "revert",
             Self::Sync { archive: false } => "sync",
             Self::Sync { archive: true } => "backup",
@@ -238,7 +249,7 @@ impl Command {
         match self {
             Self::Get { global, .. } | Self::List { global, .. } => *global,
             Self::Set { global, .. } | Self::Delete { global, .. } => global.is_some(),
-            Self::Sync { .. } | Self::RestoreArchive => true,
+            Self::Sync { .. } | Self::RestoreArchive | Self::Rebase { .. } => true,
             _ => false,
         }
     }
@@ -458,6 +469,13 @@ fn parse(args: &[String]) -> Result<Command, ParseError> {
         Verb::ClearOverride => {
             expect(1)?;
             Command::ClearOverride {
+                namespace,
+                key: positionals.remove(0),
+            }
+        }
+        Verb::Rebase => {
+            expect(1)?;
+            Command::Rebase {
                 namespace,
                 key: positionals.remove(0),
             }
@@ -935,6 +953,28 @@ fn execute_central(
                 Err(error) => return refuse_archive(err, &error),
             }
         }
+        Command::Rebase { namespace, key } => {
+            let definition =
+                match crate::central::resolve(primary, crate::central::REGISTRY_ID, &namespace) {
+                    Ok(definition) => definition,
+                    Err(error) => return refuse_central(err, &error),
+                };
+            match crate::sweep::rebase(store, identity, primary, &definition, &namespace, &key) {
+                Ok(rebased) => match rebased.requeued {
+                    Some(version) => {
+                        writeln!(out, "rebased onto={} requeued={version}", rebased.onto)
+                    }
+                    None => writeln!(out, "rebased onto={} requeued=none", rebased.onto),
+                },
+                Err(error) => {
+                    let _ = writeln!(err, "error: {}: {error}", error.code());
+                    return match &error {
+                        crate::sweep::SweepError::Central(central) => central_exit(central),
+                        crate::sweep::SweepError::Local(_) => EXIT_REFUSED,
+                    };
+                }
+            }
+        }
         Command::RestoreArchive => match archive::restore(store, identity, primary) {
             Ok(restored) => write_restored(out, &restored),
             Err(error) => return refuse_archive(err, &error),
@@ -1176,7 +1216,7 @@ fn execute(
                 Err(error) => return refuse(err, &error),
             }
         }
-        Command::Sync { .. } | Command::RestoreArchive => {
+        Command::Sync { .. } | Command::RestoreArchive | Command::Rebase { .. } => {
             let _ = writeln!(err, "error: usage: this verb needs the central store");
             return EXIT_USAGE;
         }
@@ -1655,6 +1695,75 @@ mod tests {
             text(&restored)
         );
         assert!(text(&restored).ends_with(" adopted=0 kept_local=0 unprotected=0\n"));
+    }
+
+    #[test]
+    fn central_cli_rebase_unblocks_a_conflicted_key() {
+        let central = Central::new();
+        let (first, second) = (
+            LocalStore::in_memory().expect("store"),
+            LocalStore::in_memory().expect("store"),
+        );
+        assert_eq!(
+            central
+                .invoke(
+                    &first,
+                    "first",
+                    &["set", "--namespace", "status", "claim", "one"],
+                    b""
+                )
+                .code,
+            EXIT_OK
+        );
+        assert_eq!(
+            central
+                .invoke(
+                    &second,
+                    "second",
+                    &["set", "--namespace", "status", "claim", "two"],
+                    b""
+                )
+                .code,
+            EXIT_OK
+        );
+        assert_eq!(
+            central.invoke(&first, "first", &["sync"], b"").code,
+            EXIT_OK
+        );
+        let lost = central.invoke(&second, "second", &["sync"], b"");
+        assert!(
+            text(&lost).starts_with("namespaces=1 committed=0 conflicts=1"),
+            "{}",
+            text(&lost)
+        );
+        let rebased = central.invoke(
+            &second,
+            "second",
+            &["rebase", "--namespace", "status", "claim"],
+            b"",
+        );
+        assert_eq!(rebased.code, EXIT_OK, "{}", rebased.err);
+        assert_eq!(text(&rebased), "rebased onto=1 requeued=1\n");
+        let won = central.invoke(&second, "second", &["sync"], b"");
+        assert!(
+            text(&won).starts_with("namespaces=1 committed=1 conflicts=0"),
+            "{}",
+            text(&won)
+        );
+        let unknown = central.invoke(
+            &second,
+            "second",
+            &["rebase", "--namespace", "nowhere", "claim"],
+            b"",
+        );
+        assert_eq!(unknown.code, EXIT_REFUSED);
+        assert!(
+            unknown.err.starts_with("error: unknown_namespace"),
+            "{}",
+            unknown.err
+        );
+        let usage = central.invoke(&second, "second", &["rebase", "--namespace", "status"], b"");
+        assert_eq!(usage.code, EXIT_USAGE);
     }
 
     #[test]
