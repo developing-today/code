@@ -201,7 +201,10 @@ impl Job {
             preferred_surface: s("preferred_surface"),
             previous_run_id: v.get("previous_run_id").and_then(|x| x.as_i64()),
             previous_run_repo: s("previous_run_repo"),
-            push_nix_cache: v.get("push_nix_cache").and_then(|x| x.as_bool()).unwrap_or(false),
+            push_nix_cache: v
+                .get("push_nix_cache")
+                .and_then(|x| x.as_bool())
+                .unwrap_or(false),
             actions_cache: s("actions_cache"),
             actions_cache_restore_keys: v
                 .get("actions_cache_restore_keys")
@@ -1453,7 +1456,10 @@ fn complete_queued_session(
     if rec.get("state").and_then(Value::as_str) != Some("queued") {
         return;
     }
-    let Some(claim_handle) = rec.get("claim_handle").and_then(Value::as_str).map(str::to_string)
+    let Some(claim_handle) = rec
+        .get("claim_handle")
+        .and_then(Value::as_str)
+        .map(str::to_string)
     else {
         return;
     };
@@ -1468,7 +1474,11 @@ fn complete_queued_session(
     let Some(job) = rec.get("job").and_then(Job::from_json) else {
         return;
     };
-    let Some(sid) = claim.get("surface").and_then(Value::as_str).map(str::to_string) else {
+    let Some(sid) = claim
+        .get("surface")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+    else {
         return;
     };
     let Some(surface) = find_surface(registry, &sid) else {
@@ -1496,7 +1506,11 @@ fn complete_queued_session(
                 rec["portable_id"] = json!(format!("{runner_repo}#{run_id}"));
             }
             rec["run_id"] = result.run_id.map(Value::from).unwrap_or(Value::Null);
-            rec["run_url"] = result.run_url.clone().map(Value::from).unwrap_or(Value::Null);
+            rec["run_url"] = result
+                .run_url
+                .clone()
+                .map(Value::from)
+                .unwrap_or(Value::Null);
             rec["state"] = json!(match &result.terminal_state {
                 Some(s) => s.clone(),
                 None if result.run_id.is_some() => "queued".to_string(),
@@ -1506,7 +1520,10 @@ fn complete_queued_session(
                 rec["note"] = json!(note);
             }
             if kind == "blacksmith" {
-                if let Some(arr) = store.get_mut("blacksmith_dispatches").and_then(Value::as_array_mut) {
+                if let Some(arr) = store
+                    .get_mut("blacksmith_dispatches")
+                    .and_then(Value::as_array_mut)
+                {
                     arr.push(json!({
                         "handle": handle,
                         "month": current_month(),
@@ -1526,7 +1543,10 @@ fn complete_queued_session(
 /// settle with the run's reconciled minutes and wait for them; every
 /// other slot releases as soon as its run is terminal.
 fn settle_coordinator_claim(store: &Value, handle: &str, rec: &mut Value, state: &str, kind: &str) {
-    let Some(claim_handle) = rec.get("claim_handle").and_then(Value::as_str).map(str::to_string)
+    let Some(claim_handle) = rec
+        .get("claim_handle")
+        .and_then(Value::as_str)
+        .map(str::to_string)
     else {
         return;
     };
@@ -1554,7 +1574,10 @@ fn settle_coordinator_claim(store: &Value, handle: &str, rec: &mut Value, state:
     } else {
         None
     };
-    if coordinator::coordinator().release(&claim_handle, actual).is_ok() {
+    if coordinator::coordinator()
+        .release(&claim_handle, actual)
+        .is_ok()
+    {
         rec["coord_released"] = json!(true);
     }
 }
@@ -1638,7 +1661,11 @@ fn refresh_session(store: &mut Value, handle: &str, registry: &Value, gh: &dyn G
             }
         }
     }
-    let state = rec.get("state").and_then(Value::as_str).unwrap_or("").to_string();
+    let state = rec
+        .get("state")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
     let kind = rec
         .get("surface")
         .and_then(Value::as_str)
@@ -2269,10 +2296,17 @@ fn run_dispatch(args: &[String]) -> R<i32> {
             if granted {
                 rec.insert("claim_handle".into(), json!(handle));
             }
-            rec.insert("run_id".into(), result.run_id.map(Value::from).unwrap_or(Value::Null));
+            rec.insert(
+                "run_id".into(),
+                result.run_id.map(Value::from).unwrap_or(Value::Null),
+            );
             rec.insert(
                 "run_url".into(),
-                result.run_url.clone().map(Value::from).unwrap_or(Value::Null),
+                result
+                    .run_url
+                    .clone()
+                    .map(Value::from)
+                    .unwrap_or(Value::Null),
             );
             rec.insert(
                 "state".into(),

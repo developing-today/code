@@ -93,7 +93,12 @@ function fixPacket(issue = 4242, payloadExtra: JsonObject = {}, packetExtra: Jso
   };
 }
 
-async function enqueue(store: QueueStore, env: QueueEnv, packet: JsonObject, extra: JsonObject = {}): Promise<JsonObject> {
+async function enqueue(
+  store: QueueStore,
+  env: QueueEnv,
+  packet: JsonObject,
+  extra: JsonObject = {},
+): Promise<JsonObject> {
   return await executeQueueVerb(store, "enqueue", { queue: "repo-health", packet, ...extra }, env);
 }
 
@@ -191,7 +196,10 @@ test("store: a full task row round-trips every column through the shared schema"
       dep_recheck_seconds: 300,
     });
     assert.deepEqual(await t.store.getTask(row.id), row);
-    assert.deepEqual((await t.store.tasksByDedupe("repo-health", "k1")).map((r) => r.id), [row.id]);
+    assert.deepEqual(
+      (await t.store.tasksByDedupe("repo-health", "k1")).map((r) => r.id),
+      [row.id],
+    );
     assert.equal(await t.store.getTask(row.id + 1), null);
   } finally {
     closeOpened(t);
@@ -238,13 +246,14 @@ test("store: a losing conditional update reports false and leaves the row", asyn
       dep_blocked_until: null,
       dep_recheck_seconds: null,
     } as Omit<TaskRow, "id">);
-    assert.equal(
-      await t.store.conditionalUpdateTask(row.id, { status: "claimed" }, { worker_id: "x" }),
-      false,
-    );
+    assert.equal(await t.store.conditionalUpdateTask(row.id, { status: "claimed" }, { worker_id: "x" }), false);
     assert.equal((await t.store.getTask(row.id))?.worker_id, null);
     assert.equal(
-      await t.store.conditionalUpdateTask(row.id, { status: "queued", worker_id: null }, { status: "claimed", worker_id: "w" }),
+      await t.store.conditionalUpdateTask(
+        row.id,
+        { status: "queued", worker_id: null },
+        { status: "claimed", worker_id: "w" },
+      ),
       true,
     );
     assert.equal((await t.store.getTask(row.id))?.worker_id, "w");

@@ -121,15 +121,15 @@ says how the two coexist.
 
 ## 2. Ownership
 
-| Concern                                                   | Owner             |
-| --------------------------------------------------------- | ----------------- |
-| Edge types, aliases, JSON and error contract              | DEP-02 (#9503)    |
+| Concern                                                    | Owner             |
+| ---------------------------------------------------------- | ----------------- |
+| Edge types, aliases, JSON and error contract               | DEP-02 (#9503)    |
 | **Edge storage, revision, cycle-safe mutation, readiness** | **DEP-03 (this)** |
-| Native GitHub links, all seven relations' projection      | DEP-04 (#9444)    |
-| Dependency-derived pressure                               | PRI-04 (#9480)    |
-| Command spelling / registration                           | CLI-02 / CLI-13   |
-| Claim and manual-only semantics                           | #9178             |
-| Park/resume safety                                        | #9179             |
+| Native GitHub links, all seven relations' projection       | DEP-04 (#9444)    |
+| Dependency-derived pressure                                | PRI-04 (#9480)    |
+| Command spelling / registration                            | CLI-02 / CLI-13   |
+| Claim and manual-only semantics                            | #9178             |
+| Park/resume safety                                         | #9179             |
 
 DEP-03 writes `work/relations.rs` (the pure readiness and
 reachability model, after DEP-02's types) and the broker
@@ -220,14 +220,14 @@ edge mutation (§6.3).
 
 ## 4. Mutations
 
-| Operation             | Effect on the edge                                        | Revision |
-| --------------------- | --------------------------------------------------------- | -------- |
-| `dependency.add`      | insert `active` (§5 for hard `blocks`; §5.4 for others)   | +1       |
-| `dependency.resolve`  | `active → resolved`, evidence required                    | +1       |
-| `dependency.remove`   | `active → removed`, reason required (tombstone)           | +1       |
-| quarantine (§7)       | `active → quarantined` (import or repair only)            | +1       |
-| `dependency.restore`  | `quarantined → active` via the §5 insert check            | +1       |
-| automatic resolution  | `active → resolved` when the blocker is satisfied (§6.3)  | +1       |
+| Operation            | Effect on the edge                                       | Revision |
+| -------------------- | -------------------------------------------------------- | -------- |
+| `dependency.add`     | insert `active` (§5 for hard `blocks`; §5.4 for others)  | +1       |
+| `dependency.resolve` | `active → resolved`, evidence required                   | +1       |
+| `dependency.remove`  | `active → removed`, reason required (tombstone)          | +1       |
+| quarantine (§7)      | `active → quarantined` (import or repair only)           | +1       |
+| `dependency.restore` | `quarantined → active` via the §5 insert check           | +1       |
+| automatic resolution | `active → resolved` when the blocker is satisfied (§6.3) | +1       |
 
 Every mutation is one pipeline transaction that updates the edge
 row with `WHERE status = ? AND revision = ?` (edge-level CAS),
@@ -387,18 +387,18 @@ exactly "not excluded by this clause".
 
 ### 6.3 What satisfies a blocker, and who records it
 
-| Blocker                   | Satisfied when                          | Recorded by                                                        |
-| ------------------------- | --------------------------------------- | ------------------------------------------------------------------ |
-| Fleet task                | it reaches `done`                       | the `complete` verb, in its own transaction: resolve every active hard edge it sources (+1 revision) |
-| Fleet task                | it reaches `cancelled` / `failed`       | **not satisfied.** Edge stays active; a `dep_blocker_terminal_unsuccessful` event is raised once. |
-| GitHub issue              | CLOSED as completed                     | the existing #8276 recheck sweep, extended to typed edges          |
-| GitHub issue              | CLOSED as not planned                   | not satisfied; event raised, as for a failed task                  |
-| GitHub PR                 | MERGED                                  | recheck sweep                                                      |
-| GitHub PR                 | CLOSED unmerged                         | not satisfied; event raised                                        |
-| Actions run               | completed with `success`                | recheck sweep                                                      |
-| Actions run               | completed otherwise                     | not satisfied; event raised                                        |
-| any external              | probe `Broken` (404, unknown)           | not satisfied; `certainty → uncertain`, event raised              |
-| any external              | probe `Failed` (rate limit, auth)       | nothing inferred; recheck rescheduled                              |
+| Blocker      | Satisfied when                    | Recorded by                                                                                          |
+| ------------ | --------------------------------- | ---------------------------------------------------------------------------------------------------- |
+| Fleet task   | it reaches `done`                 | the `complete` verb, in its own transaction: resolve every active hard edge it sources (+1 revision) |
+| Fleet task   | it reaches `cancelled` / `failed` | **not satisfied.** Edge stays active; a `dep_blocker_terminal_unsuccessful` event is raised once.    |
+| GitHub issue | CLOSED as completed               | the existing #8276 recheck sweep, extended to typed edges                                            |
+| GitHub issue | CLOSED as not planned             | not satisfied; event raised, as for a failed task                                                    |
+| GitHub PR    | MERGED                            | recheck sweep                                                                                        |
+| GitHub PR    | CLOSED unmerged                   | not satisfied; event raised                                                                          |
+| Actions run  | completed with `success`          | recheck sweep                                                                                        |
+| Actions run  | completed otherwise               | not satisfied; event raised                                                                          |
+| any external | probe `Broken` (404, unknown)     | not satisfied; `certainty → uncertain`, event raised                                                 |
+| any external | probe `Failed` (rate limit, auth) | nothing inferred; recheck rescheduled                                                                |
 
 This deliberately differs from #8276, which releases on failure,
 breakage and TTL so that free-form blocks never strand a task.
@@ -485,7 +485,7 @@ fields enter through §5.
    (auto-resolution), the recheck sweep (auto-resolution and
    certainty downgrade), import (quarantine). **Read API:**
    the claim predicate clause, `dependency.ready / blockers /
-   graph / list`, `show`, PRI-04's evaluator.
+graph / list`, `show`, PRI-04's evaluator.
 5. **Legacy mapping:** `tasks.blocked_deps` and its recheck
    fields are **not** this fact: they are #8276's per-row block
    with its own release rules and stay authoritative for the
@@ -529,7 +529,7 @@ fields enter through §5.
   DEP-01 crosswalk decision. If it is done, it is an import
   (§7) with `reason_code = migrated`, the original row is left
   as it was, and the converted edges start `certainty =
-  asserted`.
+asserted`.
 
 ## 10. Gates and sequencing
 
@@ -566,19 +566,19 @@ output of its exact command. Builds and test runs go through
 remote dispatch (`fleet queue dispatch`), per the repository's
 remote-build rule.
 
-| Test                                                     | Oracle                                                                                                                                                                                               |
-| -------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Test                                                                | Oracle                                                                                                                                                                                                          |
+| ------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `pmo_dep_opposite_concurrent_edges_cannot_both_commit` (first, red) | Two writers on separate connections submit `A→B` and `B→A` against revision r0, released together, many iterations. Exactly one edge commits each time; the other returns `dependency_cycle`; revision is r0+1. |
-| `pmo_dep_cycle_rule_matches_bfs`                         | Generated graphs up to 8 nodes: the in-SQL check rejects `u→v` iff `u == v` or an independent in-test BFS finds `v→u` over active hard `blocks` edges only.                                            |
-| `pmo_dep_reach_bound_fails_closed`                       | A chain longer than `max_reach`: insert refused with `graph_evaluation_incomplete`; no edge, no revision bump.                                                                                     |
-| `pmo_dep_ready_requires_all_hard_blockers`               | Two hard blockers; resolving one leaves the task unclaimable; resolving both makes it claimable; `unblock` on one edge never clears the other.                                                       |
-| `pmo_dep_non_hard_edges_do_not_gate`                     | Soft blocks, `related_to`, hierarchy, `duplicates`, `supersedes` and resolved/removed edges never exclude a task from the pick predicate.                                                             |
-| `pmo_dep_unsuccessful_blocker_does_not_release`          | Blocker task `failed`; closed-not-planned issue; closed-unmerged PR; probe `Broken`: the dependent stays unready and one event is raised each; probe `Failed` changes nothing.                       |
-| `pmo_dep_done_blocker_resolves_in_complete_txn`          | `complete` on a blocker resolves its outgoing hard edges and bumps revision in the same transaction; a crash between is impossible to observe (single pipeline).                                     |
-| `pmo_dep_imported_cycle_quarantined`                     | Importing a 3-cycle: two edges active, one quarantined with its path; the quarantined edge keeps its dependent unready; the CTE terminates.                                                           |
-| `pmo_dep_restore_rechecks_cycle`                         | Restoring a quarantined edge while the cycle stands is refused; after removing another cycle edge it succeeds.                                                                                     |
-| `pmo_dep_edge_mutation_is_cas`                           | Stale `--expected-version` returns `VERSION_CONFLICT` with the current revision and changes nothing; an idempotent replay of an add returns the existing edge.                                       |
-| `pmo_dep_legacy_block_coexists`                          | A task with both a #8276 block and a typed edge needs both released; the #8276 TTL release does not clear the typed edge, and resolving the edge does not change `status`.                            |
+| `pmo_dep_cycle_rule_matches_bfs`                                    | Generated graphs up to 8 nodes: the in-SQL check rejects `u→v` iff `u == v` or an independent in-test BFS finds `v→u` over active hard `blocks` edges only.                                                     |
+| `pmo_dep_reach_bound_fails_closed`                                  | A chain longer than `max_reach`: insert refused with `graph_evaluation_incomplete`; no edge, no revision bump.                                                                                                  |
+| `pmo_dep_ready_requires_all_hard_blockers`                          | Two hard blockers; resolving one leaves the task unclaimable; resolving both makes it claimable; `unblock` on one edge never clears the other.                                                                  |
+| `pmo_dep_non_hard_edges_do_not_gate`                                | Soft blocks, `related_to`, hierarchy, `duplicates`, `supersedes` and resolved/removed edges never exclude a task from the pick predicate.                                                                       |
+| `pmo_dep_unsuccessful_blocker_does_not_release`                     | Blocker task `failed`; closed-not-planned issue; closed-unmerged PR; probe `Broken`: the dependent stays unready and one event is raised each; probe `Failed` changes nothing.                                  |
+| `pmo_dep_done_blocker_resolves_in_complete_txn`                     | `complete` on a blocker resolves its outgoing hard edges and bumps revision in the same transaction; a crash between is impossible to observe (single pipeline).                                                |
+| `pmo_dep_imported_cycle_quarantined`                                | Importing a 3-cycle: two edges active, one quarantined with its path; the quarantined edge keeps its dependent unready; the CTE terminates.                                                                     |
+| `pmo_dep_restore_rechecks_cycle`                                    | Restoring a quarantined edge while the cycle stands is refused; after removing another cycle edge it succeeds.                                                                                                  |
+| `pmo_dep_edge_mutation_is_cas`                                      | Stale `--expected-version` returns `VERSION_CONFLICT` with the current revision and changes nothing; an idempotent replay of an add returns the existing edge.                                                  |
+| `pmo_dep_legacy_block_coexists`                                     | A task with both a #8276 block and a typed edge needs both released; the #8276 TTL release does not clear the typed edge, and resolving the edge does not change `status`.                                      |
 
 Negative coverage from the slice body, mapped: imported cycles
 quarantined → `imported_cycle_quarantined`; incomplete traversal
@@ -593,18 +593,18 @@ Full per-occurrence text is in
 `doc/2026-11-13T03-20-24Z_design_pm-stack-fleet-orchestration/census/requirements-crosswalk.jsonl`;
 this table claims design coverage, not implementation.
 
-| IDs                                   | Where addressed                                                                                         |
-| ------------------------------------- | ------------------------------------------------------------------------------------------------------- |
-| C-R129, C-R130, P-R019                | §3.1, §6 — typed relations stored once; hard blockers gate eligibility, advisory edges do not          |
-| C-R131, O-R033                        | §4, §5, §7 — cycles prevented; resolved/removed history kept in place with events; no silent unblock   |
-| C-R151                                | §1, §6.3 — Scenario B's `--blocked-by fleet:761 --hard` and its release on 761's completion            |
-| C-R005, C-R009, C-R107, C-R108, H-R017, O-R023, P-R009 | §4, §6.2 — allocated dependency command keys and `--expected-version`; spelling stays CLI-02's |
-| C-R087                                | §4 — `agent.slash.unblock` acts on one named edge, never all                                            |
-| C-R123, C-R124, C-R125, C-R132        | §2, §9 — dependency semantics separate from titles/bodies; native links are DEP-04's projection        |
-| H-R001, O-R022                        | §2 — dependency resolver responsibility inside the existing broker, no new service                     |
-| H-R016, H-R024, H-R031, P-R027, P-R052, P-R067 | §11 — blocked/resume, conflict, cycle and history cases carried into acceptance               |
-| O-R008, S-R006                        | §6.1, §7 — hard/soft separation; pressure left to PRI-04, which reads this graph                        |
-| P-R013                                | §3 — dependencies as part of the logical work-item record, in the existing store                       |
+| IDs                                                    | Where addressed                                                                                      |
+| ------------------------------------------------------ | ---------------------------------------------------------------------------------------------------- |
+| C-R129, C-R130, P-R019                                 | §3.1, §6 — typed relations stored once; hard blockers gate eligibility, advisory edges do not        |
+| C-R131, O-R033                                         | §4, §5, §7 — cycles prevented; resolved/removed history kept in place with events; no silent unblock |
+| C-R151                                                 | §1, §6.3 — Scenario B's `--blocked-by fleet:761 --hard` and its release on 761's completion          |
+| C-R005, C-R009, C-R107, C-R108, H-R017, O-R023, P-R009 | §4, §6.2 — allocated dependency command keys and `--expected-version`; spelling stays CLI-02's       |
+| C-R087                                                 | §4 — `agent.slash.unblock` acts on one named edge, never all                                         |
+| C-R123, C-R124, C-R125, C-R132                         | §2, §9 — dependency semantics separate from titles/bodies; native links are DEP-04's projection      |
+| H-R001, O-R022                                         | §2 — dependency resolver responsibility inside the existing broker, no new service                   |
+| H-R016, H-R024, H-R031, P-R027, P-R052, P-R067         | §11 — blocked/resume, conflict, cycle and history cases carried into acceptance                      |
+| O-R008, S-R006                                         | §6.1, §7 — hard/soft separation; pressure left to PRI-04, which reads this graph                     |
+| P-R013                                                 | §3 — dependencies as part of the logical work-item record, in the existing store                     |
 
 ## 13. Non-goals
 

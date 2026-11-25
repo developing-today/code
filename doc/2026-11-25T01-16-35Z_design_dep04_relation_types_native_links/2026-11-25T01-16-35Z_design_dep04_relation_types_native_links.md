@@ -76,16 +76,16 @@ and keeps the history of every link from first sight to removal.
 
 ## 2. Ownership
 
-| Concern                                                         | Owner             |
-| --------------------------------------------------------------- | ----------------- |
-| Relation enum, aliases, JSON and error envelope                 | DEP-02 (#9503)    |
-| `dep_edges`/`dep_graph`, `blocks` insert, readiness, quarantine | DEP-03 (#9443)    |
-| Effect of the other relations; hierarchy/supersedes cycles      | **DEP-04 (this)** |
-| Native GitHub link import, provider removal, user suppression   | **DEP-04 (this)** |
-| `dependency.graph`, `dependency.remove`, `--depth`              | **DEP-04 (this)** |
+| Concern                                                         | Owner                                                                                                               |
+| --------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
+| Relation enum, aliases, JSON and error envelope                 | DEP-02 (#9503)                                                                                                      |
+| `dep_edges`/`dep_graph`, `blocks` insert, readiness, quarantine | DEP-03 (#9443)                                                                                                      |
+| Effect of the other relations; hierarchy/supersedes cycles      | **DEP-04 (this)**                                                                                                   |
+| Native GitHub link import, provider removal, user suppression   | **DEP-04 (this)**                                                                                                   |
+| `dependency.graph`, `dependency.remove`, `--depth`              | **DEP-04 (this)**                                                                                                   |
 | Reading native links from GitHub                                | existing `fleet gh` adapter (`pkgs/fleet/crates/fleet/src/gh.rs`, read-only consumer), #9073/#9074 metadata surface |
-| Writing native links back to GitHub                             | not in scope (§12) |
-| Dependency pressure from the graph                              | PRI-04 (#9480)    |
+| Writing native links back to GitHub                             | not in scope (§12)                                                                                                  |
+| Dependency pressure from the graph                              | PRI-04 (#9480)                                                                                                      |
 
 Owned files when implemented, unchanged from the slice:
 `pkgs/fleet/crates/fleet-queue/src/work/relations.rs` and
@@ -103,15 +103,15 @@ Each spelling normalises to one stored fact. The "Fleet end"
 column says which side of the stored edge must be Fleet work
 (§3.3).
 
-| User spelling   | Stored `relation` | Stored direction                        | `role`                  | Execution effect                                   | Resolvable? |
-| --------------- | ----------------- | --------------------------------------- | ----------------------- | -------------------------------------------------- | ----------- |
-| `A blocks B`    | `blocks`          | `A → B` (blocker → dependent)           | NULL                    | If hard and active, B is not ready (DEP-03 §6).    | yes         |
-| `B blocked_by A`| `blocks`          | `A → B` — the same row                  | NULL                    | Same edge; the spelling is an alias.               | yes         |
-| `A related_to B`| `related_to`      | ordered pair (§3.3)                     | NULL                    | None. Advisory, display only.                      | no          |
-| `P parent_of C` | `hierarchy`       | `P → C` (parent → child)                | NULL                    | None on readiness, state or completion.            | no          |
-| `C child_of P`  | `hierarchy`       | `P → C` — the same row                  | NULL                    | Same edge; alias.                                  | no          |
-| `A duplicates B`| `duplicates`      | ordered pair (§3.3)                     | `source_is_duplicate` / `target_is_duplicate` | None. No close, no merge, no completion. | no |
-| `N supersedes O`| `supersedes`      | `N → O` (newer → superseded)            | NULL                    | None. Historical link only.                        | no          |
+| User spelling    | Stored `relation` | Stored direction              | `role`                                        | Execution effect                                | Resolvable? |
+| ---------------- | ----------------- | ----------------------------- | --------------------------------------------- | ----------------------------------------------- | ----------- |
+| `A blocks B`     | `blocks`          | `A → B` (blocker → dependent) | NULL                                          | If hard and active, B is not ready (DEP-03 §6). | yes         |
+| `B blocked_by A` | `blocks`          | `A → B` — the same row        | NULL                                          | Same edge; the spelling is an alias.            | yes         |
+| `A related_to B` | `related_to`      | ordered pair (§3.3)           | NULL                                          | None. Advisory, display only.                   | no          |
+| `P parent_of C`  | `hierarchy`       | `P → C` (parent → child)      | NULL                                          | None on readiness, state or completion.         | no          |
+| `C child_of P`   | `hierarchy`       | `P → C` — the same row        | NULL                                          | Same edge; alias.                               | no          |
+| `A duplicates B` | `duplicates`      | ordered pair (§3.3)           | `source_is_duplicate` / `target_is_duplicate` | None. No close, no merge, no completion.        | no          |
+| `N supersedes O` | `supersedes`      | `N → O` (newer → superseded)  | NULL                                          | None. Historical link only.                     | no          |
 
 Rules that hold for every row:
 
@@ -208,12 +208,12 @@ returns `ambiguous_ref` and asks for the qualified ref (#9208
 
 ### 3.5 Cycles outside `blocks`
 
-| Relation     | Cycle meaning                            | Rule                                                                         |
-| ------------ | ---------------------------------------- | ---------------------------------------------------------------------------- |
-| `blocks`     | deadlock                                 | DEP-03 §5 (refuse on add, quarantine on import)                              |
-| `hierarchy`  | A is its own ancestor                    | same check as DEP-03 §5, run over `relation = 'hierarchy'`; refuse `hierarchy_cycle` on add, quarantine on import |
-| `supersedes` | A replaces B replaces A                  | same check over `relation = 'supersedes'`; refuse `supersedes_cycle`, quarantine on import |
-| `related_to`, `duplicates` | not meaningful (pairs)     | no check; the unique index stops the reversed duplicate                      |
+| Relation                   | Cycle meaning           | Rule                                                                                                              |
+| -------------------------- | ----------------------- | ----------------------------------------------------------------------------------------------------------------- |
+| `blocks`                   | deadlock                | DEP-03 §5 (refuse on add, quarantine on import)                                                                   |
+| `hierarchy`                | A is its own ancestor   | same check as DEP-03 §5, run over `relation = 'hierarchy'`; refuse `hierarchy_cycle` on add, quarantine on import |
+| `supersedes`               | A replaces B replaces A | same check over `relation = 'supersedes'`; refuse `supersedes_cycle`, quarantine on import                        |
+| `related_to`, `duplicates` | not meaningful (pairs)  | no check; the unique index stops the reversed duplicate                                                           |
 
 The hierarchy and supersedes checks reuse DEP-03's recursive CTE
 with the relation filter changed, inside the same `BEGIN
@@ -244,14 +244,14 @@ Fleet task links to, the native relations GitHub exposes. This
 record names the facts it needs; the adapter slice verifies the
 exact fields and endpoints (that verification is a gate, §10):
 
-| GitHub fact                                  | Imported as                                     |
-| -------------------------------------------- | ----------------------------------------------- |
-| issue X is blocked by issue B (native dependency) | `blocks`, `B → T` for every Fleet task T linked to X |
-| issue X blocks issue D                       | nothing from X's side; D's own import writes `X → T_D` if D has Fleet work |
-| issue X has parent P (native sub-issue)      | `hierarchy`, `P → T`                            |
-| issue X has sub-issue C                      | nothing from X's side; C's own import writes `X → T_C` if C has Fleet work |
-| X closed as duplicate of Y, with Y named     | `duplicates`, pair per §3.3, `role` naming X as the duplicate |
-| X closed as duplicate with no target named   | nothing; a `dep_import_unmapped` event records it |
+| GitHub fact                                                                                                      | Imported as                                                                               |
+| ---------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------- |
+| issue X is blocked by issue B (native dependency)                                                                | `blocks`, `B → T` for every Fleet task T linked to X                                      |
+| issue X blocks issue D                                                                                           | nothing from X's side; D's own import writes `X → T_D` if D has Fleet work                |
+| issue X has parent P (native sub-issue)                                                                          | `hierarchy`, `P → T`                                                                      |
+| issue X has sub-issue C                                                                                          | nothing from X's side; C's own import writes `X → T_C` if C has Fleet work                |
+| X closed as duplicate of Y, with Y named                                                                         | `duplicates`, pair per §3.3, `role` naming X as the duplicate                             |
+| X closed as duplicate with no target named                                                                       | nothing; a `dep_import_unmapped` event records it                                         |
 | Project item "parent" field or tracked-by prose, task-list checkboxes, "blocked by #N" text in a body or comment | **nothing.** Prose is never parsed into an edge (#9208 §6: "Reject implicit resolution"). |
 
 Each relation is imported from exactly one side (the side whose
@@ -444,16 +444,16 @@ ALTER TABLE dep_edges ADD COLUMN role TEXT
          AND role IN ('source_is_duplicate', 'target_is_duplicate')));
 ```
 
-| CEN-04 §5 item     | Entry                                                                                   |
-| ------------------ | --------------------------------------------------------------------------------------- |
-| Owner              | #9208 typed model (DEP-04); broker store holds it (CEN-04 §3.5 "extend")                |
-| Purpose            | Which end of a `duplicates` pair is the duplicate (§3.2)                                 |
-| Writers            | `dependency.add` for `duplicates`; the importer (§4.1)                                   |
-| Readers            | `dependency.list`, `dependency.graph`, hydration                                         |
-| Nullability/default| NULL; NULL for every relation but `duplicates`, and for side-less imports               |
-| Compatibility      | Additive; existing rows read NULL; no reader of DEP-03 columns changes                  |
-| Rollback           | Column left in place and ignored; no destructive drop (CEN-04 §7)                        |
-| Privacy            | Not private; no note or comment text                                                     |
+| CEN-04 §5 item      | Entry                                                                     |
+| ------------------- | ------------------------------------------------------------------------- |
+| Owner               | #9208 typed model (DEP-04); broker store holds it (CEN-04 §3.5 "extend")  |
+| Purpose             | Which end of a `duplicates` pair is the duplicate (§3.2)                  |
+| Writers             | `dependency.add` for `duplicates`; the importer (§4.1)                    |
+| Readers             | `dependency.list`, `dependency.graph`, hydration                          |
+| Nullability/default | NULL; NULL for every relation but `duplicates`, and for side-less imports |
+| Compatibility       | Additive; existing rows read NULL; no reader of DEP-03 columns changes    |
+| Rollback            | Column left in place and ignored; no destructive drop (CEN-04 §7)         |
+| Privacy             | Not private; no note or comment text                                      |
 
 No other new persisted field is introduced: the import mode is
 configuration, suppression and moves live in the existing
@@ -461,21 +461,21 @@ configuration, suppression and moves live in the existing
 
 ## 9. Failure and recovery
 
-| Scenario                                                    | Behaviour                                                                                     |
-| ----------------------------------------------------------- | --------------------------------------------------------------------------------------------- |
-| Native read rate-limited / auth fails                       | Nothing imported, nothing removed; recheck rescheduled                                        |
-| Task's linked issue 404s                                    | Import stops for that task; existing imported rows kept; one `dep_import_source_broken` event |
-| Native blockers form a cycle under `enforce`                | DEP-03 quarantine; dependents stay not ready until repaired                                    |
-| Native sub-issue cycle                                      | Hierarchy edge quarantined; nothing blocked; health signal raised                              |
-| Same number, two repositories                               | Different keys; never matched                                                                  |
-| Issue transferred / repo renamed                            | `removed` (`provider_moved`) + new row, linked by `successor_edge_id`                          |
-| User removed an imported link that GitHub still has         | Suppressed on re-import; `dep_import_suppressed` event                                         |
-| Duplicate stated both ways                                  | Second is `relation_role_conflict`; change via remove and add                                  |
-| `--hard` asked on a non-`blocks` relation                   | Refused, `relation_not_gating`                                                                 |
-| Import and a person add the same link concurrently          | Unique index: one row; the loser is an idempotent replay; person's row keeps `explicit` if first |
-| Epic closes while children open                             | No state change; readiness unchanged                                                           |
-| Repository switched `shadow → enforce`                      | Imported soft blockers upgraded through the insert check, one at a time; cycles quarantined     |
-| Rollback of the slice                                       | Import set to `off`; rows and history kept; `blocks` rows keep gating per DEP-03              |
+| Scenario                                            | Behaviour                                                                                        |
+| --------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
+| Native read rate-limited / auth fails               | Nothing imported, nothing removed; recheck rescheduled                                           |
+| Task's linked issue 404s                            | Import stops for that task; existing imported rows kept; one `dep_import_source_broken` event    |
+| Native blockers form a cycle under `enforce`        | DEP-03 quarantine; dependents stay not ready until repaired                                      |
+| Native sub-issue cycle                              | Hierarchy edge quarantined; nothing blocked; health signal raised                                |
+| Same number, two repositories                       | Different keys; never matched                                                                    |
+| Issue transferred / repo renamed                    | `removed` (`provider_moved`) + new row, linked by `successor_edge_id`                            |
+| User removed an imported link that GitHub still has | Suppressed on re-import; `dep_import_suppressed` event                                           |
+| Duplicate stated both ways                          | Second is `relation_role_conflict`; change via remove and add                                    |
+| `--hard` asked on a non-`blocks` relation           | Refused, `relation_not_gating`                                                                   |
+| Import and a person add the same link concurrently  | Unique index: one row; the loser is an idempotent replay; person's row keeps `explicit` if first |
+| Epic closes while children open                     | No state change; readiness unchanged                                                             |
+| Repository switched `shadow → enforce`              | Imported soft blockers upgraded through the insert check, one at a time; cycles quarantined      |
+| Rollback of the slice                               | Import set to `off`; rows and history kept; `blocks` rows keep gating per DEP-03                 |
 
 ## 10. Gates and sequencing
 
@@ -567,17 +567,17 @@ unless noted; the GitHub fixtures live in
 
 ## 13. Requirement trace (design-level)
 
-| Requirement | Where addressed                                       |
-| ----------- | ----------------------------------------------------- |
-| C-R129      | §3.1 all seven spellings                              |
-| C-R130      | §3.1 only hard `blocks` gates; others refuse `--hard` |
-| C-R131      | §3.5 cycles; §5 tombstones and history                |
-| C-R132      | §4 native links projected, prose never parsed         |
-| C-R124, C-R125 | §3.1 no relation writes title, body or state       |
-| O-R008      | §3.1, §12 non-gating relations add no pressure        |
-| O-R033      | §5.4 resolved history retained; unblocking erases nothing |
-| C-R107, C-R108, H-R017, O-R023 | §7 commands and flags through CLI-02/CLI-13 |
-| H-R024, H-R031 | §9 failure matrix, §11 negative tests              |
+| Requirement                                                                    | Where addressed                                                                |
+| ------------------------------------------------------------------------------ | ------------------------------------------------------------------------------ |
+| C-R129                                                                         | §3.1 all seven spellings                                                       |
+| C-R130                                                                         | §3.1 only hard `blocks` gates; others refuse `--hard`                          |
+| C-R131                                                                         | §3.5 cycles; §5 tombstones and history                                         |
+| C-R132                                                                         | §4 native links projected, prose never parsed                                  |
+| C-R124, C-R125                                                                 | §3.1 no relation writes title, body or state                                   |
+| O-R008                                                                         | §3.1, §12 non-gating relations add no pressure                                 |
+| O-R033                                                                         | §5.4 resolved history retained; unblocking erases nothing                      |
+| C-R107, C-R108, H-R017, O-R023                                                 | §7 commands and flags through CLI-02/CLI-13                                    |
+| H-R024, H-R031                                                                 | §9 failure matrix, §11 negative tests                                          |
 | P-R009, P-R013, P-R019, P-R027, S-R006, C-R005, C-R009, C-R123, H-R001, O-R022 | consumed via the component trace; no further design-level change in this slice |
 
 Implementation, parser tests, deployment and live acceptance for

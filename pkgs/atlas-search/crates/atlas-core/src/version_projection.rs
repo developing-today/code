@@ -7,7 +7,7 @@
 //! Runtime publication, tombstones, and correction clears
 //! remain later slices of the #6062 follow-on.
 
-use std::collections::{btree_map::Entry, BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, btree_map::Entry};
 
 use serde::{Deserialize, Serialize};
 use unicode_normalization::is_nfc;

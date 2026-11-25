@@ -226,9 +226,7 @@ def _extract_ctx(env):
     return {
         k: v
         for k, v in env.items()
-        if isinstance(k, str)
-        and k.startswith(FLEET_CTX_PREFIX)
-        and isinstance(v, str)
+        if isinstance(k, str) and k.startswith(FLEET_CTX_PREFIX) and isinstance(v, str)
     }
 
 
@@ -756,7 +754,10 @@ def _restore_persisted_job(meta, dir_name):
     _raw_ctx = meta.get("ctx")
     if _raw_ctx is not None and (
         not isinstance(_raw_ctx, dict)
-        or any(not isinstance(k, str) or not isinstance(v, str) for k, v in _raw_ctx.items())
+        or any(
+            not isinstance(k, str) or not isinstance(v, str)
+            for k, v in _raw_ctx.items()
+        )
     ):
         return None, False, "non-string-map ctx in meta.json"
     state = _raw_state or "done"

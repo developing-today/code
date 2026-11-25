@@ -950,7 +950,10 @@ export class Ops {
     if (n !== null) argv.push("--limit", String(n));
     // The text goes on stdin, so nothing in it is read as an option.
     argv.push("-");
-    const out = JSON.parse(await this.must(argv, { stdin: text(body, "text", 16_000) })) as Record<string, unknown> | null;
+    const out = JSON.parse(await this.must(argv, { stdin: text(body, "text", 16_000) })) as Record<
+      string,
+      unknown
+    > | null;
     return matchReport(out, targets, command === true);
   }
 
@@ -978,7 +981,15 @@ export class Ops {
    * thread onto that batch. The answer is the bridge's offer row. */
   async offer(to: unknown, body: unknown, command: unknown, slots: unknown, ttlSeconds?: unknown) {
     const targets = bridgeTargets(to);
-    const argv = [this.cfg.fleetBin, "bridge", "offer", "--to", targets.join(","), "--slots", String(id(slots, "slots"))];
+    const argv = [
+      this.cfg.fleetBin,
+      "bridge",
+      "offer",
+      "--to",
+      targets.join(","),
+      "--slots",
+      String(id(slots, "slots")),
+    ];
     if (command === true) argv.push("--command");
     const ttl = optionalCount(ttlSeconds, "ttl", 7 * 24 * 3600);
     if (ttl !== null) argv.push("--ttl", String(ttl));
