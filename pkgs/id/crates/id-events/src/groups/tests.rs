@@ -534,6 +534,24 @@ fn test_a_non_manager_may_not_add_or_remove_a_member() {
 }
 
 #[test]
+fn test_delegated_manage_adds_and_removes_without_promoting_the_signer() {
+    // Oracle: design §5.2/§7.2 — a live Manage grant authorizes membership changes,
+    // but does not change the grantee's membership role or grant Admin policy rights.
+    let g = id("g");
+    let p = project(&[
+        custom("g", 1, &[(2, Role::Read), (3, Role::Read)], Policy::default()),
+        delegate("d0", 1, g, 2, Role::Manage, false, &["g"]),
+        add("a0", 2, g, 4, Role::Write, &["d0"]),
+        remove("r0", 2, g, 3, &["a0"]),
+    ]);
+    assert_eq!(outcome(&p, "a0"), Outcome::Applied);
+    assert_eq!(outcome(&p, "r0"), Outcome::Applied);
+    assert_eq!(p.group(&g).unwrap().members.get(&key(2)), Some(&Role::Read));
+    assert_eq!(p.group(&g).unwrap().members.get(&key(4)), Some(&Role::Write));
+    assert!(!p.group(&g).unwrap().members.contains_key(&key(3)));
+}
+
+#[test]
 fn test_only_an_invitee_may_accept_a_friendship_request() {
     let g = pair_group(1, 2, 0);
     let p = project(&[
