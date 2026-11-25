@@ -1131,14 +1131,8 @@ fn apply_plain(txn: &WriteTransaction, event: &Event) -> Result<(), StoreError> 
 }
 
 pub(super) fn refresh(txn: &WriteTransaction) -> Result<(), StoreError> {
-    let (stored, forks, headers) = {
-        let events = txn.open_table(EVENTS)?;
-        let actions = txn.open_table(ACTIONS)?;
-        let device_ops = txn.open_table(DEVICE_OPS)?;
-        let forks = txn.open_table(FORKS)?;
-        let proof_headers = txn.open_table(PROOF_HEADERS)?;
-        resolve::load(&events, &actions, &device_ops, &forks, &proof_headers)?
-    };
+    let mut rows = txn;
+    let (stored, forks, headers) = resolve::load(&mut rows)?;
     let residue = {
         let compacted = txn.open_table(COMPACTED)?;
         super::compaction::load_residue(&compacted)?
