@@ -4,6 +4,7 @@
 
 import {
   createHostedAccountRecord,
+  HOSTED_DIRECTORY_ALLOWLISTED_COLUMNS,
   type HostedAccountRecord,
   type NewHostedAccount,
 } from "./account-directory.ts";
@@ -29,8 +30,7 @@ type StoredAccountRow = Record<string, unknown> & {
   routing_epoch: number;
 };
 
-const COLUMNS =
-  "subject_key, binding_id, jurisdiction, jurisdiction_pending, migration_id, phase, routing_epoch";
+const COLUMNS = HOSTED_DIRECTORY_ALLOWLISTED_COLUMNS.join(", ");
 
 function fromRow(row: StoredAccountRow): HostedAccountRecord {
   try {
