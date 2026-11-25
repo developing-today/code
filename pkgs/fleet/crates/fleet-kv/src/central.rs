@@ -41,7 +41,10 @@ pub const MAX_ATTEMPTS: u32 = 5;
 pub const BACKOFF_CAP: Duration = Duration::from_secs(1);
 
 /// The numbered migrations, oldest first.
-pub const MIGRATIONS: &[(i64, &str)] = &[(1, include_str!("../migrations/0001_central.sql"))];
+pub const MIGRATIONS: &[(i64, &str)] = &[
+    (1, include_str!("../migrations/0001_central.sql")),
+    (2, include_str!("../migrations/0002_archive.sql")),
+];
 
 /// A bound SQL value, in the shapes both the libSQL pipeline and SQLite use.
 #[derive(Clone, Debug, PartialEq)]
@@ -54,21 +57,21 @@ pub enum Value {
 }
 
 impl Value {
-    fn as_i64(&self) -> Option<i64> {
+    pub(crate) fn as_i64(&self) -> Option<i64> {
         match self {
             Self::Integer(value) => Some(*value),
             _ => None,
         }
     }
 
-    fn as_str(&self) -> Option<&str> {
+    pub(crate) fn as_str(&self) -> Option<&str> {
         match self {
             Self::Text(value) => Some(value),
             _ => None,
         }
     }
 
-    fn into_bytes(self) -> Option<Vec<u8>> {
+    pub(crate) fn into_bytes(self) -> Option<Vec<u8>> {
         match self {
             Self::Blob(value) => Some(value),
             Self::Text(value) => Some(value.into_bytes()),
@@ -716,11 +719,11 @@ fn read(primary: &dyn Pipeline, sql: &str, args: &[Value]) -> Result<Vec<Vec<Val
         .unwrap_or_default())
 }
 
-fn unsigned(value: &Value) -> u64 {
+pub(crate) fn unsigned(value: &Value) -> u64 {
     value.as_i64().unwrap_or(0).max(0) as u64
 }
 
-fn string(value: &Value) -> String {
+pub(crate) fn string(value: &Value) -> String {
     value.as_str().unwrap_or_default().to_string()
 }
 
