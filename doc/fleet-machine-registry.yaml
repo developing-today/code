@@ -55,25 +55,25 @@ machines:
       # scripts/fleet-machine-watchdog.py; never hand-edited (the
       # validator requires the earned checks record below).
       source: watchdog
-      last_seen: '2026-11-25T00:24:10Z'
+      last_seen: '2026-11-25T00:54:12Z'
       status: degraded
       checks:
-        reported_at: '2026-11-25T00:24:10Z'
+        reported_at: '2026-11-25T00:54:12Z'
         reachable:
           state: ok
           ssh: true
           opencode_server_http: 200
         load_headroom:
           state: ok
-          load15: 8.27
+          load15: 4.58
           cpu_cores: 16
-          load15_per_core: 0.517
+          load15_per_core: 0.286
         disk_headroom:
           state: failed
           volume: worktree (home)
           total_gb: 3371
-          free_gb: 189
-          free_pct: 5.6
+          free_gb: 192
+          free_pct: 5.7
         sessions:
           state: ok
           listed: 50
@@ -82,7 +82,7 @@ machines:
           source: openchamber attach api
         last_queue_job:
           state: ok
-          task_id: '23423'
-          queue: repo-health-code-pilot
-          worker: repo-worker-code
-          completed_at: '2026-11-25T00:23:29Z'
+          task_id: '22676'
+          queue: repo-health-nix-pilot
+          worker: agent-next-24-local
+          completed_at: '2026-11-25T00:53:55Z'
