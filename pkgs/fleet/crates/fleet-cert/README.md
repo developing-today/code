@@ -18,7 +18,13 @@ Implements the fleet architecture spec v0.3
   requires `--root` and `--root-key-dir`.
 - `fleet cert leaf issue|inspect|list` — profiles mirroring
   `pkgs/idp-pki`'s idp-ca: `server`, `client`, `saml-signing`,
-  `oidc-signing`; requires `--issuer-key-dir`.
+  `oidc-signing`; requires `--issuer-key-dir`. `--ip` adds IP SANs and
+  `--csr <file>` certifies a key made elsewhere (no key is generated or
+  written; the manifest records `host-local` custody). The broker TLS
+  profiles `broker-server`/`broker-client` (P-256, 90d, renewed with
+  30d left) take a CSR only, issue only from a Base (`general`) issuer
+  set, and require `.internal` DNS names plus a tailnet IP SAN, with
+  wildcards and public names refused (#14399).
 - `fleet cert chain build|test` — signature-verified path building
   (shortest path, path-length pruned) and validation under
   all/classical/PQ trust selections.
