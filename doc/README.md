@@ -202,6 +202,7 @@ Folders are named `<UTC datetime>_<kind>_<name>`. The kinds in use are `feature`
 - [Research: CDC feasibility at embedding scale (#6040)](2026-11-14T12-20-00Z_research_atlas_cdc_feasibility_6040/README.md)
 - [Atlas Layer 1 classification revalidation — scan report 2026-11-15](2026-11-15T00-50-00Z_report_atlas_layer1_revalidation.md)
 - [Atlas retention rule engine — design record (#6041)](2026-11-17_design_atlas_retention_rule_engine.md)
+- [Design: delegation, transfer, and cross-signed identity ceremony](2026-11-21T04-30-00Z_design_id_delegation_cross_signing_ceremony/2026-11-21T04-30-00Z_design_id_delegation_cross_signing_ceremony.md) — design record for #9132 under #9107: distinct delegation and transfer ceremonies, mutual identity-link signatures, inert pending claims, and Q1–Q9 chosen defaults; implementation slices #10239 and #10240.
 - [Metadata schema v1 and evolution doctrine](2026-11-21T17-56-24Z_design_atlas_metadata_schema_v1/note.md) (Atlas metadata schema record)
 - [Design: Atlas per-embed classification and disclosure model](2026-11-21T21-32-00Z_design_atlas_classification_model_v1.md)
 - [Decision: embedded-replica integration shape for the atlas core shards](2026-11-23T04-10-00Z_decision_atlas_embedded_replica_integration/2026-11-23T04-10-00Z_decision_atlas_embedded_replica_integration.md)

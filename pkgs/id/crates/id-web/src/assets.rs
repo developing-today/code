@@ -77,6 +77,40 @@ pub fn static_handler(path: &str) -> Response<Body> {
     }
 }
 
+/// Path of the built service worker inside `web/dist` (#13918).
+pub const SERVICE_WORKER_ASSET: &str = "sw.js";
+
+/// Serve the offline-shell service worker at the site root (`/sw.js`).
+///
+/// The worker controls scope `/`, so it is served from the root with
+/// `Service-Worker-Allowed: /`, and with `no-cache` so the browser
+/// revalidates it on every navigation and finds a new build's worker
+/// (its bytes change per build: build-manifest.ts prefixes the shell
+/// manifest). Design: doc/2026-11-25_design_id_service_worker_offline_13918.md.
+pub fn service_worker_handler() -> Response<Body> {
+    service_worker_response(
+        Assets::get(SERVICE_WORKER_ASSET).map(|content| content.data.into_owned()),
+    )
+}
+
+/// Build the `/sw.js` response from the embedded bytes, or 404 when the
+/// web build did not emit a worker.
+fn service_worker_response(script: Option<Vec<u8>>) -> Response<Body> {
+    let Some(script) = script else {
+        return not_found();
+    };
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(
+            header::CONTENT_TYPE,
+            HeaderValue::from_static("text/javascript; charset=utf-8"),
+        )
+        .header(header::CACHE_CONTROL, HeaderValue::from_static("no-cache"))
+        .header("service-worker-allowed", HeaderValue::from_static("/"))
+        .body(Body::from(script))
+        .unwrap_or_else(|_| internal_server_error())
+}
+
 /// Check if a filename is a content-hashed build artifact.
 ///
 /// The contract is what the `web/dist` build actually emits -- a name
@@ -171,6 +205,34 @@ pub fn get_asset_string(path: &str) -> Option<String> {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_service_worker_response_headers() {
+        let resp = service_worker_response(Some(b"self.x=1;".to_vec()));
+        assert_eq!(resp.status(), StatusCode::OK);
+        let headers = resp.headers();
+        assert_eq!(
+            headers[header::CONTENT_TYPE],
+            "text/javascript; charset=utf-8"
+        );
+        assert_eq!(headers[header::CACHE_CONTROL], "no-cache");
+        assert_eq!(headers["service-worker-allowed"], "/");
+    }
+
+    #[test]
+    fn test_service_worker_response_missing_is_404() {
+        assert_eq!(
+            service_worker_response(None).status(),
+            StatusCode::NOT_FOUND
+        );
+    }
+
+    #[test]
+    fn test_service_worker_is_not_immutable_cached() {
+        // sw.js must never get the one-year immutable cache: a stale
+        // worker would pin users to an old shell (#13918).
+        assert!(!is_hashed_filename("sw.js"));
+    }
 
     #[test]
     fn test_assets_embed_compiles() {

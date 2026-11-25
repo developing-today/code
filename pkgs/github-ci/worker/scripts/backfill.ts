@@ -48,6 +48,9 @@ import {
   ensureMirrorSchema,
   historyInsertStmt,
   isAgentNote,
+  labelStartStmt,
+  labelHistoryInsertStmt,
+  snapshotLabelHistory,
   issueUpsertStmt,
   mirrorSweepBatch,
   parentOf,
@@ -188,6 +191,8 @@ interface StoredRow {
   agentNoteId: number | null;
   /** The sub-issue parent projection; issues table only (null for PRs). */
   parentNumber: number | null;
+  /** The stored label set as JSON text (#14170 Q5). */
+  labels: string | null;
 }
 
 const storedRows = async (
@@ -199,7 +204,7 @@ const storedRows = async (
   const r = await retry(`read ${table}`, () =>
     q.execute(
       `SELECT number, gh_updated_at, body_hash, comments, comments_gh_updated_at, latest_agent_note_id,
-              ${withParent ? "parent_number" : "NULL"}
+              ${withParent ? "parent_number" : "NULL"}, labels
          FROM ${table} WHERE repo = ?`,
       [{ type: "text", value: repo }],
     ),
@@ -219,6 +224,7 @@ const storedRows = async (
       commentsGhUpdatedAt: cell(4),
       agentNoteId: cell(5) === null ? null : Number(cell(5)),
       parentNumber: cell(6) === null ? null : Number(cell(6)),
+      labels: cell(7),
     });
   }
   return map;
@@ -238,6 +244,8 @@ interface RepoSummary {
   counts_repair_failed: number;
   history_rows: number;
   history_failed: number;
+  /** #14170 Q5 label-diff rows written (start rows are set-based and not counted). */
+  label_history_rows: number;
   incomplete?: boolean;
   vanished_skipped_live: number;
   unchanged: number;
@@ -260,6 +268,7 @@ const sweepRepo = async (repo: string): Promise<RepoSummary> => {
     counts_repair_failed: 0,
     history_rows: 0,
     history_failed: 0,
+    label_history_rows: 0,
     unchanged: 0,
   };
   const q = new Turso(env.TURSO_QUEUE_URL, env.TURSO_QUEUE_TOKEN);
@@ -284,6 +293,8 @@ const sweepRepo = async (repo: string): Promise<RepoSummary> => {
     stmt: { sql: string; args?: import("../src/turso").TursoArg[] };
     /** Q7 history rows this item's diff implies (empty on first sight). */
     history: { sql: string; args?: import("../src/turso").TursoArg[] }[];
+    /** Q5 label-diff rows (empty on first sight; start rows are set-based). */
+    labelHistory: { sql: string; args?: import("../src/turso").TursoArg[] }[];
   }
   interface CountRepair {
     number: number;
@@ -353,6 +364,7 @@ const sweepRepo = async (repo: string): Promise<RepoSummary> => {
     // item the upsert's guards would refuse yields no rows). First
     // sights (no prev) write none.
     let history: Pending["history"] = [];
+    let labelHistory: Pending["labelHistory"] = [];
     if (prev) {
       const storedView: StoredMirrorRow = {
         bodyHash: prev.bodyHash,
@@ -361,11 +373,16 @@ const sweepRepo = async (repo: string): Promise<RepoSummary> => {
         ghUpdatedAt: prev.ghUpdatedAt,
         parentNumber: prev.parentNumber,
         tombstoneVersion: null,
+        labels: prev.labels,
       };
       const countVersion = isPr ? (row as PrRow).comments_gh_updated_at : row.gh_updated_at;
       history = snapshotHistory(storedView, row, countVersion, isPr, "backfill").map(historyInsertStmt);
+      // Q5: the label diff a missed labeled/unlabeled webhook would
+      // have written. A row whose labels were never observed gets
+      // its start row from the set-based pass after the flush.
+      labelHistory = snapshotLabelHistory(storedView, row, isPr, "backfill", "backfill").map(labelHistoryInsertStmt);
     }
-    pending.push({ number, isPr, item, stmt, history });
+    pending.push({ number, isPr, item, stmt, history, labelHistory });
   };
   for (const issue of pureIssues) await consider(issue, false, storedIssues);
   for (const pr of pullList) await consider(pr, true, storedPrs);
@@ -447,7 +464,24 @@ const sweepRepo = async (repo: string): Promise<RepoSummary> => {
     }
   }
 
+  // Q5 label START rows for rows observed before this run that have
+  // no label history yet (rows mirrored before Q5): set-based, one
+  // statement per table, written BEFORE the snapshot flush so the
+  // start carries the pre-run set and any diff row below follows it.
+  // Fail-open like all history.
+  const labelStarts = (): Pending["stmt"][] => [
+    labelStartStmt(repo, null, false, "backfill", "backfill"),
+    labelStartStmt(repo, null, true, "backfill", "backfill"),
+  ];
+  try {
+    await sweepBatch(env, labelStarts());
+  } catch (e) {
+    summary.history_failed++;
+    console.error(`backfill ${repo}: label start rows failed open: ${String(e)}`);
+  }
+
   const historyFlush: Pending["stmt"][] = [];
+  let labelRows = 0;
   for (const p of pending) {
     if (!failed.has(p.number)) {
       flush.push(p.stmt);
@@ -455,7 +489,8 @@ const sweepRepo = async (repo: string): Promise<RepoSummary> => {
       // History rides only with an upsert that actually flushed: an
       // item withheld for a failed pointer repair keeps its diff —
       // and its history — eligible for the next run.
-      historyFlush.push(...p.history);
+      historyFlush.push(...p.history, ...p.labelHistory);
+      labelRows += p.labelHistory.length;
     }
   }
   for (let i = 0; i < flush.length; i += 200) {
@@ -470,11 +505,20 @@ const sweepRepo = async (repo: string): Promise<RepoSummary> => {
       for (let i = 0; i < historyFlush.length; i += 200) {
         await sweepBatch(env, historyFlush.slice(i, i + 200));
       }
-      summary.history_rows += historyFlush.length;
+      summary.history_rows += historyFlush.length - labelRows;
+      summary.label_history_rows += labelRows;
     } catch (e) {
       summary.history_failed++;
       console.error(`backfill ${repo}: history write failed open: ${String(e)}`);
     }
+  }
+  // Q5 start rows for this run's first sights (and minimal seeds the
+  // snapshot flush just filled in), now that their sets are stored.
+  try {
+    await sweepBatch(env, labelStarts());
+  } catch (e) {
+    summary.history_failed++;
+    console.error(`backfill ${repo}: label start rows failed open: ${String(e)}`);
   }
 
   // Count-repair pass: for every row whose count mismatched at diff
