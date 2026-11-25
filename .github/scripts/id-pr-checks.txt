@@ -35,6 +35,7 @@ prod-lines-check
 test-unit
 test-crate-integration
 test-native-shell
+test-android-remote
 test-tui-shell
 test-hw-shell
 test-rust-examples
