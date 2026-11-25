@@ -582,6 +582,7 @@ mod tests {
 
     struct MirrorDo {
         store: EventStore,
+        limits: BridgeLimits,
         bound_key: VerifyingKey,
         nonce: Option<(String, u64)>,
         nonce_counter: u64,
@@ -595,6 +596,7 @@ mod tests {
             let store = EventStore::open(dir.path(), WaitingLimits::default(), NOW_MS).unwrap();
             Self {
                 store,
+                limits: BridgeLimits::default(),
                 bound_key: dalek_key(bound_seed).verifying_key(),
                 nonce: None,
                 nonce_counter: 0,
@@ -719,7 +721,7 @@ mod tests {
                 .unwrap_or_default()
                 .to_owned();
             self.seen.push(format!("{} {path}", request.method));
-            let limits = BridgeLimits::default();
+            let limits = self.limits;
             match (request.method.as_str(), path.as_str()) {
                 ("GET", "/v1/bridge/challenge") => {
                     self.nonce_counter += 1;
@@ -789,7 +791,10 @@ mod tests {
                         .max_events
                         .map_or(limits.max_batch_events, |max| (max as usize).clamp(1, 512));
                     let mut batch: Vec<Vec<u8>> = Vec::new();
-                    let mut batch_bytes = 0usize;
+                    // The encoded size so far: the 4-byte count
+                    // prefix, then each event's 4-byte length
+                    // prefix and payload (#14644).
+                    let mut batch_bytes = 4usize;
                     let mut more = false;
                     // The sync set is key-ordered: author, then
                     // sequence — the hosted pull's sort.
@@ -808,12 +813,28 @@ mod tests {
                             continue;
                         };
                         if batch.len() >= max_events
-                            || batch_bytes + bytes.len() > limits.max_batch_bytes
+                            || batch_bytes + 4 + bytes.len() > limits.max_batch_bytes
                         {
+                            if batch.is_empty() {
+                                // The first event alone cannot fit
+                                // any batch under the bound: refuse
+                                // by name rather than answer with an
+                                // empty batch the caller would retry
+                                // forever (#14644).
+                                return Ok(Self::refusal(
+                                    413,
+                                    "event_too_large",
+                                    &format!(
+                                        "event of {} bytes cannot fit the {}-byte batch bound",
+                                        bytes.len(),
+                                        limits.max_batch_bytes
+                                    ),
+                                ));
+                            }
                             more = true;
                             break;
                         }
-                        batch_bytes += bytes.len();
+                        batch_bytes += 4 + bytes.len();
                         batch.push(bytes);
                     }
                     Ok(HttpResponse {
@@ -958,6 +979,71 @@ mod tests {
         }
         assert_eq!(collected, events);
         assert_eq!(position.next_seq, 3);
+    }
+
+    #[tokio::test]
+    async fn pull_paginates_at_the_encoded_byte_bound() {
+        // The mirror's pull budgets the encoded batch (4-byte count
+        // + 4-byte length per event), not the payload sum (#14644):
+        // with room for exactly one framed event per page, three
+        // events arrive one per pull, in order.
+        let mut mirror = MirrorDo::new(1);
+        let events = make_events(7, 3);
+        // Room for exactly one framed event: the count prefix plus
+        // the longest event's length prefix and payload (seq 0 is
+        // shorter — it carries no backlink).
+        let longest = events.iter().map(|e| e.len()).max().unwrap();
+        mirror.limits = BridgeLimits {
+            max_batch_bytes: 4 + 4 + longest,
+            ..BridgeLimits::default()
+        };
+        let client = client(1).with_limits(mirror.limits);
+        for event in &events {
+            client
+                .push(&mut mirror, std::slice::from_ref(event))
+                .await
+                .unwrap();
+        }
+        let mut position = PullPosition {
+            author: author_hex(7),
+            next_seq: 0,
+        };
+        let mut collected: Vec<Vec<u8>> = Vec::new();
+        loop {
+            let page = client
+                .pull(&mut mirror, std::slice::from_ref(&position), None)
+                .await
+                .unwrap();
+            assert_eq!(page.events.len(), 1);
+            collected.extend(page.events);
+            position.next_seq += 1;
+            if !page.more {
+                break;
+            }
+        }
+        assert_eq!(collected, events);
+    }
+
+    #[tokio::test]
+    async fn pull_refuses_an_event_that_cannot_fit_any_batch() {
+        let mut mirror = MirrorDo::new(1);
+        let events = make_events(7, 1);
+        client(1).push(&mut mirror, &events).await.unwrap();
+        // One byte short of a single framed event.
+        mirror.limits = BridgeLimits {
+            max_batch_bytes: 4 + 4 + events[0].len() - 1,
+            ..BridgeLimits::default()
+        };
+        let tight = client(1).with_limits(mirror.limits);
+        let position = PullPosition {
+            author: author_hex(7),
+            next_seq: 0,
+        };
+        let err = tight
+            .pull(&mut mirror, &[position], None)
+            .await
+            .unwrap_err();
+        assert!(format!("{err:#}").contains("event_too_large"), "{err:#}");
     }
 
     #[tokio::test]

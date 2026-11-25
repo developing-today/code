@@ -397,6 +397,20 @@ describe("the edge's run: the bridge through its binding", () => {
     );
     await expect(h.run(["fleet", "bridge", "revoke-enroll", "--agent", "new-1"])).rejects.toThrow(/needs a machine/);
     expect(h.calls).toHaveLength(4);
+    // The wake hooks' list is a read of the same binding (#14544);
+    // setting and removing are owner-token acts, refused here like
+    // the revoke above (a remove is held for a machine instead).
+    h.answer.body = { hooks: [{ address: "agent:felix-1", kind: "webhook", host: "hooks.example", has_token: true, added: "2026-11-24T00:00:00.000Z" }] };
+    const hooks = await h.run(["fleet", "bridge", "wake-hooks"]);
+    expect(h.calls[4].url).toBe("https://bridge.internal/fleet/pm-cred-test/wake-hooks");
+    expect(JSON.parse(hooks.stdout)).toEqual({
+      hooks: [{ address: "agent:felix-1", kind: "webhook", host: "hooks.example", has_token: true, added: "2026-11-24T00:00:00.000Z" }],
+    });
+    await expect(h.run(["fleet", "bridge", "wake-hooks", "--set", "-"], { stdin: "{}" })).rejects.toThrow(/needs a machine/);
+    await expect(h.run(["fleet", "bridge", "wake-hooks", "--remove", "--address", "agent:felix-1"])).rejects.toThrow(
+      /needs a machine/,
+    );
+    expect(h.calls).toHaveLength(5);
   });
 
   test("the classes read the pipeline and the merged directory through the bridge, and cannot revoke there", async () => {
