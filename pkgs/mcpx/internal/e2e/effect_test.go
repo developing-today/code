@@ -1290,17 +1290,27 @@ func TestReadMaxAgeSetsTheReadCacheHintFromTheEnvironment(t *testing.T) {
 
 // protoMessages.taskAfter is how long a tools/call runs in line before a
 // 2026-07-28 client that declared the tasks extension is handed a task.
-// The client runs a script that takes one second.
-// Oracle: at the default (2s) the call is answered directly with
-// resultType complete; with MCPX_PROTO_MESSAGES_TASK_AFTER=200ms it comes
-// back as a task (resultType task with a taskId).
+// Oracle: at the default (2s) a call that finishes well within it is
+// answered directly with resultType complete; with
+// MCPX_PROTO_MESSAGES_TASK_AFTER=200ms a one-second call comes back as a
+// task (resultType task with a taskId).
+// The in-line case sleeps 200ms, not one second: the assertion is which
+// side of the threshold the call lands on, and a one-second sleep sits
+// only 2x under the default, so under build load (runtime startup plus a
+// stretched sleep) it crossed the 2s threshold and came back as a task
+// (#15237, the same load sensitivity b3e622316 widened waits for). 200ms
+// keeps a 10x margin; the task case keeps its one-second sleep, 5x over
+// its 200ms threshold.
 func TestTaskAfterHandsASlowCallATaskFromTheEnvironment(t *testing.T) {
-	call := func(env ...string) map[string]any { t.Helper(); return slowTaskCall(t, env...) }
-
-	if got := call(); got["resultType"] != "complete" || !strings.Contains(dumpJSON(t, got), "slept") {
-		t.Fatalf("at the default protoMessages.taskAfter a one-second call should be answered in line, got %s", dumpJSON(t, got))
+	call := func(sleepMs int, env ...string) map[string]any {
+		t.Helper()
+		return slowTaskCall(t, sleepMs, env...)
 	}
-	if got := call("MCPX_PROTO_MESSAGES_TASK_AFTER=200ms"); got["resultType"] != "task" || got["taskId"] == nil {
+
+	if got := call(200); got["resultType"] != "complete" || !strings.Contains(dumpJSON(t, got), "slept") {
+		t.Fatalf("at the default protoMessages.taskAfter a 200ms call should be answered in line, got %s", dumpJSON(t, got))
+	}
+	if got := call(1000, "MCPX_PROTO_MESSAGES_TASK_AFTER=200ms"); got["resultType"] != "task" || got["taskId"] == nil {
 		t.Fatalf("protoMessages.taskAfter=200ms should hand a one-second call a task, got %s", dumpJSON(t, got))
 	}
 }
@@ -1312,7 +1322,7 @@ func TestTaskAfterHandsASlowCallATaskFromTheEnvironment(t *testing.T) {
 func TestTaskPollIntervalSetsTheTaskPollHintFromTheEnvironment(t *testing.T) {
 	poll := func(env ...string) any {
 		t.Helper()
-		got := slowTaskCall(t, append([]string{"MCPX_PROTO_MESSAGES_TASK_AFTER=200ms"}, env...)...)
+		got := slowTaskCall(t, 1000, append([]string{"MCPX_PROTO_MESSAGES_TASK_AFTER=200ms"}, env...)...)
 		if got["resultType"] != "task" {
 			t.Fatalf("a one-second call past a 200ms threshold should be a task, got %s", dumpJSON(t, got))
 		}
@@ -1328,8 +1338,8 @@ func TestTaskPollIntervalSetsTheTaskPollHintFromTheEnvironment(t *testing.T) {
 }
 
 // slowTaskCall has a 2026-07-28 client that declared the tasks extension
-// run a script that takes one second, and returns the tools/call result.
-func slowTaskCall(t *testing.T, env ...string) map[string]any {
+// run a script that sleeps for sleepMs, and returns the tools/call result.
+func slowTaskCall(t *testing.T, sleepMs int, env ...string) map[string]any {
 	t.Helper()
 	e := newEnv(t, oneServer)
 	e.setenv(env...)
@@ -1337,7 +1347,7 @@ func slowTaskCall(t *testing.T, env ...string) map[string]any {
 	ep := e.endpoint(t)
 	resp := mcpPost(t, ep, "", map[string]any{"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": map[string]any{
 		"name":      "mcpx_exec",
-		"arguments": map[string]any{"source": "await new Promise((r) => setTimeout(r, 1000)); console.log(\"slept\")"},
+		"arguments": map[string]any{"source": fmt.Sprintf("await new Promise((r) => setTimeout(r, %d)); console.log(\"slept\")", sleepMs)},
 		"_meta": map[string]any{
 			"io.modelcontextprotocol/protocolVersion": "2026-07-28",
 			"io.modelcontextprotocol/clientCapabilities": map[string]any{
@@ -2734,7 +2744,12 @@ func TestHooksRunOnTheirEvent(t *testing.T) {
 	e2 := newEnv(t, oneServer)
 	e2.setenv(touchHook(mark))
 	e2.run("call", "demo.echo", `{"message":"x"}`)
-	if !appears(mark, 10*time.Second) {
+	// The hook itself sleeps one second; the wait is for the daemon to
+	// dispatch it, which under build load can lag far past 10s (the
+	// darwin-nix pinned build that filed #15237 ran this suite ~5x slow
+	// and the mark had not appeared in 10s). The assertion is that the
+	// hook runs at all, so the wait is 60s, as in b3e622316's probes.
+	if !appears(mark, 60*time.Second) {
 		t.Error("a declared call.finished hook should run after the call")
 	}
 }
