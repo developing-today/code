@@ -62,6 +62,13 @@
 //!   `hysteresis_suppressed` hint. An authorised manual change or a
 //!   verified deadline/incident bypasses the resistance, but never the
 //!   owner gate or the capability check.
+//! * **Clump refinement is a bounded sweep.** [`refine_clump`]
+//!   (PRI-05d, #9484) turns cohort comparisons (much/slightly more or
+//!   less urgent, roughly equal, custom, needs research) into peer-rank
+//!   moves inside one equal-urgency clump: at most one move per item
+//!   per sweep, a per-sweep cap, every move citing its evidence, its
+//!   comparison and the sweep. Protected owner items never move and a
+//!   replayed sweep is refused.
 //!
 //! The module is pure: no I/O, no queue, no persisted state. It
 //! changes no live priority and authorises no schema change — later
@@ -100,6 +107,9 @@ pub const MAX_BOOST_STEPS: u8 = 2;
 pub const HYSTERESIS_POLICY_SCHEMA_VERSION: &str = "fleet.priority-hysteresis-policy/v1";
 /// The capability a manual priority change requires.
 pub const PRIORITY_WRITE_CAPABILITY: &str = "priority.write";
+
+/// Wire schema identifier of a clump-refinement policy.
+pub const CLUMP_POLICY_SCHEMA_VERSION: &str = "fleet.priority-clump-policy/v1";
 
 /// Evidence for the ratified bands: the #7030 ratification comment
 /// and the broker readback comment cited by the design.
@@ -161,6 +171,11 @@ pub enum PriorityError {
         /// What was wrong, in one line.
         detail: String,
     },
+    /// A clump sweep is malformed, mixes clumps, or is a replay.
+    InvalidSweep {
+        /// What was wrong, in one line.
+        detail: String,
+    },
     /// A shared-contract owner-policy failure
     /// (`OWNER_POLICY_PROTECTED`, `OWNER_POLICY_VERSION_CONFLICT`,
     /// `owner_policy_ref_missing`).
@@ -179,6 +194,7 @@ impl PriorityError {
             PriorityError::UnmappedAcrossProfiles { .. } => "unmapped_across_profiles",
             PriorityError::OwnerPolicyUnavailable => "owner_policy_unavailable",
             PriorityError::InvalidBoost { .. } => "invalid_boost",
+            PriorityError::InvalidSweep { .. } => "invalid_sweep",
             PriorityError::OwnerPolicy(err) => err.code(),
         }
     }
@@ -215,6 +231,7 @@ impl fmt::Display for PriorityError {
                 "owner_policy_unavailable: missing or unverifiable owner policy fails closed"
             ),
             PriorityError::InvalidBoost { detail } => write!(f, "invalid_boost: {detail}"),
+            PriorityError::InvalidSweep { detail } => write!(f, "invalid_sweep: {detail}"),
             PriorityError::OwnerPolicy(err) => write!(f, "{err}"),
         }
     }
@@ -1766,6 +1783,301 @@ pub fn evaluate_hysteresis(
     Ok(HysteresisDecision::Allow { bypass: None })
 }
 
+/// A versioned clump-refinement policy (PRI-05d). Deltas are
+/// configurable and small; the source's `50 → 25/10/5/singles`
+/// grouping is an illustration, not a mandated group size.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ClumpPolicy {
+    /// `fleet.priority-clump-policy/v1`.
+    pub schema_version: String,
+    /// The reference moves cite.
+    pub policy_ref: String,
+    /// Policy version (canonical decimal string).
+    pub version: String,
+    /// Peer-rank distance for a "slightly" comparison.
+    pub slight_delta: i64,
+    /// Peer-rank distance for a "much" comparison.
+    pub much_delta: i64,
+    /// Judgements below this confidence (0–100) are held.
+    pub min_confidence_pct: u8,
+    /// Most moves one sweep may make.
+    pub max_moves_per_sweep: usize,
+}
+
+impl ClumpPolicy {
+    /// Validate the policy document.
+    pub fn validate(&self) -> Result<(), PriorityError> {
+        if self.schema_version != CLUMP_POLICY_SCHEMA_VERSION {
+            return Err(PriorityError::UnsupportedVersion {
+                schema_version: self.schema_version.clone(),
+            });
+        }
+        let invalid = |detail: String| Err(PriorityError::InvalidProfile { detail });
+        if self.policy_ref.trim().is_empty() {
+            return invalid("clump policy_ref must not be empty".to_string());
+        }
+        if !is_canonical_decimal(&self.version) {
+            return invalid(format!(
+                "clump policy version is not a canonical decimal string: {:?}",
+                self.version
+            ));
+        }
+        if self.slight_delta <= 0 || self.much_delta <= self.slight_delta {
+            return invalid("clump deltas must satisfy 0 < slight < much".to_string());
+        }
+        if self.min_confidence_pct > 100 || self.max_moves_per_sweep == 0 {
+            return invalid("clump confidence must be 0..=100 and the cap positive".to_string());
+        }
+        Ok(())
+    }
+}
+
+/// A triage comparison of one item against a reference item.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Comparison {
+    /// Much more urgent than the reference.
+    MuchMoreUrgent,
+    /// Slightly more urgent than the reference.
+    SlightlyMoreUrgent,
+    /// Roughly equal to the reference.
+    RoughlyEqual,
+    /// Slightly less urgent than the reference.
+    SlightlyLessUrgent,
+    /// Much less urgent than the reference.
+    MuchLessUrgent,
+    /// A custom placement: a person decides; no automatic move.
+    Custom,
+    /// Needs research before any move.
+    NeedsResearch,
+}
+
+/// One cohort judgement.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ClumpJudgement {
+    /// The item to place.
+    pub work: WorkRef,
+    /// The item it was compared against (same clump).
+    pub reference: WorkRef,
+    /// The comparison.
+    pub comparison: Comparison,
+    /// Where the evidence is.
+    pub evidence_ref: String,
+    /// Confidence, 0–100.
+    pub confidence_pct: u8,
+}
+
+/// One applied refinement move: a peer-placement change only.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ClumpMove {
+    /// Moved work.
+    pub work: WorkRef,
+    /// Always `clump_refinement`.
+    pub reason_code: String,
+    /// The sweep that made the move.
+    pub sweep_ref: String,
+    /// The comparison it rests on.
+    pub comparison: Comparison,
+    /// The reference item.
+    pub reference: WorkRef,
+    /// Peer rank before (`None` read as `0`).
+    pub from_rank: i64,
+    /// Peer rank after.
+    pub to_rank: i64,
+    /// The evidence the move rests on.
+    pub evidence_refs: Vec<String>,
+    /// Judgement confidence.
+    pub confidence_pct: u8,
+    /// Clump policy reference.
+    pub policy_ref: String,
+    /// Clump policy version.
+    pub policy_version: String,
+}
+
+/// Why a judgement produced no move.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ClumpHold {
+    /// The item is in the protected owner set.
+    ProtectedExpedite,
+    /// The item already moved in this sweep.
+    OneMovePerSweep,
+    /// The sweep's move cap is reached.
+    SweepCapReached,
+    /// No evidence reference.
+    NoEvidence,
+    /// Confidence below the policy threshold.
+    LowConfidence,
+    /// Roughly equal, or already where the comparison puts it.
+    NoChange,
+    /// Custom or needs-research: a person decides.
+    NeedsResearch,
+}
+
+/// The outcome of one sweep over one clump.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClumpSweepResult {
+    /// The sweep.
+    pub sweep_ref: String,
+    /// Moves to apply (each under the caller's work-version check).
+    pub moves: Vec<ClumpMove>,
+    /// Judgements that produced no move, with why.
+    pub held: Vec<(WorkRef, ClumpHold)>,
+}
+
+/// Run one bounded clump-refinement sweep (PRI-05d).
+///
+/// * `cohort` is one clump: every candidate shares the same urgency
+///   value and profile, and each work appears once.
+/// * A replayed `sweep_ref` (in `applied_sweeps`) is refused.
+/// * Judgements are taken in a fixed order (work, then confidence
+///   descending, then evidence), so the outcome does not depend on
+///   input order; each item moves at most once and the sweep makes at
+///   most `max_moves_per_sweep` moves.
+/// * A move places the item `slight_delta` or `much_delta` peer-rank
+///   units before or after the reference's rank in the snapshot.
+///   Lower rank sorts first, as in [`compare_candidates`].
+/// * The owner gate runs per item as a clump-refinement peer-placement
+///   write: protected items are held, a stale or missing policy fails
+///   the whole sweep closed.
+#[allow(clippy::too_many_arguments)]
+pub fn refine_clump(
+    policy: &ClumpPolicy,
+    sweep_ref: &str,
+    applied_sweeps: &BTreeSet<String>,
+    cohort: &[CandidateKey],
+    judgements: &[ClumpJudgement],
+    owner_policy_ref: Option<&str>,
+    owner_policy: Option<&OwnerPriorityPolicy>,
+    membership: Option<&ProtectedMembership>,
+) -> Result<ClumpSweepResult, PriorityError> {
+    policy.validate()?;
+    let invalid = |detail: String| Err(PriorityError::InvalidSweep { detail });
+    if sweep_ref.trim().is_empty() {
+        return invalid("sweep_ref must not be empty".to_string());
+    }
+    if applied_sweeps.contains(sweep_ref) {
+        return invalid(format!("sweep {sweep_ref} was already applied"));
+    }
+    let Some(first) = cohort.first() else {
+        return invalid("a clump sweep needs a non-empty cohort".to_string());
+    };
+    let mut ranks: BTreeMap<&WorkRef, i64> = BTreeMap::new();
+    for candidate in cohort {
+        if candidate.urgency != first.urgency {
+            return invalid("a clump sweep covers one urgency value only".to_string());
+        }
+        if ranks
+            .insert(&candidate.work, candidate.peer_rank.unwrap_or(0))
+            .is_some()
+        {
+            return invalid(format!(
+                "work {}/{} appears twice in the cohort",
+                candidate.work.authority_id, candidate.work.work_id
+            ));
+        }
+    }
+    for judgement in judgements {
+        if !ranks.contains_key(&judgement.work) || !ranks.contains_key(&judgement.reference) {
+            return invalid("a judgement names work outside the clump".to_string());
+        }
+        if judgement.work == judgement.reference {
+            return invalid("an item cannot be compared with itself".to_string());
+        }
+        if judgement.confidence_pct > 100 {
+            return invalid("confidence must be 0..=100".to_string());
+        }
+    }
+
+    let reason = super::contracts::ReasonCode::ClumpRefinement;
+    reason.check_field_effect(super::contracts::FieldEffectKind::Base)?;
+
+    let mut ordered: Vec<&ClumpJudgement> = judgements.iter().collect();
+    ordered.sort_by(|a, b| {
+        a.work
+            .cmp(&b.work)
+            .then(b.confidence_pct.cmp(&a.confidence_pct))
+            .then(a.evidence_ref.cmp(&b.evidence_ref))
+            .then(a.reference.cmp(&b.reference))
+    });
+    let mut moved: BTreeSet<&WorkRef> = BTreeSet::new();
+    let mut result = ClumpSweepResult {
+        sweep_ref: sweep_ref.to_string(),
+        moves: Vec::new(),
+        held: Vec::new(),
+    };
+    for judgement in ordered {
+        let hold = |result: &mut ClumpSweepResult, why: ClumpHold| {
+            result.held.push((judgement.work.clone(), why));
+        };
+        let gate = PriorityWrite {
+            work: judgement.work.clone(),
+            owner_policy_ref: owner_policy_ref.map(str::to_string),
+            source: WriteSource::ClumpRefinement,
+            field: PriorityField::PeerPlacement,
+        };
+        match check_priority_write(&gate, owner_policy, membership, None) {
+            Ok(()) => {}
+            Err(PriorityError::OwnerPolicy(ContractError::OwnerPolicyProtected)) => {
+                hold(&mut result, ClumpHold::ProtectedExpedite);
+                continue;
+            }
+            Err(err) => return Err(err),
+        }
+        if moved.contains(&judgement.work) {
+            hold(&mut result, ClumpHold::OneMovePerSweep);
+            continue;
+        }
+        if judgement.evidence_ref.trim().is_empty() {
+            hold(&mut result, ClumpHold::NoEvidence);
+            continue;
+        }
+        let offset = match judgement.comparison {
+            Comparison::MuchMoreUrgent => -policy.much_delta,
+            Comparison::SlightlyMoreUrgent => -policy.slight_delta,
+            Comparison::SlightlyLessUrgent => policy.slight_delta,
+            Comparison::MuchLessUrgent => policy.much_delta,
+            Comparison::RoughlyEqual => {
+                hold(&mut result, ClumpHold::NoChange);
+                continue;
+            }
+            Comparison::Custom | Comparison::NeedsResearch => {
+                hold(&mut result, ClumpHold::NeedsResearch);
+                continue;
+            }
+        };
+        if judgement.confidence_pct < policy.min_confidence_pct {
+            hold(&mut result, ClumpHold::LowConfidence);
+            continue;
+        }
+        let from_rank = ranks[&judgement.work];
+        let to_rank = ranks[&judgement.reference].saturating_add(offset);
+        if to_rank == from_rank {
+            hold(&mut result, ClumpHold::NoChange);
+            continue;
+        }
+        if result.moves.len() >= policy.max_moves_per_sweep {
+            hold(&mut result, ClumpHold::SweepCapReached);
+            continue;
+        }
+        moved.insert(&judgement.work);
+        result.moves.push(ClumpMove {
+            work: judgement.work.clone(),
+            reason_code: reason.as_str().to_string(),
+            sweep_ref: sweep_ref.to_string(),
+            comparison: judgement.comparison,
+            reference: judgement.reference.clone(),
+            from_rank,
+            to_rank,
+            evidence_refs: vec![judgement.evidence_ref.clone()],
+            confidence_pct: judgement.confidence_pct,
+            policy_ref: policy.policy_ref.clone(),
+            policy_version: policy.version.clone(),
+        });
+    }
+    Ok(result)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3071,6 +3383,266 @@ mod tests {
             )
             .unwrap_err()
             .code(),
+            "owner_policy_unavailable"
+        );
+    }
+
+    fn clump_policy() -> ClumpPolicy {
+        ClumpPolicy {
+            schema_version: CLUMP_POLICY_SCHEMA_VERSION.to_string(),
+            policy_ref: "clump:1".to_string(),
+            version: "1".to_string(),
+            slight_delta: 1,
+            much_delta: 5,
+            min_confidence_pct: 60,
+            max_moves_per_sweep: 3,
+        }
+    }
+
+    fn clump_member(id: &str, value: i64, rank: Option<i64>) -> CandidateKey {
+        CandidateKey {
+            work: work(id),
+            urgency: Some(queue().validate_value(value).unwrap()),
+            peer_rank: rank,
+            created_at: 1,
+        }
+    }
+
+    fn judge(
+        id: &str,
+        reference: &str,
+        comparison: Comparison,
+        evidence: &str,
+        confidence: u8,
+    ) -> ClumpJudgement {
+        ClumpJudgement {
+            work: work(id),
+            reference: work(reference),
+            comparison,
+            evidence_ref: evidence.to_string(),
+            confidence_pct: confidence,
+        }
+    }
+
+    fn sweep(
+        cohort: &[CandidateKey],
+        judgements: &[ClumpJudgement],
+        applied: &BTreeSet<String>,
+    ) -> Result<ClumpSweepResult, PriorityError> {
+        refine_clump(
+            &clump_policy(),
+            "sweep:1",
+            applied,
+            cohort,
+            judgements,
+            Some("owner-policy:7"),
+            Some(&policy()),
+            Some(&membership()),
+        )
+    }
+
+    #[test]
+    fn pmo_priority_clump_sweep_caps_one_move_and_records_evidence() {
+        let cohort = vec![
+            clump_member("801", 40, None),
+            clump_member("802", 40, Some(0)),
+            clump_member("803", 40, Some(0)),
+            clump_member("804", 40, Some(10)),
+            clump_member("805", 40, Some(0)),
+            clump_member("806", 40, Some(0)),
+        ];
+        let none = BTreeSet::new();
+        let judgements = vec![
+            judge("801", "804", Comparison::MuchMoreUrgent, "ev:801-a", 90),
+            // A second, weaker judgement on 801 cannot move it again.
+            judge("801", "804", Comparison::MuchLessUrgent, "ev:801-b", 80),
+            judge("802", "804", Comparison::SlightlyLessUrgent, "ev:802", 70),
+            judge("803", "804", Comparison::RoughlyEqual, "ev:803", 99),
+            judge("805", "804", Comparison::NeedsResearch, "ev:805", 99),
+            judge("806", "804", Comparison::Custom, "ev:806", 99),
+        ];
+        let result = sweep(&cohort, &judgements, &none).unwrap();
+        assert_eq!(result.sweep_ref, "sweep:1");
+        assert_eq!(result.moves.len(), 2);
+        let first = &result.moves[0];
+        assert_eq!(first.work, work("801"));
+        assert_eq!(first.from_rank, 0);
+        assert_eq!(first.to_rank, 5, "much more urgent than rank 10");
+        assert_eq!(first.reason_code, "clump_refinement");
+        assert_eq!(first.evidence_refs, vec!["ev:801-a".to_string()]);
+        assert_eq!(first.comparison, Comparison::MuchMoreUrgent);
+        assert_eq!(first.reference, work("804"));
+        assert_eq!(first.policy_ref, "clump:1");
+        assert_eq!(first.policy_version, "1");
+        assert_eq!(first.sweep_ref, "sweep:1");
+        assert_eq!(result.moves[1].work, work("802"));
+        assert_eq!(result.moves[1].to_rank, 11);
+        assert_eq!(
+            result.held,
+            vec![
+                (work("801"), ClumpHold::OneMovePerSweep),
+                (work("803"), ClumpHold::NoChange),
+                (work("805"), ClumpHold::NeedsResearch),
+                (work("806"), ClumpHold::NeedsResearch),
+            ]
+        );
+
+        // Input order does not change the outcome.
+        let mut reversed = judgements.clone();
+        reversed.reverse();
+        assert_eq!(sweep(&cohort, &reversed, &none).unwrap(), result);
+
+        // The per-sweep cap bounds the whole sweep.
+        let many: Vec<ClumpJudgement> = ["801", "802", "803", "805", "806"]
+            .iter()
+            .map(|id| {
+                judge(
+                    id,
+                    "804",
+                    Comparison::SlightlyMoreUrgent,
+                    &format!("ev:{id}"),
+                    90,
+                )
+            })
+            .collect();
+        let capped = sweep(&cohort, &many, &none).unwrap();
+        assert_eq!(capped.moves.len(), 3);
+        assert_eq!(
+            capped.held,
+            vec![
+                (work("805"), ClumpHold::SweepCapReached),
+                (work("806"), ClumpHold::SweepCapReached),
+            ]
+        );
+
+        // No evidence and low confidence hold.
+        let weak = sweep(
+            &cohort,
+            &[
+                judge("801", "804", Comparison::MuchMoreUrgent, " ", 99),
+                judge("802", "804", Comparison::MuchMoreUrgent, "ev:802", 10),
+            ],
+            &none,
+        )
+        .unwrap();
+        assert!(weak.moves.is_empty());
+        assert_eq!(
+            weak.held,
+            vec![
+                (work("801"), ClumpHold::NoEvidence),
+                (work("802"), ClumpHold::LowConfidence),
+            ]
+        );
+
+        // Replay of an applied sweep is refused.
+        let applied = BTreeSet::from(["sweep:1".to_string()]);
+        assert_eq!(
+            sweep(&cohort, &judgements, &applied).unwrap_err().code(),
+            "invalid_sweep"
+        );
+        // One clump only; no duplicates; judgements stay inside it.
+        let mut mixed = cohort.clone();
+        mixed.push(clump_member("807", 30, None));
+        assert_eq!(
+            sweep(&mixed, &judgements, &none).unwrap_err().code(),
+            "invalid_sweep"
+        );
+        let mut dup = cohort.clone();
+        dup.push(clump_member("801", 40, Some(3)));
+        assert_eq!(
+            sweep(&dup, &judgements, &none).unwrap_err().code(),
+            "invalid_sweep"
+        );
+        assert_eq!(
+            sweep(
+                &cohort,
+                &[judge("801", "999", Comparison::MuchMoreUrgent, "ev", 90)],
+                &none
+            )
+            .unwrap_err()
+            .code(),
+            "invalid_sweep"
+        );
+        assert_eq!(
+            sweep(
+                &cohort,
+                &[judge("801", "801", Comparison::MuchMoreUrgent, "ev", 90)],
+                &none
+            )
+            .unwrap_err()
+            .code(),
+            "invalid_sweep"
+        );
+        assert_eq!(sweep(&[], &[], &none).unwrap_err().code(), "invalid_sweep");
+
+        // Malformed policy is refused.
+        let mut bad = clump_policy();
+        bad.much_delta = bad.slight_delta;
+        assert_eq!(bad.validate().unwrap_err().code(), "invalid_profile");
+        bad = clump_policy();
+        bad.max_moves_per_sweep = 0;
+        assert_eq!(bad.validate().unwrap_err().code(), "invalid_profile");
+        bad = clump_policy();
+        bad.schema_version = "fleet.priority-clump-policy/v2".to_string();
+        assert_eq!(bad.validate().unwrap_err().code(), "unsupported_version");
+    }
+
+    #[test]
+    fn pmo_priority_clump_never_moves_protected_expedite() {
+        let cohort = vec![
+            clump_member("3447", EXPEDITE_VALUE, Some(0)),
+            clump_member("3448", EXPEDITE_VALUE, Some(0)),
+        ];
+        let none = BTreeSet::new();
+        let result = sweep(
+            &cohort,
+            &[
+                judge("3447", "3448", Comparison::MuchLessUrgent, "ev:a", 99),
+                judge("3448", "3447", Comparison::MuchMoreUrgent, "ev:b", 99),
+            ],
+            &none,
+        )
+        .unwrap();
+        assert_eq!(
+            result.held,
+            vec![(work("3447"), ClumpHold::ProtectedExpedite)]
+        );
+        assert_eq!(result.moves.len(), 1);
+        assert_eq!(result.moves[0].work, work("3448"));
+        assert_eq!(result.moves[0].to_rank, -5);
+
+        // A stale, missing or unverifiable policy fails the sweep closed.
+        let judgements = [judge(
+            "3448",
+            "3447",
+            Comparison::MuchMoreUrgent,
+            "ev:b",
+            99,
+        )];
+        let run = |reference: Option<&str>, owner: Option<&OwnerPriorityPolicy>| {
+            refine_clump(
+                &clump_policy(),
+                "sweep:2",
+                &none,
+                &cohort,
+                &judgements,
+                reference,
+                owner,
+                Some(&membership()),
+            )
+        };
+        assert_eq!(
+            run(Some("owner-policy:6"), Some(&policy()))
+                .unwrap_err()
+                .code(),
+            "OWNER_POLICY_VERSION_CONFLICT"
+        );
+        assert_eq!(
+            run(None, Some(&policy())).unwrap_err().code(),
+            "owner_policy_ref_missing"
+        );
+        assert_eq!(
+            run(Some("owner-policy:7"), None).unwrap_err().code(),
             "owner_policy_unavailable"
         );
     }
