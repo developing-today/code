@@ -394,7 +394,7 @@ pub struct Staleness {
 impl Staleness {
     /// Whether the index still matches every journal.
     #[must_use]
-    pub fn is_fresh(&self) -> bool {
+    pub const fn is_fresh(&self) -> bool {
         self.changed.is_empty() && self.added.is_empty() && self.removed.is_empty()
     }
 }
@@ -969,7 +969,7 @@ mod tests {
         .unwrap();
         assert_eq!(status, IndexStatus::Rebuilt(RebuildReason::OtherAuthor));
 
-        let mut grown = now.clone();
+        let mut grown = now;
         grown.insert("gallery".to_owned(), 1);
         let (index, status) = fresh_or_rebuild(Some(&stored), &my_key(), &grown, rebuild).unwrap();
         assert_eq!(
