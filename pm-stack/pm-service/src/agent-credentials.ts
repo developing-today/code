@@ -72,7 +72,11 @@ export interface AgentCredentialDeps {
 function defaultSecret(): string {
   const bytes = new Uint8Array(32);
   crypto.getRandomValues(bytes);
-  return Buffer.from(bytes).toString("base64url");
+  // base64url without Buffer: this module typechecks against
+  // Workers types only (see tsconfig), same as front-door.ts.
+  let binary = "";
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 }
 
 export async function digestSecret(secret: string): Promise<string> {
