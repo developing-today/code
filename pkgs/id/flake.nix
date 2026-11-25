@@ -112,7 +112,7 @@
           # Keyed by crate name-version, not rev: a p2panda rev bump keeps the
           # key, so these hashes (and default.nix's) must be updated by hand (#643).
           outputHashes = {
-            "p2panda-core-0.7.1" = "sha256-yq+ySfo14ucU1BWOUdJM0n7/FL3+Ria3Z+MxMHFa4Ls=";
+            "p2panda-core-0.7.1" = "sha256-9QbbXbjFMwsGKCYV6BIPOnOqLegGFexDvoph79yNpOQ=";
           };
         };
 
@@ -1161,7 +1161,7 @@
             cargoLock = {
               lockFile = ./Cargo.lock;
               outputHashes = {
-                "p2panda-core-0.7.1" = "sha256-yq+ySfo14ucU1BWOUdJM0n7/FL3+Ria3Z+MxMHFa4Ls=";
+                "p2panda-core-0.7.1" = "sha256-9QbbXbjFMwsGKCYV6BIPOnOqLegGFexDvoph79yNpOQ=";
               };
             };
 
@@ -1253,7 +1253,7 @@
             cargoLock = {
               lockFile = ./Cargo.lock;
               outputHashes = {
-                "p2panda-core-0.7.1" = "sha256-yq+ySfo14ucU1BWOUdJM0n7/FL3+Ria3Z+MxMHFa4Ls=";
+                "p2panda-core-0.7.1" = "sha256-9QbbXbjFMwsGKCYV6BIPOnOqLegGFexDvoph79yNpOQ=";
               };
             };
 

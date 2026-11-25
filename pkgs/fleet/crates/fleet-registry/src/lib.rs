@@ -299,6 +299,8 @@ pub const DOMAINS: &[Domain] = &[
             "verify-disposition",
             "timeline",
             "history",
+            "staleness",
+            "needs-user",
             "show",
             "models",
             "health",

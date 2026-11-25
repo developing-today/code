@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -469,14 +470,27 @@ func (p *Pool) ExecIdentity() string {
 // a pool that already serves the default lane are all quiet no-ops:
 // the ordinary spawn path (attach-or-spawn) covers them on first use.
 func (p *Pool) AdoptRunningSupervised(ctx context.Context) bool {
+	adopted, _ := p.AdoptRunningSupervisedDetailed(ctx)
+	return adopted
+}
+
+// AdoptRunningSupervisedDetailed is AdoptRunningSupervised with the
+// transient already-attached refusal distinguished from every other
+// quiet no-op. The predecessor closes its supervisor socket on commit,
+// but the supervisor clears the attachment asynchronously on EOF, so a
+// successor that scans immediately can still be refused as already
+// attached. Only that refusal is worth a bounded retry at the takeover
+// call site; at daemon startup it still means a live predecessor owns
+// the child and must stay a no-op.
+func (p *Pool) AdoptRunningSupervisedDetailed(ctx context.Context) (adopted bool, alreadyAttached bool) {
 	if p.cfg == nil || !p.cfg.Stdio() || !p.cfg.Mcpx.SupervisedEnabled() {
-		return false
+		return false, false
 	}
 	rs := p.cfg.Scope.Resolve(config.CallContext{})
 	p.mu.Lock()
 	if p.closed || p.starting > 0 || p.findLaneLocked(rs.Key, false) != nil {
 		p.mu.Unlock()
-		return false
+		return false, false
 	}
 	p.starting++
 	p.mu.Unlock()
@@ -498,7 +512,7 @@ func (p *Pool) AdoptRunningSupervised(ctx context.Context) bool {
 		}
 		p.cond.Broadcast()
 		p.mu.Unlock()
-		return false
+		return false, mcpclient.IsSupervisorRefusal(err) && strings.Contains(err.Error(), "already attached")
 	}
 	if p.closed || p.findLaneLocked(rs.Key, false) != nil {
 		// The pool moved on while the attach was in flight; retire
@@ -506,12 +520,12 @@ func (p *Pool) AdoptRunningSupervised(ctx context.Context) bool {
 		p.cond.Broadcast()
 		p.mu.Unlock()
 		go func() { _ = in.Client.Close() }()
-		return false
+		return false, false
 	}
 	in.key = rs.Key
 	in.lastUsed = time.Now()
 	p.instances = append(p.instances, in)
 	p.cond.Broadcast()
 	p.mu.Unlock()
-	return true
+	return true, false
 }

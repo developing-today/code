@@ -1,5 +1,7 @@
 // H2 of #9086 (issue #14260): the SSO relying-party identity_link
-// table + link/unlink API.
+// table + link/unlink API. The final section is the #15024
+// regression suite: audit-insert failure injection proving the
+// state change and its audit event are atomic.
 //
 // Oracle: doc/2026-11-24T04-50-00Z_design_sso-relying-party-9086
 // section 4.3 (link table home + semantics: link ceremony, last-door
@@ -332,4 +334,153 @@ test("DB continuity: tenant rows are untouched across a relink", () => {
   });
   assert.equal(swap.ok, true);
   assert.deepEqual(snapshot(), before, "no tenant row changed across the relink");
+});
+
+// ---------------------------------------------------------------------
+// #15024: identity state and its audit event are atomic. The seam
+// wrapper below injects failures on identity_link_event inserts —
+// the exact failure the issue reproduced, where linkDoor threw but
+// the link had already committed with no audit row, and a retry
+// then refused with already_linked so the gap could never heal.
+// ---------------------------------------------------------------------
+
+/** Wrap a seam so event inserts throw per a script over the
+ * insert attempts seen through this wrapper (1-based). */
+function failEventInserts(
+  inner: IdentityLinkSql,
+  failOn: (attempt: number) => boolean,
+): IdentityLinkSql {
+  let attempts = 0;
+  return {
+    exec(query: string, ...params: (string | null)[]) {
+      if (/^\s*INSERT\s+INTO\s+identity_link_event/i.test(query)) {
+        attempts += 1;
+        if (failOn(attempts)) throw new Error("injected audit insert failure");
+      }
+      return inner.exec(query, ...params);
+    },
+  };
+}
+
+test("atomicity: a failed audit insert on link leaves no mutation; the retry links with audit", () => {
+  const { db, sql, seq } = setup();
+  const badSql = failEventInserts(sql, () => true);
+  assert.throws(
+    () => linkDoor(badSql, SESSION, { door: "github", providerSub: "gh-42" }, deps(seq, T0)),
+    /injected audit insert failure/,
+  );
+  // Nothing committed: the door does not resolve, no link row
+  // (not even a history row), no audit event.
+  assert.equal(resolveAccountIdByDoor(sql, "github", "gh-42"), null);
+  assert.equal(listIdentityLinks(sql, ACCOUNT).length, 0);
+  assert.equal(events(db).length, 0);
+  // The retry performs the full audited operation — it does NOT
+  // trip over an unaudited row as already_linked.
+  const retry = linkDoor(sql, SESSION, { door: "github", providerSub: "gh-42" }, deps(seq, T1));
+  assert.equal(retry.ok, true);
+  assert.equal(resolveAccountIdByDoor(sql, "github", "gh-42"), ACCOUNT);
+  assert.deepEqual(
+    events(db).map((e) => `${e.action}:${e.door}`),
+    ["linked:github"],
+  );
+});
+
+test("atomicity: a failed audit insert on relink leaves the history row unlinked; the retry reactivates", () => {
+  const { db, sql, seq } = setup();
+  linkDoor(sql, SESSION, { door: "github", providerSub: "gh-42" }, deps(seq, T0));
+  linkDoor(sql, SESSION, { door: "google", providerSub: "go-7" }, deps(seq, T0));
+  unlinkDoor(sql, SESSION, "github", deps(seq, T1));
+  const badSql = failEventInserts(sql, () => true);
+  assert.throws(
+    () => linkDoor(badSql, SESSION, { door: "github", providerSub: "gh-42" }, deps(seq, T2)),
+    /injected audit insert failure/,
+  );
+  // The reactivation rolled back: the retained row still carries
+  // its unlink, the door still does not resolve, no new event.
+  const row = listIdentityLinks(sql, ACCOUNT).find((l) => l.door === "github")!;
+  assert.equal(row.unlinkedAt, T1);
+  assert.equal(row.linkedAt, T0);
+  assert.equal(resolveAccountIdByDoor(sql, "github", "gh-42"), null);
+  assert.equal(events(db).length, 3);
+  const retry = linkDoor(sql, SESSION, { door: "github", providerSub: "gh-42" }, deps(seq, T2));
+  assert.equal(retry.ok, true);
+  assert.equal(resolveAccountIdByDoor(sql, "github", "gh-42"), ACCOUNT);
+  assert.equal(events(db).length, 4);
+});
+
+test("atomicity: a failed audit insert on unlink leaves the door active; the retry unlinks with audit", () => {
+  const { db, sql, seq } = setup();
+  linkDoor(sql, SESSION, { door: "github", providerSub: "gh-42" }, deps(seq, T0));
+  linkDoor(sql, SESSION, { door: "google", providerSub: "go-7" }, deps(seq, T0));
+  const badSql = failEventInserts(sql, () => true);
+  assert.throws(() => unlinkDoor(badSql, SESSION, "github", deps(seq, T1)), /injected audit/);
+  assert.equal(resolveAccountIdByDoor(sql, "github", "gh-42"), ACCOUNT);
+  assert.equal(
+    listIdentityLinks(sql, ACCOUNT).find((l) => l.door === "github")!.unlinkedAt,
+    null,
+  );
+  assert.equal(events(db).length, 2);
+  const retry = unlinkDoor(sql, SESSION, "github", deps(seq, T1));
+  assert.equal(retry.ok, true);
+  assert.equal(resolveAccountIdByDoor(sql, "github", "gh-42"), null);
+  assert.equal(events(db).length, 3);
+});
+
+test("atomicity: a failed audit insert on the replacement's link aborts the swap untouched", () => {
+  const { db, sql, seq } = setup();
+  linkDoor(sql, SESSION, { door: "github", providerSub: "gh-42" }, deps(seq, T0));
+  const badSql = failEventInserts(sql, () => true);
+  assert.throws(
+    () =>
+      unlinkDoor(badSql, SESSION, "github", deps(seq, T1), {
+        door: "google",
+        providerSub: "go-7",
+      }),
+    /injected audit insert failure/,
+  );
+  assert.equal(resolveAccountIdByDoor(sql, "github", "gh-42"), ACCOUNT);
+  assert.equal(resolveAccountIdByDoor(sql, "google", "go-7"), null);
+  assert.equal(listIdentityLinks(sql, ACCOUNT).length, 1);
+  assert.equal(events(db).length, 1);
+});
+
+test("atomicity: a failed audit insert on the unlink event rolls back the whole swap, replacement included", () => {
+  const { db, sql, seq } = setup();
+  linkDoor(sql, SESSION, { door: "github", providerSub: "gh-42" }, deps(seq, T0));
+  // Fail only the swap's SECOND event insert: the replacement's
+  // link (row + event) has already succeeded inside the operation
+  // when the unlink's audit insert fails — the pre-fix code left
+  // exactly that partially applied swap behind.
+  const badSql = failEventInserts(sql, (attempt) => attempt === 2);
+  assert.throws(
+    () =>
+      unlinkDoor(badSql, SESSION, "github", deps(seq, T1), {
+        door: "google",
+        providerSub: "go-7",
+      }),
+    /injected audit insert failure/,
+  );
+  // The whole swap rolled back: the old door is still the active
+  // door, the replacement row is gone entirely, and the audit log
+  // holds only the original link event — no event claims a link
+  // that does not exist.
+  assert.equal(resolveAccountIdByDoor(sql, "github", "gh-42"), ACCOUNT);
+  assert.equal(resolveAccountIdByDoor(sql, "google", "go-7"), null);
+  assert.equal(listIdentityLinks(sql, ACCOUNT).length, 1);
+  assert.deepEqual(
+    events(db).map((e) => `${e.action}:${e.door}`),
+    ["linked:github"],
+  );
+  // The retry performs the complete audited swap.
+  const retry = unlinkDoor(sql, SESSION, "github", deps(seq, T2), {
+    door: "google",
+    providerSub: "go-7",
+  });
+  assert.equal(retry.ok, true);
+  assert.equal(resolveAccountIdByDoor(sql, "github", "gh-42"), null);
+  assert.equal(resolveAccountIdByDoor(sql, "google", "go-7"), ACCOUNT);
+  assert.deepEqual(
+    events(db).map((e) => `${e.action}:${e.door}`),
+    ["linked:github", "linked:google", "unlinked:github"],
+  );
 });

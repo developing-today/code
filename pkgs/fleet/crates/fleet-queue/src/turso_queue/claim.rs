@@ -103,6 +103,9 @@ pub(crate) fn verb_enqueue(t: &TursoBackend, req: &Value) -> Value {
             )?;
             let (live, terminal) = dedupe_partition(&existing);
             if let Some(row) = live {
+                if let Some(id) = row.get("id").and_then(Value::as_i64) {
+                    seed_task_links(t, id, &row, "enqueue_repo_task")?;
+                }
                 return Ok((row, None, None));
             }
             // #13091: a COMPLETED predecessor is terminal for the
@@ -204,6 +207,8 @@ pub(crate) fn verb_enqueue(t: &TursoBackend, req: &Value) -> Value {
             ],
         )?;
         let id = ins.last_insert_rowid.unwrap_or(0);
+        let mut link_row = task.clone();
+        link_row["created_at"] = json!(now_iso());
         event(
             t,
             Some("enqueue_repo_task"),
@@ -211,6 +216,7 @@ pub(crate) fn verb_enqueue(t: &TursoBackend, req: &Value) -> Value {
             "enqueued",
             &json!({"queue": queue, "dedupe_key": dedupe, "platform": platform, "manual_only": task.get("manual_only").and_then(Value::as_bool).unwrap_or(false)}),
         )?;
+        seed_task_links(t, id, &link_row, "enqueue_repo_task")?;
         // Revive-on-enqueue (#6838): the key's only prior row(s) are
         // terminal, so this fresh task is a revival, not a first
         // enqueue. Link it to its predecessor in progress (the audit

@@ -65,6 +65,7 @@ import {
 import { summarizeDns } from "./dns.ts";
 import { needsDrewWait, type NeedsDrewCensus, type NeedsDrewItem } from "./needs-drew.ts";
 import type { Incident, IncidentEvent, PushSubscriptionRow } from "./alerts.ts";
+import { incidentPageThreshold } from "./incident-page.ts";
 import type { NotificationRollup } from "./notifications.ts";
 import { NOTIFICATION_CLASS_DEFAULTS, NOTIFICATION_CLASSES } from "./notifications.ts";
 import { FEED_STALE_MS, ageMsText, feedAgeText } from "./feed.ts";
@@ -6683,10 +6684,20 @@ export function renderHealth(view: HealthView, provenance: Provenance): string {
     view.version === "unknown"
       ? `<div class="card">Build <strong>unknown</strong> — this process was not deployed with PM_AGG_BUILD_VERSION, so the deployed commit cannot be shown (boot ${esc(view.bootAt)}).</div>`
       : `<div class="card">Build <code title="${esc(view.version)}">${esc(view.version.slice(0, 8))}</code> <span class="muted">(<code>${esc(view.version)}</code> · boot ${esc(view.bootAt)} · up ${esc(ageMsText(uptimeMs))})</span> — same commit <a href="/api/health">/api/health</a> serves as version.</div>`;
+  // CF-9 (#14949): the edition's drift vs main, from the same
+  // HealthView /api/health serves. Unassembled (fixtures/tests)
+  // renders nothing; unknown renders its reason, never a guess.
+  const editionLine = !view.edition
+    ? ""
+    : view.edition.state === "unknown"
+      ? `<div class="card">Edition drift <strong>unknown</strong> — ${esc(view.edition.reason ?? "not measured")}.</div>`
+      : view.edition.state === "in-sync"
+        ? `<div class="card">Edition <strong>in sync</strong> with main at <code>${esc((view.edition.mainHead ?? "").slice(0, 8))}</code>.</div>`
+        : `<div class="card">Edition <strong>${view.edition.stale ? "STALE" : "behind"}</strong> — deployed <code>${esc((view.edition.deployedCommit ?? "").slice(0, 8))}</code> (${esc(view.edition.deployedCommitAt ?? "")}), main <code>${esc((view.edition.mainHead ?? "").slice(0, 8))}</code>, ${esc(String(view.edition.behindBy ?? "?"))} commits behind; main has carried newer code for ${esc(ageMsText(view.edition.driftMs ?? 0))}${view.edition.stale ? " — past the drift threshold; the merge → switch flip is overdue" : ""}.</div>`;
   const body = `<h1>Health</h1>
 <p class="muted">Every stack service probed live (results cached 60 s), every feed section aged, the last job runs, and this dashboard's own render history — assembled from the same view <a href="/api/health">/api/health</a> serves, at ${esc(view.generatedAt)}.</p>
 ${buildLine}
-${degraded}${modeNote}
+${editionLine}${degraded}${modeNote}
 <h2 id="topology">Services &amp; topology</h2>
 <p class="muted">What runs where: the component, its port and bind as actually deployed, what consumes it, and what breaks without it. State is probed, never assumed.</p>
 <div class="tblwrap"><table class="table table-zebra"><caption>Services, ports, and topology</caption><tr><th scope="col">Service</th><th scope="col">Port</th><th scope="col">Bind</th><th scope="col">Runs as</th><th scope="col">State</th><th scope="col">Consumed by</th><th scope="col">If it is down</th></tr>${serviceRows}</table></div>
@@ -8217,7 +8228,7 @@ export interface AlertsPageView {
   ackWindowMin: number;
 }
 
-function incidentCard(i: Incident): string {
+function incidentCard(i: Incident, events: IncidentEvent[] = [], all: Incident[] = []): string {
   const sev = i.severity === "critical" ? "closed" : i.severity === "warning" ? "implementing" : "open";
   const times = [
     `first seen ${fmtDate(i.first_seen_at)}`,
@@ -8239,11 +8250,19 @@ function incidentCard(i: Incident): string {
       : i.status === "acked"
         ? `<button data-close="${esc(i.id)}">Close</button>`
         : "";
+  // C6 (#15019): incidents with healthHook evidence that meet the
+  // §6.2 threshold earn a durable incident page; link it from the card.
+  const ownEvents = events.filter((e) => e.incident_id === i.id);
+  const pageLink =
+    ownEvents.some((e) => e.detail?.healthHook !== undefined) &&
+    incidentPageThreshold(i, ownEvents, all).qualifies
+      ? `<br><a href="/reports/incident/${esc(i.id)}">Incident page</a>`
+      : "";
   return `<div class="card incident" id="incident-${esc(i.id)}">
 <strong>${esc(i.title)}</strong> <span class="badge ${sev}">${esc(i.severity)}</span> <span class="badge">${esc(i.status)}</span>
 ${i.body ? `<br>${esc(i.body)}` : ""}
 <br><span class="muted">source <code>${esc(i.source)}</code> · key <code>${esc(i.incident_key)}</code> · ${esc(times)}</span>
-${actions ? `<br>${actions}` : ""}
+${actions ? `<br>${actions}` : ""}${pageLink}
 </div>`;
 }
 
@@ -8323,8 +8342,8 @@ export function renderAlerts(view: AlertsPageView, provenance: Provenance, vapid
 <h2>Subscriptions (${view.subscriptions.length})</h2>
 ${view.subscriptions.length ? view.subscriptions.map(subscriptionRow).join("") : `<p class="muted">No push subscriptions yet — enable push above.</p>`}
 <h2>Open incidents (${open.length})</h2>
-${open.length ? open.map(incidentCard).join("") : `<p class="muted">No open incidents. Silence is golden.</p>`}
-${closed.length ? `<h2>Closed (recent)</h2>${closed.map(incidentCard).join("")}` : ""}
+${open.length ? open.map((i) => incidentCard(i, view.events, view.incidents)).join("") : `<p class="muted">No open incidents. Silence is golden.</p>`}
+${closed.length ? `<h2>Closed (recent)</h2>${closed.map((i) => incidentCard(i, view.events, view.incidents)).join("")}` : ""}
 <h2>Ledger — recent transitions</h2>
  <div class="tblwrap"><table><caption>Recent alert-ledger transitions</caption><tr><th scope="col">at</th><th scope="col">kind</th><th scope="col">incident</th><th scope="col">source · key</th></tr>${events}</table></div>`;
   const script = `<script>

@@ -839,6 +839,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "fleet-pool"
+version = "0.1.0"
+dependencies = [
+ "proptest",
+]
+
+[[package]]
 name = "fleet-proxy"
 version = "0.1.0"
 dependencies = [
@@ -869,12 +876,16 @@ name = "fleet-queue"
 version = "0.1.0"
 dependencies = [
  "chunked_transfer",
+ "fleet-cert",
  "fleet-config",
  "fleet-secrets",
  "libc",
  "proptest",
+ "rcgen",
  "ring",
  "rusqlite",
+ "rustls",
+ "rustls-pki-types",
  "serde",
  "serde_json",
  "sha2",
@@ -1717,6 +1728,7 @@ checksum = "8774e05a7d0de114588e6a28fe7e71694b82614ed569d86d8b389dfbc98b8ad8"
 dependencies = [
  "aws-lc-rs",
  "pem",
+ "ring",
  "rustls-pki-types",
  "time",
  "x509-parser",
@@ -2678,6 +2690,7 @@ dependencies = [
  "lazy_static",
  "nom",
  "oid-registry",
+ "ring",
  "rusticata-macros",
  "thiserror",
  "time",
