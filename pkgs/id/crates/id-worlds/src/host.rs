@@ -1331,6 +1331,112 @@ mod tests {
         assert!(!HostFile::path_for(root.path()).exists());
     }
 
+    /// Leave `name` as a killed host would: recorded live, nothing held.
+    fn record_live_as_after_a_crash(root: &Path, name: &str) {
+        let mut file = HostFile::load(root).unwrap();
+        file.transition(name, LifecycleState::Live, actor(), 1_700_000_200)
+            .unwrap();
+        file.save(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn restart_after_a_torn_append_replays_exactly_the_fsynced_prefix() {
+        // #10695 crash matrix: the host died mid-append, leaving an
+        // incomplete final line after the last fsynced entry.
+        let root = data_root_with(&["alpha"]);
+        let mut sup = Supervisor::open(root.path()).await.unwrap();
+        sup.start("alpha", actor()).await.unwrap();
+        sup.live["alpha"]
+            .service
+            .world()
+            .set_isolation(Authority::Admin, Isolation::Unisolated)
+            .await
+            .unwrap();
+        sup.shutdown().await.unwrap();
+        let journal = root.path().join("alpha").join(JOURNAL_FILE);
+        let fsynced = std::fs::read(&journal).unwrap();
+
+        // The oracle: the same prefix replayed in a scratch directory.
+        let oracle_root = data_root_with(&["alpha"]);
+        std::fs::write(
+            oracle_root.path().join("alpha").join(JOURNAL_FILE),
+            &fsynced,
+        )
+        .unwrap();
+        let mut oracle = Supervisor::open(oracle_root.path()).await.unwrap();
+        oracle.start("alpha", actor()).await.unwrap();
+        let want = oracle.live_report("alpha").unwrap().clone();
+        let want_isolation = oracle.live["alpha"]
+            .service
+            .world()
+            .isolation()
+            .await
+            .unwrap();
+        oracle.shutdown().await.unwrap();
+
+        let mut torn = fsynced.clone();
+        torn.extend_from_slice(br#"{"IsolationChanged":{"isol"#);
+        std::fs::write(&journal, &torn).unwrap();
+        assert!(journal_facts(&journal).unwrap().torn_tail);
+
+        let sup = Supervisor::open(root.path()).await.unwrap();
+        assert_eq!(sup.live_names(), vec!["alpha".to_owned()]);
+        let got = sup.live_report("alpha").unwrap();
+        assert_eq!(got.sequence, want.sequence);
+        assert_eq!(got.journal_entries, want.journal_entries);
+        assert_eq!(
+            sup.live["alpha"].service.world().isolation().await.unwrap(),
+            want_isolation
+        );
+        assert_eq!(want_isolation, Isolation::Unisolated);
+        sup.shutdown().await.unwrap();
+        // No partial application: the torn bytes were never kept as an
+        // entry, and every fsynced byte survives.
+        let after = std::fs::read(&journal).unwrap();
+        assert!(after.starts_with(&fsynced));
+        assert_eq!(
+            journal_facts(&journal).unwrap().entries,
+            journal_facts_of(&fsynced)
+        );
+    }
+
+    fn journal_facts_of(bytes: &[u8]) -> usize {
+        let scratch = TempDir::new().unwrap();
+        let path = scratch.path().join(JOURNAL_FILE);
+        std::fs::write(&path, bytes).unwrap();
+        journal_facts(&path).unwrap().entries
+    }
+
+    #[tokio::test]
+    async fn open_refuses_a_journal_version_it_cannot_replay_and_leaves_it_untouched() {
+        // #10695: name the version, never rewrite the journal, and never
+        // demote the world from the state the host file records.
+        let root = data_root_with(&["future", "fine"]);
+        let future = crate::world::MAX_JOURNAL_VERSION + 1;
+        let created = serde_json::to_string(&crate::world::JournalEntry::Created {
+            world_id: "future".to_owned(),
+            version: future,
+        })
+        .unwrap();
+        let journal = root.path().join("future").join(JOURNAL_FILE);
+        std::fs::write(&journal, format!("{created}\n")).unwrap();
+        let before = std::fs::read(&journal).unwrap();
+        HostFile::rebuild(root.path())
+            .unwrap()
+            .save(root.path())
+            .unwrap();
+        record_live_as_after_a_crash(root.path(), "future");
+
+        let error = Supervisor::open(root.path()).await.unwrap_err();
+        let message = format!("{error:#}");
+        assert!(message.contains("future"), "{message}");
+        assert!(message.contains(&future.to_string()), "{message}");
+        assert_eq!(std::fs::read(&journal).unwrap(), before);
+        let file = HostFile::load(root.path()).unwrap();
+        assert_eq!(file.worlds["future"].state, LifecycleState::Live);
+        assert_eq!(file.worlds["fine"].state, LifecycleState::Asleep);
+    }
+
     #[test]
     fn host_lifecycle_reopens_what_it_saved() {
         let root = data_root_with(&["w"]);
