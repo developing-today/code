@@ -3,14 +3,18 @@
 //! Parsing is strict and finishes before any store access: an unknown flag, a
 //! missing `--namespace` or a malformed value is a usage error (exit 2) and
 //! touches nothing. Typed store refusals print `error: <code>: <message>` and
-//! exit 1. `--global` is refused as `unimplemented_central_in_phase1`
-//! (exit 69) because the central plane is not built yet.
+//! exit 1. `--global` and `sync` reach the central plane (code#13316): when
+//! it is not configured or cannot be reached they exit 69 before the local
+//! store is opened. `--force-blob` is refused as `pending_needs_phase3`
+//! (exit 69) because the blob plane arrives in Phase 3.
 
 use std::io::{Read, Write};
 
 use std::path::PathBuf;
 
 use crate::backup::{self, BackupError, Manifest};
+use crate::central::{CentralError, Op, Pipeline};
+use crate::sync::{self, GlobalError};
 use crate::{Identity, KvError, LocalStore};
 
 pub const EXIT_OK: i32 = 0;
@@ -30,6 +34,8 @@ verbs:
   delete         --namespace NS KEY            write a masking tombstone
   clear-override --namespace NS KEY            drop the local overlay row
   revert         --namespace NS KEY --to V     append a copy of version V
+  sync                                         pull namespace definitions, then
+                                               sweep this session's intents
 
 host store (operators):
   snapshot       DEST                          write a one-file snapshot to DEST
@@ -43,19 +49,27 @@ Keys are scoped to this session's launch identity (owner, context and
 session). With no trusted launch-identity record every verb but help
 refuses with identity_unavailable (exit 69).
 
---global (central store) and --force-blob (blob placement) belong to the
-central plane, which is not built yet: both are refused with
-unimplemented_central_in_phase1 (exit 69).
+--global pins get, set, list and delete to the central store: it reads
+the authoritative head (no cache) and writes by compare-and-swap against
+the head it read, or against --expect VERSION. A moved head is a typed
+conflict (exit 1) whose proposed value central keeps. The central store
+is FLEET_KV_URL with a bearer token in the file FLEET_KV_TOKEN_FILE;
+without them --global and sync exit 69 with central_not_configured.
 
-Exit codes: 0 ok, 1 typed refusal (malformed_key, not_found,
-backup_target_exists, not_a_snapshot, ...),
+After the first sync this host knows which namespaces exist: any other
+namespace is refused with unknown_namespace. --force-blob (blob placement)
+arrives in Phase 3 and is refused with pending_needs_phase3 (exit 69).
+
+Exit codes: 0 ok, 1 typed refusal (malformed_key, not_found, conflict,
+unknown_namespace, backup_target_exists, not_a_snapshot, ...),
 2 usage error, 69 unavailable.
 ";
 
-const GET_USAGE: &str = "usage: fleet kv get --namespace NS KEY\n\nPrint the value's bytes exactly. A missing or masked key exits 1 with not_found.\n";
-const SET_USAGE: &str = "usage: fleet kv set --namespace NS KEY (VALUE | --stdin)\n\nStore bytes as a new local version and queue it for the sweep. Prints the version.\n";
-const LIST_USAGE: &str = "usage: fleet kv list --namespace NS [--include-tombstones]\n\nOne line per key: KEY<TAB>VERSION<TAB>ORIGIN (local or masked).\n";
-const DELETE_USAGE: &str = "usage: fleet kv delete --namespace NS KEY\n\nWrite a masking tombstone: the key reads absent here and sweeps as a mask.\n";
+const GET_USAGE: &str = "usage: fleet kv get [--global] --namespace NS KEY\n\nPrint the value's bytes exactly. A missing or masked key exits 1 with not_found.\n--global reads the authoritative central head instead of this host's overlay.\n";
+const SET_USAGE: &str = "usage: fleet kv set [--global [--expect VERSION]] --namespace NS KEY (VALUE | --stdin)\n\nStore bytes as a new local version and queue it for the sweep. Prints the version.\n--global writes central directly by compare-and-swap; --expect VERSION (0 for\nabsent) fails with conflict unless central is still at VERSION.\n";
+const LIST_USAGE: &str = "usage: fleet kv list [--global] --namespace NS [--include-tombstones]\n\nOne line per key: KEY<TAB>VERSION<TAB>ORIGIN (local, masked or central).\n";
+const DELETE_USAGE: &str = "usage: fleet kv delete [--global [--expect VERSION]] --namespace NS KEY\n\nWrite a masking tombstone: the key reads absent here and sweeps as a mask.\n--global writes the tombstone to central directly by compare-and-swap.\n";
+const SYNC_USAGE: &str = "usage: fleet kv sync\n\nPull this host's namespace definitions from central, then sweep this session's\npending intents into central by compare-and-swap. Prints a summary line, then\none line per conflict or waiting key.\n";
 const CLEAR_USAGE: &str = "usage: fleet kv clear-override --namespace NS KEY\n\nDrop the local overlay row, advance the key's fence and cancel unsent sweep\nintents. History is kept. Busy for over 5 s: clear_busy_try_again.\n";
 const SNAPSHOT_USAGE: &str = "usage: fleet kv snapshot DEST\n\nWrite a consistent one-file snapshot of this host's whole store (WAL included)\nto DEST, with a manifest row inside it. Never overwrites DEST. Prints the manifest.\n";
 const RESTORE_USAGE: &str = "usage: fleet kv restore SNAPSHOT\n\nRestore SNAPSHOT as this host's store after checking its manifest, schema\nversion and integrity. Refuses when a store (or its WAL) already exists.\nPrints the manifest.\n";
@@ -69,6 +83,7 @@ enum Verb {
     Delete,
     ClearOverride,
     Revert,
+    Sync,
     Snapshot,
     Restore,
 }
@@ -82,6 +97,7 @@ impl Verb {
             "delete" => Self::Delete,
             "clear-override" => Self::ClearOverride,
             "revert" => Self::Revert,
+            "sync" => Self::Sync,
             "snapshot" => Self::Snapshot,
             "restore" => Self::Restore,
             _ => return None,
@@ -96,14 +112,37 @@ impl Verb {
             Self::Delete => DELETE_USAGE,
             Self::ClearOverride => CLEAR_USAGE,
             Self::Revert => REVERT_USAGE,
+            Self::Sync => SYNC_USAGE,
             Self::Snapshot => SNAPSHOT_USAGE,
             Self::Restore => RESTORE_USAGE,
         }
     }
 
+    /// Verbs that `--global` can pin to the central store.
+    fn takes_global(self) -> bool {
+        matches!(self, Self::Get | Self::Set | Self::List | Self::Delete)
+    }
+
     /// Host-store verbs act on the whole store, not on one namespace.
     fn is_host(self) -> bool {
         matches!(self, Self::Snapshot | Self::Restore)
+    }
+}
+
+/// A `--global` write's compare-and-swap base: the head it reads, or the
+/// version the caller names with `--expect`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Expect {
+    CurrentHead,
+    Version(u64),
+}
+
+impl Expect {
+    fn version(self) -> Option<u64> {
+        match self {
+            Self::CurrentHead => None,
+            Self::Version(version) => Some(version),
+        }
     }
 }
 
@@ -119,20 +158,25 @@ enum Command {
     Get {
         namespace: String,
         key: String,
+        global: bool,
     },
     Set {
         namespace: String,
         key: String,
         value: ValueSource,
+        global: Option<Expect>,
     },
     List {
         namespace: String,
         include_tombstones: bool,
+        global: bool,
     },
     Delete {
         namespace: String,
         key: String,
+        global: Option<Expect>,
     },
+    Sync,
     ClearOverride {
         namespace: String,
         key: String,
@@ -160,9 +204,20 @@ impl Command {
             Self::Delete { .. } => "delete",
             Self::ClearOverride { .. } => "clear-override",
             Self::Revert { .. } => "revert",
+            Self::Sync => "sync",
             Self::Snapshot { .. } => "snapshot",
             Self::Restore { .. } => "restore",
         })
+    }
+
+    /// Commands that need the central plane before anything else.
+    fn needs_central(&self) -> bool {
+        match self {
+            Self::Get { global, .. } | Self::List { global, .. } => *global,
+            Self::Set { global, .. } | Self::Delete { global, .. } => global.is_some(),
+            Self::Sync => true,
+            _ => false,
+        }
     }
 }
 
@@ -183,19 +238,29 @@ fn parse(args: &[String]) -> Result<Command, ParseError> {
     if matches!(first.as_str(), "-h" | "--help" | "help") {
         return Ok(Command::Help(USAGE));
     }
-    for flag in ["--global", "--force-blob"] {
-        if args.iter().any(|arg| arg == flag) {
-            return Err(ParseError::Central(flag));
-        }
+    if args.iter().any(|arg| arg == "--force-blob") {
+        return Err(ParseError::Central("--force-blob"));
     }
+    // `--global` may come before the verb, as in `fleet kv --global get`.
+    let (global, first) = if first == "--global" {
+        match args.get(1) {
+            Some(verb) => (true, verb),
+            None => return Err(usage("--global needs a verb")),
+        }
+    } else {
+        (false, first)
+    };
+    let skip = if global { 2 } else { 1 };
     let verb = Verb::parse(first).ok_or_else(|| usage(format!("unknown verb `{first}`")))?;
 
     let mut namespace: Option<String> = None;
     let mut include_tombstones = false;
     let mut stdin = false;
     let mut to: Option<u64> = None;
+    let mut global = global;
+    let mut expect: Option<u64> = None;
     let mut positionals: Vec<String> = Vec::new();
-    let mut rest = args[1..].iter();
+    let mut rest = args[skip..].iter();
     let mut only_positionals = false;
     while let Some(arg) = rest.next() {
         if only_positionals || !arg.starts_with("--") || arg == "-" {
@@ -228,6 +293,14 @@ fn parse(args: &[String]) -> Result<Command, ParseError> {
                 include_tombstones = true;
             }
             "--stdin" if verb == Verb::Set && inline.is_none() => stdin = true,
+            "--global" if verb.takes_global() && inline.is_none() => global = true,
+            "--expect" if matches!(verb, Verb::Set | Verb::Delete) => {
+                let raw = take_value("--expect")?;
+                let version = raw
+                    .parse::<u64>()
+                    .map_err(|_| usage(format!("--expect needs a version number, got `{raw}`")))?;
+                expect = Some(version);
+            }
             "--to" if verb == Verb::Revert => {
                 let raw = take_value("--to")?;
                 let version = raw
@@ -241,6 +314,15 @@ fn parse(args: &[String]) -> Result<Command, ParseError> {
         }
     }
 
+    if global && !verb.takes_global() {
+        return Err(usage(format!(
+            "--global applies to get, set, list and delete, not `kv {first}`"
+        )));
+    }
+    if expect.is_some() && !global {
+        return Err(usage("--expect VERSION needs --global"));
+    }
+    let write_scope = global.then(|| expect.map_or(Expect::CurrentHead, Expect::Version));
     if verb == Verb::Revert && namespace.is_none() && positionals.len() == 2 {
         namespace = Some(positionals.remove(0));
     }
@@ -268,6 +350,15 @@ fn parse(args: &[String]) -> Result<Command, ParseError> {
             Command::Restore { snapshot: path }
         });
     }
+    if verb == Verb::Sync {
+        if namespace.is_some() {
+            return Err(usage(
+                "`kv sync` acts on every namespace and takes no --namespace",
+            ));
+        }
+        expect(0)?;
+        return Ok(Command::Sync);
+    }
     let namespace = namespace.ok_or_else(|| usage("--namespace NS is required"))?;
     Ok(match verb {
         Verb::Get => {
@@ -275,6 +366,7 @@ fn parse(args: &[String]) -> Result<Command, ParseError> {
             Command::Get {
                 namespace,
                 key: positionals.remove(0),
+                global,
             }
         }
         Verb::Set => {
@@ -284,6 +376,7 @@ fn parse(args: &[String]) -> Result<Command, ParseError> {
                     namespace,
                     key: positionals.remove(0),
                     value: ValueSource::Stdin,
+                    global: write_scope,
                 }
             } else {
                 expect(2)?;
@@ -292,6 +385,7 @@ fn parse(args: &[String]) -> Result<Command, ParseError> {
                     namespace,
                     key: positionals.remove(0),
                     value: ValueSource::Inline(value),
+                    global: write_scope,
                 }
             }
         }
@@ -300,6 +394,7 @@ fn parse(args: &[String]) -> Result<Command, ParseError> {
             Command::List {
                 namespace,
                 include_tombstones,
+                global,
             }
         }
         Verb::Delete => {
@@ -307,6 +402,7 @@ fn parse(args: &[String]) -> Result<Command, ParseError> {
             Command::Delete {
                 namespace,
                 key: positionals.remove(0),
+                global: write_scope,
             }
         }
         Verb::ClearOverride => {
@@ -325,7 +421,9 @@ fn parse(args: &[String]) -> Result<Command, ParseError> {
                 to,
             }
         }
-        Verb::Snapshot | Verb::Restore => unreachable!("host verbs returned above"),
+        Verb::Sync | Verb::Snapshot | Verb::Restore => {
+            unreachable!("sync and host verbs returned above")
+        }
     })
 }
 
@@ -365,7 +463,7 @@ fn report_parse_error(error: ParseError, err: &mut dyn Write) -> i32 {
         ParseError::Central(flag) => {
             let _ = writeln!(
                 err,
-                "error: unimplemented_central_in_phase1: {flag} needs the central store, which is not built yet"
+                "error: pending_needs_phase3: {flag} needs the blob plane, which arrives in Phase 3"
             );
             EXIT_UNAVAILABLE
         }
@@ -373,6 +471,53 @@ fn report_parse_error(error: ParseError, err: &mut dyn Write) -> i32 {
             let _ = writeln!(err, "error: usage: {message}\n\n{USAGE}");
             EXIT_USAGE
         }
+    }
+}
+
+/// What opening the central plane yields.
+pub type CentralOpened = Result<Box<dyn Pipeline>, CentralError>;
+
+/// The central plane the environment configures: `FLEET_KV_URL` with the
+/// bearer token in the file `FLEET_KV_TOKEN_FILE`, or
+/// `central_not_configured`.
+pub fn central_from_env() -> CentralOpened {
+    #[cfg(feature = "http")]
+    {
+        match crate::http::HttpPipeline::from_env()? {
+            Some(pipeline) => Ok(Box::new(pipeline)),
+            None => Err(CentralError::NotConfigured(format!(
+                "set {} and {} to reach the central store",
+                crate::http::URL_VAR,
+                crate::http::TOKEN_FILE_VAR
+            ))),
+        }
+    }
+    #[cfg(not(feature = "http"))]
+    {
+        Err(CentralError::NotConfigured(
+            "this build has no central client (fleet-kv `http` feature)".into(),
+        ))
+    }
+}
+
+fn central_exit(error: &CentralError) -> i32 {
+    match error {
+        CentralError::Unavailable(_) | CentralError::NotConfigured(_) => EXIT_UNAVAILABLE,
+        _ => EXIT_REFUSED,
+    }
+}
+
+fn refuse_central(err: &mut dyn Write, error: &CentralError) -> i32 {
+    let _ = writeln!(err, "error: {}: {error}", error.code());
+    central_exit(error)
+}
+
+fn refuse_global(err: &mut dyn Write, error: &GlobalError) -> i32 {
+    let _ = writeln!(err, "error: {}: {error}", error.code());
+    if error.is_unavailable() {
+        EXIT_UNAVAILABLE
+    } else {
+        EXIT_REFUSED
     }
 }
 
@@ -411,6 +556,29 @@ pub fn run_opening(
     out: &mut dyn Write,
     err: &mut dyn Write,
 ) -> i32 {
+    run_opening_with_central(
+        args,
+        open,
+        restore_target,
+        &central_from_env,
+        stdin,
+        out,
+        err,
+    )
+}
+
+/// [`run_opening`] with an explicit central plane. A command that needs
+/// central opens it first, so an unconfigured or unreachable central plane
+/// exits 69 before the local store is opened or created.
+pub fn run_opening_with_central(
+    args: &[String],
+    open: impl FnOnce() -> Opened,
+    restore_target: impl FnOnce() -> RestoreTarget,
+    central: &dyn Fn() -> CentralOpened,
+    stdin: &mut dyn Read,
+    out: &mut dyn Write,
+    err: &mut dyn Write,
+) -> i32 {
     let command = match parse(args) {
         Ok(command) => command,
         Err(error) => return report_parse_error(error, err),
@@ -432,6 +600,14 @@ pub fn run_opening(
             Err(error) => refuse_backup(err, &error),
         };
     }
+    let opened_central = if command.needs_central() {
+        match central() {
+            Ok(primary) => Some(primary),
+            Err(error) => return refuse_central(err, &error),
+        }
+    } else {
+        None
+    };
     let (store, launch) = match open() {
         Ok(opened) => opened,
         Err((code, message)) => {
@@ -443,6 +619,7 @@ pub fn run_opening(
         command,
         &store,
         &launch.identity(),
+        opened_central.as_deref(),
         stdin,
         out,
         err,
@@ -459,10 +636,25 @@ pub fn run(
     out: &mut dyn Write,
     err: &mut dyn Write,
 ) -> i32 {
+    run_with_central(args, store, identity, &central_from_env, stdin, out, err)
+}
+
+/// [`run`] with an explicit central plane, opened only when the command
+/// needs it.
+pub fn run_with_central(
+    args: &[String],
+    store: &LocalStore,
+    identity: &Identity<'_>,
+    central: &dyn Fn() -> CentralOpened,
+    stdin: &mut dyn Read,
+    out: &mut dyn Write,
+    err: &mut dyn Write,
+) -> i32 {
     run_with_context(
         args,
         store,
         identity,
+        central,
         stdin,
         out,
         err,
@@ -470,19 +662,39 @@ pub fn run(
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run_with_context(
     args: &[String],
     store: &LocalStore,
     identity: &Identity<'_>,
+    central: &dyn Fn() -> CentralOpened,
     stdin: &mut dyn Read,
     out: &mut dyn Write,
     err: &mut dyn Write,
     ctx: &fleet_config::ctx::Ctx,
 ) -> i32 {
-    match parse(args) {
-        Ok(command) => execute(command, store, identity, stdin, out, err, ctx),
-        Err(error) => report_parse_error(error, err),
-    }
+    let command = match parse(args) {
+        Ok(command) => command,
+        Err(error) => return report_parse_error(error, err),
+    };
+    let opened = if command.needs_central() {
+        match central() {
+            Ok(primary) => Some(primary),
+            Err(error) => return refuse_central(err, &error),
+        }
+    } else {
+        None
+    };
+    execute(
+        command,
+        store,
+        identity,
+        opened.as_deref(),
+        stdin,
+        out,
+        err,
+        ctx,
+    )
 }
 
 fn finish(written: std::io::Result<()>, err: &mut dyn Write) -> i32 {
@@ -495,33 +707,203 @@ fn finish(written: std::io::Result<()>, err: &mut dyn Write) -> i32 {
     }
 }
 
+/// Sleeps between central retries.
+fn sleep(delay: std::time::Duration) {
+    std::thread::sleep(delay);
+}
+
+/// The namespace a local verb names, once the host's cache allows it.
+fn local_namespace(command: &Command) -> Option<&str> {
+    match command {
+        Command::Get { namespace, .. }
+        | Command::Set { namespace, .. }
+        | Command::List { namespace, .. }
+        | Command::Delete { namespace, .. }
+        | Command::Revert { namespace, .. } => Some(namespace.as_str()),
+        _ => None,
+    }
+}
+
+/// The `--global` verbs and `sync`, against an opened central plane.
+fn execute_central(
+    command: Command,
+    store: &LocalStore,
+    identity: &Identity<'_>,
+    primary: &dyn Pipeline,
+    stdin: &mut dyn Read,
+    out: &mut dyn Write,
+    err: &mut dyn Write,
+) -> i32 {
+    let written = match command {
+        Command::Get { namespace, key, .. } => {
+            match sync::global_get(primary, identity, &namespace, &key, out) {
+                Ok(_) => Ok(()),
+                Err(error) => return refuse_global(err, &error),
+            }
+        }
+        Command::List {
+            namespace,
+            include_tombstones,
+            ..
+        } => match sync::global_list(primary, identity, &namespace, include_tombstones) {
+            Ok(entries) => entries.iter().try_for_each(|entry| {
+                let origin = if entry.live { "central" } else { "masked" };
+                writeln!(out, "{}\t{}\t{origin}", entry.key, entry.version)
+            }),
+            Err(error) => return refuse_global(err, &error),
+        },
+        Command::Set {
+            namespace,
+            key,
+            value,
+            global,
+        } => {
+            let value = match value {
+                ValueSource::Inline(value) => value.into_bytes(),
+                // Bounded by the largest inline value central can hold; the
+                // namespace's own threshold is checked again before the CAS.
+                ValueSource::Stdin => {
+                    match sync::read_bounded(stdin, crate::working::INLINE_LIMIT as u64) {
+                        Ok(value) => value,
+                        Err(error) => return refuse_global(err, &error),
+                    }
+                }
+            };
+            let expect = global.and_then(Expect::version);
+            match sync::global_write(
+                store,
+                primary,
+                identity,
+                &namespace,
+                &key,
+                Op::Set(value),
+                expect,
+                &mut sleep,
+            ) {
+                Ok(version) => writeln!(out, "{version}"),
+                Err(error) => return refuse_global(err, &error),
+            }
+        }
+        Command::Delete {
+            namespace,
+            key,
+            global,
+        } => {
+            let expect = global.and_then(Expect::version);
+            match sync::global_write(
+                store,
+                primary,
+                identity,
+                &namespace,
+                &key,
+                Op::Tombstone,
+                expect,
+                &mut sleep,
+            ) {
+                Ok(version) => writeln!(out, "{version}"),
+                Err(error) => return refuse_global(err, &error),
+            }
+        }
+        Command::Sync => {
+            let report =
+                match sync::sync(store, identity, primary, identity.owner_user_id, &mut sleep) {
+                    Ok(report) => report,
+                    Err(error) => {
+                        let _ = writeln!(err, "error: {}: {error}", error.code());
+                        return match &error {
+                            crate::sweep::SweepError::Central(central) => central_exit(central),
+                            crate::sweep::SweepError::Local(_) => EXIT_REFUSED,
+                        };
+                    }
+                };
+            write_sync_report(out, &report)
+        }
+        _ => {
+            let _ = writeln!(
+                err,
+                "error: usage: this verb does not use the central store"
+            );
+            return EXIT_USAGE;
+        }
+    };
+    finish(written, err)
+}
+
+fn write_sync_report(out: &mut dyn Write, report: &sync::SyncReport) -> std::io::Result<()> {
+    writeln!(
+        out,
+        "namespaces={} committed={} conflicts={} waiting={}",
+        report.namespaces,
+        report.sweep.committed(),
+        report.sweep.conflicts(),
+        report.sweep.waiting.len()
+    )?;
+    for swept in &report.sweep.swept {
+        if let crate::central::Outcome::Conflict {
+            expected, actual, ..
+        } = swept.outcome
+        {
+            writeln!(
+                out,
+                "conflict\t{}\t{}\texpected={expected}\tactual={actual}",
+                swept.namespace, swept.key
+            )?;
+        }
+    }
+    for waiting in &report.sweep.waiting {
+        writeln!(
+            out,
+            "waiting\t{}\t{}\t{}",
+            waiting.namespace, waiting.key, waiting.reason
+        )?;
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
 fn execute(
     command: Command,
     store: &LocalStore,
     identity: &Identity<'_>,
+    central: Option<&dyn Pipeline>,
     stdin: &mut dyn Read,
     out: &mut dyn Write,
     err: &mut dyn Write,
     ctx: &fleet_config::ctx::Ctx,
 ) -> i32 {
     log_operation(&command, err, ctx);
+    if command.needs_central() {
+        let Some(primary) = central else {
+            let error = CentralError::NotConfigured("the central store was not opened".into());
+            return refuse_central(err, &error);
+        };
+        return execute_central(command, store, identity, primary, stdin, out, err);
+    }
+    if let Some(namespace) = local_namespace(&command)
+        && let Err(error) = sync::require_known(store, namespace)
+    {
+        return refuse(err, &error);
+    }
     let written = match command {
         Command::Help(text) => out.write_all(text.as_bytes()),
-        Command::Get { namespace, key } => match store.get_to(identity, &namespace, &key, out) {
-            Ok(true) => Ok(()),
-            Ok(false) => {
-                let _ = writeln!(
-                    err,
-                    "error: not_found: no live value for `{key}` in `{namespace}`"
-                );
-                return EXIT_REFUSED;
+        Command::Get { namespace, key, .. } => {
+            match store.get_to(identity, &namespace, &key, out) {
+                Ok(true) => Ok(()),
+                Ok(false) => {
+                    let _ = writeln!(
+                        err,
+                        "error: not_found: no live value for `{key}` in `{namespace}`"
+                    );
+                    return EXIT_REFUSED;
+                }
+                Err(error) => return refuse(err, &error),
             }
-            Err(error) => return refuse(err, &error),
-        },
+        }
         Command::Set {
             namespace,
             key,
             value,
+            ..
         } => {
             let stored = match value {
                 ValueSource::Inline(value) => {
@@ -538,6 +920,7 @@ fn execute(
         Command::List {
             namespace,
             include_tombstones,
+            ..
         } => match store.list(identity, &namespace, include_tombstones) {
             Ok(entries) => entries.iter().try_for_each(|entry| {
                 writeln!(
@@ -550,7 +933,7 @@ fn execute(
             }),
             Err(error) => return refuse(err, &error),
         },
-        Command::Delete { namespace, key } => match store.delete(identity, &namespace, &key) {
+        Command::Delete { namespace, key, .. } => match store.delete(identity, &namespace, &key) {
             Ok(version) => writeln!(out, "{version}"),
             Err(error) => return refuse(err, &error),
         },
@@ -566,6 +949,10 @@ fn execute(
                 Ok(version) => writeln!(out, "{version}"),
                 Err(error) => return refuse(err, &error),
             }
+        }
+        Command::Sync => {
+            let _ = writeln!(err, "error: usage: `kv sync` needs the central store");
+            return EXIT_USAGE;
         }
         Command::Snapshot { dest } => match store.snapshot(&dest) {
             Ok(manifest) => write_manifest(out, &manifest),
@@ -622,6 +1009,11 @@ mod tests {
             &args(words),
             store,
             &identity,
+            &|| {
+                Err(CentralError::NotConfigured(
+                    "no central in this test".into(),
+                ))
+            },
             &mut input,
             &mut out,
             &mut err,
@@ -737,26 +1129,265 @@ mod tests {
     }
 
     #[test]
-    fn global_is_refused_before_any_store_access() {
+    fn global_without_a_central_store_is_unavailable_and_writes_nothing() {
         let store = LocalStore::in_memory().expect("store");
         for words in [
             &["get", "--global", "--namespace", "notes", "k"][..],
             &["set", "--namespace", "notes", "--global", "k", "v"][..],
             &["--global", "list", "--namespace", "notes"][..],
-            &["set", "--namespace", "notes", "--force-blob", "k", "v"][..],
+            &[
+                "delete",
+                "--global",
+                "--expect",
+                "3",
+                "--namespace",
+                "notes",
+                "k",
+            ][..],
+            &["sync"][..],
         ] {
             let outcome = invoke(&store, words, b"");
-            assert_eq!(outcome.code, EXIT_UNAVAILABLE);
+            assert_eq!(outcome.code, EXIT_UNAVAILABLE, "{words:?}");
             assert!(
-                outcome
-                    .err
-                    .starts_with("error: unimplemented_central_in_phase1"),
+                outcome.err.starts_with("error: central_not_configured"),
                 "{}",
                 outcome.err
             );
         }
+        let blob = invoke(
+            &store,
+            &["set", "--namespace", "notes", "--force-blob", "k", "v"],
+            b"",
+        );
+        assert_eq!(blob.code, EXIT_UNAVAILABLE);
+        assert!(
+            blob.err.starts_with("error: pending_needs_phase3"),
+            "{}",
+            blob.err
+        );
         let list = invoke(&store, &["list", "--namespace", "notes"], b"");
         assert_eq!(text(&list), "");
+    }
+
+    struct Central {
+        primary: std::sync::Arc<crate::central::SqlitePrimary>,
+    }
+
+    impl Central {
+        fn new() -> Self {
+            let primary = crate::central::SqlitePrimary::in_memory().expect("primary");
+            crate::central::define_namespace(
+                &primary,
+                &crate::central::Namespace::shared("status", "fleet-status"),
+            )
+            .expect("define");
+            Self {
+                primary: std::sync::Arc::new(primary),
+            }
+        }
+
+        fn invoke(&self, store: &LocalStore, user: &str, words: &[&str], stdin: &[u8]) -> Outcome {
+            let identity = Identity::new(user, "context", "partition");
+            let mut input = stdin;
+            let mut out = Vec::new();
+            let mut err = Vec::new();
+            let shared = SharedPrimary(self.primary.clone());
+            let code = run_with_context(
+                &args(words),
+                store,
+                &identity,
+                &|| Ok(Box::new(shared.clone()) as Box<dyn Pipeline>),
+                &mut input,
+                &mut out,
+                &mut err,
+                &fleet_config::ctx::Ctx::from_pairs(std::iter::empty::<(&str, &str)>()),
+            );
+            Outcome {
+                code,
+                out,
+                err: String::from_utf8(err).expect("utf8 stderr"),
+            }
+        }
+    }
+
+    /// A shared primary that the CLI can own as a boxed pipeline.
+    #[derive(Clone)]
+    struct SharedPrimary(std::sync::Arc<crate::central::SqlitePrimary>);
+
+    impl Pipeline for SharedPrimary {
+        fn transaction(
+            &self,
+            statements: &[crate::central::Statement],
+        ) -> crate::central::Result<Vec<crate::central::Rows>> {
+            self.0.transaction(statements)
+        }
+    }
+
+    #[test]
+    fn central_cli_global_round_trip_and_expect_conflict() {
+        let central = Central::new();
+        let store = LocalStore::in_memory().expect("store");
+        let set = central.invoke(
+            &store,
+            "u1",
+            &["--global", "set", "--namespace", "status", "claim", "mine"],
+            b"",
+        );
+        assert_eq!(
+            (set.code, text(&set)),
+            (EXIT_OK, "1\n".into()),
+            "{}",
+            set.err
+        );
+        let get = central.invoke(
+            &store,
+            "u2",
+            &["get", "--global", "--namespace", "status", "claim"],
+            b"",
+        );
+        assert_eq!((get.code, get.out), (EXIT_OK, b"mine".to_vec()));
+        // The global write left no local overlay row.
+        let local = invoke(&store, &["get", "--namespace", "status", "claim"], b"");
+        assert_eq!(local.code, EXIT_REFUSED);
+        let stale = central.invoke(
+            &store,
+            "u2",
+            &[
+                "set",
+                "--global",
+                "--expect",
+                "0",
+                "--namespace",
+                "status",
+                "claim",
+                "theirs",
+            ],
+            b"",
+        );
+        assert_eq!(stale.code, EXIT_REFUSED);
+        assert!(stale.err.starts_with("error: conflict:"), "{}", stale.err);
+        let listed = central.invoke(
+            &store,
+            "u1",
+            &["list", "--global", "--namespace", "status"],
+            b"",
+        );
+        assert_eq!(text(&listed), "claim\t1\tcentral\n");
+        let deleted = central.invoke(
+            &store,
+            "u1",
+            &[
+                "delete",
+                "--global",
+                "--expect",
+                "1",
+                "--namespace",
+                "status",
+                "claim",
+            ],
+            b"",
+        );
+        assert_eq!(text(&deleted), "2\n", "{}", deleted.err);
+        let masked = central.invoke(
+            &store,
+            "u1",
+            &[
+                "list",
+                "--global",
+                "--include-tombstones",
+                "--namespace",
+                "status",
+            ],
+            b"",
+        );
+        assert_eq!(text(&masked), "claim\t2\tmasked\n");
+        let unknown = central.invoke(
+            &store,
+            "u1",
+            &["get", "--global", "--namespace", "nowhere", "k"],
+            b"",
+        );
+        assert_eq!(unknown.code, EXIT_REFUSED);
+        assert!(
+            unknown.err.starts_with("error: unknown_namespace:"),
+            "{}",
+            unknown.err
+        );
+    }
+
+    #[test]
+    fn central_cli_sync_pulls_sweeps_and_then_refuses_unknown_namespaces() {
+        let central = Central::new();
+        let store = LocalStore::in_memory().expect("store");
+        // Before the first sync any valid namespace works locally.
+        for words in [
+            &["set", "--namespace", "status", "agent", "working"][..],
+            &["set", "--namespace", "elsewhere", "agent", "here"][..],
+        ] {
+            assert_eq!(invoke(&store, words, b"").code, EXIT_OK);
+        }
+        let synced = central.invoke(&store, "owner", &["sync"], b"");
+        assert_eq!(synced.code, EXIT_OK, "{}", synced.err);
+        assert_eq!(
+            text(&synced),
+            "namespaces=1 committed=1 conflicts=0 waiting=1\nwaiting\telsewhere\tagent\tunknown_namespace\n"
+        );
+        let global = central.invoke(
+            &store,
+            "owner",
+            &["get", "--global", "--namespace", "status", "agent"],
+            b"",
+        );
+        assert_eq!(global.out, b"working");
+        // After the pull, an undefined namespace is a typed refusal locally.
+        let refused = invoke(&store, &["set", "--namespace", "elsewhere", "k", "v"], b"");
+        assert_eq!(refused.code, EXIT_REFUSED);
+        assert!(
+            refused.err.starts_with("error: unknown_namespace:"),
+            "{}",
+            refused.err
+        );
+        assert_eq!(
+            invoke(&store, &["set", "--namespace", "status", "k", "v"], b"").code,
+            EXIT_OK
+        );
+        // clear-override stays available: it only drops local state.
+        assert_eq!(
+            invoke(
+                &store,
+                &["clear-override", "--namespace", "elsewhere", "agent"],
+                b""
+            )
+            .code,
+            EXIT_OK
+        );
+    }
+
+    #[test]
+    fn global_flags_parse_strictly() {
+        let store = LocalStore::in_memory().expect("store");
+        for words in [
+            &["revert", "--global", "--namespace", "n", "k", "--to", "1"][..],
+            &["--global", "clear-override", "--namespace", "n", "k"][..],
+            &["--global"][..],
+            &["set", "--expect", "1", "--namespace", "n", "k", "v"][..],
+            &[
+                "set",
+                "--global",
+                "--expect",
+                "x",
+                "--namespace",
+                "n",
+                "k",
+                "v",
+            ][..],
+            &["get", "--global", "--expect", "1", "--namespace", "n", "k"][..],
+            &["sync", "--namespace", "n"][..],
+            &["sync", "extra"][..],
+        ] {
+            let outcome = invoke(&store, words, b"");
+            assert_eq!(outcome.code, EXIT_USAGE, "{words:?}: {}", outcome.err);
+        }
     }
 
     #[test]
@@ -871,11 +1502,19 @@ mod tests {
         );
         assert_eq!(
             preflight(
-                &args(&["list", "--global", "--namespace", "n"]),
+                &args(&["set", "--force-blob", "--namespace", "n", "k", "v"]),
                 &mut out,
                 &mut err
             ),
             Some(EXIT_UNAVAILABLE)
+        );
+        assert_eq!(
+            preflight(
+                &args(&["list", "--global", "--namespace", "n"]),
+                &mut out,
+                &mut err
+            ),
+            None
         );
         assert_eq!(
             preflight(&args(&["list", "--namespace", "n"]), &mut out, &mut err),

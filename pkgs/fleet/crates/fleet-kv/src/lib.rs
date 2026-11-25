@@ -20,6 +20,7 @@ pub mod cli;
 pub mod http;
 pub mod launch;
 pub mod sweep;
+pub mod sync;
 pub mod working;
 
 use std::io::{Read, Write};
@@ -29,13 +30,16 @@ use rusqlite::{Connection, ErrorCode, OptionalExtension, Transaction, params};
 
 use crate::working::{INLINE_LIMIT, WorkingError, WorkingRef};
 
-const SCHEMA_VERSION: i64 = 5;
+const SCHEMA_VERSION: i64 = 6;
 const BUSY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
 #[derive(Debug)]
 pub enum KvError {
     MalformedKey,
     MalformedNamespace,
+    /// This host has pulled the central namespace definitions and the
+    /// namespace is not among them.
+    UnknownNamespace(String),
     /// `revert --to` named a version that is not in this tuple's history.
     UnknownVersion,
     /// `revert --to` named a masking tombstone; `delete` is the masking verb.
@@ -58,6 +62,7 @@ impl KvError {
         match self {
             Self::MalformedKey => "malformed_key",
             Self::MalformedNamespace => "malformed_namespace",
+            Self::UnknownNamespace(_) => "unknown_namespace",
             Self::UnknownVersion => "unknown_version",
             Self::RevertTargetIsTombstone => "revert_target_is_tombstone",
             Self::ClearBusyTryAgain => "clear_busy_try_again",
@@ -77,6 +82,10 @@ impl std::fmt::Display for KvError {
             ),
             Self::MalformedNamespace => f.write_str(
                 "namespaces start with a letter, then letters, digits or hyphens, at most 63 bytes",
+            ),
+            Self::UnknownNamespace(namespace) => write!(
+                f,
+                "`{namespace}` is not defined in fleet-kv-central as of this host's last `fleet kv sync`"
             ),
             Self::UnknownVersion => f.write_str("no such version in this key's local history"),
             Self::RevertTargetIsTombstone => {
@@ -574,7 +583,8 @@ fn busy_or_sql(error: rusqlite::Error) -> KvError {
 /// outbox and the generation fence (existing overlay rows become version 1);
 /// version 3 adds the backup manifest and its working-file pins; version 4
 /// lets rows refer to working files; version 5 adds the host incarnation, the
-/// per-key central base and local copies of sweep receipts.
+/// per-key central base and local copies of sweep receipts; version 6 adds
+/// the cached namespace definitions pulled by `fleet kv sync`.
 fn migrate(connection: &Connection) -> Result<(), KvError> {
     let current: i64 = connection
         .pragma_query_value(None, "user_version", |row| row.get(0))
@@ -589,6 +599,7 @@ fn migrate(connection: &Connection) -> Result<(), KvError> {
     backup::migrate_to_v3(&tx)?;
     migrate_to_v4(&tx)?;
     sweep::migrate_to_v5(&tx)?;
+    sync::migrate_to_v6(&tx)?;
     tx.pragma_update(None, "user_version", SCHEMA_VERSION)
         .map_err(sql)?;
     tx.commit().map_err(sql)

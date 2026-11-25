@@ -916,7 +916,7 @@ fn run_domain_with_initializer(
         return fleet_agent::run_shell(&surface.config, args);
     }
     // The kv domain's own parser answers `fleet kv --help`, usage
-    // errors and the --global refusal before session resolution, so
+    // errors and the --force-blob refusal before session resolution, so
     // a malformed command line touches nothing (code#13314) — the
     // same carve-out the actions domain gets above.
     #[cfg(feature = "kv")]
