@@ -110,9 +110,11 @@ test.describe("World surface", () => {
     // does not expose a reliable OS clipboard in the Nix sandbox, while this
     // exercises the same world-view paste handler and WebSocket frame.
     await page.locator("[data-world-view]").evaluate((view) => {
-      const clipboardData = new DataTransfer();
-      clipboardData.setData("text/plain", "++");
-      view.dispatchEvent(new ClipboardEvent("paste", { clipboardData, bubbles: true, cancelable: true }));
+      const paste = new Event("paste", { bubbles: true, cancelable: true });
+      Object.defineProperty(paste, "clipboardData", {
+        value: { getData: (type: string) => (type === "text/plain" ? "++" : "") },
+      });
+      view.dispatchEvent(paste);
     });
     // The pasted "++" is two "+" presses for the fixture: +2.
     await expect(page.locator("[data-world-log]")).toContainText(/input #\d+ from player/, {
