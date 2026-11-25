@@ -251,6 +251,14 @@ tap_text_retry() {
   until tap_text "$1"; do
     tries=$((tries + 1))
     [ "$tries" -ge 5 ] && return 1
+    # A system dialog may be all that covers the app — in run
+    # 45579940065 the launcher's "isn't responding" dialog came back
+    # after the dismissal in wait_text, and every tap look saw only
+    # it. Dismiss it the same way and look again.
+    if screen_text | grep -qF "isn't responding"; then
+      tap_text "Wait" || true
+      sleep 2
+    fi
     sleep 3
   done
 }
