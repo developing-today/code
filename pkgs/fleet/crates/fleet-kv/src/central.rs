@@ -784,6 +784,37 @@ pub fn heads(
         .collect())
 }
 
+/// One key of a scope's listing: its head version and whether it is live.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Listed {
+    pub key: String,
+    pub version: u64,
+    pub live: bool,
+}
+
+/// The heads in one scope of one namespace, by key, without their values.
+pub fn listing(
+    primary: &dyn Pipeline,
+    scope_id: &str,
+    registry_id: &str,
+    namespace: &str,
+) -> Result<Vec<Listed>> {
+    let rows = read(
+        primary,
+        "SELECT key, version, state FROM kv_heads
+         WHERE scope_id = ?1 AND registry_id = ?2 AND namespace = ?3 ORDER BY key",
+        &[text(scope_id), text(registry_id), text(namespace)],
+    )?;
+    Ok(rows
+        .into_iter()
+        .map(|row| Listed {
+            key: string(&row[0]),
+            version: unsigned(&row[1]),
+            live: row[2].as_str() == Some("live"),
+        })
+        .collect())
+}
+
 /// Every committed version of `address`, oldest first.
 pub fn history(primary: &dyn Pipeline, address: &Address) -> Result<Vec<Version>> {
     let rows = read(
