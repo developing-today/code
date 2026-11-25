@@ -58,7 +58,10 @@ test("a Worker said to be deployed from Actions has a workflow that deploys it a
     const workflow = readFileSync(file, "utf8");
     expect([w.name, workflow.includes("workflow_dispatch")]).toEqual([w.name, true]);
     expect([w.name, workflow.includes(w.path)]).toEqual([w.name, true]);
-    expect([w.name, /wrangler|upload-version/.test(workflow)]).toEqual([w.name, true]);
+    // A deploy runs wrangler, uploads a version, or runs the Worker's
+    // flake deploy app (`nix run .#<name>-deploy`), which uploads
+    // through the Cloudflare API itself (message-bridge does).
+    expect([w.name, /wrangler|upload-version|nix run [^\n]*#[\w-]+-deploy/.test(workflow)]).toEqual([w.name, true]);
   }
 });
 
