@@ -430,6 +430,8 @@ impl BrokerSource {
             trip: None,
             transport: None,
             cf_ok: None,
+            // #14188: the caller's FLEET_CTX_* record rides the frame.
+            ctx: fleet_config::ctx::Ctx::from_env().to_frame(),
         };
         let mut stream = self.connect(name)?;
         // Bound the exchange: a session broker (or the path behind
@@ -652,8 +654,11 @@ impl DirectBrokerSource {
             let _ = stream.set_read_timeout(Some(self.retry_policy.attempt_timeout));
             let _ = stream.set_write_timeout(Some(self.retry_policy.attempt_timeout));
         }
+        // #14188: the caller's FLEET_CTX_* record as X-Fleet-Ctx-*
+        // headers (empty when there is no context).
+        let ctx_headers = fleet_config::ctx::Ctx::from_env().header_lines();
         let req = format!(
-            "GET {path} HTTP/1.1\r\nHost: localhost\r\nX-Agent-Token: {}\r\nConnection: close\r\n\r\n",
+            "GET {path} HTTP/1.1\r\nHost: localhost\r\nX-Agent-Token: {}\r\n{ctx_headers}Connection: close\r\n\r\n",
             token.trim()
         );
         stream
@@ -2009,6 +2014,7 @@ mod tests {
             trip: None,
             transport: None,
             cf_ok: None,
+            ctx: None,
         };
         let resp = source
             .exchange(&mut client, &request, "wanted.name")

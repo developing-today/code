@@ -277,6 +277,25 @@ pub(super) fn finish_direct_response(raw: &[u8]) -> Result<Value, String> {
     })
 }
 
+/// #14188: the caller's FLEET_CTX_* record as raw `X-Fleet-Ctx-*`
+/// header lines for the hand-written direct legs (empty when there
+/// is no context — absence is representable, never an error).
+fn ctx_header_lines() -> String {
+    fleet_config::ctx::Ctx::from_env().header_lines()
+}
+
+/// #14188: the same record on a session-proxy frame (`ctx`), which
+/// the proxy forwards as `X-Fleet-Ctx-*` headers. Omitted when empty.
+fn with_ctx_frame(mut frame: Value) -> Value {
+    if let (Some(obj), Some(ctx)) = (
+        frame.as_object_mut(),
+        fleet_config::ctx::Ctx::from_env().to_frame(),
+    ) {
+        obj.insert("ctx".to_string(), json!(ctx));
+    }
+    frame
+}
+
 pub(super) fn direct_tcp_roundtrip(url: &str, path: &str, body: &Value) -> Result<Value, String> {
     let rest = url
         .strip_prefix("http://")
@@ -291,8 +310,9 @@ pub(super) fn direct_tcp_roundtrip(url: &str, path: &str, body: &Value) -> Resul
         .map_err(|e| format!("cannot connect to queue-broker at {hostport}: {e}"))?;
     s.set_read_timeout(Some(Duration::from_secs(300))).ok();
     s.set_write_timeout(Some(Duration::from_secs(60))).ok();
+    let ctx = ctx_header_lines();
     let head = format!(
-        "POST {path} HTTP/1.1\r\nHost: {hostport}\r\nX-Agent-Token: {token}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        "POST {path} HTTP/1.1\r\nHost: {hostport}\r\nX-Agent-Token: {token}\r\n{ctx}Content-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
         payload.len()
     );
     s.write_all(head.as_bytes())
@@ -323,8 +343,9 @@ pub(super) fn direct_uds_roundtrip(
     })?;
     s.set_read_timeout(Some(Duration::from_secs(300))).ok();
     s.set_write_timeout(Some(Duration::from_secs(60))).ok();
+    let ctx = ctx_header_lines();
     let head = format!(
-        "POST {path} HTTP/1.1\r\nHost: localhost\r\nX-Agent-Token: {token}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        "POST {path} HTTP/1.1\r\nHost: localhost\r\nX-Agent-Token: {token}\r\n{ctx}Content-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
         payload.len()
     );
     s.write_all(head.as_bytes())
@@ -355,6 +376,7 @@ pub(super) fn broker_roundtrip(path: &str, body: &Value) -> Result<Value, String
         "port": QUEUE_BROKER_PORT,
         "token_file": format!("{}/tools/queue-broker-token", home()),
     });
+    let payload = with_ctx_frame(payload);
     let data = serde_json::to_vec(&payload).unwrap();
     for attempt in 0..2 {
         match unix_roundtrip(&data) {
@@ -446,8 +468,9 @@ fn bounded_direct_exchange<S: Read + Write>(
     token: &str,
 ) -> Result<Value, String> {
     let payload = serde_json::to_vec(body).unwrap();
+    let ctx = ctx_header_lines();
     let head = format!(
-        "POST {path} HTTP/1.1\r\nHost: {host}\r\nX-Agent-Token: {token}\r\n\
+        "POST {path} HTTP/1.1\r\nHost: {host}\r\nX-Agent-Token: {token}\r\n{ctx}\
          Content-Type: application/json\r\nContent-Length: {}\r\n\
          Connection: close\r\n\r\n",
         payload.len()
@@ -536,6 +559,7 @@ fn bounded_proxy_roundtrip(path: &str, body: &Value, budget: Duration) -> Result
         "port": QUEUE_BROKER_PORT,
         "token_file": format!("{}/tools/queue-broker-token", home()),
     });
+    let payload = with_ctx_frame(payload);
     let data = serde_json::to_vec(&payload).unwrap();
     let mut s = UnixStream::connect(broker_sock())
         .map_err(|e| format!("cannot connect to session proxy: {e}"))?;
