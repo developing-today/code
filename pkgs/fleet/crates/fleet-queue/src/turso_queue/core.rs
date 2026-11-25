@@ -1423,6 +1423,9 @@ pub(crate) fn event(
     kind: &str,
     detail: &Value,
 ) -> Result<(), TErr> {
+    // #14191: rows written while serving a request that carried
+    // context name its id, so the event store joins the trip logs.
+    let detail = &super::ctx_scope::stamp(detail);
     let transition = history_transition(kind).filter(|_| task_id.is_some());
     let Some((from, to)) = transition else {
         t.exec(
@@ -1494,6 +1497,7 @@ pub(crate) fn verb_events_append(t: &TursoBackend, req: &Value) -> Value {
         Ok(v) => v,
         Err(e) => return fail(2, e),
     };
+    let detail = super::ctx_scope::stamp(&detail);
     let work = (|| -> Result<Value, TErr> {
         let now = now_iso();
         let res = t.exec(
