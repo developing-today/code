@@ -3222,7 +3222,7 @@ mod task_resolution_tests {
             &json!({
                 "task_id": done_id, "worker": "resolution-worker",
                 "result": {
-                    "evidence": "https://github.com/developing-today/code/pull/14700",
+                    "evidence": "verified closure note",
                     "disposition": {
                         "checked_at": now, "source": "fleet gh readback",
                         "issue": {"number": 14171, "state": "closed", "closed_at": now},
@@ -3268,6 +3268,21 @@ mod task_resolution_tests {
         );
         assert_eq!(
             events[0]["detail"]["resolution_cleared"]["reason"],
+            "legacy decision"
+        );
+        let history = t
+            .query_objs(
+                "SELECT detail FROM task_history WHERE task_id=? AND kind='revived' ORDER BY id DESC LIMIT 1",
+                &[Arg::Int(id)],
+                &["detail"],
+            )
+            .unwrap();
+        assert_eq!(
+            history[0]["detail"]["resolution_cleared"]["resolution"],
+            "wontfix"
+        );
+        assert_eq!(
+            history[0]["detail"]["resolution_cleared"]["reason"],
             "legacy decision"
         );
     }
