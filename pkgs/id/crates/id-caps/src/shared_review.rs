@@ -71,8 +71,9 @@ pub const SURFACE_ACT_CHARGE: Quota = Quota {
 // Delta summaries
 // ---------------------------------------------------------------------------
 
-/// "What changed since I was last here" over every shared surface in
-/// the world, from the audit log: executed acts by kind, refusals, who
+/// "What changed since I was last here" over every shared surface.
+///
+/// Read from the audit log alone: executed acts by kind, refusals, who
 /// acted and which claims ran out, for the window after `since`
 /// (exclusive; `None` for everything) through `through`. The owner and
 /// a human visitor get the same view.
@@ -619,11 +620,12 @@ impl SurfaceRefusalDigest {
     }
 }
 
-/// The repeated refusal shapes on shared surfaces at or after `since`:
-/// agent, role, act, surface and code, once their count reaches the
-/// role's `digest_every_refusals` (a role with `0`, or one the registry
-/// no longer holds, is never digested). Ordered by count, highest
-/// first.
+/// The repeated refusal shapes on shared surfaces at or after `since`.
+///
+/// A shape is agent, role, act, surface and code; it is digested once
+/// its count reaches the role's `digest_every_refusals` (a role with
+/// `0`, or one the registry no longer holds, is never digested).
+/// Ordered by count, highest first.
 #[must_use]
 pub fn surface_refusal_digests(
     events: &[SurfaceEvent],
@@ -685,7 +687,7 @@ pub fn surface_refusal_digests(
             },
         )
         .collect();
-    digests.sort_by(|a, b| b.count.cmp(&a.count));
+    digests.sort_by_key(|digest| std::cmp::Reverse(digest.count));
     digests
 }
 
@@ -876,6 +878,7 @@ pub fn requesting_agents(resolutions: &[SharedEditResolution]) -> BTreeSet<Strin
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
     use crate::agent_delegation::AgentId;
@@ -1051,7 +1054,7 @@ mod tests {
             .offer(&surfaces, &registry, "owner", &editor, op.clone(), T0 + 1)
             .unwrap();
         assert_eq!(
-            queue.offer(&surfaces, &registry, "owner", &editor, op.clone(), T0 + 1),
+            queue.offer(&surfaces, &registry, "owner", &editor, op, T0 + 1),
             Err(OfferRefusal::AlreadyHeld { request_id: id })
         );
         // An observer's role does not queue.
@@ -1363,17 +1366,14 @@ mod tests {
         assert!(reasons.contains(&(hex(3).as_str(), "no_ledger")));
         // Charging again charges nothing twice.
         assert_eq!(charger.cursor(), surfaces.events().len());
-        assert!(
-            charger
-                .charge(
-                    &surfaces,
-                    queue.resolutions(),
-                    &mut ledgers,
-                    SURFACE_ACT_CHARGE,
-                    T0 + 10
-                )
-                .is_empty()
+        let again = charger.charge(
+            &surfaces,
+            queue.resolutions(),
+            &mut ledgers,
+            SURFACE_ACT_CHARGE,
+            T0 + 10,
         );
+        assert_eq!(again, Vec::new());
         assert_eq!(ledgers[&hex(1)].spend_at(T0 + 10).tool_calls, 3);
     }
 
