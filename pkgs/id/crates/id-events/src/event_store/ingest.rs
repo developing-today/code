@@ -161,7 +161,8 @@ impl EventStore {
                 recover_one(txn, &bodies, &event, &mut recovered, &mut incomplete)?;
             }
         }
-        for row in super::waiting_rows::all(txn)? {
+        let mut row_txn = txn;
+        for row in super::waiting_rows::all(&mut row_txn)? {
             let event = chain::decode(&row.bytes).map_err(|err| corrupt(err.to_string()))?;
             recover_one(txn, &bodies, &event, &mut recovered, &mut incomplete)?;
         }
@@ -4149,7 +4150,12 @@ mod tests {
             deps: vec![events[0].id],
             bytes: events[1].bytes.clone(),
         };
-        store.write(|txn| waiting_rows::put(txn, &stale)).unwrap();
+        store
+            .write(|txn| {
+                let mut txn = txn;
+                waiting_rows::put(&mut txn, &stale)
+            })
+            .unwrap();
         let again = store
             .transact(0, |m| {
                 let again = m.hold(events[1].clone(), vec![events[0].id], false, 0)?;
@@ -4223,7 +4229,12 @@ mod tests {
             deps: vec![Hash::digest(b"a dependency that never arrives")],
             bytes: events[0].bytes.clone(),
         };
-        store.write(|txn| waiting_rows::put(txn, &stale)).unwrap();
+        store
+            .write(|txn| {
+                let mut txn = txn;
+                waiting_rows::put(&mut txn, &stale)
+            })
+            .unwrap();
         drop(store);
         let store = reopen(&dir, WaitingLimits::default(), 0);
         assert!(!store.is_waiting(&events[0].id));
@@ -4280,7 +4291,12 @@ mod tests {
             .waiting
             .restore(author(&y), waits.id, [x0.id], waits, 0)
             .unwrap();
-        store.write(|txn| waiting_rows::put(txn, &row)).unwrap();
+        store
+            .write(|txn| {
+                let mut txn = txn;
+                waiting_rows::put(&mut txn, &row)
+            })
+            .unwrap();
         let err = store.check_invariants().unwrap_err();
         assert!(err.to_string().contains("present"), "{err}");
     }

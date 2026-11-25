@@ -1291,7 +1291,7 @@ impl EventStore {
         let txn = self.db.begin_write()?;
         let (value, changed) = {
             let mut mirror = Mirror {
-                txn: &txn,
+                txn: &mut txn,
                 pool: &mut self.waiting,
                 arrivals: &mut self.next_arrival,
             };
@@ -1318,13 +1318,14 @@ impl EventStore {
     /// disagree, so the rebuild fails as corruption and the pool is left as it was.
     fn reload(&mut self, now_ms: u64) -> Result<(), StoreError> {
         let txn = self.db.begin_write()?;
+        let mut row_txn = &txn;
         let mut pool = WaitingPool::new(self.limits);
         let mut next_arrival = 0;
         let mut dropped = false;
-        for row in waiting_rows::all(&txn)? {
+        for row in waiting_rows::all(&mut row_txn)? {
             next_arrival = next_arrival.max(row.arrival.saturating_add(1));
             if self.limits.is_due(row.arrived_at, now_ms) {
-                waiting_rows::drop_held(&txn, &row.id)?;
+                waiting_rows::drop_held(&mut row_txn, &row.id)?;
                 dropped = true;
                 continue;
             }
@@ -1339,12 +1340,12 @@ impl EventStore {
                                 deps: Vec::new(),
                                 ..row
                             };
-                            waiting_rows::put(&txn, &parked)?;
+                            waiting_rows::put(&mut row_txn, &parked)?;
                             dropped = true;
                         }
                     }
                     Err(WaitRefusal::AuthorFull | WaitRefusal::PoolFull) => {
-                        waiting_rows::drop_held(&txn, &row.id)?;
+                        waiting_rows::drop_held(&mut row_txn, &row.id)?;
                         dropped = true;
                     }
                 }
@@ -1355,7 +1356,7 @@ impl EventStore {
                 // goes rather than holding an already-decided event again. Its device
                 // operation stays: a stored event's operation is kept, only a held one's is
                 // dropped with its row (#8160).
-                waiting_rows::delete(&txn, &row.id)?;
+                waiting_rows::delete(&mut row_txn, &row.id)?;
                 dropped = true;
                 continue;
             }
@@ -1371,11 +1372,11 @@ impl EventStore {
                 Ok(()) => {
                     // Skipped by an arrived, ready, or duplicate guard: the row names an
                     // event the rebuilt pool does not hold, so the row goes with the rebuild.
-                    waiting_rows::drop_held(&txn, &row.id)?;
+                    waiting_rows::drop_held(&mut row_txn, &row.id)?;
                     dropped = true;
                 }
                 Err(WaitRefusal::AuthorFull | WaitRefusal::PoolFull) => {
-                    waiting_rows::drop_held(&txn, &row.id)?;
+                    waiting_rows::drop_held(&mut row_txn, &row.id)?;
                     dropped = true;
                 }
             }

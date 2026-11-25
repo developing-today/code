@@ -4,7 +4,10 @@
 //! own ingest policy: the caller commits the whole batch or aborts it on error.
 //! Reads return owned bytes so no backend's row guards leak into event logic.
 
-use redb::{MultimapTableDefinition, ReadableTable, TableDefinition, WriteTransaction};
+use redb::{
+    MultimapTableDefinition, ReadableMultimapTable, ReadableTable, TableDefinition,
+    WriteTransaction,
+};
 
 use crate::event_types::StoreError;
 use crate::turso::{PipelineTransport, TenantStore, TursoError};
@@ -22,6 +25,20 @@ pub trait RowWrite {
         key: &[u8],
         value: &[u8],
     ) -> Result<(), StoreError>;
+    /// Removes one value from a single-value table, if present.
+    fn remove(&mut self, table: &'static str, key: &[u8]) -> Result<(), StoreError>;
+    /// Removes one value from a multimap set, if present.
+    fn multi_remove(
+        &mut self,
+        table: &'static str,
+        key: &[u8],
+        value: &[u8],
+    ) -> Result<(), StoreError>;
+    /// Reads all values under one multimap key in byte order.
+    fn multi_values(&mut self, table: &'static str, key: &[u8])
+    -> Result<Vec<Vec<u8>>, StoreError>;
+    /// Reads every row of a single-value table in key order.
+    fn scan_all(&mut self, table: &'static str) -> Result<Vec<(Vec<u8>, Vec<u8>)>, StoreError>;
 }
 
 impl<R: RowWrite + ?Sized> RowWrite for &mut R {
@@ -41,9 +58,101 @@ impl<R: RowWrite + ?Sized> RowWrite for &mut R {
     ) -> Result<(), StoreError> {
         (**self).multi_put(table, key, value)
     }
+
+    fn remove(&mut self, table: &'static str, key: &[u8]) -> Result<(), StoreError> {
+        (**self).remove(table, key)
+    }
+
+    fn multi_remove(
+        &mut self,
+        table: &'static str,
+        key: &[u8],
+        value: &[u8],
+    ) -> Result<(), StoreError> {
+        (**self).multi_remove(table, key, value)
+    }
+
+    fn multi_values(
+        &mut self,
+        table: &'static str,
+        key: &[u8],
+    ) -> Result<Vec<Vec<u8>>, StoreError> {
+        (**self).multi_values(table, key)
+    }
+
+    fn scan_all(&mut self, table: &'static str) -> Result<Vec<(Vec<u8>, Vec<u8>)>, StoreError> {
+        (**self).scan_all(table)
+    }
 }
 
 /// Native adapter: redb's transaction already has interior-mutating table opens.
+impl RowWrite for WriteTransaction {
+    fn get(&mut self, table: &'static str, key: &[u8]) -> Result<Option<Vec<u8>>, StoreError> {
+        let table = self.open_table(TableDefinition::<&[u8], &[u8]>::new(table))?;
+        Ok(table.get(key)?.map(|row| row.value().to_vec()))
+    }
+
+    fn put(&mut self, table: &'static str, key: &[u8], value: &[u8]) -> Result<(), StoreError> {
+        self.open_table(TableDefinition::<&[u8], &[u8]>::new(table))?
+            .insert(key, value)?;
+        Ok(())
+    }
+
+    fn multi_put(
+        &mut self,
+        table: &'static str,
+        key: &[u8],
+        value: &[u8],
+    ) -> Result<(), StoreError> {
+        self.open_multimap_table(MultimapTableDefinition::<&[u8], &[u8]>::new(table))?
+            .insert(key, value)?;
+        Ok(())
+    }
+
+    fn remove(&mut self, table: &'static str, key: &[u8]) -> Result<(), StoreError> {
+        self.open_table(TableDefinition::<&[u8], &[u8]>::new(table))?
+            .remove(key)?;
+        Ok(())
+    }
+
+    fn multi_remove(
+        &mut self,
+        table: &'static str,
+        key: &[u8],
+        value: &[u8],
+    ) -> Result<(), StoreError> {
+        self.open_multimap_table(MultimapTableDefinition::<&[u8], &[u8]>::new(table))?
+            .remove(key, value)?;
+        Ok(())
+    }
+
+    fn multi_values(
+        &mut self,
+        table: &'static str,
+        key: &[u8],
+    ) -> Result<Vec<Vec<u8>>, StoreError> {
+        let table =
+            self.open_multimap_table(MultimapTableDefinition::<&[u8], &[u8]>::new(table))?;
+        table
+            .get(key)?
+            .map(|value| value.map(|row| row.value().to_vec()))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(Into::into)
+    }
+
+    fn scan_all(&mut self, table: &'static str) -> Result<Vec<(Vec<u8>, Vec<u8>)>, StoreError> {
+        let table = self.open_table(TableDefinition::<&[u8], &[u8]>::new(table))?;
+        table
+            .iter()?
+            .map(|row| {
+                let (key, value) = row?;
+                Ok((key.value().to_vec(), value.value().to_vec()))
+            })
+            .collect()
+    }
+}
+
+/// Compatibility adapter for helpers that borrow an already-open native transaction.
 impl RowWrite for &WriteTransaction {
     fn get(&mut self, table: &'static str, key: &[u8]) -> Result<Option<Vec<u8>>, StoreError> {
         let table = self.open_table(TableDefinition::<&[u8], &[u8]>::new(table))?;
@@ -65,6 +174,48 @@ impl RowWrite for &WriteTransaction {
         self.open_multimap_table(MultimapTableDefinition::<&[u8], &[u8]>::new(table))?
             .insert(key, value)?;
         Ok(())
+    }
+
+    fn remove(&mut self, table: &'static str, key: &[u8]) -> Result<(), StoreError> {
+        self.open_table(TableDefinition::<&[u8], &[u8]>::new(table))?
+            .remove(key)?;
+        Ok(())
+    }
+
+    fn multi_remove(
+        &mut self,
+        table: &'static str,
+        key: &[u8],
+        value: &[u8],
+    ) -> Result<(), StoreError> {
+        self.open_multimap_table(MultimapTableDefinition::<&[u8], &[u8]>::new(table))?
+            .remove(key, value)?;
+        Ok(())
+    }
+
+    fn multi_values(
+        &mut self,
+        table: &'static str,
+        key: &[u8],
+    ) -> Result<Vec<Vec<u8>>, StoreError> {
+        let table =
+            self.open_multimap_table(MultimapTableDefinition::<&[u8], &[u8]>::new(table))?;
+        table
+            .get(key)?
+            .map(|value| value.map(|row| row.value().to_vec()))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(Into::into)
+    }
+
+    fn scan_all(&mut self, table: &'static str) -> Result<Vec<(Vec<u8>, Vec<u8>)>, StoreError> {
+        let table = self.open_table(TableDefinition::<&[u8], &[u8]>::new(table))?;
+        table
+            .iter()?
+            .map(|row| {
+                let (key, value) = row?;
+                Ok((key.value().to_vec(), value.value().to_vec()))
+            })
+            .collect()
     }
 }
 
@@ -146,5 +297,32 @@ impl<T: PipelineTransport> RowWrite for &mut TenantWrite<'_, T> {
         value: &[u8],
     ) -> Result<(), StoreError> {
         Ok(self.store.multi_put(table, key, value)?)
+    }
+
+    fn remove(&mut self, table: &'static str, key: &[u8]) -> Result<(), StoreError> {
+        self.store.remove(table, key)?;
+        Ok(())
+    }
+
+    fn multi_remove(
+        &mut self,
+        table: &'static str,
+        key: &[u8],
+        value: &[u8],
+    ) -> Result<(), StoreError> {
+        self.store.multi_remove(table, key, value)?;
+        Ok(())
+    }
+
+    fn multi_values(
+        &mut self,
+        table: &'static str,
+        key: &[u8],
+    ) -> Result<Vec<Vec<u8>>, StoreError> {
+        Ok(self.store.multi_values(table, key)?)
+    }
+
+    fn scan_all(&mut self, table: &'static str) -> Result<Vec<(Vec<u8>, Vec<u8>)>, StoreError> {
+        Ok(self.store.scan(table, Vec::<u8>::new().., usize::MAX)?)
     }
 }
