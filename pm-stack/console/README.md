@@ -375,7 +375,11 @@ the Android app alike (which is the same site in Chrome).
   the header then says `offline` and how old the state is, and a line
   under the header says there is no connection. A screen the device
   has never seen says it has no copy of it. More, On this device has
-  "Keep a copy of every screen now", for before a flight.
+  "Keep a copy of every screen now", for before a flight. Signed in on
+  Wi-Fi or a cable (or a fast connection the browser does not name),
+  the app also keeps every screen once in the background, at most every
+  twelve hours; never on a metered connection, with data saving on, or
+  where the browser says nothing of the connection (Safari, Firefox).
 - **What the owner does is kept and sent once.** Every action is given
   a name on the device (a UUID) and written to the browser's own
   database before it is sent (`public/outbox.js`), and before it waits
@@ -437,7 +441,13 @@ the Android app alike (which is the same site in Chrome).
   unblock and a service action act on something that may have changed:
   they are kept too, sent by themselves only within ten minutes of
   being asked for, and after that wait under "kept back" until the
-  owner looks again and says to send them. A merge also carries the
+  owner looks again and says to send them. The platform holds every
+  sender to the same ten minutes: a device says when the owner did it
+  and what its own clock read as it sent it, and the edge (and the
+  laptop, sent straight to it) refuses one older than ten minutes by
+  either clock unless it says the owner looked again. A device keeps a
+  refused one back as if it had kept it back itself. One that says
+  nothing of when it was done is taken as done now. A merge also carries the
   commit the owner was shown, and GitHub merges only that. What sets
   the connection up or carries a secret (notifications, phones,
   sign-in, the Cloudflare switch) is never kept: it says it needs a

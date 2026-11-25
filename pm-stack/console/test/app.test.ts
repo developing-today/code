@@ -33,10 +33,13 @@ import {
   endpointMark,
   enrollCommand,
   everyRead,
+  unmetered,
   flushSaid,
   freshSaid,
   intakeArgs,
   intakeSaid,
+  KEEP_ALL_EVERY_MS,
+  keepAllDue,
   keptGroups,
   keptSaid,
   heldWaitsSaid,
@@ -1733,4 +1736,33 @@ test("words written for a Markdown file are shown as plain words", () => {
   expect(readFileSync(new URL("../public/app.js", import.meta.url), "utf8")).toContain(
     'h("p", {}, plainWords(r.intent))',
   );
+});
+
+test("every screen is kept in the background only on a connection that is not metered, and only once in a while (#13501)", () => {
+  // Named by the browser as Wi-Fi or a cable.
+  expect(unmetered({ type: "wifi" })).toBe(true);
+  expect(unmetered({ type: "ethernet", effectiveType: "2g" })).toBe(true);
+  // Named as anything else: left alone, however fast.
+  expect(unmetered({ type: "cellular", effectiveType: "4g" })).toBe(false);
+  expect(unmetered({ type: "bluetooth" })).toBe(false);
+  expect(unmetered({ type: "none" })).toBe(false);
+  // Not named: a fast one only.
+  expect(unmetered({ effectiveType: "4g" })).toBe(true);
+  expect(unmetered({ type: "unknown", effectiveType: "4g" })).toBe(true);
+  expect(unmetered({ effectiveType: "3g" })).toBe(false);
+  // The owner asked to save data, or the browser says nothing at all.
+  expect(unmetered({ type: "wifi", saveData: true })).toBe(false);
+  expect(unmetered(undefined)).toBe(false);
+  expect(unmetered(null)).toBe(false);
+  // Never kept, or not for twelve hours: due. Since then: not.
+  const now = 1_800_000_000_000;
+  expect(KEEP_ALL_EVERY_MS).toBe(12 * 60 * 60_000);
+  expect(keepAllDue(null, now)).toBe(true);
+  expect(keepAllDue("", now)).toBe(true);
+  expect(keepAllDue(String(now - KEEP_ALL_EVERY_MS), now)).toBe(true);
+  expect(keepAllDue(String(now - KEEP_ALL_EVERY_MS + 1), now)).toBe(false);
+  expect(keepAllDue(String(now - 60_000), now)).toBe(false);
+  // A time that cannot be read, or one ahead of the clock, is taken as never.
+  expect(keepAllDue("soon", now)).toBe(true);
+  expect(keepAllDue(String(now + 60_000), now)).toBe(true);
 });

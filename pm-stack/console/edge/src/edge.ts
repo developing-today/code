@@ -104,6 +104,8 @@ import {
   machineReport,
   type PublicKey,
   publicKey,
+  STALE_ACT_ERROR,
+  staleAct,
   subjectOf,
   SYNC_SKEW_MS,
   type SyncRequest,
@@ -135,10 +137,50 @@ import {
   ResetFlow,
 } from "../../src/quota-page.ts";
 import { contact, Push } from "../../src/push.ts";
-import { goesBy, platformSettings, settingsDifferences, settingsThatDiffer } from "../../src/settings.ts";
+import {
+  effectiveSettings,
+  OWNER_CHANGEABLE,
+  type OwnerChangeableName,
+  type OwnerSettings,
+  platformSettings,
+  settingsDifferences,
+  settingsThatDiffer,
+} from "../../src/settings.ts";
 import { timed, unread } from "../../src/timed.ts";
 import appFiles from "../../public/files.json";
 import { createLedgerQuery, LEDGER_PAGE_PATHS, ledgerPage } from "./ledger-pages.ts";
+
+/** Where the settings the owner changed are kept: beside "cfg", never in it. */
+export const OWNER_SETTINGS_KEY = "ownerSettings";
+
+/** The owner's record as kept, or null when what is kept is not one:
+ * only the names the owner may change, each in its setting's shape. */
+export function ownerSettingsRecord(value: unknown): OwnerSettings | null {
+  const v = value as Record<string, unknown> | null;
+  if (!v || typeof v !== "object") return null;
+  if (!Number.isSafeInteger(v.rev) || (v.rev as number) < 1) return null;
+  if (typeof v.at !== "number" || !Number.isFinite(v.at)) return null;
+  if (typeof v.by !== "string" || v.by === "") return null;
+  const raw = v.values as Record<string, unknown> | null;
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const values: OwnerSettings["values"] = {};
+  for (const [name, setting] of Object.entries(raw)) {
+    if (name === "promptLabel") {
+      if (typeof setting !== "string" || setting === "") return null;
+      values.promptLabel = setting;
+    } else if (name === "needsRepos") {
+      if (
+        !Array.isArray(setting) ||
+        !setting.every((repo) => typeof repo === "string" && /^[^/\s]+\/[^/\s]+$/.test(repo))
+      )
+        return null;
+      values.needsRepos = [...new Set(setting as string[])];
+    } else {
+      return null;
+    }
+  }
+  return { rev: v.rev as number, at: v.at, by: v.by, values };
+}
 
 /** The app's files and what each is served as: public/files.json is the
  * one list of them, and this Worker's build ships exactly those. */
@@ -219,6 +261,9 @@ export class Edge {
   private cfg: EdgeConfig | null | undefined;
   /** What a machine told, as it is kept; undefined until read. */
   private told: EdgeConfig | null | undefined;
+  /** The settings the owner changed, as kept under "ownerSettings";
+   * read once, and replaced only by a change made through this object. */
+  private owner: OwnerSettings | null | undefined;
   private mirrors: Mirrors;
   private held: Held[] | null = null;
   /** Held actions already handed to a machine in a report answer and not
@@ -451,9 +496,91 @@ export class Edge {
   private async config(): Promise<EdgeConfig | null> {
     if (this.cfg === undefined) {
       const told = await this.toldConfig();
-      this.cfg = told === null ? null : goesBy(told);
+      this.cfg = told === null ? null : effectiveSettings(told, await this.ownerSettings());
     }
     return this.cfg;
+  }
+
+  /** The settings the owner changed, kept under their own key beside
+   * "cfg" and never inside it: "cfg" is a machine's word and the next
+   * report that differs replaces it (#14163). A record that does not
+   * read as one is no record: the repository speaks. */
+  private async ownerSettings(): Promise<OwnerSettings | null> {
+    if (this.owner === undefined) this.owner = ownerSettingsRecord(await this.kv.get(OWNER_SETTINGS_KEY));
+    return this.owner;
+  }
+
+  /** The owner sets one of the settings the owner may change: kept whole,
+   * at the next revision, and said in the audit log by name (never by
+   * value). What is gone by changes at once. The owner's actions call
+   * this once they have checked who asks and what is asked (#14956); a
+   * machine's report never reaches it. */
+  async setOwnerSetting<N extends OwnerChangeableName>(
+    by: string,
+    name: N,
+    value: OwnerSettings["values"][N] & {},
+  ): Promise<OwnerSettings> {
+    const was = await this.ownerSettings();
+    const values = {
+      ...was?.values,
+      [name]: Array.isArray(value) ? [...value] : value,
+    };
+    const record = ownerSettingsRecord({
+      rev: (was?.rev ?? 0) + 1,
+      at: this.now(),
+      by,
+      values,
+    });
+    if (record === null) throw new OpError(400, `${name}: not a value the owner can set`);
+    await this.keepOwnerSettings(record, [{ kind: "setting.set", name }]);
+    return record;
+  }
+
+  /** The owner clears one setting they changed, or every one with no
+   * name: the repository speaks for it again from now. Clearing what
+   * was not changed changes nothing and is not logged. */
+  async clearOwnerSetting(by: string, name?: OwnerChangeableName): Promise<OwnerSettings | null> {
+    const was = await this.ownerSettings();
+    if (was === null) return null;
+    const cleared = OWNER_CHANGEABLE.filter(
+      (n) => (name === undefined || n === name) && Object.prototype.hasOwnProperty.call(was.values, n),
+    );
+    if (cleared.length === 0) return was;
+    const values = { ...was.values };
+    for (const n of cleared) delete values[n];
+    const record: OwnerSettings = {
+      rev: was.rev + 1,
+      at: this.now(),
+      by,
+      values,
+    };
+    await this.keepOwnerSettings(
+      record,
+      cleared.map((n) => ({ kind: "setting.clear", name: n })),
+    );
+    return record;
+  }
+
+  private async keepOwnerSettings(
+    record: OwnerSettings,
+    changes: {
+      kind: "setting.set" | "setting.clear";
+      name: OwnerChangeableName;
+    }[],
+  ): Promise<void> {
+    await this.kv.put(OWNER_SETTINGS_KEY, record);
+    this.owner = record;
+    this.cfg = undefined;
+    for (const change of changes) {
+      await this.audit({
+        ...change,
+        rev: record.rev,
+        at: new Date(record.at).toISOString(),
+        by: record.by,
+      });
+    }
+    // The list of repositories may have changed.
+    await this.showEdge();
   }
 
   /** Sections from the host, taken in; returns the names that changed. */
@@ -2181,7 +2308,7 @@ export class Edge {
       if (!sameSiteWrite(req)) return json({ error: "this request did not come from the console" }, 403);
       if (!(seg.length === 1 && seg[0] === "act")) return next("relay", { mode: "live" });
       if (Number(req.headers.get("content-length") ?? "0") > ACT_LIMIT) return json({ error: "too large" }, 413);
-      let body: { kind?: unknown; args?: unknown; id?: unknown };
+      let body: { kind?: unknown; args?: unknown; id?: unknown; at?: unknown; sent?: unknown; sure?: unknown };
       try {
         const text = await req.text();
         if (text.length > ACT_LIMIT) return json({ error: "too large" }, 413);
@@ -2198,6 +2325,16 @@ export class Edge {
       // The name the device gave this, if it gave one: whatever does
       // it, here or on a machine, does it once under that name.
       const id = typeof body.id === "string" && ACT_ID.test(body.id) ? body.id : null;
+      // Something that may have changed is not done unasked once it is
+      // more than ten minutes old, by whoever sends it (#13501). One
+      // this side has met under its name before is answered as it was:
+      // its answer may only have been lost on the way back.
+      if (
+        staleAct(kind, body, this.now()) &&
+        (id === null || (((await this.kv.get(`a:${id}`)) as Acted | undefined) ?? null) === null)
+      ) {
+        return json({ error: STALE_ACT_ERROR, stale: true }, 409);
+      }
       if (!Object.hasOwn(this.table, kind)) {
         // One this side does itself: it runs here, through the
         // console's own classes, and is never sent to a machine, so no

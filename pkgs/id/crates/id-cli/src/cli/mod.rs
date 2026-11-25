@@ -560,6 +560,12 @@ pub struct ServeArgs {
     /// (they reopen from their journal on demand). `0` keeps them open.
     #[arg(long, default_value_t = 600, requires = "world")]
     pub world_idle_secs: u64,
+    /// Serve the worlds directory as a host-mode data root (#10693): keep
+    /// its `host.json`, wake asleep worlds when clients name them, record
+    /// idle closes as asleep, refuse archived worlds, and reopen the worlds
+    /// recorded live at startup. `id host list` shows the states.
+    #[arg(long, requires = "world", conflicts_with = "ephemeral")]
+    pub world_host: bool,
     /// Refuse signed world and directory requests for this many seconds
     /// after startup, so a request captured before a restart cannot be
     /// replayed into a server with empty replay memory. `0` disables.

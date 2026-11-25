@@ -15,7 +15,7 @@ import { appendFile } from "node:fs/promises";
 import { hostname } from "node:os";
 import { dirname, join } from "node:path";
 import { actions, perform } from "./actions.ts";
-import { HOLDABLE, type Held, type MachinesAnswer, machineName } from "./edge-proto.ts";
+import { HOLDABLE, type Held, type MachinesAnswer, machineName, STALE_ACT_ERROR, staleAct } from "./edge-proto.ts";
 import { AuthError, type Identity, identify } from "./auth.ts";
 import { type Config, readConfig } from "./config.ts";
 import { Devices, Limiter } from "./devices.ts";
@@ -484,6 +484,13 @@ export async function handle(req: Request, deps: Deps, peer: string | null = nul
           return before.fate.ok
             ? json({ ok: true, result: before.fate.result ?? null, again: true, ...forEdge?.() })
             : json({ error: before.fate.error ?? "it could not be done", again: true }, before.fate.status ?? 502);
+        }
+        // Something that may have changed is not done unasked once it
+        // is more than ten minutes old (#13501), sent straight here or
+        // relayed by the edge (which passes the device's body on as it
+        // came, and holds the device to the same rule first).
+        if (before === null && staleAct(kind, body, Date.now())) {
+          return json({ error: STALE_ACT_ERROR, stale: true }, 409);
         }
         return await act(
           kind || "unknown",
