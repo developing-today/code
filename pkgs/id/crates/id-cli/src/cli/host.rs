@@ -100,6 +100,38 @@ pub enum HostCommand {
         #[arg(long)]
         json: bool,
     },
+    /// Pin a world always-live, or unpin it with `--off`: a serving
+    /// process never closes a pinned world for idleness or to make room
+    /// for another. Acts on the running host when one answers on
+    /// `host.sock`; otherwise edits the host file, which `id serve
+    /// --world-host` picks up on its next look.
+    Pin {
+        /// The data root.
+        root: PathBuf,
+        /// The world.
+        world: String,
+        /// Unpin instead.
+        #[arg(long)]
+        off: bool,
+        /// Print the world's settings as JSON instead of a line.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Set how an asleep world wakes: `connect` (a client's connection
+    /// wakes it, the default) or `operator` (only `id host start`).
+    /// Reaches the host file as `pin` does.
+    WakeMode {
+        /// The data root.
+        root: PathBuf,
+        /// The world.
+        world: String,
+        /// `connect` or `operator`.
+        #[arg(value_parser = ["connect", "operator"])]
+        mode: String,
+        /// Print the world's settings as JSON instead of a line.
+        #[arg(long)]
+        json: bool,
+    },
     /// Show one world's record without opening it: lifecycle state and
     /// every recorded transition, journal entries, version and torn
     /// tail, module count and storage bytes. Writes nothing.

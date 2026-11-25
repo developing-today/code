@@ -19,7 +19,7 @@ use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
 
-use crate::host::{LifecycleState, Supervisor, inspect_world};
+use crate::host::{LifecycleState, Supervisor, WakeMode, inspect_world, settings_body};
 
 /// Name of the control socket inside a data root.
 pub const CONTROL_SOCKET_NAME: &str = "host.sock";
@@ -77,6 +77,20 @@ pub enum ControlRequest {
         world: String,
         /// Who asked, recorded in the host file.
         actor: String,
+    },
+    /// Pin a world always-live, or unpin it (#10694).
+    SetPinned {
+        /// The world.
+        world: String,
+        /// Pinned or not.
+        pinned: bool,
+    },
+    /// Set how a world wakes from asleep (#10694).
+    SetWake {
+        /// The world.
+        world: String,
+        /// The wake mode.
+        wake: WakeMode,
     },
 }
 
@@ -146,6 +160,12 @@ pub async fn handle(supervisor: &mut Supervisor, request: ControlRequest) -> Con
         ControlRequest::Restore { world, actor } => supervisor
             .restore(&world, &actor)
             .map(|()| state_body(&world, LifecycleState::Asleep)),
+        ControlRequest::SetPinned { world, pinned } => supervisor
+            .set_pinned(&world, pinned)
+            .and_then(|()| settings_body(supervisor.file(), &world)),
+        ControlRequest::SetWake { world, wake } => supervisor
+            .set_wake(&world, wake)
+            .and_then(|()| settings_body(supervisor.file(), &world)),
     };
     match result {
         Ok(body) => ControlResponse::done(body),
@@ -240,14 +260,38 @@ async fn answer(supervisor: &mut Supervisor, stream: UnixStream) -> Result<()> {
 /// Fails when no host is running on `root`, or the connection or the
 /// answer breaks. A refused act is an `Ok` response with `ok: false`.
 pub async fn request(root: &Path, request: &ControlRequest) -> Result<ControlResponse> {
-    let path = socket_path(root);
-    let stream = UnixStream::connect(&path).await.with_context(|| {
+    try_request(root, request).await?.with_context(|| {
         format!(
             "no host is running on {} (start one with `id host run {}`)",
             root.display(),
             root.display()
         )
-    })?;
+    })
+}
+
+/// As [`request`], but `Ok(None)` when no host answers on `root`: no
+/// socket, or a socket left by a host that is gone.
+///
+/// # Errors
+///
+/// Fails when the socket cannot be reached for another reason, or the
+/// connection or the answer breaks.
+pub async fn try_request(root: &Path, request: &ControlRequest) -> Result<Option<ControlResponse>> {
+    let path = socket_path(root);
+    let stream = match UnixStream::connect(&path).await {
+        Ok(stream) => stream,
+        Err(error)
+            if matches!(
+                error.kind(),
+                std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused
+            ) =>
+        {
+            return Ok(None);
+        }
+        Err(error) => {
+            return Err(error).with_context(|| format!("connecting to {}", path.display()));
+        }
+    };
     let (read, mut write) = stream.into_split();
     let mut bytes = serde_json::to_vec(request)?;
     bytes.push(b'\n');
@@ -256,7 +300,9 @@ pub async fn request(root: &Path, request: &ControlRequest) -> Result<ControlRes
     let mut reader = BufReader::new(read.take(MAX_RESPONSE_BYTES));
     let mut line = String::new();
     reader.read_line(&mut line).await?;
-    serde_json::from_str(line.trim()).context("reading the host's answer")
+    serde_json::from_str(line.trim())
+        .context("reading the host's answer")
+        .map(Some)
 }
 
 #[cfg(test)]
@@ -346,6 +392,33 @@ mod tests {
             assert!(bad.error.unwrap().starts_with("bad request"));
             assert!(request(&path, &ControlRequest::List).await.unwrap().ok);
 
+            let pinned = request(
+                &path,
+                &ControlRequest::SetPinned {
+                    world: "gamma".to_owned(),
+                    pinned: true,
+                },
+            )
+            .await
+            .unwrap();
+            assert!(pinned.ok, "{pinned:?}");
+            assert_eq!(pinned.body.unwrap()["pinned"], true);
+            let woke = request(
+                &path,
+                &ControlRequest::SetWake {
+                    world: "gamma".to_owned(),
+                    wake: WakeMode::Operator,
+                },
+            )
+            .await
+            .unwrap();
+            assert_eq!(woke.body.unwrap()["wake"], "operator");
+            let unknown = ControlRequest::SetPinned {
+                world: "nobody".to_owned(),
+                pinned: true,
+            };
+            assert!(!request(&path, &unknown).await.unwrap().ok);
+
             stop.send(()).unwrap();
         };
         let served = serve(&mut supervisor, &listener, async {
@@ -360,6 +433,8 @@ mod tests {
         for name in ["alpha", "beta", "gamma"] {
             assert_eq!(file.worlds[name].state, LifecycleState::Asleep, "{name}");
         }
+        assert!(file.worlds["gamma"].pinned);
+        assert_eq!(file.worlds["gamma"].wake, WakeMode::Operator);
         let actors: Vec<&str> = file.worlds["beta"]
             .history
             .iter()
@@ -369,6 +444,12 @@ mod tests {
 
         // The host is gone: its socket file is stale and a new host binds.
         assert!(request(root.path(), &ControlRequest::List).await.is_err());
+        assert!(
+            try_request(root.path(), &ControlRequest::List)
+                .await
+                .unwrap()
+                .is_none()
+        );
         drop(bind(root.path()).unwrap());
     }
 
@@ -386,5 +467,14 @@ mod tests {
         assert_eq!(line, r#"{"op":"archive","world":"w","actor":"ops"}"#);
         let list: ControlRequest = serde_json::from_str(r#"{"op":"list"}"#).unwrap();
         assert_eq!(list, ControlRequest::List);
+        let wake: ControlRequest =
+            serde_json::from_str(r#"{"op":"set_wake","world":"w","wake":"operator"}"#).unwrap();
+        assert_eq!(
+            wake,
+            ControlRequest::SetWake {
+                world: "w".to_owned(),
+                wake: WakeMode::Operator
+            }
+        );
     }
 }

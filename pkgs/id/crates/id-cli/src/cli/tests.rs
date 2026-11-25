@@ -3308,3 +3308,21 @@ fn test_cli_parse_keyset_recovery_commands() {
         })
     ));
 }
+
+#[test]
+fn test_cli_parse_host_pin_and_wake_mode() {
+    let cli = Cli::parse_from(["id", "host", "pin", "/data", "w", "--off"]);
+    match cli.command {
+        Some(Command::Host(HostCommand::Pin { world, off, .. })) => {
+            assert_eq!(world, "w");
+            assert!(off);
+        }
+        _ => panic!("Expected host pin"),
+    }
+    let cli = Cli::parse_from(["id", "host", "wake-mode", "/data", "w", "operator"]);
+    match cli.command {
+        Some(Command::Host(HostCommand::WakeMode { mode, .. })) => assert_eq!(mode, "operator"),
+        _ => panic!("Expected host wake-mode"),
+    }
+    assert!(Cli::try_parse_from(["id", "host", "wake-mode", "/data", "w", "never"]).is_err());
+}

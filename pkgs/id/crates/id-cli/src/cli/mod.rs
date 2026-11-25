@@ -128,8 +128,8 @@ pub use groups::{DelegateArgs, GroupCommand, GroupRemoveMode, GroupTemplate, Rev
 pub use host::HostCommand;
 pub use match_audit::MatchAuditCommand;
 pub use petname::PetnameCommand;
-pub use talk::TalkCommand;
 pub use tag::TagCommand;
+pub use talk::TalkCommand;
 pub use walk::WalkCommand;
 pub use world::{
     JournalCommand, WorldAnnounceArgs, WorldApplyArgs, WorldCapsArgs, WorldCommand,
@@ -561,9 +561,11 @@ pub struct ServeArgs {
     #[arg(long, default_value_t = 600, requires = "world")]
     pub world_idle_secs: u64,
     /// Serve the worlds directory as a host-mode data root (#10693): keep
-    /// its `host.json`, wake asleep worlds when clients name them, record
-    /// idle closes as asleep, refuse archived worlds, and reopen the worlds
-    /// recorded live at startup. `id host list` shows the states.
+    /// its `host.json`, wake asleep worlds when clients name them (unless
+    /// `id host wake-mode` set `operator`), never close `id host pin`
+    /// worlds for idleness or room, record idle closes as asleep, refuse
+    /// archived worlds, and reopen the worlds recorded live at startup.
+    /// `id host list` shows the states.
     #[arg(long, requires = "world", conflicts_with = "ephemeral")]
     pub world_host: bool,
     /// Refuse signed world and directory requests for this many seconds

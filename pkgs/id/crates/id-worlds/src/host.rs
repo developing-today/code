@@ -79,6 +79,45 @@ impl std::fmt::Display for LifecycleState {
     }
 }
 
+/// How an asleep world comes back live (design §10.3).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum WakeMode {
+    /// A client's connection wakes it ([`WAKE_ON_CONNECT`]); membership
+    /// is still checked by the world before it serves. The default.
+    #[default]
+    Connect,
+    /// Wake-on-connect is off: only an operator `start` brings it live.
+    Operator,
+}
+
+impl WakeMode {
+    fn is_default(&self) -> bool {
+        *self == WakeMode::Connect
+    }
+}
+
+impl std::fmt::Display for WakeMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            WakeMode::Connect => write!(f, "connect"),
+            WakeMode::Operator => write!(f, "operator"),
+        }
+    }
+}
+
+impl std::str::FromStr for WakeMode {
+    type Err = anyhow::Error;
+
+    fn from_str(text: &str) -> Result<Self> {
+        match text {
+            "connect" => Ok(WakeMode::Connect),
+            "operator" => Ok(WakeMode::Operator),
+            other => bail!("wake mode {other:?} is not `connect` or `operator`"),
+        }
+    }
+}
+
 /// One recorded lifecycle transition: when, by whom, from what.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StateChange {
@@ -99,6 +138,14 @@ pub struct WorldRecord {
     /// Newest-last transition history.
     #[serde(default)]
     pub history: Vec<StateChange>,
+    /// Operator pin: the world is never closed for idleness or to make
+    /// room for another world (design §10.2). It still stops when an
+    /// operator stops it or the host shuts down.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub pinned: bool,
+    /// How the world wakes from asleep.
+    #[serde(default, skip_serializing_if = "WakeMode::is_default")]
+    pub wake: WakeMode,
 }
 
 /// The host file beside the data root: which worlds exist, their
@@ -237,7 +284,7 @@ impl HostFile {
                 name,
                 WorldRecord {
                     state: LifecycleState::Asleep,
-                    history: Vec::new(),
+                    ..WorldRecord::default()
                 },
             );
         }
@@ -265,6 +312,33 @@ impl HostFile {
             prior,
         });
         Ok(())
+    }
+
+    /// Pin `name` always-live, or unpin it.
+    ///
+    /// # Errors
+    ///
+    /// Fails for a world this file does not record.
+    pub fn set_pinned(&mut self, name: &str, pinned: bool) -> Result<()> {
+        self.record_mut(name)?.pinned = pinned;
+        Ok(())
+    }
+
+    /// Set how `name` wakes from asleep.
+    ///
+    /// # Errors
+    ///
+    /// Fails for a world this file does not record.
+    pub fn set_wake(&mut self, name: &str, wake: WakeMode) -> Result<()> {
+        self.record_mut(name)?.wake = wake;
+        Ok(())
+    }
+
+    fn record_mut(&mut self, name: &str) -> Result<&mut WorldRecord> {
+        let root = self.data_root.display().to_string();
+        self.worlds
+            .get_mut(name)
+            .with_context(|| format!("no world {name:?} in data root {root}"))
     }
 }
 
@@ -423,6 +497,32 @@ pub const ADMIN_CREATE: &str = "admin-create";
 pub struct HostLifecycle {
     root: PathBuf,
     file: std::sync::Mutex<HostFile>,
+    /// The host file on disk as this process last read or wrote it, so an
+    /// operator's edit made by another process (`id host pin` with no
+    /// host answering the control socket) is adopted on the next read.
+    seen: std::sync::Mutex<Option<FileStamp>>,
+}
+
+/// Enough of a file's metadata to tell that it was replaced: every save
+/// renames a new file over the old one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct FileStamp {
+    modified: Option<SystemTime>,
+    len: u64,
+    inode: u64,
+}
+
+fn stamp_of(path: &Path) -> Option<FileStamp> {
+    let meta = std::fs::metadata(path).ok()?;
+    #[cfg(unix)]
+    let inode = std::os::unix::fs::MetadataExt::ino(&meta);
+    #[cfg(not(unix))]
+    let inode = 0;
+    Some(FileStamp {
+        modified: meta.modified().ok(),
+        len: meta.len(),
+        inode,
+    })
 }
 
 /// What [`HostLifecycle::admit_wake`] did, so a failed open can be undone.
@@ -453,7 +553,45 @@ impl HostLifecycle {
         Ok(Self {
             root: root.to_path_buf(),
             file: std::sync::Mutex::new(file),
+            seen: std::sync::Mutex::new(stamp_of(&HostFile::path_for(root))),
         })
+    }
+
+    /// Whether the operator pinned `name` always-live.
+    pub fn pinned(&self, name: &str) -> bool {
+        self.lock()
+            .worlds
+            .get(name)
+            .is_some_and(|record| record.pinned)
+    }
+
+    /// Pin `name` always-live, or unpin it, and save.
+    ///
+    /// # Errors
+    ///
+    /// Fails for a world the host file does not know, and when the save
+    /// fails (nothing changes then).
+    pub fn set_pinned(&self, name: &str, pinned: bool) -> Result<()> {
+        let mut file = self.lock();
+        let mut next = file.clone();
+        next.set_pinned(name, pinned)?;
+        self.save(&next)?;
+        *file = next;
+        Ok(())
+    }
+
+    /// Set how `name` wakes from asleep, and save.
+    ///
+    /// # Errors
+    ///
+    /// As [`HostLifecycle::set_pinned`].
+    pub fn set_wake(&self, name: &str, wake: WakeMode) -> Result<()> {
+        let mut file = self.lock();
+        let mut next = file.clone();
+        next.set_wake(name, wake)?;
+        self.save(&next)?;
+        *file = next;
+        Ok(())
     }
 
     /// The data root this host file describes.
@@ -476,8 +614,10 @@ impl HostLifecycle {
     ///
     /// # Errors
     ///
-    /// Refuses an archived world (restore it first), a world the host
-    /// file does not know, and a failed save (nothing is recorded then).
+    /// Refuses an archived world (restore it first), an asleep world whose
+    /// wake mode is [`WakeMode::Operator`] (an operator starts it), a
+    /// world the host file does not know, and a failed save (nothing is
+    /// recorded then).
     pub fn admit_wake(&self, name: &str) -> Result<Admission> {
         let mut file = self.lock();
         self.admit_known(&mut file, name)
@@ -508,9 +648,10 @@ impl HostLifecycle {
                     actor: ADMIN_CREATE.to_owned(),
                     prior: LifecycleState::Asleep,
                 }],
+                ..WorldRecord::default()
             },
         );
-        next.save(&self.root)?;
+        self.save(&next)?;
         *file = next;
         Ok(Admission::Created)
     }
@@ -521,6 +662,14 @@ impl HostLifecycle {
             Some(LifecycleState::Live) => Ok(Admission::AlreadyLive),
             Some(LifecycleState::Archived) => {
                 bail!("world {name:?} is archived: an operator must restore it before it wakes")
+            }
+            Some(LifecycleState::Asleep)
+                if file
+                    .worlds
+                    .get(name)
+                    .is_some_and(|record| record.wake == WakeMode::Operator) =>
+            {
+                bail!("world {name:?} wakes only when an operator starts it")
             }
             Some(LifecycleState::Asleep) => {
                 self.record(file, name, LifecycleState::Live, WAKE_ON_CONNECT)?;
@@ -552,7 +701,7 @@ impl HostLifecycle {
                 return Ok(());
             }
             file.worlds.remove(name);
-            return file.save(&self.root);
+            return self.save(&file);
         }
         let Some(record) = file.worlds.get_mut(name) else {
             return Ok(());
@@ -565,7 +714,7 @@ impl HostLifecycle {
         }
         record.state = LifecycleState::Asleep;
         record.history.pop();
-        file.save(&self.root)
+        self.save(&file)
     }
 
     /// The hub closed `name` (idle, or to make room): record it asleep by
@@ -593,15 +742,42 @@ impl HostLifecycle {
     ) -> Result<()> {
         let mut next = file.clone();
         next.transition(name, to, actor, now_secs())?;
-        next.save(&self.root)?;
+        self.save(&next)?;
         *file = next;
         Ok(())
     }
 
+    /// The host file, first adopting it from disk when another process
+    /// replaced it since this one last read or wrote it. A replacement
+    /// that does not load is ignored and overwritten by the next save.
     fn lock(&self) -> std::sync::MutexGuard<'_, HostFile> {
-        self.file
+        let mut file = self
+            .file
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let now = stamp_of(&HostFile::path_for(&self.root));
+        let mut seen = self
+            .seen
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if now.is_some() && now != *seen {
+            if let Ok(fresh) = HostFile::load(&self.root) {
+                *file = fresh;
+            }
+            *seen = now;
+        }
+        file
+    }
+
+    /// Save `file` and remember the result as this process's own write.
+    fn save(&self, file: &HostFile) -> Result<()> {
+        file.save(&self.root)?;
+        *self
+            .seen
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) =
+            stamp_of(&HostFile::path_for(&self.root));
+        Ok(())
     }
 }
 
@@ -619,6 +795,10 @@ pub struct WorldInspection {
     pub state: LifecycleState,
     /// Recorded transitions, oldest first.
     pub history: Vec<StateChange>,
+    /// Pinned always-live by an operator.
+    pub pinned: bool,
+    /// How the world wakes from asleep.
+    pub wake: WakeMode,
     /// The journal's entry count, version and torn tail, when it parses.
     pub journal: Option<JournalFacts>,
     /// Why the journal could not be read, when it could not.
@@ -662,11 +842,32 @@ pub fn inspect_world(root: &Path, file: &HostFile, name: &str) -> Result<WorldIn
         dir,
         state: record.state,
         history: record.history.clone(),
+        pinned: record.pinned,
+        wake: record.wake,
         journal,
         journal_error,
         module_count,
         storage,
     })
+}
+
+/// The answer body for a pin or wake-mode change: the world's settings as
+/// the host file now records them.
+///
+/// # Errors
+///
+/// Fails for a world the file does not record.
+pub fn settings_body(file: &HostFile, world: &str) -> Result<serde_json::Value> {
+    let record = file
+        .worlds
+        .get(world)
+        .with_context(|| format!("no world {world:?} in this data root"))?;
+    Ok(serde_json::json!({
+        "world": world,
+        "state": record.state,
+        "pinned": record.pinned,
+        "wake": record.wake,
+    }))
 }
 
 /// A live world held by the [`Supervisor`]: its service plus the replay
@@ -790,6 +991,7 @@ impl Supervisor {
                     actor: actor.to_owned(),
                     prior: LifecycleState::Asleep,
                 }],
+                ..WorldRecord::default()
             },
         );
         self.file.save(&self.root)?;
@@ -858,6 +1060,33 @@ impl Supervisor {
         self.file
             .transition(name, LifecycleState::Asleep, actor, now_secs())?;
         self.file.save(&self.root)?;
+        Ok(())
+    }
+
+    /// Pin `name` always-live, or unpin it, and save.
+    ///
+    /// # Errors
+    ///
+    /// Fails for a world the host file does not know, and when the save
+    /// fails (nothing changes then).
+    pub fn set_pinned(&mut self, name: &str, pinned: bool) -> Result<()> {
+        let mut next = self.file.clone();
+        next.set_pinned(name, pinned)?;
+        next.save(&self.root)?;
+        self.file = next;
+        Ok(())
+    }
+
+    /// Set how `name` wakes from asleep, and save.
+    ///
+    /// # Errors
+    ///
+    /// As [`Supervisor::set_pinned`].
+    pub fn set_wake(&mut self, name: &str, wake: WakeMode) -> Result<()> {
+        let mut next = self.file.clone();
+        next.set_wake(name, wake)?;
+        next.save(&self.root)?;
+        self.file = next;
         Ok(())
     }
 
@@ -1262,6 +1491,76 @@ mod tests {
     }
 
     #[test]
+    fn operator_wake_mode_refuses_wake_on_connect_and_pins_are_saved() {
+        let root = data_root_with(&["kept", "plain"]);
+        let host = HostLifecycle::open(root.path()).unwrap();
+
+        // Defaults are not written, so older host files read the same.
+        let text = std::fs::read_to_string(HostFile::path_for(root.path())).unwrap();
+        assert!(!text.contains("pinned") && !text.contains("wake"), "{text}");
+        assert!(!host.pinned("kept"));
+
+        host.set_wake("kept", WakeMode::Operator).unwrap();
+        host.set_pinned("kept", true).unwrap();
+        assert!(host.pinned("kept"));
+        let refused = host.admit_wake("kept").unwrap_err().to_string();
+        assert!(refused.contains("operator"), "{refused}");
+        assert_eq!(host.state("kept"), Some(LifecycleState::Asleep));
+        let refused = host.admit_create("kept").unwrap_err().to_string();
+        assert!(refused.contains("operator"), "{refused}");
+
+        let saved = HostFile::load(root.path()).unwrap();
+        assert!(saved.worlds["kept"].pinned);
+        assert_eq!(saved.worlds["kept"].wake, WakeMode::Operator);
+        assert!(saved.worlds["kept"].history.is_empty());
+        let seen = inspect_world(root.path(), &saved, "kept").unwrap();
+        assert!(seen.pinned);
+        assert_eq!(seen.wake, WakeMode::Operator);
+
+        // An operator start still brings it live, and a live world is
+        // admitted whatever its wake mode.
+        let mut file = saved.clone();
+        file.transition("kept", LifecycleState::Live, actor(), 1)
+            .unwrap();
+        file.save(root.path()).unwrap();
+        assert_eq!(host.admit_wake("kept").unwrap(), Admission::AlreadyLive);
+
+        assert!(host.set_pinned("nobody", true).is_err());
+        assert!(host.set_wake("nobody", WakeMode::Operator).is_err());
+        assert_eq!(host.admit_wake("plain").unwrap(), Admission::Woken);
+        assert_eq!("operator".parse::<WakeMode>().unwrap(), WakeMode::Operator);
+        assert_eq!(WakeMode::Connect.to_string(), "connect");
+        assert!("never".parse::<WakeMode>().is_err());
+    }
+
+    #[test]
+    fn host_lifecycle_adopts_an_operator_edit_saved_by_another_process() {
+        let root = data_root_with(&["w"]);
+        let host = HostLifecycle::open(root.path()).unwrap();
+        assert!(!host.pinned("w"));
+
+        let mut edited = HostFile::load(root.path()).unwrap();
+        edited.set_pinned("w", true).unwrap();
+        edited.save(root.path()).unwrap();
+        assert!(host.pinned("w"));
+
+        // The next transition keeps the edit instead of writing over it.
+        host.admit_wake("w").unwrap();
+        let saved = HostFile::load(root.path()).unwrap();
+        assert!(saved.worlds["w"].pinned);
+        assert_eq!(saved.worlds["w"].state, LifecycleState::Live);
+
+        // A replacement that does not load is ignored, and the next save
+        // writes the last good file back.
+        std::fs::write(HostFile::path_for(root.path()), b"not json").unwrap();
+        assert!(host.pinned("w"));
+        host.record_closed("w").unwrap();
+        let saved = HostFile::load(root.path()).unwrap();
+        assert!(saved.worlds["w"].pinned);
+        assert_eq!(saved.worlds["w"].state, LifecycleState::Asleep);
+    }
+
+    #[test]
     fn host_lifecycle_admit_create_records_new_worlds_and_never_restores() {
         let root = data_root_with(&["shelved"]);
         let host = HostLifecycle::open(root.path()).unwrap();
@@ -1525,8 +1824,22 @@ mod tests {
                     prior,
                 }
             });
-        let record = (state_strategy(), proptest::collection::vec(change, 0..4))
-            .prop_map(|(state, history)| WorldRecord { state, history });
+        let record = (
+            state_strategy(),
+            proptest::collection::vec(change, 0..4),
+            proptest::bool::ANY,
+            proptest::bool::ANY,
+        )
+            .prop_map(|(state, history, pinned, operator)| WorldRecord {
+                state,
+                history,
+                pinned,
+                wake: if operator {
+                    WakeMode::Operator
+                } else {
+                    WakeMode::Connect
+                },
+            });
         let file = (
             proptest::collection::hash_map(name, record, 0..5),
             proptest::collection::vec(0u8..8, 0..4),

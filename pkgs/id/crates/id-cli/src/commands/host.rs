@@ -3,7 +3,10 @@
 use std::fmt::Write as _;
 
 use anyhow::{Context, Result};
-use id_worlds::host::{Census, HostFile, Supervisor, WorldInspection, census_of, inspect_world};
+use id_worlds::host::{
+    Census, HostFile, Supervisor, WakeMode, WorldInspection, census_of, inspect_world,
+    settings_body,
+};
 
 use crate::cli::HostCommand;
 
@@ -84,6 +87,18 @@ pub async fn cmd_host(command: HostCommand) -> Result<()> {
             actor,
             json,
         } => operator_act(&root, ControlAct::Restore, world, actor, json).await,
+        HostCommand::Pin {
+            root,
+            world,
+            off,
+            json,
+        } => settings_act(&root, Setting::Pinned(!off), world, json).await,
+        HostCommand::WakeMode {
+            root,
+            world,
+            mode,
+            json,
+        } => settings_act(&root, Setting::Wake(mode.parse()?), world, json).await,
         HostCommand::List { root, json } => {
             let file = HostFile::read_or_rebuild(&root)
                 .with_context(|| format!("reading data root {}", root.display()))?;
@@ -165,6 +180,81 @@ async fn operator_act(
     anyhow::bail!("reaching a running host needs its Unix control socket")
 }
 
+/// A per-world setting an operator changes (#10694).
+#[derive(Clone, Copy, Debug)]
+enum Setting {
+    Pinned(bool),
+    Wake(WakeMode),
+}
+
+/// Change one world's setting on the host running on `root`, or in its
+/// host file when no host answers, and print the world's settings.
+async fn settings_act(
+    root: &std::path::Path,
+    setting: Setting,
+    world: String,
+    json: bool,
+) -> Result<()> {
+    // The host's answer, when a host answers: its body, or why it refused.
+    #[cfg(unix)]
+    let answered: Option<std::result::Result<serde_json::Value, String>> = {
+        use id_worlds::host_control::{ControlRequest, try_request};
+        let message = match setting {
+            Setting::Pinned(pinned) => ControlRequest::SetPinned {
+                world: world.clone(),
+                pinned,
+            },
+            Setting::Wake(wake) => ControlRequest::SetWake {
+                world: world.clone(),
+                wake,
+            },
+        };
+        try_request(root, &message).await?.map(|answer| {
+            if answer.ok {
+                Ok(answer.body.unwrap_or_default())
+            } else {
+                Err(answer
+                    .error
+                    .unwrap_or_else(|| "the host refused without a reason".to_owned()))
+            }
+        })
+    };
+    #[cfg(not(unix))]
+    let answered: Option<std::result::Result<serde_json::Value, String>> = None;
+    let body = match answered {
+        Some(Ok(body)) => body,
+        Some(Err(error)) => anyhow::bail!("{error}"),
+        None => {
+            let mut file = HostFile::load(root)
+                .with_context(|| format!("reading data root {}", root.display()))?;
+            match setting {
+                Setting::Pinned(pinned) => file.set_pinned(&world, pinned)?,
+                Setting::Wake(wake) => file.set_wake(&world, wake)?,
+            }
+            file.save(root)?;
+            settings_body(&file, &world)?
+        }
+    };
+    if json {
+        println!("{}", serde_json::to_string_pretty(&body)?);
+    } else {
+        print!("{}", settings_line(&body));
+    }
+    Ok(())
+}
+
+/// `<world> <state> pinned=<bool> wake=<mode>`.
+fn settings_line(body: &serde_json::Value) -> String {
+    let text = |key: &str| body[key].as_str().unwrap_or("?").to_owned();
+    format!(
+        "{} {} pinned={} wake={}\n",
+        text("world"),
+        text("state"),
+        body["pinned"].as_bool().unwrap_or(false),
+        text("wake")
+    )
+}
+
 /// `<world> <state>`, plus the replay result when the act was a start.
 fn act_line(body: &serde_json::Value) -> String {
     let text = |key: &str| body[key].as_str().unwrap_or("?").to_owned();
@@ -189,6 +279,8 @@ fn inspection_lines(seen: &WorldInspection) -> String {
     let mut out = String::new();
     let _ = writeln!(out, "world {}", seen.name);
     let _ = writeln!(out, "state {}", seen.state);
+    let _ = writeln!(out, "pinned {}", seen.pinned);
+    let _ = writeln!(out, "wake {}", seen.wake);
     let _ = writeln!(out, "data-root {}", seen.data_root.display());
     let _ = writeln!(out, "dir {}", seen.dir.display());
     match (&seen.journal, &seen.journal_error) {
@@ -309,6 +401,54 @@ mod tests {
         let alpha = inspection_lines(&inspect_world(root.path(), &file, "alpha").unwrap());
         assert!(alpha.contains("history none\n"), "{alpha}");
         assert!(inspect_world(root.path(), &file, "gamma").is_err());
+    }
+
+    #[tokio::test]
+    async fn pin_and_wake_mode_edit_the_host_file_when_no_host_answers() {
+        let root = tempfile::TempDir::new().unwrap();
+        let dir = root.path().join("w");
+        std::fs::create_dir_all(dir.join("modules")).unwrap();
+        std::fs::write(dir.join("journal.jsonl"), "").unwrap();
+        HostFile::rebuild(root.path())
+            .unwrap()
+            .save(root.path())
+            .unwrap();
+
+        settings_act(root.path(), Setting::Pinned(true), "w".to_owned(), false)
+            .await
+            .unwrap();
+        settings_act(
+            root.path(),
+            Setting::Wake(WakeMode::Operator),
+            "w".to_owned(),
+            true,
+        )
+        .await
+        .unwrap();
+        let file = HostFile::load(root.path()).unwrap();
+        assert!(file.worlds["w"].pinned);
+        assert_eq!(file.worlds["w"].wake, WakeMode::Operator);
+        let text = inspection_lines(&inspect_world(root.path(), &file, "w").unwrap());
+        assert!(text.contains("\npinned true\nwake operator\n"), "{text}");
+
+        settings_act(root.path(), Setting::Pinned(false), "w".to_owned(), false)
+            .await
+            .unwrap();
+        assert!(!HostFile::load(root.path()).unwrap().worlds["w"].pinned);
+        assert!(
+            settings_act(
+                root.path(),
+                Setting::Pinned(true),
+                "nobody".to_owned(),
+                false
+            )
+            .await
+            .is_err()
+        );
+        assert_eq!(
+            settings_line(&settings_body(&file, "w").unwrap()),
+            "w asleep pinned=true wake=operator\n"
+        );
     }
 
     #[test]
