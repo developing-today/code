@@ -19,7 +19,7 @@ if [ -z "${WASM_OPT:-}" ]; then
 fi
 
 # The world platform (host adapter + ABI) is shared by every app.
-(cd ../roc-world && ./build-host.sh >/dev/null)
+(cd ../roc-world && bash ./build-host.sh >/dev/null)
 
 # Built without --debug and shrunk below (F11.15, #555) so the checked-in
 # module stays <= 1 MiB; the strip step keeps the name section, so

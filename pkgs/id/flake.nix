@@ -863,6 +863,10 @@
                     export HOME=$(mktemp -d)
                     export CARGO_HOME=$HOME/.cargo
 
+                    # The E2E server requires the Roc platform host WASM file,
+                    # which is git-ignored and not built by this derivation.
+                    ${buildWasmHost}
+
                     # @tailwindcss/cli uses @parcel/watcher (native module) which needs libstdc++
                     export LD_LIBRARY_PATH="${pkgs.stdenv.cc.cc.lib}/lib''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 

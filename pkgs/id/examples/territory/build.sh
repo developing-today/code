@@ -29,7 +29,7 @@ if [ -z "${WASM_OPT:-}" ]; then
   fi
 fi
 
-(cd ../roc-world && ./build-host.sh >/dev/null)
+(cd ../roc-world && bash ./build-host.sh >/dev/null)
 # Roc's default initial wasm memory (64 MiB) is above the sandbox's 16 MiB limit.
 "$ROC" build main.roc --target=wasm32 --wasm-memory=8454144 --output=territory.wasm
 
