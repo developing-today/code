@@ -13,12 +13,13 @@
 //! `clear-override`, masking `delete` and history `revert` are the three
 //! delete-related states from the fleet-kv design (D005) and stay distinct.
 
+pub mod backup;
 pub mod cli;
 pub mod launch;
 
 use rusqlite::{Connection, ErrorCode, OptionalExtension, Transaction, params};
 
-const SCHEMA_VERSION: i64 = 2;
+const SCHEMA_VERSION: i64 = 3;
 const BUSY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
 #[derive(Debug)]
@@ -128,7 +129,7 @@ pub struct OutboxIntent {
 }
 
 pub struct LocalStore {
-    connection: Connection,
+    pub(crate) connection: Connection,
 }
 
 impl LocalStore {
@@ -425,7 +426,8 @@ fn busy_or_sql(error: rusqlite::Error) -> KvError {
 
 /// Schema migration keyed on `PRAGMA user_version`. Version 1 is the
 /// original value-only `kv_local`; version 2 adds versions, tombstones, the
-/// outbox and the generation fence. Existing overlay rows become version 1.
+/// outbox and the generation fence (existing overlay rows become version 1);
+/// version 3 adds the backup manifest and its working-file pins.
 fn migrate(connection: &Connection) -> Result<(), KvError> {
     let current: i64 = connection
         .pragma_query_value(None, "user_version", |row| row.get(0))
@@ -434,6 +436,16 @@ fn migrate(connection: &Connection) -> Result<(), KvError> {
         return Ok(());
     }
     let tx = connection.unchecked_transaction().map_err(sql)?;
+    if current < 2 {
+        migrate_to_v2(&tx)?;
+    }
+    backup::migrate_to_v3(&tx)?;
+    tx.pragma_update(None, "user_version", SCHEMA_VERSION)
+        .map_err(sql)?;
+    tx.commit().map_err(sql)
+}
+
+fn migrate_to_v2(tx: &Transaction<'_>) -> Result<(), KvError> {
     let has_version: bool = tx
         .query_row(
             "SELECT COUNT(*) FROM pragma_table_info('kv_local') WHERE name='version'",
@@ -494,10 +506,7 @@ fn migrate(connection: &Connection) -> Result<(), KvError> {
                 version, NULL, value, state, 'set', 0
          FROM kv_local;",
     )
-    .map_err(sql)?;
-    tx.pragma_update(None, "user_version", SCHEMA_VERSION)
-        .map_err(sql)?;
-    tx.commit().map_err(sql)
+    .map_err(sql)
 }
 
 /// Append the next version for the tuple, point the overlay at it and
