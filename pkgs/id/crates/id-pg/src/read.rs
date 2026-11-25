@@ -187,11 +187,16 @@ pub enum DecodeError {
         /// The column's declared type.
         declared_type: String,
     },
+    /// A row broke the protocol: it carries a column the owner did not
+    /// declare, or it lacks a column the keyset cursor needs. The column
+    /// name is not kept, so nothing undeclared reaches an error.
+    MalformedRow,
 }
 
 /// Turns a page body into rows, and a row into its keyset cursor.
 ///
-/// The typed mapping (§5.1, #13761) implements this.
+/// The typed mapping (§5.1, #13761) implements this as
+/// [`TypedDecoder`](crate::TypedDecoder).
 pub trait PageDecoder {
     /// One decoded row.
     type Row;
@@ -339,6 +344,7 @@ impl From<DecodeError> for ReadError {
     fn from(error: DecodeError) -> Self {
         match error {
             DecodeError::NotJson => Self::NonJsonBody,
+            DecodeError::MalformedRow => Self::MalformedPage,
             DecodeError::TypeMapping {
                 column,
                 declared_type,

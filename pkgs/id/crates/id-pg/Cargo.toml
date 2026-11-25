@@ -3,7 +3,7 @@ name = "id-pg"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.96"
-description = "Postgres-over-HTTP (PostgREST) query translator, collection allowlist, endpoint registration, error mapping, and live and materialized read paths for the id foreign data-store adapters (#5805; slices #13760, #13758, #13762, #13763)"
+description = "Postgres-over-HTTP (PostgREST) query translator, collection allowlist, endpoint registration, error mapping, live and materialized read paths, and typed mapping for the id foreign data-store adapters (#5805; slices #13760, #13758, #13762, #13763, #13761)"
 license = "MIT OR Apache-2.0"
 
 # Slice #13760 of the Postgres-over-HTTP adapter design (#5805,
