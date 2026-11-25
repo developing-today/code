@@ -4,6 +4,7 @@
   "admin_role": "kv-admin",
   "admin_door": "kv-admin",
   "door_namespace_scope": "SELECT scope_kind, shared_scope_id FROM kv_namespaces\n         WHERE registry_id = ?1 AND namespace = ?2",
+  "door_namespace_placement": "SELECT jurisdiction, tier FROM kv_namespace_placement\n         WHERE registry_id = ?1 AND namespace = ?2",
   "statements": [
     {
       "name": "cas.receipt_insert",
@@ -147,6 +148,39 @@
       "owner": null,
       "writer": null,
       "sql": "SELECT registry_id, namespace, scope_kind, shared_scope_id, core_binding,\n                global_flag, blob_threshold, policy_epoch\n         FROM kv_namespaces WHERE registry_id = ?1 ORDER BY namespace"
+    },
+    {
+      "name": "placement.upsert",
+      "class": "admin",
+      "args": 5,
+      "scope": null,
+      "registry": null,
+      "namespace": null,
+      "owner": null,
+      "writer": null,
+      "sql": "INSERT INTO kv_namespace_placement (\n                 registry_id, namespace, jurisdiction, tier, updated_at_ms)\n             SELECT ?1, ?2, ?3, ?4, ?5\n             WHERE EXISTS (SELECT 1 FROM kv_namespaces WHERE registry_id = ?1 AND namespace = ?2)\n             ON CONFLICT (registry_id, namespace) DO UPDATE SET\n                 jurisdiction = excluded.jurisdiction,\n                 tier = excluded.tier,\n                 updated_at_ms = excluded.updated_at_ms"
+    },
+    {
+      "name": "placement.delete",
+      "class": "admin",
+      "args": 2,
+      "scope": null,
+      "registry": null,
+      "namespace": null,
+      "owner": null,
+      "writer": null,
+      "sql": "DELETE FROM kv_namespace_placement WHERE registry_id = ?1 AND namespace = ?2"
+    },
+    {
+      "name": "placements.read",
+      "class": "read",
+      "args": 1,
+      "scope": null,
+      "registry": null,
+      "namespace": null,
+      "owner": null,
+      "writer": null,
+      "sql": "SELECT namespace, jurisdiction, tier FROM kv_namespace_placement\n         WHERE registry_id = ?1 ORDER BY namespace"
     },
     {
       "name": "grants.read",
@@ -355,6 +389,12 @@
           "CREATE TABLE IF NOT EXISTS kv_blobs (\n    jurisdiction TEXT NOT NULL,\n    tier TEXT NOT NULL,\n    content_id TEXT NOT NULL,\n    bytes_len INTEGER NOT NULL CHECK (bytes_len >= 0),\n    locator TEXT NOT NULL,\n    state TEXT NOT NULL CHECK (state = 'published'),\n    published_at_ms INTEGER NOT NULL,\n    PRIMARY KEY (jurisdiction, tier, content_id)\n) WITHOUT ROWID",
           "CREATE TABLE IF NOT EXISTS kv_blob_refs (\n    jurisdiction TEXT NOT NULL,\n    tier TEXT NOT NULL,\n    content_id TEXT NOT NULL,\n    writer TEXT NOT NULL,\n    host_incarnation TEXT NOT NULL,\n    outbox_id TEXT NOT NULL,\n    scope_id TEXT NOT NULL,\n    registry_id TEXT NOT NULL,\n    namespace TEXT NOT NULL,\n    key TEXT NOT NULL,\n    registered_at_ms INTEGER NOT NULL,\n    PRIMARY KEY (jurisdiction, tier, content_id, writer, host_incarnation, outbox_id)\n) WITHOUT ROWID",
           "CREATE TABLE IF NOT EXISTS kv_blob_deletions (\n    jurisdiction TEXT NOT NULL,\n    tier TEXT NOT NULL,\n    epoch INTEGER NOT NULL CHECK (epoch >= 1),\n    content_id TEXT NOT NULL,\n    bytes_len INTEGER NOT NULL CHECK (bytes_len >= 0),\n    candidate_since_ms INTEGER NOT NULL,\n    deleted_at_ms INTEGER NOT NULL,\n    attempt TEXT NOT NULL UNIQUE,\n    PRIMARY KEY (jurisdiction, tier, epoch)\n) WITHOUT ROWID"
+        ]
+      },
+      {
+        "version": 4,
+        "statements": [
+          "CREATE TABLE IF NOT EXISTS kv_namespace_placement (\n    registry_id TEXT NOT NULL,\n    namespace TEXT NOT NULL,\n    jurisdiction TEXT NOT NULL,\n    tier TEXT NOT NULL,\n    updated_at_ms INTEGER NOT NULL,\n    PRIMARY KEY (registry_id, namespace)\n) WITHOUT ROWID"
         ]
       }
     ]
