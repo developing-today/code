@@ -17,6 +17,7 @@ pub mod backup;
 pub mod central;
 pub mod cli;
 pub mod launch;
+pub mod sweep;
 pub mod working;
 
 use std::io::{Read, Write};
@@ -26,7 +27,7 @@ use rusqlite::{Connection, ErrorCode, OptionalExtension, Transaction, params};
 
 use crate::working::{INLINE_LIMIT, WorkingError, WorkingRef};
 
-const SCHEMA_VERSION: i64 = 4;
+const SCHEMA_VERSION: i64 = 5;
 const BUSY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
 #[derive(Debug)]
@@ -569,7 +570,9 @@ fn busy_or_sql(error: rusqlite::Error) -> KvError {
 /// Schema migration keyed on `PRAGMA user_version`. Version 1 is the
 /// original value-only `kv_local`; version 2 adds versions, tombstones, the
 /// outbox and the generation fence (existing overlay rows become version 1);
-/// version 3 adds the backup manifest and its working-file pins.
+/// version 3 adds the backup manifest and its working-file pins; version 4
+/// lets rows refer to working files; version 5 adds the host incarnation, the
+/// per-key central base and local copies of sweep receipts.
 fn migrate(connection: &Connection) -> Result<(), KvError> {
     let current: i64 = connection
         .pragma_query_value(None, "user_version", |row| row.get(0))
@@ -583,6 +586,7 @@ fn migrate(connection: &Connection) -> Result<(), KvError> {
     }
     backup::migrate_to_v3(&tx)?;
     migrate_to_v4(&tx)?;
+    sweep::migrate_to_v5(&tx)?;
     tx.pragma_update(None, "user_version", SCHEMA_VERSION)
         .map_err(sql)?;
     tx.commit().map_err(sql)
