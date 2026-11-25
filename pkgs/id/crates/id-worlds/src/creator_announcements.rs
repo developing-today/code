@@ -338,7 +338,6 @@ pub struct AnnouncementLine {
     /// Position in the log, from 1.
     pub sequence: u64,
     /// The event.
-    #[serde(flatten)]
     pub event: AnnouncementEvent,
 }
 
@@ -1420,10 +1419,12 @@ mod tests {
             .unwrap();
         for line in log.lines() {
             let value = serde_json::to_value(line).unwrap();
+            let event = serde_json::to_value(&line.event).unwrap();
             let keys: BTreeSet<&str> = value
                 .as_object()
                 .unwrap()
                 .keys()
+                .chain(event.as_object().unwrap().keys())
                 .map(String::as_str)
                 .collect();
             for forbidden in ["audience", "recipients", "views", "opens", "clicks"] {
