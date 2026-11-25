@@ -204,10 +204,11 @@ Run `repo-queue <verb> --help` for flags:\n\
   dep-recheck [--task <id>] [--limit <n>]\n\
   quarantine-recheck [--task <id>] [--limit <n>]\n\
   repair <task-id> [--worker <id>] [--reason <text>] [--dry-run]\n\
-  cancel <task-id> [--worker <id>] --reason <text>\n\
+  resolution-backfill\n\
+  cancel <task-id> [--worker <id>] --reason <text> --resolution <name> [--substatus <name>] [--ref <target>]\n\
   revive <task-id> [--worker <id>] [--reason <text>] [--not-before <ts>]\n\
   fail <task-id> [--worker <id>] [--lane <id>] --error <text> [--reason-class <c>] [--execution <id>]\n\
-  complete <task-id> [--worker <id>] [--lane <id>] [--result <json>] [--result-file <f>] [--telemetry <json>] [--execution <id>]\n\
+  complete <task-id> [--worker <id>] [--lane <id>] [--result <json>] [--result-file <f>] [--telemetry <json>] [--execution <id>] [--resolution <name>] [--substatus <name>] [--reason <text>] [--ref <target>]\n\
   verify-disposition <issue> --repo <owner/name> [--pr <n,n>] [--follow-up-task <id> | --follow-up-issue <n|url> | --follow-up-pr <n>] [--reason <text>] [--staleness-seconds <n>] [--json]\n\
   timeline <task-id> [--worker <id>] [--json]\n\
   history <task-id> [--worker <id>] [--json]  (alias of timeline)\n\
@@ -276,8 +277,11 @@ pub(crate) fn usage(verb: &str) -> &'static str {
         "repair" => {
             "usage: repo-queue repair <task-id> [--worker <id>] [--reason <text>] [--dry-run]\n\nRepairs a quarantined or malformed task packet in place: re-runs the packet validators and applies the deterministic repairs whose correct value can be re-derived (today the dedupe stamp, re-performed live — a live duplicate refuses). Unrepairable defects fail with the defect list and change nothing. --dry-run reports defects and planned repairs, writing nothing."
         }
+        "resolution-backfill" => {
+            "usage: repo-queue resolution-backfill\n\nRuns the idempotent Q2 terminal-resolution backfill and prints the terminal census, proven rows, and unresolved rows. Only verdicts evidenced by existing result data or a unique dedupe twin are written."
+        }
         "cancel" => {
-            "usage: repo-queue cancel <task-id> [--worker <id>] --reason <text>\n\nCancels a task. Without --worker, the cancellation is recorded under the default worker fleet-monitor."
+            "usage: repo-queue cancel <task-id> [--worker <id>] --reason <text> --resolution <name> [--substatus <name>] [--ref <target>]\n\nCancels a task with a required redirection or rejection resolution. Rejections require a reason; redirections require a reference. Without --worker, the cancellation is recorded under the default worker fleet-monitor."
         }
         "revive" => {
             "usage: repo-queue revive <task-id> [--worker <id>] [--reason <text>] [--not-before <ts>]\n\nRevives a terminal task."
@@ -286,7 +290,7 @@ pub(crate) fn usage(verb: &str) -> &'static str {
             "usage: repo-queue fail <task-id> [--worker <id>] [--lane <id>] --error <text> [--reason-class <c>] [--execution <id>]\n\nFails a task. --reason-class is one of transient (the default), deterministic, blocked."
         }
         "complete" => {
-            "usage: repo-queue complete <task-id> [--worker <id>] [--lane <id>] [--result <json>] [--result-file <f>] [--telemetry <json>] [--execution <id>]\n\nCompletes a task."
+            "usage: repo-queue complete <task-id> [--worker <id>] [--lane <id>] [--result <json>] [--result-file <f>] [--telemetry <json>] [--execution <id>] [--resolution <name>] [--substatus <name>] [--reason <text>] [--ref <target>]\n\nCompletes a task. Defaults to resolution done/unverified; a verified disposition readback stamps done/verified."
         }
         "verify-disposition" => {
             "usage: repo-queue verify-disposition <issue> --repo <owner/name> [--pr <n,n>] [--follow-up-task <id> | --follow-up-issue <n|url> | --follow-up-pr <n>] [--reason <text>] [--staleness-seconds <n>] [--json]\n\nReads the issue and its linked PRs back from GitHub and prints the disposition a terminal completion must carry (#10611); exits 1 when the broker's gate would reject it."
