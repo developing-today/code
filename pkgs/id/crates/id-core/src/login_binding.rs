@@ -693,7 +693,7 @@ impl ChallengePurpose {
 
     fn check(&self) -> Result<(), BindingError> {
         if let Self::DeviceEnrolment { device_key, scope } = self {
-            VerifyingKey::from_bytes(device_key).map_err(|_| BindingError::BadKey)?;
+            VerifyingKey::from_bytes(device_key).map_err(|_err| BindingError::BadKey)?;
             if scope.is_empty() {
                 return Err(BindingError::Field {
                     field: "scope",
@@ -898,9 +898,9 @@ fn verify(
     signature: &[u8; 64],
     which: &'static str,
 ) -> Result<(), BindingError> {
-    let key = VerifyingKey::from_bytes(key).map_err(|_| BindingError::BadKey)?;
+    let key = VerifyingKey::from_bytes(key).map_err(|_err| BindingError::BadKey)?;
     key.verify_strict(message, &Signature::from_bytes(signature))
-        .map_err(|_| BindingError::BadSignature { which })
+        .map_err(|_err| BindingError::BadSignature { which })
 }
 
 const fn check_text(field: &'static str, value: &str) -> Result<(), BindingError> {
@@ -1008,13 +1008,15 @@ impl<'a> Fields<'a> {
 
     fn bytes32(&self, name: &'static str) -> Result<[u8; 32], BindingError> {
         match self.get(name)? {
-            Value::Bytes(bytes) => bytes
-                .as_slice()
-                .try_into()
-                .map_err(|_| BindingError::Field {
-                    field: name,
-                    problem: "is not 32 bytes",
-                }),
+            Value::Bytes(bytes) => {
+                bytes
+                    .as_slice()
+                    .try_into()
+                    .map_err(|_err| BindingError::Field {
+                        field: name,
+                        problem: "is not 32 bytes",
+                    })
+            }
             _ => Err(BindingError::Field {
                 field: name,
                 problem: "is not a byte string",
@@ -1192,7 +1194,7 @@ mod tests {
         let mut recovery = SignedBinding::enrol(next(&stored, &new_key), &new_key).unwrap();
         recovery.authority = Some(BindingAuthority::Recovery(vec![1, 2, 3]));
         assert_eq!(
-            registry.update(recovery.clone(), &NoRecoveryThreshold),
+            registry.update(recovery, &NoRecoveryThreshold),
             Err(BindingError::RecoveryRejected)
         );
         assert_eq!(registry.binding(&account()), Some(&stored));
