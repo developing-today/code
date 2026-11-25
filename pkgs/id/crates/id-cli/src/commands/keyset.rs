@@ -6,6 +6,7 @@
 //! the admin key and the first device. The identity ID stays the key's
 //! public key.
 
+use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::path::Path;
 
@@ -18,6 +19,8 @@ use crate::{CLIENT_KEY_FILE, KEY_FILE};
 use id_core::hex::hex_encode;
 use id_directory::keyset::{AdminKeyState, KeysetEntry, KeysetState};
 use id_directory::keyset_file::{CLIENT_KEYSET_FILE, KEYSET_FILE, KeysetFile};
+use id_events::groups::Key;
+use id_groups::encryption::DeviceSets;
 use id_directory::restored_key::{
     self, CLIENT_RESTORED_KEY_FILE, RESTORED_KEY_FILE, RestoreStatus,
 };
@@ -214,6 +217,18 @@ pub fn render_state(state: &KeysetState) -> String {
     out
 }
 
+/// The device sets the group-encryption adapter consumes (#2380 packet 3):
+/// each member identity's folded keyset, cut to its active device keys.
+///
+/// `keysets` is keyed by member identity key (the genesis admin key, keyset
+/// ADR Decision 1). A member with no entry keeps the adapter's single-key
+/// behaviour — it is its own only device — so an unmigrated member needs no
+/// entry here.
+#[must_use]
+pub fn device_sets(_keysets: &BTreeMap<Key, KeysetState>) -> DeviceSets {
+    DeviceSets::new()
+}
+
 /// One line on how far the head is protected by checkpoint finality.
 fn finality_line(file: &KeysetFile, head: &str) -> String {
     if file.final_heads().contains(head) {
@@ -228,7 +243,65 @@ fn finality_line(file: &KeysetFile, head: &str) -> String {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
+    use std::collections::BTreeSet;
+
     use super::*;
+
+    #[test]
+    fn device_sets_cut_each_member_to_its_active_devices() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(KEYSET_FILE);
+        let owner = SigningKey::from_bytes(&[1; 32]);
+        let laptop = SigningKey::from_bytes(&[2; 32]);
+        let lost = SigningKey::from_bytes(&[3; 32]);
+        let (mut file, _) = KeysetFile::open_or_migrate(&path, &owner).unwrap();
+        file.append(
+            &owner,
+            KeysetEntry::DeviceEnrolled {
+                device_key: public_hex(&laptop),
+                label: "laptop".to_owned(),
+            },
+            Some(&laptop),
+        )
+        .unwrap();
+        file.append(
+            &owner,
+            KeysetEntry::DeviceEnrolled {
+                device_key: public_hex(&lost),
+                label: "lost phone".to_owned(),
+            },
+            Some(&lost),
+        )
+        .unwrap();
+        file.append(
+            &owner,
+            KeysetEntry::DeviceRevoked {
+                device_key: public_hex(&lost),
+                reason: "lost".to_owned(),
+            },
+            None,
+        )
+        .unwrap();
+        let state = file.state().unwrap();
+        let member = owner.verifying_key().to_bytes();
+        let sets = device_sets(&BTreeMap::from([(member, state)]));
+        assert_eq!(
+            sets.devices_of(&member),
+            BTreeSet::from([
+                owner.verifying_key().to_bytes(),
+                laptop.verifying_key().to_bytes(),
+            ]),
+            "the genesis device and the enrolled device, not the revoked one"
+        );
+        let unmigrated = SigningKey::from_bytes(&[9; 32])
+            .verifying_key()
+            .to_bytes();
+        assert_eq!(
+            sets.devices_of(&unmigrated),
+            BTreeSet::from([unmigrated]),
+            "a member with no keyset entry is its own only device"
+        );
+    }
 
     #[test]
     fn render_lists_admins_and_devices_with_status() {

@@ -440,6 +440,18 @@ impl KeysetState {
         self.admin_keys.get(key) == Some(&AdminKeyState::Active)
     }
 
+    /// The active (unrevoked) device keys, as raw key bytes: the set the
+    /// group-encryption sessions of this identity are cut from (keyset ADR
+    /// §6, #2380 packet 3). Folded device keys are validated hex; an entry
+    /// that does not decode is not a device and is skipped.
+    #[must_use]
+    pub fn active_device_keys(&self) -> BTreeSet<[u8; 32]> {
+        self.devices
+            .keys()
+            .filter_map(|key| hex_to_array::<32>(key))
+            .collect()
+    }
+
     /// This state with its pending guardian-set change in force, if the
     /// directory first saw that change (`pending_seen`) at least the
     /// recovery delay before `at`. Unknown times never mature a change,
@@ -1044,6 +1056,54 @@ mod tests {
         countersigner: Option<&SigningKey>,
     ) -> KeysetRecord {
         KeysetRecord::sign(author, lamport, prior.hash.clone(), entry, countersigner).unwrap()
+    }
+
+    #[test]
+    fn active_device_keys_excludes_revoked_devices() {
+        let first = genesis();
+        let admin = key(1);
+        let enrolled = append(
+            &first,
+            &admin,
+            2,
+            KeysetEntry::DeviceEnrolled {
+                device_key: public(2),
+                label: "second device".to_owned(),
+            },
+            Some(&key(2)),
+        );
+        let enrolled_third = append(
+            &enrolled,
+            &admin,
+            3,
+            KeysetEntry::DeviceEnrolled {
+                device_key: public(3),
+                label: "third device".to_owned(),
+            },
+            Some(&key(3)),
+        );
+        let revoked = append(
+            &enrolled_third,
+            &admin,
+            4,
+            KeysetEntry::DeviceRevoked {
+                device_key: public(3),
+                reason: "lost".to_owned(),
+            },
+            None,
+        );
+        let mut log = Log::default();
+        for record in [first.clone(), enrolled, enrolled_third, revoked] {
+            log.insert(record).unwrap();
+        }
+        let state = fold(&log, &first.hash).unwrap();
+        let expected: BTreeSet<[u8; 32]> = [
+            key(1).verifying_key().to_bytes(),
+            key(2).verifying_key().to_bytes(),
+        ]
+        .into_iter()
+        .collect();
+        assert_eq!(state.active_device_keys(), expected);
     }
 
     #[test]
