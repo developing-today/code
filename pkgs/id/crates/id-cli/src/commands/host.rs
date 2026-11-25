@@ -11,15 +11,21 @@ use crate::cli::HostCommand;
 ///
 /// # Errors
 ///
-/// `run` fails when the data root cannot be opened, a recorded-live
-/// world fails replay, a `--start` world cannot start (every world
-/// already live is drained first), or a world fails to drain on
-/// Ctrl-C. `list` and `inspect` fail when the host file is unreadable
-/// or names another data root; `inspect` also fails for a world the
-/// host file does not record.
+/// `run` fails when another host already runs on the data root, the
+/// data root cannot be opened, a recorded-live world fails replay, a
+/// `--start` world cannot start (every world already live is drained
+/// first), or a world fails to drain on Ctrl-C. `start`, `stop`,
+/// `archive` and `restore` fail when no host runs on the data root or
+/// the host refuses the act. `list` and `inspect` fail when the host
+/// file is unreadable or names another data root; `inspect` also fails
+/// for a world the host file does not record.
 pub async fn cmd_host(command: HostCommand) -> Result<()> {
     match command {
         HostCommand::Run { root, start, actor } => {
+            // Bind first: a second host on the same root must be refused
+            // before it replays any world the first one holds.
+            #[cfg(unix)]
+            let listener = id_worlds::host_control::bind(&root)?;
             let mut supervisor = Supervisor::open(&root)
                 .await
                 .with_context(|| format!("opening data root {}", root.display()))?;
@@ -35,11 +41,49 @@ pub async fn cmd_host(command: HostCommand) -> Result<()> {
                 supervisor.live_names().len(),
                 root.display()
             );
+            #[cfg(unix)]
+            {
+                let served = id_worlds::host_control::serve(&mut supervisor, &listener, async {
+                    let _ = tokio::signal::ctrl_c().await;
+                })
+                .await;
+                drop(listener);
+                let _ = std::fs::remove_file(id_worlds::host_control::socket_path(&root));
+                if let Err(error) = served {
+                    supervisor.shutdown().await?;
+                    return Err(error);
+                }
+            }
+            #[cfg(not(unix))]
             tokio::signal::ctrl_c()
                 .await
                 .context("waiting for Ctrl-C")?;
             supervisor.shutdown().await
         }
+        HostCommand::Start {
+            root,
+            world,
+            actor,
+            json,
+        } => operator_act(&root, ControlAct::Start, world, actor, json).await,
+        HostCommand::Stop {
+            root,
+            world,
+            actor,
+            json,
+        } => operator_act(&root, ControlAct::Stop, world, actor, json).await,
+        HostCommand::Archive {
+            root,
+            world,
+            actor,
+            json,
+        } => operator_act(&root, ControlAct::Archive, world, actor, json).await,
+        HostCommand::Restore {
+            root,
+            world,
+            actor,
+            json,
+        } => operator_act(&root, ControlAct::Restore, world, actor, json).await,
         HostCommand::List { root, json } => {
             let file = HostFile::read_or_rebuild(&root)
                 .with_context(|| format!("reading data root {}", root.display()))?;
@@ -63,6 +107,80 @@ pub async fn cmd_host(command: HostCommand) -> Result<()> {
             Ok(())
         }
     }
+}
+
+/// The operator acts that need a running host.
+#[derive(Clone, Copy, Debug)]
+enum ControlAct {
+    Start,
+    Stop,
+    Archive,
+    Restore,
+}
+
+/// Send one operator act to the host running on `root` and print its
+/// answer: `<world> <state>` (and the replay result after a start), or
+/// the host's JSON with `--json`.
+#[cfg(unix)]
+async fn operator_act(
+    root: &std::path::Path,
+    act: ControlAct,
+    world: String,
+    actor: String,
+    json: bool,
+) -> Result<()> {
+    use id_worlds::host_control::{ControlRequest, request};
+    let message = match act {
+        ControlAct::Start => ControlRequest::Start { world, actor },
+        ControlAct::Stop => ControlRequest::Stop { world, actor },
+        ControlAct::Archive => ControlRequest::Archive { world, actor },
+        ControlAct::Restore => ControlRequest::Restore { world, actor },
+    };
+    let answer = request(root, &message).await?;
+    if !answer.ok {
+        anyhow::bail!(
+            "{}",
+            answer
+                .error
+                .unwrap_or_else(|| "the host refused without a reason".to_owned())
+        );
+    }
+    let body = answer.body.unwrap_or_default();
+    if json {
+        println!("{}", serde_json::to_string_pretty(&body)?);
+    } else {
+        print!("{}", act_line(&body));
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+async fn operator_act(
+    _root: &std::path::Path,
+    _act: ControlAct,
+    _world: String,
+    _actor: String,
+    _json: bool,
+) -> Result<()> {
+    anyhow::bail!("reaching a running host needs its Unix control socket")
+}
+
+/// `<world> <state>`, plus the replay result when the act was a start.
+fn act_line(body: &serde_json::Value) -> String {
+    let text = |key: &str| body[key].as_str().unwrap_or("?").to_owned();
+    let mut line = format!("{} {}", text("world"), text("state"));
+    if let Some(entries) = body["journal_entries"].as_u64() {
+        let _ = write!(
+            line,
+            " journal-entries={entries} replayed-inputs={}",
+            body["replayed_inputs"].as_u64().unwrap_or(0)
+        );
+    }
+    if let Some(error) = body["program_error"].as_str() {
+        let _ = write!(line, " program-unavailable: {error}");
+    }
+    line.push('\n');
+    line
 }
 
 /// `id host inspect` as lines: one fact per line, then one line per
@@ -191,5 +309,22 @@ mod tests {
         let alpha = inspection_lines(&inspect_world(root.path(), &file, "alpha").unwrap());
         assert!(alpha.contains("history none\n"), "{alpha}");
         assert!(inspect_world(root.path(), &file, "gamma").is_err());
+    }
+
+    #[test]
+    fn act_lines_name_the_world_its_state_and_any_replay_result() {
+        let stopped = serde_json::json!({ "world": "w", "state": "asleep" });
+        assert_eq!(act_line(&stopped), "w asleep\n");
+        let started = serde_json::json!({
+            "world": "w",
+            "state": "live",
+            "journal_entries": 3,
+            "replayed_inputs": 2,
+            "program_error": "no module",
+        });
+        assert_eq!(
+            act_line(&started),
+            "w live journal-entries=3 replayed-inputs=2 program-unavailable: no module\n"
+        );
     }
 }

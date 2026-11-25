@@ -36,7 +36,7 @@
 //!   petname      List the petnames one owner gave, read-only, from a petnames journal
 //!   match-audit Export and verify signed match-audit v0 logs
 //!   walk       The #9106 walking skeleton, driven by hand (stored nodes, sync, reports)
-//!   host       Host mode: run, list or inspect a data root of world directories
+//!   host       Host mode: run a data root of world directories and operate it
 //!   group        Groups: create, policy, add, remove, set roles, list, join
 //!   delegate     Grant a delegate a scope in a group
 //!   revoke       Revoke a delegation by its grant's event ID

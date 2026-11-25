@@ -70,6 +70,8 @@ pub mod creator_org_views;
 pub mod groups;
 pub mod guest_burn;
 pub mod host;
+#[cfg(unix)]
+pub mod host_control;
 pub mod input_framing;
 pub mod program_bundle;
 pub mod program_gallery;
