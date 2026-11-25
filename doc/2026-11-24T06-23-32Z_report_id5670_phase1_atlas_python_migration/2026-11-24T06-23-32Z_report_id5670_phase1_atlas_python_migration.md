@@ -19,11 +19,11 @@ every §8 row at 2026-11-24, and slices the remainder.
 Commits `c6e5aad02` / `77a3aae8c` ("atlas-search python reference + eval
 harness (branch disposition 2026-11-07)") added:
 
-| Outside source (hatch-personal `workspace/turso-atlas/scripts/`) | Destination in this repo |
-| --- | --- |
-| `atlas_search.py` | `pkgs/atlas-search/atlas_search.py` |
-| `eval3.py` | `pkgs/atlas-search/eval/eval3.py` |
-| `golden-queries-v3.json` (the golden-311 corpus) | `pkgs/atlas-search/eval/fixtures/golden-311.json` |
+| Outside source (hatch-personal `workspace/turso-atlas/scripts/`) | Destination in this repo                          |
+| ---------------------------------------------------------------- | ------------------------------------------------- |
+| `atlas_search.py`                                                | `pkgs/atlas-search/atlas_search.py`               |
+| `eval3.py`                                                       | `pkgs/atlas-search/eval/eval3.py`                 |
+| `golden-queries-v3.json` (the golden-311 corpus)                 | `pkgs/atlas-search/eval/fixtures/golden-311.json` |
 
 Parity, verified fresh on 2026-11-24 against the outside copies as they
 stand today:
@@ -55,23 +55,23 @@ seat's `atlas-search-py` wrapper is repointed at the in-repo copy.
 
 Live rows:
 
-| §8 row | Status | Remainder |
-| --- | --- | --- |
-| `atlas_search.py` → `pkgs/atlas-search/` | **Landed** 2026-11-07; parity verified §1 | Outside copy retired (this record) |
-| `eval3.py` + golden-311 → eval tooling | **Landed** 2026-11-07; parity verified §1 | Outside copy retired (this record); the from-new-home run is #14131 |
-| `embed_pass3.py`, `embed_onnx.py` → aggregator embedding stage | Not landed as files — by design the destination is aggregator behaviour (§4.3, `fleet serve` search role) | Coverage verification + retirement: #14128 |
-| `atlas-ingest.py` → aggregator promotion path | Same as above | #14128 |
-| `~/tools/bin/atlas-search` wrapper → fleet `search` domain | Destination exists: the fleet binary has both the `search` domain and the `serve` search role | Production-path proof + wrapper retirement: #14130 |
-| `atlas-backup` → `fleet search` backup verb / serve maintenance role | No backup verb exists in the fleet binary or in `pkgs/atlas-search` nix today | Copy reconciliation (nix vs `~/tmp/atlas-backup.sh` vs hatch-personal `atlas-backup.py`), then the verb: #14129 |
-| Snowflake model provisioning → #5355 nix path | #5355 is closed; the seat wrapper already provisions the model from hash-verified pins in `~/.local/state/atlas-search/model` | Artifact deletion only: #14132 |
+| §8 row                                                               | Status                                                                                                                        | Remainder                                                                                                       |
+| -------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
+| `atlas_search.py` → `pkgs/atlas-search/`                             | **Landed** 2026-11-07; parity verified §1                                                                                     | Outside copy retired (this record)                                                                              |
+| `eval3.py` + golden-311 → eval tooling                               | **Landed** 2026-11-07; parity verified §1                                                                                     | Outside copy retired (this record); the from-new-home run is #14131                                             |
+| `embed_pass3.py`, `embed_onnx.py` → aggregator embedding stage       | Not landed as files — by design the destination is aggregator behaviour (§4.3, `fleet serve` search role)                     | Coverage verification + retirement: #14128                                                                      |
+| `atlas-ingest.py` → aggregator promotion path                        | Same as above                                                                                                                 | #14128                                                                                                          |
+| `~/tools/bin/atlas-search` wrapper → fleet `search` domain           | Destination exists: the fleet binary has both the `search` domain and the `serve` search role                                 | Production-path proof + wrapper retirement: #14130                                                              |
+| `atlas-backup` → `fleet search` backup verb / serve maintenance role | No backup verb exists in the fleet binary or in `pkgs/atlas-search` nix today                                                 | Copy reconciliation (nix vs `~/tmp/atlas-backup.sh` vs hatch-personal `atlas-backup.py`), then the verb: #14129 |
+| Snowflake model provisioning → #5355 nix path                        | #5355 is closed; the seat wrapper already provisions the model from hash-verified pins in `~/.local/state/atlas-search/model` | Artifact deletion only: #14132                                                                                  |
 
 Historical rows:
 
-| §8 row | Status | Remainder |
-| --- | --- | --- |
-| `~/atlas/v3/swap-2026-11-03/` scripts + `staging.db` (laptop) | Untouched — gated on the in-flight index rewrite completing and verifying | #14132 |
-| `hatch-personal/workspace/turso-atlas/docs/` | Archive in place per §8 (hatch-personal is the record); no action | — |
-| Transfer artifacts (`atlas-model-rev.tar` 1.2 GB, `atlas-step6-closure.nar` 300 MB, `~/tmp/atlas-migrate/`, `~/tmp/atlas-parts/`) | Laptop-side; not present on this seat | Reproducibility confirmation + delete: #14132 |
+| §8 row                                                                                                                            | Status                                                                    | Remainder                                     |
+| --------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------- | --------------------------------------------- |
+| `~/atlas/v3/swap-2026-11-03/` scripts + `staging.db` (laptop)                                                                     | Untouched — gated on the in-flight index rewrite completing and verifying | #14132                                        |
+| `hatch-personal/workspace/turso-atlas/docs/`                                                                                      | Archive in place per §8 (hatch-personal is the record); no action         | —                                             |
+| Transfer artifacts (`atlas-model-rev.tar` 1.2 GB, `atlas-step6-closure.nar` 300 MB, `~/tmp/atlas-migrate/`, `~/tmp/atlas-parts/`) | Laptop-side; not present on this seat                                     | Reproducibility confirmation + delete: #14132 |
 
 ## 3. Acceptance state of #5670
 

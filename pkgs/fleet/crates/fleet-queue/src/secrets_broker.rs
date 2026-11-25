@@ -71,7 +71,7 @@ use std::sync::{Arc, Condvar, Mutex, RwLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde_json::{Value, json};
-use tiny_http::{Header, Response, Server, StatusCode};
+use std::net::TcpListener;
 
 /// One cached secret: its value plus when the broker last fetched
 /// it from Bitwarden (#6767). The age is what lets a consumer (or a
@@ -369,21 +369,22 @@ fn persist_watermark(watermark: u64) -> Result<(), String> {
 /// reason to skip it.
 fn parse_rfc3339_unix(s: &str) -> Option<u64> {
     let s = s.trim();
-    let (dt, offset_s): (&str, i64) = if let Some(z) = s.strip_suffix('Z').or_else(|| s.strip_suffix('z')) {
-        (z, 0)
-    } else if s.len() >= 6 {
-        let (head, tail) = s.split_at(s.len() - 6);
-        let (sign_b, hh, mm) = (tail.as_bytes()[0], &tail[1..3], &tail[4..6]);
-        if (sign_b != b'+' && sign_b != b'-') || &tail[3..4] != ":" {
+    let (dt, offset_s): (&str, i64) =
+        if let Some(z) = s.strip_suffix('Z').or_else(|| s.strip_suffix('z')) {
+            (z, 0)
+        } else if s.len() >= 6 {
+            let (head, tail) = s.split_at(s.len() - 6);
+            let (sign_b, hh, mm) = (tail.as_bytes()[0], &tail[1..3], &tail[4..6]);
+            if (sign_b != b'+' && sign_b != b'-') || &tail[3..4] != ":" {
+                return None;
+            }
+            let hh: i64 = hh.parse().ok()?;
+            let mm: i64 = mm.parse().ok()?;
+            let off = hh * 3600 + mm * 60;
+            (head, if sign_b == b'+' { off } else { -off })
+        } else {
             return None;
-        }
-        let hh: i64 = hh.parse().ok()?;
-        let mm: i64 = mm.parse().ok()?;
-        let off = hh * 3600 + mm * 60;
-        (head, if sign_b == b'+' { off } else { -off })
-    } else {
-        return None;
-    };
+        };
     let (date, time) = dt.split_once('T').or_else(|| dt.split_once('t'))?;
     let d: Vec<&str> = date.split('-').collect();
     let (y, mo, d): (i64, i64, i64) = match d.as_slice() {
@@ -737,13 +738,6 @@ fn fetch_through_with(
     result
 }
 
-fn json_response(status: u16, body: Value) -> Response<std::io::Cursor<Vec<u8>>> {
-    let data = serde_json::to_vec(&body).unwrap_or_else(|_| b"{}".to_vec());
-    Response::from_data(data)
-        .with_status_code(StatusCode(status))
-        .with_header(Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..]).unwrap())
-}
-
 fn token_matches(provided: Option<&str>, expected: &str) -> bool {
     // #6320 defence in depth: an empty expected token never authenticates,
     // not even against an empty X-Agent-Token header.
@@ -945,7 +939,6 @@ pub fn parse_ttl_s(raw: Option<&str>) -> Result<TtlParse, String> {
 }
 
 pub fn run() -> i32 {
-    use std::io::Read as _;
     // Stage-2 broker resilience: on the sandbox the broker is a
     // local capability, never a LAN surface — force loopback
     // regardless of the environment, so a stale or widened
@@ -1025,7 +1018,7 @@ pub fn run() -> i32 {
         });
     }
 
-    let server = match Server::http(&bind) {
+    let server = match TcpListener::bind(&bind) {
         Ok(server) => server,
         Err(e) => {
             crate::log::info("secrets-broker", &format!("cannot bind {bind}: {e:?}"));
@@ -1100,59 +1093,39 @@ pub fn run() -> i32 {
         ),
     }
 
-    for mut req in server.incoming_requests() {
-        let state = Arc::clone(&state);
-        let token = token.clone();
-        std::thread::spawn(move || {
-            let url = req.url().to_string();
-            let provided = req
-                .headers()
-                .iter()
-                .find(|h| h.field.as_str().to_ascii_lowercase() == "x-agent-token")
-                .map(|h| h.value.as_str().to_string());
-            // #6515: authenticate and size-check from the headers
-            // before draining any body byte (tiny_http 0.12 exposes
-            // no per-connection read timeout; see queue_broker).
-            let content_length = req
-                .headers()
-                .iter()
-                .find(|h| h.field.as_str().to_ascii_lowercase() == "content-length")
-                .and_then(|h| h.value.as_str().parse::<u64>().ok());
-            if let Some((status, value)) = pre_body_refusal(
-                req.method().as_str(),
-                &url,
-                provided.as_deref(),
-                &token,
-                content_length,
-            ) {
-                let _ = req.respond(json_response(status, value));
-                return;
-            }
-            if req.method().as_str() == "POST" {
-                // POST /refresh's body is ignored by the handler;
-                // drain it (capped, #6515) as the pre-#6216 loop did.
-                let cap = (crate::uds_http::MAX_BODY_BYTES + 1) as u64;
-                let mut buf = Vec::new();
-                let _ = req.as_reader().take(cap).read_to_end(&mut buf);
-                if buf.len() > crate::uds_http::MAX_BODY_BYTES {
-                    let _ = req.respond(json_response(
-                        413,
-                        json!({"error": "request body too large"}),
-                    ));
-                    return;
-                }
-            }
+    let pre_token = token.clone();
+    crate::tcp_http::serve(
+        server,
+        move |head| {
+            pre_body_refusal(
+                &head.method,
+                &head.target,
+                head.header("X-Agent-Token"),
+                &pre_token,
+                head.header("Content-Length")
+                    .and_then(|v| v.parse::<u64>().ok()),
+            )
+            .map(|(status, value)| {
+                (
+                    status,
+                    serde_json::to_vec(&value).unwrap_or_else(|_| b"{}".to_vec()),
+                )
+            })
+        },
+        move |req| {
             let (status, value) = handle_request(
                 &state,
                 &token,
-                req.method().as_str(),
-                &url,
-                provided.as_deref(),
+                &req.method,
+                &req.target,
+                req.header("X-Agent-Token"),
             );
-            let _ = req.respond(json_response(status, value));
-        });
-    }
-    // incoming_requests() ends only when the server stops.
+            (
+                status,
+                serde_json::to_vec(&value).unwrap_or_else(|_| b"{}".to_vec()),
+            )
+        },
+    );
     0
 }
 
@@ -1624,18 +1597,27 @@ mod tests {
         // Oracle: `bws secret list` revisionDate looks like
         // 2026-10-07T07:23:52.457179600Z (9-digit fraction, Z).
         let live = parse_rfc3339_unix("2026-10-07T07:23:52.457179600Z").expect("live shape");
-        assert_eq!(live, parse_rfc3339_unix("2026-10-07T07:23:52Z").expect("plain"));
+        assert_eq!(
+            live,
+            parse_rfc3339_unix("2026-10-07T07:23:52Z").expect("plain")
+        );
         assert_eq!(
             live,
             parse_rfc3339_unix("2026-10-07T09:23:52+02:00").expect("offset")
         );
         assert_eq!(
             parse_rfc3339_unix("2026-10-07T09:23:52+02:00").expect("offset"),
-            parse_rfc3339_unix("2026-10-07T07:23:52Z").expect("z") 
+            parse_rfc3339_unix("2026-10-07T07:23:52Z").expect("z")
         );
         // Absolute anchor (verified against `date -u -d`): 2026-01-01T00:00:00Z.
         assert_eq!(parse_rfc3339_unix("2026-01-01T00:00:00Z"), Some(1767225600));
-        for bad in ["", "not-a-date", "2026-13-01T00:00:00Z", "2026-01-01 00:00:00", "2026-01-01T25:00:00Z"] {
+        for bad in [
+            "",
+            "not-a-date",
+            "2026-13-01T00:00:00Z",
+            "2026-01-01 00:00:00",
+            "2026-01-01T25:00:00Z",
+        ] {
             assert_eq!(parse_rfc3339_unix(bad), None, "reject {bad}");
         }
     }
@@ -1651,19 +1633,40 @@ mod tests {
             ("id-g", "gamma", "old-gamma", 100),
         ]);
         let entries = vec![
-            ("id-a".to_string(), "alpha".to_string(), "new-alpha-upstream".to_string(), Some(900)),
-            ("id-b".to_string(), "beta".to_string(), "new-beta".to_string(), Some(1100)),
+            (
+                "id-a".to_string(),
+                "alpha".to_string(),
+                "new-alpha-upstream".to_string(),
+                Some(900),
+            ),
+            (
+                "id-b".to_string(),
+                "beta".to_string(),
+                "new-beta".to_string(),
+                Some(1100),
+            ),
         ];
         let out = apply_delta_refresh(&state, &entries, Some(1000), 2000, 1940);
-        assert_eq!(out, DeltaOutcome { applied: 1, deleted: 1, total: 2 });
+        assert_eq!(
+            out,
+            DeltaOutcome {
+                applied: 1,
+                deleted: 1,
+                total: 2
+            }
+        );
         let secrets = state.secrets.read().unwrap();
         // Below-watermark entry: value and fetch time untouched.
         assert_eq!(
-            secrets.get("alpha").map(|c| (c.value.as_str(), c.fetched_at_unix)),
+            secrets
+                .get("alpha")
+                .map(|c| (c.value.as_str(), c.fetched_at_unix)),
             Some(("old-alpha", 100))
         );
         assert_eq!(
-            secrets.get("beta").map(|c| (c.value.as_str(), c.fetched_at_unix)),
+            secrets
+                .get("beta")
+                .map(|c| (c.value.as_str(), c.fetched_at_unix)),
             Some(("new-beta", 2000))
         );
         assert!(!secrets.contains_key("gamma"));
@@ -1681,18 +1684,39 @@ mod tests {
             ("id-b", "beta", "old-beta", 100),
         ]);
         let entries = vec![
-            ("id-a".to_string(), "alpha".to_string(), "old-alpha".to_string(), Some(500)),
-            ("id-b".to_string(), "beta".to_string(), "old-beta".to_string(), Some(900)),
+            (
+                "id-a".to_string(),
+                "alpha".to_string(),
+                "old-alpha".to_string(),
+                Some(500),
+            ),
+            (
+                "id-b".to_string(),
+                "beta".to_string(),
+                "old-beta".to_string(),
+                Some(900),
+            ),
         ];
         let out = apply_delta_refresh(&state, &entries, Some(1000), 2000, 1940);
-        assert_eq!(out, DeltaOutcome { applied: 0, deleted: 0, total: 2 });
+        assert_eq!(
+            out,
+            DeltaOutcome {
+                applied: 0,
+                deleted: 0,
+                total: 2
+            }
+        );
         let secrets = state.secrets.read().unwrap();
         assert_eq!(
-            secrets.get("alpha").map(|c| (c.value.as_str(), c.fetched_at_unix)),
+            secrets
+                .get("alpha")
+                .map(|c| (c.value.as_str(), c.fetched_at_unix)),
             Some(("old-alpha", 100))
         );
         assert_eq!(
-            secrets.get("beta").map(|c| (c.value.as_str(), c.fetched_at_unix)),
+            secrets
+                .get("beta")
+                .map(|c| (c.value.as_str(), c.fetched_at_unix)),
             Some(("old-beta", 100))
         );
         assert_eq!(*state.last_refresh.read().unwrap(), Some(1940));
@@ -1713,7 +1737,12 @@ mod tests {
         let out = apply_delta_refresh(&state, &entries, Some(1000), 2000, 1940);
         assert_eq!(out.applied, 2);
         assert_eq!(
-            state.secrets.read().unwrap().get("alpha").map(|c| c.value.as_str()),
+            state
+                .secrets
+                .read()
+                .unwrap()
+                .get("alpha")
+                .map(|c| c.value.as_str()),
             Some("v-a")
         );
     }
@@ -1750,7 +1779,9 @@ mod tests {
         let secrets = state.secrets.read().unwrap();
         assert_eq!(secrets.len(), 1);
         assert_eq!(
-            secrets.get("alpha").map(|c| (c.value.as_str(), c.fetched_at_unix)),
+            secrets
+                .get("alpha")
+                .map(|c| (c.value.as_str(), c.fetched_at_unix)),
             Some(("old-alpha", 100))
         );
         assert_eq!(*state.last_refresh.read().unwrap(), Some(1000));
@@ -1783,7 +1814,12 @@ mod tests {
         let out2 = apply_delta_refresh(&state, &entries, Some(watermark_new), 2200, 2140);
         assert_eq!(out2.applied, 1);
         assert_eq!(
-            state.secrets.read().unwrap().get("alpha").map(|c| c.value.as_str()),
+            state
+                .secrets
+                .read()
+                .unwrap()
+                .get("alpha")
+                .map(|c| c.value.as_str()),
             Some("mid-refresh-value")
         );
     }

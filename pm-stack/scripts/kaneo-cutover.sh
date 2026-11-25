@@ -16,6 +16,8 @@
 #                  anything unreadable); and
 #              (b) final-delta parity: target table count AND exact row
 #                  count equal the source's.
+#              (c) a complete, verified backup generation finished within
+#                  the accepted freshness window (default 36 hours).
 #            Only then is a cutover receipt written and PROMOTE OK printed.
 #            The script never rewrites the DSN itself: it gates the step
 #            and records the evidence, so no configuration can promote
@@ -54,6 +56,9 @@
 #   --fence-check PATH         fence checker (default: sibling fence-check.sh)
 #   --units-dir DIR            passed to fence-check (fixture mode)
 #   --containers-file FILE     passed to fence-check (fixture mode)
+#   --backup-record-file FILE  latest pm-dashboard-backup .last-run.json;
+#                              required for promote
+#   --max-backup-age-hours N   freshness bound for the backup (default 36)
 #   --unreachable              passed to fence-check: old host unreachable.
 #                              Refused in rollback mode (exit 2): the writer
 #                              being fenced there is local.
@@ -74,6 +79,8 @@ PG_BIN_DIR=""
 FENCE_CHECK="$SCRIPT_DIR/fence-check.sh"
 UNREACHABLE_FLAG=0
 FENCE_ARGS=()
+BACKUP_RECORD_FILE=""
+MAX_BACKUP_AGE_HOURS=36
 
 # Exact counts for every public table, in one query: table count, then the
 # sum of per-table exact count(*). Exact (not pg_stat estimates) so the
@@ -86,12 +93,14 @@ usage: kaneo-cutover.sh --mode presync|promote|rollback --source-dsn-file FILE
                         --target-dsn-file FILE [--dump-file FILE]
                         [--receipt FILE] [--pg-bin-dir DIR]
                         [--fence-check PATH] [--units-dir DIR]
-                        [--containers-file FILE] [--unreachable] [-h|--help]
+                        [--containers-file FILE] [--unreachable]
+                        [--backup-record-file FILE]
+                        [--max-backup-age-hours N] [-h|--help]
 
   presync  dump the source, restore into the target, verify schema parity.
-  promote  require the old writer FENCED and exact table/row parity, then
-           write the cutover receipt. Exit: 0 pass, 2 usage, 3 not fenced,
-           4 parity failure, 5 command failure.
+  promote  require a fresh complete backup, the old writer FENCED, and exact
+           table/row parity, then write the cutover receipt. Exit: 0 pass,
+           2 usage, 3 promotion refused, 4 parity failure, 5 command failure.
   rollback fence the promoted writer, replay the target delta into the
            source, require exact parity, write the rollback receipt.
            --unreachable is refused. Exit codes as promote.
@@ -115,7 +124,7 @@ while [ "$#" -gt 0 ]; do
     UNREACHABLE_FLAG=1
     shift
     ;;
-  --mode | --source-dsn-file | --target-dsn-file | --dump-file | --receipt | --pg-bin-dir | --fence-check | --units-dir | --containers-file)
+  --mode | --source-dsn-file | --target-dsn-file | --dump-file | --receipt | --pg-bin-dir | --fence-check | --units-dir | --containers-file | --backup-record-file | --max-backup-age-hours)
     opt="$1"
     [ "$#" -ge 2 ] || fail_usage "$opt requires a value"
     val="$2"
@@ -128,12 +137,14 @@ while [ "$#" -gt 0 ]; do
     --receipt) RECEIPT="$val" ;;
     --pg-bin-dir) PG_BIN_DIR="$val" ;;
     --fence-check) FENCE_CHECK="$val" ;;
+    --backup-record-file) BACKUP_RECORD_FILE="$val" ;;
+    --max-backup-age-hours) MAX_BACKUP_AGE_HOURS="$val" ;;
     --units-dir) FENCE_ARGS+=("--units-dir" "$val") ;;
     --containers-file) FENCE_ARGS+=("--containers-file" "$val") ;;
     esac
     shift 2
     ;;
-  --mode=* | --source-dsn-file=* | --target-dsn-file=* | --dump-file=* | --receipt=* | --pg-bin-dir=* | --fence-check=* | --units-dir=* | --containers-file=*)
+  --mode=* | --source-dsn-file=* | --target-dsn-file=* | --dump-file=* | --receipt=* | --pg-bin-dir=* | --fence-check=* | --units-dir=* | --containers-file=* | --backup-record-file=* | --max-backup-age-hours=*)
     opt="${1%%=*}"
     val="${1#*=}"
     [ -n "$val" ] || fail_usage "$opt requires a non-empty value"
@@ -145,6 +156,8 @@ while [ "$#" -gt 0 ]; do
     --receipt) RECEIPT="$val" ;;
     --pg-bin-dir) PG_BIN_DIR="$val" ;;
     --fence-check) FENCE_CHECK="$val" ;;
+    --backup-record-file) BACKUP_RECORD_FILE="$val" ;;
+    --max-backup-age-hours) MAX_BACKUP_AGE_HOURS="$val" ;;
     --units-dir) FENCE_ARGS+=("--units-dir" "$val") ;;
     --containers-file) FENCE_ARGS+=("--containers-file" "$val") ;;
     esac
@@ -171,6 +184,14 @@ esac
 [ -r "$TARGET_DSN_FILE" ] || fail_usage "target DSN file '$TARGET_DSN_FILE' is not readable"
 if [ "$MODE" = "presync" ]; then
   [ -n "$DUMP_FILE" ] || fail_usage "--dump-file is required for presync"
+fi
+if [ "$MODE" = "promote" ]; then
+  [ -n "$BACKUP_RECORD_FILE" ] || fail_usage "--backup-record-file is required for promote"
+  [ -r "$BACKUP_RECORD_FILE" ] || fail_usage "backup record file '$BACKUP_RECORD_FILE' is not readable"
+  case "$MAX_BACKUP_AGE_HOURS" in
+    ''|*[!0-9]*) fail_usage "--max-backup-age-hours must be a positive integer" ;;
+    0) fail_usage "--max-backup-age-hours must be a positive integer" ;;
+  esac
 fi
 if [ "$MODE" = "rollback" ]; then
   [ -n "$DUMP_FILE" ] || fail_usage "--dump-file is required for rollback"
@@ -327,6 +348,18 @@ if ! FENCE_OUT="$("$FENCE_CHECK" ${FENCE_ARGS[@]+"${FENCE_ARGS[@]}"} 2>&1)" || [
 fi
 FENCE_LINE="$FENCE_OUT"
 
+# Reject absent, incomplete, unverified, stale, or future-dated generations
+# before querying either database. The collector and gate share the same
+# local/R2/Drive definition of a complete backup restore point.
+RESTORE_POINT_OUT="$(python3 -I "$SCRIPT_DIR/restore-point-check.py" \
+  --record "$BACKUP_RECORD_FILE" --max-age-hours "$MAX_BACKUP_AGE_HOURS" 2>&1)" || {
+  RESTORE_POINT_LINE="REFUSED — $RESTORE_POINT_OUT"
+  write_receipt "REFUSED — promotion requires a fresh verified backup restore point" "- Restore point: $RESTORE_POINT_LINE"
+  echo "kaneo-cutover: REFUSED — promotion requires a fresh verified backup restore point; no database queried. $RESTORE_POINT_OUT" >&2
+  exit 3
+}
+RESTORE_POINT_LINE="$RESTORE_POINT_OUT"
+
 SRC_COUNTS="$(counts_of source "$source_dsn")" || exit $?
 TGT_COUNTS="$(counts_of target "$target_dsn")" || exit $?
 if [ "$SRC_COUNTS" != "$TGT_COUNTS" ]; then
@@ -335,8 +368,8 @@ if [ "$SRC_COUNTS" != "$TGT_COUNTS" ]; then
   exit 4
 fi
 
-write_receipt "PASS — fenced, and source and target both $SRC_COUNTS"
-echo "kaneo-cutover: PROMOTE OK — $FENCE_OUT; source and target both $SRC_COUNTS"
+write_receipt "PASS — fresh verified backup, fenced, and source and target both $SRC_COUNTS" "- Restore point: $RESTORE_POINT_LINE"
+echo "kaneo-cutover: PROMOTE OK — $FENCE_OUT; $RESTORE_POINT_OUT; source and target both $SRC_COUNTS"
 if [ -z "$RECEIPT" ]; then
   printf '\n%s\n' "$RECEIPT_BODY"
 fi

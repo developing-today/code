@@ -58,9 +58,15 @@ Prints one JSON object:
                                               # session-cap-5016)
     "cap": 36,
     "concurrency_cap": 36,
-    "cap_room": int | null                   # CAP - active claimant
+     "cap_room": int | null,                  # CAP - active claimant
                                               # roots; null when count
                                               # unknown
+     "pilot_cap_comparison": {
+       "proposed_cap": 4,
+       "observed_active_claimant_roots": int | null,
+       "available_slots": int | null,
+       "over_cap_by": int | null
+     }                                        # advisory only (#1658)
   }
 
 Read-only by construction: claimed rows come from the queue-broker's
@@ -132,6 +138,8 @@ QUEUES = [
 ]
 CAP = 36
 CONCURRENCY_CAP = CAP
+# #1658 measurement only: never used for operational launch decisions.
+PILOT_PROPOSED_CAP = 4
 # A root session counts toward the cap only while it is active: no
 # terminal marker and recent activity. GET /api/session returns every
 # finished-but-unarchived session forever (50 roots at the #3026 gate
@@ -1150,6 +1158,21 @@ def main():
     out["cap"] = CAP
     out["concurrency_cap"] = CAP
     out["cap_room"] = room
+    # Advisory #1658 comparison reuses the operational census, not a
+    # separate read. Non-scheduled active claimant roots are a proxy,
+    # NOT verified queue-specific spawns. This does not change CAP,
+    # cap_room, candidate discovery or any launch decision. Unknown
+    # counts stay unknown rather than manufacturing advisory room.
+    out["pilot_cap_comparison"] = {
+        "proposed_cap": PILOT_PROPOSED_CAP,
+        "observed_active_claimant_roots": active,
+        "available_slots": (
+            max(0, PILOT_PROPOSED_CAP - active) if active is not None else None
+        ),
+        "over_cap_by": (
+            max(0, active - PILOT_PROPOSED_CAP) if active is not None else None
+        ),
+    }
     print(json.dumps(out, indent=1))
     return 0
 

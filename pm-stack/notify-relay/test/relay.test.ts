@@ -14,6 +14,7 @@ import {
   ALARM_AFTER_MS,
   applyAlarm,
   applyHeartbeat,
+  applyMirrorEvent,
   applySnapshot,
   buildRecoveredPayload,
   buildSilentPayload,
@@ -22,6 +23,7 @@ import {
   isAuthorized,
   takesSilentClass,
   validateHeartbeat,
+  validateMirrorEvent,
   validateSnapshot,
   type MirroredSubscription,
   type RelayState,
@@ -64,6 +66,35 @@ describe("subscription snapshot seq rules (design §1)", () => {
     const reg = applySnapshot(stored, { snapshotSeq: 4, subscriptions: [] });
     expect(reg.outcome).toBe("regression");
     expect(reg.state.snapshot?.snapshotSeq).toBe(5);
+  });
+});
+
+describe("event mirror append log (design §1, silent at the edge)", () => {
+  const event = {
+    mirrorId: "event-1",
+    objectRef: "incident:1",
+    transition: "opened",
+    raisedAt: "2026-11-24T12:00:00.000Z",
+    payload: { class: "incident", title: "Database unavailable" },
+  };
+  const now = Date.parse("2026-11-24T12:01:00.000Z");
+
+  test("a missed acknowledgment retry is idempotent and leaves one silent mirror row", () => {
+    const first = applyMirrorEvent(emptyRelayState(), event, now);
+    const retry = applyMirrorEvent(first.state, event, now);
+    expect(first.outcome).toBe("stored");
+    expect(retry.outcome).toBe("duplicate");
+    expect(retry.state.mirrorEvents).toEqual([event]);
+  });
+
+  test("append prunes expired rows and acknowledges late retries without retaining them", () => {
+    const old = { ...event, mirrorId: "old", raisedAt: "2026-10-01T00:00:00.000Z" };
+    const withOld = { ...emptyRelayState(), mirrorEvents: [old] };
+    const appended = applyMirrorEvent(withOld, event, now);
+    expect(appended.state.mirrorEvents).toEqual([event]);
+    const late = applyMirrorEvent(appended.state, old, now);
+    expect(late.outcome).toBe("expired");
+    expect(late.state.mirrorEvents).toEqual([event]);
   });
 });
 
@@ -176,6 +207,13 @@ describe("validation (design §1 shapes, rejected loudly)", () => {
     expect(validateHeartbeat({ stackEpoch: "", seq: 1 }).ok).toBe(false);
     expect(validateHeartbeat({ stackEpoch: "e", seq: -1 }).ok).toBe(false);
     expect(validateHeartbeat({ stackEpoch: "e", seq: 0, at: "2026-11-23T00:00:00Z" }).ok).toBe(true);
+  });
+
+  test("event mirror requires a stable id, transition envelope, timestamp, and payload", () => {
+    expect(validateMirrorEvent({ mirrorId: "m", objectRef: "quota:a", transition: "raised", raisedAt: "2026-11-24T00:00:00Z", payload: { class: "quota-wall" } }).ok).toBe(true);
+    expect(validateMirrorEvent({ mirrorId: "", objectRef: "quota:a", transition: "raised", raisedAt: "2026-11-24T00:00:00Z", payload: {} }).ok).toBe(false);
+    expect(validateMirrorEvent({ mirrorId: "m", objectRef: "quota:a", transition: "raised", raisedAt: "yesterday", payload: {} }).ok).toBe(false);
+    expect(validateMirrorEvent({ mirrorId: "m", objectRef: "quota:a", transition: "raised", raisedAt: "2026-11-24T00:00:00Z", payload: [] }).ok).toBe(false);
   });
 });
 

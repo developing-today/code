@@ -185,8 +185,7 @@ export function releaseSnapshotFromStored(input: {
 }): ReleaseSnapshot {
   const total: CategoryCounts = {
     closed: input.counts.issues.closed + input.counts.designs.closed + input.counts.epics.closed,
-    carriedOver:
-      input.counts.issues.carriedOver + input.counts.designs.carriedOver + input.counts.epics.carriedOver,
+    carriedOver: input.counts.issues.carriedOver + input.counts.designs.carriedOver + input.counts.epics.carriedOver,
     total: input.counts.issues.total + input.counts.designs.total + input.counts.epics.total,
   };
   const counts = { ...input.counts, total };

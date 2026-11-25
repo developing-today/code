@@ -1,13 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import {
-  chmodSync,
-  existsSync,
-  mkdirSync,
-  mkdtempSync,
-  readFileSync,
-  writeFileSync,
-} from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -67,10 +60,7 @@ fi
 exit 0
 `,
   );
-  writeExe(
-    join(bin, "sudo"),
-    `#!/bin/sh\n[ "$1" = "-n" ] && shift\nexec "$@"\n`,
-  );
+  writeExe(join(bin, "sudo"), `#!/bin/sh\n[ "$1" = "-n" ] && shift\nexec "$@"\n`);
   // The drill waits minutes in real runs; the stub makes waits instant.
   writeExe(join(bin, "sleep"), `#!/bin/sh\nexit 0\n`);
 

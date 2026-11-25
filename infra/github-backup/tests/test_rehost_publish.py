@@ -135,17 +135,13 @@ class RehostPublishTests(unittest.TestCase):
         self.assertEqual(doc["head_ref"], "refs/heads/main")
         refs = {r["name"]: r for r in doc["refs"]}
         self.assertEqual(refs["refs/heads/main"]["oid"], head)
-        tag_commit = git(
-            "--git-dir", mirror, "rev-parse", "v1^{commit}"
-        ).stdout.strip()
+        tag_commit = git("--git-dir", mirror, "rev-parse", "v1^{commit}").stdout.strip()
         self.assertEqual(refs["refs/tags/v1"]["peeled"], tag_commit)
         self.assertIsNone(refs["refs/tags/light"]["peeled"])
 
         # The bucket holds exactly the doc the Worker will read, and
         # the pack it names.
-        with open(
-            os.path.join(self.bucket_dir, "owner/repo/refs.json")
-        ) as f:
+        with open(os.path.join(self.bucket_dir, "owner/repo/refs.json")) as f:
             stored = json.load(f)
         self.assertEqual(stored, doc)
         pack_path = os.path.join(self.bucket_dir, "owner/repo", doc["pack"])
@@ -159,9 +155,7 @@ class RehostPublishTests(unittest.TestCase):
         local_pack = os.path.join(pack_dir, os.path.basename(pack_path))
         shutil.copyfile(pack_path, local_pack)
         git("--git-dir", scratch, "index-pack", local_pack)
-        kind = git(
-            "--git-dir", scratch, "cat-file", "-t", head
-        ).stdout.strip()
+        kind = git("--git-dir", scratch, "cat-file", "-t", head).stdout.strip()
         self.assertEqual(kind, "commit")
 
     def test_unplanned_repo_and_skeleton_mirror_refused(self):
@@ -191,13 +185,9 @@ class RehostPublishTests(unittest.TestCase):
             docs.append(
                 rehost_publish.publish_repo("owner/repo", self.root, "test-bucket")
             )
-        packs = sorted(
-            os.listdir(os.path.join(self.bucket_dir, "owner/repo/packs"))
-        )
+        packs = sorted(os.listdir(os.path.join(self.bucket_dir, "owner/repo/packs")))
         # Three generations published; only the newest two packs stay.
-        expected = sorted(
-            os.path.basename(d["pack"]) for d in docs[1:]
-        )
+        expected = sorted(os.path.basename(d["pack"]) for d in docs[1:])
         self.assertEqual(packs, expected)
         self.assertNotIn(os.path.basename(first["pack"]), packs)
 

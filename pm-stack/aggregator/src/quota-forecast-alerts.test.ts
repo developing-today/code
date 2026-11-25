@@ -3,6 +3,8 @@ import {
   emptyForecastAlertState,
   evaluateForecastAlerts,
   forecastAlertIncidentInput,
+  isForecastAlertState,
+  parseForecastAlertLog,
   type ForecastPredictionRecord,
 } from "./quota-forecast-alerts.ts";
 
@@ -275,5 +277,112 @@ describe("forecast alerts: honesty states", () => {
     });
     expect(out.findings).toHaveLength(0);
     expect(out.evaluations[0].state).toBe("unevaluable");
+  });
+});
+
+describe("forecast alerts: tick wiring (slice 2, #13261)", () => {
+  const line = (r: ForecastPredictionRecord): string => JSON.stringify(r);
+
+  test("the log reader takes the newest record per subject and skips torn + foreign lines", () => {
+    const old = record();
+    const moved = record({
+      id: "c4:downtime_window:all-pools:1764000900000",
+      issued_at: "2026-11-23T12:00:00.000Z",
+      supersedes: old.id,
+      prediction: {
+        earliest: "2026-11-23T22:00:00.000Z",
+        latest: "2026-11-24T06:00:00.000Z",
+        rendered: "likely runs out between tonight and Monday 6 am",
+      },
+    });
+    const text = [
+      line(old),
+      line(moved),
+      // A torn last line from a crashed append, and a foreign
+      // line from another product sharing nothing with this log.
+      '{"record_version": 1, "id": "c4:downtime_w',
+      JSON.stringify({ kind: "quota-anomaly-finding", version: 1, key: "x" }),
+      "",
+    ].join("\n");
+    const records = parseForecastAlertLog(text);
+    expect(records).toHaveLength(1);
+    expect(records[0].id).toBe(moved.id);
+  });
+
+  test("the state guard accepts the empty state and rejects garbage (re-baseline path)", () => {
+    expect(isForecastAlertState(emptyForecastAlertState())).toBe(true);
+    expect(isForecastAlertState(null)).toBe(false);
+    expect(isForecastAlertState({ version: 1 })).toBe(false);
+    expect(isForecastAlertState({ version: 2, fired: [] })).toBe(false);
+    expect(isForecastAlertState({ version: 1, fired: [{ recordId: 42 }] })).toBe(false);
+  });
+
+  test("two ticks over the log post once, suppress the repeat, and fire the moved prediction", () => {
+    const r = record();
+    const log1 = `${line(r)}\n`;
+    // Tick 1: one finding, keyed on the record id, verbatim body.
+    const first = evaluateForecastAlerts({
+      records: parseForecastAlertLog(log1),
+      state: emptyForecastAlertState(),
+      workhorsePools: WORKHORSE,
+      now: NOW,
+    });
+    expect(first.findings).toHaveLength(1);
+    const input = forecastAlertIncidentInput(first.findings[0]);
+    expect(input.source).toBe("quota-prediction");
+    expect(input.key).toBe(r.id);
+    expect(input.body).toBe(r.prediction.rendered);
+
+    // Tick 2: the same log re-read posts nothing.
+    const second = evaluateForecastAlerts({
+      records: parseForecastAlertLog(log1),
+      state: first.state,
+      workhorsePools: WORKHORSE,
+      now: new Date(NOW.getTime() + 15 * 60000),
+    });
+    expect(second.findings).toHaveLength(0);
+    expect(second.evaluations[0].state).toBe("already-alerted");
+
+    // Tick 3: a superseding record with a moved range fires once.
+    const moved = record({
+      id: "c4:downtime_window:all-pools:1764000900000",
+      issued_at: "2026-11-23T12:15:00.000Z",
+      supersedes: r.id,
+      prediction: {
+        earliest: "2026-11-23T22:00:00.000Z",
+        latest: "2026-11-24T06:00:00.000Z",
+        rendered: "likely runs out between tonight and Monday 6 am",
+      },
+    });
+    const third = evaluateForecastAlerts({
+      records: parseForecastAlertLog(`${log1}${line(moved)}\n`),
+      state: second.state,
+      workhorsePools: WORKHORSE,
+      now: new Date(NOW.getTime() + 30 * 60000),
+    });
+    expect(third.findings).toHaveLength(1);
+    expect(third.findings[0].predictionId).toBe(moved.id);
+    expect(third.findings[0].body).toBe(moved.prediction.rendered);
+  });
+
+  test("an empty workhorse set (unreadable config) silences walls but still fires downtime", () => {
+    const wall = record({
+      id: "c4:pool_exhaustion:opencode-go:weekly:1764000000000",
+      kind: "pool_exhaustion",
+      subject: { pool: "opencode-go", window: "weekly" },
+      prediction: {
+        earliest: "2026-11-23T20:00:00.000Z",
+        latest: "2026-11-24T04:00:00.000Z",
+        rendered: "between 8 and 16 hours from now",
+      },
+    });
+    const out = evaluateForecastAlerts({
+      records: [record(), wall],
+      state: emptyForecastAlertState(),
+      workhorsePools: new Set(),
+      now: NOW,
+    });
+    expect(out.findings).toHaveLength(1);
+    expect(out.findings[0].kind).toBe("downtime_window");
   });
 });

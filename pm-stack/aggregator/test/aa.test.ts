@@ -1009,6 +1009,21 @@ describe("aa chart expand + zoom/pan (#3298)", () => {
     for (const script of scripts) expect(() => new Function(script)).not.toThrow();
   });
 
+  test("band-scale redraws re-run the chart enhancer (#14479)", () => {
+    const html = renderAa(FIXTURE_AA, PROV);
+    // renderBandComparisons() rebuilds #xpl-bandgroups via innerHTML,
+    // destroying the injected Expand / Zoom controls — so the band-scale
+    // handler must re-run enhanceCharts(), like the band-count handler.
+    const scaleHandler = html.match(
+      /getElementById\("xf-bandscale"\)[\s\S]*?renderBandComparisons\(\); enhanceCharts\(\);/,
+    );
+    expect(scaleHandler).not.toBeNull();
+    const countHandler = html.match(
+      /getElementById\("xf-bands"\)[\s\S]*?renderBandComparisons\(\); enhanceCharts\(\);/,
+    );
+    expect(countHandler).not.toBeNull();
+  });
+
   test("the enhancer delegates its viewBox math to the tested computations module (#9581)", () => {
     const html = renderAa(FIXTURE_AA, PROV);
     const importMatch = html.match(/import \{([^}]+)\} from "\/assets\/aa-explorer-computations\.js";/);

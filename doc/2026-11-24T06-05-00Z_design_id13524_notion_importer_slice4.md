@@ -205,7 +205,7 @@ header. All additive; slice-1/2 manifests read unchanged.
    record.
 5. Per-attribute loss counting, not per-block. Reason: check 4's decidable form
    needs class totals, but the fidelity report's purpose is telling the user
-   *what was lost* — colour-vs-icon-vs-width are different losses on the same
+   _what was lost_ — colour-vs-icon-vs-width are different losses on the same
    block. Decided in this record.
 6. Where this record and #6436 disagree, #6436 governs and this record is the
    defect (same supremacy rule as the sibling slice pattern). Drew directive
@@ -214,7 +214,7 @@ header. All additive; slice-1/2 manifests read unchanged.
 ## 4. Alternatives considered
 
 - Comments as revisions or as note body appendices. Rejected: #6436 §2.4 and
-  #2048 semantics both fix comments as discussion *about* the object; revisions
+  #2048 semantics both fix comments as discussion _about_ the object; revisions
   would rewrite page history and appendices would corrupt content hashes and
   re-import idempotency.
 - Synced blocks copied at each referencing page. Rejected: forks one block into
@@ -239,13 +239,13 @@ slice 3 interfaces available (#13523 — row-note IDs for comment attachment and
 database-page scoping; if slice 3 has not landed, slices 1–2 below proceed
 against page notes and slice 3-dependent cases gate on its landing).
 
-| Slice | Work | Acceptance |
-| ----- | ---- | ---------- |
-| 1. Comment claims | `comments.rs`: claim construction, `comment_id_to_claim`, reply chaining, resolved facts, per-page coverage accounting; fixture tests | Fixture discussion (replies, resolved, block-anchored) exists as claims on the expected notes; the comment-invisible page is listed with its reason (issue check 7) |
-| 2. Degraded converters | toggle/callout/columns/table/equation/embed structural conversion + per-attribute loss ledger (§2.3–2.4) | Every §2.5 degraded class in the corpus converts structurally; ledger class totals equal the corpus known counts (issue check 4) |
-| 3. Synced blocks | source-page conversion + reference-pass fixup + externalised-source path | Synced fixture block converts once at the source page; both referencing pages carry typed references; out-of-set source is verbatim + counted |
-| 4. Export reader | `export.rs`: Markdown+CSV parse, UUID/title+path matching, match ledger, normalization into the slice-2 pipeline | Same corpus via export+API: content matches the API-path conversion; every uncertain match is named in the ledger |
-| 5. Export-only mode + coverage | degraded identity (hash+path), headlined degradation, all pages comment-uncovered with reason, weaker-guarantee assertions | Export-only run over the corpus asserts degraded guarantees as such (issue export acceptance); no page claims full guarantees |
+| Slice                          | Work                                                                                                                                  | Acceptance                                                                                                                                                          |
+| ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1. Comment claims              | `comments.rs`: claim construction, `comment_id_to_claim`, reply chaining, resolved facts, per-page coverage accounting; fixture tests | Fixture discussion (replies, resolved, block-anchored) exists as claims on the expected notes; the comment-invisible page is listed with its reason (issue check 7) |
+| 2. Degraded converters         | toggle/callout/columns/table/equation/embed structural conversion + per-attribute loss ledger (§2.3–2.4)                              | Every §2.5 degraded class in the corpus converts structurally; ledger class totals equal the corpus known counts (issue check 4)                                    |
+| 3. Synced blocks               | source-page conversion + reference-pass fixup + externalised-source path                                                              | Synced fixture block converts once at the source page; both referencing pages carry typed references; out-of-set source is verbatim + counted                       |
+| 4. Export reader               | `export.rs`: Markdown+CSV parse, UUID/title+path matching, match ledger, normalization into the slice-2 pipeline                      | Same corpus via export+API: content matches the API-path conversion; every uncertain match is named in the ledger                                                   |
+| 5. Export-only mode + coverage | degraded identity (hash+path), headlined degradation, all pages comment-uncovered with reason, weaker-guarantee assertions            | Export-only run over the corpus asserts degraded guarantees as such (issue export acceptance); no page claims full guarantees                                       |
 
 Sequencing: 2←1 (converters and comments are independent — either order; table
 shows content order), 3←2 (synced fixup rides the converter output), 4←2

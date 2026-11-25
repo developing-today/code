@@ -15,8 +15,8 @@
 //     count, last delivery — never board data, never endpoints.)
 //
 // Everything else 404s — the route list is closed (design §2).
-// POST /mirror/event arrives with step 2 and the answer routes
-// with step 3; they are not routed yet.
+// Mirrored event rows are append-only, deduped by mirrorId, retained
+// for 30 days, and deliberately never sent from the edge.
 //
 // The Durable Object (singleton, idFromName("pm-notify")) owns the
 // episode state machine in src/relay.ts: an alarm fire with no
@@ -28,6 +28,7 @@ import { sendPush } from "./push.ts";
 import {
   applyAlarm,
   applyHeartbeat,
+  applyMirrorEvent,
   applySnapshot,
   buildRecoveredPayload,
   buildSilentPayload,
@@ -35,6 +36,7 @@ import {
   isAuthorized,
   takesSilentClass,
   validateHeartbeat,
+  validateMirrorEvent,
   validateSnapshot,
   type DeliveryRecord,
   type RelayState,
@@ -60,7 +62,10 @@ export default {
   async fetch(req: Request, env: Env): Promise<Response> {
     const url = new URL(req.url);
     const stub = env.PM_NOTIFY.get(env.PM_NOTIFY.idFromName(SINGLETON));
-    if (req.method === "POST" && (url.pathname === "/mirror/subscriptions" || url.pathname === "/heartbeat")) {
+    if (
+      req.method === "POST" &&
+      (url.pathname === "/mirror/subscriptions" || url.pathname === "/mirror/event" || url.pathname === "/heartbeat")
+    ) {
       if (!isAuthorized(req.headers, env.RELAY_SHARED_SECRET)) return json({ error: "unauthorized" }, 401);
       // The DO learns the Worker's public origin from the request
       // itself (for the /status deep link in push payloads) — no
@@ -75,17 +80,38 @@ export default {
 };
 
 export class PmNotify {
+  private operation: Promise<void> = Promise.resolve();
+
   constructor(
     private state: DurableObjectState,
     private env: Env,
   ) {}
 
   private async load(): Promise<RelayState> {
-    return (await this.state.storage.get<RelayState>(STATE_KEY)) ?? emptyRelayState();
+    const stored = await this.state.storage.get<Partial<RelayState>>(STATE_KEY);
+    return stored
+      ? { ...emptyRelayState(), ...stored, mirrorEvents: stored.mirrorEvents ?? [] }
+      : emptyRelayState();
   }
 
   private async save(state: RelayState): Promise<void> {
     await this.state.storage.put(STATE_KEY, state);
+  }
+
+  /** Serialize read-modify-write operations so overlapping event, beat,
+   * and alarm work cannot overwrite each other's whole-state updates. */
+  private async serialize<T>(work: () => Promise<T>): Promise<T> {
+    const previous = this.operation;
+    let release!: () => void;
+    this.operation = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    await previous;
+    try {
+      return await work();
+    } finally {
+      release();
+    }
   }
 
   /** Send one episode payload to every mirrored subscription that
@@ -123,6 +149,10 @@ export class PmNotify {
   }
 
   async fetch(req: Request): Promise<Response> {
+    return this.serialize(() => this.handleFetch(req));
+  }
+
+  private async handleFetch(req: Request): Promise<Response> {
     const url = new URL(req.url);
     let state = await this.load();
     const origin = req.headers.get("X-Relay-Origin");
@@ -148,6 +178,14 @@ export class PmNotify {
         snapshotSeq: parsed.value.snapshotSeq,
         subscriptions: parsed.value.subscriptions.length,
       });
+    }
+
+    if (req.method === "POST" && url.pathname === "/mirror/event") {
+      const parsed = validateMirrorEvent(await req.json().catch(() => null));
+      if (!parsed.ok) return json({ error: parsed.error }, 400);
+      const applied = applyMirrorEvent(state, parsed.value, Date.now());
+      await this.save(applied.state);
+      return json({ ok: true, outcome: applied.outcome, mirrorId: parsed.value.mirrorId });
     }
 
     if (req.method === "POST" && url.pathname === "/heartbeat") {
@@ -185,6 +223,12 @@ export class PmNotify {
   /** The dead-man's switch itself: no beat inside the window =>
    * open the episode and send the one stack.silent push. */
   async alarm(): Promise<void> {
+    return this.serialize(async () => {
+      await this.handleAlarm();
+    });
+  }
+
+  private async handleAlarm(): Promise<void> {
     const loaded = await this.load();
     const outcome = applyAlarm(loaded, Date.now());
     if (!outcome.opened) return;

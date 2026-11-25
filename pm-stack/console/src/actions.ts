@@ -207,9 +207,82 @@ export function actions(
     // machine, where the tokens are, and never held.
     "edge.direct": { run: (a) => ops.edgeDirect(a.on), touch: [], audit: (a) => ({ on: a.on === true }) },
     "message.send": {
-      run: (a) => ops.send(a.to, a.text, a.command),
+      run: (a) => ops.send(a.to, a.text, a.command, a.limit),
       touch: [],
-      audit: (a) => ({ to: a.to, command: a.command === true }),
+      audit: (a) => ({ to: a.to, command: a.command === true, limit: a.limit ?? null }),
+    },
+    // Broaden and offer are the composer's other two acts (#14375):
+    // broaden delivers a pattern send's remainder on its own batch;
+    // offer posts the text as a claim offer. Neither audit carries
+    // the text, like message.send.
+    "message.broaden": {
+      run: (a) => ops.broaden(a.batch, a.limit),
+      touch: [],
+      audit: (a) => ({ batch: a.batch, limit: a.limit ?? null }),
+    },
+    "message.offer": {
+      run: (a) => ops.offer(a.to, a.text, a.command, a.slots),
+      touch: [],
+      audit: (a) => ({ to: a.to, command: a.command === true, slots: a.slots }),
+    },
+    // Revoke an agent's bridge credentials from the Agents screen
+    // (#14374): the per-agent kill switch. It changes no document
+    // section — the Agents screen reads the directory fresh — and it
+    // is held for a machine when asked at the edge: revoking is the
+    // owner's act through the owner token, never the edge's
+    // read-scope credential (edge-proto.ts).
+    "agent.revoke": {
+      run: (a) => ops.revokeCredential(a.surface, a.name),
+      touch: [],
+      audit: ids("surface", "name"),
+    },
+    // Provisioning (#14376, design §4.9). The two mints are never
+    // held anywhere to be done late (edge-proto.ts): a mint's answer
+    // IS the secret, shown once on the screen that asked — a mint
+    // done late would hand its value to nobody, and lose it. Like
+    // sso.google, their audit records nothing of the value: the mint
+    // keeps only the binding it was made under. The enroll revoke is
+    // the opposite shape — no value in it at all, and done late it is
+    // still the right act — so it is held for a machine like
+    // agent.revoke.
+    "agent.mint-enroll": {
+      run: (a) =>
+        ops.mintEnrollToken({
+          agent: a.agent,
+          kind: a.kind,
+          groups: a.groups,
+          notesIdentity: a.notesIdentity,
+          ttlSeconds: a.ttlSeconds,
+        }),
+      touch: [],
+      audit: ids("agent", "kind", "groups", "notesIdentity", "ttlSeconds"),
+    },
+    "agent.mint-credential": {
+      run: (a) => ops.mintCredential({ agent: a.agent, scopes: a.scopes, addr: a.addr }),
+      touch: [],
+      audit: ids("agent", "scopes", "addr"),
+    },
+    "agent.revoke-enroll": {
+      run: (a) => ops.revokeEnrollTokens(a.agent),
+      touch: [],
+      audit: ids("agent"),
+    },
+    // Wake hooks (#14544): the Agents screen is the bridge's owner
+    // surface for them, now the standalone page is retired. Setting
+    // one is never held (edge-proto.ts): its arguments carry the
+    // hook's token, a value, and a held copy would keep that value
+    // at the edge to be used late. Removing one carries no value
+    // and is held for a machine like agent.revoke-enroll. Neither
+    // audit carries the URL or the token — the address is the act.
+    "agent.wake-hook-set": {
+      run: (a) => ops.setWakeHook({ address: a.address, url: a.url, token: a.token }),
+      touch: [],
+      audit: ids("address"),
+    },
+    "agent.wake-hook-remove": {
+      run: (a) => ops.removeWakeHook(a.address),
+      touch: [],
+      audit: ids("address"),
     },
   };
 }

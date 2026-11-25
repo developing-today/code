@@ -1787,6 +1787,11 @@ func (c *Client) CallTool(ctx context.Context, name string, args any) (json.RawM
 		return nil, err
 	}
 	defer done()
+	// Fleet context (build 4/5, #14190): the originating queue task id
+	// rides the legacy-era request's _meta directly (callReissue sends
+	// legacy params without withMeta); on modern connections withMeta
+	// repeats the same set-if-absent merge idempotently.
+	params = withFleetMetaParams(params, ctx)
 	var raw json.RawMessage
 	allowReissue := false
 	retried32042 := false
@@ -1795,6 +1800,10 @@ func (c *Client) CallTool(ctx context.Context, name string, args any) (json.RawM
 		if err != nil {
 			return nil, err
 		}
+		// Fleet headers ride Streamable HTTP above the Mcp-Param-*
+		// headers toolCallHeaders just set; withFleetHeaders merges,
+		// never overwriting an explicit per-request header.
+		hctx = withFleetHeaders(hctx)
 		if attempt == 0 {
 			// After toolCallHeaders: on a modern HTTP connection it
 			// has just listed, so the retained hints are current.
