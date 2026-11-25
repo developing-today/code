@@ -1505,10 +1505,8 @@ mod tests {
             any::<bool>(),
         )
             .prop_map(|(mut seeds, repeat_first)| {
-                if repeat_first {
-                    if let Some(first) = seeds.first().copied() {
-                        seeds.push(first);
-                    }
+                if repeat_first && let Some(first) = seeds.first().copied() {
+                    seeds.push(first);
                 }
                 seeds
             })
