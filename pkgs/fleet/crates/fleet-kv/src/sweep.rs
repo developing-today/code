@@ -240,6 +240,8 @@ struct Pending {
     namespace: String,
     key: String,
     version: u64,
+    /// Set with `--force-blob`: a blob whatever its size.
+    force_blob: bool,
 }
 
 /// Who the sweep writes as, and how it finds namespace definitions.
@@ -536,7 +538,7 @@ impl Sweeper<'_> {
             .map_or(value.len() as u64, |reference| reference.len);
         // A working file is never read whole into a row, whatever the knob.
         if working.is_none()
-            && blob::place(len, definition.blob_threshold, false) == Placement::Inline
+            && blob::place(len, definition.blob_threshold, intent.force_blob) == Placement::Inline
         {
             return Ok(Staged::Inline);
         }
@@ -711,7 +713,7 @@ fn pending_intents(store: &LocalStore, identity: &Identity<'_>) -> Result<Vec<Pe
     let mut statement = store
         .connection
         .prepare(
-            "SELECT id, namespace, key, version FROM kv_outbox
+            "SELECT id, namespace, key, version, op FROM kv_outbox
              WHERE owner_user_id=?1 AND context_id=?2 AND partition_id=?3 AND status='pending'
              ORDER BY id",
         )
@@ -729,6 +731,7 @@ fn pending_intents(store: &LocalStore, identity: &Identity<'_>) -> Result<Vec<Pe
                     namespace: row.get(1)?,
                     key: row.get(2)?,
                     version: unsigned(row.get(3)?),
+                    force_blob: row.get::<_, String>(4)? == crate::OP_SET_BLOB,
                 })
             },
         )
@@ -1195,6 +1198,51 @@ mod tests {
                 .committed(),
             1
         );
+    }
+
+    #[test]
+    fn central_sweep_force_blob_places_a_small_value_in_a_blob() {
+        let primary = primary_with_namespaces();
+        let store = LocalStore::in_memory().unwrap();
+        let me = session("s1");
+        store.set_forcing_blob(&me, "status", "tiny", b"x").unwrap();
+        store.set(&me, "status", "plain", b"x").unwrap();
+        // With no blob plane the forced value waits; the plain one lands.
+        let report = sweep(&primary, &primary, &store, &me).unwrap();
+        assert_eq!(report.committed(), 1);
+        assert_eq!(report.waiting[0].reason, "pending_needs_phase3");
+        assert_eq!(head(&primary, &shared("tiny")).unwrap(), None);
+        let door = Door::new(&primary);
+        let plane = BlobPlane {
+            uploader: &door,
+            partition: Partition::new("eu", "standard"),
+        };
+        assert_eq!(
+            sweep_with(&primary, &store, &me, &plane)
+                .unwrap()
+                .committed(),
+            1
+        );
+        let reference =
+            KvBlobRefV1::decode(&head(&primary, &shared("tiny")).unwrap().unwrap().value).unwrap();
+        assert_eq!(reference.bytes_len, 1);
+        assert_eq!(
+            head(&primary, &shared("plain")).unwrap().unwrap().value,
+            b"x"
+        );
+        // The local row reads back as the bytes either way.
+        assert_eq!(
+            store.get(&me, "status", "tiny").unwrap(),
+            Some(b"x".to_vec())
+        );
+        // A later plain set of the same key is inline again.
+        store.set(&me, "status", "tiny", b"y").unwrap();
+        sweep_with(&primary, &store, &me, &plane).unwrap();
+        assert_eq!(
+            head(&primary, &shared("tiny")).unwrap().unwrap().value,
+            b"y"
+        );
+        assert_eq!(door.uploads.lock().unwrap().len(), 1);
     }
 
     #[test]

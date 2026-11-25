@@ -5,8 +5,8 @@
 //! touches nothing. Typed store refusals print `error: <code>: <message>` and
 //! exit 1. `--global` and `sync` reach the central plane (code#13316): when
 //! it is not configured or cannot be reached they exit 69 before the local
-//! store is opened. `--force-blob` is refused as `pending_needs_phase3`
-//! (exit 69) because the blob plane arrives in Phase 3.
+//! store is opened. `--force-blob` marks a local set for blob placement;
+//! with `--global` it is refused as `pending_needs_phase3` (exit 69).
 
 use std::io::{Read, Write};
 
@@ -31,7 +31,8 @@ Identity-scoped key/value bytes in this host's local store.
 
 verbs:
   get            --namespace NS KEY            print the value's bytes
-  set            --namespace NS KEY VALUE      store VALUE (or --stdin)
+  set            --namespace NS KEY VALUE      store VALUE (or --stdin;
+                                               --force-blob: sync it as a blob)
   list           --namespace NS                list keys (--include-tombstones)
   delete         --namespace NS KEY            write a masking tombstone
   clear-override --namespace NS KEY            drop the local overlay row
@@ -77,8 +78,8 @@ namespace's inline threshold as a blob: it streams the bytes to the upload
 door beside FLEET_KV_URL (the token needs the kv-upload door) in the
 partition FLEET_KV_BLOB_JURISDICTION and FLEET_KV_BLOB_TIER, then writes
 the reference; without those two such values wait as pending_needs_phase3.
---force-blob is not wired yet and is refused with pending_needs_phase3
-(exit 69).
+set --force-blob places the value in a blob at any size when sync sends
+it; with --global it is refused with pending_needs_phase3 (exit 69).
 
 Exit codes: 0 ok, 1 typed refusal (malformed_key, not_found, conflict,
 unknown_namespace, backup_target_exists, not_a_snapshot, ...),
@@ -199,6 +200,8 @@ enum Command {
         key: String,
         value: ValueSource,
         global: Option<Expect>,
+        /// `--force-blob`: sync places the value in a blob at any size.
+        force_blob: bool,
     },
     List {
         namespace: String,
@@ -303,9 +306,6 @@ fn parse(args: &[String]) -> Result<Command, ParseError> {
     if matches!(first.as_str(), "-h" | "--help" | "help") {
         return Ok(Command::Help(USAGE));
     }
-    if args.iter().any(|arg| arg == "--force-blob") {
-        return Err(ParseError::Central("--force-blob"));
-    }
     // `--global` may come before the verb, as in `fleet kv --global get`.
     let (global, first) = if first == "--global" {
         match args.get(1) {
@@ -329,6 +329,7 @@ fn parse(args: &[String]) -> Result<Command, ParseError> {
     let mut namespace: Option<String> = None;
     let mut include_tombstones = false;
     let mut stdin = false;
+    let mut force_blob = false;
     let mut to: Option<u64> = None;
     let mut global = global;
     let mut expect: Option<u64> = None;
@@ -369,6 +370,7 @@ fn parse(args: &[String]) -> Result<Command, ParseError> {
                 include_tombstones = true;
             }
             "--stdin" if verb == Verb::Set && inline.is_none() => stdin = true,
+            "--force-blob" if verb == Verb::Set && inline.is_none() => force_blob = true,
             "--global" if verb.takes_global() && inline.is_none() => global = true,
             "--allow-stale" if matches!(verb, Verb::Get | Verb::List) && inline.is_none() => {
                 allow_stale = true;
@@ -403,6 +405,11 @@ fn parse(args: &[String]) -> Result<Command, ParseError> {
         return Err(usage(format!(
             "--global applies to get, set, list and delete, not `kv {first}`"
         )));
+    }
+    if force_blob && global {
+        // A --global write is one CAS from this command; it has no upload
+        // step yet.
+        return Err(ParseError::Central("--force-blob with --global"));
     }
     if allow_stale && global {
         return Err(usage(
@@ -475,6 +482,7 @@ fn parse(args: &[String]) -> Result<Command, ParseError> {
                     key: positionals.remove(0),
                     value: ValueSource::Stdin,
                     global: write_scope,
+                    force_blob,
                 }
             } else {
                 expect(2)?;
@@ -484,6 +492,7 @@ fn parse(args: &[String]) -> Result<Command, ParseError> {
                     key: positionals.remove(0),
                     value: ValueSource::Inline(value),
                     global: write_scope,
+                    force_blob,
                 }
             }
         }
@@ -677,10 +686,7 @@ fn log_operation(command: &Command, err: &mut dyn Write, ctx: &fleet_config::ctx
 fn report_parse_error(error: ParseError, err: &mut dyn Write) -> i32 {
     match error {
         ParseError::Central(flag) => {
-            let _ = writeln!(
-                err,
-                "error: pending_needs_phase3: {flag} needs the blob plane, which arrives in Phase 3"
-            );
+            let _ = writeln!(err, "error: pending_needs_phase3: {flag} is not wired yet");
             EXIT_UNAVAILABLE
         }
         ParseError::Usage(message) => {
@@ -1054,6 +1060,7 @@ fn execute_central(
             key,
             value,
             global,
+            ..
         } => {
             let value = match value {
                 ValueSource::Inline(value) => value.into_bytes(),
@@ -1441,13 +1448,20 @@ fn execute(
             namespace,
             key,
             value,
+            force_blob,
             ..
         } => {
-            let stored = match value {
-                ValueSource::Inline(value) => {
+            let stored = match (value, force_blob) {
+                (ValueSource::Inline(value), false) => {
                     store.set(identity, &namespace, &key, value.as_bytes())
                 }
-                ValueSource::Stdin => store.set_reader(identity, &namespace, &key, stdin),
+                (ValueSource::Inline(value), true) => {
+                    store.set_forcing_blob(identity, &namespace, &key, value.as_bytes())
+                }
+                (ValueSource::Stdin, false) => store.set_reader(identity, &namespace, &key, stdin),
+                (ValueSource::Stdin, true) => {
+                    store.set_reader_forcing_blob(identity, &namespace, &key, stdin)
+                }
             };
             match stored {
                 Ok(version) => writeln!(out, "{version}"),
@@ -1592,6 +1606,52 @@ mod tests {
     }
 
     #[test]
+    fn set_force_blob_marks_the_intent_for_blob_placement() {
+        let store = LocalStore::in_memory().expect("store");
+        let me = Identity::new("owner", "context", "partition");
+        let forced = invoke(
+            &store,
+            &["set", "--namespace", "notes", "--force-blob", "k", "v"],
+            b"",
+        );
+        assert_eq!(forced.code, EXIT_OK, "{}", forced.err);
+        assert_eq!(text(&forced), "1\n");
+        let piped = invoke(
+            &store,
+            &[
+                "set",
+                "--force-blob",
+                "--namespace",
+                "notes",
+                "--stdin",
+                "k",
+            ],
+            b"w",
+        );
+        assert_eq!(piped.code, EXIT_OK, "{}", piped.err);
+        let plain = invoke(&store, &["set", "--namespace", "notes", "k", "x"], b"");
+        assert_eq!(plain.code, EXIT_OK, "{}", plain.err);
+        let ops: Vec<String> = store
+            .outbox(&me, "notes", "k")
+            .expect("outbox")
+            .into_iter()
+            .map(|intent| intent.op)
+            .collect();
+        assert_eq!(ops, [crate::OP_SET_BLOB, crate::OP_SET_BLOB, crate::OP_SET]);
+        assert_eq!(
+            store.get(&me, "notes", "k").expect("get"),
+            Some(b"x".to_vec())
+        );
+        // A flag value is not a flag.
+        let bad = invoke(
+            &store,
+            &["set", "--namespace", "notes", "--force-blob=1", "k", "v"],
+            b"",
+        );
+        assert_eq!(bad.code, EXIT_USAGE);
+    }
+
+    #[test]
     fn set_get_list_delete_round_trip() {
         let store = LocalStore::in_memory().expect("store");
         let set = invoke(
@@ -1717,7 +1777,15 @@ mod tests {
         }
         let blob = invoke(
             &store,
-            &["set", "--namespace", "notes", "--force-blob", "k", "v"],
+            &[
+                "set",
+                "--global",
+                "--namespace",
+                "notes",
+                "--force-blob",
+                "k",
+                "v",
+            ],
             b"",
         );
         assert_eq!(blob.code, EXIT_UNAVAILABLE);
@@ -2392,11 +2460,35 @@ mod tests {
         );
         assert_eq!(
             preflight(
-                &args(&["set", "--force-blob", "--namespace", "n", "k", "v"]),
+                &args(&[
+                    "set",
+                    "--global",
+                    "--force-blob",
+                    "--namespace",
+                    "n",
+                    "k",
+                    "v"
+                ]),
                 &mut out,
                 &mut err
             ),
             Some(EXIT_UNAVAILABLE)
+        );
+        assert_eq!(
+            preflight(
+                &args(&["set", "--force-blob", "--namespace", "n", "k", "v"]),
+                &mut out,
+                &mut err
+            ),
+            None
+        );
+        assert_eq!(
+            preflight(
+                &args(&["get", "--force-blob", "--namespace", "n", "k"]),
+                &mut out,
+                &mut err
+            ),
+            Some(EXIT_USAGE)
         );
         assert_eq!(
             preflight(
