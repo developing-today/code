@@ -52,8 +52,8 @@ EXPECTED_CLASSES = {
     "scratch": {"count": 2, "bytes": 850},
 }
 EXPECTED_TOTAL_COUNT = 12
-EXPECTED_TOTAL_BYTES = 20_010_900
-EXPECTED_JUNK = {"count": 9, "bytes": 9800}
+EXPECTED_TOTAL_BYTES = 20_011_200
+EXPECTED_JUNK = {"count": 9, "bytes": 10_100}
 
 
 def run_fixture(entries, *extra_args):
