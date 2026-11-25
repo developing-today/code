@@ -94,7 +94,7 @@ start = raw.find(b"<hierarchy")
 if start < 0:
     sys.exit(0)
 end = raw.find(b"</hierarchy>", start)
-root = ET.fromstring(raw[start:end + 13 if end >= 0 else None].decode("utf-8", "replace"))
+root = ET.fromstring(raw[start:end + len(b"</hierarchy>") if end >= 0 else None].decode("utf-8", "replace"))
 for node in root.iter("node"):
     text = node.get("text") or ""
     if text:
@@ -113,7 +113,7 @@ start = raw.find(b"<hierarchy")
 if start < 0:
     sys.exit(1)
 end = raw.find(b"</hierarchy>", start)
-root = ET.fromstring(raw[start:end + 13 if end >= 0 else None].decode("utf-8", "replace"))
+root = ET.fromstring(raw[start:end + len(b"</hierarchy>") if end >= 0 else None].decode("utf-8", "replace"))
 for node in root.iter("node"):
     if (node.get("text") or "") == needle:
         bounds = node.get("bounds") or ""
