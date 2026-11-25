@@ -341,7 +341,7 @@ mod tests {
         let Err(SurfaceError::StaleDecision(stale)) = refused else {
             panic!("expected a stale decision");
         };
-        assert!(stale.missed.is_empty());
+        assert_eq!(stale.missed, Vec::new());
         assert_eq!(stale.current, 1);
     }
 
