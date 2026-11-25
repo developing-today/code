@@ -188,8 +188,9 @@ usage: repo-queue <verb> ...\n\
 \n\
 Run `repo-queue <verb> --help` for flags:\n\
   validate <packet-path>\n\
-  enqueue <packet-path> [--queue <name>] [--platform <p>] [--dry-run] [--shadow-intent]\n\
-  list [--queue <name>] [--status <s>] [--limit <n>] [--not-before <ts>] [--lane <l>] [--worker <w>] [--task <id>] [--label <name|prefix*>] [--json]\n\
+  enqueue <packet-path> [--queue <name>] [--platform <p>] [--meta key=json]... [--dry-run] [--shadow-intent]\n\
+  list [--queue <name>] [--status <s>] [--limit <n>] [--not-before <ts>] [--lane <l>] [--worker <w>] [--task <id>] [--meta key=value]... [--label <name|prefix*>] [--json]\n\
+  meta <get|set|unset|keys> ...\n\
   claim [--queue <name>] [--worker <id>] [--lease-seconds <n>] [--lane <l>] [--task <id>] [--count <n>] [--from-session <id>] [--platform <p>] [--session-id <id>] [--model-provider <p>] [--model-id <id>] [--model-variant <v>] [--filter <f>] [--pool <p>] [--launched-by <who>] [--remaining-budget-minutes <n>] [--handoff] [--bind]\n\
   release <task-id> [--worker <id>] [--lane <id>] --reason <text>\n\
   lane <task-id> [--worker <id>] [--exclusion-reason <text>] [--opencode-reason <text>] [--limit-platform <p>] [--limit-reason <text>] [--clear-platform-limit]\n\
@@ -231,10 +232,13 @@ pub(crate) fn usage(verb: &str) -> &'static str {
             "usage: repo-queue validate <packet-path>\n\nValidates a task packet without enqueuing it."
         }
         "enqueue" => {
-            "usage: repo-queue enqueue <packet-path> [--queue <name>] [--platform <p>] [--dry-run] [--shadow-intent]\n\nEnqueues a task packet."
+            "usage: repo-queue enqueue <packet-path> [--queue <name>] [--platform <p>] [--meta key=json]... [--dry-run] [--shadow-intent]\n\nEnqueues a task packet with optional metadata."
         }
         "list" => {
-            "usage: repo-queue list [--queue <name>] [--status <s>] [--limit <n>] [--not-before <ts>] [--lane <l>] [--worker <w>] [--task <id>] [--label <name|prefix*>] [--json]\n\nLists tasks; a bare `list` shows one queue in the broker's default ordering (newest terminal rows first) — pass --status queued|parked|claimed|blocked for actionable work. --label filters on the task's cached GitHub labels (a trailing * matches a prefix, e.g. user/*). With --json, --queue and --task are required together: one scoped broker read printed as a single JSON record (result found / not_found / partial / unknown, with the mode and route used); no other list flag applies in that form."
+            "usage: repo-queue list [--queue <name>] [--status <s>] [--limit <n>] [--not-before <ts>] [--lane <l>] [--worker <w>] [--task <id>] [--meta key=value]... [--label <name|prefix*>] [--json]\n\nLists tasks; repeat --meta for ANDed JSON equality filters. --label filters on cached GitHub labels (a trailing * matches a prefix, e.g. user/*). A bare `list` shows one queue in the broker's default ordering (newest terminal rows first) — pass --status queued|parked|claimed|blocked."
+        }
+        "meta" => {
+            "usage: repo-queue meta get <task-id> [key] | set <task-id> <key> <json-value> | set <task-id> [--json '{...}'] | unset <task-id> <key> | keys\n\nReads or merge-patches queue metadata. Null values delete keys; metadata writes are audited in task history."
         }
         "claim" => {
             "usage: repo-queue claim [--queue <name>] [--worker <id>] [--lease-seconds <n>] [--lane <l>] [--task <id>] [--count <n>] [--from-session <id>] [--platform <p>] [--session-id <id>] [--model-provider <p>] [--model-id <id>] [--model-variant <v>] [--filter <f>] [--pool <p>] [--launched-by <who>] [--remaining-budget-minutes <n>] [--handoff] [--bind]\n\nClaims the highest-priority eligible task."
