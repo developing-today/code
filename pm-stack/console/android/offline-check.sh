@@ -131,6 +131,9 @@ dump_for_log() {
   screen_text >&2 || true
   echo "--- end screen ---" >&2
   echo "--- foreground: $(adb shell dumpsys activity activities 2>/dev/null | grep -m 1 'topResumedActivity' | tr -d '[:space:]') ---" >&2
+  echo "--- logcat (app and runtime lines) ---" >&2
+  adb logcat -d -t 400 2>/dev/null | grep -aE 'AndroidRuntime|FATAL EXCEPTION|pmconsole|LauncherActivity' | tail -15 >&2 || true
+  echo "--- end logcat ---" >&2
 }
 
 fail() {
@@ -214,9 +217,15 @@ airplane() {
   return 1
 }
 
-# Open the app the way the home screen does.
+# Open the app at its launcher activity. This used monkey, the way
+# the home screen does, until run 45558906810: monkey's launches
+# never brought the app up at all (its output was thrown away, so
+# it failed silently), the waits sat on the launcher, and the
+# launcher's own long-press menu ended up covering the screen. An
+# explicit start names the activity the icon names, waits for it,
+# and says on the log what happened.
 launch_from_icon() {
-  adb shell monkey -p "$PKG" -c android.intent.category.LAUNCHER 1 >/dev/null 2>&1
+  adb shell am start -W -n "$LAUNCHER" 2>&1 | grep -v '^$' || true
 }
 
 # Open the app and wait for its text, opening it again while the
