@@ -774,7 +774,15 @@ async function setup(options: { direct?: boolean; kinds?: readonly string[]; bri
       return {
         ok: true,
         status: 201,
-        json: async () => ({ batch: "b1", messages: [], unregistered: [], matched: 1, delivered: 1, recipients: ["lane-1"], remaining: 0 }),
+        json: async () => ({
+          batch: "b1",
+          messages: [],
+          unregistered: [],
+          matched: 1,
+          delivered: 1,
+          recipients: ["lane-1"],
+          remaining: 0,
+        }),
       };
     }
     if (method === "GET" && u.endsWith("/agents")) {
@@ -3915,7 +3923,16 @@ describe("the edge does the core itself", () => {
     const sent = await w.act("message.send", { to: ["lane-1"], text: "from the edge" });
     expect(await sent.json()).toEqual({
       ok: true,
-      result: { to: ["lane-1"], command: false, batch: "b1", matched: 1, delivered: 1, recipients: ["lane-1"], remaining: 0, unregistered: [] },
+      result: {
+        to: ["lane-1"],
+        command: false,
+        batch: "b1",
+        matched: 1,
+        delivered: 1,
+        recipients: ["lane-1"],
+        remaining: 0,
+        unregistered: [],
+      },
     });
     // The bridge was asked once, over its binding, as the PM stack.
     expect(w.bridgeCalls).toHaveLength(1);

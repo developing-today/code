@@ -460,7 +460,9 @@ async function forwardToTriage(
 ): Promise<NonNullable<IngestionCheckResult["queue"]>> {
   if (!deps.queueStore) return { action: "unavailable" };
   const dedupeKey = triageDedupeKey(item.repo, item.number);
-  const live = (await deps.queueStore.tasksByDedupe(TRIAGE_QUEUE, dedupeKey)).find((t) => LIVE_STATUSES.includes(t.status));
+  const live = (await deps.queueStore.tasksByDedupe(TRIAGE_QUEUE, dedupeKey)).find((t) =>
+    LIVE_STATUSES.includes(t.status),
+  );
   if (live) return { action: "already_enqueued", task_id: live.id, dedupe_key: dedupeKey };
   const resp = await executeQueueVerb(
     deps.queueStore,

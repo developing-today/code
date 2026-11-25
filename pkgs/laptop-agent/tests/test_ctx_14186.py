@@ -28,11 +28,7 @@ INIT_SH = Path(__file__).resolve().parents[3] / "pkgs" / "fleet" / "fleet-ctx-in
 
 def _clean_env(**overrides):
     """Env without any FLEET_CTX_* record plus PATH/HOME, with overrides."""
-    env = {
-        k: v
-        for k, v in os.environ.items()
-        if not k.startswith("FLEET_CTX_")
-    }
+    env = {k: v for k, v in os.environ.items() if not k.startswith("FLEET_CTX_")}
     env.update(overrides)
     env.setdefault("PATH", "/usr/bin:/bin")
     env.setdefault("HOME", str(Path.home()))
@@ -61,13 +57,13 @@ def _clean_env(**overrides):
 def _sourced_env(clean_env, extra_bash_args=()):
     """Source INIT_SH in bash, then print the FLEET_CTX_* record as JSON."""
     probe = (
-        "source \"$INIT_SH\"; "
+        'source "$INIT_SH"; '
         "rc=$?; "
-        "printf '{\"rc\":%s,' \"$rc\"; "
-        "printf '\"ORIGIN\":\"%s\",' \"$FLEET_CTX_ORIGIN\"; "
-        "printf '\"HOST\":\"%s\",' \"$FLEET_CTX_HOST\"; "
-        "printf '\"TASK\":\"%s\",' \"${FLEET_CTX_TASK_ID:-}\"; "
-        "printf '\"ID\":\"%s\"}' \"$FLEET_CTX_ID\""
+        'printf \'{"rc":%s,\' "$rc"; '
+        'printf \'"ORIGIN":"%s",\' "$FLEET_CTX_ORIGIN"; '
+        'printf \'"HOST":"%s",\' "$FLEET_CTX_HOST"; '
+        'printf \'"TASK":"%s",\' "${FLEET_CTX_TASK_ID:-}"; '
+        'printf \'"ID":"%s"}\' "$FLEET_CTX_ID"'
     )
     p = subprocess.run(
         ["bash", *extra_bash_args, "-c", probe],
@@ -211,12 +207,12 @@ class InitSourcingTest(unittest.TestCase):
         script = (
             'source "$INIT_SH"; '
             'parent="$FLEET_CTX_ORIGIN|$FLEET_CTX_HOST|$FLEET_CTX_ID"; '
-            'child=$(bash -c \'echo "$FLEET_CTX_ORIGIN|$FLEET_CTX_HOST|$FLEET_CTX_ID"\'); '
+            "child=$(bash -c 'echo \"$FLEET_CTX_ORIGIN|$FLEET_CTX_HOST|$FLEET_CTX_ID\"'); "
             'test -n "$FLEET_CTX_ORIGIN" && test -n "$FLEET_CTX_HOST" && test -n "$FLEET_CTX_ID"; '
-            'rc=$?; '
+            "rc=$?; "
             'test "$parent" = "$child"; '
-            'eq=$?; '
-            'printf \'{"rc\":%s,\"eq\":%s,\"parent\":\"%s\"}\' "$rc" "$eq" "$parent"'
+            "eq=$?; "
+            'printf \'{"rc":%s,"eq":%s,"parent":"%s"}\' "$rc" "$eq" "$parent"'
         )
         p = subprocess.run(
             ["bash", "-c", script],
@@ -282,9 +278,7 @@ class OriginTaxonomyTest(unittest.TestCase):
         return rec["ORIGIN"]
 
     def test_opencode(self):
-        self.assertEqual(
-            self._origin(OPENCODE_SESSION_ID="ses_test"), "opencode"
-        )
+        self.assertEqual(self._origin(OPENCODE_SESSION_ID="ses_test"), "opencode")
 
     def test_claude(self):
         self.assertEqual(self._origin(CLAUDECODE="1"), "claude")
@@ -296,9 +290,7 @@ class OriginTaxonomyTest(unittest.TestCase):
 
     def test_systemd_unit_wins_with_qualifier(self):
         self.assertEqual(
-            self._origin(
-                INVOCATION_ID="abc123", OPENCODE_SESSION_ID="ses_test"
-            ),
+            self._origin(INVOCATION_ID="abc123", OPENCODE_SESSION_ID="ses_test"),
             "systemd-unit:opencode",
         )
         self.assertEqual(self._origin(INVOCATION_ID="abc123"), "systemd-unit")

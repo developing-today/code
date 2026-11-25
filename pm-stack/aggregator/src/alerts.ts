@@ -2,8 +2,9 @@
 // 2026-11-01): every sentinel posts incidents to ONE intake; this
 // module owns dedupe, delivery, escalation, and ack state; every
 // transition lands in the Turso `alerts_*` ledger tables
-// (incidents / incident_events / push_subscriptions /
-// notification_sends). Delivery is Web Push per the #1254 design
+// (incidents / incident_events / notification_sends); push endpoints
+// and their preferences live in the one push registry (#14084 S1,
+// push-registry.ts), which replaced alerts.push_subscriptions. Delivery is Web Push per the #1254 design
 // (doc/2026-11-01T03-54-00Z_design_pwa_push_notifications.md): the
 // `incident` class is the breakthrough class — it delivers
 // immediately, quiet hours or not, because the sentinels are
@@ -23,6 +24,20 @@
 import type { Config } from "./config.ts";
 import { sendPush, type PushOutcome, type PushTarget } from "./push.ts";
 import { getTursoStoreClient } from "./turso-stores.ts";
+import {
+  DEFAULT_DELIVERY,
+  ensurePushRegistry,
+  isPushClient,
+  MAX_DEVICE_ID_LENGTH,
+  MAX_LABEL_LENGTH,
+  ItemStageStore,
+  mergeDelivery,
+  nowIso,
+  readDelivery,
+  type DeliveryPrefs,
+  type PushClient,
+  type PushTransport,
+} from "./push-registry.ts";
 import { sqlInt, sqlJson, sqlStr, type SqlClient } from "./sql-client.ts";
 import {
   buildNotificationCandidates,
@@ -82,6 +97,10 @@ export interface IncidentMirrorRow extends Incident {
   mirror_event_kind: IncidentEvent["kind"];
 }
 
+/** One endpoint of the push registry (#14084 S1) with its
+ * preferences, in the shape every delivery path reads. The fields
+ * from `transport` on are the registry's additions; a delivery path
+ * that predates the registry reads the same keys it always did. */
 export interface PushSubscriptionRow {
   id: string;
   endpoint: string;
@@ -93,6 +112,11 @@ export interface PushSubscriptionRow {
   created_at: string;
   last_seen_at: string;
   gone_count: number;
+  transport?: PushTransport;
+  client?: PushClient;
+  device_id?: string | null;
+  label?: string | null;
+  delivery?: DeliveryPrefs;
 }
 
 /** One alerts.notification_sends ledger row (#3319): one per send
@@ -132,6 +156,11 @@ export interface PublicPushSubscription {
   created_at: string;
   last_seen_at: string;
   gone_count: number;
+  transport: PushTransport;
+  client: PushClient;
+  device_id: string | null;
+  label: string | null;
+  delivery: DeliveryPrefs;
 }
 
 /** #3693: strip the push-encryption secrets before serializing a
@@ -146,6 +175,11 @@ export function toPublicSubscription(sub: PushSubscriptionRow): PublicPushSubscr
     created_at: sub.created_at,
     last_seen_at: sub.last_seen_at,
     gone_count: sub.gone_count,
+    transport: sub.transport ?? "webpush",
+    client: sub.client ?? "browser",
+    device_id: sub.device_id ?? null,
+    label: sub.label ?? null,
+    delivery: sub.delivery ?? { ...DEFAULT_DELIVERY },
   };
 }
 
@@ -166,12 +200,34 @@ export const MAX_CLASS_KEYS = 16;
  * ("quota-wall"); anything longer is not a class this build knows. */
 export const MAX_CLASS_KEY_LENGTH = 64;
 
+/** Class ids renamed by a ruling, old id → class of record. #14084
+ * (Drew, 2026-11-24, comment 7124146989): the answerable class is
+ * `needs-user`, not `needs-drew`. A stored map or a caller that still
+ * says `needs-drew` means `needs-user`; the old key is never stored
+ * again and never reaches the engine. */
+export const LEGACY_CLASS_ALIASES: Readonly<Record<string, string>> = { "needs-drew": "needs-user" };
+
+export const canonicalClass = (cls: string): string =>
+  Object.hasOwn(LEGACY_CLASS_ALIASES, cls) ? LEGACY_CLASS_ALIASES[cls] : cls;
+
+/** Rewrite a class map onto the classes of record. Where a map holds
+ * both the old and the new key, the new key's choice wins. */
+export function normalizeClassMap<T>(input: Record<string, T>): Record<string, T> {
+  const out: Record<string, T> = {};
+  for (const [k, v] of Object.entries(input)) {
+    const canonical = canonicalClass(k);
+    if (canonical !== k && Object.hasOwn(input, canonical)) continue;
+    out[canonical] = v;
+  }
+  return out;
+}
+
 export function mergeClasses(input: unknown): Record<string, boolean> {
   const out = { ...DEFAULT_CLASSES };
   let clientKeys = 0;
   const seenClient: Record<string, true> = {};
   if (input && typeof input === "object") {
-    for (const [k, v] of Object.entries(input as Record<string, unknown>)) {
+    for (const [k, v] of Object.entries(normalizeClassMap(input as Record<string, unknown>))) {
       // #4981: bound growth — a key must be a plausible class name, and a
       // subscription may carry only MAX_CLASS_KEYS client-supplied keys.
       // Over-limit input is dropped rather than extending the stored
@@ -238,7 +294,11 @@ export function mergeQuiet(input: unknown): QuietPrefs {
  * mergeClasses at creation, so this fallback only ever fires for
  * classes newer than the row. */
 export function classEnabled(sub: { classes: Record<string, boolean> }, cls: string): boolean {
-  return sub.classes?.[cls] ?? DEFAULT_CLASSES[cls] ?? false;
+  const canonical = canonicalClass(cls);
+  const legacy = Object.keys(LEGACY_CLASS_ALIASES).find((old) => LEGACY_CLASS_ALIASES[old] === canonical);
+  return (
+    sub.classes?.[canonical] ?? (legacy ? sub.classes?.[legacy] : undefined) ?? DEFAULT_CLASSES[canonical] ?? false
+  );
 }
 
 /** Is `now` inside the quiet window (evaluated in the prefs' timezone)?
@@ -370,6 +430,14 @@ export interface NewSubscription {
   providedClasses?: Record<string, boolean>;
   quiet: QuietPrefs;
   userAgent?: string;
+  /** #14084 S1 registry fields. `client` defaults to `browser`. */
+  client?: PushClient;
+  deviceId?: string;
+  label?: string;
+  /** Delivery settings, stored only when the caller sent them: an
+   * upsert without `delivery` keeps the stored settings (the same
+   * rule #7193 set for classes). */
+  delivery?: DeliveryPrefs;
 }
 
 export function validateNewSubscription(
@@ -386,10 +454,16 @@ export function validateNewSubscription(
   if (!auth) return { ok: false, error: "keys.auth required" };
   const providedClasses: Record<string, boolean> = {};
   if (b.classes && typeof b.classes === "object") {
-    for (const [k, v] of Object.entries(b.classes as Record<string, unknown>)) {
+    for (const [k, v] of Object.entries(normalizeClassMap(b.classes as Record<string, unknown>))) {
       if (typeof v === "boolean") providedClasses[k] = v;
     }
   }
+  if (b.client !== undefined && !isPushClient(b.client)) {
+    return { ok: false, error: "client must be browser or android-app" };
+  }
+  const deviceId = typeof b.deviceId === "string" ? b.deviceId.trim() : "";
+  if (deviceId.length > MAX_DEVICE_ID_LENGTH) return { ok: false, error: "deviceId too long" };
+  const label = typeof b.label === "string" ? b.label.trim().slice(0, MAX_LABEL_LENGTH) : "";
   return {
     ok: true,
     value: {
@@ -400,6 +474,10 @@ export function validateNewSubscription(
       providedClasses,
       quiet: mergeQuiet(b.quiet),
       userAgent: typeof b.userAgent === "string" ? b.userAgent : undefined,
+      client: isPushClient(b.client) ? b.client : undefined,
+      deviceId: deviceId || undefined,
+      label: label || undefined,
+      delivery: b.delivery !== undefined ? mergeDelivery(b.delivery) : undefined,
     },
   };
 }
@@ -413,13 +491,64 @@ interface PendingIncidentCursor {
 
 type PendingIncidentOrder = "first_seen_at" | "delivered_at";
 
+/** The registry read: an endpoint joined to its preference row. */
+export const SUBSCRIPTION_SELECT = `select e.id, e.transport, e.client, e.device_id, e.endpoint, e.p256dh, e.auth, e.label,
+  e.user_agent, e.created_at, e.last_seen_at, e.gone_count, p.classes, p.quiet, p.delivery
+  from push_endpoints e left join push_preferences p on p.endpoint_id = e.id`;
+
+const parseJsonColumn = (value: unknown): unknown => {
+  if (typeof value !== "string") return value;
+  try {
+    return JSON.parse(value);
+  } catch {
+    return null;
+  }
+};
+
+/** Decode one registry row into the subscription shape. Stored values
+ * are read through the intake merges, so an old or hand-edited row is
+ * never reinterpreted (#3702 decision 3), and a legacy class id reads
+ * as its class of record. */
+export function readSubscriptionRow(row: Record<string, unknown>): PushSubscriptionRow {
+  const classes = parseJsonColumn(row.classes);
+  return {
+    id: String(row.id),
+    endpoint: String(row.endpoint),
+    p256dh: String(row.p256dh),
+    auth: String(row.auth),
+    classes:
+      classes && typeof classes === "object"
+        ? normalizeClassMap(classes as Record<string, boolean>)
+        : mergeClasses(undefined),
+    quiet: mergeQuiet(parseJsonColumn(row.quiet)),
+    user_agent: typeof row.user_agent === "string" ? row.user_agent : null,
+    created_at: String(row.created_at),
+    last_seen_at: String(row.last_seen_at),
+    gone_count: Number(row.gone_count ?? 0),
+    transport: "webpush",
+    client: isPushClient(row.client) ? row.client : "browser",
+    device_id: typeof row.device_id === "string" ? row.device_id : null,
+    label: typeof row.label === "string" ? row.label : null,
+    delivery: readDelivery(row.delivery),
+  };
+}
+
 export class AlertsStore {
   // Each queue advances independently, even when a send fails and leaves
   // the incident eligible. The keyset cursor lives for this store's lifetime.
   private readonly deliveryCursor: { last: PendingIncidentCursor | null } = { last: null };
   private readonly escalationCursor: { last: PendingIncidentCursor | null } = { last: null };
 
+  private stages: ItemStageStore | null = null;
+
   constructor(private readonly db: SqlClient) {}
+
+  /** The staged pipeline for answerable items (#14084 S1), over the
+   * same store connection. */
+  itemStages(): ItemStageStore {
+    if (!this.stages) this.stages = new ItemStageStore(this.db);
+    return this.stages;
+  }
 
   private async pendingBatch(
     eligibility: string,
@@ -461,45 +590,96 @@ export class AlertsStore {
     );
   }
 
+  // --- Subscriptions: the one push registry (#14084 S1) ----------------------
+  //
+  // Endpoints and their preferences live in the registry tables
+  // (push-registry.ts), not alerts.push_subscriptions. The row shape
+  // every delivery path reads is unchanged; `/alerts/preferences`
+  // behaves as before externally.
+
+  private registryReady: Promise<void> | null = null;
+
+  private ensureRegistry(): Promise<void> {
+    if (!this.registryReady) {
+      const pending = ensurePushRegistry(this.db);
+      this.registryReady = pending;
+      pending.catch(() => {
+        if (this.registryReady === pending) this.registryReady = null;
+      });
+    }
+    return this.registryReady;
+  }
+
+  private async subscriptionByEndpoint(endpoint: string): Promise<PushSubscriptionRow | null> {
+    const rows = await this.db.query<Record<string, unknown>>(
+      `${SUBSCRIPTION_SELECT} where e.endpoint = ${sqlStr(endpoint)}`,
+    );
+    return rows[0] ? readSubscriptionRow(rows[0]) : null;
+  }
+
   async upsertSubscription(sub: NewSubscription): Promise<PushSubscriptionRow> {
-    const rows = await this.db.query<PushSubscriptionRow>(
-      `insert into alerts.push_subscriptions (endpoint, p256dh, auth, classes, quiet, user_agent)
-       values (${sqlStr(sub.endpoint)}, ${sqlStr(sub.p256dh)}, ${sqlStr(sub.auth)}, ${sqlJson(sub.classes)}, ${sqlJson(sub.quiet)}, ${
+    await this.ensureRegistry();
+    const at = sqlStr(nowIso());
+    const endpointRows = await this.db.query<{ id: string }>(
+      `insert into push_endpoints (id, transport, client, device_id, endpoint, p256dh, auth, label, user_agent, created_at, last_seen_at, gone_count)
+       values (${sqlStr(crypto.randomUUID())}, ${sqlStr("webpush")}, ${sqlStr(sub.client ?? "browser")}, ${
+         sub.deviceId ? sqlStr(sub.deviceId) : "null"
+       }, ${sqlStr(sub.endpoint)}, ${sqlStr(sub.p256dh)}, ${sqlStr(sub.auth)}, ${sub.label ? sqlStr(sub.label) : "null"}, ${
          sub.userAgent ? sqlStr(sub.userAgent) : "null"
-       })
+       }, ${at}, ${at}, 0)
        on conflict (endpoint) do update set
          p256dh = excluded.p256dh, auth = excluded.auth,
-         classes = push_subscriptions.classes || ${sqlJson(sub.providedClasses ?? {})},
-         quiet = excluded.quiet, user_agent = excluded.user_agent,
-         last_seen_at = now(), gone_count = 0
-       returning *`,
+         client = ${sub.client ? "excluded.client" : "push_endpoints.client"},
+         device_id = coalesce(excluded.device_id, push_endpoints.device_id),
+         label = coalesce(excluded.label, push_endpoints.label),
+         user_agent = excluded.user_agent, last_seen_at = excluded.last_seen_at, gone_count = 0
+       returning id`,
     );
-    return rows[0];
+    const endpointId = endpointRows[0]?.id;
+    if (!endpointId) throw new Error("push registry upsert returned no endpoint");
+    await this.db.query(
+      `insert into push_preferences (endpoint_id, classes, quiet, delivery, updated_at)
+       values (${sqlStr(endpointId)}, ${sqlJson(sub.classes)}, ${sqlJson(sub.quiet)}, ${sqlJson(
+         sub.delivery ?? DEFAULT_DELIVERY,
+       )}, ${at})
+       on conflict (endpoint_id) do update set
+         classes = json_patch(push_preferences.classes, ${sqlJson(sub.providedClasses ?? {})}),
+         quiet = excluded.quiet,
+         delivery = ${sub.delivery ? "excluded.delivery" : "push_preferences.delivery"},
+         updated_at = excluded.updated_at`,
+    );
+    const row = await this.subscriptionByEndpoint(sub.endpoint);
+    if (!row) throw new Error("push registry upsert did not read back");
+    return row;
   }
 
   async deleteSubscription(endpoint: string): Promise<boolean> {
+    await this.ensureRegistry();
+    await this.db.query(
+      `delete from push_preferences where endpoint_id in (select id from push_endpoints where endpoint = ${sqlStr(endpoint)})`,
+    );
     const rows = await this.db.query<{ id: string }>(
-      `delete from alerts.push_subscriptions where endpoint = ${sqlStr(endpoint)} returning id`,
+      `delete from push_endpoints where endpoint = ${sqlStr(endpoint)} returning id`,
     );
     return rows.length > 0;
   }
 
   async listSubscriptions(): Promise<PushSubscriptionRow[]> {
-    const rows = await this.db.query<PushSubscriptionRow>(
-      `select * from alerts.push_subscriptions order by created_at`,
-    );
+    await this.ensureRegistry();
+    const rows = await this.db.query<Record<string, unknown>>(`${SUBSCRIPTION_SELECT} order by e.created_at, e.id`);
     // #3702 decision 3: old stored prefs are not rewritten, but must not
     // be reinterpreted on read. Apply the same per-field fallbacks used at
     // intake so delivery and the prefs page see safe values.
-    return rows.map((row) => ({ ...row, quiet: mergeQuiet(row.quiet) }));
+    return rows.map(readSubscriptionRow);
   }
 
   /** Design §4: a 404/410 marks the subscription gone; two consecutive
    * gone responses prune it. A successful send resets the count (the
    * upsert path resets it too, on re-subscribe). */
   async noteSubscriptionGone(endpoint: string): Promise<"marked" | "pruned"> {
+    await this.ensureRegistry();
     const rows = await this.db.query<{ gone_count: number }>(
-      `update alerts.push_subscriptions set gone_count = gone_count + 1 where endpoint = ${sqlStr(endpoint)} returning gone_count`,
+      `update push_endpoints set gone_count = gone_count + 1 where endpoint = ${sqlStr(endpoint)} returning gone_count`,
     );
     const count = rows[0]?.gone_count ?? 0;
     if (count >= 2) {
@@ -510,8 +690,11 @@ export class AlertsStore {
   }
 
   async noteSubscriptionAlive(endpoint: string): Promise<void> {
+    await this.ensureRegistry();
     await this.db.query(
-      `update alerts.push_subscriptions set gone_count = 0, last_seen_at = now() where endpoint = ${sqlStr(endpoint)} and gone_count <> 0`,
+      `update push_endpoints set gone_count = 0, last_seen_at = ${sqlStr(nowIso())} where endpoint = ${sqlStr(
+        endpoint,
+      )} and gone_count <> 0`,
     );
   }
 

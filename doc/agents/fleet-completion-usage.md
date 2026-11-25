@@ -10,12 +10,12 @@ python3 -I scripts/fleet_completion_usage.py --snapshot cohort.json \
 
 `cohort.json` is one JSON object containing four arrays:
 
-| Array | Native fields consumed | Source |
-| --- | --- | --- |
-| `tasks` | `id`, `queue`, `status`, `progress.session_id` (object or JSON string); optional normalized `session_id` | rich broker task export; `pkgs/fleet/hosted-worker/src/queue-store.ts` |
-| `events` | `task_id`, `kind`, `created_at` | complete broker event export for those tasks |
-| `ledger` | `queue`, `task_id`, `session_id` | execution bindings; see retry-history caveat below |
-| `sessions` | `id`, `tokens.input` | cumulative OpenCode session export; `pm-stack/aggregator/src/sources/opencode.ts` |
+| Array      | Native fields consumed                                                                                   | Source                                                                            |
+| ---------- | -------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------- |
+| `tasks`    | `id`, `queue`, `status`, `progress.session_id` (object or JSON string); optional normalized `session_id` | rich broker task export; `pkgs/fleet/hosted-worker/src/queue-store.ts`            |
+| `events`   | `task_id`, `kind`, `created_at`                                                                          | complete broker event export for those tasks                                      |
+| `ledger`   | `queue`, `task_id`, `session_id`                                                                         | execution bindings; see retry-history caveat below                                |
+| `sessions` | `id`, `tokens.input`                                                                                     | cumulative OpenCode session export; `pm-stack/aggregator/src/sources/opencode.ts` |
 
 Export all relevant task rows, finishing events, execution bindings and sessions
 before deleting sessions. This command intentionally does not query the broker

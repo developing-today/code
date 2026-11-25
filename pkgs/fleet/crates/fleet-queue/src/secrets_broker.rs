@@ -71,7 +71,7 @@ use std::sync::{Arc, Condvar, Mutex, RwLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde_json::{Value, json};
-use tiny_http::{Header, Response, Server, StatusCode};
+use std::net::TcpListener;
 
 /// One cached secret: its value plus when the broker last fetched
 /// it from Bitwarden (#6767). The age is what lets a consumer (or a
@@ -738,13 +738,6 @@ fn fetch_through_with(
     result
 }
 
-fn json_response(status: u16, body: Value) -> Response<std::io::Cursor<Vec<u8>>> {
-    let data = serde_json::to_vec(&body).unwrap_or_else(|_| b"{}".to_vec());
-    Response::from_data(data)
-        .with_status_code(StatusCode(status))
-        .with_header(Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..]).unwrap())
-}
-
 fn token_matches(provided: Option<&str>, expected: &str) -> bool {
     // #6320 defence in depth: an empty expected token never authenticates,
     // not even against an empty X-Agent-Token header.
@@ -946,7 +939,6 @@ pub fn parse_ttl_s(raw: Option<&str>) -> Result<TtlParse, String> {
 }
 
 pub fn run() -> i32 {
-    use std::io::Read as _;
     // Stage-2 broker resilience: on the sandbox the broker is a
     // local capability, never a LAN surface — force loopback
     // regardless of the environment, so a stale or widened
@@ -1026,7 +1018,7 @@ pub fn run() -> i32 {
         });
     }
 
-    let server = match Server::http(&bind) {
+    let server = match TcpListener::bind(&bind) {
         Ok(server) => server,
         Err(e) => {
             crate::log::info("secrets-broker", &format!("cannot bind {bind}: {e:?}"));
@@ -1080,6 +1072,7 @@ pub fn run() -> i32 {
                             &req.target,
                             req.header("X-Agent-Token"),
                         );
+                        crate::uds_http::log_ctx_trip("secrets-broker", req, status);
                         (
                             status,
                             serde_json::to_vec(&value).unwrap_or_else(|_| b"{}".to_vec()),
@@ -1101,59 +1094,40 @@ pub fn run() -> i32 {
         ),
     }
 
-    for mut req in server.incoming_requests() {
-        let state = Arc::clone(&state);
-        let token = token.clone();
-        std::thread::spawn(move || {
-            let url = req.url().to_string();
-            let provided = req
-                .headers()
-                .iter()
-                .find(|h| h.field.as_str().to_ascii_lowercase() == "x-agent-token")
-                .map(|h| h.value.as_str().to_string());
-            // #6515: authenticate and size-check from the headers
-            // before draining any body byte (tiny_http 0.12 exposes
-            // no per-connection read timeout; see queue_broker).
-            let content_length = req
-                .headers()
-                .iter()
-                .find(|h| h.field.as_str().to_ascii_lowercase() == "content-length")
-                .and_then(|h| h.value.as_str().parse::<u64>().ok());
-            if let Some((status, value)) = pre_body_refusal(
-                req.method().as_str(),
-                &url,
-                provided.as_deref(),
-                &token,
-                content_length,
-            ) {
-                let _ = req.respond(json_response(status, value));
-                return;
-            }
-            if req.method().as_str() == "POST" {
-                // POST /refresh's body is ignored by the handler;
-                // drain it (capped, #6515) as the pre-#6216 loop did.
-                let cap = (crate::uds_http::MAX_BODY_BYTES + 1) as u64;
-                let mut buf = Vec::new();
-                let _ = req.as_reader().take(cap).read_to_end(&mut buf);
-                if buf.len() > crate::uds_http::MAX_BODY_BYTES {
-                    let _ = req.respond(json_response(
-                        413,
-                        json!({"error": "request body too large"}),
-                    ));
-                    return;
-                }
-            }
+    let pre_token = token.clone();
+    crate::tcp_http::serve(
+        server,
+        move |head| {
+            pre_body_refusal(
+                &head.method,
+                &head.target,
+                head.header("X-Agent-Token"),
+                &pre_token,
+                head.header("Content-Length")
+                    .and_then(|v| v.parse::<u64>().ok()),
+            )
+            .map(|(status, value)| {
+                (
+                    status,
+                    serde_json::to_vec(&value).unwrap_or_else(|_| b"{}".to_vec()),
+                )
+            })
+        },
+        move |req| {
             let (status, value) = handle_request(
                 &state,
                 &token,
-                req.method().as_str(),
-                &url,
-                provided.as_deref(),
+                &req.method,
+                &req.target,
+                req.header("X-Agent-Token"),
             );
-            let _ = req.respond(json_response(status, value));
-        });
-    }
-    // incoming_requests() ends only when the server stops.
+            crate::uds_http::log_ctx_trip("secrets-broker", req, status);
+            (
+                status,
+                serde_json::to_vec(&value).unwrap_or_else(|_| b"{}".to_vec()),
+            )
+        },
+    );
     0
 }
 

@@ -32,7 +32,12 @@ fn read_json(relative: &str) -> Value {
 }
 
 fn statement() -> Value {
-    read_json("capability-statement.json")
+    let path = if cfg!(target_os = "macos") {
+        "capability-statement.macos.json"
+    } else {
+        "capability-statement.json"
+    };
+    read_json(path)
 }
 
 fn contract() -> Value {
@@ -83,7 +88,14 @@ fn statement_is_well_formed_and_names_the_contract() {
     let contract = contract();
     assert_eq!(statement["statement"], json!("shell-capability-statement"));
     assert_eq!(statement["shell"], json!("id-native-shell"));
-    assert_eq!(statement["platform"], json!("linux-desktop"));
+    // Oracle: the recorded capability statement names the desktop target
+    // whose binary and checks are being built.
+    let expected_platform = if cfg!(target_os = "macos") {
+        "macos-desktop"
+    } else {
+        "linux-desktop"
+    };
+    assert_eq!(statement["platform"], json!(expected_platform));
     assert_eq!(
         statement["contract"]["name"], contract["contract"],
         "statement must name the contract it is a statement against"
@@ -106,6 +118,19 @@ fn statement_is_well_formed_and_names_the_contract() {
     }
     assert_sorted_unique(&statement, "sends");
     assert_sorted_unique(&statement, "presents");
+}
+
+#[test]
+fn linux_and_macos_statements_record_the_same_capability_profile() {
+    // Oracle: the two target statements may differ only in the platform
+    // they name; sends, presents, provider bounds, and contract remain equal.
+    let mut linux = read_json("capability-statement.json");
+    let mut macos = read_json("capability-statement.macos.json");
+    assert_eq!(linux["platform"], json!("linux-desktop"));
+    assert_eq!(macos["platform"], json!("macos-desktop"));
+    linux["platform"] = json!("desktop");
+    macos["platform"] = json!("desktop");
+    assert_eq!(linux, macos);
 }
 
 /// Every client frame kind this shell can emit, produced by calling the

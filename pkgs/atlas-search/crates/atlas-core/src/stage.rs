@@ -863,7 +863,9 @@ impl Registry {
                 params![unit_id, model, now],
             )
             .map_err(|e| {
-                Error::backend(format!("registry: recording embedding model for {unit_id}: {e}"))
+                Error::backend(format!(
+                    "registry: recording embedding model for {unit_id}: {e}"
+                ))
             })?;
         if changed == 0 {
             return Err(Error::fatal(format!(

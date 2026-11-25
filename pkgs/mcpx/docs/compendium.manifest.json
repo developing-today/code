@@ -1026,6 +1026,13 @@
       "note": "scripts: the unit of work mcpx runs, their shape and lifecycle"
     },
     {
+      "path": "docs/script-generate.md",
+      "chapter": "proposed",
+      "role": "chapter-source",
+      "lines": 294,
+      "note": "contract for the script-side generate surface (#14183, split from #1925): call surface, languages, model selection, request/response, budgets, errors, readiness verdict"
+    },
+    {
       "path": "docs/decisions/0005-release-pipeline.md",
       "chapter": "decision-records",
       "role": "chapter-source",

@@ -35,7 +35,14 @@ pub const CLAIM_ESTIMATE_MINUTES: f64 = 10.0;
 /// Err means "coordinator unreachable", never a dispatch failure.
 pub trait CoordinatorRemote {
     /// Hold a slot for this dispatch (`/placement-claim`).
-    fn claim(&self, handle: &str, surface: &str, seat: &str, est_minutes: f64, allow_paid: f64) -> Result<Value, String>;
+    fn claim(
+        &self,
+        handle: &str,
+        surface: &str,
+        seat: &str,
+        est_minutes: f64,
+        allow_paid: f64,
+    ) -> Result<Value, String>;
     /// Confirm a granted slot after dispatch (`/placement-confirm`).
     fn confirm(&self, handle: &str, run_id: Option<i64>) -> Result<Value, String>;
     /// Give a slot back (`/placement-release`).
@@ -67,7 +74,14 @@ impl BrokerCoordinator {
 }
 
 impl CoordinatorRemote for BrokerCoordinator {
-    fn claim(&self, handle: &str, surface: &str, seat: &str, est_minutes: f64, allow_paid: f64) -> Result<Value, String> {
+    fn claim(
+        &self,
+        handle: &str,
+        surface: &str,
+        seat: &str,
+        est_minutes: f64,
+        allow_paid: f64,
+    ) -> Result<Value, String> {
         self.call(
             "/placement-claim",
             &json!({
@@ -161,7 +175,9 @@ pub enum ClaimDecision {
 /// dispatch decision. A `refused` answer carries no claim row —
 /// nothing polls it. Any transport or backend error is the singular
 /// fallback, never a dispatch failure.
-pub fn classify_claim(answer: Result<Value, String>) -> (ClaimDecision, Option<Value>, Option<String>) {
+pub fn classify_claim(
+    answer: Result<Value, String>,
+) -> (ClaimDecision, Option<Value>, Option<String>) {
     match answer {
         Err(e) => (ClaimDecision::Unreachable, None, Some(e)),
         Ok(v) => match v.get("status").and_then(|s| s.as_str()) {
@@ -195,7 +211,10 @@ pub fn placement_path(decision: &ClaimDecision) -> &'static str {
 /// unreachable fallback). Queued and refused dispatch nothing on
 /// this pass.
 pub fn dispatch_now(decision: &ClaimDecision) -> bool {
-    matches!(decision, ClaimDecision::Granted | ClaimDecision::Unreachable)
+    matches!(
+        decision,
+        ClaimDecision::Granted | ClaimDecision::Unreachable
+    )
 }
 
 /// A clone of the registry with every Blacksmith surface removed —
@@ -223,7 +242,11 @@ pub fn coord_overrides(load: &Value) -> String {
         .unwrap_or_default()
         .iter()
         .map(|o| {
-            let owner = o.get("owner").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let owner = o
+                .get("owner")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
             let occupancy = o.get("occupancy").and_then(|v| v.as_i64()).unwrap_or(0);
             (owner, occupancy)
         })
@@ -328,11 +351,15 @@ mod tests {
             self.claim_answer.borrow().clone()
         }
         fn confirm(&self, handle: &str, run_id: Option<i64>) -> Result<Value, String> {
-            self.confirms.borrow_mut().push((handle.to_string(), run_id));
+            self.confirms
+                .borrow_mut()
+                .push((handle.to_string(), run_id));
             Ok(json!({"confirmed": true}))
         }
         fn release(&self, handle: &str, actual: Option<f64>) -> Result<Value, String> {
-            self.releases.borrow_mut().push((handle.to_string(), actual));
+            self.releases
+                .borrow_mut()
+                .push((handle.to_string(), actual));
             Ok(json!({"released": true}))
         }
         fn claim_status(&self, _h: &str) -> Result<Value, String> {
@@ -364,17 +391,22 @@ mod tests {
     #[test]
     fn granted_slot_confirms_and_names_coordinator() {
         let remote = FakeCoordinator::granted();
-        let (decision, _, _) =
-            classify_claim(remote.claim("fp_x", "fleet-org", "seat", 10.0, 0.0));
+        let (decision, _, _) = classify_claim(remote.claim("fp_x", "fleet-org", "seat", 10.0, 0.0));
         assert_eq!(decision, ClaimDecision::Granted);
         assert!(dispatch_now(&decision));
         assert_eq!(placement_path(&decision), "coordinator");
         // Granted dispatches, then confirms with the run id.
         remote.confirm("fp_x", Some(4242)).unwrap();
-        assert_eq!(remote.confirms.borrow().as_slice(), &[("fp_x".to_string(), Some(4242))]);
+        assert_eq!(
+            remote.confirms.borrow().as_slice(),
+            &[("fp_x".to_string(), Some(4242))]
+        );
         // A dispatch failure releases the held slot instead.
         remote.release("fp_x", None).unwrap();
-        assert_eq!(remote.releases.borrow().as_slice(), &[("fp_x".to_string(), None)]);
+        assert_eq!(
+            remote.releases.borrow().as_slice(),
+            &[("fp_x".to_string(), None)]
+        );
     }
 
     /// Test 5c: a queued claim commits the session queued and
