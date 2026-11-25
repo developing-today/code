@@ -4,7 +4,12 @@
 //! The done check of #13763: live responses state `per_request`
 //! consistency, snapshot caps are enforced before copy, and an interrupted
 //! build keeps the prior snapshot.
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::unnecessary_wraps
+)]
 
 use std::collections::VecDeque;
 
@@ -19,41 +24,41 @@ type Row = serde_json::Map<String, serde_json::Value>;
 
 fn endpoint() -> RegisteredEndpoint {
     let collection = |relation: &str| CollectionAllowlist {
-        schema: "api".to_string(),
-        relation: relation.to_string(),
+        schema: "api".to_owned(),
+        relation: relation.to_owned(),
         columns: vec![
             ColumnDecl {
-                name: "id".to_string(),
+                name: "id".to_owned(),
                 filterable: true,
                 orderable: true,
             },
             ColumnDecl {
-                name: "title".to_string(),
+                name: "title".to_owned(),
                 filterable: true,
                 orderable: false,
             },
         ],
-        unique_key: vec!["id".to_string()],
+        unique_key: vec!["id".to_owned()],
         max_limit: Some(2),
     };
     let config = EndpointConfig {
-        alias: "books-db".to_string(),
-        base_url: "https://pg.example.org/rest".to_string(),
-        schema: "api".to_string(),
-        credential_ref: "secret://pg-books-reader".to_string(),
+        alias: "books-db".to_owned(),
+        base_url: "https://pg.example.org/rest".to_owned(),
+        schema: "api".to_owned(),
+        credential_ref: "secret://pg-books-reader".to_owned(),
         collections: vec![collection("items"), collection("authors")],
     };
     let probe = EndpointProbe {
-        db_schemas: vec!["api".to_string()],
+        db_schemas: vec!["api".to_owned()],
         role_grants: vec![
             RoleGrant {
                 kind: ObjectKind::Schema,
-                object: "api".to_string(),
+                object: "api".to_owned(),
                 privilege: Privilege::Usage,
             },
             RoleGrant {
                 kind: ObjectKind::Relation,
-                object: "items".to_string(),
+                object: "items".to_owned(),
                 privilege: Privilege::Select,
             },
         ],
@@ -105,8 +110,9 @@ impl PageDecoder for JsonRows {
     type Row = Row;
 
     fn decode(&self, body: &[u8]) -> Result<Vec<Row>, DecodeError> {
-        let value: serde_json::Value =
-            serde_json::from_slice(body).map_err(|_| DecodeError::NotJson)?;
+        let value: serde_json::Value = serde_json::from_slice(body)
+            .ok()
+            .ok_or(DecodeError::NotJson)?;
         let serde_json::Value::Array(items) = value else {
             return Err(DecodeError::NotJson);
         };
@@ -128,7 +134,7 @@ impl PageDecoder for JsonRows {
                     .map(Value::Int)
                     .ok_or_else(|| DecodeError::TypeMapping {
                         column: key.column.clone(),
-                        declared_type: "bigint".to_string(),
+                        declared_type: "bigint".to_owned(),
                     })
             })
             .collect()
@@ -142,8 +148,8 @@ fn page(ids: &[i64], range: Option<&str>, at: u64) -> Result<HttpResponse, Trans
         .collect();
     Ok(HttpResponse {
         status: 200,
-        content_type: Some("application/json; charset=utf-8".to_string()),
-        content_range: range.map(str::to_string),
+        content_type: Some("application/json; charset=utf-8".to_owned()),
+        content_range: range.map(str::to_owned),
         body: serde_json::to_vec(&rows).unwrap(),
         observed_at_ms: at,
     })
@@ -152,7 +158,7 @@ fn page(ids: &[i64], range: Option<&str>, at: u64) -> Result<HttpResponse, Trans
 fn status(code: u16) -> Result<HttpResponse, TransportError> {
     Ok(HttpResponse {
         status: code,
-        content_type: Some("application/json".to_string()),
+        content_type: Some("application/json".to_owned()),
         content_range: None,
         body: b"{\"message\":\"nope\"}".to_vec(),
         observed_at_ms: 1,
@@ -295,7 +301,7 @@ fn live_transport_and_body_failures_are_errors() {
     );
 
     let mut html = page(&[], None, 1).unwrap();
-    html.content_type = Some("text/html".to_string());
+    html.content_type = Some("text/html".to_owned());
     assert_eq!(run(Ok(html)), ReadError::NonJsonBody);
 
     let mut garbage = page(&[], None, 1).unwrap();
