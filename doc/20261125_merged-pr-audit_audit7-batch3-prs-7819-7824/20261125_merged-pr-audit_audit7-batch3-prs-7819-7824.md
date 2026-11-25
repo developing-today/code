@@ -10,7 +10,7 @@ Continue the AUDIT-7 Lane 4 batch 3/14 audit for `developing-today/code`: read e
 - Read source issue bodies and full comments, confirming #3181 (21), #7093 (6), #7811 (18), and #7098 (14). #7822 had no originating issue; it was a main-build break fix discovered during a build.
 - For #7820, read later PR #7829 and #7093's final run record: #7829 fixes the first live apply-loop failure and adds end-to-end apply coverage; #7093 then records the scheduled run and reaper output.
 - For #7824, read the merged fork PR #2173 and #7098's full deployment/acceptance comments. #2173 prevents empty credential writes; #7098 records both that guard and this PR's backup snapshots live, with recovery/service acceptance passing.
-- Applied and read back `audit:complete` on #7819, #7821; `audit:no-issue` on #7822; and `audit:completed-later` on #7820 and #7824.
+- Applied and read back `audit:complete` on #7819, #7821; `audit:no-issue` on #7822; `audit:completed-later` on #7820; and `audit:partial` on #7824.
 
 ## Per-entry ledger
 
@@ -20,11 +20,11 @@ Continue the AUDIT-7 Lane 4 batch 3/14 audit for `developing-today/code`: read e
 | #7820 | #7093 | `audit:completed-later` | Implements the yard reaper and schedule. Its first live apply failed safe before moving anything; later #7829 fixed the NameError and added end-to-end apply tests, after which #7093 recorded successful scheduled/apply runs and closed. |
 | #7821 | #7811 | `audit:complete` | Validates the full home-feed response before DOM mutation and preserves existing lists with a clean unavailable message on malformed data, with the issue's wrong-shape cases tested. |
 | #7822 | — | `audit:no-issue` | No originating issue was linked; this one-line test-fixture repair removes duplicate `ChainExt` fields and resolves the build error named in the PR. |
-| #7824 | #7098 | `audit:completed-later` | Adds backup snapshots for the Claude credentials file as a recovery net. Later fork PR #2173 prevents empty-token writes; #7098 records both protections deployed and the service/credential acceptance passing. |
+| #7824 | #7098 | `audit:partial` | Adds backup snapshots for the Claude credentials file as a recovery net. The upstream write-boundary guard #2173 had already merged before this PR; #7098 later records both protections deployed and the service/credential acceptance passing. |
 
 ## Slice state
 
-Five payload entries were processed: five actual merged PRs audited and labelled, with no invalid references. Two are complete, one has no source issue, and two were completed by later merged work. Across all slices to this point, **101 valid PRs are audited from 105 processed payload identifiers**; #7667, #7668, #7693 and #7694 are issues rather than PRs. There are 145 payload identifiers remaining; next is #7826. Batch 3 remains partial.
+Five payload entries were processed: five actual merged PRs audited and labelled, with no invalid references. Two are complete, one has no source issue, one is partial, and one was completed by later merged work. Across all slices to this point, **106 valid PRs are audited from 110 processed payload identifiers**; #7667, #7668, #7693 and #7694 are issues rather than PRs. There are 140 payload identifiers remaining; next is #7826. Batch 3 remains partial.
 
 Tracking progress comment: to be recorded at this slice boundary.
 
