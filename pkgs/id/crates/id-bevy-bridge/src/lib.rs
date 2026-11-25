@@ -48,7 +48,7 @@ pub mod projection;
 pub mod schema;
 pub mod tail;
 
-pub use fixture::{HostedWorldFixture, JournalDelta};
+pub use fixture::{HostedWorldFixture, JournalDelta, judge_intent};
 pub use intent::{
     AppendGate, GateVerdict, Intent, IntentGate, IntentLedger, IntentOutbox, IntentOutcome,
     PredictedPosition, Proposal, presented_position,

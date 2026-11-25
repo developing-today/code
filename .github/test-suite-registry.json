@@ -406,8 +406,8 @@
         "dispatchable": true
       },
       "status": "mapped",
-      "related_issues": [13705],
-      "notes": "The bevy-presenter check runs the Bevy slice 4 presenter-client app headless against the demo world hosted as a separate process: projection, intents end to end, predicted presentation that reconciles or snaps back, the provider manifest and surface grants, and the replay oracle over the host's journal."
+      "related_issues": [13705, 13706],
+      "notes": "The bevy-presenter check runs the Bevy slice 4 presenter-client app headless against the demo world hosted as a separate process: projection, intents end to end, predicted presentation that reconciles or snaps back, the provider manifest and surface grants, and the replay oracle over the host's journal. It also runs slice 5, the host posture: the Bevy process hosting the world with its journal on disk, a second presenter (in process and as the app in its own process) seeing the same world as with an external host, the host's own presenter on the same path, admission by manifest up to capacity, and a reopened or killed host resuming from its last acknowledged position."
     },
     {
       "id": "id.bench.compare-script",

@@ -15,28 +15,40 @@
 //!   predicted presentation that reconciles or snaps back, the 2D sprite
 //!   surface and audio cues.
 //! - [`host`]: the demo arena the binary serves in `host` mode.
+//! - [`world_host`] and [`journal_store`]: the host posture (slice 5,
+//!   #13706), where the Bevy process also runs the world's gate and its
+//!   journal on disk, presents the world itself through the same bridge
+//!   path, and admits other presenters over [`remote::listen`].
 //!
-//! [`run_script`] drives the app headlessly from a move script; the
-//! binary's `script` mode and the end-to-end tests both use it.
+//! [`Session`] drives the app headlessly, joined to a remote world or
+//! hosting one; [`run_script`] runs a move script through it. The
+//! binary's `script` mode and the end-to-end tests both use them.
 
 pub mod app;
 pub mod host;
+pub mod journal_store;
 pub mod provider;
 pub mod remote;
+pub mod world_host;
 
 use std::sync::Arc;
 
 use bevy::input::ButtonInput;
-use bevy::prelude::{App, Gamepad, GamepadButton, KeyCode, MinimalPlugins};
-use id_bevy_bridge::{AppendGate, JournalSource, LagBudget, check_replay};
+use bevy::prelude::{App, Entity, Gamepad, GamepadButton, KeyCode, MinimalPlugins};
+use id_bevy_bridge::{
+    AppendGate, CanonicalState, JournalSource, LagBudget, PositionBatch, canonical_state,
+    check_replay,
+};
 use serde::Serialize;
 
 pub use app::{
     AVATAR, AudioCue, Cue, DrawnEntity, PresentedFrame, PresenterEvent, PresenterLog,
     PresenterPlugin, connect, drawn_sprites, presenter_schema, queued_cues,
 };
+pub use journal_store::{JournalStore, StoreError};
 pub use provider::{Surface, SurfaceGrants, device_manifest};
-pub use remote::{RemoteError, RemoteWorld};
+pub use remote::{HostedWorld, Listener, RemoteError, RemoteWorld, connect_tcp, listen};
+pub use world_host::{EmbeddedHost, HostSettings, WorldRules};
 
 /// Render surface size the app declares, in pixels.
 pub const SURFACE_SIZE: (u32, u32) = (640, 480);
@@ -68,8 +80,40 @@ pub fn join(app: &mut App, link: &Arc<RemoteWorld>) -> Result<SurfaceGrants, Rem
     let granted = link.hello(&device_manifest(width, height))?;
     let grants = SurfaceGrants::from_granted_names(&granted)
         .map_err(|error| RemoteError::Refused(format!("{error:?}")))?;
-    let source: Arc<dyn JournalSource> = Arc::clone(link);
-    let gate: Arc<dyn AppendGate> = Arc::clone(link);
+    let shared_source = Arc::clone(link);
+    let shared_gate = Arc::clone(link);
+    let source: Arc<dyn JournalSource> = shared_source;
+    let gate: Arc<dyn AppendGate> = shared_gate;
+    connect(
+        app.world_mut(),
+        source,
+        gate,
+        grants.clone(),
+        LagBudget::new(PRESENTER_LAG_BUDGET),
+    );
+    Ok(grants)
+}
+
+/// Present the world this process hosts: connect the bridge to
+/// `world`'s own journal and gate, with the surfaces its grants allow.
+///
+/// This is [`join`] without the link: the same tail, the same
+/// `JournalSet`, the same intent path. The host's presenter sees world
+/// state only as positions apply and changes it only through the gate.
+///
+/// # Errors
+///
+/// The world grants an unknown provider name.
+pub fn present_hosted<W: HostedWorld>(
+    app: &mut App,
+    world: &Arc<W>,
+) -> Result<SurfaceGrants, RemoteError> {
+    let grants = SurfaceGrants::from_granted_names(&world.granted())
+        .map_err(|error| RemoteError::Refused(format!("{error:?}")))?;
+    let shared_source = Arc::clone(world);
+    let shared_gate = Arc::clone(world);
+    let source: Arc<dyn JournalSource> = shared_source;
+    let gate: Arc<dyn AppendGate> = shared_gate;
     connect(
         app.world_mut(),
         source,
@@ -130,20 +174,126 @@ pub struct ScriptRun {
     pub replay: Result<(), String>,
 }
 
-/// Run one tick and keep its frame.
-fn tick(app: &mut App, frames: &mut Vec<PresentedFrame>) {
-    app.update();
-    frames.push(app.world().resource::<PresentedFrame>().clone());
-    // A scripted press lasts one tick: release it and forget the edge,
-    // so the next press of the same key is a new press.
-    if let Some(mut keys) = app.world_mut().get_resource_mut::<ButtonInput<KeyCode>>() {
-        keys.release_all();
-        keys.clear();
+/// A headless presenter driven one press at a time: joined to a world
+/// over a link, or presenting the world this process hosts.
+#[derive(Debug)]
+pub struct Session {
+    app: App,
+    pad: Entity,
+    grants: SurfaceGrants,
+    frames: Vec<PresentedFrame>,
+}
+
+impl Session {
+    /// Join the world behind `link` and catch up with it.
+    ///
+    /// # Errors
+    ///
+    /// Joining failed.
+    pub fn join(link: &Arc<RemoteWorld>) -> Result<Self, RemoteError> {
+        let mut app = headless_app();
+        let grants = join(&mut app, link)?;
+        Ok(Self::start(app, grants))
     }
-    let mut pads = app.world_mut().query::<&mut Gamepad>();
-    for mut pad in pads.iter_mut(app.world_mut()) {
-        pad.digital_mut().release_all();
-        pad.digital_mut().clear();
+
+    /// Present `world`, hosted in this process, and catch up with it.
+    ///
+    /// # Errors
+    ///
+    /// The world grants an unknown provider name.
+    pub fn host<W: HostedWorld>(world: &Arc<W>) -> Result<Self, RemoteError> {
+        let mut app = headless_app();
+        let grants = present_hosted(&mut app, world)?;
+        Ok(Self::start(app, grants))
+    }
+
+    fn start(mut app: App, grants: SurfaceGrants) -> Self {
+        app.world_mut()
+            .insert_resource(ButtonInput::<KeyCode>::default());
+        let pad = app.world_mut().spawn(Gamepad::default()).id();
+        let mut session = Self {
+            app,
+            pad,
+            grants,
+            frames: Vec::new(),
+        };
+        // Catch up with the world before the first press.
+        session.settle();
+        session
+    }
+
+    /// Run one tick and keep its frame.
+    fn tick(&mut self) {
+        let app = &mut self.app;
+        app.update();
+        self.frames
+            .push(app.world().resource::<PresentedFrame>().clone());
+        // A scripted press lasts one tick: release it and forget the
+        // edge, so the next press of the same key is a new press.
+        if let Some(mut keys) = app.world_mut().get_resource_mut::<ButtonInput<KeyCode>>() {
+            keys.release_all();
+            keys.clear();
+        }
+        let mut pads = app.world_mut().query::<&mut Gamepad>();
+        for mut pad in pads.iter_mut(app.world_mut()) {
+            pad.digital_mut().release_all();
+            pad.digital_mut().clear();
+        }
+    }
+
+    /// Run the ticks a press is given to settle.
+    pub fn settle(&mut self) {
+        for _ in 0..TICKS_PER_PRESS {
+            self.tick();
+        }
+    }
+
+    /// Press once, then settle.
+    pub fn press(&mut self, press: Press) {
+        let world = self.app.world_mut();
+        match press {
+            Press::Key(key) => {
+                if let Some(mut keys) = world.get_resource_mut::<ButtonInput<KeyCode>>() {
+                    keys.press(key);
+                }
+            }
+            Press::Pad(button) => {
+                if let Some(mut gamepad) = world.get_mut::<Gamepad>(self.pad) {
+                    gamepad.digital_mut().press(button);
+                }
+            }
+        }
+        self.settle();
+    }
+
+    /// The app, for reading what it shows.
+    pub const fn app_mut(&mut self) -> &mut App {
+        &mut self.app
+    }
+
+    /// The world state the app holds, in the replay oracle's comparison
+    /// form.
+    pub fn world_state(&mut self) -> CanonicalState {
+        canonical_state(self.app.world_mut())
+    }
+
+    /// Report what the app showed, checking its world against a replay
+    /// of `journal` (design §4).
+    pub fn finish(mut self, journal: &[PositionBatch]) -> ScriptRun {
+        let world = self.app.world_mut();
+        let replay = check_replay(world, &presenter_schema(), journal)
+            .map_err(|divergence| divergence.to_string());
+        let events = world.resource::<PresenterLog>().events.clone();
+        let cues = queued_cues(world);
+        let sprites = drawn_sprites(world);
+        ScriptRun {
+            surfaces: self.grants.labels(),
+            frames: self.frames,
+            events,
+            cues,
+            sprites,
+            replay,
+        }
     }
 }
 
@@ -154,45 +304,10 @@ fn tick(app: &mut App, frames: &mut Vec<PresentedFrame>) {
 ///
 /// Joining failed.
 pub fn run_script(link: &Arc<RemoteWorld>, presses: &[Press]) -> Result<ScriptRun, RemoteError> {
-    let mut app = headless_app();
-    let grants = join(&mut app, link)?;
-    app.world_mut()
-        .insert_resource(ButtonInput::<KeyCode>::default());
-    let pad = app.world_mut().spawn(Gamepad::default()).id();
-    let mut frames = Vec::new();
-    // Catch up with the world before the first press.
-    for _ in 0..TICKS_PER_PRESS {
-        tick(&mut app, &mut frames);
-    }
+    let mut session = Session::join(link)?;
     for press in presses {
-        match press {
-            Press::Key(key) => {
-                if let Some(mut keys) = app.world_mut().get_resource_mut::<ButtonInput<KeyCode>>() {
-                    keys.press(*key);
-                }
-            }
-            Press::Pad(button) => {
-                if let Some(mut gamepad) = app.world_mut().get_mut::<Gamepad>(pad) {
-                    gamepad.digital_mut().press(*button);
-                }
-            }
-        }
-        for _ in 0..TICKS_PER_PRESS {
-            tick(&mut app, &mut frames);
-        }
+        session.press(*press);
     }
     let journal = link.whole_journal()?;
-    let replay = check_replay(app.world_mut(), &presenter_schema(), &journal)
-        .map_err(|divergence| divergence.to_string());
-    let events = app.world().resource::<PresenterLog>().events.clone();
-    let cues = queued_cues(app.world_mut());
-    let sprites = drawn_sprites(app.world_mut());
-    Ok(ScriptRun {
-        surfaces: grants.labels(),
-        frames,
-        events,
-        cues,
-        sprites,
-        replay,
-    })
+    Ok(session.finish(&journal))
 }

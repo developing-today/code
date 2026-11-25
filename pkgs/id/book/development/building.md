@@ -104,7 +104,7 @@ Tests run under cargo-nextest where the justfile uses it. The recipes:
 | `just test-native-shell` | `cargo nextest run -p id-native-shell`. A separate recipe because the crate is not a default member. |
 | `just test-hw-shell` | `cargo nextest run -p id-hw-shell`. Same reason. |
 | `just test-bevy-bridge` | `cargo nextest run -p id-bevy-bridge`. Same reason. Its replay oracle is the acceptance gate for a bump of the bridge's pinned `bevy_ecs` (#13704). |
-| `just test-bevy-presenter` | `cargo nextest run -p id-bevy-presenter`. Same reason. It runs the 2D presenter-client app headless against a demo world hosted in a separate process (#13705). |
+| `just test-bevy-presenter` | `cargo nextest run -p id-bevy-presenter`. Same reason. It runs the 2D presenter-client app headless against a demo world hosted in a separate process (#13705), and the host posture, where the Bevy process hosts the world with its journal on disk and admits other presenters (#13706). |
 | `just test-rust-examples` | `cargo test` against `examples/rust-world/Cargo.toml`, `examples/rust-counter/Cargo.toml`, `examples/rust-cells/Cargo.toml`, `examples/rust-orbit/Cargo.toml` and `examples/rust-colony/Cargo.toml` — standalone crates outside the workspace. |
 | `just test-integration` | `cargo nextest run --all-features --test cli_integration`. Alias: `test-int`. |
 | `just test-web-unit` | `cd web && bun run test` (Vitest), then the build-manifest shell test. |

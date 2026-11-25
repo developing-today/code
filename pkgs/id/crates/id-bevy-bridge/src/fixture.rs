@@ -179,53 +179,66 @@ impl crate::tail::JournalSource for HostedWorldFixture {
 
 impl crate::intent::AppendGate for HostedWorldFixture {
     fn submit(&self, frame: &serde_json::Value) -> crate::intent::GateVerdict {
-        use crate::intent::{GateVerdict, Intent, Proposal};
-        let intent = match Intent::from_input_frame(frame) {
-            Ok(intent) => intent,
-            Err(error) => {
-                return GateVerdict::Rejected {
-                    reason: error.to_string(),
-                };
-            }
-        };
+        use crate::intent::GateVerdict;
         // One lock for check and append, so nothing lands in between.
         let mut state = self.state();
-        let target = match &intent.proposal {
-            Proposal::Upsert { id, .. } | Proposal::Retract { id } => id.clone(),
-        };
-        let touched_since = state
-            .journal
-            .iter()
-            .filter(|batch| intent.based_on.is_none_or(|based| batch.position > based))
-            .flat_map(|batch| batch.deltas.iter())
-            .any(|delta| match delta {
-                JournalDelta::Upsert { id, .. } | JournalDelta::Retract { id, .. } => *id == target,
-            });
-        if touched_since {
-            return GateVerdict::Rejected {
-                reason: format!("stale: `{target}` changed after the intent's position"),
-            };
+        match judge_intent(&state.journal, &state.denied, frame) {
+            Ok(delta) => GateVerdict::Accepted {
+                position: append_locked(&mut state, vec![delta]),
+            },
+            Err(reason) => GateVerdict::Rejected { reason },
         }
-        let delta = match intent.proposal {
-            Proposal::Upsert { id, values } => {
-                if let Some((predicate, _)) = values
-                    .iter()
-                    .find(|(predicate, _)| state.denied.contains(predicate))
-                {
-                    return GateVerdict::Rejected {
-                        reason: format!("denied predicate `{predicate}`"),
-                    };
-                }
-                JournalDelta::Upsert {
-                    position: 0,
-                    id,
-                    values,
-                }
+    }
+}
+
+/// The fixture gate's rules, for any hosted world that keeps them.
+///
+/// Decodes the shell-contract `input` frame and judges its intent against
+/// `journal`: an intent whose entity changed after its `based_on`
+/// position is stale, and one that writes a predicate in `denied` is
+/// refused. An admitted intent comes back as the delta to journal, with
+/// position 0 for the caller to stamp; a refused one as the reason. The
+/// caller must hold its journal still between judging and appending.
+///
+/// # Errors
+///
+/// The reason the intent is refused.
+pub fn judge_intent(
+    journal: &[crate::tail::PositionBatch],
+    denied: &[String],
+    frame: &serde_json::Value,
+) -> Result<JournalDelta, String> {
+    use crate::intent::{Intent, Proposal};
+    let intent = Intent::from_input_frame(frame).map_err(|error| error.to_string())?;
+    let target = match &intent.proposal {
+        Proposal::Upsert { id, .. } | Proposal::Retract { id } => id.clone(),
+    };
+    let touched_since = journal
+        .iter()
+        .filter(|batch| intent.based_on.is_none_or(|based| batch.position > based))
+        .flat_map(|batch| batch.deltas.iter())
+        .any(|delta| match delta {
+            JournalDelta::Upsert { id, .. } | JournalDelta::Retract { id, .. } => *id == target,
+        });
+    if touched_since {
+        return Err(format!(
+            "stale: `{target}` changed after the intent's position"
+        ));
+    }
+    match intent.proposal {
+        Proposal::Upsert { id, values } => {
+            if let Some((predicate, _)) = values
+                .iter()
+                .find(|(predicate, _)| denied.contains(predicate))
+            {
+                return Err(format!("denied predicate `{predicate}`"));
             }
-            Proposal::Retract { id } => JournalDelta::Retract { position: 0, id },
-        };
-        GateVerdict::Accepted {
-            position: append_locked(&mut state, vec![delta]),
+            Ok(JournalDelta::Upsert {
+                position: 0,
+                id,
+                values,
+            })
         }
+        Proposal::Retract { id } => Ok(JournalDelta::Retract { position: 0, id }),
     }
 }

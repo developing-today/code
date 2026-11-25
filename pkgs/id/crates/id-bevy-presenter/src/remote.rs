@@ -15,9 +15,12 @@
 
 use std::fmt;
 use std::io::{self, BufRead, BufReader, Write};
+use std::net::{SocketAddr, TcpListener, TcpStream, ToSocketAddrs};
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
-use std::sync::{Mutex, MutexGuard, PoisonError};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::thread::JoinHandle;
 
 use id_bevy_bridge::{AppendGate, GateVerdict, JournalSource, PositionBatch};
 use id_caps::world_caps::DeviceManifest;
@@ -96,6 +99,19 @@ pub enum Reply {
 pub trait HostedWorld: JournalSource + AppendGate {
     /// The provider names the world grants a presenter.
     fn granted(&self) -> Vec<String>;
+
+    /// Admit one more presenter whose manifest checked out, or say why
+    /// not. Every admitted presenter departs once its link closes.
+    ///
+    /// # Errors
+    ///
+    /// Why the world will not admit another presenter now.
+    fn admit(&self) -> Result<(), String> {
+        Ok(())
+    }
+
+    /// A presenter admitted by [`Self::admit`] has gone.
+    fn depart(&self) {}
 }
 
 /// Why a call to the host failed.
@@ -272,16 +288,22 @@ impl AppendGate for RemoteWorld {
 }
 
 /// Answer one request for `world`. `admitted` records whether the
-/// presenter has said hello.
+/// presenter has said hello and been admitted.
 pub fn answer(world: &dyn HostedWorld, admitted: &mut bool, request: Request) -> Reply {
     match request {
+        Request::Hello { .. } if *admitted => Reply::Welcome {
+            granted: world.granted(),
+        },
         Request::Hello { device } => match DeviceManifest::from_json(&device) {
-            Ok(_) => {
-                *admitted = true;
-                Reply::Welcome {
-                    granted: world.granted(),
+            Ok(_) => match world.admit() {
+                Ok(()) => {
+                    *admitted = true;
+                    Reply::Welcome {
+                        granted: world.granted(),
+                    }
                 }
-            }
+                Err(reason) => Reply::Refused { reason },
+            },
             Err(error) => Reply::Refused {
                 reason: format!("device manifest refused: {error:?}"),
             },
@@ -303,7 +325,8 @@ pub fn answer(world: &dyn HostedWorld, admitted: &mut bool, request: Request) ->
 }
 
 /// Serve `world` over `reader` and `writer` until the presenter closes
-/// the link.
+/// the link. An admitted presenter departs when the link ends, however
+/// it ends.
 ///
 /// # Errors
 ///
@@ -314,6 +337,19 @@ pub fn serve(
     writer: &mut dyn Write,
 ) -> io::Result<()> {
     let mut admitted = false;
+    let outcome = serve_lines(world, &mut admitted, reader, writer);
+    if admitted {
+        world.depart();
+    }
+    outcome
+}
+
+fn serve_lines(
+    world: &dyn HostedWorld,
+    admitted: &mut bool,
+    reader: &mut dyn BufRead,
+    writer: &mut dyn Write,
+) -> io::Result<()> {
     let mut line = String::new();
     loop {
         line.clear();
@@ -321,7 +357,7 @@ pub fn serve(
             return Ok(());
         }
         let reply = match serde_json::from_str::<Request>(&line) {
-            Ok(request) => answer(world, &mut admitted, request),
+            Ok(request) => answer(world, admitted, request),
             Err(error) => Reply::Refused {
                 reason: format!("unreadable request: {error}"),
             },
@@ -352,4 +388,97 @@ pub fn spawn_host(program: &Path, args: &[String]) -> io::Result<(Child, RemoteW
     };
     let world = RemoteWorld::new(Box::new(BufReader::new(stdout)), Box::new(stdin));
     Ok((child, world))
+}
+
+/// Link to a world served on `addr` by [`listen`].
+///
+/// # Errors
+///
+/// The connection failed.
+pub fn connect_tcp(addr: impl ToSocketAddrs) -> io::Result<RemoteWorld> {
+    let stream = TcpStream::connect(addr)?;
+    stream.set_nodelay(true)?;
+    let reader = BufReader::new(stream.try_clone()?);
+    Ok(RemoteWorld::new(Box::new(reader), Box::new(stream)))
+}
+
+/// A world's door for other presenters (design §3, host posture): each
+/// connection is served on its own thread, through [`serve`], so every
+/// presenter is admitted by the world's own [`HostedWorld::admit`].
+///
+/// Dropping the listener stops it taking new presenters; presenters
+/// already admitted keep their links until they close them.
+#[derive(Debug)]
+pub struct Listener {
+    addr: SocketAddr,
+    stopped: Arc<AtomicBool>,
+    accepting: Option<JoinHandle<()>>,
+}
+
+/// Start admitting presenters to `world` on `addr`. Use port 0 for any
+/// free port; [`Listener::addr`] says which one was taken.
+///
+/// # Errors
+///
+/// The address could not be bound.
+pub fn listen<W: HostedWorld>(world: Arc<W>, addr: impl ToSocketAddrs) -> io::Result<Listener> {
+    let listener = TcpListener::bind(addr)?;
+    let addr = listener.local_addr()?;
+    let stopped = Arc::new(AtomicBool::new(false));
+    let stop = Arc::clone(&stopped);
+    let accepting = std::thread::Builder::new()
+        .name("id-bevy-world-door".to_owned())
+        .spawn(move || {
+            for stream in listener.incoming() {
+                if stop.load(Ordering::SeqCst) {
+                    return;
+                }
+                let Ok(stream) = stream else {
+                    continue;
+                };
+                let world = Arc::clone(&world);
+                let _ = std::thread::Builder::new()
+                    .name("id-bevy-world-link".to_owned())
+                    .spawn(move || serve_stream(&*world, stream));
+            }
+        })?;
+    Ok(Listener {
+        addr,
+        stopped,
+        accepting: Some(accepting),
+    })
+}
+
+fn serve_stream(world: &dyn HostedWorld, stream: TcpStream) {
+    let _ = stream.set_nodelay(true);
+    let Ok(reading) = stream.try_clone() else {
+        return;
+    };
+    let mut reader = BufReader::new(reading);
+    let mut writer = stream;
+    let _ = serve(world, &mut reader, &mut writer);
+}
+
+impl Listener {
+    /// The address presenters connect to.
+    #[must_use]
+    pub const fn addr(&self) -> SocketAddr {
+        self.addr
+    }
+
+    /// Stop taking new presenters and wait for the door to close.
+    pub fn stop(&mut self) {
+        self.stopped.store(true, Ordering::SeqCst);
+        // Wake the accept loop so it sees the flag.
+        let _ = TcpStream::connect(self.addr);
+        if let Some(accepting) = self.accepting.take() {
+            let _ = accepting.join();
+        }
+    }
+}
+
+impl Drop for Listener {
+    fn drop(&mut self) {
+        self.stop();
+    }
 }

@@ -34,11 +34,9 @@ impl ArenaHost {
     #[must_use]
     pub fn demo(granted: Vec<String>) -> Self {
         let world = HostedWorldFixture::new();
-        world.append(vec![upsert(AVATAR, "You", [0.0, 0.0])]);
-        world.append(vec![
-            upsert("beacon-north", "North beacon", [0.0, 2.0]),
-            upsert("beacon-east", "East beacon", [2.0, 0.0]),
-        ]);
+        for position in arena_genesis() {
+            world.append(position);
+        }
         Self {
             world,
             half_extent: ARENA_HALF_EXTENT,
@@ -54,16 +52,41 @@ impl ArenaHost {
             .map(|surface| surface.provider().to_owned())
             .collect()
     }
+}
 
-    fn outside(&self, value: &serde_json::Value) -> bool {
-        value.as_array().is_some_and(|pair| {
-            pair.iter().any(|coordinate| {
-                coordinate
-                    .as_f64()
-                    .is_none_or(|c| c.abs() > self.half_extent)
+/// The demo arena's first positions: the avatar at the centre, then two
+/// beacons. Every host of the arena starts its journal with them.
+#[must_use]
+pub fn arena_genesis() -> Vec<Vec<JournalDelta>> {
+    vec![
+        vec![upsert(AVATAR, "You", [0.0, 0.0])],
+        vec![
+            upsert("beacon-north", "North beacon", [0.0, 2.0]),
+            upsert("beacon-east", "East beacon", [2.0, 0.0]),
+        ],
+    ]
+}
+
+/// The arena's world rule: true when `frame` carries an intent that
+/// moves something to a position more than `half_extent` from the
+/// centre on either axis. A frame that is not an intent is left to the
+/// gate's own decoding.
+#[must_use]
+pub fn outside_arena(frame: &serde_json::Value, half_extent: f64) -> bool {
+    let Ok(Intent {
+        proposal: Proposal::Upsert { values, .. },
+        ..
+    }) = Intent::from_input_frame(frame)
+    else {
+        return false;
+    };
+    values.iter().any(|(predicate, value)| {
+        predicate == "position"
+            && value.as_array().is_some_and(|pair| {
+                pair.iter()
+                    .any(|coordinate| coordinate.as_f64().is_none_or(|c| c.abs() > half_extent))
             })
-        })
-    }
+    })
 }
 
 fn upsert(id: &str, name: &str, at: [f64; 2]) -> JournalDelta {
@@ -89,14 +112,7 @@ impl JournalSource for ArenaHost {
 
 impl AppendGate for ArenaHost {
     fn submit(&self, frame: &serde_json::Value) -> GateVerdict {
-        if let Ok(Intent {
-            proposal: Proposal::Upsert { values, .. },
-            ..
-        }) = Intent::from_input_frame(frame)
-            && values
-                .iter()
-                .any(|(predicate, value)| predicate == "position" && self.outside(value))
-        {
+        if outside_arena(frame, self.half_extent) {
             return GateVerdict::Rejected {
                 reason: OUTSIDE_ARENA.to_owned(),
             };
