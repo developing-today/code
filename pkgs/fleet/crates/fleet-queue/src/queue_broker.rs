@@ -1328,6 +1328,7 @@ pub fn run() -> i32 {
                             req.header("X-Agent-Token"),
                             &req.body,
                         );
+                        crate::uds_http::log_ctx_trip("queue-broker", req, status);
                         (
                             status,
                             serde_json::to_vec(&value).unwrap_or_else(|_| b"{}".to_vec()),
@@ -1377,6 +1378,7 @@ pub fn run() -> i32 {
                 req.header("X-Agent-Token"),
                 &req.body,
             );
+            crate::uds_http::log_ctx_trip("queue-broker", req, status);
             (
                 status,
                 serde_json::to_vec(&value).unwrap_or_else(|_| b"{}".to_vec()),

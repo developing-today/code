@@ -293,12 +293,31 @@ pub fn kill(ladder: &Arc<Ladder>, job: &str) -> i32 {
 }
 
 /// What a command runs: an argv, or a shell string (`--shell`).
+/// The caller's `FLEET_CTX_*` record rides the spec's `env`
+/// (code#14188): the daemon merges it into the job's environment and
+/// records it in the spool, and the SSH fallback leg exports it on
+/// the remote line, so the context reaches the command on every leg.
 pub fn command_spec(cwd: Option<&str>, shell: bool, cmd: &[String]) -> Value {
-    if shell {
+    command_spec_with_ctx(&fleet_config::ctx::Ctx::from_env(), cwd, shell, cmd)
+}
+
+/// [`command_spec`] with an explicit context record. An empty record
+/// adds no `env` key, so pre-contract specs are byte-identical.
+pub fn command_spec_with_ctx(
+    ctx: &fleet_config::ctx::Ctx,
+    cwd: Option<&str>,
+    shell: bool,
+    cmd: &[String],
+) -> Value {
+    let mut spec = if shell {
         json!({ "cwd": cwd, "shell": cmd.join(" ") })
     } else {
         json!({ "cwd": cwd, "argv": cmd })
+    };
+    if let (Some(obj), Some(env)) = (spec.as_object_mut(), ctx.to_frame()) {
+        obj.insert("env".to_string(), json!(env));
     }
+    spec
 }
 
 pub fn exec(ladder: &Arc<Ladder>, spec: Value, timeout_s: u64) -> i32 {
@@ -606,6 +625,29 @@ pub fn fetch(ladder: &Arc<Ladder>, remote: &str, dest: &std::path::Path) -> i32 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #14188: the FLEET_CTX_* record rides the exec/jobs spec `env`,
+    /// and the SSH fallback leg exports it on the remote line.
+    #[test]
+    fn command_spec_carries_ctx_in_env_and_ssh_leg_exports_it_14188() {
+        let cmd = vec!["true".to_string()];
+        let empty = fleet_config::ctx::Ctx::default();
+        let bare = command_spec_with_ctx(&empty, None, false, &cmd);
+        assert!(bare.get("env").is_none(), "no context, no env key: {bare}");
+
+        let ctx = fleet_config::ctx::Ctx::from_pairs([
+            ("FLEET_CTX_ID", "task-22655"),
+            ("FLEET_CTX_TASK_ID", "22655"),
+        ]);
+        let spec = command_spec_with_ctx(&ctx, Some("/tmp"), true, &cmd);
+        assert_eq!(spec["env"]["FLEET_CTX_ID"], "task-22655");
+        assert_eq!(spec["env"]["FLEET_CTX_TASK_ID"], "22655");
+        let inner = crate::legs::ssh_inner(&spec);
+        assert!(
+            inner.starts_with("export FLEET_CTX_ID=task-22655; export FLEET_CTX_TASK_ID=22655; "),
+            "{inner}"
+        );
+    }
 
     /// #5757 poll-backoff oracle: 1 s doubling capped at 10 s.
     #[test]
