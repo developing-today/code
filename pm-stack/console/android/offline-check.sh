@@ -198,11 +198,9 @@ tap_text() {
   adb shell input tap "$xy"
 }
 
-# Waits for words, scrolling the page down between looks: the Needs
-# me page leads with what only the owner can do, and the questions
-# sit below the fold — and a screen read only holds what is on the
-# screen (run 45573336528's dump ends at the visible asks, the
-# question nowhere in it). A swipe up, a breath, another look.
+# Waits for words, scrolling the page down between looks: a list
+# can run past the fold, and a screen read only holds what is on
+# the screen. A swipe up, a breath, another look.
 wait_text_scrolling() {
   local tries=0 texts
   until texts="$(screen_text)" && printf '%s' "$texts" | grep -qF "$1"; do
@@ -319,12 +317,19 @@ adb shell am force-stop "$PKG" 2>/dev/null || true
 echo "offline-check: 1. the app opens against the demo edge"
 launch_and_wait_text "Needs me" 120 || fail "the app did not open to the console (no 'Needs me' tab)"
 tap_text_retry "Needs me" || fail "could not open the Needs me tab"
+# The Needs me page opens on whichever list leads; the questions are
+# their own segment of it, behind the "Questions" button (app.js:
+# viewNeeds' seg buttons), not further down the page — ten scrolls
+# in run 45576589239 moved nothing because there was nothing to
+# scroll to.
+tap_text_retry "Questions" || fail "could not open the Questions segment"
 wait_text_scrolling "$QUESTION_TEXT" || fail "the demo question is not shown"
 
 echo "offline-check: 2. with no connection, opened again it shows what it kept"
 airplane on || fail "could not turn aeroplane mode on"
 if ! launch_and_wait_text "$QUESTION_TEXT" 60; then
   launch_from_icon
+  tap_text_retry "Questions" || true
   wait_text_scrolling "$QUESTION_TEXT" || fail "opened with no connection, the app does not show the question it last saw"
 fi
 
@@ -366,6 +371,7 @@ done
 [ "$seen" = "1" ] || fail "the demo edge saw the answer $seen times, not once (log: $ACT_LOG)"
 launch_and_wait_text "Needs me" 60 || fail "the app did not reopen after the answer was sent"
 tap_text_retry "Needs me" || fail "could not open the Needs me tab again"
+tap_text_retry "Questions" || fail "could not reopen the Questions segment"
 wait_text_scrolling "$NEXT_QUESTION_TEXT" || fail "the Needs me list did not load after the answer was sent"
 if screen_text | grep -qF "$QUESTION_TEXT"; then
   fail "the answered question is back in the list after being sent"
