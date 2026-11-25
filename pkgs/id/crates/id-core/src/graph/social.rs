@@ -72,6 +72,11 @@ pub struct SocialObject {
     pub schema_version: u64,
     /// The version this object succeeds, if it is a version.
     pub succeeds_ref: Option<ObjectRef>,
+    /// The social object a feed entry surfaces. Required for
+    /// [`SocialObjectKind::FeedEntry`] and absent for every other
+    /// profile (envelope design #13095 §4); see
+    /// [`super::social_envelope`] for the validator.
+    pub target_ref: Option<ObjectRef>,
 }
 
 /// The selected deployment profile bounding one traversal.
