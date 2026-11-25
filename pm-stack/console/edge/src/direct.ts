@@ -41,7 +41,16 @@ import { memoryShelf, type Shelf, Trends } from "../../src/trends.ts";
  * credential (edge.ts `owned` says which of these are its, case by
  * case); the pipeline's unread-instruction count is the bridge's
  * the same way (#14377); the rest are GitHub's and the queue store's. */
-export const DIRECT_READ_SECTIONS = ["board", "prs", "priorities", "asks", "census", "done", "agents", "pipeline"] as const;
+export const DIRECT_READ_SECTIONS = [
+  "board",
+  "prs",
+  "priorities",
+  "asks",
+  "census",
+  "done",
+  "agents",
+  "pipeline",
+] as const;
 /** Actions the edge runs itself: each is one or a few calls to GitHub
  * or the queue store, and needs nothing a machine has. */
 export const DIRECT_ACTIONS = [
@@ -821,6 +830,14 @@ async function bridgeCall(
   } else if (what === "enroll-tokens") {
     if (rest.length > 0) throw new OpError(502, "fleet bridge enroll-tokens takes no arguments here");
     path = `/fleet/${token}/enroll-tokens`;
+  } else if (what === "wake-hooks") {
+    // The wake hooks' list is a read of the same binding (#14544),
+    // through the bridge's read-scope view. Setting and removing are
+    // owner-token acts, never translated: a set asked at the edge is
+    // refused (its token must not be held, edge-proto.ts), a remove
+    // is held for a machine.
+    if (rest.length > 0) throw new OpError(502, "needs a machine");
+    path = `/fleet/${token}/wake-hooks`;
   } else if (what === "send") {
     const to: string[] = [];
     let kind = "message";
@@ -839,7 +856,8 @@ async function bridgeCall(
       else if (arg === "--kind") kind = rest[++i] ?? "message";
       else if (arg === "--limit") {
         const n = Number(rest[++i]);
-        if (!Number.isInteger(n) || n < 1) throw new OpError(502, "fleet bridge send: --limit must be a positive whole number");
+        if (!Number.isInteger(n) || n < 1)
+          throw new OpError(502, "fleet bridge send: --limit must be a positive whole number");
         limit = n;
       } else if (arg === "--broaden") broaden = rest[++i] ?? "";
       else if (arg === "-") useStdin = true;
@@ -857,7 +875,13 @@ async function bridgeCall(
     } else {
       if (to.length === 0) throw new OpError(502, "fleet bridge send: needs --to");
       if (!useStdin) throw new OpError(502, "fleet bridge send: the text comes on stdin here");
-      body = JSON.stringify({ agent: BRIDGE_AGENT, to, body: opts?.stdin ?? "", kind, ...(limit === undefined ? {} : { limit }) });
+      body = JSON.stringify({
+        agent: BRIDGE_AGENT,
+        to,
+        body: opts?.stdin ?? "",
+        kind,
+        ...(limit === undefined ? {} : { limit }),
+      });
     }
   } else if (what === "offer") {
     // A claim offer posted as this credential (#14375): the bridge
@@ -870,17 +894,22 @@ async function bridgeCall(
     for (let i = 0; i < rest.length; i++) {
       const arg = rest[i];
       if (arg === "--to") {
-        const list = (rest[++i] ?? "").split(",").map((t) => t.trim()).filter(Boolean);
+        const list = (rest[++i] ?? "")
+          .split(",")
+          .map((t) => t.trim())
+          .filter(Boolean);
         to.push(...list);
       } else if (arg === "--command") kind = "command";
       else if (arg === "--kind") kind = rest[++i] ?? "message";
       else if (arg === "--slots") {
         const n = Number(rest[++i]);
-        if (!Number.isInteger(n) || n < 1) throw new OpError(502, "fleet bridge offer: --slots must be a positive whole number");
+        if (!Number.isInteger(n) || n < 1)
+          throw new OpError(502, "fleet bridge offer: --slots must be a positive whole number");
         slots = n;
       } else if (arg === "--ttl") {
         const n = Number(rest[++i]);
-        if (!Number.isInteger(n) || n < 1) throw new OpError(502, "fleet bridge offer: --ttl must be a positive whole number");
+        if (!Number.isInteger(n) || n < 1)
+          throw new OpError(502, "fleet bridge offer: --ttl must be a positive whole number");
         ttl = n;
       } else if (arg === "-") useStdin = true;
       else throw new OpError(502, `fleet bridge offer: unexpected argument ${arg}`);

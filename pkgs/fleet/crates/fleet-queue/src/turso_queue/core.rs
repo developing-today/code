@@ -84,6 +84,7 @@ pub(crate) fn after_iso(secs: i64) -> String {
 pub(crate) enum Arg {
     Text(String),
     Int(i64),
+    Float(f64),
     Null,
 }
 
@@ -92,6 +93,9 @@ impl Arg {
         match self {
             Arg::Text(v) => json!({"type": "text", "value": v}),
             Arg::Int(v) => json!({"type": "integer", "value": v.to_string()}),
+            // hrana carries floats as JSON numbers (integers go as
+            // strings); both shapes are accepted on read.
+            Arg::Float(v) => json!({"type": "float", "value": v}),
             Arg::Null => json!({"type": "null"}),
         }
     }
@@ -129,9 +133,11 @@ pub(crate) fn cell_to_json(cell: &Value) -> Value {
             .and_then(|s| s.parse::<i64>().ok())
             .map(|n| json!(n))
             .unwrap_or(Value::Null),
+        // The pipeline may carry a float as a JSON number
+        // (hrana) or as a string (mirrors that stringify args);
+        // accept both so REAL columns read back either way.
         "float" => raw
-            .and_then(|v| v.as_str())
-            .and_then(|s| s.parse::<f64>().ok())
+            .and_then(|v| v.as_f64().or_else(|| v.as_str()?.parse::<f64>().ok()))
             .and_then(serde_json::Number::from_f64)
             .map(Value::Number)
             .unwrap_or(Value::Null),
@@ -901,6 +907,12 @@ impl TursoBackend {
             ("dep_blocked_until", "TEXT"),
             ("dep_recheck_seconds", "INTEGER"),
             ("required_budget_minutes", "INTEGER"),
+            // #14170 Q5: the label cache (mirror's JSON array of
+            // names) and its sync stamp. Existing rows read `[]` and
+            // NULL — "never synced" — until a transition or the
+            // label sweep copies them from the mirror.
+            ("labels", "TEXT NOT NULL DEFAULT '[]'"),
+            ("labels_synced_at", "TEXT"),
         ] {
             let has = cols
                 .iter()
@@ -1010,12 +1022,13 @@ impl Clone for Arg {
         match self {
             Arg::Text(s) => Arg::Text(s.clone()),
             Arg::Int(n) => Arg::Int(*n),
+            Arg::Float(f) => Arg::Float(*f),
             Arg::Null => Arg::Null,
         }
     }
 }
 
-pub(crate) const SCHEMA: [&str; 27] = [
+pub(crate) const SCHEMA: [&str; 34] = [
     "CREATE TABLE IF NOT EXISTS tasks (\
         id INTEGER PRIMARY KEY AUTOINCREMENT, \
         queue TEXT NOT NULL, title TEXT, body TEXT, \
@@ -1032,7 +1045,8 @@ pub(crate) const SCHEMA: [&str; 27] = [
         created_at TEXT NOT NULL, updated_at TEXT NOT NULL, \
         completed_at TEXT, \
         blocked_deps TEXT, dep_next_recheck_at TEXT, dep_blocked_until TEXT, \
-        dep_recheck_seconds INTEGER)",
+        dep_recheck_seconds INTEGER, \
+        labels TEXT NOT NULL DEFAULT '[]', labels_synced_at TEXT)",
     // NOT unique: the PG data itself carries duplicate (queue, dedupe_key)
     // pairs from before dedupe was enforced, and the backup load must
     // accept them as-is; enqueue dedupe is a read-then-insert check.
@@ -1069,6 +1083,15 @@ pub(crate) const SCHEMA: [&str; 27] = [
     "CREATE INDEX IF NOT EXISTS events_task ON events(task_id, id)",
     "CREATE INDEX IF NOT EXISTS events_kind_ts ON events(kind, created_at)",
     "CREATE INDEX IF NOT EXISTS events_created ON events(created_at)",
+    "CREATE TABLE IF NOT EXISTS task_history (\
+        id INTEGER PRIMARY KEY AUTOINCREMENT, event_id INTEGER UNIQUE, \
+        task_id INTEGER NOT NULL, kind TEXT NOT NULL, \
+        from_status TEXT, to_status TEXT, from_priority INTEGER, to_priority INTEGER, \
+        actor TEXT, session_id TEXT, model_provider TEXT, model_id TEXT, \
+        detail TEXT NOT NULL DEFAULT '{}', source TEXT NOT NULL DEFAULT 'live', \
+        created_at TEXT NOT NULL)",
+    "CREATE INDEX IF NOT EXISTS task_history_task ON task_history(task_id, id)",
+    "CREATE INDEX IF NOT EXISTS task_history_created ON task_history(created_at)",
     "CREATE TABLE IF NOT EXISTS creation_outbox (\
         id TEXT PRIMARY KEY, repo TEXT NOT NULL, kind TEXT NOT NULL, \
         payload TEXT NOT NULL DEFAULT '{}', dedup_key TEXT NOT NULL, \
@@ -1120,6 +1143,13 @@ pub(crate) const SCHEMA: [&str; 27] = [
     crate::turso_queue::ACTIONS_EXEC_DDL_COMMANDS_IDX,
     crate::turso_queue::ACTIONS_EXEC_DDL_IO,
     crate::turso_queue::ACTIONS_EXEC_DDL_IO_IDX,
+    // #13765: central placement coordinator — slot claims, the
+    // cross-seat load view, the fleet-wide Blacksmith budget, and
+    // the waitlist. DDL of record in the placement_coord module.
+    crate::turso_queue::PLACEMENT_COORD_DDL_OWNER,
+    crate::turso_queue::PLACEMENT_COORD_DDL_CLAIMS,
+    crate::turso_queue::PLACEMENT_COORD_DDL_BUDGETS,
+    crate::turso_queue::PLACEMENT_COORD_DDL_CLAIMS_IDX,
 ];
 
 // ---------------------------------------------------------------------------
@@ -1210,6 +1240,174 @@ pub(crate) fn with_marks(detail: &Value, task: &Value) -> Value {
     merge_obj(&audit_marks(task), detail)
 }
 
+/// Status transition each lifecycle event kind records in
+/// task_history: (from_status, to_status). `None` means the
+/// transition's prior status is not known from the event alone
+/// (blocked/cancelled/failed/task_revived can come from several
+/// states), so from_status is left NULL rather than guessed.
+/// `reprioritized` changes priority, not status: its from/to are
+/// the priority values carried in the event detail. Kinds absent
+/// here (checkpoint, claim_refused, session_bound, lease_expired,
+/// ...) are not status transitions and get no history row.
+pub(crate) fn history_transition(
+    kind: &str,
+) -> Option<(Option<&'static str>, Option<&'static str>)> {
+    Some(match kind {
+        "enqueued" => (None, Some("queued")),
+        "task_revived" => (None, Some("queued")),
+        "claimed" => (Some("queued"), Some("claimed")),
+        "parked" => (Some("claimed"), Some("parked")),
+        "released" => (Some("claimed"), Some("queued")),
+        "woken" => (Some("parked"), Some("queued")),
+        "blocked" => (None, Some("blocked")),
+        "unblocked" | "dep_unblocked" => (Some("blocked"), Some("queued")),
+        "completed" => (Some("claimed"), Some("done")),
+        "cancelled" => (None, Some("cancelled")),
+        "failed" => (None, Some("failed")),
+        "reprioritized" => (None, None),
+        _ => return None,
+    })
+}
+
+/// The history row for the event just inserted by the same
+/// transaction: it reads the newest events row, so it must run
+/// inside the BEGIN IMMEDIATE batch that inserted that event. Marks
+/// come from the event detail, which the transition wrote from its
+/// own context (with_marks), never from the task's current claim.
+pub(crate) const HISTORY_INSERT_SQL: &str = "INSERT OR IGNORE INTO task_history \
+    (event_id, task_id, kind, from_status, to_status, from_priority, to_priority, \
+     actor, session_id, model_provider, model_id, detail, source, created_at) \
+    SELECT e.id, e.task_id, e.kind, ?, ?, \
+        CASE WHEN e.kind = 'reprioritized' THEN json_extract(e.detail, '$.from') END, \
+        CASE WHEN e.kind = 'reprioritized' THEN json_extract(e.detail, '$.to') END, \
+        COALESCE(json_extract(e.detail, '$.actor'), e.worker_id), \
+        json_extract(e.detail, '$.session_id'), \
+        json_extract(e.detail, '$.model_provider'), \
+        json_extract(e.detail, '$.model_id'), \
+        e.detail, 'live', e.created_at \
+    FROM events e WHERE e.id = (SELECT max(id) FROM events) AND changes() = 1";
+
+/// Every event kind that history_transition maps: the backfill census.
+pub(crate) const HISTORY_KINDS: [&str; 12] = [
+    "enqueued",
+    "task_revived",
+    "claimed",
+    "parked",
+    "released",
+    "woken",
+    "blocked",
+    "unblocked",
+    "dep_unblocked",
+    "completed",
+    "cancelled",
+    "failed",
+];
+
+/// Backfill: one history row per mapped events row that has none
+/// (INSERT OR IGNORE on event_id), source='backfill'. The from/to
+/// CASE expressions come from history_transition, so backfill and
+/// the live dual-write cannot disagree. `reprioritized` is included.
+fn backfill_sql() -> String {
+    let mut kinds: Vec<&str> = HISTORY_KINDS.to_vec();
+    kinds.push("reprioritized");
+    let arm = |pick: fn((Option<&'static str>, Option<&'static str>)) -> Option<&'static str>| {
+        kinds
+            .iter()
+            .map(|k| {
+                let v = history_transition(k).and_then(pick);
+                format!(
+                    "WHEN '{k}' THEN {}",
+                    v.map(|s| format!("'{s}'")).unwrap_or_else(|| "NULL".into())
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
+    let in_list = kinds
+        .iter()
+        .map(|k| format!("'{k}'"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!(
+        "INSERT OR IGNORE INTO task_history \
+         (event_id, task_id, kind, from_status, to_status, from_priority, to_priority, \
+          actor, session_id, model_provider, model_id, detail, source, created_at) \
+         SELECT e.id, e.task_id, e.kind, \
+            CASE e.kind {from} END, CASE e.kind {to} END, \
+            CASE WHEN e.kind = 'reprioritized' THEN json_extract(e.detail, '$.from') END, \
+            CASE WHEN e.kind = 'reprioritized' THEN json_extract(e.detail, '$.to') END, \
+            COALESCE(json_extract(e.detail, '$.actor'), e.worker_id), \
+            json_extract(e.detail, '$.session_id'), \
+            json_extract(e.detail, '$.model_provider'), \
+            json_extract(e.detail, '$.model_id'), \
+            e.detail, 'backfill', e.created_at \
+         FROM events e WHERE e.task_id IS NOT NULL AND e.kind IN ({in_list})",
+        from = arm(|(f, _)| f),
+        to = arm(|(_, t)| t),
+    )
+}
+
+/// /history-backfill: idempotent. Reports the census of mapped
+/// events, the rows inserted now, and the rows skipped because a
+/// history row already existed for that event.
+pub(crate) fn verb_history_backfill(t: &TursoBackend, _req: &Value) -> Value {
+    let mut kinds: Vec<&str> = HISTORY_KINDS.to_vec();
+    kinds.push("reprioritized");
+    let in_list = kinds
+        .iter()
+        .map(|k| format!("'{k}'"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let work = (|| -> Result<Value, TErr> {
+        let census = t
+            .query_objs(
+                &format!("SELECT count(*) AS n FROM events WHERE task_id IS NOT NULL AND kind IN ({in_list})"),
+                &[],
+                &[],
+            )?
+            .first()
+            .and_then(|r| r["n"].as_i64())
+            .unwrap_or(0);
+        let inserted = t.exec(&backfill_sql(), &[])?.affected as i64;
+        Ok(json!({
+            "source": "backfill",
+            "census": census,
+            "inserted": inserted,
+            "skipped": census - inserted,
+        }))
+    })();
+    match work {
+        Ok(v) => ok(v),
+        Err(e) => fail(2, e),
+    }
+}
+
+/// /history-since: task_history rows in id order, optionally for one
+/// task and/or created at or after `since`. The per-task timeline and
+/// the notes interleave read this table.
+pub(crate) fn verb_history_since(t: &TursoBackend, req: &Value) -> Value {
+    let task_id = req_i64(req, "task_id");
+    let limit = req_i64(req, "limit").unwrap_or(200).clamp(1, 50_000);
+    let mut sql = "SELECT id, event_id, task_id, kind, from_status, to_status, from_priority, \
+                   to_priority, actor, session_id, model_provider, model_id, detail, source, created_at \
+                   FROM task_history WHERE 1 = 1"
+        .to_string();
+    let mut args: Vec<Arg> = vec![];
+    if let Some(id) = task_id {
+        sql += " AND task_id = ?";
+        args.push(Arg::Int(id));
+    }
+    if let Some(s) = req_str(req, "since") {
+        sql += " AND created_at >= ?";
+        args.push(Arg::Text(s.to_string()));
+    }
+    sql += &format!(" ORDER BY id ASC LIMIT {limit}");
+    match t.query_objs(&sql, &args, &["detail"]) {
+        Ok(rows) => ok(json!({"rows": rows, "task_id": task_id})),
+        Err(e) => fail(2, e),
+    }
+}
+
 pub(crate) fn event(
     t: &TursoBackend,
     worker: Option<&str>,
@@ -1217,17 +1415,44 @@ pub(crate) fn event(
     kind: &str,
     detail: &Value,
 ) -> Result<(), TErr> {
-    t.exec(
-        "INSERT INTO events (worker_id, task_id, kind, detail, created_at) \
-         VALUES (?, ?, ?, ?, ?)",
-        &[
-            arg_str(worker),
-            task_id.map(Arg::Int).unwrap_or(Arg::Null),
-            Arg::Text(kind.to_string()),
-            Arg::Text(detail.to_string()),
-            Arg::Text(now_iso()),
-        ],
-    )?;
+    let transition = history_transition(kind).filter(|_| task_id.is_some());
+    let Some((from, to)) = transition else {
+        t.exec(
+            "INSERT INTO events (worker_id, task_id, kind, detail, created_at) \
+             VALUES (?, ?, ?, ?, ?)",
+            &[
+                arg_str(worker),
+                task_id.map(Arg::Int).unwrap_or(Arg::Null),
+                Arg::Text(kind.to_string()),
+                Arg::Text(detail.to_string()),
+                Arg::Text(now_iso()),
+            ],
+        )?;
+        return Ok(());
+    };
+    t.exec_batch(&[
+        ("BEGIN IMMEDIATE", vec![]),
+        (
+            "INSERT INTO events (worker_id, task_id, kind, detail, created_at) \
+             VALUES (?, ?, ?, ?, ?)",
+            vec![
+                arg_str(worker),
+                task_id.map(Arg::Int).unwrap_or(Arg::Null),
+                Arg::Text(kind.to_string()),
+                Arg::Text(detail.to_string()),
+                Arg::Text(now_iso()),
+            ],
+        ),
+        (HISTORY_INSERT_SQL, vec![arg_str(from), arg_str(to)]),
+        ("COMMIT", vec![]),
+    ])?;
+    // #14170 Q5: every transition refreshes the task's label cache
+    // from the mirror, after the transition has committed. Fail-open:
+    // the mirror never gates work (#8575), so a missing mirror table
+    // or a failed read leaves the cache as it was.
+    if let Some(id) = task_id {
+        let _ = refresh_task_labels(t, id);
+    }
     Ok(())
 }
 
@@ -1735,6 +1960,18 @@ pub(crate) fn verb_sweep(t: &TursoBackend, req: &Value) -> Value {
             .unwrap_or(0);
         if let Some(s) = closed_bound_summary {
             out["closed_bound"] = s;
+        }
+        // #14170 Q5: the label cache sweep rides the sweep, at most
+        // hourly (a checkpoint records the last pass), over
+        // actionable statuses only. It never fails the sweep. Opt
+        // out per call: labels_sync=false; labels_sync_force=true
+        // runs it regardless of the interval.
+        if req_bool(req, "labels_sync").unwrap_or(true) {
+            if let Some(s) =
+                sweep_task_labels(t, req_bool(req, "labels_sync_force").unwrap_or(false))
+            {
+                out["labels_sync"] = s;
+            }
         }
         if expired > 0
             || do_revalidate

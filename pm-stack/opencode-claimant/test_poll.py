@@ -126,6 +126,96 @@ class TestSummarizeCap(unittest.TestCase):
         self.assertEqual((live, active, room), (2, 1, poll.CAP - 1))
 
 
+class TestPilotCapComparison(unittest.TestCase):
+    """Oracle: #1658's advisory cap-4 arithmetic over the existing
+    non-scheduled active-root proxy, with unknowns preserved. Operational
+    cap-36 accounting and candidate discovery must remain unchanged.
+    Every external reader is mocked; no queue or server is touched.
+    """
+
+    def run_main(self, sessions, active_ids):
+        stdout = io.StringIO()
+        with (
+            patch.object(poll.time, "time", return_value=NOW / 1000),
+            patch.object(poll, "fetch_sessions", return_value=sessions),
+            patch.object(poll, "fetch_active_ids", return_value=active_ids),
+            patch.object(poll, "fetch_claimed_rows", return_value=[]),
+            patch.object(poll, "fetch_handed_off_rows", return_value=[]),
+            patch.object(poll, "fetch_ledger_bindings", return_value={}),
+            contextlib.redirect_stdout(stdout),
+            contextlib.redirect_stderr(io.StringIO()),
+        ):
+            self.assertEqual(poll.main(), 0)
+        return json.loads(stdout.getvalue())
+
+    def test_five_active_roots_report_overage_without_changing_launch_room(self):
+        sessions = [root(id=f"ses_{i}") for i in range(5)]
+        out = self.run_main(sessions, {s["id"] for s in sessions})
+        self.assertIn("pilot_cap_comparison", out)
+        self.assertEqual(
+            out["pilot_cap_comparison"],
+            {
+                "proposed_cap": 4,
+                "observed_active_claimant_roots": 5,
+                "available_slots": 0,
+                "over_cap_by": 1,
+            },
+        )
+        self.assertEqual(
+            (out["cap"], out["concurrency_cap"], out["cap_room"]), (36, 36, 31)
+        )
+
+    def test_count_range_obeys_advisory_and_operational_invariants(self):
+        for count in range(41):
+            with self.subTest(count=count):
+                sessions = [root(id=f"ses_{i}") for i in range(count)]
+                out = self.run_main(sessions, {s["id"] for s in sessions})
+                comparison = out["pilot_cap_comparison"]
+                self.assertEqual(comparison["proposed_cap"], 4)
+                self.assertEqual(comparison["observed_active_claimant_roots"], count)
+                self.assertEqual(comparison["available_slots"], max(0, 4 - count))
+                self.assertEqual(comparison["over_cap_by"], max(0, count - 4))
+                self.assertEqual(out["cap_room"], max(0, 36 - count))
+
+    def test_unknown_reads_or_timing_preserve_null_measurements(self):
+        for sessions, active_ids in (
+            (None, set()),
+            ([root()], None),
+            ([root(time={"updated": "unreadable"})], set()),
+        ):
+            with self.subTest(sessions=sessions, active_ids=active_ids):
+                out = self.run_main(sessions, active_ids)
+                self.assertEqual(
+                    out["pilot_cap_comparison"],
+                    {
+                        "proposed_cap": 4,
+                        "observed_active_claimant_roots": None,
+                        "available_slots": None,
+                        "over_cap_by": None,
+                    },
+                )
+                self.assertIsNone(out["cap_room"])
+
+    def test_scheduled_roots_and_children_do_not_consume_advisory_slots(self):
+        sessions = [
+            root(),
+            root(id="scheduled", metadata={"openchamber": {"kind": "scheduled"}}),
+            root(id="legacy", title="Queue lane (scheduled) - code"),
+            root(id="child", parentID="ses_x"),
+        ]
+        out = self.run_main(sessions, {s["id"] for s in sessions})
+        self.assertEqual(
+            out["pilot_cap_comparison"],
+            {
+                "proposed_cap": 4,
+                "observed_active_claimant_roots": 1,
+                "available_slots": 3,
+                "over_cap_by": 0,
+            },
+        )
+        self.assertEqual(out["cap_room"], 35)
+
+
 class TestClaimantCapAccounting(unittest.TestCase):
     """#5016, ruling `session-cap-5016`: the concurrency cap is the
     claimant's LAUNCH budget. Scheduled fleet sessions (lane runners,
@@ -1131,6 +1221,7 @@ class TestMainParallelReads(unittest.TestCase):
                 "cap",
                 "concurrency_cap",
                 "cap_room",
+                "pilot_cap_comparison",
             },
         )
         self.assertEqual(set(out["queues"]), set(poll.QUEUES))

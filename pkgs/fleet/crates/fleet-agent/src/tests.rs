@@ -969,6 +969,63 @@ fn shortlist_add_refuses_duplicates_and_recent_hand_outs() {
 }
 
 #[test]
+fn take_never_hands_out_an_issue_already_handed_within_the_window() {
+    // Oracle (#14651): a shortlist row can outlive its hand-out: it
+    // was written before reservations removed rows, or restored from
+    // an old file. take must skip it until the window passes.
+    let mut list = Shortlist::default();
+    list.entries.push(entry(557, 0, 1));
+    list.entries.push(entry(558, 2, 2));
+    list.handed.push(shortlist::Handed {
+        repo: "developing-today/code".to_string(),
+        issue: 557,
+        to: "agent-a".to_string(),
+        at: 100,
+    });
+    let taken = list.take("agent-b", 200).unwrap();
+    assert_eq!(
+        taken.issue, 558,
+        "the better-ranked 557 is already handed out"
+    );
+    assert!(
+        list.take("agent-c", 200).is_none(),
+        "557 stays unhanded in the window"
+    );
+    list.prune(100 + shortlist::HANDED_TTL_SECS);
+    let taken = list
+        .take("agent-c", 100 + shortlist::HANDED_TTL_SECS)
+        .unwrap();
+    assert_eq!(taken.issue, 557, "the window has passed");
+}
+
+#[test]
+fn a_priority_reservation_removes_the_shortlist_row_for_the_same_issue() {
+    // Oracle (#14651), the reported sequence end to end: issue 557
+    // is shortlisted; agent A reserves it through the priority rung
+    // (`next --no-shortlist`); agent B then takes from the shortlist
+    // before GitHub state changes. B must not get 557 a second time.
+    let fake = Fake::new();
+    fake.seed(vec![entry(557, 2, 1), entry(558, 2, 2)]);
+    let now = fake.now.get();
+    let reserved = shortlist::reserve(&fake.shortlist_path(), now, "agent-a", &[entry(557, 2, 1)])
+        .unwrap()
+        .expect("the priority rung hands out 557");
+    assert_eq!(reserved.issue, 557);
+    let list = shortlist::load(&fake.shortlist_path()).unwrap();
+    assert!(
+        !list.has("developing-today/code", 557),
+        "the reservation removed the shortlist row"
+    );
+    assert!(list.has("developing-today/code", 558));
+    let (out, code) = run(&fake, &["shortlist", "take", "--agent", "agent-b"]);
+    assert_eq!(code, EXIT_OK);
+    assert_eq!(out["entry"]["issue"], 558);
+    let (out, code) = run(&fake, &["shortlist", "take", "--agent", "agent-c"]);
+    assert_eq!(code, EXIT_NO_WORK);
+    assert!(out["entry"].is_null());
+}
+
+#[test]
 fn a_shortlist_file_that_does_not_parse_is_an_error_and_is_left_alone() {
     let fake = Fake::new();
     std::fs::write(fake.shortlist_path(), "{ not a shortlist").unwrap();
@@ -1050,6 +1107,30 @@ proptest! {
         prop_assert_eq!(&got, &expected);
         prop_assert_eq!(list.handed.len(), specs.len());
         prop_assert!(list.entries.is_empty());
+    }
+
+    /// Any interleaving of adds, shortlist takes and priority
+    /// reservations hands each issue out at most once within the
+    /// window (#14651). Every operation happens at one instant, so
+    /// no hand-out ages out mid-sequence.
+    #[test]
+    fn mixed_handouts_never_repeat_an_issue(ops in proptest::collection::vec((0u8..3, 1u64..6, 0u64..7), 0..40)) {
+        let mut list = Shortlist::default();
+        let mut handed_out: Vec<u64> = Vec::new();
+        for (op, issue, rank) in ops {
+            let got = match op {
+                0 => {
+                    list.add(entry(issue, rank, issue));
+                    None
+                }
+                1 => list.take("taker", 1000),
+                _ => list.reserve_from("reserver", 1000, &[entry(issue, rank, issue)]),
+            };
+            if let Some(e) = got {
+                prop_assert!(!handed_out.contains(&e.issue), "issue {} handed out twice", e.issue);
+                handed_out.push(e.issue);
+            }
+        }
     }
 
     /// What is written is what is read back.
@@ -1223,9 +1304,18 @@ fn bootstrap_enrolment_exchanges_first_saves_names_and_writes_the_wake_hook() {
         }))],
     )
     .on("fleet bridge hello", vec![ok(json!({"agent": "muse-9"}))])
-    .on("fleet queue health", vec![fail(3, "queue broker unreachable")])
-    .on("fleet gh api rate_limit", vec![ok(json!({"rate": {"remaining": 4000}}))])
-    .on("fleet laptop-agent health", vec![fail(3, "no leg answered")]);
+    .on(
+        "fleet queue health",
+        vec![fail(3, "queue broker unreachable")],
+    )
+    .on(
+        "fleet gh api rate_limit",
+        vec![ok(json!({"rate": {"remaining": 4000}}))],
+    )
+    .on(
+        "fleet laptop-agent health",
+        vec![fail(3, "no leg answered")],
+    );
     let (out, code) = run(
         &fake,
         &[
@@ -1248,7 +1338,10 @@ fn bootstrap_enrolment_exchanges_first_saves_names_and_writes_the_wake_hook() {
         fake.calls()
     );
     assert_eq!(out["groups"], json!(["muse"]));
-    assert_eq!(out["bootstrap"]["fleet_token_name"], "bridge.muse-9-fleet-token");
+    assert_eq!(
+        out["bootstrap"]["fleet_token_name"],
+        "bridge.muse-9-fleet-token"
+    );
     assert_eq!(out["bootstrap"]["notes_token_name"], "bridge.muse-9-token");
     assert_eq!(out["bootstrap"]["notes_identity"], "muse/muse-9");
     // The profile records the credential names — and no token value
@@ -1279,7 +1372,10 @@ fn bootstrap_enrolment_exchanges_first_saves_names_and_writes_the_wake_hook() {
             .join("bridge-muse-9-signal.sh"),
     )
     .unwrap();
-    assert!(script.contains("https://bridge.example/muse/muse-9"), "{script}");
+    assert!(
+        script.contains("https://bridge.example/muse/muse-9"),
+        "{script}"
+    );
     assert!(!script.contains(BOOTSTRAP_FIXTURE));
     let definition: Value = serde_json::from_str(
         &std::fs::read_to_string(
@@ -1295,7 +1391,10 @@ fn bootstrap_enrolment_exchanges_first_saves_names_and_writes_the_wake_hook() {
     assert_eq!(definition["poll_interval_secs"], 60);
     let prompt = definition["prompt"].as_str().unwrap();
     assert!(prompt.contains("fleet bridge notes inbox"), "{prompt}");
-    assert!(prompt.contains("bridge.muse-9-token"), "the prompt names the token, by name: {prompt}");
+    assert!(
+        prompt.contains("bridge.muse-9-token"),
+        "the prompt names the token, by name: {prompt}"
+    );
     assert!(!prompt.contains(BOOTSTRAP_FIXTURE));
 }
 
@@ -1326,7 +1425,10 @@ fn a_refused_exchange_enrols_nothing() {
         matches!(&err, AgentError::Down(m) if m.contains("nothing was stored")),
         "{err}"
     );
-    assert!(!fake.profile_path().exists(), "no profile after a refused exchange");
+    assert!(
+        !fake.profile_path().exists(),
+        "no profile after a refused exchange"
+    );
     assert!(
         !fake.called("bridge hello"),
         "no hello after a refused exchange: {:?}",

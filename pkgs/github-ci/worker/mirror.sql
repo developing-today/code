@@ -91,3 +91,30 @@ CREATE TABLE IF NOT EXISTS github_issue_history (
 
 CREATE INDEX IF NOT EXISTS github_issue_history_issue
   ON github_issue_history(repo, number, id);
+
+-- Label add/remove history (#14170 Q5; design §7.2): one append-only
+-- row per observed change to an issue's or PR's label set — the
+-- exact names added and removed (diffed stored → incoming under the
+-- upserts' own acceptance rules) and the full set after the change.
+-- action is the webhook action (labeled | unlabeled | opened |
+-- edited | synchronize | …) or 'backfill' for sweep-written rows;
+-- actor is the webhook sender login or 'backfill'. Each item gets a
+-- defined START row the first time its labels are observed (the
+-- whole set as added, removed = '[]'), written only while the item
+-- has no label history, so any item's timeline replays from row 1.
+-- Labels belong to the issue, not to queue tasks: queue items read
+-- this by joining on their issue ref (design D6). FAIL-OPEN like
+-- github_issue_history.
+CREATE TABLE IF NOT EXISTS github_label_history (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  repo TEXT NOT NULL, number INTEGER NOT NULL,
+  is_pr INTEGER NOT NULL DEFAULT 0,
+  added TEXT NOT NULL DEFAULT '[]',
+  removed TEXT NOT NULL DEFAULT '[]',
+  label_set TEXT NOT NULL,
+  action TEXT NOT NULL,
+  actor TEXT, gh_updated_at TEXT,
+  mirrored_at TEXT NOT NULL);
+
+CREATE INDEX IF NOT EXISTS github_label_history_issue
+  ON github_label_history(repo, number, id);

@@ -185,6 +185,26 @@ enum Command {
         #[arg(long, default_value = "codeconfig")]
         topic: String,
     },
+    /// Rebuild an already-promoted corpus end-to-end under the
+    /// mandated embedding model (#8623 slice 2: the re-embed job).
+    /// Reads the unit's promotion archive, embeds with the mandated
+    /// model, writes one new core scan shard part, and closes out the
+    /// registry's per-corpus identity record. The unit stays merged.
+    Reembed {
+        /// The registry store file.
+        #[arg(long)]
+        registry: PathBuf,
+        /// The staging-unit id to rebuild (must be merged).
+        #[arg(long)]
+        unit: String,
+        /// Directory the new core scan shard is written into
+        /// (created if missing).
+        #[arg(long)]
+        shard_dir: PathBuf,
+        /// Shard topic for the rebuilt entries.
+        #[arg(long, default_value = "codeconfig")]
+        topic: String,
+    },
     /// List units in a lifecycle state (open|closing|merged).
     Units {
         #[arg(long, default_value = "open")]
@@ -440,6 +460,36 @@ fn run(cli: Cli) -> Result<(), String> {
             );
             Ok(())
         }
+        Command::Reembed {
+            registry,
+            unit,
+            shard_dir,
+            topic,
+        } => {
+            let registry = Registry::open(&registry).map_err(|e| e.to_string())?;
+            let embedder = load_doc_embedder()?;
+            let report = atlas_core::aggregate::reembed_unit_into_shard(
+                &registry,
+                &unit,
+                &shard_dir,
+                &topic,
+                &embedder,
+                &now_utc(),
+            )
+            .map_err(|e| e.to_string())?;
+            println!(
+                "{{\"unit\":{},\"shard\":{},\"shard_path\":{},\"items\":{},\"prior_chunks\":{},\"chunks\":{},\"dims\":{},\"embedding_model\":{}}}",
+                json_str(&report.unit_id),
+                json_str(&report.shard_name),
+                json_str(&report.shard_path.display().to_string()),
+                report.items,
+                report.prior_chunks,
+                report.chunks,
+                report.dims,
+                json_str(&report.embedding_model),
+            );
+            Ok(())
+        }
         Command::Units { state, registry } => {
             let state = parse_state(&state)?;
             let registry = Registry::open(&registry).map_err(|e| e.to_string())?;
@@ -501,7 +551,7 @@ fn load_doc_embedder() -> Result<atlas_core::AtlasEmbedder, String> {
 
 fn unit_json(unit: &atlas_core::stage::StagingUnit) -> String {
     format!(
-        "{{\"unit_id\":{},\"db_uri\":{},\"owner\":{},\"sensitivity\":{},\"state\":{},\"schema_version\":{},\"created_at\":{},\"updated_at\":{}}}",
+        "{{\"unit_id\":{},\"db_uri\":{},\"owner\":{},\"sensitivity\":{},\"state\":{},\"schema_version\":{},\"created_at\":{},\"updated_at\":{},\"embedding_model\":{}}}",
         json_str(&unit.unit_id),
         json_str(&unit.db_uri),
         json_str(&unit.owner),
@@ -510,6 +560,7 @@ fn unit_json(unit: &atlas_core::stage::StagingUnit) -> String {
         unit.schema_version,
         json_str(&unit.created_at),
         json_str(&unit.updated_at),
+        json_str(&unit.embedding_model),
     )
 }
 

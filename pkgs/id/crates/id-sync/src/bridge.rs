@@ -785,19 +785,28 @@ async fn send_batches<T: BridgeTransport>(
     limits: &BridgeLimits,
 ) -> Result<()> {
     let mut batch: Vec<Vec<u8>> = Vec::new();
-    let mut batch_bytes: usize = 0;
+    // The encoded size of the batch so far — the 4-byte count
+    // prefix plus each event's 4-byte length prefix and payload.
+    // decode_batch enforces max_batch_bytes against that encoded
+    // size, not the payload sum (#14644).
+    let mut batch_bytes: usize = 4;
     for event in events {
-        if batch.len() >= limits.max_batch_events
-            || batch_bytes + event.len() > limits.max_batch_bytes
+        if !batch.is_empty()
+            && (batch.len() >= limits.max_batch_events
+                || batch_bytes + 4 + event.len() > limits.max_batch_bytes)
         {
-            if !batch.is_empty() {
-                send_frame(transport, TAG_BATCH, &encode_batch(&batch)).await?;
-                batch.clear();
-                batch_bytes = 0;
-            }
+            send_frame(transport, TAG_BATCH, &encode_batch(&batch)).await?;
+            batch.clear();
+            batch_bytes = 4;
         }
+        ensure!(
+            batch_bytes + 4 + event.len() <= limits.max_batch_bytes,
+            "event of {} bytes cannot fit the {}-byte batch bound",
+            event.len(),
+            limits.max_batch_bytes
+        );
         batch.push(event.clone());
-        batch_bytes += event.len();
+        batch_bytes += 4 + event.len();
     }
     if !batch.is_empty() {
         send_frame(transport, TAG_BATCH, &encode_batch(&batch)).await?;
@@ -1201,6 +1210,111 @@ mod tests {
             ..BridgeLimits::default()
         };
         assert!(decode_batch(&encoded, &small).is_err());
+    }
+
+    #[tokio::test]
+    async fn send_batches_budgets_the_encoded_size() {
+        // The #14644 boundary at default limits: 16 x 64 KiB events
+        // fit the payload sum (1 MiB) but not the encoded batch
+        // (4-byte count + 4-byte length per event). Every emitted
+        // batch must decode under the same limits, in order.
+        let limits = BridgeLimits::default();
+        let events: Vec<Vec<u8>> = (0..16u8).map(|i| vec![i; 65536]).collect();
+        let (mut sender, mut receiver) = pair();
+        send_batches(&mut sender, &events, &limits).await.unwrap();
+        drop(sender);
+        let mut frames = 0;
+        let mut received: Vec<Vec<u8>> = Vec::new();
+        while let Some(frame) = receiver.recv().await.unwrap() {
+            frames += 1;
+            assert_eq!(frame[0], TAG_BATCH);
+            let decoded = decode_batch(&frame[1..], &limits).unwrap();
+            received.extend(decoded);
+        }
+        assert_eq!(frames, 2);
+        assert_eq!(received, events);
+    }
+
+    #[tokio::test]
+    async fn send_batches_splits_at_the_first_overflow() {
+        // Encoded accounting: 4 + (4 + 44) + (4 + 44) = 100 fits
+        // exactly; the third event opens a new batch. Payload-only
+        // accounting would also have paired two 48-byte events
+        // (96 <= 100) whose encoded size (108) the decoder refuses.
+        let limits = BridgeLimits {
+            max_batch_bytes: 100,
+            ..BridgeLimits::default()
+        };
+        let events: Vec<Vec<u8>> = vec![vec![1u8; 44], vec![2u8; 44], vec![3u8; 44]];
+        let (mut sender, mut receiver) = pair();
+        send_batches(&mut sender, &events, &limits).await.unwrap();
+        drop(sender);
+        let mut counts = Vec::new();
+        while let Some(frame) = receiver.recv().await.unwrap() {
+            counts.push(decode_batch(&frame[1..], &limits).unwrap().len());
+        }
+        assert_eq!(counts, vec![2, 1]);
+
+        let events: Vec<Vec<u8>> = vec![vec![1u8; 48], vec![2u8; 48]];
+        let (mut sender, mut receiver) = pair();
+        send_batches(&mut sender, &events, &limits).await.unwrap();
+        drop(sender);
+        let mut counts = Vec::new();
+        while let Some(frame) = receiver.recv().await.unwrap() {
+            counts.push(decode_batch(&frame[1..], &limits).unwrap().len());
+        }
+        assert_eq!(counts, vec![1, 1]);
+    }
+
+    #[tokio::test]
+    async fn send_batches_names_an_event_that_cannot_fit() {
+        let limits = BridgeLimits {
+            max_batch_bytes: 100,
+            ..BridgeLimits::default()
+        };
+        let (mut sender, _receiver) = pair();
+        let err = send_batches(&mut sender, &[vec![0u8; 200]], &limits)
+            .await
+            .unwrap_err();
+        assert!(
+            format!("{err:#}").contains("cannot fit the 100-byte batch bound"),
+            "{err:#}"
+        );
+    }
+
+    #[tokio::test]
+    async fn send_batches_property_every_batch_decodes_under_the_same_limits() {
+        // Oracle (#14644): for generated size sequences and limit
+        // sets, every emitted batch decodes under the same limits
+        // and the concatenation preserves the original sequence.
+        let mut state = 0x2f6e_2b1u32;
+        let mut rand = move |n: usize| {
+            state = state.wrapping_mul(1103515245).wrapping_add(12345) & 0x7fff_ffff;
+            (state as usize) % n
+        };
+        for _trial in 0..100 {
+            let limits = BridgeLimits {
+                max_event_bytes: 4096,
+                max_batch_events: 1 + rand(8),
+                max_batch_bytes: 64 + rand(2048),
+                max_want_ids: 512,
+            };
+            let count = rand(24);
+            let events: Vec<Vec<u8>> = (0..count)
+                .map(|_| vec![0u8; 1 + rand(200)])
+                .filter(|e| 4 + 4 + e.len() <= limits.max_batch_bytes)
+                .collect();
+            let (mut sender, mut receiver) = pair();
+            send_batches(&mut sender, &events, &limits).await.unwrap();
+            drop(sender);
+            let mut received: Vec<Vec<u8>> = Vec::new();
+            while let Some(frame) = receiver.recv().await.unwrap() {
+                let decoded = decode_batch(&frame[1..], &limits).unwrap();
+                assert!(decoded.len() <= limits.max_batch_events);
+                received.extend(decoded);
+            }
+            assert_eq!(received, events);
+        }
     }
 
     #[test]

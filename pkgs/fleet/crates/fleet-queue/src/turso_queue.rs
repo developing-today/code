@@ -50,6 +50,7 @@ mod closed_bound;
 mod core;
 mod label_enrich;
 mod lifecycle;
+mod placement_coord;
 mod placement_sessions;
 mod repair;
 mod stacks_outbox;
@@ -63,6 +64,7 @@ pub use closed_bound::*;
 pub use core::*;
 pub use label_enrich::*;
 pub use lifecycle::*;
+pub use placement_coord::*;
 pub use placement_sessions::*;
 pub use repair::*;
 pub use stacks_outbox::*;
@@ -85,6 +87,7 @@ mod tests {
             include_str!("turso_queue/claim.rs"),
             include_str!("turso_queue/label_enrich.rs"),
             include_str!("turso_queue/lifecycle.rs"),
+            include_str!("turso_queue/placement_coord.rs"),
             include_str!("turso_queue/admin.rs"),
             include_str!("turso_queue/stacks_outbox.rs"),
             include_str!("turso_queue/staleness.rs"),
@@ -891,6 +894,7 @@ mod tests {
             args.push(match a {
                 Arg::Text(s) => rusqlite::types::Value::Text(s.clone()),
                 Arg::Int(i) => rusqlite::types::Value::Integer(*i),
+                Arg::Float(f) => rusqlite::types::Value::Real(*f),
                 Arg::Null => rusqlite::types::Value::Null,
             });
         }
@@ -1030,6 +1034,49 @@ mod tests {
         assert_eq!(
             not_claimed_reason(Some(&queued), Some(&reclaimed), "archer"),
             "it is queued"
+        );
+    }
+
+    #[test]
+    fn lease_renewal_guidance_names_heartbeat_only_14653() {
+        // #14653 oracle: the lease-expiry diagnostic advertises
+        // exactly one renewal action — heartbeat — and that action
+        // is the verb whose statement actually advances the
+        // deadline. Checkpoint is never advertised as renewal:
+        // verb_checkpoint writes progress only, and this test fails
+        // if it ever gains a lease_until write, so the guidance
+        // and the behaviour cannot drift apart silently again.
+        let queued = json!({"status": "queued", "worker_id": null});
+        let expired = json!({
+            "worker_id": "archer",
+            "kind": "lease_expired",
+            "created_at": "2026-11-22T16:00:00Z",
+        });
+        let reason = not_claimed_reason(Some(&queued), Some(&expired), "archer");
+        assert!(reason.contains("heartbeat to keep a lease"), "{reason}");
+        assert!(
+            !reason.contains("or checkpoint"),
+            "checkpoint is not a renewal action: {reason}"
+        );
+        // The advertised action advances the deadline: the
+        // statement verb_heartbeat runs raises lease_until to the
+        // requested extension whenever that is later.
+        let heartbeat_sql = include_str!("turso_queue/heartbeat.sql");
+        assert!(
+            heartbeat_sql
+                .contains("SET lease_until = CASE WHEN julianday(lease_until) >= julianday(?1)"),
+            "heartbeat statement must advance lease_until: {heartbeat_sql}"
+        );
+        // Checkpoint's verb body touches no lease column.
+        let lifecycle_src = include_str!("turso_queue/lifecycle.rs");
+        let start = lifecycle_src
+            .find("pub(crate) fn verb_checkpoint")
+            .expect("verb_checkpoint exists");
+        let body = &lifecycle_src[start..];
+        let end = body.find("\npub(crate) fn ").unwrap_or(body.len());
+        assert!(
+            !body[..end].contains("lease_until"),
+            "verb_checkpoint must not write lease_until"
         );
     }
 

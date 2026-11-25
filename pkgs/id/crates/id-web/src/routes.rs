@@ -556,6 +556,7 @@ pub fn create_program_router(
     };
     let router = Router::new()
         .route("/", get(program_page_handler))
+        .route("/sw.js", get(service_worker_handler))
         .route("/assets/{*path}", get(assets_handler))
         .merge(super::world_ws::world_routes_at(&world_socket).with_state(world_state));
     let router = router
@@ -641,6 +642,8 @@ fn create_router_inner(state: AppState) -> Router {
         .route("/ws/collab/{doc_id}", get(super::collab::ws_collab_handler))
         // WebSocket for live tag updates
         .route("/ws/tags", get(super::tags_ws::ws_tags_handler))
+        // Offline-shell service worker (#13918), root scope
+        .route("/sw.js", get(service_worker_handler))
         // Static assets
         .route("/assets/{*path}", get(assets_handler));
     // Optional authoritative in-memory world session bridge, bound
@@ -1432,6 +1435,11 @@ async fn blocks_partial_handler(State(state): State<AppState>) -> Response {
 /// Static assets handler.
 async fn assets_handler(Path(path): Path<String>) -> impl IntoResponse {
     super::assets::static_handler(&path)
+}
+
+/// Offline-shell service worker at the site root (#13918).
+async fn service_worker_handler() -> impl IntoResponse {
+    super::assets::service_worker_handler()
 }
 
 /// System tag keys that are excluded from user-visible tags display.

@@ -1,0 +1,132 @@
+[
+  {
+    "file_id": "file-alpha",
+    "version_seq": 1,
+    "head_transition": true,
+    "file_note_binding": {
+      "file_id": "file-alpha",
+      "note_create": { "file_id": "file-alpha", "version_seq": 1 },
+      "source_anchor": "native-alpha"
+    },
+    "media_type": "text/markdown",
+    "content": "# Atlas fixture\n",
+    "path": "docs/alpha.md",
+    "source_locator": "repo@0123456789abcdef0123456789abcdef01234567:docs/alpha.md",
+    "ingested_at": "2026-11-20T10:00:00Z",
+    "batch_id": "batch-alpha-1"
+  },
+  {
+    "file_id": "file-alpha",
+    "version_seq": 2,
+    "head_transition": true,
+    "revision_edges": [
+      {
+        "newer": { "file_id": "file-alpha", "version_seq": 2 },
+        "prior": { "file_id": "file-alpha", "version_seq": 1 },
+        "edge_kind": "rename",
+        "confidence": 1.0
+      }
+    ],
+    "media_type": "text/markdown",
+    "content": "# Atlas fixture, revised\n",
+    "path": "docs/renamed-alpha.md",
+    "source_locator": "repo@89abcdef0123456789abcdef0123456789abcdef:docs/renamed-alpha.md",
+    "ingested_at": "2026-11-21T10:00:00Z",
+    "batch_id": "batch-alpha-2"
+  },
+  {
+    "file_id": "file-beta",
+    "version_seq": 1,
+    "file_note_binding": {
+      "file_id": "file-beta",
+      "note_create": { "file_id": "file-beta", "version_seq": 1 },
+      "source_anchor": null
+    },
+    "revision_edges": [
+      {
+        "newer": { "file_id": "file-beta", "version_seq": 1 },
+        "prior": { "file_id": "file-alpha", "version_seq": 1 },
+        "edge_kind": "split",
+        "confidence": 0.8
+      }
+    ],
+    "head_transition": true,
+    "media_type": "text/plain",
+    "content": "Independent file.\n",
+    "path": "notes/beta.txt",
+    "source_locator": "system@fixture@2026-11-22",
+    "ingested_at": "2026-11-22T10:00:00Z",
+    "batch_id": "batch-beta-1"
+  },
+  {
+    "file_id": "file-alpha",
+    "version_seq": 3,
+    "head_transition": false,
+    "media_type": "text/markdown",
+    "content": "# Older source content ingested late\n",
+    "path": "docs/old-alpha.md",
+    "source_locator": "repo@older:docs/old-alpha.md",
+    "ingested_at": "2026-11-22T10:00:00Z",
+    "batch_id": "batch-alpha-backfill"
+  },
+  {
+    "file_id": "file-alpha",
+    "version_seq": 4,
+    "head_transition": true,
+    "revision_edges": [
+      {
+        "newer": { "file_id": "file-alpha", "version_seq": 4 },
+        "prior": { "file_id": "file-alpha", "version_seq": 2 },
+        "edge_kind": "merge",
+        "confidence": 0.9
+      },
+      {
+        "newer": { "file_id": "file-alpha", "version_seq": 4 },
+        "prior": { "file_id": "file-beta", "version_seq": 1 },
+        "edge_kind": "merge",
+        "confidence": 0.7
+      }
+    ],
+    "media_type": "text/markdown",
+    "content": "# Current alpha head\n",
+    "path": "docs/renamed-alpha.md",
+    "source_locator": "repo@current:docs/renamed-alpha.md",
+    "ingested_at": "2026-11-23T10:00:00Z",
+    "batch_id": "batch-alpha-4"
+  },
+  {
+    "file_id": "file-beta",
+    "version_seq": 2,
+    "revision_edges": [
+      {
+        "newer": { "file_id": "file-beta", "version_seq": 2 },
+        "prior": { "file_id": "file-beta", "version_seq": 1 },
+        "edge_kind": "edit",
+        "confidence": 0.6
+      }
+    ],
+    "head_transition": false,
+    "media_type": "text/plain",
+    "content": "Beta backfill newer ingestion, not a head.\n",
+    "path": "notes/old-beta.txt",
+    "source_locator": "system@fixture-backfill@2026-11-20",
+    "ingested_at": "2026-11-24T10:00:00Z",
+    "batch_id": "batch-beta-backfill"
+  },
+  {
+    "file_id": "file-backfill-only",
+    "version_seq": 1,
+    "file_note_binding": {
+      "file_id": "file-backfill-only",
+      "note_create": { "file_id": "file-backfill-only", "version_seq": 7 },
+      "source_anchor": "external-published-note"
+    },
+    "head_transition": false,
+    "media_type": "text/plain",
+    "content": "Historical file without a published head.\n",
+    "path": "history/file.txt",
+    "source_locator": "system@historical@2026-11-01",
+    "ingested_at": "2026-11-24T11:00:00Z",
+    "batch_id": "batch-only-backfill"
+  }
+]
