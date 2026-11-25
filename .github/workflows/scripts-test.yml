@@ -24,6 +24,33 @@ jobs:
         run: |
           BAKEOFF_RESULTS="$PWD/fresh-bakeoff-results.json" cargo test -q -p id-store --test graph_encoding_bakeoff -- --exact graph_encoding_bakeoff 2>&1 | tail -40
           test -f fresh-bakeoff-results.json
+      - name: Splice fresh results into the report and print the patch
+        env:
+          D: doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-a-graph
+        run: |
+          cp pkgs/id/fresh-bakeoff-results.json "$D/real-encoding-bakeoff-results.json"
+          python3 -I "$D/validate_real_encoding_bakeoff.py" --render-report-blocks > /tmp/blocks.txt
+          python3 - "$D/real-encoding-bakeoff.md" /tmp/blocks.txt <<'PY'
+          import re, sys
+          md_path, blocks_path = sys.argv[1], sys.argv[2]
+          table, leaders = open(blocks_path).read().split("\n\n", 1)
+          md = open(md_path).read()
+          def put(md, name, body):
+              pat = re.compile(rf"(<!-- bakeoff-{name}:begin -->\n\n).*?(\n\n<!-- bakeoff-{name}:end -->)", re.S)
+              assert pat.search(md), name
+              return pat.sub(lambda m: m.group(1) + body.strip() + m.group(2), md)
+          md = put(md, "table", table)
+          md = put(md, "leaders", leaders)
+          md = md.replace("redb 4.6.0 (pinned)", "redb 5.0.0 (pinned)")
+          open(md_path, "w").write(md)
+          PY
+          python3 -I "$D/validate_real_encoding_bakeoff.py" --check-committed
+          git diff --stat
+          echo "PATCH-BEGIN"
+          git diff | gzip -9 | base64 -w0
+          echo
+          echo "PATCH-END"
+          git diff -- "$D/real-encoding-bakeoff.md"
       - uses: actions/upload-artifact@v7
         with:
           name: fresh-bakeoff-results
