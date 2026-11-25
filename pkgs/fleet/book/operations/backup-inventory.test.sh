@@ -19,7 +19,6 @@ paths=(
   pkgs/cold-store-reaper/scripts/restore-drill.sh
   pkgs/agent-backup/backup.sh
   pkgs/agent-backup/README.md
-  pkgs/agent-backup/JOB-BODY.md
   pkgs/id/book/operations/backup-and-restore.md
   doc/2026-11-23T16-34-18Z_design_backup_mesh/note.md
 )

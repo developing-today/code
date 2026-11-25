@@ -20,7 +20,7 @@ from the tree.
 | 2 | Cold-store nightly (`pkgs/cold-store-reaper/scripts/nightly-backup.sh`) | D1 `cold-store-manifest` export + a portable SQLite export of every Turso database (`pkgs/cold-store-reaper/scripts/export-turso.sh`) | Google Drive `db-backups/d1/` and `db-backups/turso/` (Drive is the only target) | Nightly (timer lives on the laptop, not in this repo) | 30 daily / 12 weekly / 12 monthly, enforced by `prune-backups` (trash, never delete) | Quarterly restore drill (`pkgs/cold-store-reaper/scripts/restore-drill.sh`): 3 cold objects hash-verified through the production rehydrator path + newest D1 backup compared row-by-row against live |
 | 3 | Cold-store archive (`pkgs/cold-store-reaper/`) | Operator files packed as immutable zstd-frame bundles | Google Drive (app-owned `Cold Store Reaper` tree); manifest in local SQLite + D1 `cold-store-manifest` | On demand (`pack`/`upload`) | Bundles are immutable; objects marked `cold` only after Drive md5+size verify | Same quarterly drill as #2; `fetch` sha256-verifies every object on read |
 | 4 | Agent credential snapshots (`pkgs/agent-backup/backup.sh`) | The small irreplaceable credential/config set (auth files, API keys, settings) of one seat | **The same machine**: `~/.local/share/agent-backups/<timestamp>/`, plaintext, mode 0700/0600 | On change (no timer in repo; invoked per seat) | Grows only when content changes; no pruning recorded | None recorded — copies are compared for change, never restore-tested |
-| 5 | Runtime DB export (`pkgs/agent-backup/README.md`) | Muse runtime records DB (scheduler, agents, goals, sessions, usage rollups — 28 landing tables) | Turso `muse-mirror` (`agent_mirror_*`) | Agent cron `runtime-db-export`, every 6 h (America/Chicago); the job body is `pkgs/agent-backup/JOB-BODY.md` | Watermark-based history tables; no retention limit recorded | None recorded — row counts reconciled per run, no restore drill |
+| 5 | Runtime DB export (`pkgs/agent-backup/README.md`) | Muse runtime records DB (scheduler, agents, goals, sessions, usage rollups — 28 landing tables) | Turso `muse-mirror` (`agent_mirror_*`) | Agent cron `runtime-db-export`, every 6 h (America/Chicago) | Watermark-based history tables; no retention limit recorded | None recorded — row counts reconciled per run, no restore drill |
 | 6 | Laptop legs (recorded in the #9093 design record, defined in `nixos/home/laptop-backups.nix`) | atlas DB; repo archive (restic); laptop state (restic); Supabase; dashboard | Laptop + R2 + Drive (Supabase: R2 only) | Daily (Supabase twice daily) | Per-leg restic policy (see the design record) | Freshness watchdog `laptop-backups-watchdog` (#1841) checks completion, incl. cold-store (PR #10988) |
 | 7 | fleet-queue export (named starting point of #14864) | fleet-queue Turso database | D1 database `fleet-queue-backup` (#8584) | Daily timer — **the timer is not defined in this repo** | Not recorded | None recorded; per the #9093 record, the D1 side itself has no backup home yet |
 | 8 | Turso platform protection | All 42 Turso databases (~9.4 GB at the 2026-11-12 inventory) | Turso PITR + Delete Protection | Continuous | PITR window 30 days; Delete Protection ON for all 42 (verified per DB 2026-11-17, per the #9093 record) | PITR is a platform feature; no restore exercise recorded in repo |
@@ -32,6 +32,11 @@ from the tree.
   snapshots are plaintext on the same seat's disk — the script's own
   header says this protects against deletion and bad edits, not disk
   loss) and #9 (id node state has no automated off-machine leg at all).
+- **Documented file missing from the tree:** #5's README names
+  `pkgs/agent-backup/JOB-BODY.md` as the exact, diff-verified cron job
+  body, but that file is not in the repo — the running job's only copy
+  is the stored cron itself. (This slice's drift-guard test caught it:
+  its first version cited the path and failed remotely.)
 - **Seat/machine-only timers:** #2's nightly timer, #5's agent cron, and
   #7's daily export timer are not defined in this repo. A rebuilt or
   replaced machine does not recreate them from the tree; #1 is the
