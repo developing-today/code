@@ -7,6 +7,7 @@
 //! operational/policy/validation failure.
 
 use crate::algorithm::{self, AlgorithmId};
+use crate::algorithm_lab;
 use crate::bundle::{list_bundles, load_bundle, pem_decode_all, read_artifact};
 use crate::chain::{CertInfo, TrustSelection, parse_cert};
 use crate::engine;
@@ -18,7 +19,6 @@ use crate::model::{
 };
 use crate::profile;
 use crate::timeparse::{CalendarDuration, Rfc3339};
-use rcgen::{BasicConstraints, CertificateParams, DnType, IsCa, KeyUsagePurpose};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::OpenOptions;
@@ -43,7 +43,7 @@ Groups and verbs (spec §6.1 tree; status as built):
   publish  plan | verify (apply | status deferred, production-gated)
   trust    export | stage | ack | activate | retire | status
   profile  list | show
-  algorithms list | describe
+  algorithms list | describe | benchmark | doctor
   explain  [topic]
   doctor
 
@@ -1334,8 +1334,135 @@ fn algorithms_cmd(args: &[String], json_out: bool) -> Result<i32> {
             });
             Ok(emit(json_out, text, value))
         }
+        "benchmark" => {
+            let p = parse_args(&args[1..], &["iterations"], &["json"])?;
+            if p.positionals.len() > 1 {
+                return Err(CertError::usage(
+                    "algorithms benchmark takes one comma-separated algorithm list",
+                ));
+            }
+            let iterations = match p.get("iterations") {
+                Some(v) => v.parse::<usize>().map_err(|_| {
+                    CertError::usage(format!("--iterations must be a whole number, got '{v}'"))
+                })?,
+                None => algorithm_lab::DEFAULT_ITERATIONS,
+            };
+            let iterations = algorithm_lab::check_iterations(iterations)?;
+            let (infos, warnings) = algorithm_lab::select_algorithms(p.positional(0))?;
+            let host = algorithm_lab::host_info();
+            let mut results = Vec::new();
+            for info in &infos {
+                results.push(algorithm_lab::benchmark_algorithm(info.id, iterations)?);
+            }
+            let mut text = format!(
+                "fleet cert algorithms benchmark ({iterations} samples per operation, microseconds)\n  host: {} {} · {} cpus · {}{}\n",
+                host.os,
+                host.arch,
+                host.cpus,
+                host.backend,
+                if host.debug_build {
+                    " · DEBUG build (numbers not representative)"
+                } else {
+                    ""
+                }
+            );
+            text.push_str(&format!(
+                "  {:10} {:7} {:>9} {:>9} {:>9} {:>9} {:>9}\n",
+                "algorithm", "op", "min", "p50", "p95", "p99", "max"
+            ));
+            for r in &results {
+                for (op, t) in [
+                    ("keygen", &r.keygen),
+                    ("sign", &r.sign),
+                    ("verify", &r.verify),
+                ] {
+                    text.push_str(&format!(
+                        "  {:10} {:7} {:>9} {:>9} {:>9} {:>9} {:>9}\n",
+                        r.algorithm, op, t.min_us, t.p50_us, t.p95_us, t.p99_us, t.max_us
+                    ));
+                }
+                text.push_str(&format!(
+                    "  {:10} sizes: key {} B · cert {} B · signature {} B\n",
+                    r.algorithm,
+                    r.private_key_pkcs8_bytes,
+                    r.certificate_der_bytes,
+                    r.signature_bytes
+                ));
+            }
+            text.push_str(
+                "  Evidence for this host and build only, never a CI baseline (spec §26.2).\n",
+            );
+            for w in &warnings {
+                text.push_str(&format!("  warning: {w}\n"));
+            }
+            let value = json!({
+                "iterations": iterations,
+                "unit": "microseconds",
+                "host": host,
+                "results": results,
+                "warnings": warnings,
+            });
+            Ok(emit(json_out, text, value))
+        }
+        "doctor" => {
+            let p = parse_args(&args[1..], &[], &["json"])?;
+            if p.positionals.len() > 1 {
+                return Err(CertError::usage(
+                    "algorithms doctor takes one comma-separated algorithm list",
+                ));
+            }
+            let (infos, warnings) = algorithm_lab::select_algorithms(p.positional(0))?;
+            let env = algorithm_lab::OpensslEnv::detect();
+            let reports: Vec<_> = infos
+                .iter()
+                .map(|i| algorithm_lab::doctor_algorithm(i.id, &env))
+                .collect();
+            let all_ok = reports.iter().all(|r| r.ok());
+            let mut text = format!(
+                "fleet cert algorithms doctor\n  openssl: {}{}\n",
+                env.version.as_deref().unwrap_or("not found"),
+                if env.version.is_some() {
+                    if env.ml_dsa {
+                        " (ML-DSA available)"
+                    } else {
+                        " (no ML-DSA)"
+                    }
+                } else {
+                    ""
+                }
+            );
+            for r in &reports {
+                text.push_str(&format!(
+                    "  {} {}\n",
+                    r.algorithm,
+                    if r.ok() { "ok" } else { "FAIL" }
+                ));
+                for probe in &r.probes {
+                    let status = match probe.status {
+                        algorithm_lab::ProbeStatus::Ok => "ok",
+                        algorithm_lab::ProbeStatus::Fail => "FAIL",
+                        algorithm_lab::ProbeStatus::Skipped => "skipped",
+                    };
+                    text.push_str(&format!(
+                        "    {:17} {:7} {}\n",
+                        probe.probe, status, probe.detail
+                    ));
+                }
+            }
+            for w in &warnings {
+                text.push_str(&format!("  warning: {w}\n"));
+            }
+            let value = json!({
+                "ok": all_ok,
+                "openssl": env,
+                "algorithms": reports,
+                "warnings": warnings,
+            });
+            let code = emit(json_out, text, value);
+            Ok(if all_ok { code } else { 1 })
+        }
         other => Err(CertError::usage(format!(
-            "unknown algorithms verb '{other}' (list | describe)"
+            "unknown algorithms verb '{other}' (list | describe | benchmark | doctor)"
         ))),
     }
 }
@@ -1522,10 +1649,6 @@ const NOT_BUILT: &[(&str, &str)] = &[
         "profile validate/scaffold",
         "profile validation + scaffolding (spec §6.1)",
     ),
-    (
-        "algorithms benchmark/doctor",
-        "algorithm benchmarks (spec §6.1)",
-    ),
     ("batch", "batch plan/validate/apply (spec §6.5)"),
     (
         "root/issuer renew/rotate/replace",
@@ -1617,7 +1740,7 @@ fn doctor_cmd(_args: &[String], json_out: bool) -> Result<i32> {
     let mut algo_results = Vec::new();
     let mut all_ok = true;
     for info in algorithm::registry() {
-        let ok = engine_self_test(info.id);
+        let ok = algorithm_lab::engine_self_test(info.id);
         if !ok {
             all_ok = false;
         }
@@ -1642,7 +1765,7 @@ fn doctor_cmd(_args: &[String], json_out: bool) -> Result<i32> {
         "  openssl (independent validator): {}\n",
         openssl.as_deref().unwrap_or("not found")
     ));
-    text.push_str("  built: root, issuer, leaf, key (generate/inspect/import/export public), chain, bundle (inspect), inventory (list/show/search/audit read-only), publish (plan/verify read-only), profile (list/show), algorithms (list/describe), explain, doctor\n");
+    text.push_str("  built: root, issuer, leaf, key (generate/inspect/import/export public), chain, bundle (inspect), inventory (list/show/search/audit read-only), publish (plan/verify read-only), profile (list/show), algorithms (list/describe/benchmark/doctor), explain, doctor\n");
     text.push_str("  not built yet (tracked as child issues under #9157):\n");
     for (name, what) in NOT_BUILT {
         text.push_str(&format!("    {name} — {what}\n"));
@@ -1650,33 +1773,11 @@ fn doctor_cmd(_args: &[String], json_out: bool) -> Result<i32> {
     let value = json!({
         "engine_self_test": algo_results.iter().map(|(i, ok)| json!({"algorithm": i.name, "ok": ok})).collect::<Vec<_>>(),
         "openssl": openssl,
-        "built": ["root", "issuer", "leaf", "key-generate/inspect", "chain", "bundle-inspect", "inventory-list/show/search/audit", "publish-plan/verify", "profile-list/show", "algorithms-list/describe", "explain", "doctor"],
+        "built": ["root", "issuer", "leaf", "key-generate/inspect", "chain", "bundle-inspect", "inventory-list/show/search/audit", "publish-plan/verify", "profile-list/show", "algorithms-list/describe/benchmark/doctor", "explain", "doctor"],
         "not_built": NOT_BUILT.iter().map(|(n, w)| json!({"surface": n, "scope": w})).collect::<Vec<_>>(),
     });
     let code = emit(json_out, text, value);
     Ok(if all_ok { code } else { 1 })
-}
-
-fn engine_self_test(algo: AlgorithmId) -> bool {
-    let Ok(key) = engine::generate_key(algo) else {
-        return false;
-    };
-    let mut params = CertificateParams::new(Vec::<String>::new()).expect("empty SAN list");
-    params
-        .distinguished_name
-        .push(DnType::CommonName, "fleet cert doctor self-test");
-    params.is_ca = IsCa::Ca(BasicConstraints::Constrained(0));
-    params.key_usages = vec![KeyUsagePurpose::KeyCertSign, KeyUsagePurpose::CrlSign];
-    let now = Rfc3339::now();
-    params.not_before = now.0;
-    params.not_after = (now.0 + time::Duration::days(1));
-    let Ok(cert) = params.self_signed(&key) else {
-        return false;
-    };
-    match crate::chain::parse_cert(cert.der()) {
-        Ok(info) => crate::chain::verify_signature(&info, &info),
-        Err(_) => false,
-    }
 }
 
 #[cfg(test)]

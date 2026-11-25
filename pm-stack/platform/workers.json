@@ -172,6 +172,19 @@
       "lastDeployedCommit": null
     },
     {
+      "name": "d1-gateway",
+      "title": "D1 gateway",
+      "group": "data",
+      "path": "pkgs/d1-gateway/worker",
+      "does": "A Turso/libSQL-compatible endpoint over D1, so a Turso client moves to a D1 database by changing only its URL.",
+      "state": "in service",
+      "deploy": "actions",
+      "workflow": "d1-gateway-deploy.yml",
+      "address": "https://d1-gateway.developing-today.workers.dev",
+      "next": "Deployed from Actions on every push to main that touches it; a manual run with a version id rolls back.",
+      "lastDeployedCommit": "d2bc51a72d5a2188f5e897c69e5cebc5c880d482"
+    },
+    {
       "name": "cold-store-rehydrator",
       "title": "Cold store rehydrator",
       "group": "data",
