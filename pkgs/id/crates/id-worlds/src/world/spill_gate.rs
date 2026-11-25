@@ -90,6 +90,7 @@ pub fn evaluate_spill(
     lease: &WriteLease,
     spill_host: &str,
     presented_epoch: u64,
+    _replayed_position: u64,
     now_s: u64,
     now_ms: u64,
     verifier: &dyn EvidenceVerifier,
@@ -252,10 +253,34 @@ mod tests {
             lease,
             spill_host,
             epoch,
+            lease.last_position(),
             NOW_S,
             NOW_MS,
             &verifier(),
         )
+    }
+
+    #[test]
+    fn test_successor_dispatch_waits_for_ownership_replay() {
+        // Oracle: #5787 §1 step 4. A matching grant is not enough:
+        // no dispatch may occur before the successor replays its boundary.
+        let mut lease = WriteLease::bootstrap();
+        lease.apply_revoke("do", 1, "handoff", 4).unwrap();
+        lease.apply_grant("spill-eu", 2, Some(NOW_MS + 600_000), 5).unwrap();
+        for replayed_position in [0, 4, 5, 6] {
+            let decision = evaluate_spill(
+                &Scope::Unscoped, &[], &lease, "spill-eu", 2,
+                replayed_position, NOW_S, NOW_MS, &verifier(),
+            );
+            let sent = RefCell::new(0);
+            let result = dispatch_spill(&decision, b"journal-copy", |_| {
+                *sent.borrow_mut() += 1;
+            });
+            let ready = replayed_position >= 5;
+            assert_eq!(decision.is_allow(), ready);
+            assert_eq!(result.is_ok(), ready);
+            assert_eq!(*sent.borrow(), usize::from(ready));
+        }
     }
 
     #[test]
