@@ -48,8 +48,8 @@ mod server {
     use super::IoStream;
     use rustls::ServerConfig;
     use rustls::pki_types::{CertificateDer, PrivateKeyDer, pem::PemObject};
+    use rustls::StreamOwned;
     use rustls::server::ServerConnection;
-    use rustls::stream::StreamOwned;
     use std::io::{Read, Write};
     use std::net::TcpStream;
     use std::sync::Arc;
@@ -220,9 +220,9 @@ mod client {
     use fleet_cert::chain::TrustSelection;
     use fleet_cert::trust::{VersionRef, active_anchors};
     use rustls::ClientConfig;
+    use rustls::StreamOwned;
     use rustls::client::ClientConnection;
     use rustls::pki_types::{CertificateDer, ServerName, pem::PemObject};
-    use rustls::stream::StreamOwned;
     use std::net::TcpStream;
     use std::path::Path;
     use std::sync::Arc;
