@@ -1035,10 +1035,11 @@ impl ChangelogEntry {
     }
 }
 
-/// Render a post's body against its object's changelog. The changelog
-/// should already have been checked with [`verify_chain`]; each matching
-/// `redact` entry is verified again here. The first one that redacts this
-/// post wins.
+/// Render a post's body against its object's changelog.
+///
+/// The changelog should already have been checked with [`verify_chain`];
+/// each matching `redact` entry is verified again here. The first one that
+/// redacts this post wins.
 pub fn render_post<'a>(
     post: &'a TalkPost,
     changelog: &[ChangelogEntry],
@@ -1347,7 +1348,7 @@ impl<'a> Fields<'a> {
     }
 }
 
-fn checked_object_id(object_id: &[u8]) -> Result<(), TalkPageError> {
+const fn checked_object_id(object_id: &[u8]) -> Result<(), TalkPageError> {
     if object_id.is_empty() || object_id.len() > MAX_OBJECT_ID_BYTES {
         Err(TalkPageError::Invalid(
             "object id must be non-empty and within the size limit",

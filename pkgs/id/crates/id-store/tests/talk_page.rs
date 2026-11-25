@@ -86,7 +86,7 @@ fn post_id_is_the_hash_of_the_canonical_record() {
 fn receipt_time_stays_outside_the_post_id() {
     let first = post("hello", &key(1));
     let id = first.post_id().unwrap();
-    let received = first.clone().receive(5_000);
+    let received = first.receive(5_000);
     assert_eq!(received.received_at(), 5_000);
     assert_eq!(received.post().authored_at(), 1_000);
     assert_eq!(received.post().post_id().unwrap(), id);
