@@ -338,8 +338,10 @@ standalone artifact).
 | `fleet kv delete --namespace NS KEY`         | Write a masking tombstone: the key reads absent here and sweeps as a mask.                                            |
 | `fleet kv clear-override --namespace NS KEY` | Drop the local overlay row, advance its fence and cancel unsent intents; busy for over 5 s is `clear_busy_try_again`. |
 | `fleet kv revert --namespace NS KEY --to V`  | Append a new version equal to version V (also `fleet kv revert NS KEY --to V`).                                       |
+| `fleet kv snapshot DEST`                     | Write a one-file snapshot of the whole host store (WAL included) with a manifest row; never overwrites DEST.          |
+| `fleet kv restore SNAPSHOT`                  | Restore a snapshot as this host's store after checking it; refuses when a store already exists.                       |
 
-The owner and context come only from the launch-identity record the session launcher writes at `<state dir>/kv/launch/<session id>.identity` (a regular file owned by this user, not group- or world-writable, naming the bound session). With no such record every verb but help refuses with `identity_unavailable` (exit 69); `FLEET_CTX_*` and other client-supplied values are never used. `--global` and `--force-blob` need the central plane, which is not built yet, and refuse with `unimplemented_central_in_phase1` (exit 69). The whole command line is parsed before anything is opened: unknown arguments are usage errors (exit 2) and touch nothing.
+The owner and context come only from the launch-identity record the session launcher writes at `<state dir>/kv/launch/<session id>.identity` (a regular file owned by this user, not group- or world-writable, naming the bound session). With no such record every verb but help refuses with `identity_unavailable` (exit 69); `FLEET_CTX_*` and other client-supplied values are never used. `--global` and `--force-blob` need the central plane, which is not built yet, and refuse with `unimplemented_central_in_phase1` (exit 69). The whole command line is parsed before anything is opened: unknown arguments are usage errors (exit 2) and touch nothing. Backups: see [Backing up `fleet kv`](../book/operations/kv-backup.md).
 
 ## `laptop-agent` — laptop job broker
 
