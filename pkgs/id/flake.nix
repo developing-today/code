@@ -627,7 +627,23 @@
                   "test-web-unit"
                   "test-web-typecheck"
                 ];
-                test-web-unit = mkCheckWebOnly "test-web-unit" "test-web-unit";
+                test-web-unit = mkCheckWith {
+                  name = "test-web-unit";
+                  justCmd = "test-web-unit";
+                  needsCargoSetup = false;
+                  needsRustToolchain = false;
+                  needsBuildInputs = false;
+                  buildWebAssets = false;
+                  compileRocWorldHost = false;
+                  # The sandbox source is pkgs/id alone, so its doc -> ../../doc
+                  # workspace symlink dangles. Stage the shared parity oracle
+                  # at the package-local path expected by the web test.
+                  beforeCheck = ''
+                    rm -f doc
+                    mkdir -p doc
+                    cp ${../../doc/kitty-disambiguate-v1-fixtures.json} doc/kitty-disambiguate-v1-fixtures.json
+                  '';
+                };
                 test-web-typecheck = mkCheckWebOnly "test-web-typecheck" "test-web-typecheck";
                 # Roc library expect() tests (#813): runs the roc-test just
                 # recipe with the pinned nightly from nix/roc.nix (already in
