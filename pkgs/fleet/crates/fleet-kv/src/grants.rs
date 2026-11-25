@@ -184,14 +184,24 @@ fn valid_name(name: &str) -> bool {
         && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
 }
 
+pub(crate) const GRANTS_READ: &str =
+    "SELECT group_id, database_name, registry_id, namespace, allowed_ops, policy_epoch
+             FROM kv_grants WHERE group_id = ?1 ORDER BY namespace, database_name";
+
+pub(crate) const GRANT_UPSERT: &str = "INSERT INTO kv_grants
+             (group_id, database_name, registry_id, namespace, allowed_ops, policy_epoch)
+         VALUES (?1, ?2, ?3, ?4, ?5, 1)
+         ON CONFLICT (group_id, database_name, registry_id, namespace) DO UPDATE SET
+             allowed_ops = excluded.allowed_ops,
+             policy_epoch = kv_grants.policy_epoch + 1";
+
+pub(crate) const GRANT_DELETE: &str = "DELETE FROM kv_grants
+         WHERE group_id = ?1 AND database_name = ?2 AND registry_id = ?3 AND namespace = ?4";
+
 /// Every grant naming `group_id`.
 pub fn grants(primary: &dyn Pipeline, group_id: &str) -> Result<Vec<Grant>> {
     let rows = primary
-        .transaction(&[Statement::numbered(
-            "SELECT group_id, database_name, registry_id, namespace, allowed_ops, policy_epoch
-             FROM kv_grants WHERE group_id = ?1 ORDER BY namespace, database_name",
-            &[text(group_id)],
-        )])?
+        .transaction(&[Statement::numbered(GRANTS_READ, &[text(group_id)])])?
         .into_iter()
         .next()
         .map(|rows| rows.rows)
@@ -269,15 +279,7 @@ pub fn admit(
         text(&request.namespace),
         text(&ops_text(&request.allowed_ops)),
     ];
-    primary.transaction(&[Statement::numbered(
-        "INSERT INTO kv_grants
-             (group_id, database_name, registry_id, namespace, allowed_ops, policy_epoch)
-         VALUES (?1, ?2, ?3, ?4, ?5, 1)
-         ON CONFLICT (group_id, database_name, registry_id, namespace) DO UPDATE SET
-             allowed_ops = excluded.allowed_ops,
-             policy_epoch = kv_grants.policy_epoch + 1",
-        &args,
-    )])?;
+    primary.transaction(&[Statement::numbered(GRANT_UPSERT, &args)])?;
     grants(primary, &request.group_id)?
         .into_iter()
         .find(|grant| {
@@ -294,8 +296,7 @@ pub fn revoke(
     namespace: &str,
 ) -> Result<()> {
     primary.transaction(&[Statement::numbered(
-        "DELETE FROM kv_grants
-         WHERE group_id = ?1 AND database_name = ?2 AND registry_id = ?3 AND namespace = ?4",
+        GRANT_DELETE,
         &[
             text(group_id),
             text(database_name),

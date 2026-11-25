@@ -14,8 +14,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
 
 use crate::central::{
-    self, Address, Namespace, Outcome, Pipeline, REGISTRY_ID, SqlitePrimary, Statement,
-    define_namespace,
+    self, Address, Namespace, Outcome, REGISTRY_ID, SqlitePrimary, Statement, define_namespace,
 };
 use crate::read::{CACHE_MAX_AGE_MS, Found, Reader, Source};
 use crate::sweep::{SweepReport, Sweeper, rebase};
@@ -55,7 +54,7 @@ fn address(key: &str) -> Address {
 }
 
 /// Seeds `KEYS` live keys at version 1 in one transaction.
-fn seed(primary: &dyn Pipeline) {
+fn seed(primary: &SqlitePrimary) {
     let numbers = format!(
         "WITH RECURSIVE n(i) AS (SELECT 0 UNION ALL SELECT i + 1 FROM n WHERE i < {})",
         KEYS - 1
@@ -80,7 +79,7 @@ fn seed(primary: &dyn Pipeline) {
             args: Vec::new(),
         })
         .collect();
-    primary.transaction(&statements).expect("seed");
+    primary.transaction_unlisted(&statements).expect("seed");
 }
 
 struct Agent {

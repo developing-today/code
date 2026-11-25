@@ -15,6 +15,7 @@
 
 pub mod archive;
 pub mod backup;
+pub mod catalog;
 pub mod central;
 pub mod cli;
 pub mod grants;

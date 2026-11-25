@@ -3,8 +3,9 @@
 `fleet kv` keeps every host's local rows in one SQLite file,
 `<state dir>/kv/local.db`, in WAL mode. Values over 1 MiB live beside it as
 content-addressed working files in `local.db.working/`, and the rows refer
-to them. Phase 1 has no central copy, so
-this file and its snapshots are the only copy of the local data. This page
+to them. This file and its snapshots are the host's own copy; a session's
+unswept writes are also archived centrally, see
+[Running the `fleet kv` central plane](kv-central.md). This page
 covers taking snapshots, restoring one on a fresh host, and what a restore
 can lose. Design: #13314, acceptance 6.
 

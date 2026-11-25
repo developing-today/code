@@ -156,6 +156,31 @@ impl Checkpoint {
     }
 }
 
+pub(crate) const ARCHIVE_CLEAR: &str = "DELETE FROM kv_archive
+              WHERE owner_user_id = ?1 AND context_id = ?2 AND partition_id = ?3";
+
+pub(crate) const ARCHIVE_INSERT: &str = "INSERT INTO kv_archive (
+                      owner_user_id, context_id, partition_id, namespace, key, version,
+                      state, value, host_incarnation, outbox_id, archived_at_ms)
+                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)";
+
+pub(crate) const CHECKPOINT_UPSERT: &str = "INSERT INTO kv_archive_checkpoints (
+                  owner_user_id, context_id, partition_id, host_incarnation,
+                  checkpoint_at_ms, archived, unprotected)
+              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+              ON CONFLICT (owner_user_id, context_id, partition_id) DO UPDATE SET
+                  host_incarnation = excluded.host_incarnation,
+                  checkpoint_at_ms = excluded.checkpoint_at_ms,
+                  archived = excluded.archived,
+                  unprotected = excluded.unprotected";
+
+pub(crate) const CHECKPOINT_READ: &str = "SELECT checkpoint_at_ms FROM kv_archive_checkpoints
+                  WHERE owner_user_id = ?1 AND context_id = ?2 AND partition_id = ?3";
+
+pub(crate) const ARCHIVE_READ: &str = "SELECT namespace, key, version, state, value FROM kv_archive
+                  WHERE owner_user_id = ?1 AND context_id = ?2 AND partition_id = ?3
+                  ORDER BY namespace, key";
+
 struct Dirty {
     namespace: String,
     key: String,
@@ -242,9 +267,7 @@ pub fn checkpoint(
         Value::Text(identity.partition_id.to_string()),
     ];
     let mut statements = vec![Statement {
-        sql: "DELETE FROM kv_archive
-              WHERE owner_user_id = ?1 AND context_id = ?2 AND partition_id = ?3"
-            .into(),
+        sql: ARCHIVE_CLEAR.into(),
         args: partition.to_vec(),
     }];
     for dirty in dirty_set(store, identity)? {
@@ -271,11 +294,7 @@ pub fn checkpoint(
             Value::Integer(now_ms),
         ]);
         statements.push(Statement {
-            sql: "INSERT INTO kv_archive (
-                      owner_user_id, context_id, partition_id, namespace, key, version,
-                      state, value, host_incarnation, outbox_id, archived_at_ms)
-                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)"
-                .into(),
+            sql: ARCHIVE_INSERT.into(),
             args,
         });
         keys.push(ArchivedKey {
@@ -299,16 +318,7 @@ pub fn checkpoint(
         Value::Integer(unprotected),
     ]);
     statements.push(Statement {
-        sql: "INSERT INTO kv_archive_checkpoints (
-                  owner_user_id, context_id, partition_id, host_incarnation,
-                  checkpoint_at_ms, archived, unprotected)
-              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
-              ON CONFLICT (owner_user_id, context_id, partition_id) DO UPDATE SET
-                  host_incarnation = excluded.host_incarnation,
-                  checkpoint_at_ms = excluded.checkpoint_at_ms,
-                  archived = excluded.archived,
-                  unprotected = excluded.unprotected"
-            .into(),
+        sql: CHECKPOINT_UPSERT.into(),
         args,
     });
     // Either the whole checkpoint lands or none of it does; the local
@@ -396,16 +406,11 @@ pub fn fetch(
     ];
     let results = primary.transaction(&[
         Statement {
-            sql: "SELECT checkpoint_at_ms FROM kv_archive_checkpoints
-                  WHERE owner_user_id = ?1 AND context_id = ?2 AND partition_id = ?3"
-                .into(),
+            sql: CHECKPOINT_READ.into(),
             args: partition.clone(),
         },
         Statement {
-            sql: "SELECT namespace, key, version, state, value FROM kv_archive
-                  WHERE owner_user_id = ?1 AND context_id = ?2 AND partition_id = ?3
-                  ORDER BY namespace, key"
-                .into(),
+            sql: ARCHIVE_READ.into(),
             args: partition,
         },
     ])?;

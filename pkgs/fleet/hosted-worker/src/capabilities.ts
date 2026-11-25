@@ -110,6 +110,12 @@ export const HOSTED_DOORS: HostedDoor[] = [
     fillingIssue: "#14373",
     state: "live",
   },
+  {
+    id: "kv",
+    routes: ["POST /v1/kv/v2/pipeline"],
+    fillingIssue: "#13316",
+    state: "live",
+  },
 ];
 
 interface NativeDomain {
