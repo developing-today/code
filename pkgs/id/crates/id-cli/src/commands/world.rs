@@ -1280,6 +1280,12 @@ async fn current_world_state(
             .await?,
     )
     .context("host returned a malformed execution profile")?;
+    // The presentation policy is public pre-join metadata, so it is read
+    // with no token at all.
+    let presentation: id_core::presentation_policy::PresentationPolicy = serde_json::from_value(
+        client.fresh_session().await?.presentation_policy().await?,
+    )
+    .context("host returned a malformed presentation policy")?;
     // The report carries the world's own ceiling as a list; the shared
     // fold turns a report equal to the default ceiling into None, which
     // means the default ceiling — the one meaning of None for a live
@@ -1296,6 +1302,7 @@ async fn current_world_state(
         grants: caps.granted,
         ceiling,
         profile,
+        presentation,
         schedules,
     })
 }
@@ -1313,6 +1320,7 @@ fn step_is_applied(step: &id_caps::world_manifest::ApplyStep) -> bool {
             | ApplyStep::SetGrants { .. }
             | ApplyStep::SetCeiling { .. }
             | ApplyStep::SetProfile { .. }
+            | ApplyStep::SetPresentation { .. }
             | ApplyStep::ScheduleAt { .. }
             | ApplyStep::CancelSchedule { .. }
     )
@@ -1340,8 +1348,9 @@ fn step_is_applied(step: &id_caps::world_manifest::ApplyStep) -> bool {
 /// operation per stream, so a second operation on the same stream would
 /// write to a session that no longer has a receiver.
 /// Order steps for reachability (see [`apply_steps`]): cancellations
-/// first, then profile, grants and ceiling, then the module install,
-/// and schedule additions last. The sort is stable, so steps of the
+/// first, then profile, grants and ceiling, then the presentation
+/// policy (it depends on nothing else and nothing depends on it), then
+/// the module install, and schedule additions last. The sort is stable, so steps of the
 /// same kind keep their plan order.
 fn ordered_steps<'a>(
     steps: &'a [id_caps::world_manifest::ApplyStep],
@@ -1353,8 +1362,9 @@ fn ordered_steps<'a>(
             ApplyStep::SetProfile { .. } => 1,
             ApplyStep::SetGrants { .. } => 2,
             ApplyStep::SetCeiling { .. } => 3,
-            ApplyStep::InstallModule { .. } => 4,
-            ApplyStep::ScheduleAt { .. } => 5,
+            ApplyStep::SetPresentation { .. } => 4,
+            ApplyStep::InstallModule { .. } => 5,
+            ApplyStep::ScheduleAt { .. } => 6,
         }
     }
     let mut ordered: Vec<&ApplyStep> = steps.iter().collect();
@@ -1417,6 +1427,13 @@ async fn apply_steps(
                     .fresh_session()
                     .await?
                     .set_execution_profile(admin_token, *profile)
+                    .await?;
+            }
+            ApplyStep::SetPresentation { policy } => {
+                client
+                    .fresh_session()
+                    .await?
+                    .set_presentation_policy(admin_token, policy)
                     .await?;
             }
             ApplyStep::InstallModule { hash, source, seed } => {

@@ -168,7 +168,15 @@ id world apply <NODE> --file <FILE> --admin-token <TOKEN> --capability <CAP> [--
 | `--capability`  | capability string | required (env `ID_WORLD_CAPABILITY`)  | A guest capability, used to read the current state. Applying reads before it writes, so both credentials are required. |
 | `--dry-run`     | switch            | off                                   | Print the plan only; change nothing.                                                                                   |
 
-Behaviour: prints the plan and applies it. Every step — module install, grants, ceiling, profile, schedules — is applied through the admin operations and journaled by the host. When the plan is empty the command prints `no drift` and changes nothing. A full apply prints `applied <N> step(s)`; a partial apply prints `applied <N> of <M> step(s); the rest were reported but not applied`. With `--dry-run` it prints the plan and then `dry run: nothing changed`. Before any step runs, the plan passes the schedule-horizon check: a plan that fails it is refused whole, so no partial apply happens on that account.
+Behaviour: prints the plan and applies it. Every step — module install, grants, ceiling, profile, presentation policy, schedules — is applied through the admin operations and journaled by the host. When the plan is empty the command prints `no drift` and changes nothing. A full apply prints `applied <N> step(s)`; a partial apply prints `applied <N> of <M> step(s); the rest were reported but not applied`. With `--dry-run` it prints the plan and then `dry run: nothing changed`. Before any step runs, the plan passes the schedule-horizon check: a plan that fails it is refused whole, so no partial apply happens on that account.
+
+A `[presentation]` table sets the world's presentation policy, in the same shape `id world presentation --set` takes. Leaving the table out leaves the live policy alone. A present table replaces the policy whole, and its omitted fields take their defaults, so an empty `[presentation]` resets a changed policy:
+
+```toml
+[presentation.assets]
+user_uploads = "deny"
+max_rung = "tileset"
+```
 
 Example — preview, then apply, a toy manifest:
 
