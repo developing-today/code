@@ -919,6 +919,14 @@ impl<B: EventStoreStorage> EventStore<B> {
         })
     }
 
+    /// Checks the persisted indexes and waiting rows through the selected
+    /// backend. Used by the generic store-traits surface for both native and
+    /// tenant stores.
+    pub(crate) fn check_invariants_backend(&self) -> Result<(), StoreError> {
+        self.db
+            .with_read(|rows| check_invariants_rows(rows, &self.waiting, self.limits))
+    }
+
     /// Runs one ingest operation inside the backend's owned write transaction.
     /// On an error the in-memory waiting pool may have moved ahead of storage,
     /// so rebuild it from the committed rows before allowing another call.
@@ -949,6 +957,177 @@ impl<B: EventStoreStorage> EventStore<B> {
         }
         result
     }
+}
+
+fn check_invariants_rows<T: RowRead + ?Sized>(
+    rows: &mut T,
+    waiting: &WaitingPool<Hash, Event>,
+    limits: WaitingLimits,
+) -> Result<(), StoreError> {
+    let events: HashMap<Vec<u8>, Vec<u8>> = rows.scan_all("events")?.into_iter().collect();
+    let hashes: HashMap<Vec<u8>, Vec<u8>> = rows.scan_all("hashes")?.into_iter().collect();
+    let chains: HashMap<Vec<u8>, Vec<u8>> = rows.scan_all("chains")?.into_iter().collect();
+    let proof_ids: HashMap<Vec<u8>, Vec<u8>> = rows.scan_all("proof_ids")?.into_iter().collect();
+    let proof_headers: HashMap<Vec<u8>, Vec<u8>> =
+        rows.scan_all("proof_headers")?.into_iter().collect();
+    let compacted_rows = compaction::load_residue_rows(rows)?;
+    let compacted: HashMap<Vec<u8>, compaction::Residue> = compacted_rows
+        .into_iter()
+        .map(|item| (position_key(&item.author, item.seq).to_vec(), item))
+        .collect();
+    let mut fork_points = HashMap::<AuthorKey, SeqNum>::new();
+    let mut forks = Vec::new();
+    for (position, bytes) in rows.scan_all("forks")? {
+        let (author, seq) = split_position(&position)?;
+        let proof = decode_proof(&bytes)?;
+        if proof.seq != seq {
+            return Err(corrupt("a fork proof is stored at another fork point"));
+        }
+        fork_points
+            .entry(author)
+            .and_modify(|point| *point = (*point).min(seq))
+            .or_insert(seq);
+        forks.push((author, proof));
+    }
+
+    for (position, bytes) in &events {
+        let (author, seq) = split_position(position)?;
+        let event = decode_stored(bytes)?;
+        if *event.header.verifying_key.as_bytes() != author || event.header.seq_num != seq {
+            return Err(corrupt("an event is stored under another position"));
+        }
+        if hashes.get(event.id.as_bytes().as_slice()) != Some(position) {
+            return Err(corrupt("an event is not indexed under its ID"));
+        }
+        if let Some(group) = event.header.extensions.group
+            && !rows
+                .multi_values("groups", group.as_bytes())?
+                .iter()
+                .any(|member| member == position)
+        {
+            return Err(corrupt("an event is missing from its group index"));
+        }
+    }
+
+    for (id, position) in &hashes {
+        let id_hash = hash_of(id)?;
+        if let Some(bytes) = events.get(position) {
+            if Hash::digest(bytes) != id_hash {
+                return Err(corrupt("an ID does not match the event it points at"));
+            }
+        } else if !compacted
+            .get(position)
+            .is_some_and(|residue| residue.id == id_hash)
+        {
+            return Err(corrupt("an ID points at no stored event"));
+        }
+    }
+
+    for (author_bytes, chain_bytes) in &chains {
+        let author: AuthorKey = author_bytes
+            .as_slice()
+            .try_into()
+            .map_err(|_err| corrupt("a chain row has a short author key"))?;
+        let chain = Chain::decode(chain_bytes)?;
+        if chain.next_seq == 0 && !chain.frozen {
+            return Err(corrupt(
+                "a chain with no applied event and no fork has a row",
+            ));
+        }
+        for seq in 0..chain.next_seq {
+            let position = position_key(&author, seq).to_vec();
+            if !events.contains_key(&position) && !compacted.contains_key(&position) {
+                return Err(corrupt(format!("applied sequence {seq} is not stored")));
+            }
+        }
+        if let Some(head) = chain.head {
+            let position = position_key(&author, chain.next_seq.saturating_sub(1)).to_vec();
+            let matches = events
+                .get(&position)
+                .is_some_and(|bytes| Hash::digest(bytes) == head)
+                || compacted
+                    .get(&position)
+                    .is_some_and(|residue| residue.id == head);
+            if !matches {
+                return Err(corrupt("the head of a chain does not match its event"));
+            }
+        }
+        match (chain.frozen, fork_points.get(&author)) {
+            (false, None) => {}
+            (true, Some(point)) if *point >= chain.next_seq => {}
+            _ => return Err(corrupt("a frozen chain and its fork proof disagree")),
+        }
+    }
+
+    for (author, proof) in &forks {
+        let chain = chains
+            .get(author.as_slice())
+            .map(|bytes| Chain::decode(bytes))
+            .transpose()?;
+        if !chain.is_some_and(|chain| chain.frozen) {
+            return Err(corrupt(
+                "a fork proof belongs to a chain that is not frozen",
+            ));
+        }
+        for header in [&proof.first, &proof.second] {
+            if proof_ids
+                .get(header.id.as_bytes().as_slice())
+                .map(Vec::as_slice)
+                != Some(author.as_slice())
+                || proof_headers
+                    .get(header.id.as_bytes().as_slice())
+                    .map(Vec::as_slice)
+                    != Some(header.bytes.as_slice())
+            {
+                return Err(corrupt("a fork proof header is not indexed with its bytes"));
+            }
+        }
+    }
+
+    for (position, residue) in &compacted {
+        if events.contains_key(position)
+            || hashes.get(residue.id.as_bytes().as_slice()) != Some(position)
+        {
+            return Err(corrupt("a compacted position and its ID index disagree"));
+        }
+    }
+
+    let mut total = 0;
+    let mut per_author = BTreeMap::<AuthorKey, usize>::new();
+    for (id_bytes, value) in rows.scan_all("waiting")? {
+        let id = hash_of(&id_bytes)?;
+        let row = Row::decode(id, &value)?;
+        row_event(&row)?;
+        if hashes.contains_key(id.as_bytes()) || !waiting.contains(&id) {
+            return Err(corrupt("a waiting row and the in-memory pool disagree"));
+        }
+        for dep in &row.deps {
+            if hashes.contains_key(dep.as_bytes()) || proof_ids.contains_key(dep.as_bytes()) {
+                return Err(corrupt(
+                    "a waiting event waits for a dependency that is present",
+                ));
+            }
+            if !rows
+                .multi_values("waiting_by_dep", dep.as_bytes())?
+                .iter()
+                .any(|waiter| waiter.as_slice() == id.as_bytes())
+            {
+                return Err(corrupt(
+                    "a waiting event is missing from its dependency index",
+                ));
+            }
+        }
+        *per_author.entry(row.author).or_default() += 1;
+        total += 1;
+    }
+    if total != waiting.len()
+        || per_author.iter().any(|(author, count)| {
+            *count > limits.per_author() || waiting.waiting_count(*author) != *count
+        })
+    {
+        return Err(corrupt("the waiting pool and persisted rows disagree"));
+    }
+    Ok(())
 }
 
 impl EventStore<Database> {
@@ -2476,7 +2655,7 @@ mod tests {
 // generic over this backend surface (seam 3 — the traits crate holds
 // traits only and cannot name the concrete store above it). Each method
 // delegates to the inherent method of the same name above.
-impl id_store::store_traits::EventStoreBackend for EventStore {
+impl<B: EventStoreStorage> id_store::store_traits::EventStoreBackend for EventStore<B> {
     fn ingest_with_body(
         &mut self,
         bytes: &[u8],
@@ -2519,7 +2698,7 @@ impl id_store::store_traits::EventStoreBackend for EventStore {
     }
 
     fn check_invariants(&self) -> Result<(), StoreError> {
-        self.check_invariants()
+        self.check_invariants_backend()
     }
 
     fn event(&self, author: &AuthorKey, seq: SeqNum) -> Result<Option<Event>, StoreError> {
@@ -2554,7 +2733,7 @@ impl id_store::store_traits::EventStoreBackend for EventStore {
     }
 
     fn tag_claims(&self) -> Result<Vec<id_store::tag_claims::Claim>, StoreError> {
-        self.tag_claims()
+        self.db.with_read(|rows| claims::tag_claims_rows(rows))
     }
 
     fn event_by_id(&self, id: &Hash) -> Result<Option<Event>, StoreError> {
