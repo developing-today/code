@@ -9,6 +9,7 @@ use atlas_core::version_projection::{
     ProjectedNoteEventRef, ProjectedSelectedVersion, ProjectedTag, ProjectedVersion,
     project_lineage_claims, project_selected_versions,
 };
+use proptest::prelude::*;
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -346,6 +347,7 @@ fn real_projection_matches_fixture_oracle_and_permutations() {
     let selected = project_selected_versions(&f.rows, &f.heads).unwrap();
     let claims = project_lineage_claims(&f.rows, &f.bindings, &f.edges).unwrap();
     let report = audit(&f, &selected, &claims);
+    println!("{}", report.summary());
     assert!(
         report.failures.is_empty(),
         "fixture oracle mismatch: {}",
@@ -381,6 +383,36 @@ fn real_projection_matches_fixture_oracle_and_permutations() {
         "permutation oracle: fixture-derived facts and key ordering: {}",
         permuted_report.summary()
     );
+}
+
+proptest! {
+    #[test]
+    fn fixture_oracle_survives_random_permutations_and_detects_content_tampering(
+        ranks in prop::array::uniform4(prop::collection::vec(any::<u64>(), 7)),
+        output_index in 0usize..7,
+    ) {
+        // Oracle: fixture-derived bytes, explicit lineage facts and head flags.
+        // Random ranks permute each input independently; index breaks rank ties.
+        fn permute<T>(items: &mut Vec<T>, ranks: &[u64]) {
+            let mut indexed = items.drain(..).enumerate().collect::<Vec<_>>();
+            indexed.sort_by_key(|(index, _)| (ranks[*index], *index));
+            *items = indexed.into_iter().map(|(_, item)| item).collect();
+        }
+        let mut f = fixture();
+        permute(&mut f.rows, &ranks[0]);
+        permute(&mut f.heads, &ranks[1]);
+        permute(&mut f.bindings, &ranks[2]);
+        permute(&mut f.edges, &ranks[3]);
+        let mut selected = project_selected_versions(&f.rows, &f.heads).unwrap();
+        let claims = project_lineage_claims(&f.rows, &f.bindings, &f.edges).unwrap();
+        let report = audit(&f, &selected, &claims);
+        prop_assert!(report.failures.is_empty(), "fixture oracle: {}", report.summary());
+
+        // Negative-control oracle: XOR changes a real nonempty fixture document byte.
+        selected[output_index].document.content[0] ^= 1;
+        let report = audit(&f, &selected, &claims);
+        prop_assert!(report.has("version.content"), "byte equality oracle: {}", report.summary());
+    }
 }
 
 #[test]
