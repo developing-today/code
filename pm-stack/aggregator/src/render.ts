@@ -79,7 +79,7 @@ import {
   type QueueRow,
   type ReconciledInProgressItem,
 } from "./queue-view.ts";
-import type { HealthView, PageHealth } from "./health.ts";
+import { dedupeGathererProviders, type HealthView, type PageHealth } from "./health.ts";
 import {
   type AaCaiRow,
   type AaConfig,
@@ -6570,7 +6570,7 @@ export function renderHealth(view: HealthView, provenance: Provenance): string {
       const port = s.def.port !== null ? String(s.def.port) : "—";
       const upWhen = s.def.upWhen ? `<br><span class="muted">up = ${esc(s.def.upWhen)}</span>` : "";
       const notes = s.def.notes ? `<br><span class="muted">${esc(s.def.notes)}</span>` : "";
-      return `<tr><td><strong>${esc(s.def.name)}</strong>${upWhen}${notes}</td><td><code>${port}</code></td><td>${esc(s.def.bind)}</td><td><code>${esc(s.def.runsAs)}</code></td><td><span class="dot ${s.state}"></span><strong>${esc(s.state)}</strong> — ${esc(s.detail)}${probedAge(s.probedAt)}</td><td>${esc(s.def.consumers)}</td><td>${esc(s.def.breaksIfDown)}</td></tr>`;
+      return `<tr><td><strong>${esc(s.def.name)}</strong>${upWhen}${notes}</td><td><code>${port}</code></td><td>${esc(s.def.bind)}</td><td><code>${esc(s.def.runsAs)}</code></td><td><span class="dot ${s.state === "late" ? "stale" : s.state}"></span><strong>${esc(s.state)}</strong> — ${esc(s.detail)}${probedAge(s.probedAt)}</td><td>${esc(s.def.consumers)}</td><td>${esc(s.def.breaksIfDown)}</td></tr>`;
     })
     .join("");
   const sectionRows = view.feed.sections.length
@@ -6585,14 +6585,22 @@ export function renderHealth(view: HealthView, provenance: Provenance): string {
         })
         .join("")
     : `<tr><td colspan="7" class="muted">No readable fleet feed — sections cannot be reported.</td></tr>`;
-  const gathererRows = view.quotaGatherer?.providers.length
-    ? view.quotaGatherer.providers
+  // #14062: one row per provider, service and credential (the gatherer can
+  // list one more than once), the gatherer's own error text on a failed row,
+  // and the lag note said once under the table rather than on every row.
+  const gathererProviders = dedupeGathererProviders(view.quotaGatherer?.providers ?? []);
+  const gathererLagNotes = [...new Set(gathererProviders.map((p) => p.lagNote).filter(Boolean))];
+  const gathererRows = gathererProviders.length
+    ? gathererProviders
         .map(
           (p) =>
-            `<tr><td><code>${esc(p.providerId)}</code>${p.credentialLabel ? ` · ${esc(p.credentialLabel)}` : ""}</td><td>${esc(p.serviceId)}</td><td>${esc(p.state)}</td><td>unknown</td><td>${p.lastSyncAt ? esc(p.lastSyncAt) : "—"}</td><td>${esc(p.lagNote)}</td></tr>`,
+            `<tr><td><code>${esc(p.providerId)}</code>${p.credentialLabel ? ` · ${esc(p.credentialLabel)}` : ""}</td><td>${esc(p.serviceId)}</td><td>${esc(p.state)}${p.state === "error" || p.state === "lapsed" ? ` <span class="muted">\u2014 ${p.error ? esc(p.error) : "the gatherer gave no reason"}</span>` : ""}</td><td>${p.lastSyncAt ? esc(p.lastSyncAt) : "\u2014"}</td></tr>`,
         )
         .join("")
-    : `<tr><td colspan="6" class="muted">No quota-gatherer provider rows are available.</td></tr>`;
+    : `<tr><td colspan="4" class="muted">No quota-gatherer provider rows are available.</td></tr>`;
+  const gathererNote = gathererLagNotes.length
+    ? `<p class="muted">Behind by is not shown: ${gathererLagNotes.map((note) => esc(note)).join("; ")}.</p>`
+    : "";
   const orch = view.jobs.orchestration;
   const orchLine = orch.generatedAt
     ? `last run <code>${esc(orch.runId ?? "unknown")}</code> · ${esc(ageMsText(orch.ageMs ?? 0))} · state <strong>${esc(orch.state)}</strong>${orch.failedChecks ? ` · failed checks: ${esc(orch.failedChecks.join(", "))}` : ""} · next expected ~${esc(orch.nextExpectedAt ?? "")} (hourly cadence — an expectation, not a promise)`
@@ -6667,7 +6675,13 @@ export function renderHealth(view: HealthView, provenance: Provenance): string {
               : "up";
       const remaining = s.budgetRemainingPercent === null ? "\u2014" : `${s.budgetRemainingPercent.toFixed(1)}%`;
       const burn = s.burnRate1h === null ? "\u2014" : s.burnRate1h.toFixed(2);
-      return `<tr><td>${esc(s.label)}</td><td>${esc(s.target)}</td><td>${current}</td><td>${remaining}</td><td>${burn}</td><td>${esc(s.state)}</td></tr>`;
+      // #14062: a budget spent earlier in the window while the facet reads
+      // inside its target now says both, so the row never contradicts itself.
+      const state =
+        s.state === "exhausted" && s.latestBad === false
+          ? `exhausted over the window <span class="muted">\u00b7 now within target</span>`
+          : esc(s.state);
+      return `<tr><td>${esc(s.label)}</td><td>${esc(s.target)}</td><td>${current}</td><td>${remaining}</td><td>${burn}</td><td>${state}</td></tr>`;
     })
     .join("");
   const sloSection = view.slo
@@ -6734,7 +6748,8 @@ ${sloSection}
 <h2>Feed sections</h2>
 <div class="tblwrap"><table><caption>Feed sections — presence, age, lag, and last sync</caption><tr><th scope="col">Section</th><th scope="col">Present</th><th scope="col">Age</th><th scope="col">Behind by</th><th scope="col">Last sync</th><th scope="col">Lag note</th><th scope="col">Note</th></tr>${sectionRows}</table></div>
 <h2>Quota gatherer sources</h2>
-<div class="tblwrap"><table><caption>Quota-gatherer provider freshness and lag</caption><tr><th scope="col">Provider</th><th scope="col">Service</th><th scope="col">State</th><th scope="col">Behind by</th><th scope="col">Last sync</th><th scope="col">Lag note</th></tr>${gathererRows}</table></div>
+<div class="tblwrap"><table><caption>Quota-gatherer provider freshness</caption><tr><th scope="col">Provider</th><th scope="col">Service</th><th scope="col">State</th><th scope="col">Last sync</th></tr>${gathererRows}</table></div>
+${gathererNote}
 <h2>Jobs</h2>
 <div class="card"><strong>Orchestration pass</strong><br>${orchLine}</div>
 <div class="card"><strong>Fleet-feed collector</strong><br>${collLine}</div>

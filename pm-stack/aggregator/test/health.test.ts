@@ -198,7 +198,7 @@ describe("buildHealth probes", () => {
     });
   });
 
-  test("a stopped collector is visible on the health page by the next five-minute interval", async () => {
+  test("a stopped collector is visible on the health page by the next five-minute interval and degrades after a missed write", async () => {
     // An isolated stand-in collector writes only a temporary feed. Freeze the
     // observation clock immediately after its last write and advance it to the
     // next interval: this tests the worst-case stop without a five-minute wait.
@@ -225,12 +225,20 @@ describe("buildHealth probes", () => {
       const opts = { fetcher, cache: createProbeCache() };
       const before = await buildHealth(inputs({ feed }), { ...opts, now: stoppedAt });
       expect(service(before, "fleet-feed").state).toBe("up");
+      // #1116: by the next interval the row says a write is overdue.
       const view = await buildHealth(inputs({ feed }), { ...opts, now: stoppedAt + 5 * 60_000 });
-      expect(service(view, "fleet-feed").state).toBe("stale");
-      expect(view.degraded).toBe(true);
+      expect(service(view, "fleet-feed").state).toBe("late");
       const html = renderHealth(view, {} as Parameters<typeof renderHealth>[1]);
-      expect(html).toContain("past the 5m freshness threshold");
-      expect(html).toContain("stale");
+      expect(html).toContain("past the 5m collector cadence, a write is overdue; stale at 10m");
+      // #14062: one late write is not yet degraded; a whole missed write is.
+      expect(view.degraded).toBe(false);
+      expect(view.status).toBe("ok");
+      const missed = await buildHealth(inputs({ feed }), { ...opts, now: stoppedAt + 10 * 60_000 });
+      expect(service(missed, "fleet-feed").state).toBe("stale");
+      expect(missed.degraded).toBe(true);
+      expect(missed.status).toBe("degraded");
+      const missedHtml = renderHealth(missed, {} as Parameters<typeof renderHealth>[1]);
+      expect(missedHtml).toContain("past the 10m freshness threshold");
     } finally {
       collector.kill();
       await collector.exited;
