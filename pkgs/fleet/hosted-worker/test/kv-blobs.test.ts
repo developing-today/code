@@ -13,7 +13,14 @@ import { blake3 as oneShot } from "../../../id/hosted-worker/src/blake3.ts";
 import { sha256Hex } from "../src/auth.ts";
 import { Blake3Hasher, hex } from "../src/blake3.ts";
 import { configFromEnv } from "../src/config.ts";
-import { encodeKvBlobRef, MemoryKvBlobBucket, publishedKey } from "../src/kv-blobs.ts";
+import {
+  CAPABILITY_TTL_MS,
+  decodeKvBlobRef,
+  encodeKvBlobRef,
+  handleKvBlobRead,
+  MemoryKvBlobBucket,
+  publishedKey,
+} from "../src/kv-blobs.ts";
 import { ensureKvMigrated, KV_CATALOG, privateScopePrefix, runKvTransaction, type KvValue } from "../src/kv-door.ts";
 import { dispatch } from "../src/router.ts";
 import { AUDIENCE, BINDING_A, BINDING_B, ISSUER, WEBHOOK_SECRET, bearerReq, makeHarness } from "./helpers.ts";
@@ -60,7 +67,7 @@ test("streaming BLAKE3 equals the one-shot hash at every chunk boundary and spli
 
 // --- the door -------------------------------------------------------------
 
-async function deps(options: { primary?: SqlitePrimary; bucket?: MemoryKvBlobBucket } = {}) {
+async function deps(options: { primary?: SqlitePrimary; bucket?: MemoryKvBlobBucket; capabilityKey?: string } = {}) {
   const fixture = JSON.stringify({
     subjects: [
       {
@@ -104,6 +111,7 @@ async function deps(options: { primary?: SqlitePrimary; bucket?: MemoryKvBlobBuc
     config,
     ...(options.primary ? { kvPrimary: options.primary } : {}),
     ...(options.bucket ? { kvBlobs: options.bucket } : {}),
+    ...(options.capabilityKey ? { kvBlobCapabilityKey: options.capabilityKey } : {}),
   };
 }
 
@@ -339,4 +347,212 @@ test("the encoded reference has the Rust encoding's exact shape", () => {
     }),
     `profile=raw-blake3-256\ndigest=${"ab".repeat(32)}\nbytes_len=0\njurisdiction=eu\ntier=t1\nlocator=r2:x\nstate=published\n`,
   );
+});
+
+// --- reads: capability mint and capability-only read ------------------------
+
+const CAPABILITY_KEY = "test-capability-key-0123456789abcdef";
+
+function setHead(primary: SqlitePrimary, key: string, value: string, state = "live", namespace = "files"): void {
+  const scope = namespace === "files" ? "shared:team" : `${privateScopePrefix(BINDING_A)}laptop`;
+  primary.db
+    .prepare(
+      `INSERT OR REPLACE INTO kv_heads (scope_id, registry_id, namespace, key, version, state, value, writer, written_at_ms)
+       VALUES (?, ?, ?, ?, 1, ?, ?, 'test', 0)`,
+    )
+    .run(scope, REGISTRY, namespace, key, state, new TextEncoder().encode(value));
+}
+
+function capabilityReq(token: string, body: unknown): Request {
+  return bearerReq("/v1/kv/blobs/capability", token, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
+interface Minted {
+  read_url: string;
+  expires_at_ms: number;
+  digest: string;
+  bytes_len: number;
+}
+
+async function uploadedAndHeaded(bytes: Uint8Array) {
+  const primary = await primaryWithNamespaces();
+  const bucket = new MemoryKvBlobBucket();
+  const d = await deps({ primary, bucket, capabilityKey: CAPABILITY_KEY });
+  const up = await dispatch(uploadReq(UPLOAD_TOKEN, { bytes }), d);
+  assert.equal(up.status, 201, await up.clone().text());
+  const answer = (await up.json()) as Answer;
+  setHead(primary, "big", answer.reference);
+  return { primary, bucket, d, answer };
+}
+
+async function mint(d: Awaited<ReturnType<typeof deps>>, key = "big"): Promise<Response> {
+  return dispatch(
+    capabilityReq(UPLOAD_TOKEN, { registry: REGISTRY, namespace: "files", scope: "shared:team", key }),
+    d,
+  );
+}
+
+function readReq(url: string): Request {
+  return new Request(`https://fleet-hosted.test${url}`);
+}
+
+test("a minted capability reads the bytes back, checked against the digest", async () => {
+  const bytes = pattern(70000);
+  const { d, answer } = await uploadedAndHeaded(bytes);
+  const res = await mint(d);
+  assert.equal(res.status, 200, await res.clone().text());
+  const minted = (await res.json()) as Minted;
+  assert.equal(minted.digest, answer.digest);
+  assert.equal(minted.bytes_len, 70000);
+  assert.ok(minted.expires_at_ms > Date.now() && minted.expires_at_ms <= Date.now() + CAPABILITY_TTL_MS);
+  // The read needs no credential but the capability.
+  const read = await dispatch(readReq(minted.read_url), d);
+  assert.equal(read.status, 200, await read.clone().text());
+  assert.equal(read.headers.get("content-length"), "70000");
+  assert.equal(read.headers.get("cache-control"), "no-store");
+  assert.deepEqual(new Uint8Array(await read.arrayBuffer()), bytes);
+});
+
+test("a capability that is tampered with or expired reads nothing", async () => {
+  const { d, answer } = await uploadedAndHeaded(pattern(100));
+  const minted = (await (await mint(d)).json()) as Minted;
+  const url = new URL(minted.read_url, "https://fleet-hosted.test");
+  const other = hex(oneShot(pattern(99)));
+  for (const [name, value] of [
+    ["digest", other],
+    ["bytes_len", "99"],
+    ["jurisdiction", "us"],
+    ["tier", "cold"],
+    ["expires", String(minted.expires_at_ms + 1)],
+    ["mac", "00".repeat(32)],
+    ["mac", "not-hex"],
+  ] as const) {
+    const q = new URLSearchParams(url.search);
+    q.set(name, value);
+    const res = await dispatch(readReq(`/v1/kv/blobs/read?${q}`), d);
+    assert.equal(res.status, 401, `${name}=${value}`);
+    assert.equal(((await res.json()) as { error: string }).error, "capability_invalid");
+  }
+  // A capability for another deployment's key does not verify either.
+  const elsewhere = await deps({
+    primary: await primaryWithNamespaces(),
+    bucket: new MemoryKvBlobBucket(),
+    capabilityKey: "another-key-0123456789abcdef0123",
+  });
+  let res = await dispatch(readReq(minted.read_url), elsewhere);
+  assert.equal(res.status, 401);
+  // Expired: the same capability, read after its expiry.
+  res = await handleKvBlobRead(readReq(minted.read_url), d, () => minted.expires_at_ms).catch(
+    (e: { status: number; code: string }) => Response.json({ error: e.code }, { status: e.status }),
+  );
+  assert.equal(res.status, 401);
+  assert.equal(((await res.json()) as { error: string }).error, "capability_expired");
+  assert.equal(answer.bytes_len, 100);
+});
+
+test("a corrupt stored copy ends the read with an error instead of the value", async () => {
+  const bytes = pattern(4096);
+  const { d, bucket, answer } = await uploadedAndHeaded(bytes);
+  const minted = (await (await mint(d)).json()) as Minted;
+  const stored = publishedKey("eu", "standard", answer.digest);
+  const flipped = bytes.slice();
+  flipped[100] ^= 1;
+  bucket.objects.set(stored, flipped);
+  const res = await dispatch(readReq(minted.read_url), d);
+  assert.equal(res.status, 200);
+  await assert.rejects(res.arrayBuffer());
+  // A shorter copy fails the same way.
+  bucket.objects.set(stored, bytes.slice(0, 4000));
+  await assert.rejects((await dispatch(readReq(minted.read_url), d)).arrayBuffer());
+  // A missing copy is a 404.
+  bucket.objects.delete(stored);
+  const gone = await dispatch(readReq(minted.read_url), d);
+  assert.equal(gone.status, 404);
+});
+
+test("the mint needs a live blob reference the caller may read", async () => {
+  const { primary, d, bucket, answer } = await uploadedAndHeaded(pattern(200));
+  // A plain value, a tombstone and an absent key are not references.
+  setHead(primary, "plain", "just text");
+  setHead(primary, "dead", answer.reference, "tombstone");
+  for (const key of ["plain", "dead", "absent"]) {
+    const res = await mint(d, key);
+    assert.equal(res.status, 404, key);
+    assert.equal(((await res.json()) as { error: string }).error, "no_live_reference");
+  }
+  // A reference whose object is gone.
+  bucket.objects.clear();
+  let res = await mint(d);
+  assert.equal(res.status, 404);
+  assert.equal(((await res.json()) as { error: string }).error, "kv_blob_not_found");
+  // The scope must be the namespace's.
+  res = await dispatch(
+    capabilityReq(UPLOAD_TOKEN, { registry: REGISTRY, namespace: "files", scope: "shared:elsewhere", key: "big" }),
+    d,
+  );
+  assert.equal(res.status, 403);
+  // A person may not mint for someone else's private scope.
+  const userA = await h.sign(h.rpPayload({ sub: "user-sub-1" }));
+  res = await dispatch(
+    capabilityReq(userA, {
+      registry: REGISTRY,
+      namespace: "notes",
+      scope: `${privateScopePrefix(BINDING_B)}laptop`,
+      key: "big",
+    }),
+    d,
+  );
+  assert.equal(res.status, 403);
+  assert.equal(((await res.json()) as { error: string }).error, "kv_scope_refused");
+  // A malformed body.
+  res = await dispatch(capabilityReq(UPLOAD_TOKEN, { namespace: "files" }), d);
+  assert.equal(res.status, 400);
+  res = await dispatch(capabilityReq(UPLOAD_TOKEN, ["files"]), d);
+  assert.equal(res.status, 400);
+});
+
+test("a person reads a blob in their own private scope", async () => {
+  const primary = await primaryWithNamespaces();
+  const bucket = new MemoryKvBlobBucket();
+  const d = await deps({ primary, bucket, capabilityKey: CAPABILITY_KEY });
+  const userA = await h.sign(h.rpPayload({ sub: "user-sub-1" }));
+  const bytes = pattern(300);
+  const scope = `${privateScopePrefix(BINDING_A)}laptop`;
+  const up = await dispatch(uploadReq(userA, { bytes, namespace: "notes", scope }), d);
+  assert.equal(up.status, 201, await up.clone().text());
+  setHead(primary, "mine", ((await up.json()) as Answer).reference, "live", "notes");
+  const res = await dispatch(capabilityReq(userA, { registry: REGISTRY, namespace: "notes", scope, key: "mine" }), d);
+  assert.equal(res.status, 200, await res.clone().text());
+  const read = await dispatch(readReq(((await res.json()) as Minted).read_url), d);
+  assert.deepEqual(new Uint8Array(await read.arrayBuffer()), bytes);
+});
+
+test("both read routes fail closed without a capability key", async () => {
+  const primary = await primaryWithNamespaces();
+  const d = await deps({ primary, bucket: new MemoryKvBlobBucket() });
+  let res = await mint(d);
+  assert.equal(res.status, 503);
+  assert.equal(((await res.json()) as { error: string }).error, "kv_blobs_not_configured");
+  res = await dispatch(readReq("/v1/kv/blobs/read?digest=x"), d);
+  assert.equal(res.status, 503);
+});
+
+test("the reference decoder takes exactly the encoder's output", () => {
+  const ref = { digest: "cd".repeat(32), bytesLen: 12, jurisdiction: "eu", tier: "t1", locator: "r2:kv/blobs/eu/t1/x" };
+  assert.deepEqual(decodeKvBlobRef(encodeKvBlobRef(ref)), ref);
+  const encoded = encodeKvBlobRef(ref);
+  for (const bad of [
+    encoded.slice(0, -1),
+    encoded.replace("state=published", "state=staged"),
+    encoded.replace("profile=raw-blake3-256", "profile=sha256"),
+    encoded.replace("bytes_len=12", "bytes_len=-1"),
+    encoded.replace("locator=r2:kv/blobs/eu/t1/x", "locator="),
+    `extra=1\n${encoded}`,
+  ]) {
+    assert.equal(decodeKvBlobRef(bad), null, JSON.stringify(bad));
+  }
 });
