@@ -16,6 +16,7 @@ import { plain } from "./plain.ts";
 import { WORKERS_FILE, workersList } from "./platform.ts";
 import { STORES_FILE, storesList } from "./stores.ts";
 import { heldTokens, jwtExpiry, type TokenExpiry, tokenExpiry } from "./tokens.ts";
+import { TURSO_ADMIN_WORKFLOW, tursoAdminInputs, tursoAdminRequest, tursoAdminRun } from "./turso-admin.ts";
 import { timed, unread } from "./timed.ts";
 
 export interface RunResult {
@@ -1377,6 +1378,32 @@ export class Ops {
       ...(fromNothing ? { inputs: { scratch: "true" } } : {}),
     });
     return { started: what, scratch: fromNothing };
+  }
+
+  /** Start a Turso management operation (#14257): create a database or
+   * mint a token for one. The operation runs in the pm-turso-admin
+   * workflow, which alone holds the organisation's token (by secret
+   * name, in the runner only); this console never sees a token value —
+   * it dispatches names and choices, like deploy() above. */
+  async tursoAdmin(args: Record<string, unknown>) {
+    const req = tursoAdminRequest(args);
+    await this.gh(["-X", "POST", `repos/${this.cfg.repo}/actions/workflows/${TURSO_ADMIN_WORKFLOW}/dispatches`], {
+      ref: "main",
+      inputs: tursoAdminInputs(req),
+    });
+    return { started: req.operation, database: req.database };
+  }
+
+  /** The last pm-turso-admin run, for the Stores section: its outcome
+   * as GitHub records it, with a failure kept a failure (#14257). */
+  async tursoAdminLastRun() {
+    const found = (await this.gh([
+      `repos/${this.cfg.repo}/actions/workflows/${TURSO_ADMIN_WORKFLOW}/runs?per_page=1`,
+    ])) as {
+      workflow_runs?: { status: string; conclusion: string | null; created_at: string; html_url: string }[];
+    } | null;
+    const run = found?.workflow_runs?.[0];
+    return run ? tursoAdminRun(run) : null;
   }
 
   // ---- one screen --------------------------------------------------------
