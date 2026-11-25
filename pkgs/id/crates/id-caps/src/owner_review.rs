@@ -851,6 +851,7 @@ impl RefusalDigest {
 type DigestKey = ([u8; 32], String, String, String, String);
 
 /// Digest repeated same-shape refusals in the audit logs (§2.5).
+///
 /// Refusals are grouped by agent, role, tool, refusal code and shape;
 /// a group of at least `digest_every(role)` refusals becomes one
 /// digest — the role's [`ReviewPolicy::digest_every_refusals`], where
@@ -901,7 +902,7 @@ pub fn refusal_digests<'a>(
             every > 0 && digest.count >= every
         })
         .collect();
-    digests.sort_by(|left, right| right.count.cmp(&left.count));
+    digests.sort_by_key(|digest| std::cmp::Reverse(digest.count));
     digests
 }
 
@@ -1234,7 +1235,7 @@ mod tests {
         let swept = refuse_and_hold(&mut session, &mut queue, NOW + 200);
         assert_eq!(queue.expire(NOW + 299), Vec::<u64>::new());
         assert_eq!(queue.expire(NOW + 300), vec![swept]);
-        assert!(queue.pending().is_empty());
+        assert_eq!(queue.pending(), Vec::<&ReviewRequest>::new());
         let expired: Vec<_> = queue
             .resolutions()
             .iter()
@@ -1335,10 +1336,9 @@ mod tests {
         assert_eq!(recent.len(), 2);
         assert_eq!(recent[1].seq, archivist_log.last().unwrap().seq);
         // Other worlds are not in this world's view.
-        assert!(
-            WorldReview::from_audit("elsewhere", [archivist_log.as_slice()], 2)
-                .agents
-                .is_empty()
+        assert_eq!(
+            WorldReview::from_audit("elsewhere", [archivist_log.as_slice()], 2).agents,
+            Vec::new()
         );
     }
 
@@ -1418,7 +1418,7 @@ mod tests {
         ));
 
         // A threshold of 0 never digests.
-        assert!(refusal_digests([session.audit_events()], |_| 0).is_empty());
+        assert_eq!(refusal_digests([session.audit_events()], |_| 0), Vec::new());
     }
 
     #[test]

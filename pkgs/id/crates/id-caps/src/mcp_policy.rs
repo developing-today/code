@@ -236,8 +236,10 @@ pub struct RoleGrant {
 }
 
 /// The owner authority one action ran under (design #6301 section
-/// 2.5, #8302): the review request the owner approved, and who
-/// approved it. Stamped on exactly the one audit event that request
+/// 2.5, #8302).
+///
+/// The review request the owner approved, and who approved it.
+/// Stamped on exactly the one audit event that request
 /// executed; it is never a delegation and never edits the role.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct OwnerApproval {
@@ -247,8 +249,9 @@ pub struct OwnerApproval {
     pub approver: String,
 }
 
-/// Which leg of the capability ceiling refused an action. Its
-/// [`std::fmt::Display`] is the `detail` the audit log records for a
+/// Which leg of the capability ceiling refused an action.
+///
+/// Its [`std::fmt::Display`] is the `detail` the audit log records for a
 /// [`AuditOutcome::RefusedCeiling`], and [`CeilingLeg::from_detail`]
 /// reads it back, so the owner review tooling can name the role edit
 /// that would fix a refusal from the log alone (#8302).
