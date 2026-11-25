@@ -431,7 +431,7 @@ mod tests {
                 assert!(r.revision.declares(&part("cape")));
                 assert!(!r.revision.declares(&part("hood")));
             }
-            other => panic!("expected rich, got {other:?}"),
+            other @ Resolution::StepDown(_) => panic!("expected rich, got {other:?}"),
         }
         // Revision 1 is byte-for-byte what was published.
         assert_eq!(
