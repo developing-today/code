@@ -1,6 +1,7 @@
 // Read-only fleet-queue collector (#9920, split from #1239): the
 // aggregator's projection of the queue-broker's read verbs — POST
-// /health (per-queue counts) and POST /list (task rows, rich mode).
+// /health (per-queue counts), POST /list (task rows, rich mode), and
+// POST /history-since (incremental task_history pages).
 // READ-ONLY BY CONSTRUCTION: this module and its live source call no
 // enqueue/claim/complete surface and hold no write credential; the
 // broker token used is the read-capable agent token from its file,
@@ -64,6 +65,38 @@ export interface BrokerTaskRow {
   } | null;
 }
 
+/** One immutable transition from the broker's task_history table. */
+export interface BrokerHistoryRow {
+  id?: number;
+  task_id?: number;
+  kind?: string;
+  from_status?: string | null;
+  to_status?: string | null;
+  actor?: string | null;
+  created_at?: string;
+}
+
+export interface QueueHistoryEvent {
+  id: number;
+  taskId: number;
+  kind: string;
+  fromStatus: string | null;
+  toStatus: string | null;
+  actor: string | null;
+  createdAt: string;
+}
+
+export interface QueueHistoryPage {
+  /** Highest history id observed; the next read resumes strictly after it. */
+  cursor: number;
+  rows: QueueHistoryEvent[];
+  hasMore: boolean;
+  available: boolean;
+  error: string | null;
+}
+
+export const QUEUE_HISTORY_PAGE_SIZE = 5_000;
+
 export interface QueueCounts {
   queue: string;
   queued: number;
@@ -125,6 +158,9 @@ export interface QueueSnapshot {
   errors: string[];
   queues: QueueCounts[];
   tasks: QueueTask[];
+  /** Incremental transition feed. Optional for snapshots built from
+   * fixtures or older cache records that predate Q8. */
+  history?: QueueHistoryPage;
 }
 
 const DEDUPE_ISSUE_RE = /^repo-health:v1:[^:]+:(.+):issue:(\d+)$/;
@@ -269,12 +305,11 @@ async function brokerPost(
 }
 
 /**
- * One live collector pass: POST /health for the per-queue counts,
- * then POST /list (rich) per queue named by the health rows for the
- * task rows. Any failure throws; the caller decides the fail-soft
- * policy (last-good snapshot re-projected stale, or the unavailable
- * snapshot). Read verbs only — /health and /list are the whole
- * surface this collector will ever call.
+ * One live collector pass: POST /health for per-queue counts, POST
+ * /list (rich) per queue named by health, then one POST /history-since
+ * for the shared monotonic history cursor. Health/list failures throw;
+ * a history failure is recorded on its own page so the last good queue
+ * counts can still render. Read verbs only.
  */
 export async function fetchQueueSnapshot(
   brokerUrl: string,
@@ -282,6 +317,7 @@ export async function fetchQueueSnapshot(
   fetchImpl: FetchLike = fetch as unknown as FetchLike,
   now: () => number = () => Date.now(),
   listLimit = 200,
+  historyCursor = 0,
 ): Promise<QueueSnapshot> {
   const health = await brokerPost(fetchImpl, brokerUrl, token, "/health", {});
   const healthRows = (Array.isArray(health.rows) ? health.rows : []) as BrokerHealthRow[];
@@ -296,5 +332,60 @@ export async function fetchQueueSnapshot(
     if (Array.isArray(list.rows)) taskRows.push(...(list.rows as BrokerTaskRow[]));
   }
   const fetchedAt = now();
-  return projectQueueSnapshot(healthRows, taskRows, fetchedAt, fetchedAt);
+  let history: QueueHistoryPage;
+  try {
+    const response = await brokerPost(fetchImpl, brokerUrl, token, "/history-since", {
+      after_id: historyCursor,
+      limit: QUEUE_HISTORY_PAGE_SIZE,
+    });
+    const sourceRows = Array.isArray(response.rows) ? (response.rows as BrokerHistoryRow[]) : [];
+    const rows = sourceRows
+      .map(projectQueueHistoryEvent)
+      .filter((row): row is QueueHistoryEvent => row !== null && row.id > historyCursor)
+      .sort((a, b) => a.id - b.id);
+    const reportedCursor =
+      typeof response.next_cursor === "number" && Number.isSafeInteger(response.next_cursor)
+        ? response.next_cursor
+        : historyCursor;
+    const cursor = Math.max(historyCursor, reportedCursor, rows.at(-1)?.id ?? historyCursor);
+    history = {
+      cursor,
+      rows,
+      hasMore:
+        typeof response.has_more === "boolean" ? response.has_more : sourceRows.length >= QUEUE_HISTORY_PAGE_SIZE,
+      available: true,
+      error: null,
+    };
+  } catch (error) {
+    // History is additive to the existing queue snapshot. A new reader
+    // must not take the queue counts offline while brokers roll forward.
+    history = {
+      cursor: historyCursor,
+      rows: [],
+      hasMore: false,
+      available: false,
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+  return { ...projectQueueSnapshot(healthRows, taskRows, fetchedAt, fetchedAt), history };
+}
+
+function projectQueueHistoryEvent(row: BrokerHistoryRow): QueueHistoryEvent | null {
+  if (
+    !Number.isSafeInteger(row.id) ||
+    !Number.isSafeInteger(row.task_id) ||
+    typeof row.kind !== "string" ||
+    typeof row.created_at !== "string"
+  ) {
+    return null;
+  }
+  return {
+    id: row.id as number,
+    taskId: row.task_id as number,
+    kind: row.kind,
+    fromStatus: typeof row.from_status === "string" ? row.from_status : null,
+    toStatus: typeof row.to_status === "string" ? row.to_status : null,
+    actor: typeof row.actor === "string" ? row.actor : null,
+    createdAt: row.created_at,
+  };
 }

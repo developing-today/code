@@ -7,6 +7,7 @@ import {
   projectQueueTask,
   unavailableQueueSnapshot,
   QUEUE_STALE_MS,
+  QUEUE_HISTORY_PAGE_SIZE,
   type BrokerHealthRow,
   type BrokerTaskRow,
 } from "../src/queue.ts";
@@ -170,6 +171,9 @@ describe("fetchQueueSnapshot (fixture broker)", () => {
       const rows = TASKS.filter((t) => t.queue === body.queue);
       return { ok: true, status: 200, json: async () => ({ ok: true, rows }) };
     }
+    if (url.endsWith("/history-since")) {
+      return { ok: true, status: 200, json: async () => ({ ok: true, rows: [], next_cursor: 0, has_more: false }) };
+    }
     throw new Error(`unexpected url ${url}`);
   };
   test("reads /health then /list per queue with the agent token, read verbs only", async () => {
@@ -183,6 +187,7 @@ describe("fetchQueueSnapshot (fixture broker)", () => {
       "http://broker.test:4801/health",
       "http://broker.test:4801/list",
       "http://broker.test:4801/list",
+      "http://broker.test:4801/history-since",
     ]);
     for (const c of calls) {
       expect(c.init?.headers?.["X-Agent-Token"]).toBe("tok-123");
@@ -214,9 +219,33 @@ describe("fetchQueueSnapshot (fixture broker)", () => {
           json: async () => ({
             ok: true,
             rows: [
-              { id: 40, task_id: 7, kind: "claimed", from_status: "queued", to_status: "claimed", actor: "lane-a", created_at: "2026-11-14T14:00:00Z" },
-              { id: 41, task_id: 7, kind: "parked", from_status: "claimed", to_status: "parked", actor: "lane-a", created_at: "2026-11-14T14:01:00Z" },
-              { id: 42, task_id: 8, kind: "claimed", from_status: "queued", to_status: "claimed", actor: "lane-b", created_at: "2026-11-14T14:02:00Z" },
+              {
+                id: 40,
+                task_id: 7,
+                kind: "claimed",
+                from_status: "queued",
+                to_status: "claimed",
+                actor: "lane-a",
+                created_at: "2026-11-14T14:00:00Z",
+              },
+              {
+                id: 41,
+                task_id: 7,
+                kind: "parked",
+                from_status: "claimed",
+                to_status: "parked",
+                actor: "lane-a",
+                created_at: "2026-11-14T14:01:00Z",
+              },
+              {
+                id: 42,
+                task_id: 8,
+                kind: "claimed",
+                from_status: "queued",
+                to_status: "claimed",
+                actor: "lane-b",
+                created_at: "2026-11-14T14:02:00Z",
+              },
             ],
             next_cursor: 42,
             has_more: true,
@@ -235,7 +264,18 @@ describe("fetchQueueSnapshot (fixture broker)", () => {
       "http://broker.test:4801/health",
       "http://broker.test:4801/history-since",
     ]);
-    expect(calls[1].body).toMatchObject({ after_id: 39, limit: 200 });
+    expect(calls[1].body).toMatchObject({ after_id: 39, limit: QUEUE_HISTORY_PAGE_SIZE });
+  });
+  test("history failure does not take the existing queue snapshot offline", async () => {
+    const historyErrorFetch = async (url: string) => {
+      if (url.endsWith("/health")) return { ok: true, status: 200, json: async () => ({ ok: true, rows: HEALTH }) };
+      if (url.endsWith("/list")) return { ok: true, status: 200, json: async () => ({ ok: true, rows: [] }) };
+      return { ok: false, status: 503, json: async () => ({ error: "history unavailable" }) };
+    };
+    const snap = await fetchQueueSnapshot("http://broker.test:4801", "tok", historyErrorFetch as never, () => NOW);
+    expect(snap.available).toBe(true);
+    expect(snap.history?.available).toBe(false);
+    expect(snap.history?.error).toContain("history unavailable");
   });
 });
 
@@ -248,6 +288,7 @@ describe("read-only by construction", () => {
     }
     expect(src).toContain('"/health"');
     expect(src).toContain('"/list"');
+    expect(src).toContain('"/history-since"');
   });
 });
 
@@ -264,6 +305,40 @@ describe("queuePanelHtml (#9921)", () => {
     expect(html).toContain("#8580");
     expect(html).toContain("any-d");
     expect(html).toContain("2026-11-14T15:00:00.000Z"); // source timestamp
+  });
+  test("fresh snapshot renders recent task_history transitions", () => {
+    const html = queuePanelHtml({
+      ...fresh,
+      history: {
+        cursor: 42,
+        rows: [
+          {
+            id: 42,
+            taskId: 8,
+            kind: "claimed",
+            fromStatus: "queued",
+            toStatus: "claimed",
+            actor: "lane-b",
+            createdAt: "2026-11-14T14:02:00Z",
+          },
+        ],
+        hasMore: true,
+        available: true,
+        error: null,
+      },
+    });
+    expect(html).toContain("/history-since");
+    expect(html).toContain("Recent task changes");
+    expect(html).toContain("queued \u2192 claimed");
+    expect(html).toContain("More history remains after cursor 42");
+  });
+  test("history failure is visible without hiding queue counts", () => {
+    const html = queuePanelHtml({
+      ...fresh,
+      history: { cursor: 42, rows: [], hasMore: false, available: false, error: "history unavailable" },
+    });
+    expect(html).toContain("Queue streams");
+    expect(html).toContain("History feed unavailable at cursor 42");
   });
   test("stale snapshot: the warning replaces the data", () => {
     const stale = projectQueueSnapshot(HEALTH, TASKS, NOW - QUEUE_STALE_MS - 1, NOW);
