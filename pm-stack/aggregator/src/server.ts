@@ -1647,7 +1647,8 @@ async function handler(req: Request, remoteAddress?: string): Promise<Response> 
       // healthy restore point from missing data.
       readHostHealthSnapshot(cfg.hostHealthFile).catch(() => null),
     ]);
-    const body: Record<string, unknown> = { status: "ok", source: prov(), version: view.version };
+    // #14062: the top-level status follows the degraded flag below.
+    const body: Record<string, unknown> = { status: view.status, source: prov(), version: view.version };
     body.hostHealth = hostHealth
       ? { host: hostHealth.host, backup: hostHealth.backup }
       : { host: null, backup: null, state: "unavailable" };

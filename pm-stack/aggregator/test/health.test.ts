@@ -230,9 +230,12 @@ describe("buildHealth probes", () => {
       expect(service(view, "fleet-feed").state).toBe("late");
       const html = renderHealth(view, {} as Parameters<typeof renderHealth>[1]);
       expect(html).toContain("past the 5m collector cadence, a write is overdue; stale at 10m");
-      // #14062: one late write is not yet degraded; a whole missed write is.
-      expect(view.degraded).toBe(false);
-      expect(view.status).toBe("ok");
+      // #14062: one late write adds nothing to the degraded verdict (the
+      // view degrades only as much as it did before the stop); a whole
+      // missed write does, and the status says so.
+      expect(service(view, "fleet-feed").ok).toBe(true);
+      expect(view.degraded).toBe(before.degraded);
+      expect(view.status).toBe(view.degraded ? "degraded" : "ok");
       const missed = await buildHealth(inputs({ feed }), { ...opts, now: stoppedAt + 10 * 60_000 });
       expect(service(missed, "fleet-feed").state).toBe("stale");
       expect(missed.degraded).toBe(true);
