@@ -52,7 +52,9 @@ fn main() -> ExitCode {
             let k = match k.parse::<usize>() {
                 Ok(k) => k,
                 Err(_) => {
-                    eprintln!("atlas-eval: invalid precision depth {k:?} (want an integer from 1 to 1000)");
+                    eprintln!(
+                        "atlas-eval: invalid precision depth {k:?} (want an integer from 1 to 1000)"
+                    );
                     return ExitCode::from(2);
                 }
             };
