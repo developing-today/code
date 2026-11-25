@@ -666,9 +666,10 @@ expect marched_12.oy == 2 and marched_12.dir == 0
 
 # Killing the last alien wins the wave; Enter starts the next one.
 lone_shot : Model
-lone_shot =
+lone_shot = {
     lone = { ..init(0), aliens: "10000000000000000000000000000000", score: 0 }
     collide_bullet({ ..lone, bullet_on: 1, bullet_x: lone.ox + 1, bullet_y: lone.oy })
+}
 
 expect lone_shot.phase == "won" and lone_shot.score == 30
 
