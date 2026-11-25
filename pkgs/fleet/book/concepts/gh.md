@@ -152,7 +152,11 @@ layer behind it: `issue|pr close|reopen` through the rotation must carry a
 `--reason` from the taxonomy — `implemented`, `superseded`, `cancelled`,
 `started-incorrectly` — enforced with the policy error "Please give a
 reason. This is required by policy." The reason is written into the close
-comment, and every successful close or reopen appends one `fleet-closure/v1`
+comment; free text after it comes from `--reason-text`, and gh's native
+`--comment`/`-c` is accepted as an alias of `--reason-text` on a close
+(the two combine in argument order), while on a reopen `--comment`
+forwards to gh, which accepts it there. Every successful close or reopen
+appends one `fleet-closure/v1`
 JSON-line record to `closure-records.jsonl` in the fleet state directory
 (backed up with it); `closures` prints the log, optionally filtered to one
 item. Source behaviour: the verb produces **no help output at all** — its
