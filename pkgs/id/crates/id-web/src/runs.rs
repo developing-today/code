@@ -37,8 +37,14 @@
 //!   are granted only when listed. The grant reaches the run as
 //!   environment ([`APP_ENV`], [`CAPABILITIES_ENV`], [`CLIENT_KIND_ENV`]).
 //!   `GET /v1/apps/{app}/manifest` returns an app's manifest.
-//! - Streaming output (SSE, §4.2) is slice 2; this slice answers once, when
-//!   the run ends.
+//! - Streaming output (slice 2, #14225, §4.2): a request whose `Accept`
+//!   header names `text/event-stream` is answered as server-sent events as
+//!   the run produces them. Each event has `id: <seq>` (from 1, increasing
+//!   by one), `event: app | out | err | exit` and a JSON `data:` object
+//!   ([`RunEventData::to_json`]); the `exit` event is last. A
+//!   close-immediately run (`stdin.mode = none`, no session) is this one
+//!   event stream in one HTTP response, and its output, exit status and
+//!   truncation equal the plain JSON answer for the same request.
 //!
 //! Binding (design §4.7): a run executes arbitrary subcommands, so this
 //! slice answers only requests whose peer address is loopback and that no
@@ -63,11 +69,13 @@ use axum::Json;
 use axum::Router;
 use axum::extract::{ConnectInfo, FromRequest, Path, Request, State};
 use axum::http::StatusCode;
+use axum::response::sse::{Event, Sse};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use base64::Engine as _;
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
+use tokio::sync::mpsc;
 
 /// Path of the run endpoint.
 pub const RUNS_PATH: &str = "/v1/runs";
@@ -498,28 +506,6 @@ pub fn validate(request: &RunRequest) -> Result<Option<Vec<u8>>, String> {
     }
 }
 
-/// Read a stream to its end, keeping at most `cap` bytes; report whether
-/// anything past the cap was dropped.
-async fn read_capped<R>(mut reader: R, cap: usize) -> std::io::Result<(Vec<u8>, bool)>
-where
-    R: AsyncRead + Unpin,
-{
-    let mut kept = Vec::new();
-    let mut truncated = false;
-    let mut chunk = vec![0_u8; 64 * 1024];
-    loop {
-        let read = reader.read(&mut chunk).await?;
-        if read == 0 {
-            return Ok((kept, truncated));
-        }
-        let room = cap.saturating_sub(kept.len());
-        if read > room {
-            truncated = true;
-        }
-        kept.extend_from_slice(&chunk[..read.min(room)]);
-    }
-}
-
 #[cfg(unix)]
 fn exit_signal(status: std::process::ExitStatus) -> Option<i32> {
     use std::os::unix::process::ExitStatusExt as _;
@@ -559,6 +545,167 @@ pub async fn execute_granted(
     stdin: Option<Vec<u8>>,
     grant: Option<&AppGrant>,
 ) -> std::io::Result<RunResponse> {
+    let started = start_run(config, request, stdin, grant)?;
+    let (events, mut received) = mpsc::channel(EVENT_BUFFER);
+    let collect = async move {
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+        let mut exit = None;
+        while let Some(event) = received.recv().await {
+            match event.data {
+                RunEventData::Out(bytes) => stdout.extend(bytes),
+                RunEventData::Err(bytes) => stderr.extend(bytes),
+                RunEventData::Exit(end) => exit = Some(end),
+                RunEventData::App(_) => {}
+            }
+        }
+        (stdout, stderr, exit)
+    };
+    let (streamed, (stdout, stderr, exit)) = tokio::join!(started.stream(events), collect);
+    streamed?;
+    let exit = exit.ok_or_else(|| std::io::Error::other("run ended without an exit event"))?;
+    Ok(RunResponse {
+        exit_code: exit.exit_code,
+        signal: exit.signal,
+        timed_out: exit.timed_out,
+        stdout: StreamOutput::from_bytes(stdout, exit.stdout_truncated),
+        stderr: StreamOutput::from_bytes(stderr, exit.stderr_truncated),
+        app: grant.map(|grant| grant.app.clone()),
+        granted_capabilities: grant.map(|grant| grant.granted.clone()).unwrap_or_default(),
+    })
+}
+
+/// Events a run may have in flight before its reader takes them.
+const EVENT_BUFFER: usize = 16;
+
+/// The `Accept` media type that asks for a run as server-sent events
+/// (§4.2).
+pub const EVENT_STREAM: &str = "text/event-stream";
+
+/// One output event of a run (§4.2). Events are numbered by `seq` from 1,
+/// in the order the run produced them; the `exit` event is always last.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RunEvent {
+    /// The event's sequence number, from 1, increasing by one per event.
+    pub seq: u64,
+    /// What happened.
+    pub data: RunEventData,
+}
+
+/// What a [`RunEvent`] carries.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RunEventData {
+    /// The loader's grant for an app run; first, before any output.
+    App(AppEvent),
+    /// Bytes the run wrote to stdout.
+    Out(Vec<u8>),
+    /// Bytes the run wrote to stderr.
+    Err(Vec<u8>),
+    /// How the run ended; last.
+    Exit(ExitEvent),
+}
+
+impl RunEventData {
+    /// The SSE `event:` name: `app`, `out`, `err` or `exit`.
+    #[must_use]
+    pub const fn name(&self) -> &'static str {
+        match self {
+            Self::App(_) => "app",
+            Self::Out(_) => "out",
+            Self::Err(_) => "err",
+            Self::Exit(_) => "exit",
+        }
+    }
+
+    /// The SSE `data:` JSON object. Output chunks are
+    /// `{"encoding": "utf8" | "base64", "data": ...}`.
+    ///
+    /// # Errors
+    ///
+    /// Fails only if serialization fails.
+    pub fn to_json(&self) -> serde_json::Result<String> {
+        match self {
+            Self::App(app) => serde_json::to_string(app),
+            Self::Out(bytes) | Self::Err(bytes) => {
+                serde_json::to_string(&ChunkData::from_bytes(bytes))
+            }
+            Self::Exit(exit) => serde_json::to_string(exit),
+        }
+    }
+}
+
+/// The `app` event: the loader's grant for an app run.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct AppEvent {
+    /// The app id.
+    pub app: String,
+    /// The announced client kind.
+    pub client_kind: ClientKind,
+    /// The capabilities granted to the run.
+    pub granted_capabilities: Vec<String>,
+}
+
+/// The `exit` event: how the run ended.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+pub struct ExitEvent {
+    /// The process exit code; absent when it was ended by a signal.
+    pub exit_code: Option<i32>,
+    /// The signal that ended the process, on Unix, if any.
+    pub signal: Option<i32>,
+    /// Whether the run was killed for exceeding the run timeout.
+    pub timed_out: bool,
+    /// Whether stdout went past the stream cap and was cut.
+    pub stdout_truncated: bool,
+    /// Whether stderr went past the stream cap and was cut.
+    pub stderr_truncated: bool,
+}
+
+#[derive(Serialize)]
+struct ChunkData {
+    encoding: &'static str,
+    data: String,
+}
+
+impl ChunkData {
+    fn from_bytes(bytes: &[u8]) -> Self {
+        match std::str::from_utf8(bytes) {
+            Ok(text) => Self {
+                encoding: "utf8",
+                data: text.to_owned(),
+            },
+            Err(_) => Self {
+                encoding: "base64",
+                data: base64::engine::general_purpose::STANDARD.encode(bytes),
+            },
+        }
+    }
+}
+
+/// A run that has started and whose output has not been read yet.
+#[derive(Debug)]
+pub struct StartedRun {
+    child: tokio::process::Child,
+    stdout: tokio::process::ChildStdout,
+    stderr: tokio::process::ChildStderr,
+    stdin_task: Option<tokio::task::JoinHandle<()>>,
+    timeout: Duration,
+    stream_cap: usize,
+    app: Option<AppEvent>,
+}
+
+/// Start one validated run, with the loader's grant if it is an app run.
+/// The grant reaches the run as [`APP_ENV`], [`CAPABILITIES_ENV`] and
+/// [`CLIENT_KIND_ENV`]. Must be called inside a Tokio runtime.
+///
+/// # Errors
+///
+/// Fails when the executable cannot be started.
+pub fn start_run(
+    config: &RunsConfig,
+    request: &RunRequest,
+    stdin: Option<Vec<u8>>,
+    grant: Option<&AppGrant>,
+) -> std::io::Result<StartedRun> {
     let mut command = tokio::process::Command::new(&config.exe);
     command.args(&request.argv).envs(&request.env);
     if let Some(grant) = grant {
@@ -595,33 +742,184 @@ pub async fn execute_granted(
         .stderr
         .take()
         .ok_or_else(|| std::io::Error::other("child stderr was not piped"))?;
-    let cap = config.stream_cap;
-    let stdout_task = tokio::spawn(read_capped(stdout, cap));
-    let stderr_task = tokio::spawn(read_capped(stderr, cap));
-
-    let (status, timed_out) = match tokio::time::timeout(config.timeout, child.wait()).await {
-        Ok(status) => (status?, false),
-        Err(_elapsed) => {
-            child.kill().await?;
-            (child.wait().await?, true)
-        }
-    };
-
-    if let Some(task) = stdin_task {
-        task.abort();
-    }
-    let (stdout, stdout_truncated) = stdout_task.await.map_err(std::io::Error::other)??;
-    let (stderr, stderr_truncated) = stderr_task.await.map_err(std::io::Error::other)??;
-
-    Ok(RunResponse {
-        exit_code: status.code(),
-        signal: exit_signal(status),
-        timed_out,
-        stdout: StreamOutput::from_bytes(stdout, stdout_truncated),
-        stderr: StreamOutput::from_bytes(stderr, stderr_truncated),
-        app: grant.map(|grant| grant.app.clone()),
-        granted_capabilities: grant.map(|grant| grant.granted.clone()).unwrap_or_default(),
+    Ok(StartedRun {
+        child,
+        stdout,
+        stderr,
+        stdin_task,
+        timeout: config.timeout,
+        stream_cap: config.stream_cap,
+        app: grant.map(|grant| AppEvent {
+            app: grant.app.clone(),
+            client_kind: grant.client_kind,
+            granted_capabilities: grant.granted.clone(),
+        }),
     })
+}
+
+impl StartedRun {
+    /// Read the run to its end and send its events, in order, to `events`:
+    /// the `app` event for an app run, then `out` and `err` chunks as they
+    /// arrive (each stream cut at the stream cap), then one `exit` event.
+    /// When `events` closes early the run is killed and this returns.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the run's streams cannot be read or its exit cannot be
+    /// awaited; no `exit` event is sent then.
+    // The sender is owned so the channel closes when the run ends.
+    #[allow(clippy::needless_pass_by_value)]
+    pub async fn stream(self, events: mpsc::Sender<RunEvent>) -> std::io::Result<()> {
+        let Self {
+            mut child,
+            stdout,
+            stderr,
+            stdin_task,
+            timeout,
+            stream_cap,
+            app,
+        } = self;
+        let (chunks, mut chunk_rx) = mpsc::channel(EVENT_BUFFER);
+        let stdout_task = tokio::spawn(pump(stdout, stream_cap, chunks.clone(), RunEventData::Out));
+        let stderr_task = tokio::spawn(pump(stderr, stream_cap, chunks, RunEventData::Err));
+        let wait_task = tokio::spawn(async move {
+            match tokio::time::timeout(timeout, child.wait()).await {
+                Ok(status) => Ok::<_, std::io::Error>((status?, false)),
+                Err(_elapsed) => {
+                    child.kill().await?;
+                    Ok((child.wait().await?, true))
+                }
+            }
+        });
+        // Whatever way this returns, nothing of the run outlives it: the
+        // wait task owns the child, which is killed when it is dropped.
+        let _guard = AbortOnDrop(
+            [
+                Some(stdout_task.abort_handle()),
+                Some(stderr_task.abort_handle()),
+                Some(wait_task.abort_handle()),
+                stdin_task
+                    .as_ref()
+                    .map(tokio::task::JoinHandle::abort_handle),
+            ]
+            .into_iter()
+            .flatten()
+            .collect(),
+        );
+
+        let mut seq = 0_u64;
+        if let Some(app) = app
+            && !emit(&events, &mut seq, RunEventData::App(app)).await
+        {
+            return Ok(());
+        }
+        while let Some(chunk) = chunk_rx.recv().await {
+            if !emit(&events, &mut seq, chunk).await {
+                return Ok(());
+            }
+        }
+        let stdout_truncated = stdout_task.await.map_err(std::io::Error::other)??;
+        let stderr_truncated = stderr_task.await.map_err(std::io::Error::other)??;
+        let (status, timed_out) = wait_task.await.map_err(std::io::Error::other)??;
+        let exit = ExitEvent {
+            exit_code: status.code(),
+            signal: exit_signal(status),
+            timed_out,
+            stdout_truncated,
+            stderr_truncated,
+        };
+        emit(&events, &mut seq, RunEventData::Exit(exit)).await;
+        Ok(())
+    }
+}
+
+/// Aborts its tasks when dropped.
+struct AbortOnDrop(Vec<tokio::task::AbortHandle>);
+
+impl Drop for AbortOnDrop {
+    fn drop(&mut self) {
+        for handle in &self.0 {
+            handle.abort();
+        }
+    }
+}
+
+/// Number and send one event; `false` when the receiver has gone.
+async fn emit(events: &mpsc::Sender<RunEvent>, seq: &mut u64, data: RunEventData) -> bool {
+    *seq += 1;
+    events.send(RunEvent { seq: *seq, data }).await.is_ok()
+}
+
+/// Read `reader` to its end, sending at most `cap` bytes of it as chunks,
+/// and report whether anything past the cap was dropped.
+// The sender is owned so the channel closes when the run ends.
+#[allow(clippy::needless_pass_by_value)]
+async fn pump<R>(
+    mut reader: R,
+    cap: usize,
+    chunks: mpsc::Sender<RunEventData>,
+    wrap: fn(Vec<u8>) -> RunEventData,
+) -> std::io::Result<bool>
+where
+    R: AsyncRead + Unpin,
+{
+    let mut sent = 0_usize;
+    let mut truncated = false;
+    let mut buffer = vec![0_u8; 64 * 1024];
+    loop {
+        let read = reader.read(&mut buffer).await?;
+        if read == 0 {
+            return Ok(truncated);
+        }
+        let room = cap.saturating_sub(sent);
+        if read > room {
+            truncated = true;
+        }
+        let keep = read.min(room);
+        if keep > 0 {
+            sent += keep;
+            if chunks.send(wrap(buffer[..keep].to_vec())).await.is_err() {
+                return Ok(truncated);
+            }
+        }
+    }
+}
+
+/// Whether the request's `Accept` header asks for [`EVENT_STREAM`].
+fn accepts_event_stream(headers: &axum::http::HeaderMap) -> bool {
+    headers
+        .get_all(axum::http::header::ACCEPT)
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+        .flat_map(|value| value.split(','))
+        .filter_map(|item| item.split(';').next())
+        .any(|media| media.trim().eq_ignore_ascii_case(EVENT_STREAM))
+}
+
+/// Answer with the run's events as SSE, streamed as the run produces them.
+fn event_stream_response(started: StartedRun) -> Response {
+    let (events, received) = mpsc::channel(EVENT_BUFFER);
+    tokio::spawn(async move {
+        if let Err(err) = started.stream(events).await {
+            tracing::warn!(error = %err, "run stream failed");
+        }
+    });
+    let stream = futures::stream::unfold(received, |mut received| async move {
+        let event = received.recv().await?;
+        Some((
+            Ok::<_, std::convert::Infallible>(sse_event(&event)),
+            received,
+        ))
+    });
+    Sse::new(stream).into_response()
+}
+
+fn sse_event(event: &RunEvent) -> Event {
+    let data = event.data.to_json().unwrap_or_else(|_| String::from("{}"));
+    Event::default()
+        .id(event.seq.to_string())
+        .event(event.data.name())
+        .data(data)
 }
 
 async fn run_handler(State(config): State<Arc<RunsConfig>>, request: Request) -> Response {
@@ -635,6 +933,7 @@ async fn run_handler(State(config): State<Arc<RunsConfig>>, request: Request) ->
             "runs are served to loopback clients only (#10392 §4.7)",
         );
     }
+    let wants_events = accepts_event_stream(request.headers());
     let run = match Json::<RunRequest>::from_request(request, &()).await {
         Ok(Json(run)) => run,
         Err(rejection) => return rejection.into_response(),
@@ -647,6 +946,18 @@ async fn run_handler(State(config): State<Arc<RunsConfig>>, request: Request) ->
         Ok(grant) => grant,
         Err(refusal) => return error_response(refusal.status, refusal.message),
     };
+    if wants_events {
+        return match start_run(&config, &run, stdin, grant.as_ref()) {
+            Ok(started) => event_stream_response(started),
+            Err(err) => {
+                tracing::warn!(error = %err, "run could not be started");
+                error_response(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("run could not be started: {err}"),
+                )
+            }
+        };
+    }
     match execute_granted(&config, &run, stdin, grant.as_ref()).await {
         Ok(response) => Json(response).into_response(),
         Err(err) => {
@@ -1019,5 +1330,188 @@ mod tests {
         let remote = SocketAddr::from(([192, 0, 2, 7], 40_000));
         let (status, _) = get_manifest("notes", Some(remote)).await;
         assert_eq!(status, StatusCode::FORBIDDEN);
+    }
+
+    async fn post_events(
+        config: RunsConfig,
+        body: &serde_json::Value,
+    ) -> (StatusCode, String, String) {
+        let app: Router = runs_routes(config);
+        let mut request = HttpRequest::post(RUNS_PATH)
+            .header("content-type", "application/json")
+            .header("accept", "text/html, text/event-stream;q=0.9")
+            .body(Body::from(body.to_string()))
+            .unwrap();
+        request.extensions_mut().insert(ConnectInfo(loopback()));
+        let response = app.oneshot(request).await.unwrap();
+        let status = response.status();
+        let content_type = response
+            .headers()
+            .get("content-type")
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or_default()
+            .to_owned();
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        (
+            status,
+            content_type,
+            String::from_utf8(bytes.to_vec()).unwrap(),
+        )
+    }
+
+    /// Parse an SSE body into `(id, event, data)` triples.
+    fn parse_events(text: &str) -> Vec<(u64, String, serde_json::Value)> {
+        text.split("\n\n")
+            .filter(|block| !block.trim().is_empty())
+            .map(|block| {
+                let mut id = None;
+                let mut event = None;
+                let mut data = String::new();
+                for line in block.lines() {
+                    if let Some(value) = line.strip_prefix("id:") {
+                        id = Some(value.trim().parse().unwrap());
+                    } else if let Some(value) = line.strip_prefix("event:") {
+                        event = Some(value.trim().to_owned());
+                    } else if let Some(value) = line.strip_prefix("data:") {
+                        data.push_str(value.trim_start());
+                    }
+                }
+                (
+                    id.unwrap(),
+                    event.unwrap(),
+                    serde_json::from_str(&data).unwrap(),
+                )
+            })
+            .collect()
+    }
+
+    /// The bytes an `out`/`err` event or a plain stream object carries.
+    fn decoded(value: &serde_json::Value) -> Vec<u8> {
+        let data = value["data"].as_str().unwrap();
+        match value["encoding"].as_str().unwrap() {
+            "utf8" => data.as_bytes().to_vec(),
+            "base64" => base64::engine::general_purpose::STANDARD
+                .decode(data)
+                .unwrap(),
+            other => panic!("unknown encoding {other}"),
+        }
+    }
+
+    fn stream_bytes(events: &[(u64, String, serde_json::Value)], name: &str) -> Vec<u8> {
+        events
+            .iter()
+            .filter(|(_, event, _)| event == name)
+            .flat_map(|(_, _, data)| decoded(data))
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn sse_events_are_numbered_and_end_with_exit() {
+        let (status, content_type, text) = post_events(
+            sh_config(),
+            &serde_json::json!({
+                "argv": ["-c", "printf out; printf err >&2; printf more; exit 3"],
+                "stdin": { "mode": "none" }
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{text}");
+        assert!(content_type.starts_with(EVENT_STREAM), "{content_type}");
+        let events = parse_events(&text);
+        let ids: Vec<u64> = events.iter().map(|(id, _, _)| *id).collect();
+        let expected: Vec<u64> = (1..=u64::try_from(ids.len()).unwrap()).collect();
+        assert_eq!(ids, expected, "{text}");
+        let exits: Vec<_> = events
+            .iter()
+            .filter(|(_, event, _)| event == "exit")
+            .collect();
+        assert_eq!(exits.len(), 1, "{text}");
+        let (_, last, exit) = events.last().unwrap();
+        assert_eq!(last, "exit");
+        assert_eq!(exit["exit_code"], 3);
+        assert_eq!(exit["timed_out"], false);
+        assert_eq!(stream_bytes(&events, "out"), b"outmore");
+        assert_eq!(stream_bytes(&events, "err"), b"err");
+    }
+
+    #[tokio::test]
+    async fn close_immediately_stream_equals_plain_run() {
+        let mut config = sh_config();
+        config.stream_cap = 6;
+        let request = serde_json::json!({
+            "argv": ["-c", "printf 'a\\377b'; printf e >&2; printf 'cdefgh'; exit 2"]
+        });
+        let (status, plain) = post_run(config.clone(), Some(loopback()), &request).await;
+        assert_eq!(status, StatusCode::OK, "{plain}");
+        let (_, _, text) = post_events(config, &request).await;
+        let events = parse_events(&text);
+        let (_, _, exit) = events.last().unwrap();
+        assert_eq!(stream_bytes(&events, "out"), decoded(&plain["stdout"]));
+        assert_eq!(stream_bytes(&events, "err"), decoded(&plain["stderr"]));
+        assert_eq!(decoded(&plain["stdout"]), b"a\xffbcde");
+        assert_eq!(exit["exit_code"], plain["exit_code"]);
+        assert_eq!(exit["signal"], plain["signal"]);
+        assert_eq!(exit["timed_out"], plain["timed_out"]);
+        assert_eq!(exit["stdout_truncated"], plain["stdout"]["truncated"]);
+        assert_eq!(exit["stdout_truncated"], true);
+        assert_eq!(exit["stderr_truncated"], plain["stderr"]["truncated"]);
+    }
+
+    #[tokio::test]
+    async fn sse_app_runs_open_with_the_grant() {
+        let (status, _, text) = post_events(
+            sh_config().with_apps(notes_apps()),
+            &serde_json::json!({
+                "app": "notes",
+                "argv": ["-c", "printf ran"],
+                "client": { "kind": "web" },
+                "capabilities": ["fs.read", "net"]
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{text}");
+        let events = parse_events(&text);
+        let (id, event, app) = &events[0];
+        assert_eq!((*id, event.as_str()), (1, "app"));
+        assert_eq!(app["app"], "notes");
+        assert_eq!(app["client_kind"], "web");
+        assert_eq!(
+            app["granted_capabilities"],
+            serde_json::json!(["fs.read", "net"])
+        );
+        assert_eq!(stream_bytes(&events, "out"), b"ran");
+    }
+
+    #[tokio::test]
+    async fn sse_refusals_answer_before_any_event() {
+        let (status, content_type, text) = post_events(
+            sh_config().with_apps(notes_apps()),
+            &serde_json::json!({
+                "app": "notes",
+                "argv": ["-c", "printf ran"],
+                "client": { "kind": "web" }
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{text}");
+        assert!(
+            content_type.starts_with("application/json"),
+            "{content_type}"
+        );
+    }
+
+    #[test]
+    fn accept_negotiation_finds_the_event_stream() {
+        let mut headers = axum::http::HeaderMap::new();
+        assert!(!accepts_event_stream(&headers));
+        headers.insert("accept", "application/json".parse().unwrap());
+        assert!(!accepts_event_stream(&headers));
+        headers.insert(
+            "accept",
+            "text/html, Text/Event-Stream; q=0.5".parse().unwrap(),
+        );
+        assert!(accepts_event_stream(&headers));
     }
 }

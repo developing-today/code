@@ -358,12 +358,23 @@ Every gallery route answers 404 unless a gallery was wired in with
 argv, allowlisted env and stdin (`none`, or `body` with `data` or
 `data_base64`), and answers with its exit code, stdout and stderr: the same
 result as the CLI with that argv (#10392 §6.1). Loopback clients only; a
-request forwarded by a proxy is refused. Sessions, streaming output and app
-runs are later slices of #10392.
+request forwarded by a proxy is refused.
 
-| Route      | Method | Description                          |
-| ---------- | ------ | ------------------------------------ |
-| `/v1/runs` | POST   | Run one subcommand, answer when done |
+With `Accept: text/event-stream` the run answers as server-sent events while
+it runs (§6.2): `id: <seq>` from 1, `event: app | out | err | exit`, and a
+JSON `data:` object. `out` and `err` carry `{encoding, data}` chunks; `exit`
+comes last with the exit code, signal, timeout and truncation flags. The
+events of a run with `stdin.mode = none` add up to the plain JSON answer.
+
+App runs name an `app` from the served `app.toml` manifests, announce a
+`client` (`kind`, `features`) and list the `capabilities` they grant (§6.4).
+A run missing a required capability is refused with 403 naming it, and never
+starts. Sessions and interactive input are a later slice of #10392.
+
+| Route                     | Method | Description                                  |
+| ------------------------- | ------ | -------------------------------------------- |
+| `/v1/runs`                | POST   | Run one subcommand; JSON when done, or SSE   |
+| `/v1/apps/{app}/manifest` | GET    | An app's run manifest (capabilities, assets) |
 
 ### WebSocket
 
