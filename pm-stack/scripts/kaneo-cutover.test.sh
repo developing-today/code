@@ -87,8 +87,8 @@ printf 'pg_restore:%s\n' "$role" >>"$CUTOVER_FIXTURE_DIR/log"
 STUB
 chmod +x "$TMP/bin/psql" "$TMP/bin/pg_dump" "$TMP/bin/pg_restore"
 
-printf 'source-db dsn\n' >"$TMP/source.dsn"
-printf 'target-db dsn\n' >"$TMP/target.dsn"
+printf 'postgresql://source-user:password@source-db:5432/kaneo\n' >"$TMP/source.dsn"
+printf 'postgresql://target-user:password@target-db:5432/kaneo\n' >"$TMP/target.dsn"
 python3 -I - "$TMP/backup.json" <<'PY'
 import json, sys
 from datetime import datetime, timezone, timedelta
@@ -119,7 +119,7 @@ log_is_empty() { [ ! -s "$TMP/fx/log" ]; }
 
 run() { "$BASH_BIN" "$DRIVER" "$@" 2>&1; }
 
-common=(--pg-bin-dir "$TMP/bin" --source-dsn-file "$TMP/source.dsn" --target-dsn-file "$TMP/target.dsn")
+common=(--pg-bin-dir "$TMP/bin" --source-dsn-file "$TMP/source.dsn" --target-dsn-file "$TMP/target.dsn" --target-home cluster-postgres --target-host target-db)
 promote=(--backup-record-file "$TMP/backup.json")
 
 # 1. presync dumps then restores, and passes on schema parity.
@@ -326,6 +326,74 @@ else
   [ "$?" -eq 2 ] && pass 'unreadable source DSN exits 2' || fail 'unreadable source DSN exits 2'
 fi
 log_is_empty && pass 'usage errors ran no subprocess' || fail 'usage errors ran no subprocess'
+
+# Oracle (#6816): target identity rejection in EVERY mode happens before any
+# PG/fence process or dump/receipt write. Valid offline preflight does too.
+cat >"$TMP/bin/fence-spy" <<'STUB'
+#!/usr/bin/env bash
+printf 'fence\n' >>"$CUTOVER_FIXTURE_DIR/log"
+echo 'FENCED: fixture'
+STUB
+chmod +x "$TMP/bin/fence-spy"
+safe=(--pg-bin-dir "$TMP/bin" --source-dsn-file "$TMP/source.dsn" --target-dsn-file "$TMP/target.dsn" --fence-check "$TMP/bin/fence-spy" --dump-file "$TMP/safety.dump" --receipt "$TMP/safety.md" --backup-record-file "$TMP/backup.json")
+reject_identity() {
+  local label="$1" mode status
+  shift
+  for mode in preflight presync promote rollback; do
+    reset_log
+    status=0
+    run --mode "$mode" "${safe[@]}" "$@" >"$TMP/out" 2>&1 || status=$?
+    if [ "$status" -eq 2 ] && log_is_empty && [ ! -e "$TMP/safety.dump" ] && [ ! -e "$TMP/safety.md" ]; then
+      pass "$mode rejects $label without effects"
+    else
+      fail "$mode rejects $label without effects (exit $status: $(cat "$TMP/out"))"
+    fi
+    rm -f "$TMP/safety.dump" "$TMP/safety.md"
+  done
+}
+for syntax in split equals; do
+  reset_log
+  identity=(--target-home cluster-postgres --target-host target-db)
+  [ "$syntax" = split ] || identity=(--target-home=cluster-postgres --target-host=target-db)
+  if run --mode preflight --source-dsn-file "$TMP/source.dsn" --target-dsn-file "$TMP/target.dsn" "${identity[@]}" --fence-check "$TMP/absent" --dump-file "$TMP/safety.dump" --receipt "$TMP/safety.md" >"$TMP/out" 2>&1 && log_is_empty && [ ! -e "$TMP/safety.dump" ] && [ ! -e "$TMP/safety.md" ] && grep -q 'PREFLIGHT OK' "$TMP/out"; then
+    pass "offline preflight ($syntax) needs no backup/fence and has no effects"
+  else
+    fail "offline preflight ($syntax) (got: $(cat "$TMP/out"))"
+  fi
+done
+reject_identity 'missing identity'
+reject_identity 'wrong home' --target-home supabase --target-host target-db
+reject_identity 'mismatched host' --target-home cluster-postgres --target-host other-db
+reject_identity 'empty host' --target-home=cluster-postgres --target-host=
+for dsn in \
+  'postgresql://target@db.SuPaBaSe.Co/kaneo' \
+  'postgresql://target@db.%73upabase.com/kaneo' \
+  'postgresql://target@db.supabase.co./kaneo' \
+  'postgresql://target@MUSE-%64EV2/kaneo' \
+  'postgresql://target@target-db/muse-%64ev2' \
+  'postgresql://muse-dev2:pw@target-db/kaneo' \
+  'host=target-db dbname=kaneo' \
+  'postgresql://target@target-db/kaneo?host=other' \
+  'postgresql://target@target-db/kaneo?%68ostaddr=1.2.3.4' \
+  'postgresql://target@target-db/kaneo?service=retired' \
+  'postgresql://target@target-db,other/kaneo' \
+  'postgresql://target@%2Ftmp/kaneo' \
+  'postgresql:///kaneo' \
+  'postgresql://target@target-db/' \
+  'postgresql://target@target-db/kaneo#ignored' \
+  'postgresql://target@target-db:bad/kaneo' \
+  'postgresql://target@target-db/kaneo?dbname=other' \
+  'postgresql://target@target-db/kaneo?options=-c%20search_path=public' \
+  'postgresql://target@target-db/kaneo?sslmode=require&sslmode=disable'; do
+  printf '%s\n' "$dsn" >"$TMP/target.dsn"
+  reject_identity 'forbidden/ambiguous URI' --target-home cluster-postgres --target-host target-db
+done
+printf 'postgresql://source@SOURCE-db:5432/kan%%65o\n' >"$TMP/source.dsn"
+printf 'postgres://different:credentials@source-db/kaneo\n' >"$TMP/target.dsn"
+reject_identity 'same database with different credentials' --target-home cluster-postgres --target-host source-db
+printf 'postgresql://source@source-db/kaneo?host=other\n' >"$TMP/source.dsn"
+printf 'postgresql://target@target-db/kaneo\n' >"$TMP/target.dsn"
+reject_identity 'ambiguous source' --target-home cluster-postgres --target-host target-db
 
 if ((FAILURES)); then
   printf 'kaneo-cutover.test.sh: %d check(s) failed\n' "$FAILURES"
