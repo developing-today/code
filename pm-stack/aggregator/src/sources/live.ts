@@ -1425,9 +1425,15 @@ export function liveSource(
         }
         return merged;
       } catch (err) {
-        provenance.board = `fixtures (kaneo unreachable: ${err instanceof Error ? err.message : err})`;
+        // #14065: live mode never renders the demo board as if it were
+        // real work. A failed Kaneo read is an outage state, not
+        // content: serve an empty board with the cause named in
+        // provenance (the attention path's #1116 contract).
+        const reason = err instanceof Error ? err.message : String(err);
+        console.error(`[board] kaneo unreachable (${reason}) — serving empty, NOT fixtures`);
+        provenance.board = `unavailable (kaneo unreachable: ${reason}; fixtures withheld in live mode)`;
       }
-      return fix.board();
+      return [];
     },
     async roadmap() {
       try {
@@ -1464,10 +1470,17 @@ export function liveSource(
           provenance.roadmap = label;
           return merged;
         }
+        // #14065: Grist answered with no rows. That is not a reason to
+        // show invented roadmap rows: name it and serve nothing.
+        provenance.roadmap = "unavailable (grist returned no roadmap rows; fixtures withheld in live mode)";
       } catch (err) {
-        provenance.roadmap = `fixtures (grist unreachable: ${err instanceof Error ? err.message : err})`;
+        // #14065: as on the board path, a failed read is an outage
+        // state, never fixture content in live mode.
+        const reason = err instanceof Error ? err.message : String(err);
+        console.error(`[roadmap] grist unreachable (${reason}) — serving empty, NOT fixtures`);
+        provenance.roadmap = `unavailable (grist unreachable: ${reason}; fixtures withheld in live mode)`;
       }
-      return fix.roadmap();
+      return [];
     },
     async items(refs) {
       // #910 stage 5: the fleet feed's GitHub Project pool is the
@@ -2184,6 +2197,7 @@ export function liveSource(
         const text = provenance[key];
         let state: ProvenanceFacet["state"];
         if (text.startsWith("error")) state = "error";
+        else if (text.startsWith("unavailable")) state = "unavailable";
         else if (text.startsWith("live")) state = "live";
         else if (text.startsWith("invalid")) state = "invalid";
         else if (text.startsWith("none yet") || text.startsWith("not collected yet") || text.startsWith("skipped"))
