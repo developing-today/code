@@ -12,7 +12,8 @@ grant or handoff for the current epoch, not a caller-selected barrier and not
 the latest renewal/rejection audit. Refuse dispatch below that position even
 when identity, epoch, expiry and residency pass. Bootstrap and unstamped legacy
 ownership boundaries retain position zero semantics. The host must obtain the
-watermark from verified replay, not an unauthenticated node assertion.
+contiguous watermark from verified replay, not an unauthenticated node assertion
+or the authority's own lease watermark.
 
 Verified when: the public admission gate refuses a matching successor below
 the grant position, dispatch sends no copy, and admission succeeds exactly at
@@ -39,7 +40,7 @@ based on these unit tests, or tune the 30s/10s defaults from synthetic timings.
 The gate now derives the current epoch's grant/handoff position and returns
 `SpillDeny::ReplayPending` below it. An acceptance case checks refusal and zero
 dispatches below the boundary, and a property test varies handoff/grant boundaries
-and cursors while renewing the term. The red checkpoint is commit
+and cursors while renewing the term and appending rejection audits. The red checkpoint is commit
 `31eeaf90bbab26a7085a4565919d8c2f565b2c1b`; remote execution is still pending
 confirmation, not evidence of a passing test. The first dispatch failed checkout
 because the abbreviated SHA was treated as a branch name; a full-SHA retry was

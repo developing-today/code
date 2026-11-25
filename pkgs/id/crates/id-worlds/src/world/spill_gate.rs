@@ -354,7 +354,7 @@ mod tests {
             let required = if handoff { boundary } else { boundary + 1 };
             lease.apply_renew("spill-eu", epoch, NOW_MS + 200, required + 1).unwrap();
             lease.apply_rejection(LeaseWriteRejection {
-                writer: "fenced-holder".into(),
+                writer: "spill-eu".into(),
                 presented_epoch: epoch - 1,
                 operation_id: "stale-append".into(),
                 observed_epoch: epoch,
