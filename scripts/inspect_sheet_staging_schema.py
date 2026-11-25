@@ -80,6 +80,14 @@ def inspect_database(path):
                     unique.add(tuple(r["name"] for r in item["columns"]))
             expected, not_null, keys = contract(name)
             columns = {r["name"]: r for r in row["columns"]}
+            if not name.startswith("home_"):
+                if pk != ("id",):
+                    row["gaps"].append("missing single-column id primary key")
+                elif not columns["id"]["notnull"]:
+                    rowid_alias = (columns["id"]["type"].upper() == "INTEGER"
+                                   and not any(i["origin"] == "pk" for i in row["indexes"]))
+                    if not rowid_alias:
+                        row["gaps"].append("nullable primary identity: id")
             row["gaps"].extend(f"missing column: {c}" for c in sorted(expected - columns.keys()))
             row["gaps"].extend(f"nullable required column: {c}" for c in sorted(not_null & columns.keys()) if not columns[c]["notnull"])
             row["gaps"].extend("missing unconditional unique key: " + ", ".join(key) for key in keys if key not in unique)
@@ -90,7 +98,7 @@ def inspect_database(path):
             if name.endswith("_sheet_rows"):
                 row["unknown"].append("batch association requires canonical writer and parent-key evidence")
             if not row["guards"]:
-                row["gaps"].append("no installed trigger guards observed")
+                row["unknown"].append("no installed trigger guards observed; required guard policy unknown")
         return {"evidence_scope": "local SQLite artifact only; not live target verification",
                 "artifact": str(Path(path).resolve()), "live_gate_cleared": False,
                 "tables": tables}

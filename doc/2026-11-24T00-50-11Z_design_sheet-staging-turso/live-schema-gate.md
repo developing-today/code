@@ -32,7 +32,10 @@ and primary-key ordinal), `index_list`/`index_info`, raw index SQL,
 indexes with the exact ordered columns qualify for the expected key; partial or
 expression indexes do not silently count as a full-column dedupe guarantee.
 Trigger presence is not proof of guard semantics: definitions are retained for
-review, never parsed heuristically or executed. Absent triggers are reported.
+review, never parsed heuristically or executed. Absent triggers are observations
+with an unknown required guard policy, not blanket migration defects. The `id`
+primary key is checked independently of dedupe keys. Nullable SQLite text primary
+keys are flagged; true INTEGER rowid aliases are not mistaken for nullable keys.
 
 Expectations are deliberately bounded by migrations 0003/0004/0011/0013/0016/0017
 and the design's dedupe requirement, not a proposed universal workbook schema:

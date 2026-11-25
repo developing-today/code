@@ -31,13 +31,11 @@ class SchemaInspectorTests(unittest.TestCase):
             id INTEGER PRIMARY KEY, run_date TEXT NOT NULL, topic TEXT NOT NULL,
             headline TEXT NOT NULL, summary TEXT, source_url TEXT, source_name TEXT,
             event_date TEXT, dedupe_key TEXT NOT NULL UNIQUE,
-            payload TEXT NOT NULL DEFAULT '{}', created_at TEXT NOT NULL);
-        CREATE TRIGGER findings_no_delete BEFORE DELETE ON engineering_events
-            BEGIN SELECT RAISE(ABORT, 'append only'); END;""")
+            payload TEXT NOT NULL DEFAULT '{}', created_at TEXT NOT NULL);""")
         row = inspector.inspect_database(self.path)["tables"]["engineering_events"]
         self.assertEqual(row["gaps"], [])
-        self.assertEqual(row["unknown"], ["guard behavior not exercised", "canonical writer unknown"])
-        self.assertIn("RAISE", row["guards"][0]["sql"])
+        self.assertIn("guard behavior not exercised", row["unknown"])
+        self.assertEqual(row["guards"], [])
         self.assertNotIn("import_batch", [c["name"] for c in row["columns"]])
 
     def test_oracle_missing_dedupe_or_partial_unique_fails(self):
@@ -95,6 +93,22 @@ class SchemaInspectorTests(unittest.TestCase):
         with self.assertRaises(sqlite3.OperationalError):
             inspector.inspect_database(missing)
         self.assertFalse(missing.exists())
+
+    def test_oracle_sqlite_identity_pk_and_nullability(self):
+        for declaration, expected in (
+                ("id TEXT", "missing single-column id primary key"),
+                ("id TEXT UNIQUE", "missing single-column id primary key"),
+                ("id TEXT, extra TEXT, PRIMARY KEY(id, extra)", "missing single-column id primary key"),
+                ("id TEXT PRIMARY KEY", "nullable primary identity: id"),
+                ("id TEXT NOT NULL PRIMARY KEY", None),
+                ("id INTEGER PRIMARY KEY", None)):
+            with self.subTest(declaration=declaration):
+                if self.path.exists():
+                    self.path.unlink()
+                self.database(f"CREATE TABLE engineering_events ({declaration});")
+                gaps = inspector.inspect_database(self.path)["tables"]["engineering_events"]["gaps"]
+                identity_gaps = [g for g in gaps if "primary" in g]
+                self.assertEqual(identity_gaps, [expected] if expected else [])
 
     def test_oracle_strict_cli_before_file_access(self):
         for extra in (["--typo"], ["stray"], ["--data", "x"], ["--database"]):
