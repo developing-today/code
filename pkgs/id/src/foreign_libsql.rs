@@ -37,13 +37,14 @@
 //!   calls are isolated behind per-alias circuit breakers with bounded
 //!   retries for reads only; auth failure is fatal and never retried.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use id_grants::{PublicationRecord, Scope};
 use serde_json::{Value as Json, json};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -685,6 +686,90 @@ impl PublicationScope {
             map.insert(collection.name.clone(), collection);
         }
         Ok(Self { collections: map })
+    }
+
+    /// Build the scope from the real publication record (#14781,
+    /// [`PublicationRecord`]) plus the serving side's per-collection
+    /// serving declarations.
+    ///
+    /// The record is the authority for WHAT is published: its scope's
+    /// collection units are exactly the published set (D4). The
+    /// declarations are the authority for HOW each collection is
+    /// served — the owner's per-collection live/materialized choice
+    /// (#5803), which the record does not carry — so the serving side
+    /// supplies them here, as [`PublishedCollection`] entries.
+    ///
+    /// The two must agree exactly, and every disagreement is a config
+    /// error, refused loudly rather than partially applied
+    /// (invariant 8):
+    ///
+    /// - a retired record (`unpublished_at` set) builds no scope:
+    ///   unpublish retires the whole share at once (D5);
+    /// - a record unit that is an object, not a collection, is
+    ///   refused: this read path serves collections, and silently
+    ///   dropping part of the published set would serve less than
+    ///   the record promises with nobody told;
+    /// - a collection the record names with no serving declaration,
+    ///   and a declaration naming a collection the record does not
+    ///   name, are both refused: the scope is never wider or narrower
+    ///   than the record, and a table the record does not name (one
+    ///   created later, say) is not published.
+    ///
+    /// The caller passes a record that is live at build time — the
+    /// grants layer's liveness check (grant lineage, via
+    /// `Publications::resolve`) is what vouches for that. The scope
+    /// is then a snapshot of the published set; unpublish is
+    /// expressed by the serving layer no longer presenting it, as
+    /// [`PublicationScope`] documents.
+    pub fn from_record(
+        record: &PublicationRecord,
+        declared: impl IntoIterator<Item = PublishedCollection>,
+    ) -> Result<Self, AdapterError> {
+        if record.unpublished_at.is_some() {
+            return Err(AdapterError::Config(format!(
+                "publication record for share {} is retired; a retired share has no public scope",
+                record.share
+            )));
+        }
+        let mut named = BTreeSet::new();
+        for unit in &record.scope {
+            match unit {
+                Scope::Collection(name) => {
+                    named.insert(name.as_str());
+                }
+                Scope::Object(id) => {
+                    return Err(AdapterError::Config(format!(
+                        "publication record for share {} names object {id}, which the \
+                         adapter's collection read path cannot serve",
+                        record.share
+                    )));
+                }
+            }
+        }
+        let declared: Vec<PublishedCollection> = declared.into_iter().collect();
+        let declared_names: BTreeSet<&str> = declared
+            .iter()
+            .map(|collection| collection.name.as_str())
+            .collect();
+        for name in &named {
+            if !declared_names.contains(name) {
+                return Err(AdapterError::Config(format!(
+                    "publication record for share {} publishes collection {name}, \
+                     which has no serving declaration",
+                    record.share
+                )));
+            }
+        }
+        for collection in &declared {
+            if !named.contains(collection.name.as_str()) {
+                return Err(AdapterError::Config(format!(
+                    "serving declaration names collection {}, which the publication \
+                     record for share {} does not publish",
+                    collection.name, record.share
+                )));
+            }
+        }
+        Self::new(declared)
     }
 
     /// The published collection named `name`, if the record names it.
@@ -2759,5 +2844,135 @@ mod tests {
         assert!(scope.is_published("objects"));
         assert!(!scope.is_published("secrets"));
         assert_eq!(scope.collection("objects"), Some(&live("objects")));
+    }
+
+    /// Build a real publication record through the real publish
+    /// action (#14781), over the named collection units.
+    fn published_record(collections: &[&str]) -> PublicationRecord {
+        use id_grants::{
+            ClassLevel, DiscoveryMode, Duration as GrantDuration, GrantSet, Publications,
+            PublishRequest, ShareId,
+        };
+        let mut grants = GrantSet::new();
+        let mut book = Publications::new("owner");
+        let request = PublishRequest {
+            scope: collections
+                .iter()
+                .map(|name| (Scope::Collection((*name).to_owned()), ClassLevel(0)))
+                .collect::<BTreeMap<_, _>>(),
+            subscribe: false,
+            duration: GrantDuration::Standing,
+            discovery: DiscoveryMode::Listed,
+            ceiling: ClassLevel(1),
+            owner_ceiling: ClassLevel(2),
+            title: "Published tables".to_owned(),
+            description: "Tables the owner published".to_owned(),
+            now: 1_800_000_000,
+        };
+        book.publish(&mut grants, ShareId::mint([7; 32]), request)
+            .unwrap()
+            .clone()
+    }
+
+    fn live(name: &str) -> PublishedCollection {
+        PublishedCollection {
+            name: name.to_owned(),
+            mode: PublicServingMode::Live,
+            replica_alias: None,
+        }
+    }
+
+    /// Oracle: #14784 checkpoint — the scope built from the real
+    /// publication record names exactly the record's collections,
+    /// each in its declared mode; a table created later (absent from
+    /// the record) is not published.
+    #[test]
+    fn test_publication_scope_from_record_matches_the_record() {
+        let record = published_record(&["objects", "events"]);
+        let scope = PublicationScope::from_record(
+            &record,
+            [
+                live("objects"),
+                PublishedCollection {
+                    name: "events".to_owned(),
+                    mode: PublicServingMode::MaterializedReplica,
+                    replica_alias: Some("events-replica".to_owned()),
+                },
+            ],
+        )
+        .unwrap();
+        assert!(scope.is_published("objects"));
+        assert!(scope.is_published("events"));
+        assert_eq!(
+            scope.collection("events").map(|c| c.mode),
+            Some(PublicServingMode::MaterializedReplica)
+        );
+        assert!(!scope.is_published("created-later"));
+    }
+
+    /// Oracle: #14784 checkpoint — a scope built from the real
+    /// record serves through the public read path like a hand-built
+    /// one (the record's live collection answers; the record's set
+    /// is the gate).
+    #[tokio::test]
+    async fn test_public_read_serves_scope_built_from_record() {
+        let record = published_record(&["objects"]);
+        let scope = PublicationScope::from_record(&record, [live("objects")]).unwrap();
+        let transport = ScriptTransport::default();
+        let row = format!(
+            "[{{\"type\":\"integer\",\"value\":\"7\"}},{{\"type\":\"blob\",\"value\":\"{}\"}},\
+             {{\"type\":\"text\",\"value\":\"report\"}},{{\"type\":\"integer\",\"value\":\"1\"}}]",
+            base64_encode(b"hash")
+        );
+        transport.push(Ok(TransportResponse {
+            status: 200,
+            body: ok_pipeline_body(&row),
+        }));
+        let adapter = scripted_adapter(transport);
+        let rows = adapter
+            .query_public("main", &scope, &sample_query())
+            .await
+            .unwrap();
+        assert_eq!(rows.len(), 1);
+    }
+
+    /// Oracle: #14784 checkpoint / invariant 8 — building from the
+    /// record refuses every disagreement loudly: a published
+    /// collection with no serving declaration, a declaration naming
+    /// a collection the record does not publish, an object unit in
+    /// the record's scope, and a retired record.
+    #[test]
+    fn test_publication_scope_from_record_refuses_disagreement() {
+        let record = published_record(&["objects", "events"]);
+        // A record collection with no serving declaration.
+        assert!(matches!(
+            PublicationScope::from_record(&record, [live("objects")]),
+            Err(AdapterError::Config(_))
+        ));
+        // A declaration wider than the record.
+        assert!(matches!(
+            PublicationScope::from_record(
+                &record,
+                [live("objects"), live("events"), live("secrets")]
+            ),
+            Err(AdapterError::Config(_))
+        ));
+        // An object unit in the record's scope: not servable on the
+        // collection read path, refused rather than dropped.
+        let mut object_record = published_record(&["objects"]);
+        object_record
+            .scope
+            .insert(Scope::Object("note-1".to_owned()));
+        assert!(matches!(
+            PublicationScope::from_record(&object_record, [live("objects")]),
+            Err(AdapterError::Config(_))
+        ));
+        // A retired record builds no scope.
+        let mut retired = published_record(&["objects"]);
+        retired.unpublished_at = Some(1_800_000_100);
+        assert!(matches!(
+            PublicationScope::from_record(&retired, [live("objects")]),
+            Err(AdapterError::Config(_))
+        ));
     }
 }
