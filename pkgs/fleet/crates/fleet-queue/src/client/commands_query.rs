@@ -10,6 +10,127 @@ use serde_json::{Map, Value, json};
 
 use super::*;
 
+fn extract_repeatable(rest: &[String], flag: &str) -> (Vec<String>, Vec<String>) {
+    let mut kept = Vec::new();
+    let mut values = Vec::new();
+    let mut i = 0;
+    while i < rest.len() {
+        if rest[i] == flag {
+            if i + 1 >= rest.len() || rest[i + 1].starts_with("--") {
+                die(2, &format!("argument {flag}: expected one argument"));
+            }
+            values.push(rest[i + 1].clone());
+            i += 2;
+        } else if let Some(value) = rest[i].strip_prefix(&format!("{flag}=")) {
+            values.push(value.to_string());
+            i += 1;
+        } else {
+            kept.push(rest[i].clone());
+            i += 1;
+        }
+    }
+    (kept, values)
+}
+
+fn parse_meta_pairs(values: &[String]) -> Result<Value, String> {
+    let mut object = serde_json::Map::new();
+    for raw in values {
+        let (key, value) = raw
+            .split_once('=')
+            .ok_or_else(|| format!("expected key=value, got {raw:?}"))?;
+        let parsed =
+            serde_json::from_str(value).unwrap_or_else(|_| Value::String(value.to_string()));
+        if object.insert(key.to_string(), parsed).is_some() {
+            return Err(format!("duplicate key {key:?}"));
+        }
+    }
+    let result = Value::Object(object);
+    crate::validate::validate_metadata(&result)?;
+    Ok(result)
+}
+
+pub(super) fn cmd_meta(rest: &[String]) -> i32 {
+    let verb = rest.first().map(String::as_str).unwrap_or("");
+    let rest = &rest[1..];
+    let args = parse_verb_args("meta", rest, &["json"], &[]);
+    if verb == "keys" {
+        if args.pos(0).is_some() || args.get("json").is_some() {
+            usage_error("meta", "meta keys takes no arguments");
+        }
+        reject_extra_pos("meta", &args, 1);
+        let resp = unwrap_ok(call("/meta", &json!({"op":"keys"})));
+        print_json(resp.get("row").unwrap_or(&Value::Null));
+        return 0;
+    }
+    match verb {
+        "get" => {
+            reject_extra_pos("meta", &args, 2);
+            let id = args.pos_i64(0, "task_id");
+            let mut req = json!({"op":"get","task_id":id});
+            if let Some(key) = args.pos(1) {
+                req["key"] = json!(key);
+            }
+            let resp = unwrap_ok(call("/meta", &req));
+            print_json(resp.get("row").unwrap_or(&Value::Null));
+        }
+        "set" => {
+            if let Some(raw) = args.get("json") {
+                reject_extra_pos("meta", &args, 1);
+                let patch: Value = serde_json::from_str(&raw)
+                    .unwrap_or_else(|e| die(2, &format!("meta set --json: invalid JSON: {e}")));
+                if !patch.is_object() {
+                    die(2, "meta set --json: expected a JSON object");
+                }
+                if let Err(e) = crate::validate::validate_metadata_patch(&patch) {
+                    die(2, &e);
+                }
+                let id = args.pos_i64(0, "task_id");
+                let resp = unwrap_ok(call(
+                    "/meta",
+                    &json!({"op":"set","task_id":id,"patch":patch}),
+                ));
+                print_json(resp.get("row").unwrap_or(&Value::Null));
+            } else {
+                reject_extra_pos("meta", &args, 3);
+                let id = args.pos_i64(0, "task_id");
+                let key = args
+                    .pos(1)
+                    .unwrap_or_else(|| die(2, "meta set: key required"));
+                let raw = args
+                    .pos(2)
+                    .unwrap_or_else(|| die(2, "meta set: JSON value required"));
+                let value: Value = serde_json::from_str(&raw)
+                    .unwrap_or_else(|e| die(2, &format!("meta set: invalid JSON value: {e}")));
+                let mut patch = serde_json::Map::new();
+                patch.insert(key, value);
+                let patch = Value::Object(patch);
+                if let Err(e) = crate::validate::validate_metadata_patch(&patch) {
+                    die(2, &e);
+                }
+                let resp = unwrap_ok(call(
+                    "/meta",
+                    &json!({"op":"set","task_id":id,"patch":patch}),
+                ));
+                print_json(resp.get("row").unwrap_or(&Value::Null));
+            }
+        }
+        "unset" => {
+            reject_extra_pos("meta", &args, 2);
+            let id = args.pos_i64(0, "task_id");
+            let key = args
+                .pos(1)
+                .unwrap_or_else(|| die(2, "meta unset: key required"));
+            let resp = unwrap_ok(call("/meta", &json!({"op":"unset","task_id":id,"key":key})));
+            print_json(resp.get("row").unwrap_or(&Value::Null));
+        }
+        _ => die(
+            2,
+            &format!("meta: expected get, set, unset, or keys\n{}", usage("meta")),
+        ),
+    }
+    0
+}
+
 pub(super) fn cmd_validate(rest: &[String]) -> i32 {
     let args = parse_verb_args("validate", rest, &[], &[]);
     reject_extra_pos("validate", &args, 1);
@@ -60,10 +181,15 @@ pub(super) fn resolve_enqueue_queue(
 }
 
 pub(super) fn cmd_enqueue(rest: &[String]) -> i32 {
+    let (rest, meta_args) = extract_repeatable(rest, "--meta");
+    let metadata = match parse_meta_pairs(&meta_args) {
+        Ok(value) => value,
+        Err(e) => die(2, &format!("enqueue --meta: {e}")),
+    };
     let args = parse_verb_args(
         "enqueue",
-        rest,
-        &["queue", "platform"],
+        &rest,
+        &["queue", "platform", "meta"],
         &["dry-run", "shadow-intent"],
     );
     reject_extra_pos("enqueue", &args, 1);
@@ -108,7 +234,7 @@ pub(super) fn cmd_enqueue(rest: &[String]) -> i32 {
         "/enqueue",
         &json!({
             "packet": packet, "queue": queue, "dry_run": dry_run,
-            "shadow_intent": shadow_intent, "platform": platform,
+            "shadow_intent": shadow_intent, "platform": platform, "metadata": metadata,
         }),
     );
     let resp = unwrap_ok(resp);
@@ -251,9 +377,14 @@ pub(crate) fn bare_list_note(args: &Args, resolved_queue: Option<&str>) -> Optio
 }
 
 pub(super) fn cmd_list(rest: &[String]) -> i32 {
+    let (rest, meta_args) = extract_repeatable(rest, "--meta");
+    let metadata_filter = match parse_meta_pairs(&meta_args) {
+        Ok(value) => value,
+        Err(e) => die(2, &format!("list --meta: {e}")),
+    };
     let args = parse_verb_args(
         "list",
-        rest,
+        &rest,
         &[
             "queue",
             "status",
@@ -262,6 +393,7 @@ pub(super) fn cmd_list(rest: &[String]) -> i32 {
             "lane",
             "worker",
             "task",
+            "meta",
             "label",
         ],
         &["json"],
@@ -272,6 +404,12 @@ pub(super) fn cmd_list(rest: &[String]) -> i32 {
     // is a different read, not a rendering of this listing — one
     // scoped broker read, one JSON record, no paging.
     if args.has("json") {
+        if !metadata_filter.as_object().is_some_and(|m| m.is_empty()) {
+            usage_error("list", "--json exact status does not support --meta");
+        }
+        if args.get("label").is_some() {
+            usage_error("list", "--json exact status does not support --label");
+        }
         return cmd_list_exact_status(&args, queue);
     }
     if let Some(note) = bare_list_note(&args, queue.as_deref()) {
@@ -313,6 +451,7 @@ pub(super) fn cmd_list(rest: &[String]) -> i32 {
                 "lane": args.get("lane"),
                 "worker": args.get("worker"),
                 "task": args.get_i64("task"),
+                "meta": metadata_filter.clone(),
                 "label": args.get("label"),
             }),
         );

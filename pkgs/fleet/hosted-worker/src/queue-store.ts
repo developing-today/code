@@ -33,6 +33,7 @@ export interface TaskRow {
   title: string | null;
   body: string | null;
   payload: Json;
+  metadata: Json;
   dedupe_key: string | null;
   priority: number | null;
   status: string;

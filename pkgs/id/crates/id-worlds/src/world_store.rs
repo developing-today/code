@@ -796,6 +796,33 @@ pub async fn open_world(
     runtime: crate::world_limits::RuntimeLimits,
     service: impl FnOnce(WorldHandle) -> WorldService,
 ) -> Result<(WorldService, OpenReport)> {
+    open_world_inner(dir, world_id, limits, runtime, None, service).await
+}
+
+/// Open a durable world and install its runtime account and world-membership
+/// boundary gate before the restored core is moved into the world actor.
+///
+/// The gate is runtime wiring and is deliberately not journaled. Callers
+/// without an operator boundary configuration should use [`open_world`].
+pub async fn open_world_with_directory_gate(
+    dir: &Path,
+    world_id: &str,
+    limits: WorldLimits,
+    runtime: crate::world_limits::RuntimeLimits,
+    gate: Option<std::sync::Arc<dyn id_directory::directory::BoundaryGate>>,
+    service: impl FnOnce(WorldHandle) -> WorldService,
+) -> Result<(WorldService, OpenReport)> {
+    open_world_inner(dir, world_id, limits, runtime, gate, service).await
+}
+
+async fn open_world_inner(
+    dir: &Path,
+    world_id: &str,
+    limits: WorldLimits,
+    runtime: crate::world_limits::RuntimeLimits,
+    gate: Option<std::sync::Arc<dyn id_directory::directory::BoundaryGate>>,
+    service: impl FnOnce(WorldHandle) -> WorldService,
+) -> Result<(WorldService, OpenReport)> {
     let journal_path = dir.join("journal.jsonl");
     let id = world_id.to_owned();
     let ack_mode = limits.journal_ack_mode;
@@ -812,6 +839,7 @@ pub async fn open_world(
             .await
             .context("directory open task")??;
     *restored.core.directory_mut() = directory;
+    install_world_boundary_gate(&mut restored.core, gate);
     let petnames_path = dir.join("petnames.jsonl");
     let petnames =
         tokio::task::spawn_blocking(move || crate::petname::Petnames::open(&petnames_path))
@@ -869,6 +897,17 @@ pub async fn open_world(
         service.adopt_module(wasm).await?;
     }
     Ok((service, report))
+}
+
+fn install_world_boundary_gate(
+    core: &mut WorldCore,
+    gate: Option<std::sync::Arc<dyn id_directory::directory::BoundaryGate>>,
+) {
+    if let Some(gate) = gate {
+        core.directory_mut()
+            .set_boundary_gate(std::sync::Arc::clone(&gate));
+        core.set_membership_boundary_gate(gate);
+    }
 }
 
 /// Open a read-only replica world rooted at `dir` (F12.13 phase 4).
@@ -1386,11 +1425,16 @@ async fn restore_program(
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
+    use std::sync::Arc;
+
     use tempfile::TempDir;
 
     use super::*;
     use crate::world::{Authority, CapabilityBounds, FileScope, Isolation, WorldScopes};
     use crate::world_limits::RuntimeLimits;
+    use id_core::boundary::EnforcementPoint;
+    use id_core::boundary_surfaces::FrameworkOutcome;
+    use id_directory::directory::BoundaryGate;
 
     // #8728: the journal scan reports a malformed complete line
     // without reading the rest of the journal. The oracle is a
@@ -1965,6 +2009,42 @@ mod tests {
     fn service(admin: Option<&str>) -> impl FnOnce(WorldHandle) -> WorldService {
         let admin = admin.map(str::to_owned);
         move |handle| WorldService::new(handle, admin)
+    }
+
+    struct DenyAccountAndMembershipGate;
+
+    impl BoundaryGate for DenyAccountAndMembershipGate {
+        fn check(&self, point: EnforcementPoint, _: &str) -> FrameworkOutcome {
+            match point {
+                EnforcementPoint::AccountCreation | EnforcementPoint::WorldMembership => {
+                    FrameworkOutcome::Deny {
+                        placement: Vec::new(),
+                        assurance: Vec::new(),
+                    }
+                }
+                _ => FrameworkOutcome::Allow,
+            }
+        }
+    }
+
+    #[test]
+    fn world_store_gate_installer_applies_account_and_world_membership_guards() {
+        // Oracle: id-directory's BoundaryGate contract refuses signup for a
+        // Deny outcome. The same configured gate must protect account signup
+        // and account-bound world membership before the core is spawned.
+        let mut core = WorldCore::new("lobby", WorldLimits::default()).unwrap();
+        let (credential, _) = core.directory_mut().sign_up("ann").unwrap();
+        install_world_boundary_gate(&mut core, Some(Arc::new(DenyAccountAndMembershipGate)));
+        assert!(core.directory_mut().sign_up("bo").is_err());
+        assert!(
+            core.issue_for_account(
+                &credential,
+                WorldScopes::JOIN,
+                CapabilityBounds::default(),
+                "ann",
+            )
+            .is_err()
+        );
     }
 
     #[tokio::test]

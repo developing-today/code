@@ -104,6 +104,10 @@ impl CollectionAllowlist {
     ///   become query-parameter keys, so a name containing `,`, `(`,
     ///   `)`, `"`, or whitespace would change the shape of the
     ///   `select` list the source parses;
+    /// - an empty `unique_key` — the key is the tiebreak that makes
+    ///   every ordering total; with no key there is no stable
+    ///   ordering, so keyset pagination cannot keep its contract
+    ///   (#14795);
     /// - a `unique_key` entry that is not one of the declared
     ///   columns — the key is appended to every ordering and rendered
     ///   into the `order` parameter and the keyset `or` group.
@@ -125,6 +129,13 @@ impl CollectionAllowlist {
                     column.name
                 ));
             }
+        }
+        if self.unique_key.is_empty() {
+            return Err(
+                "unique_key is empty: a collection needs a declared unique key \
+                 so its ordering is total and keyset pagination is stable"
+                    .to_string(),
+            );
         }
         for key in &self.unique_key {
             if !self.is_declared(key) {
@@ -218,6 +229,16 @@ mod tests {
         let mut collection = collection();
         collection.relation = "items/x".to_string();
         assert!(collection.validate().is_err());
+    }
+
+    #[test]
+    fn validate_refuses_empty_unique_key() {
+        // Oracle: #14795 — keyset pagination is only stable when the
+        // effective ordering is total, and the unique key is the
+        // tiebreak that makes it total.
+        let mut collection = collection();
+        collection.unique_key = vec![];
+        assert!(collection.validate().unwrap_err().contains("unique_key"));
     }
 
     #[test]

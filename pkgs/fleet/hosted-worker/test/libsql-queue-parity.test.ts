@@ -115,7 +115,7 @@ async function verb(store: QueueStore, env: QueueEnv, name: string, req: JsonObj
 // ---------------------------------------------------------------------------
 
 const NATIVE_TASK_COLS = (
-  "id, queue, manual_only, title, body, payload, dedupe_key, priority, status, " +
+  "id, queue, manual_only, title, body, payload, metadata, dedupe_key, priority, status, " +
   "not_before, worker_id, claimed_at, lease_until, lane_id, platform, attempts, max_attempts, " +
   "claim_provider, claim_model, claim_variant, claim_session_id, " +
   "progress, result, last_error, park_kind, wait_kind, ready_condition, " +
@@ -231,6 +231,7 @@ test("store: a full task row round-trips every column through the shared schema"
       title: "t",
       body: "b",
       payload: { schema: "repo-task/v1", tags: ["a", "b"], n: 3 },
+      metadata: { repository: "developing-today/code" },
       dedupe_key: "k1",
       priority: 30,
       status: "claimed",
@@ -326,6 +327,7 @@ test("store: a losing conditional update reports false and leaves the row", asyn
       title: null,
       body: null,
       payload: {},
+      metadata: {},
       dedupe_key: null,
       priority: null,
       status: "queued",

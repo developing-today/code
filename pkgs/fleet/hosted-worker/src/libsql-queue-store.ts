@@ -57,7 +57,7 @@ export const LIBSQL_QUEUE_SCHEMA: string[] = [
   `CREATE TABLE IF NOT EXISTS tasks (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     queue TEXT NOT NULL, manual_only INTEGER NOT NULL DEFAULT 0, title TEXT, body TEXT,
-    payload TEXT NOT NULL DEFAULT '{}', dedupe_key TEXT,
+    payload TEXT NOT NULL DEFAULT '{}', metadata TEXT NOT NULL DEFAULT '{}', dedupe_key TEXT,
     priority INTEGER, status TEXT NOT NULL DEFAULT 'queued',
     not_before TEXT, worker_id TEXT, claimed_at TEXT, lease_until TEXT,
     lane_id TEXT, platform TEXT, attempts INTEGER NOT NULL DEFAULT 0,
@@ -108,7 +108,7 @@ export const LIBSQL_QUEUE_SCHEMA: string[] = [
 // core.rs TASK_COLS / LEDGER_COLS order: the SELECT column order the
 // row readers below rely on.
 export const TASK_COLS =
-  "id, queue, manual_only, title, body, payload, dedupe_key, priority, status, " +
+  "id, queue, manual_only, title, body, payload, metadata, dedupe_key, priority, status, " +
   "not_before, worker_id, claimed_at, lease_until, lane_id, platform, attempts, max_attempts, " +
   "claim_provider, claim_model, claim_variant, claim_session_id, " +
   "progress, result, last_error, park_kind, wait_kind, ready_condition, " +
@@ -124,7 +124,7 @@ export const LEDGER_COLS =
   "assigned_at, executed_at, updated_at";
 export const LEDGER_INSERT_COLS = LEDGER_COLS.split(", ").filter((c) => c !== "id");
 
-const TASK_JSON_COLS = new Set(["payload", "progress", "result", "ready_condition", "blocked_deps"]);
+const TASK_JSON_COLS = new Set(["payload", "metadata", "progress", "result", "ready_condition", "blocked_deps"]);
 const TASK_INT_COLS = new Set([
   "id",
   "priority",
@@ -183,6 +183,7 @@ export function readTask(r: Record<string, unknown>): TaskRow {
     title: textOrNull(need("title"), "title"),
     body: textOrNull(need("body"), "body"),
     payload: jsonValue(need("payload"), "payload"),
+    metadata: jsonValue(need("metadata"), "metadata"),
     dedupe_key: textOrNull(need("dedupe_key"), "dedupe_key"),
     priority: intOrNull(need("priority"), "priority"),
     status: textOrNull(need("status"), "status") ?? "",
@@ -286,6 +287,9 @@ export class LibSQLQueueStore implements QueueStore {
     const cols = db.exec("SELECT name FROM pragma_table_info('tasks')").toArray();
     if (!cols.some((col) => col["name"] === "manual_only")) {
       db.exec("ALTER TABLE tasks ADD COLUMN manual_only INTEGER NOT NULL DEFAULT 0");
+    }
+    if (!cols.some((col) => col["name"] === "metadata")) {
+      db.exec("ALTER TABLE tasks ADD COLUMN metadata TEXT NOT NULL DEFAULT '{}' ");
     }
   }
 

@@ -1583,6 +1583,7 @@ function dedupePartition(rows: TaskRow[]): { live: TaskRow | null; terminal: Tas
 function emptyTaskRow(fields: Partial<TaskRow> & { queue: string }): Omit<TaskRow, "id"> {
   return {
     manual_only: false,
+    metadata: {},
     title: null,
     body: null,
     payload: {},
@@ -1653,6 +1654,7 @@ async function verbEnqueue(store: QueueStore, env: QueueEnv, req: Req): Promise<
     );
   }
   const packet = clone(packetRaw) as JsonObject;
+  const metadata: JsonObject = req["metadata"] === undefined ? {} : isObj(req["metadata"]) ? req["metadata"] : fail(2, "enqueue: metadata must be a JSON object");
   const warnings = [...warnings0];
   await enrichPayloadLabels(
     store,
@@ -1708,6 +1710,7 @@ async function verbEnqueue(store: QueueStore, env: QueueEnv, req: Req): Promise<
     emptyTaskRow({
       queue,
       manual_only: task["manual_only"] === true,
+      metadata,
       title: typeof task["title"] === "string" ? task["title"] : null,
       body: typeof task["body"] === "string" ? task["body"] : null,
       payload: (task["payload"] ?? {}) as Json,

@@ -9,6 +9,10 @@ use super::*;
 
 pub(crate) fn verb_enqueue(t: &TursoBackend, req: &Value) -> Value {
     let mut packet = req.get("packet").cloned().unwrap_or(Value::Null);
+    let metadata = req.get("metadata").cloned().unwrap_or_else(|| json!({}));
+    if let Err(e) = crate::validate::validate_metadata(&metadata) {
+        return fail(2, format!("enqueue: {e}"));
+    }
     let (errors, mut warnings) = validate_packet(&packet);
     if !errors.is_empty() {
         return json!({
@@ -156,9 +160,9 @@ pub(crate) fn verb_enqueue(t: &TursoBackend, req: &Value) -> Value {
             }
         }
         let ins = t.exec(
-            "INSERT INTO tasks (queue, manual_only, title, body, payload, dedupe_key, priority, \
+            "INSERT INTO tasks (queue, manual_only, title, body, payload, metadata, dedupe_key, priority, \
                status, not_before, max_attempts, required_budget_minutes, platform, progress, result, created_at, updated_at) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, '{}', '{}', ?, ?)",
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, '{}', '{}', ?, ?)",
             &[
                 Arg::Text(queue.clone()),
                 Arg::Int(if task.get("manual_only").and_then(Value::as_bool).unwrap_or(false) {
@@ -171,6 +175,7 @@ pub(crate) fn verb_enqueue(t: &TursoBackend, req: &Value) -> Value {
                 Arg::Text(
                     task.get("payload").cloned().unwrap_or(json!({})).to_string(),
                 ),
+                Arg::Text(metadata.to_string()),
                 arg_str(dedupe.as_deref()),
                 task.get("priority")
                     .and_then(|v| v.as_i64())

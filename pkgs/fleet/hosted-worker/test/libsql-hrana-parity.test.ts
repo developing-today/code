@@ -137,6 +137,7 @@ test("hrana store: the full QueueStore surface round-trips over the transport se
       title: "fix issue 4242",
       body: "b",
       payload: fixPacket().payload,
+      metadata: {},
       dedupe_key: "repo-health:v1:fix:developing-today/code:issue:4242",
       priority: 30,
       status: "queued",
