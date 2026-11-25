@@ -145,7 +145,11 @@ describe("AlertsStore over the registry", () => {
 
     await store.upsertSubscription(subscription({ endpoint: "https://push.example/browser" }));
     const all = await store.listSubscriptions();
-    expect(all.map((s) => s.client)).toEqual(["android-app", "browser"]);
+    // A resubscribe that does not name its client keeps the stored one.
+    expect(all.map((s) => `${s.endpoint} ${s.client}`).sort()).toEqual([
+      "https://push.example/app android-app",
+      "https://push.example/browser browser",
+    ]);
     db.close();
   });
 

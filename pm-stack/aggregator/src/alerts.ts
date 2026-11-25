@@ -618,7 +618,8 @@ export class AlertsStore {
          sub.userAgent ? sqlStr(sub.userAgent) : "null"
        }, ${at}, ${at}, 0)
        on conflict (endpoint) do update set
-         p256dh = excluded.p256dh, auth = excluded.auth, client = excluded.client,
+         p256dh = excluded.p256dh, auth = excluded.auth,
+         client = ${sub.client ? "excluded.client" : "push_endpoints.client"},
          device_id = coalesce(excluded.device_id, push_endpoints.device_id),
          label = coalesce(excluded.label, push_endpoints.label),
          user_agent = excluded.user_agent, last_seen_at = excluded.last_seen_at, gone_count = 0
