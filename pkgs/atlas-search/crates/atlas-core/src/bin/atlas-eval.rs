@@ -1,7 +1,8 @@
 //! atlas-eval — the offline ranking-evaluation runner (#5741).
 //!
-//! Usage: `atlas-eval <eval.json> <dev|test>`; `atlas-eval
-//! --help` prints the usage line and `--version` the version,
+//! Usage: `atlas-eval <eval.json> <dev|test>` or
+//! `atlas-eval --precision-at-k <k> <eval.json> <dev|test>`;
+//! `atlas-eval --help` prints the usage line and `--version` the version,
 //! both exit 0.
 //!
 //! Reads an `atlas-eval/v1` document (queries, qrels, and saved
@@ -23,13 +24,13 @@
 
 use std::process::ExitCode;
 
-use atlas_core::eval::{EvalData, Split, evaluate};
+use atlas_core::eval::{EvalData, MAX_PRECISION_K, Split, evaluate, evaluate_precision};
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().collect();
-    let (path, split) = match args.as_slice() {
+    let (path, split, precision_k) = match args.as_slice() {
         [_, flag] if flag == "--help" || flag == "-h" => {
-            println!("usage: atlas-eval <eval.json> <dev|test>");
+            print_usage();
             return ExitCode::SUCCESS;
         }
         [_, flag] if flag == "--version" || flag == "-V" => {
@@ -45,10 +46,34 @@ fn main() -> ExitCode {
                     return ExitCode::from(2);
                 }
             };
-            (path.clone(), split)
+            (path.clone(), split, None)
+        }
+        [_, mode, k, path, split] if mode == "--precision-at-k" => {
+            let k = match k.parse::<usize>() {
+                Ok(k) => k,
+                Err(_) => {
+                    eprintln!(
+                        "atlas-eval: invalid precision depth {k:?} (want an integer from 1 to 1000)"
+                    );
+                    return ExitCode::from(2);
+                }
+            };
+            if !(1..=MAX_PRECISION_K).contains(&k) {
+                eprintln!("atlas-eval: precision depth must be from 1 to {MAX_PRECISION_K}");
+                return ExitCode::from(2);
+            }
+            let split = match split.as_str() {
+                "dev" => Split::Dev,
+                "test" => Split::Test,
+                other => {
+                    eprintln!("atlas-eval: unknown split {other:?} (want dev|test)");
+                    return ExitCode::from(2);
+                }
+            };
+            (path.clone(), split, Some(k))
         }
         _ => {
-            eprintln!("usage: atlas-eval <eval.json> <dev|test>");
+            eprintln!("{}", usage());
             return ExitCode::from(2);
         }
     };
@@ -66,15 +91,29 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    match evaluate(&data, split) {
-        Ok(report) => {
-            println!(
-                "{}",
-                serde_json::to_string_pretty(&report).expect("report serializes")
-            );
-            if report.passed() {
+    let result = match precision_k {
+        Some(k) => (|| {
+            let precision = evaluate_precision(&data, split, k)?;
+            let passed = evaluate(&data, split)?.passed();
+            Ok::<_, atlas_core::error::Error>((
+                serde_json::to_string_pretty(&precision).expect("report serializes"),
+                passed,
+            ))
+        })(),
+        None => evaluate(&data, split).map(|report| {
+            (
+                serde_json::to_string_pretty(&report).expect("report serializes"),
+                report.passed(),
+            )
+        }),
+    };
+    match result {
+        Ok((report, passed)) => {
+            println!("{report}");
+            if passed {
                 return ExitCode::SUCCESS;
             }
+            let report = evaluate(&data, split).expect("standard report computed above");
             for signal in &report.signals {
                 if let Some(first) = signal.violations.first() {
                     eprintln!(
@@ -96,4 +135,12 @@ fn main() -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+fn usage() -> &'static str {
+    "usage: atlas-eval <eval.json> <dev|test>\n       atlas-eval --precision-at-k <k> <eval.json> <dev|test>"
+}
+
+fn print_usage() {
+    println!("{}", usage());
 }
