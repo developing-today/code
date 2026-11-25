@@ -308,7 +308,7 @@ fn declared_json_shapes_become_records_and_lists() {
         r#"{"n":1,"tags":[]}"#,
         r#"{"n":null,"tags":[],"note":null}"#,
         r#"{"n":1,"tags":[1],"note":null}"#,
-        r#"[1]"#,
+        "[1]",
     ] {
         assert_eq!(map(&ty, bad), Err(failed(&ty)), "{bad}");
     }
@@ -412,30 +412,30 @@ fn an_undeclared_column_in_a_row_is_refused_without_naming_it() {
 
 #[test]
 fn construction_requires_a_type_for_exactly_the_declared_columns() {
-    let (collection, mut types) = collection(&PgType::Text);
+    let (items, mut types) = collection(&PgType::Text);
     types.remove("v");
     assert!(
-        TypedDecoder::new(&collection, types.clone())
+        TypedDecoder::new(&items, types.clone())
             .unwrap_err()
             .contains("\"v\"")
     );
     types.insert("v".to_owned(), PgType::Text);
     types.insert("ghost".to_owned(), PgType::Text);
     assert!(
-        TypedDecoder::new(&collection, types)
+        TypedDecoder::new(&items, types)
             .unwrap_err()
             .contains("ghost")
     );
 
-    let (collection, mut types) = collection(&PgType::Enum { labels: vec![] });
-    assert!(TypedDecoder::new(&collection, types.clone()).is_err());
+    let (items, mut types) = collection(&PgType::Enum { labels: vec![] });
+    assert!(TypedDecoder::new(&items, types.clone()).is_err());
     types.insert(
         "v".to_owned(),
         PgType::Enum {
             labels: vec!["a".to_owned(), "a".to_owned()],
         },
     );
-    assert!(TypedDecoder::new(&collection, types).is_err());
+    assert!(TypedDecoder::new(&items, types).is_err());
 }
 
 #[test]

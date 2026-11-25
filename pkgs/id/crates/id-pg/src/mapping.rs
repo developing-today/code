@@ -633,12 +633,13 @@ const fn days_in_month(year: i64, month: i64) -> i64 {
 }
 
 /// A fixed run of ASCII digits read from the front of `text`.
-fn take_digits<'a>(text: &mut &'a str, count: usize) -> Option<i64> {
-    let head = text.get(..count)?;
+fn take_digits(text: &mut &str, count: usize) -> Option<i64> {
+    let whole: &str = *text;
+    let (head, tail) = (whole.get(..count)?, whole.get(count..)?);
     if !head.bytes().all(|b| b.is_ascii_digit()) {
         return None;
     }
-    *text = &text[count..];
+    *text = tail;
     head.parse().ok()
 }
 
@@ -665,17 +666,17 @@ fn parse_timestamptz(text: &str) -> Option<i64> {
     let minute = take_digits(&mut rest, 2)?;
     take_char(&mut rest, ':')?;
     let second = take_digits(&mut rest, 2)?;
-    let mut fraction = 0_i64;
-    if let Some(after) = rest.strip_prefix('.') {
+    let fraction = if let Some(after) = rest.strip_prefix('.') {
         let len = after.bytes().take_while(u8::is_ascii_digit).count();
         if len == 0 || len > 6 {
             return None;
         }
         rest = after;
         let digits = take_digits(&mut rest, len)?;
-        let scale = 10_i64.pow(u32::try_from(6 - len).ok()?);
-        fraction = digits * scale;
-    }
+        digits * 10_i64.pow(u32::try_from(6 - len).ok()?)
+    } else {
+        0
+    };
     let offset_seconds = if rest == "Z" {
         0
     } else {

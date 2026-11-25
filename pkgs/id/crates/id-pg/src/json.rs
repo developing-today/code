@@ -107,7 +107,7 @@ pub struct NotJson;
 /// Parse one complete JSON text. Surrounding whitespace is allowed;
 /// anything else after the value is refused.
 pub fn parse(body: &[u8]) -> Result<Json, NotJson> {
-    let text = std::str::from_utf8(body).map_err(|_| NotJson)?;
+    let text = std::str::from_utf8(body).map_err(|_invalid| NotJson)?;
     let mut reader = Reader {
         bytes: text.as_bytes(),
         pos: 0,
@@ -276,7 +276,7 @@ impl Reader<'_> {
                 return Err(NotJson);
             }
         }
-        let text = std::str::from_utf8(&self.bytes[start..self.pos]).map_err(|_| NotJson)?;
+        let text = std::str::from_utf8(&self.bytes[start..self.pos]).map_err(|_invalid| NotJson)?;
         Ok(text.to_owned())
     }
 
@@ -304,7 +304,9 @@ impl Reader<'_> {
             }
             // The input is valid UTF-8 and the run stops only at ASCII
             // bytes, so the run is a whole number of characters.
-            out.push_str(std::str::from_utf8(&self.bytes[start..self.pos]).map_err(|_| NotJson)?);
+            out.push_str(
+                std::str::from_utf8(&self.bytes[start..self.pos]).map_err(|_invalid| NotJson)?,
+            );
             match self.bump().ok_or(NotJson)? {
                 b'"' => return Ok(out),
                 b'\\' => {
@@ -350,7 +352,12 @@ impl Reader<'_> {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::literal_string_with_formatting_args
+)]
 mod tests {
     use super::*;
 
@@ -428,9 +435,9 @@ mod tests {
 
     #[test]
     fn refuses_nesting_past_the_limit() {
-        let deep = "[".repeat(MAX_DEPTH + 1) + &"]".repeat(MAX_DEPTH + 1);
+        let deep = format!("{}{}", "[".repeat(MAX_DEPTH + 1), "]".repeat(MAX_DEPTH + 1));
         bad(&deep);
-        let fine = "[".repeat(MAX_DEPTH) + &"]".repeat(MAX_DEPTH);
+        let fine = format!("{}{}", "[".repeat(MAX_DEPTH), "]".repeat(MAX_DEPTH));
         assert!(parse(fine.as_bytes()).is_ok());
     }
 
