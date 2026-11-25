@@ -330,25 +330,21 @@ pub(crate) fn seed_task_links(
         .get("created_at")
         .and_then(Value::as_str)
         .unwrap_or_else(|| "");
-    for link in task_link_refs(row) {
-        let existing = t.query_objs(
-            "SELECT id FROM queue_links WHERE task_id = ? AND link_kind = ? AND link_key = ? AND removed_at IS NULL LIMIT 1",
-            &[
-                Arg::Int(task_id),
-                Arg::Text(link.link_kind.clone()),
-                Arg::Text(link.link_key.clone()),
-            ],
-            &[],
-        )?;
-        if existing.is_empty() {
-            t.exec(
-                "INSERT INTO queue_links \
-                 (task_id, other_kind, other_repo, other_number, other_task_id, link_kind, link_key, created_by, created_at) \
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                &link_insert_args(task_id, &link, actor, created_at),
-            )?;
-        }
+    let links = task_link_refs(row);
+    if links.is_empty() {
+        return Ok(());
     }
+    let mut statements = vec![("BEGIN IMMEDIATE", Vec::new())];
+    statements.extend(links.iter().map(|link| {
+        (
+            "INSERT OR IGNORE INTO queue_links \
+             (task_id, other_kind, other_repo, other_number, other_task_id, link_kind, link_key, created_by, created_at) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            link_insert_args(task_id, link, actor, created_at),
+        )
+    }));
+    statements.push(("COMMIT", Vec::new()));
+    t.exec_batch(&statements)?;
     Ok(())
 }
 
@@ -492,7 +488,36 @@ fn dep_insert_statement(dep: &Value) -> (&'static str, Vec<Arg>) {
     )
 }
 
-/// Persist one blocked-deps cache generation as normalized indexed rows.
+const BACKFILL_DEP_INSERT_SQL: &str = "INSERT INTO task_deps \
+    (task_id, block_id, dep_kind, dep_key, ref_repo, ref_number, ref_task_id, state, created_at, cleared_at, cleared_by, detail) \
+    SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ? \
+    WHERE EXISTS (SELECT 1 FROM tasks WHERE id = ? AND status = 'blocked' \
+      AND blocked_deps = ? AND dep_blocked_until IS ?) \
+    ON CONFLICT(task_id, block_id, dep_key) DO UPDATE SET \
+      dep_kind=excluded.dep_kind, ref_repo=excluded.ref_repo, ref_number=excluded.ref_number, \
+      ref_task_id=excluded.ref_task_id, state=excluded.state, cleared_at=excluded.cleared_at, \
+      cleared_by=excluded.cleared_by, detail=excluded.detail";
+
+/// Prepare one blocked-deps cache generation for an enclosing write batch.
+pub(crate) fn prepare_task_deps(
+    task_id: i64,
+    block_id: &str,
+    deps: &[Value],
+    fallback_created_at: &str,
+    source: &str,
+) -> (Vec<Value>, Vec<(&'static str, Vec<Arg>)>) {
+    let normalized: Vec<Value> = deps
+        .iter()
+        .map(|dep| normalized_dep(dep, task_id, block_id, fallback_created_at, source))
+        .collect();
+    let statements = normalized.iter().map(dep_insert_statement).collect();
+    (
+        normalized.iter().map(dependency_cache_state).collect(),
+        statements,
+    )
+}
+
+/// Standalone normalized write for migration fixtures and simple callers.
 pub(crate) fn sync_task_deps(
     t: &TursoBackend,
     task_id: i64,
@@ -501,44 +526,14 @@ pub(crate) fn sync_task_deps(
     fallback_created_at: &str,
     source: &str,
 ) -> Result<Vec<Value>, TErr> {
-    let normalized: Vec<Value> = deps
-        .iter()
-        .map(|dep| normalized_dep(dep, task_id, block_id, fallback_created_at, source))
-        .collect();
-    let wanted: std::collections::HashSet<&str> = normalized
-        .iter()
-        .filter_map(|dep| dep.get("dep_key").and_then(Value::as_str))
-        .collect();
-    for existing in t.query_objs(
-        "SELECT dep_key FROM task_deps WHERE task_id = ? AND block_id = ? AND state = 'open'",
-        &[Arg::Int(task_id), Arg::Text(block_id.to_owned())],
-        &[],
-    )? {
-        let Some(key) = existing.get("dep_key").and_then(Value::as_str) else {
-            continue;
-        };
-        if !wanted.contains(key) {
-            t.exec(
-                "UPDATE task_deps SET state = 'cleared', cleared_at = ?, cleared_by = ?, \
-                 detail = json_set(detail, '$.clear_reason', 'removed_from_block') \
-                 WHERE task_id = ? AND block_id = ? AND dep_key = ? AND state = 'open'",
-                &[
-                    Arg::Text(fallback_created_at.to_owned()),
-                    Arg::Text(source.to_owned()),
-                    Arg::Int(task_id),
-                    Arg::Text(block_id.to_owned()),
-                    Arg::Text(key.to_owned()),
-                ],
-            )?;
-        }
-    }
-    if !normalized.is_empty() {
+    let (cache, writes) = prepare_task_deps(task_id, block_id, deps, fallback_created_at, source);
+    if !writes.is_empty() {
         let mut statements = vec![("BEGIN IMMEDIATE", Vec::new())];
-        statements.extend(normalized.iter().map(dep_insert_statement));
+        statements.extend(writes);
         statements.push(("COMMIT", Vec::new()));
         t.exec_batch(&statements)?;
     }
-    Ok(normalized.iter().map(dependency_cache_state).collect())
+    Ok(cache)
 }
 
 fn dependency_cache_state(dep: &Value) -> Value {
@@ -586,14 +581,13 @@ fn dependency_cache_state(dep: &Value) -> Value {
     raw
 }
 
-pub(crate) fn clear_task_deps(
-    t: &TursoBackend,
+pub(crate) fn clear_task_deps_statement(
     task_id: i64,
     block_id: Option<&str>,
     worker: &str,
     reason: &str,
     now: &str,
-) -> Result<(), TErr> {
+) -> (&'static str, Vec<Arg>) {
     let block_filter = if block_id.is_some() {
         " AND block_id = ?"
     } else {
@@ -608,13 +602,58 @@ pub(crate) fn clear_task_deps(
     if let Some(block_id) = block_id {
         args.push(Arg::Text(block_id.to_owned()));
     }
-    let sql = format!(
+    let sql = if block_filter.is_empty() {
+        "UPDATE task_deps SET state = 'cleared', cleared_at = ?, cleared_by = ?, \
+         detail = json_set(detail, '$.clear_reason', ?) WHERE task_id = ? AND state = 'open'"
+    } else {
         "UPDATE task_deps SET state = 'cleared', cleared_at = ?, cleared_by = ?, \
          detail = json_set(detail, '$.clear_reason', ?) WHERE task_id = ? \
-         AND state = 'open'{block_filter}"
-    );
-    t.exec(&sql, &args)?;
-    Ok(())
+         AND state = 'open' AND block_id = ?"
+    };
+    (sql, args)
+}
+
+pub(crate) fn clear_missing_task_deps_statement(
+    task_id: i64,
+    block_id: &str,
+    deps: &[Value],
+    worker: &str,
+    reason: &str,
+    now: &str,
+) -> (String, Vec<Arg>) {
+    let keys: std::collections::HashSet<String> = deps
+        .iter()
+        .map(|dep| {
+            dep.get("dep_key")
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+                .unwrap_or_else(|| dep_key(dep))
+        })
+        .collect();
+    let placeholders = std::iter::repeat_n("?", keys.len())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let keep = if keys.is_empty() {
+        String::new()
+    } else {
+        format!(" AND dep_key NOT IN ({placeholders})")
+    };
+    let mut args = vec![
+        Arg::Text(now.to_owned()),
+        Arg::Text(worker.to_owned()),
+        Arg::Text(reason.to_owned()),
+        Arg::Int(task_id),
+        Arg::Text(block_id.to_owned()),
+    ];
+    args.extend(keys.into_iter().map(Arg::Text));
+    (
+        format!(
+            "UPDATE task_deps SET state = 'cleared', cleared_at = ?, cleared_by = ?, \
+             detail = json_set(detail, '$.clear_reason', ?) WHERE task_id = ? \
+             AND block_id = ? AND state = 'open'{keep}"
+        ),
+        args,
+    )
 }
 
 /// One-time idempotent Q6 backfill. New writes maintain the normalized
@@ -636,7 +675,7 @@ pub(crate) fn ensure_q6_backfill(t: &TursoBackend) -> Result<(), TErr> {
     let mut dep_candidates = 0i64;
     loop {
         let rows = t.query_objs(
-            "SELECT id, payload, result, dedupe_key, blocked_deps, created_at, updated_at, \
+            "SELECT id, payload, result, dedupe_key, status, blocked_deps, created_at, updated_at, \
              dep_blocked_until FROM tasks WHERE id > ? ORDER BY id LIMIT 200",
             &[Arg::Int(after_id)],
             &[],
@@ -659,6 +698,9 @@ pub(crate) fn ensure_q6_backfill(t: &TursoBackend) -> Result<(), TErr> {
                 link_candidates += 1;
             }
             let raw_blocked = row.get("blocked_deps").cloned().unwrap_or(Value::Null);
+            if row.get("status").and_then(Value::as_str) != Some("blocked") {
+                continue;
+            }
             let parsed_blocked = parse_json(Some(&raw_blocked));
             let deps = match parsed_blocked {
                 Value::Array(deps) => deps,
@@ -686,7 +728,16 @@ pub(crate) fn ensure_q6_backfill(t: &TursoBackend) -> Result<(), TErr> {
                 .unwrap_or(created_at);
             for raw in &deps {
                 let dep = normalized_dep(raw, task_id, block_id, created_at, "backfill");
-                statements.push(dep_insert_statement(&dep));
+                let (_, mut args) = dep_insert_statement(&dep);
+                args.extend([
+                    Arg::Int(task_id),
+                    Arg::Text(raw_blocked.as_str().unwrap_or_default().to_owned()),
+                    row.get("dep_blocked_until")
+                        .and_then(Value::as_str)
+                        .map(|s| Arg::Text(s.to_owned()))
+                        .unwrap_or(Arg::Null),
+                ]);
+                statements.push((BACKFILL_DEP_INSERT_SQL, args));
                 dep_candidates += 1;
             }
         }

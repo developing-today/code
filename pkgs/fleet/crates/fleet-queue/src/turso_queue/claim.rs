@@ -103,6 +103,9 @@ pub(crate) fn verb_enqueue(t: &TursoBackend, req: &Value) -> Value {
             )?;
             let (live, terminal) = dedupe_partition(&existing);
             if let Some(row) = live {
+                if let Some(id) = row.get("id").and_then(Value::as_i64) {
+                    seed_task_links(t, id, &row, "enqueue_repo_task")?;
+                }
                 return Ok((row, None, None));
             }
             // #13091: a COMPLETED predecessor is terminal for the
@@ -119,6 +122,9 @@ pub(crate) fn verb_enqueue(t: &TursoBackend, req: &Value) -> Value {
                     .as_ref()
                     .filter(|r| r.get("status").and_then(|v| v.as_str()) == Some("done"))
                 {
+                    if let Some(id) = row.get("id").and_then(Value::as_i64) {
+                        seed_task_links(t, id, row, "enqueue_repo_task")?;
+                    }
                     return Ok((row.clone(), None, None));
                 }
             }

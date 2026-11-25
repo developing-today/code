@@ -3830,7 +3830,7 @@ mod task_notes_tests {
         });
         let enqueued = verb_enqueue(
             &t,
-            &json!({"queue": "repo-health-code-pilot", "packet": packet}),
+            &json!({"queue": "repo-health-code-pilot", "packet": packet.clone()}),
         );
         assert_eq!(enqueued["ok"], true, "{enqueued}");
         let task_id = enqueued["row"]["id"].as_i64().expect("task id");
@@ -3849,6 +3849,30 @@ mod task_notes_tests {
         assert_eq!(links[1]["other_kind"], "pr");
         assert_eq!(links[1]["other_number"], 14441);
         assert_eq!(links[1]["link_kind"], "pr_for");
+        t.exec(
+            "DELETE FROM queue_links WHERE task_id = ?",
+            &[Arg::Int(task_id)],
+        )
+        .expect("simulate a transiently failed link seed");
+        let retry = verb_enqueue(
+            &t,
+            &json!({"queue": "repo-health-code-pilot", "packet": packet}),
+        );
+        assert_eq!(retry["ok"], true, "{retry}");
+        assert_eq!(retry["row"]["id"], task_id);
+        let repaired = t
+            .query_objs(
+                "SELECT id FROM queue_links WHERE task_id = ? AND removed_at IS NULL",
+                &[Arg::Int(task_id)],
+                &[],
+            )
+            .expect("enqueue dedupe retry repairs missing packet links");
+        assert_eq!(repaired.len(), 2);
+        t.exec(
+            "DELETE FROM queue_schema_migrations WHERE name = 'q6-links-deps-v1'",
+            &[],
+        )
+        .expect("reset the migration marker to exercise the backfill path");
         super::links::ensure_q6_backfill(&t).expect("backfill re-run is safe");
         let still_two = t
             .query_objs(
@@ -3975,6 +3999,23 @@ mod task_notes_tests {
                 .collect::<Vec<_>>(),
             ["linked", "unlinked"]
         );
+        let history = t
+            .query_objs(
+                "SELECT kind, from_status, to_status, \
+                 json_extract(detail, '$.link_kind') AS link_kind, \
+                 json_extract(detail, '$.other_number') AS other_number \
+                 FROM task_history WHERE task_id = ? AND kind IN ('linked','unlinked') ORDER BY id",
+                &[Arg::Int(task_id)],
+                &[],
+            )
+            .expect("parent change is visible in child history");
+        assert_eq!(history.len(), 2);
+        for row in &history {
+            assert_eq!(row["link_kind"], "parent");
+            assert_eq!(row["other_number"], 14170);
+            assert!(row["from_status"].is_null());
+            assert!(row["to_status"].is_null());
+        }
         let task = get_task(&t, task_id).unwrap().unwrap();
         assert_eq!(task["status"], "queued");
     }
