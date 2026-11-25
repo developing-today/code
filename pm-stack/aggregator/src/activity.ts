@@ -640,11 +640,12 @@ export class IngestionStore {
     let dirty = false;
     // A replay batch may contain thousands of deliveries; build each persisted
     // seen list's lookup index once instead of rescanning it for every delivery.
+    // A singleton stays on the scan path to avoid constructing an unused index.
     const seenBySource = new Map<string, Map<string, number>>();
     for (const d of deliveries) {
       const seen = (this.data.seen[d.source] ??= []);
       let seenCounts = seenBySource.get(d.source);
-      if (!seenCounts) {
+      if (!seenCounts && deliveries.length > 1) {
         seenCounts = new Map();
         // Loaded lists may contain repeated ids; counts preserve membership
         // until the last copy is evicted, just like the persisted array.
@@ -659,7 +660,7 @@ export class IngestionStore {
         duplicates: 0,
         updatedAt: new Date().toISOString(),
       });
-      if (seenCounts.has(d.sourceId)) {
+      if (seenCounts ? seenCounts.has(d.sourceId) : seen.includes(d.sourceId)) {
         duplicates++;
         cp.duplicates++;
         cp.updatedAt = new Date().toISOString();
@@ -693,13 +694,15 @@ export class IngestionStore {
         continue;
       }
       seen.push(d.sourceId);
-      seenCounts.set(d.sourceId, 1);
+      seenCounts?.set(d.sourceId, 1);
       if (seen.length > SEEN_RETENTION_MAX) {
         const evicted = seen.splice(0, seen.length - SEEN_RETENTION_MAX);
-        for (const sourceId of evicted) {
-          const remaining = seenCounts.get(sourceId)! - 1;
-          if (remaining) seenCounts.set(sourceId, remaining);
-          else seenCounts.delete(sourceId);
+        if (seenCounts) {
+          for (const sourceId of evicted) {
+            const remaining = seenCounts.get(sourceId)! - 1;
+            if (remaining) seenCounts.set(sourceId, remaining);
+            else seenCounts.delete(sourceId);
+          }
         }
       }
       cp.deliveries++;
