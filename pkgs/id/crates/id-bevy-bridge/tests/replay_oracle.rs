@@ -22,10 +22,10 @@ use std::sync::Arc;
 use bevy_ecs::prelude::*;
 use id_bevy_bridge::projection::ProjectionError;
 use id_bevy_bridge::{
-    BridgeSchema, CanonicalEntity, CanonicalPosition, CanonicalState, ComponentRule, DataClass,
-    Divergence, HostedWorldFixture, IdEntityMap, IntentGate, IntentLedger, IntentOutbox,
-    IntentOutcome, JournalDelta, JournalHalt, JournalLag, JournalTail, LagBudget, LocalOnly,
-    PositionBatch, PredicateRule, PredictedPosition, Proposal, WorldName, WorldPosition,
+    AppendGate, BridgeSchema, CanonicalEntity, CanonicalPosition, CanonicalState, ComponentRule,
+    DataClass, Divergence, HostedWorldFixture, IdEntityMap, IntentGate, IntentLedger, IntentOutbox,
+    IntentOutcome, JournalDelta, JournalHalt, JournalLag, JournalSource, JournalTail, LagBudget,
+    LocalOnly, PositionBatch, PredicateRule, PredictedPosition, Proposal, WorldName, WorldPosition,
     applied_position, apply_position, canonical_state, check_replay, configure_bridge_schedule,
     replay,
 };
@@ -181,13 +181,13 @@ struct LiveRun {
 /// canonical state.
 fn run_live(label: &str, budget: usize, steps: &[Step]) -> LiveRun {
     let host = Arc::new(HostedWorldFixture::new());
+    let shared_source = Arc::clone(&host);
+    let source: Arc<dyn JournalSource> = shared_source;
+    let shared_gate = Arc::clone(&host);
+    let gate: Arc<dyn AppendGate> = shared_gate;
     let mut world = World::new();
-    world.insert_resource(JournalTail::new(
-        Arc::clone(&host),
-        schema(),
-        LagBudget::new(budget),
-    ));
-    world.insert_resource(IntentGate(Arc::clone(&host)));
+    world.insert_resource(JournalTail::new(source, schema(), LagBudget::new(budget)));
+    world.insert_resource(IntentGate(gate));
     world.insert_resource(IntentOutbox::default());
     let mut schedule = Schedule::default();
     configure_bridge_schedule(&mut schedule);

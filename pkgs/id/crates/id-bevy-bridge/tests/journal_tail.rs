@@ -9,11 +9,11 @@ use std::sync::Arc;
 use bevy_ecs::prelude::*;
 use id_bevy_bridge::projection::ProjectionError;
 use id_bevy_bridge::{
-    AppliedPosition, BridgeSchema, ComponentRule, DataClass, GameplaySet, HostedWorldFixture,
-    IdEntityMap, Intent, IntentGate, IntentLedger, IntentOutbox, IntentOutcome, JournalDelta,
-    JournalHalt, JournalLag, JournalTail, LagBudget, PositionBatch, PredicateRule,
-    PredictedPosition, Proposal, WorldName, WorldPosition, applied_position, apply_position,
-    configure_bridge_schedule, presented_position,
+    AppendGate, AppliedPosition, BridgeSchema, ComponentRule, DataClass, GameplaySet,
+    HostedWorldFixture, IdEntityMap, Intent, IntentGate, IntentLedger, IntentOutbox, IntentOutcome,
+    JournalDelta, JournalHalt, JournalLag, JournalSource, JournalTail, LagBudget, PositionBatch,
+    PredicateRule, PredictedPosition, Proposal, WorldName, WorldPosition, applied_position,
+    apply_position, configure_bridge_schedule, presented_position,
 };
 
 fn schema() -> BridgeSchema {
@@ -48,13 +48,13 @@ fn upsert(id: &str, values: Vec<(&str, serde_json::Value)>) -> JournalDelta {
 
 /// A world wired to `host` with the bridge's schedule and `budget`.
 fn bridge(host: &Arc<HostedWorldFixture>, budget: usize) -> (World, Schedule) {
+    let shared_source = Arc::clone(host);
+    let source: Arc<dyn JournalSource> = shared_source;
+    let shared_gate = Arc::clone(host);
+    let gate: Arc<dyn AppendGate> = shared_gate;
     let mut world = World::new();
-    world.insert_resource(JournalTail::new(
-        Arc::clone(host),
-        schema(),
-        LagBudget::new(budget),
-    ));
-    world.insert_resource(IntentGate(Arc::clone(host)));
+    world.insert_resource(JournalTail::new(source, schema(), LagBudget::new(budget)));
+    world.insert_resource(IntentGate(gate));
     world.insert_resource(IntentOutbox::default());
     let mut schedule = Schedule::default();
     configure_bridge_schedule(&mut schedule);

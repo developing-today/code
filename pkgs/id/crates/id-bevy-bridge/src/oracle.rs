@@ -172,6 +172,10 @@ pub enum Divergence {
 /// Compare two canonical states; the first difference found is returned,
 /// checking the applied position, then entities in ID order, then
 /// unmapped world state.
+// A divergence is the oracle's failure report: it is built once, on the
+// failing path, and carries the two entity states so the report shows
+// both. Boxing it would only move that cost and complicate every match.
+#[allow(clippy::result_large_err)]
 pub fn compare(live: &CanonicalState, replay: &CanonicalState) -> Result<(), Divergence> {
     if live.applied != replay.applied {
         return Err(Divergence::Applied {
@@ -201,6 +205,7 @@ pub fn compare(live: &CanonicalState, replay: &CanonicalState) -> Result<(), Div
 
 /// The replay oracle: replay `journal` up to `live`'s applied position
 /// from an empty world and require the same canonical state.
+#[allow(clippy::result_large_err)] // See `compare`.
 pub fn check_replay(
     live: &mut World,
     schema: &BridgeSchema,
