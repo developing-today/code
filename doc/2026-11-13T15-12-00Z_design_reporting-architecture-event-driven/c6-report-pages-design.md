@@ -138,11 +138,47 @@ of staleness.
 
 The canonical PM-stack report-record store is the source of truth and storage
 adapter for these versions (`report-records.ts` and `report-records-c7.md`);
-do not introduce a parallel page/report store. It must support immutable
-versions, bounded reads, append semantics, and conditional current-version
-promotion. A refresh never overwrites human-authored prose: generated facts
+do not introduce a parallel page/report database. Period pages use the
+existing C7 record identity and append/snapshot/correction operations. Quota,
+status, incident, and index records are not falsely encoded as C7 periods:
+their implementation extends the same canonical append-only store/backend
+with a typed page-record operation and a stable record ID derived from
+`(page_id, template_version, source_cursor)`. The extension must retain the
+existing idempotency/conflict guarantees and use its atomic insert-if-absent
+boundary; it must not assume the local JSONL backend provides cross-process
+locking. Promotion of a current-page pointer is conditional on its expected
+prior version using the durable backend's concurrency primitive. A refresh
+never overwrites human-authored prose: generated facts
 occupy typed sections, and editorial changes are separate attributed
 versions/events. This composes with C7's append/version/conflict rules.
+
+### 1.4 Reuse existing freshness and decision machinery
+
+C6 adds the page-class freshness view and budgets, not a second event journal,
+quota gatherer, or decision system:
+
+- `FreshnessStore` (`freshness.ts`) remains the append-only source-event
+  journal, with its cursor, deduplication, and bounded retention. Its notices
+  invalidate affected page projections and provide source cursors; they are
+  not themselves proof that every report source had a successful observation.
+  The freshness delivery surface (`freshness-delivery.ts`) remains the live /
+  stale / silent source-health feed and its five-minute / 24-hour windows.
+  C6 derives page freshness from each page's successful source-observation
+  timestamps and its class budget, and uses the existing exception path for
+  breach/recovery visibility.
+- Quota pages consume the existing quota snapshot measurements and
+  `quota-refresh.ts` lazy refresh trigger (five-minute measurement age by
+  default); they do not fetch providers from the page handler or replace the
+  gatherer. The page-class budget can be configured separately, but its
+  freshness display must also surface the underlying measurement state and
+  refresh-in-flight outcome.
+- Questions embed the existing decision-set/question/resolution contract
+  (`decisions.ts`) and route effectful answers through its audited task/action
+  path. C6 supplies page/version context and confirmation; it does not mint a
+  competing question ledger.
+- Incident detail reads the existing alerts ledger's incident and event
+  records. Its event detail includes the C3 `healthHook` extension where
+  present; the audit projection alone is insufficient evidence.
 
 ## 2. Mobile-first rendering
 
