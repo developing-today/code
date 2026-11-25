@@ -12,7 +12,7 @@
 import { describe, expect, test } from "bun:test";
 import { readConfig } from "../src/config.ts";
 import { actions } from "../src/actions.ts";
-import { Ops, type RunResult } from "../src/ops.ts";
+import { Ops, latestApply, type RunResult } from "../src/ops.ts";
 import { Work } from "../src/work.ts";
 import {
   askAgainAt,
@@ -2094,5 +2094,76 @@ describe("the console's direct-mode setting", () => {
 
     const invalid = await ops.edgeDirect(false, true).catch((error) => error);
     expect(invalid.status).toBe(400);
+  });
+});
+
+describe("the console's Cloudflare apply provenance (#13495)", () => {
+  const sha = (c: string) => c.repeat(40).slice(0, 40);
+  const run = (over: Record<string, unknown>) => ({
+    name: "pm-console-cloudflare config",
+    event: "workflow_dispatch",
+    status: "completed",
+    conclusion: "success",
+    head_branch: "main",
+    head_sha: sha("a"),
+    updated_at: "2026-11-25T03:00:00Z",
+    html_url: "https://github.com/developing-today/code/actions/runs/1",
+    triggering_actor: { login: "dezren39" },
+    ...over,
+  });
+  // Newest first, as GitHub lists them: a still-running dispatch and a
+  // failed one sit above the latest success, and a successful push run
+  // (validation only — pushes never apply) above an older success.
+  const runs = [
+    run({ status: "in_progress", conclusion: null, updated_at: "2026-11-25T06:00:00Z", head_sha: sha("e") }),
+    run({ conclusion: "failure", updated_at: "2026-11-25T05:00:00Z", head_sha: sha("d") }),
+    run({ updated_at: "2026-11-25T04:00:00Z", head_sha: sha("c"), html_url: "https://github.com/developing-today/code/actions/runs/3" }),
+    run({ event: "push", updated_at: "2026-11-25T04:30:00Z", head_sha: sha("b") }),
+    run({ updated_at: "2026-11-25T02:00:00Z", head_sha: sha("a") }),
+  ];
+
+  test("only the latest successful apply is shown, with its source, SHA, completion time and URL", async () => {
+    const calls: string[][] = [];
+    const cfg = readConfig({ HOME: "/h" });
+    const ops = new Ops(cfg, async (argv) => {
+      calls.push(argv);
+      return { code: 0, stdout: JSON.stringify({ workflow_runs: runs }), stderr: "" } satisfies RunResult;
+    });
+    expect(await ops.cloudflareApply()).toEqual({
+      apply: {
+        source: "pm-console-cloudflare config, dispatched by dezren39",
+        commit: sha("c"),
+        at: "2026-11-25T04:00:00Z",
+        url: "https://github.com/developing-today/code/actions/runs/3",
+      },
+    });
+    // A read only: one runs query, no dispatch, no write, no secret read.
+    expect(calls).toHaveLength(1);
+    expect(calls[0].join(" ")).toContain("actions/workflows/pm-cloudflare-config.yml/runs?");
+    expect(calls[0].join(" ")).toContain("event=workflow_dispatch");
+    expect(calls.flat()).not.toContain("-X");
+    expect(calls.flat().join(" ")).not.toContain("dispatches");
+    expect(calls.flat().join(" ")).not.toContain("secrets");
+  });
+
+  test("no successful apply on record reads back as provenance unavailable", async () => {
+    const cfg = readConfig({ HOME: "/h" });
+    const ops = new Ops(cfg, async () => ({
+      code: 0,
+      stdout: JSON.stringify({
+        workflow_runs: [
+          run({ conclusion: "failure" }),
+          run({ status: "in_progress", conclusion: null }),
+          run({ event: "push" }),
+          run({ head_branch: "xaltha/some-branch" }),
+        ],
+      }),
+      stderr: "",
+    }));
+    expect(await ops.cloudflareApply()).toEqual({ apply: null });
+    expect(latestApply(null)).toBeNull();
+    expect(latestApply({ workflow_runs: "nope" })).toBeNull();
+    // A malformed success is passed over, not trusted.
+    expect(latestApply({ workflow_runs: [run({ head_sha: "not-a-sha" }), run({ updated_at: "whenever" })] })).toBeNull();
   });
 });

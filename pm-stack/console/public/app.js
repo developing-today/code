@@ -2658,6 +2658,16 @@ export function awayState(health) {
   };
 }
 
+/** What the Cloudflare screen says of where the repository-described
+ * configuration was last applied from (#13495): the latest successful
+ * apply's source, commit and completion time, or that provenance is
+ * unavailable when no successful apply is on record. The run's page is
+ * linked from the screen itself, beside this line. */
+export function applySaid(apply, now = Date.now()) {
+  if (!apply) return "Apply provenance is unavailable: no successful apply is on record.";
+  return `Last applied from ${apply.source}, at commit ${String(apply.commit).slice(0, 12)}, ${ago(apply.at, now)}.`;
+}
+
 /** Cloudflare: whether it does the core itself, what that covers, how
  * its own reads are going, and the switch. The switch can be turned off
  * because it is what puts two of the owner's tokens in the Worker. */
@@ -2677,6 +2687,15 @@ async function viewAway() {
         h("p", { class: "meta" }, "It is not being served from Cloudflare right now, so this is the laptop doing everything."),
       ),
     ];
+  }
+  // The last successful apply's provenance, read from the workflow's
+  // runs: a read that dispatches nothing. Unreadable says so by itself
+  // and leaves the rest of the screen as it was.
+  let provenance = null;
+  try {
+    provenance = await api("cloudflare-apply");
+  } catch {
+    provenance = null;
   }
   const flip = async (e) => {
     const done = await act(
@@ -2713,6 +2732,14 @@ async function viewAway() {
       ),
       checked,
       s.on && s.checkedAt ? h("p", { class: "meta" }, `Tried ${ago(new Date(s.checkedAt).toISOString())}.`) : null,
+      provenance
+        ? h(
+            "p",
+            { class: "meta" },
+            applySaid(provenance.apply),
+            provenance.apply ? [" ", ext(provenance.apply.url, "See the run")] : null,
+          )
+        : h("p", { class: "meta" }, "Apply provenance could not be read."),
       s.refused.length > 0
         ? h(
             "p",
