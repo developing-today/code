@@ -554,9 +554,18 @@ pub(super) fn cmd_show(rest: &[String]) -> i32 {
     let events = collapse_timeline(events);
     let start = events.len().saturating_sub(limit);
     let history = &events[start..];
+    // #14170 Q4: the latest notes inline, bounded, with the count of
+    // live notes so a reader knows how many the bound left out.
+    let notes = fetch_notes(task_id, Some(SHOW_NOTES_LATEST));
     if args.has("json") {
+        let (shown, count) = match &notes {
+            Some((n, c)) => (n.iter().map(note_json).collect::<Vec<_>>(), json!(c)),
+            None => (Vec::new(), Value::Null),
+        };
         print_json(&json!({
             "task": task,
+            "notes": shown,
+            "note_count": count,
             "history": history.iter().map(|ev| json!({
                 "id": ev.id, "kind": ev.kind, "created_at": ev.created_at,
                 "session_id": ev.session_id, "provider": ev.provider,
@@ -623,8 +632,19 @@ pub(super) fn cmd_show(rest: &[String]) -> i32 {
     for event in history {
         println!("{}", format_timeline_event(event));
     }
+    if let Some((shown, count)) = &notes {
+        if *count > 0 || !shown.is_empty() {
+            println!("notes ({} most recent of {count}):", shown.len());
+            for n in shown {
+                println!("{}", format_timeline_note(n));
+            }
+        }
+    }
     0
 }
+
+/// How many of a task's newest notes `show` prints inline.
+pub(super) const SHOW_NOTES_LATEST: i64 = 5;
 
 /// The /claim-flow request invariants (#5757-A), checked before
 /// any step runs, on both broker backends (the broker is the
@@ -1127,10 +1147,14 @@ pub(super) fn cmd_timeline(verb: &str, rest: &[String]) -> i32 {
     }
     events.sort_by_key(|e| e.id);
     let events = collapse_timeline(events);
+    // #14170 Q4: the task's notes interleave with its events into
+    // one chronological story. Fail-soft: a broker without
+    // /note-list renders the events alone.
+    let (notes, _) = fetch_notes(task_id, None).unwrap_or_default();
     let json_out = args.has("json");
-    if events.is_empty() {
+    if events.is_empty() && notes.is_empty() {
         if json_out {
-            print_json(&json!({"task_id": task_id, "events": [], "served": []}));
+            print_json(&json!({"task_id": task_id, "events": [], "notes": [], "story": [], "served": []}));
             return 0;
         }
         println!("task {task_id}: no timeline records");
@@ -1182,12 +1206,23 @@ pub(super) fn cmd_timeline(verb: &str, rest: &[String]) -> i32 {
                     })
                 })
                 .collect::<Vec<_>>(),
+            "notes": notes.iter().map(note_json).collect::<Vec<_>>(),
+            "story": interleave_notes(&events, &notes)
+                .iter()
+                .map(|entry| match entry {
+                    TimelineEntry::Event(ev) => json!({"type": "event", "id": ev.id, "created_at": ev.created_at}),
+                    TimelineEntry::Note(n) => json!({"type": "note", "id": n.id, "created_at": n.created_at}),
+                })
+                .collect::<Vec<_>>(),
             "served": served,
         }));
         return 0;
     }
-    for ev in &events {
-        println!("{}", format_timeline_event(ev));
+    for entry in interleave_notes(&events, &notes) {
+        match entry {
+            TimelineEntry::Event(ev) => println!("{}", format_timeline_event(ev)),
+            TimelineEntry::Note(n) => println!("{}", format_timeline_note(n)),
+        }
     }
     // The join: exact resolved models per binding window, from
     // the session's raw route_attempt rows (laptop-local,
@@ -1745,4 +1780,257 @@ pub(crate) fn exact_task_status(
             (record, 3)
         }
     }
+}
+
+/// #14170 Q4: one task note as the timeline and `note list` render
+/// it. Marks print as recorded: an absent mark is None.
+pub(super) struct TimelineNote {
+    pub(super) id: i64,
+    pub(super) author: String,
+    pub(super) author_kind: String,
+    pub(super) session_id: Option<String>,
+    pub(super) provider: Option<String>,
+    pub(super) model: Option<String>,
+    pub(super) variant: Option<String>,
+    pub(super) body: String,
+    pub(super) created_at: String,
+    pub(super) created_us: i64,
+    pub(super) edited_at: Option<String>,
+    pub(super) deleted_at: Option<String>,
+}
+
+pub(super) fn timeline_note(row: &Value) -> Option<TimelineNote> {
+    let s = |key: &str| {
+        row.get(key)
+            .and_then(Value::as_str)
+            .filter(|v| !v.is_empty())
+            .map(str::to_string)
+    };
+    Some(TimelineNote {
+        id: row.get("id").and_then(Value::as_i64)?,
+        author: s("author").unwrap_or_default(),
+        author_kind: s("author_kind").unwrap_or_else(|| "agent".to_string()),
+        session_id: s("session_id"),
+        provider: s("model_provider"),
+        model: s("model_id"),
+        variant: s("model_variant"),
+        body: s("body").unwrap_or_default(),
+        created_at: s("created_at")?,
+        created_us: row.get("created_at").and_then(parse_ts).unwrap_or(0),
+        edited_at: s("edited_at"),
+        deleted_at: s("deleted_at"),
+    })
+}
+
+pub(super) fn note_json(n: &TimelineNote) -> Value {
+    json!({
+        "id": n.id, "author": n.author, "author_kind": n.author_kind,
+        "session_id": n.session_id, "provider": n.provider, "model": n.model,
+        "variant": n.variant, "body": n.body, "created_at": n.created_at,
+        "edited_at": n.edited_at, "deleted_at": n.deleted_at,
+    })
+}
+
+/// A note's line in the same shape as an event line: timestamp,
+/// `note #id`, author and marks, then the body indented beneath.
+pub(super) fn format_timeline_note(n: &TimelineNote) -> String {
+    let mut line = format!("{}  note #{}  by {}", n.created_at, n.id, n.author);
+    if n.author_kind != "agent" {
+        line += &format!(" ({})", n.author_kind);
+    }
+    if let Some(sid) = &n.session_id {
+        line += &format!("  session={sid}");
+    }
+    if let Some(provider) = &n.provider {
+        line += &format!("  {provider}/{}", n.model.as_deref().unwrap_or("?"));
+        if let Some(variant) = &n.variant {
+            line += &format!("#{variant}");
+        }
+    }
+    if let Some(at) = &n.edited_at {
+        line += &format!("  (edited {at})");
+    }
+    if let Some(at) = &n.deleted_at {
+        line += &format!("  (removed {at})");
+    }
+    for body_line in n.body.lines() {
+        line += &format!("\n    {body_line}");
+    }
+    line
+}
+
+/// One entry of a task's story: a history event or a note.
+pub(super) enum TimelineEntry<'a> {
+    Event(&'a TimelineEvent),
+    Note(&'a TimelineNote),
+}
+
+/// #14170 Q4: interleave notes into the (already ordered and
+/// collapsed) events by timestamp, so a reader sees one
+/// chronological story. Each input keeps its own order; on a
+/// timestamp tie the event comes first (the store stamps whole
+/// seconds, and a note about a transition is written after it).
+pub(super) fn interleave_notes<'a>(
+    events: &'a [TimelineEvent],
+    notes: &'a [TimelineNote],
+) -> Vec<TimelineEntry<'a>> {
+    let mut out = Vec::with_capacity(events.len() + notes.len());
+    let (mut i, mut j) = (0, 0);
+    while i < events.len() || j < notes.len() {
+        let take_event = match (events.get(i), notes.get(j)) {
+            (Some(e), Some(n)) => e.created_us <= n.created_us,
+            (Some(_), None) => true,
+            _ => false,
+        };
+        if take_event {
+            out.push(TimelineEntry::Event(&events[i]));
+            i += 1;
+        } else {
+            out.push(TimelineEntry::Note(&notes[j]));
+            j += 1;
+        }
+    }
+    out
+}
+
+/// A task's notes, oldest first, and its live note count. Fail-soft:
+/// a broker that does not serve /note-list yet yields None, and the
+/// caller renders the events alone.
+pub(super) fn fetch_notes(task_id: i64, latest: Option<i64>) -> Option<(Vec<TimelineNote>, i64)> {
+    let mut req = json!({"task_id": task_id});
+    if let Some(n) = latest {
+        req["latest"] = json!(n);
+    }
+    let resp = call("/note-list", &req);
+    if resp.get("ok").and_then(Value::as_bool) != Some(true) {
+        return None;
+    }
+    let row = resp.get("row")?;
+    let notes = row
+        .get("rows")
+        .and_then(Value::as_array)
+        .map(|rows| rows.iter().filter_map(timeline_note).collect())
+        .unwrap_or_default();
+    let count = row.get("count").and_then(Value::as_i64).unwrap_or(0);
+    Some((notes, count))
+}
+
+/// `repo-queue note <add|list|edit|remove>` (#14170 Q4): the task
+/// notes stream.
+pub(super) fn cmd_note(rest: &[String]) -> i32 {
+    if rest.is_empty() || is_help_arg(&rest[0]) {
+        println!("{}", usage("note"));
+        return if rest.is_empty() { 2 } else { 0 };
+    }
+    let tail = &rest[1..];
+    match rest[0].as_str() {
+        "add" => cmd_note_add(tail),
+        "list" => cmd_note_list(tail),
+        "edit" => cmd_note_edit(tail),
+        "remove" => cmd_note_remove(tail),
+        sub => {
+            eprint(&format!(
+                "repo-queue: unknown note command {sub:?}\n{}",
+                usage("note")
+            ));
+            2
+        }
+    }
+}
+
+fn cmd_note_add(rest: &[String]) -> i32 {
+    let args = parse_verb_args(
+        "note add",
+        rest,
+        &[
+            "worker",
+            "text",
+            "kind",
+            "session-id",
+            "model-provider",
+            "model-id",
+            "model-variant",
+        ],
+        &[],
+    );
+    reject_extra_pos("note add", &args, 1);
+    let text = args
+        .get("text")
+        .unwrap_or_else(|| die(2, "note add: --text is required"));
+    let body = json!({
+        "task_id": args.pos_i64(0, "task_id"),
+        "worker": opt_worker(&args),
+        "body": text,
+        "author_kind": args.get("kind"),
+        "session_id": args.get("session-id"),
+        "model_provider": args.get("model-provider"),
+        "model_id": args.get("model-id"),
+        "model_variant": args.get("model-variant"),
+    });
+    let resp = unwrap_ok(call("/note-add", &body));
+    print_json(&require_row(&resp, "note_add"));
+    0
+}
+
+fn cmd_note_list(rest: &[String]) -> i32 {
+    let args = parse_verb_args("note list", rest, &["latest"], &["include-removed", "json"]);
+    reject_extra_pos("note list", &args, 1);
+    let task_id = args.pos_i64(0, "task_id");
+    let mut req = json!({"task_id": task_id, "include_removed": args.has("include-removed")});
+    if let Some(n) = args.get_i64("latest") {
+        req["latest"] = json!(n);
+    }
+    let resp = unwrap_ok(call("/note-list", &req));
+    let row = resp.get("row").cloned().unwrap_or(Value::Null);
+    let notes: Vec<TimelineNote> = row
+        .get("rows")
+        .and_then(Value::as_array)
+        .map(|rows| rows.iter().filter_map(timeline_note).collect())
+        .unwrap_or_default();
+    let count = row.get("count").and_then(Value::as_i64).unwrap_or(0);
+    if args.has("json") {
+        print_json(&json!({
+            "task_id": task_id,
+            "count": count,
+            "notes": notes.iter().map(note_json).collect::<Vec<_>>(),
+        }));
+        return 0;
+    }
+    if notes.is_empty() {
+        println!("task {task_id}: no notes");
+        return 0;
+    }
+    println!("task {task_id}: {} of {count} notes", notes.len());
+    for n in &notes {
+        println!("{}", format_timeline_note(n));
+    }
+    0
+}
+
+fn cmd_note_edit(rest: &[String]) -> i32 {
+    let args = parse_verb_args("note edit", rest, &["worker", "text"], &[]);
+    reject_extra_pos("note edit", &args, 1);
+    let text = args
+        .get("text")
+        .unwrap_or_else(|| die(2, "note edit: --text is required"));
+    let body = json!({
+        "note_id": args.pos_i64(0, "note_id"),
+        "worker": opt_worker(&args),
+        "body": text,
+    });
+    let resp = unwrap_ok(call("/note-edit", &body));
+    print_json(&require_row(&resp, "note_edit"));
+    0
+}
+
+fn cmd_note_remove(rest: &[String]) -> i32 {
+    let args = parse_verb_args("note remove", rest, &["worker"], &[]);
+    reject_extra_pos("note remove", &args, 1);
+    let body = json!({
+        "note_id": args.pos_i64(0, "note_id"),
+        "worker": opt_worker(&args),
+    });
+    let resp = unwrap_ok(call("/note-remove", &body));
+    print_json(&require_row(&resp, "note_remove"));
+    0
 }

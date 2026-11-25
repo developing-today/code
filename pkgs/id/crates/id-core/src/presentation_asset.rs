@@ -92,6 +92,13 @@ fn check_name(s: &str) -> Result<(), AssetRefError> {
     }
 }
 
+fn check_filter_name(s: &str) -> Result<(), AssetRefError> {
+    if s.len() > MAX_NAME_LEN || s.split('/').any(|seg| check_name(seg).is_err()) {
+        return Err(AssetRefError::InvalidName(s.to_owned()));
+    }
+    Ok(())
+}
+
 fn parse_revision(s: &str) -> Result<u32, AssetRefError> {
     let bad = || AssetRefError::InvalidRevision(s.to_owned());
     if s.is_empty() || !s.bytes().all(|b| b.is_ascii_digit()) || s.starts_with('0') {
@@ -105,12 +112,14 @@ fn split_versioned(s: &str) -> Result<(&str, u32), AssetRefError> {
     let (name, rev) = s
         .rsplit_once('@')
         .ok_or_else(|| AssetRefError::MissingRevision(s.to_owned()))?;
-    check_name(name)?;
     Ok((name, parse_revision(rev)?))
 }
 
 macro_rules! name_type {
     ($(#[$doc:meta])* $ty:ident) => {
+        name_type!($(#[$doc])* $ty, check_name);
+    };
+    ($(#[$doc:meta])* $ty:ident, $check:path) => {
         $(#[$doc])*
         #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
         #[serde(try_from = "String", into = "String")]
@@ -119,7 +128,7 @@ macro_rules! name_type {
         impl $ty {
             /// Validate and wrap a name.
             pub fn new(s: &str) -> Result<Self, AssetRefError> {
-                check_name(s)?;
+                $check(s)?;
                 Ok(Self(s.to_owned()))
             }
 
@@ -132,7 +141,7 @@ macro_rules! name_type {
         impl TryFrom<String> for $ty {
             type Error = AssetRefError;
             fn try_from(s: String) -> Result<Self, Self::Error> {
-                check_name(&s)?;
+                $check(&s)?;
                 Ok(Self(s))
             }
         }
@@ -202,8 +211,14 @@ macro_rules! versioned_type {
 }
 
 name_type!(
-    /// A filter family name; the filter registry is a later slice.
-    FilterName
+    /// A filter name, such as `tint` or `fx/sparkle`.
+    ///
+    /// One or more `/`-separated segments, each a plain name. The leading
+    /// segments name the filter's family, which world policy can allow or
+    /// deny as a whole (`fx/*`). What a filter does is the filter
+    /// registry's, a later slice.
+    FilterName,
+    check_filter_name
 );
 
 versioned_type!(
@@ -407,6 +422,14 @@ mod tests {
         // An id cannot itself contain '@': the last '@' splits, and the
         // id half is then refused.
         assert!("a@b@1".parse::<AssetRef>().is_err());
+
+        // Filter names may carry a family path; asset ids may not.
+        let fx: FilterRef = "fx/glow/soft@2".parse().unwrap();
+        assert_eq!(fx.name.as_str(), "fx/glow/soft");
+        for bad in ["fx//glow@1", "/glow@1", "fx/@1", "fx/Glow@1"] {
+            assert!(bad.parse::<FilterRef>().is_err(), "{bad} should be refused");
+        }
+        assert!("fx/glow@1".parse::<AssetRef>().is_err());
     }
 
     #[test]

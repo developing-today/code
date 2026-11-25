@@ -48,8 +48,10 @@ mod admin;
 mod claim;
 mod closed_bound;
 mod core;
+pub mod ctx_scope;
 mod label_enrich;
 mod lifecycle;
+mod notes;
 mod placement_coord;
 mod placement_sessions;
 mod repair;
@@ -64,6 +66,7 @@ pub use closed_bound::*;
 pub use core::*;
 pub use label_enrich::*;
 pub use lifecycle::*;
+pub use notes::*;
 pub use placement_coord::*;
 pub use placement_sessions::*;
 pub use repair::*;
@@ -389,6 +392,46 @@ mod tests {
                 "dedupe": {"checked_at": "2026-11-14T00:00:00Z", "basis": "test" }
             }
         })
+    }
+
+    /// A canned pipeline reply for one INSERT.
+    fn exec_pipeline_reply() -> String {
+        json!({"results": [
+            {"type": "ok", "response": {"type": "execute", "result": {
+                "cols": [], "rows": [], "affected_row_count": 1,
+                "last_insert_rowid": "1"}}},
+            {"type": "ok", "response": {"type": "close"}}
+        ]})
+        .to_string()
+    }
+
+    #[test]
+    fn events_carry_the_serving_requests_ctx_id_14191() {
+        // #14191 (build 5/5): an event written while the broker
+        // serves a request that carried context stores the context
+        // id in its detail, so the queue event store joins the
+        // trip logs on one id. Without context the row is unchanged.
+        let (url, captured) = stub_pipeline(exec_pipeline_reply());
+        let backend = TursoBackend::new(url, "test".to_string(), ureq::agent());
+        {
+            let _scope = ctx_scope::enter(Some("task-22655"));
+            event(&backend, Some("w1"), Some(7), "ctx_probe", &json!({"a": 1})).unwrap();
+        }
+        let bodies = captured.lock().unwrap();
+        assert_eq!(bodies.len(), 1, "{bodies:?}");
+        assert!(
+            bodies[0].contains(r#"\"ctx_id\":\"task-22655\""#),
+            "{bodies:?}"
+        );
+        drop(bodies);
+
+        let (url, captured) = stub_pipeline(exec_pipeline_reply());
+        let backend = TursoBackend::new(url, "test".to_string(), ureq::agent());
+        let out = verb_events_append(&backend, &json!({"kind": "ctx_probe", "detail": {"a": 1}}));
+        assert_eq!(out["ok"], true, "{out}");
+        let bodies = captured.lock().unwrap();
+        assert_eq!(bodies.len(), 1, "{bodies:?}");
+        assert!(!bodies[0].contains("ctx_id"), "{bodies:?}");
     }
 
     #[test]
