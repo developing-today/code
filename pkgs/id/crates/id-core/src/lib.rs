@@ -59,6 +59,7 @@ pub mod namespace_definition;
 pub mod numeric_order;
 pub mod numeric_value;
 pub mod port;
+pub mod presentation_asset;
 pub mod rejection;
 pub mod residency;
 pub mod residency_inventory;
