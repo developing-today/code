@@ -385,10 +385,9 @@ fn normalized_dep(
     } else {
         raw_state
     };
-    let dep_kind = if valid {
-        format!("blocked-by-{kind}")
-    } else {
-        "malformed".to_owned()
+    let dep_kind = match kind {
+        "issue" | "pr" | "task" | "ci" => format!("blocked-by-{kind}"),
+        _ => "malformed".to_owned(),
     };
     let dep_key = if valid {
         dep_key(raw)

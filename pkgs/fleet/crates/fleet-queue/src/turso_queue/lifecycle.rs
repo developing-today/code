@@ -3817,7 +3817,7 @@ mod task_notes_tests {
         );
         assert_eq!(enqueued["ok"], true, "{enqueued}");
         let task_id = enqueued["row"]["id"].as_i64().unwrap();
-        let request = json!({"task_id":task_id,"worker":"q6-test","link_kind":"related",
+        let request = json!({"task_id":task_id,"worker":"q6-test","link_kind":"parent",
             "other_issue":{"repo":"developing-today/code","number":14170}});
         assert_eq!(verb_link_add(&t, &request)["ok"], true);
         assert_eq!(verb_link_remove(&t, &request)["ok"], true);
