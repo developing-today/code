@@ -78,7 +78,8 @@ def delta(source_url, d1_name, append):
         r["name"]
         for r in d1.query(db_id, "SELECT name FROM sqlite_master WHERE type = 'table'")
     }
-    lines, splits, report = [], [], {}
+    # D1 enforces foreign keys; check them at the end of the import.
+    lines, splits, report = ["PRAGMA defer_foreign_keys = true;"], [], {}
     for name, sql in tables:
         if name not in existing:
             lines.append(sql.rstrip().rstrip(";") + ";")
@@ -103,7 +104,7 @@ def delta(source_url, d1_name, append):
     for kind, name, tbl, sql in schema:
         if kind in ("index", "trigger") and tbl not in existing and not tbl.startswith("__turso_internal"):
             lines.append(sql.rstrip().rstrip(";") + ";")
-    if lines:
+    if len(lines) > 1:
         d1.import_sql(db_id, "\n".join(lines) + "\n")
     for table, col, where, expected in splits:
         rows = d1.query(db_id, f'SELECT length("{col}") AS n FROM "{table}" WHERE {where}')

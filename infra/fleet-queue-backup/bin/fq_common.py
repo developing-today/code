@@ -236,14 +236,40 @@ def read_table_quoted(client, table, ncols):
     quote() as SQL literal text — the export's escaping oracle.
 
     Column names come from the schema itself, via a zero-row probe, so
-    quote() wraps the real columns in order. Paged by OFFSET with the
-    #6622 bound: a table whose pages never shorten past the bound
-    raises instead of looping forever.
+    quote() wraps the real columns in order. Rowid tables are paged by
+    rowid (WHERE rowid > last ORDER BY rowid), so each page reads only
+    its own rows; paging by OFFSET re-read every earlier row on every
+    page, which on a 400k-row Turso table cost hundreds of millions of
+    row reads and most of an hour. A table without a rowid (WITHOUT
+    ROWID) falls back to OFFSET. Both carry the #6622 bound: a table
+    whose pages never shorten past the bound raises instead of looping
+    forever.
     """
     colnames, _probe = client.execute(f'SELECT * FROM "{table}" LIMIT 0')
     if len(colnames) != ncols:
         raise RuntimeError(f"{table}: expected {ncols} columns, found {len(colnames)}")
     quoted = ", ".join(f'quote("{c}")' for c in colnames)
+    try:
+        _cols, rows = client.execute(
+            f'SELECT _rowid_, {quoted} FROM "{table}" ORDER BY _rowid_ LIMIT {PAGE_ROWS}'
+        )
+    except Exception:  # noqa: BLE001 - no rowid: the source says so as an error
+        rows = None
+    if rows is not None:
+        for _page in range(MAX_PAGES):
+            for row in rows:
+                yield tuple(row[1:])
+            if len(rows) < PAGE_ROWS:
+                return
+            _cols, rows = client.execute(
+                f'SELECT _rowid_, {quoted} FROM "{table}" WHERE _rowid_ > ? '
+                f"ORDER BY _rowid_ LIMIT {PAGE_ROWS}",
+                (rows[-1][0],),
+            )
+        raise RuntimeError(
+            f"{table}: pagination exceeded {MAX_PAGES} pages of {PAGE_ROWS}; "
+            "refusing to page unboundedly"
+        )
     offset = 0
     for _page in range(MAX_PAGES):
         _cols, rows = client.execute(
@@ -506,6 +532,10 @@ def _split_row_insert(table, colnames, row, pk_cols, splits):
     return out
 
 
+def _is_unique_index(sql):
+    return bool(re.match(r"\s*CREATE\s+UNIQUE\s+INDEX\b", sql or "", re.IGNORECASE))
+
+
 def build_dump(client, exported_at):
     """A complete, re-importable SQL dump of the store as D1-safe text.
 
@@ -531,6 +561,7 @@ def build_dump(client, exported_at):
         "-- fleet-queue-backup export (#8584)",
         f"-- exported_at: {exported_at}",
         f"-- source tables: {len(tables)}",
+        "PRAGMA defer_foreign_keys = true;",
     ]
     # Drop every object the dump recreates, dependents first, so the
     # dump is idempotent against a target already holding a copy
@@ -541,6 +572,18 @@ def build_dump(client, exported_at):
     for name, _sql in tables:
         lines.append(f'DROP TABLE IF EXISTS "{name}";')
     for _name, sql in tables:
+        lines.append(sql.rstrip().rstrip(";") + ";")
+    # D1 always enforces foreign keys. A key a child row points at must
+    # be unique when the row lands, so UNIQUE indexes go in before the
+    # rows (a parent whose id is unique only by index otherwise fails
+    # with "foreign key mismatch"), and the checks wait for the end of
+    # the import, since tables are not loaded parents first.
+    unique_indexes = [
+        sql
+        for kind, _name, _t, sql in schema
+        if kind == "index" and _is_unique_index(sql)
+    ]
+    for sql in unique_indexes:
         lines.append(sql.rstrip().rstrip(";") + ";")
     splits = []
     for name, sql in tables:
@@ -555,7 +598,7 @@ def build_dump(client, exported_at):
             else:
                 lines.extend(_split_row_insert(name, colnames, row, pk_cols, splits))
     for kind, _name, _t, sql in schema:
-        if kind in ("index", "view", "trigger"):
+        if kind in ("index", "view", "trigger") and sql not in unique_indexes:
             lines.append(sql.rstrip().rstrip(";") + ";")
     lines.append(f'DROP TABLE IF EXISTS "{META_TABLE}";')
     lines.append(
