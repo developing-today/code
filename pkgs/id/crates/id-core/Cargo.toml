@@ -29,6 +29,9 @@ ed25519-dalek = { version = "3", features = ["rand_core"] }
 opaque-ke = { version = "4.0.1", default-features = false, features = ["ristretto255", "argon2"] }
 rand_core_06 = { package = "rand_core", version = "0.6", features = ["getrandom"] }
 sha2_010 = { package = "sha2", version = "0.10" }
+# ID Token signature checks for OIDC login (oidc_login.rs, #13710):
+# RS256 and ES256 verification. Already in the tree via rustls.
+ring = "0.17"
 rand = "0.10"
 sha2 = "0.11"
 zeroize = "1"

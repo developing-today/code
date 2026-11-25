@@ -5035,6 +5035,7 @@ dependencies = [
  "qrcode",
  "rand 0.10.4",
  "rand_core 0.6.4",
+ "ring",
  "rmp-serde",
  "rqrr",
  "serde",

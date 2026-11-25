@@ -59,6 +59,7 @@ pub mod migration_control;
 pub mod namespace_definition;
 pub mod numeric_order;
 pub mod numeric_value;
+pub mod oidc_login;
 pub mod opaque_login;
 pub mod port;
 pub mod rejection;
