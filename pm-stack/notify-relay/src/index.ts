@@ -89,9 +89,7 @@ export class PmNotify {
 
   private async load(): Promise<RelayState> {
     const stored = await this.state.storage.get<Partial<RelayState>>(STATE_KEY);
-    return stored
-      ? { ...emptyRelayState(), ...stored, mirrorEvents: stored.mirrorEvents ?? [] }
-      : emptyRelayState();
+    return stored ? { ...emptyRelayState(), ...stored, mirrorEvents: stored.mirrorEvents ?? [] } : emptyRelayState();
   }
 
   private async save(state: RelayState): Promise<void> {

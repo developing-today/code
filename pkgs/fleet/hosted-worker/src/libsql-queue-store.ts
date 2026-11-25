@@ -35,14 +35,7 @@
 // read back.
 
 import type { Json } from "./queue-validate.ts";
-import type {
-  EventRow,
-  LaneRow,
-  LedgerRow,
-  LeaseRow,
-  QueueStore,
-  TaskRow,
-} from "./queue-store.ts";
+import type { EventRow, LaneRow, LedgerRow, LeaseRow, QueueStore, TaskRow } from "./queue-store.ts";
 
 /** The synchronous embedded-SQL surface this store needs: the house
  *  SqlStorageLike shape (pkgs/id/hosted-worker/src/bridge-store.ts).
@@ -305,9 +298,7 @@ export class LibSQLQueueStore implements QueueStore {
       `INSERT INTO tasks (${cols.join(", ")}) VALUES (${placeholders})`,
       ...cols.map((c) => encodeTaskValue(c, rec[c]) as string | number | bigint | boolean | null),
     );
-    const got = this.db
-      .exec(`SELECT ${TASK_COLS} FROM tasks WHERE id = last_insert_rowid()`)
-      .toArray();
+    const got = this.db.exec(`SELECT ${TASK_COLS} FROM tasks WHERE id = last_insert_rowid()`).toArray();
     if (got.length === 0) failWhere("insertTask lost the inserted row");
     return readTask(got[0] as Record<string, unknown>);
   }
@@ -366,11 +357,7 @@ export class LibSQLQueueStore implements QueueStore {
     const cols = Object.keys(rec);
     if (cols.length === 0) return;
     const setSql = cols.map((c) => `${c} = ?`).join(", ");
-    this.db.exec(
-      `UPDATE tasks SET ${setSql} WHERE id = ?`,
-      ...cols.map((c) => encodeTaskValue(c, rec[c])),
-      id,
-    );
+    this.db.exec(`UPDATE tasks SET ${setSql} WHERE id = ?`, ...cols.map((c) => encodeTaskValue(c, rec[c])), id);
   }
 
   async getLedger(taskId: number): Promise<LedgerRow | null> {
@@ -442,7 +429,9 @@ export class LibSQLQueueStore implements QueueStore {
   }
 
   async getLane(laneId: string): Promise<LaneRow | null> {
-    const rows = this.db.exec("SELECT lane_id, worker_id, queue, enabled FROM lanes WHERE lane_id = ?", laneId).toArray();
+    const rows = this.db
+      .exec("SELECT lane_id, worker_id, queue, enabled FROM lanes WHERE lane_id = ?", laneId)
+      .toArray();
     if (rows.length === 0) return null;
     const r = rows[0] as Record<string, unknown>;
     return {
@@ -454,7 +443,13 @@ export class LibSQLQueueStore implements QueueStore {
   }
 
   async insertLane(row: LaneRow): Promise<void> {
-    this.db.exec("INSERT INTO lanes (lane_id, worker_id, queue, enabled) VALUES (?, ?, ?, ?)", row.lane_id, row.worker_id, row.queue, row.enabled);
+    this.db.exec(
+      "INSERT INTO lanes (lane_id, worker_id, queue, enabled) VALUES (?, ?, ?, ?)",
+      row.lane_id,
+      row.worker_id,
+      row.queue,
+      row.enabled,
+    );
   }
 
   async touchWorker(workerId: string, working: boolean, nowIso: string): Promise<void> {
@@ -487,7 +482,13 @@ export class LibSQLQueueStore implements QueueStore {
     );
   }
 
-  async appendEvent(workerId: string | null, taskId: number | null, kind: string, detail: Json, createdAt: string): Promise<EventRow> {
+  async appendEvent(
+    workerId: string | null,
+    taskId: number | null,
+    kind: string,
+    detail: Json,
+    createdAt: string,
+  ): Promise<EventRow> {
     this.db.exec(
       "INSERT INTO events (worker_id, task_id, kind, detail, created_at) VALUES (?, ?, ?, ?, ?)",
       workerId,
@@ -512,7 +513,10 @@ export class LibSQLQueueStore implements QueueStore {
 
   async eventsForTask(taskId: number): Promise<EventRow[]> {
     return this.db
-      .exec("SELECT id, worker_id, task_id, kind, detail, created_at FROM events WHERE task_id = ? ORDER BY id ASC", taskId)
+      .exec(
+        "SELECT id, worker_id, task_id, kind, detail, created_at FROM events WHERE task_id = ? ORDER BY id ASC",
+        taskId,
+      )
       .toArray()
       .map((r) => readEvent(r as Record<string, unknown>));
   }
@@ -526,7 +530,9 @@ export class LibSQLQueueStore implements QueueStore {
     // github_mirror_issues is the github-ci Worker's read model, not
     // this store's table: no row → null; a failing read (no table, no
     // database) throws so the caller warns and proceeds unenriched.
-    const rows = this.db.exec("SELECT labels FROM github_mirror_issues WHERE repo = ? AND number = ?", repo, issueNumber).toArray();
+    const rows = this.db
+      .exec("SELECT labels FROM github_mirror_issues WHERE repo = ? AND number = ?", repo, issueNumber)
+      .toArray();
     if (rows.length === 0) return null;
     const parsed = jsonValue(rows[0]["labels"], "labels");
     return Array.isArray(parsed) ? parsed.filter((l): l is string => typeof l === "string") : [];

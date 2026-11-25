@@ -8,7 +8,7 @@
 // apply actions; the dashboard only records them.
 import { execFile } from "node:child_process";
 import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
-import { homedir, tmpdir } from "node:os";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Database } from "bun:sqlite";
 import { createQuotaRefresher, systemdTrigger } from "./quota-refresh.ts";
@@ -303,6 +303,7 @@ import {
   subjectForecastContracts,
   type ForecastContract,
 } from "./forecast-contract.ts";
+import { requireHome } from "./home.ts";
 
 // Cap `t` at `max` UTF-16 code units, but never leave half of a surrogate
 // pair at the cut (#7740, mirroring the #7694-family capUnits guard): an
@@ -2264,7 +2265,7 @@ async function withMetadataTempFile<T>(prefix: string, content: string, run: (pa
 }
 
 const metadataDbPath =
-  process.env.PM_METADATA_DB_PATH ?? join(homedir(), ".local/state/pm-aggregator/pm-metadata.sqlite");
+  process.env.PM_METADATA_DB_PATH ?? join(requireHome("PM_METADATA_DB_PATH"), ".local/state/pm-aggregator/pm-metadata.sqlite");
 const metadataDb = openMetadataStore(metadataDbPath, (path) => new Database(path));
 const metadataWebhookHandler = createMetadataWebhookHandler({
   secret: () => resolveBwsSecret("pm-aggregator.github-webhook-secret"),

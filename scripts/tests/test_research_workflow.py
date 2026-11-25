@@ -202,7 +202,9 @@ class ResearchWorkflowTests(unittest.TestCase):
         }
 
     def standalone(self):
-        package = self.root / "docs/requests/2026-11-23T22-00-25Z_research_roc-ecosystem"
+        package = (
+            self.root / "docs/requests/2026-11-23T22-00-25Z_research_roc-ecosystem"
+        )
         package.mkdir()
         (package / f"{package.name}.md").write_text(
             "# Standalone research\n\nNot a managed workflow package.\n",
@@ -261,7 +263,12 @@ class ResearchWorkflowTests(unittest.TestCase):
         """Oracle: every reserved workflow artifact preserves strict package validation."""
         package = self.standalone()
         for artifact in (
-            "main.md", "transcript.txt", "design.md", "changes.md", "concepts", "notes"
+            "main.md",
+            "transcript.txt",
+            "design.md",
+            "changes.md",
+            "concepts",
+            "notes",
         ):
             with self.subTest(artifact=artifact):
                 path = package / artifact

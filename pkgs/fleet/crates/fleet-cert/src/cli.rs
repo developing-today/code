@@ -282,11 +282,7 @@ fn inventory_cmd(args: &[String], json_out: bool) -> Result<i32> {
     let rest = &args[1.min(args.len())..];
     match verb {
         "list" => {
-            let p = parse_args(
-                rest,
-                &["dir", "at", "ca-within", "leaf-within"],
-                &["json"],
-            )?;
+            let p = parse_args(rest, &["dir", "at", "ca-within", "leaf-within"], &["json"])?;
             let req = inventory_scan_args(&p)?;
             let report = crate::inventory::audit(&req)?;
             let (text, value) = crate::inventory::render_list(&report);
@@ -311,11 +307,9 @@ fn inventory_cmd(args: &[String], json_out: bool) -> Result<i32> {
             req.dir = PathBuf::from(&bundle_dir);
             let report = crate::inventory::audit(&req)?;
             let at = report.at;
-            let found = report
-                .bundles
-                .into_iter()
-                .next()
-                .ok_or_else(|| CertError::usage(format!("{bundle_dir} is not a bundle directory")))?;
+            let found = report.bundles.into_iter().next().ok_or_else(|| {
+                CertError::usage(format!("{bundle_dir} is not a bundle directory"))
+            })?;
             let (text, value) = crate::inventory::render_show(&found, at);
             Ok(emit(json_out, text, value))
         }
@@ -353,15 +347,10 @@ fn inventory_cmd(args: &[String], json_out: bool) -> Result<i32> {
             Ok(emit(json_out, text, value))
         }
         "audit" => {
-            let p = parse_args(
-                rest,
-                &["dir", "at", "ca-within", "leaf-within"],
-                &["json"],
-            )?;
+            let p = parse_args(rest, &["dir", "at", "ca-within", "leaf-within"], &["json"])?;
             let req = inventory_scan_args(&p)?;
             let report = crate::inventory::audit(&req)?;
-            let failed =
-                report.totals.expired > 0 || report.totals.drift_findings > 0;
+            let failed = report.totals.expired > 0 || report.totals.drift_findings > 0;
             let (text, value) = crate::inventory::render_audit(&report);
             let code = emit(json_out, text, value);
             Ok(if failed { 1 } else { code })
@@ -919,7 +908,14 @@ fn publish_cmd(args: &[String], json_out: bool) -> Result<i32> {
         "plan" => {
             let p = parse_args(
                 rest,
-                &["bundle", "host", "aia-base-url", "dns-target", "format", "out"],
+                &[
+                    "bundle",
+                    "host",
+                    "aia-base-url",
+                    "dns-target",
+                    "format",
+                    "out",
+                ],
                 &["json"],
             )?;
             let dir = p
@@ -940,8 +936,8 @@ fn publish_cmd(args: &[String], json_out: bool) -> Result<i32> {
             };
             let plan = crate::publish::plan_bundle(&req)?;
             let format = p.get("format").unwrap_or("text").to_ascii_lowercase();
-            let value = serde_json::to_value(&plan)
-                .map_err(|e| CertError::engine(e.to_string()))?;
+            let value =
+                serde_json::to_value(&plan).map_err(|e| CertError::engine(e.to_string()))?;
             let text = crate::publish::render_plan_text(&plan);
             let out_text = match format.as_str() {
                 "json" => serde_json::to_string_pretty(&value)
@@ -999,10 +995,14 @@ fn publish_cmd(args: &[String], json_out: bool) -> Result<i32> {
             }
             text.push_str(&format!(
                 "  result: {}\n",
-                if report.valid { "IN SYNC" } else { "OUT OF SYNC" }
+                if report.valid {
+                    "IN SYNC"
+                } else {
+                    "OUT OF SYNC"
+                }
             ));
-            let value = serde_json::to_value(&report)
-                .map_err(|e| CertError::engine(e.to_string()))?;
+            let value =
+                serde_json::to_value(&report).map_err(|e| CertError::engine(e.to_string()))?;
             let code = emit(json_out, text, value);
             Ok(if report.valid { code } else { 1 })
         }

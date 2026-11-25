@@ -20,7 +20,6 @@
 // Env: USAGE_SNAPSHOT_OUTBOX_PATH, GH_BILLING_USER.
 import { execFileSync } from "node:child_process";
 import { appendFile, mkdir } from "node:fs/promises";
-import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import type { SnapshotRecord } from "../src/model.ts";
 import { isSnapshotRecord, snapshotKey } from "../src/snapshots.ts";
@@ -30,8 +29,9 @@ import {
   summarizeBillingDays,
   type BillingUsageItem,
 } from "../src/sources/github-billing.ts";
+import { requireHome } from "../src/home.ts";
 
-const HOME = homedir();
+const HOME = requireHome("the collect-github-billing paths");
 const outboxPath =
   process.env.USAGE_SNAPSHOT_OUTBOX_PATH ??
   join(HOME, "workspace/goals/keep-the-four-repos-healthy/hidden_files/usage-snapshot-outbox.jsonl");

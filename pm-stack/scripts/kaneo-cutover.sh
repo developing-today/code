@@ -208,8 +208,8 @@ if [ "$MODE" = "promote" ]; then
   [ -n "$BACKUP_RECORD_FILE" ] || fail_usage "--backup-record-file is required for promote"
   [ -r "$BACKUP_RECORD_FILE" ] || fail_usage "backup record file '$BACKUP_RECORD_FILE' is not readable"
   case "$MAX_BACKUP_AGE_HOURS" in
-    ''|*[!0-9]*) fail_usage "--max-backup-age-hours must be a positive integer" ;;
-    0) fail_usage "--max-backup-age-hours must be a positive integer" ;;
+  '' | *[!0-9]*) fail_usage "--max-backup-age-hours must be a positive integer" ;;
+  0) fail_usage "--max-backup-age-hours must be a positive integer" ;;
   esac
 fi
 if [ "$MODE" = "rollback" ]; then

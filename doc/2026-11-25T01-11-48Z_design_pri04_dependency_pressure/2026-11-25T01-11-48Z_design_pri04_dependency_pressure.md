@@ -98,7 +98,7 @@ Verified state at writing (2026-11-25, origin/main `5acf8c22`):
   `selection` and (broker builds) `sqlite_replica`; none of
   them derives pressure or walks a dependency graph.
   `work/journal.rs` carries `BlockerEdgeRef { edge_id, target,
-  hard }` on checkpoints as an opaque reference "so dependency
+hard }` on checkpoints as an opaque reference "so dependency
   semantics stay with their owner".
 - The only dependency mechanism on main is **#8276's typed
   block**: a lane blocks its task with a `blocked_deps` JSON
@@ -145,14 +145,14 @@ slice is the rule that does that, and the safety around it:
 
 ## 2. Ownership: who writes what
 
-| Concern                                                              | Owner             | PRI-04's relation                                                  |
-| -------------------------------------------------------------------- | ----------------- | ------------------------------------------------------------------ |
-| Edge types, seven spellings, canonical `blocker → dependent` record  | DEP-02 (#9503)    | Consumes the types; defines none.                                  |
-| Edge insertion, `would_create_cycle(u, v)`, revision CAS, readiness  | DEP-03 (#9443)    | Consumes the committed graph at a revision; never inserts edges.   |
-| Native GitHub links, resolved history                                | DEP-04 (#9444)    | Consumes resolved/active status only.                              |
-| Dimension and explanation types                                      | PRI-02 (#9479)    | Fills the dependency component of the explanation.                 |
-| Comparator, peer rank, selection-order digest contribution for rank | PRI-03 (#9511)    | Supplies effective urgency as the comparator's first key.          |
-| Aging, hysteresis, temporary boosts, triage                          | PRI-05 (#9481–4)  | Independent derived components; combination rule in §3.6.          |
+| Concern                                                              | Owner             | PRI-04's relation                                                            |
+| -------------------------------------------------------------------- | ----------------- | ---------------------------------------------------------------------------- |
+| Edge types, seven spellings, canonical `blocker → dependent` record  | DEP-02 (#9503)    | Consumes the types; defines none.                                            |
+| Edge insertion, `would_create_cycle(u, v)`, revision CAS, readiness  | DEP-03 (#9443)    | Consumes the committed graph at a revision; never inserts edges.             |
+| Native GitHub links, resolved history                                | DEP-04 (#9444)    | Consumes resolved/active status only.                                        |
+| Dimension and explanation types                                      | PRI-02 (#9479)    | Fills the dependency component of the explanation.                           |
+| Comparator, peer rank, selection-order digest contribution for rank  | PRI-03 (#9511)    | Supplies effective urgency as the comparator's first key.                    |
+| Aging, hysteresis, temporary boosts, triage                          | PRI-05 (#9481–4)  | Independent derived components; combination rule in §3.6.                    |
 | **Inherited-urgency derivation, its bounds, cycle and budget rules** | **PRI-04 (this)** | Owns `work/relations.rs` read-side evaluator and the `priority.rs` consumer. |
 
 Two consequences. First, the cycle **predicate** for insertion
@@ -402,9 +402,7 @@ implementation-issue measurement, not a design guess). It either
 finishes the whole qualifying subgraph within budget or returns:
 
 ```json
-{ "status": "graph_evaluation_incomplete",
-  "graph_revision": "57", "visited_nodes": "…", "visited_edges": "…",
-  "budget": { "max_nodes": "…", "max_edges": "…" } }
+{ "status": "graph_evaluation_incomplete", "graph_revision": "57", "visited_nodes": "…", "visited_edges": "…", "budget": { "max_nodes": "…", "max_edges": "…" } }
 ```
 
 and **no per-item pressure values at all**. Partial pressure is
@@ -491,19 +489,19 @@ is not acceptance. Builds and test runs go through remote
 dispatch (`fleet queue dispatch`), per the repository's
 remote-build rule; no local compile is an acceptance record.
 
-| Test                                                    | Oracle                                                                                                                                                                                                                                                                                                |
-| ------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `pmo_dependency_cycle_opposite_edge_pair` (first, red) | Empty graph at rev r0; propose `A→B` and `B→A`, both checked against r0, committed through DEP-03's revision CAS in both orders. Exactly one commits; the other is rejected as a cycle at r1. Pressure at r1 flows only along the committed edge. Same final state for either commit order.        |
-| `pmo_dependency_cycle_predicate_truth_table`           | For generated graphs up to 7 nodes: DEP-03's predicate rejects `u→v` iff `u == v` or a brute-force path `v→u` exists. Asserted against an independent BFS in the test, not the evaluator.                                                                                                          |
-| `pmo_dependency_pressure_matches_reference`            | For generated DAGs up to 9 nodes with random urgencies, efforts and certainties: the evaluator's inherited values equal a brute-force all-paths `min(offer)` reference (§3.3–§3.4).                                                                                                                  |
-| `pmo_dependency_pressure_non_hard_edges_inert`         | Adding any `hierarchy`, `related_to`, `duplicates`, `supersedes`, soft, resolved, removed, quarantined, uncertain or pending-review edge changes no effective urgency.                                                                                                                                  |
-| `pmo_dependency_pressure_preserves_intrinsic`          | Intrinsic urgency of every item is byte-identical before and after evaluation; null stays null; no evaluation output is a base mutation (effect class `DerivedPressure` only).                                                                                                                         |
-| `pmo_dependency_pressure_low_value_quick_fix`          | C-090: a `low` quick fix blocking a `high` item gets effective `high` and keeps intrinsic `low`; the explanation names the dependent, hop count 1, and the edge.                                                                                                                                     |
-| `pmo_dependency_pressure_caps_and_decay`               | No offer below `inherited_floor` without verified-deadline evidence; with it, the dependent's value passes through; each hop adds `hop_step`; effort at or above `effort_clamp_at` clamps to `normal`; missing effort is recorded, not guessed.                                                         |
-| `pmo_dependency_pressure_cycle_isolated`               | An imported 2-cycle and a 3-cycle with tails in and out: members neither give nor receive pressure; nodes outside the cycles are evaluated normally; the evaluation terminates; `dependency_cycle_isolated` lists sorted members.                                                                    |
-| `pmo_dependency_pressure_graph_revision_retry`         | Selection at rev r, edge added at r+1 before claim: the claim recomputes and reselects once; a second move returns the existing stale result; no claim uses r's pressure.                                                                                                                             |
-| `pmo_dependency_pressure_budget_fails_closed`          | A chain longer than `max_nodes`: result is `graph_evaluation_incomplete` with no per-item values; ordering falls back to the no-dependency policy and the order object's pressure state is `unavailable`; the fingerprint differs from a complete evaluation's.                                         |
-| `pmo_dependency_pressure_directive_does_not_travel`    | A `do_now` dependent with `normal` effective urgency gives its blocker `normal`, not Critical; a `hold` dependent gives nothing; a `manual_only` dependent gives its effective urgency.                                                                                                                |
+| Test                                                   | Oracle                                                                                                                                                                                                                                                                                      |
+| ------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `pmo_dependency_cycle_opposite_edge_pair` (first, red) | Empty graph at rev r0; propose `A→B` and `B→A`, both checked against r0, committed through DEP-03's revision CAS in both orders. Exactly one commits; the other is rejected as a cycle at r1. Pressure at r1 flows only along the committed edge. Same final state for either commit order. |
+| `pmo_dependency_cycle_predicate_truth_table`           | For generated graphs up to 7 nodes: DEP-03's predicate rejects `u→v` iff `u == v` or a brute-force path `v→u` exists. Asserted against an independent BFS in the test, not the evaluator.                                                                                                   |
+| `pmo_dependency_pressure_matches_reference`            | For generated DAGs up to 9 nodes with random urgencies, efforts and certainties: the evaluator's inherited values equal a brute-force all-paths `min(offer)` reference (§3.3–§3.4).                                                                                                         |
+| `pmo_dependency_pressure_non_hard_edges_inert`         | Adding any `hierarchy`, `related_to`, `duplicates`, `supersedes`, soft, resolved, removed, quarantined, uncertain or pending-review edge changes no effective urgency.                                                                                                                      |
+| `pmo_dependency_pressure_preserves_intrinsic`          | Intrinsic urgency of every item is byte-identical before and after evaluation; null stays null; no evaluation output is a base mutation (effect class `DerivedPressure` only).                                                                                                              |
+| `pmo_dependency_pressure_low_value_quick_fix`          | C-090: a `low` quick fix blocking a `high` item gets effective `high` and keeps intrinsic `low`; the explanation names the dependent, hop count 1, and the edge.                                                                                                                            |
+| `pmo_dependency_pressure_caps_and_decay`               | No offer below `inherited_floor` without verified-deadline evidence; with it, the dependent's value passes through; each hop adds `hop_step`; effort at or above `effort_clamp_at` clamps to `normal`; missing effort is recorded, not guessed.                                             |
+| `pmo_dependency_pressure_cycle_isolated`               | An imported 2-cycle and a 3-cycle with tails in and out: members neither give nor receive pressure; nodes outside the cycles are evaluated normally; the evaluation terminates; `dependency_cycle_isolated` lists sorted members.                                                           |
+| `pmo_dependency_pressure_graph_revision_retry`         | Selection at rev r, edge added at r+1 before claim: the claim recomputes and reselects once; a second move returns the existing stale result; no claim uses r's pressure.                                                                                                                   |
+| `pmo_dependency_pressure_budget_fails_closed`          | A chain longer than `max_nodes`: result is `graph_evaluation_incomplete` with no per-item values; ordering falls back to the no-dependency policy and the order object's pressure state is `unavailable`; the fingerprint differs from a complete evaluation's.                             |
+| `pmo_dependency_pressure_directive_does_not_travel`    | A `do_now` dependent with `normal` effective urgency gives its blocker `normal`, not Critical; a `hold` dependent gives nothing; a `manual_only` dependent gives its effective urgency.                                                                                                     |
 
 Negative coverage from the slice body, mapped: stale input →
 `graph_revision_retry`; duplicate/replay → evaluation is pure,
@@ -555,17 +553,17 @@ Full per-occurrence text for every allocated ID is in
 this table records which part of this design speaks to each
 group — design coverage, not implementation.
 
-| IDs                   | Where addressed                                                                                                     |
-| --------------------- | ------------------------------------------------------------------------------------------------------------------- |
-| C-R041                | §3 — dependency pressure as one input to effective scheduling urgency, beside deadlines and directives              |
-| C-R045                | §3.2, §3.5, `directive_does_not_travel` — `do_now` is not Critical urgency and removes no hard blocker               |
-| C-R052, O-R006        | §3.6 — dependency pressure combined with PRI-05's triage components, which still owe untriaged blockers a review     |
-| C-R061                | §3.3 — caps are resistance, not a barrier: verified deadlines pass through                                           |
-| C-R064                | §3.3–§3.5, `low_value_quick_fix` — a quick fix inherits the blocked item's urgency, intrinsic stays explainable      |
-| H-R004, O-R002, S-R006 | §3.5, §7 — intrinsic, effective and directive kept distinct; nothing rewritten or persisted                         |
-| H-R007, O-R008        | §3.1, §3.3, §4 — hard-only edges, cycle safety, effort and certainty safeguards                                      |
-| H-R030                | §3.3, §3.7 — bounded, explainable pressure; no inflation beyond the source                                           |
-| O-R017                | §3.4 — critical-path minimum; unrelated items (hierarchy children) get nothing                                       |
+| IDs                    | Where addressed                                                                                                  |
+| ---------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| C-R041                 | §3 — dependency pressure as one input to effective scheduling urgency, beside deadlines and directives           |
+| C-R045                 | §3.2, §3.5, `directive_does_not_travel` — `do_now` is not Critical urgency and removes no hard blocker           |
+| C-R052, O-R006         | §3.6 — dependency pressure combined with PRI-05's triage components, which still owe untriaged blockers a review |
+| C-R061                 | §3.3 — caps are resistance, not a barrier: verified deadlines pass through                                       |
+| C-R064                 | §3.3–§3.5, `low_value_quick_fix` — a quick fix inherits the blocked item's urgency, intrinsic stays explainable  |
+| H-R004, O-R002, S-R006 | §3.5, §7 — intrinsic, effective and directive kept distinct; nothing rewritten or persisted                      |
+| H-R007, O-R008         | §3.1, §3.3, §4 — hard-only edges, cycle safety, effort and certainty safeguards                                  |
+| H-R030                 | §3.3, §3.7 — bounded, explainable pressure; no inflation beyond the source                                       |
+| O-R017                 | §3.4 — critical-path minimum; unrelated items (hierarchy children) get nothing                                   |
 
 ## 11. Non-goals
 

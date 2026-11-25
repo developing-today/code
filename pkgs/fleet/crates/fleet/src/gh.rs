@@ -2591,10 +2591,7 @@ mod tests {
         place_script(&dir, "pristine-gh", &pristine);
         place_script(&dir, "fleet", &fleet);
         let shim_path = place_script(&dir, "gh", &shim);
-        (
-            dir.to_string_lossy().to_string(),
-            shim_path,
-        )
+        (dir.to_string_lossy().to_string(), shim_path)
     }
 
     // oracle: #14650 — a direct `fleet gh` whose `gh` is the

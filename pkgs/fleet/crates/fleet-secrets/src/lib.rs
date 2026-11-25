@@ -1188,15 +1188,17 @@ fn bws_listed_id(list_raw: &str, name: &str) -> Result<Option<String>, SecretErr
         name: name.to_string(),
         detail: detail.to_string(),
     };
-    let list: serde_json::Value =
-        serde_json::from_str(list_raw).map_err(|_| unavailable("bws secret list: output is not JSON"))?;
+    let list: serde_json::Value = serde_json::from_str(list_raw)
+        .map_err(|_| unavailable("bws secret list: output is not JSON"))?;
     let items = list
         .as_array()
         .ok_or_else(|| unavailable("bws secret list: output is not a JSON array"))?;
     for item in items {
         if item.get("key").and_then(|k| k.as_str()) == Some(name) {
             let raw_id = item.get("id").and_then(|i| i.as_str()).ok_or_else(|| {
-                unavailable("bws secret list: entry for the requested key has a missing or non-string id")
+                unavailable(
+                    "bws secret list: entry for the requested key has a missing or non-string id",
+                )
             })?;
             return Ok(Some(raw_id.to_string()));
         }
@@ -1289,7 +1291,16 @@ impl BwsStore {
         self.runner
             .run(
                 "bws",
-                &["secret", "create", "-o", "json", "--", name, value, &self.project_id],
+                &[
+                    "secret",
+                    "create",
+                    "-o",
+                    "json",
+                    "--",
+                    name,
+                    value,
+                    &self.project_id,
+                ],
             )
             .map_err(|d| unavailable(format!("bws secret create: {d}")))?;
         // Verify by reading the name back; the comparison happens in
@@ -1299,7 +1310,9 @@ impl BwsStore {
             .run("bws", &["secret", "list", "-o", "json"])
             .map_err(|d| unavailable(format!("bws secret list: {d}")))?;
         let id = bws_listed_id(&list_raw, name)?.ok_or_else(|| {
-            unavailable("bws secret create: the name is absent from the listing afterwards".to_string())
+            unavailable(
+                "bws secret create: the name is absent from the listing afterwards".to_string(),
+            )
         })?;
         let got_raw = self
             .runner
@@ -1307,9 +1320,10 @@ impl BwsStore {
             .map_err(|d| unavailable(format!("bws secret get: {d}")))?;
         let got: serde_json::Value = serde_json::from_str(&got_raw)
             .map_err(|_| unavailable("bws secret get: output is not JSON".to_string()))?;
-        let stored = got.get("value").and_then(|v| v.as_str()).ok_or_else(|| {
-            unavailable("bws secret get: no string \"value\" field".to_string())
-        })?;
+        let stored = got
+            .get("value")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| unavailable("bws secret get: no string \"value\" field".to_string()))?;
         if stored != value {
             return Err(unavailable(
                 "bws secret create: the value read back does not match what was stored".to_string(),
@@ -1636,14 +1650,25 @@ mod tests {
                     self.entries.borrow_mut().retain(|(i, _, _)| i != id);
                     Ok("{}".to_string())
                 }
-                ["secret", "create", "-o", "json", "--", name, value, _project] => {
+                [
+                    "secret",
+                    "create",
+                    "-o",
+                    "json",
+                    "--",
+                    name,
+                    value,
+                    _project,
+                ] => {
                     if self.fail_create {
                         return Err("exit status 1".to_string());
                     }
                     let id = format!("id-{}", self.entries.borrow().len() + 1);
-                    self.entries
-                        .borrow_mut()
-                        .push((id.clone(), name.to_string(), value.to_string()));
+                    self.entries.borrow_mut().push((
+                        id.clone(),
+                        name.to_string(),
+                        value.to_string(),
+                    ));
                     Ok(serde_json::json!({"id": id}).to_string())
                 }
                 other => Err(format!("unexpected args: {other:?}")),
@@ -1661,10 +1686,7 @@ mod tests {
                 self.0.run(program, args)
             }
         }
-        let store = BwsStore::with_runner(
-            Box::new(Shared(fake.clone())),
-            "proj-1".to_string(),
-        );
+        let store = BwsStore::with_runner(Box::new(Shared(fake.clone())), "proj-1".to_string());
         store
             .store("bridge.new-1-token", "fixture-value-not-a-secret")
             .unwrap();
@@ -1695,7 +1717,11 @@ mod tests {
 
     #[test]
     fn bws_store_replaces_an_existing_name() {
-        let fake = std::rc::Rc::new(FakeBws::new(vec![("id-old", "bridge.new-1-token", "old-value")]));
+        let fake = std::rc::Rc::new(FakeBws::new(vec![(
+            "id-old",
+            "bridge.new-1-token",
+            "old-value",
+        )]));
         struct Shared(std::rc::Rc<FakeBws>);
         impl CommandRunner for Shared {
             fn run(&self, program: &str, args: &[&str]) -> Result<String, String> {
@@ -1704,12 +1730,24 @@ mod tests {
         }
         let store = BwsStore::with_runner(Box::new(Shared(fake.clone())), "proj-1".to_string());
         store.store("bridge.new-1-token", "new-value").unwrap();
-        assert_eq!(fake.value_of("bridge.new-1-token").as_deref(), Some("new-value"));
+        assert_eq!(
+            fake.value_of("bridge.new-1-token").as_deref(),
+            Some("new-value")
+        );
         let calls = fake.calls.borrow();
         let verbs: Vec<&str> = calls.iter().map(|c| c[1].as_str()).collect();
-        let delete_at = verbs.iter().position(|v| *v == "delete").expect("old entry deleted");
-        let create_at = verbs.iter().position(|v| *v == "create").expect("new entry created");
-        assert!(delete_at < create_at, "rotation deletes before it creates: {verbs:?}");
+        let delete_at = verbs
+            .iter()
+            .position(|v| *v == "delete")
+            .expect("old entry deleted");
+        let create_at = verbs
+            .iter()
+            .position(|v| *v == "create")
+            .expect("new entry created");
+        assert!(
+            delete_at < create_at,
+            "rotation deletes before it creates: {verbs:?}"
+        );
         assert_eq!(calls[delete_at][2], "id-old");
     }
 
@@ -1722,7 +1760,10 @@ mod tests {
             .store("bridge.new-1-token", "fixture-value-not-a-secret")
             .unwrap_err();
         let text = format!("{err}");
-        assert!(text.contains("bridge.new-1-token"), "error names the secret: {text}");
+        assert!(
+            text.contains("bridge.new-1-token"),
+            "error names the secret: {text}"
+        );
         assert!(
             !text.contains("fixture-value-not-a-secret"),
             "error must not carry the value: {text}"

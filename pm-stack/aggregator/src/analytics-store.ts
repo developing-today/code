@@ -27,7 +27,6 @@
 
 import { Database } from "bun:sqlite";
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
-import { homedir } from "node:os";
 import { join } from "node:path";
 import type { QuotaPool, QuotaView, SnapshotRecord, UsageView } from "./model.ts";
 import { credentialKey, fetchRollup, type RollupRow } from "./route-rollup.ts";
@@ -44,8 +43,11 @@ import {
   type WindowProjection,
   type WowDelta,
 } from "./quota-analytics.ts";
+import { requireHome } from "./home.ts";
 
-export const OPENCODE_DB_DEFAULT = join(homedir(), ".local", "share", "opencode", "opencode.db");
+/** The OpenCode database under HOME; HomeUnresolvedError when HOME is unset or empty (#8220). */
+export const opencodeDbDefault = (): string =>
+  join(requireHome("the OpenCode database path"), ".local", "share", "opencode", "opencode.db");
 
 const HOUR_MS = 3_600_000;
 const DAY_MS = 24 * HOUR_MS;
@@ -1060,13 +1062,14 @@ export function buildQuotaAnalytics(args: {
       } satisfies PoolAnalytics;
     });
 
-    const db = getDb(args.opencodeDbPath ?? OPENCODE_DB_DEFAULT);
+    const db = getDb(args.opencodeDbPath ?? opencodeDbDefault());
     base.activity7d = db
       ? loadActivity(
           db,
           now,
-          args.mcpxCallLedgerDir ?? join(homedir(), ".local", "state", "mcpx", "call-ledger"),
-          args.fleetInvocationLedgerFile ?? join(homedir(), ".local", "state", "fleet", "invocations.jsonl"),
+          args.mcpxCallLedgerDir ?? join(requireHome("PM_AGG_MCPX_CALL_LEDGER_DIR"), ".local", "state", "mcpx", "call-ledger"),
+          args.fleetInvocationLedgerFile ??
+            join(requireHome("PM_AGG_FLEET_INVOCATION_LEDGER_FILE"), ".local", "state", "fleet", "invocations.jsonl"),
         )
       : null;
     return base;

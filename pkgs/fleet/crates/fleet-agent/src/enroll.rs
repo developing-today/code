@@ -319,9 +319,8 @@ fn run_exchange(world: &dyn World, name: &str, token: &str) -> R<Bootstrap> {
             out.why()
         )));
     }
-    let v: Value = serde_json::from_str(&out.stdout).map_err(|e| {
-        AgentError::Down(format!("the exchange answered unparseable output: {e}"))
-    })?;
+    let v: Value = serde_json::from_str(&out.stdout)
+        .map_err(|e| AgentError::Down(format!("the exchange answered unparseable output: {e}")))?;
     let fleet_token_name = v
         .get("fleet_token_name")
         .and_then(Value::as_str)

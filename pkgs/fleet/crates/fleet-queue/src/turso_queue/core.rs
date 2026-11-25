@@ -1242,7 +1242,9 @@ pub(crate) fn with_marks(detail: &Value, task: &Value) -> Value {
 /// the priority values carried in the event detail. Kinds absent
 /// here (checkpoint, claim_refused, session_bound, lease_expired,
 /// ...) are not status transitions and get no history row.
-pub(crate) fn history_transition(kind: &str) -> Option<(Option<&'static str>, Option<&'static str>)> {
+pub(crate) fn history_transition(
+    kind: &str,
+) -> Option<(Option<&'static str>, Option<&'static str>)> {
     Some(match kind {
         "enqueued" => (None, Some("queued")),
         "task_revived" => (None, Some("queued")),
@@ -1280,8 +1282,18 @@ pub(crate) const HISTORY_INSERT_SQL: &str = "INSERT OR IGNORE INTO task_history 
 
 /// Every event kind that history_transition maps: the backfill census.
 pub(crate) const HISTORY_KINDS: [&str; 12] = [
-    "enqueued", "task_revived", "claimed", "parked", "released", "woken", "blocked",
-    "unblocked", "dep_unblocked", "completed", "cancelled", "failed",
+    "enqueued",
+    "task_revived",
+    "claimed",
+    "parked",
+    "released",
+    "woken",
+    "blocked",
+    "unblocked",
+    "dep_unblocked",
+    "completed",
+    "cancelled",
+    "failed",
 ];
 
 /// Backfill: one history row per mapped events row that has none
@@ -1304,7 +1316,11 @@ fn backfill_sql() -> String {
             .collect::<Vec<_>>()
             .join(" ")
     };
-    let in_list = kinds.iter().map(|k| format!("'{k}'")).collect::<Vec<_>>().join(", ");
+    let in_list = kinds
+        .iter()
+        .map(|k| format!("'{k}'"))
+        .collect::<Vec<_>>()
+        .join(", ");
     format!(
         "INSERT OR IGNORE INTO task_history \
          (event_id, task_id, kind, from_status, to_status, from_priority, to_priority, \
@@ -1330,7 +1346,11 @@ fn backfill_sql() -> String {
 pub(crate) fn verb_history_backfill(t: &TursoBackend, _req: &Value) -> Value {
     let mut kinds: Vec<&str> = HISTORY_KINDS.to_vec();
     kinds.push("reprioritized");
-    let in_list = kinds.iter().map(|k| format!("'{k}'")).collect::<Vec<_>>().join(", ");
+    let in_list = kinds
+        .iter()
+        .map(|k| format!("'{k}'"))
+        .collect::<Vec<_>>()
+        .join(", ");
     let work = (|| -> Result<Value, TErr> {
         let census = t
             .query_objs(
@@ -1416,10 +1436,7 @@ pub(crate) fn event(
                 Arg::Text(now_iso()),
             ],
         ),
-        (
-            HISTORY_INSERT_SQL,
-            vec![arg_str(from), arg_str(to)],
-        ),
+        (HISTORY_INSERT_SQL, vec![arg_str(from), arg_str(to)]),
         ("COMMIT", vec![]),
     ])?;
     Ok(())

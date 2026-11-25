@@ -74,13 +74,13 @@ failures this slice prevents:
 
 ## 2. Ownership and the hard/soft blocker split
 
-| Concern                                                       | Owner                 |
-| ------------------------------------------------------------- | --------------------- |
-| DTO keys, framing, domain registry                            | `architecture.md` (fixed) |
-| `digest`, `canonical_json`                                    | `work/contracts.rs` (existing; read-only here) |
-| Comparator tuple, `comparator_ref`, broker parity fixture     | PRI-03                |
-| Order DTO builder, completeness gate, fixture format, divergence report | **DST-06a (this record)** |
-| Hosted targets running the fixture                            | **DST-06b (this record)**, inside #9079 / #9081 |
+| Concern                                                                 | Owner                                           |
+| ----------------------------------------------------------------------- | ----------------------------------------------- |
+| DTO keys, framing, domain registry                                      | `architecture.md` (fixed)                       |
+| `digest`, `canonical_json`                                              | `work/contracts.rs` (existing; read-only here)  |
+| Comparator tuple, `comparator_ref`, broker parity fixture               | PRI-03                                          |
+| Order DTO builder, completeness gate, fixture format, divergence report | **DST-06a (this record)**                       |
+| Hosted targets running the fixture                                      | **DST-06b (this record)**, inside #9079 / #9081 |
 
 Every lane that has triaged #9456 flagged the same tension: the
 slice header names #9079/#9081 as hard blockers while the
@@ -264,7 +264,10 @@ Each case is one JSON file with:
   "case": "tie_nine_before_ten",
   "description": "two items equal on urgency, rank and created_at; ids 9 and 10",
   "inputs": { "...": "the OrderInputs fields" },
-  "population": [ { "work_id": "10", "...": "..." }, { "work_id": "9", "...": "..." } ],
+  "population": [
+    { "work_id": "10", "...": "..." },
+    { "work_id": "9", "...": "..." }
+  ],
   "expected": {
     "ordered_work_ids": ["9", "10"],
     "canonical_json": "{...exact JCS bytes...}",
@@ -289,17 +292,17 @@ environment flag), never something a failing test does to itself.
 
 Positive cases (each must reproduce exactly):
 
-| Case                         | What it pins                                                |
-| ---------------------------- | ----------------------------------------------------------- |
-| `single_item`                | smallest complete population                                 |
-| `empty_population`           | `eligible_count` `"0"`, `ordered_items` `[]` — complete and hashable |
-| `tie_nine_before_ten`        | numeric identity tie order despite string encoding           |
-| `null_rank_normalised`       | a stored NULL rank becomes PRI-03's normalized `"0"`, never null |
-| `negative_rank_and_urgency`  | signed canonical decimals                                    |
-| `beyond_u53`                 | a `work_version` above 2^53 survives unchanged               |
-| `unicode_capabilities`       | capability strings outside ASCII sort by UTF-16 code units   |
-| `nullable_fairness_ref`      | `fairness_state_ref: null` present, not omitted              |
-| `pri03_parity`               | PRI-03's own parity snapshot, so the broker's three executions and every target share one case |
+| Case                        | What it pins                                                                                   |
+| --------------------------- | ---------------------------------------------------------------------------------------------- |
+| `single_item`               | smallest complete population                                                                   |
+| `empty_population`          | `eligible_count` `"0"`, `ordered_items` `[]` — complete and hashable                           |
+| `tie_nine_before_ten`       | numeric identity tie order despite string encoding                                             |
+| `null_rank_normalised`      | a stored NULL rank becomes PRI-03's normalized `"0"`, never null                               |
+| `negative_rank_and_urgency` | signed canonical decimals                                                                      |
+| `beyond_u53`                | a `work_version` above 2^53 survives unchanged                                                 |
+| `unicode_capabilities`      | capability strings outside ASCII sort by UTF-16 code units                                     |
+| `nullable_fairness_ref`     | `fairness_state_ref: null` present, not omitted                                                |
+| `pri03_parity`              | PRI-03's own parity snapshot, so the broker's three executions and every target share one case |
 
 Perturbation cases: for every included input of §3.3, one case
 that changes only that input from a base case and asserts the hash
@@ -364,17 +367,17 @@ urgency). Fixtures are test files, not store schema. No CEN-04
 
 ## 8. Failure and recovery
 
-| Scenario                                                  | Behaviour                                                     |
-| --------------------------------------------------------- | ------------------------------------------------------------- |
-| Producer has only a page                                  | `PartialOrder`, no hash                                        |
-| Producer hands in an unsorted "ordered" population        | `OrderError::NotInComparatorOrder`; comparator bug surfaced    |
-| Two targets differ on `graph_revision`                    | `InputsDiffer`; re-run on a pinned snapshot                    |
-| Same inputs, different order                              | `OrderDiffers` with the first index: a defect                 |
-| Target on an older comparator                             | `unsupported_version`; not compared                            |
-| Title or board position changed                           | hash unchanged (excluded by construction)                      |
-| A value above 2^53                                        | carried as a decimal string; hash stable across languages      |
-| Fixture `expected` block edited by hand to make a test pass | caught in review; regeneration is an explicit flagged helper  |
-| Rollback                                                  | remove the export's hash field; nothing persisted to revert    |
+| Scenario                                                    | Behaviour                                                    |
+| ----------------------------------------------------------- | ------------------------------------------------------------ |
+| Producer has only a page                                    | `PartialOrder`, no hash                                      |
+| Producer hands in an unsorted "ordered" population          | `OrderError::NotInComparatorOrder`; comparator bug surfaced  |
+| Two targets differ on `graph_revision`                      | `InputsDiffer`; re-run on a pinned snapshot                  |
+| Same inputs, different order                                | `OrderDiffers` with the first index: a defect                |
+| Target on an older comparator                               | `unsupported_version`; not compared                          |
+| Title or board position changed                             | hash unchanged (excluded by construction)                    |
+| A value above 2^53                                          | carried as a decimal string; hash stable across languages    |
+| Fixture `expected` block edited by hand to make a test pass | caught in review; regeneration is an explicit flagged helper |
+| Rollback                                                    | remove the export's hash field; nothing persisted to revert  |
 
 ## 9. Gates and sequencing
 

@@ -66,11 +66,11 @@ Rules the ABNF does not carry:
 
 ## 3. The object forms
 
-| Form | Example (portable, digest shortened) | Names |
-|---|---|---|
-| Object | `id://any/graph/v2/obj/raw-blake3-256.0001…1f` | One immutable D3 object, ContentObject or LinkObject. The digest is the `object_id`. |
-| Object slice | `…/obj/raw-blake3-256.0001…1f/bytes/100-200` | Bytes 100 up to 200 of that object's `body` (never its signed envelope). `100-` means to the end. |
-| Chain head | `id://any/graph/v2/head/raw-blake3-256.0001…1f` | "The current version of the object this chain started from", resolved through `supersede` links (D3 §5). |
+| Form               | Example (portable, digest shortened)                    | Names                                                                                                                                          |
+| ------------------ | ------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| Object             | `id://any/graph/v2/obj/raw-blake3-256.0001…1f`          | One immutable D3 object, ContentObject or LinkObject. The digest is the `object_id`.                                                           |
+| Object slice       | `…/obj/raw-blake3-256.0001…1f/bytes/100-200`            | Bytes 100 up to 200 of that object's `body` (never its signed envelope). `100-` means to the end.                                              |
+| Chain head         | `id://any/graph/v2/head/raw-blake3-256.0001…1f`         | "The current version of the object this chain started from", resolved through `supersede` links (D3 §5).                                       |
 | Chain head, pinned | `…/head/raw-blake3-256.<root>/at/raw-blake3-256.<head>` | As above, with the head the writer saw. A resolver that finds a newer head says so (stale link) instead of silently showing different content. |
 
 Choices in these forms:
@@ -153,27 +153,27 @@ Slice 4 covers paper and email survival in full.
 
 ## 8. R1 verdicts, consumed row by row
 
-| R1 row | R1 verdict | D1 slice 1 |
-|---|---|---|
-| 1 Generic RFC 3986 skeleton | adopt | Adopted: `id://authority/path?query#fragment`. |
-| 2 Authority = namespace.subspace keys | reject | Rejected. Authority is the V1 resolver alias plus portable `any` (§4). No keys in the host, so no DNS label overflow. |
-| 3 Path with dot-segments | reject / adapt in collections | Rejected for objects: every path segment has a fixed alphabet except the namespace, which forbids `.` and `..`. A display-alias selector inside collections is slice 2. |
-| 4 Entry form | adapt | `obj/<object_id>`: one URI, one immutable object. Links named the same way (§3). |
-| 5 Slice form | adapt | `/bytes/from-to` in the path, body bytes only, truncation at resolve time; the name `bytes` cannot collide with time bounds (R1 erratum 4). |
-| 6 Expected digest | adapt | Only on the mutable form, as `/at/<cid>`; algorithm-tagged by the profile token. |
-| 7 Prune fails | adopt principle, adapt semantics | Naming never pins (§7). The cause matrix is slice 3. |
-| 8 Area form | adapt | Reserved `set/` shape; slice 2. |
-| 9 Hint sequence | adapt | Typed `via=` hints in the query, ordered, max 8, outside identity (§5). |
-| 10 Fragment | adopt | Adopted, client-side, outside identity (§5). |
-| 11 Parameterised encodings | reject | Rejected: one encoding per field, fixed by the `v2` segment. |
-| 12 Willow'25 hex codec | reject | Diverges in part, see §8.1: lower-case hex kept, mixed case and `+`/`-` prefixes rejected, QR density recovered by the upper-case transport form. |
-| 13 Many codes per value | reject | Rejected harder than R1 suggests, see §8.1: non-canonical input is rejected, not accepted. |
-| 14 RFC 3986 classes and percent-encoding | adopt | Adopted, upper-case escapes, only in namespace, hint values and fragment. |
-| 15 Dot-segment normalisation | reject | Rejected; `.`/`..` cannot appear (row 3). |
-| 16 Relative references | reject for identity | Rejected: the parser accepts only absolute `id://` strings. Collection-relative selectors are slice 2. |
-| 17 Scheme name `willow://` | reject | Rejected; proposal is to keep `id` (§9). |
-| 18 No capability in the URI | adopt | Adopted and enforced by the closed query vocabulary (§5). |
-| 19 Mutable-link semantics | adapt | Explicit `head/` form, never the default (§3). |
+| R1 row                                   | R1 verdict                       | D1 slice 1                                                                                                                                                              |
+| ---------------------------------------- | -------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1 Generic RFC 3986 skeleton              | adopt                            | Adopted: `id://authority/path?query#fragment`.                                                                                                                          |
+| 2 Authority = namespace.subspace keys    | reject                           | Rejected. Authority is the V1 resolver alias plus portable `any` (§4). No keys in the host, so no DNS label overflow.                                                   |
+| 3 Path with dot-segments                 | reject / adapt in collections    | Rejected for objects: every path segment has a fixed alphabet except the namespace, which forbids `.` and `..`. A display-alias selector inside collections is slice 2. |
+| 4 Entry form                             | adapt                            | `obj/<object_id>`: one URI, one immutable object. Links named the same way (§3).                                                                                        |
+| 5 Slice form                             | adapt                            | `/bytes/from-to` in the path, body bytes only, truncation at resolve time; the name `bytes` cannot collide with time bounds (R1 erratum 4).                             |
+| 6 Expected digest                        | adapt                            | Only on the mutable form, as `/at/<cid>`; algorithm-tagged by the profile token.                                                                                        |
+| 7 Prune fails                            | adopt principle, adapt semantics | Naming never pins (§7). The cause matrix is slice 3.                                                                                                                    |
+| 8 Area form                              | adapt                            | Reserved `set/` shape; slice 2.                                                                                                                                         |
+| 9 Hint sequence                          | adapt                            | Typed `via=` hints in the query, ordered, max 8, outside identity (§5).                                                                                                 |
+| 10 Fragment                              | adopt                            | Adopted, client-side, outside identity (§5).                                                                                                                            |
+| 11 Parameterised encodings               | reject                           | Rejected: one encoding per field, fixed by the `v2` segment.                                                                                                            |
+| 12 Willow'25 hex codec                   | reject                           | Diverges in part, see §8.1: lower-case hex kept, mixed case and `+`/`-` prefixes rejected, QR density recovered by the upper-case transport form.                       |
+| 13 Many codes per value                  | reject                           | Rejected harder than R1 suggests, see §8.1: non-canonical input is rejected, not accepted.                                                                              |
+| 14 RFC 3986 classes and percent-encoding | adopt                            | Adopted, upper-case escapes, only in namespace, hint values and fragment.                                                                                               |
+| 15 Dot-segment normalisation             | reject                           | Rejected; `.`/`..` cannot appear (row 3).                                                                                                                               |
+| 16 Relative references                   | reject for identity              | Rejected: the parser accepts only absolute `id://` strings. Collection-relative selectors are slice 2.                                                                  |
+| 17 Scheme name `willow://`               | reject                           | Rejected; proposal is to keep `id` (§9).                                                                                                                                |
+| 18 No capability in the URI              | adopt                            | Adopted and enforced by the closed query vocabulary (§5).                                                                                                               |
+| 19 Mutable-link semantics                | adapt                            | Explicit `head/` form, never the default (§3).                                                                                                                          |
 
 ### 8.1 The two places this record departs from R1's recommendation
 

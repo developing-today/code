@@ -29,8 +29,8 @@
 import { REPOS } from "./model.ts";
 import { randomUUID } from "node:crypto";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
-import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+import { requireHome } from "./home.ts";
 
 export const NEEDS_DREW_LABELS = ["user/review", "user/escalated"] as const;
 export type NeedsDrewLabel = (typeof NEEDS_DREW_LABELS)[number];
@@ -407,7 +407,7 @@ export const NEEDS_DREW_OPEN_MAX_AGE_MS = 7 * 24 * 60 * 60_000;
 /** Default question-store path (mirrors src/config.ts needsDrewFile). */
 export function defaultNeedsDrewFile(env: Record<string, string | undefined> = process.env): string {
   const v = env.PM_AGG_NEEDS_DREW_FILE?.trim();
-  return v ? v : join(homedir(), ".local", "state", "pm-aggregator", "needs-drew.json");
+  return v ? v : join(requireHome("PM_AGG_NEEDS_DREW_FILE"), ".local", "state", "pm-aggregator", "needs-drew.json");
 }
 
 /** Validate the intake `needsDrew` extension object (#8568 wire contract). */

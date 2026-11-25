@@ -16,7 +16,7 @@ class CoverageTests(unittest.TestCase):
     defaults = '{"k":10,"raw":false}'
     chapter = (
         "# Protocol\n## Defaults (`query-parameters-v1.json`)\n"
-        "```json\n{\"raw\":false,\"k\":10}\n```\n"
+        '```json\n{"raw":false,"k":10}\n```\n'
     )
 
     def test_document_order_does_not_affect_coverage(self):
@@ -40,22 +40,35 @@ class CoverageTests(unittest.TestCase):
         for rust, table, diagnostic in [
             (
                 self.rust + "\npub mod added;",
-                self.table.replace("The 2", "The 3").replace("declares 2", "declares 3"),
+                self.table.replace("The 2", "The 3").replace(
+                    "declares 2", "declares 3"
+                ),
                 "missing.*added",
             ),
             (
                 self.rust.replace("pub mod source_registry;\n", ""),
-                self.table.replace("The 2", "The 1").replace("declares 2", "declares 1"),
+                self.table.replace("The 2", "The 1").replace(
+                    "declares 2", "declares 1"
+                ),
                 "stale.*source_registry",
             ),
-            (self.rust, self.table.replace("The 2", "The 3").replace("declares 2", "declares 3"), "stale public-module count"),
+            (
+                self.rust,
+                self.table.replace("The 2", "The 3").replace(
+                    "declares 2", "declares 3"
+                ),
+                "stale public-module count",
+            ),
             (self.rust, self.table + "\n| `retired` | Old |", "stale.*retired"),
             (self.rust, self.table + "\n| `search` | Again |", "duplicate"),
             ("", self.table, "empty inventory"),
             (self.rust, "plain text", "expected one public-module heading"),
             (self.rust + "\npub mod inline {}", self.table, "unsupported"),
         ]:
-            with self.subTest(diagnostic=diagnostic), self.assertRaisesRegex(ValueError, diagnostic):
+            with (
+                self.subTest(diagnostic=diagnostic),
+                self.assertRaisesRegex(ValueError, diagnostic),
+            ):
                 check_modules(rust, table)
 
     def test_contract_drift(self):

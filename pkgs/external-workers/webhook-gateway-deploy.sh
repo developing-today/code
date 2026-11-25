@@ -39,13 +39,26 @@ DRY_RUN=0
 REV="$PINNED_REV"
 while [ $# -gt 0 ]; do
   case "$1" in
-    --dry-run) DRY_RUN=1; shift ;;
-    --rev)
-      REV="${2:?--rev needs a value}"; shift 2 ;;
-    --rev=*) REV="${1#--rev=}"; shift ;;
-    -h|--help)
-      echo "Usage: $0 [--dry-run] [--rev <sha>]"; exit 0 ;;
-    *) echo "error: unknown argument $1 (usage: $0 [--dry-run] [--rev <sha>])" >&2; exit 2 ;;
+  --dry-run)
+    DRY_RUN=1
+    shift
+    ;;
+  --rev)
+    REV="${2:?--rev needs a value}"
+    shift 2
+    ;;
+  --rev=*)
+    REV="${1#--rev=}"
+    shift
+    ;;
+  -h | --help)
+    echo "Usage: $0 [--dry-run] [--rev <sha>]"
+    exit 0
+    ;;
+  *)
+    echo "error: unknown argument $1 (usage: $0 [--dry-run] [--rev <sha>])" >&2
+    exit 2
+    ;;
   esac
 done
 
@@ -60,14 +73,17 @@ git clone --quiet --filter=blob:none --no-checkout "https://github.com/${REPO}.g
 git -C "$STAGE/checkout" sparse-checkout set "$SUBPATH"
 git -C "$STAGE/checkout" checkout --quiet "$REV"
 WORKDIR="$STAGE/checkout/$SUBPATH"
-[ -f "$WORKDIR/wrangler.toml" ] || { echo "error: $SUBPATH has no wrangler.toml at $REV" >&2; exit 1; }
+[ -f "$WORKDIR/wrangler.toml" ] || {
+  echo "error: $SUBPATH has no wrangler.toml at $REV" >&2
+  exit 1
+}
 
 if [ "$DRY_RUN" = 1 ]; then
-  ( cd "$WORKDIR" && wrangler deploy --dry-run )
+  (cd "$WORKDIR" && wrangler deploy --dry-run)
   exit 0
 fi
 
 repo_root="$(git rev-parse --show-toplevel)"
 CLOUDFLARE_ACCOUNT_ID="$(sops decrypt --extract '["cloudflare_account_id"]' "${repo_root}/secrets/sops/common/cloudflare.yaml")"
 export CLOUDFLARE_ACCOUNT_ID
-( cd "$WORKDIR" && wrangler deploy )
+(cd "$WORKDIR" && wrangler deploy)
