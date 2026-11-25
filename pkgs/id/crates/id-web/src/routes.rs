@@ -662,10 +662,13 @@ fn create_router_inner(state: AppState) -> Router {
     // unless the serving process wired a gallery in.
     let router = router.merge(super::gallery::gallery_routes().with_state(state.gallery.clone()));
     // #10392 §6.1 (#14224): `POST /v1/runs` runs one subcommand of this
-    // binary with argv parity, for loopback clients only (see
-    // `super::runs`). Absent when the running executable cannot be found.
+    // binary with argv parity, for loopback clients only, checking app
+    // runs against the state's app manifests (#14226; see `super::runs`).
+    // Absent when the running executable cannot be found.
     let router = match super::runs::RunsConfig::current_exe() {
-        Some(config) => router.merge(super::runs::runs_routes(config)),
+        Some(config) => router.merge(super::runs::runs_routes(
+            config.with_apps(state.run_apps.clone()),
+        )),
         None => router,
     };
     let router = router

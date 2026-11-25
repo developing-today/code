@@ -478,6 +478,37 @@ impl WebBindingIndex {
     }
 }
 
+/// The run manifests (#10392 §4.5, #14226) of discovered apps, keyed by app
+/// id, for the web surface's run loader. An app's `capabilities.request`
+/// becomes its required capabilities: the manifest declares no optional
+/// ones and no client-side assets, so the loader never starts an app
+/// without every capability it asks for.
+#[cfg(feature = "web")]
+#[must_use]
+pub fn run_apps(apps: &[DiscoveredApp]) -> id_web::RunApps {
+    std::sync::Arc::new(
+        apps.iter()
+            .map(|app| {
+                let manifest = &app.manifest;
+                let run = id_web::RunManifest {
+                    app: manifest.app.id.clone(),
+                    version: manifest.app.version.clone(),
+                    client_side: Vec::new(),
+                    capabilities: id_web::runs::ManifestCapabilities {
+                        required: manifest
+                            .capabilities
+                            .as_ref()
+                            .map(|caps| caps.request.clone())
+                            .unwrap_or_default(),
+                        optional: Vec::new(),
+                    },
+                };
+                (manifest.app.id.clone(), run)
+            })
+            .collect(),
+    )
+}
+
 /// Scan immediate child folders for `app.toml`, isolating errors to each app.
 pub fn discover_apps(root: impl AsRef<Path>) -> AppDiscovery {
     let root = root.as_ref();
