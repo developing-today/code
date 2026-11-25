@@ -70,6 +70,22 @@ class SchemaInspectorTests(unittest.TestCase):
         self.assertIn("missing table", report["tables"]["finance_events"]["gaps"])
         self.assertIn("home contract unknown", report["tables"]["home_events"]["unknown"])
 
+    def test_oracle_sqlite_catalog_fk_and_composite_index(self):
+        self.database("""CREATE TABLE research_sources(id INTEGER PRIMARY KEY);
+            CREATE TABLE research_sheet_rows (
+            id INTEGER PRIMARY KEY, source_id INTEGER NOT NULL REFERENCES research_sources(id),
+            import_batch TEXT NOT NULL, sheet_name TEXT NOT NULL,
+            row_index INTEGER NOT NULL, data TEXT NOT NULL);
+            CREATE UNIQUE INDEX rows_key ON research_sheet_rows
+            (source_id, import_batch, sheet_name, row_index);
+            CREATE TRIGGER misleading_guard BEFORE DELETE ON research_sheet_rows
+            BEGIN SELECT 1; END;""")
+        row = inspector.inspect_database(self.path)["tables"]["research_sheet_rows"]
+        self.assertEqual(row["gaps"], [])
+        self.assertEqual(row["foreign_keys"][0]["table"], "research_sources")
+        self.assertIn("CREATE UNIQUE INDEX", row["indexes"][0]["sql"])
+        self.assertIn("guard behavior not exercised", row["unknown"])
+
     def test_oracle_read_only_bytes_and_missing_file_not_created(self):
         self.database()
         before = hashlib.sha256(self.path.read_bytes()).hexdigest()
