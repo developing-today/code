@@ -64,6 +64,7 @@ pub mod manifest;
 pub mod memory;
 pub mod occurrences;
 pub mod owner_inventory;
+pub mod reports;
 pub mod search;
 pub mod shards;
 pub mod shingles;
