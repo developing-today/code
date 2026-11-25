@@ -52,6 +52,7 @@ pub mod ip_evidence;
 pub mod iroh_hash;
 pub mod json_unique;
 pub mod key_envelope;
+pub mod login_binding;
 pub mod location_ref;
 pub mod membership;
 pub mod migration_control;
