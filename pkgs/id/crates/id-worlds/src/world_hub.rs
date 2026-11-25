@@ -80,6 +80,12 @@ pub trait WorldOpener: Send + Sync + 'static {
     /// Whether a closed world can be reopened from storage. Only durable
     /// worlds are ever evicted.
     fn durable(&self) -> bool;
+
+    /// The hub shut `name` down after an eviction (idle, or to make room
+    /// for another world); it reopens from storage when next named. Called
+    /// once the world's actor has drained. A host-mode opener records the
+    /// world asleep here (#10693); the default does nothing.
+    fn closed(&self, _name: &str) {}
 }
 
 /// Ceilings a hub enforces.
@@ -586,8 +592,11 @@ impl WorldHub {
             slot: Arc::clone(&slot),
             armed: true,
         };
-        for service in evicted {
+        for (victim, service) in evicted {
             let _ = service.world().shutdown().await;
+            if let Some(opener) = self.inner.opener.as_ref() {
+                opener.closed(&victim);
+            }
         }
         let opened = slot
             .service
@@ -633,12 +642,13 @@ impl WorldHub {
     }
 
     /// Find or create the slot for `name` and count a lease on it. Returns
-    /// services evicted to make room, to be shut down by the caller.
+    /// the worlds evicted to make room (name and service), to be shut down
+    /// by the caller.
     fn acquire_slot(
         &self,
         name: &str,
         create: bool,
-    ) -> Result<(Arc<Slot>, Vec<WorldService>), ResolveError> {
+    ) -> Result<(Arc<Slot>, Vec<(String, WorldService)>), ResolveError> {
         let mut slots = self
             .inner
             .slots
@@ -678,7 +688,7 @@ impl WorldHub {
             if let Some(slot) = slots.remove(&victim)
                 && let Some(service) = slot.service.get()
             {
-                evicted.push(service.clone());
+                evicted.push((victim, service.clone()));
             }
         }
         let slot = Arc::new(Slot::new());
@@ -800,7 +810,7 @@ impl WorldHub {
         if !self.inner.opener.as_ref().is_some_and(|o| o.durable()) {
             return 0;
         }
-        let victims: Vec<WorldService> = {
+        let victims: Vec<(String, WorldService)> = {
             let Ok(mut slots) = self.inner.slots.lock() else {
                 return 0;
             };
@@ -815,13 +825,19 @@ impl WorldHub {
                 .collect();
             names
                 .into_iter()
-                .filter_map(|name| slots.remove(&name))
-                .filter_map(|slot| slot.service.get().cloned())
+                .filter_map(|name| {
+                    let slot = slots.remove(&name)?;
+                    let service = slot.service.get().cloned()?;
+                    Some((name, service))
+                })
                 .collect()
         };
         let closed = victims.len();
-        for service in victims {
+        for (name, service) in victims {
             let _ = service.world().shutdown().await;
+            if let Some(opener) = self.inner.opener.as_ref() {
+                opener.closed(&name);
+            }
         }
         closed
     }
@@ -912,6 +928,8 @@ pub mod testing {
         pub(crate) known: StdMutex<Vec<String>>,
         pub(crate) opens: AtomicUsize,
         pub(crate) durable: bool,
+        /// Names the hub reported closed, in order.
+        pub(crate) closed: StdMutex<Vec<String>>,
     }
 
     impl MemoryOpener {
@@ -920,6 +938,7 @@ pub mod testing {
                 known: StdMutex::new(Vec::new()),
                 opens: AtomicUsize::new(0),
                 durable,
+                closed: StdMutex::new(Vec::new()),
             })
         }
     }
@@ -952,6 +971,10 @@ pub mod testing {
 
         fn durable(&self) -> bool {
             self.durable
+        }
+
+        fn closed(&self, name: &str) {
+            self.closed.lock().unwrap().push(name.to_owned());
         }
     }
 }
@@ -1388,6 +1411,8 @@ mod tests {
                 ("c".to_owned(), true)
             ]
         );
+        // The opener heard that "a" closed (#10693: a host records it asleep).
+        assert_eq!(*opener.closed.lock().unwrap(), vec!["a".to_owned()]);
         // "a" still exists and reopens on demand (evicting nothing leased).
         drop(_b);
         hub.lease(Some("a"), None).await.unwrap();
@@ -1402,6 +1427,7 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(30)).await;
         assert_eq!(hub.evict_idle(Duration::from_millis(10)).await, 1);
         assert_eq!(hub.open_count(), 1);
+        assert_eq!(*opener.closed.lock().unwrap(), vec!["idle".to_owned()]);
         assert!(
             busy.service().world().shutdown().await.is_ok(),
             "the leased world kept running"
