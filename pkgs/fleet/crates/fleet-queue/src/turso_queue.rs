@@ -150,6 +150,60 @@ mod tests {
     }
 
     #[test]
+    fn park_time_condition_floor_9179() {
+        // #9179 (c)4, oracle: the audited failure shape — a time
+        // condition horizon later than the requested lapse term.
+        // The lapse term must rise to the condition's `until`;
+        // every other shape leaves the park untouched.
+        let cond = json!({"kind": "time", "until": "2026-12-27T00:00:00Z"});
+        assert_eq!(
+            apply_time_condition_floor(&cond, "2026-11-24T00:00:00Z".to_string(), "relative"),
+            ("2026-12-27T00:00:00Z".to_string(), "absolute"),
+            "a later time-until raises the lapse term to the condition horizon"
+        );
+        assert_eq!(
+            apply_time_condition_floor(&cond, "2027-01-05T00:00:00Z".to_string(), "absolute"),
+            ("2027-01-05T00:00:00Z".to_string(), "absolute"),
+            "a lapse term already past the condition stands"
+        );
+        assert_eq!(
+            apply_time_condition_floor(&cond, "2026-12-27T00:00:00Z".to_string(), "relative"),
+            ("2026-12-27T00:00:00Z".to_string(), "relative"),
+            "an equal horizon is not a raise"
+        );
+        let ci = json!({"kind": "ci", "until": "2026-12-27T00:00:00Z"});
+        assert_eq!(
+            apply_time_condition_floor(&ci, "2026-11-24T00:00:00Z".to_string(), "relative"),
+            ("2026-11-24T00:00:00Z".to_string(), "relative"),
+            "non-time conditions never raise the lapse term"
+        );
+        let garbage = json!({"kind": "time", "until": "banana"});
+        assert_eq!(
+            apply_time_condition_floor(&garbage, "2026-11-24T00:00:00Z".to_string(), "relative"),
+            ("2026-11-24T00:00:00Z".to_string(), "relative"),
+            "an unparseable until leaves the park as requested"
+        );
+        let missing = json!({"kind": "time"});
+        assert_eq!(
+            apply_time_condition_floor(&missing, "2026-11-24T00:00:00Z".to_string(), "relative"),
+            ("2026-11-24T00:00:00Z".to_string(), "relative"),
+            "a time condition with no until leaves the park as requested"
+        );
+        // Wiring oracle: verb_park applies the floor to the final
+        // condition before storing the row.
+        let src = &test_source();
+        let seg = src
+            .split("fn verb_park(")
+            .nth(1)
+            .and_then(|s| s.split("\nfn verb_release(").next())
+            .unwrap_or("");
+        assert!(
+            seg.contains("apply_time_condition_floor(&condition, not_before, park_kind)"),
+            "verb_park must floor the lapse term at the time condition's until"
+        );
+    }
+
+    #[test]
     fn enqueue_insert_stamps_required_budget_column_3418() {
         // #3418 (#4712) oracle: the live enqueue INSERT persists the
         // effective requirement in the queryable column (NULL when

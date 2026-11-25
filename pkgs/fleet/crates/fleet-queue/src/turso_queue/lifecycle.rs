@@ -1927,6 +1927,41 @@ pub(crate) fn apply_wait_floor(
     }
 }
 
+/// #9179 class (c)4: a park carrying a structured time condition
+/// (`{"kind": "time", "until": <rfc3339>}`) must not lapse before
+/// that condition's own horizon. The audit's live case (task
+/// 13224) was parked for a day while its recorded resume
+/// condition was a month out, so it lapsed into the unchanged
+/// condition and burned a lane pass re-parking. When the
+/// condition's `until` parses and is later than the requested
+/// lapse term, the lapse term rises to `until` (and the park
+/// becomes absolute — its term is now that fixed timestamp).
+/// An earlier, equal, missing, or unparseable `until`, and any
+/// non-time condition, leave the park exactly as requested.
+pub(crate) fn apply_time_condition_floor(
+    condition: &Value,
+    not_before: String,
+    park_kind: &'static str,
+) -> (String, &'static str) {
+    if condition.get("kind").and_then(|k| k.as_str()) != Some("time") {
+        return (not_before, park_kind);
+    }
+    let Some(until) = condition.get("until").and_then(|u| u.as_str()) else {
+        return (not_before, park_kind);
+    };
+    let (Some(until_epoch), Some(nb_epoch)) = (
+        crate::disposition::parse_rfc3339_epoch(until),
+        crate::disposition::parse_rfc3339_epoch(&not_before),
+    ) else {
+        return (not_before, park_kind);
+    };
+    if until_epoch > nb_epoch {
+        (until.to_string(), "absolute")
+    } else {
+        (not_before, park_kind)
+    }
+}
+
 /// #3418: the required budget a park records. An explicit
 /// `required_budget_minutes` in the park request wins. Otherwise a
 /// capacity wait (ready-condition kind `capacity`) defaults the
@@ -2007,6 +2042,10 @@ pub(crate) fn verb_park(t: &TursoBackend, req: &Value) -> Value {
     } else {
         condition
     };
+    // #9179 (c)4: a caller-supplied time condition whose `until`
+    // is later than the park's lapse term raises the lapse term —
+    // the park must not resume into the unchanged condition.
+    let (not_before, park_kind) = apply_time_condition_floor(&condition, not_before, park_kind);
     // #3418: the budget requirement this park records (explicit in
     // the request, or defaulted from the packet timebox for a
     // capacity wait). A capacity park stays timer-floored as
