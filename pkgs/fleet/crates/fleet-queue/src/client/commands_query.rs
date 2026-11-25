@@ -2181,7 +2181,7 @@ fn finish_link_change(
     verb: &str,
     add: bool,
     task_id: i64,
-    worker: Option<String>,
+    worker: String,
     link_kind: Option<String>,
     issue: Option<String>,
     pr: Option<String>,
