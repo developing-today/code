@@ -17,7 +17,9 @@ use std::time::Duration;
 
 use serde_json::{Value as Json, json};
 
+use crate::blob::{KvBlobRefV1, Partition};
 use crate::central::{CentralError, Pipeline, Result, Rows, Statement, Value};
+use crate::sweep::{BlobUpload, BlobUploader};
 
 /// The environment variable naming the central endpoint.
 pub const URL_VAR: &str = "FLEET_KV_URL";
@@ -73,6 +75,114 @@ impl HttpPipeline {
         })?;
         Self::new(&url, &bearer).map(Some)
     }
+}
+
+/// The environment variables naming the partition this host's blobs go to
+/// (#3401 jurisdiction and sensitivity tier). Unset: no blob plane, and
+/// over-threshold values stay local.
+pub const BLOB_JURISDICTION_VAR: &str = "FLEET_KV_BLOB_JURISDICTION";
+pub const BLOB_TIER_VAR: &str = "FLEET_KV_BLOB_TIER";
+/// An upload streams a value of any size, so it gets far longer than a
+/// pipeline request.
+pub const UPLOAD_TIMEOUT: Duration = Duration::from_secs(600);
+
+/// The trusted upload door (design §9) beside the central endpoint:
+/// `PUT {FLEET_KV_URL}/blobs`, with the same bearer, which must be allowed
+/// the `kv-upload` door.
+pub struct HttpBlobUploader {
+    url: String,
+    bearer: String,
+    agent: ureq::Agent,
+}
+
+impl HttpBlobUploader {
+    pub fn new(url: &str, bearer: &str) -> Result<Self> {
+        // The same URL and credential rules as the pipeline.
+        let pipeline = HttpPipeline::new(url, bearer)?;
+        let agent: ureq::Agent = ureq::Agent::config_builder()
+            .http_status_as_error(false)
+            .timeout_global(Some(UPLOAD_TIMEOUT))
+            .build()
+            .into();
+        Ok(Self {
+            url: pipeline.url,
+            bearer: pipeline.bearer,
+            agent,
+        })
+    }
+
+    /// The uploader and partition the environment configures, or `None`
+    /// when the central endpoint or the blob partition is not configured.
+    pub fn from_env() -> Result<Option<(Self, Partition)>> {
+        let jurisdiction = std::env::var(BLOB_JURISDICTION_VAR).unwrap_or_default();
+        let tier = std::env::var(BLOB_TIER_VAR).unwrap_or_default();
+        let (jurisdiction, tier) = (jurisdiction.trim(), tier.trim());
+        if jurisdiction.is_empty() && tier.is_empty() {
+            return Ok(None);
+        }
+        if jurisdiction.is_empty() || tier.is_empty() {
+            return Err(CentralError::NotConfigured(format!(
+                "set both {BLOB_JURISDICTION_VAR} and {BLOB_TIER_VAR}, or neither"
+            )));
+        }
+        let Some(pipeline) = HttpPipeline::from_env()? else {
+            return Ok(None);
+        };
+        Ok(Some((
+            Self::new(&pipeline.url, &pipeline.bearer)?,
+            Partition::new(jurisdiction, tier),
+        )))
+    }
+}
+
+impl BlobUploader for HttpBlobUploader {
+    fn upload(
+        &self,
+        upload: &BlobUpload<'_>,
+        bytes: &mut dyn std::io::Read,
+    ) -> Result<KvBlobRefV1> {
+        let mut response = self
+            .agent
+            .put(&format!("{}/blobs", self.url))
+            .query("registry", upload.registry_id)
+            .query("namespace", upload.namespace)
+            .query("scope", upload.scope_id)
+            .query("jurisdiction", &upload.partition.jurisdiction)
+            .query("tier", &upload.partition.tier)
+            .query("digest", upload.digest)
+            .query("bytes_len", upload.bytes_len.to_string())
+            .header("Authorization", &format!("Bearer {}", self.bearer))
+            .header("Content-Type", "application/octet-stream")
+            .send(ureq::SendBody::from_reader(bytes))
+            .map_err(|error| CentralError::Unavailable(error.to_string()))?;
+        let status = response.status().as_u16();
+        let text = response
+            .body_mut()
+            .read_to_string()
+            .map_err(|error| CentralError::Unavailable(format!("reading the answer: {error}")))?;
+        if status == 429 || status >= 500 {
+            return Err(CentralError::Unavailable(format!(
+                "HTTP {status}: {}",
+                snippet(&text)
+            )));
+        }
+        if !(200..300).contains(&status) {
+            return Err(refusal(status, &text));
+        }
+        parse_upload_answer(&text)
+    }
+}
+
+/// The reference in the upload door's answer.
+pub fn parse_upload_answer(text: &str) -> Result<KvBlobRefV1> {
+    let parsed: Json = serde_json::from_str(text)
+        .map_err(|error| CentralError::Store(format!("a non-JSON upload answer: {error}")))?;
+    let reference = parsed
+        .get("reference")
+        .and_then(Json::as_str)
+        .ok_or_else(|| CentralError::Store("the upload answer has no reference".into()))?;
+    KvBlobRefV1::decode(reference.as_bytes())
+        .map_err(|error| CentralError::Store(format!("the upload answer's reference: {error}")))
 }
 
 fn is_loopback_http(url: &str) -> bool {
@@ -452,6 +562,32 @@ mod tests {
         assert_eq!(refused.code(), "data_plane_credential_refused");
         assert_eq!(refusal(401, "nope").code(), "unauthorized");
         assert_eq!(refusal(404, "{}").code(), "central_refused");
+    }
+
+    #[test]
+    fn central_http_upload_answer_carries_a_published_reference() {
+        let reference = crate::blob::KvBlobRefV1 {
+            digest: "ab".repeat(32),
+            bytes_len: 9,
+            partition: Partition::new("eu", "standard"),
+            locator: format!("r2:kv/blobs/eu/standard/{}", "ab".repeat(32)),
+        };
+        let encoded = String::from_utf8(reference.encode()).unwrap();
+        let answer =
+            json!({"reference": encoded, "digest": "ab".repeat(32), "deduplicated": false});
+        assert_eq!(parse_upload_answer(&answer.to_string()).unwrap(), reference);
+        for bad in [
+            "not json".to_string(),
+            json!({"digest": "x"}).to_string(),
+            json!({"reference": encoded.replace("state=published", "state=staged")}).to_string(),
+        ] {
+            assert!(
+                matches!(parse_upload_answer(&bad), Err(CentralError::Store(_))),
+                "{bad}"
+            );
+        }
+        assert!(HttpBlobUploader::new("http://kv.example.com", "token").is_err());
+        assert!(HttpBlobUploader::new("https://kv.example.com/v1/kv", "token").is_ok());
     }
 
     /// A one-endpoint Hrana server that runs each batch's statements on a

@@ -173,6 +173,19 @@ pub fn publish_cas(
     )
 }
 
+/// [`publish_cas`], retried with backoff while the primary is unavailable,
+/// as [`central::cas_with_retry`] retries a plain CAS. Each attempt carries
+/// a fresh nonce under the same idempotency key, so a retry after a lost
+/// answer replays the decided receipt.
+pub fn publish_cas_with_retry(
+    primary: &dyn Pipeline,
+    intent: &Intent,
+    reference: &KvBlobRefV1,
+    sleep: &mut dyn FnMut(std::time::Duration),
+) -> Result<PublishCas> {
+    central::with_retry(intent, sleep, || publish_cas(primary, intent, reference))
+}
+
 /// Load the GC roots of `partition`.
 pub fn roots(primary: &dyn Pipeline, partition: &Partition) -> Result<CentralRoots> {
     let rows = central::read(primary, BLOB_ROOTS_READ, &partition_args(partition))?;

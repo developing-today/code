@@ -627,6 +627,7 @@ mod tests {
             writer: "user-1",
             resolve: &resolve,
             sleep: &mut sleep,
+            blobs: None,
         }
         .sweep(&fresh, &me())
         .unwrap();
