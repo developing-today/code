@@ -874,12 +874,16 @@ name = "fleet-queue"
 version = "0.1.0"
 dependencies = [
  "chunked_transfer",
+ "fleet-cert",
  "fleet-config",
  "fleet-secrets",
  "libc",
  "proptest",
+ "rcgen",
  "ring",
  "rusqlite",
+ "rustls",
+ "rustls-pki-types",
  "serde",
  "serde_json",
  "sha2",
