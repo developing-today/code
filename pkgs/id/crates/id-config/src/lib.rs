@@ -45,9 +45,10 @@ pub use rollout::{
 /// rather than silently reinterpreted.
 pub const CONFIG_SCHEMA_VERSION: u32 = 1;
 
-/// Reject boundary for `ceilings.max_hops`: a document whose hop ceiling
-/// is above this does not load (#9111 record §5.2 and §5.3 item 7; #9144
-/// §5.1). Not configurable.
+/// Reject boundary for `ceilings.max_hops`.
+///
+/// A document whose hop ceiling is above this does not load (#9111 record
+/// §5.2 and §5.3 item 7; #9144 §5.1). Not configurable.
 pub const MAX_HOPS_LIMIT: u32 = 8;
 /// Reject boundary for `fanout.deadline_ms` (#9111 record §5.2; #9144 Q5).
 pub const DEADLINE_MS_LIMIT: u64 = 60_000;
@@ -267,9 +268,11 @@ const fn default_peer_breadth() -> u32 {
     4
 }
 
-/// The fan-out keys of #9111 record §7.1 (from #9144 §8 and §11.1). Each
-/// key has a default, so an absent `fanout` section or key means the
-/// default, and each is validated against `1 ..= limit`, where the limit
+/// The fan-out keys of #9111 record §7.1.
+///
+/// They come from #9144 §8 and §11.1. Each key has a default, so an absent
+/// `fanout` section or key means the default, and each is validated
+/// against `1 ..= limit`, where the limit
 /// is fixed in this crate ([`DEADLINE_MS_LIMIT`],
 /// [`PER_PEER_TIMEOUT_MS_LIMIT`], [`PEER_BREADTH_LIMIT`]); a value above
 /// its limit rejects the document at load instead of being clamped, so an
@@ -284,9 +287,10 @@ pub struct Fanout {
     /// Whole fan-out query deadline in milliseconds. Default 5000.
     #[serde(default = "default_deadline_ms")]
     pub deadline_ms: u64,
-    /// Per-peer timeout in milliseconds. Default 2000. A value above
-    /// `deadline_ms` is accepted and clamped to it in the resolved config
-    /// (record §7.1).
+    /// Per-peer timeout in milliseconds. Default 2000.
+    ///
+    /// A value above `deadline_ms` is accepted and clamped to it in the
+    /// resolved config (record §7.1).
     #[serde(default = "default_per_peer_timeout_ms")]
     pub per_peer_timeout_ms: u64,
     /// How many peers one query asks at once. Default 4.
@@ -324,8 +328,10 @@ impl Fanout {
         .find(|&(_, value, limit)| value == 0 || value > limit)
     }
 
-    /// The resolved form: the per-peer timeout clamped to the deadline
-    /// (record §7.1 and §7.2), every other key as written.
+    /// The resolved form.
+    ///
+    /// The per-peer timeout is clamped to the deadline (record §7.1 and
+    /// §7.2); every other key is as written.
     #[must_use]
     pub const fn resolved(self) -> Self {
         let per_peer_timeout_ms = if self.per_peer_timeout_ms > self.deadline_ms {
@@ -527,8 +533,7 @@ pub struct ResolvedConfig {
     pub provenance: BTreeMap<String, String>,
     /// Namespaced extensions, retained verbatim, never executed.
     pub extensions: BTreeMap<String, serde_json::Value>,
-    /// Resolved fan-out keys, with the per-peer timeout clamped to the
-    /// deadline.
+    /// Resolved fan-out keys, per-peer timeout clamped to the deadline.
     pub fanout: Fanout,
 }
 
@@ -575,8 +580,9 @@ pub enum ConfigError {
     /// A ceiling field is zero.
     #[error("ceiling {0} must be at least 1")]
     ZeroCeiling(&'static str),
-    /// A value is above a limit fixed in this crate, or a fan-out key is
-    /// zero. Never clamped: the document is rejected.
+    /// A value is zero or above a limit fixed in this crate.
+    ///
+    /// Never clamped: the document is rejected.
     #[error("{field} value {value} is outside 1..={limit}")]
     OutOfRange {
         /// The field's dotted path.
