@@ -1,7 +1,7 @@
 # Recordings: append the moments worth remembering
 
 When something happens in a session that you would stop and tell the user about,
-**also record it** with the `record` tool (developing-today/code `bin/record.mjs`,
+**also record it** with the `record` command (developing-today/code `bin/record.mjs`,
 tracking issue: developing-today/code#1853):
 
 ```sh
@@ -9,12 +9,27 @@ record '<json-or-loose-text>'
 ```
 
 The tool appends one JSON line to `~/git/ai_recordings.jsonl` (override with
-`AI_RECORDINGS_FILE`), stamps `ts`/`pwd`/repo/origin/git HEAD for you, and
-**never rejects**: input it cannot normalise is quarantined verbatim to
-`~/git/ai_recordings.jsonl.quarantine`, and an unwritable target is a silent
-no-op — recording can never fail your task. Do not hand-edit the JSONL file;
-if `record` is unavailable on PATH, run it from a developing-today/code
-checkout: `node <checkout>/bin/record.mjs '<...>'`.
+`AI_RECORDINGS_FILE`), stamps `ts`/`pwd`/repo/origin/git HEAD and the session id
+for you, and **never rejects**: input it cannot normalise is quarantined verbatim
+to `~/git/ai_recordings.jsonl.quarantine`, and an unwritable target is a silent
+no-op — recording can never fail your task. Do not hand-edit the JSONL file.
+
+**Where `record` comes from.** developing-today/code's `bin/record.mjs` has a
+`#!/usr/bin/env node` shebang and can be executed directly or through a symlink.
+It had mode 644 until 2026-11-24, so a symlink on PATH got "permission denied"
+(exit 126); it is now executable, and its `#2235` entry-point guard handles
+symlinked paths.
+
+On the darwin-nix Mac, `pkgs/record` installs a wrapper instead: it runs `node`
+on the script from the developing-today/code tree the opencode fork pins (that
+pin need not have the exec-bit fix). It is on PATH as
+`/run/current-system/sw/bin/record` after a `just switch`, needs no checkout, and
+keeps working if the checkout moves. Where `command -v record` finds nothing,
+run the script with node from any developing-today/code checkout; on this Mac:
+
+```sh
+node ~/git/developing-today-code/bin/record.mjs '<json-or-loose-text>'
+```
 
 Append only. Never edit or rewrite existing lines. You do not need to read the
 file first, though reading it is not forbidden.
@@ -38,6 +53,11 @@ finding that was wrong, a fix that made things worse, a tool that lied. Surprise
 guilt, irritation and relief are all signals — if you want to flag it to the
 user, it belongs in the file too.
 
+Also record how each delegation went when it taught you something: the shape
+(who led, who worked, sessions or subagents), the models or pools, the wall
+time, and what broke. The delegate skill's choices, such as a cheap supervisor
+over strong workers, are judgements until these lines measure them.
+
 **Write it for the user as you normally would, then record it.** The recording is
 in addition to the explanation, not instead of it.
 
@@ -51,7 +71,19 @@ and quarantines whatever it cannot normalise rather than dropping it.
 A reasonable starting shape — add or drop fields freely:
 
 ```json
-{ "ts": "2026-09-30T22:41:00Z", "pwd": "/path/where/it/happened", "repo": "operations-portal", "origin": "git@github.com:org/repo.git", "kind": "short-slug", "sentiment": { "positive": ["measured instead of trusting the brief"], "negative": ["my framing sent it to the wrong layer"] }, "note": "What happened, with the evidence.", "lesson": "What to do differently." }
+{
+  "ts": "2026-09-30T22:41:00Z",
+  "pwd": "/path/where/it/happened",
+  "repo": "operations-portal",
+  "origin": "git@github.com:org/repo.git",
+  "kind": "short-slug",
+  "sentiment": {
+    "positive": ["measured instead of trusting the brief"],
+    "negative": ["my framing sent it to the wrong layer"]
+  },
+  "note": "What happened, with the evidence.",
+  "lesson": "What to do differently."
+}
 ```
 
 `sentiment` is **any** — a dict of arrays, a bare string like `"good"`, a list of

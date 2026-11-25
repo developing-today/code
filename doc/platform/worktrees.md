@@ -6,10 +6,14 @@ across several active worktrees in a single session, and it does so silently —
 `git status` keeps reporting a clean tree from a stale fsmonitor index while the
 files are gone.
 
-The environment block advertises a `/var/folders/.../T/opencode` path as
-"pre-approved for external directory access". That approval is about
-_permissions_, not _durability_. Use it for scratch output you are willing to
-lose. **Never create a git worktree there.**
+The environment block advertises a scratch directory as "pre-approved for
+external directory access". On this Mac the nix wrapper now points OpenCode's
+TMPDIR at `~/.local/share/opencode/tmp`, so that directory is
+`~/.local/share/opencode/tmp/opencode`, and `opencode-tmp-guard.nix` keeps
+`/var/folders/.../T/opencode` a symlink to it; some tool descriptions still
+name the `/var` path. Either way the approval is about _permissions_, not
+_durability_, and the place is for scratch output you are willing to lose.
+**Never create a git worktree there.**
 
 ## Where worktrees go
 
@@ -25,8 +29,16 @@ git -C <main-clone> worktree add \
   -b <branch> origin/main
 ```
 
-Pick a name nobody else is using. One worktree per agent per task — do not
-create several for the same job, and do not work in another agent's.
+Pick a name nobody else is using. One worktree per writing agent per task —
+do not create several for the same job, and do not work in another agent's.
+Read-only agents can share one.
+
+OpenChamber's `session.create` with `worktree` (and its New worktree dialog)
+creates worktrees under this root already, as
+`~/.local/share/opencode/worktree/<project id>/<name>`; use that when you start
+a session for a workstream. When you create a worktree by hand for your own
+session, move the session into it (`tools.opencode.session.move` in Code
+Mode) so every tool defaults to it.
 
 ## Never work in the session's default worktree
 

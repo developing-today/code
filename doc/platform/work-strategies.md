@@ -1,7 +1,12 @@
 # How to work here
 
-Written from a long multi-agent session that went badly before it went well. Every rule below is
-something that actually cost time or produced a wrong answer, not a preference.
+The core guardrails come from long multi-agent sessions that went badly before they went well;
+the named incidents explain them, not universal benchmarks. The flexible delegation and MCP-scripting
+guidance follows the owner's 2026-11-24 direction. Model-allocation choices remain hypotheses unless
+measured here; keep their qualifications and revise them when the evidence changes. Two skills carry the procedures
+behind the newer sections: **delegate** (models, subagents, sessions, supervision) and
+**mcpx-scripts** (Code Mode and mcpx scripts, adding MCP servers). Both live in darwin-nix's
+`.agents/skills/` and are linked into `~/.agents/skills/` on the Mac that repository configures.
 
 ## Verify, never relay
 
@@ -70,11 +75,58 @@ and `**gap**` for the same requirement from the same commit — it gets cited as
 "The document says X, the code does Y" is this codebase's signature defect (mcpx #177). When you find
 one, write the guard that would have caught it.
 
-## Delegation
+## Delegation: models, subagents and sessions
 
-**Fan out for breadth; never for depth.** Independent items in parallel works. One causal chain does
-not: three agents on a single bug produced a deleted branch, stolen commits, and ninety minutes of
-duplicate gating.
+**Delegate when someone else is faster, cheaper, or has a cleaner context than you; keep the decisions
+and the verifying.** Load the **delegate** skill before you launch two or more agents, a background
+subagent or a separate session. A repository's own rules win where they say more:
+developing-today/code dispatches subsessions on `workhorse` and escalates only by a fresh launch
+(`.opencode/instructions/routing-policy.md` there).
+
+**Match the model to the piece, not to the session.** Every subagent and session takes a model, and a
+child given none inherits yours. The pools, fastest and weakest first: `small`, `speed`, `scout`,
+`workhorse`, `specialist`, `summit`, plus `background` for long work nobody is waiting on. Call them as
+`opencode-route/<pool>` with no effort; each pool pins its own. Any model can be called directly too
+(`github-copilot/<id>#<effort>`). Lookups, status checks and mechanical edits go to the first three,
+implementation to `workhorse`, hard bugs, design and final review to `specialist` or `summit`. The
+**delegate** skill's `scripts/pools.mjs` prints what each pool runs today.
+
+**Do small things inline — usually.** Delegation costs a full model turn before any work happens, so
+an edit you already hold the context for stays inline. But a small task on `small` or `speed` can
+finish before a slow, strong model would have done it inline, and it keeps your context clean: when
+you run on a slow model and the task needs no judgement, send it.
+
+**Work in the background.** Launch long subagents with `background: true` and long commands with the
+shell's `background`, then do something that does not overlap; results arrive as a new turn. Do not
+poll and do not sleep: OpenChamber's `wait.start` wakes you on a timer or on a PR change. Ending a turn
+while workers run is fine. Your final message must not strand them: wait for them, or say what is
+still running.
+
+**Give each major workstream its own session.** An OpenChamber session (`session.create`; `ownWork:
+true` to get its answers back) has its own context, worktree, branch, model, fan-out and lifetime, and
+does not end when your context fills. Use one for anything that will outlive a few turns or deserves
+its own PR. `tools.openchamber` is not always there (the delegate skill says when); the `openchamber
+session` and `openchamber schedule` commands are shell alternatives, but lack `ownWork`'s automatic
+parent-result delivery, so keep their session IDs and supervise explicitly.
+
+**Nest when the work nests.** Subagents can launch subagents (10 levels here), and every session can
+run its own. A `summit` lead can start four `summit` area leads that each run `workhorse` implementers
+that call `scout` helpers; a `scout` can just as well start four `specialist` sessions that each run
+their own helpers. "Architects spawning workers that spawn workers" went wrong here once; the cure is
+the same as for any fan-out — each layer owns a disjoint piece, one node integrates, and every layer
+verifies what its children claim before passing it up.
+
+**Choose a lead by what it decides.** A lead that makes design or code decisions, or integrates its
+children's work, needs a strong model. A lead that only keeps independent workers moving — asks what
+is done, restarts what failed, collects reports — can be `small` or `scout`, and is probably faster
+and cheaper than a slow model tending the same sessions. That is a judgement, not yet measured here;
+record how it goes. Any session can message any other through comms, so the tree need not be strict.
+
+**Fan out on independence, in any direction.** Run independent pieces in parallel — research areas,
+review lenses, disjoint files, separate repositories — at any depth. Keep one writer per branch and per
+causal chain: three agents writing fixes for one bug produced a deleted branch, stolen commits, and
+ninety minutes of duplicate gating. Parallel readers testing different hypotheses about one bug are
+fine.
 
 **The shape that worked** (seven items, one session, no collisions):
 
@@ -84,17 +136,47 @@ duplicate gating.
 3. Workers **commit and push, and do not open a PR**.
 4. The coordinator merges every branch into **one branch** and opens **one PR**.
 
-**What fails:** architects spawning workers that spawn workers; ending a turn with workers still
-live; one PR per fix, each taking hours to gate; opening a PR from another agent's branch; launching
-a supervisor without first checking what already merged (this cost eleven duplicate issues once and
-an hour of re-derived work another time).
+**What still fails:** two writers in one branch or worktree; one PR per small fix, each gating for
+hours; opening a PR from another agent's branch; launching a supervisor without first checking what
+already merged (this cost eleven duplicate issues once and an hour of re-derived work another time).
 
-**Before launching anything:** `gh pr list`, recent merges, recent branches, recent worktrees.
+**Before launching anything:** `gh pr list`, recent merges, recent branches, recent worktrees, and live
+sessions (`tools.comms.sessions({ mode: "list", active: true })` in Code Mode).
 
-**One worktree per agent.** Agents have deleted and pushed over each other's. Never work in another
-agent's worktree, and never in the session's default checkout.
+**One worktree per writing agent.** Agents have deleted and pushed over each other's. Never work in
+another agent's worktree, and never in the session's default checkout.
 
-**Do small things inline.** Delegation costs a full model turn before any work happens.
+## Tools: MCP through mcpx, and scripts
+
+**Chain tool calls in one script.** When a task takes three or more MCP calls, mixes MCP with shell
+steps, or will run again, write one script instead of spending a turn per call. `mcpx_exec` reaches
+every MCP server plus the shell, files and network; `execute` (Code Mode) reaches sessions, comms,
+OpenChamber, GitHub and the MCP tools projected into it. No runtime has both: `mcpx_exec` lacks comms,
+whatever its description says, and `execute` sees only the MCP tools projected into it. Only what the
+script prints comes back, so filter and count inside it. The **mcpx-scripts** skill says which runtime
+reaches what, and the traps in each.
+
+**Save what will run again.** The second time a process runs, make it a named script:
+`~/.config/mcpx/scripts/<name>.ts` for you everywhere, `<repo>/.mcpx/scripts/<name>.ts` for a
+repository. `mcpx run <name>` runs it.
+
+**A CLI is fine when it is the whole job.** `gh`, `az`, `kubectl`, `aws` and `git` need no MCP. When
+the steps chain, put the CLI calls inside one script rather than alternating turns.
+
+**Wire in what we keep using.** When a service keeps coming up with no MCP namespace, find a server
+(`mcpx registry search`), vet it like any third-party code, try it, then make it permanent in
+`~/.config/nix/mcpx.config.nix` and `docs/mcp.md` (Azure and Kubernetes went in this way). A secret
+goes through `mcpx secrets set` or OpenChamber's secret card, never through chat.
+
+**A read call that hangs 45 seconds and then fails was refused, not slow.** Under mcpx's default
+`policy.write=ask`, a tool its server does not mark read-only counts as a possible write, and in a
+script nobody answers the question. If the tool really only reads, declare it in that server's
+`readOnlyTools` in `mcpx.config.nix`; nixos, deepwiki and markitdown needed this.
+
+**Never turn an error into a default.** A script that caught a failed `gh` call and returned `[]`
+printed "ok" for a pull request with two failing checks: `gh` was not on the mcpx daemon's PATH. Let
+the failure show. Scripts the daemon runs get its PATH, which `just mcpx-exec-env` prints; call a
+program by absolute path when you cannot be sure it is on it.
 
 ## Recommendations
 
@@ -219,7 +301,7 @@ route ignored the new mode entirely. Its commit had a one-line message and no ev
 - **A mutation that cannot trigger proves nothing.** A `break` on a map filled by goroutines never
   fired, so the test "passed" with the fix removed. Make the mutation undo the fix's actual mechanism.
 
-## mcpx specifics
+## Working on mcpx itself
 
 - The signature defect is **declared but not delivered** (#177): a flag parsed and dropped, a
   capability advertised and never sent, a setting read but inert. `consumed_test.go` proves a setting

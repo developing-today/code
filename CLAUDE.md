@@ -1,6 +1,9 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+@AGENTS.md
+
+`AGENTS.md` owns the shared rules, routing policy and skill index for every harness.
+The orientation below supplements it; it does not replace those rules.
 
 ## What this repository is
 

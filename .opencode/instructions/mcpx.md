@@ -1,101 +1,96 @@
-All MCP tools are accessed through `mcpx`. The `mcpx` gateway daemon unifies all MCP servers under session isolation and TypeScript Code Mode.
+# MCP scripts and the two Code Mode runtimes
 
-## Always write scripts or use `mcpx_exec` / `mcpx exec`
+Use mcpx for MCP servers. Discover what this machine actually has; do not copy a
+namespace inventory from another host. `mcpx ls`, then `mcpx search <words>`, then
+`mcpx types <namespace>.<tool>` loads only the signatures you need. The native
+`mcpx_discover` tool does the same. Names in the generated signatures win over
+spelling guessed from a server's display name.
 
-Write `.ts` scripts or use `mcpx_exec` (via native tool or CLI `mcpx exec '<code'>`) for tool usage.
-TypeScript execution filters large payloads on the server side so only relevant results enter your LLM context window.
+## Choose the runtime before writing the script
 
-```bash
-# Inline check via CLI
-mcpx exec 'console.log(await tools.codedb.status({}))'
+- **`mcpx_exec`** (native OpenCode tool) sends TypeScript to the mcpx daemon
+  (`POST /v1/exec`). It reaches every configured MCP server, files, subprocesses
+  and network. Only what you print returns to the conversation.
+- **`mcpx exec '<source>'` / `mcpx run <name-or-file.ts>`** runs the script locally,
+  with the shell caller's environment and working directory. MCP calls still go
+  through the daemon. A saved script's arguments are in `Deno.args`.
+- **`execute`** (OpenCode Code Mode) runs confined JavaScript, not a local Deno
+  program. It reaches the built-in `tools.comms`, `tools.opencode`, any tools
+  discovered by `search`, and MCP tools currently projected into its catalog.
+  It has `fetch`, but no direct filesystem or subprocess API. `tools.openchamber`
+  exists only when that integration supplied it; discover it, do not assume it.
 
-# Multi-line script execution via CLI
-cat << 'EOF' | mcpx exec -
-const results = await tools.fff.grep({ query: "TODO" });
-console.log(JSON.stringify((results.matches || []).slice(0, 5), null, 2));
-EOF
+**Comms is not an MCP server.** The installed OpenCode fork's `mcpx_exec` description
+and `mcpx_discover({ namespace: "comms" })` advertise `tools.comms` in mcpx scripts,
+but the daemon does not implement that namespace. Reproduced on 2026-11-24:
+
+```ts
+// In mcpx_exec (or mcpx exec): both fail; no message is sent.
+await tools.comms.sessions({ mode: "chain", depth: "self" }); // not a function
+await call("comms", "msg", { mode: "read", topic: "private" }); // unknown namespace
 ```
 
-## Available MCP Namespaces
+Use `execute` instead:
 
-| Namespace | Tools | Description |
-|---|---|---|
-| `codedb` | tree, outline, symbol, search, word, hot, deps, read, edit, changes, status, snapshot, bundle, projects, index, remote | Codebase exploration, symbol lookup, AST-aware search |
-| `fff` | grep, find_files, multi_grep | Frecency-ranked file search and content grep |
-| `chrome-devtools` | navigate_page, take_screenshot, take_snapshot, click, fill, press_key, hover, type_text, evaluate_script, wait_for, upload_file, handle_dialog, list_console_messages, get_console_message, list_network_requests, get_network_request | Browser automation, UI verification, screenshots (session-isolated) |
-| `context7` | resolve_library_id, query_docs | Library documentation lookup (API refs, usage guides, examples) |
-| `jules` | Jules tasks, issues, and orchestration | Google Jules integration |
-| `antigravity-jules-orchestration` | Orchestration tasks | Multi-agent coordination |
-| `antigravity` | Agent tooling | Antigravity interface |
-| `comms` | msg, topics, sessions | Cross-session messaging between running sessions (see below) |
-| `desktop-commander` | Desktop commander | System administration & actions |
-| `sequential-thinking` | sequentialthinking | Step-by-step reasoning server |
-| `mcp-server-neon` | database operations | Neon serverless Postgres tools |
-| `cloudrun` | service management | Google Cloud Run deployment and inspection |
-| `gopls-mcp-server` | Go LSP tools | Go language server diagnostics and navigation |
-
-## Cross-session messaging (`comms`)
-
-Running sessions can message each other through the `comms` namespace in
-code mode (verified 2026-11-06). Discover it first with `mcpx_discover`
-(namespace `comms`; if discovery errors once, retry), then use
-`tools.comms.msg`:
-
-```typescript
-// Send + wake the recipient session
-await tools.comms.msg({ mode: "send", to: "ses_<recipient>", text: "Token: TOK-987. Reply with it reversed.", deliver: "wake" });
-
-// Receive: block inside your turn until a message arrives
-const incoming = await tools.comms.msg({ mode: "unread", wait: 120 });
+```js
+return await tools.comms.sessions({ mode: "chain", depth: "self" });
 ```
 
-Send-with-`wake` plus a blocked unread-with-`wait` receive is a complete
-request/response loop between two live sessions. `topics` lists message
-topics; `sessions` lists reachable sessions. Messaging is reached through
-code mode only — it is not a plain tool call.
+The same `execute` runtime provides `tools.comms.msg` (including direct wake-up
+messages), topics and session logs. See [subagents.md](subagents.md#cross-session-messaging).
+This is a runtime boundary, not a missing secret or a server to install.
 
-## Script Patterns
+## Chain, filter, save
 
-```typescript
-// Find definitions
-const sym = await tools.codedb.symbol({ name: "handleAuth" });
-console.log(sym);
+Prefer one script for independent queries, pagination, joins or a multi-step MCP
+process. Run independent reads together with `Promise.allSettled`, await every
+call you need, and return a small answer that keeps each error visible. Never
+turn a failed source into an empty array and then report "none found".
 
-// Browser verification (isolated session)
-await tools["chrome-devtools"].navigate_page({ url: "http://localhost:3000" });
-const snap = await tools["chrome-devtools"].take_snapshot({});
-console.log(snap);
+In a mcpx script, `Object.keys(tools)` lists the real server namespaces.
+`typeof tools.some_name` is not an existence check: the proxy returns a function
+for invented names too. Likewise, a successful script exit is not proof every
+`Promise.allSettled` entry succeeded; inspect each result.
 
-// Library documentation
-const lib = await tools.context7.resolve_library_id({ query: "how to use React hooks", libraryName: "react" });
-const docs = await tools.context7.query_docs({ libraryId: lib.libraryId, query: "useEffect cleanup" });
-console.log(docs);
+When a process will run again, save it in `<repo>/.mcpx/scripts/<name>.ts` or
+`~/.config/mcpx/scripts/<name>.ts`, then `mcpx run <name>`. The first comment line is
+its description in `mcpx scripts`. Ignore the generated `mcpx-client.ts`,
+`mcpx-globals.d.ts` and `.*.mcpx-entry.ts` written beside a script by the launcher.
+Use `mcpx --json run <name>` when another program consumes the result.
 
-// Chaining tools across servers
-const files = await tools.fff.grep({ query: "deprecated" });
-for (const f of (files.matches || []).slice(0, 5)) {
-  const outline = await tools.codedb.outline({ path: f.path });
-  console.log(f.path, outline);
-}
-```
+A CLI is still fine. In a script that mixes MCP calls with `gh`, `az`, `kubectl` or
+`git`, use `Deno.Command(program, { args })`, check the process exit code and throw
+on error. It executes directly; `$SHELL` does not mean an interactive/login shell
+is sourced. Choose an absolute binary path and explicit `cwd` when they matter.
 
-## Commands
+## Environment and failures
 
-| Command | Description |
-|---|---|
-| `mcpx ls` | List active server namespaces and tool counts |
-| `mcpx types <ns>` | Print TypeScript signatures for a namespace |
-| `mcpx exec 'code'` | Run inline TypeScript against all MCP servers |
-| `mcpx exec <script>.ts` | Run a script file |
-| `mcpx call <server>.<tool> '<args>'` | Call a single tool with JSON arguments |
-| `mcpx daemon run` | Run daemon in foreground |
-| `mcpx log` | Inspect execution logs |
-| `mcpx stats` | Check slowest tools and error counts |
-| `mcpx skills list` | List embedded agent skills |
-| `mcpx skills install` | Install skills for OpenCode, Claude, Codex, or Antigravity |
+On the darwin-nix Mac, daemon-run scripts start as the signed-in user in `$HOME`
+(the launchd agent's WorkingDirectory), whereas CLI scripts use the caller's
+working directory (`script.cwd=caller`). `configuration.nix` appends the usual
+system/user profile and Homebrew directories to the daemon PATH; a `just switch`
+is needed to activate that setting. `just mcpx-exec-env` in darwin-nix prints the
+actual user, directory, shell and command resolution. Elsewhere inspect the
+service definition; do not assume a daemon inherited your login shell's PATH.
+The HTTP API supports per-run `options.cwd` and `options.env` (tested against the
+running daemon), but the native `mcpx_exec` tool accepts only `source` and does
+not supply the caller's directory. Use CLI execution or explicit subprocess
+`cwd` when a task needs its worktree rather than the daemon's home directory.
 
-## Key Notes
+- A 45-second wait ending in **"may be destructive and was not confirmed"** is a
+  write-policy refusal, not slow inference. An unannotated tool is treated as a
+  possible write under `policy.write=ask`. For a genuinely read-only tool,
+  configure exact `readOnlyTools` names in that server's mcpx settings. Do not
+  disable the global gate to get one search through.
+- `mcpx log --since 5m` shows calls and errors; `mcpx status` shows server stderr.
+  Restart only the affected namespace with `mcpx restart <namespace>` if needed.
+- `mcpx config --sources` shows the config files. All clients on a machine must
+  name the daemon's exact config path; an equal copy or a symlink can select a
+  different daemon. Use the already-configured `MCPX_CONFIG`.
+- Missing secrets go through the private secret UI or `mcpx secrets set <NAME>`,
+  never a prompt transcript or a literal config value.
 
-- Configuration: `.mcpx.json` at repo root
-- Secrets: loaded from environment / direnv (e.g. `JULES_API_KEY`, `CONTEXT7_API_KEY`) — never put secrets in config files
-- Stateful servers (e.g. `chrome-devtools`) are leased exclusively per session
+For this Mac's servers, credentials, Azure/Kubernetes read-only settings and
+build/activation details: [doc/fleet/mcp.md](../../doc/fleet/mcp.md). For the
+step-by-step local scripting procedure, load the `mcpx-scripts` skill when it is
+available; its source is darwin-nix's `.agents/skills/mcpx-scripts/`.

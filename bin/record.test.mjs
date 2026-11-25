@@ -227,6 +227,27 @@ test('CLI: runs main via file symlink and via directory symlink (#2235)', () => 
   );
 });
 
+test('CLI: executable shebang works through a PATH-style record symlink', { skip: process.platform === 'win32' }, () => {
+  // Oracle: invoking the documented command, not `node record.mjs`, appends
+  // the literal input once. The existing symlink test always supplied node
+  // and therefore passed while this entry point was mode 644 and got EACCES.
+  const target = tmpTarget();
+  const linkDir = fs.mkdtempSync(path.join(os.tmpdir(), 'record-executable-'));
+  try {
+    const link = path.join(linkDir, 'record');
+    fs.symlinkSync(recordCli, link);
+    const result = spawnSync(link, ['{"kind":"executable-symlink"}'], {
+      env: { ...process.env, AI_RECORDINGS_FILE: target },
+      encoding: 'utf8'
+    });
+    assert.equal(result.error, undefined, result.error?.message);
+    assert.equal(result.status, 0, result.stderr);
+    assert.deepEqual(readLines(target).map((line) => JSON.parse(line).kind), ['executable-symlink']);
+  } finally {
+    fs.rmSync(linkDir, { recursive: true, force: true });
+  }
+});
+
 test('importing record.mjs as a library does not run main (#2235)', () => {
   const target = tmpTarget();
   const env = { ...process.env, AI_RECORDINGS_FILE: target };
