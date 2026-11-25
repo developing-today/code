@@ -64,14 +64,14 @@ describe("server boots from fixtures", () => {
     const json = await fetch(`http://127.0.0.1:${port}/api/search.json?q=fleet`);
     expect(json.status).toBe(200);
     const jsonTiming = json.headers.get("server-timing") ?? "";
-    for (const stage of [...expected, "serialize"]) {
+    for (const stage of [...expected, "serialize", "total"]) {
       expect(jsonTiming).toMatch(new RegExp(`(?:^|,\\s*)${stage};dur=\\d+(?:\\.\\d+)?`));
     }
 
     const page = await fetch(`http://127.0.0.1:${port}/search?q=fleet`);
     expect(page.status).toBe(200);
     const pageTiming = page.headers.get("server-timing") ?? "";
-    for (const stage of [...expected, "render"]) {
+    for (const stage of [...expected, "render", "total"]) {
       expect(pageTiming).toMatch(new RegExp(`(?:^|,\\s*)${stage};dur=\\d+(?:\\.\\d+)?`));
     }
   });

@@ -1764,17 +1764,38 @@ async function roadmapContext() {
   return { rows, items, pool: poolResult.pool, reconciliation, drill };
 }
 
+type SearchTimings = Record<string, number>;
+
+async function withSearchTiming<T>(timings: SearchTimings, stage: string, run: () => T | Promise<T>): Promise<T> {
+  const started = performance.now();
+  try {
+    return await run();
+  } finally {
+    timings[stage] = performance.now() - started;
+  }
+}
+
+function withSearchTimings(response: Response, timings: SearchTimings): Response {
+  const value = Object.entries(timings)
+    .map(([stage, duration]) => `${stage};dur=${Math.max(0, duration).toFixed(2)}`)
+    .join(", ");
+  response.headers.set("server-timing", value);
+  return response;
+}
+
 async function searchContext(query: string) {
+  const timings: SearchTimings = {};
   // #1212 slice 2: registry, DNS, services, and tier items join the
   // board/roadmap subjects. Each extra source fails soft (empty on
-  // error) so one broken source never takes search down with it.
+  // error) so one broken source never takes search down with it. The
+  // source timings below overlap: these reads intentionally run in parallel.
   const [board, rows, registry, dns, usage, orchestration] = await Promise.all([
-    source.board(),
-    source.roadmap(),
-    source.registry().catch(() => []),
-    source.dns().catch(() => null),
-    source.usage().catch(() => null),
-    source.orchestration().catch(() => null),
+    withSearchTiming(timings, "board", () => source.board()),
+    withSearchTiming(timings, "roadmap", () => source.roadmap()),
+    withSearchTiming(timings, "registry", () => source.registry().catch(() => [])),
+    withSearchTiming(timings, "dns", () => source.dns().catch(() => null)),
+    withSearchTiming(timings, "usage", () => source.usage().catch(() => null)),
+    withSearchTiming(timings, "orchestration", () => source.orchestration().catch(() => null)),
   ]);
   const tierItems = orchestration ? [...orchestration.tiers.needsDrew, ...orchestration.tiers.needsOrchestrator] : [];
   // Codex P2 on PR #7331: refs carried only by the slice-2 sources
@@ -1785,9 +1806,10 @@ async function searchContext(query: string) {
     isValidRef,
   );
   const refs = [...new Set([...allRefs(board), ...allRefs(rows), ...extraRefs])];
-  const items = await source.items(refs);
+  const items = await withSearchTiming(timings, "items", () => source.items(refs));
   const extras = { registry, dns, services: usage?.services ?? [], tierItems };
-  return { query, results: searchWork(board, rows, items, query, extras), items };
+  const results = await withSearchTiming(timings, "search", () => searchWork(board, rows, items, query, extras));
+  return { query, results, items, timings };
 }
 
 // #3321: watchdog gap-sync passes run whole and in observation
@@ -3970,12 +3992,20 @@ async function handler(req: Request, remoteAddress?: string): Promise<Response> 
     );
   }
   if (path === "/search") {
-    const { query, results, items } = await searchContext(url.searchParams.get("q") ?? "");
-    return html(renderSearch(query, results, items, prov(), provDetail()));
+    const started = performance.now();
+    const { query, results, items, timings } = await searchContext(url.searchParams.get("q") ?? "");
+    const body = await withSearchTiming(timings, "render", () => renderSearch(query, results, items, prov(), provDetail()));
+    timings.total = performance.now() - started;
+    return withSearchTimings(html(body), timings);
   }
   if (path === "/api/search.json") {
-    const { query, results } = await searchContext(url.searchParams.get("q") ?? "");
-    return json({ query: query.trim(), total: results.length, results });
+    const started = performance.now();
+    const { query, results, timings } = await searchContext(url.searchParams.get("q") ?? "");
+    const response = await withSearchTiming(timings, "serialize", () =>
+      json({ query: query.trim(), total: results.length, results }),
+    );
+    timings.total = performance.now() - started;
+    return withSearchTimings(response, timings);
   }
   if (path === "/api/registry.json") {
     const records = await source.registry();
