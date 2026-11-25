@@ -559,7 +559,10 @@ fn test_a_cut_delegated_manage_chain_refuses_membership_changes() {
     ];
     let projection = project(&events);
     assert_eq!(outcome(&projection, "v0"), Outcome::Applied);
-    assert_eq!(outcome(&projection, "a0"), Outcome::Refused(Refusal::NoChain));
+    assert_eq!(
+        outcome(&projection, "a0"),
+        Outcome::Refused(Refusal::NoChain)
+    );
     assert_eq!(role_of(&projection, g, 3), None);
 }
 
