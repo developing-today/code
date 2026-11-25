@@ -68,10 +68,7 @@ const DOOR_SET: ReadonlySet<string> = new Set(DOORS);
 
 /** The minimal SQL surface (DO SqlStorage shape; see header). */
 export interface IdentityLinkSql {
-  exec(
-    query: string,
-    ...params: (string | null)[]
-  ): { toArray(): Record<string, unknown>[] };
+  exec(query: string, ...params: (string | null)[]): { toArray(): Record<string, unknown>[] };
 }
 
 /** An authenticated session on an account, resolved by the caller
@@ -107,9 +104,7 @@ export type LinkDenyReason =
   | "link_not_active"
   | "last_door_guard";
 
-export type LinkResult =
-  | { ok: true; link: IdentityLinkRow }
-  | { ok: false; reason: LinkDenyReason };
+export type LinkResult = { ok: true; link: IdentityLinkRow } | { ok: false; reason: LinkDenyReason };
 
 export type UnlinkResult =
   | { ok: true; unlinked: IdentityLinkRow; replacement: IdentityLinkRow | null }
@@ -152,11 +147,7 @@ function toRow(raw: LinkRowRaw): IdentityLinkRow {
   };
 }
 
-function findLinkByDoorIdentity(
-  sql: IdentityLinkSql,
-  door: string,
-  providerSub: string,
-): IdentityLinkRow | null {
+function findLinkByDoorIdentity(sql: IdentityLinkSql, door: string, providerSub: string): IdentityLinkRow | null {
   const rows = sql
     .exec(
       "SELECT link_id, account_id, door, provider_sub, linked_at, linked_by, unlinked_at FROM identity_link WHERE door = ? AND provider_sub = ?",
@@ -167,11 +158,7 @@ function findLinkByDoorIdentity(
   return rows.length === 0 ? null : toRow(rows[0]!);
 }
 
-function findActiveLink(
-  sql: IdentityLinkSql,
-  accountId: string,
-  door: string,
-): IdentityLinkRow | null {
+function findActiveLink(sql: IdentityLinkSql, accountId: string, door: string): IdentityLinkRow | null {
   const rows = sql
     .exec(
       "SELECT link_id, account_id, door, provider_sub, linked_at, linked_by, unlinked_at FROM identity_link WHERE account_id = ? AND door = ? AND unlinked_at IS NULL",
@@ -184,28 +171,20 @@ function findActiveLink(
 
 function countActiveLinks(sql: IdentityLinkSql, accountId: string): number {
   const rows = sql
-    .exec(
-      "SELECT COUNT(*) AS n FROM identity_link WHERE account_id = ? AND unlinked_at IS NULL",
-      accountId,
-    )
+    .exec("SELECT COUNT(*) AS n FROM identity_link WHERE account_id = ? AND unlinked_at IS NULL", accountId)
     .toArray() as { n: number }[];
   return rows[0]!.n;
 }
 
 function accountExists(sql: IdentityLinkSql, accountId: string): boolean {
-  const rows = sql
-    .exec("SELECT account_id FROM account WHERE account_id = ?", accountId)
-    .toArray();
+  const rows = sql.exec("SELECT account_id FROM account WHERE account_id = ?", accountId).toArray();
   return rows.length > 0;
 }
 
 /** The ceremony's actor check: the session's binding must be the
  * account's own ACTIVE binding (a superseded or foreign binding
  * performs no identity-state change). */
-function actorIsAccountBinding(
-  sql: IdentityLinkSql,
-  session: LinkSession,
-): boolean {
+function actorIsAccountBinding(sql: IdentityLinkSql, session: LinkSession): boolean {
   const rows = sql
     .exec(
       "SELECT binding_id FROM binding WHERE binding_id = ? AND account_id = ? AND status = 'active'",
@@ -241,11 +220,7 @@ function writeEvent(
  * `identity_link` lookup. Only ACTIVE links resolve: an unlinked
  * door stops opening the account immediately (design §4.3).
  */
-export function resolveAccountIdByDoor(
-  sql: IdentityLinkSql,
-  door: string,
-  providerSub: string,
-): string | null {
+export function resolveAccountIdByDoor(sql: IdentityLinkSql, door: string, providerSub: string): string | null {
   if (!DOOR_SET.has(door)) return null;
   const link = findLinkByDoorIdentity(sql, door, providerSub);
   if (link === null || link.unlinkedAt !== null) return null;
@@ -254,10 +229,7 @@ export function resolveAccountIdByDoor(
 
 /** All of an account's link rows, active and historical, oldest
  * first. History rows are retained while the account lives. */
-export function listIdentityLinks(
-  sql: IdentityLinkSql,
-  accountId: string,
-): IdentityLinkRow[] {
+export function listIdentityLinks(sql: IdentityLinkSql, accountId: string): IdentityLinkRow[] {
   const rows = sql
     .exec(
       "SELECT link_id, account_id, door, provider_sub, linked_at, linked_by, unlinked_at FROM identity_link WHERE account_id = ? ORDER BY linked_at, link_id",
@@ -279,15 +251,12 @@ export function linkDoor(
   deps: IdentityLinkDeps = {},
 ): LinkResult {
   if (!DOOR_SET.has(proof.door)) return { ok: false, reason: "bad_door" };
-  if (!accountExists(sql, session.accountId))
-    return { ok: false, reason: "account_not_found" };
-  if (!actorIsAccountBinding(sql, session))
-    return { ok: false, reason: "actor_not_account_binding" };
+  if (!accountExists(sql, session.accountId)) return { ok: false, reason: "account_not_found" };
+  if (!actorIsAccountBinding(sql, session)) return { ok: false, reason: "actor_not_account_binding" };
 
   const existing = findLinkByDoorIdentity(sql, proof.door, proof.providerSub);
   if (existing !== null) {
-    if (existing.accountId !== session.accountId)
-      return { ok: false, reason: "door_identity_claimed" };
+    if (existing.accountId !== session.accountId) return { ok: false, reason: "door_identity_claimed" };
     if (existing.unlinkedAt === null) return { ok: false, reason: "already_linked" };
     // Re-link of the account's own door: reactivate the retained
     // history row (the UNIQUE spans history; no second row exists).
@@ -346,18 +315,15 @@ export function unlinkDoor(
   replacement?: DoorProof,
 ): UnlinkResult {
   if (!DOOR_SET.has(door)) return { ok: false, reason: "bad_door" };
-  if (!accountExists(sql, session.accountId))
-    return { ok: false, reason: "account_not_found" };
-  if (!actorIsAccountBinding(sql, session))
-    return { ok: false, reason: "actor_not_account_binding" };
+  if (!accountExists(sql, session.accountId)) return { ok: false, reason: "account_not_found" };
+  if (!actorIsAccountBinding(sql, session)) return { ok: false, reason: "actor_not_account_binding" };
 
   const active = findActiveLink(sql, session.accountId, door);
   if (active === null) return { ok: false, reason: "link_not_active" };
 
   let replacementLink: IdentityLinkRow | null = null;
   if (replacement === undefined) {
-    if (countActiveLinks(sql, session.accountId) <= 1)
-      return { ok: false, reason: "last_door_guard" };
+    if (countActiveLinks(sql, session.accountId) <= 1) return { ok: false, reason: "last_door_guard" };
   } else {
     // A supplied replacement is linked first, whatever the active
     // count: the caller asked for one atomic swap, and a refused
@@ -368,11 +334,7 @@ export function unlinkDoor(
   }
 
   const at = nowOf(deps);
-  sql.exec(
-    "UPDATE identity_link SET unlinked_at = ? WHERE link_id = ?",
-    at,
-    active.linkId,
-  );
+  sql.exec("UPDATE identity_link SET unlinked_at = ? WHERE link_id = ?", at, active.linkId);
   const unlinked: IdentityLinkRow = { ...active, unlinkedAt: at };
   writeEvent(sql, deps, unlinked, "unlinked", session.bindingId, at);
   return { ok: true, unlinked, replacement: replacementLink };

@@ -113,16 +113,8 @@ fn manifest_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 }
 
-fn repo_root() -> PathBuf {
-    manifest_dir()
-        .parent()
-        .and_then(|p| p.parent())
-        .expect("pkgs/id must sit two levels below the repo root")
-        .to_path_buf()
-}
-
 fn load_report() -> serde_json::Value {
-    let path = repo_root().join(
+    let path = manifest_dir().join(
         "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-c/\
          store-placement-research-report.json",
     );

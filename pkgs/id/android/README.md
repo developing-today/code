@@ -4,7 +4,7 @@
 
 - `check-android.sh`: the slice-1 Android gate. Runs the
   `android_dependency_boundary` check, then `cargo check -p id-client
-  --target aarch64-linux-android` when the target std is installed.
+--target aarch64-linux-android` when the target std is installed.
 - `app/`: a minimal launcher APK shell. It intentionally reports the
   disconnected state; it does not yet connect, relay input, or host an
   id node. It requests no permissions, including no VPN permission.

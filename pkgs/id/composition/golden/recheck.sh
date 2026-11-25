@@ -13,7 +13,7 @@ if [ "$CANON" != "$(cat canonical.hex)" ]; then
   echo "FAIL: re-encoded canonical bytes differ from canonical.hex"
   exit 1
 fi
-echo "canonical bytes reproduce: $(($(wc -c < canonical.hex) / 2)) bytes"
+echo "canonical bytes reproduce: $(($(wc -c <canonical.hex) / 2)) bytes"
 
 if command -v b3sum >/dev/null 2>&1; then
   HASH="$(printf '%s' "$CANON" | xxd -r -p | b3sum | cut -d' ' -f1)"
@@ -21,7 +21,7 @@ elif [ -x /home/user/.local/share/opencode/tmp/opencode/s1-blake3/target/release
   HASH="$(/home/user/.local/share/opencode/tmp/opencode/s1-blake3/target/release/s1-blake3 "$CANON")"
 else
   echo "no BLAKE3 tool available; canonical bytes verified, hash step skipped"
-  echo "build one: cargo build --offline in a crate depending on blake3 = \"=1.8.7\""
+  echo 'build one: cargo build --offline in a crate depending on blake3 = "=1.8.7"'
   exit 0
 fi
 if [ "$HASH" != "$(cat hash.hex)" ]; then

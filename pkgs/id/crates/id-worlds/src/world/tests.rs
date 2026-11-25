@@ -10459,12 +10459,9 @@ mod schedule_tests {
     async fn a_fuel_rate_refusal_of_a_host_event_keeps_the_actor_healthy() {
         let journal = Recorded::for_world("system-fuel-rate");
         let clock: Arc<ManualClock> = Arc::new(ManualClock::new(EPOCH_MS));
-        let mut core = WorldCore::new_with_clock(
-            "system-fuel-rate",
-            WorldLimits::default(),
-            clock.clone(),
-        )
-        .unwrap();
+        let mut core =
+            WorldCore::new_with_clock("system-fuel-rate", WorldLimits::default(), clock.clone())
+                .unwrap();
         let (ann, token) = core
             .issue_capability("ann", WorldScopes::GUEST, CapabilityBounds::default())
             .unwrap();
@@ -10475,7 +10472,10 @@ mod schedule_tests {
             Box::new(FuelLimitedSystemProgram),
             Some(Box::new(journal.clone())),
         );
-        actor.core.schedules.insert("tick".to_owned(), PendingSchedule::one_shot(EPOCH_MS));
+        actor
+            .core
+            .schedules
+            .insert("tick".to_owned(), PendingSchedule::one_shot(EPOCH_MS));
         actor.fire_schedules().await;
         assert!(actor.program_healthy);
         assert!(actor.core.schedules.contains_key("tick"));
@@ -10639,9 +10639,7 @@ mod schedule_tests {
                 JournalEntry::System { event } => match &event.kind {
                     WorldEventKind::System { event: text } => {
                         serde_json::from_str::<serde_json::Value>(text)
-                            .is_ok_and(|value| {
-                                value["cap"] == "result" && value["id"] == id
-                            })
+                            .is_ok_and(|value| value["cap"] == "result" && value["id"] == id)
                     }
                     _ => false,
                 },

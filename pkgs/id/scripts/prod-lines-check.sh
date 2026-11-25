@@ -80,6 +80,10 @@ test_only_reason() {
     printf 'module-gated test module (#[cfg(test)] mod tests in src/cli/mod.rs)'
     return 0
     ;;
+  src/groups/tests.rs)
+    printf 'module-gated test module (#[cfg(test)] mod tests in src/groups/mod.rs)'
+    return 0
+    ;;
   esac
   return 1
 }

@@ -258,7 +258,7 @@ iroh-blobs = "0.103"
 # Parses the relay kit's configs in tests/relay_ops.rs. Dev only.
 toml = "1"
 # Local mainline DHT testnet for tests/dht_testnet.rs (P7.3). Dev only; already in the lock via the `dht` feature.
-n0-mainline = "0.8"
+n0-mainline = "0.7.2"
 # The lookup under test in tests/dht_testnet.rs (P7.3); the root package
 # only names it for that test, so it is a dev-dependency.
 iroh-mainline-address-lookup = "0.6"

@@ -30,7 +30,7 @@ if [ -z "${WASM_OPT:-}" ]; then
   fi
 fi
 
-(cd ../roc-world && ./build-host.sh >/dev/null)
+(cd ../roc-world && bash ./build-host.sh >/dev/null)
 "$ROC" build main.roc --target=wasm32 --wasm-memory=8454144 --output=mind-map.wasm
 
 # Same size discipline as roc-grid: optimize, strip DWARF, keep the name section

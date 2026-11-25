@@ -6,19 +6,19 @@ The [The first ID apps and the #2056 family](research-apps-backlog.md) resolves 
 
 **218 distinct open issues** matched the three requested labels between **12:50:30 and 12:50:43 UTC**. The earlier 12:34–12:38 UTC snapshot held 219. The sole issue removed was [#12657](https://github.com/developing-today/code/issues/12657). No new issue entered the union during the interval.
 
-| GitHub REST Search query | Earlier count | Updated count | Pages of up to 100 |
-| --- | ---: | ---: | ---: |
-| [Open app/id issues](https://api.github.com/search/issues?q=repo%3Adeveloping-today%2Fcode%20is%3Aissue%20is%3Aopen%20label%3A%22app%2Fid%22) | 204 | 203 | 3 |
-| [Open epic/id-program issues](https://api.github.com/search/issues?q=repo%3Adeveloping-today%2Fcode%20is%3Aissue%20is%3Aopen%20label%3A%22epic%2Fid-program%22) | 188 | 187 | 2 |
-| [Open epic/id-platform issues](https://api.github.com/search/issues?q=repo%3Adeveloping-today%2Fcode%20is%3Aissue%20is%3Aopen%20label%3A%22epic%2Fid-platform%22) | 35 | 35 | 1 |
-| **Union by repository issue number** | **219** | **218** | **6 fetched** |
+| GitHub REST Search query                                                                                                                                          | Earlier count | Updated count | Pages of up to 100 |
+| ----------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------: | ------------: | -----------------: |
+| [Open app/id issues](https://api.github.com/search/issues?q=repo%3Adeveloping-today%2Fcode%20is%3Aissue%20is%3Aopen%20label%3A%22app%2Fid%22)                     |           204 |           203 |                  3 |
+| [Open epic/id-program issues](https://api.github.com/search/issues?q=repo%3Adeveloping-today%2Fcode%20is%3Aissue%20is%3Aopen%20label%3A%22epic%2Fid-program%22)   |           188 |           187 |                  2 |
+| [Open epic/id-platform issues](https://api.github.com/search/issues?q=repo%3Adeveloping-today%2Fcode%20is%3Aissue%20is%3Aopen%20label%3A%22epic%2Fid-platform%22) |            35 |            35 |                  1 |
+| **Union by repository issue number**                                                                                                                              |       **219** |       **218** |      **6 fetched** |
 
 Each label query sorted by creation date ascending. Every page returned `incomplete_results: false` and agreed on that label’s total. The number of distinct issue numbers on the combined pages equalled that total for each label. The records all reported open status and carried the requested label. Search results represent a timed observation of GitHub’s index.
 
-| Change | Verified consequence |
-| --- | --- |
+| Change                                                                                     | Verified consequence                                                                                                                                                                                                                                                                                                                                                   |
+| ------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | [#12657](https://github.com/developing-today/code/issues/12657) closed at **12:41:25 UTC** | Present at rank 141 in the earlier union with both app/id and epic/id-program. Its scene, audio and widget steps are recorded by [#13214](https://github.com/developing-today/code/pull/13214), [#13244](https://github.com/developing-today/code/pull/13244) and [#13266](https://github.com/developing-today/code/pull/13266). The widget PR merged at 12:41:04 UTC. |
-| [#3404](https://github.com/developing-today/code/issues/3404) gained `status:in-review` | This was the only full-label-set difference among retained issues. [#13167](https://github.com/developing-today/code/pull/13167) and [#13275](https://github.com/developing-today/code/pull/13275) were open when checked. #13275 specifically covers the durable source-freeze acknowledgement before export. |
+| [#3404](https://github.com/developing-today/code/issues/3404) gained `status:in-review`    | This was the only full-label-set difference among retained issues. [#13167](https://github.com/developing-today/code/pull/13167) and [#13275](https://github.com/developing-today/code/pull/13275) were open when checked. #13275 specifically covers the durable source-freeze acknowledgement before export.                                                         |
 
 ## Program tracking at the earlier census
 

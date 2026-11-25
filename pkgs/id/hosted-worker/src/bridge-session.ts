@@ -171,18 +171,13 @@ export function splitBatches(events: Uint8Array[], limits: BridgeLimits): Uint8A
   let batchBytes = 4; // the encoded count prefix
   for (const event of events) {
     const framed = encodedEventBytes(event);
-    if (
-      batch.length > 0 &&
-      (batch.length >= limits.maxBatchEvents || batchBytes + framed > limits.maxBatchBytes)
-    ) {
+    if (batch.length > 0 && (batch.length >= limits.maxBatchEvents || batchBytes + framed > limits.maxBatchBytes)) {
       batches.push(batch);
       batch = [];
       batchBytes = 4;
     }
     if (batchBytes + framed > limits.maxBatchBytes) {
-      throw new Error(
-        `event of ${event.length} bytes cannot fit the ${limits.maxBatchBytes}-byte batch bound`,
-      );
+      throw new Error(`event of ${event.length} bytes cannot fit the ${limits.maxBatchBytes}-byte batch bound`);
     }
     batch.push(event);
     batchBytes += framed;
@@ -470,10 +465,7 @@ export class BridgeSessionServer {
       // A held event that cannot fit any batch under these limits:
       // name it and close, rather than emit a batch the peer's
       // decoder is bound to reject (#14644).
-      return this.fail(
-        "event_too_large",
-        e instanceof Error ? e.message : "an event cannot fit the batch bound",
-      );
+      return this.fail("event_too_large", e instanceof Error ? e.message : "an event cannot fit the batch bound");
     }
     for (const batch of batches) {
       this.send(frame(TAG.batch, encodeBatch(batch)));

@@ -57,10 +57,10 @@ mod types;
 /// World-service constructors and module lifecycle (split from this module, #4717).
 mod service;
 
-/// Document store API (split from this module, #8594).
-mod documents;
 /// Session-layer admin audit (split from this module, #13057).
 mod audit;
+/// Document store API (split from this module, #8594).
+mod documents;
 
 /// Producer-side Android gesture translation (#1831 slice S3a). Inert
 /// until the S3 app shell wires it to a live session (slice S3b); its

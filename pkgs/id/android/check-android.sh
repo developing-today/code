@@ -48,7 +48,7 @@ if [ -z "${ANDROID_NDK_HOME:-}" ]; then
 fi
 if [ -z "${ANDROID_NDK_HOME:-}" ]; then
   echo "FAIL: ANDROID_NDK_HOME is unset and no NDK found under ~/.local/share/android-sdk/ndk/"
-  echo "install one with: sdkmanager --install \"ndk;27.0.12077973\""
+  echo 'install one with: sdkmanager --install "ndk;27.0.12077973"'
   exit 1
 fi
 echo "NDK: $ANDROID_NDK_HOME"
@@ -64,7 +64,7 @@ export TARGET_AR="$NDK_BIN/llvm-ar"
 # Android-target build under toolchain $TOOLCHAIN cannot read or write
 # sccache entries owned by the ambient host toolchain.
 ID_CLIENT_PASSTHROUGH="$(mktemp)"
-printf '#!/usr/bin/env bash\nexec "$@"\n' > "$ID_CLIENT_PASSTHROUGH"
+printf '#!/usr/bin/env bash\nexec "$@"\n' >"$ID_CLIENT_PASSTHROUGH"
 chmod +x "$ID_CLIENT_PASSTHROUGH"
 # Isolated target dir: the 1.99.1 android-resolve build (including its
 # host proc-macros) must not share target/ with the ambient 1.99.0 host

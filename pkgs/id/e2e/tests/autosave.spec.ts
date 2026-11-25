@@ -42,6 +42,10 @@ async function createAndOpenFile(page: Page, name: string, baseURL: string): Pro
   });
   expect(saveResp.ok()).toBeTruthy();
 
+  // The seed save uses the same per-file limiter as the editor autosaves.
+  // Let its 5s cooldown expire before the test exercises the save path.
+  await page.waitForTimeout(5_500);
+
   await page.goto(`/edit/${encodeURIComponent(name)}`);
   await expect(page.locator("#editor-container")).toBeVisible({ timeout: 10_000 });
   // Wait for editor to be fully initialized (save button enabled)

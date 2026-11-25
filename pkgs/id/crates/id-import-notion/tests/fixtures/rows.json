@@ -1,1 +1,99 @@
-{"source-alpha":[{"created_time":"2026-11-01T10:00:00.000Z","id":"row-a1","last_edited_time":"2026-11-01T11:00:00.000Z","object":"page","parent":{"data_source_id":"source-alpha","type":"data_source_id"},"properties":{"Action":{"button":{},"id":"action","type":"button"},"Created":{"created_time":"2026-11-01T10:00:00.000Z","id":"created","type":"created_time"},"ID":{"id":"id","type":"unique_id","unique_id":{"number":7,"prefix":"ALP"}},"Linked":{"has_more":false,"id":"linked","relation":[{"id":"row-b1"}],"type":"relation"},"LinkedCount":{"id":"linked_count","rollup":{"number":1,"type":"number"},"type":"rollup"},"Name":{"id":"title","title":[{"plain_text":"Alpha One","text":{"content":"Alpha One"},"type":"text"}],"type":"title"},"Owner":{"id":"owner","people":[{"id":"user-1","name":"Drew Example","object":"user"}],"type":"people"},"Status":{"id":"status","status":{"color":"yellow","id":"st-doing","name":"Doing"},"type":"status"},"Summary":{"formula":{"string":"Alpha One / Doing","type":"string"},"id":"summary","type":"formula"}}},{"created_time":"2026-11-02T10:00:00.000Z","id":"row-a2","last_edited_time":"2026-11-02T11:00:00.000Z","object":"page","parent":{"data_source_id":"source-alpha","type":"data_source_id"},"properties":{"Action":{"button":{},"id":"action","type":"button"},"Created":{"created_time":"2026-11-02T10:00:00.000Z","id":"created","type":"created_time"},"ID":{"id":"id","type":"unique_id","unique_id":{"number":8,"prefix":"ALP"}},"Linked":{"has_more":false,"id":"linked","relation":[{"id":"row-b2"},{"id":"row-a1"},{"id":"row-outside"}],"type":"relation"},"LinkedCount":{"id":"linked_count","rollup":{"number":3,"type":"number"},"type":"rollup"},"Name":{"id":"title","title":[{"plain_text":"Alpha Two","text":{"content":"Alpha Two"},"type":"text"}],"type":"title"},"Owner":{"id":"owner","people":[],"type":"people"},"Status":{"id":"status","status":{"color":"gray","id":"st-todo","name":"Todo"},"type":"status"},"Summary":{"formula":{"string":"Alpha Two / Todo","type":"string"},"id":"summary","type":"formula"}}}],"source-beta":[{"created_time":"2026-11-01T12:00:00.000Z","id":"row-b1","last_edited_time":"2026-11-01T12:30:00.000Z","object":"page","parent":{"data_source_id":"source-beta","type":"data_source_id"},"properties":{"Archived":{"checkbox":false,"id":"archived","type":"checkbox"},"Name":{"id":"title","title":[{"plain_text":"Beta One","text":{"content":"Beta One"},"type":"text"}],"type":"title"},"Status":{"id":"status","select":{"color":"blue","id":"opt-open","name":"Open"},"type":"select"}}},{"created_time":"2026-11-02T12:00:00.000Z","id":"row-b2","last_edited_time":"2026-11-02T12:30:00.000Z","object":"page","parent":{"data_source_id":"source-beta","type":"data_source_id"},"properties":{"Archived":{"checkbox":true,"id":"archived","type":"checkbox"},"Name":{"id":"title","title":[{"plain_text":"Beta Two","text":{"content":"Beta Two"},"type":"text"}],"type":"title"},"Status":{"id":"status","select":{"color":"green","id":"opt-done","name":"Done"},"type":"select"}}}]}
+{
+  "source-alpha": [
+    {
+      "created_time": "2026-11-01T10:00:00.000Z",
+      "id": "row-a1",
+      "last_edited_time": "2026-11-01T11:00:00.000Z",
+      "object": "page",
+      "parent": { "data_source_id": "source-alpha", "type": "data_source_id" },
+      "properties": {
+        "Action": { "button": {}, "id": "action", "type": "button" },
+        "Created": { "created_time": "2026-11-01T10:00:00.000Z", "id": "created", "type": "created_time" },
+        "ID": { "id": "id", "type": "unique_id", "unique_id": { "number": 7, "prefix": "ALP" } },
+        "Linked": { "has_more": false, "id": "linked", "relation": [{ "id": "row-b1" }], "type": "relation" },
+        "LinkedCount": { "id": "linked_count", "rollup": { "number": 1, "type": "number" }, "type": "rollup" },
+        "Name": {
+          "id": "title",
+          "title": [{ "plain_text": "Alpha One", "text": { "content": "Alpha One" }, "type": "text" }],
+          "type": "title"
+        },
+        "Owner": {
+          "id": "owner",
+          "people": [{ "id": "user-1", "name": "Drew Example", "object": "user" }],
+          "type": "people"
+        },
+        "Status": {
+          "id": "status",
+          "status": { "color": "yellow", "id": "st-doing", "name": "Doing" },
+          "type": "status"
+        },
+        "Summary": {
+          "formula": { "string": "Alpha One / Doing", "type": "string" },
+          "id": "summary",
+          "type": "formula"
+        }
+      }
+    },
+    {
+      "created_time": "2026-11-02T10:00:00.000Z",
+      "id": "row-a2",
+      "last_edited_time": "2026-11-02T11:00:00.000Z",
+      "object": "page",
+      "parent": { "data_source_id": "source-alpha", "type": "data_source_id" },
+      "properties": {
+        "Action": { "button": {}, "id": "action", "type": "button" },
+        "Created": { "created_time": "2026-11-02T10:00:00.000Z", "id": "created", "type": "created_time" },
+        "ID": { "id": "id", "type": "unique_id", "unique_id": { "number": 8, "prefix": "ALP" } },
+        "Linked": {
+          "has_more": false,
+          "id": "linked",
+          "relation": [{ "id": "row-b2" }, { "id": "row-a1" }, { "id": "row-outside" }],
+          "type": "relation"
+        },
+        "LinkedCount": { "id": "linked_count", "rollup": { "number": 3, "type": "number" }, "type": "rollup" },
+        "Name": {
+          "id": "title",
+          "title": [{ "plain_text": "Alpha Two", "text": { "content": "Alpha Two" }, "type": "text" }],
+          "type": "title"
+        },
+        "Owner": { "id": "owner", "people": [], "type": "people" },
+        "Status": { "id": "status", "status": { "color": "gray", "id": "st-todo", "name": "Todo" }, "type": "status" },
+        "Summary": { "formula": { "string": "Alpha Two / Todo", "type": "string" }, "id": "summary", "type": "formula" }
+      }
+    }
+  ],
+  "source-beta": [
+    {
+      "created_time": "2026-11-01T12:00:00.000Z",
+      "id": "row-b1",
+      "last_edited_time": "2026-11-01T12:30:00.000Z",
+      "object": "page",
+      "parent": { "data_source_id": "source-beta", "type": "data_source_id" },
+      "properties": {
+        "Archived": { "checkbox": false, "id": "archived", "type": "checkbox" },
+        "Name": {
+          "id": "title",
+          "title": [{ "plain_text": "Beta One", "text": { "content": "Beta One" }, "type": "text" }],
+          "type": "title"
+        },
+        "Status": { "id": "status", "select": { "color": "blue", "id": "opt-open", "name": "Open" }, "type": "select" }
+      }
+    },
+    {
+      "created_time": "2026-11-02T12:00:00.000Z",
+      "id": "row-b2",
+      "last_edited_time": "2026-11-02T12:30:00.000Z",
+      "object": "page",
+      "parent": { "data_source_id": "source-beta", "type": "data_source_id" },
+      "properties": {
+        "Archived": { "checkbox": true, "id": "archived", "type": "checkbox" },
+        "Name": {
+          "id": "title",
+          "title": [{ "plain_text": "Beta Two", "text": { "content": "Beta Two" }, "type": "text" }],
+          "type": "title"
+        },
+        "Status": { "id": "status", "select": { "color": "green", "id": "opt-done", "name": "Done" }, "type": "select" }
+      }
+    }
+  ]
+}

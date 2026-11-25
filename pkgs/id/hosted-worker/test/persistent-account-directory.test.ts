@@ -34,10 +34,7 @@ function sqliteD1(db: DatabaseSync): HostedDirectoryDatabase {
 
 async function createTestDirectory() {
   const db = new DatabaseSync(":memory:");
-  const schema = await readFile(
-    new URL("../migrations/0001_hosted_accounts.sql", import.meta.url),
-    "utf8",
-  );
+  const schema = await readFile(new URL("../migrations/0001_hosted_accounts.sql", import.meta.url), "utf8");
   db.exec(schema);
   return { db, directory: new PersistentHostedAccountDirectory(sqliteD1(db)) };
 }
@@ -56,10 +53,7 @@ test("persistent duplicate signup returns the stored row without changing its po
       jurisdiction: "us",
     });
     assert.deepEqual(duplicate, first);
-    assert.equal(
-      db.prepare("SELECT COUNT(*) AS count FROM hosted_accounts").get()?.count,
-      1,
-    );
+    assert.equal(db.prepare("SELECT COUNT(*) AS count FROM hosted_accounts").get()?.count, 1);
   } finally {
     db.close();
   }
@@ -81,10 +75,7 @@ test("concurrent persistent signups for one subject preserve exactly one row", a
       }),
     ]);
     assert.deepEqual(left, right);
-    assert.equal(
-      db.prepare("SELECT COUNT(*) AS count FROM hosted_accounts").get()?.count,
-      1,
-    );
+    assert.equal(db.prepare("SELECT COUNT(*) AS count FROM hosted_accounts").get()?.count, 1);
     assert.ok(["eu", "us"].includes(left.jurisdiction));
   } finally {
     db.close();
@@ -105,9 +96,7 @@ test("persistent signup rejects conflicting subject and binding mappings", async
         bindingId: OTHER_BINDING,
         jurisdiction: "eu",
       }),
-      (error: unknown) =>
-        error instanceof FailClosed &&
-        error.code === "duplicate_subject_conflict",
+      (error: unknown) => error instanceof FailClosed && error.code === "duplicate_subject_conflict",
     );
     await assert.rejects(
       accountDirectory.signup({
@@ -115,13 +104,9 @@ test("persistent signup rejects conflicting subject and binding mappings", async
         bindingId: BINDING,
         jurisdiction: "eu",
       }),
-      (error: unknown) =>
-        error instanceof FailClosed && error.code === "binding_conflict",
+      (error: unknown) => error instanceof FailClosed && error.code === "binding_conflict",
     );
-    assert.equal(
-      db.prepare("SELECT COUNT(*) AS count FROM hosted_accounts").get()?.count,
-      1,
-    );
+    assert.equal(db.prepare("SELECT COUNT(*) AS count FROM hosted_accounts").get()?.count, 1);
   } finally {
     db.close();
   }
@@ -136,14 +121,9 @@ test("persistent signup fails closed before creating a row for invalid jurisdict
         bindingId: BINDING,
         jurisdiction: "unknown",
       }),
-      (error: unknown) =>
-        error instanceof FailClosed &&
-        error.code === "unsupported_jurisdiction",
+      (error: unknown) => error instanceof FailClosed && error.code === "unsupported_jurisdiction",
     );
-    assert.equal(
-      db.prepare("SELECT COUNT(*) AS count FROM hosted_accounts").get()?.count,
-      0,
-    );
+    assert.equal(db.prepare("SELECT COUNT(*) AS count FROM hosted_accounts").get()?.count, 0);
   } finally {
     db.close();
   }
@@ -190,8 +170,7 @@ test("persistent reads reject records outside the current stable account contrac
 
       await assert.rejects(
         accountDirectory.get(`subject-${index}`),
-        (error: unknown) =>
-          error instanceof FailClosed && error.code === "invalid_directory_record",
+        (error: unknown) => error instanceof FailClosed && error.code === "invalid_directory_record",
         name,
       );
       db.exec("DELETE FROM hosted_accounts");

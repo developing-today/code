@@ -21,10 +21,7 @@
           "id": "status",
           "type": "select",
           "select": {
-            "options": [
-              { "name": "Open", "color": "green" },
-              { "name": "Done", "color": "gray" }
-            ]
+            "options": [{ "name": "Open", "color": "green" }, { "name": "Done", "color": "gray" }]
           }
         }
       }

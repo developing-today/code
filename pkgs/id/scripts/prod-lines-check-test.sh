@@ -74,21 +74,24 @@ check_usage_fail() {
 check_usage_fail 'extra positional argument' extra-arg-test
 
 # Clean tree: one small file, integration tests, vendored code and the
-# module-gated encryption, world-session and cli test modules are all out of
+# module-gated encryption, world-session, groups, and cli test modules are all out of
 # scope and must not trip a limit of 3. Both the pre-split `src/...` layout
 # and the post-split `crates/<crate>/src/...` layout are covered: the guard
 # normalizes the crate prefix before matching (#10603).
 reset_tree
 write_small src
-mkdir -p "$tmp/tests" "$tmp/vendor/dep" "$tmp/src/encryption" "$tmp/src/web" "$tmp/src/world_session"
+mkdir -p "$tmp/tests" "$tmp/vendor/dep" "$tmp/src/encryption" "$tmp/src/web" "$tmp/src/world_session" "$tmp/src/groups"
 mkdir -p "$tmp/crates/id-groups/src/encryption" "$tmp/crates/id-worlds/src/world_session" "$tmp/crates/id-cli/src/cli"
+mkdir -p "$tmp/crates/id-events/src/groups"
 printf 'line1\nline2\nline3\nline4\n' >"$tmp/tests/big_integration.rs"
 printf 'line1\nline2\nline3\nline4\n' >"$tmp/vendor/dep/big_vendor.rs"
 printf 'line1\nline2\nline3\nline4\n' >"$tmp/src/encryption/tests.rs"
 printf 'line1\nline2\nline3\nline4\n' >"$tmp/src/world_session/tests.rs"
+printf 'line1\nline2\nline3\nline4\n' >"$tmp/src/groups/tests.rs"
 printf 'line1\nline2\nline3\nline4\n' >"$tmp/crates/id-groups/src/encryption/tests.rs"
 printf 'line1\nline2\nline3\nline4\n' >"$tmp/crates/id-worlds/src/world_session/tests.rs"
 printf 'line1\nline2\nline3\nline4\n' >"$tmp/crates/id-cli/src/cli/tests.rs"
+printf 'line1\nline2\nline3\nline4\n' >"$tmp/crates/id-events/src/groups/tests.rs"
 printf 'line1\nline2\nline3\n#[cfg(test)]\nmod tests { }\n' >"$tmp/src/web/markdown.rs"
 check_pass 3 'clean tree passes'
 

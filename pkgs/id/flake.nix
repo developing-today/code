@@ -101,10 +101,7 @@
         ];
 
         craneLib =
-          if craneInput == null then
-            null
-          else
-            (craneInput.mkLib pkgs).overrideToolchain rustToolchain;
+          if craneInput == null then null else (craneInput.mkLib pkgs).overrideToolchain rustToolchain;
 
         # Pre-fetch cargo dependencies for sandbox builds (no network access)
         cargoDeps = pkgs.rustPlatform.importCargoLock {
@@ -164,7 +161,12 @@
           craneLib.buildPackage (
             commonArgs
             // {
-              inherit cargoArtifacts buildInputs nativeBuildInputs meta;
+              inherit
+                cargoArtifacts
+                buildInputs
+                nativeBuildInputs
+                meta
+                ;
             }
             // buildArgs
           );
@@ -336,75 +338,80 @@
             buildWebAssets ? true,
             compileRocWorldHost ? true,
           }:
-          pkgs.stdenv.mkDerivation ({
-            name = "id-${name}";
-            # Every check builds its own debug test binaries in parallel on a
-            # runner with limited disk. Full debuginfo and the incremental cache
-            # filled the disk (ENOSPC, then a linker bus error). Line tables keep
-            # file:line in panics and backtraces.
-            CARGO_INCREMENTAL = "0";
-            CARGO_PROFILE_TEST_DEBUG = "line-tables-only";
-            CARGO_PROFILE_DEV_DEBUG = "line-tables-only";
-            # Fake-compiler probe tests need a real interpreter for their
-            # shebang in the sandbox, where /bin/sh does not exist (#5926).
-            ID_TEST_FAKE_SH = "${pkgs.stdenv.shell}";
-            # The sandbox has no system CA store, so a reqwest client
-            # constructed by a test loads zero root certificates and
-            # the http_fetch schedule tests panic (#12608);
-            # rustls-native-certs honours SSL_CERT_FILE.
-            SSL_CERT_FILE = testSslCertFile;
-            src = ./.;
-            buildInputs = if needsBuildInputs then buildInputs else [ ];
-            nativeBuildInputs =
-              checkBaseNativeBuildInputs
-              ++ pkgs.lib.optionals needsRustToolchain [ rustToolchain ]
-              ++ pkgs.lib.optionals needsCargoSetup (
-                checkCargoNativeBuildInputs ++ [ pkgs.rustPlatform.cargoSetupHook ]
-              )
-              ++ pkgs.lib.optionals installWebDeps (
-                checkWebNativeBuildInputs ++ [ bun2nixPkg.hook ]
-              )
-              ++ pkgs.lib.optionals compileRocWorldHost checkRocNativeBuildInputs
-              ++ extraNativeBuildInputs;
-            inherit (opensslEnv) OPENSSL_DIR;
-            inherit (opensslEnv) OPENSSL_LIB_DIR;
-            inherit (opensslEnv) OPENSSL_INCLUDE_DIR;
-            inherit (opensslEnv) PKG_CONFIG_PATH;
+          pkgs.stdenv.mkDerivation (
+            {
+              name = "id-${name}";
+              # Every check builds its own debug test binaries in parallel on a
+              # runner with limited disk. Full debuginfo and the incremental cache
+              # filled the disk (ENOSPC, then a linker bus error). Line tables keep
+              # file:line in panics and backtraces.
+              CARGO_INCREMENTAL = "0";
+              CARGO_PROFILE_TEST_DEBUG = "line-tables-only";
+              CARGO_PROFILE_DEV_DEBUG = "line-tables-only";
+              # Fake-compiler probe tests need a real interpreter for their
+              # shebang in the sandbox, where /bin/sh does not exist (#5926).
+              ID_TEST_FAKE_SH = "${pkgs.stdenv.shell}";
+              # The sandbox has no system CA store, so a reqwest client
+              # constructed by a test loads zero root certificates and
+              # the http_fetch schedule tests panic (#12608);
+              # rustls-native-certs honours SSL_CERT_FILE.
+              SSL_CERT_FILE = testSslCertFile;
+              src = ./.;
+              buildInputs = if needsBuildInputs then buildInputs else [ ];
+              nativeBuildInputs =
+                checkBaseNativeBuildInputs
+                ++ pkgs.lib.optionals needsRustToolchain [ rustToolchain ]
+                ++ pkgs.lib.optionals needsCargoSetup (
+                  checkCargoNativeBuildInputs ++ [ pkgs.rustPlatform.cargoSetupHook ]
+                )
+                ++ pkgs.lib.optionals installWebDeps (checkWebNativeBuildInputs ++ [ bun2nixPkg.hook ])
+                ++ pkgs.lib.optionals compileRocWorldHost checkRocNativeBuildInputs
+                ++ extraNativeBuildInputs;
+              inherit (opensslEnv) OPENSSL_DIR;
+              inherit (opensslEnv) OPENSSL_LIB_DIR;
+              inherit (opensslEnv) OPENSSL_INCLUDE_DIR;
+              inherit (opensslEnv) PKG_CONFIG_PATH;
 
-            dontUseBunBuild = true;
-            dontUseBunCheck = true;
-            dontUseBunInstall = true;
-            dontUseCmakeConfigure = true;
+              dontUseBunBuild = true;
+              dontUseBunCheck = true;
+              dontUseBunInstall = true;
+              dontUseCmakeConfigure = true;
 
-            buildPhase = ''
-              export HOME=$(mktemp -d)
-              export CARGO_HOME=$HOME/.cargo
+              buildPhase = ''
+                export HOME=$(mktemp -d)
+                export CARGO_HOME=$HOME/.cargo
 
-              ${if buildWebAssets then ''
-                # @tailwindcss/cli uses @parcel/watcher (native module) which needs libstdc++
-                export LD_LIBRARY_PATH="${pkgs.stdenv.cc.cc.lib}/lib''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+                ${
+                  if buildWebAssets then
+                    ''
+                      # @tailwindcss/cli uses @parcel/watcher (native module) which needs libstdc++
+                      export LD_LIBRARY_PATH="${pkgs.stdenv.cc.cc.lib}/lib''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 
-                # Build web assets (bun2nix hook installed node_modules).
-                (cd web && bun run build)
-              '' else ""}
+                      # Build web assets (bun2nix hook installed node_modules).
+                      (cd web && bun run build)
+                    ''
+                  else
+                    ""
+                }
 
-              ${if compileRocWorldHost then buildWasmHost else ""}
+                ${if compileRocWorldHost then buildWasmHost else ""}
 
-              ${beforeCheck}
+                ${beforeCheck}
 
-              ${if checkCommand != null then checkCommand else "just ${justCmd}"}
-            '';
-            installPhase = ''
-              mkdir -p $out
-              echo "${name} passed at $(date)" > $out/result.txt
-            '';
-          }
-          // pkgs.lib.optionalAttrs needsCargoSetup { inherit cargoDeps; }
-          // pkgs.lib.optionalAttrs installWebDeps {
-            inherit bunDeps;
-            bunRoot = "web";
-            bunInstallFlags = [ "--linker=hoisted" ];
-          });
+                ${if checkCommand != null then checkCommand else "just ${justCmd}"}
+              '';
+              installPhase = ''
+                mkdir -p $out
+                echo "${name} passed at $(date)" > $out/result.txt
+              '';
+            }
+            // pkgs.lib.optionalAttrs needsCargoSetup { inherit cargoDeps; }
+            // pkgs.lib.optionalAttrs installWebDeps {
+              inherit bunDeps;
+              bunRoot = "web";
+              bunInstallFlags = [ "--linker=hoisted" ];
+            }
+          );
 
         # Helper to create a script that runs in the project directory
         mkScript =
@@ -539,569 +546,605 @@
               build = mkCheck "build" "build";
               release = mkCheck "release" "release";
             };
-            individualChecks =
-              {
-                # CI-safe checks (read-only): cargo-fmt-check web-fmt-check clippy-lint web-lint test-sandbox test-crate-integration test-web-unit test-web-typecheck roc-test roc-examples doc build release
-                # NixOS VM integration tests (Linux only): nixos-serve nixos-e2e
-                # Nix flake check builds all named checks as well as default.
-                # Use a link farm so the aggregate depends on those same results
-                # instead of rerunning the full CI recipe in a second derivation.
+            individualChecks = {
+              # CI-safe checks (read-only): cargo-fmt-check web-fmt-check clippy-lint web-lint test-sandbox test-crate-integration test-web-unit test-web-typecheck roc-test roc-examples doc build release
+              # NixOS VM integration tests (Linux only): nixos-serve nixos-e2e
+              # Nix flake check builds all named checks as well as default.
+              # Use a link farm so the aggregate depends on those same results
+              # instead of rerunning the full CI recipe in a second derivation.
 
-                # Individual checks
-                cargo-fmt-check = mkCheckRustOnly "cargo-fmt-check" "cargo-fmt-check";
-                web-fmt-check = mkCheckBiome "web-fmt-check" "web-fmt-check";
-                clippy-lint = mkCheck "clippy-lint" "clippy-lint";
-                # id-native-shell gate (#5582): the crate is a non-default
-                # workspace member, invisible to the default-member checks.
-                clippy-native-shell = mkCheckCargoOnly "clippy-native-shell" "clippy-native-shell";
-                web-lint = mkCheckBiome "web-lint" "web-lint";
-                # test-unit plus the four shards cover the same root suite
-                # as test-sandbox, without building and running that suite twice.
-                test = mkCheckAggregate "id-test" [
-                  "test-unit"
-                  "test-shard-0"
-                  "test-shard-1"
-                  "test-shard-2"
-                  "test-shard-3"
+              # Individual checks
+              cargo-fmt-check = mkCheckRustOnly "cargo-fmt-check" "cargo-fmt-check";
+              web-fmt-check = mkCheckBiome "web-fmt-check" "web-fmt-check";
+              clippy-lint = mkCheck "clippy-lint" "clippy-lint";
+              # id-native-shell gate (#5582): the crate is a non-default
+              # workspace member, invisible to the default-member checks.
+              clippy-native-shell = mkCheckCargoOnly "clippy-native-shell" "clippy-native-shell";
+              web-lint = mkCheckBiome "web-lint" "web-lint";
+              # test-unit plus the four shards cover the same root suite
+              # as test-sandbox, without building and running that suite twice.
+              test = mkCheckAggregate "id-test" [
+                "test-unit"
+                "test-shard-0"
+                "test-shard-1"
+                "test-shard-2"
+                "test-shard-3"
+              ];
+              test-unit = mkCheckWith {
+                name = "test-unit";
+                justCmd = "test-unit";
+                # The Nix check source is pkgs/id alone; stage the shared
+                # research oracle where store_authority_contract resolves it.
+                beforeCheck = ''
+                  rm -f doc
+                  mkdir -p doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-c
+                  cp ${../../doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-c/store-placement-research-report.json} doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-c/store-placement-research-report.json
+                '';
+              };
+              test-crate-integration = mkCheck "test-crate-integration" "test-crate-integration";
+              test-native-shell = mkCheckCargoOnly "test-native-shell" "test-native-shell";
+              test-tui-shell = mkCheck "test-tui-shell" "test-tui-shell";
+              test-hw-shell = mkCheck "test-hw-shell" "test-hw-shell";
+              # Rust example guests (#7904): plaza-sdk (examples/rust-world)
+              # and rust-counter (examples/rust-counter) are standalone
+              # crates outside the pkgs/id workspace, so no workspace test
+              # check ever ran their unit tests (9 + 2).
+              test-rust-examples = mkCheckCargoOnly "test-rust-examples" "test-rust-examples";
+              # Rebuild the Rust counter guest from source and run the
+              # sandbox tests against the rebuilt module (#7904) -- the
+              # roc-examples pattern. Wasm bytes are not reproducible
+              # across rustc builds or build paths (the producers/code
+              # sections differ between the rustup and rust-overlay
+              # builds of the same pinned 1.99.1), so a byte drift gate
+              # would be permanently red; what CI must prove is that the
+              # module built from current source passes the conformance
+              # tests that load it (src/sandbox.rs include_bytes!).
+              rust-counter-wasm = mkCheckWith {
+                name = "rust-counter-wasm";
+                installWebDeps = false;
+                buildWebAssets = false;
+                beforeCheck = ''
+                  export PATH="${rustToolchainWasm}/bin:$PATH"
+                  bash examples/rust-counter/build.sh
+                '';
+                checkCommand = ''
+                  cargo test --no-default-features --features sandbox,world --lib sandbox
+                '';
+              };
+              # The shards cover the integration target as well as
+              # the unit/bin/doc tests assigned to shard zero.
+              test-int = mkCheckAggregate "id-test-int" [
+                "test-shard-0"
+                "test-shard-1"
+                "test-shard-2"
+                "test-shard-3"
+              ];
+              # PR-gate shards of the integration suite (#869): the four
+              # shards together run every target test-sandbox runs, in
+              # parallel jobs instead of one serial ~25-minute check.
+              # (3 → 4 shards in #551: the 3-way shards had drifted to
+              # ~12.5 min, close to the fast-lane exit.)
+              # Keep the shard argument/empty-selection regression in the PR
+              # gate once, alongside shard 0, before running its real partition.
+              test-shard-0 = mkCheckWith {
+                name = "test-shard-0";
+                checkCommand = ''
+                  bash scripts/test-shard-sandbox-test.sh
+                  just test-shard-sandbox 0 4
+                '';
+              };
+              test-shard-1 = mkCheck "test-shard-1" "test-shard-sandbox 1 4";
+              test-shard-2 = mkCheck "test-shard-2" "test-shard-sandbox 2 4";
+              test-shard-3 = mkCheck "test-shard-3" "test-shard-sandbox 3 4";
+              # Compose the Rust and web checks already run separately
+              # by nix flake check instead of rebuilding them in one derivation.
+              test-web = mkCheckAggregate "id-test-web" [
+                "test"
+                "test-web-unit"
+                "test-web-typecheck"
+              ];
+              test-web-unit = mkCheckWith {
+                name = "test-web-unit";
+                justCmd = "test-web-unit";
+                needsCargoSetup = false;
+                needsRustToolchain = false;
+                needsBuildInputs = false;
+                buildWebAssets = false;
+                compileRocWorldHost = false;
+                # The sandbox source is pkgs/id alone, so its doc -> ../../doc
+                # workspace symlink dangles. Stage the shared parity oracle
+                # at the package-local path expected by the web test.
+                beforeCheck = ''
+                  rm -f doc
+                  mkdir -p doc
+                  cp ${../../doc/kitty-disambiguate-v1-fixtures.json} doc/kitty-disambiguate-v1-fixtures.json
+                '';
+              };
+              test-web-typecheck = mkCheckWebOnly "test-web-typecheck" "test-web-typecheck";
+              # Roc library expect() tests (#813): runs the roc-test just
+              # recipe with the pinned nightly from nix/roc.nix (already in
+              # nativeBuildInputs); fails on a missing compiler or a failing
+              # expect — the world_compile.rs skip path is not reused here.
+              roc-test = mkCheckWith {
+                name = "roc-test";
+                needsCargoSetup = false;
+                needsRustToolchain = false;
+                needsBuildInputs = false;
+                installWebDeps = false;
+                buildWebAssets = false;
+                compileRocWorldHost = false;
+                # python3: scripts/key-parity-test.sh (run by the roc-test
+                # recipe since #787 Slice D) hard-fails without it — the
+                # corpus generator is a Python script.
+                extraNativeBuildInputs = [
+                  rocCompiler
+                  pkgs.python3
                 ];
-                test-unit = mkCheck "test-unit" "test-unit";
-                test-crate-integration = mkCheck "test-crate-integration" "test-crate-integration";
-                test-native-shell = mkCheckCargoOnly "test-native-shell" "test-native-shell";
-                test-tui-shell = mkCheck "test-tui-shell" "test-tui-shell";
-                test-hw-shell = mkCheck "test-hw-shell" "test-hw-shell";
-                # Rust example guests (#7904): plaza-sdk (examples/rust-world)
-                # and rust-counter (examples/rust-counter) are standalone
-                # crates outside the pkgs/id workspace, so no workspace test
-                # check ever ran their unit tests (9 + 2).
-                test-rust-examples = mkCheckCargoOnly "test-rust-examples" "test-rust-examples";
-                # Rebuild the Rust counter guest from source and run the
-                # sandbox tests against the rebuilt module (#7904) -- the
-                # roc-examples pattern. Wasm bytes are not reproducible
-                # across rustc builds or build paths (the producers/code
-                # sections differ between the rustup and rust-overlay
-                # builds of the same pinned 1.99.1), so a byte drift gate
-                # would be permanently red; what CI must prove is that the
-                # module built from current source passes the conformance
-                # tests that load it (src/sandbox.rs include_bytes!).
-                rust-counter-wasm = mkCheckWith {
-                  name = "rust-counter-wasm";
-                  installWebDeps = false;
-                  buildWebAssets = false;
-                  beforeCheck = ''
-                    export PATH="${rustToolchainWasm}/bin:$PATH"
-                    bash examples/rust-counter/build.sh
-                  '';
-                  checkCommand = ''
-                    cargo test --no-default-features --features sandbox,world --lib sandbox
-                  '';
-                };
-                # The shards cover the integration target as well as
-                # the unit/bin/doc tests assigned to shard zero.
-                test-int = mkCheckAggregate "id-test-int" [
-                  "test-shard-0"
-                  "test-shard-1"
-                  "test-shard-2"
-                  "test-shard-3"
+                # pkgs/id/doc is a symlink to the repo-root doc/, which
+                # dangles inside the check sandbox (src is pkgs/id
+                # alone), so the key-parity corpus reads as missing.
+                # Materialize just that file before the recipe runs.
+                beforeCheck = ''
+                  rm doc
+                  mkdir doc
+                  cp ${../../doc/kitty-disambiguate-v1-fixtures.json} doc/kitty-disambiguate-v1-fixtures.json
+                '';
+                justCmd = "roc-test";
+              };
+              # Rebuild all checked-in Roc examples with the pinned compiler, then
+              # run the sandbox behavior and fuel-budget tests against them.
+              roc-examples = mkCheckWith {
+                name = "roc-examples";
+                installWebDeps = false;
+                buildWebAssets = false;
+                checkCommand = ''
+                  cargo test --no-default-features --features sandbox,world --lib sandbox
+                  cargo test --test toolchain_pin
+                '';
+                extraNativeBuildInputs = [
+                  pkgs.binaryen
+                  pkgs.wasm-tools
                 ];
-                # PR-gate shards of the integration suite (#869): the four
-                # shards together run every target test-sandbox runs, in
-                # parallel jobs instead of one serial ~25-minute check.
-                # (3 → 4 shards in #551: the 3-way shards had drifted to
-                # ~12.5 min, close to the fast-lane exit.)
-                # Keep the shard argument/empty-selection regression in the PR
-                # gate once, alongside shard 0, before running its real partition.
-                test-shard-0 = mkCheckWith {
-                  name = "test-shard-0";
-                  checkCommand = ''
-                    bash scripts/test-shard-sandbox-test.sh
-                    just test-shard-sandbox 0 4
-                  '';
-                };
-                test-shard-1 = mkCheck "test-shard-1" "test-shard-sandbox 1 4";
-                test-shard-2 = mkCheck "test-shard-2" "test-shard-sandbox 2 4";
-                test-shard-3 = mkCheck "test-shard-3" "test-shard-sandbox 3 4";
-                # Compose the Rust and web checks already run separately
-                # by nix flake check instead of rebuilding them in one derivation.
-                test-web = mkCheckAggregate "id-test-web" [
-                  "test"
-                  "test-web-unit"
-                  "test-web-typecheck"
-                ];
-                test-web-unit = mkCheckWebOnly "test-web-unit" "test-web-unit";
-                test-web-typecheck = mkCheckWebOnly "test-web-typecheck" "test-web-typecheck";
-                # Roc library expect() tests (#813): runs the roc-test just
-                # recipe with the pinned nightly from nix/roc.nix (already in
-                # nativeBuildInputs); fails on a missing compiler or a failing
-                # expect — the world_compile.rs skip path is not reused here.
-                roc-test = mkCheckWith {
-                  name = "roc-test";
-                  needsCargoSetup = false;
-                  needsRustToolchain = false;
-                  needsBuildInputs = false;
-                  installWebDeps = false;
-                  buildWebAssets = false;
-                  compileRocWorldHost = false;
-                  # python3: scripts/key-parity-test.sh (run by the roc-test
-                  # recipe since #787 Slice D) hard-fails without it — the
-                  # corpus generator is a Python script.
-                  extraNativeBuildInputs = [
-                    rocCompiler
-                    pkgs.python3
-                  ];
-                  # pkgs/id/doc is a symlink to the repo-root doc/, which
-                  # dangles inside the check sandbox (src is pkgs/id
-                  # alone), so the key-parity corpus reads as missing.
-                  # Materialize just that file before the recipe runs.
-                  beforeCheck = ''
-                    rm doc
-                    mkdir doc
-                    cp ${../../doc/kitty-disambiguate-v1-fixtures.json} doc/kitty-disambiguate-v1-fixtures.json
-                  '';
-                  justCmd = "roc-test";
-                };
-                # Rebuild all checked-in Roc examples with the pinned compiler, then
-                # run the sandbox behavior and fuel-budget tests against them.
-                roc-examples = mkCheckWith {
-                  name = "roc-examples";
-                  installWebDeps = false;
-                  buildWebAssets = false;
-                  checkCommand = ''
-                    cargo test --no-default-features --features sandbox,world --lib sandbox
-                    cargo test --test toolchain_pin
-                  '';
-                  extraNativeBuildInputs = [
-                    pkgs.binaryen
-                    pkgs.wasm-tools
-                  ];
-                  beforeCheck = ''
-                    ROC=${rocCompiler}/bin/roc \
-                      WASM_TOOLS=${pkgs.wasm-tools}/bin/wasm-tools \
-                      WASM_OPT=${pkgs.binaryen}/bin/wasm-opt \
-                      bash scripts/rebuild-roc-examples.sh
-                  '';
-                };
-                doc = mkCheckCargoOnly "doc" "doc";
-                cargo-check = mkCheck "cargo-check" "cargo-check";
-                # Production module-size guard (#1411): fails when any
-                # production .rs file exceeds 2,500 production lines.
-                # src/web/markdown.rs was the last id grandfather entry; its
-                # split into web/markdown/ submodules landed under #4704 and
-                # the entry was removed there, completing #1438.
-                prod-lines-check = mkCheckLean "prod-lines-check" "prod-lines-check";
-                crash-gate = mkCheck "crash-gate" "crash-gate";
-                # PR-gate splits of crash-gate (#551): the aggregate above runs
-                # every heavy full sweep serially (~15 min, the slowest PR
-                # check). These four checks partition the same tests by name
-                # filter and run in parallel on PRs; crash-gate itself stays
-                # for local use and the nightly full flake check, and is
-                # excluded from the PR list in check-id-pr-checks.sh.
-                crash-gate-sampled = mkCheck "crash-gate-sampled" "crash-gate-sampled";
-                crash-gate-sweep = mkCheck "crash-gate-sweep" "crash-gate-sweep";
-                crash-gate-control = mkCheck "crash-gate-control" "crash-gate-control";
-                crash-gate-ingest = mkCheck "crash-gate-ingest" "crash-gate-ingest";
-                # Drift guard for the generated just-recipes.json (#2729): fails
-                # when the checked-in JSON disagrees with the justfile on the
-                # semantic recipe fields. The recipe projects out generation
-                # noise (absolute source path, body serialisation), so this is
-                # green on any correctly regenerated file.
-                just-recipes-drift = mkCheckLean "just-recipes-drift" "just-recipes-check && bash scripts/just-recipes-check-test.sh";
+                beforeCheck = ''
+                  ROC=${rocCompiler}/bin/roc \
+                    WASM_TOOLS=${pkgs.wasm-tools}/bin/wasm-tools \
+                    WASM_OPT=${pkgs.binaryen}/bin/wasm-opt \
+                    bash scripts/rebuild-roc-examples.sh
+                '';
+              };
+              doc = mkCheckCargoOnly "doc" "doc";
+              cargo-check = mkCheck "cargo-check" "cargo-check";
+              # Production module-size guard (#1411): fails when any
+              # production .rs file exceeds 2,500 production lines.
+              # src/web/markdown.rs was the last id grandfather entry; its
+              # split into web/markdown/ submodules landed under #4704 and
+              # the entry was removed there, completing #1438.
+              prod-lines-check = mkCheckLean "prod-lines-check" "prod-lines-check";
+              crash-gate = mkCheck "crash-gate" "crash-gate";
+              # PR-gate splits of crash-gate (#551): the aggregate above runs
+              # every heavy full sweep serially (~15 min, the slowest PR
+              # check). These four checks partition the same tests by name
+              # filter and run in parallel on PRs; crash-gate itself stays
+              # for local use and the nightly full flake check, and is
+              # excluded from the PR list in check-id-pr-checks.sh.
+              crash-gate-sampled = mkCheck "crash-gate-sampled" "crash-gate-sampled";
+              crash-gate-sweep = mkCheck "crash-gate-sweep" "crash-gate-sweep";
+              crash-gate-control = mkCheck "crash-gate-control" "crash-gate-control";
+              crash-gate-ingest = mkCheck "crash-gate-ingest" "crash-gate-ingest";
+              # Drift guard for the generated just-recipes.json (#2729): fails
+              # when the checked-in JSON disagrees with the justfile on the
+              # semantic recipe fields. The recipe projects out generation
+              # noise (absolute source path, body serialisation), so this is
+              # green on any correctly regenerated file.
+              just-recipes-drift = mkCheckLean "just-recipes-drift" "just-recipes-check && bash scripts/just-recipes-check-test.sh";
 
-                # Planted-bug mutation proof (#8037, plan #1395): the script
-                # plants one named mutation at a time and requires the
-                # voiding/frontier suites to FAIL on each, after a green
-                # unmutated baseline. It drives git (rev-parse / apply /
-                # checkout) against repo-root-relative paths, and a flake
-                # check's src is pkgs/id alone with no .git, so the check
-                # stages a throwaway repo whose pkgs/id is this source tree,
-                # commits it, and runs the script there; the cargo vendor
-                # config the setup hook put in CARGO_HOME carries over, so
-                # the staged suites build offline like every other check.
-                # Nightly-only (full flake check): it runs the judged suites
-                # five times over, so it is excluded from the fast PR list
-                # in check-id-pr-checks.sh.
-                planted-bug-check = mkCheckWith {
-                  name = "planted-bug-check";
-                  extraNativeBuildInputs = [ pkgs.git ];
-                  checkCommand = ''
-                    stage=$(mktemp -d)
-                    mkdir -p "$stage/pkgs/id"
-                    tar --exclude=./target --exclude=./web/node_modules --exclude=./web/dist -cf - . | tar -xf - -C "$stage/pkgs/id"
-                    git -C "$stage" init -q
-                    git -C "$stage" add -A
-                    git -C "$stage" -c user.email=ci@example.invalid -c user.name=ci commit -qm "stage pkgs/id for planted-bug-check"
-                    bash "$stage/pkgs/id/tests/planted-bug-check.sh"
-                  '';
-                };
+              # Planted-bug mutation proof (#8037, plan #1395): the script
+              # plants one named mutation at a time and requires the
+              # voiding/frontier suites to FAIL on each, after a green
+              # unmutated baseline. It drives git (rev-parse / apply /
+              # checkout) against repo-root-relative paths, and a flake
+              # check's src is pkgs/id alone with no .git, so the check
+              # stages a throwaway repo whose pkgs/id is this source tree,
+              # commits it, and runs the script there; the cargo vendor
+              # config the setup hook put in CARGO_HOME carries over, so
+              # the staged suites build offline like every other check.
+              # Nightly-only (full flake check): it runs the judged suites
+              # five times over, so it is excluded from the fast PR list
+              # in check-id-pr-checks.sh.
+              planted-bug-check = mkCheckWith {
+                name = "planted-bug-check";
+                extraNativeBuildInputs = [ pkgs.git ];
+                checkCommand = ''
+                  stage=$(mktemp -d)
+                  mkdir -p "$stage/pkgs/id"
+                  tar --exclude=./target --exclude=./web/node_modules --exclude=./web/dist -cf - . | tar -xf - -C "$stage/pkgs/id"
+                  git -C "$stage" init -q
+                  git -C "$stage" add -A
+                  git -C "$stage" -c user.email=ci@example.invalid -c user.name=ci commit -qm "stage pkgs/id for planted-bug-check"
+                  bash "$stage/pkgs/id/tests/planted-bug-check.sh"
+                '';
+              };
 
-                # Regression pins for scripts/build.sh variant handling (#6869):
-                # the fixture suite stubs cargo and exercises every variant, so a
-                # variant-specific regression fails here instead of in a just recipe.
-                build-sh-test = mkCheckWith {
-                  name = "build-sh-test";
-                  needsRustToolchain = false;
-                  needsCargoSetup = false;
-                  needsBuildInputs = false;
-                  installWebDeps = false;
-                  buildWebAssets = false;
-                  compileRocWorldHost = false;
-                  checkCommand = "bash scripts/build-sh-test.sh";
-                };
+              # Regression pins for scripts/build.sh variant handling (#6869):
+              # the fixture suite stubs cargo and exercises every variant, so a
+              # variant-specific regression fails here instead of in a just recipe.
+              build-sh-test = mkCheckWith {
+                name = "build-sh-test";
+                needsRustToolchain = false;
+                needsCargoSetup = false;
+                needsBuildInputs = false;
+                installWebDeps = false;
+                buildWebAssets = false;
+                compileRocWorldHost = false;
+                checkCommand = "bash scripts/build-sh-test.sh";
+              };
 
-                # Exercise the same alias-admission function used by apps against
-                # synthetic recipes/aliases, including dangling targets and names
-                # that would shadow recipe or manual apps.
-                just-recipes-alias-admission =
-                  let
-                    fixtureRecipes = {
-                      public = { };
-                      private = {
-                        private = true;
-                      };
-                      default = { };
-                      recipeCollision = { };
-                      privateCollision = {
-                        private = true;
-                      };
+              # Exercise the same alias-admission function used by apps against
+              # synthetic recipes/aliases, including dangling targets and names
+              # that would shadow recipe or manual apps.
+              just-recipes-alias-admission =
+                let
+                  fixtureRecipes = {
+                    public = { };
+                    private = {
+                      private = true;
                     };
-                    fixtureAliases = {
-                      valid = {
-                        target = "public";
-                      };
-                      privateTarget = {
-                        target = "private";
-                      };
-                      defaultTarget = {
-                        target = "default";
-                      };
-                      missingTarget = {
-                        target = "missing";
-                      };
-                      recipeCollision = {
-                        target = "public";
-                      };
-                      privateCollision = {
-                        target = "public";
-                      };
-                      default = {
-                        target = "public";
-                      };
-                      just = {
-                        target = "public";
-                      };
+                    default = { };
+                    recipeCollision = { };
+                    privateCollision = {
+                      private = true;
                     };
-                    admittedAliases = filterAliasApps fixtureRecipes fixtureAliases [
-                      "default"
-                      "just"
-                    ];
-                    fixtureRecipeApps = filterPublicRecipes fixtureRecipes;
-                    fixtureApps =
-                      (builtins.mapAttrs (_: _: "recipe") fixtureRecipeApps)
-                      // (builtins.mapAttrs (_: _: "alias") admittedAliases)
-                      // {
-                        default = "manual";
-                        just = "manual";
-                      };
-                  in
-                  assert builtins.attrNames admittedAliases == [ "valid" ];
-                  assert fixtureApps.recipeCollision == "recipe";
-                  assert fixtureApps.default == "manual";
-                  assert fixtureApps.just == "manual";
-                  pkgs.runCommand "id-just-recipes-alias-admission" { } ''
-                    touch "$out"
-                  '';
-
-                # Playwright E2E tests (requires building the binary + browser binaries)
-                test-e2e = pkgs.stdenv.mkDerivation {
-                  name = "id-test-e2e";
-                  src = ./.;
-                  inherit buildInputs;
-                  nativeBuildInputs = [
-                    rustToolchain
-                    pkgs.pkg-config
-                    pkgs.cmake
-                    pkgs.bun
-                    bun2nixPkg.hook
-                    pkgs.rustPlatform.cargoSetupHook
-                    # TODO: Switch back to `bunx playwright test` once Bun supports Playwright's
-                    # ESM config loader (.esm.preflight virtual imports). Bun's runtime doesn't handle
-                    # the Node.js-specific ESM hooks that Playwright uses for TypeScript config loading.
-                    # Tracking: https://github.com/oven-sh/bun/pull/28610
-                    pkgs.nodejs
+                  };
+                  fixtureAliases = {
+                    valid = {
+                      target = "public";
+                    };
+                    privateTarget = {
+                      target = "private";
+                    };
+                    defaultTarget = {
+                      target = "default";
+                    };
+                    missingTarget = {
+                      target = "missing";
+                    };
+                    recipeCollision = {
+                      target = "public";
+                    };
+                    privateCollision = {
+                      target = "public";
+                    };
+                    default = {
+                      target = "public";
+                    };
+                    just = {
+                      target = "public";
+                    };
+                  };
+                  admittedAliases = filterAliasApps fixtureRecipes fixtureAliases [
+                    "default"
+                    "just"
                   ];
-                  inherit cargoDeps;
-                  inherit (opensslEnv) OPENSSL_DIR;
-                  inherit (opensslEnv) OPENSSL_LIB_DIR;
-                  inherit (opensslEnv) OPENSSL_INCLUDE_DIR;
-                  inherit (opensslEnv) PKG_CONFIG_PATH;
+                  fixtureRecipeApps = filterPublicRecipes fixtureRecipes;
+                  fixtureApps =
+                    (builtins.mapAttrs (_: _: "recipe") fixtureRecipeApps)
+                    // (builtins.mapAttrs (_: _: "alias") admittedAliases)
+                    // {
+                      default = "manual";
+                      just = "manual";
+                    };
+                in
+                assert builtins.attrNames admittedAliases == [ "valid" ];
+                assert fixtureApps.recipeCollision == "recipe";
+                assert fixtureApps.default == "manual";
+                assert fixtureApps.just == "manual";
+                pkgs.runCommand "id-just-recipes-alias-admission" { } ''
+                  touch "$out"
+                '';
 
-                  # bun2nix hook: install web deps offline via pre-fetched cache
-                  inherit bunDeps;
-                  bunRoot = "web";
-                  bunInstallFlags = [ "--linker=hoisted" ];
-                  dontUseBunBuild = true;
-                  dontUseBunCheck = true;
-                  dontUseBunInstall = true;
-                  dontUseCmakeConfigure = true;
+              # Playwright E2E tests (requires building the binary + browser binaries)
+              test-e2e = pkgs.stdenv.mkDerivation {
+                name = "id-test-e2e";
+                src = ./.;
+                inherit buildInputs;
+                nativeBuildInputs = [
+                  rustToolchain
+                  pkgs.pkg-config
+                  pkgs.cmake
+                  pkgs.bun
+                  bun2nixPkg.hook
+                  pkgs.rustPlatform.cargoSetupHook
+                  # TODO: Switch back to `bunx playwright test` once Bun supports Playwright's
+                  # ESM config loader (.esm.preflight virtual imports). Bun's runtime doesn't handle
+                  # the Node.js-specific ESM hooks that Playwright uses for TypeScript config loading.
+                  # Tracking: https://github.com/oven-sh/bun/pull/28610
+                  pkgs.nodejs
+                ];
+                inherit cargoDeps;
+                inherit (opensslEnv) OPENSSL_DIR;
+                inherit (opensslEnv) OPENSSL_LIB_DIR;
+                inherit (opensslEnv) OPENSSL_INCLUDE_DIR;
+                inherit (opensslEnv) PKG_CONFIG_PATH;
 
-                  buildPhase = ''
-                    export HOME=$(mktemp -d)
-                    export CARGO_HOME=$HOME/.cargo
+                # bun2nix hook: install web deps offline via pre-fetched cache
+                inherit bunDeps;
+                bunRoot = "web";
+                bunInstallFlags = [ "--linker=hoisted" ];
+                dontUseBunBuild = true;
+                dontUseBunCheck = true;
+                dontUseBunInstall = true;
+                dontUseCmakeConfigure = true;
 
-                    # @tailwindcss/cli uses @parcel/watcher (native module) which needs libstdc++
-                    export LD_LIBRARY_PATH="${pkgs.stdenv.cc.cc.lib}/lib''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+                buildPhase = ''
+                  export HOME=$(mktemp -d)
+                  export CARGO_HOME=$HOME/.cargo
 
-                    # Build web assets (bun2nix hook already installed node_modules via bunNodeModulesInstallPhase)
-                    (cd web && bun run build)
+                  # The E2E server requires the Roc platform host WASM file,
+                  # which is git-ignored and not built by this derivation.
+                  ${buildWasmHost}
 
-                    # Build the binary with web feature
-                    cargo build --features web
+                  # @tailwindcss/cli uses @parcel/watcher (native module) which needs libstdc++
+                  export LD_LIBRARY_PATH="${pkgs.stdenv.cc.cc.lib}/lib''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 
-                    # Install e2e deps from pre-fetched cache (separate from web deps)
-                    E2E_CACHE_DIR=$(mktemp -d)
-                    cp -r "${e2eBunDeps}"/share/bun-cache/. "$E2E_CACHE_DIR"
-                    (cd e2e && BUN_INSTALL_CACHE_DIR="$E2E_CACHE_DIR" \
-                      bun install --frozen-lockfile --linker=hoisted)
+                  # Build web assets (bun2nix hook already installed node_modules via bunNodeModulesInstallPhase)
+                  (cd web && bun run build)
 
-                    # Configure Playwright to use nix-provided browsers
-                    export PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
-                    export PLAYWRIGHT_BROWSERS_PATH="${pkgs.playwright-driver.browsers}"
+                  # Build the binary with web feature
+                  cargo build --features web
 
-                    # Unset LD_LIBRARY_PATH before running Playwright — nix-patched Chromium
-                    # has its own RPATH and the extra libstdc++ path (needed for @parcel/watcher
-                    # during web build above) can interfere with Chromium's library resolution,
-                    # causing it to hang on launch in the nix sandbox.
-                    unset LD_LIBRARY_PATH
+                  # Install e2e deps from pre-fetched cache (separate from web deps)
+                  E2E_CACHE_DIR=$(mktemp -d)
+                  cp -r "${e2eBunDeps}"/share/bun-cache/. "$E2E_CACHE_DIR"
+                  (cd e2e && BUN_INSTALL_CACHE_DIR="$E2E_CACHE_DIR" \
+                    bun install --frozen-lockfile --linker=hoisted)
 
-                    # Run Playwright E2E tests — one invocation per spec file (#229).
-                    # playwright.config.ts starts ONE ephemeral server per browser
-                    # project for the whole invocation, so a single full-suite run
-                    # lets every spec observe the files/state earlier specs created
-                    # on that shared server (the Firefox shared-state failure
-                    # cluster: e.g. basic.spec's "empty state" test ran after
-                    # autosave.spec had already created files). A fresh invocation
-                    # per spec file gives each file a fresh ephemeral server.
-                    # All files run even if one fails, so one run reports every
-                    # failing file; the check fails if any file failed.
-                    # TODO: Switch to `bunx playwright test` once Bun's ESM loader supports
-                    # Playwright's .esm.preflight virtual imports for TypeScript config loading.
-                    # Tracking: https://github.com/oven-sh/bun/pull/28610
-                    (
-                      cd e2e
-                      e2e_status=0
-                      for spec in tests/*.spec.ts; do
-                        echo "=== test-e2e isolated per-spec run: $spec ==="
+                  # Configure Playwright to use nix-provided browsers
+                  export PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
+                  export PLAYWRIGHT_BROWSERS_PATH="${pkgs.playwright-driver.browsers}"
+
+                  # Unset LD_LIBRARY_PATH before running Playwright — nix-patched Chromium
+                  # has its own RPATH and the extra libstdc++ path (needed for @parcel/watcher
+                  # during web build above) can interfere with Chromium's library resolution,
+                  # causing it to hang on launch in the nix sandbox.
+                  unset LD_LIBRARY_PATH
+
+                  # Run Playwright E2E tests — one invocation per spec file (#229).
+                  # playwright.config.ts starts ONE ephemeral server per browser
+                  # project for the whole invocation, so a single full-suite run
+                  # lets every spec observe the files/state earlier specs created
+                  # on that shared server (the Firefox shared-state failure
+                  # cluster: e.g. basic.spec's "empty state" test ran after
+                  # autosave.spec had already created files). A fresh invocation
+                  # per spec file gives each file a fresh ephemeral server.
+                  # All files run even if one fails, so one run reports every
+                  # failing file; the check fails if any file failed.
+                  # TODO: Switch to `bunx playwright test` once Bun's ESM loader supports
+                  # Playwright's .esm.preflight virtual imports for TypeScript config loading.
+                  # Tracking: https://github.com/oven-sh/bun/pull/28610
+                  (
+                    cd e2e
+                    e2e_status=0
+                    for spec in tests/*.spec.ts; do
+                      echo "=== test-e2e isolated per-spec run: $spec ==="
+                      spec_server_dir=$(mktemp -d "$TMPDIR/id-e2e-server.XXXXXX")
+                      ID_E2E_SERVER_CWD="$spec_server_dir" \
                         node node_modules/@playwright/test/cli.js test "$spec" || e2e_status=1
-                      done
-                      exit $e2e_status
-                    )
-                  '';
-                  installPhase = ''
-                    mkdir -p $out
-                    echo "test-e2e passed at $(date)" > $out/result.txt
-                  '';
-                };
+                      rm -rf "$spec_server_dir"
+                    done
+                    exit $e2e_status
+                  )
+                '';
+                installPhase = ''
+                  mkdir -p $out
+                  echo "test-e2e passed at $(date)" > $out/result.txt
+                '';
+              };
 
-                nix-fmt-check = pkgs.stdenv.mkDerivation {
-                  name = "id-nix-fmt-check";
-                  src = ./.;
-                  nativeBuildInputs = [ pkgs.nixfmt ];
-                  buildPhase = ''
-                    find . -name '*.nix' -not -path './web/bun.nix' -not -path './e2e/bun.nix' | xargs nixfmt --check
-                  '';
-                  installPhase = ''
-                    mkdir -p $out
-                    echo "nix-fmt-check passed at $(date)" > $out/result.txt
-                  '';
-                };
-                treefmt-check = pkgs.stdenv.mkDerivation {
-                  name = "id-treefmt-check";
-                  src = ./.;
-                  nativeBuildInputs = fmtBins;
-                  buildPhase = ''
-                    treefmt --config-file ./treefmt.toml --tree-root "$(pwd)" --ci 2>&1
-                  '';
-                  installPhase = ''
-                    mkdir -p $out
-                    echo "treefmt-check passed at $(date)" > $out/result.txt
-                  '';
-                };
+              nix-fmt-check = pkgs.stdenv.mkDerivation {
+                name = "id-nix-fmt-check";
+                src = ./.;
+                nativeBuildInputs = [ pkgs.nixfmt ];
+                buildPhase = ''
+                  find . -name '*.nix' -not -path './web/bun.nix' -not -path './e2e/bun.nix' | xargs nixfmt --check
+                '';
+                installPhase = ''
+                  mkdir -p $out
+                  echo "nix-fmt-check passed at $(date)" > $out/result.txt
+                '';
+              };
+              treefmt-check = pkgs.stdenv.mkDerivation {
+                name = "id-treefmt-check";
+                src = ./.;
+                nativeBuildInputs = fmtBins;
+                buildPhase = ''
+                  treefmt --config-file ./treefmt.toml --tree-root "$(pwd)" --ci 2>&1
+                '';
+                installPhase = ''
+                  mkdir -p $out
+                  echo "treefmt-check passed at $(date)" > $out/result.txt
+                '';
+              };
 
-                # Per-formatter checks (read-only validation)
-                biome-check = pkgs.stdenv.mkDerivation {
-                  name = "id-biome-check";
-                  src = ./.;
-                  nativeBuildInputs = [ pkgs.biome ];
-                  buildPhase = ''
-                    biome format \
-                      --files-ignore-unknown=true \
-                      $(find . \( -name '*.js' -o -name '*.jsx' -o -name '*.ts' -o -name '*.tsx' \
-                        -o -name '*.css' -o -name '*.json' -o -name '*.graphql' \) \
-                        -not -path '*/node_modules/*' -not -path '*/target/*' \
-                        -not -path '*/dist/*')
-                  '';
-                  installPhase = ''
-                    mkdir -p $out
-                    echo "biome-check passed at $(date)" > $out/result.txt
-                  '';
-                };
-                rustfmt-check = pkgs.stdenv.mkDerivation {
-                  name = "id-rustfmt-check";
-                  src = ./.;
-                  nativeBuildInputs = [ rustToolchain ];
-                  buildPhase = ''
-                    find . -name '*.rs' -not -path '*/target/*' \
-                      -exec rustfmt --check --edition 2024 {} +
-                  '';
-                  installPhase = ''
-                    mkdir -p $out
-                    echo "rustfmt-check passed at $(date)" > $out/result.txt
-                  '';
-                };
-                statix-check = pkgs.stdenv.mkDerivation {
-                  name = "id-statix-check";
-                  src = ./.;
-                  nativeBuildInputs = [ pkgs.statix ];
-                  buildPhase = ''
-                    # Collect failures across files instead of swallowing each
-                    # one: a pipe into `while` would run the loop in a subshell
-                    # and lose the flag, so feed it via process substitution.
-                    fail=0
-                    while IFS= read -r -d "" f; do
-                      statix check -- "$f" || fail=1
-                    done < <(find . -name '*.nix' -print0)
-                    if [ "$fail" -ne 0 ]; then
-                      echo "statix-check: statix reported problems above" >&2
-                      false
-                    fi
-                  '';
-                  installPhase = ''
-                    mkdir -p $out
-                    echo "statix-check passed at $(date)" > $out/result.txt
-                  '';
-                };
-                shfmt-check = pkgs.stdenv.mkDerivation {
-                  name = "id-shfmt-check";
-                  src = ./.;
-                  nativeBuildInputs = [ pkgs.shfmt ];
-                  buildPhase = ''
-                    find . -name '*.sh' -not -path '*/node_modules/*' \
-                      -exec shfmt -d -i 2 -s {} +
-                  '';
-                  installPhase = ''
-                    mkdir -p $out
-                    echo "shfmt-check passed at $(date)" > $out/result.txt
-                  '';
-                };
-                shellcheck-check = pkgs.stdenv.mkDerivation {
-                  name = "id-shellcheck-check";
-                  src = ./.;
-                  nativeBuildInputs = [ pkgs.shellcheck ];
-                  buildPhase = ''
-                    # Enforced at warning severity (#702): under sandbox
-                    # conditions shellcheck reports only four info findings
-                    # (SC2012, `ls` glob picks in the examples' build.sh
-                    # files) and no warning-or-above findings, so warnings
-                    # and errors fail the gate while those info findings
-                    # are worked down separately.
-                    find . -name '*.sh' -not -path '*/node_modules/*' \
-                      -exec shellcheck --severity=warning {} +
-                  '';
-                  installPhase = ''
-                    mkdir -p $out
-                    echo "shellcheck-check passed at $(date)" > $out/result.txt
-                  '';
-                };
-                taplo-check = pkgs.stdenv.mkDerivation {
-                  name = "id-taplo-check";
-                  src = ./.;
-                  nativeBuildInputs = [ pkgs.taplo ];
-                  buildPhase = ''
-                    find . -name '*.toml' -not -path '*/target/*' \
-                      -exec taplo check {} +
-                  '';
-                  installPhase = ''
-                    mkdir -p $out
-                    echo "taplo-check passed at $(date)" > $out/result.txt
-                  '';
-                };
-                justfmt-check = pkgs.stdenv.mkDerivation {
-                  name = "id-justfmt-check";
-                  src = ./.;
-                  nativeBuildInputs = [ pkgs.just ];
-                  buildPhase = ''
-                    just --fmt --check --justfile ./justfile
-                  '';
-                  installPhase = ''
-                    mkdir -p $out
-                    echo "justfmt-check passed at $(date)" > $out/result.txt
-                  '';
-                };
-                prettier-check = pkgs.stdenv.mkDerivation {
-                  name = "id-prettier-check";
-                  src = ./.;
-                  nativeBuildInputs = [ pkgs.prettier ]; # nodepackages remove 2026-04-03
-                  buildPhase = ''
-                    find . \( -name '*.html' -o -name '*.md' -o -name '*.mdx' \
-                      -o -name '*.scss' -o -name '*.yaml' \) \
+              # Per-formatter checks (read-only validation)
+              biome-check = pkgs.stdenv.mkDerivation {
+                name = "id-biome-check";
+                src = ./.;
+                nativeBuildInputs = [ pkgs.biome ];
+                buildPhase = ''
+                  biome format \
+                    --files-ignore-unknown=true \
+                    $(find . \( -name '*.js' -o -name '*.jsx' -o -name '*.ts' -o -name '*.tsx' \
+                      -o -name '*.css' -o -name '*.json' -o -name '*.graphql' \) \
                       -not -path '*/node_modules/*' -not -path '*/target/*' \
-                      -not -path '*/dist/*' \
-                      -exec prettier --check {} +
-                  '';
-                  installPhase = ''
-                    mkdir -p $out
-                    echo "prettier-check passed at $(date)" > $out/result.txt
-                  '';
-                };
+                      -not -path '*/dist/*')
+                '';
+                installPhase = ''
+                  mkdir -p $out
+                  echo "biome-check passed at $(date)" > $out/result.txt
+                '';
+              };
+              rustfmt-check = pkgs.stdenv.mkDerivation {
+                name = "id-rustfmt-check";
+                src = ./.;
+                nativeBuildInputs = [ rustToolchain ];
+                buildPhase = ''
+                  # Match treefmt.toml: vendored upstream Rust is excluded.
+                  find . -name '*.rs' -not -path '*/target/*' -not -path './vendor/*' \
+                    -exec rustfmt --check --edition 2024 {} +
+                '';
+                installPhase = ''
+                  mkdir -p $out
+                  echo "rustfmt-check passed at $(date)" > $out/result.txt
+                '';
+              };
+              statix-check = pkgs.stdenv.mkDerivation {
+                name = "id-statix-check";
+                src = ./.;
+                nativeBuildInputs = [ pkgs.statix ];
+                buildPhase = ''
+                  # Collect failures across files instead of swallowing each
+                  # one: a pipe into `while` would run the loop in a subshell
+                  # and lose the flag, so feed it via process substitution.
+                  fail=0
+                  while IFS= read -r -d "" f; do
+                    statix check -- "$f" || fail=1
+                  done < <(find . -name '*.nix' -print0)
+                  if [ "$fail" -ne 0 ]; then
+                    echo "statix-check: statix reported problems above" >&2
+                    false
+                  fi
+                '';
+                installPhase = ''
+                  mkdir -p $out
+                  echo "statix-check passed at $(date)" > $out/result.txt
+                '';
+              };
+              shfmt-check = pkgs.stdenv.mkDerivation {
+                name = "id-shfmt-check";
+                src = ./.;
+                nativeBuildInputs = [ pkgs.shfmt ];
+                buildPhase = ''
+                  find . -name '*.sh' -not -path '*/node_modules/*' \
+                    -exec shfmt -d -i 2 -s {} +
+                '';
+                installPhase = ''
+                  mkdir -p $out
+                  echo "shfmt-check passed at $(date)" > $out/result.txt
+                '';
+              };
+              shellcheck-check = pkgs.stdenv.mkDerivation {
+                name = "id-shellcheck-check";
+                src = ./.;
+                nativeBuildInputs = [ pkgs.shellcheck ];
+                buildPhase = ''
+                  # Enforced at warning severity (#702): under sandbox
+                  # conditions shellcheck reports only four info findings
+                  # (SC2012, `ls` glob picks in the examples' build.sh
+                  # files) and no warning-or-above findings, so warnings
+                  # and errors fail the gate while those info findings
+                  # are worked down separately.
+                  find . -name '*.sh' -not -path '*/node_modules/*' \
+                    -exec shellcheck --severity=warning {} +
+                '';
+                installPhase = ''
+                  mkdir -p $out
+                  echo "shellcheck-check passed at $(date)" > $out/result.txt
+                '';
+              };
+              taplo-check = pkgs.stdenv.mkDerivation {
+                name = "id-taplo-check";
+                src = ./.;
+                nativeBuildInputs = [ pkgs.taplo ];
+                buildPhase = ''
+                  find . -name '*.toml' -not -path '*/target/*' \
+                    -exec taplo check {} +
+                '';
+                installPhase = ''
+                  mkdir -p $out
+                  echo "taplo-check passed at $(date)" > $out/result.txt
+                '';
+              };
+              justfmt-check = pkgs.stdenv.mkDerivation {
+                name = "id-justfmt-check";
+                src = ./.;
+                nativeBuildInputs = [ pkgs.just ];
+                buildPhase = ''
+                  just --fmt --check --justfile ./justfile
+                '';
+                installPhase = ''
+                  mkdir -p $out
+                  echo "justfmt-check passed at $(date)" > $out/result.txt
+                '';
+              };
+              prettier-check = pkgs.stdenv.mkDerivation {
+                name = "id-prettier-check";
+                src = ./.;
+                nativeBuildInputs = [ pkgs.prettier ]; # nodepackages remove 2026-04-03
+                buildPhase = ''
+                  # Match treefmt.toml: vendored upstream docs are excluded.
+                  find . \( -name '*.html' -o -name '*.md' -o -name '*.mdx' \
+                    -o -name '*.scss' -o -name '*.yaml' \) \
+                    -not -path '*/node_modules/*' -not -path '*/target/*' \
+                    -not -path '*/dist/*' -not -path './vendor/*' \
+                    -exec prettier --check {} +
+                '';
+                installPhase = ''
+                  mkdir -p $out
+                  echo "prettier-check passed at $(date)" > $out/result.txt
+                '';
+              };
+            }
+            // (
+              # NixOS VM integration tests (Linux only — VMs require KVM)
+              pkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
+                nixos-serve = pkgs.testers.runNixOSTest (
+                  import ./nix/tests/serve-test.nix { idPackage = self.packages.${system}.id-web; }
+                );
+                nixos-e2e = pkgs.testers.runNixOSTest (
+                  import ./nix/tests/e2e-test.nix { idPackage = self.packages.${system}.id-web; }
+                );
+                nixos-playwright-e2e = pkgs.testers.runNixOSTest (
+                  import ./nix/tests/playwright-e2e-test.nix {
+                    idPackage = self.packages.${system}.id-web;
+                    inherit e2eTestRunner;
+                    playwrightBrowsers = pkgs.playwright-driver.browsers;
+                  }
+                );
+                nixos-integration = pkgs.testers.runNixOSTest (
+                  import ./nix/tests/integration-test.nix {
+                    idPackage = self.packages.${system}.id-web;
+                    inherit integrationTestRunner;
+                  }
+                );
               }
-              // (
-                # NixOS VM integration tests (Linux only — VMs require KVM)
-                pkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
-                  nixos-serve = pkgs.testers.runNixOSTest (
-                    import ./nix/tests/serve-test.nix { idPackage = self.packages.${system}.id-web; }
-                  );
-                  nixos-e2e = pkgs.testers.runNixOSTest (
-                    import ./nix/tests/e2e-test.nix { idPackage = self.packages.${system}.id-web; }
-                  );
-                  nixos-playwright-e2e = pkgs.testers.runNixOSTest (
-                    import ./nix/tests/playwright-e2e-test.nix {
-                      idPackage = self.packages.${system}.id-web;
-                      inherit e2eTestRunner;
-                      playwrightBrowsers = pkgs.playwright-driver.browsers;
-                    }
-                  );
-                  nixos-integration = pkgs.testers.runNixOSTest (
-                    import ./nix/tests/integration-test.nix {
-                      idPackage = self.packages.${system}.id-web;
-                      inherit integrationTestRunner;
-                    }
-                  );
-                }
-              );
+            );
             ciChecks = individualChecks // ciBuildChecks;
           in
           individualChecks
           // {
             default = pkgs.linkFarm "id-ci" (
-              map (name: {
-                inherit name;
-                path = ciChecks.${name};
-              }) [
-                "cargo-fmt-check"
-                "web-fmt-check"
-                "cargo-check"
-                "clippy-lint"
-                "clippy-native-shell"
-                "web-lint"
-                "test"
-                "test-native-shell"
-                "test-rust-examples"
-                "test-web-unit"
-                "test-web-typecheck"
-                "roc-test"
-                "doc"
-                "build"
-                "release"
-              ]
+              map
+                (name: {
+                  inherit name;
+                  path = ciChecks.${name};
+                })
+                [
+                  "cargo-fmt-check"
+                  "web-fmt-check"
+                  "cargo-check"
+                  "clippy-lint"
+                  "clippy-native-shell"
+                  "web-lint"
+                  "test"
+                  "test-native-shell"
+                  "test-rust-examples"
+                  "test-web-unit"
+                  "test-web-typecheck"
+                  "roc-test"
+                  "doc"
+                  "build"
+                  "release"
+                ]
             );
           };
 
@@ -1146,83 +1189,83 @@
               }
             else
               pkgs.rustPlatform.buildRustPackage {
-            pname = "id";
-            version = "0.1.0";
-            src = ./.;
+                pname = "id";
+                version = "0.1.0";
+                src = ./.;
 
-            # Enable the web feature (default features are empty in Cargo.toml)
-            buildFeatures = [
-              "web"
-              "sandbox"
-              "ssh"
-              "world"
-            ];
+                # Enable the web feature (default features are empty in Cargo.toml)
+                buildFeatures = [
+                  "web"
+                  "sandbox"
+                  "ssh"
+                  "world"
+                ];
 
-            cargoLock = {
-              lockFile = ./Cargo.lock;
-              outputHashes = {
-                "p2panda-core-0.7.1" = "sha256-yq+ySfo14ucU1BWOUdJM0n7/FL3+Ria3Z+MxMHFa4Ls=";
+                cargoLock = {
+                  lockFile = ./Cargo.lock;
+                  outputHashes = {
+                    "p2panda-core-0.7.1" = "sha256-yq+ySfo14ucU1BWOUdJM0n7/FL3+Ria3Z+MxMHFa4Ls=";
+                  };
+                };
+
+                buildInputs = [ pkgs.openssl ];
+                nativeBuildInputs = [
+                  pkgs.pkg-config
+                  pkgs.cmake
+                  rustToolchain
+                  pkgs.bun
+                  bun2nixPkg.hook
+                  # The tests compile roc worlds. zig is not listed: its setup hook would
+                  # replace this derivation's build phase (buildWasmHost finds it by path).
+                  rocCompiler
+                ];
+
+                # bun2nix: offline web dependency installation
+                inherit bunDeps;
+                bunRoot = "web";
+                bunInstallFlags = [ "--linker=hoisted" ];
+                dontUseBunBuild = true;
+                dontUseBunCheck = true;
+                dontUseBunInstall = true;
+                dontUseCmakeConfigure = true;
+
+                inherit (opensslEnv) OPENSSL_DIR;
+                inherit (opensslEnv) OPENSSL_LIB_DIR;
+                inherit (opensslEnv) OPENSSL_INCLUDE_DIR;
+
+                preBuild = ''
+                  # Build web assets (bun2nix hook already installed node_modules)
+                  # @tailwindcss/cli uses @parcel/watcher (native module) which needs libstdc++
+                  export LD_LIBRARY_PATH="${pkgs.stdenv.cc.cc.lib}/lib''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+                  cd web
+                  bun run build
+                  cd ..
+
+                  ${buildWasmHost}
+                '';
+
+                doCheck = checkRuntimePackages;
+                # Test phase under the ci-check profile (#3195), not release.
+                checkType = "ci-check";
+                # serve_tests require networking (bind/listen), unavailable in nix sandbox
+                checkFlags = [
+                  "--skip"
+                  "serve_tests"
+                ];
+                preCheck = ''
+                  export ID_TEST_FAKE_SH="${pkgs.stdenv.shell}"
+                  # CA bundle for the check phase (#12608): the sandbox
+                  # has no system CA store, so the reqwest client the
+                  # http_fetch schedule tests construct loads zero root
+                  # certificates and panics; rustls-native-certs honours
+                  # SSL_CERT_FILE.
+                  export SSL_CERT_FILE="${testSslCertFile}"
+                '';
+
+                meta = commonMeta // {
+                  description = "A peer-to-peer file sharing CLI built with Iroh (with web UI)";
+                };
               };
-            };
-
-            buildInputs = [ pkgs.openssl ];
-            nativeBuildInputs = [
-              pkgs.pkg-config
-              pkgs.cmake
-              rustToolchain
-              pkgs.bun
-              bun2nixPkg.hook
-              # The tests compile roc worlds. zig is not listed: its setup hook would
-              # replace this derivation's build phase (buildWasmHost finds it by path).
-              rocCompiler
-            ];
-
-            # bun2nix: offline web dependency installation
-            inherit bunDeps;
-            bunRoot = "web";
-            bunInstallFlags = [ "--linker=hoisted" ];
-            dontUseBunBuild = true;
-            dontUseBunCheck = true;
-            dontUseBunInstall = true;
-            dontUseCmakeConfigure = true;
-
-            inherit (opensslEnv) OPENSSL_DIR;
-            inherit (opensslEnv) OPENSSL_LIB_DIR;
-            inherit (opensslEnv) OPENSSL_INCLUDE_DIR;
-
-            preBuild = ''
-              # Build web assets (bun2nix hook already installed node_modules)
-              # @tailwindcss/cli uses @parcel/watcher (native module) which needs libstdc++
-              export LD_LIBRARY_PATH="${pkgs.stdenv.cc.cc.lib}/lib''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-              cd web
-              bun run build
-              cd ..
-
-              ${buildWasmHost}
-            '';
-
-            doCheck = checkRuntimePackages;
-            # Test phase under the ci-check profile (#3195), not release.
-            checkType = "ci-check";
-            # serve_tests require networking (bind/listen), unavailable in nix sandbox
-            checkFlags = [
-              "--skip"
-              "serve_tests"
-            ];
-            preCheck = ''
-              export ID_TEST_FAKE_SH="${pkgs.stdenv.shell}"
-              # CA bundle for the check phase (#12608): the sandbox
-              # has no system CA store, so the reqwest client the
-              # http_fetch schedule tests construct loads zero root
-              # certificates and panics; rustls-native-certs honours
-              # SSL_CERT_FILE.
-              export SSL_CERT_FILE="${testSslCertFile}"
-            '';
-
-            meta = commonMeta // {
-              description = "A peer-to-peer file sharing CLI built with Iroh (with web UI)";
-            };
-          };
 
           # Library-only package (no web UI, no bun required)
           id-lib =
@@ -1246,61 +1289,61 @@
               }
             else
               pkgs.rustPlatform.buildRustPackage {
-            pname = "id-lib";
-            version = "0.1.0";
-            src = ./.;
+                pname = "id-lib";
+                version = "0.1.0";
+                src = ./.;
 
-            cargoLock = {
-              lockFile = ./Cargo.lock;
-              outputHashes = {
-                "p2panda-core-0.7.1" = "sha256-yq+ySfo14ucU1BWOUdJM0n7/FL3+Ria3Z+MxMHFa4Ls=";
+                cargoLock = {
+                  lockFile = ./Cargo.lock;
+                  outputHashes = {
+                    "p2panda-core-0.7.1" = "sha256-yq+ySfo14ucU1BWOUdJM0n7/FL3+Ria3Z+MxMHFa4Ls=";
+                  };
+                };
+
+                # Disable default web feature for lib-only build
+                buildNoDefaultFeatures = true;
+                buildFeatures = [
+                  "sandbox"
+                  "world"
+                ];
+                dontUseCmakeConfigure = true;
+
+                buildInputs = [ pkgs.openssl ];
+                nativeBuildInputs = [
+                  pkgs.pkg-config
+                  pkgs.cmake
+                  rustToolchain
+                  rocCompiler
+                ];
+
+                inherit (opensslEnv) OPENSSL_DIR;
+                inherit (opensslEnv) OPENSSL_LIB_DIR;
+                inherit (opensslEnv) OPENSSL_INCLUDE_DIR;
+
+                preBuild = buildWasmHost;
+
+                doCheck = checkRuntimePackages;
+                # Test phase under the ci-check profile (#3195), not release.
+                checkType = "ci-check";
+                # serve_tests require networking (bind/listen), unavailable in nix sandbox
+                checkFlags = [
+                  "--skip"
+                  "serve_tests"
+                ];
+                preCheck = ''
+                  export ID_TEST_FAKE_SH="${pkgs.stdenv.shell}"
+                  # CA bundle for the check phase (#12608): the sandbox
+                  # has no system CA store, so the reqwest client the
+                  # http_fetch schedule tests construct loads zero root
+                  # certificates and panics; rustls-native-certs honours
+                  # SSL_CERT_FILE.
+                  export SSL_CERT_FILE="${testSslCertFile}"
+                '';
+
+                meta = commonMeta // {
+                  description = "A peer-to-peer file sharing CLI built with Iroh";
+                };
               };
-            };
-
-            # Disable default web feature for lib-only build
-            buildNoDefaultFeatures = true;
-            buildFeatures = [
-              "sandbox"
-              "world"
-            ];
-            dontUseCmakeConfigure = true;
-
-            buildInputs = [ pkgs.openssl ];
-            nativeBuildInputs = [
-              pkgs.pkg-config
-              pkgs.cmake
-              rustToolchain
-              rocCompiler
-            ];
-
-            inherit (opensslEnv) OPENSSL_DIR;
-            inherit (opensslEnv) OPENSSL_LIB_DIR;
-            inherit (opensslEnv) OPENSSL_INCLUDE_DIR;
-
-            preBuild = buildWasmHost;
-
-            doCheck = checkRuntimePackages;
-            # Test phase under the ci-check profile (#3195), not release.
-            checkType = "ci-check";
-            # serve_tests require networking (bind/listen), unavailable in nix sandbox
-            checkFlags = [
-              "--skip"
-              "serve_tests"
-            ];
-            preCheck = ''
-              export ID_TEST_FAKE_SH="${pkgs.stdenv.shell}"
-              # CA bundle for the check phase (#12608): the sandbox
-              # has no system CA store, so the reqwest client the
-              # http_fetch schedule tests construct loads zero root
-              # certificates and panics; rustls-native-certs honours
-              # SSL_CERT_FILE.
-              export SSL_CERT_FILE="${testSslCertFile}"
-            '';
-
-            meta = commonMeta // {
-              description = "A peer-to-peer file sharing CLI built with Iroh";
-            };
-          };
 
           # Default = web
           default = self.packages.${system}.id-web;

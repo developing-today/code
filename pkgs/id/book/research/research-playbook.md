@@ -1,6 +1,6 @@
 # Six apps a participant can finish, replay or resume
 
-*Research snapshot of November 23, 2026. Code and issue observations refer to the cited revisions and collection times.*
+_Research snapshot of November 23, 2026. Code and issue observations refer to the cited revisions and collection times._
 
 **Proposed suite.** The accompanying [app-vectors.json](evidence/app-vectors.json) contains six additional scenarios and 33 expected state transitions. Each names its parent ID in the staged 13-case [app-fixtures.json](evidence/app-fixtures.json). The two sets have different purposes. The earlier cases preserve regression and pending merge-policy decisions. These transcripts specify small levels or editorial tasks from entry through an observable result. The answers were authored by hand. JSON structure, correspondence of the six IDs, and all 33 expected records have been checked independently against the level rules. No guest, renderer or device ran them.
 
@@ -16,16 +16,16 @@ For each guest keep the level configuration small, immutable and versioned. A pa
 
 **Transcript.** Board 4×2. Stockpile (0,1), ore (1,0) and (2,1), worker (1,1), empty pack and store. Compare the worker position plus the three locations of ore after every action. Coordinates in the JSON are zero-based.
 
-| Input | Worker | Ore remaining | Pack | Store |
-|---|---|---|---:|---:|
-| Mine east | (1,1) | (1,0) | 1 | 0 |
-| Mine north with full pack | (1,1) | (1,0) | 1 | 0 |
-| Walk west | (0,1) | (1,0) | 1 | 0 |
-| Deposit | (0,1) | (1,0) | 0 | 1 |
-| Walk east | (1,1) | (1,0) | 0 | 1 |
-| Mine north | (1,1) | empty | 1 | 1 |
-| Walk west | (0,1) | empty | 1 | 1 |
-| Deposit | (0,1) | empty | 0 | 2 |
+| Input                     | Worker | Ore remaining | Pack | Store |
+| ------------------------- | ------ | ------------- | ---: | ----: |
+| Mine east                 | (1,1)  | (1,0)         |    1 |     0 |
+| Mine north with full pack | (1,1)  | (1,0)         |    1 |     0 |
+| Walk west                 | (0,1)  | (1,0)         |    1 |     0 |
+| Deposit                   | (0,1)  | (1,0)         |    0 |     1 |
+| Walk east                 | (1,1)  | (1,0)         |    0 |     1 |
+| Mine north                | (1,1)  | empty         |    1 |     1 |
+| Walk west                 | (0,1)  | empty         |    1 |     1 |
+| Deposit                   | (0,1)  | empty         |    0 |     2 |
 
 Every row conserves two units. Rejecting the second action cannot deplete the northern vein. Reuse Territory's in-bounds movement and RocGrid's cell access. Keep inventory numeric and separate from cell glyphs so placing the worker over the stockpile cannot remove it from the level.
 
@@ -45,14 +45,14 @@ Every row conserves two units. Rejecting the second action cannot deplete the no
 
 **Goal.** Seed or load a bounded board. Inspect a cell and its neighbors, edit the seed before starting, step, pause and compare generations. The level challenges the participant to predict where a glider will be after four steps. Use B3/S23, a dead exterior, eight neighbors, and a single read-only previous generation for every update. A headless Bevy observer rebuilds a projection at the checkpoint. It cannot add a simulation tick when reconnecting. Reuse RocGrid for storage and implement a bounded Moore-neighborhood read. Its built-in four-neighbor traversal alone yields a different automaton. [RocGrid][grid] · [ECS design issue](https://github.com/developing-today/code/issues/5781)
 
-| Generation | Live cells in row-major order |
-|---:|---|
-| 0 | (1,0), (2,1), (0,2), (1,2), (2,2) |
-| 1 | (0,1), (2,1), (1,2), (2,2), (1,3) |
-| 2 | (2,1), (0,2), (2,2), (1,3), (2,3) |
+|  Generation | Live cells in row-major order     |
+| ----------: | --------------------------------- |
+|           0 | (1,0), (2,1), (0,2), (1,2), (2,2) |
+|           1 | (0,1), (2,1), (1,2), (2,2), (1,3) |
+|           2 | (2,1), (0,2), (2,2), (1,3), (2,3) |
 | Reopen at 2 | (2,1), (0,2), (2,2), (1,3), (2,3) |
-| 3 | (1,1), (2,2), (3,2), (1,3), (2,3) |
-| 4 | (2,1), (3,2), (1,3), (2,3), (3,3) |
+|           3 | (1,1), (2,2), (3,2), (1,3), (2,3) |
+|           4 | (2,1), (3,2), (1,3), (2,3), (3,3) |
 
 The board is 5×5. Generation four is the initial set translated one cell east and one cell south. Comparing only live population would miss all the movement. The checkpoint action must preserve both records and generation number.
 
@@ -72,14 +72,14 @@ The board is 5×5. Generation four is the initial set translated one cell east a
 
 The following are candidate affordances. The bounded hardware shell available in source folds a journal and answers supported forms. Each hardware entry here either names an optional form the world would have to provide or records why the task requires another shell. Availability in these cells is a design target. [Hardware contract][hardware] · [Native widget presenter][widget]
 
-| App | Scripted CLI and keyboard TUI | Web and Linux GUI | Android | Confirmation-only hardware |
-|---|---|---|---|---|
-| Colony | CLI names action and direction; TUI selects tile, then Mine/Walk/Deposit. | Select the same tile by pointer or keyboard and expose pack/store counts to accessibility APIs. | Target list and touch grid both expose tile ID, direction and capacity. | A world-provided “Deposit one ore” token-bound form can authorize that single action at the stockpile. Full spatial loop requires a richer profile. |
-| Orbit | CLI queues a tick-stamped input; TUI arrow and fire controls form one tick order. Manual step remains available. | Map keyboard or labelled steer/fire buttons to the same next-tick order. Render interpolation is local. | Persistent large lane and fire controls and a turn-based order composer allow the same action without simultaneous gestures. | Status/head available. The hardware spike has no realtime arcade input. An optional turn form could submit a prepared order once its timing and rejection behavior are defined. |
-| Burrow | CLI selects Dig or Walk and a direction; TUI offers labeled adjacent terrain. | Keyboard, a target list and clickable adjacent cells reach the same adjacent target. | Rotate or resize while digging without changing the selected world cell. Announce “blocked rock.” | A short choice form may expose a single legal dig or walking direction. Paired display controls remain conditional on actual form and hardware support. |
-| Cells | CLI steps or lists live coordinates; TUI lets the user inspect the same cells. | Step button and keyboard activation are equivalent. Show generation, population and coordinates. | Provide explicit Step, focusable cell inspection and committed generation announcements. | A token-bound Step form can advance once. Arbitrary seed editing requires an appropriate editor on another shell. |
-| Sketch | CLI gives ordered vertices; TUI places vertices with a cursor and confirms once. | Polyline via keyboard or pointer, freehand via actual pointer samples; canceled gestures stay transient. | Touch vertices, stylus if supported, or accessible coordinate editor. Preserve touch cancellation and IME boundaries. | A prepared export or other scoped confirmation may fit a form. This profile cannot author the polyline or freehand stroke. |
-| Mind Map | CLI names source and destination IDs; a keyboard outline picker shows paths and labels. | Drag or use “Move under…”. The same two IDs are committed. | Use a searchable semantic outline and Move command as an alternative to dragging. | A token-bound choice may confirm two preselected nodes. Arbitrary rename or search needs free text outside this profile. |
+| App      | Scripted CLI and keyboard TUI                                                                                    | Web and Linux GUI                                                                                        | Android                                                                                                                      | Confirmation-only hardware                                                                                                                                                      |
+| -------- | ---------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Colony   | CLI names action and direction; TUI selects tile, then Mine/Walk/Deposit.                                        | Select the same tile by pointer or keyboard and expose pack/store counts to accessibility APIs.          | Target list and touch grid both expose tile ID, direction and capacity.                                                      | A world-provided “Deposit one ore” token-bound form can authorize that single action at the stockpile. Full spatial loop requires a richer profile.                             |
+| Orbit    | CLI queues a tick-stamped input; TUI arrow and fire controls form one tick order. Manual step remains available. | Map keyboard or labelled steer/fire buttons to the same next-tick order. Render interpolation is local.  | Persistent large lane and fire controls and a turn-based order composer allow the same action without simultaneous gestures. | Status/head available. The hardware spike has no realtime arcade input. An optional turn form could submit a prepared order once its timing and rejection behavior are defined. |
+| Burrow   | CLI selects Dig or Walk and a direction; TUI offers labeled adjacent terrain.                                    | Keyboard, a target list and clickable adjacent cells reach the same adjacent target.                     | Rotate or resize while digging without changing the selected world cell. Announce “blocked rock.”                            | A short choice form may expose a single legal dig or walking direction. Paired display controls remain conditional on actual form and hardware support.                         |
+| Cells    | CLI steps or lists live coordinates; TUI lets the user inspect the same cells.                                   | Step button and keyboard activation are equivalent. Show generation, population and coordinates.         | Provide explicit Step, focusable cell inspection and committed generation announcements.                                     | A token-bound Step form can advance once. Arbitrary seed editing requires an appropriate editor on another shell.                                                               |
+| Sketch   | CLI gives ordered vertices; TUI places vertices with a cursor and confirms once.                                 | Polyline via keyboard or pointer, freehand via actual pointer samples; canceled gestures stay transient. | Touch vertices, stylus if supported, or accessible coordinate editor. Preserve touch cancellation and IME boundaries.        | A prepared export or other scoped confirmation may fit a form. This profile cannot author the polyline or freehand stroke.                                                      |
+| Mind Map | CLI names source and destination IDs; a keyboard outline picker shows paths and labels.                          | Drag or use “Move under…”. The same two IDs are committed.                                               | Use a searchable semantic outline and Move command as an alternative to dragging.                                            | A token-bound choice may confirm two preselected nodes. Arbitrary rename or search needs free text outside this profile.                                                        |
 
 ## What needs to exist before a release can claim these loops
 

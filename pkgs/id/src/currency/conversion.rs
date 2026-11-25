@@ -775,7 +775,9 @@ impl ConversionVerifier {
                 max_amount: authorisation.max_amount,
             });
         }
-        let used = self.usage.used_volume(&submission.issuer, submission.authorisation_id);
+        let used = self
+            .usage
+            .used_volume(&submission.issuer, submission.authorisation_id);
         let remaining_volume = authorisation.total_cap.saturating_sub(used);
         if submission.amount > remaining_volume {
             return Err(FailedPreSubmit::CapExhausted { remaining_volume });
@@ -1127,7 +1129,9 @@ mod tests {
         expected: &FailedPreSubmit,
     ) {
         let ledger = InMemoryLedger::default();
-        let used_before = verifier.usage().used_volume(&submission.issuer, submission.authorisation_id);
+        let used_before = verifier
+            .usage()
+            .used_volume(&submission.issuer, submission.authorisation_id);
         let error = verifier
             .verify(control, submission)
             .expect_err("submission must be refused pre-flight");
@@ -1138,7 +1142,9 @@ mod tests {
         );
         assert_eq!(error.disposition(), "FAILED_PRE_SUBMIT");
         assert_eq!(
-            verifier.usage().used_volume(&submission.issuer, submission.authorisation_id),
+            verifier
+                .usage()
+                .used_volume(&submission.issuer, submission.authorisation_id),
             used_before,
             "a refused submission must not commit usage"
         );
@@ -1169,7 +1175,12 @@ mod tests {
         assert_eq!(verified.dest_amount, 81);
         assert_eq!(verified.remaining_volume, 1_000_000 - 100);
         // Verification alone commits no usage.
-        assert_eq!(verifier.usage().used_volume(&super::super::issuer_id(&lp_key()), 7), 0);
+        assert_eq!(
+            verifier
+                .usage()
+                .used_volume(&super::super::issuer_id(&lp_key()), 7),
+            0
+        );
     }
 
     #[test]
@@ -1491,7 +1502,9 @@ mod tests {
         expected: &FailedPreSubmit,
     ) {
         let ledger = InMemoryLedger::default();
-        let used_before = verifier.usage().used_volume(&submission.issuer, submission.authorisation_id);
+        let used_before = verifier
+            .usage()
+            .used_volume(&submission.issuer, submission.authorisation_id);
         let error = verifier
             .verify_quoted(control, submission, quote_id)
             .expect_err("quoted submission must be refused pre-flight");
@@ -1502,7 +1515,9 @@ mod tests {
         );
         assert_eq!(error.disposition(), "FAILED_PRE_SUBMIT");
         assert_eq!(
-            verifier.usage().used_volume(&submission.issuer, submission.authorisation_id),
+            verifier
+                .usage()
+                .used_volume(&submission.issuer, submission.authorisation_id),
             used_before,
             "a refused submission must not commit usage"
         );
@@ -1550,7 +1565,12 @@ mod tests {
         // The gateway's book holds the issued quote; issuance
         // committed no usage.
         assert_eq!(verifier.quote(42), Some(&quote));
-        assert_eq!(verifier.usage().used_volume(&super::super::issuer_id(&lp_key()), 7), 0);
+        assert_eq!(
+            verifier
+                .usage()
+                .used_volume(&super::super::issuer_id(&lp_key()), 7),
+            0
+        );
     }
 
     #[test]
@@ -1776,7 +1796,12 @@ mod tests {
         assert_eq!(executed.fee(), 1);
         assert_eq!(executed.remaining_volume, 1_000_000 - 100);
         // Execution verification alone commits no usage.
-        assert_eq!(verifier.usage().used_volume(&super::super::issuer_id(&lp_key()), 7), 0);
+        assert_eq!(
+            verifier
+                .usage()
+                .used_volume(&super::super::issuer_id(&lp_key()), 7),
+            0
+        );
     }
 
     #[test]
