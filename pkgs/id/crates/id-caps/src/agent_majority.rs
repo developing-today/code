@@ -44,6 +44,7 @@
 //! Standing-population caps and per-role event-rate budgets (§2.5,
 //! decision 5) are later slices of #10052; they extend this profile.
 
+use std::collections::btree_map::Entry;
 use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
@@ -549,19 +550,19 @@ impl Visitors {
             Err(VisitorError::UnknownRole)
         } else if holds_agent_grant(registry, &key) {
             Err(VisitorError::AgentAsHuman)
-        } else if self.grants.contains_key(&key) {
-            Err(VisitorError::AlreadyGranted)
         } else {
-            self.grants.insert(
-                key,
-                VisitorGrant {
-                    key,
-                    role: role.to_owned(),
-                    granted_by: actor.to_owned(),
-                    granted_at: now,
-                },
-            );
-            Ok(())
+            match self.grants.entry(key) {
+                Entry::Occupied(_) => Err(VisitorError::AlreadyGranted),
+                Entry::Vacant(vacant) => {
+                    vacant.insert(VisitorGrant {
+                        key,
+                        role: role.to_owned(),
+                        granted_by: actor.to_owned(),
+                        granted_at: now,
+                    });
+                    Ok(())
+                }
+            }
         };
         self.record(
             EVENT_VISITOR_GRANT,
