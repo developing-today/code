@@ -401,7 +401,7 @@ mod tests {
             store,
             words,
             stdin,
-            &fleet_config::ctx::Ctx::from_pairs([]),
+            &fleet_config::ctx::Ctx::from_pairs(std::iter::empty::<(&str, &str)>()),
         )
     }
 
