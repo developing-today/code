@@ -3,12 +3,12 @@
 //! The bridge speaks the existing `/id-world/1` shell session protocol and
 //! stays a client: it never starts a world host or listener.
 
-use std::time::Duration;
+use std::{net::SocketAddr, time::Duration};
 
 use anyhow::{Context, Result, bail};
 use id_worlds::{shell_contract::ShellContract, world_net::WorldClient};
 use iroh::endpoint::presets;
-use iroh::{Endpoint, EndpointAddr, EndpointId};
+use iroh::{Endpoint, EndpointAddr, EndpointId, TransportAddr};
 use serde::Serialize;
 use serde_json::{Value, json};
 
@@ -156,7 +156,8 @@ pub async fn join_world_session(
     Ok((session, first_view))
 }
 
-/// Parse an Iroh endpoint ID or serialized `EndpointAddr` supplied by the UI.
+/// Parse an Iroh endpoint ID, compact node-ID/socket address, or serialized
+/// `EndpointAddr` supplied by the UI.
 ///
 /// # Errors
 ///
@@ -169,9 +170,21 @@ pub fn parse_endpoint_addr(text: &str) -> Result<EndpointAddr> {
     if let Ok(addr) = serde_json::from_str::<EndpointAddr>(value) {
         return Ok(addr);
     }
-    let endpoint_id: EndpointId = value
-        .parse()
-        .context("world address must be an endpoint ID or serialized EndpointAddr")?;
+    if let Some((node_id_text, socket_addr_text)) = value.split_once('@') {
+        let endpoint_id: EndpointId = node_id_text
+            .parse()
+            .context("compact world address has an invalid endpoint ID")?;
+        let socket_addr: SocketAddr = socket_addr_text
+            .parse()
+            .context("compact world address must include an IP socket address")?;
+        return Ok(EndpointAddr::from_parts(
+            endpoint_id,
+            [TransportAddr::Ip(socket_addr)],
+        ));
+    }
+    let endpoint_id: EndpointId = value.parse().context(
+        "world address must be an endpoint ID, node-ID@IP:port, or serialized EndpointAddr",
+    )?;
     Ok(EndpointAddr::from(endpoint_id))
 }
 

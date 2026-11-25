@@ -37,8 +37,8 @@ the pinned Rust toolchain plus `cargo-ndk` before building. The debug APK is
 
 ## Runtime inputs
 
-- **Host address:** an Iroh endpoint ID, or a serialized Iroh `EndpointAddr`
-  when direct transport addresses are needed.
+- **Host address:** an Iroh endpoint ID, `node-id@ip:port` for a direct socket,
+  or a serialized Iroh `EndpointAddr` for other direct transport addresses.
 - **World:** optional world name; blank uses the host default.
 - **Join capability:** supplied by the operator for this session; it is not
   saved by the app.

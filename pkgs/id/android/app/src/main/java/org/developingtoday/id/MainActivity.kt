@@ -38,7 +38,7 @@ class MainActivity : Activity() {
             contentDescription = "Remote app surface (disconnected)"
         }
         val address = EditText(this).apply {
-            hint = "Host node ID or Iroh EndpointAddr JSON"
+            hint = "Node ID, node-ID@IP:port, or Iroh EndpointAddr JSON"
             inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
             setSingleLine(true)
             contentDescription = "World host address"
