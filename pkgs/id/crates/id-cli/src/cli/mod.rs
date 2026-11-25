@@ -1794,10 +1794,11 @@ pub enum KeysetCommand {
         #[arg(long)]
         client: bool,
     },
-    /// Revoke a device key, given as its hex public key. Records it signed
-    /// before the revocation stay valid history.
+    /// Revoke a device key, given as its hex public key or scanned
+    /// `id:keyset-device?...` payload. Records it signed before the
+    /// revocation stay valid history.
     Revoke {
-        /// The device's hex public key, as `id keyset show` prints it.
+        /// The device's hex public key or its scanned QR payload.
         device_key: String,
         /// Why it was revoked, kept in the record.
         #[arg(long, default_value = "revoked")]
