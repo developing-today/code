@@ -2614,6 +2614,7 @@ const REFUSED_SAID = {
   "task.move": "moving a task",
   "pr.merge": "merging",
   "deploy.start": "starting a deploy",
+  "store.migrate": "running a store migration",
   "intake.send": "filing a note, a bug or a change",
   "read.board": "reading the board",
   "read.prs": "reading the pull requests",
