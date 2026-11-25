@@ -64,7 +64,8 @@ Read at `origin/main` on 2026-11-25:
 
 ## 1. Intent
 
-A person who adds `next-up` to an issue means "move this up". Fleet
+A person who adds `priority/critical` to an issue means "move this
+up". Fleet
 should hear that as a priority request from that person and decide it
 under the same rules as any other priority request. Fleet's own label
 writes, which mirror decisions already made, must never come back as
@@ -80,7 +81,7 @@ whoever added it.
 | Envelope → shared `Command` mapping        | `work/distribution.rs` (DST-03 file)      | **owns** the label mapping |
 | Authorization, acceptance, durable receipt | Fleet sink (DSP-01), AUTH-01, PRI-01      | consumer                   |
 | Accepted-intent write                      | DST-03                                    | consumer                   |
-| Outbound label writes (the echo source)    | `fleet gh` adapter, REL-04 outbox         | read-only consumer         |
+| Outbound label writes (the echo source)    | `reprioritize_sync_outbox`, `fleet gh`    | read-only consumer         |
 | Projector tests                            | `projector/test/priority-webhook.test.ts` | **owns**                   |
 
 No new service, route, queue, table, client or HMAC helper. The
@@ -89,25 +90,47 @@ Projector gains no policy and no remote write.
 ## 3. Which events become commands
 
 Only `issues` and `pull_request` events with action `labeled` or
-`unlabeled`, where the label named in the event is a **priority label**
-of the current profile (`expedite`, `next-up` and the named bands of
-the ratified scale), produce a label envelope. Every other label event
-is projected as today and forwards nothing.
+`unlabeled`, where the label named in the event is in the **label
+mapping** below, produce a label envelope. Every other label event is
+projected as today and forwards nothing.
 
-The envelope carries **the full priority-label set after the change**,
+Two label families exist on main, and neither names a band exactly:
+
+- **Category labels** `priority/critical`, `priority/high`,
+  `priority/normal`, `priority/low`. Fleet writes them itself
+  (`validate::label_for_priority`, through `reprioritize_sync_outbox`),
+  and each covers a range of values (`category_for_priority`: up to 10,
+  up to 30, up to 50, above 50). They are lossy: 15 and 25 both render
+  as `priority/high`.
+- **Rank labels** `expedite`, `now`, `next`, read by the console
+  (`console/src/ops.ts` `RANKS`). `expedite` names #7030's protected
+  set.
+
+The **label mapping** is versioned data in the priority profile. It
+lists, for each label, the range it covers and the value to set when the
+current value falls outside that range. This record proposes the
+category ranges above, and no representative values. Until the owner of
+the profile (#9199 / #9200) sets those values, a category label that
+would move a value returns `LABEL_MAPPING_UNCONFIGURED` and a triage
+hint, and changes nothing. Nothing here invents a band.
+
+The envelope carries **the full mapped-label set after the change**,
 taken from the payload's `issue.labels` (or `pull_request.labels`), not
-only the delta. Fleet decides from the resulting set:
+only the delta. Fleet decides from the resulting set and the item's
+current value:
 
-| Resulting priority-label set | Command                                    | Reason code                  |
-| ---------------------------- | ------------------------------------------ | ---------------------------- |
-| exactly one label            | `priority.set_band` to that band           | `label_band_change`          |
-| none, after an `unlabeled`   | `priority.request_triage`; base value kept | `label_removed_needs_triage` |
-| two or more labels           | no mutation; triage hint                   | `label_conflict`             |
+| Resulting mapped-label set                 | Result                                          | Reason code                  |
+| ------------------------------------------ | ----------------------------------------------- | ---------------------------- |
+| one label, current value inside its range  | `no_change`; the value is kept, so 15 stays 15  | none                         |
+| one label, current value outside its range | `priority.set_band` to the mapped value         | `label_band_change`          |
+| `expedite` added or removed                | protected-membership write; PRI-01 decides (§7) | `label_band_change`          |
+| none, after an `unlabeled`                 | `priority.request_triage`; base value kept      | `label_removed_needs_triage` |
+| two or more labels                         | no mutation; triage hint                        | `label_conflict`             |
 
-Values are the ratified ones, exactly: `expedite` is 15 and `next-up`
-is 25. Nothing in this path snaps 15 to 10 or 25 to 20. A label the
-current profile does not name fails as `UNKNOWN_PROFILE_LABEL`, with no
-fallback band.
+The first row is what keeps the ratified values: a category label that
+merely agrees with the stored value never rewrites it. Nothing in this
+path snaps 15 to 10 or 25 to 20. A label that is not in the mapping
+forwards nothing.
 
 ## 4. One act, one identity
 
@@ -154,17 +177,19 @@ acceptance is caught by the work version that DST-03 records
 
 ## 6. Echoes
 
-Fleet writes priority labels itself, through the `fleet gh` adapter
-from the REL-04 outbox, to mirror decisions already accepted. Those
+Fleet writes priority labels itself, to mirror decisions already
+accepted: today `verb_reprioritize` queues a `priority/<category>` label
+in `reprioritize_sync_outbox`, and the broker drains it through
+`fleet gh`. REL-04's intent rows take that role once they exist. Those
 writes come back as `labeled` / `unlabeled` webhooks. An event is an
 **echo** when both of these hold:
 
 - the event's sender is one of the configured Fleet GitHub Apps, matched
   by app id. Login is not used, because it rotates among three Apps
   (`gh.rs`);
-- an outbox label effect exists for the same repository id, number,
-  label and action, and is pending or was verified within the
-  reconcile window.
+- an outbox row exists (`reprioritize_sync_outbox`, or a REL-04 intent
+  later) for the same repository, number, label and action, and is
+  pending or was delivered within the reconcile window.
 
 An echo is `projection_echo`: no mutation, no hint. The receipt names
 the matching operation id. An event from a Fleet App with **no**
@@ -241,7 +266,7 @@ DST-03's `distribution.rs` maps it to the shared `Command`:
 | `projection_echo`                      | §6                                             | no      |
 | `stale_snapshot`                       | §5 set differs from the fresh read             | no      |
 | `no_change`                            | band already held                              | no      |
-| `UNKNOWN_PROFILE_LABEL`                | label not in the current profile               | no      |
+| `LABEL_MAPPING_UNCONFIGURED`           | category label would move a value; no mapping  | hint    |
 | `AMBIGUOUS_RESOURCE_REF`               | repo id and name disagree, or not resolvable   | no      |
 | `GRANT_MISSING`, `FLOOR_NOT_MET`       | §7                                             | no      |
 | `OWNER_POLICY_PROTECTED`               | §7, protected item                             | no      |
@@ -259,8 +284,9 @@ redelivery retries it, and the Projector never fabricates a receipt
 First failing oracles (from the issue):
 
 1. `pmo_distribution_priority_webhook_maps_to_shared_command` (Fleet):
-   a signed `labeled next-up` envelope maps to `priority.set_band` with
-   value 25, `label_band_change`, and the §4 key.
+   with a fixture label mapping, a signed `labeled priority/critical`
+   envelope on an item at 50 maps to `priority.set_band` with the
+   fixture's mapped value, `label_band_change`, and the §4 key.
 2. `pmo_distribution_protected_expedite_label_event_is_denied` (Fleet):
    a label event on a protected item returns `OWNER_POLICY_PROTECTED`,
    including when the sender is the owner's account. Removing
@@ -274,7 +300,9 @@ Further oracles:
 6. `pmo_distribution_fleet_app_echo_is_not_intent`.
 7. `pmo_distribution_unmatched_fleet_app_label_is_conflict`.
 8. `pmo_distribution_out_of_order_label_is_stale_snapshot`.
-9. `pmo_distribution_label_values_are_not_snapped` (15 and 25).
+9. `pmo_distribution_label_values_are_not_snapped`: `priority/high` on
+   an item at 15 or 25 is `no_change`.
+10. `pmo_distribution_unconfigured_category_mapping_changes_nothing`.
 
 The Projector suite, `test/priority-webhook.test.ts`, checks four
 things:
@@ -319,6 +347,19 @@ unchanged, accepted intents stay, and no label on GitHub is touched.
 
 - No change to `webhook.ts`, the delivery ledger or the hot cursor.
 - No Projector write to GitHub, Project or Fleet state.
-- No label taxonomy change and no re-ratification of 15 and 25.
+- No label taxonomy change, no representative values for category
+  labels, and no re-ratification of 15 and 25.
 - No automatic revert of a refused human label.
 - No `do-now` or urgency mapping from labels.
+
+## 2026-11-25T22:40Z Correction:
+
+The first version of §3 assumed GitHub labels named `expedite` and
+`next-up` that map one to one to bands. On main, Fleet's own labels are
+the lossy `priority/<category>` family, and the console reads the rank
+labels `expedite`, `now` and `next`. §3 now maps labels through a
+versioned mapping. A label that agrees with the stored value changes
+nothing, and a category label with no configured value changes nothing
+and asks for triage. §6 names `reprioritize_sync_outbox` as today's
+echo source. `UNKNOWN_PROFILE_LABEL` is replaced by
+`LABEL_MAPPING_UNCONFIGURED`, and oracle 10 is added.
