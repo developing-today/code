@@ -127,6 +127,16 @@ sys.exit(1)
 }
 
 dump_for_log() {
+  # A system dialog — the launcher's "isn't responding", under this
+  # emulator's load — may be all that covers the app at the moment
+  # of failure (run 45563986699's dump showed only the dialog, with
+  # the app's browser tab already open behind it). Dismiss it the
+  # way wait_text does and read the screen again, so the dump names
+  # the app's own state, not the dialog's.
+  if screen_text | grep -qF "isn't responding"; then
+    tap_text "Wait" || true
+    sleep 2
+  fi
   echo "--- screen ---" >&2
   screen_text >&2 || true
   echo "--- end screen ---" >&2
