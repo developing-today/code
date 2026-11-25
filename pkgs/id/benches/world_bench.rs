@@ -33,8 +33,10 @@
 //!   recent checkpoints plus records/sequence across idle eviction and reopen.
 //!   The full-size configuration is parameterizable for profiling runs via
 //!   `ID_BENCH_MW_IDLE_WORLDS`, `ID_BENCH_MW_ACTIVE_WORLDS`,
-//!   `ID_BENCH_MW_EVENTS_PER_SECOND`, and `ID_BENCH_MW_DURATION_SECS`
-//!   (defaults are the committed full size). After the timed load it also
+//!   `ID_BENCH_MW_EVENTS_PER_SECOND`, `ID_BENCH_MW_DURATION_SECS`, and
+//!   `ID_BENCH_MW_MAX_OPEN_WORLDS` (the hub's open-world ceiling, sized to
+//!   the tier being run; defaults are the committed full size). After the
+//!   timed load it also
 //!   prints one `profile many_worlds ...` line aggregating the world
 //!   actors' own metrics (journal-append and command latency histograms,
 //!   deepest actor queue depth) across the active worlds, so a run
@@ -250,6 +252,7 @@ impl WorldOpener for DurableBenchOpener {
 struct ManyWorldsConfig {
     idle_worlds: usize,
     active_worlds: usize,
+    max_open_worlds: usize,
     events_per_second: usize,
     duration_secs: u64,
     checkpoint_every: u64,
@@ -270,9 +273,19 @@ impl ManyWorldsConfig {
         let active_worlds = mw_env("ID_BENCH_MW_ACTIVE_WORLDS", 100);
         let events_per_second = mw_env("ID_BENCH_MW_EVENTS_PER_SECOND", 20);
         let duration_secs = mw_env("ID_BENCH_MW_DURATION_SECS", 10) as u64;
+        // The hub's open-world ceiling, sized by the operator to the tier
+        // being run (the 10x tier leases 1,000 worlds concurrently, past
+        // the 256 default). Unset keeps the committed default, so existing
+        // runs are unchanged; the effective value is recorded in the
+        // `bench many_worlds` output line.
+        let max_open_worlds = mw_env(
+            "ID_BENCH_MW_MAX_OPEN_WORLDS",
+            HubLimits::default().max_open_worlds,
+        );
         Self {
             idle_worlds,
             active_worlds,
+            max_open_worlds,
             events_per_second,
             duration_secs,
             // Keep checkpoint compaction out of the timed 20 ev/s window;
@@ -287,6 +300,7 @@ impl ManyWorldsConfig {
         Self {
             idle_worlds: 10,
             active_worlds: 4,
+            max_open_worlds: HubLimits::default().max_open_worlds,
             events_per_second: 20,
             duration_secs: 1,
             checkpoint_every: 22,
@@ -432,11 +446,14 @@ async fn bench_many_worlds(root: &Path, quick: bool) -> Result<()> {
         opener,
         Some(MANY_WORLDS_ADMIN.to_owned()),
         "lobby",
-        HubLimits::default(),
+        HubLimits {
+            max_open_worlds: config.max_open_worlds,
+            ..HubLimits::default()
+        },
     );
 
-    // Materialize 1,000 idle durable worlds on disk while the hub lazily opens
-    // and evicts them through its real 256-open-world ceiling.
+    // Materialize the idle durable worlds on disk while the hub lazily opens
+    // and evicts them through its configured open-world ceiling.
     for index in 0..config.idle_worlds {
         let name = format!("idle-{index:04}");
         let lease = hub
@@ -689,7 +706,7 @@ async fn bench_many_worlds(root: &Path, quick: bool) -> Result<()> {
         .map(|latency| latency.as_secs_f64() * 1_000.0)
         .fold(f64::INFINITY, f64::min);
     println!(
-        "bench many_worlds unit=ms_per_command median={p50:.3} min={min:.3} reps=1 p50_ms={p50:.3} p95_ms={p95:.3} p99_ms={p99:.3} wake_p50_ms={wake_p50:.3} wake_p95_ms={wake_p95:.3} wake_p99_ms={wake_p99:.3} input_ack_p50_ms={input_ack_p50:.3} input_ack_p95_ms={input_ack_p95:.3} input_ack_p99_ms={input_ack_p99:.3} target_p99_ms=50 target_met={target_met} idle_worlds={} active_worlds={} events_per_second={} duration_secs={} commands={} load_elapsed_secs={load_elapsed_secs:.3} completed_events_per_second={completed_events_per_second:.1} checkpoint_triggers={} checkpoints={} evicted={} reopened={}",
+        "bench many_worlds unit=ms_per_command median={p50:.3} min={min:.3} reps=1 p50_ms={p50:.3} p95_ms={p95:.3} p99_ms={p99:.3} wake_p50_ms={wake_p50:.3} wake_p95_ms={wake_p95:.3} wake_p99_ms={wake_p99:.3} input_ack_p50_ms={input_ack_p50:.3} input_ack_p95_ms={input_ack_p95:.3} input_ack_p99_ms={input_ack_p99:.3} target_p99_ms=50 target_met={target_met} idle_worlds={} active_worlds={} events_per_second={} duration_secs={} commands={} load_elapsed_secs={load_elapsed_secs:.3} completed_events_per_second={completed_events_per_second:.1} checkpoint_triggers={} checkpoints={} evicted={} reopened={} max_open_worlds={}",
         config.idle_worlds,
         config.active_worlds,
         config.events_per_second,
@@ -699,6 +716,7 @@ async fn bench_many_worlds(root: &Path, quick: bool) -> Result<()> {
         total_checkpoints,
         evicted,
         expected.len(),
+        config.max_open_worlds,
     );
     ensure!(
         hub.open_count() == 0,
