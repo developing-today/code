@@ -75,12 +75,15 @@ hosted instance is the public backstop, never a requirement.
   accountable for hosting this hire; and the delegation scope. The
   record also identifies the authorizing world action and its actor,
   so the audit chain establishes who authorized the hire. The selected
-  listing version, role version, quota class, ledger, operator, and
+  listing, role version, quota class, ledger, operator, and
   term are fixed for that hire; changing them requires an audited
   replacement hire rather than silently rewriting its record.
+  Program/build upgrades are not listing changes: they follow §2.3's
+  drain-and-replace under the same hire, with the acting program
+  version recorded in the audit for every action.
 - **Ledger selection belongs to the hiring world.** The hire charges
   the ledger configured by that world; absent an explicit shared-ledger
-  rule, it charges the world owner's ledger. The hire record fixes both
+  rule in the world's configuration, it charges the world owner's ledger. The hire record fixes both
   the ledger and quota class for the hire's term. Each action spends
   against the ledger recorded on its hire, not the agent owner's or
   host operator's budget. This resolves v4 §5 Q1 in accordance with
@@ -110,10 +113,12 @@ hosted instance is the public backstop, never a requirement.
   §2.5), and its hosted-ness is visible in the world's population
   rendering: owners and visitors can always see which agents are
   hosted, and by whom. There is no stealth hosting.
-- **Multi-owner worlds inherit v3 §5 Q1.** A hosted agent serving
-  in a world owned by someone other than its own owner is the
-  general case of that question; the hire record names whose
-  configuration, ledgers, and review queue govern (§5 question 1).
+- **Multi-owner worlds follow the hiring world's authority and ledger.**
+  A hosted agent serving in a world owned by someone other than its own
+  owner is the general case: the hiring world authorizes the hire and
+  selects its ledger as resolved in §5 Q1. The world’s ordinary
+  configuration and review rules govern the hire; the agent owner and
+  host operator gain no authority from hosting it.
 
 ### 2.3 Always-on runtime contract
 
