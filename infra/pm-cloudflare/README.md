@@ -37,6 +37,10 @@ Run the tests: `python3 -I infra/pm-cloudflare/test_apply.py`.
 | `PMCF_BRIDGE_TOKEN` | `PMCF_BRIDGE_TOKEN` (optional) | the PM stack bridge token; source it from `bridge.pm-stack-token` |
 | `PMCF_GOOGLE_CLIENT_ID` / `PMCF_GOOGLE_CLIENT_SECRET` | same names | Google sign-in (optional) |
 
+Google sign-in credentials must be supplied as a pair. When both are
+omitted, an existing Google identity provider is preserved; the applier
+never sends empty credentials to Cloudflare.
+
 ## What this does not do yet (the follow-on)
 
 - The laptop timer's `expose.py` still enforces all of this too.
