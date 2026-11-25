@@ -58,6 +58,19 @@ jobs:
           echo "the demo edge did not answer its health check" >&2
           cat edge-demo.log >&2
           exit 1
+      # GitHub's current Ubuntu runners keep /dev/kvm closed to the
+      # runner user, so the emulator action finds no hardware
+      # acceleration and starts the emulator with -accel off, which
+      # current emulator builds refuse outright: the emulator exits at
+      # once and the step burns its whole boot timeout polling for a
+      # device that never starts (runs 45397083403, 45464698161).
+      # Open the device up the way the action's README prescribes for
+      # these runners, so the emulator gets KVM and actually boots.
+      - name: Enable KVM for the emulator
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
       - name: Check the app with no connection
         uses: reactivecircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d # v2
         with:
