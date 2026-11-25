@@ -127,6 +127,7 @@ import { plain } from "../../src/plain.ts";
 import type { Later } from "../../src/plan.ts";
 import { platformRead } from "../../src/reads.ts";
 import { Notifier, WATCHED as NOTIFIED } from "../../src/notify.ts";
+import { embedQuestions, type ExistingQuestionSet, QuotaPageStore, renderQuotaPage, ResetFlow } from "../../src/quota-page.ts";
 import { contact, Push } from "../../src/push.ts";
 import { goesBy, platformSettings, settingsDifferences, settingsThatDiffer } from "../../src/settings.ts";
 import { timed, unread } from "../../src/timed.ts";
@@ -274,6 +275,9 @@ export class Edge {
   readonly phones: Phones;
   private notifier: Notifier;
   private table: Record<string, Action>;
+  private quotaStore = new QuotaPageStore();
+  private quotaQuestions: ExistingQuestionSet[] = [];
+  private quotaFlow: ResetFlow | null = null;
 
   constructor(options: EdgeOptions) {
     this.kv = options.kv;
@@ -292,6 +296,9 @@ export class Edge {
     this.actRecords = new StoredRecords(this.kv, "acts", (id) => `act:${id}`);
     this.direct = options.direct;
     this.ledgerPages = options.ledgerPages;
+    if (options.quota?.enabled && options.quota.envelope) { try { this.quotaStore.applySuccess(options.quota.envelope); } catch { this.quotaStore.applyFailure("invalid quota envelope"); } }
+    this.quotaQuestions = options.quota?.questions ?? [];
+    this.quotaFlow = new ResetFlow(options.quota?.dispatchReset ?? (async () => { throw new Error("no pool-steward reset dispatch is configured on this edge"); }));
     this.sockets = options.sockets ?? null;
     const setAlarm = options.setAlarm ?? (async () => {});
     this.setAlarm = async (at) => {
@@ -2078,6 +2085,10 @@ export class Edge {
           return json({ release: await this.builds.releaseSaid(cfg), copy: await this.builds.apkState() });
         }
         if (seg.length === 1 && seg[0] === "push") return json(await this.push.status());
+        if (seg.length === 1 && seg[0] === "quota") {
+          if (!this.quotaStore.good) return json({ error: "quota page data has not been reported yet" }, 503);
+          return new Response(renderQuotaPage(this.quotaStore.good, { questions: embedQuestions(this.quotaQuestions), resets: this.quotaFlow?.records ?? [] }), { headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" } });
+        }
         if (seg.length === 1 && seg[0] === "devices") return json(await this.phones.devices.list());
         if (seg.length === 1 && seg[0] === "machines") return json(await this.machinesSaid(cfg));
         if (seg.length === 1 && seg[0] === "events") {

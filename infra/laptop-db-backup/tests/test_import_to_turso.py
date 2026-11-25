@@ -41,6 +41,10 @@ def make_source(path, events_rows, with_extra=True):
     if os.path.exists(path):
         os.unlink(path)
     db = sqlite3.connect(path)
+    # WAL like the live sources: the snapshot inherits the journal
+    # mode, and its -wal/-shm sidecars must not break the run's
+    # staging cleanup (the first live run failed exactly there).
+    db.execute("PRAGMA journal_mode=WAL")
     db.execute("CREATE TABLE events (id INTEGER PRIMARY KEY, kind TEXT, payload BLOB, score REAL)")
     db.execute("CREATE INDEX events_kind ON events (kind)")
     db.execute("CREATE TABLE snapshots (id INTEGER PRIMARY KEY, note TEXT)")
@@ -82,9 +86,13 @@ def test_first_import_lands_verified_copy():
 def test_second_import_wholesale_replaces():
     with tempfile.TemporaryDirectory() as td:
         src = os.path.join(td, "source.db")
-        make_source(src, 10)
+        # 600 rows crosses two full insert batches plus a remainder,
+        # so the multi-row INSERT batching is exercised end to end.
+        make_source(src, 600)
         home = FakeHome()
-        imp.run_import(src, home, "laptop-backup-test")
+        first = imp.run_import(src, home, "laptop-backup-test")
+        assert first["counts"] == {"events": 600, "snapshots": 1}, first
+        assert len(live_rows(home, "events")) == 600
         make_source(src, 4, with_extra=False)
         receipt = imp.run_import(src, home, "laptop-backup-test")
         assert receipt["counts"] == {"events": 4, "snapshots": 0}, receipt

@@ -47,6 +47,7 @@ import argparse
 import json
 import os
 import re
+import shutil
 import sqlite3
 import sys
 import tempfile
@@ -258,6 +259,22 @@ def snapshot_schema(snap):
     return [tuple(r) for r in rows]
 
 
+def _insert_rows(home, stage, rows):
+    """Insert one batch as a single multi-row INSERT statement.
+
+    Per-statement cost dominates on the libsql wire (measured on the
+    first live run, #13474: ~54 ms per single-row INSERT statement
+    through the pipeline, against ~29 rows/s end to end), so a batch
+    rides one statement with one value tuple per row, never one
+    statement per row.
+    """
+    ncols = len(rows[0])
+    one = "(" + ", ".join("?" for _ in range(ncols)) + ")"
+    sql = f'INSERT INTO "{stage}" VALUES ' + ", ".join(one for _ in rows)
+    args = tuple(value for row in rows for value in row)
+    home.execute(sql, args)
+
+
 def _load_staging(snap, home, schema):
     """Load every snapshot table into its staging table; return the
     per-table counts of rows actually loaded, cross-checked against
@@ -270,7 +287,6 @@ def _load_staging(snap, home, schema):
     counts = {}
     for name, _sql in tables:
         stage = f"{STAGE_PREFIX}{name}"
-        placeholders = None
         batch = []
         loaded = 0
         cursor = snap.execute(f'SELECT * FROM "{name}"')
@@ -279,15 +295,13 @@ def _load_staging(snap, home, schema):
             if not rows:
                 break
             for row in rows:
-                if placeholders is None:
-                    placeholders = ", ".join("?" for _ in row)
-                batch.append((f'INSERT INTO "{stage}" VALUES ({placeholders})', tuple(row)))
+                batch.append(tuple(row))
                 loaded += 1
                 if len(batch) >= BATCH:
-                    home.execute_many(batch)
+                    _insert_rows(home, stage, batch)
                     batch = []
         if batch:
-            home.execute_many(batch)
+            _insert_rows(home, stage, batch)
         counts[name] = loaded
     staged = ldb_common.table_counts(home, home_schema(home))
     mismatched = {
@@ -382,8 +396,12 @@ def run_import(source_path, home, home_name):
         finally:
             snap.close()
     finally:
-        os.unlink(snap_path)
-        os.rmdir(staging_dir)
+        # The snapshot inherits the source's WAL journal mode, so its
+        # -wal/-shm sidecars outlive the read-only connection that
+        # read it; remove the whole staging dir, never just the file
+        # (first live run, #13474: rmdir failed "Directory not empty"
+        # after staging verified, before the swap).
+        shutil.rmtree(staging_dir, ignore_errors=True)
     record = {
         "import_id": uuid.uuid4().hex,
         "imported_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
