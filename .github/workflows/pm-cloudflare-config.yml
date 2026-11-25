@@ -68,13 +68,13 @@ jobs:
       - name: Check apply secrets
         id: secrets
         env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          PMCF_CLOUDFLARE_TOKEN: ${{ secrets.PMCF_CLOUDFLARE_TOKEN }}
           PMCF_OWNER_EMAIL: ${{ secrets.PMCF_OWNER_EMAIL }}
           PMCF_GITHUB_TOKEN: ${{ secrets.PMCF_GITHUB_TOKEN }}
           PMCF_QUEUE_TOKEN: ${{ secrets.PMCF_QUEUE_TOKEN }}
         run: |
           missing=""
-          for v in CLOUDFLARE_API_TOKEN PMCF_OWNER_EMAIL PMCF_GITHUB_TOKEN PMCF_QUEUE_TOKEN; do
+          for v in PMCF_CLOUDFLARE_TOKEN PMCF_OWNER_EMAIL PMCF_GITHUB_TOKEN PMCF_QUEUE_TOKEN; do
             [ -n "${!v}" ] || missing="$missing $v"
           done
           if [ -n "$missing" ]; then
@@ -92,12 +92,13 @@ jobs:
       - name: Apply the repository state to Cloudflare
         if: steps.secrets.outputs.ready == 'true'
         env:
-          PMCF_CLOUDFLARE_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          PMCF_CLOUDFLARE_TOKEN: ${{ secrets.PMCF_CLOUDFLARE_TOKEN }}
           PMCF_OWNER_EMAIL: ${{ secrets.PMCF_OWNER_EMAIL }}
           PMCF_GOOGLE_CLIENT_ID: ${{ secrets.PMCF_GOOGLE_CLIENT_ID }}
           PMCF_GOOGLE_CLIENT_SECRET: ${{ secrets.PMCF_GOOGLE_CLIENT_SECRET }}
           PMCF_GITHUB_TOKEN: ${{ secrets.PMCF_GITHUB_TOKEN }}
           PMCF_QUEUE_TOKEN: ${{ secrets.PMCF_QUEUE_TOKEN }}
+          PMCF_BRIDGE_TOKEN: ${{ secrets.PMCF_BRIDGE_TOKEN }}
         run: |
           # The input goes through the env, never into the script text;
           # the script only knows --check and --apply.

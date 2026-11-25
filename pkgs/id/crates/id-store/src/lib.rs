@@ -34,6 +34,7 @@ pub mod chat_anchor;
 pub mod content_store;
 pub mod documents;
 pub mod event_types;
+pub mod grant_authority;
 pub mod graph_index;
 pub mod identity;
 pub mod issuer_rotation;

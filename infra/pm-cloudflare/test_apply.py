@@ -166,6 +166,34 @@ class Apply(unittest.TestCase):
             run(account, "--apply", env={"PMCF_GITHUB_TOKEN": ""})
         self.assertEqual(account.order, [])
 
+    def test_missing_optional_google_pair_preserves_existing_provider(self):
+        account = test_expose.Account()
+        google = {
+            "id": "idp-google",
+            "type": "google",
+            "name": "Google",
+            "config": {"client_id": "configured-id", "client_secret": "configured-secret"},
+        }
+        account.idps.append(copy.deepcopy(google))
+
+        code = run(account, "--apply")
+
+        self.assertEqual(code, 0)
+        actual = next(idp for idp in account.idps if idp["type"] == "google")
+        self.assertEqual(actual, google)
+        self.assertNotIn(
+            "PUT /accounts/acc/access/identity_providers/idp-google",
+            account.order,
+        )
+
+    def test_partial_optional_google_pair_refuses_before_cloudflare_writes(self):
+        account = test_expose.Account()
+
+        with self.assertRaises(SystemExit):
+            run(account, "--apply", env={"PMCF_GOOGLE_CLIENT_ID": "configured-id"})
+
+        self.assertEqual(account.order, [])
+
     def test_the_bridge_token_rides_along_when_the_state_holds_it(self):
         account = test_expose.Account()
         run(account, "--apply")

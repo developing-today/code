@@ -16,7 +16,8 @@ use id_config::rollout::{
     AdapterCapabilities, AdapterSet, CapabilityFailure, ExternalEffect, Rollout, RolloutError,
 };
 use id_config::{
-    Behavior, CONFIG_SCHEMA_VERSION, Ceilings, ConfigDocument, FixedGates, Mode, SyncScope, Tier,
+    Behavior, CONFIG_SCHEMA_VERSION, Ceilings, ConfigDocument, Fanout, FixedGates, Mode, SyncScope,
+    Tier,
 };
 use sha2::{Digest as _, Sha256};
 
@@ -41,6 +42,7 @@ fn document(revision: u64) -> ConfigDocument {
         },
         overrides: vec![],
         extensions: BTreeMap::new(),
+        fanout: Fanout::default(),
     }
 }
 
