@@ -629,48 +629,42 @@ mod tests {
     }
 
     /// One task row in TASK_COLS order for the #13091 stub replies.
+    /// Cells are keyed by column name and emitted in TASK_COLS
+    /// order, so a column added to TASK_COLS cannot silently shift
+    /// the row again (#14873: manual_only, metadata and the
+    /// resolution block did exactly that to the positional row).
     fn task_row_13091(id: i64, status: &str, payload: &Value, dedupe_key: &str) -> Value {
         let text = |v: &str| json!({"type": "text", "value": v});
         let int = |v: i64| json!({"type": "integer", "value": v.to_string()});
         let null = json!({"type": "null"});
-        json!([
-            int(id),
-            text("repo-health-code-pilot"),
-            text("probe"),
-            null,
-            text(&payload.to_string()),
-            text(dedupe_key),
-            int(30),
-            text(status),
-            null,
-            null,
-            null,
-            null,
-            null,
-            null,
-            int(1),
-            int(1000),
-            null,
-            null,
-            null,
-            null,
-            text("{}"),
-            text("{}"),
-            null,
-            null,
-            null,
-            null,
-            null,
-            null,
-            null,
-            text("2026-11-20T00:00:00Z"),
-            text("2026-11-21T00:00:00Z"),
-            text("2026-11-21T00:00:00Z"),
-            null,
-            null,
-            null,
-            null
-        ])
+        let mut cells: std::collections::HashMap<&str, Value> = std::collections::HashMap::new();
+        cells.insert("id", int(id));
+        cells.insert("queue", text("repo-health-code-pilot"));
+        cells.insert("manual_only", int(0));
+        cells.insert("title", text("probe"));
+        cells.insert("payload", text(&payload.to_string()));
+        cells.insert("dedupe_key", text(dedupe_key));
+        cells.insert("priority", int(30));
+        cells.insert("status", text(status));
+        cells.insert("attempts", int(1));
+        cells.insert("max_attempts", int(1000));
+        cells.insert("progress", text("{}"));
+        cells.insert("result", text("{}"));
+        cells.insert("created_at", text("2026-11-20T00:00:00Z"));
+        cells.insert("updated_at", text("2026-11-21T00:00:00Z"));
+        cells.insert("completed_at", text("2026-11-21T00:00:00Z"));
+        let cols: Vec<&str> = TASK_COLS.split(", ").map(str::trim).collect();
+        for key in cells.keys() {
+            assert!(
+                cols.iter().any(|c| c == key),
+                "stub cell {key} is not a task column"
+            );
+        }
+        Value::Array(
+            cols.iter()
+                .map(|c| cells.get(c).cloned().unwrap_or_else(|| null.clone()))
+                .collect(),
+        )
     }
 
     fn insert_ok_13091(id: i64) -> String {
@@ -877,7 +871,7 @@ mod tests {
         // its timer release, and a completed row is never servable.
         let conn = rusqlite::Connection::open_in_memory().unwrap();
         conn.execute_batch(
-            "CREATE TABLE tasks (id INTEGER PRIMARY KEY, queue TEXT, payload TEXT,
+            "CREATE TABLE tasks (id INTEGER PRIMARY KEY, queue TEXT, manual_only INTEGER NOT NULL DEFAULT 0, payload TEXT,
                status TEXT, attempts INTEGER, max_attempts INTEGER, not_before TEXT,
                wait_kind TEXT, ready_condition TEXT, required_budget_minutes INTEGER,
                priority INTEGER, created_at TEXT, progress TEXT);
@@ -1016,11 +1010,14 @@ mod tests {
             .unwrap();
         };
         let predicate = default_pick_predicate();
+        // The predicate binds four arguments (now x2 for the
+        // queued/parked branches, the declared budget x2 for the
+        // bypass + gate). This harness runs it bare — the two
+        // platform-clause arguments of the full production pick
+        // SELECT do not belong here (#14873).
         let args = vec![
             rusqlite::types::Value::Text(now.to_string()),
             rusqlite::types::Value::Text(now.to_string()),
-            rusqlite::types::Value::Null,
-            rusqlite::types::Value::Null,
             rusqlite::types::Value::Null,
             rusqlite::types::Value::Null,
         ];

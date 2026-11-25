@@ -13,6 +13,7 @@
 
 pub mod account_quota;
 pub mod agent_delegation;
+pub mod agent_majority;
 pub mod agent_quota_ledger;
 pub mod cap_baseline;
 pub mod cap_class;
@@ -26,8 +27,10 @@ pub mod library_manifest;
 pub mod library_resolution;
 pub mod mcp_bridge;
 pub mod mcp_policy;
+pub mod owner_review;
 pub mod portal;
 pub mod role_config;
+pub mod surface_host;
 pub mod used_caps;
 pub mod work_surfaces;
 pub mod world_agents;

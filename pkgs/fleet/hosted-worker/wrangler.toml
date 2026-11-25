@@ -25,6 +25,17 @@ RP_AUDIENCE = "fleet-hosted"
 binding = "BRIDGE"
 service = "message-bridge"
 
+# The fleet-queue D1 database (#14866): the queue door's
+# Cloudflare-first home \u2014 when this binding is present, buildDeps
+# runs the queue verbs against D1QueueStore over the shared
+# fleet-queue schema. Declared here so the deployed shape carries
+# it; the local-only posture above still applies. database_id is
+# assigned by the deployment slice that creates the database
+# (wrangler dev runs the binding locally without one).
+[[d1_databases]]
+binding = "QUEUE_D1"
+database_name = "fleet-queue"
+
 # The ingestion sweeper's standing scope (#12590): the in-scope
 # repos the scheduled run re-scans (#9060 §16). Set per environment
 # at deployment; empty here (local only) means the scheduled sweep

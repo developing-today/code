@@ -434,6 +434,10 @@ mod tests {
     }
 
     /// One task row in TASK_COLS order for the stub replies.
+    /// Cells are keyed by column name and emitted in TASK_COLS
+    /// order, so a column added to TASK_COLS cannot silently shift
+    /// the row again (#14873: manual_only, metadata and the
+    /// resolution block did exactly that to the positional row).
     fn task_row(
         id: i64,
         status: &str,
@@ -447,44 +451,35 @@ mod tests {
             Some(s) => cell_text(s),
             None => nullc.clone(),
         };
-        json!([
-            cell_int(id),
-            cell_text("repo-health-code-pilot"),
-            cell_text("probe"),
-            nullc.clone(),
-            cell_text(&payload.to_string()),
-            cell_text(dedupe_key),
-            cell_int(30),
-            cell_text(status),
-            nullc.clone(),
-            nullc.clone(),
-            nullc.clone(),
-            nullc.clone(),
-            nullc.clone(),
-            nullc.clone(),
-            cell_int(1),
-            cell_int(1000),
-            nullc.clone(),
-            nullc.clone(),
-            nullc.clone(),
-            nullc.clone(),
-            cell_text("{}"),
-            cell_text("{}"),
-            opt(last_error),
-            nullc.clone(),
-            nullc.clone(),
-            nullc.clone(),
-            nullc.clone(),
-            nullc.clone(),
-            nullc.clone(),
-            cell_text("2026-11-20T00:00:00Z"),
-            cell_text("2026-11-21T00:00:00Z"),
-            nullc.clone(),
-            opt(blocked_deps),
-            nullc.clone(),
-            nullc.clone(),
-            nullc.clone()
-        ])
+        let mut cells: std::collections::HashMap<&str, Value> = std::collections::HashMap::new();
+        cells.insert("id", cell_int(id));
+        cells.insert("queue", cell_text("repo-health-code-pilot"));
+        cells.insert("manual_only", cell_int(0));
+        cells.insert("title", cell_text("probe"));
+        cells.insert("payload", cell_text(&payload.to_string()));
+        cells.insert("dedupe_key", cell_text(dedupe_key));
+        cells.insert("priority", cell_int(30));
+        cells.insert("status", cell_text(status));
+        cells.insert("attempts", cell_int(1));
+        cells.insert("max_attempts", cell_int(1000));
+        cells.insert("progress", cell_text("{}"));
+        cells.insert("result", cell_text("{}"));
+        cells.insert("last_error", opt(last_error));
+        cells.insert("created_at", cell_text("2026-11-20T00:00:00Z"));
+        cells.insert("updated_at", cell_text("2026-11-21T00:00:00Z"));
+        cells.insert("blocked_deps", opt(blocked_deps));
+        let cols: Vec<&str> = TASK_COLS.split(", ").map(str::trim).collect();
+        for key in cells.keys() {
+            assert!(
+                cols.iter().any(|c| c == key),
+                "stub cell {key} is not a task column"
+            );
+        }
+        Value::Array(
+            cols.iter()
+                .map(|c| cells.get(c).cloned().unwrap_or_else(|| nullc.clone()))
+                .collect(),
+        )
     }
 
     fn select_reply(rows: Vec<Value>) -> String {

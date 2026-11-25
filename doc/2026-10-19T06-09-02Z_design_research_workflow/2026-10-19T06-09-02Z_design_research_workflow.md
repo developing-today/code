@@ -114,3 +114,7 @@ Validation covers fixture-based intake, integrity failures, stage routing contra
 ## Issues and PRs
 
 Framework PRs and validation evidence are recorded in [changes.md](changes.md). No future product research issues have been created by this setup.
+
+## Tracking
+
+This record predates the tracking-issue convention; its work is logged in [changes.md](changes.md). The PRs that built it were given retroactive tracking issues: #9248, #9249, #9250 and #9253 (all closed). (Pointer added 2026-11-25 for #13881.)
