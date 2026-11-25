@@ -4,8 +4,20 @@
 # (smoke/drive.mjs). Build the game first (program/build.sh).
 # Usage: smoke.sh [path-to-space-invaders.wasm]
 set -euo pipefail
+# Resolve an explicit module path against the caller's cwd BEFORE the
+# cd below: callers pass repo-root-relative paths (the id-roc-game
+# workflow does), which would otherwise be resolved under smoke/ and
+# never found. The default stays relative to this script's directory.
+if [ $# -ge 1 ]; then
+  case "$1" in
+    /*) wasm="$1" ;;
+    *) wasm="$PWD/$1" ;;
+  esac
+else
+  wasm=""
+fi
 cd "$(dirname "${BASH_SOURCE[0]}")"
-wasm="${1:-../program/space-invaders.wasm}"
+wasm="${wasm:-../program/space-invaders.wasm}"
 if [ ! -f "$wasm" ]; then
   echo "smoke: no built module at $wasm — build the game first (program/build.sh)" >&2
   exit 1
