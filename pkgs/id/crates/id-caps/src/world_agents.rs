@@ -866,7 +866,7 @@ mod tests {
             digest_every_refusals: 5,
         };
         let mut queue = ReviewQueue::default();
-        let subscribe = json!({});
+        let subscribe = json!({ "event_classes": ["chat_posted"] });
         let ceiling_before = world.session(&PLAYER).unwrap().grant().ceiling.clone();
         assert!(matches!(
             world

@@ -2053,6 +2053,10 @@ mod tests {
                 "owner".to_owned(),
                 "prev_hash".to_owned(),
                 "quota_charged".to_owned(),
+                // Additive (#8302): the role the review tooling reads.
+                // `approved_by` is additive too, and present only on
+                // an owner-approved action.
+                "role".to_owned(),
                 "seq".to_owned(),
                 "signature".to_owned(),
                 "tool".to_owned(),

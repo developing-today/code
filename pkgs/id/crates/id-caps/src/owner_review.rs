@@ -1064,7 +1064,7 @@ mod tests {
     }
 
     fn subscribe() -> serde_json::Value {
-        json!({})
+        json!({ "event_classes": ["chat_posted"] })
     }
 
     /// Hold a ceiling refusal of `screen.subscribe` (outside the test
