@@ -87,11 +87,11 @@
       "path": "pkgs/github-ci/worker",
       "does": "Receives GitHub's webhooks for every fleet repository and writes them to the store; nothing else receives them.",
       "state": "in service",
-      "deploy": "by hand",
-      "workflow": null,
+      "deploy": "actions",
+      "workflow": "cf-worker-versions-release.yml",
       "address": "https://github-ci.developing-today.workers.dev",
       "next": "Deployed from Actions, stood up, checked and rolled back the way the PM console is; listed here with its last deploy.",
-      "lastDeployedCommit": null
+      "lastDeployedCommit": "df6651ee1a2f6dc4468f945872705af8e4dc9d65"
     },
     {
       "name": "voice-line",
