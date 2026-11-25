@@ -234,10 +234,12 @@ class TestLaunchStep(unittest.TestCase):
             argv = [str(part) for part in cmd]
             if "repo-queue" in argv[0] and ("claim" in argv or "park" in argv):
                 return handback_fake(cmd, **kwargs)
-            if argv and argv[0] == "gh":
+            if argv[1:3] == ["gh", "sync-labels"]:
+                # Held-label reads use fleet's GitHub front door, not
+                # raw gh view (#10973). Empty labels permit launch.
+                return Result(0, "[]")
+            if argv[1:3] == ["gh", "sync-comment"]:
                 calls["gh"].append(argv)
-                if "view" in argv:
-                    return Result(0, "[]")
                 return Result(0, "")
             return base_fake(cmd, **kwargs)
 
