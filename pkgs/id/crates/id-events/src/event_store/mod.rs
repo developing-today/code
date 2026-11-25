@@ -72,6 +72,7 @@ use redb::{
 use id_store::chain::{self, Event};
 use id_store::event_rows::{RowWrite, with_write_transaction};
 
+mod backend;
 mod anchors;
 mod author_events;
 mod chat;
@@ -90,6 +91,7 @@ mod writer_set;
 mod persistence_tests;
 
 pub use author_events::{AuthorEvent, CandidateQuery, Candidates};
+pub use backend::{EventStoreStorage, TenantBackend};
 pub use compaction::CompactionPolicy;
 use id_core::waiting::{AuthorKey, WaitRefusal, WaitingLimits, WaitingPool};
 

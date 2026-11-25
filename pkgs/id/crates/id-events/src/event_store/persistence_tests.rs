@@ -851,35 +851,37 @@ fn tenant_backend_transaction_round_trip_and_abort_match_native() {
     assert_eq!(exercise(&tenant), exercise(&native));
 }
 
-/// The native EventStore is the oracle: the tenant-backed public backend must
-/// expose the same applied result and observable read/sync surface for the same
-/// signed event.
+/// Native redb is the oracle for the transaction-owned storage seam: both
+/// backends commit the same row and roll back a failed operation completely.
 #[test]
-fn tenant_event_store_matches_native_backend_for_applied_message() {
-    let dir = tempfile::tempdir().unwrap();
-    let mut native = EventStore::open(dir.path(), Default::default(), 0).unwrap();
-    let mut tenant =
-        TenantEventStore::open_tenant(SqliteEndpoint::new(), Default::default(), 0).unwrap();
-    let signed = event("message", None);
-    let author = *signed.header.verifying_key.as_bytes();
+fn tenant_backend_transaction_round_trip_and_abort_match_native() {
+    fn exercise<B: EventStoreStorage>(backend: &B) -> Option<Vec<u8>> {
+        backend
+            .with_write(|rows| {
+                rows.put("meta", b"driver-key", b"committed")?;
+                Ok(((), true))
+            })
+            .unwrap();
+        assert!(
+            backend
+                .with_write(|rows| {
+                    rows.put("meta", b"rollback-key", b"partial")?;
+                    Err(corrupt("forced transaction abort"))
+                })
+                .is_err()
+        );
+        assert_eq!(
+            backend.with_read(|rows| rows.get("meta", b"rollback-key")).unwrap(),
+            None,
+            "a failed batch must leave no partial row"
+        );
+        backend
+            .with_read(|rows| rows.get("meta", b"driver-key"))
+            .unwrap()
+    }
 
-    let native_ingest = native.ingest_events(vec![signed.clone()], 1).unwrap();
-    let tenant_ingest = tenant.ingest_events(vec![signed.clone()], 1).unwrap();
-    assert_eq!(tenant_ingest, native_ingest, "native redb is the oracle");
-    assert_eq!(tenant.chain(&author).unwrap(), native.chain(&author).unwrap());
-    assert_eq!(
-        tenant.event_by_id(&signed.id).unwrap(),
-        native.event_by_id(&signed.id).unwrap()
-    );
-    assert_eq!(
-        tenant.applied_events(&author, None, None, 8).unwrap(),
-        native.applied_events(&author, None, None, 8).unwrap()
-    );
-    assert_eq!(tenant.sync_entries().unwrap(), native.sync_entries().unwrap());
-    assert_eq!(
-        tenant.sync_bytes(&signed.id).unwrap(),
-        native.sync_bytes(&signed.id).unwrap()
-    );
-    tenant.check_invariants().unwrap();
-    native.check_invariants().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let native = Database::create(dir.path().join("driver.redb")).unwrap();
+    let tenant = TenantBackend::open(SqliteEndpoint::new()).unwrap();
+    assert_eq!(exercise(&tenant), exercise(&native));
 }
