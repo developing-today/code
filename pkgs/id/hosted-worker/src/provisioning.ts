@@ -64,6 +64,15 @@ export interface BucketConfig {
   declaredJurisdiction?: string;
 }
 
+/** Required jurisdiction-specific R2 bindings (#3401). The current local
+ * router still uses a shared binding; production routing must switch to
+ * this same mapping before jurisdiction isolation can be enabled. */
+export const BLOBS_BINDING_FOR_JURISDICTION = {
+  us: "BLOBS_US",
+  eu: "BLOBS_EU",
+  fedramp: "BLOBS_FEDRAMP",
+} as const satisfies Record<Jurisdiction, string>;
+
 /** A request to enable hosted production signup/migration for one
  * configured jurisdiction. Every field is a claim to be validated;
  * absent fields fail closed. */
@@ -181,6 +190,13 @@ export function validateEnablement(config: EnablementConfig, evidence: AccountEv
   const bucket = config.bucket;
   if (!bucket) {
     refuse("bucket_missing", `no R2 bucket is configured for jurisdiction "${jurisdiction}"; failing closed`);
+  }
+  const expectedBinding = BLOBS_BINDING_FOR_JURISDICTION[jurisdiction];
+  if (bucket.binding !== expectedBinding) {
+    refuse(
+      "bucket_binding_mismatch",
+      `bucket binding "${bucket.binding}" is not the authoritative binding "${expectedBinding}" for jurisdiction "${jurisdiction}"; failing closed`,
+    );
   }
   if (bucket.declaredJurisdiction !== undefined && bucket.declaredJurisdiction !== jurisdiction) {
     refuse(

@@ -160,10 +160,44 @@ test("missing bucket fails closed", () => {
   );
 });
 
+test("bucket binding must match the authoritative jurisdiction", () => {
+  const cases = [
+    { jurisdiction: "us", binding: "BLOBS_US", bucketName: "user-blobs-us" },
+    { jurisdiction: "eu", binding: "BLOBS_EU", bucketName: "user-blobs-eu" },
+    { jurisdiction: "fedramp", binding: "BLOBS_FEDRAMP", bucketName: "user-blobs-fedramp" },
+  ] as const;
+  for (const { jurisdiction, binding, bucketName } of cases) {
+    const config: EnablementConfig = {
+      jurisdiction,
+      restrictedNamespace: true,
+      durableObjectBinding: "USERS",
+      bucket: { binding, bucketName, declaredJurisdiction: jurisdiction },
+    };
+    const matchingEvidence: AccountEvidence = {
+      jurisdictions: { [jurisdiction]: { durableObjects: "supported", runtimeTypes: "supported" } },
+      buckets: [{ bucketName, actualJurisdiction: jurisdiction }],
+    };
+    assert.equal(validateEnablement(config, matchingEvidence).bucket.binding, binding);
+
+    for (const mismatchedBinding of cases.map((c) => c.binding).filter((candidate) => candidate !== binding)) {
+      assert.equal(
+        refusalCode(() => validateEnablement({ ...config, bucket: { ...config.bucket!, binding: mismatchedBinding } }, matchingEvidence)),
+        "bucket_binding_mismatch",
+        `${jurisdiction} must reject ${mismatchedBinding}`,
+      );
+    }
+    assert.equal(
+      refusalCode(() => validateEnablement({ ...config, bucket: { ...config.bucket!, binding: "" } }, matchingEvidence)),
+      "bucket_binding_mismatch",
+      `${jurisdiction} must reject a missing binding`,
+    );
+  }
+});
+
 test("bucket whose declared jurisdiction disagrees with the configuration fails closed", () => {
   const config: EnablementConfig = {
     ...US_CONFIG,
-    bucket: { binding: "BLOBS_EU", bucketName: "user-blobs-eu", declaredJurisdiction: "eu" },
+    bucket: { binding: "BLOBS_US", bucketName: "user-blobs-us", declaredJurisdiction: "eu" },
   };
   assert.equal(
     refusalCode(() => validateEnablement(config, US_EVIDENCE)),
