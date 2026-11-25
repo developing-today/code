@@ -117,7 +117,7 @@ impl From<io::Error> for BlobError {
 }
 
 /// A dedup partition (#3401, component F §4). Dedup never crosses it.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Partition {
     pub jurisdiction: String,
     pub tier: String,
