@@ -251,7 +251,7 @@ describe("dual-edition PM read-contract projections", () => {
 
   test("the same roadmap row and pool produce identical overlay JSON", async () => {
     const db = await seededDb();
-    const hosted = loadRoadmapRows(db);
+    const hosted = loadRoadmapRows(db, loadPool(db));
     const laptop = enrichRoadmapRows([ROADMAP_ROW], POOL);
     deepStrictEqual(hosted, laptop);
   });
