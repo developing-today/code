@@ -20,6 +20,8 @@
 #                  count equal the source's.
 #              (c) a complete, verified backup generation finished within
 #                  the accepted freshness window (default 36 hours).
+#              (d) independently verified source-bound Kaneo archive evidence
+#                  with data captured within one hour (not configurable).
 #            Only then is a cutover receipt written and PROMOTE OK printed.
 #            The script never rewrites the DSN itself: it gates the step
 #            and records the evidence, so no configuration can promote
@@ -66,6 +68,8 @@
 #   --backup-record-file FILE  latest pm-dashboard-backup .last-run.json;
 #                              required for promote
 #   --max-backup-age-hours N   freshness bound for the backup (default 36)
+#   --kaneo-recovery-record-file FILE  independent Kaneo archive verification
+#                              record; absent/unreadable evidence refuses promote
 #   --unreachable              passed to fence-check: old host unreachable.
 #                              Refused in rollback mode (exit 2): the writer
 #                              being fenced there is local.
@@ -88,6 +92,7 @@ UNREACHABLE_FLAG=0
 FENCE_ARGS=()
 BACKUP_RECORD_FILE=""
 MAX_BACKUP_AGE_HOURS=36
+KANEO_RECOVERY_RECORD_FILE=""
 
 # Exact counts for every public table, in one query: table count, then the
 # sum of per-table exact count(*). Exact (not pg_stat estimates) so the
@@ -102,7 +107,8 @@ usage: kaneo-cutover.sh --mode preflight|presync|promote|rollback --source-dsn-f
                         [--receipt FILE] [--pg-bin-dir DIR]
                         [--fence-check PATH] [--units-dir DIR]
                         [--containers-file FILE] [--unreachable]
-                        [--backup-record-file FILE]
+                         [--backup-record-file FILE]
+                         [--kaneo-recovery-record-file FILE]
                         [--max-backup-age-hours N] [-h|--help]
 
   preflight offline URI identity validation only; no backups/fence/dump/receipt
@@ -111,7 +117,8 @@ usage: kaneo-cutover.sh --mode preflight|presync|promote|rollback --source-dsn-f
             Only explicit single TCP host postgres/postgresql URIs supported;
             no Supabase endpoints, muse-dev2 identifiers or endpoint overrides.
   presync  dump the source, restore into the target, verify schema parity.
-  promote  require a fresh complete backup, the old writer FENCED, and exact
+  promote  require a fresh complete backup, a separately verified <=1-hour
+           source-bound Kaneo recovery archive, the old writer FENCED, and exact
            table/row parity, then write the cutover receipt. Exit: 0 pass,
            2 usage, 3 promotion refused, 4 parity failure, 5 command failure.
   rollback fence the promoted writer, replay the target delta into the
@@ -137,7 +144,7 @@ while [ "$#" -gt 0 ]; do
     UNREACHABLE_FLAG=1
     shift
     ;;
-  --mode | --target-home | --target-host | --source-dsn-file | --target-dsn-file | --dump-file | --receipt | --pg-bin-dir | --fence-check | --units-dir | --containers-file | --backup-record-file | --max-backup-age-hours)
+  --mode | --target-home | --target-host | --source-dsn-file | --target-dsn-file | --dump-file | --receipt | --pg-bin-dir | --fence-check | --units-dir | --containers-file | --backup-record-file | --max-backup-age-hours | --kaneo-recovery-record-file)
     opt="$1"
     [ "$#" -ge 2 ] || fail_usage "$opt requires a value"
     val="$2"
@@ -153,13 +160,14 @@ while [ "$#" -gt 0 ]; do
     --pg-bin-dir) PG_BIN_DIR="$val" ;;
     --fence-check) FENCE_CHECK="$val" ;;
     --backup-record-file) BACKUP_RECORD_FILE="$val" ;;
+    --kaneo-recovery-record-file) KANEO_RECOVERY_RECORD_FILE="$val" ;;
     --max-backup-age-hours) MAX_BACKUP_AGE_HOURS="$val" ;;
     --units-dir) FENCE_ARGS+=("--units-dir" "$val") ;;
     --containers-file) FENCE_ARGS+=("--containers-file" "$val") ;;
     esac
     shift 2
     ;;
-  --mode=* | --target-home=* | --target-host=* | --source-dsn-file=* | --target-dsn-file=* | --dump-file=* | --receipt=* | --pg-bin-dir=* | --fence-check=* | --units-dir=* | --containers-file=* | --backup-record-file=* | --max-backup-age-hours=*)
+  --mode=* | --target-home=* | --target-host=* | --source-dsn-file=* | --target-dsn-file=* | --dump-file=* | --receipt=* | --pg-bin-dir=* | --fence-check=* | --units-dir=* | --containers-file=* | --backup-record-file=* | --max-backup-age-hours=* | --kaneo-recovery-record-file=*)
     opt="${1%%=*}"
     val="${1#*=}"
     [ -n "$val" ] || fail_usage "$opt requires a non-empty value"
@@ -174,6 +182,7 @@ while [ "$#" -gt 0 ]; do
     --pg-bin-dir) PG_BIN_DIR="$val" ;;
     --fence-check) FENCE_CHECK="$val" ;;
     --backup-record-file) BACKUP_RECORD_FILE="$val" ;;
+    --kaneo-recovery-record-file) KANEO_RECOVERY_RECORD_FILE="$val" ;;
     --max-backup-age-hours) MAX_BACKUP_AGE_HOURS="$val" ;;
     --units-dir) FENCE_ARGS+=("--units-dir" "$val") ;;
     --containers-file) FENCE_ARGS+=("--containers-file" "$val") ;;
@@ -389,6 +398,13 @@ RESTORE_POINT_OUT="$(python3 -I "$SCRIPT_DIR/restore-point-check.py" \
 }
 RESTORE_POINT_LINE="$RESTORE_POINT_OUT"
 
+KANEO_RECOVERY_OUT="$(python3 -I "$SCRIPT_DIR/kaneo-recovery-point-check.py" \
+  --record "$KANEO_RECOVERY_RECORD_FILE" --source-dsn-file "$SOURCE_DSN_FILE" 2>&1)" || {
+  write_receipt "REFUSED — promotion requires a verified one-hour Kaneo recovery point" "- Kaneo recovery point: $KANEO_RECOVERY_OUT"
+  echo "kaneo-cutover: REFUSED — Kaneo recovery point unavailable; no database queried. $KANEO_RECOVERY_OUT" >&2
+  exit 3
+}
+
 SRC_COUNTS="$(counts_of source "$source_dsn")" || exit $?
 TGT_COUNTS="$(counts_of target "$target_dsn")" || exit $?
 if [ "$SRC_COUNTS" != "$TGT_COUNTS" ]; then
@@ -397,7 +413,8 @@ if [ "$SRC_COUNTS" != "$TGT_COUNTS" ]; then
   exit 4
 fi
 
-write_receipt "PASS — fresh verified backup, fenced, and source and target both $SRC_COUNTS" "- Restore point: $RESTORE_POINT_LINE"
+write_receipt "PASS — fresh verified backup, fenced, and source and target both $SRC_COUNTS" "- Restore point: $RESTORE_POINT_LINE
+- Kaneo recovery point: $KANEO_RECOVERY_OUT"
 echo "kaneo-cutover: PROMOTE OK — $FENCE_OUT; $RESTORE_POINT_OUT; source and target both $SRC_COUNTS"
 if [ -z "$RECEIPT" ]; then
   printf '\n%s\n' "$RECEIPT_BODY"

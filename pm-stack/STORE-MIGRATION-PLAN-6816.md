@@ -147,6 +147,37 @@ never enter a subprocess argument. Suites:
 `pm-stack/scripts/fence-check.test.sh` (fencing rule), both run by
 `.github/workflows/pm-stack-tests.yml`.
 
+### One-hour Kaneo recovery evidence
+
+Promotion also consumes `--kaneo-recovery-record-file FILE`, independently of
+`--backup-record-file`. Missing or invalid evidence refuses promotion (exit 3)
+before any database query, with a refusal receipt. This gate cannot be relaxed
+by `--max-backup-age-hours`. A recent upload timestamp is not a recent recovery
+point: the **data capture time** must be within one hour and no later than the
+verification completion time.
+
+The record uses the existing complete archive verification schema (`date`,
+`finishedAt`, `result: "complete"`, `archiveSha256`, and all three `destinations`
+equal to `"ok"` for `local`, `r2`, `drive`), with two additional fields:
+
+```json
+{
+  "source": {"host": "actual-source-host", "port": 5432, "database": "kaneo"},
+  "recoveryPointAt": "2026-11-25T02:00:00Z"
+}
+```
+
+This fragment is not a usable record: the complete archive fields are required.
+Source identity must match the normalized source DSN host, port, and database
+(no credentials in this record). The independent backup/restore verifier must
+observe and supply these fields from the Kaneo archive; do **not** copy a
+dashboard backup's completion time into `recoveryPointAt` or fabricate a pass.
+This slice adds a consumer gate, not a verifier, hourly backup job, or PITR.
+No live recovery point or RPO compliance is claimed. The acceptance window
+still owes a real restore and observed recovery point. Tests cover generated
+age boundaries and fixture mutations; `.github/workflows/pm-stack-tests.yml`
+runs both `kaneo-recovery-point-check.test.py` and the driver suite.
+
 ### The file-store driver: `pm-stack/scripts/grist-pad-sync.sh`
 
 Steps 1 and 5 run through one driver per file store (`--store grist|pad`),
