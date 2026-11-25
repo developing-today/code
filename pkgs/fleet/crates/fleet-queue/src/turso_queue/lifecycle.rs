@@ -2933,6 +2933,7 @@ mod task_history_tests {
 mod task_labels_tests {
     use super::reprioritize_tests::fake_backend;
     use super::*;
+    use std::sync::{Arc, Mutex};
 
     const QUEUE: &str = "repo-health-code-pilot";
 
