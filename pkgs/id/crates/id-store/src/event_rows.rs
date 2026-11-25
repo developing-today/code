@@ -46,6 +46,51 @@ pub trait RowWrite: RowRead {
     ) -> Result<(), StoreError>;
 }
 
+/// A backend-owned write transaction that exposes the shared row operations.
+/// The transaction decides how rows are read and written, and owns its commit
+/// or abort lifecycle; event semantics run only through [`RowWrite`].
+pub trait EventWriteTransaction: Sized {
+    /// The row handle borrowed from this transaction.
+    type Rows<'a>: RowWrite
+    where
+        Self: 'a;
+
+    /// Borrows the transaction's row operations.
+    fn rows(&mut self) -> Self::Rows<'_>;
+
+    /// Commits the transaction.
+    fn commit(self) -> Result<(), StoreError>;
+
+    /// Aborts the transaction.
+    fn abort(self) -> Result<(), StoreError>;
+}
+
+/// Runs one operation in a backend-owned write transaction.
+///
+/// The operation's change bit selects commit or abort. An operation error
+/// leaves the transaction uncommitted, so dropping its backend guard performs
+/// rollback where required.
+pub fn with_write_transaction<T, Tx: EventWriteTransaction>(
+    mut txn: Tx,
+    op: impl FnOnce(&mut Tx::Rows<'_>) -> Result<(T, bool), StoreError>,
+) -> Result<(T, bool), StoreError> {
+    let result = {
+        let mut rows = txn.rows();
+        op(&mut rows)
+    };
+    match result {
+        Ok((value, changed)) => {
+            if changed {
+                EventWriteTransaction::commit(txn)?;
+            } else {
+                EventWriteTransaction::abort(txn)?;
+            }
+            Ok((value, changed))
+        }
+        Err(error) => Err(error),
+    }
+}
+
 impl<R: RowRead + ?Sized> RowRead for &mut R {
     fn get(&mut self, table: &'static str, key: &[u8]) -> Result<Option<Vec<u8>>, StoreError> {
         (**self).get(table, key)
@@ -194,6 +239,27 @@ impl RowWrite for WriteTransaction {
     }
 }
 
+impl EventWriteTransaction for WriteTransaction {
+    type Rows<'a>
+        = &'a WriteTransaction
+    where
+        Self: 'a;
+
+    fn rows(&mut self) -> Self::Rows<'_> {
+        self
+    }
+
+    fn commit(self) -> Result<(), StoreError> {
+        WriteTransaction::commit(self)?;
+        Ok(())
+    }
+
+    fn abort(self) -> Result<(), StoreError> {
+        WriteTransaction::abort(self)?;
+        Ok(())
+    }
+}
+
 /// Compatibility adapter for helpers that borrow an already-open native transaction.
 impl RowRead for &WriteTransaction {
     fn get(&mut self, table: &'static str, key: &[u8]) -> Result<Option<Vec<u8>>, StoreError> {
@@ -312,6 +378,25 @@ impl<'a, T: PipelineTransport> TenantWrite<'a, T> {
         self.store.rollback()?;
         self.finished = true;
         Ok(())
+    }
+}
+
+impl<'txn, T: PipelineTransport> EventWriteTransaction for TenantWrite<'txn, T> {
+    type Rows<'a>
+        = &'a mut TenantWrite<'txn, T>
+    where
+        Self: 'a;
+
+    fn rows(&mut self) -> Self::Rows<'_> {
+        self
+    }
+
+    fn commit(self) -> Result<(), StoreError> {
+        TenantWrite::commit(self)
+    }
+
+    fn abort(self) -> Result<(), StoreError> {
+        TenantWrite::rollback(self)
     }
 }
 

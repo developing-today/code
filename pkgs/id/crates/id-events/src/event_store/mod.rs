@@ -70,7 +70,7 @@ use redb::{
 };
 
 use id_store::chain::{self, Event};
-use id_store::event_rows::RowWrite;
+use id_store::event_rows::{RowWrite, with_write_transaction};
 
 mod anchors;
 mod author_events;
@@ -1320,23 +1320,20 @@ impl EventStore {
         &mut self,
         op: impl FnOnce(&mut Mirror<'_>) -> Result<(T, bool), StoreError>,
     ) -> Result<T, StoreError> {
-        let mut txn = self.db.begin_write()?;
-        let (value, changed) = {
+        let txn = self.db.begin_write()?;
+        let (value, changed) = with_write_transaction(txn, |rows| {
             let mut mirror = Mirror {
-                txn: &mut txn,
+                txn: rows,
                 pool: &mut self.waiting,
                 arrivals: &mut self.next_arrival,
             };
             op(&mut mirror)?
-        };
+        })?;
         if changed {
-            txn.commit()?;
             // A committed change moves the stored-state generation, so
             // memoized reads (the roster cache, #13043) re-resolve on
             // their next read instead of serving a stale snapshot.
             self.generation = self.generation.wrapping_add(1);
-        } else {
-            txn.abort()?;
         }
         Ok(value)
     }

@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex};
 
 use base64::Engine as _;
 use id_store::chain::{ChainExt, sign};
-use id_store::event_rows::{RowWrite, TenantWrite};
+use id_store::event_rows::{EventWriteTransaction, RowWrite, TenantWrite, with_write_transaction};
 use id_store::turso::{PipelineTransport, TenantStore, TursoError};
 use p2panda_core::SigningKey;
 use rusqlite::types::Value;
@@ -228,6 +228,77 @@ fn compare_helpers(body: &[u8], group: Hash) {
             expected
         );
     }
+}
+
+/// The shared transaction runner is the oracle for commit, no-op abort, and
+/// error rollback across native redb and tenant SQLite transactions.
+#[test]
+fn test_shared_write_transaction_lifecycle_matches_native_and_tenant() {
+    let dir = tempfile::tempdir().unwrap();
+    let native = Database::create(dir.path().join("transaction-driver.redb")).unwrap();
+    let mut tenant = TenantStore::open(SqliteEndpoint::new()).unwrap();
+
+    let native_txn = native.begin_write().unwrap();
+    with_write_transaction(native_txn, |rows| {
+        rows.put("driver_rows", b"committed", b"native")?;
+        Ok(((), true))
+    })
+    .unwrap();
+    let tenant_txn = TenantWrite::begin(&mut tenant).unwrap();
+    with_write_transaction(tenant_txn, |rows| {
+        rows.put("driver_rows", b"committed", b"tenant")?;
+        Ok(((), true))
+    })
+    .unwrap();
+
+    let native_txn = native.begin_write().unwrap();
+    with_write_transaction(native_txn, |rows| {
+        rows.put("driver_rows", b"aborted", b"native")?;
+        Ok(((), false))
+    })
+    .unwrap();
+    let tenant_txn = TenantWrite::begin(&mut tenant).unwrap();
+    with_write_transaction(tenant_txn, |rows| {
+        rows.put("driver_rows", b"aborted", b"tenant")?;
+        Ok(((), false))
+    })
+    .unwrap();
+
+    let native_txn = native.begin_write().unwrap();
+    let native_error = with_write_transaction(native_txn, |rows| {
+        rows.put("driver_rows", b"failed", b"native")?;
+        Err(StoreError::Corrupt("injected operation failure".to_owned()))
+    })
+    .unwrap_err();
+    assert!(matches!(native_error, StoreError::Corrupt(_)));
+    let tenant_txn = TenantWrite::begin(&mut tenant).unwrap();
+    let tenant_error = with_write_transaction(tenant_txn, |rows| {
+        rows.put("driver_rows", b"failed", b"tenant")?;
+        Err(StoreError::Corrupt("injected operation failure".to_owned()))
+    })
+    .unwrap_err();
+    assert!(matches!(tenant_error, StoreError::Corrupt(_)));
+
+    let native_read = native.begin_read().unwrap();
+    let native_rows = native_read
+        .open_table(TableDefinition::<&[u8], &[u8]>::new("driver_rows"))
+        .unwrap();
+    assert_eq!(
+        native_rows
+            .get(b"committed".as_slice())
+            .unwrap()
+            .unwrap()
+            .value(),
+        b"native"
+    );
+    assert!(native_rows.get(b"aborted".as_slice()).unwrap().is_none());
+    assert!(native_rows.get(b"failed".as_slice()).unwrap().is_none());
+    assert_eq!(
+        tenant.get("driver_rows", b"committed").unwrap(),
+        Some(b"tenant".to_vec())
+    );
+    assert_eq!(tenant.get("driver_rows", b"aborted").unwrap(), None);
+    assert_eq!(tenant.get("driver_rows", b"failed").unwrap(), None);
 }
 
 proptest::proptest! {
