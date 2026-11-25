@@ -12,11 +12,22 @@ description = "Identity-scoped local SQLite storage for fleet-kv."
 blake3 = "1.8"
 fleet-config = { workspace = true }
 rusqlite = { version = "0.43", features = ["bundled"] }
+# The central plane over the libSQL HTTP pipeline (the `http` feature);
+# the same ureq pin as the fleet binary (rustls, no native-tls).
+serde_json = { version = "1", optional = true }
+ureq = { version = "3", default-features = false, features = [
+  "rustls",
+  "platform-verifier",
+], optional = true }
 
 # geteuid for the launch-identity ownership check; already in the
 # workspace lockfile through the fleet binary.
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
+
+[features]
+default = ["http"]
+http = ["dep:serde_json", "dep:ureq"]
 
 [dev-dependencies]
 proptest = "1.12"
