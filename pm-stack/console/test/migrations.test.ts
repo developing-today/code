@@ -11,7 +11,6 @@ import { type Config, readConfig } from "../src/config.ts";
 import { HOLDABLE } from "../src/edge-proto.ts";
 import { lastMigrationRuns, runStore } from "../src/migrations.ts";
 import { Ops, type Run } from "../src/ops.ts";
-// @ts-expect-error app.js is the app's plain-JS module, imported the way tokens.test.ts imports it
 import { migrationSaid } from "../public/app.js";
 
 const CFG: Config = readConfig({
