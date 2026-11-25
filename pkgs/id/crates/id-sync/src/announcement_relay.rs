@@ -10,7 +10,7 @@
 //! wins. The transport is the [`BridgeHttp`] seam, so tests run
 //! against an in-memory relay.
 
-use anyhow::{Result, bail, ensure};
+use anyhow::{Result, anyhow, bail, ensure};
 
 use crate::announcement::SignedAnnouncement;
 use crate::announcement_pkarr::{self, PkarrItem, z32_encode};
@@ -159,6 +159,33 @@ impl RelaySinks {
         PublishReport { outcomes }
     }
 
+    /// Fetch the raw relay payload for `key` from every relay, in
+    /// configuration order. A relay that is unreachable or answers
+    /// anything but 200 gives an error in its slot. Nothing is verified
+    /// here: each record family's resolver checks its own payloads.
+    pub async fn fetch_payloads<H: BridgeHttp>(
+        &self,
+        http: &mut H,
+        key: &[u8; 32],
+    ) -> Vec<(String, Result<Vec<u8>>)> {
+        let mut out = Vec::with_capacity(self.bases.len());
+        for base in &self.bases {
+            let request = HttpRequest {
+                method: "GET".to_owned(),
+                url: Self::url(base, key),
+                headers: Vec::new(),
+                body: Vec::new(),
+            };
+            let payload = match http.request(request).await {
+                Ok(response) if response.status == 200 => Ok(response.body),
+                Ok(response) => Err(anyhow!("HTTP {}", response.status)),
+                Err(error) => Err(error),
+            };
+            out.push((base.clone(), payload));
+        }
+        out
+    }
+
     /// Fetch `world_key` from every relay and return the valid
     /// announcement with the highest `seq` at `now` (Unix seconds).
     /// A relay that is unreachable, has nothing, or serves something
@@ -175,25 +202,10 @@ impl RelaySinks {
     ) -> Result<SignedAnnouncement> {
         let mut best: Option<SignedAnnouncement> = None;
         let mut reasons = Vec::new();
-        for base in &self.bases {
-            let request = HttpRequest {
-                method: "GET".to_owned(),
-                url: Self::url(base, world_key),
-                headers: Vec::new(),
-                body: Vec::new(),
-            };
-            let response = match http.request(request).await {
-                Ok(response) => response,
-                Err(error) => {
-                    reasons.push(format!("{base}: {error:#}"));
-                    continue;
-                }
-            };
-            if response.status != 200 {
-                reasons.push(format!("{base}: HTTP {}", response.status));
-                continue;
-            }
-            match announcement_pkarr::resolve(world_key, &response.body, now) {
+        for (base, payload) in self.fetch_payloads(http, world_key).await {
+            let resolved =
+                payload.and_then(|body| announcement_pkarr::resolve(world_key, &body, now));
+            match resolved {
                 Ok(signed) => {
                     if best
                         .as_ref()
