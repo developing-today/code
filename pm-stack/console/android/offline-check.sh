@@ -32,6 +32,7 @@ set -euo pipefail
 APK=""
 EDGE_URL=""
 ACT_LOG=""
+SITE_URL=""
 ANSWER_LABEL="Build new attachment storage"
 QUESTION_TEXT="For S7 attachments and multimedia, build new storage, or reuse a mechanism outside pm-stack that you name?"
 NEXT_QUESTION_TEXT="Which checks must pass before a batch merges?"
@@ -39,7 +40,7 @@ PKG="today.developing.pmconsole"
 LAUNCHER="today.developing.pmconsole/com.google.androidbrowserhelper.trusted.LauncherActivity"
 
 usage() {
-  echo "usage: offline-check.sh --apk <apk> --edge-url <url> --act-log <file> [--answer-label <text>] [--question-text <text>] [--next-question-text <text>]" >&2
+  echo "usage: offline-check.sh --apk <apk> --edge-url <url> --act-log <file> [--site-url <url>] [--answer-label <text>] [--question-text <text>] [--next-question-text <text>]" >&2
   exit 2
 }
 
@@ -51,6 +52,10 @@ while [ $# -gt 0 ]; do
     ;;
   --edge-url)
     EDGE_URL="${2:-}"
+    shift 2
+    ;;
+  --site-url)
+    SITE_URL="${2:-}"
     shift 2
     ;;
   --act-log)
@@ -354,8 +359,19 @@ done
 [ "$(adb shell getprop sys.boot_completed 2>/dev/null | tr -d '[:space:]')" = "1" ] || fail "emulator did not finish booting"
 
 # Chrome's first-run screen would stand between the app and its page:
-# tell it not to show, before it first starts.
-adb shell 'echo "chrome --no-first-run --disable-fre" > /data/local/tmp/chrome-command-line' 2>/dev/null || true
+# tell it not to show, before it first starts. And where the app is
+# opened from a plain-http address (the emulator's name for this
+# machine), tell Chrome to treat that one address as secure: the
+# app's worker — the part that sends what was done offline once the
+# connection is back, which stage 4 tests — only exists on secure
+# origins, and without this the check tests a browser with no worker
+# in it (run 45582639147: the answer was kept, and never sent). On
+# the app's real https address nothing is added.
+CHROME_FLAGS="chrome --no-first-run --disable-fre"
+case "$SITE_URL" in
+http://*) CHROME_FLAGS="$CHROME_FLAGS --unsafely-treat-insecure-origin-as-secure=$SITE_URL" ;;
+esac
+adb shell "echo \"$CHROME_FLAGS\" > /data/local/tmp/chrome-command-line" 2>/dev/null || true
 adb shell am force-stop com.android.chrome 2>/dev/null || true
 
 echo "offline-check: installing the APK"

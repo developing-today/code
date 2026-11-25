@@ -102,7 +102,7 @@ jobs:
           profile: pixel_7
           disable-animations: true
           emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim
-          script: bash pm-stack/console/android/offline-check.sh --apk pm-stack/console/android/app/build/outputs/apk/release/app-release.apk --edge-url http://127.0.0.1:4897 --act-log pm-console-acts.jsonl
+          script: bash pm-stack/console/android/offline-check.sh --apk pm-stack/console/android/app/build/outputs/apk/release/app-release.apk --edge-url http://127.0.0.1:4897 --act-log pm-console-acts.jsonl --site-url http://10.0.2.2:4897
       - name: Keep the act log and the edge log
         if: always()
         uses: actions/upload-artifact@v7
