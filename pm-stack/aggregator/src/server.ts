@@ -312,6 +312,12 @@ import {
 } from "./report-records.ts";
 import { renderReportReview, reportBlockReviews } from "./report-review.ts";
 import {
+  buildIncidentEnvelope,
+  incidentPageThreshold,
+  incidentTarget,
+  renderIncidentPage,
+} from "./incident-page.ts";
+import {
   FORECAST_CONTRACT_VERSION,
   quotaForecastContract,
   subjectForecastContracts,
@@ -2436,6 +2442,39 @@ async function handler(req: Request, remoteAddress?: string): Promise<Response> 
       if (path === "/api/reports.json") return json({ error: "report records unavailable" }, 503);
       return html(`<h1>Report review unavailable</h1><p>Could not read retained report records.</p>`, 503);
     }
+  }
+
+  // C6 incident page (#15019, design §6): one evidence-backed page
+  // per threshold-meeting incident, assembled live from the alerts
+  // ledger's healthHook records. The path id is the alerts-ledger
+  // incident id; the page identity joins on healthHook.incidentId.
+  const incidentPageMatch = /^\/reports\/incident\/([\w-]+)$/.exec(path);
+  const incidentJsonMatch = /^\/api\/reports\/incident\/([\w-]+)\.json$/.exec(path);
+  if (req.method === "GET" && (incidentPageMatch || incidentJsonMatch)) {
+    const id = (incidentPageMatch ?? incidentJsonMatch)![1];
+    if (!UUID_RE.test(id)) return json({ error: "incident id must be a uuid" }, 400);
+    const store = await getAlertsStore();
+    if (!store) return json({ error: "alerts store unavailable" }, 503);
+    const incident = await store.getIncident(id);
+    if (!incident) return json({ error: "no such incident", id }, 404);
+    const events = await store.listIncidentEvents(id);
+    if (!events.some((e) => e.detail?.healthHook !== undefined)) {
+      return json({ error: "incident has no healthHook evidence records", id }, 404);
+    }
+    const target = incidentTarget(incident);
+    const related = (await store.listIncidents(200)).filter(
+      (r) => target !== null && incidentTarget(r) === target,
+    );
+    if (!incidentPageThreshold(incident, events, related).qualifies) {
+      return json({ error: "incident does not meet the C6 section 6.2 page threshold", id }, 404);
+    }
+    const envelope = buildIncidentEnvelope({
+      incident,
+      events,
+      related,
+      generatedAt: new Date().toISOString(),
+    });
+    return incidentJsonMatch ? json(envelope) : html(renderIncidentPage(envelope));
   }
 
   if (req.method === "POST" && path === "/api/reports/resolve") {
