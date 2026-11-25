@@ -847,6 +847,7 @@ records = |model| encode_or_crash(
         { key: "phase", value: RocJson.String(model.phase) },
         { key: "plies", value: RocJson.Number(model.plies.to_str()) },
         { key: "turn", value: RocJson.String(model.turn) },
+        { key: "board", value: RocJson.String(model.board) },
         { key: "red_player", value: RocJson.String(seat_label(model.red)) },
         { key: "black_player", value: RocJson.String(seat_label(model.black)) },
     ]),
@@ -1224,6 +1225,9 @@ expect solo.turn == "red" and solo.plies == 2 and solo.black.pid == 0
 # Records name the side to move and who plays each side.
 expect Str.contains(records(both_seated), "\"red_player\":\"ann\"") and Str.contains(records(both_seated), "\"black_player\":\"bo\"")
 expect Str.contains(records(solo), "\"black_player\":\"AI\"")
+
+# The board is a record too, so every participant can check it.
+expect Str.contains(records(both_seated), "\"board\":\"${start_board}\"")
 
 # Seats survive a snapshot; the roster is rebuilt from presence.
 expect restore(snapshot(black_moved)) == { ..black_moved, roster: [] }
