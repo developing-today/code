@@ -110,6 +110,7 @@ fn operations(events: &[Ev]) -> Vec<AuthOperation> {
                 out.push(AuthOperation {
                     id: ident(event.id),
                     author: key(event.author),
+                    authorization_actor: None,
                     dependencies,
                     group_id: AuthId::Group(group),
                     action: action.clone(),
