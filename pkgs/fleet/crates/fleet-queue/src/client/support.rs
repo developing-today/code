@@ -212,6 +212,7 @@ Run `repo-queue <verb> --help` for flags:\n\
   timeline <task-id> [--worker <id>] [--json]\n\
   history <task-id> [--worker <id>] [--json]  (alias of timeline)\n\
   show <task-id> [--limit <n>] [--json]\n\
+  note <add|list|edit|remove> ...\n\
   models [--days <n>] [--json]\n\
   health [--queue <name>] [--worker <id>]\n\
   signal [--queue <name>] [--reason <text>]\n\
@@ -299,6 +300,21 @@ pub(crate) fn usage(verb: &str) -> &'static str {
         }
         "show" => {
             "usage: repo-queue show <task-id> [--limit <n>] [--json]\n\nShows one task's current details and recent history."
+        }
+        "note" => {
+            "usage: repo-queue note <add|list|edit|remove> ...\n\nA task's notes: an append-only, authored stream (#14170 Q4). Run `repo-queue note <sub> --help` for flags."
+        }
+        "note add" => {
+            "usage: repo-queue note add <task-id> --text <text> [--worker <id>] [--kind agent|human|system] [--session-id <id>] [--model-provider <p>] [--model-id <id>] [--model-variant <v>]\n\nAppends a note to a task. The worker is the author. The body is at most 4096 characters. Without marks, a note by the task's claim holder copies the claim's session and model."
+        }
+        "note list" => {
+            "usage: repo-queue note list <task-id> [--latest <n>] [--include-removed] [--json]\n\nLists a task's notes, oldest first, with the count of live notes. --latest keeps the newest n."
+        }
+        "note edit" => {
+            "usage: repo-queue note edit <note-id> --text <text> [--worker <id>]\n\nReplaces a note's body. Only the note's author may edit it; the old body is kept in the task's history."
+        }
+        "note remove" => {
+            "usage: repo-queue note remove <note-id> [--worker <id>]\n\nRemoves a note. The removal is soft: the row stays, hidden from list unless --include-removed. Only the note's author may remove it."
         }
         "models" => {
             "usage: repo-queue models [--days <n>] [--json]\n\nRolls up serving-model stamps."

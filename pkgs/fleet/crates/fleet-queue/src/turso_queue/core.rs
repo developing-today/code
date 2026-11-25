@@ -1028,7 +1028,7 @@ impl Clone for Arg {
     }
 }
 
-pub(crate) const SCHEMA: [&str; 34] = [
+pub(crate) const SCHEMA: [&str; 36] = [
     "CREATE TABLE IF NOT EXISTS tasks (\
         id INTEGER PRIMARY KEY AUTOINCREMENT, \
         queue TEXT NOT NULL, title TEXT, body TEXT, \
@@ -1092,6 +1092,14 @@ pub(crate) const SCHEMA: [&str; 34] = [
         created_at TEXT NOT NULL)",
     "CREATE INDEX IF NOT EXISTS task_history_task ON task_history(task_id, id)",
     "CREATE INDEX IF NOT EXISTS task_history_created ON task_history(created_at)",
+    // #14170 Q4: the append-only notes stream (turso_queue::notes).
+    "CREATE TABLE IF NOT EXISTS task_notes (\
+        id INTEGER PRIMARY KEY AUTOINCREMENT, task_id INTEGER NOT NULL, \
+        author TEXT NOT NULL, author_kind TEXT NOT NULL DEFAULT 'agent', \
+        session_id TEXT, model_provider TEXT, model_id TEXT, model_variant TEXT, \
+        body TEXT NOT NULL, created_at TEXT NOT NULL, \
+        edited_at TEXT, deleted_at TEXT)",
+    "CREATE INDEX IF NOT EXISTS task_notes_task ON task_notes(task_id, id)",
     "CREATE TABLE IF NOT EXISTS creation_outbox (\
         id TEXT PRIMARY KEY, repo TEXT NOT NULL, kind TEXT NOT NULL, \
         payload TEXT NOT NULL DEFAULT '{}', dedup_key TEXT NOT NULL, \

@@ -3133,3 +3133,178 @@ mod task_labels_tests {
         assert_eq!(full["row"]["labels_sync"]["scope"], "actionable", "{full}");
     }
 }
+
+// ---------------------------------------------------------------------------
+// Tests (#14170 Q4): the task_notes stream against the rusqlite-backed
+// fake pipeline. Oracle: two concurrent note adds both survive in
+// order; an edit preserves the original in history; the history rows
+// a note writes are state-neutral and carry the note pointer.
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod task_notes_tests {
+    use super::reprioritize_tests::fake_backend;
+    use super::*;
+
+    fn task(t: &TursoBackend, worker: Option<&str>) -> i64 {
+        t.exec(
+            "INSERT INTO tasks (queue, title, payload, priority, status, worker_id, \
+             claim_provider, claim_model, claim_variant, claim_session_id, progress, \
+             created_at, updated_at) \
+             VALUES ('repo-health-code-pilot', 't', '{}', 50, ?, ?, ?, ?, NULL, ?, '{}', \
+             '2026-11-25T00:00:00Z', '2026-11-25T00:00:00Z')",
+            &[
+                Arg::Text(if worker.is_some() { "claimed" } else { "queued" }.into()),
+                arg_str(worker),
+                arg_str(worker.map(|_| "anthropic")),
+                arg_str(worker.map(|_| "claude-opus")),
+                arg_str(worker.map(|_| "ses_claim")),
+            ],
+        )
+        .unwrap()
+        .last_insert_rowid
+        .unwrap()
+    }
+
+    fn add(t: &TursoBackend, task_id: i64, worker: &str, body: &str) -> Value {
+        verb_note_add(t, &json!({"task_id": task_id, "worker": worker, "body": body}))
+    }
+
+    fn history(t: &TursoBackend, task_id: i64) -> Vec<Value> {
+        t.query_objs(
+            "SELECT kind, from_status, to_status, actor, session_id, model_provider, \
+             model_id, detail FROM task_history WHERE task_id = ? ORDER BY id",
+            &[Arg::Int(task_id)],
+            &["detail"],
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn concurrent_note_adds_both_survive_in_order() {
+        let (t, _db) = fake_backend();
+        let id = task(&t, None);
+        let t = std::sync::Arc::new(t);
+        let handles: Vec<_> = (0..2)
+            .map(|i| {
+                let t = t.clone();
+                std::thread::spawn(move || {
+                    let out = add(&t, id, &format!("w{i}"), &format!("note from w{i}"));
+                    assert_eq!(out["ok"], true, "{out}");
+                    out["row"]["id"].as_i64().unwrap()
+                })
+            })
+            .collect();
+        let mut written: Vec<i64> = handles.into_iter().map(|h| h.join().unwrap()).collect();
+        written.sort();
+        assert_ne!(written[0], written[1], "each add is its own row");
+        let listed = verb_note_list(&t, &json!({"task_id": id}));
+        let rows = listed["row"]["rows"].as_array().unwrap().clone();
+        assert_eq!(listed["row"]["count"], 2);
+        assert_eq!(
+            rows.iter().map(|r| r["id"].as_i64().unwrap()).collect::<Vec<_>>(),
+            written,
+            "both notes survive, oldest first"
+        );
+        let mut authors: Vec<&str> = rows.iter().map(|r| r["author"].as_str().unwrap()).collect();
+        authors.sort();
+        assert_eq!(authors, ["w0", "w1"]);
+        // One state-neutral history row per note, pointing at it.
+        let h = history(&t, id);
+        assert_eq!(h.len(), 2);
+        for (row, note) in h.iter().zip(&rows) {
+            assert_eq!(row["kind"], "note_added");
+            assert!(row["from_status"].is_null() && row["to_status"].is_null());
+            assert_eq!(row["detail"]["note_id"], note["id"]);
+            assert_eq!(row["actor"], note["author"]);
+        }
+    }
+
+    #[test]
+    fn edit_preserves_the_original_in_history_and_is_author_only() {
+        let (t, _db) = fake_backend();
+        let id = task(&t, Some("lane-9"));
+        let added = add(&t, id, "lane-9", "first draft");
+        assert_eq!(added["ok"], true, "{added}");
+        let note = added["row"].clone();
+        let note_id = note["id"].as_i64().unwrap();
+        // The claim holder's note copies the claim's marks.
+        assert_eq!(note["session_id"], "ses_claim");
+        assert_eq!(note["model_provider"], "anthropic");
+        assert_eq!(note["model_id"], "claude-opus");
+        assert_eq!(note["author_kind"], "agent");
+
+        let refused = verb_note_edit(
+            &t,
+            &json!({"note_id": note_id, "worker": "someone-else", "body": "hijack"}),
+        );
+        assert_eq!(refused["ok"], false);
+        assert!(
+            refused["error"].as_str().unwrap().contains("only its author"),
+            "{refused}"
+        );
+
+        let edited = verb_note_edit(
+            &t,
+            &json!({"note_id": note_id, "worker": "lane-9", "body": "second draft"}),
+        );
+        assert_eq!(edited["ok"], true, "{edited}");
+        assert_eq!(edited["row"]["body"], "second draft");
+        assert!(!edited["row"]["edited_at"].is_null());
+
+        let h = history(&t, id);
+        let kinds: Vec<&str> = h.iter().map(|r| r["kind"].as_str().unwrap()).collect();
+        assert_eq!(kinds, ["note_added", "note_edited"], "the refused edit wrote no history");
+        assert_eq!(h[1]["detail"]["previous_body"], "first draft");
+        assert_eq!(h[1]["detail"]["note_id"], note_id);
+        assert_eq!(h[1]["session_id"], "ses_claim");
+
+        let removed = verb_note_remove(&t, &json!({"note_id": note_id, "worker": "lane-9"}));
+        assert_eq!(removed["ok"], true, "{removed}");
+        assert!(!removed["row"]["deleted_at"].is_null());
+        let again = verb_note_remove(&t, &json!({"note_id": note_id, "worker": "lane-9"}));
+        assert!(again["error"].as_str().unwrap().contains("was removed"), "{again}");
+        let live = verb_note_list(&t, &json!({"task_id": id}));
+        assert_eq!(live["row"]["count"], 0);
+        assert_eq!(live["row"]["rows"].as_array().unwrap().len(), 0);
+        let all = verb_note_list(&t, &json!({"task_id": id, "include_removed": true}));
+        assert_eq!(all["row"]["rows"][0]["body"], "second draft", "soft delete keeps the row");
+        let h = history(&t, id);
+        assert_eq!(h[2]["kind"], "note_removed");
+        assert_eq!(h[2]["detail"]["previous_body"], "second draft");
+    }
+
+    #[test]
+    fn note_add_validates_body_author_kind_and_task() {
+        let (t, _db) = fake_backend();
+        let id = task(&t, None);
+        let empty = add(&t, id, "w", "   ");
+        assert_eq!(empty["exit"], 2, "{empty}");
+        let long = add(&t, id, "w", &"x".repeat(NOTE_BODY_MAX_CHARS + 1));
+        assert!(long["error"].as_str().unwrap().contains("4096"), "{long}");
+        let at_limit = add(&t, id, "w", &"é".repeat(NOTE_BODY_MAX_CHARS));
+        assert_eq!(at_limit["ok"], true, "the limit counts characters, not bytes");
+        let no_author = verb_note_add(&t, &json!({"task_id": id, "body": "b"}));
+        assert!(no_author["error"].as_str().unwrap().contains("worker is required"));
+        let bad_kind =
+            verb_note_add(&t, &json!({"task_id": id, "worker": "w", "body": "b", "author_kind": "robot"}));
+        assert_eq!(bad_kind["exit"], 2, "{bad_kind}");
+        let missing = add(&t, id + 999, "w", "b");
+        assert!(missing["error"].as_str().unwrap().contains("does not exist"), "{missing}");
+        // A non-holder's note carries no claim marks.
+        let plain = add(&t, id, "w", "plain");
+        assert!(plain["row"]["session_id"].is_null());
+        // latest keeps the newest n, oldest first; count stays total.
+        add(&t, id, "w", "third");
+        let latest = verb_note_list(&t, &json!({"task_id": id, "latest": 2}));
+        let bodies: Vec<&str> = latest["row"]["rows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| r["body"].as_str().unwrap())
+            .collect();
+        assert_eq!(bodies, ["plain", "third"]);
+        assert_eq!(latest["row"]["count"], 3);
+    }
+}
