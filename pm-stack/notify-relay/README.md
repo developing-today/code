@@ -33,14 +33,17 @@ NO-GO half of the ruling); the only read surface is `GET /status`.
 | Route                                                            | Auth               | Lands in                                                                                 |
 | ---------------------------------------------------------------- | ------------------ | ---------------------------------------------------------------------------------------- |
 | `POST /mirror/subscriptions`                                     | shared secret      | step 1 (this package)                                                                    |
-| `POST /heartbeat`                                                | shared secret      | step 1 (this package)                                                                    |
+| `POST /heartbeat`                                                | shared secret      | step 1; returns the pending-answer count                                                  |
 | `GET /status`                                                    | none (minimal)     | step 1 (this package)                                                                    |
 | `POST /mirror/event`                                             | shared secret      | step 2; append-only, deduped by `mirrorId`, pruned after 30 days, never sent at the edge |
-| `GET /answer/:ledgerId`, `POST /api/needs-drew/:ledgerId/answer` | per-question token | step 3                                                                                   |
+| `POST /mirror/questions`                                         | shared secret      | step 3; replaces open question mirror, stores only token hashes                         |
+| `GET /answer/:ledgerId`, `POST /api/needs-drew/:ledgerId/answer` | per-question token | step 3; edge page + durable pending answer mailbox                                       |
+| `GET /pending-answers`, `POST /pending-answers/:answerId/ack`    | shared secret      | step 3; aggregator pull/ack drain                                                       |
 
 Everything else 404s. The heartbeat response carries
-`pendingAnswers` — step 3's drain count, always 0 in step 1, so
-the client contract is stable from the first beat.
+`pendingAnswers`. The aggregator pulls and ACKs each answer only after
+the Phase-1 `recordAnswer` writer returns, so a crash before ACK reoffers
+the same answer id and the local first-answer-wins writer dedupes it.
 
 `test/event.test.ts` is the event-mirror comparison harness: it keeps a
 source-ledger fixture for incident, needs-Drew, and quota-wall events,

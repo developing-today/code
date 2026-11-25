@@ -5970,4 +5970,32 @@ startAlertEngine(cfg, async (): Promise<NotificationSnapshot> => {
 // PM_AGG_NOTIFY_RELAY_URL is set (the deploy is a separate leg),
 // and fail-soft once running — the edge is a mirror of this
 // stack, never a dependency of it.
-startNotifyRelay(cfg, () => getAlertsStore());
+startNotifyRelay(cfg, () => getAlertsStore(), {
+  getQuestions: () => listOpenNeedsDrew(cfg.needsDrewFile),
+  getQuestion: (ledgerId) => getNeedsDrew(cfg.needsDrewFile, ledgerId),
+  applyAnswer: async (answer) => {
+    const question = await getNeedsDrew(cfg.needsDrewFile, answer.ledgerId);
+    if (!question) throw new Error(`edge answer question missing: ${answer.ledgerId}`);
+    const updated = await recordAnswer(cfg.needsDrewFile, answer.ledgerId, {
+      ...(answer.optionId !== undefined ? { optionId: answer.optionId } : {}),
+      ...(answer.freeText !== undefined ? { freeText: answer.freeText } : {}),
+      via: "edge-drain",
+    });
+    if (!updated?.answer) throw new Error(`edge answer not recorded: ${answer.ledgerId}`);
+    try {
+      const store = await getAlertsStore();
+      if (store) {
+        await store.closeOpenIncidentByKey(question.source, needsDrewIncidentKey(answer.ledgerId));
+        requestAlertTick();
+      }
+    } catch (err) {
+      console.error(`edge needs-drew answer: incident close failed (${err instanceof Error ? err.message : "error"})`);
+    }
+    try {
+      const store = await getAlertsStore();
+      if (store) await onQuestionAnswered(store.itemStages(), answer.ledgerId, updated.answer.optionId);
+    } catch (err) {
+      console.error(`edge needs-drew answer: stage update failed (${err instanceof Error ? err.message : "error"})`);
+    }
+  },
+});

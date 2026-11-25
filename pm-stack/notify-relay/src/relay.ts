@@ -52,6 +52,26 @@ export interface MirrorEvent {
   payload: Record<string, unknown>;
 }
 
+export interface MirroredQuestion {
+  ledgerId: string;
+  question: string;
+  context?: string;
+  options: Array<{ id: string; label: string }>;
+  links: string[];
+  raisedAt: string;
+  answerTokenHash: string;
+  acceptedAnswerId?: string;
+}
+
+export interface PendingAnswer {
+  answerId: string;
+  ledgerId: string;
+  optionId?: string;
+  freeText?: string;
+  answeredAt: string;
+  answerTokenHash: string;
+}
+
 export const MIRROR_RETENTION_MS = 30 * 24 * 60 * 60_000;
 
 export interface HeartbeatState {
@@ -81,6 +101,8 @@ export interface RelayState {
   origin: string | null;
   lastDelivery: DeliveryRecord | null;
   mirrorEvents: MirrorEvent[];
+  questions: MirroredQuestion[];
+  pendingAnswers: PendingAnswer[];
 }
 
 export const emptyRelayState = (): RelayState => ({
@@ -89,7 +111,119 @@ export const emptyRelayState = (): RelayState => ({
   origin: null,
   lastDelivery: null,
   mirrorEvents: [],
+  questions: [],
+  pendingAnswers: [],
 });
+
+export function validateMirroredQuestions(body: unknown): Validation<MirroredQuestion[]> {
+  if (!isRecord(body) || !Array.isArray(body.questions) || body.questions.length > 256) {
+    return { ok: false, error: "questions must be an array of at most 256 entries" };
+  }
+  const questions: MirroredQuestion[] = [];
+  const ids = new Set<string>();
+  for (const [index, raw] of body.questions.entries()) {
+    if (!isRecord(raw)) return { ok: false, error: `questions[${index}] must be an object` };
+    const { ledgerId, question, context, options, links, raisedAt, answerTokenHash } = raw;
+    if (typeof ledgerId !== "string" || !ledgerId || ledgerId.length > 256 || ids.has(ledgerId)) {
+      return { ok: false, error: `questions[${index}].ledgerId must be unique and non-empty` };
+    }
+    if (typeof question !== "string" || !question || question.length > 4000) {
+      return { ok: false, error: `questions[${index}].question must be non-empty` };
+    }
+    if (context !== undefined && (typeof context !== "string" || context.length > 8000)) {
+      return { ok: false, error: `questions[${index}].context must be a string` };
+    }
+    if (!Array.isArray(options) || options.length > 8) {
+      return { ok: false, error: `questions[${index}].options must be an array of at most 8 entries` };
+    }
+    const cleanOptions: Array<{ id: string; label: string }> = [];
+    for (const option of options) {
+      if (!isRecord(option) || typeof option.id !== "string" || !option.id || option.id.length > 128 ||
+        typeof option.label !== "string" || !option.label || option.label.length > 512) {
+        return { ok: false, error: `questions[${index}].options must contain valid options` };
+      }
+      cleanOptions.push({ id: option.id, label: option.label });
+    }
+    if (!Array.isArray(links) || links.length > 32 || links.some((link) => typeof link !== "string")) {
+      return { ok: false, error: `questions[${index}].links must be strings` };
+    }
+    if (typeof raisedAt !== "string" || !Number.isFinite(Date.parse(raisedAt))) {
+      return { ok: false, error: `questions[${index}].raisedAt must be a valid date` };
+    }
+    if (typeof answerTokenHash !== "string" || !/^[a-f0-9]{64}$/.test(answerTokenHash)) {
+      return { ok: false, error: `questions[${index}].answerTokenHash must be a SHA-256 hex digest` };
+    }
+    ids.add(ledgerId);
+    questions.push({ ledgerId, question, ...(typeof context === "string" ? { context } : {}),
+      options: cleanOptions,
+      links: (links as string[]).slice(), raisedAt, answerTokenHash });
+  }
+  return { ok: true, value: questions };
+}
+
+export function applyMirroredQuestions(state: RelayState, questions: MirroredQuestion[]): RelayState {
+  // Snapshot absence revokes intake, never a previously accepted mailbox
+  // entry. An expiry/restart between acceptance and drain must not lose it.
+  return { ...state, questions: questions.map((question) => {
+    const previous = state.questions.find((old) => old.ledgerId === question.ledgerId && old.answerTokenHash === question.answerTokenHash);
+    return previous?.acceptedAnswerId ? { ...question, acceptedAnswerId: previous.acceptedAnswerId } : question;
+  }) };
+}
+
+/** Step 3 drain oracles (pure, so the edge tests exercise the exact
+ * transitions the Durable Object performs). Questions older than the
+ * Phase-1 open window refuse intake; the mailbox keeps an accepted
+ * answer until the aggregator acks it by id. */
+export const OPEN_MAX_AGE_MS = 7 * 24 * 60 * 60_000;
+
+export function isQuestionOpen(question: MirroredQuestion, now: number): boolean {
+  return Number.isFinite(Date.parse(question.raisedAt)) && now - Date.parse(question.raisedAt) < OPEN_MAX_AGE_MS;
+}
+
+export interface EdgeAnswerInput {
+  ledgerId: string;
+  answerId: string;
+  optionId?: string;
+  freeText?: string;
+  answeredAt: string;
+  answerTokenHash: string;
+}
+
+export function applyEdgeAnswer(
+  state: RelayState,
+  input: EdgeAnswerInput,
+  now: number,
+): { state: RelayState; outcome: "stored" | "duplicate" | "expired" | "unknown" } {
+  const item = state.questions.find((question) => question.ledgerId === input.ledgerId);
+  if (!item || item.answerTokenHash !== input.answerTokenHash) return { state, outcome: "unknown" };
+  if (!isQuestionOpen(item, now)) return { state, outcome: "expired" };
+  if (item.acceptedAnswerId) {
+    return { state, outcome: "duplicate" };
+  }
+  const answer: PendingAnswer = {
+    answerId: input.answerId,
+    ledgerId: input.ledgerId,
+    ...(input.optionId !== undefined ? { optionId: input.optionId } : {}),
+    ...(input.freeText !== undefined ? { freeText: input.freeText } : {}),
+    answeredAt: input.answeredAt,
+    answerTokenHash: input.answerTokenHash,
+  };
+  return {
+    state: {
+      ...state,
+      questions: state.questions.map((question) =>
+        question === item ? { ...item, acceptedAnswerId: input.answerId } : question),
+      pendingAnswers: [...state.pendingAnswers, answer],
+    },
+    outcome: "stored",
+  };
+}
+
+export function applyAnswerAck(state: RelayState, answerId: string): { state: RelayState; acknowledged: boolean } {
+  const pendingAnswers = state.pendingAnswers.filter((answer) => answer.answerId !== answerId);
+  const acknowledged = pendingAnswers.length !== state.pendingAnswers.length;
+  return { state: acknowledged ? { ...state, pendingAnswers } : state, acknowledged };
+}
 
 /** Keep the 30-day mirror log bounded by event time (the laptop's
  * transition time), so retries cannot extend an old event's life. */

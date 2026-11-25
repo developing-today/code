@@ -12,10 +12,12 @@
 //    edge never throws into the aggregator.
 import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { IncidentMirrorRow, PushSubscriptionRow } from "../src/alerts.ts";
 import type { NotificationCandidate } from "../src/notifications.ts";
+import { getNeedsDrew, raiseNeedsDrew, recordAnswer } from "../src/needs-drew.ts";
 import { buildHeartbeatBody, buildSnapshotBody, incidentMirrorEvent, NotifyRelayClient } from "../src/notify-relay.ts";
 
 const row = (over: Partial<PushSubscriptionRow> = {}): PushSubscriptionRow => ({
@@ -330,6 +332,55 @@ describe("the client's contact discipline", () => {
       }),
     ).rejects.toThrow();
     expect(calls.filter((call) => call.url.endsWith("/mirror/event"))).toHaveLength(0);
+  });
+
+  test("a crash after the Phase-1 writer commits but before ACK reoffers and dedupes the answer", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "notify-relay-answer-drain-"));
+    dirs.push(dir);
+    const stateFile = join(dir, "relay.json");
+    const ledgerFile = join(dir, "needs-drew.json");
+    const raised = await raiseNeedsDrew(ledgerFile, {
+      ledgerId: "ledger-crash-1", question: "Choose", options: [{ id: "yes", label: "Yes" }], links: [],
+    });
+    const edgeAnswer = {
+      answerId: "stable-answer-id", ledgerId: raised.ledgerId, optionId: "yes",
+      answeredAt: "2026-11-23T12:00:00.000Z",
+      answerTokenHash: createHash("sha256").update(raised.token).digest("hex"),
+    };
+    let ackAttempts = 0;
+    let answerCalls = 0;
+    const client = new NotifyRelayClient({
+      url: "https://pm-notify.example.workers.dev", stateFile,
+      getStore: async () => null,
+      getQuestions: async () => [],
+      getQuestion: (ledgerId) => getNeedsDrew(ledgerFile, ledgerId),
+      applyAnswer: async (answer) => {
+        answerCalls += 1;
+        await recordAnswer(ledgerFile, answer.ledgerId, { optionId: answer.optionId, via: "edge-drain" });
+      },
+      resolveSecret: async () => "test-secret",
+      mintEpoch: () => "epoch-test",
+      fetchImpl: (async (url: string, init: RequestInit = {}) => {
+        const path = new URL(url).pathname;
+        if (path === "/heartbeat") return { ok: true, status: 200, json: async () => ({ pendingAnswers: 1 }) } as Response;
+        if (path === "/pending-answers") return { ok: true, status: 200, json: async () => ({ answers: [edgeAnswer] }) } as Response;
+        if (path.endsWith("/ack")) {
+          ackAttempts += 1;
+          return { ok: ackAttempts > 1, status: ackAttempts > 1 ? 200 : 500, json: async () => ({}) } as Response;
+        }
+        throw new Error(`unexpected request: ${init.method ?? "GET"} ${url}`);
+      }) as typeof fetch,
+    });
+    clients.push(client);
+
+    await client.beat(); // local first-answer writer commits; ACK is lost
+    const afterCrash = await getNeedsDrew(ledgerFile, raised.ledgerId);
+    expect(afterCrash?.answer).toMatchObject({ optionId: "yes", via: "edge-drain" });
+    await client.beat(); // edge re-offers; Phase-1 first-wins writer dedupes, ACK succeeds
+    const recovered = await getNeedsDrew(ledgerFile, raised.ledgerId);
+    expect(recovered?.answer).toEqual(afterCrash?.answer);
+    expect(answerCalls).toBe(2);
+    expect(ackAttempts).toBe(2);
   });
 });
 

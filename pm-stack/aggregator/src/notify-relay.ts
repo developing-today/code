@@ -27,12 +27,13 @@
 // aggregator's own sends — every public entry point swallows its
 // errors after recording them on the client for /status-style
 // inspection.
-import { createHash } from "node:crypto";
+import { createHash, timingSafeEqual } from "node:crypto";
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import type { AlertsStore, IncidentMirrorRow, PushSubscriptionRow } from "./alerts.ts";
 import type { Config } from "./config.ts";
 import type { NotificationCandidate } from "./notifications.ts";
+import type { NeedsDrewQuestion } from "./needs-drew.ts";
 import { resolveBwsSecret } from "./secrets.ts";
 
 /** Bitwarden name of the throat<->Worker shared secret (design
@@ -158,10 +159,22 @@ export interface NotifyRelayDeps {
         Partial<Pick<AlertsStore, "latestIncidentEventId" | "incidentEventsAfter">>)
     | null
   >;
+  getQuestions?: () => Promise<NeedsDrewQuestion[]>;
+  getQuestion?: (ledgerId: string) => Promise<NeedsDrewQuestion | null>;
+  applyAnswer?: (answer: PendingEdgeAnswer) => Promise<void>;
   resolveSecret?: (name: string) => Promise<string | null>;
   fetchImpl?: typeof fetch;
   now?: () => number;
   mintEpoch?: () => string;
+}
+
+export interface PendingEdgeAnswer {
+  answerId: string;
+  ledgerId: string;
+  optionId?: string;
+  freeText?: string;
+  answeredAt: string;
+  answerTokenHash: string;
 }
 
 export class NotifyRelayClient {
@@ -242,13 +255,82 @@ export class NotifyRelayClient {
    * that authorizes its push has landed), then heartbeat. */
   async beat(): Promise<void> {
     if (this.syncDirty || this.pending) await this.syncSubscriptions();
+    await this.syncQuestions();
     try {
       await this.postHeartbeat();
+      await this.drainAnswers();
     } catch (err) {
       this.lastError = err instanceof Error ? err.message : String(err);
     }
     // Heartbeats must not queue behind an arbitrarily long mirror backlog.
     await this.flushMirrorEvents();
+  }
+
+  private async syncQuestions(): Promise<void> {
+    if (!this.deps.getQuestions) return;
+    try {
+      const questions = await this.deps.getQuestions();
+      const res = await this.fetchImpl(`${this.deps.url}/mirror/questions`, {
+        method: "POST",
+        headers: { "content-type": "application/json", authorization: `Bearer ${await this.requireSecret()}` },
+        body: JSON.stringify({ questions: questions.map(({ ledgerId, question, context, options, links, raisedAt, token }) => ({
+          ledgerId, question, ...(context !== undefined ? { context } : {}), options, links, raisedAt,
+          answerTokenHash: createHash("sha256").update(token).digest("hex"),
+        })) }),
+        signal: AbortSignal.timeout(10_000),
+      });
+      if (!res.ok) throw new Error(`relay question mirror failed: HTTP ${res.status}`);
+    } catch (err) {
+      this.lastError = err instanceof Error ? err.message : String(err);
+    }
+  }
+
+  private async requireSecret(): Promise<string> {
+    const secret = await this.resolveSecret(NOTIFY_RELAY_SECRET_NAME);
+    if (!secret) throw new Error(`relay shared secret unavailable (bws: ${NOTIFY_RELAY_SECRET_NAME})`);
+    return secret;
+  }
+
+  private async drainAnswers(): Promise<void> {
+    if (!this.lastPendingAnswers || !this.deps.applyAnswer) return;
+    try {
+      const secret = await this.requireSecret();
+      const response = await this.fetchImpl(`${this.deps.url}/pending-answers`, {
+        headers: { authorization: `Bearer ${secret}` }, signal: AbortSignal.timeout(10_000),
+      });
+      if (!response.ok) throw new Error(`relay pending-answer GET failed: HTTP ${response.status}`);
+      const payload = await response.json() as { answers?: unknown };
+      if (!Array.isArray(payload.answers)) throw new Error("relay pending-answer response malformed");
+      for (const raw of payload.answers) {
+        if (!raw || typeof raw !== "object") continue;
+        const answer = raw as PendingEdgeAnswer;
+        if (typeof answer.answerId !== "string" || typeof answer.ledgerId !== "string" || typeof answer.answerTokenHash !== "string") continue;
+        const question = await this.deps.getQuestion?.(answer.ledgerId);
+        // The edge holds the only copy of a pending answer while offline;
+        // token hash verification prevents a stale/forged mailbox row from
+        // becoming an authoritative local answer.
+        if (!question) {
+          throw new Error(`relay answer unknown question for ${answer.ledgerId}`);
+        }
+        const expected = createHash("sha256").update(question.token, "utf8").digest();
+        let presented: Buffer;
+        try {
+          presented = Buffer.from(answer.answerTokenHash, "hex");
+        } catch {
+          throw new Error(`relay answer token mismatch for ${answer.ledgerId}`);
+        }
+        if (presented.length !== expected.length || !timingSafeEqual(presented, expected)) {
+          throw new Error(`relay answer token mismatch for ${answer.ledgerId}`);
+        }
+        await this.deps.applyAnswer(answer);
+        const ack = await this.fetchImpl(`${this.deps.url}/pending-answers/${encodeURIComponent(answer.answerId)}/ack`, {
+          method: "POST", headers: { authorization: `Bearer ${secret}` }, signal: AbortSignal.timeout(10_000),
+        });
+        if (!ack.ok) throw new Error(`relay answer ACK failed: HTTP ${ack.status}`);
+      }
+    } catch (err) {
+      this.lastError = err instanceof Error ? err.message : String(err);
+    }
   }
 
   /** Persist before sending; an ambiguous network failure retries the
@@ -620,10 +702,10 @@ let singleton: NotifyRelayClient | null = null;
  * deployed/configured yet — the aggregator runs exactly as
  * before in that case. Called once from server.ts startup,
  * beside startAlertEngine. */
-export function startNotifyRelay(cfg: Config, getStore: NotifyRelayDeps["getStore"]): NotifyRelayClient | null {
+export function startNotifyRelay(cfg: Config, getStore: NotifyRelayDeps["getStore"], answers: Pick<NotifyRelayDeps, "getQuestions" | "getQuestion" | "applyAnswer"> = {}): NotifyRelayClient | null {
   if (!cfg.notifyRelay.url) return null;
   if (singleton) return singleton;
-  singleton = new NotifyRelayClient({ url: cfg.notifyRelay.url, stateFile: cfg.notifyRelay.stateFile, getStore });
+  singleton = new NotifyRelayClient({ url: cfg.notifyRelay.url, stateFile: cfg.notifyRelay.stateFile, getStore, ...answers });
   void singleton.start().catch(() => {
     // start() records its own errors; the catch only keeps an
     // early rejection from surfacing as an unhandled rejection.
