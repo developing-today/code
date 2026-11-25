@@ -134,17 +134,13 @@ class Apply(unittest.TestCase):
         account = test_expose.Account()
         run(account, "--check")
         laptop = test_expose.Account()
-        test_expose.run(
-            laptop,
-            self.home,
-            "--check",
-            secrets={
-                expose.GITHUB_TOKEN_SECRET: "github-value",
-                expose.QUEUE_TOKEN_DEFAULT: "queue-value",
-                expose.BRIDGE_TOKEN_DEFAULT: "bridge-value",
-            },
-        )
-        self.assertEqual(account.changes, laptop.changes, f"apply.py changes:\n{account.changes}\n\nexpose.py changes:\n{laptop.changes}")
+        test_expose.run(laptop, self.home, "--check")
+        # Direct-mode secrets now belong only to repository-driven apply;
+        # expose.py must agree on the shared account configuration without
+        # managing the Worker's secrets itself.
+        shared = [change for change in account.changes if not change.startswith("edge direct:")]
+        self.assertEqual(shared, laptop.changes, f"apply.py changes:\n{shared}\n\nexpose.py changes:\n{laptop.changes}")
+        self.assertFalse(laptop.worker_secrets)
 
     def test_a_renamed_tunnel_is_refused_before_anything_is_asked(self):
         account = test_expose.Account()
@@ -194,6 +190,33 @@ class Apply(unittest.TestCase):
 
         self.assertEqual(account.order, [])
 
+    def test_refresh_tokens_rotates_existing_worker_secrets(self):
+        account = test_expose.Account()
+        run(account, "--apply")
+        account.worker_secrets["GITHUB_TOKEN"] = "old-github"
+        account.worker_secrets["QUEUE_TOKEN"] = "old-queue"
+        account.worker_secrets["BRIDGE_TOKEN"] = "old-bridge"
+        account.order = []
+        code = run(account, "--apply", "--refresh-tokens")
+        self.assertEqual(code, 0)
+        self.assertEqual(
+            account.worker_secrets,
+            {
+                "GITHUB_TOKEN": "github-value",
+                "QUEUE_TOKEN": "queue-value",
+                "EDGE_DIRECT": "on",
+                "BRIDGE_TOKEN": "bridge-value",
+            },
+        )
+        self.assertEqual(account.order, ["PUT /accounts/acc/workers/scripts/pm-console-edge/secrets"] * 4)
+
+    def test_refresh_tokens_is_refused_when_direct_mode_is_off(self):
+        account = test_expose.Account()
+        state = write_state({("worker", "direct"): "off"})
+        with self.assertRaisesRegex(SystemExit, "worker.direct to be on"):
+            run(account, "--apply", "--refresh-tokens", state=state)
+        self.assertEqual(getattr(account, "asked", 0), 0)
+
     def test_the_bridge_token_rides_along_when_the_state_holds_it(self):
         account = test_expose.Account()
         run(account, "--apply")
@@ -219,7 +242,7 @@ class Apply(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertNotIn("GITHUB_TOKEN", account.worker_secrets)
         self.assertNotIn("QUEUE_TOKEN", account.worker_secrets)
-        self.assertEqual(account.worker_secrets.get("EDGE_DIRECT"), "off")
+        self.assertNotIn("EDGE_DIRECT", account.worker_secrets)
 
 
 if __name__ == "__main__":

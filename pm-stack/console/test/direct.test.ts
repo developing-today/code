@@ -11,6 +11,9 @@
 // here and held against generated headers.
 import { describe, expect, test } from "bun:test";
 import { readConfig } from "../src/config.ts";
+import { actions } from "../src/actions.ts";
+import { Ops, type RunResult } from "../src/ops.ts";
+import { Work } from "../src/work.ts";
 import {
   askAgainAt,
   directClasses,
@@ -29,7 +32,7 @@ import {
   READ_FROM,
 } from "../edge/src/direct.ts";
 import type { Fetch } from "../src/ops.ts";
-import type { EdgeConfig } from "../src/edge-proto.ts";
+import { HOLDABLE, type EdgeConfig } from "../src/edge-proto.ts";
 import { asThePlatformFetch, letters, pick, rng } from "./support.ts";
 
 const cfg = readConfig({ HOME: "/h", PM_CONSOLE_OWNER_EMAILS: "owner@example.com" });
@@ -2043,5 +2046,53 @@ describe("what the edge remembers of GitHub", () => {
       seen.long > 1_500,
       seen.strict > 7_000,
     ]).toEqual([true, true, true, true, true, true, true]);
+  });
+});
+
+describe("the console's direct-mode setting", () => {
+  test("writes both direct-mode choices and dispatches the apply workflow, optionally refreshing tokens", async () => {
+    const state = { worker: { direct: "off" } };
+    const calls: { argv: string[]; stdin?: string }[] = [];
+    const cfg = readConfig({ HOME: "/h" });
+    const ops = new Ops(cfg, async (argv, options) => {
+      calls.push({ argv, stdin: options?.stdin });
+      const path = argv.find((part) => part.includes("/contents/infra/pm-cloudflare/state.json"));
+      if (path && !argv.includes("-X")) {
+        return {
+          code: 0,
+          stdout: JSON.stringify({ sha: "state-sha", content: btoa(JSON.stringify(state)) }),
+          stderr: "",
+        };
+      }
+      if (path && argv.includes("-X")) {
+        const body = JSON.parse(options?.stdin ?? "{}");
+        Object.assign(state.worker, JSON.parse(atob(body.content)).worker);
+      }
+      return { code: 0, stdout: "", stderr: "" } satisfies RunResult;
+    });
+    const table = actions(ops, new Work(ops));
+
+    expect(await ops.edgeDirect(true)).toEqual({ on: true, started: "pm-cloudflare-config.yml" });
+    expect(state.worker.direct).toBe("on");
+    expect(await ops.edgeDirect(false)).toEqual({ on: false, started: "pm-cloudflare-config.yml" });
+    expect(state.worker.direct).toBe("off");
+    expect(await ops.edgeDirect(true, true)).toEqual({ on: true, started: "pm-cloudflare-config.yml" });
+    expect(state.worker.direct).toBe("on");
+
+    const bodies = calls.map((call) => call.stdin && JSON.parse(call.stdin));
+    expect(bodies.filter(Boolean)).toEqual([
+      expect.objectContaining({ sha: "state-sha", message: expect.stringContaining("direct mode") }),
+      { ref: "main", inputs: { mode: "apply", refresh_tokens: "false" } },
+      expect.objectContaining({ sha: "state-sha", message: expect.stringContaining("direct mode") }),
+      { ref: "main", inputs: { mode: "apply", refresh_tokens: "false" } },
+      expect.objectContaining({ sha: "state-sha", message: expect.stringContaining("direct mode") }),
+      { ref: "main", inputs: { mode: "apply", refresh_tokens: "true" } },
+    ]);
+    expect(table["edge.direct"].audit({ on: true, refreshTokens: true })).toEqual({ on: true, refreshTokens: true });
+    expect(HOLDABLE.has("edge.direct")).toBe(false);
+    expect(calls.every((call) => !call.argv.includes("expose.py"))).toBe(true);
+
+    const invalid = await ops.edgeDirect(false, true).catch((error) => error);
+    expect(invalid.status).toBe(400);
   });
 });

@@ -1083,25 +1083,44 @@ export class Ops {
     return { google: true, changed: said.filter((line) => line.startsWith("changed: ")).map((line) => line.slice(9)) };
   }
 
-  /** Have the edge do the core itself, or stop it. On gives the Worker
-   * the repository automation token and the queue store token, read
-   * from the secret store by the setup script and sent to Cloudflare;
-   * off takes them away, and is remembered. It can only be done on a
-   * machine, where the secret store is. */
-  async edgeDirect(on: unknown) {
+  /** Persist the desired direct-mode state in the repository, then ask
+   * Actions to apply it. Token rotation is explicit because Worker
+   * secret values cannot be read back to determine whether they changed. */
+  async edgeDirect(on: unknown, refreshTokens: unknown = false) {
     if (typeof on !== "boolean") throw new OpError(400, "on: true or false");
-    const r = await this.expose(["--edge-direct", on ? "on" : "off"]);
-    const said = `${r.stdout}\n${r.stderr}`
-      .split("\n")
-      .map((line) => line.trim())
-      .filter((line) => line !== "");
-    if (r.code !== 0) {
-      throw new OpError(
-        502,
-        `Cloudflare was not ${on ? "given" : "relieved of"} the tokens: ${(said.pop() ?? "the setup script failed").slice(0, 300)}`,
-      );
+    if (typeof refreshTokens !== "boolean") throw new OpError(400, "refreshTokens: true or false");
+    if (refreshTokens && !on) throw new OpError(400, "refreshTokens requires direct mode on");
+    const file = `repos/${this.cfg.repo}/contents/infra/pm-cloudflare/state.json`;
+    const current = (await this.gh([file])) as { sha?: unknown; content?: unknown } | null;
+    if (typeof current?.sha !== "string" || typeof current.content !== "string") {
+      throw new OpError(502, "could not read the Cloudflare repository state");
     }
-    return { on, changed: said.filter((line) => line.startsWith("changed: ")).map((line) => line.slice(9)) };
+    let state: Record<string, unknown>;
+    try {
+      const binary = atob(current.content.replace(/\s/g, ""));
+      state = JSON.parse(new TextDecoder().decode(Uint8Array.from(binary, (c) => c.charCodeAt(0)))) as Record<string, unknown>;
+    } catch {
+      throw new OpError(502, "the Cloudflare repository state was not valid JSON");
+    }
+    const worker = state.worker as Record<string, unknown> | undefined;
+    if (!worker || (worker.direct !== "on" && worker.direct !== "off")) {
+      throw new OpError(502, "the Cloudflare repository state has no valid worker.direct setting");
+    }
+    worker.direct = on ? "on" : "off";
+    const bytes = new TextEncoder().encode(`${JSON.stringify(state, null, 2)}\n`);
+    let binary = "";
+    for (const byte of bytes) binary += String.fromCharCode(byte);
+    await this.gh(["-X", "PUT", file], {
+      message: `pm-console: ${on ? "enable" : "disable"} edge direct mode`,
+      sha: current.sha,
+      content: btoa(binary),
+      branch: "main",
+    });
+    await this.gh(["-X", "POST", `repos/${this.cfg.repo}/actions/workflows/pm-cloudflare-config.yml/dispatches`], {
+      ref: "main",
+      inputs: { mode: "apply", refresh_tokens: String(refreshTokens) },
+    });
+    return { on, started: "pm-cloudflare-config.yml" };
   }
 
   // ---- services ----------------------------------------------------------
