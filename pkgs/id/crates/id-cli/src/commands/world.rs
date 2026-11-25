@@ -408,6 +408,38 @@ pub async fn cmd_world(command: WorldCommand) -> Result<()> {
             println!("{}", serde_json::to_string_pretty(&result?)?);
             Ok(())
         }
+        WorldCommand::Presentation(args) => {
+            let crate::cli::WorldPresentationArgs {
+                node,
+                set,
+                admin_token,
+                world,
+                addrs,
+                no_relay,
+            } = args;
+            // Read and check the file before connecting, so a bad file
+            // never costs a round trip.
+            let replacement = match set {
+                Some(path) => {
+                    let admin_token = admin_token.context(
+                        "the admin token is needed to replace the world's presentation policy",
+                    )?;
+                    Some((admin_token, read_presentation_policy(&path)?))
+                }
+                None => None,
+            };
+            let (endpoint, mut client) = connect(&node, &addrs, no_relay, world.as_deref()).await?;
+            let result = match &replacement {
+                Some((admin_token, policy)) => {
+                    client.set_presentation_policy(admin_token, policy).await
+                }
+                None => client.presentation_policy().await,
+            };
+            client.close();
+            endpoint.close().await;
+            println!("{}", serde_json::to_string_pretty(&result?)?);
+            Ok(())
+        }
         WorldCommand::Isolation(args) => {
             let crate::cli::WorldIsolationArgs {
                 node,
@@ -2284,14 +2316,60 @@ fn read_execution_profile(
         .with_context(|| format!("parse execution profile {}", path.display()))
 }
 
+/// The presentation policy in the file at `path`, for
+/// `id world presentation --set`. A duplicated key is refused rather
+/// than read as its last value (#8794), and the policy is validated
+/// here so an oversized one is refused before it is sent.
+fn read_presentation_policy(
+    path: &std::path::Path,
+) -> Result<id_core::presentation_policy::PresentationPolicy> {
+    let text = std::fs::read_to_string(path)
+        .with_context(|| format!("read presentation policy {}", path.display()))?;
+    let policy: id_core::presentation_policy::PresentationPolicy =
+        id_core::json_unique::from_slice_without_duplicate_keys(text.as_bytes())
+            .with_context(|| format!("parse presentation policy {}", path.display()))?;
+    policy
+        .validate()
+        .with_context(|| format!("invalid presentation policy {}", path.display()))?;
+    Ok(policy)
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::{
         PumpLine, check_contract, check_journal_bytes, check_suite_file, journal_backup,
         local_transcript_record, print_journal_check, pump_command, read_execution_profile,
-        scaffold_world, step_is_applied, world_list_plain_row, world_provenance,
+        read_presentation_policy, scaffold_world, step_is_applied, world_list_plain_row,
+        world_provenance,
     };
+
+    #[test]
+    fn a_presentation_policy_file_is_read_checked_and_refused_when_bad() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("presentation.json");
+        std::fs::write(
+            &path,
+            r#"{"assets":{"user_uploads":"deny","max_rung":"tileset"}}"#,
+        )
+        .unwrap();
+        let policy = read_presentation_policy(&path).unwrap();
+        assert_eq!(
+            policy.assets.max_rung,
+            id_core::presentation_policy::Rung::Tileset
+        );
+
+        // A duplicated key, an unknown field and an unregistered shader
+        // format are each refused.
+        for bad in [
+            r#"{"assets":{"max_rung":"rich","max_rung":"glyph"}}"#,
+            r#"{"assets":{"uploads":"deny"}}"#,
+            r#"{"shaders":{"enabled":true,"formats":["made.up/v9"]}}"#,
+        ] {
+            std::fs::write(&path, bad).unwrap();
+            assert!(read_presentation_policy(&path).is_err(), "{bad}");
+        }
+    }
 
     #[test]
     fn an_execution_profile_with_a_duplicated_key_is_refused() {

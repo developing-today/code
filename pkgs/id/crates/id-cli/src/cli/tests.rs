@@ -2892,6 +2892,43 @@ fn test_cli_parse_world_profile() {
 }
 
 #[test]
+fn test_cli_parse_world_presentation() {
+    let node = "a".repeat(64);
+    let cli = Cli::parse_from(["id", "world", "presentation", &node]);
+    match cli.command {
+        Some(Command::World(cmd)) => match *cmd {
+            WorldCommand::Presentation(args) => {
+                assert!(args.set.is_none());
+                assert!(args.admin_token.is_none());
+            }
+            other => panic!("unexpected: {other:?}"),
+        },
+        other => panic!("unexpected: {other:?}"),
+    }
+
+    let cli = Cli::parse_from([
+        "id",
+        "world",
+        "presentation",
+        &node,
+        "--set",
+        "policy.json",
+        "--admin-token",
+        "adm",
+    ]);
+    match cli.command {
+        Some(Command::World(cmd)) => match *cmd {
+            WorldCommand::Presentation(args) => {
+                assert_eq!(args.set, Some(std::path::PathBuf::from("policy.json")));
+                assert_eq!(args.admin_token, Some("adm".to_owned()));
+            }
+            other => panic!("unexpected: {other:?}"),
+        },
+        other => panic!("unexpected: {other:?}"),
+    }
+}
+
+#[test]
 fn test_cli_parse_world_dev_fuzz() {
     let cli = Cli::parse_from([
         "id",

@@ -25,6 +25,7 @@ pub(super) fn admin_frame_name(frame: &ClientFrame) -> &'static str {
         ClientFrame::InstallBegin { .. } => "InstallBegin",
         ClientFrame::EventHistoryAdmin { .. } => "EventHistoryAdmin",
         ClientFrame::SetExecutionProfile { .. } => "SetExecutionProfile",
+        ClientFrame::SetPresentationPolicy { .. } => "SetPresentationPolicy",
         _ => "Unknown",
     }
 }

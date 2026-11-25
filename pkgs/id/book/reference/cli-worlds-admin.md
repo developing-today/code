@@ -71,6 +71,33 @@ $ id world profile 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abc
 
 Failures: a limit flag without the admin token is refused, exit `1`.
 
+## `presentation`
+
+Shows or replaces a world's presentation policy: whether user-uploaded art renders, the richest rung the world draws, which filters and shaders are allowed, and the world's own fallback art.
+
+```
+id world presentation <NODE> [--set <FILE> --admin-token <TOKEN>]
+```
+
+| Flag            | Argument          | Default                        | Meaning                                                                                 |
+| --------------- | ----------------- | ------------------------------ | --------------------------------------------------------------------------------------- |
+| `<NODE>`        | 64 hex characters | required                       | The host's node ID.                                                                     |
+| `--set`         | file path (JSON)  | — (none)                       | Replace the policy with the one in this file. A duplicated key or unknown field is refused. |
+| `--admin-token` | token             | — (env `ID_WORLD_ADMIN_TOKEN`) | The host's admin secret. Required with `--set`.                                         |
+
+Behaviour: without `--set` it prints the current policy, and needs no token, because the policy is public before anyone joins. With `--set` the host checks the policy, journals it and applies it at once. An empty file object `{}` is the default policy, which denies user shaders and disguise filters.
+
+Example: stop rendering user uploads and draw nothing richer than tiles.
+
+```
+$ cat presentation.json
+{"assets": {"user_uploads": "deny", "max_rung": "tileset"}}
+$ id world presentation 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef \
+    --set presentation.json
+```
+
+Failures: `--set` without the admin token, a malformed file or a wrong admin token is refused, exit `1`.
+
 ## `doctor`
 
 Diagnoses a broken world setup and prints the fix for each problem. It takes no `<NODE>`: every check is local.
