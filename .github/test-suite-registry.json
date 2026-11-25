@@ -798,6 +798,19 @@
       "related_issues": [12828]
     },
     {
+      "id": "pm-service.dual-edition-conformance",
+      "paths": ["pm-stack/pm-service/test/dual-edition-conformance.test.ts"],
+      "invocation": "cd pm-stack/pm-service && bun test test/dual-edition-conformance.test.ts",
+      "venue": {
+        "workflow": ".github/workflows/pm-stack-tests.yml",
+        "job_step": "Test pm-service suites",
+        "state": "active",
+        "dispatchable": true
+      },
+      "status": "mapped",
+      "related_issues": [9074, 12833]
+    },
+    {
       "id": "opencode-claimant.install",
       "paths": ["pm-stack/opencode-claimant/test/install.test.mjs"],
       "invocation": "cd pm-stack/opencode-claimant && bun test test/install.test.mjs",
