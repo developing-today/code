@@ -309,7 +309,7 @@ it is — a valid world capability, minted by the host's admin with
 | `petname`      |                                | List the petnames one owner gave, read-only             |
 | `match-audit`  |                                | Export and verify signed match-audit v0 logs            |
 | `walk`         |                                | The #9106 walking skeleton, driven by hand              |
-| `host`         |                                | Host mode: run, or list, a data root of worlds          |
+| `host`         |                                | Host mode: run, list or inspect a data root of worlds   |
 | `group`        |                                | Groups: create, policy, add, remove, roles, join        |
 | `delegate`     |                                | Grant a delegate a scope in a group                     |
 | `revoke`       |                                | Revoke a delegation by its grant event ID               |

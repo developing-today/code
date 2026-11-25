@@ -42,4 +42,16 @@ pub enum HostCommand {
         #[arg(long)]
         json: bool,
     },
+    /// Show one world's record without opening it: lifecycle state and
+    /// every recorded transition, journal entries, version and torn
+    /// tail, module count and storage bytes. Writes nothing.
+    Inspect {
+        /// The data root.
+        root: PathBuf,
+        /// The world to inspect.
+        world: String,
+        /// Print the inspection as JSON instead of lines.
+        #[arg(long)]
+        json: bool,
+    },
 }

@@ -35,9 +35,10 @@ use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 
 use crate::world::{WorldHandle, WorldLimits};
+use crate::world_doctor::{JournalFacts, journal_facts};
 use crate::world_limits::RuntimeLimits;
 use crate::world_session::WorldService;
-use crate::world_storage::{WalkLimits, inventory};
+use crate::world_storage::{JOURNAL_FILE, WalkLimits, inventory};
 use crate::world_store::{OpenReport, open_world};
 
 /// Version of the [`HostFile`] schema written by this module.
@@ -602,6 +603,70 @@ impl HostLifecycle {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
+}
+
+/// One world's facts for `id host inspect` (#10696), read from the host
+/// file and the world directory without opening the world for serving.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct WorldInspection {
+    /// World name (directory name).
+    pub name: String,
+    /// The data root the host file describes.
+    pub data_root: PathBuf,
+    /// The world's directory under the data root.
+    pub dir: PathBuf,
+    /// Recorded lifecycle state.
+    pub state: LifecycleState,
+    /// Recorded transitions, oldest first.
+    pub history: Vec<StateChange>,
+    /// The journal's entry count, version and torn tail, when it parses.
+    pub journal: Option<JournalFacts>,
+    /// Why the journal could not be read, when it could not.
+    pub journal_error: Option<String>,
+    /// Module files under `modules/`.
+    pub module_count: u64,
+    /// The world's storage row, as `id host list` shows it.
+    pub storage: WorldCensus,
+}
+
+/// Inspect `name` in the data root `root` that `file` describes, reading
+/// only the host file record and the world directory: nothing is opened
+/// for serving, replayed or written.
+///
+/// # Errors
+///
+/// Fails when the host file has no world called `name`. A journal that
+/// does not parse is reported in [`WorldInspection::journal_error`], not
+/// as an error, so a damaged world can still be inspected.
+pub fn inspect_world(root: &Path, file: &HostFile, name: &str) -> Result<WorldInspection> {
+    let record = file
+        .worlds
+        .get(name)
+        .with_context(|| format!("no world {name:?} in data root {}", root.display()))?;
+    let dir = root.join(name);
+    let (journal, journal_error) = match journal_facts(&dir.join(JOURNAL_FILE)) {
+        Ok(facts) => (Some(facts), None),
+        Err(error) => (None, Some(format!("{error:#}"))),
+    };
+    let module_count = inventory(&dir, WalkLimits::default())
+        .map(|inv| inv.modules.files)
+        .unwrap_or(0);
+    let storage = census_of(root, file)
+        .worlds
+        .into_iter()
+        .find(|row| row.name == name)
+        .unwrap_or_default();
+    Ok(WorldInspection {
+        name: name.to_owned(),
+        data_root: file.data_root.clone(),
+        dir,
+        state: record.state,
+        history: record.history.clone(),
+        journal,
+        journal_error,
+        module_count,
+        storage,
+    })
 }
 
 /// A live world held by the [`Supervisor`]: its service plus the replay
@@ -1225,6 +1290,45 @@ mod tests {
                 .worlds
                 .contains_key("doomed")
         );
+    }
+
+    #[test]
+    fn inspect_world_reads_record_journal_and_modules_without_writing() {
+        let root = data_root_with(&["w", "broken"]);
+        let created = serde_json::to_string(&crate::world::JournalEntry::Created {
+            world_id: "w".to_owned(),
+            version: crate::world::JOURNAL_VERSION,
+        })
+        .unwrap();
+        std::fs::write(
+            root.path().join("w").join(JOURNAL_FILE),
+            format!("{created}\n{{\"torn"),
+        )
+        .unwrap();
+        std::fs::write(root.path().join("w/modules/aa.wasm"), b"\0asm").unwrap();
+        let mut file = HostFile::rebuild(root.path()).unwrap();
+        file.transition("w", LifecycleState::Live, actor(), 7)
+            .unwrap();
+
+        let seen = inspect_world(root.path(), &file, "w").unwrap();
+        assert_eq!(seen.state, LifecycleState::Live);
+        assert_eq!(seen.history.len(), 1);
+        assert_eq!(seen.history[0].actor, actor());
+        let journal = seen.journal.unwrap();
+        assert_eq!(journal.entries, 1);
+        assert_eq!(journal.version, crate::world::JOURNAL_VERSION);
+        assert!(journal.torn_tail);
+        assert_eq!(seen.module_count, 1);
+        assert_eq!(seen.storage.modules_bytes, 4);
+        assert_eq!(seen.dir, root.path().join("w"));
+
+        // An empty journal is reported, not an error.
+        let broken = inspect_world(root.path(), &file, "broken").unwrap();
+        assert!(broken.journal.is_none());
+        assert!(broken.journal_error.unwrap().contains("empty"));
+
+        assert!(inspect_world(root.path(), &file, "nobody").is_err());
+        assert!(!HostFile::path_for(root.path()).exists());
     }
 
     #[test]

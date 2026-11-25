@@ -3,7 +3,7 @@
 use std::fmt::Write as _;
 
 use anyhow::{Context, Result};
-use id_worlds::host::{Census, HostFile, Supervisor, census_of};
+use id_worlds::host::{Census, HostFile, Supervisor, WorldInspection, census_of, inspect_world};
 
 use crate::cli::HostCommand;
 
@@ -14,8 +14,9 @@ use crate::cli::HostCommand;
 /// `run` fails when the data root cannot be opened, a recorded-live
 /// world fails replay, a `--start` world cannot start (every world
 /// already live is drained first), or a world fails to drain on
-/// Ctrl-C. `list` fails when the host file is unreadable or names
-/// another data root.
+/// Ctrl-C. `list` and `inspect` fail when the host file is unreadable
+/// or names another data root; `inspect` also fails for a world the
+/// host file does not record.
 pub async fn cmd_host(command: HostCommand) -> Result<()> {
     match command {
         HostCommand::Run { root, start, actor } => {
@@ -50,7 +51,65 @@ pub async fn cmd_host(command: HostCommand) -> Result<()> {
             }
             Ok(())
         }
+        HostCommand::Inspect { root, world, json } => {
+            let file = HostFile::read_or_rebuild(&root)
+                .with_context(|| format!("reading data root {}", root.display()))?;
+            let inspection = inspect_world(&root, &file, &world)?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&inspection)?);
+            } else {
+                print!("{}", inspection_lines(&inspection));
+            }
+            Ok(())
+        }
     }
+}
+
+/// `id host inspect` as lines: one fact per line, then one line per
+/// recorded transition.
+fn inspection_lines(seen: &WorldInspection) -> String {
+    let mut out = String::new();
+    let _ = writeln!(out, "world {}", seen.name);
+    let _ = writeln!(out, "state {}", seen.state);
+    let _ = writeln!(out, "data-root {}", seen.data_root.display());
+    let _ = writeln!(out, "dir {}", seen.dir.display());
+    match (&seen.journal, &seen.journal_error) {
+        (Some(journal), _) => {
+            let _ = writeln!(
+                out,
+                "journal entries={} version={} torn-tail={}",
+                journal.entries, journal.version, journal.torn_tail
+            );
+        }
+        (None, Some(error)) => {
+            let _ = writeln!(out, "journal unreadable: {error}");
+        }
+        (None, None) => {
+            let _ = writeln!(out, "journal unreadable");
+        }
+    }
+    let _ = writeln!(out, "modules {}", seen.module_count);
+    let missing = if seen.storage.missing {
+        " (directory missing)"
+    } else {
+        ""
+    };
+    let _ = writeln!(
+        out,
+        "bytes journal={} modules={} other={}{missing}",
+        seen.storage.journal_bytes, seen.storage.modules_bytes, seen.storage.other_bytes
+    );
+    if seen.history.is_empty() {
+        let _ = writeln!(out, "history none");
+    }
+    for change in &seen.history {
+        let _ = writeln!(
+            out,
+            "history {} {} from {}",
+            change.at_secs, change.actor, change.prior
+        );
+    }
+    out
 }
 
 /// One line per world (name, state, bytes, last state change), then one
@@ -122,5 +181,15 @@ mod tests {
         assert!(text.contains("total live: worlds=0"), "{text}");
         assert!(text.contains("total asleep: worlds=1"), "{text}");
         assert!(text.contains("total archived: worlds=1"), "{text}");
+
+        let seen = inspect_world(root.path(), &file, "beta").unwrap();
+        let text = inspection_lines(&seen);
+        assert!(text.starts_with("world beta\nstate archived\n"), "{text}");
+        assert!(text.contains("journal unreadable: "), "{text}");
+        assert!(text.contains("modules 0\n"), "{text}");
+        assert!(text.contains(" ops from asleep\n"), "{text}");
+        let alpha = inspection_lines(&inspect_world(root.path(), &file, "alpha").unwrap());
+        assert!(alpha.contains("history none\n"), "{alpha}");
+        assert!(inspect_world(root.path(), &file, "gamma").is_err());
     }
 }
