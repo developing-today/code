@@ -195,7 +195,7 @@ if out="$(run --mode promote --receipt "$TMP/r5.md" --units-dir "$TMP/units" --c
   *'PROMOTE OK'*FENCED*) pass 'promote passes when fenced and parity holds' ;;
   *) fail "promote passes when fenced and parity holds (got: $out)" ;;
   esac
-  if grep -q 'Fence: FENCED' "$TMP/r5.md" && grep -q '45 90139' "$TMP/r5.md" && grep -q 'RESTORE POINT OK' "$TMP/r5.md"; then
+  if grep -q 'Fence: FENCED' "$TMP/r5.md" && grep -q '45 90139' "$TMP/r5.md" && grep -q 'RESTORE POINT OK' "$TMP/r5.md" && grep -q 'Kaneo recovery point OK' "$TMP/r5.md"; then
     pass 'promote receipt records the fence, backup restore point, and counts'
   else
     fail 'promote receipt records the fence, backup restore point, and counts'
