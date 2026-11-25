@@ -661,6 +661,13 @@ fn create_router_inner(state: AppState) -> Router {
     // The program gallery's read surface (#10003): 404 on every route
     // unless the serving process wired a gallery in.
     let router = router.merge(super::gallery::gallery_routes().with_state(state.gallery.clone()));
+    // #10392 §6.1 (#14224): `POST /v1/runs` runs one subcommand of this
+    // binary with argv parity, for loopback clients only (see
+    // `super::runs`). Absent when the running executable cannot be found.
+    let router = match super::runs::RunsConfig::current_exe() {
+        Some(config) => router.merge(super::runs::runs_routes(config)),
+        None => router,
+    };
     let router = router
         .layer(DefaultBodyLimit::max(DEFAULT_BODY_LIMIT))
         .with_state(state.clone());

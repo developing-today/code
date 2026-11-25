@@ -124,6 +124,7 @@ crates/id-web/src/
 ├── home.rs               # Home page and feed
 ├── explore.rs            # Script-free directory explorer (/explore)
 ├── gallery.rs            # Program gallery routes
+├── runs.rs               # POST /v1/runs: one subcommand with argv parity
 ├── groups.rs             # Groups page
 ├── identity.rs           # Web client identity routes
 ├── seitan.rs             # Seitan admission (invite / admit)
@@ -350,6 +351,19 @@ Every gallery route answers 404 unless a gallery was wired in with
 | `/api/gallery/collections`                   | GET    | Operator-signed featured collections  |
 | `/api/gallery/collections/{operator}/{name}` | GET    | One collection                        |
 | `/api/gallery/transparency`                  | GET    | Removals, refusals and reinstatements |
+
+### Runs
+
+`POST /v1/runs` runs one subcommand of the serving binary with the request's
+argv, allowlisted env and stdin (`none`, or `body` with `data` or
+`data_base64`), and answers with its exit code, stdout and stderr: the same
+result as the CLI with that argv (#10392 §6.1). Loopback clients only; a
+request forwarded by a proxy is refused. Sessions, streaming output and app
+runs are later slices of #10392.
+
+| Route      | Method | Description                          |
+| ---------- | ------ | ------------------------------------ |
+| `/v1/runs` | POST   | Run one subcommand, answer when done |
 
 ### WebSocket
 

@@ -55,6 +55,7 @@ mod home;
 mod identity;
 mod markdown;
 mod routes;
+pub mod runs;
 mod security;
 mod seitan;
 mod tags_ws;
@@ -89,6 +90,7 @@ pub use identity::IdentityStore;
 #[doc(hidden)]
 pub use identity::crash_gate;
 pub use routes::{create_program_router, create_router, create_router_for_app};
+pub use runs::{RunsConfig, runs_routes};
 pub use security::WebSecurity;
 pub use seitan::SeitanState;
 pub use templates::{AssetUrls, render_page};
