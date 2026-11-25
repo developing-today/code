@@ -58,6 +58,7 @@ mod routes;
 pub mod runs;
 mod security;
 mod seitan;
+pub mod sessions;
 mod tags_ws;
 mod templates;
 mod transport_ad;

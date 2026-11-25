@@ -27,8 +27,12 @@
 //!   finite input carried in the request (`data` as UTF-8 text or
 //!   `data_base64` as bytes) and then closes it. The mode is explicit, never
 //!   inferred from whether input happens to be present.
-//! - `stdin.mode = session` (interactive input, §4.3) is refused with a
-//!   message naming the slice that adds it.
+//! - `stdin.mode = session` (interactive input, slice 3, #14227) runs in a
+//!   session ([`crate::sessions`]): input arrives as numbered frames on the
+//!   session's input endpoint, and the answer is the session's event
+//!   stream, so it needs `Accept: text/event-stream` (406 otherwise). A
+//!   streamed run with `body` input, or one naming a `session`, also runs
+//!   in a session the client can attach to and replay.
 //! - App runs (slice 4, #14226) go through the app loader ([`load_app`],
 //!   §4.5): the request names an `app` the server has a [`RunManifest`]
 //!   for, announces its `client` (`kind`, `features`), and lists the
@@ -77,6 +81,8 @@ use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 use tokio::sync::mpsc;
 
+use crate::sessions::SessionStore;
+
 /// Path of the run endpoint.
 pub const RUNS_PATH: &str = "/v1/runs";
 
@@ -113,6 +119,8 @@ pub struct RunsConfig {
     pub stream_cap: usize,
     /// The app manifests the loader checks app runs against (§4.5).
     pub apps: RunApps,
+    /// The sessions runs attach to (§4.3).
+    pub sessions: Arc<SessionStore>,
 }
 
 impl RunsConfig {
@@ -124,6 +132,7 @@ impl RunsConfig {
             timeout: DEFAULT_RUN_TIMEOUT,
             stream_cap: DEFAULT_STREAM_CAP,
             apps: RunApps::new(BTreeMap::new()),
+            sessions: Arc::new(SessionStore::default()),
         }
     }
 
@@ -150,6 +159,7 @@ where
     Router::new()
         .route(RUNS_PATH, post(run_handler))
         .route(APP_MANIFEST_PATH, get(manifest_handler))
+        .merge(crate::sessions::session_routes())
         .with_state(Arc::new(config))
 }
 
@@ -370,6 +380,11 @@ pub struct RunRequest {
     /// Capabilities the client can grant, checked by the app loader.
     #[serde(default)]
     pub capabilities: Vec<String>,
+    /// The session to attach the run to (§4.3); one is created when a
+    /// streamed run has input (`stdin.mode` other than `none`) and names
+    /// none.
+    #[serde(default)]
+    pub session: Option<String>,
 }
 
 /// One captured output stream.
@@ -426,7 +441,7 @@ struct ErrorBody {
     error: String,
 }
 
-fn error_response(status: StatusCode, message: impl Into<String>) -> Response {
+pub(crate) fn error_response(status: StatusCode, message: impl Into<String>) -> Response {
     (
         status,
         Json(ErrorBody {
@@ -449,7 +464,7 @@ const FORWARDING_HEADERS: &[&str] = &[
 
 /// Whether a request may run subcommands: a loopback peer, not forwarded
 /// by a proxy (§4.7).
-fn peer_allowed(peer: Option<SocketAddr>, headers: &axum::http::HeaderMap) -> bool {
+pub(crate) fn peer_allowed(peer: Option<SocketAddr>, headers: &axum::http::HeaderMap) -> bool {
     peer.is_some_and(|addr| addr.ip().is_loopback())
         && !FORWARDING_HEADERS
             .iter()
@@ -479,10 +494,16 @@ pub fn validate(request: &RunRequest) -> Result<Option<Vec<u8>>, String> {
     }
     let stdin = &request.stdin;
     match stdin.mode {
-        StdinMode::Session => Err(
-            "stdin.mode = session needs sessions (#10392 §6.3), which are not served yet"
-                .to_owned(),
-        ),
+        StdinMode::Session => {
+            if stdin.data.is_some() || stdin.data_base64.is_some() {
+                Err(
+                    "stdin.mode = session takes input as frames on the session's input endpoint, not data"
+                        .to_owned(),
+                )
+            } else {
+                Ok(None)
+            }
+        }
         StdinMode::None => {
             if stdin.data.is_some() || stdin.data_base64.is_some() {
                 Err("stdin.mode = none takes no data; use mode = body to send input".to_owned())
@@ -545,7 +566,7 @@ pub async fn execute_granted(
     stdin: Option<Vec<u8>>,
     grant: Option<&AppGrant>,
 ) -> std::io::Result<RunResponse> {
-    let started = start_run(config, request, stdin, grant)?;
+    let started = start_run(config, request, stdin.into(), grant)?;
     let (events, mut received) = mpsc::channel(EVENT_BUFFER);
     let collect = async move {
         let mut stdout = Vec::new();
@@ -556,7 +577,7 @@ pub async fn execute_granted(
                 RunEventData::Out(bytes) => stdout.extend(bytes),
                 RunEventData::Err(bytes) => stderr.extend(bytes),
                 RunEventData::Exit(end) => exit = Some(end),
-                RunEventData::App(_) => {}
+                RunEventData::Session(_) | RunEventData::App(_) => {}
             }
         }
         (stdout, stderr, exit)
@@ -576,7 +597,7 @@ pub async fn execute_granted(
 }
 
 /// Events a run may have in flight before its reader takes them.
-const EVENT_BUFFER: usize = 16;
+pub(crate) const EVENT_BUFFER: usize = 16;
 
 /// The `Accept` media type that asks for a run as server-sent events
 /// (§4.2).
@@ -595,7 +616,9 @@ pub struct RunEvent {
 /// What a [`RunEvent`] carries.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RunEventData {
-    /// The loader's grant for an app run; first, before any output.
+    /// The session a run belongs to; first in a session's log (§4.3).
+    Session(String),
+    /// The loader's grant for an app run; before any output.
     App(AppEvent),
     /// Bytes the run wrote to stdout.
     Out(Vec<u8>),
@@ -610,7 +633,7 @@ impl RunEventData {
     #[must_use]
     pub const fn name(&self) -> &'static str {
         match self {
-            Self::App(_) => "app",
+            Self::Session(_) | Self::App(_) => "app",
             Self::Out(_) => "out",
             Self::Err(_) => "err",
             Self::Exit(_) => "exit",
@@ -625,6 +648,7 @@ impl RunEventData {
     /// Fails only if serialization fails.
     pub fn to_json(&self) -> serde_json::Result<String> {
         match self {
+            Self::Session(id) => serde_json::to_string(&serde_json::json!({ "session": id })),
             Self::App(app) => serde_json::to_string(app),
             Self::Out(bytes) | Self::Err(bytes) => {
                 serde_json::to_string(&ChunkData::from_bytes(bytes))
@@ -693,6 +717,25 @@ pub struct StartedRun {
     app: Option<AppEvent>,
 }
 
+/// Where a run's stdin comes from.
+#[derive(Debug, Default)]
+pub enum StdinFeed {
+    /// No input: stdin is closed at start (`stdin.mode = none`).
+    #[default]
+    Closed,
+    /// Finite input, then EOF (`stdin.mode = body`).
+    Bytes(Vec<u8>),
+    /// Open-ended input: each received chunk is written as it arrives, and
+    /// the run sees EOF when the sender is dropped (`stdin.mode = session`).
+    Frames(mpsc::Receiver<Vec<u8>>),
+}
+
+impl From<Option<Vec<u8>>> for StdinFeed {
+    fn from(bytes: Option<Vec<u8>>) -> Self {
+        bytes.map_or(Self::Closed, Self::Bytes)
+    }
+}
+
 /// Start one validated run, with the loader's grant if it is an app run.
 /// The grant reaches the run as [`APP_ENV`], [`CAPABILITIES_ENV`] and
 /// [`CLIENT_KIND_ENV`]. Must be called inside a Tokio runtime.
@@ -703,7 +746,7 @@ pub struct StartedRun {
 pub fn start_run(
     config: &RunsConfig,
     request: &RunRequest,
-    stdin: Option<Vec<u8>>,
+    stdin: StdinFeed,
     grant: Option<&AppGrant>,
 ) -> std::io::Result<StartedRun> {
     let mut command = tokio::process::Command::new(&config.exe);
@@ -715,21 +758,30 @@ pub fn start_run(
             .env(CLIENT_KIND_ENV, grant.client_kind.as_str());
     }
     command
-        .stdin(if stdin.is_some() {
-            Stdio::piped()
-        } else {
+        .stdin(if matches!(stdin, StdinFeed::Closed) {
             Stdio::null()
+        } else {
+            Stdio::piped()
         })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
     let mut child = command.spawn()?;
 
+    // A child that exits without reading its input closes the pipe; that
+    // is the child's choice, not a run failure, so write errors end the
+    // feed quietly.
     let stdin_task = match (child.stdin.take(), stdin) {
-        (Some(mut writer), Some(bytes)) => Some(tokio::spawn(async move {
-            // A child that exits without reading its input closes the
-            // pipe; that is the child's choice, not a run failure.
+        (Some(mut writer), StdinFeed::Bytes(bytes)) => Some(tokio::spawn(async move {
             let _ = writer.write_all(&bytes).await;
+            let _ = writer.shutdown().await;
+        })),
+        (Some(mut writer), StdinFeed::Frames(mut frames)) => Some(tokio::spawn(async move {
+            while let Some(bytes) = frames.recv().await {
+                if writer.write_all(&bytes).await.is_err() || writer.flush().await.is_err() {
+                    return;
+                }
+            }
             let _ = writer.shutdown().await;
         })),
         _ => None,
@@ -914,7 +966,7 @@ fn event_stream_response(started: StartedRun) -> Response {
     Sse::new(stream).into_response()
 }
 
-fn sse_event(event: &RunEvent) -> Event {
+pub(crate) fn sse_event(event: &RunEvent) -> Event {
     let data = event.data.to_json().unwrap_or_else(|_| String::from("{}"));
     Event::default()
         .id(event.seq.to_string())
@@ -946,8 +998,21 @@ async fn run_handler(State(config): State<Arc<RunsConfig>>, request: Request) ->
         Ok(grant) => grant,
         Err(refusal) => return error_response(refusal.status, refusal.message),
     };
+    // A run that needs a session (interactive input or a named session)
+    // answers as events; a streamed run with input gets a session so the
+    // client can resume it (§4.3).
+    let needs_session = run.session.is_some() || run.stdin.mode == StdinMode::Session;
+    if needs_session && !wants_events {
+        return error_response(
+            StatusCode::NOT_ACCEPTABLE,
+            "session runs answer as server-sent events; send Accept: text/event-stream",
+        );
+    }
+    if wants_events && (needs_session || run.stdin.mode == StdinMode::Body) {
+        return crate::sessions::start_session_run(&config, &run, stdin, grant.as_ref()).await;
+    }
     if wants_events {
-        return match start_run(&config, &run, stdin, grant.as_ref()) {
+        return match start_run(&config, &run, stdin.into(), grant.as_ref()) {
             Ok(started) => event_stream_response(started),
             Err(err) => {
                 tracing::warn!(error = %err, "run could not be started");
@@ -989,7 +1054,7 @@ async fn manifest_handler(
 }
 
 /// The request's peer address, when the listener recorded one.
-struct ConnectInfoPeer(Option<SocketAddr>);
+pub(crate) struct ConnectInfoPeer(pub(crate) Option<SocketAddr>);
 
 impl<S: Send + Sync> axum::extract::FromRequestParts<S> for ConnectInfoPeer {
     type Rejection = std::convert::Infallible;
@@ -1120,7 +1185,7 @@ mod tests {
     async fn refuses_unlisted_env_and_session_mode() {
         for request in [
             serde_json::json!({ "argv": [], "env": { "HOME": "/tmp" } }),
-            serde_json::json!({ "argv": [], "stdin": { "mode": "session" } }),
+            serde_json::json!({ "argv": [], "stdin": { "mode": "session", "data": "x" } }),
             serde_json::json!({ "argv": [], "stdin": { "mode": "none", "data": "x" } }),
             serde_json::json!({ "argv": [], "stdin": { "mode": "body" } }),
         ] {

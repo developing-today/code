@@ -124,7 +124,8 @@ crates/id-web/src/
 ├── home.rs               # Home page and feed
 ├── explore.rs            # Script-free directory explorer (/explore)
 ├── gallery.rs            # Program gallery routes
-├── runs.rs               # POST /v1/runs: one subcommand with argv parity
+├── runs.rs               # POST /v1/runs: argv parity, SSE output, app loader
+├── sessions.rs           # /v1/sessions: event log, input frames, replay, socket
 ├── groups.rs             # Groups page
 ├── identity.rs           # Web client identity routes
 ├── seitan.rs             # Seitan admission (invite / admit)
@@ -369,12 +370,27 @@ events of a run with `stdin.mode = none` add up to the plain JSON answer.
 App runs name an `app` from the served `app.toml` manifests, announce a
 `client` (`kind`, `features`) and list the `capabilities` they grant (§6.4).
 A run missing a required capability is refused with 403 naming it, and never
-starts. Sessions and interactive input are a later slice of #10392.
+starts.
 
-| Route                     | Method | Description                                  |
-| ------------------------- | ------ | -------------------------------------------- |
-| `/v1/runs`                | POST   | Run one subcommand; JSON when done, or SSE   |
-| `/v1/apps/{app}/manifest` | GET    | An app's run manifest (capabilities, assets) |
+Sessions (§6.3) hold a run's numbered event log. `POST /v1/sessions` answers
+`{id}` at once; a run joins one by naming `session`, and a streamed run with
+input gets one (its first event is `app` with `{session}`). With
+`stdin.mode = session`, input arrives as frames `{seq, bytes, close}` (`bytes`
+base64, `seq` from 1): in order, a gap or a conflicting repeat refused with
+`kind` `gap` or `conflict`, an identical repeat answered `repeated`. Readers
+attach with `since`, `after`, `before` + `after` or `all=1`; when retention
+(16 MiB per session, one hour idle) dropped events below the cursor, an `app`
+event `{truncated, first_retained_seq}` comes first. The socket carries the
+same event and input objects.
+
+| Route                      | Method | Description                                  |
+| -------------------------- | ------ | -------------------------------------------- |
+| `/v1/runs`                 | POST   | Run one subcommand; JSON when done, or SSE   |
+| `/v1/apps/{app}/manifest`  | GET    | An app's run manifest (capabilities, assets) |
+| `/v1/sessions`             | POST   | Create a session; answers `{id}`             |
+| `/v1/sessions/{id}/input`  | POST   | One numbered input frame                     |
+| `/v1/sessions/{id}/events` | GET    | Attach or replay as SSE                      |
+| `/v1/sessions/{id}/socket` | GET    | Attach over a WebSocket (events and input)   |
 
 ### WebSocket
 
