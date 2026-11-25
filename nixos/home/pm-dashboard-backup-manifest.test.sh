@@ -373,7 +373,7 @@ cat >"$EXPORTER" <<'STUBEOF'
 set -eu
 [[ "$1" == --output-dir && $# == 2 ]]
 mkdir -p "$2"
-for table in agg_actions agg_activity_ingestion agg_activity_gaps agg_usage_snapshots agg_store_documents alerts_incidents alerts_incident_events alerts_push_subscriptions alerts_notification_sends orch_runs; do
+for table in agg_actions agg_activity_ingestion agg_activity_gaps agg_usage_snapshots agg_store_documents alerts_incidents alerts_incident_events alerts_push_subscriptions alerts_notification_sends orch_runs push_endpoints push_preferences push_item_stages push_item_stage_events push_registry_meta; do
   printf '[]' >"$2/$table.json"
 done
 STUBEOF
@@ -389,6 +389,7 @@ if [[ $RC -eq 0 ]]; then ok "turso-export: completed"; else fail "turso-export: 
 assert_member turso-export turso/agg_actions.json required present
 assert_member turso-export turso/alerts_push_subscriptions.json required present
 assert_member turso-export turso/orch_runs.json required present
+assert_member turso-export turso/push_endpoints.json optional present
 
 setup_home turso-missing
 PATH="$BIN:$PATH" HOME="$RUN_HOME" BWS_ACCESS_TOKEN=fake-token \

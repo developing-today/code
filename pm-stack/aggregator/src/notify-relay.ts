@@ -315,7 +315,7 @@ export class NotifyRelayClient {
   async mirrorCandidates(candidates: NotificationCandidate[]): Promise<void> {
     const queued = await this.withStateLock(async () => {
       const mirrorable = candidates.filter(
-        (candidate) => candidate.class === "needs-drew" || candidate.class === "quota-wall",
+        (candidate) => candidate.class === "needs-user" || candidate.class === "quota-wall",
       );
       const current = new Set(
         mirrorable.map((candidate) => JSON.stringify([candidate.class, candidate.objectRef, candidate.stateFingerprint])),
