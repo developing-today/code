@@ -753,10 +753,14 @@ impl Pool {
             );
         }
 
-        // Narrowing: for each ancestor group wall, either this
-        // member's success removes it as a supporter, or — when the
-        // member was never a supporter — the group re-opens and the
-        // wall narrows to member walls on its supporters.
+        // Narrowing: a success under an active group wall
+        // re-opens the group for everyone but the members whose
+        // failures still support the wall — the wall narrows to
+        // member walls on exactly those members, whether or not
+        // the succeeding member was itself a supporter (oracle: *a
+        // sibling success never leaves a group wall wider than the
+        // failing member*). If no supporter remains, the wall is
+        // gone entirely.
         let ancestors = self.ancestors(member);
         for scope in ancestors {
             let Some(wall) = self.walls.get(&scope).cloned() else {
@@ -765,17 +769,28 @@ impl Pool {
             if !wall.is_active(now, self.inferred_wall_ttl) {
                 continue;
             }
-            if wall.supporters.contains(member) {
-                let mut wall = wall;
-                wall.supporters.remove(member);
-                if wall.supporters.is_empty() {
-                    self.walls.remove(&scope);
-                } else {
-                    self.walls.insert(scope, wall);
-                }
+            let mut remaining = wall.supporters.clone();
+            remaining.remove(member);
+            self.walls.remove(&scope);
+            if remaining.is_empty() {
+                self.log_event(
+                    now,
+                    DecisionKind::WallRemoved,
+                    Some(scope.clone()),
+                    None,
+                    format!("wall at {scope} removed: its last supporter succeeded"),
+                );
             } else {
-                self.walls.remove(&scope);
-                for supporter in &wall.supporters {
+                self.log_event(
+                    now,
+                    DecisionKind::WallNarrowed,
+                    Some(scope.clone()),
+                    None,
+                    format!(
+                        "success by {member} narrowed the wall at {scope} to its failing members"
+                    ),
+                );
+                for supporter in &remaining {
                     let narrowed = Wall {
                         scope: supporter.clone(),
                         until: wall.until,
@@ -784,6 +799,13 @@ impl Pool {
                         placed_at: wall.placed_at,
                     };
                     self.walls.insert(supporter.clone(), narrowed);
+                    self.log_event(
+                        now,
+                        DecisionKind::WallPlaced,
+                        Some(supporter.clone()),
+                        Some(MemberState::Walled),
+                        format!("wall narrowed from {scope} to {supporter}: {}", wall.evidence),
+                    );
                 }
             }
         }
