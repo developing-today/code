@@ -27,6 +27,7 @@ pub mod library_resolution;
 pub mod mcp_bridge;
 pub mod mcp_policy;
 pub mod portal;
+pub mod public_share_limits;
 pub mod role_config;
 pub mod used_caps;
 pub mod work_surfaces;

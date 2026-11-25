@@ -20,6 +20,7 @@
 //! enum composition is in `id-cli` (`meta_client`), over this crate's
 //! [`meta_client`] request/response plumbing.
 
+pub mod admission;
 pub mod announcement;
 pub mod artifact;
 pub mod bridge;
