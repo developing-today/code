@@ -833,22 +833,19 @@ pub fn world_dir(name: &str) -> PathBuf {
 
 /// Resolve the compile settings: an explicit flag, the environment, or the
 /// conventional repository layout. Absence is fine (compilation stays off).
+///
+/// An explicit flag or `ID_ROC_PLATFORM` that is not a built platform is an
+/// error. A conventional checkout that is not built (no
+/// `targets/wasm32/host.wasm`, as in a source tree or the nix test sandbox)
+/// only leaves compilation off: the operator never asked for it.
 #[cfg(feature = "world")]
 fn resolve_compiler(
     roc_bin: Option<String>,
     roc_platform: Option<PathBuf>,
 ) -> Result<Option<id_worlds::world_compile::Compiler>> {
-    let Some(platform) = roc_platform
-        .or_else(|| std::env::var("ID_ROC_PLATFORM").ok().map(PathBuf::from))
-        .or_else(|| {
-            [
-                PathBuf::from("examples/roc-world"),
-                PathBuf::from("../examples/roc-world"),
-            ]
-            .into_iter()
-            .find(|dir| dir.is_dir())
-        })
-    else {
+    let explicit =
+        roc_platform.or_else(|| std::env::var("ID_ROC_PLATFORM").ok().map(PathBuf::from));
+    let Some(platform) = explicit.or_else(|| discover_platform_dir(Path::new("."))) else {
         return Ok(None);
     };
     let roc_bin = roc_bin
@@ -880,6 +877,27 @@ fn resolve_compiler(
         lru_bytes, "world: shared compiled-world cache enabled"
     );
     Ok(Some(compiler.with_cache(std::sync::Arc::new(cache))))
+}
+
+/// The conventional platform checkout (`examples/roc-world`, or
+/// `../examples/roc-world` from a subdirectory such as `e2e/`) under
+/// `base`, when one is present and built. An unbuilt checkout is skipped
+/// with a warning rather than failing the server.
+#[cfg(feature = "world")]
+fn discover_platform_dir(base: &Path) -> Option<PathBuf> {
+    let found = ["examples/roc-world", "../examples/roc-world"]
+        .into_iter()
+        .map(|rel| base.join(rel))
+        .find(|dir| dir.is_dir())?;
+    if id_worlds::world_compile::is_platform_dir(&found) {
+        Some(found)
+    } else {
+        warn!(
+            platform = %found.display(),
+            "world: platform checkout has no built host (targets/wasm32/host.wasm); on-the-fly compilation stays off"
+        );
+        None
+    }
 }
 
 /// Builds this server's worlds: durable under [`WORLDS_DIR`] unless
@@ -928,6 +946,8 @@ fn allowed_caps(names: Option<&[String]>) -> Result<std::collections::BTreeSet<S
 struct ServeWorlds {
     ephemeral: bool,
     admin_token: Option<String>,
+    boundary_config: Option<crate::server_config::Boundaries>,
+    boundary_server: String,
     blobs: iroh_blobs::api::Store,
     docs: Docs,
     checkpoint_every: u64,
@@ -992,6 +1012,18 @@ impl ServeWorlds {
             ..WorldLimits::default()
         };
         let runtime = self.runtime;
+        // Until the serving process has live placement evidence sources, an
+        // enabled boundary receives no claims and therefore fails closed.
+        let boundary_gate = self.boundary_config.as_ref().map(|boundaries| {
+            Arc::new(
+                crate::boundary_gate::ServerBoundaryGate::without_hop_evidence(
+                    boundaries.clone(),
+                    self.boundary_server.clone(),
+                    Some(name.to_owned()),
+                    Arc::new(crate::boundary_evidence::AppEvidenceVerifier::default()),
+                ),
+            ) as Arc<dyn id_directory::directory::BoundaryGate>
+        });
         let make = {
             let admin_token = self.admin_token.clone();
             let blobs = self.blobs.clone();
@@ -1026,15 +1058,27 @@ impl ServeWorlds {
             "serve startup: records ready, building world service (#190 breadcrumb)"
         );
         let service = if self.ephemeral {
+            let mut core = WorldCore::new(name, limits)?;
+            if let Some(gate) = boundary_gate {
+                core.directory_mut().set_boundary_gate(Arc::clone(&gate));
+                core.set_world_boundary_gate(gate);
+            }
             make(WorldHandle::spawn_with_device_manifest(
-                WorldCore::new(name, limits)?,
+                core,
                 Box::<id_worlds::world::EmptyWorldProgram>::default(),
                 Some(WorldHandle::host_device_manifest()),
             ))
             .with_records_store(records)
         } else {
-            let (service, report) =
-                id_worlds::world_store::open_world(&dir, name, limits, runtime, make).await?;
+            let (service, report) = id_worlds::world_store::open_world_with_directory_gate(
+                &dir,
+                name,
+                limits,
+                runtime,
+                boundary_gate,
+                make,
+            )
+            .await?;
             status!(
                 "world {name}: restored {} at sequence {} ({} input(s) replayed)",
                 dir.display(),
@@ -1652,6 +1696,10 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
         let opener = Arc::new(ServeWorlds {
             ephemeral,
             admin_token: world_admin_token.clone(),
+            boundary_config: started_server_config
+                .as_ref()
+                .map(|started| started.config.boundaries().clone()),
+            boundary_server: node_id.to_string(),
             blobs: store_handle.clone(),
             docs: docs.clone(),
             checkpoint_every: world_checkpoint_every,
@@ -1871,9 +1919,27 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
             let store = events.lock().await.shared_store();
             let frontier = GraphFrontier::new(store);
             let relay_key = ed25519_dalek::SigningKey::from_bytes(&key.to_bytes());
+            let boundary_gate = started_server_config.as_ref().map(|started| {
+                Arc::new(
+                    crate::boundary_gate::ServerBoundaryGate::without_hop_evidence(
+                        started.config.boundaries().clone(),
+                        node_id.to_string(),
+                        None,
+                        Arc::new(crate::boundary_evidence::AppEvidenceVerifier::default()),
+                    ),
+                ) as Arc<dyn id_sync::relay_ingest::RelayBoundaryGate>
+            });
             let sink =
                 ForwardingSink::fanning_out(node_id.to_string(), endpoint.clone(), Vec::new());
+            let sink = match boundary_gate.as_ref() {
+                Some(gate) => sink.with_boundary_gate(Arc::clone(gate)),
+                None => sink,
+            };
             let protocol = ChainedRelayProtocol::new(RelayGate::new(&relay_key, frontier), sink);
+            let protocol = match boundary_gate {
+                Some(gate) => protocol.with_boundary_gate(gate),
+                None => protocol,
+            };
             router_builder.accept(CHAINED_RELAY_ALPN, protocol)
         }
         None => router_builder,
@@ -4017,5 +4083,31 @@ mod tests {
         };
         let crate::cli::ServeArgs { server_config, .. } = args;
         assert_eq!(server_config, Some(PathBuf::from("ops.toml")));
+    }
+
+    #[cfg(feature = "world")]
+    #[test]
+    fn conventional_platform_checkout_is_used_only_when_built() {
+        let root = tempfile::tempdir().unwrap();
+        assert_eq!(discover_platform_dir(root.path()), None);
+
+        // A source checkout without the built host leaves compilation off
+        // instead of failing `serve` (the test-e2e sandbox layout).
+        let platform = root.path().join("examples/roc-world");
+        fs::create_dir_all(&platform).unwrap();
+        fs::write(platform.join("platform.roc"), "platform \"x\"\n").unwrap();
+        assert_eq!(discover_platform_dir(root.path()), None);
+
+        fs::create_dir_all(platform.join("targets/wasm32")).unwrap();
+        fs::write(platform.join("targets/wasm32/host.wasm"), b"\0asm").unwrap();
+        assert_eq!(discover_platform_dir(root.path()), Some(platform.clone()));
+
+        // From a subdirectory such as `e2e/`, the parent's checkout is found.
+        let sub = root.path().join("e2e");
+        fs::create_dir_all(&sub).unwrap();
+        assert_eq!(
+            discover_platform_dir(&sub),
+            Some(sub.join("../examples/roc-world"))
+        );
     }
 }

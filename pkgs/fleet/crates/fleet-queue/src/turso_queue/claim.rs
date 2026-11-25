@@ -9,6 +9,10 @@ use super::*;
 
 pub(crate) fn verb_enqueue(t: &TursoBackend, req: &Value) -> Value {
     let mut packet = req.get("packet").cloned().unwrap_or(Value::Null);
+    let metadata = req.get("metadata").cloned().unwrap_or_else(|| json!({}));
+    if let Err(e) = crate::validate::validate_metadata(&metadata) {
+        return fail(2, format!("enqueue: {e}"));
+    }
     let (errors, mut warnings) = validate_packet(&packet);
     if !errors.is_empty() {
         return json!({
@@ -99,6 +103,9 @@ pub(crate) fn verb_enqueue(t: &TursoBackend, req: &Value) -> Value {
             )?;
             let (live, terminal) = dedupe_partition(&existing);
             if let Some(row) = live {
+                if let Some(id) = row.get("id").and_then(Value::as_i64) {
+                    seed_task_links(t, id, &row, "enqueue_repo_task")?;
+                }
                 return Ok((row, None, None));
             }
             // #13091: a COMPLETED predecessor is terminal for the
@@ -156,16 +163,22 @@ pub(crate) fn verb_enqueue(t: &TursoBackend, req: &Value) -> Value {
             }
         }
         let ins = t.exec(
-            "INSERT INTO tasks (queue, title, body, payload, dedupe_key, priority, \
+            "INSERT INTO tasks (queue, manual_only, title, body, payload, metadata, dedupe_key, priority, \
                status, not_before, max_attempts, required_budget_minutes, platform, progress, result, created_at, updated_at) \
-             VALUES (?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, '{}', '{}', ?, ?)",
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, '{}', '{}', ?, ?)",
             &[
                 Arg::Text(queue.clone()),
+                Arg::Int(if task.get("manual_only").and_then(Value::as_bool).unwrap_or(false) {
+                    1
+                } else {
+                    0
+                }),
                 arg_str(task.get("title").and_then(|v| v.as_str())),
                 arg_str(task.get("body").and_then(|v| v.as_str())),
                 Arg::Text(
                     task.get("payload").cloned().unwrap_or(json!({})).to_string(),
                 ),
+                Arg::Text(metadata.to_string()),
                 arg_str(dedupe.as_deref()),
                 task.get("priority")
                     .and_then(|v| v.as_i64())
@@ -194,13 +207,16 @@ pub(crate) fn verb_enqueue(t: &TursoBackend, req: &Value) -> Value {
             ],
         )?;
         let id = ins.last_insert_rowid.unwrap_or(0);
+        let mut link_row = task.clone();
+        link_row["created_at"] = json!(now_iso());
         event(
             t,
             Some("enqueue_repo_task"),
             Some(id),
             "enqueued",
-            &json!({"queue": queue, "dedupe_key": dedupe, "platform": platform}),
+            &json!({"queue": queue, "dedupe_key": dedupe, "platform": platform, "manual_only": task.get("manual_only").and_then(Value::as_bool).unwrap_or(false)}),
         )?;
+        seed_task_links(t, id, &link_row, "enqueue_repo_task")?;
         // Revive-on-enqueue (#6838): the key's only prior row(s) are
         // terminal, so this fresh task is a revival, not a first
         // enqueue. Link it to its predecessor in progress (the audit
@@ -351,9 +367,25 @@ pub(crate) fn verb_revive(t: &TursoBackend, req: &Value) -> Value {
             .unwrap_or(crate::validate::TASK_DEFAULT_MAX_ATTEMPTS as i64);
         revive_eligible(&status, attempts, max_attempts)
             .map_err(|e| format!("revive_task: task {task_id}: {e}"))?;
+        let resolution_cleared = row
+            .get("resolution")
+            .and_then(|v| v.as_str())
+            .map(|resolution| {
+                json!({
+                    "resolution": resolution,
+                    "category": row.get("resolution_category").cloned().unwrap_or(Value::Null),
+                    "substatus": row.get("resolution_substatus").cloned().unwrap_or(Value::Null),
+                    "reason": row.get("resolution_reason").cloned().unwrap_or(Value::Null),
+                    "reference": row.get("resolution_ref").cloned().unwrap_or(Value::Null),
+                    "resolved_by": row.get("resolved_by").cloned().unwrap_or(Value::Null),
+                    "resolved_at": row.get("resolved_at").cloned().unwrap_or(Value::Null),
+                })
+            });
         t.exec(
             "UPDATE tasks SET status = 'queued', attempts = 0, last_error = NULL, \
                not_before = ?, worker_id = NULL, lease_until = NULL, \
+               resolution = NULL, resolution_category = NULL, resolution_substatus = NULL, \
+               resolution_reason = NULL, resolution_ref = NULL, resolved_by = NULL, resolved_at = NULL, \
                updated_at = ? WHERE id = ?",
             &[
                 Arg::Text(not_before.clone()),
@@ -370,6 +402,7 @@ pub(crate) fn verb_revive(t: &TursoBackend, req: &Value) -> Value {
             &json!({
                 "reason": reason, "previous_status": status,
                 "previous_attempts": attempts, "not_before": not_before,
+                "resolution_cleared": resolution_cleared,
                 "via": "revive_task_turso",
             }),
         )
@@ -2226,13 +2259,17 @@ pub(crate) fn default_pick_predicate() -> String {
     let gate = budget_gate_sql();
     let bypass = budget_bypass_sql();
     format!(
-        "(((status = 'queued' AND attempts < max_attempts \
+        "manual_only = 0 AND ((((status = 'queued' AND attempts < max_attempts \
          AND (not_before IS NULL OR not_before <= ?)) \
        OR (status = 'parked' AND ((not_before IS NOT NULL AND not_before <= ?) \
          OR (wait_kind = 'capacity' AND {bypass})) AND {PARKED_TERM_EXCLUSION})) \
        AND {gate}) \
-       OR ({HANDOFF_SQL})"
+       OR ({HANDOFF_SQL}))"
     )
+}
+
+pub(crate) fn handoff_pick_predicate() -> String {
+    format!("manual_only = 0 AND ({HANDOFF_SQL})")
 }
 
 /// The lane a FRESH ledger assignment gets (#8187): `direct` by

@@ -14,6 +14,8 @@ import type { Config } from "./config.ts";
 import { OpError } from "./errors.ts";
 import { plain } from "./plain.ts";
 import { WORKERS_FILE, workersList } from "./platform.ts";
+import { STORES_FILE, storesList } from "./stores.ts";
+import { heldTokens, jwtExpiry, type TokenExpiry, tokenExpiry } from "./tokens.ts";
 import { timed, unread } from "./timed.ts";
 
 export interface RunResult {
@@ -242,8 +244,17 @@ function matchReport(out: Record<string, unknown> | null, to: string[], command:
   };
 }
 
+/** How long what a token said of its expiry is kept before the token
+ * is fetched again: long enough that the notifier's minute does not
+ * fetch every secret every minute, short enough that a rotation shows
+ * the same hour. */
+export const TOKEN_EXPIRY_KEPT_MS = 10 * 60_000;
+
 export class Ops {
   private queueToken: string | null = null;
+  /** What each token said of when it runs out, by its name, and when
+   * that was read. Never the token itself. */
+  private expiries = new Map<string, { at: number; expiresAt: number | null | undefined }>();
 
   /** How the queue store and the dashboard are reached. Kept as a plain
    * caller: these classes also run at the edge, where the platform's
@@ -1072,25 +1083,47 @@ export class Ops {
     return { google: true, changed: said.filter((line) => line.startsWith("changed: ")).map((line) => line.slice(9)) };
   }
 
-  /** Have the edge do the core itself, or stop it. On gives the Worker
-   * the repository automation token and the queue store token, read
-   * from the secret store by the setup script and sent to Cloudflare;
-   * off takes them away, and is remembered. It can only be done on a
-   * machine, where the secret store is. */
-  async edgeDirect(on: unknown) {
+  /** Persist the desired direct-mode state in the repository, then ask
+   * Actions to apply it. Token rotation is explicit because Worker
+   * secret values cannot be read back to determine whether they changed. */
+  async edgeDirect(on: unknown, refreshTokens: unknown = false) {
     if (typeof on !== "boolean") throw new OpError(400, "on: true or false");
-    const r = await this.expose(["--edge-direct", on ? "on" : "off"]);
-    const said = `${r.stdout}\n${r.stderr}`
-      .split("\n")
-      .map((line) => line.trim())
-      .filter((line) => line !== "");
-    if (r.code !== 0) {
-      throw new OpError(
-        502,
-        `Cloudflare was not ${on ? "given" : "relieved of"} the tokens: ${(said.pop() ?? "the setup script failed").slice(0, 300)}`,
-      );
+    if (typeof refreshTokens !== "boolean") throw new OpError(400, "refreshTokens: true or false");
+    if (refreshTokens && !on) throw new OpError(400, "refreshTokens requires direct mode on");
+    const file = `repos/${this.cfg.repo}/contents/infra/pm-cloudflare/state.json`;
+    const current = (await this.gh([file])) as { sha?: unknown; content?: unknown } | null;
+    if (typeof current?.sha !== "string" || typeof current.content !== "string") {
+      throw new OpError(502, "could not read the Cloudflare repository state");
     }
-    return { on, changed: said.filter((line) => line.startsWith("changed: ")).map((line) => line.slice(9)) };
+    let state: Record<string, unknown>;
+    try {
+      const binary = atob(current.content.replace(/\s/g, ""));
+      state = JSON.parse(new TextDecoder().decode(Uint8Array.from(binary, (c) => c.charCodeAt(0)))) as Record<
+        string,
+        unknown
+      >;
+    } catch {
+      throw new OpError(502, "the Cloudflare repository state was not valid JSON");
+    }
+    const worker = state.worker as Record<string, unknown> | undefined;
+    if (!worker || (worker.direct !== "on" && worker.direct !== "off")) {
+      throw new OpError(502, "the Cloudflare repository state has no valid worker.direct setting");
+    }
+    worker.direct = on ? "on" : "off";
+    const bytes = new TextEncoder().encode(`${JSON.stringify(state, null, 2)}\n`);
+    let binary = "";
+    for (const byte of bytes) binary += String.fromCharCode(byte);
+    await this.gh(["-X", "PUT", file], {
+      message: `pm-console: ${on ? "enable" : "disable"} edge direct mode`,
+      sha: current.sha,
+      content: btoa(binary),
+      branch: "main",
+    });
+    await this.gh(["-X", "POST", `repos/${this.cfg.repo}/actions/workflows/pm-cloudflare-config.yml/dispatches`], {
+      ref: "main",
+      inputs: { mode: "apply", refresh_tokens: String(refreshTokens) },
+    });
+    return { on, started: "pm-cloudflare-config.yml" };
   }
 
   // ---- services ----------------------------------------------------------
@@ -1261,6 +1294,44 @@ export class Ops {
       malformed: list.malformed,
       workers: list.workers.map((w) => ({ ...w, run: w.workflow ? (runs.get(w.workflow) ?? null) : null })),
     };
+  }
+
+  /** When each store token the platform holds runs out (#14255): the
+   * tokens the repository's list of stores names
+   * (pm-stack/platform/stores.json), each fetched by name the way the
+   * queue token is and read for its `exp` claim. Only the name and the
+   * date leave here; a token that could not be fetched says only that. */
+  async tokenExpiries(now: number = Date.now()): Promise<{ checkedAt: string; tokens: TokenExpiry[] }> {
+    const got = (await this.gh([`repos/${this.cfg.repo}/contents/${STORES_FILE}`])) as { content?: string } | null;
+    if (typeof got?.content !== "string") throw new OpError(502, "the list of stores could not be read");
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(new TextDecoder().decode(Uint8Array.from(atob(got.content), (c) => c.charCodeAt(0))));
+    } catch {
+      throw new OpError(502, "the list of stores is not valid JSON");
+    }
+    const held = heldTokens(storesList(parsed).stores);
+    const tokens = await Promise.all(
+      held.map(async (token) => {
+        const kept = this.expiries.get(token.name);
+        if (kept && now - kept.at < TOKEN_EXPIRY_KEPT_MS) return tokenExpiry(token, kept.expiresAt, now);
+        let expiresAt: number | null | undefined;
+        try {
+          const value =
+            token.name === this.cfg.queueTokenName && this.queueToken !== null
+              ? this.queueToken
+              : (await this.must([this.cfg.fleetBin, "secrets", "get", token.name])).trim();
+          expiresAt = jwtExpiry(value);
+        } catch {
+          // Why it could not be fetched is not said: what the fleet
+          // binary prints about a secret stays on the machine.
+          expiresAt = undefined;
+        }
+        this.expiries.set(token.name, { at: now, expiresAt });
+        return tokenExpiry(token, expiresAt, now);
+      }),
+    );
+    return { checkedAt: new Date(now).toISOString(), tokens };
   }
 
   async releases() {

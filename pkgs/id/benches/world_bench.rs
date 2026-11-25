@@ -33,8 +33,10 @@
 //!   recent checkpoints plus records/sequence across idle eviction and reopen.
 //!   The full-size configuration is parameterizable for profiling runs via
 //!   `ID_BENCH_MW_IDLE_WORLDS`, `ID_BENCH_MW_ACTIVE_WORLDS`,
-//!   `ID_BENCH_MW_EVENTS_PER_SECOND`, and `ID_BENCH_MW_DURATION_SECS`
-//!   (defaults are the committed full size). After the timed load it also
+//!   `ID_BENCH_MW_EVENTS_PER_SECOND`, `ID_BENCH_MW_DURATION_SECS`, and
+//!   `ID_BENCH_MW_MAX_OPEN_WORLDS` (the hub's open-world ceiling, sized to
+//!   the tier being run; defaults are the committed full size). After the
+//!   timed load it also
 //!   prints one `profile many_worlds ...` line aggregating the world
 //!   actors' own metrics (journal-append and command latency histograms,
 //!   deepest actor queue depth) across the active worlds, so a run
@@ -250,6 +252,7 @@ impl WorldOpener for DurableBenchOpener {
 struct ManyWorldsConfig {
     idle_worlds: usize,
     active_worlds: usize,
+    max_open_worlds: usize,
     events_per_second: usize,
     duration_secs: u64,
     checkpoint_every: u64,
@@ -270,9 +273,19 @@ impl ManyWorldsConfig {
         let active_worlds = mw_env("ID_BENCH_MW_ACTIVE_WORLDS", 100);
         let events_per_second = mw_env("ID_BENCH_MW_EVENTS_PER_SECOND", 20);
         let duration_secs = mw_env("ID_BENCH_MW_DURATION_SECS", 10) as u64;
+        // The hub's open-world ceiling, sized by the operator to the tier
+        // being run (the 10x tier leases 1,000 worlds concurrently, past
+        // the 256 default). Unset keeps the committed default, so existing
+        // runs are unchanged; the effective value is recorded in the
+        // `bench many_worlds` output line.
+        let max_open_worlds = mw_env(
+            "ID_BENCH_MW_MAX_OPEN_WORLDS",
+            HubLimits::default().max_open_worlds,
+        );
         Self {
             idle_worlds,
             active_worlds,
+            max_open_worlds,
             events_per_second,
             duration_secs,
             // Keep checkpoint compaction out of the timed 20 ev/s window;
@@ -287,6 +300,7 @@ impl ManyWorldsConfig {
         Self {
             idle_worlds: 10,
             active_worlds: 4,
+            max_open_worlds: HubLimits::default().max_open_worlds,
             events_per_second: 20,
             duration_secs: 1,
             checkpoint_every: 22,
@@ -392,6 +406,17 @@ fn histogram_percentile_us(histogram: &id::world::HistogramSnapshot, fraction: f
     u64::MAX
 }
 
+/// Format one histogram percentile for a profile line. A percentile
+/// landing in the overflow bucket comes back as `u64::MAX` - a
+/// saturation sentinel, not a measurement - so print the word
+/// `saturated` instead of the raw constant (#15094).
+fn histogram_percentile_field(histogram: &id::world::HistogramSnapshot, fraction: f64) -> String {
+    match histogram_percentile_us(histogram, fraction) {
+        u64::MAX => "saturated".to_string(),
+        value => value.to_string(),
+    }
+}
+
 fn histogram_mean_us(histogram: &id::world::HistogramSnapshot) -> u64 {
     histogram.sum_us.checked_div(histogram.count).unwrap_or(0)
 }
@@ -432,11 +457,14 @@ async fn bench_many_worlds(root: &Path, quick: bool) -> Result<()> {
         opener,
         Some(MANY_WORLDS_ADMIN.to_owned()),
         "lobby",
-        HubLimits::default(),
+        HubLimits {
+            max_open_worlds: config.max_open_worlds,
+            ..HubLimits::default()
+        },
     );
 
-    // Materialize 1,000 idle durable worlds on disk while the hub lazily opens
-    // and evicts them through its real 256-open-world ceiling.
+    // Materialize the idle durable worlds on disk while the hub lazily opens
+    // and evicts them through its configured open-world ceiling.
     for index in 0..config.idle_worlds {
         let name = format!("idle-{index:04}");
         let lease = hub
@@ -548,14 +576,14 @@ async fn bench_many_worlds(root: &Path, quick: bool) -> Result<()> {
         "profile many_worlds journal_appends={} journal_append_mean_us={} journal_append_p50_us={} journal_append_p95_us={} journal_append_p99_us={} commands={} command_mean_us={} command_p50_us={} command_p95_us={} command_p99_us={} queue_depth_max={} checkpoints_during_load={}",
         journal_histogram.count,
         histogram_mean_us(&journal_histogram),
-        histogram_percentile_us(&journal_histogram, 0.50),
-        histogram_percentile_us(&journal_histogram, 0.95),
-        histogram_percentile_us(&journal_histogram, 0.99),
+        histogram_percentile_field(&journal_histogram, 0.50),
+        histogram_percentile_field(&journal_histogram, 0.95),
+        histogram_percentile_field(&journal_histogram, 0.99),
         command_histogram.count,
         histogram_mean_us(&command_histogram),
-        histogram_percentile_us(&command_histogram, 0.50),
-        histogram_percentile_us(&command_histogram, 0.95),
-        histogram_percentile_us(&command_histogram, 0.99),
+        histogram_percentile_field(&command_histogram, 0.50),
+        histogram_percentile_field(&command_histogram, 0.95),
+        histogram_percentile_field(&command_histogram, 0.99),
         queue_depth_max,
         checkpoints_during_load,
     );
@@ -689,7 +717,7 @@ async fn bench_many_worlds(root: &Path, quick: bool) -> Result<()> {
         .map(|latency| latency.as_secs_f64() * 1_000.0)
         .fold(f64::INFINITY, f64::min);
     println!(
-        "bench many_worlds unit=ms_per_command median={p50:.3} min={min:.3} reps=1 p50_ms={p50:.3} p95_ms={p95:.3} p99_ms={p99:.3} wake_p50_ms={wake_p50:.3} wake_p95_ms={wake_p95:.3} wake_p99_ms={wake_p99:.3} input_ack_p50_ms={input_ack_p50:.3} input_ack_p95_ms={input_ack_p95:.3} input_ack_p99_ms={input_ack_p99:.3} target_p99_ms=50 target_met={target_met} idle_worlds={} active_worlds={} events_per_second={} duration_secs={} commands={} load_elapsed_secs={load_elapsed_secs:.3} completed_events_per_second={completed_events_per_second:.1} checkpoint_triggers={} checkpoints={} evicted={} reopened={}",
+        "bench many_worlds unit=ms_per_command median={p50:.3} min={min:.3} reps=1 p50_ms={p50:.3} p95_ms={p95:.3} p99_ms={p99:.3} wake_p50_ms={wake_p50:.3} wake_p95_ms={wake_p95:.3} wake_p99_ms={wake_p99:.3} input_ack_p50_ms={input_ack_p50:.3} input_ack_p95_ms={input_ack_p95:.3} input_ack_p99_ms={input_ack_p99:.3} target_p99_ms=50 target_met={target_met} idle_worlds={} active_worlds={} events_per_second={} duration_secs={} commands={} load_elapsed_secs={load_elapsed_secs:.3} completed_events_per_second={completed_events_per_second:.1} checkpoint_triggers={} checkpoints={} evicted={} reopened={} max_open_worlds={}",
         config.idle_worlds,
         config.active_worlds,
         config.events_per_second,
@@ -699,6 +727,7 @@ async fn bench_many_worlds(root: &Path, quick: bool) -> Result<()> {
         total_checkpoints,
         evicted,
         expected.len(),
+        config.max_open_worlds,
     );
     ensure!(
         hub.open_count() == 0,
@@ -1087,14 +1116,14 @@ async fn bench_fuel_spin_isolation(worker_threads: usize, quick: bool) -> Result
         percentile(&spinning_ack, 0.99),
         calm_journal.count,
         histogram_mean_us(&calm_journal),
-        histogram_percentile_us(&calm_journal, 0.99),
+        histogram_percentile_field(&calm_journal, 0.99),
         spinning_journal.count,
         histogram_mean_us(&spinning_journal),
-        histogram_percentile_us(&spinning_journal, 0.99),
+        histogram_percentile_field(&spinning_journal, 0.99),
         histogram_mean_us(&calm_command),
-        histogram_percentile_us(&calm_command, 0.99),
+        histogram_percentile_field(&calm_command, 0.99),
         histogram_mean_us(&spinning_command),
-        histogram_percentile_us(&spinning_command, 0.99),
+        histogram_percentile_field(&spinning_command, 0.99),
         metrics_after_spinning.actor_queue_depth_max,
         metrics_after_spinning
             .checkpoints_total

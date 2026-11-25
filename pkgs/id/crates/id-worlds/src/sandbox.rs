@@ -2815,6 +2815,137 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "needs COLONY_WASM=FILE, the built examples/rust-colony module"]
+    fn built_colony_replays_two_deliveries() {
+        // Oracle: colony/two-deliveries in app-vectors.json (revision
+        // b9d8177), played by the regular host. The guest is built from
+        // source, so this test reads the module named by COLONY_WASM. The
+        // after-states are literal copies of the vector projections; the
+        // outcome is asserted beside them.
+        let Some(path) = std::env::var_os("COLONY_WASM") else {
+            panic!("set COLONY_WASM to the built rust_colony.wasm");
+        };
+        let wasm = std::fs::read(path).unwrap();
+        let runner = Sandbox::compile(&wasm, SandboxLimits::default()).unwrap();
+        let records = |world: &mut WorldInstance| -> serde_json::Value {
+            serde_json::from_slice(&world.records().unwrap().unwrap()).unwrap()
+        };
+        let steps = [
+            (
+                r#"{"kind":"Mine","direction":"E","event":"m1"}"#,
+                "extracted",
+                serde_json::json!({"worker": [1, 1], "ore_cells": [[1, 0]], "pack_ore": 1, "stored_ore": 0, "phase": "working"}),
+            ),
+            (
+                r#"{"kind":"Mine","direction":"N","event":"m2"}"#,
+                "pack-full",
+                serde_json::json!({"worker": [1, 1], "ore_cells": [[1, 0]], "pack_ore": 1, "stored_ore": 0, "phase": "working"}),
+            ),
+            (
+                r#"{"kind":"Walk","direction":"W","event":"w1"}"#,
+                "moved",
+                serde_json::json!({"worker": [0, 1], "ore_cells": [[1, 0]], "pack_ore": 1, "stored_ore": 0, "phase": "working"}),
+            ),
+            (
+                r#"{"kind":"Deposit","event":"d1"}"#,
+                "stored",
+                serde_json::json!({"worker": [0, 1], "ore_cells": [[1, 0]], "pack_ore": 0, "stored_ore": 1, "phase": "working"}),
+            ),
+            (
+                r#"{"kind":"Walk","direction":"E","event":"w2"}"#,
+                "moved",
+                serde_json::json!({"worker": [1, 1], "ore_cells": [[1, 0]], "pack_ore": 0, "stored_ore": 1, "phase": "working"}),
+            ),
+            (
+                r#"{"kind":"Mine","direction":"N","event":"m3"}"#,
+                "extracted",
+                serde_json::json!({"worker": [1, 1], "ore_cells": [], "pack_ore": 1, "stored_ore": 1, "phase": "working"}),
+            ),
+            (
+                r#"{"kind":"Walk","direction":"W","event":"w3"}"#,
+                "moved",
+                serde_json::json!({"worker": [0, 1], "ore_cells": [], "pack_ore": 1, "stored_ore": 1, "phase": "working"}),
+            ),
+            (
+                r#"{"kind":"Deposit","event":"d2"}"#,
+                "supply-goal-met",
+                serde_json::json!({"worker": [0, 1], "ore_cells": [], "pack_ore": 0, "stored_ore": 2, "phase": "supplied"}),
+            ),
+        ];
+        let expected = |after: &serde_json::Value, outcome: &str| -> serde_json::Value {
+            let mut doc = after.clone();
+            doc["outcome"] = serde_json::json!(outcome);
+            doc
+        };
+        let mut live = runner.instantiate(7).unwrap();
+        assert_eq!(
+            records(&mut live),
+            serde_json::json!({
+                "worker": [1, 1], "ore_cells": [[1, 0], [2, 1]], "pack_ore": 0,
+                "stored_ore": 0, "phase": "working", "outcome": ""
+            })
+        );
+        for (input, outcome, after) in &steps {
+            live.update(1, input.as_bytes()).unwrap();
+            assert_eq!(records(&mut live), expected(after, outcome), "{input}");
+        }
+
+        // Restore a mid-run snapshot (after the first deposit) into a new
+        // instance and compare the next accepted operation through the
+        // regular host.
+        let mut first = runner.instantiate(7).unwrap();
+        for (input, _, _) in &steps[..4] {
+            first.update(1, input.as_bytes()).unwrap();
+        }
+        let snapshot = first.snapshot().unwrap().unwrap();
+        let mut restored = runner.instantiate(7).unwrap();
+        restored.restore(&snapshot).unwrap();
+        assert_eq!(records(&mut restored), records(&mut first));
+        assert_eq!(restored.view().unwrap(), first.view().unwrap());
+        assert_eq!(restored.snapshot().unwrap().unwrap(), snapshot);
+        for (input, _, _) in &steps[4..] {
+            first.update(1, input.as_bytes()).unwrap();
+            restored.update(1, input.as_bytes()).unwrap();
+            assert_eq!(records(&mut restored), records(&mut first), "{input}");
+        }
+        assert_eq!(
+            records(&mut restored),
+            expected(&steps[7].2, "supply-goal-met")
+        );
+
+        // Scope: views never change the domain, host deliveries never drive
+        // the colony, a replayed event folds once, the records hold only
+        // domain keys, and the snapshot alone carries the folded event ids.
+        let settled = records(&mut live);
+        for _ in 0..120 {
+            live.view().unwrap();
+        }
+        live.update(0, steps[0].0.as_bytes()).unwrap();
+        assert_eq!(records(&mut live), settled);
+        live.update(1, steps[7].0.as_bytes()).unwrap();
+        assert_eq!(records(&mut live), expected(&steps[7].2, "already-folded"));
+        let mut keys: Vec<String> = settled.as_object().unwrap().keys().cloned().collect();
+        keys.sort_unstable();
+        assert_eq!(
+            keys,
+            [
+                "ore_cells",
+                "outcome",
+                "pack_ore",
+                "phase",
+                "stored_ore",
+                "worker"
+            ]
+        );
+        let memory: serde_json::Value =
+            serde_json::from_slice(&live.snapshot().unwrap().unwrap()).unwrap();
+        assert_eq!(
+            memory["folded"],
+            serde_json::json!(["m1", "m2", "w1", "d1", "w2", "m3", "w3", "d2"])
+        );
+    }
+
+    #[test]
     fn checked_in_chat_example_sends_and_reads_history() {
         use crate::world::{WorldEvent, WorldEventKind};
 

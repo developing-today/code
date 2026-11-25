@@ -89,6 +89,9 @@ pub enum Capability {
     Actions,
     /// `fleet orgs …` — the Turso-backed GitHub org/App registry.
     Orgs,
+    /// `fleet kv …` — identity-scoped key/value bytes in the host-local
+    /// store (code#13314). A working-seat client surface, so full only.
+    Kv,
 }
 
 impl Capability {
@@ -118,6 +121,7 @@ impl Capability {
             Capability::Cert => "cert",
             Capability::Actions => "actions",
             Capability::Orgs => "orgs",
+            Capability::Kv => "kv",
         }
     }
 
@@ -146,6 +150,7 @@ impl Capability {
         Capability::Cert,
         Capability::Actions,
         Capability::Orgs,
+        Capability::Kv,
     ];
 }
 
@@ -294,6 +299,8 @@ pub const DOMAINS: &[Domain] = &[
             "verify-disposition",
             "timeline",
             "history",
+            "staleness",
+            "needs-user",
             "show",
             "models",
             "health",
@@ -395,6 +402,14 @@ pub const DOMAINS: &[Domain] = &[
         subcommands: &["list", "sync"],
     },
     Domain {
+        name: "kv",
+        summary: "Key/value bytes for this session in the host-local store: get, set, list, delete (masking tombstone), clear-override and revert, per --namespace. --global is not built yet.",
+        capabilities: &[Capability::Kv],
+        primary: Capability::Kv,
+        aliases: &[],
+        subcommands: &["get", "set", "list", "delete", "clear-override", "revert"],
+    },
+    Domain {
         name: "agent",
         summary: "The agent's front door: enrol an agent of any kind, check what this seat reaches, and take the next piece of work down the intake ladder (pushed command, queue, local shortlist, highest priority).",
         capabilities: &[Capability::Agent],
@@ -416,7 +431,7 @@ pub const DOMAINS: &[Domain] = &[
         capabilities: &[Capability::Search],
         primary: Capability::Search,
         aliases: &["atlas-search"],
-        subcommands: &["search", "get-chunk", "serve"],
+        subcommands: &["search", "get-chunk", "serve", "backup"],
     },
     Domain {
         name: "cert",

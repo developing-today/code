@@ -65,6 +65,7 @@ import {
 import { summarizeDns } from "./dns.ts";
 import { needsDrewWait, type NeedsDrewCensus, type NeedsDrewItem } from "./needs-drew.ts";
 import type { Incident, IncidentEvent, PushSubscriptionRow } from "./alerts.ts";
+import { incidentPageThreshold } from "./incident-page.ts";
 import type { NotificationRollup } from "./notifications.ts";
 import { NOTIFICATION_CLASS_DEFAULTS, NOTIFICATION_CLASSES } from "./notifications.ts";
 import { FEED_STALE_MS, ageMsText, feedAgeText } from "./feed.ts";
@@ -6683,10 +6684,20 @@ export function renderHealth(view: HealthView, provenance: Provenance): string {
     view.version === "unknown"
       ? `<div class="card">Build <strong>unknown</strong> — this process was not deployed with PM_AGG_BUILD_VERSION, so the deployed commit cannot be shown (boot ${esc(view.bootAt)}).</div>`
       : `<div class="card">Build <code title="${esc(view.version)}">${esc(view.version.slice(0, 8))}</code> <span class="muted">(<code>${esc(view.version)}</code> · boot ${esc(view.bootAt)} · up ${esc(ageMsText(uptimeMs))})</span> — same commit <a href="/api/health">/api/health</a> serves as version.</div>`;
+  // CF-9 (#14949): the edition's drift vs main, from the same
+  // HealthView /api/health serves. Unassembled (fixtures/tests)
+  // renders nothing; unknown renders its reason, never a guess.
+  const editionLine = !view.edition
+    ? ""
+    : view.edition.state === "unknown"
+      ? `<div class="card">Edition drift <strong>unknown</strong> — ${esc(view.edition.reason ?? "not measured")}.</div>`
+      : view.edition.state === "in-sync"
+        ? `<div class="card">Edition <strong>in sync</strong> with main at <code>${esc((view.edition.mainHead ?? "").slice(0, 8))}</code>.</div>`
+        : `<div class="card">Edition <strong>${view.edition.stale ? "STALE" : "behind"}</strong> — deployed <code>${esc((view.edition.deployedCommit ?? "").slice(0, 8))}</code> (${esc(view.edition.deployedCommitAt ?? "")}), main <code>${esc((view.edition.mainHead ?? "").slice(0, 8))}</code>, ${esc(String(view.edition.behindBy ?? "?"))} commits behind; main has carried newer code for ${esc(ageMsText(view.edition.driftMs ?? 0))}${view.edition.stale ? " — past the drift threshold; the merge → switch flip is overdue" : ""}.</div>`;
   const body = `<h1>Health</h1>
 <p class="muted">Every stack service probed live (results cached 60 s), every feed section aged, the last job runs, and this dashboard's own render history — assembled from the same view <a href="/api/health">/api/health</a> serves, at ${esc(view.generatedAt)}.</p>
 ${buildLine}
-${degraded}${modeNote}
+${editionLine}${degraded}${modeNote}
 <h2 id="topology">Services &amp; topology</h2>
 <p class="muted">What runs where: the component, its port and bind as actually deployed, what consumes it, and what breaks without it. State is probed, never assumed.</p>
 <div class="tblwrap"><table class="table table-zebra"><caption>Services, ports, and topology</caption><tr><th scope="col">Service</th><th scope="col">Port</th><th scope="col">Bind</th><th scope="col">Runs as</th><th scope="col">State</th><th scope="col">Consumed by</th><th scope="col">If it is down</th></tr>${serviceRows}</table></div>
@@ -6974,7 +6985,7 @@ function coverageSectionHtml(coverage: CoverageSnapshotFile | null | undefined):
   const cell = (
     repo: string,
     v: number | null,
-    key: "openIssues" | "gateNow" | "gateNext" | "poolItems" | "poolUnsetStatus" | "poolUnsetArea",
+    key: "openIssues" | "gateNow" | "gateNext" | "poolItems" | "poolUnsetStatus" | "poolUnsetArea" | "staleOpenIssues",
   ): string => {
     if (v === null) return "—";
     const d = delta.get(repo)?.[key];
@@ -6996,7 +7007,7 @@ function coverageSectionHtml(coverage: CoverageSnapshotFile | null | undefined):
       const collectedAt = r.staleIssuesCollectedAt
         ? `<time datetime="${esc(r.staleIssuesCollectedAt)}">${esc(r.staleIssuesCollectedAt)}</time>`
         : "—";
-      return `<tr><td>${esc(r.repo)}</td><td>${cell(r.repo, r.openIssues, "openIssues")}</td><td>${cell(r.repo, r.gateNow, "gateNow")}</td><td>${cell(r.repo, r.gateNext, "gateNext")}</td><td>${cell(r.repo, r.poolItems, "poolItems")}</td><td>${cell(r.repo, r.poolUnsetStatus, "poolUnsetStatus")}</td><td>${cell(r.repo, r.poolUnsetArea, "poolUnsetArea")}</td><td>${r.staleOpenIssues === null ? "—" : r.staleOpenIssues}</td><td>${collectedAt}</td><td>${status}</td></tr>`;
+      return `<tr><td>${esc(r.repo)}</td><td>${cell(r.repo, r.openIssues, "openIssues")}</td><td>${cell(r.repo, r.gateNow, "gateNow")}</td><td>${cell(r.repo, r.gateNext, "gateNext")}</td><td>${cell(r.repo, r.poolItems, "poolItems")}</td><td>${cell(r.repo, r.poolUnsetStatus, "poolUnsetStatus")}</td><td>${cell(r.repo, r.poolUnsetArea, "poolUnsetArea")}</td><td>${cell(r.repo, r.staleOpenIssues, "staleOpenIssues")}</td><td>${collectedAt}</td><td>${status}</td></tr>`;
     })
     .join("");
   const note = baseline
@@ -7806,8 +7817,9 @@ export function phase12PanelHtml(
  * F-item progress counted from #1235's ordered step list, and Phases
  * 11 and 13 count the F-item mapping table in planning/roadmaps/id.md
  * (the source of record, #9923 step 3) when the source carries it;
- * Phases 0-10 have no F-item numbering in their plans, so they state
- * that gap instead of showing a fabricated percentage. */
+ * Phases 0-10 joined that table for #13944 (F-numbering mirroring
+ * their plans' P-step lists, refs = their validation audits), so
+ * they derive from the same mapping instead of stating a gap. */
 export function phaseTrackerPanelHtml(
   items: Map<RefKey, GhItem>,
   phase12: Phase12Snapshot | null = null,
@@ -7817,7 +7829,7 @@ export function phaseTrackerPanelHtml(
   const head = `<h2>Phase tracker — validation by phase, live from <a href="${umbrellaUrl}">#${PHASE_TRACKER_UMBRELLA}</a></h2>`;
   const progress = derivePhase12Progress(phase12, items);
   const mappedProgress = phaseMapping ? deriveMappedProgress(phaseMapping.entries, items) : null;
-  const sourceLine = `<p class="muted">Source: the validation audits <a href="https://github.com/${PHASE_TRACKER_REPO}/issues/1075">#1075</a>–<a href="https://github.com/${PHASE_TRACKER_REPO}/issues/1078">#1078</a> under umbrella <a href="${umbrellaUrl}">#${PHASE_TRACKER_UMBRELLA}</a>, resolved from the same live GitHub items as the tracked-issues table above (the page provenance stamp applies). Phase 12 progress counts the ordered steps in <a href="${PHASE12_ISSUE_URL}">#1235</a> against live issue state${phase12 ? ` (body fetched ${esc(phase12.fetchedAt)})` : ""}; ${phaseMapping ? `Phases 11 and 13 progress counts the F-item mapping table in <a href="https://github.com/${PHASE_TRACKER_REPO}/blob/main/planning/roadmaps/id.md">planning/roadmaps/id.md</a> (read ${esc(phaseMapping.fetchedAt)}) against live item state; ` : ""}Phases 0–10 have no F-item numbering in their plans, so no percentage is shown for them — the gap is stated rather than a number invented.</p>`;
+  const sourceLine = `<p class="muted">Source: the validation audits <a href="https://github.com/${PHASE_TRACKER_REPO}/issues/1075">#1075</a>–<a href="https://github.com/${PHASE_TRACKER_REPO}/issues/1078">#1078</a> under umbrella <a href="${umbrellaUrl}">#${PHASE_TRACKER_UMBRELLA}</a>, resolved from the same live GitHub items as the tracked-issues table above (the page provenance stamp applies). Phase 12 progress counts the ordered steps in <a href="${PHASE12_ISSUE_URL}">#1235</a> against live issue state${phase12 ? ` (body fetched ${esc(phase12.fetchedAt)})` : ""}; ${phaseMapping ? `All phases except 12 count the F-item mapping table in <a href="https://github.com/${PHASE_TRACKER_REPO}/blob/main/planning/roadmaps/id.md">planning/roadmaps/id.md</a> (read ${esc(phaseMapping.fetchedAt)}) against live item state — for Phases 0–10 the F-numbering mirrors their plans' P-step lists and each item's ref is its phase's validation audit (#1075–#1077); ` : "The F-item mapping is unavailable in the current source, so no mapped percentage is shown — a number is never invented."}</p>`;
   const rows = derivePhaseValidation(items)
     .map((r) => {
       const badge =
@@ -7843,9 +7855,7 @@ export function phaseTrackerPanelHtml(
             : `<span class="muted">withheld — #1235 feed unavailable or stale</span>`
           : mapped
             ? `<strong>${mapped.done}/${mapped.total} items done (${mapped.percent}%)</strong><br><span class="muted">${mapped.open} open${mapped.unresolved ? ` · ${mapped.unresolved} not resolved in the current source` : ""} — from the F-item mapping in planning/roadmaps/id.md</span>`
-            : r.phase <= 10
-              ? `<span class="muted">not derived — this phase's plan has no F-item numbering</span>`
-              : `<span class="muted">not derived — F-item mapping unavailable in the current source</span>`;
+            : `<span class="muted">not derived — F-item mapping unavailable in the current source</span>`;
       return `<tr><th scope="row">Phase ${r.phase}</th><td>${badge}</td><td>${audit}</td><td>${followUps}</td><td>${progressCell}</td></tr>`;
     })
     .join("");
@@ -7968,7 +7978,8 @@ export function queuePanelHtml(snapshot: QueueSnapshot | null): string {
     return `${head}<div class="banner">The queue-broker snapshot is unavailable in the current source, so no queue state is shown \u2014 this panel never renders hand-kept queue values.</div>`;
   }
   const fetchedIso = new Date(snapshot.fetchedAt).toISOString();
-  const sourceLine = `<p class="muted">Source: queue-broker /health + /list (read-only), fetched ${esc(fetchedIso)}.</p>`;
+  const historySource = snapshot.history ? " + /history-since" : "";
+  const sourceLine = `<p class="muted">Source: queue-broker /health + /list${historySource} (read-only), fetched ${esc(fetchedIso)}.</p>`;
   if (!snapshot.available || snapshot.stale) {
     const why = snapshot.errors.length ? ` Last read error: ${esc(snapshot.errors[0])}.` : "";
     return `${head}${sourceLine}<div class="banner">Stale source: this queue snapshot was fetched at ${esc(fetchedIso)}, outside the freshness window \u2014 queue numbers are withheld rather than shown silently old.${why} They refresh on the next successful broker read.</div>`;
@@ -8005,7 +8016,29 @@ export function queuePanelHtml(snapshot: QueueSnapshot | null): string {
   const items = idItems.length
     ? `<h3>Claimed &amp; parked id items (${idItems.length})</h3><table><caption>Claimed &amp; parked id items</caption><thead><tr><th scope="col">Task</th><th scope="col">Issue</th><th scope="col">Status</th><th scope="col">Worker / lane</th><th scope="col">Stage</th></tr></thead><tbody>${itemRows}</tbody></table>`
     : `<h3>Claimed &amp; parked id items</h3><p class="muted">None in the current snapshot.</p>`;
-  return `${head}${sourceLine}${streams}${items}`;
+  const history = snapshot.history;
+  let historyHtml = "";
+  if (history) {
+    if (!history.available) {
+      historyHtml = `<h3>Recent task changes</h3><p class="muted">History feed unavailable at cursor ${history.cursor}: ${esc(history.error ?? "no error detail")}.</p>`;
+    } else if (history.rows.length === 0) {
+      historyHtml = `<h3>Recent task changes</h3><p class="muted">No new transitions after history cursor ${history.cursor}.</p>`;
+    } else {
+      const rows = [...history.rows]
+        .sort((a, b) => b.id - a.id)
+        .slice(0, 20)
+        .map((event) => {
+          const transition = `${event.fromStatus ?? "\u2014"} \u2192 ${event.toStatus ?? event.kind}`;
+          return `<tr><td>${event.id}</td><td>${event.taskId}</td><td>${esc(event.kind)}</td><td>${esc(transition)}</td><td>${esc(event.actor ?? "\u2014")}</td><td>${esc(event.createdAt)}</td></tr>`;
+        })
+        .join("");
+      const more = history.hasMore
+        ? `<p class="muted">More history remains after cursor ${history.cursor}; the next read resumes there.</p>`
+        : "";
+      historyHtml = `<h3>Recent task changes</h3><table><caption>Task history after cursor ${history.cursor}</caption><thead><tr><th scope="col">History id</th><th scope="col">Task</th><th scope="col">Kind</th><th scope="col">Transition</th><th scope="col">Actor</th><th scope="col">At</th></tr></thead><tbody>${rows}</tbody></table>${more}`;
+    }
+  }
+  return `${head}${sourceLine}${streams}${items}${historyHtml}`;
 }
 
 export function renderProgramProject(
@@ -8195,7 +8228,7 @@ export interface AlertsPageView {
   ackWindowMin: number;
 }
 
-function incidentCard(i: Incident): string {
+function incidentCard(i: Incident, events: IncidentEvent[] = [], all: Incident[] = []): string {
   const sev = i.severity === "critical" ? "closed" : i.severity === "warning" ? "implementing" : "open";
   const times = [
     `first seen ${fmtDate(i.first_seen_at)}`,
@@ -8217,11 +8250,19 @@ function incidentCard(i: Incident): string {
       : i.status === "acked"
         ? `<button data-close="${esc(i.id)}">Close</button>`
         : "";
+  // C6 (#15019): incidents with healthHook evidence that meet the
+  // §6.2 threshold earn a durable incident page; link it from the card.
+  const ownEvents = events.filter((e) => e.incident_id === i.id);
+  const pageLink =
+    ownEvents.some((e) => e.detail?.healthHook !== undefined) &&
+    incidentPageThreshold(i, ownEvents, all).qualifies
+      ? `<br><a href="/reports/incident/${esc(i.id)}">Incident page</a>`
+      : "";
   return `<div class="card incident" id="incident-${esc(i.id)}">
 <strong>${esc(i.title)}</strong> <span class="badge ${sev}">${esc(i.severity)}</span> <span class="badge">${esc(i.status)}</span>
 ${i.body ? `<br>${esc(i.body)}` : ""}
 <br><span class="muted">source <code>${esc(i.source)}</code> · key <code>${esc(i.incident_key)}</code> · ${esc(times)}</span>
-${actions ? `<br>${actions}` : ""}
+${actions ? `<br>${actions}` : ""}${pageLink}
 </div>`;
 }
 
@@ -8301,8 +8342,8 @@ export function renderAlerts(view: AlertsPageView, provenance: Provenance, vapid
 <h2>Subscriptions (${view.subscriptions.length})</h2>
 ${view.subscriptions.length ? view.subscriptions.map(subscriptionRow).join("") : `<p class="muted">No push subscriptions yet — enable push above.</p>`}
 <h2>Open incidents (${open.length})</h2>
-${open.length ? open.map(incidentCard).join("") : `<p class="muted">No open incidents. Silence is golden.</p>`}
-${closed.length ? `<h2>Closed (recent)</h2>${closed.map(incidentCard).join("")}` : ""}
+${open.length ? open.map((i) => incidentCard(i, view.events, view.incidents)).join("") : `<p class="muted">No open incidents. Silence is golden.</p>`}
+${closed.length ? `<h2>Closed (recent)</h2>${closed.map((i) => incidentCard(i, view.events, view.incidents)).join("")}` : ""}
 <h2>Ledger — recent transitions</h2>
  <div class="tblwrap"><table><caption>Recent alert-ledger transitions</caption><tr><th scope="col">at</th><th scope="col">kind</th><th scope="col">incident</th><th scope="col">source · key</th></tr>${events}</table></div>`;
   const script = `<script>

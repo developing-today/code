@@ -19,7 +19,15 @@
       "used_by": ["pm-stack/aggregator (writes)", "pm-stack/quota-check (reads)"],
       "address": "https://fleet-platform-dezren39.aws-us-east-1.turso.io",
       "token": "turso.fleet-platform-rw-token",
-      "tables": ["incidents", "push_subscriptions", "notification_sends", "decision_set_events", "push_endpoints", "push_preferences", "push_item_stages"],
+      "tables": [
+        "incidents",
+        "push_subscriptions",
+        "notification_sends",
+        "decision_set_events",
+        "push_endpoints",
+        "push_preferences",
+        "push_item_stages"
+      ],
       "schema_version": null
     },
     {

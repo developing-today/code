@@ -1445,6 +1445,7 @@ let
         "laptop-backups-watchdog"
         "laptop-state-backup"
         "laptop-repo-keeper"
+        "stable-entrypoints"
         "laptop-untracked-review"
         "openclaw-backup"
         "oc-password-sync"

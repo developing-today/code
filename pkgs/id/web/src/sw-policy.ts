@@ -1,5 +1,5 @@
 /**
- * #13918 slice 1: the service worker's routing and cache policy.
+ * #13918 slices 1 and 3: the service worker's routing and cache policy.
  *
  * Design of record: doc/2026-11-25_design_id_service_worker_offline_13918.md.
  * Everything here is pure or takes its platform objects (CacheStorage,
@@ -12,9 +12,14 @@
  * - navigations are network-first; a plain 200 HTML response that is
  *   not redirected and not `no-store` is kept per URL; on network
  *   failure the kept copy is served, else a 503 offline page;
- * - writes, API, WebSocket, blob, token-bearing and cross-origin
- *   requests are never intercepted, so nothing that mutates state or
- *   carries a credential is cached or replayed.
+ * - content-addressed blobs (`/blob/<hash>`, slice 3) are served
+ *   cache-first: a blob is immutable by hash, so a kept copy never goes
+ *   stale. Only a plain 200 the server marks `immutable` with a declared
+ *   size up to MAX_CACHED_BLOB_BYTES is kept, at most MAX_CACHED_BLOBS
+ *   of them; range requests pass through so media seeking still works;
+ * - writes, API, WebSocket, token-bearing and cross-origin requests are
+ *   never intercepted, so nothing that mutates state or carries a
+ *   credential is cached or replayed.
  */
 
 export const SHELL_CACHE_PREFIX = "id-shell-";
@@ -23,6 +28,16 @@ export const PAGES_CACHE_PREFIX = "id-pages-";
 export const CACHE_FORMAT = "v1";
 /** Most recent visited pages kept for offline reading. */
 export const MAX_CACHED_PAGES = 50;
+export const BLOBS_CACHE_PREFIX = "id-blobs-";
+/** Blobs are immutable by hash, so their cache is not versioned per build. */
+export const BLOBS_CACHE_NAME = `${BLOBS_CACHE_PREFIX}${CACHE_FORMAT}`;
+/** Most recently fetched blobs kept for offline use. */
+export const MAX_CACHED_BLOBS = 64;
+/** Larger blobs are never kept, which bounds the cache at 64 MiB. */
+export const MAX_CACHED_BLOB_BYTES = 1024 * 1024;
+
+/** `/blob/<hash>`: one path segment of hash characters, as `parse_hash` accepts. */
+const BLOB_PATH = /^\/blob\/[A-Za-z0-9]{1,128}$/;
 
 const HASHED_JS = /^main\.([a-z0-9]{8})\.js$/;
 const HASHED_CSS = /^styles\.([0-9a-f]{8})\.css$/;
@@ -64,18 +79,24 @@ export function precacheUrls(manifest: ShellManifest): string[] {
   return [`/assets/${manifest["main.js"]}`, `/assets/${manifest["styles.css"]}`];
 }
 
-/** Caches this worker owns that do not belong to the current build. */
+const OWNED_PREFIXES = [SHELL_CACHE_PREFIX, PAGES_CACHE_PREFIX, BLOBS_CACHE_PREFIX];
+
+/**
+ * Caches this worker owns that do not belong to the current build. The
+ * blob cache outlives builds; with no valid manifest (the kill switch)
+ * every owned cache goes, blobs included.
+ */
 export function obsoleteCacheNames(existing: readonly string[], manifest: ShellManifest | null): string[] {
-  const keep = manifest ? new Set([shellCacheName(manifest), pagesCacheName(manifest)]) : new Set<string>();
-  return existing.filter(
-    (name) => (name.startsWith(SHELL_CACHE_PREFIX) || name.startsWith(PAGES_CACHE_PREFIX)) && !keep.has(name),
-  );
+  const keep = manifest
+    ? new Set([shellCacheName(manifest), pagesCacheName(manifest), BLOBS_CACHE_NAME])
+    : new Set<string>();
+  return existing.filter((name) => OWNED_PREFIXES.some((prefix) => name.startsWith(prefix)) && !keep.has(name));
 }
 
-export type RouteDecision = "asset-cache-first" | "page-network-first" | "passthrough";
+export type RouteDecision = "asset-cache-first" | "blob-cache-first" | "page-network-first" | "passthrough";
 
 /** The request fields the router looks at (a Request satisfies this). */
-export type RoutableRequest = { method: string; url: string; mode: string };
+export type RoutableRequest = { method: string; url: string; mode: string; headers?: Pick<Headers, "has"> };
 
 const ONLINE_ONLY_PREFIXES = ["/api/", "/ws/", "/blob/", "/.well-known/"];
 
@@ -89,6 +110,12 @@ export function classifyRequest(request: RoutableRequest, origin: string): Route
   }
   if (url.origin !== origin) return "passthrough";
   const path = url.pathname;
+  if (BLOB_PATH.test(path)) {
+    // A credential must never become a cache key, and a partial (range)
+    // response cannot answer a whole-blob request.
+    if (url.searchParams.has("token") || request.headers?.has("range")) return "passthrough";
+    return "blob-cache-first";
+  }
   if (path === "/sw.js" || ONLINE_ONLY_PREFIXES.some((prefix) => path.startsWith(prefix))) return "passthrough";
   if (path.startsWith("/assets/")) {
     const name = path.slice("/assets/".length);
@@ -112,6 +139,23 @@ export function isCacheablePageResponse(response: Response): boolean {
   return !/(^|[\s,])no-store($|[\s,])/.test(cacheControl);
 }
 
+/**
+ * Only a plain, final 200 the server marks `immutable`, with a declared
+ * size up to MAX_CACHED_BLOB_BYTES, is kept. A response without a
+ * Content-Length is not kept, so the cap is never exceeded unseen.
+ */
+export function isCacheableBlobResponse(response: Response): boolean {
+  if (response.status !== 200 || response.redirected) return false;
+  if (response.type !== "basic" && response.type !== "default") return false;
+  const cacheControl = (response.headers.get("cache-control") ?? "").toLowerCase();
+  if (!/(^|[\s,])immutable($|[\s,])/.test(cacheControl) || /(^|[\s,])no-store($|[\s,])/.test(cacheControl)) {
+    return false;
+  }
+  const length = response.headers.get("content-length");
+  if (length === null || !/^\d+$/.test(length.trim())) return false;
+  return Number(length) <= MAX_CACHED_BLOB_BYTES;
+}
+
 /** Cache key for a page: the URL without its fragment. */
 export function pageCacheKey(url: string): string {
   const parsed = new URL(url);
@@ -132,6 +176,15 @@ export function offlineResponse(): Response {
     status: 503,
     statusText: "Offline",
     headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" },
+  });
+}
+
+/** A blob that was never kept, asked for offline: a plain uncacheable 503. */
+export function offlineBlobResponse(): Response {
+  return new Response("Offline: this file has not been saved on this device.", {
+    status: 503,
+    statusText: "Offline",
+    headers: { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" },
   });
 }
 
@@ -189,6 +242,25 @@ export function createShellWorker(deps: ShellWorkerDeps): ShellWorker {
     return response;
   }
 
+  async function blobCacheFirst(request: Request): Promise<Response> {
+    // The query (`?filename=`) selects the served headers, so it stays in the key.
+    const key = pageCacheKey(request.url);
+    const blobs = await caches.open(BLOBS_CACHE_NAME);
+    const cached = await blobs.match(key);
+    if (cached) return cached;
+    let response: Response;
+    try {
+      response = await fetchFn(request);
+    } catch {
+      return offlineBlobResponse();
+    }
+    if (isCacheableBlobResponse(response)) {
+      await blobs.put(key, response.clone());
+      await trimCache(blobs, MAX_CACHED_BLOBS);
+    }
+    return response;
+  }
+
   async function pageNetworkFirst(manifest: ShellManifest, request: Request): Promise<Response> {
     const key = pageCacheKey(request.url);
     let response: Response;
@@ -213,6 +285,8 @@ export function createShellWorker(deps: ShellWorkerDeps): ShellWorker {
     switch (classifyRequest(request, origin)) {
       case "asset-cache-first":
         return assetCacheFirst(manifest, request);
+      case "blob-cache-first":
+        return blobCacheFirst(request);
       case "page-network-first":
         return pageNetworkFirst(manifest, request);
       default:

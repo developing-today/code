@@ -3,7 +3,7 @@
 //!   rustc -O --crate-type cdylib ipc_plugin.rs -o libipc_plugin.so
 //!   rustc -O ipc_bench.rs -o ipc_bench && ./ipc_bench ./libipc_plugin.so
 //! Every leg runs the same echo: send N bytes, get the same N bytes back.
-use std::ffi::{c_char, c_int, c_void, CString};
+use std::ffi::{CString, c_char, c_int, c_void};
 use std::hint::black_box;
 use std::io::{BufReader, BufWriter, Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -56,7 +56,11 @@ fn serve_http(s: UnixStream) {
         let text = String::from_utf8_lossy(&head);
         let len: usize = text
             .lines()
-            .find_map(|l| l.to_ascii_lowercase().strip_prefix("content-length: ").map(|v| v.trim().parse().unwrap()))
+            .find_map(|l| {
+                l.to_ascii_lowercase()
+                    .strip_prefix("content-length: ")
+                    .map(|v| v.trim().parse().unwrap())
+            })
             .unwrap_or(0);
         let mut body = vec![0u8; len];
         r.read_exact(&mut body).unwrap();
@@ -69,20 +73,32 @@ fn serve_http(s: UnixStream) {
 #[derive(Clone)]
 struct Uds(std::sync::Arc<UnixStream>);
 impl Read for Uds {
-    fn read(&mut self, b: &mut [u8]) -> std::io::Result<usize> { (&*self.0).read(b) }
+    fn read(&mut self, b: &mut [u8]) -> std::io::Result<usize> {
+        (&*self.0).read(b)
+    }
 }
 impl Write for Uds {
-    fn write(&mut self, b: &[u8]) -> std::io::Result<usize> { (&*self.0).write(b) }
-    fn flush(&mut self) -> std::io::Result<()> { (&*self.0).flush() }
+    fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
+        (&*self.0).write(b)
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        (&*self.0).flush()
+    }
 }
 #[derive(Clone)]
 struct Tcp(std::sync::Arc<TcpStream>);
 impl Read for Tcp {
-    fn read(&mut self, b: &mut [u8]) -> std::io::Result<usize> { (&*self.0).read(b) }
+    fn read(&mut self, b: &mut [u8]) -> std::io::Result<usize> {
+        (&*self.0).read(b)
+    }
 }
 impl Write for Tcp {
-    fn write(&mut self, b: &[u8]) -> std::io::Result<usize> { (&*self.0).write(b) }
-    fn flush(&mut self) -> std::io::Result<()> { (&*self.0).flush() }
+    fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
+        (&*self.0).write(b)
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        (&*self.0).flush()
+    }
 }
 
 fn server_mode(mode: &str, addr: &str) {
@@ -131,7 +147,14 @@ fn stats(name: &str, size: usize, mut d: Vec<Duration>) {
     let us = |x: Duration| x.as_secs_f64() * 1e6;
     let p = |q: f64| us(d[((d.len() as f64 - 1.0) * q).round() as usize]);
     let mean = d.iter().map(|x| us(*x)).sum::<f64>() / d.len() as f64;
-    println!("| {name} | {size} | {} | {:.3} | {:.3} | {:.3} | {:.3} |", d.len(), us(d[0]), p(0.5), p(0.99), mean);
+    println!(
+        "| {name} | {size} | {} | {:.3} | {:.3} | {:.3} | {:.3} |",
+        d.len(),
+        us(d[0]),
+        p(0.5),
+        p(0.99),
+        mean
+    );
 }
 
 fn time_loop(n: usize, mut f: impl FnMut()) -> Vec<Duration> {
@@ -166,11 +189,17 @@ fn main() {
     if args.len() >= 3 && args[1] == "--serve" {
         return server_mode(&args[2], args.get(3).map(String::as_str).unwrap_or(""));
     }
-    let plugin = args.get(1).cloned().unwrap_or_else(|| "./libipc_plugin.so".into());
+    let plugin = args
+        .get(1)
+        .cloned()
+        .unwrap_or_else(|| "./libipc_plugin.so".into());
     let exe = std::env::current_exe().unwrap();
     let tmp = std::env::temp_dir();
     let sizes = [64usize, 16 * 1024];
-    let scale: usize = std::env::var("IPC_BENCH_SCALE").ok().and_then(|v| v.parse().ok()).unwrap_or(1);
+    let scale: usize = std::env::var("IPC_BENCH_SCALE")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(1);
 
     println!("| boundary | payload bytes | samples | min us | p50 us | p99 us | mean us |");
     println!("|---|---|---|---|---|---|---|");
@@ -179,10 +208,14 @@ fn main() {
         let mut out = vec![0u8; size];
 
         // 1. Static embed: an ordinary in-process call (the copy is the work).
-        stats("in-process call (static embed)", size, time_loop(200_000 * scale, || {
-            out.copy_from_slice(black_box(&payload));
-            black_box(&out);
-        }));
+        stats(
+            "in-process call (static embed)",
+            size,
+            time_loop(200_000 * scale, || {
+                out.copy_from_slice(black_box(&payload));
+                black_box(&out);
+            }),
+        );
 
         // 2. Dynamic library: first load once, then calls through the dlsym pointer.
         let path = CString::new(plugin.clone()).unwrap();
@@ -194,81 +227,132 @@ fn main() {
         if size == sizes[0] {
             stats("dlopen + dlsym (one-time load)", 0, vec![t.elapsed()]);
         }
-        stats("dylib call via dlsym pointer", size, time_loop(200_000 * scale, || {
-            black_box(f(payload.as_ptr(), payload.len(), out.as_mut_ptr()));
-        }));
+        stats(
+            "dylib call via dlsym pointer",
+            size,
+            time_loop(200_000 * scale, || {
+                black_box(f(payload.as_ptr(), payload.len(), out.as_mut_ptr()));
+            }),
+        );
 
         // 3. Persistent child over stdin/stdout pipes (an exec'd helper kept alive; MCP stdio shape).
-        let mut child = Command::new(&exe).args(["--serve", "stdio"]).stdin(Stdio::piped()).stdout(Stdio::piped()).spawn().unwrap();
+        let mut child = Command::new(&exe)
+            .args(["--serve", "stdio"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
         let mut w = BufWriter::new(child.stdin.take().unwrap());
         let mut r = BufReader::new(child.stdout.take().unwrap());
         let mut buf = Vec::new();
-        stats("persistent child, stdio pipes", size, time_loop(20_000 * scale, || {
-            write_frame(&mut w, &payload);
-            read_frame(&mut r, &mut buf);
-        }));
+        stats(
+            "persistent child, stdio pipes",
+            size,
+            time_loop(20_000 * scale, || {
+                write_frame(&mut w, &payload);
+                read_frame(&mut r, &mut buf);
+            }),
+        );
         drop(w);
         child.wait().unwrap();
 
         // 4. Unix domain socket to a separate server process.
         let sock = tmp.join(format!("ipc-bench-{}-{size}.sock", std::process::id()));
         let _ = std::fs::remove_file(&sock);
-        let mut child = Command::new(&exe).args(["--serve", "uds", sock.to_str().unwrap()]).stdout(Stdio::piped()).spawn().unwrap();
+        let mut child = Command::new(&exe)
+            .args(["--serve", "uds", sock.to_str().unwrap()])
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
         ready_line(&mut child);
         let s = Uds(std::sync::Arc::new(UnixStream::connect(&sock).unwrap()));
         let (mut r, mut w) = (BufReader::new(s.clone()), BufWriter::new(s));
-        stats("unix socket, framed", size, time_loop(20_000 * scale, || {
-            write_frame(&mut w, &payload);
-            read_frame(&mut r, &mut buf);
-        }));
+        stats(
+            "unix socket, framed",
+            size,
+            time_loop(20_000 * scale, || {
+                write_frame(&mut w, &payload);
+                read_frame(&mut r, &mut buf);
+            }),
+        );
         drop((r, w));
         child.wait().unwrap();
         let _ = std::fs::remove_file(&sock);
 
         // 5. HTTP/1.1 keep-alive over a unix socket (mcpx daemon API shape).
-        let mut child = Command::new(&exe).args(["--serve", "http", sock.to_str().unwrap()]).stdout(Stdio::piped()).spawn().unwrap();
+        let mut child = Command::new(&exe)
+            .args(["--serve", "http", sock.to_str().unwrap()])
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
         ready_line(&mut child);
         let s = UnixStream::connect(&sock).unwrap();
         let mut r = BufReader::new(s.try_clone().unwrap());
         let mut w = BufWriter::new(s);
-        stats("unix socket, HTTP/1.1 keep-alive", size, time_loop(20_000 * scale, || {
-            write!(w, "POST /echo HTTP/1.1\r\nhost: x\r\ncontent-length: {}\r\n\r\n", payload.len()).unwrap();
-            w.write_all(&payload).unwrap();
-            w.flush().unwrap();
-            let mut head = Vec::new();
-            let mut b = [0u8; 1];
-            while !head.ends_with(b"\r\n\r\n") {
-                r.read_exact(&mut b).unwrap();
-                head.push(b[0]);
-            }
-            buf.resize(payload.len(), 0);
-            r.read_exact(&mut buf).unwrap();
-        }));
+        stats(
+            "unix socket, HTTP/1.1 keep-alive",
+            size,
+            time_loop(20_000 * scale, || {
+                write!(
+                    w,
+                    "POST /echo HTTP/1.1\r\nhost: x\r\ncontent-length: {}\r\n\r\n",
+                    payload.len()
+                )
+                .unwrap();
+                w.write_all(&payload).unwrap();
+                w.flush().unwrap();
+                let mut head = Vec::new();
+                let mut b = [0u8; 1];
+                while !head.ends_with(b"\r\n\r\n") {
+                    r.read_exact(&mut b).unwrap();
+                    head.push(b[0]);
+                }
+                buf.resize(payload.len(), 0);
+                r.read_exact(&mut buf).unwrap();
+            }),
+        );
         drop((r, w));
         child.wait().unwrap();
         let _ = std::fs::remove_file(&sock);
 
         // 6. TCP loopback to a separate server process (the remote-transport floor).
-        let mut child = Command::new(&exe).args(["--serve", "tcp"]).stdout(Stdio::piped()).spawn().unwrap();
+        let mut child = Command::new(&exe)
+            .args(["--serve", "tcp"])
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
         let port = ready_line(&mut child);
         let s = TcpStream::connect(("127.0.0.1", port.parse::<u16>().unwrap())).unwrap();
         s.set_nodelay(true).unwrap();
         let s = Tcp(std::sync::Arc::new(s));
         let (mut r, mut w) = (BufReader::new(s.clone()), BufWriter::new(s));
-        stats("tcp loopback, framed", size, time_loop(20_000 * scale, || {
-            write_frame(&mut w, &payload);
-            read_frame(&mut r, &mut buf);
-        }));
+        stats(
+            "tcp loopback, framed",
+            size,
+            time_loop(20_000 * scale, || {
+                write_frame(&mut w, &payload);
+                read_frame(&mut r, &mut buf);
+            }),
+        );
         drop((r, w));
         child.wait().unwrap();
 
         // 7. Spawn per call: exec a fresh process for every request (`fleet` shelling out to `id`).
-        stats("spawn per call (fork+exec, this binary)", size, time_loop(300 * scale, || {
-            let mut c = Command::new(&exe).args(["--serve", "once"]).stdin(Stdio::piped()).stdout(Stdio::piped()).spawn().unwrap();
-            write_frame(&mut c.stdin.take().unwrap(), &payload);
-            let mut o = c.stdout.take().unwrap();
-            read_frame(&mut o, &mut buf);
-            c.wait().unwrap();
-        }));
+        stats(
+            "spawn per call (fork+exec, this binary)",
+            size,
+            time_loop(300 * scale, || {
+                let mut c = Command::new(&exe)
+                    .args(["--serve", "once"])
+                    .stdin(Stdio::piped())
+                    .stdout(Stdio::piped())
+                    .spawn()
+                    .unwrap();
+                write_frame(&mut c.stdin.take().unwrap(), &payload);
+                let mut o = c.stdout.take().unwrap();
+                read_frame(&mut o, &mut buf);
+                c.wait().unwrap();
+            }),
+        );
     }
 }

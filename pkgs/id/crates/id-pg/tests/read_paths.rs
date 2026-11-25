@@ -17,8 +17,8 @@ use id_pg::{
     Audience, CollectionAllowlist, ColumnDecl, Consistency, ContentRange, DecodeError,
     EndpointConfig, EndpointProbe, Failure, HttpResponse, ModeChoices, ObjectKind, OrderKey,
     PageDecoder, Pagination, PostgrestRequest, Privilege, Query, ReadError, ReadMode, Refusal,
-    RegisteredEndpoint, RoleGrant, SnapshotCaps, SnapshotStore, Transport, TransportError, Value,
-    live_read, register,
+    RegisteredEndpoint, RoleGrant, SelectItem, SnapshotCaps, SnapshotStore, Transport,
+    TransportError, Value, live_read, register,
 };
 
 type Row = serde_json::Map<String, serde_json::Value>;
@@ -139,6 +139,12 @@ impl PageDecoder for JsonRows {
                     })
             })
             .collect()
+    }
+
+    fn drop_columns(&self, row: &mut Row, columns: &[String]) {
+        for column in columns {
+            row.remove(column);
+        }
     }
 }
 
@@ -261,6 +267,67 @@ fn live_follows_the_keyset_cursor_one_request_per_page() {
     assert_eq!(result.observed_at_ms, 20);
     assert_eq!(param(&transport.sent[0], "or"), None);
     assert_eq!(param(&transport.sent[1], "or"), Some("(id.gt.2)"));
+}
+
+/// The query of #15010: project `title` alone from a collection whose
+/// unique key is `id`.
+fn title_only() -> Query {
+    let mut query = Query::read("items");
+    query.select = vec![SelectItem::Column("title".to_owned())];
+    query
+}
+
+fn titles(rows: &[Row]) -> Vec<String> {
+    rows.iter()
+        .map(|row| row["title"].as_str().unwrap().to_owned())
+        .collect()
+}
+
+#[test]
+fn projection_without_the_unique_key_reads_a_full_page_and_hides_the_key() {
+    // Oracle: #15010 — a full page used to fail as a malformed page
+    // because the cursor could not find `id` in the rows. The key is
+    // now fetched for the cursor and removed from the returned rows.
+    let mut transport = Scripted::new(vec![page(&[1, 2], Some("0-1/*"), 5)]);
+    let result = live_read(
+        &endpoint(),
+        &modes(ReadMode::Live),
+        &mut transport,
+        &JsonRows,
+        &title_only(),
+        1,
+    )
+    .unwrap();
+    assert_eq!(param(&transport.sent[0], "select"), Some("title,id"));
+    assert_eq!(titles(&result.rows), vec!["t1", "t2"]);
+    assert!(result.rows.iter().all(|row| !row.contains_key("id")));
+    assert!(result.truncated);
+    assert_eq!(result.next_cursor, Some(vec![Value::Int(2)]));
+}
+
+#[test]
+fn projection_without_the_unique_key_continues_across_pages() {
+    let mut transport = Scripted::new(vec![
+        page(&[1, 2], Some("0-1/*"), 10),
+        page(&[3], Some("0-0/*"), 20),
+    ]);
+    let result = live_read(
+        &endpoint(),
+        &modes(ReadMode::Live),
+        &mut transport,
+        &JsonRows,
+        &title_only(),
+        5,
+    )
+    .unwrap();
+    assert_eq!(titles(&result.rows), vec!["t1", "t2", "t3"]);
+    assert!(result.rows.iter().all(|row| row.len() == 1));
+    assert!(result.complete);
+    assert_eq!(result.pages, 2);
+    // The second page continues after the first page's last key and
+    // still fetches the key for its own cursor.
+    assert_eq!(param(&transport.sent[1], "or"), Some("(id.gt.2)"));
+    assert_eq!(param(&transport.sent[1], "select"), Some("title,id"));
 }
 
 #[test]

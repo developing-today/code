@@ -55,6 +55,29 @@
       },
       "type": "object"
     },
+    "peer": {
+      "additionalProperties": false,
+      "description": "One peer relationship (#9111 record section 3.2; the #9141 PeerPolicy plus fan-out fields). The class is a ceiling and operations is the grant. Load rejects: relay_granted without fully_trusted; the relay operation without relay_granted; sync.accept on send_only; sync.send on accept_signed_from; any operation on unknown; a repeated operation; expires_at not after valid_from. peer_id is unique in the document.",
+      "properties": {
+        "class": { "default": "unknown", "enum": ["fully_trusted", "send_only", "accept_signed_from", "unknown"], "type": "string" },
+        "expires_at": { "default": null, "format": "date-time", "type": ["string", "null"] },
+        "operations": {
+          "default": [],
+          "items": { "enum": ["sync.accept", "sync.send", "query.out", "query.answer", "relay"], "type": "string" },
+          "type": "array",
+          "uniqueItems": true
+        },
+        "peer_id": { "minLength": 1, "type": "string" },
+        "policy_version": { "minimum": 0, "type": "integer" },
+        "priority": { "default": null, "minimum": 0, "type": ["integer", "null"] },
+        "relay_granted": { "default": false, "type": "boolean" },
+        "scope": { "default": null, "minLength": 1, "type": ["string", "null"] },
+        "timeout_ms": { "default": null, "maximum": 30000, "minimum": 1, "type": ["integer", "null"] },
+        "valid_from": { "default": null, "format": "date-time", "type": ["string", "null"] }
+      },
+      "required": ["peer_id", "policy_version"],
+      "type": "object"
+    },
     "scoped_override": {
       "additionalProperties": false,
       "properties": {
@@ -63,6 +86,39 @@
         "scope": { "minLength": 1, "type": "string" }
       },
       "required": ["scope"],
+      "type": "object"
+    },
+    "storage": {
+      "additionalProperties": false,
+      "description": "The storage plane (#9111 record section 3.4): which adapter family backs each store. An absent key or null takes the built-in default. Load rejects an adapter or durability this build does not advertise (record section 6.5 step 4); this build advertises redb with fsync for local_store and event_log, and no object-store adapter.",
+      "properties": {
+        "event_log": { "anyOf": [{ "$ref": "#/$defs/store_binding" }, { "type": "null" }], "description": "The event log. Default sync_participation none." },
+        "local_store": { "anyOf": [{ "$ref": "#/$defs/store_binding" }, { "type": "null" }], "description": "The local persistent store. Default sync_participation full." },
+        "object_store": {
+          "anyOf": [
+            {
+              "additionalProperties": false,
+              "properties": {
+                "adapter": { "minLength": 1, "type": "string" },
+                "retention_class": { "default": "default", "minLength": 1, "type": ["string", "null"] }
+              },
+              "required": ["adapter"],
+              "type": "object"
+            },
+            { "type": "null" }
+          ],
+          "description": "The object store. Absent or null means none."
+        }
+      },
+      "type": "object"
+    },
+    "store_binding": {
+      "additionalProperties": false,
+      "properties": {
+        "adapter": { "default": "redb", "type": ["string", "null"] },
+        "durability": { "default": "fsync", "type": ["string", "null"] },
+        "sync_participation": { "enum": ["full", "none", null], "type": ["string", "null"] }
+      },
       "type": "object"
     }
   },
@@ -95,6 +151,11 @@
       "items": { "$ref": "#/$defs/scoped_override" },
       "type": "array"
     },
+    "peers": {
+      "description": "The peer plane: one entry per peer relationship; a repeated peer_id rejects the document. Absent means no configured peers. Resolved output is sorted by peer_id.",
+      "items": { "$ref": "#/$defs/peer" },
+      "type": "array"
+    },
     "protocol_versions": {
       "description": "Protocol-version allowlist. Resolved output is sorted; authoring order carries no meaning.",
       "items": { "minLength": 1, "type": "string" },
@@ -107,7 +168,8 @@
       "const": 1,
       "description": "Schema version. Only version 1 is accepted; any other version rejects the document.",
       "type": "integer"
-    }
+    },
+    "storage": { "$ref": "#/$defs/storage" }
   },
   "required": ["schema_version", "config_id", "revision", "mode", "protocol_versions", "ceilings"],
   "title": "id ConfigDocument v1",

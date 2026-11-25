@@ -1,0 +1,14 @@
+[Unit]
+Description=hatch-execd socket
+DefaultDependencies=no
+
+[Socket]
+ExecStartPre=+/usr/bin/install -d -m 0755 -o root -g root /run/hatch
+ExecStartPre=+/usr/bin/install -d -m 0755 -o root -g root /run/hatch/execd
+ListenStream=/run/hatch/execd/execd.sock
+SocketMode=0600
+RemoveOnStop=true
+Service=hatch-execd.service
+
+[Install]
+WantedBy=sockets.target

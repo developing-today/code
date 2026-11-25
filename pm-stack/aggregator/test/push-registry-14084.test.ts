@@ -54,7 +54,8 @@ describe("registry schema", () => {
     // Writer-stamped times (the #14061 lesson): no timestamp column has a default.
     for (const table of Object.keys(PUSH_REGISTRY_TABLES)) {
       const cols = db.query(`pragma table_info(${table})`).all() as { name: string; dflt_value: unknown }[];
-      for (const col of cols.filter((c) => /_at$|^at$/.test(c.name))) expect([table, col.dflt_value]).toEqual([table, null]);
+      for (const col of cols.filter((c) => /_at$|^at$/.test(c.name)))
+        expect([table, col.dflt_value]).toEqual([table, null]);
     }
     // No legacy table here: the seed marker still lands, recording zero.
     const meta = db.query("select key, value from push_registry_meta").all();
@@ -181,7 +182,12 @@ describe("taxonomy", () => {
 
 describe("delivery settings", () => {
   test("send-immediately is the default; invalid fields fall back per field", () => {
-    expect(mergeDelivery(undefined)).toEqual({ immediate: true, rateCap: null, grouping: false, groupReminderMinutes: null });
+    expect(mergeDelivery(undefined)).toEqual({
+      immediate: true,
+      rateCap: null,
+      grouping: false,
+      groupReminderMinutes: null,
+    });
     expect(mergeDelivery({ rateCap: { max: 0, perMinutes: 60 } }).rateCap).toBeNull();
     expect(mergeDelivery({ rateCap: { max: 5, perMinutes: 99999 } }).rateCap).toBeNull();
     expect(mergeDelivery({ rateCap: { max: 5, perMinutes: 30 } }).rateCap).toEqual({ max: 5, perMinutes: 30 });

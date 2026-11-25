@@ -725,9 +725,12 @@ export const PROPOSAL_THRESHOLD = 0.1;
 
 /** The send's timestamp: the ledger's insert-time column. Rows the
  * store writes carry no explicit timestamp, so the row's defaulted
- * created_at is the send time; sent_at wins when a row carries one. */
+ * column is the send time — named `at` in the live Turso ledger and
+ * `created_at` in the local store's shape; sent_at wins when a row
+ * carries one. (#15090; the hosted port in console/edge reads the
+ * same precedence.) */
 export function sendTimestamp(row: NotificationSendRow): string | null {
-  return row.sent_at ?? row.created_at ?? null;
+  return row.sent_at ?? row.created_at ?? row.at ?? null;
 }
 
 export interface NotificationWeekRollup {

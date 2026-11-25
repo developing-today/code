@@ -25,6 +25,7 @@ use crate::{
     is_node_id, load_or_create_keypair,
 };
 
+mod announce;
 mod journal;
 mod owner;
 mod scaffold;
@@ -1035,6 +1036,8 @@ pub async fn cmd_world(command: WorldCommand) -> Result<()> {
             JournalCommand::Check { dir, json } => print_journal_check(&dir, json),
             JournalCommand::Backup { dir, out } => journal_backup(&dir, &out),
         },
+        WorldCommand::Announce(args) => announce::announce(args).await,
+        WorldCommand::Lookup(args) => announce::lookup(args).await,
     }
 }
 

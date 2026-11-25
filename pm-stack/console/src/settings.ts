@@ -36,6 +36,34 @@ export interface PlatformSettings {
   needsRepos: string[];
 }
 
+/** Settings the owner may change without a deploy. Adding a name here is
+ * a repository change; the app may only set names already in this list. */
+export const OWNER_CHANGEABLE = ["promptLabel", "needsRepos"] as const satisfies readonly (keyof PlatformSettings)[];
+
+export type OwnerChangeableName = (typeof OWNER_CHANGEABLE)[number];
+
+export interface OwnerSettings {
+  /** Monotonic revision; every accepted change increments it. */
+  rev: number;
+  /** Milliseconds when this revision took effect. */
+  at: number;
+  /** Verified owner identity that made the change. */
+  by: string;
+  /** Missing names have no override. */
+  values: Partial<Pick<PlatformSettings, OwnerChangeableName>>;
+}
+
+export interface SettingInForce {
+  name: keyof PlatformSettings;
+  source: "owner" | "repository" | "machine";
+  /** Owner overrides have their accepted timestamp; other sources are undated here. */
+  since: number | null;
+  value: unknown;
+  repository: unknown;
+  by?: string;
+  rev?: number;
+}
+
 /** The names, in the order they are said in. */
 export const PLATFORM_SETTING_NAMES = [
   "repo",
@@ -95,6 +123,70 @@ export const MACHINES_FOR_NOW = ["needsRepos"] as const satisfies readonly (keyo
 export function goesBy<T extends PlatformSettings>(told: T, platform: PlatformSettings = platformSettings()): T {
   const own = Object.fromEntries(PLATFORM_OWN.map((name) => [name, platform[name]]));
   return { ...told, ...own };
+}
+
+/** Effective settings in repository → machine (needsRepos only) → owner order.
+ * Neither input is changed; absent owner values leave the existing merge in force. */
+export function effectiveSettings<T extends PlatformSettings>(
+  told: T,
+  owner: OwnerSettings | null | undefined,
+  platform: PlatformSettings = platformSettings(),
+): T {
+  const effective = goesBy(told, platform);
+  const values = owner?.values;
+  if (values && Object.prototype.hasOwnProperty.call(values, "promptLabel")) {
+    effective.promptLabel = values.promptLabel!;
+  }
+  if (values && Object.prototype.hasOwnProperty.call(values, "needsRepos")) {
+    effective.needsRepos = [...values.needsRepos!];
+  }
+  return effective;
+}
+
+/** One pure projection of the currently effective source for each setting. */
+export function settingsInForce(
+  told: Partial<Record<keyof PlatformSettings, unknown>> | null | undefined,
+  owner: OwnerSettings | null | undefined,
+  platform: PlatformSettings = platformSettings(),
+): SettingInForce[] {
+  const values = owner?.values;
+  const hasOwnerPrompt = Boolean(values && Object.prototype.hasOwnProperty.call(values, "promptLabel"));
+  const hasOwnerRepos = Boolean(values && Object.prototype.hasOwnProperty.call(values, "needsRepos"));
+  const machineSettings = new Set<keyof PlatformSettings>(MACHINES_FOR_NOW);
+
+  return PLATFORM_SETTING_NAMES.map((name) => {
+    if (name === "promptLabel" && hasOwnerPrompt) {
+      return {
+        name,
+        source: "owner",
+        since: owner!.at,
+        value: values!.promptLabel,
+        repository: platform.promptLabel,
+        by: owner!.by,
+        rev: owner!.rev,
+      };
+    }
+    if (name === "needsRepos" && hasOwnerRepos) {
+      return {
+        name,
+        source: "owner",
+        since: owner!.at,
+        value: values!.needsRepos,
+        repository: platform.needsRepos,
+        by: owner!.by,
+        rev: owner!.rev,
+      };
+    }
+
+    const source = machineSettings.has(name) && told?.[name] !== undefined ? "machine" : "repository";
+    return {
+      name,
+      source,
+      since: null,
+      value: source === "machine" ? told?.[name] : platform[name],
+      repository: platform[name],
+    };
+  });
 }
 
 /** One setting a machine runs with another value of: what it says,

@@ -131,6 +131,8 @@ export interface NotificationSendRow {
   outcome: string;
   sent_at?: string | null;
   created_at?: string | null;
+  /** The live Turso table's defaulted send-time column (named `at` there). */
+  at?: string | null;
   acted_on_at: string | null;
 }
 
