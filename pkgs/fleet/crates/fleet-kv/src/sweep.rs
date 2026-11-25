@@ -528,9 +528,9 @@ mod tests {
         store.delete(&me, "status", "agent").unwrap();
         let report = sweep(&primary, &primary, &store, &me).unwrap();
         assert_eq!((report.committed(), report.conflicts()), (3, 0));
-        let history = history(&primary, &shared("agent")).unwrap();
-        assert_eq!(history.len(), 3);
-        assert_eq!(history[1].value, b"working");
+        let versions = history(&primary, &shared("agent")).unwrap();
+        assert_eq!(versions.len(), 3);
+        assert_eq!(versions[1].value, b"working");
         assert!(!head(&primary, &shared("agent")).unwrap().unwrap().live);
         // Re-running is safe: nothing is pending, central is unchanged.
         let again = sweep(&primary, &primary, &store, &me).unwrap();
