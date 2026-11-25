@@ -137,6 +137,45 @@ fn dedupe_issue_ref(key: &str) -> Option<(String, i64)> {
     (valid_repo(repo) && number > 0).then(|| (repo.to_owned(), number))
 }
 
+fn dedupe_pr_refs(key: &str) -> Vec<(String, i64)> {
+    let Some(rest) = key.strip_prefix("repo-health:v1:") else {
+        return Vec::new();
+    };
+    let Some((family, tail)) = rest.split_once(':') else {
+        return Vec::new();
+    };
+    match family {
+        "pr" => {
+            let Some((repo, number)) = tail.split_once(":pr:") else {
+                return Vec::new();
+            };
+            let number = number.split(':').next().and_then(|n| n.parse::<i64>().ok());
+            number
+                .filter(|n| valid_repo(repo) && *n > 0)
+                .map(|n| vec![(repo.to_owned(), n)])
+                .unwrap_or_default()
+        }
+        "pr-set" => {
+            let Some((repo, numbers)) = tail.split_once(':') else {
+                return Vec::new();
+            };
+            if !valid_repo(repo) {
+                return Vec::new();
+            }
+            let mut refs: Vec<(String, i64)> = numbers
+                .split('-')
+                .filter_map(|number| number.parse::<i64>().ok())
+                .filter(|number| *number > 0)
+                .map(|number| (repo.to_owned(), number))
+                .collect();
+            refs.sort();
+            refs.dedup();
+            refs
+        }
+        _ => Vec::new(),
+    }
+}
+
 fn parse_pull_url(url: &str) -> (Option<String>, Option<i64>) {
     let Some(rest) = url.split("github.com/").nth(1) else {
         return (None, None);
@@ -212,6 +251,11 @@ fn task_link_refs(row: &Value) -> Vec<LinkRef> {
             number,
             "implements",
         ));
+    }
+    if let Some(key) = dedupe_key {
+        for (pr_repo, number) in dedupe_pr_refs(key) {
+            links.push(LinkRef::issue_or_pr("pr", pr_repo, number, "pr_for"));
+        }
     }
     for pr in [payload.get("pr"), result.get("pr"), result.get("pr_url")]
         .into_iter()
@@ -334,15 +378,28 @@ pub(crate) fn seed_task_links(
     if links.is_empty() {
         return Ok(());
     }
+    let task = get_task(t, task_id)?.unwrap_or_else(|| row.clone());
+    let now = now_iso();
     let mut statements = vec![("BEGIN IMMEDIATE", Vec::new())];
-    statements.extend(links.iter().map(|link| {
-        (
+    for link in &links {
+        statements.push((
             "INSERT OR IGNORE INTO queue_links \
              (task_id, other_kind, other_repo, other_number, other_task_id, link_kind, link_key, created_by, created_at) \
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
             link_insert_args(task_id, link, actor, created_at),
-        )
-    }));
+        ));
+        statements.push((
+            "INSERT INTO events (worker_id, task_id, kind, detail, created_at) \
+             SELECT ?, ?, 'linked', ?, ? WHERE changes() = 1",
+            vec![
+                Arg::Text(actor.to_owned()),
+                Arg::Int(task_id),
+                Arg::Text(link_event_detail(link, &task, actor).to_string()),
+                Arg::Text(now.clone()),
+            ],
+        ));
+        statements.push((HISTORY_INSERT_SQL, vec![Arg::Null, Arg::Null]));
+    }
     statements.push(("COMMIT", Vec::new()));
     t.exec_batch(&statements)?;
     Ok(())

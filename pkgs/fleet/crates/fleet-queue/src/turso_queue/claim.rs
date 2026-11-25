@@ -212,7 +212,6 @@ pub(crate) fn verb_enqueue(t: &TursoBackend, req: &Value) -> Value {
         let id = ins.last_insert_rowid.unwrap_or(0);
         let mut link_row = task.clone();
         link_row["created_at"] = json!(now_iso());
-        seed_task_links(t, id, &link_row, "enqueue_repo_task")?;
         event(
             t,
             Some("enqueue_repo_task"),
@@ -220,6 +219,7 @@ pub(crate) fn verb_enqueue(t: &TursoBackend, req: &Value) -> Value {
             "enqueued",
             &json!({"queue": queue, "dedupe_key": dedupe, "platform": platform, "manual_only": task.get("manual_only").and_then(Value::as_bool).unwrap_or(false)}),
         )?;
+        seed_task_links(t, id, &link_row, "enqueue_repo_task")?;
         // Revive-on-enqueue (#6838): the key's only prior row(s) are
         // terminal, so this fresh task is a revival, not a first
         // enqueue. Link it to its predecessor in progress (the audit
