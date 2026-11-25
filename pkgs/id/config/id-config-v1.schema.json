@@ -120,6 +120,15 @@
         "sync_participation": { "enum": ["full", "none", null], "type": ["string", "null"] }
       },
       "type": "object"
+    },
+    "tier": {
+      "additionalProperties": false,
+      "description": "One tier's placement and retention (#9111 record section 3.5). An absent key or null takes the default. A tier label never authorizes access. Load rejects object_store placement unless storage.object_store is bound.",
+      "properties": {
+        "placement": { "default": "local", "enum": ["local", "object_store", null], "type": ["string", "null"] },
+        "retention": { "default": "indefinite", "pattern": "^(indefinite|[0-9]*[1-9][0-9]*d)$", "type": ["string", "null"] }
+      },
+      "type": "object"
     }
   },
   "$id": "https://github.com/developing-today/code/pkgs/id/config/id-config-v1.schema.json",
@@ -169,7 +178,13 @@
       "description": "Schema version. Only version 1 is accepted; any other version rejects the document.",
       "type": "integer"
     },
-    "storage": { "$ref": "#/$defs/storage" }
+    "storage": { "$ref": "#/$defs/storage" },
+    "tiers": {
+      "additionalProperties": { "$ref": "#/$defs/tier" },
+      "description": "The tier map (#9111 record section 3.5): tier identifier to placement and retention. Absent means every record is in the built-in default tier (local, indefinite). A record whose tier the map does not name is held in default placement and refused for placement-dependent operations.",
+      "propertyNames": { "maxLength": 64, "minLength": 1, "pattern": "^[A-Za-z0-9_-]+$" },
+      "type": "object"
+    }
   },
   "required": ["schema_version", "config_id", "revision", "mode", "protocol_versions", "ceilings"],
   "title": "id ConfigDocument v1",
