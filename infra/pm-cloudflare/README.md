@@ -28,14 +28,14 @@ Run the tests: `python3 -I infra/pm-cloudflare/test_apply.py`.
 
 ## Secrets (repository secrets, never in the repo)
 
-| Variable | Repository secret | What it is |
-|---|---|---|
-| `PMCF_CLOUDFLARE_TOKEN` | `PMCF_CLOUDFLARE_TOKEN` | the Cloudflare API token; source it from `cloudflare.api-token-account-wide` |
-| `PMCF_OWNER_EMAIL` | `PMCF_OWNER_EMAIL` | whose sign-in is let in |
-| `PMCF_GITHUB_TOKEN` | `PMCF_GITHUB_TOKEN` | the Worker automation token; source it from `github.developing-today-code-automation` |
-| `PMCF_QUEUE_TOKEN` | `PMCF_QUEUE_TOKEN` | the Worker queue store token; source it from `turso.fleet-queue-rw-token` |
-| `PMCF_BRIDGE_TOKEN` | `PMCF_BRIDGE_TOKEN` (optional) | the PM stack bridge token; source it from `bridge.pm-stack-token` |
-| `PMCF_GOOGLE_CLIENT_ID` / `PMCF_GOOGLE_CLIENT_SECRET` | same names | Google sign-in (optional) |
+| Variable                                              | Repository secret              | What it is                                                                            |
+| ----------------------------------------------------- | ------------------------------ | ------------------------------------------------------------------------------------- |
+| `PMCF_CLOUDFLARE_TOKEN`                               | `PMCF_CLOUDFLARE_TOKEN`        | the Cloudflare API token; source it from `cloudflare.api-token-account-wide`          |
+| `PMCF_OWNER_EMAIL`                                    | `PMCF_OWNER_EMAIL`             | whose sign-in is let in                                                               |
+| `PMCF_GITHUB_TOKEN`                                   | `PMCF_GITHUB_TOKEN`            | the Worker automation token; source it from `github.developing-today-code-automation` |
+| `PMCF_QUEUE_TOKEN`                                    | `PMCF_QUEUE_TOKEN`             | the Worker queue store token; source it from `turso.fleet-queue-rw-token`             |
+| `PMCF_BRIDGE_TOKEN`                                   | `PMCF_BRIDGE_TOKEN` (optional) | the PM stack bridge token; source it from `bridge.pm-stack-token`                     |
+| `PMCF_GOOGLE_CLIENT_ID` / `PMCF_GOOGLE_CLIENT_SECRET` | same names                     | Google sign-in (optional)                                                             |
 
 Google sign-in credentials must be supplied as a pair. When both are
 omitted, an existing Google identity provider is preserved; the applier

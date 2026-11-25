@@ -869,9 +869,7 @@ const ANSWER_PAGE_STYLE = `<style>
 function renderNeedsUserPage(items: NeedsUserListItem[], stagesAvailable: boolean): string {
   const priorityOptions = (current: number | null) =>
     [`<option value=""${current === null ? " selected" : ""}>No priority</option>`]
-      .concat(
-        [1, 2, 3, 4, 5].map((p) => `<option value="${p}"${current === p ? " selected" : ""}>P${p}</option>`),
-      )
+      .concat([1, 2, 3, 4, 5].map((p) => `<option value="${p}"${current === p ? " selected" : ""}>P${p}</option>`))
       .join("");
   const rows = items
     .map(
@@ -2321,7 +2319,8 @@ async function withMetadataTempFile<T>(prefix: string, content: string, run: (pa
 }
 
 const metadataDbPath =
-  process.env.PM_METADATA_DB_PATH ?? join(requireHome("PM_METADATA_DB_PATH"), ".local/state/pm-aggregator/pm-metadata.sqlite");
+  process.env.PM_METADATA_DB_PATH ??
+  join(requireHome("PM_METADATA_DB_PATH"), ".local/state/pm-aggregator/pm-metadata.sqlite");
 const metadataDb = openMetadataStore(metadataDbPath, (path) => new Database(path));
 const metadataWebhookHandler = createMetadataWebhookHandler({
   secret: () => resolveBwsSecret("pm-aggregator.github-webhook-secret"),

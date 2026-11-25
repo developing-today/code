@@ -56,105 +56,105 @@ The Phase tracker panel's per-phase progress counts F-items against live GitHub 
 
 | Phase | Item   | Ref     | Title                                                 |
 | ----- | ------ | ------- | ----------------------------------------------------- |
-| 0 | F0.1 | #1075 | Baseline: fix or quarantine the three known failures |
-| 0 | F0.2 | #1075 | Toolchain 1.99.0 in rust-toolchain.toml |
-| 0 | F0.3 | #1075 | Dependencies, one group per commit |
-| 0 | F0.4 | #1075 | Pull pages capped by bytes, not item count |
-| 0 | F0.5 | #1075 | rust-version set to 1.96, the true minimum |
-| 0 | F0.6 | #1075 | Dial deadlines in the remaining modules |
-| 0 | F0.7 | #1075 | mDNS on serve, on by default |
-| 0 | F0.8 | #1075 | store.rs FsStore comment corrected to redb |
-| 0 | F0.9 | #1075 | Tuple encoding property tests and fuzz target |
-| 0 | F0.10 | #1075 | Test harness: regression runner and multi-node helper |
-| 0 | F0.11 | #1075 | verify_strict regressions at every call site |
-| 0 | F0.12 | #1075 | Nix check uses the pinned toolchain |
-| 1 | F1.1 | #1075 | Storage decision record: redb everywhere |
-| 1 | F1.2 | #1075 | ChainExt struct, validation, builder and reader |
-| 1 | F1.3 | #1075 | Event store on redb with fork freeze and proofs |
-| 1 | F1.4 | #1075 | Crash-safety gate for redb |
-| 1 | F1.5 | #1075 | Waiting caps: 256 per author, 7 days |
-| 1 | F1.6 | #1075 | Store traits over redb |
-| 1 | F1.7 | #1075 | Canonical CBOR golden vectors |
-| 1 | F1.8 | #1075 | Ingest pipeline: signature verify and fork freeze |
-| 1 | F1.9 | #1075 | Identity store moves from libsql to redb |
-| 1 | F1.10 | #1075 | Crash gate for the identity store |
-| 2 | F2.1 | #1075 | Auth-frontier mapping |
-| 2 | F2.2 | #1075 | Admission gate |
-| 2 | F2.3 | #1075 | Voiding: authority-based dependents |
-| 2 | F2.4 | #1075 | Friendship with its cap, and the dissolve projection |
-| 2 | F2.5 | #1075 | Delegation: edges, attenuation, chain search, veto |
-| 2 | F2.6 | #1075 | World capabilities without use-count bounds |
-| 2 | F2.7 | #1075 | Cross-world reconciliation |
-| 2 | F2.8 | #1075 | Property tests over random operation orders |
-| 2 | F2.9 | #1075 | Server config: creation limits, provisioning, aliases |
-| 3 | F3.1 | #1075 | Range sync on the redb store (P3.1) |
-| 3 | F3.2 | #1075 | Fork in a batch isolates and continues (P3.1a) |
-| 3 | F3.3 | #1075 | T=0 validation rejects non-termination (P3.1b) |
-| 3 | F3.4 | #1075 | Flights chunked under the frame cap (P3.1c) |
-| 3 | F3.5 | #1075 | LogSync through p2panda-sync on our traits (P3.2) |
-| 3 | F3.6 | #1075 | Method selection: LogSync vs range (P3.3) |
-| 3 | F3.7 | #1075 | Blob gating and observe (P3.4) |
-| 3 | F3.8 | #1075 | Relay defaults: n0, home-relay deadline (P3.5) |
-| 3 | F3.9 | #1075 | Relay map order: QAD-capable relays first (P3.6) |
-| 3 | F3.10 | #1075 | Real-network holepunch and QAD tests (P3.7) |
-| 3 | F3.11 | #1075 | Relay operations: systemd unit and metrics (P3.8) |
-| 4 | F4.1 | #1075 | DataScheme adapter around the crate |
-| 4 | F4.2 | #1075 | DGM and the from_join membership fix |
-| 4 | F4.3 | #1075 | from_join: immediate update and withholding rule |
-| 4 | F4.4 | #1075 | Scheme v1: serde_bytes encoding |
-| 4 | F4.5 | #1075 | recent:N and full history modes |
-| 4 | F4.6 | #1075 | Lazy full history via member epoch secrets |
-| 4 | F4.7 | #1075 | Heads rule: cap 32 |
-| 4 | F4.8 | #1075 | Rotation policy and PCS recovery procedure |
-| 4 | F4.9 | #1075 | Warnings at 96, 128 and 1,000 members |
-| 4 | F4.10 | #1075 | scheme: none notice in UI and metadata |
-| 4 | F4.11 | #1075 | DataScheme update cost measurement |
-| 4 | F4.12 | #1075 | Welcome size budget: chunking above the frame cap |
-| 4 | F4.13 | #1075 | Membership source is the group fold |
-| 5 | F5.1 | #1075 | Observed-remove tags in the store |
-| 5 | F5.2 | #1075 | Tag index on the fixed tuple encoding |
-| 5 | F5.3 | #1075 | Compaction: snapshot at a causal cut |
-| 5 | F5.4 | #1075 | Documents: content events and snapshots |
-| 5 | F5.5 | #1075 | Search over the tag index |
-| 5 | F5.6 | #1075 | Content on removal, kept |
-| 5 | F5.7 | #1075 | Aliases as tags |
-| 6 | F6.1 | #1075 | Seitan V2 invites: tokens, derivations, proofs |
-| 6 | F6.2 | #1075 | Freshness window, default 5 minutes |
-| 6 | F6.3 | #1075 | Tickets, option E: standard ticket links |
-| 6 | F6.4 | #1075 | Invite events and links |
-| 6 | F6.5 | #1075 | Pull policy: open pull with authorized option |
-| 6 | F6.6 | #1075 | Fork recovery: remove and re-enrol |
-| 6 | F6.7 | #1075 | CLI: groups (P6.7a) |
-| 6 | F6.8 | #1075 | CLI: delegation (P6.7b) |
-| 6 | F6.9 | #1075 | CLI: documents and tags (P6.7c) |
-| 6 | F6.10 | #1075 | Rejection reasons everywhere (P6.8) |
-| 7 | F7.1 | #1075 | Relay kit for Cloudflare Tunnel and VPS testing |
-| 7 | F7.2 | #1075 | Cloudflare Workers pkarr option (design) |
-| 7 | F7.3 | #1075 | DHT opt-in per world |
-| 7 | F7.4 | #1075 | Access control: none now, revisit later |
-| 7 | F7.5 | #1075 | Deployments and real-network tests |
-| 8 | F8.1 | #1075 | Time and witnesses: causal-validity-only scope |
-| 8 | F8.2 | #1075 | Retention and pruning |
-| 8 | F8.3 | #1075 | Multi-device |
-| 8 | F8.4 | #1075 | Views: explorer and web |
-| 8 | F8.5 | #1075 | Cross-world rules |
-| 8 | F8.6 | #1075 | Warnings UI |
-| 8 | F8.7 | #1075 | BeeKEM reconsideration, conditional |
-| 8 | F8.8 | #1075 | Clippy and other lints, deferred |
-| 9 | F9.1 | #1076 | Portable screen view (P9.1) |
-| 9 | F9.2 | #1076 | Input and viewport (P9.2) |
-| 9 | F9.3 | #1076 | Execution profiles (P9.3) |
-| 9 | F9.4 | #1076 | Standard libraries: Roc JSON and helpers (P9.4) |
-| 9 | F9.5 | #1076 | Adapters and examples (P9.5) |
-| 9 | F9.6 | #1076 | Standard-library consolidation (P9.6) |
-| 9 | F9.7 | #1076 | Server-observed chat history (P9.7) |
-| 9 | F9.8 | #1076 | Guest-aware reflow (P9.8) |
-| 9 | F9.9 | #1076 | Presence and records readback (P9.9) |
-| 9 | F9.10 | #1076 | App scaffolding and inspection CLI (P9.10) |
-| 9 | F9.11 | #1076 | Library growth: text and widgets (P9.11) |
-| 10 | F10.1 | #1077 | Role-scoped invites and world directory |
-| 10 | F10.2 | #1077 | Session recording to replayable fixtures |
-| 10 | F10.3 | #1077 | Scheduled events |
+| 0     | F0.1   | #1075   | Baseline: fix or quarantine the three known failures  |
+| 0     | F0.2   | #1075   | Toolchain 1.99.0 in rust-toolchain.toml               |
+| 0     | F0.3   | #1075   | Dependencies, one group per commit                    |
+| 0     | F0.4   | #1075   | Pull pages capped by bytes, not item count            |
+| 0     | F0.5   | #1075   | rust-version set to 1.96, the true minimum            |
+| 0     | F0.6   | #1075   | Dial deadlines in the remaining modules               |
+| 0     | F0.7   | #1075   | mDNS on serve, on by default                          |
+| 0     | F0.8   | #1075   | store.rs FsStore comment corrected to redb            |
+| 0     | F0.9   | #1075   | Tuple encoding property tests and fuzz target         |
+| 0     | F0.10  | #1075   | Test harness: regression runner and multi-node helper |
+| 0     | F0.11  | #1075   | verify_strict regressions at every call site          |
+| 0     | F0.12  | #1075   | Nix check uses the pinned toolchain                   |
+| 1     | F1.1   | #1075   | Storage decision record: redb everywhere              |
+| 1     | F1.2   | #1075   | ChainExt struct, validation, builder and reader       |
+| 1     | F1.3   | #1075   | Event store on redb with fork freeze and proofs       |
+| 1     | F1.4   | #1075   | Crash-safety gate for redb                            |
+| 1     | F1.5   | #1075   | Waiting caps: 256 per author, 7 days                  |
+| 1     | F1.6   | #1075   | Store traits over redb                                |
+| 1     | F1.7   | #1075   | Canonical CBOR golden vectors                         |
+| 1     | F1.8   | #1075   | Ingest pipeline: signature verify and fork freeze     |
+| 1     | F1.9   | #1075   | Identity store moves from libsql to redb              |
+| 1     | F1.10  | #1075   | Crash gate for the identity store                     |
+| 2     | F2.1   | #1075   | Auth-frontier mapping                                 |
+| 2     | F2.2   | #1075   | Admission gate                                        |
+| 2     | F2.3   | #1075   | Voiding: authority-based dependents                   |
+| 2     | F2.4   | #1075   | Friendship with its cap, and the dissolve projection  |
+| 2     | F2.5   | #1075   | Delegation: edges, attenuation, chain search, veto    |
+| 2     | F2.6   | #1075   | World capabilities without use-count bounds           |
+| 2     | F2.7   | #1075   | Cross-world reconciliation                            |
+| 2     | F2.8   | #1075   | Property tests over random operation orders           |
+| 2     | F2.9   | #1075   | Server config: creation limits, provisioning, aliases |
+| 3     | F3.1   | #1075   | Range sync on the redb store (P3.1)                   |
+| 3     | F3.2   | #1075   | Fork in a batch isolates and continues (P3.1a)        |
+| 3     | F3.3   | #1075   | T=0 validation rejects non-termination (P3.1b)        |
+| 3     | F3.4   | #1075   | Flights chunked under the frame cap (P3.1c)           |
+| 3     | F3.5   | #1075   | LogSync through p2panda-sync on our traits (P3.2)     |
+| 3     | F3.6   | #1075   | Method selection: LogSync vs range (P3.3)             |
+| 3     | F3.7   | #1075   | Blob gating and observe (P3.4)                        |
+| 3     | F3.8   | #1075   | Relay defaults: n0, home-relay deadline (P3.5)        |
+| 3     | F3.9   | #1075   | Relay map order: QAD-capable relays first (P3.6)      |
+| 3     | F3.10  | #1075   | Real-network holepunch and QAD tests (P3.7)           |
+| 3     | F3.11  | #1075   | Relay operations: systemd unit and metrics (P3.8)     |
+| 4     | F4.1   | #1075   | DataScheme adapter around the crate                   |
+| 4     | F4.2   | #1075   | DGM and the from_join membership fix                  |
+| 4     | F4.3   | #1075   | from_join: immediate update and withholding rule      |
+| 4     | F4.4   | #1075   | Scheme v1: serde_bytes encoding                       |
+| 4     | F4.5   | #1075   | recent:N and full history modes                       |
+| 4     | F4.6   | #1075   | Lazy full history via member epoch secrets            |
+| 4     | F4.7   | #1075   | Heads rule: cap 32                                    |
+| 4     | F4.8   | #1075   | Rotation policy and PCS recovery procedure            |
+| 4     | F4.9   | #1075   | Warnings at 96, 128 and 1,000 members                 |
+| 4     | F4.10  | #1075   | scheme: none notice in UI and metadata                |
+| 4     | F4.11  | #1075   | DataScheme update cost measurement                    |
+| 4     | F4.12  | #1075   | Welcome size budget: chunking above the frame cap     |
+| 4     | F4.13  | #1075   | Membership source is the group fold                   |
+| 5     | F5.1   | #1075   | Observed-remove tags in the store                     |
+| 5     | F5.2   | #1075   | Tag index on the fixed tuple encoding                 |
+| 5     | F5.3   | #1075   | Compaction: snapshot at a causal cut                  |
+| 5     | F5.4   | #1075   | Documents: content events and snapshots               |
+| 5     | F5.5   | #1075   | Search over the tag index                             |
+| 5     | F5.6   | #1075   | Content on removal, kept                              |
+| 5     | F5.7   | #1075   | Aliases as tags                                       |
+| 6     | F6.1   | #1075   | Seitan V2 invites: tokens, derivations, proofs        |
+| 6     | F6.2   | #1075   | Freshness window, default 5 minutes                   |
+| 6     | F6.3   | #1075   | Tickets, option E: standard ticket links              |
+| 6     | F6.4   | #1075   | Invite events and links                               |
+| 6     | F6.5   | #1075   | Pull policy: open pull with authorized option         |
+| 6     | F6.6   | #1075   | Fork recovery: remove and re-enrol                    |
+| 6     | F6.7   | #1075   | CLI: groups (P6.7a)                                   |
+| 6     | F6.8   | #1075   | CLI: delegation (P6.7b)                               |
+| 6     | F6.9   | #1075   | CLI: documents and tags (P6.7c)                       |
+| 6     | F6.10  | #1075   | Rejection reasons everywhere (P6.8)                   |
+| 7     | F7.1   | #1075   | Relay kit for Cloudflare Tunnel and VPS testing       |
+| 7     | F7.2   | #1075   | Cloudflare Workers pkarr option (design)              |
+| 7     | F7.3   | #1075   | DHT opt-in per world                                  |
+| 7     | F7.4   | #1075   | Access control: none now, revisit later               |
+| 7     | F7.5   | #1075   | Deployments and real-network tests                    |
+| 8     | F8.1   | #1075   | Time and witnesses: causal-validity-only scope        |
+| 8     | F8.2   | #1075   | Retention and pruning                                 |
+| 8     | F8.3   | #1075   | Multi-device                                          |
+| 8     | F8.4   | #1075   | Views: explorer and web                               |
+| 8     | F8.5   | #1075   | Cross-world rules                                     |
+| 8     | F8.6   | #1075   | Warnings UI                                           |
+| 8     | F8.7   | #1075   | BeeKEM reconsideration, conditional                   |
+| 8     | F8.8   | #1075   | Clippy and other lints, deferred                      |
+| 9     | F9.1   | #1076   | Portable screen view (P9.1)                           |
+| 9     | F9.2   | #1076   | Input and viewport (P9.2)                             |
+| 9     | F9.3   | #1076   | Execution profiles (P9.3)                             |
+| 9     | F9.4   | #1076   | Standard libraries: Roc JSON and helpers (P9.4)       |
+| 9     | F9.5   | #1076   | Adapters and examples (P9.5)                          |
+| 9     | F9.6   | #1076   | Standard-library consolidation (P9.6)                 |
+| 9     | F9.7   | #1076   | Server-observed chat history (P9.7)                   |
+| 9     | F9.8   | #1076   | Guest-aware reflow (P9.8)                             |
+| 9     | F9.9   | #1076   | Presence and records readback (P9.9)                  |
+| 9     | F9.10  | #1076   | App scaffolding and inspection CLI (P9.10)            |
+| 9     | F9.11  | #1076   | Library growth: text and widgets (P9.11)              |
+| 10    | F10.1  | #1077   | Role-scoped invites and world directory               |
+| 10    | F10.2  | #1077   | Session recording to replayable fixtures              |
+| 10    | F10.3  | #1077   | Scheduled events                                      |
 | 11    | F11.1  | #238    | Relay kit location                                    |
 | 11    | F11.2  | #229    | Firefox E2E isolation                                 |
 | 11    | F11.3  | #241    | Explain the LogSync flakes                            |

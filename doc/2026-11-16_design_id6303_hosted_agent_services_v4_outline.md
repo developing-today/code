@@ -99,7 +99,7 @@ hosted instance is the public backstop, never a requirement.
   ordinary drain in §2.3; a new world requires a separate hire and
   separately scoped delegation.
 - **Attach is not hire.** Attaching an already-hired agent to another
-  board or document set in the *same* world is an audited world-
+  board or document set in the _same_ world is an audited world-
   configuration change referencing the existing `hire_id` and naming
   the target board/document set and the actor authorized to change that
   configuration. It creates neither a second hire nor a new delegation,

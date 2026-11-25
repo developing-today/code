@@ -183,10 +183,7 @@ describe("front door (H1)", () => {
   test("account with no live roles is rejected (fail-closed)", async () => {
     const fixture = await makeFixture();
     const token = await mintToken(fixture, validClaims());
-    const result = await resolveFrontDoor(
-      token,
-      fixtureDeps(fixture, { loadRoles: async () => [] }),
-    );
+    const result = await resolveFrontDoor(token, fixtureDeps(fixture, { loadRoles: async () => [] }));
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.reason).toBe("no_live_roles");

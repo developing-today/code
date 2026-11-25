@@ -48,12 +48,7 @@
  */
 export type Role = "owner" | "orchestrator" | "agent" | "read-only";
 
-export const ROLES: ReadonlySet<string> = new Set([
-  "owner",
-  "orchestrator",
-  "agent",
-  "read-only",
-]);
+export const ROLES: ReadonlySet<string> = new Set(["owner", "orchestrator", "agent", "read-only"]);
 
 export interface JwksKey {
   kty?: string;
@@ -91,9 +86,7 @@ export type DenyReason =
   | "no_live_roles"
   | "invalid_agent_credential";
 
-export type FrontDoorResult =
-  | { ok: true; principal: ResolvedPrincipal }
-  | { ok: false; reason: DenyReason };
+export type FrontDoorResult = { ok: true; principal: ResolvedPrincipal } | { ok: false; reason: DenyReason };
 
 export interface FrontDoorDeps {
   /** Expected `iss` — the #9077 provider. */
@@ -157,10 +150,7 @@ function audienceMatches(aud: unknown, expected: string): boolean {
  * throws for bad tokens; unexpected internal errors deny as
  * `malformed_token` rather than leaking a partial principal.
  */
-export async function resolveFrontDoor(
-  token: string,
-  deps: FrontDoorDeps,
-): Promise<FrontDoorResult> {
+export async function resolveFrontDoor(token: string, deps: FrontDoorDeps): Promise<FrontDoorResult> {
   try {
     const nowSec = Math.floor((deps.now ?? (() => Date.now() / 1000))());
     const parts = token.split(".");

@@ -313,7 +313,12 @@ async function computeAttemptAggregates(target: OpenCodeTarget, now: number): Pr
   const legRows: DayLegRow[] = [];
   const modelRows: DayModelRow[] = [];
   for (const [from, to] of daySliceBounds(now - 15 * DAY_MS, until)) {
-    const legs = await fetchRollup(target, { since: from, until: to, bucket: "day", group: ["provider", "credential"] });
+    const legs = await fetchRollup(target, {
+      since: from,
+      until: to,
+      bucket: "day",
+      group: ["provider", "credential"],
+    });
     legRows.push(...legs.map(legRowOf));
     const models = await fetchRollup(target, { since: from, until: to, bucket: "day", group: ["model", "variant"] });
     modelRows.push(...models.map(modelRowOf));
@@ -1067,7 +1072,8 @@ export function buildQuotaAnalytics(args: {
       ? loadActivity(
           db,
           now,
-          args.mcpxCallLedgerDir ?? join(requireHome("PM_AGG_MCPX_CALL_LEDGER_DIR"), ".local", "state", "mcpx", "call-ledger"),
+          args.mcpxCallLedgerDir ??
+            join(requireHome("PM_AGG_MCPX_CALL_LEDGER_DIR"), ".local", "state", "mcpx", "call-ledger"),
           args.fleetInvocationLedgerFile ??
             join(requireHome("PM_AGG_FLEET_INVOCATION_LEDGER_FILE"), ".local", "state", "fleet", "invocations.jsonl"),
         )
