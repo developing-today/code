@@ -1560,7 +1560,7 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
         Err(e) => warn!("tags: legacy metadata import failed: {e:#}"),
     }
 
-    // The node's own event store, shared between the web layer and /id-range-sync/1
+    // The node's own event store, shared between the web layer and /id-range-sync/2
     // range sync (#792). Serve opens it once, on the same directory the web
     // state would open (the `events` sibling of the identity database), and
     // hands the one instance to both: the store admits a single opener, and a
@@ -1949,11 +1949,11 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
 
     // Offer a sync session to every discovered peer, on an interval: a save on
     // either node is discoverable on the other after the next session (#792).
-    // Peers that do not serve /id-range-sync/1 fail the dial, which is logged at debug
+    // Peers that do not serve /id-range-sync/2 fail the dial, which is logged at debug
     // and otherwise ignored — accepting sessions above is what serves the rest.
     #[cfg(feature = "web")]
     let _event_sync_handle = event_events.clone().map(|events| {
-        status!("event sync: /id-range-sync/1 enabled (the web event store)");
+        status!("event sync: /id-range-sync/2 enabled (the web event store)");
         // #5119: the live pull gate reads the operator config's
         // `[policy] pull_policy`. Without a config the policy is the code
         // default (open), exactly as before. The local event store is not a

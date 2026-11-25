@@ -1,4 +1,4 @@
-//! `/id-range-sync/1` sessions for the node's own event store, as served by `id serve` (#792).
+//! `/id-range-sync/2` sessions for the node's own event store, as served by `id serve` (#792).
 //!
 //! The ALPN is [`crate::event_store::sync::ALPN`], split from `log_sync`'s `/id-sync/1`
 //! in #179: these sessions open with a range flight, not the handshake's `Request`
@@ -336,7 +336,7 @@ mod tests {
         // `log_sync` is above this crate, and the value is the wire
         // constant the distinctness rule is about.
         assert_ne!(ALPN, b"/id-sync/1");
-        assert_eq!(ALPN, b"/id-range-sync/1");
+        assert_eq!(ALPN, b"/id-range-sync/2");
     }
 
     /// The #792 acceptance test: a document revision published (saved) on node A is

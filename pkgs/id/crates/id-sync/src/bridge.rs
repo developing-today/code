@@ -3,7 +3,7 @@
 //! The hosted half of the bridge — the endpoint, the protocol core
 //! and the store — lives in `pkgs/id/hosted-worker` (PR #12911).
 //! This module is the other leg: a native node speaking the same
-//! wire from Rust, the `/id-range-sync/1` peer role over the bridge
+//! wire from Rust, the `/id-range-sync/2` peer role over the bridge
 //! protocol instead of an Iroh stream.
 //!
 //! The wire is one ordered binary message channel (a WebSocket in

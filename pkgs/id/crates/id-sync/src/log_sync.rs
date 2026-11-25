@@ -60,7 +60,7 @@ use id_store::store_traits::{ChainLog, EventStoreBackend, SharedEventStore};
 
 /// The ALPN for sync sessions. Range sync joins as a method of the same session, and the
 /// first frame of every session is the [`Request`]: one session shape on this ALPN.
-/// `serve`'s own range sessions (P3.1) run on their own ALPN, `/id-range-sync/1`
+/// `serve`'s own range sessions (P3.1) run on their own ALPN, `/id-range-sync/2`
 /// ([`id_events::event_store::sync::ALPN`]) — a deliberate, documented split (#179), so no
 /// second, unlabelled session shape shares this one either.
 pub const SYNC_ALPN: &[u8] = b"/id-sync/1";
@@ -1650,7 +1650,10 @@ mod tests {
         // arrive.
         assert_eq!(answered.received.duplicates, 1, "seq 1 is a proof header");
         assert_eq!(answered.received.voided, 1, "seq 2 is above the fork point");
-        assert_eq!(answered.received.refused, 0, "seq 2 is retained as evidence");
+        assert_eq!(
+            answered.received.refused, 0,
+            "seq 2 is retained as evidence"
+        );
         assert_eq!(answered.received.accepted, 5, "every event of y arrives");
         assert_eq!(outcome.metrics.sent_operations, 7);
         let refs = [&y];

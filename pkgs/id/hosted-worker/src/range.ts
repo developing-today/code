@@ -1,5 +1,5 @@
 // Range reconciliation over the sync set: a transcription of
-// crates/id-events' event_store::range (the /id-range-sync/1
+// crates/id-events' event_store::range (the /id-range-sync/2
 // design) onto the bridge's wire. Two peers exchange compact range
 // entries — skip, fingerprint, id lists — and each learns exactly
 // the set difference without either side assigning order or
