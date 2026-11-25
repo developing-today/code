@@ -394,21 +394,23 @@ impl Strategy for Weighted {
             return Some(0);
         }
         let mut best: Option<usize> = None;
+        let mut best_score: i64 = i64::MIN;
         for (idx, candidate) in candidates.iter().enumerate() {
+            let weight = i64::from(self.weight_of(&candidate.id));
+            if weight == 0 {
+                continue;
+            }
             let score = {
                 let entry = self.current.entry(candidate.id.clone()).or_insert(0);
-                *entry += i64::from(self.weight_of(&candidate.id));
+                *entry += weight;
                 *entry
             };
-            let better = match best {
-                None => true,
-                Some(b) => score > self.current[&candidates[b].id],
-            };
-            if better {
+            if score > best_score {
+                best_score = score;
                 best = Some(idx);
             }
         }
-        let picked = best.expect("candidates are non-empty");
+        let picked = best.expect("a positive total implies a weighted candidate");
         *self
             .current
             .get_mut(&candidates[picked].id)
