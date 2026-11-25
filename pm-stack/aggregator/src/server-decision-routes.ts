@@ -3,7 +3,14 @@
 // decision-set pages' dispatch. Each handler returns null when its
 // routes do not match. Split out of server.ts (#13052).
 import { decodePathSegment } from "./path-segment.ts";
-import { getNeedsDrew, listOpenNeedsDrew, needsDrewIncidentKey, recordAnswer } from "./needs-drew.ts";
+import {
+  getNeedsDrew,
+  listOpenNeedsDrew,
+  needsDrewIncidentKey,
+  recordAnswer,
+  type NeedsDrewQuestion,
+} from "./needs-drew.ts";
+import { validateNeedsDrewChoice } from "./needs-drew-answer.ts";
 import {
   decisionSetAging,
   decisionSetOpenState,
@@ -32,7 +39,6 @@ import {
   onQuestionAnswered,
   parseBlockedByCount,
   parsePriority,
-  questionOptions,
   setQuestionBlockedByCount,
   setQuestionPriority,
   stageRowsFor,
@@ -64,6 +70,33 @@ import {
 } from "./server-pages.ts";
 import { alertsIntakeAuthorized } from "./server-alert-routes.ts";
 
+/** The side effects of a recorded needs-Drew answer, shared by the
+ * laptop route and the edge relay's drain (#13469). Best-effort: a
+ * failure is logged and never fails the recorded answer.
+ *
+ * #8605: the answer resolves the question, so close its alert
+ * incident — the raiser posted it under this question's source with
+ * key needs-drew:<ledgerId>. #14084 S1: "Send back" returns the item
+ * to review; any other answer resolves it, keyed on the recorded
+ * (first) answer. */
+export async function afterNeedsDrewAnswered(item: NeedsDrewQuestion, answered: NeedsDrewQuestion): Promise<void> {
+  try {
+    const store = await getAlertsStore();
+    if (store) {
+      await store.closeOpenIncidentByKey(item.source, needsDrewIncidentKey(item.ledgerId));
+      requestAlertTick();
+    }
+  } catch (err) {
+    console.error(`needs-drew answer: incident close failed (${err instanceof Error ? err.message : "error"})`);
+  }
+  try {
+    const store = await getAlertsStore();
+    if (store) await onQuestionAnswered(store.itemStages(), item.ledgerId, answered.answer?.optionId);
+  } catch (err) {
+    console.error(`needs-drew answer: stage update failed (${err instanceof Error ? err.message : "error"})`);
+  }
+}
+
 export async function handleDecisionRoutes(req: Request, url: URL, path: string): Promise<Response | null> {
   // --- Needs-Drew answers (#8568) --------------------------------------
   const needsDrewAnswerMatch = /^\/api\/needs-drew\/([^/]+)\/answer$/.exec(path);
@@ -81,58 +114,11 @@ export async function handleDecisionRoutes(req: Request, url: URL, path: string)
     if (!item || typeof body.token !== "string" || body.token !== item.token) {
       return json({ error: "unknown question or bad token" }, 403);
     }
-    const optionId = typeof body.optionId === "string" ? body.optionId : undefined;
-    if (optionId !== undefined && !questionOptions(item).some((o) => o.id === optionId)) {
-      return json({ error: "optionId is not one of the question options" }, 400);
-    }
-    // #14149: a checkbox answer ticks several options at once.
-    let optionIds: string[] | undefined;
-    if (body.optionIds !== undefined) {
-      if (!Array.isArray(body.optionIds) || body.optionIds.some((id) => typeof id !== "string")) {
-        return json({ error: "optionIds must be an array of strings" }, 400);
-      }
-      const known = new Set(questionOptions(item).map((o) => o.id));
-      if ((body.optionIds as string[]).some((id) => !known.has(id))) {
-        return json({ error: "optionIds must all be question options" }, 400);
-      }
-      optionIds = body.optionIds as string[];
-    }
-    const freeText = typeof body.freeText === "string" ? body.freeText : undefined;
-    if (body.freeText !== undefined && freeText === undefined) {
-      return json({ error: "freeText must be a string" }, 400);
-    }
-    if (optionId === undefined && !optionIds?.length && !freeText?.trim()) {
-      return json({ error: "optionId, optionIds or freeText required" }, 400);
-    }
-    const updated = await recordAnswer(cfg.needsDrewFile, ledgerId, {
-      ...(optionId !== undefined ? { optionId } : {}),
-      ...(optionIds !== undefined ? { optionIds } : {}),
-      ...(freeText !== undefined ? { freeText } : {}),
-      via: "api",
-    });
+    const choice = validateNeedsDrewChoice(item, body);
+    if (!choice.ok) return json({ error: choice.error }, 400);
+    const updated = await recordAnswer(cfg.needsDrewFile, ledgerId, { ...choice.value, via: "api" });
     if (!updated?.answer) return json({ error: "answer not recorded" }, 500);
-    // #8605: the answer resolves the question, so close its alert
-    // incident — the raiser posted it under this question's source with
-    // key needs-drew:<ledgerId>, and until now nothing ever closed it.
-    // Best-effort, like the stack-health close in the intake above: a
-    // store failure is logged and never fails the recorded answer.
-    try {
-      const store = await getAlertsStore();
-      if (store) {
-        await store.closeOpenIncidentByKey(item.source, needsDrewIncidentKey(ledgerId));
-        requestAlertTick();
-      }
-    } catch (err) {
-      console.error(`needs-drew answer: incident close failed (${err instanceof Error ? err.message : "error"})`);
-    }
-    // #14084 S1: "Send back" returns the item to review; any other
-    // answer resolves it. Keyed on the recorded (first) answer.
-    try {
-      const store = await getAlertsStore();
-      if (store) await onQuestionAnswered(store.itemStages(), ledgerId, updated.answer.optionId);
-    } catch (err) {
-      console.error(`needs-drew answer: stage update failed (${err instanceof Error ? err.message : "error"})`);
-    }
+    await afterNeedsDrewAnswered(item, updated);
     return json({
       ledgerId,
       answered: true,

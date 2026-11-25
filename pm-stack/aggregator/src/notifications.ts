@@ -27,7 +27,9 @@ import type { AttentionView } from "./derive.ts";
 import type { HealthView } from "./health.ts";
 import type { QuotaView, TierItem, TieredEntry } from "./model.ts";
 import type { NotificationSendRow } from "./alerts.ts";
+import { createHash } from "node:crypto";
 import type { NeedsDrewQuestion } from "./needs-drew.ts";
+import { questionOptions } from "./needs-user.ts";
 import { decisionSetProgress, type DecisionSet } from "./decisions.ts";
 import { SENTINEL_SERVICE_IDS, type StackHealthRecord } from "./stack-health.ts";
 
@@ -174,7 +176,21 @@ export interface NotificationCandidate {
   actedRefs?: string[];
   /** #8568: a raised needs-Drew question rides its candidate so the
    * push payload can carry tappable answer actions. */
-  needsDrew?: { ledgerId: string; question: string; options: Array<{ id: string; label: string }> };
+  needsDrew?: {
+    ledgerId: string;
+    question: string;
+    options: Array<{ id: string; label: string }>;
+    /** #13469: what the edge relay needs to answer the question while
+     * the laptop is away — every answerable option (Send back
+     * included), the context, the answer type and links, and the
+     * sha256 hex of the answer token. The token itself never rides a
+     * candidate. */
+    answerOptions?: Array<{ id: string; label: string }>;
+    context?: string;
+    answerType?: string;
+    links?: string[];
+    tokenHash?: string;
+  };
   /** #8766: a decision set rides its candidate so the push payload can
    * point at the token-carrying decisions page (no tappable answers —
    * the page is the answer surface). */
@@ -664,7 +680,16 @@ export function buildNotificationCandidates(snapshot: NotificationSnapshot, now 
         breakthrough: true,
         actedRefs: [`needs-drew:${item.ledgerId}`],
         state: { raisedAt: item.raisedAt },
-        needsDrew: { ledgerId: item.ledgerId, question: item.question, options: item.options },
+        needsDrew: {
+          ledgerId: item.ledgerId,
+          question: item.question,
+          options: item.options,
+          answerOptions: questionOptions(item),
+          ...(item.context ? { context: item.context } : {}),
+          answerType: item.answerType ?? "radio",
+          links: item.links,
+          ...(item.token ? { tokenHash: createHash("sha256").update(item.token).digest("hex") } : {}),
+        },
       }),
     );
   }

@@ -48,6 +48,7 @@ import { createPromptWsSession, type PromptWsSession } from "./prompt-ws.ts";
 import { readHostHealthSnapshot } from "./host-health.ts";
 import { startPmCoreSchedulers } from "./pm-core-wiring.ts";
 import { startNotifyRelay } from "./notify-relay.ts";
+import { applyEdgeAnswer } from "./needs-drew-answer.ts";
 import { alertsIntakeAuthorized } from "./server-alert-routes.ts";
 import { computeEditionDrift, type EditionDrift } from "./edition-drift.ts";
 import { manifestRouteFor } from "./pages.ts";
@@ -202,7 +203,12 @@ import {
   handleNotificationsPage,
   UUID_RE,
 } from "./server-alert-routes.ts";
-import { handleDecisionRoutes, handleDecisionsIndex, handleDecisionTailRoutes } from "./server-decision-routes.ts";
+import {
+  afterNeedsDrewAnswered,
+  handleDecisionRoutes,
+  handleDecisionsIndex,
+  handleDecisionTailRoutes,
+} from "./server-decision-routes.ts";
 
 function runMetadataFleet(args: string[], input?: string): Promise<string> {
   const fleetBin = process.env.FLEET_BIN ?? "fleet";
@@ -2210,4 +2216,11 @@ startAlertEngine(cfg, async (): Promise<NotificationSnapshot> => {
 // PM_AGG_NOTIFY_RELAY_URL is set (the deploy is a separate leg),
 // and fail-soft once running — the edge is a mirror of this
 // stack, never a dependency of it.
-startNotifyRelay(cfg, () => getAlertsStore());
+// #13469: answers taken at the edge while the laptop was away are
+// drained on each contact and applied through the laptop's own
+// answer path, with the same side effects.
+startNotifyRelay(
+  cfg,
+  () => getAlertsStore(),
+  (answer) => applyEdgeAnswer(cfg.needsDrewFile, answer, afterNeedsDrewAnswered),
+);
