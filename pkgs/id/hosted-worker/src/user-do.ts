@@ -44,7 +44,7 @@ import {
 import type { IngestOutcome } from "./bridge-store.ts";
 import { ExportProductionError, exportSetsToWire, produceExportSets } from "./export.ts";
 
-export const SCHEMA_VERSION = 3;
+export const SCHEMA_VERSION = 5;
 
 export const HDR_BINDING = "x-hosted-binding-id";
 export const HDR_JURISDICTION = "x-hosted-jurisdiction";
@@ -85,7 +85,7 @@ interface SqlStorage {
 }
 interface DOState {
   id: { name?: string; jurisdiction?: string };
-  storage: { sql: SqlStorage };
+  storage: { sql: SqlStorage; transactionSync?<T>(fn: () => T): T };
   blockConcurrencyWhile<T>(fn: () => Promise<T>): Promise<T>;
 }
 interface Env {
@@ -174,6 +174,8 @@ async function readTextUpTo(req: Request, limit: number): Promise<string | null>
 export class UserDO {
   private state: DOState;
   private ready: Promise<void>;
+  private inFlightMutations = 0;
+  private mutationDrain: (() => void) | null = null;
 
   private env: Env;
 
@@ -199,6 +201,14 @@ export class UserDO {
       // created before the bridge gains the tables on its next
       // bootstrap with its data untouched.
       for (const statement of BRIDGE_SCHEMA) sql.exec(statement);
+      // Durable source migration fence (#3404). `op_seq` is advanced
+      // after each user-data commit; the fence ack snapshots it only
+      // after all already-running mutation requests have drained.
+      sql.exec(
+        "CREATE TABLE IF NOT EXISTS migration_fence (migration_id TEXT NOT NULL, source_jurisdiction TEXT NOT NULL, source_binding TEXT NOT NULL, epoch INTEGER NOT NULL, frozen INTEGER NOT NULL DEFAULT 1, watermark INTEGER NOT NULL DEFAULT 0, drained INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (migration_id, source_binding, source_jurisdiction, epoch))",
+      );
+      sql.exec("CREATE UNIQUE INDEX IF NOT EXISTS migration_fence_one_source ON migration_fence(source_binding, source_jurisdiction)");
+      sql.exec("INSERT INTO meta (key, value) VALUES ('op_seq', '0') ON CONFLICT(key) DO NOTHING");
       sql.exec(
         "INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
         "schema_version",
@@ -423,14 +433,143 @@ export class UserDO {
     return { bindingId, jurisdiction, clientSideEncryption: boundCse };
   }
 
+  /** Returns true if any migration fence row is frozen, meaning this
+   * source is fenced and all mutations must be refused. This is the
+   * fail-closed write gate for #3404: once frozen, the source stays
+   * read-only + exportable. This slice deliberately has no unfreeze;
+   * abort/release is owned by the coordinator slice.
+   * The fence is keyed by (migration_id, source_jurisdiction, epoch)
+   * so a stale coordinator cannot fence or release the wrong migration. */
+  private isFenced(): boolean {
+    const rows = this.state.storage.sql
+      .exec("SELECT 1 FROM migration_fence WHERE frozen = 1 LIMIT 1")
+      .toArray();
+    return rows.length > 0;
+  }
+
+  private assertSourceWritable(): void {
+    if (this.isFenced()) {
+      throw new FailClosed(
+        423,
+        "source_frozen",
+        "source is durably frozen for jurisdiction migration; reads and export remain available",
+      );
+    }
+  }
+
+  private bumpOpSequence(): void {
+    this.state.storage.sql.exec(
+      "UPDATE meta SET value = CAST(value AS INTEGER) + 1 WHERE key = 'op_seq'",
+    );
+  }
+
+  private commitMutation<T>(commit: () => T, changed: (result: T) => boolean = () => true): T {
+    const run = () => {
+      const result = commit();
+      if (changed(result)) this.bumpOpSequence();
+      return result;
+    };
+    // SQLite user data and its sequence advance are one durable commit
+    // in production. The fallback keeps the structural test adapter
+    // small; all test SQL calls are synchronous and share one database.
+    return this.state.storage.transactionSync ? this.state.storage.transactionSync(run) : run();
+  }
+
+  private beginMutation(): () => void {
+    this.assertSourceWritable();
+    this.inFlightMutations += 1;
+    let done = false;
+    return () => {
+      if (done) return;
+      done = true;
+      this.inFlightMutations -= 1;
+      if (this.inFlightMutations === 0) {
+        const resolve = this.mutationDrain;
+        this.mutationDrain = null;
+        resolve?.();
+      }
+    };
+  }
+
+  private async drainMutations(): Promise<void> {
+    while (this.inFlightMutations > 0) {
+      await new Promise<void>((resolve) => { this.mutationDrain = resolve; });
+    }
+  }
+
+  /** Internal Durable Object RPC only; deliberately not exposed by
+   * fetch(), which is the public routed HTTP surface. The caller may
+   * provide migration identity/epoch, never a watermark or drain claim. */
+  async freezeSource(input: { migrationId: string; sourceJurisdiction: string; epoch: number }): Promise<{
+    migrationId: string; sourceJurisdiction: string; epoch: number; watermark: number; drained: true;
+  }> {
+    await this.ready;
+    const { migrationId, sourceJurisdiction, epoch } = input;
+    const bindingId = this.meta("binding_id");
+    const boundJurisdiction = this.meta("jurisdiction");
+    if (!bindingId || !boundJurisdiction || sourceJurisdiction !== boundJurisdiction) {
+      throw new FailClosed(409, "jurisdiction_mismatch", "freeze source must match the persisted object identity");
+    }
+    if (!migrationId || !Number.isSafeInteger(epoch) || epoch < 0) {
+      throw new FailClosed(400, "invalid_migration", "freeze requires a migration ID and non-negative safe epoch");
+    }
+    const rows = this.state.storage.sql.exec(
+      "SELECT migration_id, epoch, watermark, drained FROM migration_fence WHERE source_binding = ? AND source_jurisdiction = ?",
+      bindingId,
+      sourceJurisdiction,
+    ).toArray();
+    if (rows.length && String(rows[0].migration_id) !== migrationId) {
+      throw new FailClosed(409, "frozen_by_other", "source is already fenced by another migration");
+    }
+    if (rows.length && Number(rows[0].epoch) !== epoch) {
+      throw new FailClosed(409, "epoch_mismatch", "freeze epoch does not match the durable fence epoch");
+    }
+    if (!rows.length) {
+      this.state.storage.sql.exec(
+        "INSERT INTO migration_fence (migration_id, source_jurisdiction, source_binding, epoch, frozen, watermark, drained) VALUES (?, ?, ?, ?, 1, 0, 0)",
+        migrationId, sourceJurisdiction, bindingId, epoch,
+      );
+    }
+    await this.drainMutations();
+    const watermark = Number(this.meta("op_seq") ?? "0");
+    this.state.storage.sql.exec(
+      "UPDATE migration_fence SET watermark = ?, drained = 1 WHERE migration_id = ? AND source_binding = ? AND source_jurisdiction = ? AND epoch = ?",
+      watermark, migrationId, bindingId, sourceJurisdiction, epoch,
+    );
+    return { migrationId, sourceJurisdiction, epoch, watermark, drained: true };
+  }
+
+  /** Internal RPC read; an ack is exportable only after durable drain. */
+  freezeAckFor(migrationId: string): {
+    migrationId: string; sourceJurisdiction: string; epoch: number; watermark: number; drained: boolean;
+  } | null {
+    const rows = this.state.storage.sql.exec(
+      "SELECT migration_id, source_jurisdiction, epoch, watermark, drained FROM migration_fence WHERE migration_id = ?",
+      migrationId,
+    ).toArray();
+    if (!rows.length) return null;
+    const row = rows[0];
+    return { migrationId: String(row.migration_id), sourceJurisdiction: String(row.source_jurisdiction), epoch: Number(row.epoch), watermark: Number(row.watermark), drained: Number(row.drained) === 1 };
+  }
+
   async fetch(req: Request): Promise<Response> {
     await this.ready;
+    let releaseMutation: (() => void) | null = null;
     try {
       const { bindingId, jurisdiction, clientSideEncryption } = this.guard(req);
       this.state.storage.sql.exec(
         "INSERT INTO meta (key, value) VALUES ('requests', '1') ON CONFLICT(key) DO UPDATE SET value = CAST(value AS INTEGER) + 1",
       );
       const url = new URL(req.url);
+      // Track async mutations from before their first body/proof/R2
+      // await through the final commit check. freezeSource fences new
+      // entrants and waits for these requests to either commit or refuse.
+      const mutatesUserData =
+        (url.pathname === "/v1/bridge/push" && req.method === "POST") ||
+        (url.pathname === "/v1/blobs" && req.method === "PUT") ||
+        (/^\/v1\/blobs\/[0-9a-f]{64}$/.test(url.pathname) && req.method === "DELETE") ||
+        (/^\/v1\/kv\/[A-Za-z0-9._-]{1,128}$/.test(url.pathname) && req.method !== "GET");
+      if (mutatesUserData) releaseMutation = this.beginMutation();
       if (url.pathname === "/v1/usage" && req.method === "GET") {
         const usage = this.usage();
         const ceiling = this.ceilingBytes();
@@ -509,7 +648,11 @@ export class UserDO {
           if (!store.heldEvent(entry.id)) newBytes += entry.bytes.length;
         }
         this.assertWritable(newBytes);
-        const outcomes = store.ingestBatch(entries, Date.now());
+        this.assertSourceWritable();
+        const outcomes = this.commitMutation(
+          () => store.ingestBatch(entries, Date.now()),
+          (items) => items.some((outcome) => outcome.kind === "accepted" || outcome.kind === "fork" || outcome.kind === "waiting"),
+        );
         return json({ outcomes: outcomes.map(serializeOutcome), heads: store.heads() });
       }
       if (url.pathname === "/v1/bridge/pull" && req.method === "POST") {
@@ -620,12 +763,20 @@ export class UserDO {
           transport: new WsTransport(server),
           guardBatch: (newBytes) => {
             try {
+              this.assertSourceWritable();
               this.assertWritable(newBytes);
               return true;
             } catch {
-              return false;
+              return this.isFenced()
+                ? { ok: false, code: "source_frozen", message: "source is durably frozen for migration" }
+                : false;
             }
           },
+          beginBatch: () => this.beginMutation(),
+          commitBatch: (commit) => this.commitMutation(
+            commit,
+            (outcomes) => outcomes.some((outcome) => outcome.kind === "accepted" || outcome.kind === "fork" || outcome.kind === "waiting"),
+          ),
         });
         return new Response(null, { status: 101, webSocket: client } as unknown as ResponseInit);
       }
@@ -649,16 +800,21 @@ export class UserDO {
         // what grants THIS user access.
         const priorRef = this.state.storage.sql.exec("SELECT hash FROM blobs WHERE hash = ?", hash).toArray();
         this.assertWritable(priorRef.length === 0 ? bytes.byteLength : 0);
+        this.assertSourceWritable();
         const key = blobObjectKey(bindingId, hash, clientSideEncryption);
         const existing = await bucket.head(key);
+        this.assertSourceWritable();
         if (!existing) await bucket.put(key, bytes);
-        this.state.storage.sql.exec(
-          "INSERT INTO blobs (hash, size, owner, created_at) VALUES (?, ?, ?, ?) ON CONFLICT(hash) DO NOTHING",
-          hash,
-          bytes.byteLength,
-          bindingId,
-          new Date().toISOString(),
-        );
+        this.assertSourceWritable();
+        if (priorRef.length === 0) {
+          this.commitMutation(() => this.state.storage.sql.exec(
+            "INSERT INTO blobs (hash, size, owner, created_at) VALUES (?, ?, ?, ?) ON CONFLICT(hash) DO NOTHING",
+            hash,
+            bytes.byteLength,
+            bindingId,
+            new Date().toISOString(),
+          ));
+        }
         return json({ hash, size: bytes.byteLength, stored: true, deduped: !!existing, client_side_encryption: clientSideEncryption });
       }
       if (blobHashMatch && req.method === "GET") {
@@ -681,7 +837,8 @@ export class UserDO {
         const hash = blobHashMatch[1];
         const rows = this.state.storage.sql.exec("SELECT hash FROM blobs WHERE hash = ?", hash).toArray();
         if (rows.length === 0) return json({ error: "not_found" }, 404);
-        this.state.storage.sql.exec("DELETE FROM blobs WHERE hash = ?", hash);
+        this.assertSourceWritable();
+        this.commitMutation(() => this.state.storage.sql.exec("DELETE FROM blobs WHERE hash = ?", hash));
         // The reference is gone, so this user can no longer reach
         // the bytes. The R2 object itself is deliberately NOT
         // deleted here: identical content may be referenced by
@@ -712,11 +869,12 @@ export class UserDO {
           if (value === null) throw ceilingExceeded(headroom);
         }
         this.assertWritable(new TextEncoder().encode(value).byteLength - priorBytes);
-        this.state.storage.sql.exec(
+        this.assertSourceWritable();
+        this.commitMutation(() => this.state.storage.sql.exec(
           "INSERT INTO kv (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
           kvMatch[1],
           value,
-        );
+        ));
         return json({ key: kvMatch[1], stored: true });
       }
       if (kvMatch && req.method === "GET") {
@@ -729,13 +887,16 @@ export class UserDO {
         // cap — they are how a capped user recovers headroom.
         const rows = this.state.storage.sql.exec("SELECT key FROM kv WHERE key = ?", kvMatch[1]).toArray();
         if (rows.length === 0) return json({ error: "not_found" }, 404);
-        this.state.storage.sql.exec("DELETE FROM kv WHERE key = ?", kvMatch[1]);
+        this.assertSourceWritable();
+        this.commitMutation(() => this.state.storage.sql.exec("DELETE FROM kv WHERE key = ?", kvMatch[1]));
         return json({ key: kvMatch[1], deleted: true });
       }
       return json({ error: "not_found" }, 404);
     } catch (e) {
       if (e instanceof FailClosed) return json({ error: e.code, message: e.message }, e.status);
       throw e;
+    } finally {
+      releaseMutation?.();
     }
   }
 }

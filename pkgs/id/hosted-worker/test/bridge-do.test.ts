@@ -168,6 +168,27 @@ test("HTTPS push/pull round trip with per-call proofs", async () => {
   );
 });
 
+test("authenticated bridge pull and nonce bookkeeping remain available while frozen", async () => {
+  const key = await importIdKey(new Uint8Array(32).fill(61));
+  const { doA } = makeDO();
+  await challenge(doA, key.publicHex);
+  await doA.freezeSource({ migrationId: "bridge-read", sourceJurisdiction: "us", epoch: 1 });
+
+  const body = new TextEncoder().encode(JSON.stringify({ positions: [] }));
+  const nonce = await challenge(doA, key.publicHex);
+  const headers = await proofHeaders(key, nonce, "pull", body);
+  const response = await doA.fetch(
+    routed("/v1/bridge/pull", key.publicHex, { method: "POST", headers, body: body as BodyInit }),
+  );
+  assert.equal(response.status, 200);
+  assert.deepEqual(decodeBatch(new Uint8Array(await response.arrayBuffer()), {
+    maxEventBytes: 65536,
+    maxBatchEvents: 64,
+    maxBatchBytes: 1 << 20,
+    maxWantIds: 512,
+  }), []);
+});
+
 test("bridge HTTPS legs fail closed: no key, no proof, wrong key, replayed nonce", async () => {
   const key = await importIdKey(new Uint8Array(32).fill(61));
   const wrong = await importIdKey(new Uint8Array(32).fill(63));
@@ -310,10 +331,31 @@ test("the WebSocket leg runs a full session through the real DO route", async ()
   }
 });
 
-async function runWsSession(): Promise<void> {
+test("a WebSocket batch cannot ingest after the source is frozen", async () => {
+  (globalThis as Record<string, unknown>).WebSocketPair = FakeWebSocketPair;
+  const RealResponse = globalThis.Response;
+  class TestResponse extends RealResponse {
+    constructor(body?: BodyInit | null, init?: ResponseInit & { webSocket?: unknown }) {
+      super(body, init?.status === 101 ? { ...init, status: 200 } : init);
+      if (init?.status === 101) Object.defineProperty(this, "status", { value: 101 });
+    }
+  }
+  (globalThis as Record<string, unknown>).Response = TestResponse;
+  try {
+    await runWsSession(true);
+  } finally {
+    (globalThis as Record<string, unknown>).Response = RealResponse;
+  }
+});
+
+async function runWsSession(frozen = false): Promise<void> {
   const key = await importIdKey(new Uint8Array(32).fill(61));
   const author = await importIdKey(new Uint8Array(32).fill(65));
   const { doA, sql } = makeDO();
+  if (frozen) {
+    await doA.fetch(routed("/v1/state", key.publicHex));
+    await doA.freezeSource({ migrationId: "ws-read-only", sourceJurisdiction: "us", epoch: 1 });
+  }
   const events = await chainOf(author, 3);
 
   // The client's own store starts with the events; the DO starts empty.
@@ -359,6 +401,13 @@ async function runWsSession(): Promise<void> {
     key,
     bindingId: BINDING,
   });
+  if (frozen) {
+    await assert.rejects(() => client.sync());
+    const count = sql.exec("SELECT COUNT(*) AS n FROM bridge_events").toArray();
+    assert.equal(Number(count[0].n), 0);
+    assert.equal(Number(sql.exec("SELECT value FROM meta WHERE key = 'op_seq'").toArray()[0].value), 0);
+    return;
+  }
   const result = await client.sync();
   assert.ok(result.token);
   // The DO's store now holds the whole chain, byte for byte.

@@ -134,14 +134,14 @@ test("delete removes only the caller's reference; shared bytes survive", async (
   assert.equal((await doA.fetch(routed("/v1/blobs/" + hash, A, { method: "DELETE" }))).status, 404);
 });
 
-test("blob routes stay behind the identity guard; schema is v3", async () => {
+test("blob routes stay behind the identity guard; schema is v5", async () => {
   const bucket = fakeBucket();
   const doA = makeDO(A, bucket);
   const unrouted = new Request("https://do/v1/blobs", { method: "PUT", body: "x" });
   assert.equal((await doA.fetch(unrouted)).status, 403);
   const state = await doA.fetch(routed("/v1/state", A));
   const body = (await state.json()) as { schema_version: number };
-  assert.equal(body.schema_version, 3);
+  assert.equal(body.schema_version, 5);
   const badHash = await doA.fetch(routed("/v1/blobs/not-a-hash", A));
   assert.equal(badHash.status, 404);
 });

@@ -299,7 +299,9 @@ export interface ServerSessionOptions {
   now?: () => number;
   /** Storage-ceiling guard: given the bytes a batch is about to add,
    * return false to refuse it before anything is written. */
-  guardBatch?: (newBytes: number) => boolean;
+  guardBatch?: (newBytes: number) => boolean | { ok: false; code: string; message: string };
+  commitBatch?: (commit: () => IngestOutcome[]) => IngestOutcome[];
+  beginBatch?: () => () => void;
 }
 
 export class BridgeSessionServer {
@@ -481,9 +483,11 @@ export class BridgeSessionServer {
   }
 
   private async onBatch(payload: Uint8Array): Promise<void> {
-    const rawEvents = decodeBatch(payload, this.limits);
-    const entries = await decodeEntries(rawEvents);
-    if (this.opts.guardBatch) {
+    const release = this.opts.beginBatch?.();
+    try {
+      const rawEvents = decodeBatch(payload, this.limits);
+      const entries = await decodeEntries(rawEvents);
+      if (this.opts.guardBatch) {
       // The ceiling is checked before anything is written: the
       // bytes this batch would add are the verified events the store
       // does not already hold in any form.
@@ -492,12 +496,18 @@ export class BridgeSessionServer {
         if ("malformed" in entry) continue;
         if (!this.opts.store.heldEvent(entry.id)) newBytes += entry.bytes.length;
       }
-      if (!this.opts.guardBatch(newBytes)) {
-        return this.fail("storage_ceiling", "the batch would exceed the storage ceiling");
+        const guard = this.opts.guardBatch(newBytes);
+        if (guard !== true) {
+          if (typeof guard === "object") return this.fail(guard.code, guard.message);
+          return this.fail("storage_ceiling", "the batch would exceed the storage ceiling");
+        }
       }
+      const ingest = () => this.opts.store.ingestBatch(entries, this.now());
+      const outcomes = this.opts.commitBatch ? this.opts.commitBatch(ingest) : ingest();
+      this.send(jsonFrame(TAG.ack, summarizeOutcomes(outcomes)));
+    } finally {
+      release?.();
     }
-    const outcomes = this.opts.store.ingestBatch(entries, this.now());
-    this.send(jsonFrame(TAG.ack, summarizeOutcomes(outcomes)));
   }
 
   private onClientWantEnd(): void {
