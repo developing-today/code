@@ -125,11 +125,17 @@ jobs:
           echo "version_id=$version_id" >> "$GITHUB_OUTPUT"
           # The version's preview URL answers before promotion, so
           # the gate runs against the candidate, not production.
-          sub="$(curl -fsS -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
-            "https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/workers/subdomain" \
-            | python3 -c 'import json,sys; print(json.load(sys.stdin)["result"]["subdomain"])')"
+          # Take the URL from wrangler's own output: the preview
+          # host carries only the version id's first segment
+          # (run 45605143016 built the full-id host, got an HTML
+          # error page, and the gate correctly refused to promote).
+          preview_url="$(grep -Eo 'Version Preview URL: https://[^ ]+' "$RUNNER_TEMP/upload.log" | sed 's/.*: //' | tail -n 1)"
+          if [ -z "$preview_url" ]; then
+            echo "could not read a version preview URL from the upload output" >&2
+            exit 1
+          fi
           node scripts/check-health.mjs \
-            --url "https://${version_id}-pm-service.${sub}.workers.dev/health" \
+            --url "${preview_url}/health" \
             --version "$GITHUB_SHA"
       - name: Promote the gated version
         if: steps.secrets.outputs.ready == 'true' && inputs.rollback_version == '' && steps.standup.outputs.stood_up != 'true'
