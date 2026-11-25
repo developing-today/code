@@ -30,9 +30,11 @@ use std::collections::BTreeSet;
 
 use serde::{Deserialize, Serialize};
 
+pub mod explain;
 pub mod resolve;
 pub mod rollout;
 
+pub use explain::{ExplainEntry, Explanation, explain};
 pub use resolve::{LayerOverride, ResolutionInput, ResolveError, ResolvedLayers, resolve};
 pub use rollout::{
     AdapterCapabilities, AdapterSet, CapabilityFailure, CapabilityValidator, ExternalEffect,
