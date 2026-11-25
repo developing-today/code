@@ -627,6 +627,11 @@ fn run(cli: Cli) -> Result<(), String> {
                 "{{\"unit\":{},\"reports_collected\":{},\"items_staged\":{},\"item_ids\":{}}}",
                 json_str(&unit),
                 reports.len(),
+                item_ids.len(),
+                serde_json::to_string(&item_ids).unwrap_or_else(|_| "[]".to_string()),
+            );
+            Ok(())
+        }
         Command::IngestNotes { db, unit, dir } => {
             let item_ids =
                 atlas_core::notes::scan_and_stage_note_files_in_db(&db, &unit, &dir, &now_utc())
