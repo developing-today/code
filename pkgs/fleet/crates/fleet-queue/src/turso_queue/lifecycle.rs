@@ -4568,8 +4568,10 @@ mod holder_guard_tests {
 
     #[test]
     fn holder_writes_land_on_an_unchanged_claim_9487() {
-        let (t, _db, _race) = fake_backend_with_race();
         for (n, (verb, call, req)) in cases().into_iter().enumerate() {
+            // A fresh store per verb: a released task is queued
+            // again, and the next case's claim would pick it.
+            let (t, _db, _race) = fake_backend_with_race();
             let number = 948_750 + n as i64;
             let id = enqueue_claim(&t, number);
             let out = call(&t, &req(id, number));
