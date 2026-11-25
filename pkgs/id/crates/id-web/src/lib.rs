@@ -54,9 +54,12 @@ mod groups;
 mod home;
 mod identity;
 mod markdown;
+pub mod presentation;
 mod routes;
+pub mod runs;
 mod security;
 mod seitan;
+pub mod sessions;
 mod tags_ws;
 mod templates;
 mod transport_ad;
@@ -89,6 +92,7 @@ pub use identity::IdentityStore;
 #[doc(hidden)]
 pub use identity::crash_gate;
 pub use routes::{create_program_router, create_router, create_router_for_app};
+pub use runs::{RunApps, RunManifest, RunsConfig, runs_routes};
 pub use security::WebSecurity;
 pub use seitan::SeitanState;
 pub use templates::{AssetUrls, render_page};
@@ -653,6 +657,10 @@ pub struct AppState {
     /// this node serves under `/api/gallery` (#10003). `None` unless the
     /// serving process wires one in; every gallery route then answers 404.
     pub gallery: Option<gallery::SharedGallery>,
+    /// The app manifests `POST /v1/runs` checks app runs against and
+    /// `GET /v1/apps/{app}/manifest` serves (#10392 §4.5, #14226).
+    /// Empty unless the serving process wires its apps in.
+    pub run_apps: runs::RunApps,
     /// State for collaborative editing sessions.
     pub collab: Arc<CollabState>,
     /// Asset URLs (with cache-busting hashes).
@@ -783,6 +791,7 @@ impl AppState {
             transfer_endpoint: None,
             transport_ad: None,
             gallery: None,
+            run_apps: runs::RunApps::default(),
             collab: Arc::new(CollabState::new()),
             assets: load_asset_urls(),
             peers,
@@ -834,6 +843,12 @@ impl AppState {
     /// (#10003); see [`AppState::gallery`].
     pub fn set_gallery(&mut self, gallery: Option<gallery::SharedGallery>) {
         self.gallery = gallery;
+    }
+
+    /// Check app runs against, and serve, these app manifests; see
+    /// [`AppState::run_apps`].
+    pub fn set_run_apps(&mut self, apps: runs::RunApps) {
+        self.run_apps = apps;
     }
 }
 
@@ -1012,6 +1027,7 @@ pub async fn web_routers(
         None,
         None,
         None,
+        None,
     )
     .await?;
     Ok(routers)
@@ -1093,6 +1109,7 @@ pub async fn web_routers_with_surface(
     transfer_endpoint: Option<iroh::endpoint::Endpoint>,
     transport_ad: Option<Arc<id_core::transport_advertisement::AdMinter>>,
     gallery: Option<gallery::SharedGallery>,
+    run_apps: Option<runs::RunApps>,
 ) -> anyhow::Result<(Vec<Router>, WebSurfaceFactory)> {
     let note_snapshot_path = identity_db_path.with_file_name(NOTE_CHECKPOINT_SNAPSHOT_FILE_NAME);
     let mut state = match local_events {
@@ -1123,6 +1140,9 @@ pub async fn web_routers_with_surface(
     state.set_transfer_endpoint(transfer_endpoint);
     state.set_transport_ad(transport_ad);
     state.set_gallery(gallery);
+    if let Some(apps) = run_apps {
+        state.set_run_apps(apps);
+    }
     // Note checkpoints granted to a group resolve against the node's
     // group log (#3819); nothing has cloned `collab` yet, so swapping it
     // here reaches every router and the surface factory. The checkpoint
