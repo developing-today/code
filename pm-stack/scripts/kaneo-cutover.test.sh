@@ -101,6 +101,14 @@ json.dump({
     "destinations": {"local": "ok", "r2": "ok", "drive": "ok"},
 }, open(sys.argv[1], "w"))
 PY
+cp "$TMP/backup.json" "$TMP/kaneo-recovery.json"
+python3 -I - "$TMP/kaneo-recovery.json" <<'PY'
+import json, sys
+with open(sys.argv[1]) as f: record = json.load(f)
+record["source"] = {"host": "source-db", "port": 5432, "database": "kaneo"}
+record["recoveryPointAt"] = record["finishedAt"]
+with open(sys.argv[1], "w") as f: json.dump(record, f)
+PY
 
 # Fence fixtures: all writers stopped/inactive.
 mkdir -p "$TMP/units"
@@ -120,7 +128,7 @@ log_is_empty() { [ ! -s "$TMP/fx/log" ]; }
 run() { "$BASH_BIN" "$DRIVER" "$@" 2>&1; }
 
 common=(--pg-bin-dir "$TMP/bin" --source-dsn-file "$TMP/source.dsn" --target-dsn-file "$TMP/target.dsn" --target-home cluster-postgres --target-host target-db)
-promote=(--backup-record-file "$TMP/backup.json")
+promote=(--backup-record-file "$TMP/backup.json" --kaneo-recovery-record-file "$TMP/kaneo-recovery.json")
 
 # 1. presync dumps then restores, and passes on schema parity.
 set_counts '45 90139' '45 0'
@@ -240,6 +248,46 @@ with open(sys.argv[1]) as f: record = json.load(f)
 record["finishedAt"] = (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat()
 with open(sys.argv[1], "w") as f: json.dump(record, f)
 PY
+
+# Oracle: plan §2/§4 requires a verified Kaneo recovery point <=1 hour old,
+# independently of the dashboard archive's configurable 36-hour bound.
+# Mutate each evidence prerequisite; every refusal must precede PG access.
+cp "$TMP/kaneo-recovery.json" "$TMP/kaneo-valid.json"
+for mutation in stale future capture-after-finish wrong-host wrong-port wrong-db missing-time unverified malformed; do
+  python3 -I - "$TMP/kaneo-valid.json" "$TMP/kaneo-recovery.json" "$mutation" <<'PY'
+import json, sys
+from datetime import datetime, timedelta, timezone
+with open(sys.argv[1]) as f: record = json.load(f)
+mutation = sys.argv[3]
+if mutation == "stale": record["recoveryPointAt"] = (datetime.now(timezone.utc) - timedelta(hours=2)).isoformat()
+if mutation == "future": record["recoveryPointAt"] = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()
+if mutation == "capture-after-finish": record["recoveryPointAt"] = datetime.now(timezone.utc).isoformat()
+if mutation == "wrong-host": record["source"]["host"] = "other-db"
+if mutation == "wrong-port": record["source"]["port"] = 5433
+if mutation == "wrong-db": record["source"]["database"] = "other"
+if mutation == "missing-time": del record["recoveryPointAt"]
+if mutation == "unverified": record["destinations"]["drive"] = "failed"
+with open(sys.argv[2], "w") as f:
+    f.write("not json") if mutation == "malformed" else json.dump(record, f)
+PY
+  reset_log
+  status=0
+  out="$(run --mode promote --receipt "$TMP/rpo.md" --units-dir "$TMP/units" --containers-file "$TMP/containers-clean.txt" --max-backup-age-hours 72 "${promote[@]}" "${common[@]}")" || status=$?
+  if [ "$status" -eq 3 ] && log_is_empty && grep -q 'Kaneo recovery point' "$TMP/rpo.md"; then
+    pass "promote refuses $mutation Kaneo recovery evidence before database access"
+  else
+    fail "promote refuses $mutation Kaneo recovery evidence (exit $status, got: $out)"
+  fi
+done
+cp "$TMP/kaneo-valid.json" "$TMP/kaneo-recovery.json"
+reset_log
+status=0
+out="$(run --mode promote --receipt "$TMP/missing-rpo.md" --units-dir "$TMP/units" --containers-file "$TMP/containers-clean.txt" --backup-record-file "$TMP/backup.json" "${common[@]}")" || status=$?
+if [ "$status" -eq 3 ] && log_is_empty && grep -q 'Kaneo recovery point' "$TMP/missing-rpo.md"; then
+  pass 'promote refuses absent independent Kaneo recovery evidence'
+else
+  fail "promote refuses absent independent Kaneo recovery evidence (exit $status, got: $out)"
+fi
 
 # 8. rollback refuses while a writer is running — and touches nothing.
 set_counts '45 90139' '45 90500'
