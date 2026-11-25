@@ -407,6 +407,10 @@ pub const WAKE_ON_CONNECT: &str = "wake-on-connect";
 /// Actor recorded when the serving hub closes an idle world.
 pub const IDLE_CLOSE: &str = "idle";
 
+/// Actor recorded when an admin-authorised request creates a new world in
+/// a served data root.
+pub const ADMIN_CREATE: &str = "admin-create";
+
 /// The host file of a data root, shared by a serving process that opens
 /// worlds on demand (#10693 serve-attach). A client naming an asleep
 /// world wakes it ([`HostLifecycle::admit_wake`]); the hub closing an
@@ -427,6 +431,8 @@ pub enum Admission {
     AlreadyLive,
     /// The world was asleep and is now recorded live.
     Woken,
+    /// The world was new and is now recorded live by [`ADMIN_CREATE`].
+    Created,
 }
 
 impl HostLifecycle {
@@ -473,6 +479,42 @@ impl HostLifecycle {
     /// file does not know, and a failed save (nothing is recorded then).
     pub fn admit_wake(&self, name: &str) -> Result<Admission> {
         let mut file = self.lock();
+        self.admit_known(&mut file, name)
+    }
+
+    /// Admit an admin-authorised request that may create `name`: a world
+    /// the host file does not know is recorded live by [`ADMIN_CREATE`];
+    /// a known one is admitted as [`HostLifecycle::admit_wake`] admits it,
+    /// so creating never restores an archived world.
+    ///
+    /// # Errors
+    ///
+    /// As [`HostLifecycle::admit_wake`] for a known world; for a new one,
+    /// refuses a name that cannot be a world directory, and a failed save.
+    pub fn admit_create(&self, name: &str) -> Result<Admission> {
+        let mut file = self.lock();
+        if file.worlds.contains_key(name) {
+            return self.admit_known(&mut file, name);
+        }
+        validate_name(name)?;
+        let mut next = file.clone();
+        next.worlds.insert(
+            name.to_owned(),
+            WorldRecord {
+                state: LifecycleState::Live,
+                history: vec![StateChange {
+                    at_secs: now_secs(),
+                    actor: ADMIN_CREATE.to_owned(),
+                    prior: LifecycleState::Asleep,
+                }],
+            },
+        );
+        next.save(&self.root)?;
+        *file = next;
+        Ok(Admission::Created)
+    }
+
+    fn admit_known(&self, file: &mut HostFile, name: &str) -> Result<Admission> {
         match file.worlds.get(name).map(|record| record.state) {
             None => bail!("no world {name:?} in this data root"),
             Some(LifecycleState::Live) => Ok(Admission::AlreadyLive),
@@ -480,7 +522,7 @@ impl HostLifecycle {
                 bail!("world {name:?} is archived: an operator must restore it before it wakes")
             }
             Some(LifecycleState::Asleep) => {
-                self.record(&mut file, name, LifecycleState::Live, WAKE_ON_CONNECT)?;
+                self.record(file, name, LifecycleState::Live, WAKE_ON_CONNECT)?;
                 Ok(Admission::Woken)
             }
         }
@@ -488,7 +530,8 @@ impl HostLifecycle {
 
     /// Undo an [`Admission::Woken`] whose open then failed: the world goes
     /// back to asleep with the wake's history entry removed, as if the
-    /// connection never arrived. [`Admission::AlreadyLive`] undoes nothing.
+    /// connection never arrived. An [`Admission::Created`] world is
+    /// forgotten again. [`Admission::AlreadyLive`] undoes nothing.
     ///
     /// # Errors
     ///
@@ -498,6 +541,18 @@ impl HostLifecycle {
             return Ok(());
         }
         let mut file = self.lock();
+        if admission == Admission::Created {
+            let only_created = file.worlds.get(name).is_some_and(|record| {
+                record.state == LifecycleState::Live
+                    && record.history.len() == 1
+                    && record.history[0].actor == ADMIN_CREATE
+            });
+            if !only_created {
+                return Ok(());
+            }
+            file.worlds.remove(name);
+            return file.save(&self.root);
+        }
         let Some(record) = file.worlds.get_mut(name) else {
             return Ok(());
         };
@@ -1138,6 +1193,37 @@ mod tests {
         host.record_closed("nobody").unwrap();
         assert_eq!(HostFile::load(root.path()).unwrap(), saved);
         assert_eq!(host.snapshot(), saved);
+    }
+
+    #[test]
+    fn host_lifecycle_admit_create_records_new_worlds_and_never_restores() {
+        let root = data_root_with(&["shelved"]);
+        let host = HostLifecycle::open(root.path()).unwrap();
+        host.lock()
+            .transition("shelved", LifecycleState::Archived, actor(), 1)
+            .unwrap();
+
+        assert_eq!(host.admit_create("fresh").unwrap(), Admission::Created);
+        let saved = HostFile::load(root.path()).unwrap();
+        let record = &saved.worlds["fresh"];
+        assert_eq!(record.state, LifecycleState::Live);
+        assert_eq!(record.history[0].actor, ADMIN_CREATE);
+        assert_eq!(host.admit_create("fresh").unwrap(), Admission::AlreadyLive);
+
+        assert!(host.admit_create("shelved").is_err());
+        assert_eq!(host.state("shelved"), Some(LifecycleState::Archived));
+        assert!(host.admit_create("../escape").is_err());
+        assert!(host.admit_create(HOST_FILE_NAME).is_err());
+
+        assert_eq!(host.admit_create("doomed").unwrap(), Admission::Created);
+        host.undo_wake("doomed", Admission::Created).unwrap();
+        assert_eq!(host.state("doomed"), None);
+        assert!(
+            !HostFile::load(root.path())
+                .unwrap()
+                .worlds
+                .contains_key("doomed")
+        );
     }
 
     #[test]

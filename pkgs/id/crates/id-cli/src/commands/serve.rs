@@ -457,6 +457,8 @@ pub struct ServeOptions {
     pub world_max_sessions: usize,
     /// Close durable worlds idle for this many seconds (`0` never).
     pub world_idle_secs: u64,
+    /// Serve the worlds directory as a host-mode data root (#10693).
+    pub world_host: bool,
     /// Refuse signed world requests for this many seconds after startup (`0` none).
     pub world_boot_window_secs: u64,
     /// Capabilities the default world's program may use.
@@ -961,6 +963,8 @@ struct ServeWorlds {
     trusted_module_keys: Vec<[u8; 32]>,
     runtime: id_caps::world_limits::RuntimeLimits,
     mail: Option<Arc<dyn id_directory::directory_mail::MailSink>>,
+    /// Host-mode lifecycle over [`WORLDS_DIR`] (`--world-host`, #10693).
+    host: Option<Arc<id_worlds::host::HostLifecycle>>,
 }
 
 #[cfg(feature = "world")]
@@ -970,8 +974,35 @@ impl id_worlds::world_hub::WorldOpener for ServeWorlds {
             if !create && !self.exists(name) {
                 return Ok(None);
             }
-            self.open_world(name).await.map(Some)
+            let Some(host) = &self.host else {
+                return self.open_world(name).await.map(Some);
+            };
+            // Host mode (#10693): record the wake (or the admin-authorised
+            // create) before opening, and take it back if the open fails,
+            // so the host file never shows a world live that is not.
+            let admission = if create {
+                host.admit_create(name)?
+            } else {
+                host.admit_wake(name)?
+            };
+            match self.open_world(name).await {
+                Ok(service) => Ok(Some(service)),
+                Err(error) => {
+                    if let Err(undo) = host.undo_wake(name, admission) {
+                        warn!(world = name, "host: could not undo wake: {undo:#}");
+                    }
+                    Err(error)
+                }
+            }
         })
+    }
+
+    fn closed(&self, name: &str) {
+        if let Some(host) = &self.host
+            && let Err(error) = host.record_closed(name)
+        {
+            warn!(world = name, "host: could not record idle close: {error:#}");
+        }
     }
 
     fn exists(&self, name: &str) -> bool {
@@ -1292,6 +1323,7 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
         world_max_open,
         world_max_sessions,
         world_idle_secs,
+        world_host,
         world_boot_window_secs,
         world_caps,
         world_cap_policy,
@@ -1718,7 +1750,16 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
                 world_mail_smtp,
                 world_mail_from,
             )?,
+            host: world_host
+                .then(|| -> Result<_> {
+                    std::fs::create_dir_all(WORLDS_DIR)?;
+                    Ok(Arc::new(id_worlds::host::HostLifecycle::open(
+                        std::path::Path::new(WORLDS_DIR),
+                    )?))
+                })
+                .transpose()?,
         });
+        let host = opener.host.clone();
         let hub = WorldHub::new(
             opener,
             world_admin_token.clone(),
@@ -1732,6 +1773,26 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
         info!("serve startup: opening default world via hub (#190 breadcrumb)");
         let default_service = hub.open_default().await?;
         info!("serve startup: default world open, building router (#190 breadcrumb)");
+        if let Some(host) = &host {
+            // Worlds recorded live stay live across a restart (#10693):
+            // reopen each now, so a bad journal fails startup loudly.
+            let live: Vec<String> = host
+                .snapshot()
+                .worlds
+                .into_iter()
+                .filter(|(_, record)| record.state == id_worlds::host::LifecycleState::Live)
+                .map(|(name, _)| name)
+                .collect();
+            for name in live {
+                hub.lease(Some(&name), None)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("reopen live world {name}: {}", e.message()))?;
+            }
+            info!(
+                root = WORLDS_DIR,
+                "host mode: serving the worlds directory as a data root"
+            );
+        }
         if !world_caps.is_empty() {
             for cap in world_caps.iter().filter(|cap| *cap != "*") {
                 if !server_caps.contains(cap) {
