@@ -5,6 +5,7 @@ import { advanceHostViewCursor, parseWorldHostViewPage, parseWorldInviteResponse
 import { richTerminalBytesForKey, terminalBytesForKey } from "./world-keyboard";
 import { decodeViewPatchAsync } from "./screen-codec";
 import { parseWorldSeed } from "./world-seed";
+import { documentFrame, documentsFrame, documentsRefusal, parseDocumentRead, parseDocumentsPage } from "./documents";
 import {
   loadWorldSnapshot,
   saveWorldSnapshot,
@@ -18,6 +19,8 @@ type WorldFrame = {
     | "event"
     | "view"
     | "records"
+    | "documents"
+    | "document"
     | "invite"
     | "upload_ready"
     | "module_installed"
@@ -50,6 +53,9 @@ type WorldFrame = {
   invite?: { capability?: string; participant_id?: number; display_name?: string };
   capability?: string;
   records?: Record<string, unknown>;
+  names?: string[];
+  size?: number;
+  text?: string;
   next_after?: string | null;
   chunk_bytes?: number;
   module_hash?: string;
@@ -98,6 +104,10 @@ function initWorld(): void {
   const worldInput = element<HTMLInputElement>(root, "[data-world-world]");
   const recordsView = element<HTMLElement>(root, "[data-world-records]");
   const recordsRefresh = element<HTMLButtonElement>(root, "[data-world-records-refresh]");
+  const documentsList = element<HTMLElement>(root, "[data-world-documents]");
+  const documentsView = element<HTMLElement>(root, "[data-world-document]");
+  const documentsRefresh = element<HTMLButtonElement>(root, "[data-world-documents-refresh]");
+  const documentsPrefix = element<HTMLInputElement>(root, "[data-world-documents-prefix]");
   const copyButton = element<HTMLButtonElement>(root, "[data-world-copy]");
   const inviteOutput = element<HTMLElement>(root, "[data-world-invite-output]");
   // The host controls (admin token, invite minting, module install,
@@ -158,6 +168,10 @@ function initWorld(): void {
   let recordsAfter: string | null = null;
   let recordsPending = false;
   let recordsRefetch = false;
+  let documentsNames: string[] = [];
+  let documentsAfter: string | null = null;
+  let documentsPending = false;
+  let documentPending = false;
   let reconnects = 0;
   let intentionalClose = false;
   let hostMode = false;
@@ -519,6 +533,30 @@ function initWorld(): void {
         }
         break;
       }
+      case "documents": {
+        if (!documentsPending) return;
+        const refusal = documentsRefusal(frame);
+        if (refusal) { documentsPending = false; setStatus(refusal.message, "error"); return; }
+        const page = parseDocumentsPage(frame);
+        if (!page) { rejectFrame(); return; }
+        documentsNames.push(...page.names);
+        documentsAfter = page.nextAfter;
+        if (documentsAfter === null) {
+          documentsPending = false;
+          renderDocumentsList();
+        } else {
+          socket?.send(JSON.stringify(documentsFrame(capability.value.trim(), { prefix: documentsPrefix?.value.trim() || null, after: documentsAfter })));
+        }
+        break;
+      }
+      case "document": {
+        if (!documentPending) return;
+        documentPending = false;
+        const read = parseDocumentRead(frame);
+        if (!read) { rejectFrame(); return; }
+        if (documentsView) documentsView.textContent = `--- ${read.name} (${read.size} bytes; read-only) ---\n${read.text}`;
+        break;
+      }
       case "invite": {
         const invite = frame.invite ?? frame;
         // #7924: a present capability must be a string before it can be
@@ -545,11 +583,41 @@ function initWorld(): void {
           rejectFrame();
           return;
         }
+        documentsPending = false;
+        documentPending = false;
         setStatus(frame.message ?? "World request failed", "error");
         appendLine(log, `error: ${frame.message ?? "world request failed"}`);
         break;
       }
     }
+  };
+
+  const renderDocumentsList = () => {
+    if (!documentsList) return;
+    documentsList.textContent = "";
+    for (const docName of documentsNames) {
+      const item = document.createElement("button");
+      item.type = "button";
+      item.className = "btn btn-ghost btn-xs block";
+      item.textContent = docName;
+      item.addEventListener("click", () => requestDocument(docName));
+      documentsList.append(item);
+    }
+  };
+
+  const requestDocument = (docName: string) => {
+    if (socket?.readyState !== WebSocket.OPEN) { setStatus("Join the world before reading documents", "error"); return; }
+    documentPending = true;
+    socket.send(JSON.stringify(documentFrame(capability.value.trim(), docName)));
+  };
+
+  const requestDocuments = () => {
+    if (socket?.readyState !== WebSocket.OPEN) { setStatus("Join the world before reading documents", "error"); return; }
+    if (documentsPending) return;
+    documentsNames = [];
+    documentsAfter = null;
+    documentsPending = true;
+    socket.send(JSON.stringify(documentsFrame(capability.value.trim(), { prefix: documentsPrefix?.value.trim() || null })));
   };
 
   const requestRecords = () => {
@@ -651,6 +719,7 @@ function initWorld(): void {
   viewportObserver.observe(view);
 
   recordsRefresh.addEventListener("click", requestRecords);
+  documentsRefresh?.addEventListener("click", requestDocuments);
 
   refreshHostView = async () => {
     if (!admin || !hostViewButton) return;
