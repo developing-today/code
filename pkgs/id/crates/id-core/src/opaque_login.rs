@@ -411,7 +411,7 @@ fn server_params() -> ServerLoginParameters<'static, 'static> {
     }
 }
 
-fn credential_id(account: &AuthAccount) -> Result<&[u8], OpaqueError> {
+const fn credential_id(account: &AuthAccount) -> Result<&[u8], OpaqueError> {
     match account {
         AuthAccount::Opaque { account_id } => Ok(account_id.as_bytes()),
         AuthAccount::Oidc { .. } => Err(OpaqueError::Account(BindingError::Field {
