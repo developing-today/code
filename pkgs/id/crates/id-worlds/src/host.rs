@@ -401,6 +401,154 @@ pub fn census_of(root: &Path, file: &HostFile) -> Census {
     census
 }
 
+/// Actor recorded when a client's connection wakes an asleep world.
+pub const WAKE_ON_CONNECT: &str = "wake-on-connect";
+
+/// Actor recorded when the serving hub closes an idle world.
+pub const IDLE_CLOSE: &str = "idle";
+
+/// The host file of a data root, shared by a serving process that opens
+/// worlds on demand (#10693 serve-attach). A client naming an asleep
+/// world wakes it ([`HostLifecycle::admit_wake`]); the hub closing an
+/// idle world records it asleep again ([`HostLifecycle::record_closed`]).
+/// Archived and unknown worlds are refused: waking never restores an
+/// archived world and never creates one. Every change is saved before it
+/// is reported.
+#[derive(Debug)]
+pub struct HostLifecycle {
+    root: PathBuf,
+    file: std::sync::Mutex<HostFile>,
+}
+
+/// What [`HostLifecycle::admit_wake`] did, so a failed open can be undone.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Admission {
+    /// The world was already recorded live; nothing changed.
+    AlreadyLive,
+    /// The world was asleep and is now recorded live.
+    Woken,
+}
+
+impl HostLifecycle {
+    /// Load the host file for `root`, rebuilding and saving it when absent.
+    ///
+    /// # Errors
+    ///
+    /// As [`HostFile::load`], [`HostFile::rebuild`] and [`HostFile::save`].
+    pub fn open(root: &Path) -> Result<Self> {
+        let file = if HostFile::path_for(root).is_file() {
+            HostFile::load(root)?
+        } else {
+            let file = HostFile::rebuild(root)?;
+            file.save(root)?;
+            file
+        };
+        Ok(Self {
+            root: root.to_path_buf(),
+            file: std::sync::Mutex::new(file),
+        })
+    }
+
+    /// The data root this host file describes.
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
+    /// The recorded state of `name`, if the host file knows it.
+    pub fn state(&self, name: &str) -> Option<LifecycleState> {
+        self.lock().worlds.get(name).map(|record| record.state)
+    }
+
+    /// A copy of the host file as it stands.
+    pub fn snapshot(&self) -> HostFile {
+        self.lock().clone()
+    }
+
+    /// Admit a client's connection to `name`: an asleep world is recorded
+    /// live by [`WAKE_ON_CONNECT`], a live one is left as it is.
+    ///
+    /// # Errors
+    ///
+    /// Refuses an archived world (restore it first), a world the host
+    /// file does not know, and a failed save (nothing is recorded then).
+    pub fn admit_wake(&self, name: &str) -> Result<Admission> {
+        let mut file = self.lock();
+        match file.worlds.get(name).map(|record| record.state) {
+            None => bail!("no world {name:?} in this data root"),
+            Some(LifecycleState::Live) => Ok(Admission::AlreadyLive),
+            Some(LifecycleState::Archived) => {
+                bail!("world {name:?} is archived: an operator must restore it before it wakes")
+            }
+            Some(LifecycleState::Asleep) => {
+                self.record(&mut file, name, LifecycleState::Live, WAKE_ON_CONNECT)?;
+                Ok(Admission::Woken)
+            }
+        }
+    }
+
+    /// Undo an [`Admission::Woken`] whose open then failed: the world goes
+    /// back to asleep with the wake's history entry removed, as if the
+    /// connection never arrived. [`Admission::AlreadyLive`] undoes nothing.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the save fails; the in-memory record is restored anyway.
+    pub fn undo_wake(&self, name: &str, admission: Admission) -> Result<()> {
+        if admission == Admission::AlreadyLive {
+            return Ok(());
+        }
+        let mut file = self.lock();
+        let Some(record) = file.worlds.get_mut(name) else {
+            return Ok(());
+        };
+        let woke_last = record.history.last().is_some_and(|change| {
+            change.actor == WAKE_ON_CONNECT && change.prior == LifecycleState::Asleep
+        });
+        if record.state != LifecycleState::Live || !woke_last {
+            return Ok(());
+        }
+        record.state = LifecycleState::Asleep;
+        record.history.pop();
+        file.save(&self.root)
+    }
+
+    /// The hub closed `name` (idle, or to make room): record it asleep by
+    /// [`IDLE_CLOSE`]. A world not recorded live is left as it is.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the save fails; nothing is recorded then.
+    pub fn record_closed(&self, name: &str) -> Result<()> {
+        let mut file = self.lock();
+        if file.worlds.get(name).map(|record| record.state) != Some(LifecycleState::Live) {
+            return Ok(());
+        }
+        self.record(&mut file, name, LifecycleState::Asleep, IDLE_CLOSE)
+    }
+
+    /// Apply one transition to a copy, save it, then adopt it, so a failed
+    /// save leaves both the file on disk and the memory unchanged.
+    fn record(
+        &self,
+        file: &mut HostFile,
+        name: &str,
+        to: LifecycleState,
+        actor: &str,
+    ) -> Result<()> {
+        let mut next = file.clone();
+        next.transition(name, to, actor, now_secs())?;
+        next.save(&self.root)?;
+        *file = next;
+        Ok(())
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, HostFile> {
+        self.file
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+}
+
 /// A live world held by the [`Supervisor`]: its service plus the replay
 /// report from the `start` that brought it live.
 #[derive(Clone, Debug)]
@@ -932,6 +1080,76 @@ mod tests {
         rebuilt.save(root.path()).unwrap();
         let sup2 = Supervisor::open(root.path()).await.unwrap();
         assert_eq!(sup2.file().worlds.len(), 2);
+    }
+
+    #[test]
+    fn host_lifecycle_wakes_asleep_and_refuses_archived_and_unknown() {
+        let root = data_root_with(&["sleepy", "shelved"]);
+        let host = HostLifecycle::open(root.path()).unwrap();
+        assert!(HostFile::path_for(root.path()).is_file());
+        {
+            let mut file = host.lock();
+            file.transition("shelved", LifecycleState::Archived, actor(), 1)
+                .unwrap();
+        }
+
+        assert_eq!(host.admit_wake("sleepy").unwrap(), Admission::Woken);
+        assert_eq!(host.state("sleepy"), Some(LifecycleState::Live));
+        assert_eq!(host.admit_wake("sleepy").unwrap(), Admission::AlreadyLive);
+
+        let saved = HostFile::load(root.path()).unwrap();
+        let record = &saved.worlds["sleepy"];
+        assert_eq!(record.state, LifecycleState::Live);
+        assert_eq!(record.history.len(), 1);
+        assert_eq!(record.history[0].actor, WAKE_ON_CONNECT);
+        assert_eq!(record.history[0].prior, LifecycleState::Asleep);
+
+        let archived = host.admit_wake("shelved").unwrap_err().to_string();
+        assert!(archived.contains("restore"), "{archived}");
+        assert_eq!(host.state("shelved"), Some(LifecycleState::Archived));
+        assert!(host.admit_wake("nobody").is_err());
+        assert_eq!(host.state("nobody"), None);
+    }
+
+    #[test]
+    fn host_lifecycle_undo_and_close_return_worlds_to_asleep() {
+        let root = data_root_with(&["w"]);
+        let host = HostLifecycle::open(root.path()).unwrap();
+
+        let admission = host.admit_wake("w").unwrap();
+        host.undo_wake("w", admission).unwrap();
+        let saved = HostFile::load(root.path()).unwrap();
+        assert_eq!(saved.worlds["w"].state, LifecycleState::Asleep);
+        assert!(saved.worlds["w"].history.is_empty());
+
+        host.admit_wake("w").unwrap();
+        host.undo_wake("w", Admission::AlreadyLive).unwrap();
+        assert_eq!(host.state("w"), Some(LifecycleState::Live));
+
+        host.record_closed("w").unwrap();
+        let saved = HostFile::load(root.path()).unwrap();
+        let record = &saved.worlds["w"];
+        assert_eq!(record.state, LifecycleState::Asleep);
+        let actors: Vec<&str> = record.history.iter().map(|c| c.actor.as_str()).collect();
+        assert_eq!(actors, [WAKE_ON_CONNECT, IDLE_CLOSE]);
+
+        // Closing a world that is not live records nothing.
+        host.record_closed("w").unwrap();
+        host.record_closed("nobody").unwrap();
+        assert_eq!(HostFile::load(root.path()).unwrap(), saved);
+        assert_eq!(host.snapshot(), saved);
+    }
+
+    #[test]
+    fn host_lifecycle_reopens_what_it_saved() {
+        let root = data_root_with(&["w"]);
+        HostLifecycle::open(root.path())
+            .unwrap()
+            .admit_wake("w")
+            .unwrap();
+        let again = HostLifecycle::open(root.path()).unwrap();
+        assert_eq!(again.state("w"), Some(LifecycleState::Live));
+        assert_eq!(again.root(), root.path());
     }
 
     #[test]
