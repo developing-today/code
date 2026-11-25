@@ -1,7 +1,8 @@
-//! The discovery resolver (#10708): find a world's announcement by
-//! asking the three discovery layers in the order design #6287 §6
+//! The discovery resolver (#10708): find a world's freshest valid announcement.
+//!
+//! It asks the three discovery layers in the order design #6287 §6
 //! decides — the invite link, then pkarr by `world_id`, then the
-//! registries the reader subscribes to — and keep the freshest valid
+//! registries the reader subscribes to — and keeps the freshest valid
 //! announcement across all of them.
 //!
 //! The order is a fallback order, not an authority order: no layer
@@ -57,6 +58,7 @@ impl fmt::Display for Layer {
 
 /// What one layer returned for the queried world.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[allow(clippy::large_enum_variant)]
 pub enum Offer {
     /// The layer served this announcement, still to be checked.
     Announcement(SignedAnnouncement),
@@ -124,9 +126,10 @@ pub fn arbitrate(world_id: &[u8; 32], offers: Vec<(Layer, Offer)>, now: u64) -> 
             Offer::Absent => Outcome::Absent,
             Offer::Delisted(reason) => Outcome::Delisted(reason),
             Offer::Failed(reason) => Outcome::Failed(reason),
-            Offer::Announcement(signed) => match check(world_id, &signed, now) {
-                Err(error) => Outcome::Refused(format!("{error:#}")),
-                Ok(()) => {
+            Offer::Announcement(signed) => {
+                if let Err(error) = check(world_id, &signed, now) {
+                    Outcome::Refused(format!("{error:#}"))
+                } else {
                     let fresher = chosen.as_ref().is_none_or(|(_, current)| {
                         signed.announcement.seq > current.announcement.seq
                     });
@@ -144,30 +147,28 @@ pub fn arbitrate(world_id: &[u8; 32], offers: Vec<(Layer, Offer)>, now: u64) -> 
                         }
                     }
                 }
-            },
+            }
         };
         considered.push((layer, outcome));
     }
-    match chosen {
-        Some((index, announcement)) => Ok(Resolution {
+    if let Some((index, announcement)) = chosen {
+        return Ok(Resolution {
             announcement,
             layer: considered[index].0,
             considered,
-        }),
-        None => {
-            let reasons: Vec<String> = considered
-                .iter()
-                .map(|(layer, outcome)| format!("{layer}: {}", describe(outcome)))
-                .collect();
-            if reasons.is_empty() {
-                bail!("no discovery layer was asked");
-            }
-            bail!(
-                "no discovery layer served a valid announcement: {}",
-                reasons.join("; ")
-            )
-        }
+        });
     }
+    let reasons: Vec<String> = considered
+        .iter()
+        .map(|(layer, outcome)| format!("{layer}: {}", describe(outcome)))
+        .collect();
+    if reasons.is_empty() {
+        bail!("no discovery layer was asked");
+    }
+    bail!(
+        "no discovery layer served a valid announcement: {}",
+        reasons.join("; ")
+    )
 }
 
 /// One candidate's own checks: right world, signature, not expired.
@@ -203,10 +204,12 @@ pub fn registry_offer(list: &SignedRegistryList, world_id: &[u8; 32]) -> Offer {
     }
 }
 
-/// Browse the subscribed registries by name or tag: every live
-/// listed world whose name contains `query` or whose tags include it,
-/// ignoring case, one result per world (the highest seq any registry
-/// holds), ordered by name. An empty query lists every live world.
+/// Browse the subscribed registries by name or tag.
+///
+/// Returns every live listed world whose name contains `query` or
+/// whose tags include it, ignoring case, one result per world (the
+/// highest seq any registry holds), ordered by name. An empty query
+/// lists every live world.
 ///
 /// Tags are discovery hints only (design §3): a match here says what
 /// a registry holds, never that the world is what its tags say.
@@ -275,7 +278,7 @@ impl Resolver {
     /// A resolver over `pkarr` relays (none skips the pkarr layer) and
     /// the subscribed `registries`.
     #[must_use]
-    pub fn new(pkarr: Option<RelaySinks>, registries: Vec<SignedRegistryList>) -> Self {
+    pub const fn new(pkarr: Option<RelaySinks>, registries: Vec<SignedRegistryList>) -> Self {
         Self { pkarr, registries }
     }
 
@@ -383,8 +386,11 @@ mod tests {
     struct OneRelay(Option<Vec<u8>>);
 
     impl BridgeHttp for OneRelay {
-        async fn request(&mut self, _request: HttpRequest) -> Result<HttpResponse> {
-            Ok(match &self.0 {
+        fn request(
+            &mut self,
+            _request: HttpRequest,
+        ) -> impl std::future::Future<Output = Result<HttpResponse>> + Send {
+            std::future::ready(Ok(match &self.0 {
                 Some(body) => HttpResponse {
                     status: 200,
                     headers: Vec::new(),
@@ -395,7 +401,7 @@ mod tests {
                     headers: Vec::new(),
                     body: Vec::new(),
                 },
-            })
+            }))
         }
     }
 
@@ -497,7 +503,7 @@ mod tests {
             &world_id(),
             vec![
                 (Layer::Registry([1; 32]), Offer::Announcement(same.clone())),
-                (Layer::Pkarr, Offer::Announcement(same.clone())),
+                (Layer::Pkarr, Offer::Announcement(same)),
             ],
             NOW,
         )
