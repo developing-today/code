@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { clickWorldJoin } from "./world-test-connect";
 
 const here = dirname(fileURLToPath(import.meta.url));
 
@@ -118,7 +119,7 @@ describe("program-only surface (#2146 phase 2)", () => {
 
     // Join sends the capability to the pinned world, nowhere else.
     q<HTMLInputElement>("[data-world-capability]").value = "guest-capability";
-    q<HTMLButtonElement>("[data-world-join]").click();
+    clickWorldJoin(root);
     const session = FakeSocket.all.at(-1) as FakeSocket;
     expect(session.url).toMatch(/\/ws\/world$/);
     session.open();

@@ -3,6 +3,7 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import {
+import { clickWorldJoin } from "./world-test-connect";
   Conformance,
   checkClientFrame,
   checkServerFrame,
@@ -433,7 +434,7 @@ describe("web shell conformance", () => {
 
     // Join.
     q<HTMLInputElement>("[data-world-capability]").value = "guest-capability";
-    q<HTMLButtonElement>("[data-world-join]").click();
+    clickWorldJoin(root);
     const session = FakeSocket.all.at(-1) as FakeSocket;
     expect(session.url).toMatch(/\/ws\/world$/);
     session.open();

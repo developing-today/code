@@ -3,6 +3,7 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import {
+import { clickWorldJoin } from "./world-test-connect";
   loadWorldSnapshot,
   parseStoredWorldSnapshot,
   saveWorldSnapshot,
@@ -166,7 +167,7 @@ describe("world page offline read model (#10927)", () => {
 
   it("persists the snapshot store as frames arrive", () => {
     q<HTMLInputElement>("[data-world-capability]").value = "guest-capability";
-    q<HTMLButtonElement>("[data-world-join]").click();
+    clickWorldJoin(root);
     expect(FakeSocket.all).toHaveLength(1);
     const socket = FakeSocket.all[0];
     socket.open();
@@ -221,7 +222,7 @@ describe("world page offline read model (#10927)", () => {
 
     // Reconnect presents the stored last-applied sequence, not 0.
     q<HTMLInputElement>("[data-world-capability]").value = "guest-capability";
-    q<HTMLButtonElement>("[data-world-join]").click();
+    clickWorldJoin(root);
     expect(FakeSocket.all).toHaveLength(1);
     const socket = FakeSocket.all[0];
     socket.open();

@@ -183,6 +183,12 @@ function initWorld(): void {
   let socket: WebSocket | null = null;
   let connectConsent: { token: string; world: string | null } | null = null;
   let connectPending = false;
+  capability.addEventListener("input", () => {
+    connectConsent = null;
+  });
+  worldInput.addEventListener("input", () => {
+    connectConsent = null;
+  });
   let cursor = 0;
   let renderedSurface: ScreenSurface | null = null;
   let renderedViewRevision: number | null = null;
