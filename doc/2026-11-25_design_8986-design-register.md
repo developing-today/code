@@ -96,7 +96,14 @@ should not be replaced by a new tracker.
 - **Board mirror:** Project #4's `Design Register` view is selected by the
   existing `label:design` filter. Area views are separate named filters, not
   implicitly intersected with that label. Board membership is a discoverability
-  mirror, not proof of completeness.
+  mirror, not proof of completeness. Board eligibility is scoped to issues in
+  repositories that can be placed on the org project: personal-repository
+  issues cannot be placed on Project #4 (settled constraint, documented in the
+  PM-stack program roadmap). Such a design remains in the canonical issue/doc
+  register, marked `board_eligible=false` with its reason; it is not a missing
+  board-member finding. This placement limitation is distinct from an eligible
+  issue whose project data is inaccessible or stale, which makes the run
+  incomplete rather than exempt.
 - **Current state:** issue status and Project Status remain human-owned. The
   weekly check reports differences and creates/routs a repair item; it does not
   silently resolve them.
@@ -106,8 +113,12 @@ should not be replaced by a new tracker.
 The monitor takes a dated snapshot of the candidate issue set and, for each
 candidate, checks: issue is readable; canonical doc link resolves to a committed
 file; reciprocal link exists; expected design/epic labels are present; parent
-relation is correct or a recorded exception applies; and the issue appears in
-the appropriate Project #4 view. It records run time, source query/scope,
+relation is correct or a recorded exception applies; and, when
+`board_eligible=true`, the issue appears in the appropriate Project #4 view.
+The eligibility decision and its reason are recorded per candidate. A
+personal-repository issue is retained in the register and checked for its
+labels/milestone/tracking links, but excluded from the Project #4 membership
+invariant. It records run time, source query/scope,
 counts, exceptions, per-finding evidence and follow-up issue/queue references.
 It distinguishes **missing**, **mismatched**, **unavailable**, and **stale**;
 an unavailable Project snapshot is never reported as an empty board. The report
@@ -168,7 +179,9 @@ new persistence or writes.
 
 **Acceptance:** fixtures cover correctly linked, missing doc, missing label,
 wrong parent, documented exception, unsupported view filter, absent snapshot,
-and stale snapshot; incomplete inputs cannot produce a clean bill of health.
+personal-repository issue marked not board-eligible, and stale snapshot;
+incomplete inputs cannot produce a clean bill of health, and the not-eligible
+fixture produces no false missing-board finding.
 
 ### Slice 4 — Implement the weekly read-only reconciliation
 
@@ -249,9 +262,13 @@ contract rather than weaken it.
    for policy and the repository security reviewer for capability scope.
    Default: no writes; create or link a repair task for a human.
 5. **How should the monitor handle designs whose tracking home is in another
-   repository?** Decider: PM-stack maintainer. Default: include only when the
-   canonical record is accessible and state repo/token coverage; otherwise
-   report `unavailable`, never silently omit it.
+   repository, or whose repository cannot be placed on Project #4?** Decider:
+   PM-stack maintainer, with the Project #4 owner for eligibility policy.
+   Default: include accessible records in the canonical register; mark
+   structurally unplaceable personal-repository issues `board_eligible=false`
+   and check their labels/milestone/tracking links instead. For eligible but
+   inaccessible records, state repo/token coverage and report `unavailable`,
+   never silently omit them.
 
 ## 9. Record and tracking linkage
 
