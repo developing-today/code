@@ -25,6 +25,8 @@ fn fleet(dir: &Path, args: &[&str], stdin: Option<&[u8]>) -> Output {
         .env("FLEET_INVOCATION_LEDGER", dir.join("ledger.jsonl"))
         .env("FLEET_SESSION_ID", SESSION)
         .env_remove("OPENCODE_SESSION_ID")
+        .env_remove("FLEET_KV_URL")
+        .env_remove("FLEET_KV_TOKEN_FILE")
         .env("FLEET_CTX_USER", "spoofed-user");
     match stdin {
         None => command.output().unwrap(),
@@ -46,13 +48,31 @@ fn stderr(output: &Output) -> String {
 }
 
 #[test]
-fn bad_arguments_and_global_are_answered_before_anything_is_created() {
+fn bad_arguments_and_unconfigured_central_are_answered_before_anything_is_created() {
     let dir = scratch("strict");
     let usage = fleet(&dir, &["kv", "get", "--namespace", "n", "k", "extra"], None);
     assert_eq!(usage.status.code(), Some(2), "{}", stderr(&usage));
-    let global = fleet(&dir, &["kv", "list", "--global", "--namespace", "n"], None);
-    assert_eq!(global.status.code(), Some(69));
-    assert!(stderr(&global).contains("unimplemented_central_in_phase1"));
+    // With no central store configured, --global and sync exit 69 before
+    // the session's identity or the local store is touched.
+    for words in [
+        &["kv", "list", "--global", "--namespace", "n"][..],
+        &["kv", "sync"][..],
+    ] {
+        let global = fleet(&dir, words, None);
+        assert_eq!(global.status.code(), Some(69), "{}", stderr(&global));
+        assert!(
+            stderr(&global).contains("central_not_configured"),
+            "{}",
+            stderr(&global)
+        );
+    }
+    let blob = fleet(
+        &dir,
+        &["kv", "set", "--force-blob", "--namespace", "n", "k", "v"],
+        None,
+    );
+    assert_eq!(blob.status.code(), Some(69));
+    assert!(stderr(&blob).contains("pending_needs_phase3"));
     let help = fleet(&dir, &["kv", "--help"], None);
     assert_eq!(help.status.code(), Some(0));
     assert!(String::from_utf8_lossy(&help.stdout).contains("clear-override"));
