@@ -645,7 +645,11 @@ mod tests {
             match stored {
                 Some(expected) => {
                     assert_eq!(code, EXIT_OK, "{caller}");
-                    assert_eq!(fake.names.borrow().as_slice(), [expected], "{caller}");
+                    assert_eq!(
+                        fake.names.borrow().as_slice(),
+                        [expected.to_string()],
+                        "{caller}"
+                    );
                 }
                 None => {
                     // Row 8: refused before the store is contacted.
@@ -669,8 +673,8 @@ mod tests {
             );
         }
         assert_eq!(
-            fake.names.borrow().as_slice(),
-            ["alpha", "42.alpha", "42.42.x", "420.x"]
+            fake.names.borrow().join(","),
+            "alpha,42.alpha,42.42.x,420.x"
         );
     }
 
