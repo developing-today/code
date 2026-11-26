@@ -57,8 +57,8 @@ let
   # instead of crate name-version — same checkout, same hash.
   cargoLockPath = ./Cargo.lock;
   outputHashesAttrs = {
-    "git+https://github.com/p2panda/p2panda?rev=da80c05b95269926bf58121cf6a2d3dd5ca41dfc#da80c05b95269926bf58121cf6a2d3dd5ca41dfc" =
-      "sha256-yq+ySfo14ucU1BWOUdJM0n7/FL3+Ria3Z+MxMHFa4Ls=";
+    "git+https://github.com/dezren39/p2panda?rev=4a8a7ea4b6e0da187108fba9a0085e0f9679aded#4a8a7ea4b6e0da187108fba9a0085e0f9679aded" =
+      "sha256-9QbbXbjFMwsGKCYV6BIPOnOqLegGFexDvoph79yNpOQ=";
   };
 
   metaAttrs = with pkgs.lib; {

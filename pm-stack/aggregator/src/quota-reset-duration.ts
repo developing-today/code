@@ -67,7 +67,14 @@
 // module's builders serve.
 
 import { PROJECTION_PERIOD_TOLERANCE_MS } from "./quota-analytics.ts";
-import { forecastSeriesKey, type ForecastLedgerRow, type QuotaForecastFile } from "./quota-forecast.ts";
+import {
+  forecastSeriesKey,
+  indexPctHistory,
+  pointsForWindow,
+  type ForecastLedgerRow,
+  type QuotaForecastFile,
+} from "./quota-forecast.ts";
+import type { SnapshotRecord } from "./model.ts";
 import { C4_METHODOLOGY_VERSION, PREDICTION_LEDGER_SOURCE, renderPredictionRange } from "./quota-downtime.ts";
 
 export interface ResetDurationRecord {
@@ -105,6 +112,33 @@ export interface ResetObservation {
  * (the supersedes map). */
 export function resetDurationSubjectKey(providerId: string, windowName: string): string {
   return `${providerId}:${windowName}`;
+}
+
+/**
+ * The observations map deriveResetDurationRecords reads, joined
+ * from the snapshot history per forecast pool window (the same
+ * rename-joined metric matching the forecast uses). Only windows
+ * the forecast carries are keyed; the readings keep their resetsAt
+ * so the cadence basis can read published resets and gaps alike.
+ */
+export function resetObservationsFor(
+  forecast: QuotaForecastFile,
+  history: readonly SnapshotRecord[],
+): Map<string, ResetObservation[]> {
+  const index = indexPctHistory(history);
+  const observations = new Map<string, ResetObservation[]>();
+  for (const providerId of Object.keys(forecast.pools)) {
+    for (const pool of forecast.pools[providerId]) {
+      for (const w of pool.windows) {
+        const points = pointsForWindow(index, pool.serviceId, w.name);
+        observations.set(
+          resetDurationSubjectKey(providerId, w.name),
+          points.map((p) => ({ ts: new Date(p.ts).toISOString(), resetsAt: p.resetsAt })),
+        );
+      }
+    }
+  }
+  return observations;
 }
 
 // --- Cadence basis -------------------------------------------------

@@ -35,6 +35,14 @@ dispatch: a bounded pool, exclusive leases, no concurrent writers.
   first sight rather than orphaned.
 - State is SQLite at `~/.local/state/cargo-target-broker/broker.db`;
   every mutation runs under an flock. No daemon.
+- `exec` also watches sccache compiler clients. A client older than the
+  configured stall bound with negligible CPU is treated as wedged (the
+  observed failure shape in code#13367): the broker reports its pid/crate
+  and sends it SIGTERM so Cargo fails that compile instead of parking the
+  build indefinitely. Healthy compiles accrue CPU; young idle clients are
+  ignored. Default bound: 15 minutes old and at most 5 CPU seconds, polled
+  every 30 seconds. This is a local client-side guard; it does not diagnose
+  or alter the upstream sccache daemon.
 
 ## Use
 
@@ -62,6 +70,13 @@ instead of failing when the per-key cap is fully leased),
 `--workspace-cwd DIR` on checkout/exec (clean the selected Cargo workspace
 while keeping the command's original working directory),
 `--cap-gib`, `--per-key`, `--ttl-secs`, `--pool-root`, `--state-dir`.
+
+The `exec` watchdog can be tuned with `CARGO_BROKER_SCCACHE_STALL_SECS`,
+`CARGO_BROKER_SCCACHE_MAX_CPU_SECS`, and
+`CARGO_BROKER_SCCACHE_POLL_SECS`. Set
+`CARGO_BROKER_NO_SCCACHE_WATCHDOG=1` to opt out. An explicitly empty
+`RUSTC_WRAPPER` or `CARGO_BUILD_RUSTC_WRAPPER` also disables it when Cargo
+is intentionally run without sccache.
 
 ## Integration status
 

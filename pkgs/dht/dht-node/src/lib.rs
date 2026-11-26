@@ -2,13 +2,14 @@
 
 use anyhow::Result;
 use distributed_topic_tracker::{
-    AutoDiscoveryGossip, GossipReceiver, GossipSender, RecordPublisher, RotationHandle,
+    AutoDiscoveryGossip, Config, GossipReceiver, GossipSender, RecordPublisher, RotationHandle,
     SecretRotation, TopicId,
 };
 use ed25519_dalek::SigningKey;
+use iroh::endpoint::presets;
 use iroh::protocol::Router;
 use iroh::{Endpoint, SecretKey};
-use iroh_gossip::net::Gossip;
+use iroh_gossip::Gossip;
 
 struct MySecretRotation;
 
@@ -43,10 +44,10 @@ impl Node {
 
 /// Build a node and join its topic through the existing auto-discovery path.
 pub async fn join() -> Result<Node> {
-    let secret_key = SecretKey::generate(&mut rand::rng());
+    let secret_key = SecretKey::generate();
     let signing_key = SigningKey::from_bytes(&secret_key.to_bytes());
 
-    let endpoint = Endpoint::builder()
+    let endpoint = Endpoint::builder(presets::N0)
         .secret_key(secret_key.clone())
         .bind()
         .await?;
@@ -61,10 +62,10 @@ pub async fn join() -> Result<Node> {
 
     let record_publisher = RecordPublisher::new(
         topic_id.clone(),
-        signing_key.verifying_key(),
         signing_key.clone(),
         Some(RotationHandle::new(MySecretRotation)),
         initial_secret,
+        Config::default(),
     );
 
     let (gossip_sender, gossip_receiver) = gossip

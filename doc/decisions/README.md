@@ -172,10 +172,10 @@ the decision; `Implementation` is where the decision lands in code, docs, or iss
 
 ### Package-scoped records (not in this namespace)
 
-| Namespace     | Records                                                                                              | Status                 | Owner                   | Notes                                                                                            |
-| ------------- | ---------------------------------------------------------------------------------------------------- | ---------------------- | ----------------------- | ------------------------------------------------------------------------------------------------ |
-| `FDR-PMO-NNN` | [`FDR-PMO-001…008`](../2026-11-13T03-20-24Z_design_pm-stack-fleet-orchestration/decisions/README.md) | accepted (design-only) | PM-stack design package | Package-local; do not reuse these IDs fleet-wide, and do not renumber them into the table above. |
-| `FDR-RA-NNN` | [`FDR-RA-001`](../2026-11-13T15-12-00Z_design_reporting-architecture-event-driven/decisions/README.md) | accepted; implementation partially complete | Reporting-architecture program (#9568) | Package-local; do not reuse these IDs fleet-wide, and do not renumber them into the table above. |
+| Namespace     | Records                                                                                                | Status                                      | Owner                                  | Notes                                                                                            |
+| ------------- | ------------------------------------------------------------------------------------------------------ | ------------------------------------------- | -------------------------------------- | ------------------------------------------------------------------------------------------------ |
+| `FDR-PMO-NNN` | [`FDR-PMO-001…008`](../2026-11-13T03-20-24Z_design_pm-stack-fleet-orchestration/decisions/README.md)   | accepted (design-only)                      | PM-stack design package                | Package-local; do not reuse these IDs fleet-wide, and do not renumber them into the table above. |
+| `FDR-RA-NNN`  | [`FDR-RA-001`](../2026-11-13T15-12-00Z_design_reporting-architecture-event-driven/decisions/README.md) | accepted; implementation partially complete | Reporting-architecture program (#9568) | Package-local; do not reuse these IDs fleet-wide, and do not renumber them into the table above. |
 
 ## 9. Settling events for the `proposed` records
 

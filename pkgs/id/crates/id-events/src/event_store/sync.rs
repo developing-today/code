@@ -484,6 +484,12 @@ fn sync_key(position: &[u8], id: &Id) -> Result<Key, StoreError> {
 /// empty rest. The header commits to the body by hash and size, and the receiver checks
 /// the body against that commitment before storing it, so a body can never be attached
 /// to the wrong event.
+///
+/// An empty rest cannot hide a present empty body (#14907): a header whose payload size
+/// is 0 carries no payload hash on the wire (p2panda's header encoding writes the hash
+/// only for a non-zero size, and its decoder reads it back as `None`), so no header can
+/// commit to an empty body, and the store refuses one at ingest. A stored body is never
+/// empty, and "no body" is the only thing an empty rest can mean.
 fn encode_record(event: &[u8], body: Option<&[u8]>) -> Result<Vec<u8>> {
     let mut record = Vec::with_capacity(4 + event.len() + body.map_or(0, <[u8]>::len));
     record.extend_from_slice(&u32::try_from(event.len())?.to_be_bytes());
@@ -1001,6 +1007,7 @@ mod tests {
                 rotation: None,
                 chat: None,
                 anchor: None,
+                thread: None,
             };
             events.push(chain::sign(&key, seq, backlink, Some(body), ext).unwrap());
         }
@@ -1265,6 +1272,55 @@ mod tests {
         }
     }
 
+    /// The invariant behind the record framing (#14907): an event with an empty payload has
+    /// no payload hash, so the store refuses an empty body for it rather than keeping one.
+    /// An empty record rest can therefore only mean "no body", and the event syncs as the
+    /// header-only event it is stored as.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_empty_body_is_never_stored_so_an_empty_record_rest_means_no_body() {
+        let (_da, mut a) = open();
+        let (_db, mut b) = open();
+        let empty = chain_of(81, 1, b"").remove(0);
+        assert_eq!(empty.header.payload_size, 0);
+        assert_eq!(
+            empty.header.payload_hash, None,
+            "a zero-size payload carries no hash, so no header commits to an empty body"
+        );
+        let decoded = chain::decode(&empty.bytes).unwrap();
+        assert_eq!(decoded.header.payload_hash, None);
+
+        assert!(matches!(
+            a.ingest_with_body(&empty.bytes, Some(b""), NOW).unwrap(),
+            Ingest::Refused(crate::event_store::Refusal::Malformed(_))
+        ));
+        assert!(matches!(
+            a.ingest_with_body(&empty.bytes, None, NOW).unwrap(),
+            Ingest::Accepted { .. }
+        ));
+        assert_eq!(a.stored_body(&empty.id).unwrap(), None);
+        assert_eq!(
+            encode_record(&empty.bytes, None).unwrap(),
+            encode_record(&empty.bytes, Some(b"")).unwrap()
+        );
+
+        let (da, db) = loopback(
+            &mut a,
+            &mut b,
+            Params::default(),
+            Params::default(),
+            Cut::Never,
+        )
+        .await
+        .unwrap();
+        da.unwrap();
+        db.unwrap();
+        assert!(b.event_by_id(&empty.id).unwrap().is_some());
+        assert!(matches!(
+            b.event_body(&empty.id),
+            Err(StoreError::MissingBody { .. })
+        ));
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     async fn test_range_sync_ingests_device_operation_body_on_receiver() {
         let (_da, mut a) = open();
@@ -1301,6 +1357,7 @@ mod tests {
                 rotation: None,
                 chat: None,
                 anchor: None,
+                thread: None,
             },
         )
         .unwrap();
@@ -1357,6 +1414,7 @@ mod tests {
                 rotation: None,
                 chat: None,
                 anchor: None,
+                thread: None,
             },
         )
         .unwrap();
@@ -1405,6 +1463,7 @@ mod tests {
                 rotation: None,
                 chat: None,
                 anchor: None,
+                thread: None,
             },
         )
         .unwrap();
@@ -1458,6 +1517,7 @@ mod tests {
                 rotation: None,
                 chat: None,
                 anchor: None,
+                thread: None,
             },
         )
         .unwrap();
@@ -1529,6 +1589,7 @@ mod tests {
                 rotation: None,
                 chat: None,
                 anchor: None,
+                thread: None,
             }
         }
         // The group create, by A, listing A, B and C as managers. The group is

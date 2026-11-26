@@ -1,0 +1,6 @@
+{"from": "client", "frame": {"type": "join", "capability": "hw-capability", "after": null}}
+{"from": "server", "frame": {"type": "snapshot", "snapshot": {"world_id": "lobby", "current_sequence": 4, "participants": [{"id": 1, "display_name": "ann"}]}}}
+{"from": "server", "frame": {"type": "view", "sequence": 4, "data": "Ship the update?", "view_revision": 1, "surface": {"kind": "form", "version": 1, "form_id": "hw-choice", "presentation_token": "0123456789abcdef0123456789abcdef", "title": "Ship the update?", "fields": [{"kind": "choice", "id": "when", "label": "When", "required": true, "options": ["now", "later"]}], "actions": [{"id": "submit", "label": "Confirm"}, {"id": "cancel", "label": "Cancel", "kind": "cancel"}]}}}
+{"from": "client", "frame": {"type": "form_result", "form_id": "hw-choice", "presentation_token": "0123456789abcdef0123456789abcdef", "action": "submit", "values": {"when": "now"}}}
+{"from": "server", "frame": {"type": "form_result_status", "form_id": "hw-choice", "ok": true}}
+{"from": "server", "frame": {"type": "event", "event": {"sequence": 5, "participant_id": 1, "kind": {"kind": "input", "data": [112, 105, 110, 103]}}}}

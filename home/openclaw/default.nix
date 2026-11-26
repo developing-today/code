@@ -85,9 +85,11 @@ in
   # #1243) so OpenClaw sessions land on the standing shared
   # `opencode serve` at 127.0.0.1:13420 instead of a private per-process
   # server; codex runs the local wrapper in ~/.openclaw/acpx
-  # (bundled adapter, no npx fetch); agy is the system
-  # antigravity-acp server. There is deliberately NO claude agent
-  # here: Drew's order 2026-11-08 - nothing automated may spawn the
+  # (bundled adapter, no npx fetch); agy runs the CLI's built-in `agy acp`
+  # server. The separate agy_acp_server has independent auth state and
+  # prompts for browser OAuth; the CLI server reuses its existing Google
+  # login (verified end-to-end 2026-11-22, code#12766). There is deliberately
+  # NO claude agent here: Drew's order 2026-11-08 - nothing automated may spawn the
   # real Claude Code CLI (code#7098); its old wrapper path is now a
   # fail-closed stub.
   # FALLBACK (#1243): to revert opencode to the private-server path,
@@ -103,12 +105,13 @@ in
       "${acpxPlugin}/node_modules/@agentclientprotocol/codex-acp/dist/index.js";
     ".openclaw/acpx/managed-codex-acp-wrapper.mjs".source = ./acpx/codex-acp-wrapper.mjs;
     ".openclaw/acpx/managed-muse-agent-acp-wrapper.mjs".source = ./acpx/muse-agent-acp-wrapper.mjs;
+    ".openclaw/acpx/home-dir.mjs".source = ./acpx/home-dir.mjs;
   };
   home.file.".acpx/config.json".text = builtins.toJSON {
     agents = {
       opencode.command = "/home/user/code/bin/opencode-acp-adapter.mjs --server http://127.0.0.1:13420";
       codex.command = "/home/user/.openclaw/acpx/managed-codex-acp-wrapper.mjs";
-      agy.command = "/run/current-system/sw/bin/agy_acp_server";
+      agy.command = "/etc/profiles/per-user/user/bin/agy acp";
       # muse (#2012, Drew GO 2026-10-28): the ACP<->MSP adapter in this
       # repo (home/openclaw/acpx/muse-agent-acp-wrapper.mjs) driving the
       # laptop Muse CLI's `muse serve`. Not a model route: the agent
@@ -181,6 +184,9 @@ in
       # and it starts by itself the moment the host declares the
       # secrets. Delete this when every host carrying the user env also
       # carries its own openclaw secrets.
+      # Guarded by .github/scripts/check-openclaw-unit-wants.sh (#2875):
+      # while any host block in nixos/hosts/default.nix lacks an
+      # openclaw secrets import, dropping this condition fails CI.
       ConditionPathExists = "/run/secrets/openclaw/gateway-token";
       StartLimitIntervalSec = "600";
       StartLimitBurst = 30;
@@ -623,8 +629,10 @@ in
         # npx-fetched adapter (that fetch hangs on this laptop's flaky
         # npmjs route; 120s check timeout, 2026-10-26). codex runs
         # the managed wrapper in ~/.openclaw/acpx (adapter resolves
-        # from the Nix store, code#1711); agy runs the
-        # system antigravity-acp binary. Drew enabled all four
+        # from the Nix store, code#1711); agy runs the CLI's built-in
+        # `agy acp` server, which reuses the CLI's Google login; the
+        # separate system agy_acp_server prompts for separate browser OAuth
+        # (verified end-to-end 2026-11-22, code#12766). Drew enabled all four
         # 2026-10-28; claude was REMOVED 2026-11-08 by Drew's order -
         # the real Claude Code CLI must never be spawned headlessly
         # (code#7098: a headless CLI run blanked
@@ -680,7 +688,7 @@ in
                 command = "/home/user/.openclaw/acpx/managed-muse-agent-acp-wrapper.mjs";
               };
               agents.agy = {
-                command = "/run/current-system/sw/bin/agy_acp_server";
+                command = "/etc/profiles/per-user/user/bin/agy acp";
               };
             };
           };

@@ -1,0 +1,13 @@
+[Unit]
+Description=Fleet conductor silence heartbeat probe, every 30 minutes (#15123)
+
+[Timer]
+# Threshold is 2h (two missed ~hourly conductor cycles); a 30-minute
+# tick bounds detection at ~2.5h, against the ~33h the 2026-11-24
+# silence went unnoticed.
+OnBootSec=5m
+OnUnitActiveSec=30m
+RandomizedDelaySec=30s
+
+[Install]
+WantedBy=timers.target

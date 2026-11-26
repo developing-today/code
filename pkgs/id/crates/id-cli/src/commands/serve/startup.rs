@@ -5,6 +5,8 @@
 
 use super::*;
 
+use anyhow::Context as _;
+
 #[allow(unused_variables)] // web/port only used with web feature
 /// The loaded operator server config and the provisioning it ran
 /// (#5119 slice 1). Kept at startup scope so the later slices — the
@@ -187,36 +189,30 @@ pub(super) const MAX_HASHSEQ_BYTES: u64 = 1 << 20;
 /// A referenced blob that parses as a `HashSeq` contributes its children to the
 /// same world, but only when every child is present in the store — arbitrary
 /// content whose length is a multiple of 32 bytes would otherwise spray
-/// references onto hashes nobody stored. Any source that fails to read folds to
-/// empty for that source: the gate fails closed, and the next refresh retries.
+/// references onto hashes nobody stored.
+///
+/// # Errors
+///
+/// Fails when any source fails to read — the group log cannot be opened or
+/// does not fold, or the document references cannot be read. A failed build
+/// produces no fold at all, so a partial fold built from fallback values is
+/// never mistaken for a complete one: the caller decides what a failure
+/// means (startup falls back to an empty gate; the refresh loop keeps the
+/// previous fold, #13821).
 #[cfg(feature = "web")]
 pub(super) async fn build_blob_gate(
     events: &Arc<tokio::sync::Mutex<crate::local_events::LocalEvents>>,
     store: &iroh_blobs::api::Store,
     groups_log: &std::path::Path,
-) -> crate::blob_gate::FoldedWorlds {
-    let group_projection = match GroupLog::open(groups_log) {
-        Ok(log) => match crate::blob_gate::fold_group_events(log.events()) {
-            Ok(projection) => Some(projection),
-            Err(error) => {
-                warn!("blob gate: group log does not fold: {error}");
-                None
-            }
-        },
-        Err(error) => {
-            warn!("blob gate: cannot open group log: {error}");
-            None
-        }
-    };
+) -> anyhow::Result<crate::blob_gate::FoldedWorlds> {
+    let log = GroupLog::open(groups_log).context("blob gate: cannot open group log")?;
+    let group_projection = crate::blob_gate::fold_group_events(log.events())
+        .context("blob gate: group log does not fold")?;
     let references = {
         let events = events.lock().await;
-        match events.document_references() {
-            Ok(references) => references,
-            Err(error) => {
-                warn!("blob gate: cannot read document references: {error}");
-                Vec::new()
-            }
-        }
+        events
+            .document_references()
+            .context("blob gate: cannot read document references")?
     };
     // Expand HashSeq collections whose children are all in the store. The
     // expansion is bounded (#7181 review): only a group-referenced blob can
@@ -274,10 +270,8 @@ pub(super) async fn build_blob_gate(
     let index = crate::blob_gate::build_reference_index(named, |hash| {
         children.get(hash).cloned().unwrap_or_default()
     });
-    match group_projection {
-        Some(projection) => {
-            crate::blob_gate::FoldedWorlds::from_group_projection(projection, index)
-        }
-        None => crate::blob_gate::FoldedWorlds::new(crate::groups::worlds::Worlds::empty(), index),
-    }
+    Ok(crate::blob_gate::FoldedWorlds::from_group_projection(
+        group_projection,
+        index,
+    ))
 }
