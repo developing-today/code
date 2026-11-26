@@ -279,3 +279,23 @@ effect and needs no actor.
 - No change to MOB-05's edges; the two changes it would want are
   proposals (§3.1, §3.2).
 - No deploy, no live Project write.
+
+## 2026-11-25T22:40Z Correction:
+
+§4's first bullet said that with mutations off, apply "returns the envelope
+as `rejected` with reason `mutations_disabled`". That contradicts the same
+section's promise that the accepted request can be applied once mutations
+are back on: MOB-05's `rejected` is terminal, so a rejected envelope can
+never be applied again.
+
+The implementation (`pm-stack/aggregator/src/work-operation-reconciliation.ts`,
+`applyIfMutationsEnabled`) does this instead:
+
+- Off: no authority call, no effect, no transition. The envelope comes back
+  unchanged in `accepted`, with the result
+  `{ applied: false, refused: "mutations_disabled" }`.
+- On: MOB-05's `applyWorkAction`, with every one of its gates.
+
+The tests `mutations off refuses apply before any effect` and
+`mutations off keeps the envelope accepted and replayable once back on`
+are the oracles for this.
