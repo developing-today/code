@@ -47,8 +47,9 @@ test("public signal answers registered and unregistered paths in the same shape"
     assert.match((await res.text()).trim(), UUID, path);
     assert.equal(res.headers.get("cache-control"), "no-store");
   }
-  // Operational token routes keep their own shape: the page path is not a signal.
-  assert.equal((await call(`/p/${OWNER}`)).status, 200);
+  // Operational token routes keep their own shape: the owner link is a
+  // redirect to the console (#14378), not a signal.
+  assert.equal((await call(`/p/${OWNER}`)).status, 303);
 });
 
 test("registration is owner-only and tokens are not echoed", async () => {
@@ -122,4 +123,111 @@ test("direct and wildcard delivery, inbox isolation, ack, and signal change", as
   assert.equal((await send("z".repeat(40), "muse/archer", "nope")).status, 404);
   const unmatched = await send(DREW, "ghost/nobody", "nope");
   assert.equal(unmatched.status, 400);
+});
+
+test("instructions land sender-free, notes keep their sender, replies thread to the hidden sender", async () => {
+  const { call, bearer, register } = harness();
+  await register("user/drew", DREW);
+  await register("muse/archer", ARCHER);
+  await register("muse/other", OTHER);
+  const post = (token, body) =>
+    call("/notes/send", { method: "POST", headers: bearer(token), body: JSON.stringify(body) });
+  const inboxOf = async (token) => (await (await call("/notes/inbox", { headers: bearer(token) })).json()).notes;
+
+  // An instruction from Drew: Archer's inbox shows the work item but
+  // never who sent it; the store-side record is untouched by the
+  // projection (the delivery answer still names the sender, as the
+  // sender's own view).
+  const ins = await post(DREW, { to: "muse/archer", note: "run the check", kind: "instruction" });
+  assert.equal(ins.status, 201);
+  const insBody = await ins.json();
+  assert.equal(insBody.notes[0].kind, "instruction");
+  assert.equal(insBody.notes[0].from, "user/drew");
+  const plain = await post(DREW, { to: "muse/archer", note: "fyi only" });
+  assert.equal(plain.status, 201);
+
+  const archerInbox = await inboxOf(ARCHER);
+  assert.deepEqual(
+    archerInbox.map((n) => [n.kind, n.from, n.note, n.reply_to]),
+    [
+      ["instruction", null, "run the check", null],
+      ["note", "user/drew", "fyi only", null],
+    ],
+  );
+  const instructionId = archerInbox[0].id;
+
+  // Archer replies to the instruction naming only its id: the reply
+  // lands in Drew's inbox, from Archer, threaded by reply_to — the
+  // reply flow never showed Archer who the instruction came from.
+  const reply = await post(ARCHER, { note: "check done", reply_to: instructionId });
+  assert.equal(reply.status, 201);
+  assert.deepEqual((await reply.json()).recipients, ["user/drew"]);
+  const drewInbox = await inboxOf(DREW);
+  assert.deepEqual(
+    drewInbox.map((n) => [n.kind, n.from, n.note, n.reply_to]),
+    [["note", "muse/archer", "check done", instructionId]],
+  );
+
+  // A reply can itself be an instruction, and threads the same way.
+  const back = await post(DREW, { note: "now file it", kind: "instruction", reply_to: drewInbox[0].id });
+  assert.equal(back.status, 201);
+  const archerInbox2 = await inboxOf(ARCHER);
+  const threaded = archerInbox2.find((n) => n.note === "now file it");
+  assert.equal(threaded.from, null, "a reply instruction is sender-free too");
+  assert.equal(threaded.reply_to, drewInbox[0].id);
+
+  // Replying to a note that is not in your inbox is refused, and a
+  // bogus kind is refused; neither stores anything.
+  const foreign = await post(OTHER, { note: "me too", reply_to: instructionId });
+  assert.equal(foreign.status, 400);
+  assert.match((await foreign.json()).error, /not a note in your inbox/);
+  const badKind = await post(DREW, { to: "muse/archer", note: "x", kind: "shout" });
+  assert.equal(badKind.status, 400);
+  const noTarget = await post(DREW, { note: "x" });
+  assert.equal(noTarget.status, 400);
+  assert.equal((await inboxOf(ARCHER)).length, archerInbox2.length);
+});
+
+test("notes pattern sends: limit, match report, glob segments, broaden remainder", async () => {
+  const { call, bearer, register } = harness();
+  assert.equal((await register("muse/archer", ARCHER)).status, 201);
+  assert.equal((await register("muse/other", OTHER)).status, 201);
+  assert.equal((await register("user/drew", DREW)).status, 201);
+  const sendRaw = (token, body) =>
+    call("/notes/send", { method: "POST", headers: bearer(token), body: JSON.stringify(body) });
+
+  // Oracle (#14367): muse/* matches two identities; limit 1 delivers
+  // to exactly the first in name order and reports the rest.
+  const sentRes = await sendRaw(ARCHER, { to: "muse/*", note: "first only", limit: 1 });
+  assert.equal(sentRes.status, 201);
+  const sent = await sentRes.json();
+  assert.equal(sent.matched, 2);
+  assert.equal(sent.delivered, 1);
+  assert.deepEqual(sent.recipients, ["muse/archer"]);
+  assert.equal(sent.remaining, 1);
+  assert.ok(sent.batch, "the send names its distribution batch");
+
+  // A segment glob follows the same rule: muse/o* names muse/other alone.
+  const glob = await (await sendRaw(ARCHER, { to: "muse/o*", note: "just other" })).json();
+  assert.equal(glob.matched, 1);
+  assert.deepEqual(glob.recipients, ["muse/other"]);
+  assert.equal(glob.remaining, 0);
+
+  // Broaden delivers the original note to exactly the remainder.
+  const b1 = await (await sendRaw(ARCHER, { broaden: sent.batch, limit: 2 })).json();
+  assert.equal(b1.matched, 2);
+  assert.equal(b1.delivered, 1);
+  assert.deepEqual(b1.recipients, ["muse/other"]);
+  assert.equal(b1.remaining, 0);
+  assert.equal(b1.notes[0].note, "first only");
+
+  // A second identical broaden delivers nothing — never a duplicate.
+  const b2 = await (await sendRaw(ARCHER, { broaden: sent.batch, limit: 2 })).json();
+  assert.equal(b2.delivered, 0);
+  assert.deepEqual(b2.notes, []);
+
+  // Only the original sender may broaden a distribution.
+  const foreign = await sendRaw(OTHER, { broaden: sent.batch, limit: 2 });
+  assert.equal(foreign.status, 400);
+  assert.match((await foreign.json()).error, /only the original sender/);
 });

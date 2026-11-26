@@ -5,7 +5,10 @@
 //   2. It keeps a copy of the app's own files and of the last answer to
 //      everything the app reads, so the app opens and shows what it
 //      last saw with no connection. The network is always asked first:
-//      a copy is only shown when the network gives no answer.
+//      a copy is only shown when the network gives no answer. And
+//      when there is no copy either — the app never kept on this
+//      device, opened with no connection — the worker answers the
+//      page itself, with a small offline page of its own.
 //   3. It sends what the owner did while offline (outbox.js) when the
 //      connection is back, if the app is not open to do it itself.
 //
@@ -14,10 +17,45 @@
 self.importScripts("/console/outbox.js");
 
 const KEPT = "pm-console-v1";
-/** The app's own files, fetched when the worker is installed so that
- * the first visit is already enough to open it offline. */
-const FILES = ["/console/", "/console/app.js", "/console/outbox.js", "/console/app.css", "/console/icon.svg"];
+/** Where the app's own files are named: one list (public/files.json)
+ * that the services, the Worker's build and this worker all read. */
+const LIST = "/console/files.json";
+const PAGE = "/console/";
 const EXTRAS = ["/manifest.webmanifest", "/icons/icon-192.png", "/icons/icon-512.png"];
+/** What one of the app's files ends in. Anything else under /console
+ * (the Android build, say, which is large and is a download) is none
+ * of this worker's business. */
+const APP_FILE = /^\/console\/[a-z0-9/_-]+\.(?:js|css|svg|json|woff2)$/;
+
+/** The files to fetch when the worker is installed, so that the first
+ * visit is already enough to open the app offline: the page, the list,
+ * and what the list says is kept from the start. A typeface is kept
+ * when it is first used instead, so nobody fetches the ones they did
+ * not choose. Without the list (it could not be fetched) it is the
+ * page alone; the rest is kept as the page next asks for it. */
+async function filesToKeep() {
+  try {
+    const res = await self.fetch(LIST, { cache: "no-store", redirect: "manual" });
+    if (!res.ok) return [PAGE];
+    const list = await res.json();
+    const named = (list.files ?? []).filter((f) => f.kept === "installed").map((f) => `/console/${f.path}`);
+    return [...new Set([PAGE, LIST, ...named])];
+  } catch {
+    return [PAGE];
+  }
+}
+/** Every file the list names, as paths, or null when the list cannot
+ * be read: then nothing kept can be told apart, and nothing is pruned. */
+async function listedPaths() {
+  try {
+    const res = await self.fetch(LIST, { cache: "no-store", redirect: "manual" });
+    if (!res.ok) return null;
+    const list = await res.json();
+    return new Set((list.files ?? []).map((f) => `/console/${f.path}`));
+  } catch {
+    return null;
+  }
+}
 /** How long the network is waited for before a copy is shown instead.
  * The network's answer still replaces the copy when it comes. */
 const PAGE_WAIT_MS = 4_000;
@@ -33,7 +71,8 @@ self.addEventListener("install", (event) => {
         const cache = await self.caches.open(KEPT);
         // Each by itself: one that cannot be fetched (not signed in,
         // say) does not stop the others, or the worker.
-        await Promise.all([...FILES, ...EXTRAS].map((path) => keep(cache, path).catch(() => {})));
+        const files = await filesToKeep();
+        await Promise.all([...files, ...EXTRAS].map((path) => keep(cache, path).catch(() => {})));
       } catch {
         // Nothing is kept this time.
       }
@@ -51,6 +90,28 @@ self.addEventListener("activate", (event) => {
         }
       } catch {
         // An older copy that cannot be cleared is only space.
+      }
+      // What an older build kept that this one no longer knows — a
+      // file the list has since dropped, say — goes too: a new build
+      // replaces what is kept; it does not pile onto it. The page,
+      // the list itself and what the app read stay: they are the
+      // offline copy, refreshed as the network answers. When the
+      // list cannot be read (no connection, say) nothing is pruned:
+      // what this build wants cannot be told from what it dropped.
+      try {
+        const listed = await listedPaths();
+        if (listed) {
+          const cache = await self.caches.open(KEPT);
+          for (const request of await cache.keys()) {
+            const path = new URL(request.url).pathname;
+            if (path === PAGE || path === LIST || listed.has(path)) continue;
+            if (EXTRAS.includes(path) || path.startsWith("/icons/")) continue;
+            if (path.startsWith("/console/api/") || path === "/console/health" || path.startsWith("/console/__seen__/")) continue;
+            await cache.delete(request);
+          }
+        }
+      } catch {
+        // What cannot be cleared is only space.
       }
       await self.clients.claim();
     })(),
@@ -75,7 +136,7 @@ function kindOf(request, url) {
   if (!path.startsWith("/console")) return null;
   // The app is one page, at one address (its screens are after the #).
   if (path === "/console/" || path === "/console") return "page";
-  return FILES.includes(path) ? "file" : null;
+  return APP_FILE.test(path) && path !== "/console/sw.js" ? "file" : null;
 }
 
 /** The address a copy is kept under: what was asked, without the mark
@@ -164,7 +225,13 @@ function answer(request, kind) {
     if (first?.res) return first.res;
     const copy = await kept();
     if (copy) return copy;
-    // No copy to show: the network's answer, however long it takes, or its failure.
+    // No copy to show: the network's answer, however long it takes.
+    // For the page, a network that gives no answer at all gets the
+    // worker's own offline page instead of the browser's error: the
+    // owner is told what happened and given the way back. A read or
+    // a file is left to fail as it does — the app answers for those
+    // itself, and a made-up answer could be mistaken for the server's.
+    if (kind === "page") return fromNetwork.catch(() => offlinePage());
     return fromNetwork;
   })();
   return {
@@ -175,6 +242,17 @@ function answer(request, kind) {
       () => {},
     ),
   };
+}
+
+/** The page for the one case the copies cannot cover: the app was
+ * never kept on this device and there is no connection. Small and
+ * whole in itself — nothing it names could be fetched either — and
+ * never kept: it is not the app, only word that the app is not here. */
+function offlinePage() {
+  return new Response(
+    "<!doctype html><title>No connection</title><h1>No connection</h1><p>The app has not been kept on this device yet, and there is no connection to fetch it with. Connect once and open the app; from then on it opens from this device.</p><p><a href=\"/console/\">Try the app again</a></p>",
+    { status: 503, headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" } },
+  );
 }
 
 self.addEventListener("fetch", (event) => {

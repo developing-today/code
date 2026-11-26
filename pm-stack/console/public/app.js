@@ -4,6 +4,9 @@
 //
 // The page draws from three documents the server keeps ready (core,
 // questions, ops), so moving between sections never waits on a fetch.
+import { h } from "./ui.js";
+import { PAGES } from "./pages/index.js";
+
 const API = "/console/api/";
 // Without a page (the tests import the small functions) nothing is found.
 const $ = (id) => (typeof document === "undefined" ? null : document.getElementById(id));
@@ -15,22 +18,6 @@ const keptEl = $("kept");
 
 // ---- small helpers -----------------------------------------------------
 
-function h(tag, attrs, ...kids) {
-  const el = document.createElement(tag);
-  for (const [k, v] of Object.entries(attrs || {})) {
-    if (v === false || v === null || v === undefined) continue;
-    if (k.startsWith("on")) el.addEventListener(k.slice(2), v);
-    else if (k === "class") el.className = v;
-    else if (v === true) el.setAttribute(k, "");
-    else el.setAttribute(k, v);
-  }
-  for (const kid of kids.flat(Infinity)) {
-    if (kid === null || kid === undefined || kid === false) continue;
-    el.append(kid.nodeType ? kid : document.createTextNode(String(kid)));
-  }
-  return el;
-}
-
 function icon(d) {
   const NS = "http://www.w3.org/2000/svg";
   const s = document.createElementNS(NS, "svg");
@@ -40,6 +27,17 @@ function icon(d) {
   p.setAttribute("d", d);
   s.append(p);
   return s;
+}
+
+/** Words written for a Markdown file, as plain words: a link is its
+ * text, and the marks around code and strong words are dropped. (The
+ * roadmap files are Markdown; the app shows what they say, not how
+ * they are marked up.) */
+export function plainWords(text) {
+  return String(text ?? "")
+    .replace(/\[((?:[^\]\\]|\\.)*)\]\([^)\s]*\)/g, "$1")
+    .replace(/`([^`]*)`/g, "$1")
+    .replace(/\*\*([^*]+)\*\*/g, "$1");
 }
 
 /** "just now", "12 min ago", "3 h ago", "2 d ago" since an ISO time
@@ -476,8 +474,44 @@ async function act(kind, args, done, button) {
 
 // ---- now ---------------------------------------------------------------
 
-function taskCard(t, extra) {
-  const who = [t.worker, t.lane, t.model].filter(Boolean).join(" · ");
+/** The goal that most of a list's cards would show: carried by more
+ * than half of the tasks, and by at least three. A card that shows its
+ * next step does not show its goal, so it is not counted. Null where
+ * there is no such goal.
+ * @param {any} tasks */
+export function sharedGoal(tasks) {
+  const list = Array.isArray(tasks) ? tasks : [];
+  const counts = new Map();
+  for (const t of list) {
+    if (t?.step || !t?.goal) continue;
+    counts.set(t.goal, (counts.get(t.goal) || 0) + 1);
+  }
+  let best = null;
+  for (const [goal, n] of counts) if (!best || n > best.n) best = { goal, n };
+  return best && best.n >= 3 && best.n * 2 > list.length ? best : null;
+}
+
+/** What is said, once, of a goal most of a list shares.
+ * @param {{ goal: string, n: number }} shared
+ * @param {number} of */
+export function sharedGoalSaid(shared, of) {
+  const many = shared.n === of ? `All ${of} have` : `${shared.n} of these ${of} have`;
+  return `${many} the same goal, said here once: ${shared.goal}`;
+}
+
+/** How much of a blocked task's reason the platform sends (QUEUE_WHY_CHARS in src/ops.ts). */
+const WHY_CHARS = 300;
+
+/** A blocked task's reason as shown: one that was cut where the
+ * platform cuts it ends by saying so.
+ * @param {unknown} why */
+export function whyShown(why) {
+  const text = typeof why === "string" ? why : "";
+  return text.length >= WHY_CHARS ? `${text}…` : text;
+}
+
+function taskCard(t, extra, shared = null) {
+  const who = [t.worker, laneSaid(t.lane), t.model].filter(Boolean).join(" · ");
   const when = t.claimed ? `claimed ${ago(t.claimed)}` : `queued ${ago(t.created)}`;
   return card(
     h(
@@ -489,7 +523,8 @@ function taskCard(t, extra) {
     ),
     h("h3", {}, t.title),
     h("p", { class: "meta" }, [who, when].filter(Boolean).join(" · ")),
-    t.step || t.goal
+    // A goal that most of the list shares is said once above the list, not here.
+    t.step || (t.goal && t.goal !== shared?.goal)
       ? h("div", { class: "step" }, h("b", {}, t.step ? "Next step" : "Goal"), t.step || t.goal)
       : null,
     extra,
@@ -627,6 +662,8 @@ function viewNow() {
   const b = c.board || { counts: {}, now: [], next: [], blockedWhy: [] };
   const s = c.sessions || { moving: [], waiting: [] };
   const lead = needsLead(needCounts());
+  const finished = doneSaid(docs.done?.done);
+  const sharedNow = sharedGoal(b.now);
   const stat = (value, label, to) =>
     h("button", { class: "stat", onclick: () => go(to) }, h("b", {}, String(value ?? "–")), h("span", {}, label));
   const out = [
@@ -637,10 +674,12 @@ function viewNow() {
       stat(b.counts.queued ?? 0, "queued", "next"),
       stat(lead.tile, lead.tileLabel, "needs"),
       stat(b.counts.blocked ?? 0, "blocked", "more/queue"),
+      stat(finished ? finished.tiles[0].n : "–", "done in 24h", "now/done"),
     ),
     ...notices(c),
     h("h2", {}, "In progress"),
-    ...(b.now.length ? b.now.map((t) => taskCard(t, steer(t))) : [empty("No task is claimed right now.")]),
+    ...(sharedNow ? [h("p", { class: "meta" }, sharedGoalSaid(sharedNow, b.now.length))] : []),
+    ...(b.now.length ? b.now.map((t) => taskCard(t, steer(t), sharedNow)) : [empty("No task is claimed right now.")]),
   ];
   if (s.moving.length) {
     out.push(
@@ -687,12 +726,157 @@ function viewNow() {
   return out;
 }
 
+// ---- done --------------------------------------------------------------
+
+const DONE_NOUNS = {
+  tasks: ["task finished", "tasks finished"],
+  merged: ["pull request merged", "pull requests merged"],
+  closed: ["issue closed", "issues closed"],
+};
+
+/** What was finished in the last day, in numbers: tasks the queue says
+ * are done, pull requests merged, issues closed. `more` on a count says
+ * GitHub's page was full of things touched within the day, so there
+ * may be more than were counted: "at least". Null when it has not been
+ * read, or comes from a console that does not read it: nothing is said
+ * then, not zeros.
+ * @param {any} done */
+export function doneSaid(done) {
+  const parts = ["tasks", "merged", "closed"].map((key) => {
+    const part = done?.[key];
+    return Number.isSafeInteger(part?.day) && part.day >= 0 ? { key, n: part.day, more: part.more === true } : null;
+  });
+  if (parts.some((part) => part === null)) return null;
+  const noun = (part) => DONE_NOUNS[part.key][part.n === 1 ? 0 : 1];
+  const tiles = parts.map((part) => ({ n: `${part.n}${part.more ? "+" : ""}`, label: noun(part) }));
+  const counted = parts.filter((part) => part.n > 0).map((part) => `${part.more ? "at least " : ""}${part.n} ${noun(part)}`);
+  const uncounted = parts.filter((part) => part.n === 0 && part.more).map(noun);
+  if (counted.length === 0 && uncounted.length === 0) return { tiles, line: "Nothing was finished in the last day." };
+  const rest = uncounted.length ? `; ${listed(uncounted)} could not all be counted` : "";
+  return { tiles, line: `In the last day: ${counted.length ? counted.join(", ") : "nothing counted"}${rest}.` };
+}
+
+/** The day's finished tasks by their kind, the most first, in a line.
+ * @param {any} kinds */
+export function doneKindsSaid(kinds) {
+  return (Array.isArray(kinds) ? kinds : [])
+    .filter((k) => k && Number.isSafeInteger(k.n) && k.n > 0)
+    .map((k) => `${k.n} ${k.kind ? String(k.kind).replace(/_/g, " ") : "of no kind"}`)
+    .join(" · ");
+}
+
+/** What the queue's record says came of a finished task (the verdicts
+ * are the queue's own: fleet-queue's disposition.rs). */
+const VERDICT_SAID = {
+  merged_verified: "merged",
+  closed_verified: "issue closed",
+  open_draft_with_followup: "left as a draft, with a follow-up",
+  open_draft_superseded: "its draft was superseded",
+  invalid_no_work: "no work came of it",
+};
+
+/** A finished task's card, in words: what kind it was and what came of
+ * it, where its pull request and issue are, who did it and when.
+ * @param {any} task
+ * @param {number} [now] */
+export function doneTaskSaid(task, now = Date.now()) {
+  const chips = [];
+  if (task.kind) chips.push(String(task.kind).replace(/_/g, " "));
+  if (task.verdict) chips.push(VERDICT_SAID[task.verdict] || String(task.verdict).replace(/_/g, " "));
+  const links = [];
+  if (task.pr && task.prUrl) links.push({ text: `#${task.pr}`, url: task.prUrl });
+  if (task.issue && task.url) links.push({ text: `issue #${task.issue}`, url: task.url });
+  const when = ago(task.at, now);
+  return {
+    chips,
+    links,
+    meta: [`task ${task.id}`, laneSaid(task.lane), task.model, when ? `finished ${when}` : ""].filter(Boolean).join(" · "),
+  };
+}
+
+function viewDone(sub) {
+  const doc = docs.done;
+  if (!doc) return [empty("Reading what was finished…")];
+  const done = doc.done;
+  const said = doneSaid(done);
+  const out = [...notices(doc, ["done"])];
+  if (!said) return [...out, empty("What was finished has not been read yet.")];
+  const which = ["merged", "tasks", "closed"].includes(sub) ? sub : "merged";
+  const seg = (name, label, tile) =>
+    h("button", { "aria-pressed": String(which === name), onclick: () => go(`now/done/${name}`) }, `${label} ${tile.n}`);
+  out.push(
+    h("p", { class: "meta" }, said.line),
+    h(
+      "div",
+      { class: "seg" },
+      seg("merged", "Merged", said.tiles[1]),
+      seg("tasks", "Tasks", said.tiles[0]),
+      seg("closed", "Issues", said.tiles[2]),
+    ),
+  );
+  const older = (list) => (list.length ? [h("p", { class: "meta" }, `The latest ${list.length} of the last week, newest first.`)] : []);
+  if (which === "merged") {
+    const list = done.merged.latest || [];
+    const byWhom = mergedBySaid(list);
+    out.push(
+      h("h2", {}, "Pull requests merged"),
+      ...older(list),
+      ...(list.length
+        ? list.map((p) => card(h("h3", {}, p.title), h("p", { class: "meta" }, ext(p.url, `#${p.number}`), ` · ${[byWhom ? p.by : "", `merged ${ago(p.at)}`].filter(Boolean).join(" · ")}`)))
+        : [empty("No pull request was merged in the last week.")]),
+    );
+  } else if (which === "tasks") {
+    const list = done.tasks.latest || [];
+    const kinds = doneKindsSaid(done.tasks.kinds);
+    const taskCardOf = (t) => {
+      const s = doneTaskSaid(t);
+      return card(
+        h(
+          "div",
+          { class: "row" },
+          ...s.chips.map((c, i) => chip(c, i > 0 && t.verdict === "merged_verified" ? "good" : "")),
+          ...s.links.map((l) => ext(l.url, l.text)),
+        ),
+        h("h3", {}, t.title),
+        h("p", { class: "meta" }, s.meta),
+      );
+    };
+    // What a task came to is on its record or it is not: those with a
+    // result first, since a day's finished tasks are mostly passes over
+    // an issue that leave no record of one.
+    const withResult = list.filter((t) => t.verdict);
+    const rest = list.filter((t) => !t.verdict);
+    if (kinds) out.push(h("p", { class: "meta" }, `Tasks finished in the last day: ${kinds}.`));
+    out.push(...older(list));
+    if (!list.length) out.push(h("h2", {}, "Tasks finished"), empty("No task was finished in the last week."));
+    if (withResult.length) out.push(h("h2", {}, "With a result on record"), ...withResult.map(taskCardOf));
+    if (rest.length) out.push(h("h2", {}, withResult.length ? "The rest" : "Tasks finished"), ...rest.map(taskCardOf));
+  } else {
+    const list = done.closed.latest || [];
+    out.push(
+      h("h2", {}, "Issues closed"),
+      ...older(list),
+      ...(list.length
+        ? list.map((i) =>
+            card(
+              h("h3", {}, i.title),
+              h("p", { class: "meta" }, ext(i.url, `#${i.number}`), ` · ${[i.reason === "not_planned" ? "closed as not planned" : i.reason === "duplicate" ? "closed as a duplicate" : "closed", ago(i.at)].join(" ")}`),
+            ),
+          )
+        : [empty("No issue was closed in the last week.")]),
+    );
+  }
+  return out;
+}
+
 // ---- next --------------------------------------------------------------
 
 function viewNext() {
   const b = docs.core.board || { counts: {}, next: [] };
   const out = [...notices(docs.core), h("h2", {}, "Queued next, in the order it will be picked up")];
   if (!b.next.length) out.push(empty("Nothing is queued. Blocked and parked tasks are under More, Queue."));
+  const sharedNext = sharedGoal(b.next);
+  if (sharedNext) out.push(h("p", { class: "meta" }, sharedGoalSaid(sharedNext, b.next.length)));
   b.next.forEach((t, i) => {
     const moves = h(
       "div",
@@ -716,7 +900,7 @@ function viewNext() {
         "Cancel",
       ),
     );
-    out.push(h("div", { class: "lead" }, h("span", { class: "num" }, String(i + 1)), h("div", {}, taskCard(t, moves))));
+    out.push(h("div", { class: "lead" }, h("span", { class: "num" }, String(i + 1)), h("div", {}, taskCard(t, moves, sharedNext))));
   });
   const ranked = docs.ops?.priorities?.issues;
   out.push(h("h2", {}, "Ranked issues"));
@@ -837,6 +1021,25 @@ export function unitStateSaid(unit) {
   return active === sub || sub === "" ? active : `${active} · ${sub}`;
 }
 
+/** A lane the pool made up for itself ("any-" and a long run of
+ * letters) is nobody's name. */
+const POOLED_LANE = /^any-[a-z]{20,}$/;
+
+/** A lane as it is said on a card: a named one by its name, one the
+ * pool made up as what it is.
+ * @param {string | null | undefined} lane */
+export function laneSaid(lane) {
+  if (typeof lane !== "string" || lane === "") return "";
+  return POOLED_LANE.test(lane) ? "a pooled lane" : lane;
+}
+
+/** Whether to say who each pull request in a list is by: only when
+ * they are not all by the same one, since then it tells nothing.
+ * @param {any} list */
+export function mergedBySaid(list) {
+  return new Set((Array.isArray(list) ? list : []).map((p) => p?.by)).size > 1;
+}
+
 /** Who a task's agent is, to send it a message: its lane where that is
  * a registered agent's name, else its worker where that is. `names` is
  * the registered agents' names where the app has them; without them
@@ -849,7 +1052,7 @@ export function taskAgent(task, names = null) {
   const lane = typeof task?.lane === "string" ? task.lane : "";
   const worker = typeof task?.worker === "string" ? task.worker : "";
   if (names) return names.has(lane) ? lane : names.has(worker) ? worker : null;
-  if (lane && !/^any-[a-z]{20,}$/.test(lane)) return lane;
+  if (lane && !POOLED_LANE.test(lane)) return lane;
   return worker || null;
 }
 
@@ -1247,6 +1450,88 @@ const STATUS = {
   done: ["Done", "good"],
 };
 let draft = "";
+/** What he says he is sending: kept while he moves about the app. */
+let askIntent = "task";
+
+/** The kinds of thing the owner can send, as the platform takes them
+ * (ASK_INTENTS in src/work.ts), each with its own words: the button
+ * that chooses it, what the box invites, the button that sends it, and
+ * the mark it carries in the list. */
+export const ASK_KINDS = [
+  {
+    intent: "task",
+    label: "Do this",
+    placeholder: "Say what you want done, in your own words. An agent picks it up, does it, and reports back here.",
+    send: "Send",
+    sent: "Sent",
+    chip: "",
+  },
+  {
+    intent: "question",
+    label: "Answer this",
+    placeholder: "Ask a question, in your own words. An agent answers it here, with what the answer rests on, and changes nothing.",
+    send: "Ask",
+    sent: "Asked",
+    chip: "Question",
+  },
+  {
+    intent: "directive",
+    label: "From now on",
+    placeholder: "Say how you want work done from now on. It is written where every agent reads it, and work under way is brought in line.",
+    send: "Set",
+    sent: "Set",
+    chip: "Standing instruction",
+  },
+];
+
+/** The kind for an intent; anything that is not one is something to do.
+ * @param {unknown} intent */
+export function askKind(intent) {
+  return ASK_KINDS.find((kind) => kind.intent === intent) || ASK_KINDS[0];
+}
+
+/** What is sent with a prompt: the words, and the kind where it is not
+ * simply something to do (so that one is sent as it always was).
+ * @param {string} text
+ * @param {unknown} intent */
+export function askArgs(text, intent) {
+  const kind = askKind(intent).intent;
+  return { text: text.trim(), ...(kind === "task" ? {} : { intent: kind }) };
+}
+
+/** An enroll command as the provisioning form mints it, read back:
+ * the binding a shared `fleet agent enroll … --bootstrap <token>`
+ * carries (#14377). The token is opaque — it has no shape of its
+ * own — so a command is known by its flags, and anything without a
+ * bootstrap token in it is not one (null). The command as shared is
+ * what the card shows; this only picks out the fields the form
+ * below can be filled in from.
+ * @param {unknown} text */
+export function enrollCommand(text) {
+  if (typeof text !== "string" || !/\benroll\b/.test(text)) return null;
+  const flag = (name) => {
+    const m = text.match(new RegExp(`--${name}[\\s=]+("[^"]*"|'[^']*'|\\S+)`));
+    return m ? m[1].replace(/^["']|["']$/g, "") : undefined;
+  };
+  const token = flag("bootstrap");
+  if (!token) return null;
+  const groups = flag("groups");
+  return {
+    token,
+    name: flag("name"),
+    kind: flag("kind"),
+    groups: groups ? groups.split(",").map((g) => g.trim()).filter(Boolean) : [],
+    notesIdentity: flag("notes-identity"),
+  };
+}
+
+/** What he is told when it has gone.
+ * @param {unknown} intent
+ * @param {{ issue: number, queued?: boolean, note?: string }} result */
+export function askSent(intent, result) {
+  if (result.queued) return `${askKind(intent).sent} as #${result.issue}; first in the queue`;
+  return `Filed as #${result.issue}.${result.note ? ` ${result.note}` : ""}`;
+}
 
 function viewAsk(sub) {
   // Words handed over by the Android app (shared or selected text, or
@@ -1259,10 +1544,11 @@ function viewAsk(sub) {
     }
     history.replaceState(null, "", "#ask");
   }
+  const kind = askKind(askIntent);
   const box = h("textarea", {
     rows: 3,
-    placeholder: "Say what you want, in your own words. An agent picks it up, does it, and reports back here.",
-    "aria-label": "Your instruction",
+    placeholder: kind.placeholder,
+    "aria-label": kind.intent === "question" ? "Your question" : "Your instruction",
     oninput: (e) => {
       draft = e.target.value;
     },
@@ -1305,25 +1591,54 @@ function viewAsk(sub) {
       onclick: async (e) => {
         const text = box.value.trim();
         if (!text) return toast("Write what you want first", true);
-        const r = await act("ask.send", { text }, (x) => (x.queued ? `Sent as #${x.issue}; first in the queue` : `Filed as #${x.issue}. ${x.note || ""}`), e.target);
+        const r = await act("ask.send", askArgs(text, kind.intent), (x) => askSent(kind.intent, x), e.target);
         if (r) {
           draft = "";
           draw();
         }
       },
     },
-    "Send",
+    kind.send,
+  );
+  // What he is sending: something to do, a question, or how he wants
+  // work done from now on. Choosing keeps what is typed.
+  const kinds = h(
+    "div",
+    { class: "seg", role: "group", "aria-label": "What you are sending" },
+    ...ASK_KINDS.map((k) =>
+      h(
+        "button",
+        {
+          "aria-pressed": String(k.intent === kind.intent),
+          onclick: () => {
+            draft = box.value;
+            askIntent = k.intent;
+            draw();
+          },
+        },
+        k.label,
+      ),
+    ),
   );
   const asks = docs.core.asks || [];
   return [
-    h("div", { class: "card composer" }, box, h("div", { class: "row end" }, mic, send)),
+    h("div", { class: "card composer" }, kinds, box, h("div", { class: "row end" }, mic, send)),
     ...notices(docs.core).slice(0, 1),
     h("h2", {}, "What you have asked"),
     ...(asks.length
       ? asks.map((a) => {
           const [label, tone] = STATUS[a.status] || [a.status, ""];
           return card(
-            h("div", { class: "row" }, chip(label, tone), ext(a.url, `#${a.issue}`), h("span", { class: "meta" }, `${ago(a.updated)}`), a.worker ? h("span", { class: "meta" }, `· ${a.worker}`) : null),
+            h(
+              "div",
+              { class: "row" },
+              chip(label, tone),
+              // A question or a standing instruction is marked as one.
+              askKind(a.intent).chip ? chip(askKind(a.intent).chip) : null,
+              ext(a.url, `#${a.issue}`),
+              h("span", { class: "meta" }, `${ago(a.updated)}`),
+              a.worker ? h("span", { class: "meta" }, `· ${a.worker}`) : null,
+            ),
             h("div", { class: "bubble you" }, h("b", {}, "You"), a.text),
             ...a.replies.map((r) => h("div", { class: `bubble${r.you ? " you" : ""}` }, h("b", {}, `${r.you ? "You" : "Fleet"} · ${ago(r.at)}`), r.text)),
             h(
@@ -1356,6 +1671,8 @@ function viewMore() {
   const ops = docs.ops || {};
   const b = docs.core.board || { counts: {} };
   const tile = (to, title, sub) => h("button", { class: "tile", onclick: () => go(to) }, title, h("span", {}, sub));
+  // The pages that are modules of their own say which part they go in.
+  const pageTiles = (group) => PAGES.filter((page) => page.group === group).map((page) => tile(page.route, page.title, page.says));
   const out = [
     h("h2", {}, "Plan"),
     h(
@@ -1364,6 +1681,7 @@ function viewMore() {
       tile("more/roadmap", "Roadmap", "id, fleet, atlas, PM stack: built, in progress, planned"),
       tile("more/bugs", "Bugs", "report one; see what is open and what was fixed"),
       tile("more/intake", "Intake", "every note, bug and change you sent, and where it went"),
+      pageTiles("Plan"),
     ),
     h("h2", {}, "Operations"),
     h(
@@ -1373,6 +1691,7 @@ function viewMore() {
       tile("more/prs", "Pull requests", ops.prs ? `${ops.prs.filter((p) => !p.draft).length} ready of ${ops.prs.length}` : "open and ready to merge"),
       tile("more/issues", "Ranked issues", ops.priorities ? `${ops.priorities.issues.length} ranked` : "change what matters most"),
       tile("more/agents", "Agents", ops.agents ? `${ops.agents.length} registered` : "message one or all"),
+      tile("more/messages", "Messages", "every surface, who really sent what"),
       tile("more/services", "Services", ops.services ? `${ops.services.filter((u) => u.active === "failed").length} failed of ${ops.services.length}` : "start, stop, logs"),
       tile("more/notify", "Notifications", "choose what reaches this device"),
       tile("more/phone", "Phones", "the Android app and its home-screen widget"),
@@ -1381,6 +1700,8 @@ function viewMore() {
       tile("more/machines", "Machines", "each machine, what only it can do, and what waits for one"),
       tile("more/platform", "Platform", "every Worker: what it does, whether it is in service, how it is deployed"),
       tile("more/device", "On this device", "what is kept here to send, and what it shows with no connection"),
+      Look ? tile("more/look", "Appearance", lookCounts()) : null,
+      pageTiles("Operations"),
       tile("more/releases", "Releases", "what is deployed, the Android app, and putting either out again"),
     ),
   ];
@@ -1403,6 +1724,163 @@ function viewMore() {
       },
       "Sign out",
     ),
+  );
+  return out;
+}
+
+// ---- appearance ----------------------------------------------------------
+// How the app looks on this device: look.js holds the choices and puts
+// them on the page; this is the screen they are made on. Every choice
+// shows at once, on the whole app, so the app itself is the preview.
+
+const Look = globalThis.PMLook;
+/** Choices this device would not keep (storage refused): they are held
+ * here so the screen still shows what the page is wearing. */
+let lookUnkept = null;
+/** Which of the two the theme grid sets while the system is followed. */
+let lookSlot = null;
+
+const themeName = (id, look = Look) => look.THEMES.find((t) => t[0] === id)?.[1] ?? id;
+
+/** What is in effect, in a sentence: the theme shown, and why that one. */
+export function lookSaid(settings, systemDark, look = Look) {
+  const shown = look.themeFor(settings, systemDark);
+  if (!settings.follow) return `${themeName(shown, look)}, whatever the system is set to.`;
+  const [day, night] = [themeName(settings.day, look), themeName(settings.night, look)];
+  return `Following the system: ${day} when it is light, ${night} when it is dark. It is ${systemDark ? "dark" : "light"} now, so ${themeName(shown, look)}.`;
+}
+
+/** What choosing a theme changes: the one theme when the system is not
+ * followed, otherwise the theme for whichever of day and night is being
+ * set. */
+export function themeChange(settings, slot, id) {
+  if (!settings.follow) return { theme: id };
+  return slot === "night" ? { night: id } : { day: id };
+}
+
+/** What the More screen says of this one. */
+export function lookCounts(look = Look) {
+  const black = look.THEMES.filter((t) => t[2] === "black").length;
+  return `${look.THEMES.length} themes (${black} true black), ${look.FONTS.length} typefaces, text size, spacing`;
+}
+
+function viewLook(sub) {
+  if (!Look) return [empty("How the app looks could not be loaded on this device.")];
+  const which = ["colours", "type", "layout"].includes(sub) ? sub : "colours";
+  const s = lookUnkept || Look.current();
+  const dark = Look.systemDark();
+  const set = (change) => {
+    const r = Look.choose({ ...s, ...change });
+    lookUnkept = r.kept ? null : r.settings;
+    if (!r.kept) toast("This device would not keep that: it lasts until the app is closed.", true);
+    draw();
+  };
+  const tab = (name, label) => h("button", { "aria-pressed": String(which === name), onclick: () => go(`more/look/${name}`) }, label);
+  const out = [h("div", { class: "seg wrap", role: "group", "aria-label": "What to change" }, tab("colours", "Colours"), tab("type", "Typeface"), tab("layout", "Size and spacing"))];
+  const steps = (label, list, name) =>
+    h(
+      "div",
+      { class: "seg wrap", role: "group", "aria-label": label },
+      ...list.map(([id, said]) => h("button", { "aria-pressed": String(s[name] === id), onclick: () => set({ [name]: id }) }, said)),
+    );
+  // Something of everything, to see a choice on: text, small print, the
+  // three status colours, and each kind of button.
+  const sample = () =>
+    h(
+      "div",
+      { class: "card sample" },
+      h("h3", {}, "What it looks like"),
+      h("p", {}, "The quick brown fox jumps over the lazy dog. 0123456789 Il1 O0 rn m."),
+      h("p", { class: "meta" }, "Small print, as under every card: #14286 merged 12 min ago by a pooled lane."),
+      h("div", { class: "row" }, h("span", { class: "chip good" }, "done"), h("span", { class: "chip warn" }, "waiting"), h("span", { class: "chip accent" }, "in progress"), h("span", { class: "chip" }, "queued")),
+      h("div", { class: "row" }, h("button", { type: "button" }, "Do it"), h("button", { type: "button", class: "ghost" }, "Not now"), h("button", { type: "button", class: "danger" }, "Remove")),
+    );
+
+  if (which === "colours") {
+    const slot = s.follow ? lookSlot || (dark ? "night" : "day") : null;
+    const chosen = s.follow ? (slot === "night" ? s.night : s.day) : s.theme;
+    const pressed = (on) => String(Boolean(on));
+    out.push(
+      h(
+        "div",
+        { class: "seg wrap", role: "group", "aria-label": "Which theme is shown" },
+        h("button", { "aria-pressed": pressed(s.follow), onclick: () => set({ follow: true }) }, "Follow the system"),
+        h("button", { "aria-pressed": pressed(!s.follow), onclick: () => set({ follow: false, theme: Look.themeFor(s, dark) }) }, "One theme"),
+      ),
+      h("p", { class: "meta" }, lookSaid(s, dark)),
+    );
+    if (s.follow) {
+      const slotButton = (name, label) =>
+        h(
+          "button",
+          {
+            "aria-pressed": pressed(slot === name),
+            onclick: () => {
+              lookSlot = name;
+              draw();
+            },
+          },
+          label,
+        );
+      out.push(
+        h("div", { class: "seg wrap", role: "group", "aria-label": "Which of the two to choose" }, slotButton("day", `When light: ${themeName(s.day)}`), slotButton("night", `When dark: ${themeName(s.night)}`)),
+      );
+    }
+    for (const [group, title, note] of Look.THEME_GROUPS) {
+      out.push(
+        h("h2", {}, title),
+        note ? h("p", { class: "meta" }, note) : null,
+        h(
+          "div",
+          { class: "picks" },
+          ...Look.THEMES.filter((t) => t[2] === group).map(([id, name]) =>
+            h(
+              "button",
+              { class: "pick", "aria-pressed": pressed(chosen === id), onclick: () => set(themeChange(s, slot, id)) },
+              // The theme's own colours, on this one element.
+              h(
+                "span",
+                { class: "swatch", "data-theme": id, "aria-hidden": "true" },
+                h("span", { class: "swatch-card" }, h("b", {}, "Aa"), h("i", {}, "small print")),
+                h("span", { class: "dots" }, h("i", { class: "dot accent" }), h("i", { class: "dot good" }), h("i", { class: "dot warn" }), h("i", { class: "dot bad" })),
+              ),
+              h("span", { class: "pick-name" }, name),
+            ),
+          ),
+        ),
+      );
+    }
+  } else if (which === "type") {
+    out.push(sample(), h("p", { class: "meta" }, "Each is shown as itself. The device's own cost nothing; the others are fetched when first shown and then kept here, so they work with no connection."));
+    for (const [group, title] of Look.FONT_GROUPS) {
+      out.push(
+        h("h2", {}, title),
+        h(
+          "div",
+          { class: "options" },
+          ...Look.FONTS.filter((f) => f[2] === group).map(([id, name, , note]) =>
+            h("button", { class: "option face", "data-font": id, "aria-pressed": String(s.font === id), onclick: () => set({ font: id }) }, h("b", {}, name), h("span", {}, note)),
+          ),
+        ),
+      );
+    }
+  } else {
+    out.push(
+      sample(),
+      h("h2", {}, "Text size"),
+      steps("Text size", Look.SIZES, "size"),
+      h("h2", {}, "Room around things"),
+      steps("Room around things", Look.SPACES, "space"),
+      h("h2", {}, "Corners"),
+      steps("Corners", Look.CORNERS, "corners"),
+      h("h2", {}, "Movement"),
+      steps("Movement", Look.MOTIONS, "motion"),
+    );
+  }
+  out.push(
+    h("h2", {}, "This device"),
+    h("p", { class: "meta" }, "These choices are kept on this device only: a phone and a desk can each look their own way."),
+    h("div", { class: "row" }, h("button", { class: "ghost", onclick: () => set({ ...Look.DEFAULTS }) }, "Put it back how it came")),
   );
   return out;
 }
@@ -1624,7 +2102,9 @@ export function changeAsked(form) {
 export function intakeSaid(r) {
   if (!r) return "Sent";
   const task = r.queued ? "" : "; its task follows when a machine is connected";
-  return r.commented ? `Note left on #${r.issue}${task}` : `Filed as #${r.issue}${task}`;
+  if (r.commented) return `Note left on #${r.issue}${task}`;
+  if (r.pr) return `Filed as #${r.issue}; the roadmap change was made as a pull request: ${r.pr}${task}`;
+  return `Filed as #${r.issue}${task}`;
 }
 
 /** The heading of one phase of a roadmap page: how many it shows, and
@@ -1812,7 +2292,7 @@ function planRow(area, phase) {
         " ",
         r.issues.map((n) => [ext(`https://github.com/${me.repo || "developing-today/code"}/issues/${n}`, `#${n}`), " "]),
       ),
-      r.intent ? h("p", {}, r.intent) : null,
+      r.intent ? h("p", {}, plainWords(r.intent)) : null,
       h(
         "div",
         { class: "row end" },
@@ -2140,6 +2620,9 @@ const REFUSED_SAID = {
   "read.priorities": "reading the ranked issues",
   "read.asks": "reading your prompts",
   "read.census": "reading what needs you",
+  "read.done": "reading what was finished",
+  "read.agents": "reading the agents list",
+  "read.pipeline": "reading the unread instructions",
 };
 
 /** What the edge says of doing the core itself, read from its public
@@ -2175,6 +2658,16 @@ export function awayState(health) {
   };
 }
 
+/** What the Cloudflare screen says of where the repository-described
+ * configuration was last applied from (#13495): the latest successful
+ * apply's source, commit and completion time, or that provenance is
+ * unavailable when no successful apply is on record. The run's page is
+ * linked from the screen itself, beside this line. */
+export function applySaid(apply, now = Date.now()) {
+  if (!apply) return "Apply provenance is unavailable: no successful apply is on record.";
+  return `Last applied from ${apply.source}, at commit ${String(apply.commit).slice(0, 12)}, ${ago(apply.at, now)}.`;
+}
+
 /** Cloudflare: whether it does the core itself, what that covers, how
  * its own reads are going, and the switch. The switch can be turned off
  * because it is what puts two of the owner's tokens in the Worker. */
@@ -2194,6 +2687,15 @@ async function viewAway() {
         h("p", { class: "meta" }, "It is not being served from Cloudflare right now, so this is the laptop doing everything."),
       ),
     ];
+  }
+  // The last successful apply's provenance, read from the workflow's
+  // runs: a read that dispatches nothing. Unreadable says so by itself
+  // and leaves the rest of the screen as it was.
+  let provenance = null;
+  try {
+    provenance = await api("cloudflare-apply");
+  } catch {
+    provenance = null;
   }
   const flip = async (e) => {
     const done = await act(
@@ -2230,6 +2732,14 @@ async function viewAway() {
       ),
       checked,
       s.on && s.checkedAt ? h("p", { class: "meta" }, `Tried ${ago(new Date(s.checkedAt).toISOString())}.`) : null,
+      provenance
+        ? h(
+            "p",
+            { class: "meta" },
+            applySaid(provenance.apply),
+            provenance.apply ? [" ", ext(provenance.apply.url, "See the run")] : null,
+          )
+        : h("p", { class: "meta" }, "Apply provenance could not be read."),
       s.refused.length > 0
         ? h(
             "p",
@@ -2315,6 +2825,7 @@ const SECTION_SAID = {
   questions: "questions",
   prs: "pull requests",
   priorities: "ranked issues",
+  done: "what was finished",
   agents: "agents",
   services: "its units",
   more: "the dashboard's pages",
@@ -2349,6 +2860,51 @@ export function differsSaid(d) {
   return `For ${what} it says ${show(d.machine)}, and main says ${show(d.platform)}. Cloudflare goes by this machine's until it runs main's${why}.`;
 }
 
+/** The settings the owner may change from the app (src/settings.ts's
+ * OWNER_CHANGEABLE): Cloudflare refuses any other name, so no other is
+ * offered as if it could be changed. */
+export const OWNER_CHANGEABLE = ["promptLabel", "needsRepos"];
+
+/** A setting's value in words: a list said as one, nothing as "nothing". */
+const settingValue = (value) => {
+  if (Array.isArray(value)) return value.length ? listed(value.map(String)) : "none";
+  return value === null || value === undefined || value === "" ? "nothing" : String(value);
+};
+
+/** One of the platform's settings as the Machines screen says it
+ * (#14956): what it is, the value in force, whose it is and since when,
+ * main's beside a change of the owner's, and whether the owner may
+ * change it from here. A setting only main decides is said as main's,
+ * with nothing to press. */
+export function settingSaid(s, now = Date.now()) {
+  const name = typeof s?.name === "string" ? s.name : "";
+  const what = Object.hasOwn(SETTING_SAID, name) ? SETTING_SAID[name] : name || "a setting";
+  const changed = s?.source === "owner";
+  const when = changed && typeof s.since === "number" ? ago(new Date(s.since).toISOString(), now) : "";
+  const whose = changed
+    ? `Yours: changed ${when || "earlier"}${typeof s.by === "string" && s.by ? ` by ${s.by}` : ""}.`
+    : s?.source === "machine"
+      ? "The machine's: Cloudflare goes by the list it reports until it runs main's."
+      : "Main's.";
+  return {
+    name,
+    what: capital(what),
+    value: settingValue(s?.value),
+    whose,
+    main: changed ? `Main says ${settingValue(s.repository)}.` : null,
+    changeable: OWNER_CHANGEABLE.includes(name),
+    changed,
+  };
+}
+
+/** What the owner typed for a list of repositories, as the list: owner/name
+ * entries separated by commas, spaces or lines. */
+export function reposTyped(text) {
+  return String(text ?? "")
+    .split(/[\s,]+/)
+    .filter(Boolean);
+}
+
 /** One machine as the Machines screen says it: whether it is
  * reporting, what it runs, and what only it reports and does. What the
  * platform does itself (`platform`, null when nothing is in front of
@@ -2375,7 +2931,18 @@ export function machineSaid(machine, platform, now = Date.now(), serving = null)
     otherCode: version && cloud && version !== cloud ? `Cloudflare runs ${cloud}: the two are on different code.` : "",
     // The platform's settings it runs with others of, each in a sentence.
     differs: (Array.isArray(machine.differs) ? machine.differs : []).map(differsSaid),
+    settings: settingsTakenSaid(machine.settingsRev, platform?.settingsRev),
   };
+}
+
+/** Whether a machine runs with the owner's latest change to the
+ * settings, in a sentence; empty when it does, or when the owner has
+ * changed none (#14957). Until it has, Cloudflare goes by the change
+ * all the same: a machine is told it with its next report. */
+export function settingsTakenSaid(machineRev, platformRev) {
+  if (!Number.isSafeInteger(platformRev) || platformRev < 1 || machineRev === platformRev) return "";
+  if (!Number.isSafeInteger(machineRev)) return "Its console is older than changing the settings from here: it runs with its own.";
+  return "It has not taken your latest change to the settings yet: it will with its next report.";
 }
 
 /** What the Machines screen shows that can change with nothing else
@@ -2386,7 +2953,9 @@ export function machineSaid(machine, platform, now = Date.now(), serving = null)
  * no longer what it was drawn from. */
 export function machinesMark(m, now = Date.now()) {
   return JSON.stringify({
-    platform: m?.platform ? [m.platform.primary, m.platform.refused, m.platform.actions.length, m.platform.sections.length] : null,
+    platform: m?.platform
+      ? [m.platform.primary, m.platform.refused, m.platform.actions.length, m.platform.sections.length, m.platform.settingsRev ?? null]
+      : null,
     machines: (m?.machines || []).map((x) => [
       x.name,
       x.quiet,
@@ -2395,6 +2964,7 @@ export function machinesMark(m, now = Date.now()) {
       (x.sections || []).length,
       x.quiet && x.seen ? Math.floor((now - x.seen) / 60_000) : 0,
       Array.isArray(x.differs) ? x.differs : [],
+      x.settingsRev ?? null,
     ]),
     // Who each waits for is drawn too, and changes while it waits.
     held: (m?.held || []).map((item) => [item.id, item.waits ?? ""]),
@@ -2463,6 +3033,7 @@ async function viewMachines() {
       platform?.refused?.length ? h("p", { class: "why" }, `Turned away lately for ${listed(platform.refused.map((kind) => REFUSED_SAID[kind] || String(kind)))}: a machine does that for now.`) : null,
       platform === null ? null : h("div", { class: "row end" }, h("button", { class: "small ghost", onclick: () => go("more/away") }, "What it does")),
     ),
+    ...platformSettingsPart(platform),
     h("h2", {}, `Machines (${m.machines.length})`),
   ];
   if (m.machines.length === 0) out.push(card(h("p", { class: "meta" }, "No machine has reported yet.")));
@@ -2473,6 +3044,7 @@ async function viewMachines() {
         h("div", { class: "row" }, chip(s.reporting ? "reporting" : "away", s.reporting ? "good" : "warn")),
         h("h3", {}, s.name),
         h("p", { class: "meta" }, [s.state, s.version ? `Running ${s.version}.` : "", s.otherCode].filter(Boolean).join(" ")),
+        s.settings ? h("p", { class: "why" }, s.settings) : null,
         s.differs.length
           ? h(
               "details",
@@ -2519,6 +3091,62 @@ async function viewMachines() {
   return out;
 }
 
+/** The Machines screen's Platform settings: each setting in force, from
+ * where and since when, and for the ones the owner may change, a way to
+ * change it and, once changed, to put it back to main's. A change is
+ * made from the revision the screen was drawn at: if the settings were
+ * changed meanwhile somewhere else, Cloudflare refuses it and the
+ * screen is drawn again from what they are now. */
+function platformSettingsPart(platform) {
+  if (!platform || !Array.isArray(platform.settings)) return [];
+  const rev = Number.isSafeInteger(platform.settingsRev) ? platform.settingsRev : undefined;
+  const change = async (entry, said, e) => {
+    const list = entry.name === "needsRepos";
+    const value = await ask({
+      title: `Change ${said.what.toLowerCase()}`,
+      text: list
+        ? "Each repository as owner/name, separated by commas or spaces. Cloudflare goes by this list from now on, until you put it back to main's."
+        : "Cloudflare goes by this label from now on, until you put it back to main's.",
+      label: list ? "Repositories" : "Label",
+      okLabel: "Change",
+      required: true,
+      value: list ? (Array.isArray(entry.value) ? entry.value.join(", ") : "") : String(entry.value ?? ""),
+    });
+    if (value === null || value === "") return;
+    await act("settings.set", { name: entry.name, value: list ? reposTyped(value) : value, baseRev: rev }, `${said.what} changed`, e.target);
+    draw();
+  };
+  const putBack = async (entry, said, e) => {
+    const sure = await ask({
+      title: `Put ${said.what.toLowerCase()} back to main's?`,
+      text: `${said.main} Cloudflare goes by that again from now on.`,
+      okLabel: "Put back",
+    });
+    if (sure === null) return;
+    await act("settings.clear", { name: entry.name, baseRev: rev }, `${said.what} is main's again`, e.target);
+    draw();
+  };
+  return [
+    h("h2", {}, "Platform settings"),
+    ...platform.settings.map((entry) => {
+      const said = settingSaid(entry);
+      return card(
+        h("h3", {}, said.what),
+        h("p", {}, said.value),
+        h("p", { class: "meta" }, [said.whose, said.main].filter(Boolean).join(" ")),
+        said.changeable
+          ? h(
+              "div",
+              { class: "row end" },
+              said.changed ? h("button", { class: "small ghost", onclick: (e) => putBack(entry, said, e) }, "Put back to main's") : null,
+              h("button", { class: "small", onclick: (e) => change(entry, said, e) }, "Change"),
+            )
+          : null,
+      );
+    }),
+  ];
+}
+
 const GROUP_SAID = { platform: "The platform", fleet: "Fleet", data: "Data", id: "id", lab: "Lab" };
 
 /** One Worker's line on how it gets into service and how its last
@@ -2548,6 +3176,51 @@ export function workerSaid(w, now = Date.now()) {
   return { text: `In service. A deploy of ${commit} is ${run.state.replace("_", " ")}, started ${when}.`, tone: "" };
 }
 
+/** One store token's line on the Platform screen: when it runs out and
+ * whether that needs looking at. Only its name and its date are ever
+ * known here, never the token. */
+export function tokenSaid(t, now = Date.now()) {
+  const day = typeof t.expiresAt === "string" ? t.expiresAt.slice(0, 10) : "";
+  const left = day ? Math.floor((Date.parse(t.expiresAt) - now) / 86_400_000) : 0;
+  switch (t.state) {
+    case "expired":
+      return { text: `Ran out on ${day}. What uses it cannot reach its store until it is rotated.`, tone: "warn" };
+    case "soon":
+      return { text: `Runs out on ${day}, in ${left <= 0 ? "less than a day" : left === 1 ? "1 day" : `${left} days`}. Rotate it before then.`, tone: "warn" };
+    case "fine":
+      return { text: `Runs out on ${day}.`, tone: "good" };
+    case "none":
+      return { text: "Carries no date: it does not run out by itself.", tone: "" };
+    default:
+      return { text: "Could not be read from here, so when it runs out is not known.", tone: "" };
+  }
+}
+
+/** One store's line on the Platform screen (#14254): whether it
+ * answered this asking, and what it said — its size, the rows in the
+ * tables the app reads, and its schema version. A store that did not
+ * answer is said as that, with the error plainly; nothing of an
+ * earlier asking is shown for it. */
+export function storeSaid(s) {
+  if (!s.answers) return { text: `Not answering: ${s.error || "the store could not be asked"}.`, tone: "warn", lines: [] };
+  const size =
+    typeof s.sizeBytes === "number"
+      ? s.sizeBytes < 1024
+        ? `${s.sizeBytes} B`
+        : s.sizeBytes < 1024 * 1024
+          ? `${(s.sizeBytes / 1024).toFixed(1)} KiB`
+          : `${(s.sizeBytes / (1024 * 1024)).toFixed(1)} MiB`
+      : "not said";
+  const lines = Object.entries(s.rows || {}).map(
+    ([table, n]) => `${table}: ${typeof n === "number" ? n.toLocaleString("en-US") : "not counted"}`,
+  );
+  return {
+    text: `Answers. Size ${size}. Schema version ${s.liveSchemaVersion ?? "not recorded"}.`,
+    tone: "good",
+    lines,
+  };
+}
+
 /** The counts the Platform screen opens with. */
 export function platformCounts(workers) {
   const live = workers.filter((w) => w.state === "in service");
@@ -2565,7 +3238,13 @@ export function platformCounts(workers) {
  * how its last deploy went; and what joining the one platform means
  * for each that has not yet. */
 async function viewPlatform() {
-  const p = await api(freshly("platform"));
+  // When the store tokens run out is a machine's to read; with none
+  // reporting, the Workers still show.
+  const [p, held, live] = await Promise.all([
+    api(freshly("platform")),
+    api("tokens").catch((error) => ({ error: error.message })),
+    api(freshly("stores")).catch((error) => ({ error: error.message })),
+  ]);
   const workers = Array.isArray(p.workers) ? p.workers : [];
   const n = platformCounts(workers);
   const repo = `https://github.com/${me.repo || "developing-today/code"}`;
@@ -2586,6 +3265,48 @@ async function viewPlatform() {
       p.malformed ? h("p", { class: "why" }, `${p.malformed} entr${p.malformed === 1 ? "y" : "ies"} in the list could not be read and ${p.malformed === 1 ? "is" : "are"} not shown.`) : null,
     ),
   ];
+  const stores = Array.isArray(live?.stores) ? live.stores : [];
+  out.push(h("h2", {}, `Stores${stores.length ? ` (${stores.length})` : ""}`));
+  if (live?.error) out.push(card(h("p", { class: "why" }, `The stores could not be asked: ${live.error}`)));
+  if (!live?.error && stores.length === 0) out.push(card(h("p", { class: "meta" }, "The list of stores names none.")));
+  if (live?.malformed) {
+    out.push(
+      card(
+        h(
+          "p",
+          { class: "why" },
+          `${live.malformed} entr${live.malformed === 1 ? "y" : "ies"} in the list of stores could not be read and ${live.malformed === 1 ? "is" : "are"} not shown.`,
+        ),
+      ),
+    );
+  }
+  for (const s of stores) {
+    const said = storeSaid(s);
+    out.push(
+      card(
+        h("div", { class: "row" }, chip(s.answers ? "answers" : "not answering", said.tone)),
+        h("h3", {}, s.title),
+        h("p", {}, s.does),
+        h("p", { class: said.tone === "warn" ? "why" : "meta" }, said.text),
+        ...said.lines.map((line) => h("p", { class: "meta" }, line)),
+        h("p", { class: "meta" }, `Used by ${(s.usedBy || []).join(", ")}.`),
+      ),
+    );
+  }
+  const tokens = Array.isArray(held?.tokens) ? held.tokens : [];
+  out.push(h("h2", {}, `Store tokens${tokens.length ? ` (${tokens.length})` : ""}`));
+  if (held?.error) out.push(card(h("p", { class: "why" }, `When the store tokens run out could not be read: ${held.error}`)));
+  for (const t of tokens) {
+    const s = tokenSaid(t);
+    out.push(
+      card(
+        h("div", { class: "row" }, chip(t.state === "fine" ? "in date" : t.state === "soon" ? "runs out soon" : t.state === "expired" ? "ran out" : t.state === "none" ? "no date" : "not read", s.tone)),
+        h("h3", {}, t.name),
+        h("p", { class: "meta" }, `Used by ${(t.stores || []).join(", ")}.`),
+        h("p", { class: s.tone === "warn" ? "why" : "meta" }, s.text),
+      ),
+    );
+  }
   for (const group of Object.keys(GROUP_SAID)) {
     const rows = workers.filter((w) => w.group === group);
     if (rows.length === 0) continue;
@@ -2627,6 +3348,83 @@ export function keptGroups(entries) {
   ].filter((g) => g.entries.length > 0);
 }
 
+/** Read every screen once, so the device has a copy of each. One at a
+ * time, and unhurried: some of it is searched for. Says how many could
+ * not be read; `step(i, n)` is told as each one starts. */
+async function keepEveryScreen(step = () => {}) {
+  const caps = await api("roadmaps").catch(() => []);
+  const reads = everyRead(caps, me.edge);
+  let failed = 0;
+  for (const [i, path] of reads.entries()) {
+    step(i, reads.length);
+    await api(path).catch(() => failed++);
+    if (offline) break;
+    await new Promise((resolve) => setTimeout(resolve, path.startsWith("roadmap?") ? 1200 : 150));
+  }
+  await fetch("/console/health", { cache: "no-store" }).catch(() => failed++);
+  return failed;
+}
+
+/** Where this browser notes when it last kept every screen unasked. */
+const KEPT_ALL_KEY = "pm-console-kept-all";
+
+/** After a sign-in, on Wi-Fi or a cable, keep a copy of every screen in
+ * the background, so a screen never visited still has one when the
+ * connection goes (#13501). Once in a while, not on every page load;
+ * never on a metered connection; and only once this browser keeps
+ * copies at all (the worker has taken the page). Quiet: nothing is
+ * said unless the owner asks, on More, On this device. */
+async function keepAllInBackground() {
+  if (!navigator.serviceWorker?.controller || offline || signedOut) return;
+  if (!unmetered(navigator.connection)) return;
+  let last = null;
+  try {
+    last = localStorage.getItem(KEPT_ALL_KEY);
+  } catch {
+    return;
+  }
+  if (!keepAllDue(last)) return;
+  // After the first screen has been drawn and read, not in its way.
+  await new Promise((resolve) => setTimeout(resolve, 30_000));
+  if (offline || signedOut || document.visibilityState !== "visible" || !unmetered(navigator.connection)) return;
+  const failed = await keepEveryScreen();
+  // Kept whole, it is not kept again for a while. Part-way, it is tried
+  // again on the next load.
+  if (failed === 0 && !offline) {
+    try {
+      localStorage.setItem(KEPT_ALL_KEY, String(Date.now()));
+    } catch {
+      // Nowhere to note it: it is kept again on the next load.
+    }
+  }
+}
+
+/** Whether the connection is one to read every screen on unasked: one
+ * the browser says is Wi-Fi or a cable, or, where it does not say which,
+ * a fast one. A metered one, one the owner asked to save data on, and
+ * one the browser says nothing of (Safari, Firefox) are left alone: the
+ * owner can still keep every screen by hand (#13501). */
+export function unmetered(connection) {
+  if (!connection || connection.saveData === true) return false;
+  const type = typeof connection.type === "string" ? connection.type : "unknown";
+  if (["wifi", "ethernet", "wimax"].includes(type)) return true;
+  if (type !== "unknown") return false;
+  return connection.effectiveType === "4g";
+}
+
+/** How long a copy of every screen kept unasked stands before it is
+ * kept again unasked. */
+export const KEEP_ALL_EVERY_MS = 12 * 60 * 60_000;
+
+/** Whether every screen is due to be kept unasked: never yet on this
+ * browser, or not for a while. A time that cannot be read, or one ahead
+ * of the clock, is taken as never. */
+export function keepAllDue(last, now = Date.now()) {
+  const at = Number(last);
+  if (last === null || last === undefined || last === "" || !Number.isFinite(at) || at > now) return true;
+  return now - at >= KEEP_ALL_EVERY_MS;
+}
+
 /** Everything the app's screens read, by the address each asks for it
  * under: what "keep a copy of every screen" fetches. What is read only
  * for one item when it is opened (a question's background, a pull
@@ -2644,6 +3442,7 @@ export function everyRead(caps, edge) {
     ...["blocked", "queued", "claimed", "parked"].map((status) => `queue?status=${status}&q=`),
     "releases",
     "platform",
+    "tokens",
     "messages?limit=15",
     "push",
     "devices",
@@ -2720,20 +3519,13 @@ async function viewDevice() {
     toast("Forgotten. It keeps again from the next thing you look at.");
   };
   // Before a flight: read every screen once, so the device has a copy
-  // of each. One at a time, and unhurried: some of it is searched for.
+  // of each.
   const keepAll = async (e) => {
     const button = e.target;
     button.disabled = true;
-    const caps = await api("roadmaps").catch(() => []);
-    const reads = everyRead(caps, me.edge);
-    let failed = 0;
-    for (const [i, path] of reads.entries()) {
-      button.textContent = `${i + 1} of ${reads.length}…`;
-      await api(path).catch(() => failed++);
-      if (offline) break;
-      await new Promise((resolve) => setTimeout(resolve, path.startsWith("roadmap?") ? 1200 : 150));
-    }
-    await fetch("/console/health", { cache: "no-store" }).catch(() => failed++);
+    const failed = await keepEveryScreen((i, n) => {
+      button.textContent = `${i + 1} of ${n}…`;
+    });
     button.textContent = "Keep a copy of every screen now";
     button.disabled = false;
     toast(
@@ -3011,7 +3803,7 @@ async function viewQueue() {
           card(
             h("h3", {}, t.title),
             h("p", { class: "meta" }, [band(t.priority), t.updated ? `updated ${ago(t.updated)}` : ""].filter(Boolean).join(" · ")),
-            t.why ? h("p", { class: "why" }, String(t.why)) : null,
+            t.why ? h("p", { class: "why" }, whyShown(String(t.why))) : null,
             h(
               "div",
               { class: "row end" },
@@ -3113,7 +3905,341 @@ function viewIssues() {
   ];
 }
 
-async function viewAgents() {
+/** The Messages screen's filters, kept across draws (#14374). */
+let messageFilters = { kind: "", surface: "", sender: "", receiver: "", batch: "", work: "", unread: false };
+
+/** The composer's fields, kept across draws (#14375). */
+let composerDraft = { to: "", limit: "", slots: "2" };
+let composerCommand = false;
+
+/** The last send's match report, as the bridge answered it (#14375):
+ * kept so the report — and its Broaden button, while matched agents
+ * remain — stays on the screen until the next send replaces it. */
+let composerReport = null;
+
+/** A match report said in one line: how many matched, how many it was
+ * sent to (named), and how many matched agents are still to reach.
+ * This is the bridge's own report, said as it stands — the console
+ * never recounts a send. Null for an answer that is not a report (a
+ * send held for a machine, say), which the caller says its own way.
+ * @param {any} report */
+export function matchReportSaid(report) {
+  if (!report || typeof report.matched !== "number" || typeof report.delivered !== "number") return null;
+  const names =
+    Array.isArray(report.recipients) && report.recipients.length ? ` (${report.recipients.join(", ")})` : "";
+  const left =
+    typeof report.remaining === "number" && report.remaining > 0
+      ? ` · ${report.remaining} more matched and not yet reached`
+      : "";
+  return `Matched ${report.matched} · sent to ${report.delivered}${names}${left}`;
+}
+
+/** A broaden's report folded into the send's: a broaden counts only
+ * its own deliveries, so the screen's running total adds them, names
+ * every recipient once, and takes the broaden's word for what
+ * remains. @param {any} prev @param {any} next */
+export function mergeMatchReport(prev, next) {
+  if (!prev) return next;
+  if (!next || typeof next.delivered !== "number") return prev;
+  const before = Array.isArray(prev.recipients) ? prev.recipients : [];
+  const more = (Array.isArray(next.recipients) ? next.recipients : []).filter((r) => !before.includes(r));
+  return {
+    ...prev,
+    batch: typeof next.batch === "string" ? next.batch : prev.batch,
+    delivered: (typeof prev.delivered === "number" ? prev.delivered : 0) + next.delivered,
+    recipients: [...before, ...more],
+    remaining: typeof next.remaining === "number" ? next.remaining : prev.remaining,
+  };
+}
+
+/** An offer said in one line: its state, and how many of its slots
+ * are claimed. @param {any} offer */
+export function offerSaid(offer) {
+  const claimed = typeof offer?.claimed === "number" ? offer.claimed : (offer?.claims?.length ?? 0);
+  const slots = typeof offer?.slots === "number" ? offer.slots : claimed;
+  return `${offer?.state ?? "open"} · ${claimed} of ${slots} claimed`;
+}
+
+/**
+ * Every message on every surface, with the sender it really came from
+ * (#14374, design §4.9). This is the owner's console: provenance here
+ * is complete — an instruction shows its true sender. (Anonymity is
+ * what agents see of an instruction, never this view.) The composer
+ * (#14375) heads the screen: the full addressing grammar as a form,
+ * the bridge's match report in place after a send, a Broaden button
+ * while matched agents remain, and Offer instead — post the text as
+ * a claim offer, whose claims and replies show on this screen.
+ */
+async function viewMessages() {
+  const f = messageFilters;
+  const qs = new URLSearchParams({ limit: "100" });
+  if (f.kind) qs.set("kind", f.kind);
+  if (f.surface) qs.set("surface", f.surface);
+  if (f.sender) qs.set("sender", f.sender);
+  if (f.receiver) qs.set("receiver", f.receiver);
+  if (f.batch) qs.set("batch", f.batch);
+  if (f.work) qs.set("work_state", f.work);
+  if (f.unread) qs.set("unread", "1");
+  let rows = [];
+  let failed = "";
+  try {
+    const got = await api(`pipeline?${qs}`);
+    if (Array.isArray(got)) rows = got;
+  } catch (error) {
+    failed = error.message;
+  }
+  let offers = [];
+  let offersFailed = "";
+  try {
+    const got = await api("offers");
+    if (Array.isArray(got)) offers = got;
+  } catch (error) {
+    offersFailed = error.message;
+  }
+  const pick = (label, key, options) =>
+    h(
+      "select",
+      {
+        class: "narrow",
+        "aria-label": label,
+        onchange: (e) => {
+          messageFilters[key] = e.target.value;
+          draw();
+        },
+      },
+      h("option", { value: "" }, label),
+      options.map((o) => h("option", { value: o, selected: f[key] === o }, o)),
+    );
+  const find = (label, key, placeholder) =>
+    h("input", {
+      type: "search",
+      placeholder,
+      "aria-label": label,
+      value: f[key],
+      onchange: (e) => {
+        messageFilters[key] = e.target.value.trim();
+        draw();
+      },
+    });
+  const filters = card(
+    h(
+      "div",
+      { class: "row" },
+      pick("Kind", "kind", ["message", "instruction", "command", "note"]),
+      pick("Surface", "surface", ["connector", "fleet", "notes"]),
+      find("Sender", "sender", "Sender"),
+      find("Receiver", "receiver", "Receiver"),
+      find("Batch", "batch", "Batch"),
+      find("Work state", "work", "Work state"),
+      h(
+        "label",
+        { class: "row check meta" },
+        h("input", {
+          type: "checkbox",
+          checked: f.unread || undefined,
+          onchange: (e) => {
+            messageFilters.unread = e.target.checked;
+            draw();
+          },
+        }),
+        "Unread only",
+      ),
+    ),
+  );
+  const row = (m) => {
+    const who = m.sender_label && m.sender_addr && m.sender_label !== m.sender_addr ? `${m.sender_label} (${m.sender_addr})` : (m.sender_addr ?? "—");
+    const meta = [
+      `${ago(m.ts)} · ${m.surface} · ${m.kind}`,
+      `${who} → ${m.receiver}`,
+      m.direction,
+      m.read_at ? `read ${ago(m.read_at)}` : "unread",
+      m.batch ? `batch ${m.batch}` : "",
+      m.reply_to != null ? `reply to #${m.reply_to}` : "",
+      m.work_state ? `work: ${m.work_state}${m.work_task_id ? ` (task ${m.work_task_id})` : ""}` : "",
+    ]
+      .filter(Boolean)
+      .join(" · ");
+    return card(h("p", { class: "meta" }, meta), h("p", {}, String(m.body ?? "").slice(0, 1200)));
+  };
+  // ---- the composer (#14375, design §4.9) ----
+  const draftTargets = () =>
+    composerDraft.to
+      .split(",")
+      .map((t) => t.trim())
+      .filter(Boolean);
+  const text = typed("composer", {
+    rows: 3,
+    placeholder: "A message, or an instruction to act on",
+    "aria-label": "Message",
+  });
+  const commandBox = h("input", {
+    type: "checkbox",
+    id: "composer-cmd",
+    checked: composerCommand || undefined,
+    onchange: (e) => {
+      composerCommand = e.target.checked;
+    },
+  });
+  const sendNow = (e) => {
+    const to = draftTargets();
+    if (!to.length) return toast("Name who it goes to first", true);
+    if (!text.value.trim()) return toast("Write a message first", true);
+    const limit = composerDraft.limit.trim() === "" ? null : Number(composerDraft.limit);
+    if (limit !== null && (!Number.isInteger(limit) || limit < 1)) return toast("The limit is a whole number, or blank", true);
+    return sendTyped("composer", text, (words) =>
+      act(
+        "message.send",
+        { to, text: words, command: composerCommand, ...(limit === null ? {} : { limit }) },
+        (result) => {
+          const said = matchReportSaid(result);
+          if (said) composerReport = result;
+          return said ?? "Sent";
+        },
+        e.target,
+      ),
+    );
+  };
+  const offerNow = (e) => {
+    const to = draftTargets();
+    if (!to.length) return toast("Name who the offer goes to first", true);
+    if (!text.value.trim()) return toast("Write the offer first", true);
+    const slots = Number(composerDraft.slots);
+    if (!Number.isInteger(slots) || slots < 1) return toast("Say how many may claim it (a whole number)", true);
+    return sendTyped("composer", text, (words) =>
+      act("message.offer", { to, text: words, command: composerCommand, slots }, "Offer posted", e.target),
+    );
+  };
+  const compose = card(
+    h("input", {
+      type: "text",
+      placeholder: "To: agent:f*, group:muse, all…",
+      "aria-label": "To",
+      value: composerDraft.to,
+      onchange: (e) => {
+        composerDraft.to = e.target.value;
+      },
+    }),
+    text,
+    h(
+      "div",
+      { class: "row" },
+      h("label", { for: "composer-cmd", class: "row check meta" }, commandBox, "Send as an instruction"),
+      h("input", {
+        type: "number",
+        min: "1",
+        placeholder: "Limit",
+        "aria-label": "Limit",
+        value: composerDraft.limit,
+        onchange: (e) => {
+          composerDraft.limit = e.target.value;
+        },
+      }),
+    ),
+    h(
+      "div",
+      { class: "row end" },
+      h(
+        "label",
+        { class: "row meta" },
+        "Offer slots",
+        h("input", {
+          type: "number",
+          min: "1",
+          "aria-label": "Offer slots",
+          value: composerDraft.slots,
+          onchange: (e) => {
+            composerDraft.slots = e.target.value;
+          },
+        }),
+      ),
+      h("button", { class: "ghost", onclick: offerNow }, "Offer instead"),
+      h("button", { onclick: sendNow }, "Send"),
+    ),
+  );
+  // The last send's match report, in place, with its Broaden button
+  // while matched agents remain: one tap delivers the send's own
+  // remainder on its batch — never a fresh fan-out.
+  const reportCard = composerReport
+    ? card(
+        h("p", {}, matchReportSaid(composerReport) ?? ""),
+        composerReport.remaining > 0 && composerReport.batch
+          ? h(
+              "div",
+              { class: "row end" },
+              h(
+                "button",
+                {
+                  onclick: (e) =>
+                    act(
+                      "message.broaden",
+                      { batch: composerReport.batch },
+                      (result) => {
+                        const merged = mergeMatchReport(composerReport, result);
+                        if (merged !== composerReport) composerReport = merged;
+                        return matchReportSaid(merged) ?? "Broadened";
+                      },
+                      e.target,
+                    ),
+                },
+                `Broaden to the ${composerReport.remaining} remaining`,
+              ),
+            )
+          : null,
+      )
+    : null;
+  const offerRow = (o) => {
+    const claims = Array.isArray(o.claims) ? o.claims : [];
+    return card(
+      h(
+        "p",
+        { class: "meta" },
+        [`${ago(o.ts)} · ${o.kind} · to ${o.pattern ?? "—"}`, offerSaid(o), o.batch ? `batch ${o.batch}` : ""]
+          .filter(Boolean)
+          .join(" · "),
+      ),
+      h("p", {}, String(o.body ?? "").slice(0, 600)),
+      ...(claims.length
+        ? claims.map((c) => h("p", { class: "meta" }, `claimed by ${c.agent} · ${ago(c.claimed_at)}`))
+        : [h("p", { class: "meta" }, "No claims yet.")]),
+      o.batch
+        ? h(
+            "div",
+            { class: "row end" },
+            h(
+              "button",
+              {
+                class: "small ghost",
+                onclick: () => {
+                  messageFilters.batch = o.batch;
+                  draw();
+                },
+              },
+              "See the claims and replies",
+            ),
+          )
+        : null,
+    );
+  };
+  return [
+    compose,
+    reportCard,
+    h("h2", {}, `Offers (${offers.length})`),
+    ...(offersFailed
+      ? [empty(`The offers could not be read just now: ${offersFailed}`)]
+      : offers.length
+        ? [...offers].reverse().map(offerRow)
+        : [empty("No offers posted.")]),
+    filters,
+    h("h2", {}, `Messages (${rows.length})`),
+    ...(failed
+      ? [empty(`The messages could not be read just now: ${failed}`)]
+      : rows.length
+        ? rows.map(row)
+        : [empty("No messages match. Loosen a filter to see more.")]),
+  ];
+}
+
+async function viewAgents(sub) {
   const agents = docs.ops?.agents || [];
   const to = h("select", { "aria-label": "To" }, h("option", { value: "all" }, "Everyone"), agents.map((a) => h("option", { value: `agent:${a.name}` }, a.name)));
   const text = typed("message", { rows: 3, placeholder: "A message, or a command to act on", "aria-label": "Message" });
@@ -3147,13 +4273,413 @@ async function viewAgents() {
   } catch (error) {
     unread = error.message;
   }
+  // The roster is the bridge's unified directory (#14374): fleet
+  // registry rows and notes identities, each with its credential
+  // state. Where that read cannot be made (an older bridge, no
+  // credential), the fleet roster from the ops document still stands,
+  // and the screen says the credential state is not shown.
+  let directory = null;
+  try {
+    const got = await api("directory");
+    if (Array.isArray(got)) directory = got;
+  } catch {
+    directory = null;
+  }
+  const roster =
+    directory ??
+    agents.map((a) => ({
+      surface: "fleet",
+      name: a.name,
+      groups: a.groups ?? [],
+      presence: "last_seen",
+      last_seen: a.last_seen ?? null,
+      unread: a.unread ?? (a.unread_commands ?? 0) + (a.unread_messages ?? 0),
+      unread_commands: a.unread_commands ?? 0,
+      unread_messages: a.unread_messages ?? 0,
+      credential: null,
+    }));
+  const agentCard = (a) => {
+    const cred = a.credential;
+    const credSaid = !cred
+      ? "credential state not shown"
+      : cred.state === "active"
+        ? `credentials active${cred.scopes?.length ? ` (${cred.scopes.join(", ")})` : ""}`
+        : "credentials revoked";
+    const meta =
+      a.surface === "notes"
+        ? `notes only · no presence on this surface · ${credSaid}`
+        : `${(a.groups || []).join(", ")} · seen ${ago(a.last_seen) || "never"} · ${a.unread_commands ?? 0} commands and ${a.unread_messages ?? 0} messages unread · ${credSaid}`;
+    return card(
+      h("div", { class: "row" }, h("h3", {}, a.name), chip(a.surface, a.surface === "notes" ? "warn" : "good")),
+      h("p", { class: "meta" }, meta),
+      cred?.state === "active"
+        ? h(
+            "div",
+            { class: "row end" },
+            h(
+              "button",
+              {
+                class: "small ghost",
+                onclick: async (e) => {
+                  const yes = await ask({
+                    title: `Revoke ${a.name}'s ${a.surface === "notes" ? "notes tokens" : "bridge credentials"}?`,
+                    text: "It is cut off from the bridge until it is given a new credential. This is the per-agent kill switch.",
+                    okLabel: "Revoke",
+                    danger: true,
+                  });
+                  if (yes !== null) act("agent.revoke", { surface: a.surface, name: a.name }, `Revoked ${a.name}`, e.target);
+                },
+              },
+              "Revoke",
+            ),
+          )
+        : null,
+    );
+  };
+  // ---- provisioning (#14376, design §4.9) -------------------------------
+  // Minted enroll tokens, by state. Where the read cannot be made the
+  // screen says so, as it does for the directory.
+  let enroll = null;
+  try {
+    const got = await api("enroll-tokens");
+    if (Array.isArray(got)) enroll = got;
+  } catch {
+    enroll = null;
+  }
+  // A minted value, shown once: the card is built from the mint's
+  // answer and put straight into the page — never into this screen's
+  // state, the documents, or the outbox — so the next draw (leaving
+  // the screen, a refresh) takes it with it, and neither the bridge
+  // nor this console can show it again. That is the property, not a
+  // courtesy: the bridge keeps only the value's hash.
+  const showOnce = (title, note, value, command) => {
+    const copy = (what, label) =>
+      h(
+        "button",
+        {
+          class: "small",
+          onclick: () =>
+            navigator.clipboard
+              .writeText(what)
+              .then(() => toast("Copied"))
+              .catch(() => toast("Copying failed — select the text and copy it by hand", true)),
+        },
+        label,
+      );
+    const node = card(
+      h("h3", {}, title),
+      h("p", { class: "why" }, note),
+      h("pre", {}, value),
+      command ? h("pre", {}, command) : null,
+      h(
+        "div",
+        { class: "row end" },
+        copy(value, "Copy the value"),
+        command ? copy(command, "Copy the command") : null,
+        h("button", { class: "small ghost", onclick: () => node.remove() }, "Hide it"),
+      ),
+    );
+    view.prepend(node);
+    node.scrollIntoView();
+  };
+  const pName = h("input", { type: "text", "aria-label": "New agent name", placeholder: "new agent's name" });
+  const pKind = h("input", { type: "text", "aria-label": "Kind", list: "agent-kinds", placeholder: "kind — muse, codex, …" });
+  const pGroups = h("input", { type: "text", "aria-label": "Groups", placeholder: "groups, comma-separated" });
+  const pNotes = h("input", { type: "text", "aria-label": "Notes identity", placeholder: "notes identity (class/name) — blank for none" });
+  const pTtl = h(
+    "select",
+    { "aria-label": "Token lifetime" },
+    h("option", { value: "3600" }, "For an hour"),
+    h("option", { value: "86400" }, "For a day"),
+    h("option", { value: "604800" }, "For a week"),
+  );
+  pTtl.value = "86400";
+  const newAgent = card(
+    h("h3", {}, "New agent"),
+    h(
+      "p",
+      { class: "meta" },
+      "Mint a bootstrap enroll token, bound to the name, kind, groups and notes identity below. The token and the enroll command are shown once, when it is minted.",
+    ),
+    pName,
+    pKind,
+    h("datalist", { id: "agent-kinds" }, ["muse", "claude-code", "codex", "opencode", "openchamber", "openclaw", "gemini", "antigravity", "grok", "chatgpt", "generic"].map((k) => h("option", { value: k }))),
+    pGroups,
+    pNotes,
+    pTtl,
+    h(
+      "div",
+      { class: "row end" },
+      h(
+        "button",
+        {
+          onclick: async (e) => {
+            const agent = pName.value.trim();
+            if (!agent) return toast("Name the new agent first", true);
+            const result = await act(
+              "agent.mint-enroll",
+              {
+                agent,
+                kind: pKind.value.trim() || undefined,
+                groups: pGroups.value.split(",").map((g) => g.trim()).filter(Boolean),
+                notesIdentity: pNotes.value.trim() || undefined,
+                ttlSeconds: Number(pTtl.value) || undefined,
+              },
+              `Enroll token minted for ${agent}`,
+              e.target,
+            );
+            if (result && typeof result.bootstrap_token === "string") {
+              const groups = Array.isArray(result.groups) && result.groups.length ? ` --groups ${result.groups.join(",")}` : "";
+              showOnce(
+                `Enroll token for ${result.agent}`,
+                `Shown once: the bridge keeps only its hash, and it can never be shown again. It works until ${result.expires_at}. Run this on the new seat:`,
+                result.bootstrap_token,
+                `fleet agent enroll --name ${result.agent} --kind ${result.kind}${groups} --bootstrap ${result.bootstrap_token}`,
+              );
+            }
+          },
+        },
+        "Mint enroll token",
+      ),
+    ),
+  );
+  const cName = h("input", { type: "text", "aria-label": "Agent for the credential", list: "agent-names", placeholder: "agent's name" });
+  const cScope = (value, label, on) => {
+    const box = h("input", { type: "checkbox", value });
+    box.checked = on;
+    return { box, label: h("label", { class: "row check meta" }, box, label) };
+  };
+  const cInbox = cScope("inbox", "inbox", true);
+  const cSend = cScope("send", "send", true);
+  const cRead = cScope("read", "read", false);
+  const cService = h("input", { type: "checkbox" });
+  const newCredential = card(
+    h("h3", {}, "New credential"),
+    h(
+      "p",
+      { class: "meta" },
+      "Mint a credential directly, for an agent that is already enrolled or for a service. The value is shown once, when it is minted; keep it in the vault under the agent's token name.",
+    ),
+    cName,
+    h("datalist", { id: "agent-names" }, roster.filter((a) => a.surface === "fleet").map((a) => h("option", { value: a.name }))),
+    h("div", { class: "row" }, cInbox.label, cSend.label, cRead.label, h("label", { class: "row check meta" }, cService, "Service (service:<name>)")),
+    h(
+      "div",
+      { class: "row end" },
+      h(
+        "button",
+        {
+          onclick: async (e) => {
+            const agent = cName.value.trim();
+            if (!agent) return toast("Name the agent first", true);
+            const scopes = [cInbox, cSend, cRead].filter((s) => s.box.checked).map((s) => s.box.value);
+            if (!scopes.length) return toast("Pick at least one scope", true);
+            const result = await act(
+              "agent.mint-credential",
+              { agent, scopes, addr: cService.checked ? `service:${agent}` : undefined },
+              `Credential minted for ${agent}`,
+              e.target,
+            );
+            if (result && typeof result.credential === "string") {
+              showOnce(
+                `Credential for ${result.agent}`,
+                "Shown once: the bridge keeps only its hash, and it can never be shown again. Store it in the vault now, under the agent's token name.",
+                result.credential,
+                null,
+              );
+            }
+          },
+        },
+        "Mint credential",
+      ),
+    ),
+  );
+  const tokenRow = (t) => {
+    const closed =
+      t.state === "used"
+        ? `used ${ago(t.used_at)} — the exchange burned it`
+        : t.state === "revoked"
+          ? `revoked ${ago(t.revoked_at)} — taken back by the owner`
+          : t.state === "expired"
+            ? `expired ${ago(t.expires_at)} — its time ran out`
+            : `minted ${ago(t.created)} · works until ${t.expires_at}`;
+    return card(
+      h(
+        "div",
+        { class: "row" },
+        h("h3", {}, t.agent),
+        chip(t.state, t.state === "pending" ? "warn" : t.state === "used" ? "good" : ""),
+      ),
+      h(
+        "p",
+        { class: "meta" },
+        `${t.kind}${t.groups?.length ? ` · groups ${t.groups.join(", ")}` : ""}${t.notes_identity ? ` · notes ${t.notes_identity}` : ""} · ${closed}`,
+      ),
+      t.state === "pending"
+        ? h(
+            "div",
+            { class: "row end" },
+            h(
+              "button",
+              {
+                class: "small ghost",
+                onclick: async (e) => {
+                  const yes = await ask({
+                    title: `Take back ${t.agent}'s unused enroll tokens?`,
+                    text: "Every still-pending token minted for this agent is revoked. One already used is not touched — its credentials are revoked from the roster above.",
+                    okLabel: "Take back",
+                    danger: true,
+                  });
+                  if (yes !== null) act("agent.revoke-enroll", { agent: t.agent }, `Took back ${t.agent}'s enroll tokens`, e.target);
+                },
+              },
+              "Take back",
+            ),
+          )
+        : null,
+    );
+  };
+  // An enroll command handed over by the Android app (#14377): the
+  // app's share flow sends text carrying one here instead of to the
+  // Ask box. It arrives after the "#", which never leaves the phone,
+  // and is consumed here — shown once, on this draw, like a mint:
+  // the token in it is live until it is used or runs out, so it is
+  // never put into this screen's state, the documents or the outbox.
+  // The form below is filled in from the command's binding, so
+  // minting a fresh token for the same agent is one tap from here.
+  let handed = null;
+  if (sub?.startsWith("enroll=")) {
+    let shared = "";
+    try {
+      shared = decodeURIComponent(sub.slice(7));
+    } catch {
+      // not valid text: nothing was handed over that can be shown
+    }
+    history.replaceState(null, "", "#more/agents");
+    if (shared) {
+      const parsed = enrollCommand(shared);
+      if (parsed) {
+        if (parsed.name) pName.value = parsed.name;
+        if (parsed.kind) pKind.value = parsed.kind;
+        if (parsed.groups.length) pGroups.value = parsed.groups.join(", ");
+        if (parsed.notesIdentity) pNotes.value = parsed.notesIdentity;
+      }
+      const copyShared = (what, label) =>
+        h(
+          "button",
+          {
+            class: "small",
+            onclick: () =>
+              navigator.clipboard
+                .writeText(what)
+                .then(() => toast("Copied"))
+                .catch(() => toast("Copying failed — select the text and copy it by hand", true)),
+          },
+          label,
+        );
+      handed = card(
+        h("h3", {}, "An enroll command was shared to this phone"),
+        h(
+          "p",
+          { class: "why" },
+          parsed
+            ? `It is bound to ${parsed.name ?? "an unnamed agent"}${parsed.kind ? ` (${parsed.kind})` : ""}${parsed.groups.length ? `, in ${parsed.groups.join(", ")}` : ""}. Its token works until it is used or runs out; run the command on the new seat, or copy the token. Nothing was sent anywhere — the command came with the share, and leaving this screen takes it with it. The form below is filled in from it, if a fresh token should be minted instead.`
+            : "It does not carry a bootstrap token, so it is not a complete enroll command; it is shown as shared, and nothing was sent anywhere.",
+        ),
+        h("pre", {}, shared),
+        h(
+          "div",
+          { class: "row end" },
+          parsed ? copyShared(parsed.token, "Copy the token") : null,
+          copyShared(shared, "Copy the command"),
+          h("button", { class: "small ghost", onclick: () => handed.remove() }, "Hide it"),
+        ),
+      );
+    }
+  }
+  // ---- wake hooks (#14544) ---------------------------------------------
+  // The bridge wakes an address's reader through its hook. The list
+  // is the bridge's own view of a hook — address, kind, host, whether
+  // it holds a token — never the token or the path. Setting and
+  // removing go through the wake-hooks API the retired bridge page
+  // used; this screen is its owner surface now.
+  let hooks = null;
+  try {
+    const got = await api("wake-hooks");
+    if (Array.isArray(got)) hooks = got;
+  } catch {
+    hooks = null;
+  }
+  const hookRow = (hk) =>
+    card(
+      h("div", { class: "row" }, h("h3", {}, hk.address), chip(hk.kind, "good")),
+      h("p", { class: "meta" }, `${hk.host} · ${hk.has_token ? "with a token" : "no token"} · added ${ago(hk.added) || hk.added}`),
+      h(
+        "div",
+        { class: "row end" },
+        h(
+          "button",
+          {
+            class: "small ghost",
+            onclick: async (e) => {
+              const yes = await ask({
+                title: `Remove the wake hook for ${hk.address}?`,
+                text: "Messages for that address stop waking its reader; they wait for its next poll instead.",
+                okLabel: "Remove",
+                danger: true,
+              });
+              if (yes !== null) act("agent.wake-hook-remove", { address: hk.address }, `Removed the wake hook for ${hk.address}`, e.target);
+            },
+          },
+          "Remove",
+        ),
+      ),
+    );
+  const wAddress = h("input", { type: "text", "aria-label": "Wake hook address", placeholder: "agent:<name>, channel:claude or channel:chatgpt" });
+  const wUrl = h("input", { type: "url", "aria-label": "Wake hook URL", placeholder: "https://… the URL the bridge calls" });
+  const wToken = h("input", { type: "password", "aria-label": "Wake hook token", placeholder: "token, if the URL needs one (a routine's fire URL does)" });
+  const newHook = card(
+    h("h3", {}, "Set a wake hook"),
+    h("p", { class: "meta" }, "One hook per address; setting one for an address replaces it. The token is sent to the bridge and never shown again."),
+    wAddress,
+    wUrl,
+    wToken,
+    h(
+      "div",
+      { class: "row end" },
+      h(
+        "button",
+        {
+          onclick: (e) => {
+            const address = wAddress.value.trim();
+            const url = wUrl.value.trim();
+            if (!address) return toast("Name the address first", true);
+            if (!url) return toast("Give the hook's URL first", true);
+            const args = { address, url };
+            if (wToken.value) args.token = wToken.value;
+            act("agent.wake-hook-set", args, `Wake hook set for ${address}`, e.target);
+          },
+        },
+        "Set hook",
+      ),
+    ),
+  );
   return [
     ...notices(docs.ops, ["agents"]),
+    handed,
     compose,
-    h("h2", {}, `Agents (${agents.length})`),
-    ...agents.map((a) =>
-      card(h("h3", {}, a.name), h("p", { class: "meta" }, `${(a.groups || []).join(", ")} · seen ${ago(a.last_seen) || "never"} · ${a.unread_commands ?? 0} commands and ${a.unread_messages ?? 0} messages unread`)),
-    ),
+    h("h2", {}, `Agents (${roster.length})`),
+    directory === null ? empty("The unified directory could not be read just now; the fleet roster is shown, without credential state.") : null,
+    ...roster.map(agentCard),
+    h("h2", {}, "Wake hooks"),
+    newHook,
+    hooks === null ? empty("The wake hooks could not be read just now.") : null,
+    ...(hooks ?? []).map(hookRow),
+    h("h2", {}, "Provisioning"),
+    newAgent,
+    newCredential,
+    enroll === null ? empty("The enroll tokens could not be read just now.") : null,
+    ...(enroll ?? []).map(tokenRow),
     h("h2", {}, "Recent messages"),
     ...(recent.length
       ? recent.map((m) => card(h("p", { class: "meta" }, `${ago(m.ts)} · ${m.direction} · ${m.agent} · ${m.kind}`), h("p", {}, String(m.body ?? "").slice(0, 600))))
@@ -3230,7 +4756,8 @@ const TABS = [
   ["more", "More", "M4 4h6v6H4zM14 4h6v6h-6zM4 14h6v6H4zM14 14h6v6h-6z"],
 ];
 const VIEWS = {
-  now: ["Now", viewNow],
+  now: ["Now", viewNow, "done"],
+  "now/done": ["Done", viewDone, "done"],
   next: ["Next", viewNext, "ops"],
   needs: ["Needs me", viewNeeds, "questions"],
   ask: ["Ask", viewAsk],
@@ -3239,6 +4766,7 @@ const VIEWS = {
   "more/prs": ["Pull requests", viewPrs, "ops"],
   "more/issues": ["Ranked issues", viewIssues, "ops"],
   "more/agents": ["Agents", viewAgents, "ops"],
+  "more/messages": ["Messages", viewMessages],
   "more/services": ["Services", viewServices, "ops"],
   "more/notify": ["Notifications", viewNotify],
   "more/phone": ["Phones", viewPhone],
@@ -3247,11 +4775,32 @@ const VIEWS = {
   "more/machines": ["Machines", viewMachines],
   "more/platform": ["Platform", viewPlatform],
   "more/device": ["On this device", viewDevice],
+  "more/look": ["Appearance", viewLook],
   "more/releases": ["Releases", viewReleases],
   "more/roadmap": ["Roadmap", viewRoadmap],
   "more/bugs": ["Bugs", viewBugs],
   "more/intake": ["Intake", viewIntake],
 };
+/** What a page that is a module of its own (public/pages) is handed:
+ * the app's own parts, so that it reads, acts and moves about the same
+ * way as every screen written here. */
+const app = {
+  api,
+  freshly,
+  act,
+  go,
+  toast,
+  empty,
+  ago,
+  sheet,
+  newId,
+  redraw: () => draw(),
+  /** The queue as it stands now, by state (or null before it has been read). */
+  counts: () => docs.core?.board?.counts ?? null,
+};
+for (const page of PAGES) VIEWS[page.route] = [page.title, (sub) => page.view(sub, app), page.doc];
+/** Every screen's address, for the tests. */
+export const routesKnown = () => Object.keys(VIEWS);
 let route = "now";
 let drawSeq = 0;
 /** The screen whose content the view holds, once it has been drawn. */
@@ -3328,7 +4877,7 @@ export function freshSaid(state, now = Date.now()) {
 // machine serving the app by itself, a network that will not carry
 // one) the app looks every twenty seconds, as it always did.
 
-const LIVE_DOCS = ["core", "questions", "ops"];
+const LIVE_DOCS = ["core", "questions", "ops", "done"];
 
 /** What a message over the live connection asks for: the documents to
  * read again. Anything that is not such a message asks for nothing. */
@@ -3571,6 +5120,9 @@ if (typeof document !== "undefined" && view) {
     .then((m) => {
       me = m;
       connectLive();
+      // Signed in: a copy of every screen, in the background, where the
+      // connection allows it.
+      keepAllInBackground().catch(() => {});
     })
     .catch(() => {});
   // The worker shows notifications, keeps the app and what it last saw

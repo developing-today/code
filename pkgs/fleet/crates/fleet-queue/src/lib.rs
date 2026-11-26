@@ -35,6 +35,19 @@
 /// `turso_queue` tree, so a client-only build could not compile.
 pub const BATCH_CLAIM_MAX: i64 = 5;
 
+/// The bundle cap (#11333): one launch — one (lane, session)
+/// pair — may make at most this many ordinary claims. The
+/// scheduled-lane runbooks promise "up to 10 tasks per launch",
+/// but until #11333 the only enforcement was the claiming
+/// model's own count, and a claim loop walked straight past it
+/// (a scheduled session claimed 12 on 2026-11-17). The broker
+/// now counts a launch's ordinary claims itself and refuses the
+/// claim that would pass the cap; see
+/// `turso_queue::lifecycle::bundle_claim_count`. Defined at the
+/// crate root beside BATCH_CLAIM_MAX so both surfaces share the
+/// value.
+pub const BUNDLE_CLAIM_CAP: i64 = 10;
+
 pub mod backoff;
 pub mod bin_args;
 pub mod creation_outbox;
@@ -51,7 +64,7 @@ pub mod client;
 #[cfg(feature = "client")]
 pub mod fallback;
 #[cfg(feature = "client")]
-pub mod needs_drew;
+pub mod needs_user;
 pub mod person_wait;
 #[cfg(feature = "client")]
 pub mod placement;
@@ -59,6 +72,13 @@ pub mod placement;
 pub mod queue_broker;
 #[cfg(feature = "secrets-broker")]
 pub mod secrets_broker;
+#[cfg(any(feature = "queue-broker", feature = "secrets-broker"))]
+mod tcp_http;
+// BT-3 (#14401): broker TLS Phase 1 — the server half serves
+// the queue broker's TCP leg; the client half validates it
+// against the BT-2 trust store.
+#[cfg(any(feature = "client", feature = "queue-broker"))]
+pub mod broker_tls;
 #[cfg(feature = "queue-broker")]
 pub mod turso_queue;
 #[cfg(any(feature = "queue-broker", feature = "secrets-broker"))]

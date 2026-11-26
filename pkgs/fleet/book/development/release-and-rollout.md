@@ -37,6 +37,8 @@ Steps:
    sha256=<sum>
    ```
 
+**Automated cadence (#14999).** Publishing no longer waits for an operator to remember the script: `.github/workflows/fleet-static-release.yml` runs it from GitHub Actions on a daily schedule (05:41 UTC) plus `workflow_dispatch`, so the newest fetchable release tracks current main. A run first resolves its target revision (the dispatch input, else `origin/main`) and checks whether `fleet-static-<short>` already exists with both assets; if it does, the run ends without building. Otherwise it installs Nix the way `fleet-smoke` does and runs `publish-fleet.sh` for that revision, retrying once on failure — the script is idempotent, and the retry covers the transient cache rate limits of #14859. Publishing a release does not move the bootstrap pin; the pin still moves by hand (section 2).
+
 ## 2. The bootstrap pin: `scripts/muse/bootstrap.sh`
 
 `bootstrap.sh` rebuilds a Muse sandbox seat from nothing — tools, config, laptop link — with every phase idempotent and skipping work already done. It runs in **8 phases**: `tools token restore tailnet fleet persist init check`, selectable with `--only <list>` / `--skip <list>`; `--all` also restores `~/git` and `~/agents`. Exit 0 means ok, exit 1 names the failed phase, exit 2 is a usage error.

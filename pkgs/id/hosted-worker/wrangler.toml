@@ -10,9 +10,29 @@ compatibility_date = "2025-06-01"
 name = "USERS"
 class_name = "UserDO"
 
+# The tenancy provisioning state machine (E2 of #9083, #12797):
+# one object per tenant, named by binding_id, driven by the tenancy
+# Worker — never routed by this front door.
+[[durable_objects.bindings]]
+name = "TENANT_OPS"
+class_name = "TenantOpsDO"
+
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["UserDO"]
+
+[[migrations]]
+tag = "v2"
+new_sqlite_classes = ["TenantOpsDO"]
+
+# One shared control-plane registry for every front-door request and
+# tenant-operations read. The placeholder is local-only; deployments
+# create and bind the central tenancy database separately.
+[[d1_databases]]
+binding = "TENANCY_DB"
+database_name = "id-hosted-tenancy"
+database_id = "00000000-0000-0000-0000-000000000001"
+migrations_dir = "tenancy/migrations"
 
 # Slice A of #3811 (#9954): content-addressed blob bytes. Local
 # emulation only — no production bucket is provisioned by this

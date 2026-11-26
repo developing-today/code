@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { spawn, type Subprocess } from "bun";
-import { mkdtemp, writeFile } from "node:fs/promises";
+import { mkdtemp, readdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -13,12 +13,15 @@ import { join } from "node:path";
 
 interface HealthBody {
   status: string;
+  degraded?: boolean;
   source: Record<string, string>;
   sections?: { orchestration: { state: string; runId?: string } };
 }
 
 let proc: Subprocess | undefined;
 let firstHealth: HealthBody | undefined;
+let packageDirBefore: string[] = [];
+const packageDir = join(import.meta.dir, "..");
 
 // #10467: starting the aggregator subprocess can take longer than bun's
 // default 5 s hook budget on a loaded machine; give the hook room to
@@ -69,15 +72,53 @@ beforeAll(async () => {
   };
   const feedFile = join(dir, "fleet-feed.json");
   await writeFile(feedFile, JSON.stringify(feed));
+  // #14167: the spawned server must not touch the real machine — its
+  // background jobs (the pm-core quota/fleet-feed schedulers, the Meta
+  // renewal keeper and the snapshot/hot-list consumers) run real
+  // collection unless their seams are disconnected. The fixture
+  // subcommand answers with empty provider readings so the gatherer's
+  // files stay in the tmp dir; the renewal keeper is disabled; the Turso
+  // sink is off; the audit logs and snapshots land beside the feed.
+  const subcommandPath = join(dir, "quota-subcommand.mjs");
+  const providerResult = {
+    providerId: "openai",
+    providerName: "OpenAI",
+    ok: true,
+    configured: true,
+    fetchedAt: Date.parse(now),
+    failureClass: "no-data",
+    lastSuccessAt: Date.parse(now),
+    usage: { windows: { weekly: { usedPercent: null } } },
+  };
+  // Fixture subcommand: answers with one valid provider row so the
+  // gatherer exercises its write paths (heartbeat, current, anomaly
+  // state) without touching real provider credentials or the network.
+  await writeFile(subcommandPath, `console.log(${JSON.stringify(JSON.stringify([providerResult]))});\n`, "utf8");
   const port = 5100 + Math.floor(Math.random() * 800);
+  packageDirBefore = (await readdir(packageDir)).sort();
   proc = spawn({
-    cmd: ["bun", "run", "src/server.ts"],
-    cwd: join(import.meta.dir, ".."),
+    cmd: ["bun", "run", join(packageDir, "src", "server.ts")],
+    cwd: dir,
     env: {
       ...Bun.env,
+      HOME: dir,
       PM_AGG_PORT: String(port),
+      PM_AGG_FRESHNESS_PORT: String(port + 1000),
       PM_AGG_SOURCE: "live",
       PM_AGG_FEED_FILE: feedFile,
+      PM_AGG_QUOTA_CURRENT_FILE: join(dir, "quota-current.json"),
+      QUOTA_CURRENT_PATH: join(dir, "quota-current.json"),
+      QUOTA_HEARTBEAT_PATH: join(dir, "quota-gatherer-heartbeat.json"),
+      QUOTA_GATHERER_STATE_PATH: join(dir, "quota-gatherer-state.json"),
+      QUOTA_SNAPSHOTS_DIR: join(dir, "snapshots"),
+      QUOTA_FORECAST_PATH: join(dir, "quota-forecast.json"),
+      QUOTA_SUBCOMMAND: `${process.execPath} ${subcommandPath}`,
+      QUOTA_SUBCOMMAND_TIMEOUT_MS: "5000",
+      META_RENEWAL_DISABLED: "1",
+      OPENDESIGN_RENEWAL_DISABLED: "1",
+      TURSO_QUOTA_SINK: "0",
+      META_RENEWAL_STATE_PATH: join(dir, "meta-renewal.json"),
+      PM_CORE_JOBS_AUDIT_PATH: join(dir, "pm-core-jobs.jsonl"),
       PM_AGG_REGISTRY_FILE: join(dir, "registry.json"),
       PM_AGG_COMMENTS_FILE: join(dir, "comments.json"),
       PM_AGG_SNAPSHOTS_DIR: join(dir, "snapshots"),
@@ -113,7 +154,10 @@ afterAll(() => {
 
 describe("/api/health provenance priming (#1267)", () => {
   test("the first-ever response reports the live facets truthfully", () => {
-    expect(firstHealth?.status).toBe("ok");
+    // #14062: the status follows the degraded flag. This live-source
+    // server's probes reach nothing, so it is degraded and says so.
+    expect(firstHealth?.degraded).toBe(true);
+    expect(firstHealth?.status).toBe("degraded");
     expect(firstHealth?.source.quota).toContain("live (fleet feed");
     expect(firstHealth?.source.quota).toContain("1 credential row(s)");
     expect(firstHealth?.source.quota).toContain("1 active session(s)");
@@ -122,5 +166,10 @@ describe("/api/health provenance priming (#1267)", () => {
     expect(firstHealth?.source.registry).not.toBe("fixtures");
     expect(firstHealth?.sections?.orchestration.state).toBe("live");
     expect(firstHealth?.sections?.orchestration.runId).toBe("orch-health-test");
+  });
+
+  test("the run leaves no files in the package directory", async () => {
+    await Bun.sleep(500);
+    expect((await readdir(packageDir)).sort()).toEqual(packageDirBefore);
   });
 });

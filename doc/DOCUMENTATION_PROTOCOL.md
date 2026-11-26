@@ -31,6 +31,7 @@ When making a significant design or architecture decision—whether modifying an
    - What was requested or identified as needed
    - Initial design approach
    - Key decisions and their rationale
+   - **Verified when:** For every new design record, state the observable result that would satisfy the design and the test, comparison, or evidence that will establish it.
 
 4. **Append updates during rollout** as new sections:
    - Add a page break (`---`) before each appended section
@@ -154,6 +155,7 @@ docs/
 
 ## Change log
 
+- 2026-11-24: Require new design records to state the observable acceptance result and the evidence that will establish it.
 - 2026-11-24: Lane work product: recorded that goal `hidden_files/` are tracked in the hatch-personal repo's git (Drew, 2026-11-23) — presentation-hidden is not untracked, and the live-credential carve-out applies there too.
 - 2026-11-24: Added "Books stay live": a change that moves anything a book states carries its book update in the same PR, or as an immediate linked follow-up PR in the same session; the weekly review and daily spot-check are the catch-net, not the mechanism.
 - 2026-11-24: Added lane work product as a dated-record class: reports and one-offs land in the repository by pull request, with their gathered material in the folder, an index link outside it, the size and openness rules, and the live-credential carve-out.

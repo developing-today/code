@@ -288,3 +288,55 @@ python3 $GB/bin/manifest.py   # refresh totals after any manual change
 gh api rate_limit --jq '.resources.core'   # personal-token pool (sweep)
 python3 $GB/bin/app_setup.py install-report  # App installations
 ```
+
+## 12. Five-copy freshness probe (#8584)
+
+`github-backup-freshness.timer` (daily 04:10 + delay, after the copy
+jobs) runs `bin/freshness_probe.py` via `systemd/run-freshness.sh`. The
+probe verifies all five #8584 copies — the Turso→D1 export (via the D1
+export meta record), the D1 copy (same record: the export succeeds
+only after D1 read-back counts match), the plain mirrors and the R2
+bundles (HEAD equality against the local backup mirrors), and the
+Cloudflare rehost (HEAD equality between the rehost Worker's live
+advertisement and the local mirror — see §13) — rewrites
+`~/backups/github/freshness-status.json`, and judges it with
+`bin/freshness_readout.py`. A copy behind its 26h target keeps exactly
+one alert issue open in developing-today/code (title prefix
+`Backup freshness:`); the probe updates it while copies stay behind
+and closes it on recovery. A failed check never refreshes a copy's
+stamp: the previous `last_success` carries forward and ages out.
+
+Read the current state at any time:
+
+```sh
+python3 $GB/bin/freshness_readout.py --status-json ~/backups/github/freshness-status.json
+```
+
+## 13. Cloudflare rehost (Workers + R2 smart-HTTP, #8584)
+
+The rehost copy: `git clone https://git.security.cab/<owner>/<repo>`
+served by the `fleet-git-rehost` Worker from pre-generated packs in
+the `fleet-git-rehost` R2 bucket. Design and protocol notes:
+`infra/github-backup/rehost/README.md`; the surface decision record
+is in `docs/CLOUDFLARE-REHOST-EVALUATION.md`.
+
+```sh
+# Publish all four fleet repos now (or wait for the 03:20 timer):
+$GB/systemd/run-rehost.sh
+# Publish one repo by hand (r2bak rclone remote must be configured):
+python3 $GB/bin/rehost_publish.py --repo developing-today/fleet
+
+# Deploy / redeploy the Worker (token fetched by vault name):
+$GB/rehost/worker/deploy.sh            # add --dry-run to validate only
+
+# Clone drill — HEAD must equal the source repo's head:
+git clone https://git.security.cab/developing-today/fleet /tmp/rehost-drill
+git -C /tmp/rehost-drill rev-parse HEAD
+```
+
+The publish is verified in-band: the pack is read back from R2 and
+SHA-256-compared, then refs.json is uploaded last and byte-compared;
+a failed publish leaves the previous generation serving. The
+freshness probe (§12) stamps this copy only when the live
+advertisement's HEAD equals the local mirror HEAD for every fleet
+repo.

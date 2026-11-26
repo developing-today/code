@@ -1,5 +1,5 @@
 {
-  "description": "PM service, Workers edition (component A of #9078, under #9079): the hosted edition of the pm-stack PM service. Slice 1 (#12825): PM tenant store schema + migrations.",
+  "description": "PM service, Workers edition (component A of #9078, under #9079): the hosted edition of the pm-stack PM service. Slice 1 (#12825): PM tenant store schema + migrations. Slice 2 (#12826): hosted collector \u2014 registry-driven multi-board ingest with IngestDO cursors. Slice 3 (#12828): hosted read API parity \u2014 projects/item/roadmap/releases per #9060 \u00a76, served from the tenant DB. Slice 4 (#12829): dashboard pages \u2014 boards, item genealogy, roadmap + priorities, releases, needs-attention.",
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20251011.0",
     "typescript": "^5.6.0"

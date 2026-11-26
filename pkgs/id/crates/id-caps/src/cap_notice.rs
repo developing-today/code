@@ -412,7 +412,7 @@ mod tests {
     use crate::cap_baseline::{BaselineHistoryKind, CapBaseline};
     use crate::cap_class::{
         CAP_CLASS_TABLE_VERSION, CLASS_CHAT_READ, CLASS_CHAT_WRITE, CLASS_DEVICE_LOCATION,
-        CLASS_NET_OUT, CLASS_UNKNOWN,
+        CLASS_FS_READ_SELECTED, CLASS_NET_OUT, CLASS_UNKNOWN,
     };
     use crate::world_caps::PROVIDER_REGISTRY;
 
@@ -440,8 +440,9 @@ mod tests {
     #[test]
     fn notice_names_only_the_delta_grouped_by_side() {
         // Baseline covers chat.read; the world now also reaches
-        // net.out (host side, via http.fetch) and unknown (client
-        // side, via client.file.read). chat.read itself is silent.
+        // net.out (host side, via http.fetch) and fs.read.selected
+        // (client side, via client.file.read — #13004 §6). chat.read
+        // itself is silent.
         let accepted = baseline(&[CLASS_CHAT_READ]);
         let declared = names(&["chat.history", "http.fetch", "client.file.read"]);
         let new = crate::cap_diff::message_set(&PROVIDER_REGISTRY, &declared, &BTreeSet::new());
@@ -473,7 +474,7 @@ mod tests {
                 .iter()
                 .map(|line| line.class.as_str())
                 .collect::<Vec<_>>(),
-            [CLASS_UNKNOWN]
+            [CLASS_FS_READ_SELECTED]
         );
         // Server-side lines are disclosure only; client-side lines
         // carry the controls.
@@ -518,7 +519,7 @@ mod tests {
         assert!(notice.should_prompt());
         assert!(notice.uncomputable);
         assert_eq!(notice.client_side.len(), 1);
-        assert!(notice.server_side.is_empty());
+        assert_eq!(notice.server_side, [] as [crate::cap_notice::NoticeLine; 0]);
         assert_eq!(notice.client_side[0].class, CLASS_UNKNOWN);
         assert_eq!(
             notice.client_side[0].message,
@@ -545,19 +546,19 @@ mod tests {
             &diff,
             "deny",
         );
-        assert!(notice.deniable_classes().contains(CLASS_UNKNOWN));
+        assert!(notice.deniable_classes().contains(CLASS_FS_READ_SELECTED));
         assert!(!notice.deniable_classes().contains(CLASS_NET_OUT));
         let new: BTreeSet<String> = new_names.iter().map(ToString::to_string).collect();
         let applied = apply_choice(
             NoticeChoice::ConnectAndRemember,
             &notice,
             &new,
-            &refs(&[CLASS_UNKNOWN]),
+            &refs(&[CLASS_FS_READ_SELECTED]),
         );
         assert!(applied.connects);
         assert!(!applied.load_bearing_refusal);
         let remembered = applied.remembered.expect("remember choice re-baselines");
-        assert!(!remembered.iter().any(|c| c == CLASS_UNKNOWN));
+        assert!(!remembered.iter().any(|c| c == CLASS_FS_READ_SELECTED));
         assert!(remembered.iter().any(|c| c == CLASS_NET_OUT));
         assert!(remembered.iter().any(|c| c == CLASS_CHAT_READ));
         // The denied class prompts again next time: it is new against
@@ -565,7 +566,7 @@ mod tests {
         let remembered_refs: BTreeSet<&str> = remembered.iter().map(String::as_str).collect();
         let again = crate::cap_diff::compare(&remembered_refs, &new_names);
         assert!(again.triggers());
-        assert_eq!(again.new_classes, [CLASS_UNKNOWN]);
+        assert_eq!(again.new_classes, [CLASS_FS_READ_SELECTED]);
         // Denying a server-side class is ignored: those lines carry
         // no controls.
         let applied = apply_choice(
@@ -582,7 +583,7 @@ mod tests {
     fn denying_a_load_bearing_class_refuses_the_attempt() {
         // #5960 §2: denying load-bearing is equivalent to Don't
         // connect for this attempt. The world's manifest declares the
-        // unknown class load-bearing here.
+        // fs.read.selected class (client.file.read) load-bearing here.
         let accepted = baseline(&[CLASS_CHAT_READ]);
         let declared = names(&["chat.history", "client.file.read"]);
         let new_names =
@@ -593,7 +594,7 @@ mod tests {
             &PROVIDER_REGISTRY,
             &declared,
             &BTreeSet::new(),
-            &refs(&[CLASS_UNKNOWN]),
+            &refs(&[CLASS_FS_READ_SELECTED]),
             &diff,
             "deny",
         );
@@ -601,14 +602,14 @@ mod tests {
             notice
                 .client_side
                 .iter()
-                .any(|line| line.class == CLASS_UNKNOWN && line.load_bearing)
+                .any(|line| line.class == CLASS_FS_READ_SELECTED && line.load_bearing)
         );
         let new: BTreeSet<String> = new_names.iter().map(ToString::to_string).collect();
         let applied = apply_choice(
             NoticeChoice::ConnectAndRemember,
             &notice,
             &new,
-            &refs(&[CLASS_UNKNOWN]),
+            &refs(&[CLASS_FS_READ_SELECTED]),
         );
         assert!(!applied.connects);
         assert!(applied.load_bearing_refusal);

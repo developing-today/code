@@ -1,1 +1,11 @@
-{"author":"ed25519:cccc3333media","body":{"board":"events","text":"Full-res group photo attached; quoting Ana's ask from chat so the thread carries the context."},"created_claim":"2026-11-24T01:53:00Z","kind":"forum-post","object_id":"post-photo-published","schema_version":1}
+{
+  "author": "ed25519:cccc3333media",
+  "body": {
+    "board": "events",
+    "text": "Full-res group photo attached; quoting Ana's ask from chat so the thread carries the context."
+  },
+  "created_claim": "2026-11-24T01:53:00Z",
+  "kind": "forum-post",
+  "object_id": "post-photo-published",
+  "schema_version": 1
+}

@@ -20,9 +20,9 @@
 // override with CLAUDE_LAUNCH_RECORDS_PATH on the collector side, or
 // --file here).
 import { appendFile, mkdir } from "node:fs/promises";
-import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { parseRef } from "../src/model.ts";
+import { requireHome } from "../src/home.ts";
 
 function usageError(message: string): never {
   console.error(`record-claude-launch: ${message}`);
@@ -84,7 +84,10 @@ rejectUnknownArgs();
 const file =
   arg("file") ??
   process.env.CLAUDE_LAUNCH_RECORDS_PATH ??
-  join(homedir(), "workspace/goals/keep-the-four-repos-healthy/hidden_files/claude-launch-records.jsonl");
+  join(
+    requireHome("CLAUDE_LAUNCH_RECORDS_PATH"),
+    "workspace/goals/keep-the-four-repos-healthy/hidden_files/claude-launch-records.jsonl",
+  );
 
 const label = arg("label");
 if (!label) {
