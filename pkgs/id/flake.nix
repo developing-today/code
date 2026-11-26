@@ -449,7 +449,7 @@
         # Linux first per the Q1 platform order on #6297. A separate output
         # so the default `id` packages never acquire Bevy. Tests stay in the
         # test-native-shell check; this derivation only builds and wraps.
-        nativeShellPackages = pkgs.lib.optionalAttrs pkgs.stdenv.isLinux {
+        nativeShellPackages = pkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
           id-native-shell = pkgs.rustPlatform.buildRustPackage {
             pname = "id-native-shell";
             version = "0.1.0";

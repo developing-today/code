@@ -716,6 +716,32 @@ in
           };
         };
 
+        # The independent watchdog heartbeat checker (#14388, #14005
+        # item 1): a separate oneshot process on its own timer, never
+        # part of the aggregator process, so it still runs — and still
+        # pages — while the aggregator is down. It reads only the SLO
+        # journal. Its stdout IS the delivered report: systemd appends
+        # it to the report file under the aggregator state dir (the
+        # PAGE_DREW / NEEDS_ORCHESTRATOR lines the main-chat report
+        # surfaces), instead of losing it in the journal.
+        pm-watchdog-heartbeat-check = {
+          Unit = {
+            Description = "PM-stack watchdog heartbeat checker — independent five-minute check of the SLO journal (#14388)";
+            After = [ "network-online.target" ];
+          };
+          Service = {
+            Type = "oneshot";
+            TimeoutStartSec = 120;
+            WorkingDirectory = aggState;
+            Environment = [
+              "PM_AGG_SLO_JOURNAL_FILE=${aggState}/slo-journal.jsonl"
+            ];
+            ExecStart = "${pmAggregator}/bin/pm-aggregator-check-watchdog-heartbeat";
+            StandardOutput = "append:${aggState}/watchdog-heartbeat-report.log";
+            StandardError = "append:${aggState}/watchdog-heartbeat-report.log";
+          };
+        };
+
         # The Kaneo stack is a oneshot, not a daemon: deploy.sh renders
         # the env, pulls the images, and (re)creates the containers,
         # which then run under docker's own restart policy. A user unit
@@ -821,6 +847,16 @@ in
             OnBootSec = "2min";
             OnUnitActiveSec = "2min";
             Unit = "pm-tunnel-watchdog.service";
+          };
+          Install.WantedBy = [ "timers.target" ];
+        };
+
+        pm-watchdog-heartbeat-check = {
+          Unit.Description = "Run the independent watchdog heartbeat checker every 5 minutes (#14388)";
+          Timer = {
+            OnBootSec = "2min";
+            OnUnitActiveSec = "5min";
+            Unit = "pm-watchdog-heartbeat-check.service";
           };
           Install.WantedBy = [ "timers.target" ];
         };
