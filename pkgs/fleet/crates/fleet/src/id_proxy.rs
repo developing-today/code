@@ -497,7 +497,7 @@ mismatch · 73 target unreachable.";
 
 /// `fleet id proxy` — see [`PROXY_USAGE`]. Returns a process
 /// exit code. The first element of `args` is the literal
-/// `"proxy"` (stripped by the `id` domain router in `main.rs`).
+    /// `"proxy"` (retained by the `id` domain router in `main.rs`).
 pub fn run(args: &[String]) -> i32 {
     let mut rest = args.iter();
     match rest.next().map(|s| s.as_str()) {
@@ -876,7 +876,7 @@ mod tests {
             EXIT_MODE_UNAVAILABLE
         );
         assert_eq!(
-            run(&proxy_args(&["proxy", "--opaque", "127.0.0.1:9"])),
+            run(&proxy_args(&["proxy", "--opaque", "tcp://127.0.0.1:9"])),
             EXIT_MODE_UNAVAILABLE
         );
     }
