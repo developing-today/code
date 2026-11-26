@@ -196,23 +196,26 @@ buildMcpxGoModule {
         # main, which is where the fix lands.
         "internal/conformance"
       ];
-      # The Linux-only takeover/handoff tests (#418): they exercise
-      # /proc and systemd-mainpid mechanics that do not exist on
-      # darwin, so the darwin check run skips them by name.
+      # The Linux-only legacy-handoff tests (#418, shrunk by #15397
+      # per #9963 criterion 4): every entry left here drives the
+      # legacy handover machinery directly — pool/client Detach and
+      # fd-passing of stdio pipes, registry handoff, detached-child
+      # pipe adoption, and the daemon's in-process handover of its
+      # listener, connections and pools — which exercises /proc and
+      # systemd-mainpid mechanics that do not exist on darwin, so the
+      # darwin check run skips them by name.
+      #
+      # The end-to-end takeover/upgrade tests are NOT here any more:
+      # since #15398 restored supervised stdio as the default, the
+      # children in those tests (internal/e2e, default config) are
+      # adopted by attach on a takeover, so they no longer need the
+      # legacy mechanics for their stdio children and run on darwin.
       darwinSkip = "^(${
         lib.concatStringsSep "|" [
-          "TestACallInFlightAtATakeoverIsAnsweredAndItsConnectionMovesOn"
-          "TestAnIdleKeepAliveConnectionSurvivesATakeover"
           "TestClientHandoffCommitsOnlyWhenActivated"
-          "TestClientLeaseSurvivesDaemonTakeover"
           "TestDetachedChildKeepsItsPipesAndAdoptionResumesThem"
           "TestDetachRefusesWhileACallIsInFlight"
           "TestHandoffDoesNotSplitAFrameAcrossTheTwoProcesses"
-          "TestKeepAliveCallersLoseNoCallsAcrossARealTakeover"
-          "TestTakeoverKeepsTheChildAndTheListener"
-          "TestTakeoverLosesNoCallsWhileAClientKeepsCalling"
-          "TestTakeoverRestartsAChangedServerAndKeepsTheRest"
-          "TestUpgradeKeepsTheChildAndHandsMainPIDToTheSuccessor"
           "TestACallInFlightAtTheHandoverIsAnsweredByTheOldDaemon"
           "TestAClientLeaseSurvivesADaemonTakeover"
           "TestAnIdleConnectionSurvivesATakeoverInProcess"
