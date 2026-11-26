@@ -513,7 +513,14 @@ macro_rules! receipt_insert {
     };
 }
 
-pub(crate) const RECEIPT_INSERT: &str = receipt_insert!();
+/// The inline CAS receipt. Central refuses inline bytes above the
+/// namespace's threshold (#13318 acceptance 1): such a request records no
+/// receipt, so nothing else in the transaction moves, and [`cas`] answers
+/// `inline_above_ceiling`. A tombstone carries no bytes and always passes.
+pub(crate) const RECEIPT_INSERT: &str = concat!(
+    receipt_insert!(),
+    "\n    WHERE NOT EXISTS (SELECT 1 FROM kv_namespaces AS ns\n        WHERE ns.registry_id = ?2 AND ns.namespace = ?3\n          AND IFNULL(length(?7), 0) > ns.blob_threshold)"
+);
 
 /// The publish-CAS receipt (#13318, design §8): decided only while the
 /// blob it names is published in its partition (`?14` jurisdiction, `?15`
@@ -658,9 +665,20 @@ pub(crate) fn cas_args(intent: &Intent, attempt: &str) -> Vec<Value> {
 pub fn cas(primary: &dyn Pipeline, intent: &Intent) -> Result<Receipt> {
     validate(&intent.address)?;
     let attempt = attempt_nonce();
-    decide(primary, intent, &cas_statements(intent, &attempt), &attempt)?
-        .ok_or_else(|| CentralError::Store("the CAS transaction returned no receipt".into()))
+    decide(primary, intent, &cas_statements(intent, &attempt), &attempt)?.ok_or_else(|| {
+        CentralError::Refused {
+            code: INLINE_ABOVE_CEILING,
+            message: format!(
+                "{} bytes are above namespace {}'s inline threshold; central keeps them only as a blob",
+                intent.op.value().len(),
+                intent.address.namespace
+            ),
+        }
+    })
 }
+
+/// The typed refusal for inline bytes above the namespace's threshold.
+pub const INLINE_ABOVE_CEILING: &str = "inline_above_ceiling";
 
 /// Run one CAS-shaped transaction whose last statement reads the receipt,
 /// and decode it. `None` when no receipt was recorded for the key.
@@ -1363,6 +1381,28 @@ mod tests {
         for statement in cas_statements(&intent(&status(), 0, set("x"), "a", "1"), "nonce") {
             assert_eq!(statement.args.len(), highest_parameter(&statement.sql));
         }
+    }
+
+    #[test]
+    fn central_refuses_inline_bytes_above_the_namespace_threshold() {
+        let primary = SqlitePrimary::in_memory().unwrap();
+        let mut tight = Namespace::shared("status", "shared:team");
+        tight.blob_threshold = 4;
+        define_namespace(&primary, &tight).unwrap();
+        let refused = cas(&primary, &intent(&status(), 0, set("12345"), "a", "1")).unwrap_err();
+        assert_eq!(refused.code(), INLINE_ABOVE_CEILING);
+        assert!(!refused.is_retryable());
+        assert_eq!(head(&primary, &status()).unwrap(), None);
+        assert!(history(&primary, &status()).unwrap().is_empty());
+        // At the threshold it commits, and a tombstone always passes.
+        let at = cas(&primary, &intent(&status(), 0, set("1234"), "a", "2")).unwrap();
+        assert_eq!(committed(&at), 1);
+        let gone = cas(&primary, &intent(&status(), 1, Op::Tombstone, "a", "3")).unwrap();
+        assert_eq!(committed(&gone), 2);
+        // An undefined namespace has no threshold to hold to here.
+        let elsewhere = Address::new("shared:team", "other", "k");
+        let free = cas(&primary, &intent(&elsewhere, 0, set("123456789"), "a", "4")).unwrap();
+        assert_eq!(committed(&free), 1);
     }
 
     #[test]

@@ -62,6 +62,9 @@ fleet kv namespace list
 - Changing a namespace between shared and private is refused with
   `namespace_scope_change`, because its existing keys would be stranded.
 - Hosts pick up a change on their next `fleet kv sync`.
+- Central holds every inline write to the threshold it has now. A host that
+  still has an older, larger threshold gets `inline_above_ceiling`, and its
+  value waits until the next sync places it as a blob.
 
 ## Collect unreferenced blobs
 
