@@ -10,6 +10,8 @@
 //! random source. This byte ABI is deliberately separate from Roc's internal
 //! ABI; a versioned Roc platform adapter must compile to this boundary.
 
+use std::path::{Path, PathBuf};
+
 use anyhow::{Context, Result, ensure};
 use wasmtime::{
     Config, Engine, Instance, Memory, Module, Store, StoreLimits, StoreLimitsBuilder, TypedFunc,
@@ -143,10 +145,31 @@ const COMPILED_MODULES_KEPT: usize = if cfg!(test) { 256 } else { 4 };
 static COMPILED_MODULES: std::sync::Mutex<Vec<([u8; 32], Engine, Module)>> =
     std::sync::Mutex::new(Vec::new());
 
-/// Compile `wasm` under the sandbox's fixed engine configuration, or
-/// return the compiled module kept from an earlier compile of the
-/// same bytes. A failed compile is not kept.
-fn compiled_module(wasm: &[u8]) -> Result<(Engine, Module)> {
+/// The engine every guest module is compiled under. This config is
+/// identical on every call (the limits are applied per store at
+/// instantiation), which is what makes both module caches sound:
+/// codegen is a pure function of the module bytes under this fixed
+/// config (see [`MODULE_CACHE_SALT`]).
+fn sandbox_engine() -> Result<Engine> {
+    let mut config = Config::new();
+    config.consume_fuel(true);
+    config.max_wasm_stack(512 * 1024);
+    config.wasm_multi_memory(false);
+    config.wasm_memory64(false);
+    Engine::new(&config).map_err(|e| anyhow::anyhow!("create Wasmtime engine: {e}"))
+}
+
+/// The compiled module for `wasm` under [`sandbox_engine`]. With
+/// `keep`, a module kept from an earlier compile of the same bytes in
+/// this process is returned as is, and a new one is kept; otherwise,
+/// and on a miss, it comes from [`load_or_compile_module`]. A failed
+/// compile is not kept.
+fn compiled_module(wasm: &[u8], cache_dir: Option<&Path>, keep: bool) -> Result<(Engine, Module)> {
+    if !keep {
+        let engine = sandbox_engine()?;
+        let module = load_or_compile_module(&engine, wasm, cache_dir)?;
+        return Ok((engine, module));
+    }
     let key = *blake3::hash(wasm).as_bytes();
     // A poisoned lock only means another compile panicked while it
     // held the list; the entries in it are still whole.
@@ -161,15 +184,8 @@ fn compiled_module(wasm: &[u8]) -> Result<(Engine, Module)> {
             return Ok(found);
         }
     }
-    let mut config = Config::new();
-    config.consume_fuel(true);
-    config.max_wasm_stack(512 * 1024);
-    config.wasm_multi_memory(false);
-    config.wasm_memory64(false);
-    let engine =
-        Engine::new(&config).map_err(|e| anyhow::anyhow!("create Wasmtime engine: {e}"))?;
-    let module =
-        Module::new(&engine, wasm).map_err(|e| anyhow::anyhow!("compile Wasm module: {e}"))?;
+    let engine = sandbox_engine()?;
+    let module = load_or_compile_module(&engine, wasm, cache_dir)?;
     let mut kept = COMPILED_MODULES
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -190,9 +206,204 @@ pub struct Sandbox {
     limits: SandboxLimits,
 }
 
+/// Environment variable naming the guest-module compilation cache
+/// directory. Unset (or empty): a per-machine directory under the OS
+/// temp dir. `off`: the cache is disabled. Any other value: that
+/// directory — hosts that want the cache to survive reboots point it
+/// at a durable per-machine directory.
+const MODULE_CACHE_ENV: &str = "ID_WORLDS_MODULE_CACHE_DIR";
+
+/// Salt in every cache file name. It stands for the `Config` built in
+/// [`Sandbox::compile_with_cache`] (fuel on, 512 KiB max stack, no
+/// multi-memory, no memory64): any change to that config must bump
+/// this value. The wasmtime version needs no representation here —
+/// [`Module::deserialize`] refuses bytes precompiled for an
+/// incompatible engine or wasmtime version, and such an entry is
+/// simply recompiled.
+const MODULE_CACHE_SALT: &str = "cfg1";
+
+/// Total size bound for the cache directory. When a new entry would
+/// push the directory past the bound, oldest entries are evicted
+/// until it fits. Best-effort: eviction failure never fails a write,
+/// and a write failure never fails a compile.
+const MODULE_CACHE_MAX_BYTES: u64 = 512 * 1024 * 1024;
+
+/// The compilation cache directory for [`Sandbox::compile`], or
+/// `None` when the cache is disabled (see [`MODULE_CACHE_ENV`]).
+fn module_cache_dir() -> Option<PathBuf> {
+    match std::env::var_os(MODULE_CACHE_ENV) {
+        None => Some(std::env::temp_dir().join("id-worlds-module-cache")),
+        Some(value) => {
+            if value.is_empty() {
+                Some(std::env::temp_dir().join("id-worlds-module-cache"))
+            } else if value == "off" {
+                None
+            } else {
+                Some(PathBuf::from(value))
+            }
+        }
+    }
+}
+
+/// Cache file name for `wasm`: the salt plus the hex SHA-256 of the
+/// module bytes. Compilation under [`Sandbox::compile_with_cache`]'s
+/// fixed config is a pure function of the bytes, so the digest is
+/// the whole key.
+fn module_cache_key(wasm: &[u8]) -> String {
+    use sha2::Digest as _;
+    use std::fmt::Write as _;
+    let digest = sha2::Sha256::digest(wasm);
+    let mut key = String::with_capacity(MODULE_CACHE_SALT.len() + 1 + digest.len() * 2 + 6);
+    key.push_str(MODULE_CACHE_SALT);
+    key.push('-');
+    for byte in digest {
+        let _ = write!(key, "{byte:02x}");
+    }
+    key.push_str(".cwasm");
+    key
+}
+
+/// Load a precompiled module from the cache entry at `path`, or
+/// `None` on any doubt: unreadable file, truncated or corrupt
+/// contents (the stored SHA-256 of the payload must match), or
+/// bytes [`Module::deserialize`] rejects as incompatible with
+/// `engine`. `None` always means "compile fresh", never an error.
+#[allow(unsafe_code)]
+fn load_cached_module(engine: &Engine, path: &Path) -> Option<Module> {
+    use sha2::Digest as _;
+    let raw = std::fs::read(path).ok()?;
+    let (checksum, payload) = raw.split_at_checked(32)?;
+    if sha2::Sha256::digest(payload).as_slice() != checksum {
+        return None;
+    }
+    // Safety: the payload comes from our own cache directory and is
+    // integrity-checked against the checksum stored with it above,
+    // so it is bytes this process (or a sibling on the same machine)
+    // wrote from `Engine::precompile_module`. `deserialize` itself
+    // validates that the bytes are a precompiled module compatible
+    // with this engine and wasmtime version and errors otherwise;
+    // any error is treated as a cache miss by the caller.
+    unsafe { Module::deserialize(engine, payload) }.ok()
+}
+
+/// Best-effort write of `payload`, the precompiled form of a module,
+/// to the cache entry at `path`, framed as the SHA-256 of the payload
+/// followed by the payload. Every failure is ignored: the cache is an
+/// optimisation, and a compile that succeeded must not fail because
+/// its cache write did.
+fn store_cached_module(payload: &[u8], path: &Path) {
+    use sha2::Digest as _;
+    let mut framed = Vec::with_capacity(32 + payload.len());
+    framed.extend_from_slice(&sha2::Sha256::digest(payload));
+    framed.extend_from_slice(payload);
+    let Some(dir) = path.parent() else {
+        return;
+    };
+    if std::fs::create_dir_all(dir).is_err() {
+        return;
+    }
+    evict_cache_to_fit(dir, framed.len() as u64);
+    // Write beside the entry and rename over it, so a concurrent
+    // reader never sees a partial file.
+    let staging = dir.join(format!(".staging-{}", std::process::id()));
+    if std::fs::write(&staging, &framed).is_ok() && std::fs::rename(&staging, path).is_err() {
+        let _ = std::fs::remove_file(&staging);
+    }
+}
+
+/// Remove oldest cache entries in `dir` until a new entry of
+/// `incoming` bytes fits under [`MODULE_CACHE_MAX_BYTES`].
+/// Best-effort throughout.
+fn evict_cache_to_fit(dir: &Path, incoming: u64) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    let mut files: Vec<(std::time::SystemTime, u64, PathBuf)> = Vec::new();
+    let mut total: u64 = 0;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().is_none_or(|ext| ext != "cwasm") {
+            continue;
+        }
+        let Ok(metadata) = entry.metadata() else {
+            continue;
+        };
+        total += metadata.len();
+        let modified = metadata
+            .modified()
+            .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+        files.push((modified, metadata.len(), path));
+    }
+    files.sort_by_key(|(modified, _, _)| *modified);
+    for (_, len, path) in files {
+        if total + incoming <= MODULE_CACHE_MAX_BYTES {
+            break;
+        }
+        if std::fs::remove_file(&path).is_ok() {
+            total -= len;
+        }
+    }
+}
+
+/// Obtain the compiled module for `wasm`: a cache hit when
+/// `cache_dir` names an entry that loads, otherwise a fresh compile
+/// whose precompiled form is then cached best-effort. The fresh
+/// compile runs once: with a cache, the module is loaded from the
+/// very bytes that are cached, rather than compiled a second time to
+/// produce them (#13941).
+#[allow(unsafe_code)]
+fn load_or_compile_module(
+    engine: &Engine,
+    wasm: &[u8],
+    cache_dir: Option<&Path>,
+) -> Result<Module> {
+    fn compile_error(e: impl std::fmt::Display) -> anyhow::Error {
+        anyhow::anyhow!("compile Wasm module: {e}")
+    }
+    let Some(entry) = cache_dir.map(|dir| dir.join(module_cache_key(wasm))) else {
+        return Module::new(engine, wasm).map_err(compile_error);
+    };
+    if let Some(module) = load_cached_module(engine, &entry) {
+        return Ok(module);
+    }
+    let payload = engine.precompile_module(wasm).map_err(compile_error)?;
+    // Safety: `payload` was produced just above by
+    // `Engine::precompile_module` on this same engine and has not left
+    // this process's memory, so it is exactly the precompiled form
+    // `deserialize` expects.
+    let module = unsafe { Module::deserialize(engine, &payload) }.map_err(compile_error)?;
+    store_cached_module(&payload, &entry);
+    Ok(module)
+}
+
 impl Sandbox {
     /// Compile and validate a guest module against the no-import policy.
     pub fn compile(wasm: &[u8], limits: SandboxLimits) -> Result<Self> {
+        Self::compile_kept(wasm, limits, module_cache_dir().as_deref(), true)
+    }
+
+    /// [`Sandbox::compile`] over an explicit compilation cache
+    /// directory (`None` disables the cache). The seam exists for
+    /// tests, which must not share cache state through the
+    /// process-wide environment or temp dir.
+    fn compile_with_cache(
+        wasm: &[u8],
+        limits: SandboxLimits,
+        cache_dir: Option<&Path>,
+    ) -> Result<Self> {
+        Self::compile_kept(wasm, limits, cache_dir, false)
+    }
+
+    /// The body of [`Sandbox::compile`]. `keep` puts the compiled
+    /// module in the in-process list [`compiled_module`] serves from;
+    /// [`Sandbox::compile_with_cache`] leaves it out so that its tests
+    /// see the on-disk cache alone.
+    fn compile_kept(
+        wasm: &[u8],
+        limits: SandboxLimits,
+        cache_dir: Option<&Path>,
+        keep: bool,
+    ) -> Result<Self> {
         ensure!(
             wasm.len() <= limits.module_bytes,
             "guest module exceeds {} bytes",
@@ -208,7 +419,9 @@ impl Sandbox {
             "sandbox message limit must be nonzero"
         );
 
-        let (engine, module) = compiled_module(wasm)?;
+        // A kept or cached module is the identical compiled code; the
+        // ABI validation below runs on it exactly as on a fresh compile.
+        let (engine, module) = compiled_module(wasm, cache_dir, keep)?;
         let imports: Vec<_> = module
             .imports()
             .map(|i| format!("{}::{}", i.module(), i.name()))
@@ -3525,6 +3738,105 @@ mod tests {
         .unwrap();
         let error = Sandbox::compile(&wasm, SandboxLimits::default()).unwrap_err();
         assert!(error.to_string().contains("imports are not allowed"));
+    }
+
+    /// The one cache entry in `dir`, asserting there is exactly one.
+    fn only_cache_entry(dir: &Path) -> PathBuf {
+        let entries: Vec<PathBuf> = std::fs::read_dir(dir)
+            .unwrap()
+            .flatten()
+            .map(|entry| entry.path())
+            .filter(|path| path.extension().is_some_and(|ext| ext == "cwasm"))
+            .collect();
+        assert_eq!(entries.len(), 1, "{entries:?}");
+        entries.into_iter().next().unwrap()
+    }
+
+    #[test]
+    fn compile_cache_hit_skips_recompile_and_behaves_identically() {
+        // Oracle (#15334): a repeated compile of the same bytes under
+        // the same config is served by the compilation cache —
+        // materially faster, the entry untouched — and the resulting
+        // Sandbox behaves exactly like the fresh compile.
+        let example = examples()
+            .into_iter()
+            .find(|example| example.name == "territory")
+            .unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let start = std::time::Instant::now();
+        let fresh =
+            Sandbox::compile_with_cache(example.wasm, SandboxLimits::default(), Some(dir.path()))
+                .unwrap();
+        let fresh_time = start.elapsed();
+        let entry = only_cache_entry(dir.path());
+        let entry_bytes = std::fs::read(&entry).unwrap();
+
+        let start = std::time::Instant::now();
+        let cached =
+            Sandbox::compile_with_cache(example.wasm, SandboxLimits::default(), Some(dir.path()))
+                .unwrap();
+        let cached_time = start.elapsed();
+        println!("compile cache: fresh {fresh_time:?}, cached {cached_time:?} (#15334)");
+        assert_eq!(std::fs::read(&entry).unwrap(), entry_bytes);
+        assert!(
+            cached_time * 2 < fresh_time,
+            "cached compile {cached_time:?} not materially cheaper than fresh {fresh_time:?}"
+        );
+
+        let mut fresh_world = fresh.instantiate(7).unwrap();
+        (example.drive)(&mut fresh_world);
+        let mut cached_world = cached.instantiate(7).unwrap();
+        (example.drive)(&mut cached_world);
+        assert_eq!(cached_world.view().unwrap(), fresh_world.view().unwrap());
+    }
+
+    #[test]
+    fn compile_cache_corrupt_entry_falls_back_to_fresh_compile() {
+        // Oracle (#15334): a cache entry that fails its integrity
+        // check is a miss, never an error — the compile succeeds
+        // fresh and repairs the entry.
+        let example = examples()
+            .into_iter()
+            .find(|example| example.name == "tic-tac-toe")
+            .unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        Sandbox::compile_with_cache(example.wasm, SandboxLimits::default(), Some(dir.path()))
+            .unwrap();
+        let entry = only_cache_entry(dir.path());
+        std::fs::write(&entry, b"not a precompiled module").unwrap();
+        Sandbox::compile_with_cache(example.wasm, SandboxLimits::default(), Some(dir.path()))
+            .unwrap()
+            .instantiate(3)
+            .unwrap();
+        assert_ne!(
+            std::fs::read(&entry).unwrap(),
+            b"not a precompiled module".as_slice()
+        );
+    }
+
+    #[test]
+    fn compile_cache_rejection_matches_fresh_compile() {
+        // Oracle (#15334): ABI validation runs on every call, cache
+        // hit or not — a module rejected fresh is rejected with the
+        // same error once its precompiled form sits in the cache.
+        let wasm = wat::parse_str(
+            r#"(module (import "wasi_snapshot_preview1" "proc_exit" (func (param i32))))"#,
+        )
+        .unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let fresh_error =
+            Sandbox::compile_with_cache(&wasm, SandboxLimits::default(), Some(dir.path()))
+                .unwrap_err()
+                .to_string();
+        let cached_error =
+            Sandbox::compile_with_cache(&wasm, SandboxLimits::default(), Some(dir.path()))
+                .unwrap_err()
+                .to_string();
+        assert!(
+            fresh_error.contains("imports are not allowed"),
+            "{fresh_error}"
+        );
+        assert_eq!(cached_error, fresh_error);
     }
 
     #[test]

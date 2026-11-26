@@ -62,6 +62,32 @@ fleet kv namespace list
 - Changing a namespace between shared and private is refused with
   `namespace_scope_change`, because its existing keys would be stranded.
 - Hosts pick up a change on their next `fleet kv sync`.
+- Central holds every inline write to the threshold it has now. A host that
+  still has an older, larger threshold gets `inline_above_ceiling`, and its
+  value waits until the next sync places it as a blob.
+
+## Collect unreferenced blobs
+
+A blob that no key references any more is collected in two steps. Run one
+pass per partition, with the same admin credential:
+
+```sh
+fleet kv blob gc eu/standard
+```
+
+- The pass marks every published blob in the partition that nothing
+  references, and clears a mark once a reference lands or the object is gone.
+- It fences the delete of each blob that stayed unreferenced for the grace,
+  24 hours by default (`--grace-ms` changes it).
+- It prints `partition=… marked=N cleared=N deleted=N`, then one
+  `deleted content=DIGEST epoch=N` line per fenced delete. A fenced delete
+  retires the central record; the bytes stay in the bucket.
+- `fleet kv blob gc eu/standard --purge` then has the blob door remove the
+  bytes of every deleted blob that no published row names. It prints one
+  `purged content=DIGEST` line per removal and ends with
+  `purged=N released=N`; a released blob is retried by the next purge.
+  While a purge holds a blob, uploading the same bytes is refused with
+  `kv_blob_purge_in_progress`; upload again once it is done.
 
 ## Check readiness
 

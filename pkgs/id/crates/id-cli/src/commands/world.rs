@@ -1282,10 +1282,9 @@ async fn current_world_state(
     .context("host returned a malformed execution profile")?;
     // The presentation policy is public pre-join metadata, so it is read
     // with no token at all.
-    let presentation: id_core::presentation_policy::PresentationPolicy = serde_json::from_value(
-        client.fresh_session().await?.presentation_policy().await?,
-    )
-    .context("host returned a malformed presentation policy")?;
+    let presentation: id_core::presentation_policy::PresentationPolicy =
+        serde_json::from_value(client.fresh_session().await?.presentation_policy().await?)
+            .context("host returned a malformed presentation policy")?;
     // The report carries the world's own ceiling as a list; the shared
     // fold turns a report equal to the default ceiling into None, which
     // means the default ceiling — the one meaning of None for a live

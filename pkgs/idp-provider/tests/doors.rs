@@ -829,6 +829,84 @@ async fn non_owner_allowlisted_identity_enrolls_into_its_own_read_only_account()
 }
 
 #[tokio::test]
+async fn merged_secondary_signs_in_as_the_primary_and_old_tokens_resolve() {
+    // #13975 slice 2 acceptance over mock upstreams: two
+    // auto-enrolled accounts for one person merge into the one they
+    // pick; a login through the former-secondary identity reaches the
+    // primary, and a token issued before the merge still resolves.
+    const FIRST_SUB: &str = "person-first-sub";
+    const SECOND_SUB: &str = "person-second-sub";
+    let mut allowlist = baseline_allowlist();
+    allowlist.push(format!("google:{FIRST_SUB}"));
+    allowlist.push(format!("google:{SECOND_SUB}"));
+    let h = harness_with_allowlist(allowlist).await;
+
+    *h.mock.subject.lock().unwrap() = FIRST_SUB.to_string();
+    let resp = drive_door(&h, "google").await;
+    let primary = exchange_and_verify(&h, &location(&resp)).await["sub"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    *h.mock.subject.lock().unwrap() = SECOND_SUB.to_string();
+    let resp = drive_door(&h, "google").await;
+    let old_doc = exchange_doc(&h, &location(&resp)).await;
+    let old_claims = verify_with(old_doc["id_token"].as_str().unwrap(), &h.provider_pubkey);
+    let secondary = old_claims["sub"].as_str().unwrap().to_string();
+    assert_ne!(primary, secondary);
+
+    let preview = h.identities.merge_preview(&primary, &secondary).unwrap();
+    assert!(preview.secondary_only_roles.is_empty());
+    h.identities
+        .merge(&primary, &secondary, &[], &[], "established-sessions")
+        .unwrap();
+
+    // A fresh login through the former-secondary identity lands on
+    // the primary.
+    let resp = drive_door(&h, "google").await;
+    assert_eq!(resp.status(), 302);
+    let claims = exchange_and_verify(&h, &location(&resp)).await;
+    assert_eq!(claims["sub"], primary.as_str());
+    assert_eq!(claims["roles"], serde_json::json!(["read-only"]));
+
+    // The pre-merge token keeps its `sub`; userinfo answers with it
+    // and names the account it now reads as.
+    let resp = h
+        .client
+        .get(format!("{}/userinfo", h.issuer))
+        .header(
+            header::AUTHORIZATION,
+            format!("Bearer {}", old_doc["access_token"].as_str().unwrap()),
+        )
+        .send()
+        .await
+        .expect("userinfo");
+    assert_eq!(resp.status(), 200);
+    let info: serde_json::Value = resp.json().await.expect("userinfo json");
+    assert_eq!(info["sub"], secondary.as_str());
+    assert_eq!(info["merged_into"], primary.as_str());
+
+    // Both histories carry the merge; the secondary's enrollment
+    // event still names the secondary.
+    let events = h.identities.events().unwrap();
+    assert!(
+        events
+            .iter()
+            .any(|e| e.event == "link" && e.subject == SECOND_SUB && e.account_id == secondary)
+    );
+    assert!(
+        events
+            .iter()
+            .any(|e| e.event == "merge" && e.subject == SECOND_SUB && e.account_id == primary)
+    );
+    let account_events = h.identities.account_events().unwrap();
+    assert!(
+        account_events
+            .iter()
+            .any(|e| e.event == "merge-into" && e.account_id == secondary)
+    );
+}
+
+#[tokio::test]
 async fn google_door_non_allowlisted_denied_and_audited() {
     let h = harness().await;
     *h.mock.subject.lock().unwrap() = "mallory-sub".to_string();

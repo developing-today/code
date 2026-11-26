@@ -508,6 +508,13 @@ const FACET_LABELS: Record<keyof Provenance, string> = {
   aa: "aa",
 };
 
+/** #14065: "2026-11-26 03:40 UTC" from an ISO time. */
+export function unavailableSinceText(iso: string): string {
+  const ms = Date.parse(iso);
+  if (!Number.isFinite(ms)) return iso;
+  return `${new Date(ms).toISOString().slice(0, 16).replace("T", " ")} UTC`;
+}
+
 /**
  * Per-source freshness chips (#1138): only the sources the page being
  * rendered actually uses, each with its state word, its age when the
@@ -522,7 +529,10 @@ export function freshnessChips(detail: ProvenanceDetail, keys: (keyof Provenance
       const facet = detail[key];
       const count = facet.count !== undefined ? ` · ${facet.count} ${esc(facet.countLabel ?? "")}`.trimEnd() : "";
       const age = facet.ageMs !== undefined && facet.state !== "fixtures" ? ` · ${ageMsText(facet.ageMs)}` : "";
-      return `<span class="fchip ${facet.state}" title="${esc(facet.text)}">${FACET_LABELS[key]} · ${facet.state}${count}${age}</span>`;
+      // #14065: an unavailable facet says since when, in UTC minutes.
+      const since = facet.unavailableSince ? ` · since ${esc(unavailableSinceText(facet.unavailableSince))}` : "";
+      const title = facet.unavailableSince ? `${facet.text} (unavailable since ${facet.unavailableSince})` : facet.text;
+      return `<span class="fchip ${facet.state}" title="${esc(title)}">${FACET_LABELS[key]} · ${facet.state}${count}${age}${since}</span>`;
     })
     .join("");
   return `<div class="chips fresh" aria-label="Source freshness">${chips}</div>`;
@@ -2166,7 +2176,26 @@ export function commentsFixtureSourced(provenance: Provenance): boolean {
   return provenance.comments.startsWith("fixtures");
 }
 
+/** #14065 slice 3: live mode withholds fixture comments when the
+ * projector is off or unreachable, so the stream is plainly empty. */
+export const UNAVAILABLE_COMMENTS_CAUSE =
+  "the comment stream is unavailable while the projector is off or unreachable (#14065)";
+
+export function commentsUnavailable(provenance: Provenance): boolean {
+  return provenance.comments.startsWith("unavailable");
+}
+
+/** Why an empty comment stream may not mean "no discussion", or null. */
+export function commentsMissingCause(provenance: Provenance): string | null {
+  if (commentsFixtureSourced(provenance)) return FIXTURE_COMMENTS_CAUSE;
+  if (commentsUnavailable(provenance)) return UNAVAILABLE_COMMENTS_CAUSE;
+  return null;
+}
+
 export function fixtureCommentsBannerHtml(provenance: Provenance): string {
+  if (commentsUnavailable(provenance)) {
+    return `<div class="banner">The comment stream is unavailable while the projector is off or unreachable (#14065) — GitHub comments are not shown, and an empty stream does not mean the work has no discussion.</div>`;
+  }
   return commentsFixtureSourced(provenance)
     ? `<div class="banner">The comment stream is fixture-sourced while the projector is off (#1199) — GitHub comments may be missing or stale, and an empty stream does not mean the work has no discussion.</div>`
     : "";
@@ -2208,12 +2237,16 @@ export function renderItem(
           /\+ fixtures for \d+ ref\(s\) outside the pool/.test(provenance.items) ||
           provenance.items.startsWith("fixtures")
             ? "resolution fell back to fixtures (projector off, #1199)"
-            : "some linked refs could not be resolved from the current sources"
+            : /\+ unavailable for \d+ ref\(s\) outside the pool/.test(provenance.items) ||
+                provenance.items.startsWith("unavailable")
+              ? "the projector is off or unreachable, so refs outside the project pool are unresolved (#14065)"
+              : "some linked refs could not be resolved from the current sources"
         }`
       : "Linked issues / PRs";
   const commentsBanner = fixtureCommentsBannerHtml(provenance);
-  const emptyCommentRow = commentsFixtureSourced(provenance)
-    ? `<tr><td colspan="4" class="muted">no comments loaded — ${FIXTURE_COMMENTS_CAUSE}</td></tr>`
+  const missingCause = commentsMissingCause(provenance);
+  const emptyCommentRow = missingCause
+    ? `<tr><td colspan="4" class="muted">no comments loaded — ${missingCause}</td></tr>`
     : '<tr><td colspan="4" class="muted">no comments</td></tr>';
   const dashSection = extras
     ? `<h2>Dashboard comments</h2>${
@@ -6794,9 +6827,10 @@ export function renderDiscuss(
   // #1500: the same fixture banner + honest empty wording as the item
   // page, keyed off the comments provenance this page already receives.
   const discussFixtureBanner = fixtureCommentsBannerHtml(provenance);
+  const discussMissingCause = commentsMissingCause(provenance);
   const discussEmptyWording =
-    commentsFixtureSourced(provenance) && comments.length === 0
-      ? `<p class="muted">no comments loaded — ${FIXTURE_COMMENTS_CAUSE}</p>`
+    discussMissingCause && comments.length === 0
+      ? `<p class="muted">no comments loaded — ${discussMissingCause}</p>`
       : "";
   const body = `<h1>${esc(title)}</h1><p class="muted">object: <code>${esc(objectRef)}</code></p>${back}${discussFixtureBanner}${discussEmptyWording}
 <p class="muted">Two kinds, visibly distinct: a <strong>note</strong> is read when this is next picked up and triggers nothing; a <strong>message to Muse</strong> is triaged by the orchestrator on its next pass and may create work.${

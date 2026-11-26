@@ -1039,6 +1039,125 @@ fn test_cli_parse_talk_post_and_list() {
 }
 
 #[test]
+fn test_cli_parse_talk_thread_steps() {
+    let cli = Cli::parse_from([
+        "id",
+        "talk",
+        "propose",
+        "group1",
+        "object1/key1",
+        "--base",
+        "rev1",
+        "--content",
+        "blob1/key1",
+        "--thread",
+        "thread1",
+    ]);
+    match cli.command {
+        Some(Command::Talk {
+            command:
+                TalkCommand::Propose {
+                    group,
+                    object,
+                    base,
+                    content,
+                    thread,
+                    supersedes,
+                },
+            ..
+        }) => {
+            assert_eq!(group, "group1");
+            assert_eq!(object, "object1/key1");
+            assert_eq!(base, "rev1");
+            assert_eq!(content, "blob1/key1");
+            assert_eq!(thread, "thread1");
+            assert_eq!(supersedes, None);
+        }
+        _ => panic!("Expected Talk::Propose command"),
+    }
+
+    let cli = Cli::parse_from(["id", "talk", "resolve", "group1", "thread1", "--no-action"]);
+    match cli.command {
+        Some(Command::Talk {
+            command:
+                TalkCommand::Resolve {
+                    edit,
+                    object,
+                    decision,
+                    no_action,
+                    ..
+                },
+            ..
+        }) => {
+            assert!(no_action);
+            assert_eq!((edit, object, decision), (None, None, None));
+        }
+        _ => panic!("Expected Talk::Resolve command"),
+    }
+    // An edit names its object, and the outcomes exclude each other.
+    assert!(Cli::try_parse_from(["id", "talk", "resolve", "g", "t", "--edit", "e"]).is_err());
+    assert!(
+        Cli::try_parse_from([
+            "id",
+            "talk",
+            "resolve",
+            "g",
+            "t",
+            "--decision",
+            "b",
+            "--no-action"
+        ])
+        .is_err()
+    );
+
+    let cli = Cli::parse_from([
+        "id",
+        "talk",
+        "accept",
+        "group1",
+        "proposal1",
+        "edit.md",
+        "--media-type",
+        "text/markdown",
+        "--parent",
+        "rev1",
+        "--parent",
+        "rev2",
+    ]);
+    match cli.command {
+        Some(Command::Talk {
+            command:
+                TalkCommand::Accept {
+                    proposal,
+                    file,
+                    media_type,
+                    parents,
+                    ..
+                },
+            ..
+        }) => {
+            assert_eq!(proposal, "proposal1");
+            assert_eq!(file, std::path::PathBuf::from("edit.md"));
+            assert_eq!(media_type, "text/markdown");
+            assert_eq!(parents, vec!["rev1".to_owned(), "rev2".to_owned()]);
+        }
+        _ => panic!("Expected Talk::Accept command"),
+    }
+
+    let cli = Cli::parse_from(["id", "talk", "threads", "group1", "--json"]);
+    match cli.command {
+        Some(Command::Talk {
+            json,
+            command: TalkCommand::Threads { group },
+        }) => {
+            assert!(json);
+            assert_eq!(group, "group1");
+        }
+        _ => panic!("Expected Talk::Threads command"),
+    }
+}
+
+#[test]
 fn test_cli_verify() {
     // Verify CLI structure is valid
     Cli::command().debug_assert();
@@ -3344,4 +3463,50 @@ fn test_cli_parse_keyset_recovery_commands() {
             }
         })
     ));
+}
+
+#[test]
+fn test_cli_parse_host_pin_and_wake_mode() {
+    let cli = Cli::parse_from(["id", "host", "pin", "/data", "w", "--off"]);
+    match cli.command {
+        Some(Command::Host(HostCommand::Pin { world, off, .. })) => {
+            assert_eq!(world, "w");
+            assert!(off);
+        }
+        _ => panic!("Expected host pin"),
+    }
+    let cli = Cli::parse_from(["id", "host", "wake-mode", "/data", "w", "operator"]);
+    match cli.command {
+        Some(Command::Host(HostCommand::WakeMode { mode, .. })) => assert_eq!(mode, "operator"),
+        _ => panic!("Expected host wake-mode"),
+    }
+    assert!(Cli::try_parse_from(["id", "host", "wake-mode", "/data", "w", "never"]).is_err());
+}
+
+#[test]
+fn test_cli_parse_host_key_export_import() {
+    let cli = Cli::parse_from(["id", "host", "key", "/data"]);
+    assert!(matches!(
+        cli.command,
+        Some(Command::Host(HostCommand::Key { .. }))
+    ));
+    let cli = Cli::parse_from(["id", "host", "export", "/data", "w", "w.export"]);
+    match cli.command {
+        Some(Command::Host(HostCommand::Export { world, file, .. })) => {
+            assert_eq!(world, "w");
+            assert_eq!(file, std::path::PathBuf::from("w.export"));
+        }
+        _ => panic!("Expected host export"),
+    }
+    let cli = Cli::parse_from([
+        "id", "host", "import", "/data", "w.export", "--source", "ab",
+    ]);
+    match cli.command {
+        Some(Command::Host(HostCommand::Import { source, actor, .. })) => {
+            assert_eq!(source, "ab");
+            assert_eq!(actor, "operator");
+        }
+        _ => panic!("Expected host import"),
+    }
+    assert!(Cli::try_parse_from(["id", "host", "import", "/data", "w.export"]).is_err());
 }

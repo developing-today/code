@@ -276,6 +276,7 @@ fn central_five_agents_polling_sees_at_most_one_second_of_staleness() {
             store: &observer_store,
             identity: &observer,
             central: Some(&primary),
+            blobs: None,
             allow_stale: false,
             now_ms,
         }
@@ -291,6 +292,7 @@ fn central_five_agents_polling_sees_at_most_one_second_of_staleness() {
             store: &observer_store,
             identity: &observer,
             central: Some(&primary),
+            blobs: None,
             allow_stale: false,
             now_ms,
         }

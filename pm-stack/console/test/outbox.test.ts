@@ -106,6 +106,9 @@ test("what may wait, what is sent only while it is fresh, and what needs a conne
     "device.remove",
     "edge.direct",
     "edge.retry",
+    // A setting is changed from what was on the screen just now, or not at all.
+    "settings.set",
+    "settings.clear",
     "something.new",
     "",
   ]) {
@@ -128,6 +131,10 @@ test("each action is said in a line the owner will know it by", () => {
   expect(said("ask.send", { text: "Do it", intent: "task" })).toBe("Prompt: “Do it”");
   expect(said("ask.send", { text: "Do it", intent: "something else" })).toBe("Prompt: “Do it”");
   expect(said("ask.reply", { issue: 201, text: "Yes" })).toBe("Reply on #201: “Yes”");
+  expect(said("settings.set", { name: "promptLabel", value: "owner/x" })).toBe("Change the prompt label");
+  expect(said("settings.set", { name: "needsRepos", value: ["a/b"] })).toBe("Change the repositories looked in");
+  expect(said("settings.clear", { name: "promptLabel" })).toBe("Put the prompt label back to main's");
+  expect(said("settings.clear", {})).toBe("Put the changed settings back to main's");
   expect(said("ask.close", { issue: 202 })).toBe("Mark prompt #202 done");
   expect(said("issue.comment", { issue: 301, text: "" })).toBe("Comment on #301");
   expect(said("issue.rank", { issue: 301, rank: "next" })).toBe("Rank #301 next");

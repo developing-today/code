@@ -5,8 +5,8 @@
 //! touches nothing. Typed store refusals print `error: <code>: <message>` and
 //! exit 1. `--global` and `sync` reach the central plane (code#13316): when
 //! it is not configured or cannot be reached they exit 69 before the local
-//! store is opened. `--force-blob` marks a local set for blob placement;
-//! with `--global` it is refused as `pending_needs_phase3` (exit 69).
+//! store is opened. `--force-blob` marks a set for blob placement; with
+//! `--global` the value goes through the upload door at once.
 
 use std::io::{Read, Write};
 
@@ -54,6 +54,9 @@ central namespaces (operators, need kv-admin):
   namespace define NS (--shared SCOPE | --private)
                                                define or update NS on central
   namespace list                               print every central namespace
+  blob gc        JUR/TIER [--grace-ms MS] [--purge]
+                                               collect unreferenced blobs in a
+                                               partition after their grace
 
 Values of any size are accepted: up to 1 MiB they are stored inline, and
 larger values stream into a content-addressed working file beside the
@@ -80,14 +83,16 @@ partition the namespace's definition places it in (namespace define
 --blob-partition JUR/TIER), then writes the reference; a namespace with no
 placement keeps such values waiting as no_blob_placement.
 set --force-blob places the value in a blob at any size when sync sends
-it; with --global it is refused with pending_needs_phase3 (exit 69).
+it; with --global it goes through the upload door at once, as does any
+--global value above the inline threshold (no_blob_placement, exit 69,
+when the namespace has no blob placement).
 
 Exit codes: 0 ok, 1 typed refusal (malformed_key, not_found, conflict,
 unknown_namespace, backup_target_exists, not_a_snapshot, ...),
 2 usage error, 69 unavailable.
 ";
 
-const GET_USAGE: &str = "usage: fleet kv get [--global | --allow-stale] [--verbose] --namespace NS KEY\n\nPrint the value's bytes exactly: this host's overlay first, then (after a sync)\nthe central head, cached for at most 1 s. A missing or masked key exits 1 with\nnot_found. Central unreachable: unavailable, or stale for an expired cached head\n(exit 69); --allow-stale reads that head anyway. --verbose prints the source to\nstderr. --global reads the authoritative central head instead.\n";
+const GET_USAGE: &str = "usage: fleet kv get [--global | --allow-stale] [--verbose] --namespace NS KEY\n\nPrint the value's bytes exactly: this host's overlay first, then (after a sync)\nthe central head, cached for at most 1 s. A missing or masked key exits 1 with\nnot_found. Central unreachable: unavailable, or stale for an expired cached head\n(exit 69); --allow-stale reads that head anyway. --verbose prints the source to\nstderr. --global reads the authoritative central head instead. A central value\nstored as a blob streams through the blob door beside FLEET_KV_URL and is checked\nagainst its reference: a length or digest mismatch exits 1 (blob_length_mismatch,\nblob_digest_mismatch) after the bytes read so far, which are not the value.\n";
 const SET_USAGE: &str = "usage: fleet kv set [--global [--expect VERSION]] --namespace NS KEY (VALUE | --stdin)\n\nStore bytes as a new local version and queue it for the sweep. Prints the version.\n--global writes central directly by compare-and-swap; --expect VERSION (0 for\nabsent) fails with conflict unless central is still at VERSION.\n";
 const LIST_USAGE: &str = "usage: fleet kv list [--global | --allow-stale] [--verbose] --namespace NS [--include-tombstones]\n\nOne line per key: KEY<TAB>VERSION<TAB>ORIGIN, where ORIGIN is local, central,\nboth or masked. --verbose adds each central row a local row hides\n(shadowed-by-local). --allow-stale lists local rows when central is unreachable.\n";
 const DELETE_USAGE: &str = "usage: fleet kv delete [--global [--expect VERSION]] --namespace NS KEY\n\nWrite a masking tombstone: the key reads absent here and sweeps as a mask.\n--global writes the tombstone to central directly by compare-and-swap.\n";
@@ -98,6 +103,7 @@ const CLEAR_USAGE: &str = "usage: fleet kv clear-override --namespace NS KEY\n\n
 const SNAPSHOT_USAGE: &str = "usage: fleet kv snapshot DEST\n\nWrite a consistent one-file snapshot of this host's whole store (WAL included)\nto DEST, with a manifest row inside it. Never overwrites DEST. Prints the manifest.\n";
 const RESTORE_USAGE: &str = "usage: fleet kv restore SNAPSHOT\n       fleet kv restore --archive\n\nRestore SNAPSHOT as this host's store after checking its manifest, schema\nversion and integrity. Refuses when a store (or its WAL) already exists.\nPrints the manifest.\n\n--archive instead adopts this session's last central archive checkpoint as new\nlocal writes (queued to sweep). Keys this store already has history for keep\ntheir local rows; keys the archive holds no bytes for are listed as\nprotection_unavailable_needs_phase3. No checkpoint: archive_not_found.\n";
 const NAMESPACE_USAGE: &str = "usage: fleet kv namespace define NS (--shared SCOPE | --private) [--global-flag] [--blob-threshold BYTES] [--blob-partition JUR/TIER]\n       fleet kv namespace list\n\nDefine a central namespace, or print them all. Needs the central store and an\nadmin credential (the hosted door's kv-admin role); the local store is not\nopened. --shared SCOPE gives every agent one shared scope; --private gives each\n(owner, context) its own. Defining NS again keeps its settings unless a flag\nchanges them, raises its policy epoch, and refuses to change shared to private\nor back (namespace_scope_change). --global-flag marks NS as global (a\ndesignation only). --blob-threshold is the inline ceiling, at most 1 MiB\n(default 256 KiB). --blob-partition JUR/TIER places NS's blobs in that\njurisdiction and sensitivity tier; with none, values over the threshold wait\n(no_blob_placement) and the upload door refuses them. Hosts see a change after their next `fleet kv sync`.\n\ndefine prints `namespace=NS scope=SCOPE epoch=N`; list prints one line per\nnamespace: NS<TAB>SCOPE<TAB>EPOCH<TAB>THRESHOLD<TAB>global|-<TAB>JUR/TIER|-,\nwhere SCOPE is shared:ID or private.\n";
+const BLOB_USAGE: &str = "usage: fleet kv blob gc JURISDICTION/TIER [--grace-ms MS] [--purge]\n\nRun one garbage-collection pass over a central blob partition. Needs the\ncentral store and an admin credential (the hosted door's kv-admin role); the\nlocal store is not opened. The pass marks published blobs that no key\nreferences as candidates, clears candidates that gained a reference or lost\ntheir object, then fences the delete of every candidate unreferenced for at\nleast the grace (--grace-ms, default 24 hours). A reference that lands during\nthe grace keeps the blob. A fenced delete retires the central record only.\n--purge then asks the blob door to remove the bytes of every deleted blob\nthat no published row names, in rounds until none are left.\n\nPrints `partition=JUR/TIER marked=N cleared=N deleted=N`, then\n`deleted content=DIGEST epoch=N` for each fenced delete. With --purge it\nthen prints `purged content=DIGEST` for each removal, `released\ncontent=DIGEST` for each removal the door will retry later, and\n`purged=N released=N`.\n";
 const REVERT_USAGE: &str = "usage: fleet kv revert --namespace NS KEY --to VERSION\n       fleet kv revert NS KEY --to VERSION\n\nAppend a new version equal to VERSION from this key's local history.\n";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -114,6 +120,7 @@ enum Verb {
     Snapshot,
     Restore,
     Namespace,
+    Blob,
 }
 
 impl Verb {
@@ -131,6 +138,7 @@ impl Verb {
             "snapshot" => Self::Snapshot,
             "restore" => Self::Restore,
             "namespace" => Self::Namespace,
+            "blob" => Self::Blob,
             _ => return None,
         })
     }
@@ -149,6 +157,7 @@ impl Verb {
             Self::Snapshot => SNAPSHOT_USAGE,
             Self::Restore => RESTORE_USAGE,
             Self::Namespace => NAMESPACE_USAGE,
+            Self::Blob => BLOB_USAGE,
         }
     }
 
@@ -251,6 +260,12 @@ enum Command {
     },
     /// `namespace list`: print every central namespace definition.
     NamespaceList,
+    /// `blob gc`: one central GC pass over a blob partition.
+    BlobGc {
+        partition: crate::blob::Partition,
+        grace_ms: i64,
+        purge: bool,
+    },
 }
 
 impl Command {
@@ -271,6 +286,7 @@ impl Command {
             Self::Restore { .. } => "restore",
             Self::NamespaceDefine { .. } => "namespace-define",
             Self::NamespaceList => "namespace-list",
+            Self::BlobGc { .. } => "blob-gc",
         })
     }
 
@@ -280,21 +296,23 @@ impl Command {
             Self::Get { global, .. } | Self::List { global, .. } => *global,
             Self::Set { global, .. } | Self::Delete { global, .. } => global.is_some(),
             Self::Sync { .. } | Self::RestoreArchive | Self::Rebase { .. } => true,
-            Self::NamespaceDefine { .. } | Self::NamespaceList => true,
+            Self::NamespaceDefine { .. } | Self::NamespaceList | Self::BlobGc { .. } => true,
             _ => false,
         }
     }
 
     /// Central admin commands: they never open the local store.
     fn is_admin(&self) -> bool {
-        matches!(self, Self::NamespaceDefine { .. } | Self::NamespaceList)
+        matches!(
+            self,
+            Self::NamespaceDefine { .. } | Self::NamespaceList | Self::BlobGc { .. }
+        )
     }
 }
 
 #[derive(Debug, PartialEq, Eq)]
 enum ParseError {
     Usage(String),
-    Central(&'static str),
 }
 
 fn usage(message: impl Into<String>) -> ParseError {
@@ -326,6 +344,14 @@ fn parse(args: &[String]) -> Result<Command, ParseError> {
             ));
         }
         return parse_namespace(&args[skip..]);
+    }
+    if verb == Verb::Blob {
+        if global {
+            return Err(usage(
+                "--global applies to get, set, list and delete, not `kv blob`",
+            ));
+        }
+        return parse_blob(&args[skip..]);
     }
 
     let mut namespace: Option<String> = None;
@@ -407,11 +433,6 @@ fn parse(args: &[String]) -> Result<Command, ParseError> {
         return Err(usage(format!(
             "--global applies to get, set, list and delete, not `kv {first}`"
         )));
-    }
-    if force_blob && global {
-        // A --global write is one CAS from this command; it has no upload
-        // step yet.
-        return Err(ParseError::Central("--force-blob with --global"));
     }
     if allow_stale && global {
         return Err(usage(
@@ -539,14 +560,99 @@ fn parse(args: &[String]) -> Result<Command, ParseError> {
                 to,
             }
         }
-        Verb::Sync | Verb::Backup | Verb::Snapshot | Verb::Restore | Verb::Namespace => {
-            unreachable!("sync, host and namespace verbs returned above")
+        Verb::Sync
+        | Verb::Backup
+        | Verb::Snapshot
+        | Verb::Restore
+        | Verb::Namespace
+        | Verb::Blob => {
+            unreachable!("sync, host, namespace and blob verbs returned above")
         }
     })
 }
 
 /// The largest `--blob-threshold`: the local inline ceiling.
 const MAX_BLOB_THRESHOLD: u64 = crate::working::INLINE_LIMIT as u64;
+
+/// `JURISDICTION/TIER`, each a blob label.
+fn parse_partition(what: &str, raw: &str) -> Result<crate::blob::Partition, ParseError> {
+    raw.split_once('/')
+        .filter(|(jurisdiction, tier)| {
+            crate::blob::valid_label(jurisdiction) && crate::blob::valid_label(tier)
+        })
+        .map(|(jurisdiction, tier)| crate::blob::Partition::new(jurisdiction, tier))
+        .ok_or_else(|| {
+            usage(format!(
+                "{what} needs JURISDICTION/TIER in lower-case letters, digits and `-`, got `{raw}`"
+            ))
+        })
+}
+
+/// `blob gc JUR/TIER [--grace-ms MS]`.
+fn parse_blob(args: &[String]) -> Result<Command, ParseError> {
+    let Some(action) = args.first() else {
+        return Err(usage("`kv blob` needs `gc`"));
+    };
+    if matches!(action.as_str(), "-h" | "--help" | "help") {
+        return Ok(Command::Help(BLOB_USAGE));
+    }
+    if action != "gc" {
+        return Err(usage(format!(
+            "unknown `kv blob` action `{action}`: use gc"
+        )));
+    }
+    let mut grace_ms = crate::plane::GRACE_MS;
+    let mut purge = false;
+    let mut positionals: Vec<String> = Vec::new();
+    let mut rest = args[1..].iter();
+    let mut only_positionals = false;
+    while let Some(arg) = rest.next() {
+        if only_positionals || !arg.starts_with("--") {
+            positionals.push(arg.clone());
+            continue;
+        }
+        let (flag, inline) = match arg.split_once('=') {
+            Some((flag, value)) => (flag, Some(value.to_string())),
+            None => (arg.as_str(), None),
+        };
+        match flag {
+            "--" if inline.is_none() => only_positionals = true,
+            "--help" | "-h" => return Ok(Command::Help(BLOB_USAGE)),
+            "--purge" if inline.is_none() => purge = true,
+            "--grace-ms" => {
+                let raw = match inline {
+                    Some(value) => value,
+                    None => rest
+                        .next()
+                        .cloned()
+                        .ok_or_else(|| usage("--grace-ms needs a value"))?,
+                };
+                grace_ms = raw
+                    .parse::<i64>()
+                    .ok()
+                    .filter(|grace| *grace >= 0)
+                    .ok_or_else(|| {
+                        usage(format!(
+                            "--grace-ms needs a non-negative count of milliseconds, got `{raw}`"
+                        ))
+                    })?;
+            }
+            _ => return Err(usage(format!("unknown argument `{arg}` for `kv blob gc`"))),
+        }
+    }
+    if positionals.len() != 1 {
+        return Err(usage(format!(
+            "`kv blob gc` takes 1 argument (JURISDICTION/TIER), got {}",
+            positionals.len()
+        )));
+    }
+    let partition = parse_partition("`kv blob gc`", &positionals[0])?;
+    Ok(Command::BlobGc {
+        partition,
+        grace_ms,
+        purge,
+    })
+}
 
 /// `namespace define NS (--shared SCOPE | --private) [...]` and
 /// `namespace list`.
@@ -620,18 +726,7 @@ fn parse_namespace(args: &[String]) -> Result<Command, ParseError> {
             }
             "--blob-partition" if define => {
                 let raw = take_value("--blob-partition")?;
-                let partition = raw
-                    .split_once('/')
-                    .filter(|(jurisdiction, tier)| {
-                        crate::blob::valid_label(jurisdiction) && crate::blob::valid_label(tier)
-                    })
-                    .map(|(jurisdiction, tier)| crate::blob::Partition::new(jurisdiction, tier))
-                    .ok_or_else(|| {
-                        usage(format!(
-                            "--blob-partition needs JURISDICTION/TIER in lower-case letters, digits and `-`, got `{raw}`"
-                        ))
-                    })?;
-                blob_partition = Some(partition);
+                blob_partition = Some(parse_partition("--blob-partition", &raw)?);
             }
             _ => {
                 return Err(usage(format!(
@@ -704,10 +799,6 @@ fn log_operation(command: &Command, err: &mut dyn Write, ctx: &fleet_config::ctx
 
 fn report_parse_error(error: ParseError, err: &mut dyn Write) -> i32 {
     match error {
-        ParseError::Central(flag) => {
-            let _ = writeln!(err, "error: pending_needs_phase3: {flag} is not wired yet");
-            EXIT_UNAVAILABLE
-        }
         ParseError::Usage(message) => {
             let _ = writeln!(err, "error: usage: {message}\n\n{USAGE}");
             EXIT_USAGE
@@ -746,6 +837,19 @@ fn blob_plane_from_env() -> BlobPlaneOpened {
     #[cfg(not(feature = "http"))]
     {
         Ok(None)
+    }
+}
+
+/// The blob door's read side, for central heads that hold a blob
+/// reference (design §9). It reaches the door only when a read meets one.
+fn blob_reader() -> Option<&'static dyn crate::blob_read::BlobReader> {
+    #[cfg(feature = "http")]
+    {
+        Some(&crate::http::EnvBlobReader)
+    }
+    #[cfg(not(feature = "http"))]
+    {
+        None
     }
 }
 
@@ -821,8 +925,8 @@ fn refuse_global(err: &mut dyn Write, error: &GlobalError) -> i32 {
 pub type Opened = Result<(LocalStore, crate::launch::LaunchIdentity), (&'static str, String)>;
 
 /// Validate a whole command line without touching anything. Returns the
-/// exit code when the invocation is already answered (help, a usage error
-/// or the `--global` refusal) and `None` when it needs the store.
+/// exit code when the invocation is already answered (help or a usage
+/// error) and `None` when it needs the store.
 pub fn preflight(args: &[String], out: &mut dyn Write, err: &mut dyn Write) -> Option<i32> {
     match parse(args) {
         Ok(Command::Help(text)) => Some(match out.write_all(text.as_bytes()) {
@@ -1050,7 +1154,7 @@ fn execute_central(
 ) -> i32 {
     let written = match command {
         Command::Get { namespace, key, .. } => {
-            match sync::global_get(primary, identity, &namespace, &key, out) {
+            match sync::global_get(primary, identity, &namespace, &key, blob_reader(), out) {
                 Ok(_) => Ok(()),
                 Err(error) => return refuse_global(err, &error),
             }
@@ -1071,28 +1175,32 @@ fn execute_central(
             key,
             value,
             global,
-            ..
+            force_blob,
         } => {
             let value = match value {
-                ValueSource::Inline(value) => value.into_bytes(),
-                // Bounded by the largest inline value central can hold; the
-                // namespace's own threshold is checked again before the CAS.
-                ValueSource::Stdin => {
-                    match sync::read_bounded(stdin, crate::working::INLINE_LIMIT as u64) {
-                        Ok(value) => value,
-                        Err(error) => return refuse_global(err, &error),
-                    }
-                }
+                ValueSource::Inline(value) => sync::GlobalValue::Bytes(value.into_bytes()),
+                // Up to the resident budget in memory; past it the value
+                // spools beside the store and goes to a blob.
+                ValueSource::Stdin => match global_stdin(store, stdin) {
+                    Ok(value) => value,
+                    Err(error) => return refuse_global(err, &error),
+                },
+            };
+            let configured = match blob_plane_from_env() {
+                Ok(configured) => configured,
+                Err(error) => return refuse_central(err, &error),
             };
             let expect = global.and_then(Expect::version);
-            match sync::global_write(
+            match sync::global_set(
                 store,
                 primary,
                 identity,
                 &namespace,
                 &key,
-                Op::Set(value),
+                value,
+                force_blob,
                 expect,
+                configured.as_deref(),
                 &mut sleep,
             ) {
                 Ok(version) => writeln!(out, "{version}"),
@@ -1189,7 +1297,9 @@ fn execute_central(
             Ok(restored) => write_restored(out, &restored),
             Err(error) => return refuse_archive(err, &error),
         },
-        command @ (Command::NamespaceDefine { .. } | Command::NamespaceList) => {
+        command @ (Command::NamespaceDefine { .. }
+        | Command::NamespaceList
+        | Command::BlobGc { .. }) => {
             return execute_admin(command, primary, out, err);
         }
         _ => {
@@ -1201,6 +1311,132 @@ fn execute_central(
         }
     };
     finish(written, err)
+}
+
+/// The most purge rounds one `blob gc --purge` runs.
+const MAX_PURGE_ROUNDS: usize = 1000;
+
+/// `blob gc`: one GC pass, then, with `--purge`, purge rounds through the
+/// door until it reports no more deleted bytes or a round removes nothing.
+/// `purger` is `None` without `--purge`, `Some(None)` in a build with no
+/// door.
+fn blob_gc(
+    primary: &dyn Pipeline,
+    partition: &crate::blob::Partition,
+    grace_ms: i64,
+    purger: Option<Option<&dyn crate::blob_central::BlobPurger>>,
+    out: &mut dyn Write,
+    err: &mut dyn Write,
+) -> i32 {
+    let sweep = match crate::blob_central::gc_pass(
+        primary,
+        partition,
+        crate::central::now_ms(),
+        grace_ms,
+    ) {
+        Ok(sweep) => sweep,
+        Err(error) => return refuse_central(err, &error),
+    };
+    if let Err(error) = write_sweep(out, partition, &sweep) {
+        return finish(Err(error), err);
+    }
+    let Some(purger) = purger else {
+        return EXIT_OK;
+    };
+    let Some(purger) = purger else {
+        return refuse_central(
+            err,
+            &CentralError::NotConfigured("this build has no blob door to purge through".into()),
+        );
+    };
+    let (mut purged, mut released) = (0usize, 0usize);
+    for _ in 0..MAX_PURGE_ROUNDS {
+        let round = match purger.purge(partition) {
+            Ok(round) => round,
+            Err(error) => return refuse_central(err, &error),
+        };
+        let written = round
+            .purged
+            .iter()
+            .try_for_each(|id| writeln!(out, "purged content={id}"))
+            .and_then(|()| {
+                round
+                    .released
+                    .iter()
+                    .try_for_each(|id| writeln!(out, "released content={id}"))
+            });
+        if let Err(error) = written {
+            return finish(Err(error), err);
+        }
+        purged += round.purged.len();
+        released += round.released.len();
+        if !round.more || round.purged.is_empty() {
+            break;
+        }
+    }
+    finish(writeln!(out, "purged={purged} released={released}"), err)
+}
+
+/// The blob door's purge side: it removes deleted bytes (design §9, §10).
+fn blob_purger() -> Option<&'static dyn crate::blob_central::BlobPurger> {
+    #[cfg(feature = "http")]
+    {
+        Some(&crate::http::EnvBlobPurger)
+    }
+    #[cfg(not(feature = "http"))]
+    {
+        None
+    }
+}
+
+/// One line for the pass, then one per fenced deletion.
+fn write_sweep(
+    out: &mut dyn Write,
+    partition: &crate::blob::Partition,
+    sweep: &crate::plane::Sweep,
+) -> std::io::Result<()> {
+    writeln!(
+        out,
+        "partition={}/{} marked={} cleared={} deleted={}",
+        partition.jurisdiction,
+        partition.tier,
+        sweep.marked,
+        sweep.cleared,
+        sweep.deleted.len()
+    )?;
+    sweep.deleted.iter().try_for_each(|deletion| {
+        writeln!(
+            out,
+            "deleted content={} epoch={}",
+            deletion.digest, deletion.epoch
+        )
+    })
+}
+
+/// A `--global set --stdin` value: in memory up to the resident budget,
+/// spooled beside the store past it (an in-memory store keeps it whole).
+fn global_stdin(
+    store: &LocalStore,
+    stdin: &mut dyn Read,
+) -> Result<sync::GlobalValue, GlobalError> {
+    let io = |error| GlobalError::Local(KvError::Io(error));
+    let mut head = Vec::new();
+    (&mut *stdin)
+        .take(crate::working::INLINE_LIMIT as u64 + 1)
+        .read_to_end(&mut head)
+        .map_err(io)?;
+    if head.len() <= crate::working::INLINE_LIMIT {
+        return Ok(sync::GlobalValue::Bytes(head));
+    }
+    match &store.working_dir {
+        Some(dir) => sync::Spool::create(dir, &head, stdin)
+            .map(sync::GlobalValue::Spooled)
+            .map_err(io),
+        None => {
+            stdin.read_to_end(&mut head).map_err(io)?;
+            Ok(sync::GlobalValue::Bytes(head))
+        }
+    }
 }
 
 /// The central admin verbs, against an opened central plane.
@@ -1293,6 +1529,20 @@ fn execute_admin(
             }),
             Err(error) => return refuse_central(err, &error),
         },
+        Command::BlobGc {
+            partition,
+            grace_ms,
+            purge,
+        } => {
+            return blob_gc(
+                primary,
+                &partition,
+                grace_ms,
+                purge.then(blob_purger),
+                out,
+                err,
+            );
+        }
         _ => {
             let _ = writeln!(err, "error: usage: this verb is not a central admin verb");
             return EXIT_USAGE;
@@ -1440,6 +1690,7 @@ fn execute(
                 store,
                 identity,
                 central: primary,
+                blobs: blob_reader(),
                 allow_stale,
                 now_ms: read::now_ms(),
             };
@@ -1500,6 +1751,7 @@ fn execute(
                 store,
                 identity,
                 central: primary,
+                blobs: blob_reader(),
                 allow_stale,
                 now_ms: read::now_ms(),
             };
@@ -1545,7 +1797,8 @@ fn execute(
         | Command::RestoreArchive
         | Command::Rebase { .. }
         | Command::NamespaceDefine { .. }
-        | Command::NamespaceList => {
+        | Command::NamespaceList
+        | Command::BlobGc { .. } => {
             let _ = writeln!(err, "error: usage: this verb needs the central store");
             return EXIT_USAGE;
         }
@@ -1806,7 +2059,7 @@ mod tests {
         );
         assert_eq!(blob.code, EXIT_UNAVAILABLE);
         assert!(
-            blob.err.starts_with("error: pending_needs_phase3"),
+            blob.err.starts_with("error: central_not_configured"),
             "{}",
             blob.err
         );
@@ -2188,6 +2441,182 @@ mod tests {
         );
     }
 
+    struct Rounds(std::cell::RefCell<Vec<Result<crate::blob_central::Purged, CentralError>>>);
+
+    impl crate::blob_central::BlobPurger for Rounds {
+        fn purge(
+            &self,
+            partition: &crate::blob::Partition,
+        ) -> Result<crate::blob_central::Purged, CentralError> {
+            assert_eq!(partition, &crate::blob::Partition::new("eu", "standard"));
+            self.0.borrow_mut().remove(0)
+        }
+    }
+
+    fn purged(purged: &[&str], released: &[&str], more: bool) -> crate::blob_central::Purged {
+        crate::blob_central::Purged {
+            purged: purged.iter().map(|id| id.to_string()).collect(),
+            released: released.iter().map(|id| id.to_string()).collect(),
+            more,
+        }
+    }
+
+    #[test]
+    fn central_cli_blob_gc_purges_in_rounds_until_the_door_is_done() {
+        let central = Central::new();
+        crate::central::migrate(&*central.primary).expect("migrate");
+        let partition = crate::blob::Partition::new("eu", "standard");
+        let (a, b, c) = ("a".repeat(64), "b".repeat(64), "c".repeat(64));
+        let rounds = Rounds(std::cell::RefCell::new(vec![
+            Ok(purged(&[&a, &b], &[], true)),
+            Ok(purged(&[&c], &[&a], false)),
+        ]));
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+        let code = blob_gc(
+            &*central.primary,
+            &partition,
+            0,
+            Some(Some(&rounds)),
+            &mut out,
+            &mut err,
+        );
+        assert_eq!(code, EXIT_OK, "{}", String::from_utf8_lossy(&err));
+        assert_eq!(
+            String::from_utf8(out).unwrap(),
+            format!(
+                "partition=eu/standard marked=0 cleared=0 deleted=0\n\
+                 purged content={a}\npurged content={b}\n\
+                 purged content={c}\nreleased content={a}\npurged=3 released=1\n"
+            )
+        );
+        assert!(rounds.0.borrow().is_empty());
+
+        // A full round that removed nothing stops the loop.
+        let stuck = Rounds(std::cell::RefCell::new(vec![Ok(purged(&[], &[&a], true))]));
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+        let code = blob_gc(
+            &*central.primary,
+            &partition,
+            0,
+            Some(Some(&stuck)),
+            &mut out,
+            &mut err,
+        );
+        assert_eq!(code, EXIT_OK);
+        assert!(
+            String::from_utf8(out)
+                .unwrap()
+                .ends_with(&format!("\nreleased content={a}\npurged=0 released=1\n"))
+        );
+        assert!(stuck.0.borrow().is_empty());
+
+        // A refused round keeps what the pass printed and exits typed.
+        let refused = Rounds(std::cell::RefCell::new(vec![Err(CentralError::Refused {
+            code: "forbidden",
+            message: "kv-admin required".into(),
+        })]));
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+        let code = blob_gc(
+            &*central.primary,
+            &partition,
+            0,
+            Some(Some(&refused)),
+            &mut out,
+            &mut err,
+        );
+        assert_eq!(code, EXIT_REFUSED);
+        assert_eq!(
+            String::from_utf8(out).unwrap(),
+            "partition=eu/standard marked=0 cleared=0 deleted=0\n"
+        );
+        assert!(
+            String::from_utf8(err)
+                .unwrap()
+                .starts_with("error: forbidden: ")
+        );
+
+        // A build with no door refuses the purge after the pass.
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+        let code = blob_gc(
+            &*central.primary,
+            &partition,
+            0,
+            Some(None),
+            &mut out,
+            &mut err,
+        );
+        assert_eq!(code, EXIT_UNAVAILABLE);
+        assert!(
+            String::from_utf8(err)
+                .unwrap()
+                .contains("central_not_configured")
+        );
+    }
+
+    #[test]
+    fn central_cli_blob_gc_marks_then_fences_after_grace() {
+        let central = Central::new();
+        crate::central::migrate(&*central.primary).expect("migrate");
+        let store = LocalStore::in_memory().expect("store");
+        let bytes = b"an unreferenced blob";
+        let digest = crate::blob::digest(&mut &bytes[..]).expect("digest");
+        let reference = crate::blob::KvBlobRefV1 {
+            digest: digest.digest.clone(),
+            bytes_len: digest.bytes_len,
+            partition: crate::blob::Partition::new("eu", "standard"),
+            locator: "r2:eu/standard/orphan".into(),
+        };
+        crate::blob_central::mark_published(&*central.primary, &reference).expect("publish");
+
+        // The default grace marks the orphan but deletes nothing yet.
+        let marked = central.invoke(&store, "admin", &["blob", "gc", "eu/standard"], b"");
+        assert_eq!(marked.code, EXIT_OK, "{}", marked.err);
+        assert_eq!(
+            text(&marked),
+            "partition=eu/standard marked=1 cleared=0 deleted=0\n"
+        );
+
+        // With no grace the candidate is due, and the delete is fenced.
+        let swept = central.invoke(
+            &store,
+            "admin",
+            &["blob", "gc", "eu/standard", "--grace-ms", "0"],
+            b"",
+        );
+        assert_eq!(swept.code, EXIT_OK, "{}", swept.err);
+        assert_eq!(
+            text(&swept),
+            format!(
+                "partition=eu/standard marked=0 cleared=0 deleted=1\ndeleted content={} epoch=1\n",
+                digest.digest
+            )
+        );
+        let again = central.invoke(&store, "admin", &["blob", "gc", "eu/standard"], b"");
+        assert_eq!(
+            text(&again),
+            "partition=eu/standard marked=0 cleared=0 deleted=0\n"
+        );
+
+        for (words, message) in [
+            (&["blob"][..], "`kv blob` needs `gc`"),
+            (&["blob", "gc"][..], "takes 1 argument"),
+            (&["blob", "gc", "EU"][..], "needs JURISDICTION/TIER"),
+            (
+                &["blob", "gc", "eu/standard", "--grace-ms", "-1"][..],
+                "non-negative",
+            ),
+            (&["blob", "purge", "eu/standard"][..], "use gc"),
+            (
+                &["--global", "blob", "gc", "eu/standard"][..],
+                "not `kv blob`",
+            ),
+        ] {
+            let refused = central.invoke(&store, "admin", words, b"");
+            assert_eq!(refused.code, EXIT_USAGE, "{words:?}");
+            assert!(refused.err.contains(message), "{words:?}: {}", refused.err);
+        }
+    }
+
     #[test]
     fn central_cli_namespace_verbs_never_open_the_local_store() {
         let central = Central::new();
@@ -2548,7 +2977,7 @@ mod tests {
                 &mut out,
                 &mut err
             ),
-            Some(EXIT_UNAVAILABLE)
+            None
         );
         assert_eq!(
             preflight(

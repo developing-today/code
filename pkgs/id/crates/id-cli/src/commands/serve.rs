@@ -1005,6 +1005,10 @@ impl id_worlds::world_hub::WorldOpener for ServeWorlds {
         }
     }
 
+    fn pinned(&self, name: &str) -> bool {
+        self.host.as_ref().is_some_and(|host| host.pinned(name))
+    }
+
     fn exists(&self, name: &str) -> bool {
         !self.ephemeral && world_dir(name).join("journal.jsonl").is_file()
     }

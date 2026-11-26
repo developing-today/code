@@ -48,6 +48,9 @@ pub const MIGRATIONS: &[(i64, &str)] = &[
     (2, include_str!("../migrations/0002_archive.sql")),
     (3, include_str!("../migrations/0003_blobs.sql")),
     (4, include_str!("../migrations/0004_placement.sql")),
+    (5, include_str!("../migrations/0005_envelope.sql")),
+    (6, include_str!("../migrations/0006_gc.sql")),
+    (7, include_str!("../migrations/0007_purge.sql")),
 ];
 
 /// A bound SQL value, in the shapes both the libSQL pipeline and SQLite use.
@@ -510,7 +513,14 @@ macro_rules! receipt_insert {
     };
 }
 
-pub(crate) const RECEIPT_INSERT: &str = receipt_insert!();
+/// The inline CAS receipt. Central refuses inline bytes above the
+/// namespace's threshold (#13318 acceptance 1): such a request records no
+/// receipt, so nothing else in the transaction moves, and [`cas`] answers
+/// `inline_above_ceiling`. A tombstone carries no bytes and always passes.
+pub(crate) const RECEIPT_INSERT: &str = concat!(
+    receipt_insert!(),
+    "\n    WHERE NOT EXISTS (SELECT 1 FROM kv_namespaces AS ns\n        WHERE ns.registry_id = ?2 AND ns.namespace = ?3\n          AND IFNULL(length(?7), 0) > ns.blob_threshold)"
+);
 
 /// The publish-CAS receipt (#13318, design §8): decided only while the
 /// blob it names is published in its partition (`?14` jurisdiction, `?15`
@@ -543,6 +553,34 @@ pub(crate) const VERSION_INSERT: &str = concat!(
             scope_id, registry_id, namespace, key, version, parent_version,
             state, value, writer, host_incarnation, outbox_id, written_at_ms)
         SELECT ?1, ?2, ?3, ?4, receipt.version, ?5, ?6, ?7, ?8, ?9, ?10, ?13
+        FROM idem_receipts AS receipt
+        WHERE ",
+    this_attempt!(),
+    " AND receipt.outcome = 'committed'"
+);
+
+/// The publish-CAS conflict body: as [`CONFLICT_INSERT`], proposing a
+/// blob reference (design §11).
+pub(crate) const BLOB_CONFLICT_INSERT: &str = concat!(
+    "INSERT INTO kv_conflicts (
+            scope_id, registry_id, namespace, key, expected_version, actual_version,
+            proposed_state, proposed_value, writer, host_incarnation, outbox_id, written_at_ms,
+            proposed_envelope)
+        SELECT ?1, ?2, ?3, ?4, ?5, receipt.version, ?6, ?7, ?8, ?9, ?10, ?13, 'kv:ref-v1'
+        FROM idem_receipts AS receipt
+        WHERE ",
+    this_attempt!(),
+    " AND receipt.outcome = 'conflict'"
+);
+
+/// The publish-CAS version: as [`VERSION_INSERT`], whose value is a blob
+/// reference (design §11). The head the same transaction writes takes its
+/// envelope from this row.
+pub(crate) const BLOB_VERSION_INSERT: &str = concat!(
+    "INSERT INTO kv_versions (
+            scope_id, registry_id, namespace, key, version, parent_version,
+            state, value, writer, host_incarnation, outbox_id, written_at_ms, envelope)
+        SELECT ?1, ?2, ?3, ?4, receipt.version, ?5, ?6, ?7, ?8, ?9, ?10, ?13, 'kv:ref-v1'
         FROM idem_receipts AS receipt
         WHERE ",
     this_attempt!(),
@@ -627,9 +665,20 @@ pub(crate) fn cas_args(intent: &Intent, attempt: &str) -> Vec<Value> {
 pub fn cas(primary: &dyn Pipeline, intent: &Intent) -> Result<Receipt> {
     validate(&intent.address)?;
     let attempt = attempt_nonce();
-    decide(primary, intent, &cas_statements(intent, &attempt), &attempt)?
-        .ok_or_else(|| CentralError::Store("the CAS transaction returned no receipt".into()))
+    decide(primary, intent, &cas_statements(intent, &attempt), &attempt)?.ok_or_else(|| {
+        CentralError::Refused {
+            code: INLINE_ABOVE_CEILING,
+            message: format!(
+                "{} bytes are above namespace {}'s inline threshold; central keeps them only as a blob",
+                intent.op.value().len(),
+                intent.address.namespace
+            ),
+        }
+    })
 }
+
+/// The typed refusal for inline bytes above the namespace's threshold.
+pub const INLINE_ABOVE_CEILING: &str = "inline_above_ceiling";
 
 /// Run one CAS-shaped transaction whose last statement reads the receipt,
 /// and decode it. `None` when no receipt was recorded for the key.
@@ -739,9 +788,21 @@ impl Jitter {
 pub struct Head {
     pub version: u64,
     pub live: bool,
+    /// The stored bytes: the value itself, or for a `kv:ref-v1` head the
+    /// encoded blob reference.
     pub value: Vec<u8>,
     pub writer: String,
     pub written_at_ms: i64,
+    /// The row envelope version (design §11): `kv:raw-v1` or `kv:ref-v1`.
+    pub envelope: String,
+}
+
+impl Head {
+    /// The head's value under its envelope. An envelope this client does
+    /// not know is refused, never read as bytes.
+    pub fn envelope(&self) -> std::result::Result<crate::blob::Envelope, crate::blob::BlobError> {
+        crate::blob::Envelope::from_row(&self.envelope, &self.value)
+    }
 }
 
 /// One row of a key's history.
@@ -789,6 +850,36 @@ pub(crate) const CONFLICTS_READ: &str = concat!(
              FROM kv_conflicts WHERE ",
     address_filter!(),
     " ORDER BY id"
+);
+
+/// The envelope of a head: its version row's, inline bytes when that row
+/// is absent (a head written before history was kept).
+macro_rules! head_envelope {
+    () => {
+        "COALESCE((SELECT version_row.envelope FROM kv_versions AS version_row
+            WHERE version_row.scope_id = head.scope_id AND version_row.registry_id = head.registry_id
+              AND version_row.namespace = head.namespace AND version_row.key = head.key
+              AND version_row.version = head.version), 'kv:raw-v1')"
+    };
+}
+
+/// [`HEAD_READ`] with the head's envelope (design §11).
+pub(crate) const HEAD_ENVELOPED_READ: &str = concat!(
+    "SELECT head.version, head.state, head.value, head.writer, head.written_at_ms, ",
+    head_envelope!(),
+    "
+         FROM kv_heads AS head
+         WHERE head.scope_id = ?1 AND head.registry_id = ?2 AND head.namespace = ?3 AND head.key = ?4"
+);
+
+/// [`HEADS_READ`] with each head's envelope (design §11).
+pub(crate) const HEADS_ENVELOPED_READ: &str = concat!(
+    "SELECT head.key, head.version, head.state, head.value, head.writer, head.written_at_ms, ",
+    head_envelope!(),
+    "
+         FROM kv_heads AS head
+         WHERE head.scope_id = ?1 AND head.registry_id = ?2 AND head.namespace = ?3
+         ORDER BY head.key"
 );
 
 pub(crate) const HEADS_READ: &str =
@@ -885,7 +976,7 @@ fn op_of(state: &Value, value: Value) -> Op {
 
 /// The authoritative head of `address`, tombstones included.
 pub fn head(primary: &dyn Pipeline, address: &Address) -> Result<Option<Head>> {
-    let rows = read(primary, HEAD_READ, &address_args(address))?;
+    let rows = read(primary, HEAD_ENVELOPED_READ, &address_args(address))?;
     Ok(rows.into_iter().next().map(|mut row| {
         let value = std::mem::replace(&mut row[2], Value::Null);
         Head {
@@ -894,6 +985,7 @@ pub fn head(primary: &dyn Pipeline, address: &Address) -> Result<Option<Head>> {
             value: value.into_bytes().unwrap_or_default(),
             writer: string(&row[3]),
             written_at_ms: row[4].as_i64().unwrap_or(0),
+            envelope: string(&row[5]),
         }
     }))
 }
@@ -907,7 +999,7 @@ pub fn heads(
 ) -> Result<Vec<(String, Head)>> {
     let rows = read(
         primary,
-        HEADS_READ,
+        HEADS_ENVELOPED_READ,
         &[text(scope_id), text(registry_id), text(namespace)],
     )?;
     Ok(rows
@@ -922,6 +1014,7 @@ pub fn heads(
                     value: value.into_bytes().unwrap_or_default(),
                     writer: string(&row[4]),
                     written_at_ms: row[5].as_i64().unwrap_or(0),
+                    envelope: string(&row[6]),
                 },
             )
         })
@@ -1288,6 +1381,28 @@ mod tests {
         for statement in cas_statements(&intent(&status(), 0, set("x"), "a", "1"), "nonce") {
             assert_eq!(statement.args.len(), highest_parameter(&statement.sql));
         }
+    }
+
+    #[test]
+    fn central_refuses_inline_bytes_above_the_namespace_threshold() {
+        let primary = SqlitePrimary::in_memory().unwrap();
+        let mut tight = Namespace::shared("status", "shared:team");
+        tight.blob_threshold = 4;
+        define_namespace(&primary, &tight).unwrap();
+        let refused = cas(&primary, &intent(&status(), 0, set("12345"), "a", "1")).unwrap_err();
+        assert_eq!(refused.code(), INLINE_ABOVE_CEILING);
+        assert!(!refused.is_retryable());
+        assert_eq!(head(&primary, &status()).unwrap(), None);
+        assert!(history(&primary, &status()).unwrap().is_empty());
+        // At the threshold it commits, and a tombstone always passes.
+        let at = cas(&primary, &intent(&status(), 0, set("1234"), "a", "2")).unwrap();
+        assert_eq!(committed(&at), 1);
+        let gone = cas(&primary, &intent(&status(), 1, Op::Tombstone, "a", "3")).unwrap();
+        assert_eq!(committed(&gone), 2);
+        // An undefined namespace has no threshold to hold to here.
+        let elsewhere = Address::new("shared:team", "other", "k");
+        let free = cas(&primary, &intent(&elsewhere, 0, set("123456789"), "a", "4")).unwrap();
+        assert_eq!(committed(&free), 1);
     }
 
     #[test]

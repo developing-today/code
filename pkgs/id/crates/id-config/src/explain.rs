@@ -91,6 +91,7 @@ pub fn explain(input: &str) -> Result<Explanation, ConfigError> {
     storage(&written, &resolved, &mut entries);
     tiers(&written, &resolved, &mut entries);
     links(&written, &resolved, &mut entries)?;
+    namespaces(&written, &resolved, &mut entries);
     extensions(&resolved, &mut entries)?;
     Ok(Explanation { entries, digest })
 }
@@ -397,6 +398,26 @@ fn peers(
         for (key, value) in fields {
             push(entries, &format!("{prefix}.{key}"), value, source(key));
         }
+        // Overrides that set nothing are dropped at resolution, so each
+        // one listed here was written.
+        for (operation, over) in &peer.overrides {
+            if let Some(adapter) = &over.adapter {
+                push(
+                    entries,
+                    &format!("{prefix}.overrides.{}.adapter", operation.as_str()),
+                    adapter.clone(),
+                    SOURCE_DOCUMENT,
+                );
+            }
+            if let Some(timeout) = over.timeout_ms {
+                push(
+                    entries,
+                    &format!("{prefix}.overrides.{}.timeout_ms", operation.as_str()),
+                    timeout.to_string(),
+                    SOURCE_DOCUMENT,
+                );
+            }
+        }
     }
     Ok(())
 }
@@ -540,6 +561,20 @@ fn links(
         SOURCE_FIXED,
     );
     Ok(())
+}
+
+fn namespaces(written: &Value, resolved: &ResolvedConfig, entries: &mut Vec<ExplainEntry>) {
+    // As in `storage`: only a non-null written value is the document's.
+    let set = written
+        .get("namespaces")
+        .and_then(|n| n.get("registry"))
+        .is_some_and(|v| !v.is_null());
+    push(
+        entries,
+        "namespaces.registry",
+        Value::String(resolved.namespaces.registry.clone()).to_string(),
+        if set { SOURCE_DOCUMENT } else { SOURCE_DEFAULT },
+    );
 }
 
 fn tiers(written: &Value, resolved: &ResolvedConfig, entries: &mut Vec<ExplainEntry>) {

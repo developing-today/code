@@ -36,7 +36,7 @@
 //!   petname      List the petnames one owner gave, read-only, from a petnames journal
 //!   match-audit Export and verify signed match-audit v0 logs
 //!   walk       The #9106 walking skeleton, driven by hand (stored nodes, sync, reports)
-//!   host       Host mode: run, or list, a data root of world directories
+//!   host       Host mode: run a data root of world directories and operate it
 //!   group        Groups: create, policy, add, remove, set roles, list, join
 //!   delegate     Grant a delegate a scope in a group
 //!   revoke       Revoke a delegation by its grant's event ID
@@ -128,8 +128,8 @@ pub use groups::{DelegateArgs, GroupCommand, GroupRemoveMode, GroupTemplate, Rev
 pub use host::HostCommand;
 pub use match_audit::MatchAuditCommand;
 pub use petname::PetnameCommand;
-pub use talk::TalkCommand;
 pub use tag::TagCommand;
+pub use talk::TalkCommand;
 pub use walk::WalkCommand;
 pub use world::{
     JournalCommand, WorldAnnounceArgs, WorldApplyArgs, WorldCapsArgs, WorldCommand,
@@ -561,9 +561,11 @@ pub struct ServeArgs {
     #[arg(long, default_value_t = 600, requires = "world")]
     pub world_idle_secs: u64,
     /// Serve the worlds directory as a host-mode data root (#10693): keep
-    /// its `host.json`, wake asleep worlds when clients name them, record
-    /// idle closes as asleep, refuse archived worlds, and reopen the worlds
-    /// recorded live at startup. `id host list` shows the states.
+    /// its `host.json`, wake asleep worlds when clients name them (unless
+    /// `id host wake-mode` set `operator`), never close `id host pin`
+    /// worlds for idleness or room, record idle closes as asleep, refuse
+    /// archived worlds, and reopen the worlds recorded live at startup.
+    /// `id host list` shows the states.
     #[arg(long, requires = "world", conflicts_with = "ephemeral")]
     pub world_host: bool,
     /// Refuse signed world and directory requests for this many seconds
@@ -1508,15 +1510,23 @@ pub enum Command {
     /// the object may post; a correction is a new post that supersedes the old one, which stays
     /// listed and is marked superseded.
     ///
+    /// The thread steps of a conversation group (#7849) are signed events in that group:
+    /// propose a change, resolve a thread, reject or withdraw a proposal, accept one by the
+    /// note revision that cites it, and read the group's threads back.
+    ///
     /// # Examples
     ///
     /// ```bash
     /// id talk post DOCUMENT "this section needs a source"
     /// id talk post DOCUMENT "fixed wording" --supersedes POST
     /// id talk list DOCUMENT --json
+    /// id talk propose GROUP NOTE/KEY --base REVISION --content BLOB/KEY --thread THREAD
+    /// id talk accept GROUP PROPOSAL edited.md --media-type text/markdown
+    /// id talk resolve GROUP THREAD --no-action
+    /// id talk threads GROUP
     /// ```
     Talk {
-        /// Print JSON instead of lines (one array for `list`).
+        /// Print JSON instead of lines (one array for `list` and `threads`).
         #[arg(long, global = true)]
         json: bool,
         /// The talk action to run.

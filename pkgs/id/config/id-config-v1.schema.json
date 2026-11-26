@@ -115,6 +115,29 @@
       },
       "type": "object"
     },
+    "namespaces": {
+      "additionalProperties": false,
+      "description": "The namespace plane (#9111 record sections 3.1 and 7.4): which server-local namespace registry (#9116) names resolve in. An absent key or null takes the built-in default, the built-in registry only. The registry's records (core, handler, policies, shorthand_policy) are signed #9116 data and are never written here; there is no global registry and no fallback.",
+      "properties": {
+        "registry": {
+          "description": "builtin (the default), server:<id> or handle:<handle>, the id or handle 1 to 255 visible ASCII characters, written as a #9116 registry id displays itself.",
+          "oneOf": [
+            { "const": "builtin" },
+            { "pattern": "^(server|handle):[!-~]{1,255}$", "type": "string" },
+            { "type": "null" }
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "operation_override": {
+      "additionalProperties": false,
+      "properties": {
+        "adapter": { "enum": ["iroh", null], "type": ["string", "null"] },
+        "timeout_ms": { "maximum": 30000, "minimum": 1, "type": ["integer", "null"] }
+      },
+      "type": "object"
+    },
     "peer": {
       "additionalProperties": false,
       "description": "One peer relationship (#9111 record section 3.2; the #9141 PeerPolicy plus fan-out fields). The class is a ceiling and operations is the grant. Load rejects: relay_granted without fully_trusted; the relay operation without relay_granted; sync.accept on send_only; sync.send on accept_signed_from; any operation on unknown; a repeated operation; expires_at not after valid_from. peer_id is unique in the document.",
@@ -126,6 +149,18 @@
           "items": { "enum": ["sync.accept", "sync.send", "query.out", "query.answer", "relay"], "type": "string" },
           "type": "array",
           "uniqueItems": true
+        },
+        "overrides": {
+          "additionalProperties": false,
+          "default": {},
+          "description": "Per-operation overrides keyed by a granted operation (record section 3.3). Each may choose only a link adapter this build advertises and a timeout; relay takes none. Class, gates and checks are not keys and cannot be overridden.",
+          "properties": {
+            "query.answer": { "$ref": "#/$defs/operation_override" },
+            "query.out": { "$ref": "#/$defs/operation_override" },
+            "sync.accept": { "$ref": "#/$defs/operation_override" },
+            "sync.send": { "$ref": "#/$defs/operation_override" }
+          },
+          "type": "object"
         },
         "peer_id": { "minLength": 1, "type": "string" },
         "policy_version": { "minimum": 0, "type": "integer" },
@@ -216,6 +251,7 @@
       "enum": ["single-node", "hosted-tenant", "federated-relay"],
       "type": "string"
     },
+    "namespaces": { "$ref": "#/$defs/namespaces" },
     "overrides": {
       "description": "Scoped overrides. Applied in scope-name order during resolution; two overrides for the same scope reject the document.",
       "items": { "$ref": "#/$defs/scoped_override" },

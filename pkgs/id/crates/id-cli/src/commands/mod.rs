@@ -88,7 +88,6 @@ pub mod world;
 pub mod writer_set;
 
 pub use claim::cmd_claim;
-pub use talk::cmd_talk;
 pub use client::{create_local_client_endpoint, create_local_operator_endpoint};
 pub use doc::cmd_doc;
 pub use find::{
@@ -118,6 +117,7 @@ pub use serve::{
     is_process_alive, remove_serve_lock,
 };
 pub use tag::{cmd_migrate_tags, cmd_tag};
+pub use talk::cmd_talk;
 pub use walk::cmd_walk;
 #[cfg(feature = "world")]
 pub use world::cmd_world;

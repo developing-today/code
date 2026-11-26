@@ -15,7 +15,7 @@
       "namespace": 3,
       "owner": null,
       "writer": 8,
-      "sql": "INSERT OR IGNORE INTO idem_receipts (\n        writer, host_incarnation, outbox_id, request_fingerprint, attempt,\n        scope_id, registry_id, namespace, key, expected_version,\n        outcome, version, recorded_at_ms)\n    SELECT ?8, ?9, ?10, ?11, ?12, ?1, ?2, ?3, ?4, ?5,\n        CASE WHEN head.version = ?5 THEN 'committed' ELSE 'conflict' END,\n        CASE WHEN head.version = ?5 THEN ?5 + 1 ELSE head.version END,\n        ?13\n    FROM (SELECT COALESCE((SELECT version FROM kv_heads\n        WHERE scope_id = ?1 AND registry_id = ?2 AND namespace = ?3 AND key = ?4), 0) AS version) AS head"
+      "sql": "INSERT OR IGNORE INTO idem_receipts (\n        writer, host_incarnation, outbox_id, request_fingerprint, attempt,\n        scope_id, registry_id, namespace, key, expected_version,\n        outcome, version, recorded_at_ms)\n    SELECT ?8, ?9, ?10, ?11, ?12, ?1, ?2, ?3, ?4, ?5,\n        CASE WHEN head.version = ?5 THEN 'committed' ELSE 'conflict' END,\n        CASE WHEN head.version = ?5 THEN ?5 + 1 ELSE head.version END,\n        ?13\n    FROM (SELECT COALESCE((SELECT version FROM kv_heads\n        WHERE scope_id = ?1 AND registry_id = ?2 AND namespace = ?3 AND key = ?4), 0) AS version) AS head\n    WHERE NOT EXISTS (SELECT 1 FROM kv_namespaces AS ns\n        WHERE ns.registry_id = ?2 AND ns.namespace = ?3\n          AND IFNULL(length(?7), 0) > ns.blob_threshold)"
     },
     {
       "name": "cas.conflict_insert",
@@ -104,6 +104,28 @@
       "owner": null,
       "writer": null,
       "sql": "SELECT key, version, state, value, writer, written_at_ms FROM kv_heads\n         WHERE scope_id = ?1 AND registry_id = ?2 AND namespace = ?3 ORDER BY key"
+    },
+    {
+      "args": 4,
+      "class": "read",
+      "name": "head.read_enveloped",
+      "namespace": 3,
+      "owner": null,
+      "registry": 2,
+      "scope": 1,
+      "sql": "SELECT head.version, head.state, head.value, head.writer, head.written_at_ms, COALESCE((SELECT version_row.envelope FROM kv_versions AS version_row\n            WHERE version_row.scope_id = head.scope_id AND version_row.registry_id = head.registry_id\n              AND version_row.namespace = head.namespace AND version_row.key = head.key\n              AND version_row.version = head.version), 'kv:raw-v1')\n         FROM kv_heads AS head\n         WHERE head.scope_id = ?1 AND head.registry_id = ?2 AND head.namespace = ?3 AND head.key = ?4",
+      "writer": null
+    },
+    {
+      "args": 3,
+      "class": "read",
+      "name": "heads.read_enveloped",
+      "namespace": 3,
+      "owner": null,
+      "registry": 2,
+      "scope": 1,
+      "sql": "SELECT head.key, head.version, head.state, head.value, head.writer, head.written_at_ms, COALESCE((SELECT version_row.envelope FROM kv_versions AS version_row\n            WHERE version_row.scope_id = head.scope_id AND version_row.registry_id = head.registry_id\n              AND version_row.namespace = head.namespace AND version_row.key = head.key\n              AND version_row.version = head.version), 'kv:raw-v1')\n         FROM kv_heads AS head\n         WHERE head.scope_id = ?1 AND head.registry_id = ?2 AND head.namespace = ?3\n         ORDER BY head.key",
+      "writer": null
     },
     {
       "name": "listing.read",
@@ -282,6 +304,28 @@
       "sql": "INSERT OR IGNORE INTO idem_receipts (\n        writer, host_incarnation, outbox_id, request_fingerprint, attempt,\n        scope_id, registry_id, namespace, key, expected_version,\n        outcome, version, recorded_at_ms)\n    SELECT ?8, ?9, ?10, ?11, ?12, ?1, ?2, ?3, ?4, ?5,\n        CASE WHEN head.version = ?5 THEN 'committed' ELSE 'conflict' END,\n        CASE WHEN head.version = ?5 THEN ?5 + 1 ELSE head.version END,\n        ?13\n    FROM (SELECT COALESCE((SELECT version FROM kv_heads\n        WHERE scope_id = ?1 AND registry_id = ?2 AND namespace = ?3 AND key = ?4), 0) AS version) AS head\n    WHERE EXISTS (SELECT 1 FROM kv_blobs AS blob\n        WHERE blob.jurisdiction = ?14 AND blob.tier = ?15 AND blob.content_id = ?16)"
     },
     {
+      "args": 13,
+      "class": "write",
+      "name": "blob.cas_conflict_insert",
+      "namespace": 3,
+      "owner": null,
+      "registry": 2,
+      "scope": 1,
+      "sql": "INSERT INTO kv_conflicts (\n            scope_id, registry_id, namespace, key, expected_version, actual_version,\n            proposed_state, proposed_value, writer, host_incarnation, outbox_id, written_at_ms,\n            proposed_envelope)\n        SELECT ?1, ?2, ?3, ?4, ?5, receipt.version, ?6, ?7, ?8, ?9, ?10, ?13, 'kv:ref-v1'\n        FROM idem_receipts AS receipt\n        WHERE receipt.writer = ?8 AND receipt.host_incarnation = ?9 AND receipt.outbox_id = ?10 AND receipt.attempt = ?12 AND receipt.outcome = 'conflict'",
+      "writer": 8
+    },
+    {
+      "args": 13,
+      "class": "write",
+      "name": "blob.cas_version_insert",
+      "namespace": 3,
+      "owner": null,
+      "registry": 2,
+      "scope": 1,
+      "sql": "INSERT INTO kv_versions (\n            scope_id, registry_id, namespace, key, version, parent_version,\n            state, value, writer, host_incarnation, outbox_id, written_at_ms, envelope)\n        SELECT ?1, ?2, ?3, ?4, receipt.version, ?5, ?6, ?7, ?8, ?9, ?10, ?13, 'kv:ref-v1'\n        FROM idem_receipts AS receipt\n        WHERE receipt.writer = ?8 AND receipt.host_incarnation = ?9 AND receipt.outbox_id = ?10 AND receipt.attempt = ?12 AND receipt.outcome = 'committed'",
+      "writer": 8
+    },
+    {
       "name": "blob.ref_insert",
       "class": "write",
       "args": 16,
@@ -301,7 +345,18 @@
       "namespace": null,
       "owner": null,
       "writer": null,
-      "sql": "INSERT INTO kv_blobs (\n        jurisdiction, tier, content_id, bytes_len, locator, state, published_at_ms)\n    VALUES (?1, ?2, ?3, ?4, ?5, 'published', ?6)\n    ON CONFLICT (jurisdiction, tier, content_id) DO NOTHING"
+      "sql": "INSERT INTO kv_blobs (\n        jurisdiction, tier, content_id, bytes_len, locator, state, published_at_ms)\n    SELECT ?1, ?2, ?3, ?4, ?5, 'published', ?6\n    WHERE NOT EXISTS (SELECT 1 FROM kv_blob_purges AS purge\n        WHERE purge.jurisdiction = ?1 AND purge.tier = ?2 AND purge.content_id = ?3)\n    ON CONFLICT (jurisdiction, tier, content_id) DO NOTHING"
+    },
+    {
+      "args": 3,
+      "class": "admin",
+      "name": "blob.published_read",
+      "namespace": null,
+      "owner": null,
+      "registry": null,
+      "scope": null,
+      "sql": "SELECT bytes_len FROM kv_blobs\n    WHERE jurisdiction = ?1 AND tier = ?2 AND content_id = ?3",
+      "writer": null
     },
     {
       "name": "blob.roots_read",
@@ -357,6 +412,83 @@
       "owner": null,
       "writer": null,
       "sql": "SELECT epoch, deleted_at_ms FROM kv_blob_deletions\n    WHERE jurisdiction = ?1 AND tier = ?2 AND content_id = ?3 AND attempt = ?6"
+    },
+    {
+      "args": 2,
+      "class": "admin",
+      "name": "blob.candidates_clear",
+      "namespace": null,
+      "owner": null,
+      "registry": null,
+      "scope": null,
+      "sql": "DELETE FROM kv_blob_candidates\n    WHERE jurisdiction = ?1 AND tier = ?2\n        AND (EXISTS (SELECT 1 FROM kv_blob_refs AS root\n                WHERE root.jurisdiction = ?1 AND root.tier = ?2\n                    AND root.content_id = kv_blob_candidates.content_id)\n            OR NOT EXISTS (SELECT 1 FROM kv_blobs AS blob\n                WHERE blob.jurisdiction = ?1 AND blob.tier = ?2\n                    AND blob.content_id = kv_blob_candidates.content_id))\n    RETURNING content_id",
+      "writer": null
+    },
+    {
+      "args": 3,
+      "class": "admin",
+      "name": "blob.candidates_mark",
+      "namespace": null,
+      "owner": null,
+      "registry": null,
+      "scope": null,
+      "sql": "INSERT OR IGNORE INTO kv_blob_candidates (\n        jurisdiction, tier, content_id, since_ms)\n    SELECT blob.jurisdiction, blob.tier, blob.content_id, ?3\n    FROM kv_blobs AS blob\n    WHERE blob.jurisdiction = ?1 AND blob.tier = ?2\n        AND NOT EXISTS (SELECT 1 FROM kv_blob_refs AS root\n            WHERE root.jurisdiction = ?1 AND root.tier = ?2\n                AND root.content_id = blob.content_id)\n    RETURNING content_id",
+      "writer": null
+    },
+    {
+      "args": 3,
+      "class": "admin",
+      "name": "blob.candidates_due",
+      "namespace": null,
+      "owner": null,
+      "registry": null,
+      "scope": null,
+      "sql": "SELECT content_id, since_ms FROM kv_blob_candidates\n    WHERE jurisdiction = ?1 AND tier = ?2 AND since_ms <= ?3 ORDER BY content_id",
+      "writer": null
+    },
+    {
+      "args": 6,
+      "class": "admin",
+      "name": "blob.candidate_drop",
+      "namespace": null,
+      "owner": null,
+      "registry": null,
+      "scope": null,
+      "sql": "DELETE FROM kv_blob_candidates\n    WHERE jurisdiction = ?1 AND tier = ?2 AND content_id = ?3\n        AND EXISTS (SELECT 1 FROM kv_blob_deletions AS fence\n            WHERE fence.jurisdiction = ?1 AND fence.tier = ?2\n                AND fence.content_id = ?3 AND fence.attempt = ?6)",
+      "writer": null
+    },
+    {
+      "args": 6,
+      "class": "admin",
+      "name": "blob.purge_claim",
+      "namespace": null,
+      "owner": null,
+      "registry": null,
+      "scope": null,
+      "sql": "INSERT OR REPLACE INTO kv_blob_purges (\n        jurisdiction, tier, content_id, attempt, claimed_ms)\n    SELECT DISTINCT deletion.jurisdiction, deletion.tier, deletion.content_id, ?6, ?3\n    FROM kv_blob_deletions AS deletion\n    WHERE deletion.jurisdiction = ?1 AND deletion.tier = ?2\n        AND deletion.purged_at_ms IS NULL\n        AND NOT EXISTS (SELECT 1 FROM kv_blobs AS blob\n            WHERE blob.jurisdiction = ?1 AND blob.tier = ?2\n                AND blob.content_id = deletion.content_id)\n        AND NOT EXISTS (SELECT 1 FROM kv_blob_purges AS purge\n            WHERE purge.jurisdiction = ?1 AND purge.tier = ?2\n                AND purge.content_id = deletion.content_id AND purge.claimed_ms >= ?4)\n    ORDER BY deletion.content_id\n    LIMIT IFNULL(?5, 0)\n    RETURNING content_id",
+      "writer": null
+    },
+    {
+      "args": 5,
+      "class": "admin",
+      "name": "blob.purged_mark",
+      "namespace": null,
+      "owner": null,
+      "registry": null,
+      "scope": null,
+      "sql": "UPDATE kv_blob_deletions SET purged_at_ms = ?4\n    WHERE jurisdiction = ?1 AND tier = ?2 AND content_id = ?3 AND purged_at_ms IS NULL\n        AND EXISTS (SELECT 1 FROM kv_blob_purges AS purge\n            WHERE purge.jurisdiction = ?1 AND purge.tier = ?2\n                AND purge.content_id = ?3 AND purge.attempt = ?5)",
+      "writer": null
+    },
+    {
+      "args": 5,
+      "class": "admin",
+      "name": "blob.purge_release",
+      "namespace": null,
+      "owner": null,
+      "registry": null,
+      "scope": null,
+      "sql": "DELETE FROM kv_blob_purges\n    WHERE jurisdiction = ?1 AND tier = ?2 AND content_id = ?3 AND attempt = ?5",
+      "writer": null
     }
   ],
   "migrations": {
@@ -396,6 +528,26 @@
         "statements": [
           "CREATE TABLE IF NOT EXISTS kv_namespace_placement (\n    registry_id TEXT NOT NULL,\n    namespace TEXT NOT NULL,\n    jurisdiction TEXT NOT NULL,\n    tier TEXT NOT NULL,\n    updated_at_ms INTEGER NOT NULL,\n    PRIMARY KEY (registry_id, namespace)\n) WITHOUT ROWID"
         ]
+      },
+      {
+        "statements": [
+          "ALTER TABLE kv_versions ADD COLUMN envelope TEXT NOT NULL DEFAULT 'kv:raw-v1'",
+          "ALTER TABLE kv_conflicts ADD COLUMN proposed_envelope TEXT NOT NULL DEFAULT 'kv:raw-v1'"
+        ],
+        "version": 5
+      },
+      {
+        "statements": [
+          "CREATE TABLE IF NOT EXISTS kv_blob_candidates (\n    jurisdiction TEXT NOT NULL,\n    tier TEXT NOT NULL,\n    content_id TEXT NOT NULL,\n    since_ms INTEGER NOT NULL,\n    PRIMARY KEY (jurisdiction, tier, content_id)\n) WITHOUT ROWID"
+        ],
+        "version": 6
+      },
+      {
+        "statements": [
+          "ALTER TABLE kv_blob_deletions ADD COLUMN purged_at_ms INTEGER",
+          "CREATE TABLE IF NOT EXISTS kv_blob_purges (\n    jurisdiction TEXT NOT NULL,\n    tier TEXT NOT NULL,\n    content_id TEXT NOT NULL,\n    attempt TEXT NOT NULL,\n    claimed_ms INTEGER NOT NULL,\n    PRIMARY KEY (jurisdiction, tier, content_id)\n) WITHOUT ROWID"
+        ],
+        "version": 7
       }
     ]
   }

@@ -7,9 +7,13 @@ import {
   effectiveSettings,
   goesBy,
   MACHINES_FOR_NOW,
+  NEEDS_REPOS_MAX,
   OWNER_CHANGEABLE,
+  ownerSettingChange,
+  ownerSettingsAdopted,
   PLATFORM_OWN,
   PLATFORM_SETTING_NAMES,
+  PROMPT_LABEL_MAX,
   type PlatformSettings,
   platformSettings,
   settingsDifferences,
@@ -296,5 +300,99 @@ describe("owner-changeable settings", () => {
       value: platform.needsRepos,
       repository: platform.needsRepos,
     });
+  });
+});
+
+// The oracle for a change the owner asks for is the design's D5 (doc/
+// 2026-11-25T08-48-36Z_design_pm-owner-settings-at-edge.md): a name the
+// owner may change, a value in that setting's shape, or nothing at all.
+describe("a change the owner asks for is checked whole", () => {
+  test("the two settings the owner may change take their own shapes", () => {
+    expect(ownerSettingChange("promptLabel", "owner/prompt")).toEqual({ name: "promptLabel", value: "owner/prompt" });
+    expect(ownerSettingChange("promptLabel", "x".repeat(PROMPT_LABEL_MAX))).toEqual({
+      name: "promptLabel",
+      value: "x".repeat(PROMPT_LABEL_MAX),
+    });
+    expect(ownerSettingChange("needsRepos", ["developing-today/code", "a/b", "developing-today/code"])).toEqual({
+      name: "needsRepos",
+      value: ["developing-today/code", "a/b"],
+    });
+    // Main's own lists are lists the owner could set.
+    expect(ownerSettingChange("needsRepos", platformSettings().needsRepos)).toEqual({
+      name: "needsRepos",
+      value: platformSettings().needsRepos,
+    });
+  });
+
+  test("anything else is refused, saying what is wrong and never the value", () => {
+    const refused = (name: unknown, value: unknown) => {
+      const said = ownerSettingChange(name, value);
+      return "error" in said ? said.error.split(":")[0] : "taken";
+    };
+    for (const name of PLATFORM_SETTING_NAMES.filter((n) => !(OWNER_CHANGEABLE as readonly string[]).includes(n))) {
+      expect([name, refused(name, "x")]).toEqual([name, "name"]);
+    }
+    expect(refused(undefined, "x")).toBe("name");
+    expect(refused("promptLabel", "")).toBe("promptLabel");
+    expect(refused("promptLabel", 7)).toBe("promptLabel");
+    expect(refused("promptLabel", "x".repeat(PROMPT_LABEL_MAX + 1))).toBe("promptLabel");
+    expect(refused("promptLabel", "trailing ")).toBe("promptLabel");
+    expect(refused("promptLabel", "one,two")).toBe("promptLabel");
+    expect(refused("promptLabel", "line\nbreak")).toBe("promptLabel");
+    expect(refused("needsRepos", [])).toBe("needsRepos");
+    expect(refused("needsRepos", "a/b")).toBe("needsRepos");
+    expect(refused("needsRepos", ["a/b/c"])).toBe("needsRepos");
+    expect(refused("needsRepos", ["no-slash"])).toBe("needsRepos");
+    expect(refused("needsRepos", ["a/b", 3])).toBe("needsRepos");
+    expect(refused("needsRepos", Array.from({ length: NEEDS_REPOS_MAX + 1 }, (_, i) => `o/r${i}`))).toBe("needsRepos");
+    // Repeats are not counted against the limit.
+    expect(refused("needsRepos", Array.from({ length: NEEDS_REPOS_MAX + 5 }, () => "o/r"))).toBe("taken");
+    const said = ownerSettingChange("promptLabel", "secret,label");
+    expect(JSON.stringify(said)).not.toContain("secret");
+  });
+});
+
+// The oracle is the design's D6: a machine runs with the owner's changes
+// as the edge said them, its own for what was not changed, and keeps
+// what it runs with when what was said is not the owner's changes.
+describe("a machine takes the owner's changes as the edge says them", () => {
+  const own = { promptLabel: "owner/prompt", needsRepos: ["developing-today/code"] };
+
+  test("nothing said is its own, at revision 0", () => {
+    expect(ownerSettingsAdopted(own, undefined)).toEqual({ rev: 0, values: own });
+    expect(ownerSettingsAdopted(own, null)).toEqual({ rev: 0, values: own });
+  });
+
+  test("what the owner changed is run with; what the owner did not is its own", () => {
+    expect(ownerSettingsAdopted(own, { rev: 3, values: { promptLabel: "owner/now" } })).toEqual({
+      rev: 3,
+      values: { promptLabel: "owner/now", needsRepos: ["developing-today/code"] },
+    });
+    expect(ownerSettingsAdopted(own, { rev: 4, values: { needsRepos: ["a/b", "a/b", "c/d"] } })).toEqual({
+      rev: 4,
+      values: { promptLabel: "owner/prompt", needsRepos: ["a/b", "c/d"] },
+    });
+    // Every change put back: its own again, at the revision that says so.
+    expect(ownerSettingsAdopted(own, { rev: 5, values: {} })).toEqual({ rev: 5, values: own });
+    // What it is given back is its own to change.
+    const taken = ownerSettingsAdopted(own, { rev: 5, values: {} });
+    taken?.values.needsRepos.push("x/y");
+    expect(own.needsRepos).toEqual(["developing-today/code"]);
+  });
+
+  test("what does not read as the owner's changes is not taken at all", () => {
+    for (const said of [
+      { rev: 0, values: {} },
+      { rev: 1.5, values: {} },
+      { rev: "2", values: {} },
+      { rev: 2 },
+      { rev: 2, values: [] },
+      { rev: 2, values: { queue: "another" } },
+      { rev: 2, values: { promptLabel: "" } },
+      { rev: 2, values: { promptLabel: "ok", needsRepos: ["not a repository"] } },
+      "settings",
+    ]) {
+      expect([said, ownerSettingsAdopted(own, said)]).toEqual([said, null]);
+    }
   });
 });

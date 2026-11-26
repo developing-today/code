@@ -128,6 +128,11 @@
   };
 
   /** One line saying what an action is, for the list of what is kept. */
+  /** A setting the owner may change, as it is called on the Machines screen. */
+  function settingName(name) {
+    return name === "promptLabel" ? "the prompt label" : name === "needsRepos" ? "the repositories looked in" : "a setting";
+  }
+
   function sayOf(kind, args = {}) {
     const a = args ?? {};
     const quoted = (text) => (short(text) ? `: “${short(text)}”` : "");
@@ -189,6 +194,10 @@
         return `${a.action} ${a.unit}`;
       // The platform's own second half of something it filed itself:
       // never kept here, and shown where what waits for a machine is.
+      case "settings.set":
+        return `Change ${settingName(a.name)}`;
+      case "settings.clear":
+        return a.name ? `Put ${settingName(a.name)} back to main's` : "Put the changed settings back to main's";
       case "prompt.enqueue":
         return `File the queue task for prompt #${a.issue}`;
       case "triage.enqueue":

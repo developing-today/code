@@ -134,7 +134,7 @@ impl LocalEvents {
     /// Checks that this node can see `object`, and returns the object's group, if it has one.
     /// The object must be an applied event, and if it names a group, this node's key must be
     /// a member of that group.
-    fn visible_object(&self, object: Hash) -> Result<Option<Hash>> {
+    pub(super) fn visible_object(&self, object: Hash) -> Result<Option<Hash>> {
         let (event, applied) = self
             .read_store(|store| Ok((store.event_by_id(&object)?, store.event_applied(&object)?)))?;
         let Some(event) = event.filter(|_| applied) else {
@@ -480,7 +480,10 @@ mod tests {
             alice.talk_page(unknown).unwrap_err().to_string(),
             NOT_VISIBLE
         );
-        assert!(alice.read_store(|store| store.chains()).unwrap().is_empty());
+        assert_eq!(
+            alice.read_store(|store| store.chains()).unwrap(),
+            [] as [([u8; 32], id_store::event_types::Chain); 0]
+        );
     }
 
     #[test]

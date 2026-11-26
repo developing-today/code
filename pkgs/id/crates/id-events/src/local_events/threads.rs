@@ -15,6 +15,9 @@
 //! holds a revision of it by that key. That second rule is the conservative reading of the
 //! note model, which admits a revision by any key: a key that has not edited an object
 //! cannot reject a proposal on it until it does.
+//!
+//! [`LocalEvents::thread_view`] is the projection this node shows its user: the same fold,
+//! cut to what this node may see ([`ThreadProjection::visible_to`]).
 
 use std::collections::{BTreeMap, HashSet};
 
@@ -150,5 +153,24 @@ impl LocalEvents {
             }
         }
         self.thread_projection_with(group, &NodeAuthority { roster, writers })
+    }
+
+    /// The thread projection of `group` as this node, its viewer, may see it: the fold of
+    /// [`Self::thread_projection`] passed through [`ThreadProjection::visible_to`], so a
+    /// display of it keeps the no-leak rule.
+    ///
+    /// The viewer reads every thread of the group, since the read is already cut to the
+    /// thread events a member may see. It reads an object on the rule a talk page uses: an
+    /// event this store has applied and, when that event names a group, one this node is a
+    /// member of. Anything naming another object is dropped whole, and the view keeps no
+    /// refused event IDs.
+    ///
+    /// # Errors
+    ///
+    /// As for [`Self::thread_projection`].
+    pub fn thread_view(&self, group: Hash) -> Result<ThreadProjection> {
+        let projection = self.thread_projection(group)?;
+        let can_read_object = |object: &ObjectRef| self.visible_object(object.object_id).is_ok();
+        Ok(projection.visible_to(&|_: &Hash| true, &can_read_object))
     }
 }

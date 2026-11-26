@@ -268,6 +268,11 @@ fn is_digest(text: &str) -> bool {
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
+/// Whether `text` is a content digest: 64 lower-case hex digits.
+pub fn valid_digest(text: &str) -> bool {
+    is_digest(text)
+}
+
 /// Whether `text` is a partition label: 1 to 63 of `a-z`, `0-9` and `-`,
 /// the shape the upload door accepts.
 pub fn valid_label(text: &str) -> bool {

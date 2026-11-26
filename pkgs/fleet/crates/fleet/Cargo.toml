@@ -23,6 +23,10 @@ fleet-search = { workspace = true, optional = true }
 # half (fleet-proxy's `serve` feature) is variant-gated, through
 # the proxy-serve feature below.
 fleet-proxy = { workspace = true, default-features = false }
+# The pooling primitive (design #13752, crate #14721): the laptop
+# route-form walker (#14722) selects through it. Linked only by the
+# laptop feature, so the connect variant does not carry it.
+fleet-pool = { workspace = true, optional = true }
 # fleet-secrets is linked only by builds whose domains resolve secrets;
 # the connect variant must not carry it (§2: "nothing else").
 fleet-secrets = { workspace = true, optional = true }
@@ -155,7 +159,7 @@ laptop-agent = ["dep:fleet-secrets", "dep:fleet-laptop-agent"]
 commander = ["dep:fleet-secrets", "dep:ureq"]
 http = ["dep:fleet-laptop-agent"]
 ssh = []
-laptop = ["commander", "http", "ssh"]
+laptop = ["commander", "http", "ssh", "dep:fleet-pool"]
 # The actions domain (#13774): live exec sessions inside Actions
 # runners — seat verbs over the queue client, the runner-side
 # agent, and the R2 egress helper (SigV4 over sha2). Full only.

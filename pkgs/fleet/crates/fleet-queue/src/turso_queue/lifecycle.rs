@@ -2217,6 +2217,12 @@ pub(crate) fn wake_eligible(status: &str) -> Result<(), String> {
 /// holder gives the item back to the pool NOW — no park timer, no
 /// attempt change (the claim happened; the `released` event
 /// carries the reason, and revive remains the cap-repair tool).
+/// One exception (#12901): when the released claim consumed the
+/// task's last attempt, a queued return would be a zombie — the
+/// claim pick (attempts < max_attempts) can never select the row
+/// again — so the release lands where an at-cap lease expiry
+/// lands (#6463): failed, with the release reason in last_error,
+/// and revive takes it from there.
 /// Holder-only, through the same claimed_by guard as checkpoint.
 /// This is the dispatch failure path: an item whose sub-task
 /// session failed to launch/bind returns to the pool immediately
@@ -2260,22 +2266,54 @@ pub(crate) fn verb_release(t: &TursoBackend, req: &Value) -> Value {
         // A released claim never leaves a binding behind
         // (migration 0023 §4's rule, mirrored from the claim path).
         let progress = row.get("progress").cloned().unwrap_or(json!({}));
+        // #12901: where a released claim lands is the question
+        // lease expiry already answers — expire_leases'
+        // expiry_disposition oracle, computed on the same inputs
+        // (the sink shape is read from the progress BEFORE the
+        // binding is cleared, exactly as expire_leases reads it).
+        // Below the cap the row returns to queued as before. At
+        // the cap a queued return is the silent zombie of the
+        // claim→release churn (task 21418: four sessionless
+        // claim/release cycles in ~13 minutes left the row queued
+        // at attempts == max_attempts, unclaimable, counted as
+        // queued work, with nothing on the row recording why) —
+        // so an at-cap release fails the row with the release
+        // reason in last_error, and the audit event is the fail
+        // event, whose history transition (claimed → failed) is
+        // the true one. Sink rows are exempt, as in expire_leases:
+        // the sink pick serves them under its own rule.
+        let attempts = row.get("attempts").and_then(|v| v.as_i64()).unwrap_or(0);
+        let max_attempts = row
+            .get("max_attempts")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(crate::validate::TASK_DEFAULT_MAX_ATTEMPTS as i64);
+        let to_sink = expired_claim_returns_to_sink(&progress);
+        let fail_at_cap = !to_sink
+            && expiry_disposition(attempts, max_attempts) == ExpiryDisposition::FailAtCap;
         let (progress, cleared) = clear_binding(&progress, "release_repo_task");
-        let mut args = vec![
-            Arg::Text(progress.to_string()),
-            Arg::Text(now_iso()),
-            Arg::Int(task_id),
-        ];
-        args.extend(holder_guard_args(&worker, &row));
-        let upd = t.exec(
-            &format!(
+        let cap_error = format!("released at attempt cap ({attempts}/{max_attempts}): {reason}");
+        let mut args = vec![];
+        let sql = if fail_at_cap {
+            args.push(Arg::Text(cap_error.clone()));
+            format!(
+                "UPDATE tasks SET status = 'failed', worker_id = NULL, \
+                   lease_until = NULL, not_before = NULL, park_kind = NULL, \
+                   wait_kind = NULL, last_error = ?, progress = ?, updated_at = ? \
+                 WHERE id = ?{HOLDER_GUARD}"
+            )
+        } else {
+            format!(
                 "UPDATE tasks SET status = 'queued', worker_id = NULL, \
                    lease_until = NULL, not_before = NULL, park_kind = NULL, \
                    wait_kind = NULL, progress = ?, updated_at = ? \
                  WHERE id = ?{HOLDER_GUARD}"
-            ),
-            &args,
-        )?;
+            )
+        };
+        args.push(Arg::Text(progress.to_string()));
+        args.push(Arg::Text(now_iso()));
+        args.push(Arg::Int(task_id));
+        args.extend(holder_guard_args(&worker, &row));
+        let upd = t.exec(&sql, &args)?;
         if upd.affected == 0 {
             return Ok(claim_changed("release_repo_task", task_id));
         }
@@ -2325,21 +2363,36 @@ pub(crate) fn verb_release(t: &TursoBackend, req: &Value) -> Value {
         if let Some(old) = &cleared {
             on_binding_cleared(t, &worker, task_id, old, "release_repo_task")?;
         }
-        event(
-            t,
-            Some(&worker),
-            Some(task_id),
-            "released",
-            &with_marks(
-                &json!({
+        // #12901: an at-cap release records a `failed` event (the
+        // verb_fail shape: the error text plus the release's own
+        // marks), so the history transition written for the event
+        // is the true claimed → failed; a below-cap release keeps
+        // the `released` event.
+        let (kind, detail) = if fail_at_cap {
+            (
+                "failed",
+                json!({
+                    "reason": reason, "error": cap_error,
+                    "attempts": attempts, "max_attempts": max_attempts,
+                    "released_at_cap": true,
+                    "via": "release_repo_task_turso",
+                    "cleared_session_id": cleared,
+                    "platform_limit": limit_family,
+                    "platform_limit_reason": limit_reason,
+                }),
+            )
+        } else {
+            (
+                "released",
+                json!({
                     "reason": reason, "via": "release_repo_task_turso",
                     "cleared_session_id": cleared,
                     "platform_limit": limit_family,
                     "platform_limit_reason": limit_reason,
                 }),
-                &row,
-            ),
-        )?;
+            )
+        };
+        event(t, Some(&worker), Some(task_id), kind, &with_marks(&detail, &row))?;
         let row = get_task(t, task_id).map(|r| r.unwrap_or(Value::Null))?;
         Ok(ok(json!({ "row": row })))
     })();

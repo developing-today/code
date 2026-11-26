@@ -32,6 +32,7 @@ import { FailClosed } from "./errors.ts";
 import {
   checkKvScopes,
   ensureKvMigrated,
+  isKvAdmin,
   KV_CATALOG,
   kvNamespacePlacement,
   privateScopePrefix,
@@ -40,6 +41,8 @@ import {
 
 /** The registry fleet-kv's namespaces live in. */
 export const KV_REGISTRY = "fleet-kv-central";
+/** The row envelope of a blob reference (design §11, blob.rs REF_ENVELOPE). */
+export const KV_REF_ENVELOPE = "kv:ref-v1";
 
 /** The object store under the door: the slice of R2 it uses. */
 export interface KvBlobBucket {
@@ -302,8 +305,38 @@ export async function handleKvBlobPut(req: Request, ctx: CallerContext, deps: Au
     throw new FailClosed(422, "blob_digest_mismatch", "the bytes do not hash to the asserted digest");
   }
 
-  // Publish: dedup inside the partition only, then record centrally.
+  // Publish: record the object centrally first. A purge claims only
+  // content no published row names, so once the row exists no purge can
+  // remove the bytes written next; a purge already holding the content
+  // refuses the publish, and the pusher uploads again once it is done.
+  // Then dedup inside the partition only.
   const key = publishedKey(upload.jurisdiction, upload.tier, upload.digest);
+  const locator = `r2:${key}`;
+  const content = [
+    { type: "text", value: upload.jurisdiction },
+    { type: "text", value: upload.tier },
+    { type: "text", value: upload.digest },
+  ] as const;
+  const [, publishedRows] = await runKvTransaction(primary, [
+    {
+      sql: catalogSql("blob.publish"),
+      args: [
+        ...content,
+        { type: "integer", value: String(upload.bytesLen) },
+        { type: "text", value: locator },
+        { type: "integer", value: String(Date.now()) },
+      ],
+    },
+    { sql: catalogSql("blob.published_read"), args: [...content] },
+  ]);
+  if (!publishedRows || publishedRows.length === 0) {
+    await bucket.delete(staging);
+    throw new FailClosed(
+      503,
+      "kv_blob_purge_in_progress",
+      "a purge of this content is in progress; upload it again once it is done",
+    );
+  }
   const existing = await bucket.head(key);
   if (!existing) {
     const staged = await bucket.get(staging);
@@ -311,22 +344,6 @@ export async function handleKvBlobPut(req: Request, ctx: CallerContext, deps: Au
     await bucket.put(key, staged, upload.bytesLen);
   }
   await bucket.delete(staging);
-  const locator = `r2:${key}`;
-  const publish = KV_CATALOG.statements.find((s) => s.name === "blob.publish");
-  if (!publish) throw new FailClosed(500, "kv_catalog_incomplete", "the catalogue has no blob.publish");
-  await runKvTransaction(primary, [
-    {
-      sql: publish.sql,
-      args: [
-        { type: "text", value: upload.jurisdiction },
-        { type: "text", value: upload.tier },
-        { type: "text", value: upload.digest },
-        { type: "integer", value: String(upload.bytesLen) },
-        { type: "text", value: locator },
-        { type: "integer", value: String(Date.now()) },
-      ],
-    },
-  ]);
   const reference = encodeKvBlobRef({
     digest: upload.digest,
     bytesLen: upload.bytesLen,
@@ -345,6 +362,105 @@ export async function handleKvBlobPut(req: Request, ctx: CallerContext, deps: Au
       deduplicated: existing !== null,
     }),
     { status: 201, headers: { "content-type": "application/json" } },
+  );
+}
+
+function catalogSql(name: string): string {
+  const entry = KV_CATALOG.statements.find((s) => s.name === name);
+  if (!entry) throw new FailClosed(500, "kv_catalog_incomplete", `the catalogue has no ${name}`);
+  return entry.sql;
+}
+
+// --- purge: removing the bytes of fenced deletes (design §9, §10) ---------
+//
+//   POST /v1/kv/blobs/purge?jurisdiction=J&tier=T
+//
+// GC (fleet_kv::blob_central::gc_pass) retires a blob's central record
+// under an epoch fence; the bytes stay in the bucket until a kv-admin
+// caller purges the partition here. One purge claims up to PURGE_BATCH
+// deleted content ids that no published row names, removes their content
+// keys, marks those deletions purged and releases each claim. While a
+// claim holds, the upload door refuses to publish the same content, so a
+// purge never removes bytes a published row needs. A failed removal
+// releases its claim unpurged for the next purge. `more` says the batch
+// was full: purge again.
+
+/** The most content ids one purge removes. */
+export const PURGE_BATCH = 100;
+/** How long a purge claim holds before another purge may take it over
+ * (fleet_kv::blob_central::PURGE_LEASE_MS). */
+export const PURGE_LEASE_MS = 60 * 60 * 1000;
+
+/** The purge door's handler. */
+export async function handleKvBlobPurge(req: Request, ctx: CallerContext, deps: AuthDeps): Promise<Response> {
+  if (!isKvAdmin(ctx)) {
+    throw new FailClosed(403, "kv_admin_required", `purging blobs needs the ${KV_CATALOG.admin_role} role`);
+  }
+  const bucket = deps.kvBlobs;
+  if (!bucket) {
+    throw new FailClosed(503, "kv_blobs_not_configured", "this deployment has no kv blob bucket configured");
+  }
+  const primary = deps.kvPrimary;
+  if (!primary) {
+    throw new FailClosed(503, "kv_primary_not_configured", "this deployment has no fleet-kv primary configured");
+  }
+  const q = new URL(req.url).searchParams;
+  const jurisdiction = q.get("jurisdiction") ?? "";
+  const tier = q.get("tier") ?? "";
+  if (!LABEL.test(jurisdiction)) refused("kv_blob_malformed", "jurisdiction is not a label");
+  if (!LABEL.test(tier)) refused("kv_blob_malformed", "tier is not a label");
+  await ensureKvMigrated(primary);
+
+  const partition = [
+    { type: "text", value: jurisdiction },
+    { type: "text", value: tier },
+  ] as const;
+  const attempt = crypto.randomUUID();
+  const now = Date.now();
+  const [claimed = []] = await runKvTransaction(primary, [
+    {
+      sql: catalogSql("blob.purge_claim"),
+      args: [
+        ...partition,
+        { type: "integer", value: String(now) },
+        { type: "integer", value: String(now - PURGE_LEASE_MS) },
+        { type: "integer", value: String(PURGE_BATCH) },
+        { type: "text", value: attempt },
+      ],
+    },
+  ]);
+  const contentIds = claimed
+    .map((row) => row[0] as { type?: string; value?: string } | undefined)
+    .map((cell) => (cell?.type === "text" && typeof cell.value === "string" ? cell.value : null))
+    .filter((id): id is string => id !== null);
+
+  const purged: string[] = [];
+  const released: string[] = [];
+  for (const contentId of contentIds) {
+    let removed = false;
+    if (DIGEST.test(contentId)) {
+      try {
+        await bucket.delete(publishedKey(jurisdiction, tier, contentId));
+        removed = true;
+      } catch {
+        removed = false;
+      }
+    }
+    const finish = [
+      ...partition,
+      { type: "text", value: contentId },
+      { type: "integer", value: String(Date.now()) },
+      { type: "text", value: attempt },
+    ] as const;
+    await runKvTransaction(primary, [
+      ...(removed ? [{ sql: catalogSql("blob.purged_mark"), args: [...finish] }] : []),
+      { sql: catalogSql("blob.purge_release"), args: [...finish] },
+    ]);
+    (removed ? purged : released).push(contentId);
+  }
+  return new Response(
+    JSON.stringify({ jurisdiction, tier, purged, released, more: contentIds.length === PURGE_BATCH }),
+    { status: 200, headers: { "content-type": "application/json" } },
   );
 }
 
@@ -433,13 +549,14 @@ function base64Text(b64: string): string {
   return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
 }
 
-/** The key's live head value as text, or null when absent or masked. */
+/** The key's live head value as text when its envelope is a blob
+ * reference, or null when absent, masked or inline. */
 async function liveHeadText(
   primary: NonNullable<AuthDeps["kvPrimary"]>,
   address: { scope: string; registry: string; namespace: string; key: string },
 ): Promise<string | null> {
-  const read = KV_CATALOG.statements.find((s) => s.name === "head.read");
-  if (!read) throw new FailClosed(500, "kv_catalog_incomplete", "the catalogue has no head.read");
+  const read = KV_CATALOG.statements.find((s) => s.name === "head.read_enveloped");
+  if (!read) throw new FailClosed(500, "kv_catalog_incomplete", "the catalogue has no head.read_enveloped");
   const [rows] = await runKvTransaction(primary, [
     {
       sql: read.sql,
@@ -455,7 +572,10 @@ async function liveHeadText(
   if (!row) return null;
   const state = row[1] as { type?: string; value?: string } | undefined;
   const value = row[2] as { type?: string; base64?: string; value?: string } | undefined;
-  if (state?.value !== "live" || !value) return null;
+  const envelope = row[5] as { type?: string; value?: string } | undefined;
+  // Only a head whose row envelope is a reference holds one (design §11);
+  // inline bytes that spell a reference are still inline bytes.
+  if (state?.value !== "live" || !value || envelope?.value !== KV_REF_ENVELOPE) return null;
   try {
     if (value.type === "blob" && typeof value.base64 === "string") return base64Text(value.base64);
     if (value.type === "text" && typeof value.value === "string") return value.value;

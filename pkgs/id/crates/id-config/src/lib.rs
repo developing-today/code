@@ -32,6 +32,7 @@ use serde::{Deserialize, Serialize};
 
 pub mod explain;
 pub mod links;
+pub mod namespaces;
 pub mod peers;
 pub mod remotes;
 pub mod resolve;
@@ -44,7 +45,11 @@ pub use links::{
     ADVERTISED_LINK_ADAPTERS, ControlLink, Links, QueryLink, ResolvedLinks, ResolvedQueryLink,
     ResolvedSendOnlyLink, ResolvedSyncLink, SendOnlyLink, SyncLink,
 };
-pub use peers::{PeerClass, PeerEntry, PeerOperation};
+pub use namespaces::{
+    BUILTIN_NAMESPACE_REGISTRY, MAX_NAMESPACE_REGISTRY_ID_LEN, Namespaces, RegistryRef,
+    ResolvedNamespaces,
+};
+pub use peers::{OperationOverride, PeerClass, PeerEntry, PeerOperation};
 pub use remotes::FanoutRemote;
 pub use resolve::{LayerOverride, ResolutionInput, ResolveError, ResolvedLayers, resolve};
 pub use rollout::{
@@ -124,9 +129,10 @@ pub fn field_class(path: &str) -> Option<FieldClass> {
         | "gates" => Some(FieldClass::Mechanism),
         // Mode bundles, behavioral values, scoped overrides, retained
         // extensions, fan-out keys, the peer plane, the storage plane and the
-        // tier map are the configurable surface.
+        // tier map, the link plane and the namespace registry reference are
+        // the configurable surface.
         "mode" | "behavior" | "overrides" | "extensions" | "fanout" | "peers" | "storage"
-        | "tiers" | "links" => Some(FieldClass::Behavior),
+        | "tiers" | "links" | "namespaces" => Some(FieldClass::Behavior),
         _ => None,
     }
 }
@@ -550,6 +556,10 @@ pub struct ConfigDocument {
     /// configurable kind is off. See [`Links`].
     #[serde(default)]
     pub links: Links,
+    /// The namespace plane: which local registry names resolve in. Absent
+    /// means the built-in registry only. See [`Namespaces`].
+    #[serde(default)]
+    pub namespaces: Namespaces,
 }
 
 /// The deterministic result of resolving a valid [`ConfigDocument`]: the
@@ -604,6 +614,11 @@ pub struct ResolvedConfig {
     /// digest it had before the plane existed.
     #[serde(default, skip_serializing_if = "ResolvedLinks::is_default")]
     pub links: ResolvedLinks,
+    /// Resolved namespace plane. Omitted from the canonical encoding when
+    /// it is the built-in registry, so a document without `namespaces`
+    /// keeps the digest it had before the plane existed.
+    #[serde(default, skip_serializing_if = "ResolvedNamespaces::is_default")]
+    pub namespaces: ResolvedNamespaces,
 }
 
 impl ResolvedConfig {
@@ -783,6 +798,29 @@ pub enum ConfigError {
     /// A fan-out remote's `scope` is present but empty.
     #[error("fanout.remotes[] peer {0:?} scope must not be empty; omit it for the peer's scope")]
     EmptyRemoteScope(String),
+    /// A per-operation override names an operation it may not override.
+    #[error("peer {peer_id:?} overrides.{operation} is not allowed: {rule}")]
+    InvalidOperationOverride {
+        /// The peer.
+        peer_id: String,
+        /// The operation's wire name.
+        operation: &'static str,
+        /// Why it is not allowed.
+        rule: &'static str,
+    },
+    /// A per-operation override names an adapter this build does not
+    /// advertise (record §6.5 step 4).
+    #[error(
+        "peer {peer_id:?} overrides.{operation}.adapter {adapter:?} is not advertised by this build"
+    )]
+    UnadvertisedOverrideAdapter {
+        /// The peer.
+        peer_id: String,
+        /// The operation's wire name.
+        operation: &'static str,
+        /// The adapter named.
+        adapter: String,
+    },
     /// A link names an adapter this build does not advertise (record §6.5
     /// step 4).
     #[error("links.{link}.adapter {adapter:?} is not advertised by this build")]
@@ -792,6 +830,12 @@ pub enum ConfigError {
         /// The adapter named.
         adapter: String,
     },
+    /// `namespaces.registry` is not `builtin`, `server:<id>` or
+    /// `handle:<handle>` with a valid ID (record §3.1, §7.4; #9116).
+    #[error(
+        "namespaces.registry {0:?} must be \"builtin\", \"server:<id>\" or \"handle:<handle>\", the id 1 to 255 visible ASCII characters"
+    )]
+    InvalidNamespaceRegistry(String),
     /// A link's `retention_class` is empty.
     #[error("links.{0}.retention_class must not be empty; omit it for the default")]
     EmptyLinkRetentionClass(&'static str),
@@ -922,6 +966,7 @@ impl ConfigDocument {
         remotes::validate(&self.fanout.remotes, &self.peers)?;
         self.storage.validate()?;
         self.links.validate()?;
+        self.namespaces.validate()?;
         tiers::validate(&self.tiers, &self.storage)?;
         for key in self.extensions.keys() {
             if !is_namespaced_extension_key(key) {
@@ -1047,6 +1092,7 @@ impl ConfigDocument {
             storage: self.storage.resolved(),
             tiers: tiers::resolved(&self.tiers),
             links: self.links.resolved(),
+            namespaces: self.namespaces.resolved(),
         })
     }
 }

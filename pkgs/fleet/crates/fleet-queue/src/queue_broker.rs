@@ -704,7 +704,7 @@ pub(crate) fn landing_from_json(
 /// half posting for the same block is safe. This half goes live
 /// only when the broker binary is replaced (the coordinated
 /// switch); until then the CLI half is the live path.
-fn maybe_raise_needs_drew(st: &State, req: &Value, resp: &Value) {
+fn maybe_raise_needs_user(st: &State, req: &Value, resp: &Value) {
     if resp.get("ok").and_then(|v| v.as_bool()) != Some(true) {
         return;
     }
@@ -712,7 +712,7 @@ fn maybe_raise_needs_drew(st: &State, req: &Value, resp: &Value) {
         return;
     }
     let blocker = req.get("blocker").and_then(|v| v.as_str()).unwrap_or("");
-    let Some(nd) = crate::needs_drew::from_block_request(req, blocker) else {
+    let Some(nd) = crate::needs_user::from_block_request(req, blocker) else {
         return;
     };
     let secrets_url = st.secrets_url.clone();
@@ -725,9 +725,9 @@ fn maybe_raise_needs_drew(st: &State, req: &Value, resp: &Value) {
             agent: agent.clone(),
         })]);
         let raised = resolver
-            .resolve(crate::needs_drew::ALERTS_INTAKE_TOKEN_SECRET)
+            .resolve(crate::needs_user::ALERTS_INTAKE_TOKEN_SECRET)
             .map_err(|e| e.to_string())
-            .and_then(|token| crate::needs_drew::post_needs_drew(token.expose(), &nd));
+            .and_then(|token| crate::needs_user::post_needs_user(token.expose(), &nd));
         match raised {
             Ok(_) => crate::log::info(
                 "queue-broker",
@@ -800,7 +800,7 @@ fn maybe_raise_actions_exec_extension(st: &State, resp: &Value) {
             .to_string()
     };
     let i = |k: &str, d: i64| resp.get(k).and_then(|v| v.as_i64()).unwrap_or(d);
-    let info = crate::needs_drew::ExtensionAlert {
+    let info = crate::needs_user::ExtensionAlert {
         key: s("alert_key"),
         handle: handle.to_string(),
         context: resp
@@ -828,7 +828,7 @@ fn maybe_raise_actions_exec_extension(st: &State, resp: &Value) {
         grace_until: s("grace_until"),
         reason: s("reason"),
     };
-    let body = crate::needs_drew::build_extension_alert_body(&info);
+    let body = crate::needs_user::build_extension_alert_body(&info);
     let secrets_url = st.secrets_url.clone();
     let secrets_token = st.secrets_token.clone();
     let agent = st.agent.clone();
@@ -839,11 +839,11 @@ fn maybe_raise_actions_exec_extension(st: &State, resp: &Value) {
             agent: agent.clone(),
         })]);
         let raised = resolver
-            .resolve(crate::needs_drew::ALERTS_INTAKE_TOKEN_SECRET)
+            .resolve(crate::needs_user::ALERTS_INTAKE_TOKEN_SECRET)
             .map_err(|e| e.to_string())
             .and_then(|token| {
-                crate::needs_drew::post_plain_alert_to(
-                    &crate::needs_drew::alerts_url(),
+                crate::needs_user::post_plain_alert_to(
+                    &crate::needs_user::alerts_url(),
                     token.expose(),
                     &body,
                 )
@@ -1157,7 +1157,7 @@ fn dispatch(st: &State, path: &str, req: &Value) -> Value {
             // #8568: the broker-side needs-drew raise for an
             // escalated block (fire-and-forget).
             if path == "/block" {
-                maybe_raise_needs_drew(st, req, &resp);
+                maybe_raise_needs_user(st, req, &resp);
             }
             // #13774: the emergency-extension needs-drew raise.
             if path == "/actions-exec-extend-request" {
