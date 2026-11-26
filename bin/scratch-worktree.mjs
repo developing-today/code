@@ -154,6 +154,16 @@ export const remove = ({ path: target, token }) => {
   if (status !== '') {
     throw new ScratchError(3, `refusing to remove ${target}: it has uncommitted changes:\n${status}`);
   }
+  const markerPath = path.join(target, FLEET_SESSION_MARKER);
+  const markerTracked = git(['ls-files', '--', FLEET_SESSION_MARKER], target) !== '';
+  if (!markerTracked) {
+    try {
+      const marker = fs.lstatSync(markerPath);
+      if (marker.isFile() || marker.isSymbolicLink()) fs.unlinkSync(markerPath);
+    } catch (error) {
+      if (error.code !== 'ENOENT') throw error;
+    }
+  }
   const head = git(['rev-parse', 'HEAD'], target);
   git(['worktree', 'remove', target], target);
   return { removed: target, head };
