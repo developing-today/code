@@ -231,8 +231,7 @@ fn transport_inventory_reads_only_labelled_source_rows_and_never_text() {
             (5, "h5", Some("unrecognized"), Some("personal"), true),
             (6, "h6", None, None, true),
         ],
-    )
-    .expect("valid fixture hashes");
+    );
     create_db(
         &dst_path,
         &[
@@ -245,8 +244,7 @@ fn transport_inventory_reads_only_labelled_source_rows_and_never_text() {
             ),
             (4, "h4", None, Some("secret-bearing"), true),
         ],
-    )
-    .expect("valid fixture hashes");
+    );
 
     let src = LocalShardTransport::open(&src_path).expect("src");
     let dst = LocalShardTransport::open(&dst_path).expect("dst");
