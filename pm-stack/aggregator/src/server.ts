@@ -309,6 +309,7 @@ import {
   type ReportRecordSource,
 } from "./report-records.ts";
 import { renderReportReview, reportBlockReviews } from "./report-review.ts";
+import { reportIndexEntries, searchReportIndex } from "./report-index.ts";
 import {
   FORECAST_CONTRACT_VERSION,
   quotaForecastContract,
@@ -2382,11 +2383,31 @@ async function handler(req: Request, remoteAddress?: string): Promise<Response> 
 
   if (path === "/webhooks/github") return metadataWebhookHandler(req);
 
-  if (req.method === "GET" && (path === "/reports" || path === "/api/reports.json")) {
+  if (
+    req.method === "GET" &&
+    (path === "/reports" || path === "/api/reports.json" || path === "/api/v1/reports")
+  ) {
     try {
       const records = await readReportRecords(reportRecordsLocation);
       const snapshots = await readReportSnapshots(reportRecordsLocation);
       const current = selectCurrentReportRecords(records);
+      if (path === "/api/v1/reports") {
+        const number = (key: string): number | undefined => {
+          const value = url.searchParams.get(key);
+          if (value === null || !/^\d+$/.test(value)) return undefined;
+          const parsed = Number(value);
+          return Number.isSafeInteger(parsed) ? parsed : undefined;
+        };
+        const result = searchReportIndex(reportIndexEntries(current), {
+          q: url.searchParams.get("q") ?? undefined,
+          kind: url.searchParams.get("kind") ?? undefined,
+          from: url.searchParams.get("from") ?? undefined,
+          to: url.searchParams.get("to") ?? undefined,
+          limit: number("limit"),
+          offset: number("offset"),
+        });
+        return json({ ...result, version: 1 });
+      }
       if (path === "/api/reports.json") {
         return json({
           records: current,

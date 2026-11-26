@@ -1,9 +1,11 @@
+import { createHash } from "node:crypto";
 import type { ReportRecord } from "./report-records.ts";
 
 export interface ReportIndexEntry {
   id: string;
   pageId: string;
   recordId: string;
+  contentHash: string;
   periodId: string;
   title: string;
   kind: string;
@@ -29,8 +31,9 @@ export function reportIndexEntries(records: ReportRecord[]): ReportIndexEntry[] 
     const title = `${record.period.kind} report · ${record.period.periodStart.slice(0, 10)}`;
     return {
       id: record.id,
-      pageId: `report:${record.id}`,
+      pageId: `report:${record.period.id}`,
       recordId: record.id,
+      contentHash: `sha256:${createHash("sha256").update(JSON.stringify(record)).digest("hex")}`,
       periodId: record.period.id,
       title,
       kind: record.period.kind,

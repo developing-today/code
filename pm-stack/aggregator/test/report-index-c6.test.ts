@@ -12,9 +12,12 @@ const record = (id: string, title: string, text: string): ReportRecord => ({
 
 describe("C6 reports index projection", () => {
   test("searches body, linked issue and title with stable pagination", () => {
-    const entries = reportIndexEntries([record("r2", "Second report", "Atlas ingestion recovered") , record("r1", "First report", "Timeline delayed")]);
+    const entries = reportIndexEntries([record("r2", "Second report", "Atlas ingestion recovered"), record("r1", "First report", "Timeline delayed")]);
     expect(searchReportIndex(entries, { q: "ingestion" }).total).toBe(1);
     expect(searchReportIndex(entries, { q: "15020" }).total).toBe(2);
+    expect(searchReportIndex(entries, { q: "weekly report" }).total).toBe(2);
+    expect(entries[0]?.pageId).toBe("report:weekly:r1:America/Chicago");
+    expect(entries[0]?.contentHash).toMatch(/^sha256:[a-f0-9]{64}$/);
     expect(searchReportIndex(entries, { q: "report", limit: 1 }).records.map((r) => r.id)).toEqual(["r1"]);
   });
 });

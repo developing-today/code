@@ -151,6 +151,9 @@ describe("server boots from fixtures", () => {
     const api = await fetch(`http://127.0.0.1:${port}/api/reports.json`);
     expect(api.status).toBe(200);
     expect(await api.json()).toEqual({ records: [], conflicts: [] });
+    const index = await fetch(`http://127.0.0.1:${port}/api/v1/reports?kind=weekly&limit=10`);
+    expect(index.status).toBe(200);
+    expect(await index.json()).toEqual({ records: [], total: 0, offset: 0, limit: 10, version: 1 });
   });
 
   test("quota and attention pages render", async () => {
