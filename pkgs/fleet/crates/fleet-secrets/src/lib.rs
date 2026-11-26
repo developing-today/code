@@ -203,7 +203,9 @@ impl Scope {
         env_value: Option<&str>,
         config_value: Option<&str>,
     ) -> Result<Scope, SecretError> {
-        let set = |v: Option<&str>| v.filter(|s| !s.trim().is_empty());
+        fn set(v: Option<&str>) -> Option<&str> {
+            v.filter(|s| !s.trim().is_empty())
+        }
         match set(env_value).or_else(|| set(config_value)) {
             Some(prefix) => Scope::prefixed(prefix),
             None => Ok(Scope::none()),
