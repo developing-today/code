@@ -221,7 +221,7 @@ fn maps_by_content_hash_and_classifies_incomplete_secret_destinations() {
     ];
     let destination = [
         d(11, "hash-a", true),
-        d(2, "different-hash", true),
+        d(3, "different-hash", true),
         d(12, "hash-b", false),
     ];
 
