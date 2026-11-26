@@ -63,6 +63,22 @@ never something tier 0 may route around. Timeouts always apply:
 the daemon's `timeout_s` (default 300) plus the transport grace
 as the local deadline; a daemon-side timeout exits 124.
 
+The daemon has no stdin channel (the stdin contract of
+developing-today/code#10356, section 4). `fleet http exec`
+therefore refuses a stdin that carries data, such as a pipe or a
+non-empty redirected file, with a usage error (exit 2) before
+anything is dialed or sent, instead of silently dropping the
+bytes. A terminal, `/dev/null`, an empty file or an empty pipe is
+fine. To hand a command finite data, stage it first and read it
+from the laptop path:
+
+```
+fleet proxy put ./input.json /tmp/input.json
+fleet http exec -- sh -c 'jq . < /tmp/input.json'
+```
+
+For interactive input, use `fleet ssh exec` (tier T3).
+
 ## fleet ssh — tier T3
 
 SSH's endpoint-grade shape is a binary-owned client contract: the
