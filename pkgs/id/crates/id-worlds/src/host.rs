@@ -2742,6 +2742,7 @@ mod tests {
                     program_error: None,
                     error: (entries % 2 == 1).then(|| "replay failed".to_owned()),
                 }),
+                snapshots: None,
             });
         let file = (
             proptest::collection::hash_map(name, record, 0..5),
