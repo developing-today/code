@@ -176,19 +176,13 @@
 //! }
 //!
 //! #[derive(Deserialize, Debug, PartialEq)]
-//! #[serde(rename_all = "kebab-case")]
-//! enum ServerKind {
-//!     Big,
-//!     Small,
-//! }
-//! #[derive(Deserialize, Debug, PartialEq)]
 //! struct Server {
 //!     #[serde(rename = "#type")]
-//!     server_kind: ServerKind,
+//!     server_annotations: Vec<String>,
 //!     #[serde(rename = "#0#type")]
-//!     app_type: String,
+//!     app_annotations: Vec<String>,
 //!     #[serde(rename = "#@port#type")]
-//!     port_type: String,
+//!     port_annotations: Vec<String>,
 //! }
 //!
 //! let kdl = r#"
@@ -196,7 +190,7 @@
 //! "#;
 //!
 //! let config: Config = kdl::de::from_str(kdl).unwrap();
-//! assert_eq!(config, Config { server: Server { server_kind: ServerKind::Big, app_type: "cool".into(), port_type: "internal".into() }});
+//! assert_eq!(config, Config { server: Server { server_annotations: vec!["big".into()], app_annotations: vec!["cool".into()], port_annotations: vec!["internal".into()] }});
 //! ```
 
 use std::borrow::Cow;
@@ -1113,6 +1107,51 @@ impl<'de, 'a> SeqAccess<'de> for NodeGroupSeqAccess<'a> {
 }
 
 #[derive(Debug)]
+struct AnnotationsDeserializer<'a> {
+    annotations: &'a [KdlIdentifier],
+    input: &'a Arc<String>,
+}
+
+impl<'de, 'a> de::Deserializer<'de> for AnnotationsDeserializer<'a> {
+    type Error = Error;
+
+    fn deserialize_any<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Self::Error> {
+        self.deserialize_seq(visitor)
+    }
+
+    fn deserialize_seq<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Self::Error> {
+        visitor.visit_seq(AnnotationSeqAccess {
+            iter: self.annotations.iter(),
+            input: self.input,
+        })
+    }
+
+    serde::forward_to_deserialize_any! {
+        bool i8 i16 i32 i64 i128 u8 u16 u32 u64 u128 f32 f64 char str string
+        bytes byte_buf option unit unit_struct newtype_struct tuple tuple_struct
+        map struct enum identifier ignored_any
+    }
+}
+
+struct AnnotationSeqAccess<'a> {
+    iter: std::slice::Iter<'a, KdlIdentifier>,
+    input: &'a Arc<String>,
+}
+
+impl<'de, 'a> SeqAccess<'de> for AnnotationSeqAccess<'a> {
+    type Error = Error;
+
+    fn next_element_seed<T: DeserializeSeed<'de>>(
+        &mut self,
+        seed: T,
+    ) -> Result<Option<T::Value>, Self::Error> {
+        self.iter
+            .next()
+            .map(|annotation| seed.deserialize(IdentDeserializer::new(annotation, self.input)))
+            .transpose()
+    }
+}
+
 struct NodeMapAccess<'a> {
     /// Properties and children combined as (key, value_source).
     entries: Vec<(Cow<'a, str>, NodeMapValue<'a>)>,
@@ -1123,6 +1162,7 @@ struct NodeMapAccess<'a> {
 #[derive(Debug)]
 enum NodeMapValue<'a> {
     Ident(&'a KdlIdentifier),
+    Idents(&'a [KdlIdentifier]),
     Arg(&'a KdlEntry),
     Args(Vec<&'a KdlEntry>),
     SingleNode(&'a KdlNode),
@@ -1142,10 +1182,20 @@ impl<'a> NodeMapAccess<'a> {
             if fields.contains(&"#name") {
                 entries.push(("#name".into(), NodeMapValue::Ident(node.name())));
             }
-            if fields.contains(&"#type")
-                && let Some(ty) = node.ty()
-            {
-                entries.push(("#type".into(), NodeMapValue::Ident(ty)));
+            if fields.contains(&"#type") {
+                entries.push(("#type".into(), NodeMapValue::Idents(node.annotations())));
+            }
+            if fields.contains(&"@annotations") {
+                entries.push((
+                    "@annotations".into(),
+                    NodeMapValue::Idents(node.annotations()),
+                ));
+            }
+            if fields.contains(&"@children-annotations") {
+                entries.push((
+                    "@children-annotations".into(),
+                    NodeMapValue::Idents(node.children_annotations()),
+                ));
             }
         }
         if let Some(fields) = fields
@@ -1165,8 +1215,8 @@ impl<'a> NodeMapAccess<'a> {
                 }
                 let idx_name = format!("#{i}");
                 let ty_name = format!("{idx_name}#type");
-                if let Some(ty) = arg.ty() {
-                    entries.push((ty_name.into(), NodeMapValue::Ident(ty)));
+                if fields.contains(&ty_name.as_ref()) {
+                    entries.push((ty_name.into(), NodeMapValue::Idents(arg.annotations())));
                 }
                 if fields.contains(&idx_name.as_ref()) {
                     entries.push((idx_name.into(), NodeMapValue::Arg(arg)));
@@ -1192,10 +1242,8 @@ impl<'a> NodeMapAccess<'a> {
                 if fields.contains(&hash_name.as_ref()) {
                     entries.push((hash_name.into(), NodeMapValue::Arg(prop)));
                 }
-                if let Some(ty) = prop.ty()
-                    && fields.contains(&ty_name.as_ref())
-                {
-                    entries.push((ty_name.into(), NodeMapValue::Ident(ty)));
+                if fields.contains(&ty_name.as_ref()) {
+                    entries.push((ty_name.into(), NodeMapValue::Idents(prop.annotations())));
                 }
             }
             entries.push((name.into(), NodeMapValue::Arg(prop)));
@@ -1226,7 +1274,8 @@ impl<'a> NodeMapAccess<'a> {
         }
         if let Some(fields) = fields {
             for field in fields {
-                if !field.starts_with('#') && !used_names.contains(field) {
+                if !field.starts_with('#') && !field.starts_with('@') && !used_names.contains(field)
+                {
                     entries.push((String::from(*field).into(), NodeMapValue::Omitted));
                 }
             }
@@ -1267,6 +1316,10 @@ impl<'de, 'a> MapAccess<'de> for NodeMapAccess<'a> {
             NodeMapValue::Ident(ident) => {
                 seed.deserialize(IdentDeserializer::new(ident, self.input))
             }
+            NodeMapValue::Idents(idents) => seed.deserialize(AnnotationsDeserializer {
+                annotations: idents,
+                input: self.input,
+            }),
             NodeMapValue::Arg(entry) => seed.deserialize(ValueDeserializer::new(entry, self.input)),
             NodeMapValue::Args(entries) => seed.deserialize(ArgsSeqDeserializer {
                 entries: entries.clone(),
@@ -1958,22 +2011,15 @@ h 8
     #[test]
     fn rename_args() {
         #[derive(Deserialize, Debug, PartialEq)]
-        #[serde(rename_all = "kebab-case")]
-        enum HostType {
-            IpAddr,
-            Hostname,
-        }
-
-        #[derive(Deserialize, Debug, PartialEq)]
         struct Server {
             #[serde(rename = "#type")]
-            server_type: String,
+            server_type: Vec<String>,
             #[serde(rename = "#0#type")]
-            host_type: HostType,
+            host_type: Vec<String>,
             #[serde(rename = "#0")]
             host: String,
             #[serde(rename = "#@port#type")]
-            port_type: String,
+            port_type: Vec<String>,
             #[serde(rename = "#@port")]
             port: u16,
             #[serde(rename = "#args")]
@@ -1991,10 +2037,10 @@ h 8
             config,
             Config {
                 server: Server {
-                    server_type: "linux-debian-arm64".into(),
-                    host_type: HostType::Hostname,
+                    server_type: vec!["linux-debian-arm64".into()],
+                    host_type: vec!["hostname".into()],
                     host: "localhost".into(),
-                    port_type: "number".into(),
+                    port_type: vec!["number".into()],
                     port: 8080,
                     all: Vec::from(["localhost".into(), "remote".into()])
                 },
