@@ -11,8 +11,12 @@
 //! resolve-to-shard mechanics) and the idempotent restore decision
 //! (§6's no-op/conflict rules) are pure functions here; the
 //! persistent cold catalog and fan-out addressing belong to
-//! follow-on 3 (#8229), and the hot write (§6 steps 5–7) lands with
-//! the hot versioning store it writes into.
+//! follow-on 3 (#8229). The hot write (§6 steps 5–7) is
+//! [`ColdShard::restore_version`]: it writes through the
+//! [`HotVersionStore`] trait, so the orchestration — hash gate,
+//! decision, provenance-additive insert, mark-hot — is landed and
+//! tested here while a concrete hot versioning store plugs in
+//! behind that trait when it lands.
 //!
 //! ## Byte layout (format_version 1)
 //!
@@ -127,7 +131,7 @@ pub struct ColdVersion {
 /// The version's predecessor and the edge kind that produced it,
 /// from the #6026 §2.2 vocabulary (`edit`, `rename`, `split`,
 /// `merge`, `tombstone`) (§3.1).
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct LineageSummary {
     #[serde(default)]
     pub predecessor: Option<VersionRef>,
@@ -135,7 +139,7 @@ pub struct LineageSummary {
     pub edge: Option<String>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct VersionRef {
     #[serde(deserialize_with = "de_file_id")]
     pub file_id: String,
@@ -570,9 +574,9 @@ pub fn resolve_version<'s>(
 /// version that is already hot with the same content hash is a
 /// no-op success; one whose hot copy differs is a reported
 /// conflict and is never overwritten; an absent hot copy
-/// proceeds. The hot write itself (§6 steps 5–7) lands with the
-/// hot versioning store; this decision is what keeps that write
-/// from ever overwriting a differing hot copy.
+/// proceeds. [`ColdShard::restore_version`] applies this decision
+/// to its hot write; it is what keeps that write from ever
+/// overwriting a differing hot copy.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RestoreDecision {
     Proceed,
@@ -592,6 +596,165 @@ pub fn restore_decision(
         Some(hot) => RestoreDecision::Conflict {
             hot_content_hash: hot.to_string(),
         },
+    }
+}
+
+/// Provenance for one restore (§6 step 5). Provenance is additive:
+/// this record names the restore alongside — never instead of —
+/// the version's original ingestion provenance, which the hot
+/// store keeps untouched. `source_shard_id` and `export_run_id`
+/// come from the cold shard's manifest provenance; `restore_run_id`
+/// and `restored_at` are supplied by the caller driving the restore.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RestoreProvenance {
+    pub source_shard_id: String,
+    pub export_run_id: String,
+    pub restore_run_id: String,
+    pub restored_at: String,
+}
+
+/// One chunk's vector being re-imported (§6 step 6): the vector
+/// table's f32 values for `span_ref`, carried bit-identically —
+/// restore never re-embeds.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RestoredVector {
+    pub span_ref: String,
+    pub vector: Vec<f32>,
+}
+
+/// Everything §6 steps 5–6 re-import into the hot tier for one
+/// version, under its original identity: same `(file_id,
+/// version_seq)`, same content hash, its lineage summary re-attached
+/// as its lineage edge, its verified bytes, and its vectors as-is.
+/// `vector_model_mismatch` is the §6 step-6 flag: when the shard's
+/// `vector_model` differs from the hot tier's current model the
+/// version still restores with its original vectors, flagged for
+/// the hot tier's normal re-embedding policy — models are never
+/// silently mixed in a search set.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RestoredVersion {
+    pub file_id: String,
+    pub version_seq: u64,
+    pub path_at_version: String,
+    pub content_hash: String,
+    pub bytes: Vec<u8>,
+    pub lineage: Option<LineageSummary>,
+    pub vectors: Vec<RestoredVector>,
+    pub vector_model_mismatch: bool,
+    pub provenance: RestoreProvenance,
+}
+
+/// The hot side of a restore (§6 steps 5–7). A concrete hot
+/// versioning store implements this trait; the restore
+/// orchestration in [`ColdShard::restore_version`] is written
+/// against it so the guarantees — hash verified before any write,
+/// a differing hot copy never overwritten, mark-hot only after a
+/// successful insert — hold for every store.
+pub trait HotVersionStore {
+    /// The content hash of the hot copy of `(file_id, version_seq)`,
+    /// or `None` when the version is not hot.
+    fn hot_content_hash(&self, file_id: &str, version_seq: u64) -> Result<Option<String>>;
+
+    /// Insert one restored version under its original identity,
+    /// with its restore provenance recorded additively. Called only
+    /// after the version's reconstruction passed the §6 step-4
+    /// content-hash gate and the restore decision was `Proceed`.
+    fn insert_restored(&mut self, version: RestoredVersion) -> Result<()>;
+
+    /// Mark `(file_id, version_seq)` hot in the catalog (§6 step 7).
+    /// Called only after [`HotVersionStore::insert_restored`]
+    /// succeeds. The cold shard is not deleted by a restore.
+    fn mark_hot(&mut self, file_id: &str, version_seq: u64) -> Result<()>;
+}
+
+/// How one [`ColdShard::restore_version`] call ended (§6's
+/// idempotence rule, applied).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RestoreOutcome {
+    /// The version was re-imported and marked hot.
+    Restored,
+    /// Already hot with the same content hash: no-op success,
+    /// nothing written.
+    NoopSuccess,
+    /// Already hot with a differing content hash: reported, and
+    /// the hot copy was never overwritten.
+    Conflict { hot_content_hash: String },
+}
+
+impl ColdShard {
+    /// Restore one version into a hot store (§6 steps 4–7, in
+    /// order): verify the reconstruction against the version's
+    /// `content_hash` before the store is touched at all, apply the
+    /// idempotence decision against the hot copy, then — only on
+    /// `Proceed` — insert the version under its original identity
+    /// with additive restore provenance and its vectors as-is
+    /// (flagged when their model differs from `current_vector_model`),
+    /// and mark it hot. A hash mismatch aborts this version with an
+    /// error and zero store writes; a same-hash hot copy is a no-op
+    /// success; a differing hot copy is a reported conflict.
+    pub fn restore_version<S: HotVersionStore>(
+        &self,
+        store: &mut S,
+        file_id: &str,
+        version_seq: u64,
+        current_vector_model: &str,
+        restore_run_id: &str,
+        restored_at: &str,
+    ) -> Result<RestoreOutcome> {
+        // Step 4 gate first: no store call of any kind happens
+        // before the reconstruction is hash-verified.
+        let bytes = self.verify_content_hash(file_id, version_seq)?;
+        let version = self
+            .version(file_id, version_seq)
+            .expect("verify_content_hash only succeeds for a version in the shard");
+        match restore_decision(
+            &version.content_hash,
+            store.hot_content_hash(file_id, version_seq)?.as_deref(),
+        ) {
+            RestoreDecision::NoopSuccess => Ok(RestoreOutcome::NoopSuccess),
+            RestoreDecision::Conflict { hot_content_hash } => {
+                Ok(RestoreOutcome::Conflict { hot_content_hash })
+            }
+            RestoreDecision::Proceed => {
+                // Step 6: vectors as-is, one per distinct chunk the
+                // version's occurrences use, in occurrence order; a
+                // chunk with no vector entry contributes none.
+                let mut seen: Vec<&str> = Vec::new();
+                let mut vectors = Vec::new();
+                for occurrence in &version.occurrences {
+                    if seen.contains(&occurrence.span_ref.as_str()) {
+                        continue;
+                    }
+                    seen.push(occurrence.span_ref.as_str());
+                    if let Some(vector) = self.vector_for_span(&occurrence.span_ref)? {
+                        vectors.push(RestoredVector {
+                            span_ref: occurrence.span_ref.clone(),
+                            vector,
+                        });
+                    }
+                }
+                // Step 5: re-import under the original identity.
+                store.insert_restored(RestoredVersion {
+                    file_id: version.file_id.clone(),
+                    version_seq: version.version_seq,
+                    path_at_version: version.path_at_version.clone(),
+                    content_hash: version.content_hash.clone(),
+                    bytes,
+                    lineage: version.lineage.clone(),
+                    vectors,
+                    vector_model_mismatch: self.vector_model_mismatch(current_vector_model),
+                    provenance: RestoreProvenance {
+                        source_shard_id: self.manifest.shard_id.clone(),
+                        export_run_id: self.manifest.provenance.export_run_id.clone(),
+                        restore_run_id: restore_run_id.to_string(),
+                        restored_at: restored_at.to_string(),
+                    },
+                })?;
+                // Step 7: mark hot only after the insert succeeded.
+                store.mark_hot(file_id, version_seq)?;
+                Ok(RestoreOutcome::Restored)
+            }
+        }
     }
 }
 
@@ -1023,6 +1186,151 @@ mod tests {
             err.to_string().contains("more than one"),
             "error reports the ambiguity: {err}"
         );
+    }
+
+    /// In-memory [`HotVersionStore`] recording every call, so the
+    /// restore tests can assert the §6 ordering guarantees: no
+    /// insert on a no-op/conflict/hash-abort, mark-hot only after a
+    /// successful insert, and a differing hot copy left untouched.
+    /// Oracle: the design §6 procedure, step by step.
+    #[derive(Default)]
+    struct FakeHotStore {
+        hot: HashMap<(String, u64), String>,
+        inserted: Vec<RestoredVersion>,
+        marked_hot: Vec<(String, u64)>,
+    }
+
+    impl HotVersionStore for FakeHotStore {
+        fn hot_content_hash(&self, file_id: &str, version_seq: u64) -> Result<Option<String>> {
+            Ok(self.hot.get(&(file_id.to_string(), version_seq)).cloned())
+        }
+
+        fn insert_restored(&mut self, version: RestoredVersion) -> Result<()> {
+            self.hot.insert(
+                (version.file_id.clone(), version.version_seq),
+                version.content_hash.clone(),
+            );
+            self.inserted.push(version);
+            Ok(())
+        }
+
+        fn mark_hot(&mut self, file_id: &str, version_seq: u64) -> Result<()> {
+            self.marked_hot.push((file_id.to_string(), version_seq));
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn restore_version_reimports_under_original_identity_with_provenance() {
+        let shard = ColdShard::open(&hashed_fixture().bytes).expect("opens");
+        let mut store = FakeHotStore::default();
+        let outcome = shard
+            .restore_version(
+                &mut store,
+                "file-1",
+                2,
+                "embed-v2",
+                "restore-run-9",
+                "2026-11-26T00:00:00Z",
+            )
+            .expect("restore proceeds");
+        assert_eq!(outcome, RestoreOutcome::Restored);
+        assert_eq!(store.inserted.len(), 1);
+        let restored = &store.inserted[0];
+        // Original identity, verified bytes, lineage re-attached (§6 step 5).
+        assert_eq!(restored.file_id, "file-1");
+        assert_eq!(restored.version_seq, 2);
+        assert_eq!(restored.bytes, b"hello !");
+        assert_eq!(
+            restored.content_hash,
+            crate::classify::sha256_hex(b"hello !")
+        );
+        let lineage = restored.lineage.as_ref().expect("lineage re-attached");
+        assert_eq!(lineage.edge.as_deref(), Some("edit"));
+        assert_eq!(lineage.predecessor.as_ref().map(|p| p.version_seq), Some(1));
+        // Vectors as-is (§6 step 6): v2 uses span-a and span-c; only
+        // span-a has a vector entry, carried bit-identically.
+        assert_eq!(restored.vectors.len(), 1);
+        assert_eq!(restored.vectors[0].span_ref, "span-a");
+        assert_eq!(
+            restored.vectors[0]
+                .vector
+                .iter()
+                .map(|v| v.to_bits())
+                .collect::<Vec<_>>(),
+            vec![1.0f32.to_bits(), (-2.5f32).to_bits()]
+        );
+        // The shard's model is embed-v1, the hot tier's is embed-v2:
+        // flagged, not silently mixed.
+        assert!(restored.vector_model_mismatch);
+        // Additive restore provenance (§6 step 5).
+        assert_eq!(restored.provenance.source_shard_id, "shard-test-1");
+        assert_eq!(restored.provenance.export_run_id, "run-1");
+        assert_eq!(restored.provenance.restore_run_id, "restore-run-9");
+        assert_eq!(restored.provenance.restored_at, "2026-11-26T00:00:00Z");
+        // Marked hot after the insert (§6 step 7).
+        assert_eq!(store.marked_hot, vec![("file-1".to_string(), 2)]);
+    }
+
+    #[test]
+    fn restore_version_same_hash_hot_copy_is_a_noop() {
+        let shard = ColdShard::open(&hashed_fixture().bytes).expect("opens");
+        let mut store = FakeHotStore::default();
+        store.hot.insert(
+            ("file-1".to_string(), 1),
+            crate::classify::sha256_hex(b"hello world"),
+        );
+        let outcome = shard
+            .restore_version(&mut store, "file-1", 1, "embed-v1", "r", "t")
+            .expect("no-op is a success");
+        assert_eq!(outcome, RestoreOutcome::NoopSuccess);
+        assert!(store.inserted.is_empty(), "no-op writes nothing");
+        assert!(store.marked_hot.is_empty(), "no-op marks nothing");
+    }
+
+    #[test]
+    fn restore_version_differing_hot_copy_conflicts_and_is_never_overwritten() {
+        let shard = ColdShard::open(&hashed_fixture().bytes).expect("opens");
+        let mut store = FakeHotStore::default();
+        store
+            .hot
+            .insert(("file-1".to_string(), 1), "a-different-hash".to_string());
+        let outcome = shard
+            .restore_version(&mut store, "file-1", 1, "embed-v1", "r", "t")
+            .expect("conflict is reported, not an error");
+        assert_eq!(
+            outcome,
+            RestoreOutcome::Conflict {
+                hot_content_hash: "a-different-hash".to_string()
+            }
+        );
+        assert!(store.inserted.is_empty(), "conflict writes nothing");
+        assert_eq!(
+            store
+                .hot
+                .get(&("file-1".to_string(), 1))
+                .map(String::as_str),
+            Some("a-different-hash"),
+            "the differing hot copy is untouched"
+        );
+    }
+
+    #[test]
+    fn restore_version_hash_mismatch_aborts_before_any_store_write() {
+        // The standard fixture's content_hash values are not the
+        // real SHA-256 of the reconstructions, so the §6 step-4
+        // gate must abort before the store is written to.
+        let shard = ColdShard::open(&standard_fixture().bytes).expect("opens");
+        let mut store = FakeHotStore::default();
+        let err = shard
+            .restore_version(&mut store, "file-1", 1, "embed-v1", "r", "t")
+            .expect_err("hash mismatch aborts the restore");
+        assert!(
+            err.to_string().contains("content_hash"),
+            "error names the hash gate: {err}"
+        );
+        assert!(store.inserted.is_empty(), "abort writes nothing");
+        assert!(store.marked_hot.is_empty(), "abort marks nothing");
     }
 
     #[test]
