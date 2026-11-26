@@ -224,6 +224,7 @@ pub fn export_template(source: &TemplateSource) -> Result<TemplateBundle, Templa
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
 
