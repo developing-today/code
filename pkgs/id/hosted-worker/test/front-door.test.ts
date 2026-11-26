@@ -388,7 +388,7 @@ test("the migration projection can pause a centrally registered binding during s
       subject_key: "subject-1",
       binding_id: A,
       jurisdiction: "us",
-      jurisdiction_pending: null,
+      jurisdiction_pending: "eu",
       migration_id: "migration-1",
       phase: "switched",
       routing_epoch: 2,
