@@ -43,7 +43,7 @@ export interface CollectorDeps {
    * over MemoryIngestStorage in tests). */
   ingestDoFor: (boardId: string) => IngestDO;
   /** Poke the board's live-state DO after its tenant-DB snapshot commits. */
-  boardDoFor?: (boardId: string) => { snapshotLanded(snapshotId: string): Promise<void> };
+  boardDoFor: (boardId: string) => { snapshotLanded(snapshotId: string): Promise<void> };
   now?: () => string;
 }
 
@@ -209,7 +209,7 @@ export async function runHostedCollector(deps: CollectorDeps): Promise<Collector
         bodies: entry.bodies,
         now: now(),
       });
-      if (deps.boardDoFor) await deps.boardDoFor(entry.board.id).snapshotLanded(entry.snapshotId);
+      await deps.boardDoFor(entry.board.id).snapshotLanded(entry.snapshotId);
     }
   }
 
