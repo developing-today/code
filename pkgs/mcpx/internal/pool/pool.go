@@ -560,6 +560,31 @@ func (p *Pool) ReleaseKey(key string) int {
 	return 1
 }
 
+// KillKey ends the instance serving a key even when it is in use (#1931).
+// ReleaseKey detaches an idle instance and leaves a busy one alone; KillKey
+// is the force path: the instance is removed, its client is closed (ending
+// its streams and subscriptions with it), and a later call starts a fresh
+// one. Used by session kill, which addresses the caller session and ends
+// what it created rather than waiting for it to go idle.
+func (p *Pool) KillKey(key string) int {
+	if key == "" {
+		return 0
+	}
+	p.mu.Lock()
+	in := p.findLocked(key)
+	if in == nil {
+		p.mu.Unlock()
+		return 0
+	}
+	p.removeLocked(in)
+	p.cond.Broadcast()
+	p.mu.Unlock()
+	p.stopped(in, "killed")
+	p.forgetUpstreamSession(in)
+	_ = in.Client.Close()
+	return 1
+}
+
 // reapDeadLocked drops instances whose process has died and reports
 // whether any were reaped, so the caller can tell a crash (a server
 // that was running and terminated unexpectedly) from an idle pool.

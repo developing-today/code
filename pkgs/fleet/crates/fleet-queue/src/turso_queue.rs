@@ -49,6 +49,8 @@ mod claim;
 mod closed_bound;
 mod core;
 pub mod ctx_scope;
+#[cfg(all(test, feature = "queue-broker"))]
+mod hrana_double;
 mod label_enrich;
 mod lifecycle;
 mod links;

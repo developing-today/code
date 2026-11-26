@@ -46,6 +46,29 @@ import {
 } from "./bridge-session.ts";
 import type { IngestOutcome } from "./bridge-store.ts";
 import { ExportProductionError, exportSetsToWire, produceExportSets } from "./export.ts";
+import {
+  FENCE_RETRY_AFTER_SECONDS,
+  HDR_MIGRATION,
+  parseFenceRequest,
+  planFreeze,
+  planSeal,
+  planUnfreeze,
+  readEpochFloor,
+  readFence,
+  type SourceFence,
+} from "./migration-fence.ts";
+import {
+  MAX_SNAPSHOT_BYTES,
+  clearMigratedTables,
+  migratedTablesEmpty,
+  parseSnapshot,
+  readMigratedTables,
+  readStagedTarget,
+  snapshotDigest,
+  writeMigratedTables,
+  type MigrationSnapshot,
+  type StagedTarget,
+} from "./migration-snapshot.ts";
 
 export const SCHEMA_VERSION = 3;
 
@@ -94,6 +117,9 @@ interface DOState {
    * socket and may evict the object between messages, waking it
    * through webSocketMessage / webSocketClose. */
   acceptWebSocket?(ws: WsSocketLike): void;
+  /** Every socket this object accepted, so a migration freeze can
+   * close live bridge sessions (#3404). */
+  getWebSockets?(): WsSocketLike[];
 }
 interface Env {
   BLOBS?: R2BucketLike;
@@ -354,6 +380,7 @@ export class UserDO {
    * the object is read-only + exportable, and deletes are how a
    * user recovers headroom. */
   private assertWritable(deltaBytes: number) {
+    this.assertNotFenced();
     const ceiling = this.ceilingBytes();
     if (ceiling === null) return;
     const after = this.usage().storage_bytes + deltaBytes;
@@ -363,6 +390,292 @@ export class UserDO {
         "ceiling_exceeded",
         `storage ceiling exceeded: ${after} bytes would exceed the ${ceiling}-byte ceiling; reads and export remain available`,
       );
+    }
+  }
+
+  /** The persisted migration fence (#3404); null when none stands. */
+  private sourceFence(): SourceFence | null {
+    return readFence(this.meta("migration_fence"));
+  }
+
+  /** Refuse a mutation while a migration fence stands. The refusal is
+   * retryable: after the switch the route reaches the target, and
+   * after an abort the source reopens. */
+  private assertNotFenced(): void {
+    const fence = this.sourceFence();
+    if (fence === null) return;
+    throw new RetryableRefusal(
+      503,
+      fence.state === "sealed" ? "source_sealed" : "source_frozen",
+      fence.state === "sealed"
+        ? "this store moved in a migration; retry so the route reaches its new home"
+        : "this store is frozen for a migration; reads and export remain available",
+      FENCE_RETRY_AFTER_SECONDS,
+    );
+  }
+
+  /** The commit point of a mutation: check the fence, then count the
+   * mutation. Call it with no await between it and the write, so a
+   * freeze cannot land between the check and the commit. */
+  private commitPoint(): void {
+    this.assertNotFenced();
+    this.state.storage.sql.exec(
+      "INSERT INTO meta (key, value) VALUES ('mutation_seq', '1') ON CONFLICT(key) DO UPDATE SET value = CAST(value AS INTEGER) + 1",
+    );
+  }
+
+  private mutationSeq(): number {
+    return Number(this.meta("mutation_seq") ?? "0");
+  }
+
+  /** The staged-target record (#3404 slice 3); null when this object
+   * is not a staged migration target. */
+  private stagedTarget(): StagedTarget | null {
+    return readStagedTarget(this.meta("migration_target"));
+  }
+
+  /** Refuse every client route while this object is a staged target. */
+  private assertServing(): void {
+    if (this.stagedTarget() === null) return;
+    throw new RetryableRefusal(
+      503,
+      "target_not_serving",
+      "this store is being moved here and serves once the move completes",
+      FENCE_RETRY_AFTER_SECONDS,
+    );
+  }
+
+  /** Import a source snapshot into this fresh object and stage it
+   * (#3404 slice 3). The digest is checked against the body and again
+   * against what was written; any failure leaves the object empty. */
+  private async importSnapshot(
+    req: Request,
+    identity: { bindingId: string; clientSideEncryption: boolean },
+  ): Promise<Response> {
+    const text = await readTextUpTo(req, MAX_SNAPSHOT_BYTES);
+    if (text === null) throw bodyTooLarge(MAX_SNAPSHOT_BYTES);
+    let body: unknown;
+    try {
+      body = JSON.parse(text);
+    } catch {
+      throw new FailClosed(400, "invalid_body", "a snapshot is JSON");
+    }
+    const snap = parseSnapshot(body);
+    if (snap.binding_id !== identity.bindingId || snap.client_side_encryption !== identity.clientSideEncryption) {
+      throw new FailClosed(409, "identity_mismatch", "the snapshot belongs to a different binding or encryption choice");
+    }
+    if (snap.schema_version !== SCHEMA_VERSION) {
+      throw new FailClosed(409, "schema_mismatch", "the snapshot was taken at another schema version");
+    }
+    const claimed = await snapshotDigest(snap.binding_id, snap.client_side_encryption, snap.schema_version, snap.tables);
+    if (claimed !== snap.digest) {
+      throw new FailClosed(422, "snapshot_digest_mismatch", "the snapshot does not match its digest");
+    }
+    // From here to the staged record nothing awaits, so no other
+    // request sees a half-imported object.
+    const sql = this.state.storage.sql;
+    const staged = this.stagedTarget();
+    if (staged !== null) {
+      if (staged.migration_id === snap.migration_id && staged.digest === snap.digest) {
+        return json({ staged, idempotent: true });
+      }
+      throw new FailClosed(409, "target_staged_other", "this object is staged for a different migration");
+    }
+    if (this.sourceFence() !== null) {
+      throw new FailClosed(409, "target_is_fenced_source", "a fenced source cannot be a migration target");
+    }
+    if (!migratedTablesEmpty(sql)) {
+      throw new FailClosed(409, "target_not_empty", "a migration target must start empty");
+    }
+    const record: StagedTarget = {
+      v: 1,
+      migration_id: snap.migration_id,
+      routing_epoch: snap.routing_epoch,
+      digest: snap.digest,
+      watermark: snap.watermark,
+    };
+    try {
+      writeMigratedTables(sql, snap.tables);
+    } catch (error) {
+      clearMigratedTables(sql);
+      throw new FailClosed(422, "snapshot_unwritable", `the snapshot could not be written: ${String(error)}`);
+    }
+    this.setMeta("migration_target", JSON.stringify(record));
+    const written = await snapshotDigest(
+      identity.bindingId,
+      identity.clientSideEncryption,
+      SCHEMA_VERSION,
+      readMigratedTables(sql),
+    );
+    if (written !== snap.digest) {
+      clearMigratedTables(sql);
+      sql.exec("DELETE FROM meta WHERE key = 'migration_target'");
+      throw new FailClosed(500, "snapshot_verify_failed", "the imported data does not match the snapshot digest");
+    }
+    return json({ staged: record, idempotent: false });
+  }
+
+  /** The migration control routes (#3404 slices 1 and 3). Only the
+   * migration principal reaches them; the front door strips its header. */
+  private async migrationControl(
+    req: Request,
+    url: URL,
+    identity: { bindingId: string; jurisdiction: string; clientSideEncryption: boolean },
+  ): Promise<Response> {
+    if (req.headers.get(HDR_MIGRATION) !== "1") {
+      throw new FailClosed(403, "migration_principal_required", "migration control is for the migration principal only");
+    }
+    if (url.pathname === "/v1/migration/target" && req.method === "GET") {
+      return json({ staged: this.stagedTarget(), activated: this.meta("migration_activated") });
+    }
+    if (url.pathname === "/v1/migration/import" && req.method === "POST") {
+      return await this.importSnapshot(req, identity);
+    }
+    const status = () => {
+      const fence = this.sourceFence();
+      return {
+        fence,
+        epoch_floor: readEpochFloor(this.meta("fence_epoch_floor")),
+        mutation_seq: this.mutationSeq(),
+      };
+    };
+    if (url.pathname === "/v1/migration/fence" && req.method === "GET") return json(status());
+    if (req.method !== "POST") throw new FailClosed(405, "method_not_allowed", "migration control takes POST");
+    const text = await readTextUpTo(req, 4 * 1024);
+    if (text === null) throw bodyTooLarge(4 * 1024);
+    let body: unknown;
+    try {
+      body = JSON.parse(text);
+    } catch {
+      throw new FailClosed(400, "invalid_body", "migration control bodies are JSON");
+    }
+    const request = parseFenceRequest(body);
+    const current = this.sourceFence();
+    const floor = readEpochFloor(this.meta("fence_epoch_floor"));
+    const setMeta = (key: string, value: string) =>
+      this.state.storage.sql.exec(
+        "INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        key,
+        value,
+      );
+    if (url.pathname === "/v1/migration/freeze") {
+      // The DO runs this route to completion with no await before the
+      // writes below, so no mutation interleaves: the watermark is the
+      // last committed mutation, and none can commit after it.
+      const { fence, changed } = planFreeze(current, floor, request, this.mutationSeq(), Date.now());
+      if (changed) {
+        setMeta("migration_fence", JSON.stringify(fence));
+        setMeta("fence_epoch_floor", String(Math.max(floor, fence.routing_epoch)));
+        this.closeBridgeSockets("source_frozen", "this store is frozen for a migration; reconnect later");
+      }
+      return json({ acknowledged: true, ...status() });
+    }
+    if (url.pathname === "/v1/migration/unfreeze") {
+      const nextFloor = planUnfreeze(current, request);
+      this.state.storage.sql.exec("DELETE FROM meta WHERE key = 'migration_fence'");
+      setMeta("fence_epoch_floor", String(Math.max(floor, nextFloor)));
+      return json(status());
+    }
+    if (url.pathname === "/v1/migration/snapshot") {
+      // Export waits for the freeze acknowledgement: only a fence for
+      // this migration, at this epoch, makes the snapshot final.
+      if (current === null || current.migration_id !== request.migrationId || current.routing_epoch !== request.routingEpoch) {
+        throw new FailClosed(409, "freeze_not_acknowledged", "the source is not frozen for this migration at this epoch");
+      }
+      if (this.mutationSeq() !== current.watermark) {
+        throw new FailClosed(500, "fence_breached", "a mutation committed after the freeze; failing closed");
+      }
+      const tables = readMigratedTables(this.state.storage.sql);
+      const snapshot: MigrationSnapshot = {
+        v: 1,
+        migration_id: request.migrationId,
+        routing_epoch: request.routingEpoch,
+        binding_id: identity.bindingId,
+        client_side_encryption: identity.clientSideEncryption,
+        schema_version: SCHEMA_VERSION,
+        watermark: current.watermark,
+        tables,
+        digest: await snapshotDigest(identity.bindingId, identity.clientSideEncryption, SCHEMA_VERSION, tables),
+      };
+      return json(snapshot);
+    }
+    if (url.pathname === "/v1/migration/activate") {
+      const staged = this.stagedTarget();
+      if (staged === null) {
+        const done = this.meta("migration_activated");
+        if (done !== null && (JSON.parse(done) as { migration_id?: string }).migration_id === request.migrationId) {
+          return json({ activated: JSON.parse(done), idempotent: true });
+        }
+        throw new FailClosed(409, "not_staged", "this object is not a staged migration target");
+      }
+      if (staged.migration_id !== request.migrationId) {
+        throw new FailClosed(409, "target_staged_other", "this object is staged for a different migration");
+      }
+      if (request.routingEpoch <= staged.routing_epoch) {
+        throw new FailClosed(409, "stale_epoch", "activation needs the switch epoch, newer than the import");
+      }
+      // Blob bytes are copied by the coordinator; the target serves
+      // only once every reference it holds can be read here.
+      const bucket = blobsBindingFor(this.env, identity.jurisdiction as Jurisdiction);
+      const hashes = this.state.storage.sql
+        .exec("SELECT hash FROM blobs ORDER BY hash")
+        .toArray()
+        .map((r) => String(r.hash));
+      let missing = 0;
+      for (const hash of hashes) {
+        if ((await bucket.head(blobObjectKey(identity.bindingId, hash, identity.clientSideEncryption))) === null) {
+          missing++;
+        }
+      }
+      if (missing > 0) {
+        throw new FailClosed(409, "target_blobs_missing", `${missing} referenced blobs are not in this jurisdiction's bucket yet`);
+      }
+      const now = await snapshotDigest(
+        identity.bindingId,
+        identity.clientSideEncryption,
+        SCHEMA_VERSION,
+        readMigratedTables(this.state.storage.sql),
+      );
+      if (now !== staged.digest) {
+        throw new FailClosed(500, "staged_target_changed", "the staged data changed before activation; failing closed");
+      }
+      const activated = { migration_id: staged.migration_id, routing_epoch: request.routingEpoch };
+      setMeta("migration_activated", JSON.stringify(activated));
+      this.state.storage.sql.exec("DELETE FROM meta WHERE key = 'migration_target'");
+      return json({ activated, idempotent: false });
+    }
+    if (url.pathname === "/v1/migration/discard") {
+      const staged = this.stagedTarget();
+      // A newer migration may also clear an import a stale coordinator
+      // left behind for an older epoch.
+      if (staged === null || (staged.migration_id !== request.migrationId && staged.routing_epoch >= request.routingEpoch)) {
+        throw new FailClosed(409, "not_staged", "this object is not staged for this migration");
+      }
+      clearMigratedTables(this.state.storage.sql);
+      this.state.storage.sql.exec("DELETE FROM meta WHERE key = 'migration_target'");
+      return json({ discarded: staged.migration_id });
+    }
+    if (url.pathname === "/v1/migration/seal") {
+      const { fence, changed } = planSeal(current, request);
+      if (changed) {
+        setMeta("migration_fence", JSON.stringify(fence));
+        setMeta("fence_epoch_floor", String(Math.max(floor, fence.routing_epoch)));
+      }
+      return json(status());
+    }
+    throw new FailClosed(404, "not_found", "no such migration control route");
+  }
+
+  /** End every live bridge session with a named error frame. */
+  private closeBridgeSockets(code: string, message: string): void {
+    for (const ws of this.state.getWebSockets?.() ?? []) {
+      try {
+        ws.send(sessionErrorFrame(code, message));
+      } catch {
+        // The socket may already be gone; closing below is enough.
+      }
+      this.endBridgeSocket(ws);
+      closeQuietly(ws, 1013, code);
     }
   }
 
@@ -538,8 +851,13 @@ export class UserDO {
       guardBatch: (newBytes) => {
         try {
           this.assertWritable(newBytes);
+          // ingestBatch follows synchronously: this is the commit point.
+          this.commitPoint();
           return true;
-        } catch {
+        } catch (e) {
+          if (e instanceof FailClosed && (e.code === "source_frozen" || e.code === "source_sealed")) {
+            return { code: e.code, message: e.message };
+          }
           return false;
         }
       },
@@ -646,6 +964,15 @@ export class UserDO {
       );
       const url = new URL(req.url);
       const isUsage = url.pathname === "/v1/usage" && req.method === "GET";
+      // Migration control is never capped: a capped tenant must still
+      // be able to move (#3404).
+      const isMigration = url.pathname.startsWith("/v1/migration/");
+      if (isMigration) {
+        return await this.migrationControl(req, url, { bindingId, jurisdiction, clientSideEncryption });
+      }
+      // A staged migration target serves nothing until it is
+      // activated after the directory switch (#3404).
+      this.assertServing();
       const requestCap = this.requestCap();
       // The usage read is exempt so a capped caller can still see
       // where it stands and when the window resets (#15485).
@@ -736,6 +1063,7 @@ export class UserDO {
           if (!store.heldEvent(entry.id)) newBytes += entry.bytes.length;
         }
         this.assertWritable(newBytes);
+        this.commitPoint();
         const outcomes = store.ingestBatch(entries, Date.now());
         return json({ outcomes: outcomes.map(serializeOutcome), heads: store.heads() });
       }
@@ -836,6 +1164,9 @@ export class UserDO {
         if ((req.headers.get("upgrade") ?? "").toLowerCase() !== "websocket") {
           throw new FailClosed(400, "websocket_required", "the bridge session leg requires a WebSocket upgrade");
         }
+        // A frozen store takes no new bridge sessions (#3404); the
+        // HTTPS read legs stay open.
+        this.assertNotFenced();
         if (!this.state.acceptWebSocket) {
           throw new FailClosed(500, "websocket_hibernation_unavailable", "the runtime offers no hibernating WebSockets");
         }
@@ -873,6 +1204,10 @@ export class UserDO {
         const key = blobObjectKey(bindingId, hash, clientSideEncryption);
         const existing = await bucket.head(key);
         if (!existing) await bucket.put(key, bytes);
+        // Re-checked after the R2 awaits: a freeze may have landed
+        // while they ran. Bytes put above with no reference row stay
+        // invisible to this user and are left to the safe GC.
+        this.commitPoint();
         this.state.storage.sql.exec(
           "INSERT INTO blobs (hash, size, owner, created_at) VALUES (?, ?, ?, ?) ON CONFLICT(hash) DO NOTHING",
           hash,
@@ -902,6 +1237,7 @@ export class UserDO {
         const hash = blobHashMatch[1];
         const rows = this.state.storage.sql.exec("SELECT hash FROM blobs WHERE hash = ?", hash).toArray();
         if (rows.length === 0) return json({ error: "not_found" }, 404);
+        this.commitPoint();
         this.state.storage.sql.exec("DELETE FROM blobs WHERE hash = ?", hash);
         // The reference is gone, so this user can no longer reach
         // the bytes. The R2 object itself is deliberately NOT
@@ -933,6 +1269,7 @@ export class UserDO {
           if (value === null) throw ceilingExceeded(headroom);
         }
         this.assertWritable(new TextEncoder().encode(value).byteLength - priorBytes);
+        this.commitPoint();
         this.state.storage.sql.exec(
           "INSERT INTO kv (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
           kvMatch[1],
@@ -950,6 +1287,7 @@ export class UserDO {
         // cap — they are how a capped user recovers headroom.
         const rows = this.state.storage.sql.exec("SELECT key FROM kv WHERE key = ?", kvMatch[1]).toArray();
         if (rows.length === 0) return json({ error: "not_found" }, 404);
+        this.commitPoint();
         this.state.storage.sql.exec("DELETE FROM kv WHERE key = ?", kvMatch[1]);
         return json({ key: kvMatch[1], deleted: true });
       }

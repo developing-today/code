@@ -118,7 +118,7 @@ export function platformSettings(): PlatformSettings {
   return {
     repo: "developing-today/code",
     queue: "repo-health-code-pilot",
-    queueDbUrl: "https://fleet-queue-dezren39.aws-us-east-1.turso.io",
+    queueDbUrl: "https://d1-gateway.developing-today.workers.dev/db/fleet-queue",
     queueTokenName: "turso.fleet-queue-rw-token",
     androidPackage: "today.developing.pmconsole",
     promptLabel: "owner/prompt",

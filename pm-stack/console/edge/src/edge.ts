@@ -2444,6 +2444,20 @@ export class Edge {
       }
       if (method !== "POST") return json({ error: "method not allowed" }, 405);
       if (!sameSiteWrite(req)) return json({ error: "this request did not come from the console" }, 403);
+      if (seg.length === 1 && seg[0] === "route") {
+        // The owner's route flip (#14944, CF-4): the operator surface
+        // for the same flip the deploy pipeline makes on the internal
+        // channel (/internal/route). The owner is verified above and
+        // the write is same-site, as for every action; the flip itself
+        // — what counts as a surface and a tier, and what is refused —
+        // is routeFlip's, shared with the internal channel so the two
+        // can never disagree. A flip changes declared state only: it
+        // is what /console/health says, and undoing it is flipping
+        // back. It is never relayed to a machine: route state is this
+        // side's own, rebuildable front-door data.
+        if (Number(req.headers.get("content-length") ?? "0") > ACT_LIMIT) return json({ error: "too large" }, 413);
+        return this.routeFlip(req);
+      }
       if (!(seg.length === 1 && seg[0] === "act")) return next("relay", { mode: "live" });
       if (Number(req.headers.get("content-length") ?? "0") > ACT_LIMIT) return json({ error: "too large" }, 413);
       let body: { kind?: unknown; args?: unknown; id?: unknown; at?: unknown; sent?: unknown; sure?: unknown };

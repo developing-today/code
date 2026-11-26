@@ -42,6 +42,11 @@ export async function platformRead(
       // answered wherever the app is served from, like the rest here.
       case "cloudflare-apply":
         return ops.cloudflareApply();
+      // The stores, asked live (#14254). Where a store's token
+      // cannot be fetched (the edge holds none by name), that store
+      // answers as not answering; the others still show.
+      case "stores":
+        return ops.platformStores();
       case "roadmaps":
         return plan.capabilities();
       case "roadmap":
