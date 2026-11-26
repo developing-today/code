@@ -2684,9 +2684,17 @@ mod tests {
             r#"{"from": "server", "frame": {"type": "view", "sequence": 3, "data": "Harbor Controls", "view_revision": 3, "surface": {"kind": "widget", "version": 1, "title": "Harbor Controls", "controls": [{"kind": "toggle", "id": "lights", "label": "Lights", "action": "lights", "on": true}]}}}"#,
         ]
         .join("\n");
+        // Derive the expected contract version from the embedded
+        // contract, formatted the way check_contract formats it, so
+        // a contract revision bump cannot strand this expectation
+        // (#15330).
+        let contract = id_worlds::shell_contract::ShellContract::embedded().unwrap();
         assert_eq!(
             check_contract(&good).unwrap(),
-            "6 frames conform to shell contract v1.16"
+            format!(
+                "6 frames conform to shell contract v{}.{}",
+                contract.version, contract.revision
+            )
         );
         let bad = [
             r#"{"from": "client", "frame": {"type": "chat", "text": "too early"}}"#,
