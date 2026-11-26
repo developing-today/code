@@ -217,8 +217,18 @@ func SupervisorSocketPathForInstance(stateDir, name, instance string) string {
 
 func supervisorSocketFileForInstance(name, instance string) string {
 	sum := sha256.Sum256([]byte(instance))
-	return "sup-" + supervisorNameHash(name) + "-" + hex.EncodeToString(sum[:])[:16] + ".sock"
+	return "sup-" + supervisorNameHash(name) + "-" + hex.EncodeToString(sum[:])[:instanceHashLen] + ".sock"
 }
+
+// instanceHashLen is the hex-char length of the per-instance socket
+// segment. It was 16; darwin allows 104 bytes of sun_path including
+// the NUL, and the 42-char scoped name (sup-<16>-<16>.sock) pushed
+// session-scoped supervisor sockets past it under a deep TMPDIR, so
+// the dial failed EINVAL and attach never happened (#15407). 8 hex
+// chars (32 bits) still separates scoped instances of one server;
+// the server segment stays 16, so the scan classifier is unchanged
+// and pre-fix sockets remain recognised as the same server's.
+const instanceHashLen = 8
 
 // supervisorSocketNameHash extracts the server segment from a
 // supervisor socket's file name: the segment after "sup-", up to the
@@ -238,23 +248,75 @@ func supervisorSocketNameHash(base string) (string, bool) {
 	return seg, true
 }
 
-// SupervisorSocketDir is the one directory every supervisor socket of
-// stateDir lives in: stateDir itself, or, when a socket path there would
-// pass the unix socket limit (macOS's t.TempDir and nix build TMPDIRs
-// are long enough), a private per-stateDir directory under
-// os.TempDir()/mcpx-sup. Keeping the fallback per stateDir, with the
-// same sup-*.sock names, is what lets ScanSupervisorSockets glob one
-// directory and still see every socket: when the fallback was a flat
-// directory of hashes, the scan never found fallback sockets, so
-// orphans were never reaped (TestScanSupervisorSocketsAdoptAndReap and
+// SupervisorSocketDir is the one directory new supervisor sockets of
+// stateDir are created in: stateDir itself, or, when a socket path
+// there would pass the unix socket limit (macOS's t.TempDir and nix
+// build TMPDIRs are long enough), a private per-stateDir fallback
+// directory. The fallback prefers the historical
+// os.TempDir()/mcpx-sup/<16hex> location while it fits, and drops to
+// a short /tmp root (always short enough for darwin's 104-byte
+// sun_path) when even that would not fit (#15407). Keeping the
+// fallback per stateDir, with the same sup-*.sock names, is what lets
+// ScanSupervisorSockets glob one directory and still see every
+// socket: when the fallback was a flat directory of hashes, the scan
+// never found fallback sockets, so orphans were never reaped
+// (TestScanSupervisorSocketsAdoptAndReap and
 // TestDefaultConfigStdioRunsSupervised failed on every Mac and in the
 // darwin nix build).
 func SupervisorSocketDir(stateDir string) string {
-	if len(filepath.Join(stateDir, supervisorSocketFileForInstance("", ""))) <= 100 {
+	if len(filepath.Join(stateDir, supervisorSocketFileForInstance("", ""))) <= maxSupervisorSocketPath {
 		return stateDir
 	}
+	if legacy := supervisorLegacyFallbackDir(stateDir); len(filepath.Join(legacy, supervisorSocketFileForInstance("", ""))) <= maxSupervisorSocketPath {
+		return legacy
+	}
+	return supervisorShortFallbackDir(stateDir)
+}
+
+// maxSupervisorSocketPath is the portable ceiling for sun_path used
+// for supervisor sockets. macOS allows 104 bytes including the NUL;
+// Linux allows 108. Staying at or under 100 keeps behaviour identical
+// on both and matches the daemon socket ceiling.
+const maxSupervisorSocketPath = 100
+
+// supervisorLegacyFallbackDir is the pre-#15407 fallback: a per-stateDir
+// directory under os.TempDir()/mcpx-sup. It stays a scan candidate and
+// the preferred fallback while it fits, so supervisors created before
+// the fix keep their directory and are adopted, not orphaned, by the
+// upgrade.
+func supervisorLegacyFallbackDir(stateDir string) string {
 	raw := sha256.Sum256([]byte(stateDir))
 	return filepath.Join(os.TempDir(), "mcpx-sup", hex.EncodeToString(raw[:])[:16])
+}
+
+// supervisorShortFallbackDir is the #15407 last-resort fallback: a
+// per-user, per-stateDir 0700 directory rooted at /tmp, whose path is
+// short by construction. os.TempDir() on darwin is a deep
+// /var/folders/.../T/ path, so a fallback under it can itself exceed
+// the 104-byte darwin limit; /tmp is short on every supported
+// platform (darwin symlinks it to /private/tmp, but the length check
+// applies to the path handed to bind/connect, which is the short one).
+func supervisorShortFallbackDir(stateDir string) string {
+	raw := sha256.Sum256([]byte(stateDir))
+	return filepath.Join("/tmp", fmt.Sprintf("mcpx-%d", os.Getuid()), "sv-"+hex.EncodeToString(raw[:])[:8])
+}
+
+// supervisorSocketDirs lists every directory supervisor sockets of
+// stateDir may live in: the state dir itself plus both fallbacks,
+// deduped. The scan and the reap glob all of them so supervisors from
+// before the #15407 fallback change (legacy dir) and already-relocated
+// ones are all still found and adopted-or-reaped, never orphaned by
+// the upgrade.
+func supervisorSocketDirs(stateDir string) []string {
+	seen := map[string]bool{}
+	var dirs []string
+	for _, d := range []string{stateDir, supervisorLegacyFallbackDir(stateDir), supervisorShortFallbackDir(stateDir)} {
+		if !seen[d] {
+			seen[d] = true
+			dirs = append(dirs, d)
+		}
+	}
+	return dirs
 }
 
 // StateDir resolves the mcpx state directory from the environment the
