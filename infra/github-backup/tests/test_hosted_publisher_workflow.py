@@ -67,6 +67,21 @@ class HostedPublisherWorkflowTests(unittest.TestCase):
         self.assertIn("python3 infra/github-backup/bin/hosted_seed_fleet.py", workflow)
         self.assertIn("python3 infra/github-backup/bin/plain_mirror_all.py", workflow)
         self.assertNotIn("python3 -I infra/github-backup/bin/", workflow)
+        self.assertIn("RCLONE_CONFIG_R2BAK_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}", workflow)
+        self.assertIn("RCLONE_CONFIG_R2BAK_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}", workflow)
+        self.assertIn("Install rclone for R2 bundles", workflow)
+        self.assertIn(
+            "python3 infra/github-backup/bin/bundle_r2_all.py --bucket supabase-backups --root",
+            workflow,
+        )
+        self.assertLess(
+            workflow.index("plain_mirror_all.py --root"),
+            workflow.index("bundle_r2_all.py --bucket supabase-backups"),
+        )
+        self.assertLess(
+            workflow.index("bundle_r2_all.py --bucket supabase-backups"),
+            workflow.index("Remove ephemeral backup root"),
+        )
         self.assertIn("cancel-in-progress: false", workflow)
 
 
