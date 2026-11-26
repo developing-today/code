@@ -365,6 +365,14 @@ pub struct IssuerRotateRequest {
     /// Where the new keys go: `None` = the new bundle's own
     /// `private/keys`; `Some(dir)` = that external store directory.
     pub private_store: Option<PathBuf>,
+    /// When `root_bundle` is a rotation of the issuer set's root set:
+    /// that predecessor root set, whose roots then also certify each
+    /// new issuer key directly, so relying parties that still trust
+    /// only the old roots validate the new leaves (the overlap).
+    pub overlap_root_bundle: Option<PathBuf>,
+    /// REQUIRED with `overlap_root_bundle`: the signer source for the
+    /// predecessor root keys (§24.3).
+    pub overlap_root_signer: Option<SignerSource>,
 }
 
 /// `cert leaf renew` (§5.2): reissue a leaf on the key it already

@@ -61,7 +61,11 @@ Implements the fleet architecture spec v0.3
   it follows (`predecessor`). A CSR-issued leaf rotates from a new
   CSR (`--csr`). A renewed root set still anchors the issuer sets of
   its predecessor; a rotated one starts fresh, with the old set left
-  in place for its issuers and leaves.
+  in place for its issuers and leaves. `issuer rotate --root <new>`
+  moves an issuer set onto a rotated root set, and with
+  `--overlap-root <old> --overlap-root-key-dir <keys>` the old roots
+  also certify each new issuer key, so relying parties that still
+  trust only the old roots validate the new leaves during the move.
 - `fleet cert bundle inspect`, `profile list|show`,
   `algorithms list|describe`, `explain`, `doctor`.
 - `fleet cert inventory list|show|search|audit` — read-only
