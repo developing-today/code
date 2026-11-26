@@ -417,7 +417,7 @@ recheck sweep are untouched. Reversal is deleting the file and its
 | C-R131, O-R033                                                        | Resolved and removed are revisions that keep before/after, never deletes (D5); cycle codes registered (D7). |
 | C-R132                                                                | Native GitHub ends carry provider, repo, kind, number and node id (D2); DEP-04 projects them.               |
 | C-R123, C-R124, C-R125                                                | Edges are Fleet facts separate from GitHub titles and bodies; nothing here mirrors text.                    |
-| O-R026, P-R013, P-R005-adjacent identity                              | Stable keys by authority or provider id; never a number alone (D2, D3).                                     |
+| O-R026, P-R013                                                        | Stable keys by authority or provider id; never a number alone (D2, D3).                                     |
 | C-R005, C-R107, C-R108, O-R023, P-R009, P-R012                        | Ref forms and error codes the CLI registers (D3, D7) consumed by CLI-02 and CLI-13.                         |
 | C-R009, O-R021, O-R022, P-R002                                        | Agents read dependencies through one typed model; the module is pure and the resolver stays separate (§3).  |
 | C-R150–C-R153, O-R049, O-R050, O-R052, P-R035, P-R036, H-R016, P-R027 | Scenario B's `fleet:842 --blocked-by fleet:761 --hard` binds under D3; blockers and readiness views (D8).   |
