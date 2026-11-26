@@ -244,7 +244,6 @@ where
     }
 }
 
-
 /// One established WebSocket leg: each typed frame travels as exactly
 /// one binary message (design §2). Sending encodes one frame into one
 /// message; receiving requires a binary message holding exactly one
@@ -348,13 +347,10 @@ impl BrokerEndpoint {
 
 async fn tcp_connect(host: &str, port: u16, what: &str) -> Result<TcpStream> {
     validate_handshake_field(host, "TCP host")?;
-    tokio::time::timeout(
-        DEFAULT_ESTABLISH_TIMEOUT,
-        TcpStream::connect((host, port)),
-    )
-    .await
-    .with_context(|| format!("timed out connecting to {what}"))?
-    .with_context(|| format!("connecting to {what}"))
+    tokio::time::timeout(DEFAULT_ESTABLISH_TIMEOUT, TcpStream::connect((host, port)))
+        .await
+        .with_context(|| format!("timed out connecting to {what}"))?
+        .with_context(|| format!("connecting to {what}"))
 }
 
 async fn tls_connect(
@@ -408,23 +404,18 @@ pub async fn establish_connect_leg(
 /// layer, when wanted, is the stream's own, established by the caller
 /// as in [`establish_websocket_leg`]), bounded to one maximum wire
 /// frame per message.
-pub async fn establish_websocket_leg_over<S>(
-    stream: S,
-    url: &str,
-) -> Result<WebSocketLeg<S>>
+pub async fn establish_websocket_leg_over<S>(stream: S, url: &str) -> Result<WebSocketLeg<S>>
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
     let request = url
         .into_client_request()
         .context("building the WebSocket handshake request")?;
-    let (socket, _response) = tokio::time::timeout(
-        DEFAULT_ESTABLISH_TIMEOUT,
-        client_async(request, stream),
-    )
-    .await
-    .context("timed out during the WebSocket handshake")?
-    .context("WebSocket handshake failed")?;
+    let (socket, _response) =
+        tokio::time::timeout(DEFAULT_ESTABLISH_TIMEOUT, client_async(request, stream))
+            .await
+            .context("timed out during the WebSocket handshake")?
+            .context("WebSocket handshake failed")?;
     Ok(WebSocketLeg::new(socket))
 }
 
@@ -478,7 +469,13 @@ mod tests {
             Frame::data(1, 0, vec![0xAB; MAX_DATA_PAYLOAD]).unwrap(),
             Frame::data(1, 1, b"ciphertext".to_vec()).unwrap(),
             Frame::new(FrameType::Ping, 0, 0, Vec::new()).unwrap(),
-            Frame::new(FrameType::WindowUpdate, 1, 0, 4096u32.to_be_bytes().to_vec()).unwrap(),
+            Frame::new(
+                FrameType::WindowUpdate,
+                1,
+                0,
+                4096u32.to_be_bytes().to_vec(),
+            )
+            .unwrap(),
             Frame::new(FrameType::Close, 1, 0, Vec::new()).unwrap(),
         ]
     }
@@ -488,8 +485,10 @@ mod tests {
     /// sequence through its leg and asserts byte-for-byte identity of
     /// what returns. Identity of decoded frames plus the codec's own
     /// encode identity is byte preservation of the payloads.
-    async fn assert_byte_stream_leg_round_trip<S>(client_stream: S, server: tokio::task::JoinHandle<()>)
-    where
+    async fn assert_byte_stream_leg_round_trip<S>(
+        client_stream: S,
+        server: tokio::task::JoinHandle<()>,
+    ) where
         S: AsyncRead + AsyncWrite + Unpin,
     {
         let mut leg = ByteStreamLeg::new(client_stream);
@@ -606,12 +605,12 @@ mod tests {
     #[tokio::test]
     async fn serve_proxy_leg_tls13_over_connect_round_trips_and_negotiates_tls13() {
         // Self-signed broker certificate for broker.test.
-        let certified = rcgen::generate_simple_self_signed(vec!["broker.test".to_string()]).unwrap();
+        let certified =
+            rcgen::generate_simple_self_signed(vec!["broker.test".to_string()]).unwrap();
         let cert_der = certified.cert.der().clone();
-        let key_der = rustls::pki_types::PrivateKeyDer::try_from(
-            certified.signing_key.serialize_der(),
-        )
-        .unwrap();
+        let key_der =
+            rustls::pki_types::PrivateKeyDer::try_from(certified.signing_key.serialize_der())
+                .unwrap();
 
         let server_config = rustls::ServerConfig::builder_with_provider(Arc::new(
             rustls::crypto::ring::default_provider(),
@@ -711,7 +710,10 @@ mod tests {
         let server = tokio::spawn(async move {
             let (stream, _) = listener.accept().await.unwrap();
             let mut socket = tokio_tungstenite::accept_async(stream).await.unwrap();
-            socket.send(Message::Text("not a frame".into())).await.unwrap();
+            socket
+                .send(Message::Text("not a frame".into()))
+                .await
+                .unwrap();
             // Keep the socket open so the client reads the text first.
             tokio::time::sleep(Duration::from_millis(200)).await;
         });

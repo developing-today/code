@@ -22,7 +22,10 @@ function generated(mode: keyof typeof schemaByMode, baseJSON: unknown, edits: (t
 }
 
 const richBase = { type: "doc", content: [{ type: "paragraph", content: [{ type: "text", text: "hello" }] }] };
-const rawBase = { type: "doc", content: [{ type: "code_block", attrs: { language: "txt" }, content: [{ type: "text", text: "hello" }] }] };
+const rawBase = {
+  type: "doc",
+  content: [{ type: "code_block", attrs: { language: "txt" }, content: [{ type: "text", text: "hello" }] }],
+};
 
 const cases = [
   generated("rich", richBase, (tr) => {

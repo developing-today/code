@@ -2010,12 +2010,8 @@ impl ScreenPatchV2 {
             cells[start..end].clone_from_slice(&run.cells);
             covered_until = end;
         }
-        ScreenSurfaceV2::from_tagged_cells(
-            usize::from(prev.width),
-            usize::from(prev.height),
-            cells,
-        )
-        .ok()
+        ScreenSurfaceV2::from_tagged_cells(usize::from(prev.width), usize::from(prev.height), cells)
+            .ok()
     }
 
     /// Whether the patch changes nothing.
@@ -4722,12 +4718,20 @@ mod tagged_screen_tests {
         FallbackPlan {
             rich: Some(asset(
                 "hero@1",
-                &["sys.color.blue", "sys.effect.sparkle", "world.appearance.cape"],
+                &[
+                    "sys.color.blue",
+                    "sys.effect.sparkle",
+                    "world.appearance.cape",
+                ],
                 &["fx/sparkle@1"],
             )),
             static_substitute: Some(asset(
                 "hero-static@1",
-                &["sys.color.blue", "sys.effect.sparkle", "world.appearance.cape"],
+                &[
+                    "sys.color.blue",
+                    "sys.effect.sparkle",
+                    "world.appearance.cape",
+                ],
                 &[],
             )),
             tileset: Some(asset(
@@ -4741,7 +4745,12 @@ mod tagged_screen_tests {
 
     #[test]
     fn semantic_tag_validation_accepts_namespaced_and_rejects_the_rest() {
-        for good in ["sys.color.blue", "world.appearance.cape", "sys.effect.sparkle", "world.a1.b_2"] {
+        for good in [
+            "sys.color.blue",
+            "world.appearance.cape",
+            "sys.effect.sparkle",
+            "world.a1.b_2",
+        ] {
             assert!(validate_semantic_tag(good).is_ok(), "{good}");
         }
         for bad in [
@@ -4755,19 +4764,29 @@ mod tagged_screen_tests {
             "sys.color.blue ",
             "sys.color.blue-cape",
         ] {
-            assert!(validate_semantic_tag(bad).is_err(), "{bad:?} must be rejected");
+            assert!(
+                validate_semantic_tag(bad).is_err(),
+                "{bad:?} must be rejected"
+            );
         }
         // Unsorted or duplicated tag sets have no single wire form.
-        assert!(TaggedScreenCell::new(
-            plain("C"),
-            vec!["world.appearance.cape".to_owned(), "sys.color.blue".to_owned()],
-        )
-        .is_err());
-        assert!(TaggedScreenCell::new(
-            plain("C"),
-            vec!["sys.color.blue".to_owned(), "sys.color.blue".to_owned()],
-        )
-        .is_err());
+        assert!(
+            TaggedScreenCell::new(
+                plain("C"),
+                vec![
+                    "world.appearance.cape".to_owned(),
+                    "sys.color.blue".to_owned()
+                ],
+            )
+            .is_err()
+        );
+        assert!(
+            TaggedScreenCell::new(
+                plain("C"),
+                vec!["sys.color.blue".to_owned(), "sys.color.blue".to_owned()],
+            )
+            .is_err()
+        );
     }
 
     #[test]
@@ -4787,10 +4806,12 @@ mod tagged_screen_tests {
         );
         assert_eq!(parse_tagged_surface(&doc).unwrap(), Some(surface.clone()));
         // ...a v1 document is not a tagged surface...
-        assert!(parse_tagged_surface(
-            r#"{"kind":"screen","version":1,"width":1,"height":1,"rows":["x"]}"#
-        )
-        .is_err());
+        assert!(
+            parse_tagged_surface(
+                r#"{"kind":"screen","version":1,"width":1,"height":1,"rows":["x"]}"#
+            )
+            .is_err()
+        );
         // ...and the v1 parser still rejects a v2 document outright
         // instead of dropping its tags.
         assert!(parse_surface(&doc).is_err());
@@ -4806,7 +4827,8 @@ mod tagged_screen_tests {
     fn screen_v2_patch_diff_apply_preserves_tags_and_rejects_bad_tags() {
         let before = blue_cape_surface();
         let mut changed_cells = before.cells.clone();
-        changed_cells[1] = TaggedScreenCell::new(plain("x"), vec!["sys.color.blue".to_owned()]).unwrap();
+        changed_cells[1] =
+            TaggedScreenCell::new(plain("x"), vec!["sys.color.blue".to_owned()]).unwrap();
         let after = ScreenSurfaceV2::from_tagged_cells(2, 1, changed_cells).unwrap();
         let patch = ScreenPatchV2::diff(&before, &after).unwrap();
         assert!(!patch.is_empty());
@@ -4839,14 +4861,19 @@ mod tagged_screen_tests {
     fn resolver_connects_to_tagged_cells_blue_cape_at_every_rung() {
         let surface = blue_cape_surface();
         let plan = blue_cape_plan();
-        let filters: Vec<crate::presentation_asset::FilterRef> = vec!["fx/sparkle@1".parse().unwrap()];
+        let filters: Vec<crate::presentation_asset::FilterRef> =
+            vec!["fx/sparkle@1".parse().unwrap()];
         let expected: [(Rung, Vec<&str>, usize); 4] = [
             (Rung::Rich, Vec::new(), 0),
             (Rung::Static, Vec::new(), 1),
             (Rung::Tileset, vec!["sys.effect.sparkle"], 1),
             (
                 Rung::Glyph,
-                vec!["sys.color.blue", "sys.effect.sparkle", "world.appearance.cape"],
+                vec![
+                    "sys.color.blue",
+                    "sys.effect.sparkle",
+                    "world.appearance.cape",
+                ],
                 1,
             ),
         ];
@@ -4865,8 +4892,12 @@ mod tagged_screen_tests {
             }
         }
         // Deterministic: resolving twice yields identical records.
-        let a = surface.resolve_cell(0, &plan, Rung::Tileset, &filters).unwrap();
-        let b = surface.resolve_cell(0, &plan, Rung::Tileset, &filters).unwrap();
+        let a = surface
+            .resolve_cell(0, &plan, Rung::Tileset, &filters)
+            .unwrap();
+        let b = surface
+            .resolve_cell(0, &plan, Rung::Tileset, &filters)
+            .unwrap();
         assert_eq!(a, b);
         // Out-of-bounds is an explicit error, never a blank cell.
         assert!(matches!(
