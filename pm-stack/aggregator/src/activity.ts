@@ -640,13 +640,14 @@ export class IngestionStore {
     let dirty = false;
     // A replay batch may contain thousands of deliveries; build each persisted
     // seen list's lookup index once instead of rescanning it for every delivery.
-    // A singleton stays on the scan path to avoid constructing an unused index.
-    const seenBySource = new Map<string, Map<string, number>>();
+    // A singleton stays on the scan path without allocating an unused index.
+    const seenBySource =
+      deliveries.length > 1 ? new Map<string, Map<string, number>>() : undefined;
     for (const d of deliveries) {
       let seen = this.data.seen[d.source];
       if (!seen) this.data.seen[d.source] = seen = [];
-      let seenCounts = seenBySource.get(d.source);
-      if (!seenCounts && deliveries.length > 1) {
+      let seenCounts = seenBySource?.get(d.source);
+      if (!seenCounts && seenBySource) {
         seenCounts = new Map();
         // Loaded lists may contain repeated ids; counts preserve membership
         // until the last copy is evicted, just like the persisted array.
