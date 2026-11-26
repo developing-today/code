@@ -2833,6 +2833,51 @@ export function differsSaid(d) {
   return `For ${what} it says ${show(d.machine)}, and main says ${show(d.platform)}. Cloudflare goes by this machine's until it runs main's${why}.`;
 }
 
+/** The settings the owner may change from the app (src/settings.ts's
+ * OWNER_CHANGEABLE): Cloudflare refuses any other name, so no other is
+ * offered as if it could be changed. */
+export const OWNER_CHANGEABLE = ["promptLabel", "needsRepos"];
+
+/** A setting's value in words: a list said as one, nothing as "nothing". */
+const settingValue = (value) => {
+  if (Array.isArray(value)) return value.length ? listed(value.map(String)) : "none";
+  return value === null || value === undefined || value === "" ? "nothing" : String(value);
+};
+
+/** One of the platform's settings as the Machines screen says it
+ * (#14956): what it is, the value in force, whose it is and since when,
+ * main's beside a change of the owner's, and whether the owner may
+ * change it from here. A setting only main decides is said as main's,
+ * with nothing to press. */
+export function settingSaid(s, now = Date.now()) {
+  const name = typeof s?.name === "string" ? s.name : "";
+  const what = Object.hasOwn(SETTING_SAID, name) ? SETTING_SAID[name] : name || "a setting";
+  const changed = s?.source === "owner";
+  const when = changed && typeof s.since === "number" ? ago(new Date(s.since).toISOString(), now) : "";
+  const whose = changed
+    ? `Yours: changed ${when || "earlier"}${typeof s.by === "string" && s.by ? ` by ${s.by}` : ""}.`
+    : s?.source === "machine"
+      ? "The machine's: Cloudflare goes by the list it reports until it runs main's."
+      : "Main's.";
+  return {
+    name,
+    what: capital(what),
+    value: settingValue(s?.value),
+    whose,
+    main: changed ? `Main says ${settingValue(s.repository)}.` : null,
+    changeable: OWNER_CHANGEABLE.includes(name),
+    changed,
+  };
+}
+
+/** What the owner typed for a list of repositories, as the list: owner/name
+ * entries separated by commas, spaces or lines. */
+export function reposTyped(text) {
+  return String(text ?? "")
+    .split(/[\s,]+/)
+    .filter(Boolean);
+}
+
 /** One machine as the Machines screen says it: whether it is
  * reporting, what it runs, and what only it reports and does. What the
  * platform does itself (`platform`, null when nothing is in front of
@@ -2859,7 +2904,18 @@ export function machineSaid(machine, platform, now = Date.now(), serving = null)
     otherCode: version && cloud && version !== cloud ? `Cloudflare runs ${cloud}: the two are on different code.` : "",
     // The platform's settings it runs with others of, each in a sentence.
     differs: (Array.isArray(machine.differs) ? machine.differs : []).map(differsSaid),
+    settings: settingsTakenSaid(machine.settingsRev, platform?.settingsRev),
   };
+}
+
+/** Whether a machine runs with the owner's latest change to the
+ * settings, in a sentence; empty when it does, or when the owner has
+ * changed none (#14957). Until it has, Cloudflare goes by the change
+ * all the same: a machine is told it with its next report. */
+export function settingsTakenSaid(machineRev, platformRev) {
+  if (!Number.isSafeInteger(platformRev) || platformRev < 1 || machineRev === platformRev) return "";
+  if (!Number.isSafeInteger(machineRev)) return "Its console is older than changing the settings from here: it runs with its own.";
+  return "It has not taken your latest change to the settings yet: it will with its next report.";
 }
 
 /** What the Machines screen shows that can change with nothing else
@@ -2870,7 +2926,9 @@ export function machineSaid(machine, platform, now = Date.now(), serving = null)
  * no longer what it was drawn from. */
 export function machinesMark(m, now = Date.now()) {
   return JSON.stringify({
-    platform: m?.platform ? [m.platform.primary, m.platform.refused, m.platform.actions.length, m.platform.sections.length] : null,
+    platform: m?.platform
+      ? [m.platform.primary, m.platform.refused, m.platform.actions.length, m.platform.sections.length, m.platform.settingsRev ?? null]
+      : null,
     machines: (m?.machines || []).map((x) => [
       x.name,
       x.quiet,
@@ -2879,6 +2937,7 @@ export function machinesMark(m, now = Date.now()) {
       (x.sections || []).length,
       x.quiet && x.seen ? Math.floor((now - x.seen) / 60_000) : 0,
       Array.isArray(x.differs) ? x.differs : [],
+      x.settingsRev ?? null,
     ]),
     // Who each waits for is drawn too, and changes while it waits.
     held: (m?.held || []).map((item) => [item.id, item.waits ?? ""]),
@@ -2947,6 +3006,7 @@ async function viewMachines() {
       platform?.refused?.length ? h("p", { class: "why" }, `Turned away lately for ${listed(platform.refused.map((kind) => REFUSED_SAID[kind] || String(kind)))}: a machine does that for now.`) : null,
       platform === null ? null : h("div", { class: "row end" }, h("button", { class: "small ghost", onclick: () => go("more/away") }, "What it does")),
     ),
+    ...platformSettingsPart(platform),
     h("h2", {}, `Machines (${m.machines.length})`),
   ];
   if (m.machines.length === 0) out.push(card(h("p", { class: "meta" }, "No machine has reported yet.")));
@@ -2957,6 +3017,7 @@ async function viewMachines() {
         h("div", { class: "row" }, chip(s.reporting ? "reporting" : "away", s.reporting ? "good" : "warn")),
         h("h3", {}, s.name),
         h("p", { class: "meta" }, [s.state, s.version ? `Running ${s.version}.` : "", s.otherCode].filter(Boolean).join(" ")),
+        s.settings ? h("p", { class: "why" }, s.settings) : null,
         s.differs.length
           ? h(
               "details",
@@ -3001,6 +3062,62 @@ async function viewMachines() {
     ),
   );
   return out;
+}
+
+/** The Machines screen's Platform settings: each setting in force, from
+ * where and since when, and for the ones the owner may change, a way to
+ * change it and, once changed, to put it back to main's. A change is
+ * made from the revision the screen was drawn at: if the settings were
+ * changed meanwhile somewhere else, Cloudflare refuses it and the
+ * screen is drawn again from what they are now. */
+function platformSettingsPart(platform) {
+  if (!platform || !Array.isArray(platform.settings)) return [];
+  const rev = Number.isSafeInteger(platform.settingsRev) ? platform.settingsRev : undefined;
+  const change = async (entry, said, e) => {
+    const list = entry.name === "needsRepos";
+    const value = await ask({
+      title: `Change ${said.what.toLowerCase()}`,
+      text: list
+        ? "Each repository as owner/name, separated by commas or spaces. Cloudflare goes by this list from now on, until you put it back to main's."
+        : "Cloudflare goes by this label from now on, until you put it back to main's.",
+      label: list ? "Repositories" : "Label",
+      okLabel: "Change",
+      required: true,
+      value: list ? (Array.isArray(entry.value) ? entry.value.join(", ") : "") : String(entry.value ?? ""),
+    });
+    if (value === null || value === "") return;
+    await act("settings.set", { name: entry.name, value: list ? reposTyped(value) : value, baseRev: rev }, `${said.what} changed`, e.target);
+    draw();
+  };
+  const putBack = async (entry, said, e) => {
+    const sure = await ask({
+      title: `Put ${said.what.toLowerCase()} back to main's?`,
+      text: `${said.main} Cloudflare goes by that again from now on.`,
+      okLabel: "Put back",
+    });
+    if (sure === null) return;
+    await act("settings.clear", { name: entry.name, baseRev: rev }, `${said.what} is main's again`, e.target);
+    draw();
+  };
+  return [
+    h("h2", {}, "Platform settings"),
+    ...platform.settings.map((entry) => {
+      const said = settingSaid(entry);
+      return card(
+        h("h3", {}, said.what),
+        h("p", {}, said.value),
+        h("p", { class: "meta" }, [said.whose, said.main].filter(Boolean).join(" ")),
+        said.changeable
+          ? h(
+              "div",
+              { class: "row end" },
+              said.changed ? h("button", { class: "small ghost", onclick: (e) => putBack(entry, said, e) }, "Put back to main's") : null,
+              h("button", { class: "small", onclick: (e) => change(entry, said, e) }, "Change"),
+            )
+          : null,
+      );
+    }),
+  ];
 }
 
 const GROUP_SAID = { platform: "The platform", fleet: "Fleet", data: "Data", id: "id", lab: "Lab" };

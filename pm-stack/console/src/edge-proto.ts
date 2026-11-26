@@ -18,7 +18,7 @@
 // near the edge's own clock, and that time is later than the last sync
 // accepted.
 import type { Issuer } from "./config.ts";
-import type { SettingDiffers } from "./settings.ts";
+import type { OwnerChangeableName, PlatformSettings, SettingDiffers, SettingInForce } from "./settings.ts";
 
 /** What a machine tells the edge in every sync. Who may sign in (the
  * owners, the certificate names, the issuers, the Android signing
@@ -71,6 +71,10 @@ export interface SyncRequest {
    * console older than this: the edge then knows it only as a machine
    * that reports. */
   machine?: MachineReport;
+  /** The revision of the owner's changed settings this machine runs
+   * with, as the edge last said them (0: none, its own). Absent from a
+   * console older than the saying (#14957). */
+  settingsRev?: number;
   config: EdgeConfig;
   /** Sections that changed since the edge last had them. */
   sections: SyncSection[];
@@ -138,7 +142,22 @@ export interface MachinesAnswer {
   served: "edge" | "machine";
   /** What the platform does with no machine: null when it is not in
    * front, and an empty list of each when it only serves and waits. */
-  platform: { primary: boolean; actions: string[]; sections: string[]; refused: string[] } | null;
+  platform: {
+    primary: boolean;
+    actions: string[];
+    sections: string[];
+    refused: string[];
+    /** Which source each of the platform's settings is in force from,
+     * with its value, the repository's beside it, and for an owner's
+     * change who made it, when, and at which revision: the one place
+     * the owner reads which settings are in force and since when
+     * (#14955). Absent from an answer older than the saying. */
+    settings?: SettingInForce[];
+    /** The revision of the owner's changes these settings are at (0
+     * before any): what a change from the app is made from, so one made
+     * from an older look is refused (#14956). */
+    settingsRev?: number;
+  } | null;
   machines: {
     name: string;
     /** When it last reported, in milliseconds; null if it never has. */
@@ -152,6 +171,11 @@ export interface MachinesAnswer {
      * values and which the platform goes by. Absent when there is none
      * (and from an answer older than the saying). */
     differs?: SettingDiffers[];
+    /** The revision of the owner's changed settings it last said it runs
+     * with (0: its own); null when its console is older than the saying.
+     * Behind the platform's `settingsRev`, it has not taken the owner's
+     * latest change yet (#14957). */
+    settingsRev?: number | null;
   }[];
   /** What the owner did that waits to be done, oldest first, and who
    * each waits for (absent from an answer older than the saying). */
@@ -264,6 +288,11 @@ export interface SyncResponse {
   /** Sections the edge reads itself, and so need not be sent to it.
    * Absent from an edge that reads none. */
   owns?: string[];
+  /** The settings the owner changed from the app, at their revision,
+   * for the machine to run with in place of its own (#14957). Sent
+   * whenever the owner has changed any (an empty `values` once every
+   * change was put back); absent before, and from an older edge. */
+  settings?: { rev: number; values: Partial<Pick<PlatformSettings, OwnerChangeableName>> };
 }
 
 /** Actions that may be done late, when the host is back. The rest act on
