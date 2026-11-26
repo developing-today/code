@@ -1,0 +1,81 @@
+{
+  "target": "mac",
+  "platform": "mac",
+  "control_sequence": [
+    {"path": "document", "kind": "document", "control": "window"},
+    {"path": "document/page[0]", "kind": "page", "control": "grouped box composition"},
+    {"path": "document/page[0]/heading[0]", "kind": "heading", "control": "label (Dynamic Type text style)"},
+    {"path": "document/page[0]/button[0]", "kind": "button", "control": "NSButton (standard push button)"}
+  ],
+  "root": {
+    "path": "document",
+    "kind": "document",
+    "control": "window",
+    "role": "document",
+    "children": [
+      {
+        "path": "document/page[0]",
+        "kind": "page",
+        "control": "grouped box composition",
+        "role": "main region",
+        "children": [
+          {
+            "path": "document/page[0]/heading[0]",
+            "kind": "heading",
+            "control": "label (Dynamic Type text style)",
+            "role": "heading",
+            "children": [
+              {"text": "Settings"}
+            ]
+          },
+          {
+            "path": "document/page[0]/button[0]",
+            "kind": "button",
+            "control": "NSButton (standard push button)",
+            "role": "button",
+            "children": [
+              {"text": "Save"}
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "a11y": {
+    "path": "document",
+    "kind": "document",
+    "role": "document",
+    "name": "",
+    "children": [
+      {
+        "path": "document/page[0]",
+        "kind": "page",
+        "role": "main region",
+        "name": "Settings",
+        "children": [
+          {
+            "path": "document/page[0]/heading[0]",
+            "kind": "heading",
+            "role": "heading",
+            "name": "Settings",
+            "children": []
+          },
+          {
+            "path": "document/page[0]/button[0]",
+            "kind": "button",
+            "role": "button",
+            "name": "Save",
+            "children": []
+          }
+        ]
+      }
+    ]
+  },
+  "report": {
+    "mapped": [],
+    "defaulted": [],
+    "element_defaults": [],
+    "presentation_excluded": [],
+    "reported_overrides": []
+  }
+}
