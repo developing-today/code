@@ -156,6 +156,20 @@ describe("the edge queue door", () => {
         if (typeof row[key] === "string") row[key] = JSON.parse(row[key] as string);
       }
       if (typeof row.manual_only === "number") row.manual_only = row.manual_only === 1;
+      // The native schema carries lifecycle columns the hosted TaskRow does not model.
+      for (const key of [
+        "labels",
+        "labels_synced_at",
+        "resolution",
+        "resolution_category",
+        "resolution_substatus",
+        "resolution_reason",
+        "resolution_ref",
+        "resolved_by",
+        "resolved_at",
+      ]) {
+        delete row[key];
+      }
       expect(row).toEqual(expected);
       expect(db.query("SELECT blocked_deps, ready_condition FROM tasks").get()).toEqual({
         blocked_deps: null,
