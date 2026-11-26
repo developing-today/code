@@ -641,8 +641,7 @@ export class IngestionStore {
     // A replay batch may contain thousands of deliveries; build each persisted
     // seen list's lookup index once instead of rescanning it for every delivery.
     // A singleton stays on the scan path without allocating an unused index.
-    const seenBySource =
-      deliveries.length > 1 ? new Map<string, Map<string, number>>() : undefined;
+    const seenBySource = deliveries.length > 1 ? new Map<string, Map<string, number>>() : undefined;
     for (const d of deliveries) {
       let seen = this.data.seen[d.source];
       if (!seen) this.data.seen[d.source] = seen = [];
