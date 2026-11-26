@@ -2141,6 +2141,76 @@ mod tests {
         file.save(root).unwrap();
     }
 
+    /// World process killed (#10695): a world's actor dies with its
+    /// runtime, mid-stream and with a write in flight, never shut down.
+    /// The next host open replays it, every acknowledged entry is there,
+    /// nothing half-applied is, and the asleep sibling's directory is not
+    /// touched.
+    #[test]
+    fn a_killed_world_keeps_every_acknowledged_entry() {
+        use crate::world::{WorldEventKind, WorldScopes};
+
+        let root = data_root_with(&["alpha", "beta"]);
+        let beta_journal = root.path().join("beta").join(JOURNAL_FILE);
+        let beta_before = std::fs::read(&beta_journal).unwrap();
+        let acknowledged: Vec<String> = (0..5).map(|i| format!("line {i}")).collect();
+
+        let doomed = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .unwrap();
+        let (held, ann) = doomed.block_on(async {
+            let mut sup = Supervisor::open(root.path()).await.unwrap();
+            sup.start("alpha", actor()).await.unwrap();
+            let world = sup.live.get("alpha").unwrap().service.world();
+            let (_, ann) = world.issue("ann", WorldScopes::GUEST).await.unwrap();
+            for line in &acknowledged {
+                world.chat(ann.clone(), line.as_str()).await.unwrap();
+            }
+            let (inflight, token) = (world.clone(), ann.clone());
+            tokio::spawn(async move { inflight.chat(token, "in flight").await });
+            (sup, ann)
+        });
+        // Kill: the runtime and every task on it stop where they stand.
+        doomed.shutdown_timeout(std::time::Duration::from_secs(10));
+        drop(held);
+
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        runtime.block_on(async {
+            let sup = Supervisor::open(root.path()).await.unwrap();
+            assert_eq!(sup.live_names(), vec!["alpha".to_owned()]);
+            let recovery = sup.file().worlds["alpha"].last_recovery.clone().unwrap();
+            assert_eq!(recovery.error, None);
+            let world = sup.live.get("alpha").unwrap().service.world();
+            let chats: Vec<String> = world
+                .snapshot(ann)
+                .await
+                .unwrap()
+                .events
+                .into_iter()
+                .filter_map(|event| match event.kind {
+                    WorldEventKind::Chat(text) => Some(text),
+                    _ => None,
+                })
+                .collect();
+            assert!(
+                chats.starts_with(&acknowledged),
+                "every acknowledged line survives, in order: {chats:?}"
+            );
+            assert!(chats.len() <= acknowledged.len() + 1, "{chats:?}");
+            if let Some(extra) = chats.get(acknowledged.len()) {
+                assert_eq!(
+                    extra, "in flight",
+                    "an in-flight write lands whole or not at all"
+                );
+            }
+            assert_eq!(sup.file().worlds["beta"].state, LifecycleState::Asleep);
+            assert_eq!(std::fs::read(&beta_journal).unwrap(), beta_before);
+            drop(sup);
+        });
+    }
+
     #[tokio::test]
     async fn a_save_cut_off_before_its_rename_leaves_the_last_host_file() {
         // #10695 power loss: the host died after writing `host.json.tmp`
