@@ -1336,12 +1336,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(
-            b.service()
-                .world()
-                .snapshot(token_b)
-                .await
-                .unwrap()
-                .events,
+            b.service().world().snapshot(token_b).await.unwrap().events,
             [] as [crate::world::WorldEvent; 0]
         );
     }

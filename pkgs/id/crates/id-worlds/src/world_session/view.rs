@@ -472,9 +472,15 @@ mod tests {
 
         // No comparable previous screen, or a resized screen, diffs to
         // nothing: the full view frame already carried the truth.
-        assert_eq!(region_changes(None, &after, region(0, 0, 11, 3)), [] as [serde_json::Value; 0]);
+        assert_eq!(
+            region_changes(None, &after, region(0, 0, 11, 3)),
+            [] as [serde_json::Value; 0]
+        );
         let resized = screen(&["hello agent"]);
-        assert_eq!(region_changes(previous.as_ref(), &resized, region(0, 0, 11, 1)), [] as [serde_json::Value; 0]);
+        assert_eq!(
+            region_changes(previous.as_ref(), &resized, region(0, 0, 11, 1)),
+            [] as [serde_json::Value; 0]
+        );
     }
 
     /// Oracle: #6300 section 4.2 subscription scoping for event diffs —

@@ -681,7 +681,10 @@ mod tests {
             vec![("chess".to_owned(), 2)]
         );
         assert_eq!(search(&gallery(), "stones"), vec![("go".to_owned(), 1)]);
-        assert_eq!(search(&gallery(), "nothing-like-this"), [] as [(String, u64); 0]);
+        assert_eq!(
+            search(&gallery(), "nothing-like-this"),
+            [] as [(String, u64); 0]
+        );
     }
 
     #[test]
@@ -830,7 +833,10 @@ mod tests {
         }
         assert!(gallery.author_page("bob").is_err());
         let nobody = "ab".repeat(32);
-        assert_eq!(gallery.author_page(&nobody).unwrap().records, [] as [BundleRecord; 0]);
+        assert_eq!(
+            gallery.author_page(&nobody).unwrap().records,
+            [] as [BundleRecord; 0]
+        );
     }
 
     #[test]
@@ -886,7 +892,10 @@ mod tests {
             assert_eq!(gallery.list(&ListQuery::default()), [] as [BundleRecord; 0]);
             assert!(gallery.fetch(&hash).is_none());
             assert_eq!(search(&gallery, "board"), [] as [(String, u64); 0]);
-            assert_eq!(gallery.author_page(&key).unwrap().records, [] as [BundleRecord; 0]);
+            assert_eq!(
+                gallery.author_page(&key).unwrap().records,
+                [] as [BundleRecord; 0]
+            );
             assert_eq!(gallery.unlisted_by(&hash), Some(&removed));
             assert_eq!(
                 gallery.registry().fetch(&hash),

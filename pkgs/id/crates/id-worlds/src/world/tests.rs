@@ -667,7 +667,10 @@ mod tests {
             })
             .await;
         assert!(response.await.unwrap().is_ok());
-        assert_eq!(actor.pending_transfer_replays, [] as [HandoffTransferState; 0]);
+        assert_eq!(
+            actor.pending_transfer_replays,
+            [] as [HandoffTransferState; 0]
+        );
         assert!(actor.program_healthy);
         assert_eq!(
             *applied_after_install.lock().unwrap(),
@@ -694,7 +697,10 @@ mod tests {
             *applied_first.lock().unwrap(),
             vec!["add-entity".to_owned()]
         );
-        assert_eq!(actor.pending_transfer_replays, [] as [HandoffTransferState; 0]);
+        assert_eq!(
+            actor.pending_transfer_replays,
+            [] as [HandoffTransferState; 0]
+        );
         assert!(actor.program_healthy);
 
         // A live reinstall of the same module must hand the replacement
@@ -724,7 +730,10 @@ mod tests {
             .await;
         assert!(response.await.unwrap().is_ok());
         assert!(actor.program_healthy);
-        assert_eq!(actor.pending_transfer_replays, [] as [HandoffTransferState; 0]);
+        assert_eq!(
+            actor.pending_transfer_replays,
+            [] as [HandoffTransferState; 0]
+        );
         assert_eq!(
             *applied_after_install.lock().unwrap(),
             vec!["add-entity".to_owned()],
@@ -906,7 +915,10 @@ mod tests {
             .await;
         assert!(response.await.unwrap().is_ok());
         assert!(actor.program_healthy);
-        assert_eq!(actor.pending_transfer_replays, [] as [HandoffTransferState; 0]);
+        assert_eq!(
+            actor.pending_transfer_replays,
+            [] as [HandoffTransferState; 0]
+        );
     }
 
     #[tokio::test]
@@ -7115,7 +7127,10 @@ mod tests {
         revoked.sort_unstable();
         assert_eq!(revoked, vec![owner.id, child.id]);
         // Revoking a revoked capability again changes no recorded time.
-        assert_eq!(core.revoke_tree_at(owner.id, None, Some(9_999)), [] as [u64; 0]);
+        assert_eq!(
+            core.revoke_tree_at(owner.id, None, Some(9_999)),
+            [] as [u64; 0]
+        );
 
         let expected = vec![
             (owner.id, Some(1_000), Some(4_000)),
@@ -7999,7 +8014,10 @@ mod tests {
             chat_texts(&core.snapshot(&reader).unwrap().events),
             ["hello"]
         );
-        assert_eq!(chat_texts(&core.snapshot(&watcher).unwrap().events), [] as [String; 0]);
+        assert_eq!(
+            chat_texts(&core.snapshot(&watcher).unwrap().events),
+            [] as [String; 0]
+        );
         assert!(core.chat(&reader, "hi").is_err());
     }
 

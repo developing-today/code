@@ -683,7 +683,10 @@ mod tests {
                 owner_epoch: 8
             }
         );
-        assert_eq!(replayed.ops_snapshot(4_000).entries, [] as [HandoffOpsEntry; 0]);
+        assert_eq!(
+            replayed.ops_snapshot(4_000).entries,
+            [] as [HandoffOpsEntry; 0]
+        );
     }
 
     #[test]

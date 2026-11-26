@@ -688,9 +688,7 @@ mod tests {
             other => panic!("expected the removal, got {other:?}"),
         }
         assert_eq!(
-            list(&client, addr, &ListQuery::default())
-                .await
-                .unwrap(),
+            list(&client, addr, &ListQuery::default()).await.unwrap(),
             [] as [BundleRecord; 0]
         );
     }
