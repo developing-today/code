@@ -13,7 +13,7 @@
 // isolation, and guard failures.
 //
 // Usage: node smoke/smoke.mjs
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 
 const PKG = new URL("..", import.meta.url).pathname;
@@ -52,6 +52,26 @@ async function waitUp(port, tries) {
     await new Promise((r) => setTimeout(r, 2000));
   }
   return false;
+}
+
+// The front door reads the central tenancy registry (TENANCY_DB)
+// before it touches a namespace, and an unmigrated local D1 fails
+// closed there (503 tenancy_registry_unavailable). Migrate the local
+// registry and register binding A so the valid-context request
+// reaches the restricted-namespace step this part checks.
+function wranglerSync(args) {
+  const r = spawnSync("wrangler", args, { cwd: PKG, stdio: ["ignore", "pipe", "pipe"], encoding: "utf8", env: { ...process.env, CI: "1" } });
+  return r.status === 0 ? null : (r.stderr || r.stdout || "").trim().slice(-400);
+}
+{
+  const migrated = wranglerSync(["d1", "migrations", "apply", "TENANCY_DB", "--local"]);
+  check("local tenancy registry migrates", migrated === null, migrated ?? undefined);
+  const seeded = wranglerSync([
+    "d1", "execute", "TENANCY_DB", "--local", "--command",
+    "INSERT OR IGNORE INTO account (account_id, sub, email_contact, created_at, state, tier) VALUES ('smoke-acct', 'smoke-subject', NULL, '2026-11-26T00:00:00Z', 'active', 'standard'); " +
+      "INSERT OR IGNORE INTO binding (binding_id, account_id, iroh_id, status, bound_at, superseded_by) VALUES ('" + A + "', 'smoke-acct', 'smoke-iroh', 'active', '2026-11-26T00:00:00Z', NULL);",
+  ]);
+  check("binding A registered in the local tenancy registry", seeded === null, seeded ?? undefined);
 }
 
 // ---------- Part 1: application worker fails closed locally ----------

@@ -1414,7 +1414,10 @@ tree = "T"
         fn an_omitted_table_leaves_the_live_policy_alone() {
             let mut state = WorldState::default();
             state.presentation.assets.max_rung = Rung::Glyph;
-            assert_eq!(plan(&WorldManifest::default(), &state), [] as [ApplyStep; 0]);
+            assert_eq!(
+                plan(&WorldManifest::default(), &state),
+                [] as [ApplyStep; 0]
+            );
         }
 
         #[test]

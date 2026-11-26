@@ -13,11 +13,7 @@ import {
   parseDocumentRead,
   parseDocumentsPage,
 } from "./documents";
-import {
-  loadWorldSnapshot,
-  saveWorldSnapshot,
-  type StoredWorldSnapshot,
-} from "./world-snapshot-store";
+import { loadWorldSnapshot, saveWorldSnapshot, type StoredWorldSnapshot } from "./world-snapshot-store";
 import { applyScreenPatch, renderWorldSurface, type ScreenPatch, type ScreenSurface } from "./world-surface";
 import { viewportCellsForPane } from "./world-viewport";
 
@@ -233,7 +229,10 @@ function initWorld(): void {
     }
     records = { ...stored.records };
     recordsView.textContent = JSON.stringify(records, null, 2);
-    appendLine(log, `Showing ${stored.world_id} from the saved snapshot at event ${stored.sequence} (offline, read-only)`);
+    appendLine(
+      log,
+      `Showing ${stored.world_id} from the saved snapshot at event ${stored.sequence} (offline, read-only)`,
+    );
     setStatus("Offline — saved snapshot");
   };
 
@@ -573,7 +572,14 @@ function initWorld(): void {
           documentsPages = 0;
           renderDocumentsList();
         } else {
-          socket?.send(JSON.stringify(documentsFrame(capability.value.trim(), { prefix: documentsPrefix?.value.trim() || null, after: documentsAfter })));
+          socket?.send(
+            JSON.stringify(
+              documentsFrame(capability.value.trim(), {
+                prefix: documentsPrefix?.value.trim() || null,
+                after: documentsAfter,
+              }),
+            ),
+          );
         }
         break;
       }
@@ -581,8 +587,12 @@ function initWorld(): void {
         if (!documentPending) return;
         documentPending = false;
         const read = parseDocumentRead(frame);
-        if (!read) { rejectFrame(); return; }
-        if (documentsView) documentsView.textContent = `--- ${read.name} (${read.size} bytes; read-only) ---\n${read.text}`;
+        if (!read) {
+          rejectFrame();
+          return;
+        }
+        if (documentsView)
+          documentsView.textContent = `--- ${read.name} (${read.size} bytes; read-only) ---\n${read.text}`;
         break;
       }
       case "invite": {
@@ -635,19 +645,27 @@ function initWorld(): void {
   };
 
   const requestDocument = (docName: string) => {
-    if (socket?.readyState !== WebSocket.OPEN) { setStatus("Join the world before reading documents", "error"); return; }
+    if (socket?.readyState !== WebSocket.OPEN) {
+      setStatus("Join the world before reading documents", "error");
+      return;
+    }
     documentPending = true;
     socket.send(JSON.stringify(documentFrame(capability.value.trim(), docName)));
   };
 
   const requestDocuments = () => {
-    if (socket?.readyState !== WebSocket.OPEN) { setStatus("Join the world before reading documents", "error"); return; }
+    if (socket?.readyState !== WebSocket.OPEN) {
+      setStatus("Join the world before reading documents", "error");
+      return;
+    }
     if (documentsPending) return;
     documentsNames = [];
     documentsAfter = null;
     documentsPages = 0;
     documentsPending = true;
-    socket.send(JSON.stringify(documentsFrame(capability.value.trim(), { prefix: documentsPrefix?.value.trim() || null })));
+    socket.send(
+      JSON.stringify(documentsFrame(capability.value.trim(), { prefix: documentsPrefix?.value.trim() || null })),
+    );
   };
 
   const requestRecords = () => {

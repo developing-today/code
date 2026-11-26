@@ -69,6 +69,33 @@ import {
   type MigrationSnapshot,
   type StagedTarget,
 } from "./migration-snapshot.ts";
+import {
+  BACKEND_CAPABILITIES,
+  CONTRACT_VERSION,
+  DEFAULT_LADDER_THRESHOLDS,
+  HDR_PLACEMENT_GENERATION,
+  HDR_READ_AT_WATERMARK,
+  HDR_STORAGE_WATERMARK,
+  REFUSAL_HTTP_STATUS,
+  RETENTION_FLOOR_DAYS,
+  admit,
+  checkPlacementGeneration,
+  checkReadAtWatermark,
+  createManifest,
+  hardLimitRefusal,
+  isLadderStep,
+  ladderStep,
+  parseWatermark,
+  unavailable,
+  validateManifest,
+  type BackendId,
+  type BackendManifest,
+  type DeclaredLimits,
+  type LadderStep,
+  type OpClass,
+  type StorageRefusal,
+  type StoreHead,
+} from "./storage-contract.ts";
 
 export const SCHEMA_VERSION = 3;
 
@@ -162,13 +189,21 @@ class RetryableRefusal extends FailClosed {
   }
 }
 
-function ceilingExceeded(headroom: number): FailClosed {
-  return new FailClosed(
-    413,
-    "ceiling_exceeded",
-    `storage ceiling exceeded: value is larger than the ${headroom} bytes of headroom; reads and export remain available`,
-  );
+/** A #5863 §5.1 typed refusal at the HTTP boundary (#15483). The
+ * status comes from the refusal kind (storage-contract.ts); `code`
+ * keeps the route's established error code — `ceiling_exceeded` for
+ * the hard ceiling, as PR #10132 answered it — and the response body
+ * adds the typed `refusal` beside `error` and `message`. */
+export class ContractRefusal extends FailClosed {
+  readonly refusal: StorageRefusal;
+  constructor(code: string, message: string, refusal: StorageRefusal) {
+    super(REFUSAL_HTTP_STATUS[refusal.kind], code, message);
+    this.refusal = refusal;
+  }
 }
+
+/** The backend this object's store is (#5867 manifest, #5863 §4). */
+export const STORE_BACKEND: BackendId = "do_sqlite";
 
 /** Hard per-request body bound for every mutating route (#11337),
  * matching the platform's default request size. It only bounds
@@ -222,6 +257,15 @@ async function readTextUpTo(req: Request, limit: number): Promise<string | null>
   const bytes = await readBytesUpTo(req, limit);
   return bytes === null ? null : new TextDecoder().decode(bytes);
 }
+
+/** GET routes the per-binding request cap never refuses or counts
+ * (#15485, #15591): the usage read and the export paths. */
+const CAP_EXEMPT_PATHS: ReadonlySet<string> = new Set([
+  "/v1/usage",
+  "/v1/export",
+  "/v1/bridge/challenge",
+  "/v1/bridge/export",
+]);
 
 export class UserDO {
   private state: DOState;
@@ -374,22 +418,150 @@ export class UserDO {
     };
   }
 
-  /** Fail a write closed when it would push storage over the
-   * ceiling. Reads, export, and deletes never call this: at cap
-   * the object is read-only + exportable, and deletes are how a
-   * user recovers headroom. */
-  private assertWritable(deltaBytes: number) {
+  /** The #5868 ladder step last persisted for this store. */
+  private persistedStep(): LadderStep {
+    const raw = this.meta("budget_step");
+    return isLadderStep(raw) ? raw : "normal";
+  }
+
+  private persistStep(step: LadderStep) {
+    if (this.meta("budget_step") !== step) this.setMeta("budget_step", step);
+  }
+
+  /** The current ladder step over stored bytes, with hysteresis
+   * against the persisted step; persists the result. */
+  private budget(): { step: LadderStep; used: number; ceiling: number | null } {
+    const ceiling = this.ceilingBytes();
+    const used = this.usage().storage_bytes;
+    const step = ladderStep(used, ceiling, this.persistedStep());
+    this.persistStep(step);
+    return { step, used, ceiling };
+  }
+
+  /** Admit a write through the #5868 budget ladder over the storage
+   * ceiling (storage-contract.ts `admit`, #15483). A write that would
+   * pass the ceiling is refused whatever its class, journal appends
+   * included (413 ceiling_exceeded, as PR #10132 answered it). Below
+   * the ceiling the ladder decides: at `refused` (≥ 90 % by default)
+   * non-journal growth is refused (413 budget_refused) and the rest
+   * of the budget is reserved for journal appends. A write that does
+   * not grow storage is `reclaim` and always passes. Reads, export
+   * and deletes never call this: at cap the object is read-only +
+   * exportable, and deletes are how a user recovers headroom. */
+  private admitWrite(op: OpClass, deltaBytes: number) {
     this.assertNotFenced();
     const ceiling = this.ceilingBytes();
-    if (ceiling === null) return;
-    const after = this.usage().storage_bytes + deltaBytes;
-    if (after > ceiling) {
-      throw new FailClosed(
-        413,
+    const used = this.usage().storage_bytes;
+    const decision = admit({
+      op: deltaBytes > 0 ? op : "reclaim",
+      delta: deltaBytes,
+      used,
+      ceiling,
+      previous: this.persistedStep(),
+      store: this.meta("binding_id") ?? "",
+      backend: STORE_BACKEND,
+    });
+    if (decision.ok) {
+      this.persistStep(decision.value.step);
+      return;
+    }
+    const refusal = decision.refusal;
+    if (refusal.kind !== "limit") throw new ContractRefusal("storage_refused", "storage refused the write", refusal);
+    this.persistStep(refusal.step);
+    if (refusal.threshold === 1) {
+      throw new ContractRefusal(
         "ceiling_exceeded",
-        `storage ceiling exceeded: ${after} bytes would exceed the ${ceiling}-byte ceiling; reads and export remain available`,
+        `storage ceiling exceeded: ${used + deltaBytes} bytes would exceed the ${refusal.ceiling}-byte ceiling; reads and export remain available`,
+        refusal,
       );
     }
+    throw new ContractRefusal(
+      "budget_refused",
+      `storage budget is ${refusal.step} (${used} of ${refusal.ceiling} bytes): ${refusal.op} writes are refused; journal appends, deletes, reads and export remain available`,
+      refusal,
+    );
+  }
+
+  /** A hard-ceiling refusal raised before a write's size is known: a
+   * bounded body read ran past `headroom` bytes. */
+  private headroomRefusal(headroom: number, requested: number): ContractRefusal {
+    const ceiling = this.ceilingBytes() ?? headroom;
+    const used = this.usage().storage_bytes;
+    return new ContractRefusal(
+      "ceiling_exceeded",
+      `storage ceiling exceeded: value is larger than the ${headroom} bytes of headroom; reads and export remain available`,
+      hardLimitRefusal({
+        op: "write",
+        used,
+        ceiling,
+        requested,
+        step: ladderStep(used, ceiling, this.persistedStep()),
+        store: this.meta("binding_id") ?? "",
+        backend: STORE_BACKEND,
+      }),
+    );
+  }
+
+  /** #5863 §2.4 head. The object is the unit's single writer (#5867
+   * §4: one write authority), so its commit counter cannot fork and
+   * the watermark it serves at is its head. */
+  private head(): StoreHead {
+    const raw = Number(this.meta("store_seq") ?? "0");
+    const seq = Number.isSafeInteger(raw) && raw >= 0 ? raw : 0;
+    return { seq, timestamp: this.meta("store_seq_at"), watermark: seq };
+  }
+
+  /** Advance the head after a committed mutation; returns the new
+   * watermark (what a read-your-writes read asks for). */
+  private commit(): number {
+    const next = this.head().seq + 1;
+    this.setMeta("store_seq", String(next));
+    this.setMeta("store_seq_at", new Date().toISOString());
+    return next;
+  }
+
+  /** #5863 §4.1 limits this store declares. */
+  private declaredLimits(): DeclaredLimits {
+    return {
+      max_stored_bytes: this.ceilingBytes(),
+      max_entry_bytes: requestBodyLimit(this.env.USER_CEILING_BYTES),
+      max_appends_per_second: null,
+      // The object never trims its journal, so the #5869 §2.2 floor
+      // is honoured.
+      retention_floor_days: RETENTION_FLOOR_DAYS,
+    };
+  }
+
+  /** The #5867 backend manifest for this unit, recorded in meta the
+   * first time the object serves (an object bound before #15483
+   * records generation 1 from cutover 0: it has lived here since its
+   * first entry). A record that is malformed, names another unit, or
+   * places the unit on another backend fails closed (§2.4). */
+  private manifest(bindingId: string): BackendManifest {
+    const raw = this.meta("backend_manifest");
+    if (raw === null) {
+      const created = createManifest({ unit: bindingId, backend: STORE_BACKEND, recordedAt: new Date().toISOString() });
+      this.setMeta("backend_manifest", JSON.stringify(created));
+      return created;
+    }
+    let parsed: unknown = null;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      parsed = null;
+    }
+    const checked = validateManifest(parsed, bindingId);
+    if (!checked.ok) {
+      throw new ContractRefusal("placement_unknown", "the store's backend manifest is invalid; failing closed", checked.refusal);
+    }
+    if (checked.value.backend !== STORE_BACKEND) {
+      throw new ContractRefusal(
+        "placement_unknown",
+        `the backend manifest places this unit on ${checked.value.backend}; this store does not serve it`,
+        unavailable("placement_unknown", "unit is placed on another backend", { generation: checked.value.generation }),
+      );
+    }
+    return checked.value;
   }
 
   /** The persisted migration fence (#3404); null when none stands. */
@@ -679,7 +851,7 @@ export class UserDO {
   }
 
   /** The largest value (bytes) a KV PUT over `priorBytes` of existing
-   * data can carry and still pass assertWritable; null = no ceiling. */
+   * data can carry and still fit under the ceiling; null = no ceiling. */
   private kvHeadroom(priorBytes: number): number | null {
     const ceiling = this.ceilingBytes();
     if (ceiling === null) return null;
@@ -849,16 +1021,19 @@ export class UserDO {
       onSettled: (snapshot) => this.saveBridgeSession(attachment.sid, snapshot),
       guardBatch: (newBytes) => {
         try {
-          this.assertWritable(newBytes);
+          this.admitWrite("journal_append", newBytes);
           // ingestBatch follows synchronously: this is the commit point.
           this.commitPoint();
-          return true;
         } catch (e) {
           if (e instanceof FailClosed && (e.code === "source_frozen" || e.code === "source_sealed")) {
             return { code: e.code, message: e.message };
           }
           return false;
         }
+        // The session ingests synchronously right after an admitted
+        // guard, so the batch commits at this watermark (#15483).
+        if (newBytes > 0) this.commit();
+        return true;
       },
     });
     if (!resume) {
@@ -955,6 +1130,16 @@ export class UserDO {
   }
 
   async fetch(req: Request): Promise<Response> {
+    const res = await this.handle(req);
+    // #5863 §2.3: every successful answer names the watermark it was
+    // served at (a write: the one it committed at).
+    if (res.status < 400 && res.status !== 101 && this.meta("binding_id") !== null) {
+      res.headers.set(HDR_STORAGE_WATERMARK, String(this.head().watermark));
+    }
+    return res;
+  }
+
+  private async handle(req: Request): Promise<Response> {
     await this.ready;
     try {
       const { bindingId, jurisdiction, clientSideEncryption } = this.guard(req);
@@ -972,13 +1157,63 @@ export class UserDO {
       // A staged migration target serves nothing until it is
       // activated after the directory switch (#3404).
       this.assertServing();
+      const isStorage = url.pathname === "/v1/storage" && req.method === "GET";
       const requestCap = this.requestCap();
-      // The usage read is exempt so a capped caller can still see
-      // where it stands and when the window resets (#15485).
-      if (requestCap !== null && !isUsage) this.admitRequest(requestCap);
+      // Cap-exempt reads (#15485, #15591). Usage lets a capped
+      // caller see where it stands and when the window resets.
+      // Plain export and bridge export are how a capped user gets
+      // their data out (#3811). The bridge challenge mints the
+      // single-use, 5-minute nonce that bridge export's proof needs,
+      // so refusing it would leave bridge export unreachable to a
+      // caller holding no live nonce. Exempt reads do not count
+      // toward the window either; the export proof checks are
+      // unchanged.
+      const capExempt = req.method === "GET" && CAP_EXEMPT_PATHS.has(url.pathname);
+      if (requestCap !== null && !capExempt) this.admitRequest(requestCap);
+      // #15483: the placement fact, then the request's own contract
+      // preconditions. A caller that presents a placement generation
+      // must present the current one (#5867 §2.3); one that names a
+      // watermark is served only by a store that has reached it
+      // (#5863 §2.3, read-at-≥N), otherwise refused carrying the
+      // store's current watermark.
+      const manifest = this.manifest(bindingId);
+      const rawGeneration = req.headers.get(HDR_PLACEMENT_GENERATION);
+      if (rawGeneration !== null) {
+        const generation = parseWatermark(rawGeneration);
+        if (!generation.ok || generation.value === null) {
+          throw new FailClosed(400, "invalid_placement_generation", "placement generation must be a non-negative integer");
+        }
+        const stale = checkPlacementGeneration(manifest, generation.value);
+        if (stale !== null) throw new ContractRefusal("placement_stale", "placement generation is not current", stale);
+      }
+      const readAt = parseWatermark(req.headers.get(HDR_READ_AT_WATERMARK));
+      if (!readAt.ok) throw new FailClosed(400, "invalid_watermark", "requested watermark must be a non-negative integer");
+      const served = checkReadAtWatermark(readAt.value, this.head());
+      if (!served.ok) {
+        throw new ContractRefusal("watermark_unavailable", "the store has not reached the requested watermark", served.refusal);
+      }
+      if (isStorage) {
+        const budget = this.budget();
+        return json({
+          contract_version: CONTRACT_VERSION,
+          head: this.head(),
+          manifest,
+          capabilities: BACKEND_CAPABILITIES[manifest.backend],
+          limits: this.declaredLimits(),
+          meters: { rows_read: null, rows_written: null, stored_bytes: budget.used },
+          budget: {
+            dimension: "stored_bytes",
+            step: budget.step,
+            used: budget.used,
+            ceiling: budget.ceiling,
+            thresholds: DEFAULT_LADDER_THRESHOLDS,
+          },
+        });
+      }
       if (isUsage) {
         const usage = this.usage();
         const ceiling = this.ceilingBytes();
+        const budgetStep = this.budget().step;
         const now = Date.now();
         const current = requestCap === null ? null : this.requestWindow(requestCap.windowMs, now);
         return json({
@@ -994,6 +1229,8 @@ export class UserDO {
           window_resets_at_ms:
             requestCap === null || current === null || current.count === 0 ? null : current.start + requestCap.windowMs,
           at_request_cap: requestCap !== null && current !== null && current.count >= requestCap.ceiling,
+          budget_step: budgetStep,
+          watermark: this.head().watermark,
         });
       }
       if (url.pathname === "/v1/export" && req.method === "GET") {
@@ -1007,6 +1244,8 @@ export class UserDO {
           binding_id: bindingId,
           jurisdiction,
           client_side_encryption: clientSideEncryption,
+          contract_version: CONTRACT_VERSION,
+          watermark: this.head().watermark,
           usage: this.usage(),
           kv: Object.fromEntries(kvRows.map((r) => [String(r.key), String(r.value)])),
           blobs: blobRows.map((r) => ({
@@ -1061,9 +1300,12 @@ export class UserDO {
           if ("malformed" in entry) continue;
           if (!store.heldEvent(entry.id)) newBytes += entry.bytes.length;
         }
-        this.assertWritable(newBytes);
+        // Signed journal appends: allowed at every ladder step, refused
+        // only at the hard ceiling (#5868 decision 4 (d)).
+        this.admitWrite("journal_append", newBytes);
         this.commitPoint();
         const outcomes = store.ingestBatch(entries, Date.now());
+        if (outcomes.some((o) => o.kind === "accepted" || o.kind === "waiting" || o.kind === "fork")) this.commit();
         return json({ outcomes: outcomes.map(serializeOutcome), heads: store.heads() });
       }
       if (url.pathname === "/v1/bridge/pull" && req.method === "POST") {
@@ -1185,11 +1427,12 @@ export class UserDO {
         // Bounded read (#11337): a blob larger than the whole
         // ceiling can never fit, so the ceiling bounds the read too.
         const limit = requestBodyLimit(this.env.USER_CEILING_BYTES);
-        const tooLarge = () => (this.ceilingBytes() === null ? bodyTooLarge(limit) : ceilingExceeded(limit));
+        const tooLarge = (requested: number) =>
+          this.ceilingBytes() === null ? bodyTooLarge(limit) : this.headroomRefusal(limit, requested);
         const declared = req.headers.get("content-length");
-        if (declared !== null && Number(declared) > limit) throw tooLarge();
+        if (declared !== null && Number(declared) > limit) throw tooLarge(Number(declared));
         const bytes = await readBytesUpTo(req, limit);
-        if (bytes === null) throw tooLarge();
+        if (bytes === null) throw tooLarge(limit + 1);
         const digest = await crypto.subtle.digest("SHA-256", bytes);
         const hash = [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
         const bucket = blobsBindingFor(this.env, jurisdiction as Jurisdiction);
@@ -1199,7 +1442,7 @@ export class UserDO {
         // once per binding. Either way the reference row below is
         // what grants THIS user access.
         const priorRef = this.state.storage.sql.exec("SELECT hash FROM blobs WHERE hash = ?", hash).toArray();
-        this.assertWritable(priorRef.length === 0 ? bytes.byteLength : 0);
+        this.admitWrite("write", priorRef.length === 0 ? bytes.byteLength : 0);
         const key = blobObjectKey(bindingId, hash, clientSideEncryption);
         const existing = await bucket.head(key);
         if (!existing) await bucket.put(key, bytes);
@@ -1214,6 +1457,7 @@ export class UserDO {
           bindingId,
           new Date().toISOString(),
         );
+        if (priorRef.length === 0) this.commit();
         return json({ hash, size: bytes.byteLength, stored: true, deduped: !!existing, client_side_encryption: clientSideEncryption });
       }
       if (blobHashMatch && req.method === "GET") {
@@ -1238,6 +1482,7 @@ export class UserDO {
         if (rows.length === 0) return json({ error: "not_found" }, 404);
         this.commitPoint();
         this.state.storage.sql.exec("DELETE FROM blobs WHERE hash = ?", hash);
+        this.commit();
         // The reference is gone, so this user can no longer reach
         // the bytes. The R2 object itself is deliberately NOT
         // deleted here: identical content may be referenced by
@@ -1263,17 +1508,18 @@ export class UserDO {
           if (value === null) throw bodyTooLarge(limit);
         } else {
           const declared = req.headers.get("content-length");
-          if (declared !== null && Number(declared) > headroom) throw ceilingExceeded(headroom);
+          if (declared !== null && Number(declared) > headroom) throw this.headroomRefusal(headroom, Number(declared));
           value = await readTextUpTo(req, headroom);
-          if (value === null) throw ceilingExceeded(headroom);
+          if (value === null) throw this.headroomRefusal(headroom, headroom + 1);
         }
-        this.assertWritable(new TextEncoder().encode(value).byteLength - priorBytes);
+        this.admitWrite("write", new TextEncoder().encode(value).byteLength - priorBytes);
         this.commitPoint();
         this.state.storage.sql.exec(
           "INSERT INTO kv (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
           kvMatch[1],
           value,
         );
+        this.commit();
         return json({ key: kvMatch[1], stored: true });
       }
       if (kvMatch && req.method === "GET") {
@@ -1288,6 +1534,7 @@ export class UserDO {
         if (rows.length === 0) return json({ error: "not_found" }, 404);
         this.commitPoint();
         this.state.storage.sql.exec("DELETE FROM kv WHERE key = ?", kvMatch[1]);
+        this.commit();
         return json({ key: kvMatch[1], deleted: true });
       }
       return json({ error: "not_found" }, 404);
@@ -1296,6 +1543,9 @@ export class UserDO {
         const response = json({ error: e.code, message: e.message, retry_after_seconds: e.retryAfterSeconds }, e.status);
         response.headers.set("retry-after", String(e.retryAfterSeconds));
         return response;
+      }
+      if (e instanceof ContractRefusal) {
+        return json({ error: e.code, message: e.message, refusal: e.refusal }, e.status);
       }
       if (e instanceof FailClosed) return json({ error: e.code, message: e.message }, e.status);
       throw e;

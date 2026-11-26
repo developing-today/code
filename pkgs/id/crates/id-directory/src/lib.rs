@@ -28,6 +28,7 @@ pub mod invite;
 pub mod invites;
 pub mod keyset;
 pub mod keyset_file;
+pub mod keyset_pairing;
 pub mod recovery;
 pub mod recovery_flow;
 pub mod recovery_relay;

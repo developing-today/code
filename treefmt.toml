@@ -58,6 +58,8 @@ options = ["format", "--write"]
 [formatter.prettier]
 command = "prettier"
 includes = ["*.html", "*.md", "*.mdx", "*.scss", "*.yaml", "*.yml"]
+# Helm/Go-template YAML is not parseable as plain YAML by prettier.
+excludes = ["infra/cluster/basement/templates/**"]
 options = ["--write"]
 
 [formatter.shfmt]

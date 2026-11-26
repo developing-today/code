@@ -74,12 +74,6 @@ export interface BlobsEnv {
   BLOBS_FEDRAMP?: R2BucketLike;
 }
 
-const BLOBS_BINDING_FOR_JURISDICTION = {
-  us: "BLOBS_US",
-  eu: "BLOBS_EU",
-  fedramp: "BLOBS_FEDRAMP",
-} as const;
-
 export function blobsBindingFor(env: BlobsEnv, jurisdiction: Jurisdiction): R2BucketLike {
   const binding = BLOBS_BINDING_FOR_JURISDICTION[jurisdiction];
   const bucket = env[binding];

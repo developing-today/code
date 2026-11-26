@@ -705,7 +705,24 @@
                   "test-web-unit"
                   "test-web-typecheck"
                 ];
-                test-web-unit = mkCheckWebOnly "test-web-unit" "test-web-unit";
+                # The keyboard parity test reads the kitty corpus from
+                # doc/, a symlink to the repo-root doc/ that dangles in
+                # the check sandbox; materialize that one file as
+                # roc-test does (#14665).
+                test-web-unit = mkCheckWith {
+                  name = "test-web-unit";
+                  justCmd = "test-web-unit";
+                  needsCargoSetup = false;
+                  needsRustToolchain = false;
+                  needsBuildInputs = false;
+                  buildWebAssets = false;
+                  compileRocWorldHost = false;
+                  beforeCheck = ''
+                    rm doc
+                    mkdir doc
+                    cp ${../../doc/kitty-disambiguate-v1-fixtures.json} doc/kitty-disambiguate-v1-fixtures.json
+                  '';
+                };
                 test-web-typecheck = mkCheckWebOnly "test-web-typecheck" "test-web-typecheck";
                 # Roc library expect() tests (#813): runs the roc-test just
                 # recipe with the pinned nightly from nix/roc.nix (already in

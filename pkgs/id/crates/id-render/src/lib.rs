@@ -32,8 +32,8 @@
 //!   layering, further assertion and override resolution, the
 //!   web-only raw-CSS layer), producing the resolved IR and
 //!   composition report for one target. Conditional
-//!   blocks await a #5849 vocabulary representation; see the module
-//!   documentation for the stated boundary.
+//!   blocks (`<conditional>`, #5854 §5) are resolved for the
+//!   target before the cascade; see the module documentation.
 //!
 //! * **Stages 4–5 — lower + emit, web target** ([`lower`]): the
 //!   resolved IR is lowered through the #5851 mapping table
@@ -75,18 +75,19 @@
 //! it, and stage 3 composes the slot's assertions like any other
 //! layer-3 input. What remains outside the pipeline is unchanged
 //! and belongs to its own records: state-delta composition
-//! (#5851 §3.6 — targets render state behaviour natively) and
-//! conditional blocks (no #5849 representation yet).
+//! (#5851 §3.6 — targets render state behaviour natively).
+//! Conditional blocks, which #5849 v1 could not represent, are the
+//! `<conditional>` element of [`vocabulary::CONDITIONAL`] (issue
+//! #7920): validated in stage 2, resolved per target in stage 3.
 
 //! * **Author tooling** ([`tooling`]): the one toolchain
 //!   surface #5855 §4 settles — a linter over the source plus
 //!   the vocabularies and tables the pipeline consumes, and
 //!   the multi-target preview: the pipeline run in report
 //!   mode, presenting every target's artefact together with
-//!   the coverage/conflict report. The §4 rule that cannot be
-//!   expressed over the pipeline's current inputs (essential
-//!   content in conditional blocks) does not ship, per §4's
-//!   own gate; see the module documentation.
+//!   the coverage/conflict report, including the essential-
+//!   content rule for conditional blocks; see the module
+//!   documentation.
 //!
 pub mod assertion_vocabulary;
 pub mod compose;

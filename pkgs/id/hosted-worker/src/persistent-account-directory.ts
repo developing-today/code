@@ -4,6 +4,7 @@
 
 import {
   createHostedAccountRecord,
+  HOSTED_DIRECTORY_ALLOWLISTED_COLUMNS,
   inventoryLegacyHostedAccount,
   migrationShapeError,
   planDirectoryTransition,
@@ -48,8 +49,7 @@ type StoredAccountRow = Record<string, unknown> & {
   routing_epoch: number;
 };
 
-const COLUMNS =
-  "subject_key, binding_id, jurisdiction, jurisdiction_pending, migration_id, phase, routing_epoch";
+const COLUMNS = HOSTED_DIRECTORY_ALLOWLISTED_COLUMNS.join(", ");
 
 const LEGACY_COLUMNS = "subject_key, binding_id, classification";
 
