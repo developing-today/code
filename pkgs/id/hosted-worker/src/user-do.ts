@@ -45,6 +45,7 @@ import {
   type FrameTransport,
 } from "./bridge-session.ts";
 import type { IngestOutcome } from "./bridge-store.ts";
+import { SYNC_COORD_SCHEMA, SyncCoord, SyncCoordConflict } from "./sync-coord.ts";
 import { ExportProductionError, exportSetsToWire, produceExportSets } from "./export.ts";
 import {
   FENCE_RETRY_AFTER_SECONDS,
@@ -298,6 +299,10 @@ export class UserDO {
       // created before the bridge gains the tables on its next
       // bootstrap with its data untouched.
       for (const statement of BRIDGE_SCHEMA) sql.exec(statement);
+      // E3: per-tenant/peer ownership and resume watermarks live in
+      // this tenant database. SyncCoord stores coordination metadata
+      // only; BridgeStore remains the event-content authority.
+      for (const statement of SYNC_COORD_SCHEMA) sql.exec(statement);
       // #15484: the state of each open bridge WebSocket session, so
       // a session survives the object being evicted while its
       // socket hibernates. One row per socket, removed on close.
@@ -864,6 +869,10 @@ export class UserDO {
     return new BridgeStore(this.state.storage.sql, this.bridgeLimits());
   }
 
+  private syncCoord(bindingId: string): SyncCoord {
+    return new SyncCoord(this.state.storage.sql, bindingId);
+  }
+
   /** Bridge waiting-pool bounds from the environment; a malformed
    * value fails closed, like the storage ceiling. */
   private bridgeLimits(): WaitingLimits {
@@ -1018,7 +1027,14 @@ export class UserDO {
       irohHex: attachment.irohHex,
       transport,
       resume,
-      onSettled: (snapshot) => this.saveBridgeSession(attachment.sid, snapshot),
+      onSettled: (snapshot) => {
+        if (snapshot.authed) {
+          const coord = this.syncCoord(attachment.bindingId);
+          if (snapshot.closed) coord.end(attachment.irohHex, attachment.sid);
+          else coord.own(attachment.irohHex, attachment.sid, this.bridgeStore().heads());
+        }
+        this.saveBridgeSession(attachment.sid, snapshot);
+      },
       guardBatch: (newBytes) => {
         try {
           this.admitWrite("journal_append", newBytes);
@@ -1062,7 +1078,14 @@ export class UserDO {
 
   private forgetBridgeSession(socket: WsSocketLike, sid: string | null): void {
     this.liveSessions.delete(socket);
-    if (sid !== null) this.state.storage.sql.exec("DELETE FROM bridge_ws_sessions WHERE sid = ?", sid);
+    if (sid !== null) {
+      const rows = this.state.storage.sql.exec(
+        "SELECT tenant_id, peer_id FROM sync_coord WHERE session_id = ? AND state = 'active'",
+        sid,
+      ).toArray();
+      for (const row of rows) this.syncCoord(String(row.tenant_id)).end(String(row.peer_id), sid);
+      this.state.storage.sql.exec("DELETE FROM bridge_ws_sessions WHERE sid = ?", sid);
+    }
   }
 
   /** The live session for a socket, rebuilt from its row after an
@@ -1279,6 +1302,11 @@ export class UserDO {
         const store = await this.bridgeProof(req, bindingId, irohHex, "heads", new Uint8Array(0));
         return json({ heads: store.heads() });
       }
+      if (url.pathname === "/v1/bridge/conflicts" && req.method === "GET") {
+        const irohHex = this.requireIroh(req);
+        const store = await this.bridgeProof(req, bindingId, irohHex, "conflicts", new Uint8Array(0));
+        return json({ conflicts: store.conflictReports() });
+      }
       if (url.pathname === "/v1/bridge/push" && req.method === "POST") {
         const irohHex = this.requireIroh(req);
         const body = await readBytesUpTo(req, DEFAULT_BRIDGE_LIMITS.maxBatchBytes);
@@ -1306,7 +1334,9 @@ export class UserDO {
         this.commitPoint();
         const outcomes = store.ingestBatch(entries, Date.now());
         if (outcomes.some((o) => o.kind === "accepted" || o.kind === "waiting" || o.kind === "fork")) this.commit();
-        return json({ outcomes: outcomes.map(serializeOutcome), heads: store.heads() });
+        // Fork proofs remain stored as evidence and are returned as
+        // durable conflict reports; this path never selects a branch.
+        return json({ outcomes: outcomes.map(serializeOutcome), heads: store.heads(), conflicts: store.conflictReports() });
       }
       if (url.pathname === "/v1/bridge/pull" && req.method === "POST") {
         const irohHex = this.requireIroh(req);
@@ -1546,6 +1576,9 @@ export class UserDO {
       }
       if (e instanceof ContractRefusal) {
         return json({ error: e.code, message: e.message, refusal: e.refusal }, e.status);
+      }
+      if (e instanceof SyncCoordConflict) {
+        return json({ error: "sync_session_owned", message: e.message }, 409);
       }
       if (e instanceof FailClosed) return json({ error: e.code, message: e.message }, e.status);
       throw e;
