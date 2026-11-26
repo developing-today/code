@@ -266,6 +266,16 @@ pub struct BundleManifest {
     pub country: String,
     pub purpose: Option<String>,
     pub generation: u32,
+    /// Certificate revision within one key generation (§5.2 renew):
+    /// a renewal reissues on the same keys and moves this to r2, r3,
+    /// .. while `generation` stays put, so a renewed bundle never
+    /// reads as a key rotation. 1 (and absent from the JSON) for a
+    /// bundle that renews nothing.
+    #[serde(default = "first_revision", skip_serializing_if = "is_first_revision")]
+    pub revision: u32,
+    /// The bundle id this bundle renews (the §5.2 predecessor trace).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub predecessor: Option<String>,
     pub created_at: Rfc3339,
     /// fleet-cert crate version that created the bundle.
     pub engine_version: String,
@@ -279,6 +289,34 @@ pub struct BundleManifest {
     pub certificates: Vec<CertRecord>,
     pub files: Vec<FileRecord>,
     pub warnings: Vec<String>,
+}
+
+fn first_revision() -> u32 {
+    1
+}
+
+fn is_first_revision(revision: &u32) -> bool {
+    *revision == 1
+}
+
+/// `cert issuer renew` (§5.2): reissue every certificate of an
+/// issuer set on the keys it already has. Renewal is key reuse, so
+/// the request carries the explicit opt-in the spec requires; the
+/// issuer keys are never regenerated, and only the root keys sign.
+#[derive(Debug, Clone)]
+pub struct IssuerRenewRequest {
+    /// The issuer set being renewed (its manifest, public
+    /// certificates and, for bundle-private custody, its keys).
+    pub issuer_bundle: PathBuf,
+    /// The root set the issuer set chains to.
+    pub root_bundle: PathBuf,
+    /// REQUIRED explicit signer source for the root keys (§24.3).
+    pub root_signer: SignerSource,
+    pub not_before: Rfc3339,
+    pub not_after: Rfc3339,
+    /// The §5.2 opt-in: renewal reissues on the same keys, which
+    /// policy allows only when asked for in so many words.
+    pub allow_key_reuse: bool,
 }
 
 /// `cert publish plan` (§4.4): read-only publication rendering.
