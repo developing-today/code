@@ -23,7 +23,7 @@ import { closeDownloadMenu, toggleDownloadMenu } from "./download-menu";
 import { closeImageBrowser } from "./image-browser";
 import { createNavigation } from "./navigation";
 import { resolveSaveFilename } from "./save-filename";
-import { parseTagsResponse } from "./tags-response";
+import { parseTagsResponse, parseTagWsEvent } from "./tags-response";
 import {
   isCopyFileResponse,
   isNewFileResponse,
@@ -32,6 +32,7 @@ import {
   isSendFileResponse,
 } from "./file-op-responses";
 import { isSaveShortcut } from "./save-shortcut";
+import { registerShellServiceWorker } from "./sw-policy";
 import { cycleTheme, initTheme, setTheme, type Theme } from "./theme";
 
 declare global {
@@ -673,6 +674,14 @@ async function init(): Promise<void> {
   // Initialize theme system
   initTheme();
 
+  // Offline app shell (#13918): the service worker keeps this build's
+  // assets and visited pages readable with no network. Best-effort and
+  // secure-context only; never blocks start-up.
+  void registerShellServiceWorker(
+    "serviceWorker" in navigator ? navigator.serviceWorker : undefined,
+    window.isSecureContext,
+  );
+
   // A program-only surface (#2146 phase 2) has no Explorer identity
   // or tags endpoints on its listener: registering an identity or
   // connecting the tags WebSocket there would only fail and retry
@@ -731,7 +740,13 @@ async function init(): Promise<void> {
 
       ws.onmessage = (event: MessageEvent) => {
         try {
-          const data = JSON.parse(event.data as string);
+          // #7983 item 2: the broadcast frame is validated at the
+          // boundary before any field is read. A wrong-shape frame
+          // (scalar, array, or an object without the TagEvent `type`
+          // tag) is ignored — never refreshed against.
+          if (typeof event.data !== "string") return;
+          const data = parseTagWsEvent(JSON.parse(event.data));
+          if (data === null) return;
           console.log("[id] Tag event:", data);
 
           // On any tag change, refresh the file list if we're on the home page

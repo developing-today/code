@@ -62,6 +62,37 @@
  * count. (Same-second deliveries share a timestamp and stay
  * arrival-ordered; the backfill sweep is the repair path for that
  * residual, as for every mirror field.)
+ *
+ * GitHub-side history (#14170 Q7, design §8): the upserts above
+ * overwrite body_hash, the comments count, and (for issues) the
+ * sub-issue parent projection in place, so the projector also
+ * records what changed in github_issue_history — body_edited
+ * (hashes only), comment_added / comment_removed /
+ * comment_count_changed (counts only; the direction kinds only
+ * when the delivery itself is an issue_comment action), and
+ * parent_changed. The diff is computed in TS from a pre-upsert
+ * read, applying the same acceptance rules the upsert SQL encodes
+ * (deletionBlocks + the version guards, spelled in TS beside their
+ * SQL twins). Capture is FAIL-OPEN: history rows are written in
+ * their own batch AFTER the mirror batch lands, inside a catch —
+ * a killed history write never fails the mirror upsert, and the
+ * backfill sweep writes its own diff rows for changes whose
+ * webhook was missed, so history degrades to "as observed", never
+ * to fiction. First sights write no rows: a row's first observed
+ * state is a defined start, not a change.
+ *
+ * Label history (#14170 Q5, design §7.2): the upserts also
+ * overwrite the label set in place, so the projector records each
+ * observed change in github_label_history — added / removed names
+ * (diffed stored → incoming under the same acceptance rules) plus
+ * the full set after the change, the webhook action, and the
+ * sender. Unlike Q7, labels get a defined START row: the first
+ * time a row's labels are observed (a first sight, or a row that
+ * existed before Q5), one row carries the whole set as `added`
+ * with removed = [] (action = the delivery's action, or
+ * "backfill" from the sweep), written only when the item has no
+ * label history yet — so a reader can replay any item's label
+ * timeline from its first row. Same fail-open rule as Q7.
  */
 import { Turso, iArg, tArg, type TursoArg } from "./turso";
 import { queueNow, type SinkEnv } from "./sink";
@@ -77,6 +108,7 @@ export const MIRROR_DDL: string[] = [
      latest_agent_note_id INTEGER, latest_agent_note_url TEXT,
      author TEXT, html_url TEXT,
      gh_created_at TEXT, gh_updated_at TEXT,
+     parent_number INTEGER,
      mirrored_at TEXT NOT NULL,
      PRIMARY KEY (repo, number))`,
   `CREATE TABLE IF NOT EXISTS github_mirror_pull_requests (
@@ -108,6 +140,28 @@ export const MIRROR_DDL: string[] = [
      comment_id INTEGER NOT NULL,
      mirrored_at TEXT NOT NULL,
      PRIMARY KEY (repo, number, comment_id))`,
+  `CREATE TABLE IF NOT EXISTS github_issue_history (
+     id INTEGER PRIMARY KEY AUTOINCREMENT,
+     repo TEXT NOT NULL, number INTEGER NOT NULL,
+     is_pr INTEGER NOT NULL DEFAULT 0,
+     kind TEXT NOT NULL,
+     detail TEXT NOT NULL DEFAULT '{}',
+     actor TEXT, gh_updated_at TEXT,
+     mirrored_at TEXT NOT NULL)`,
+  `CREATE INDEX IF NOT EXISTS github_issue_history_issue
+     ON github_issue_history(repo, number, id)`,
+  `CREATE TABLE IF NOT EXISTS github_label_history (
+     id INTEGER PRIMARY KEY AUTOINCREMENT,
+     repo TEXT NOT NULL, number INTEGER NOT NULL,
+     is_pr INTEGER NOT NULL DEFAULT 0,
+     added TEXT NOT NULL DEFAULT '[]',
+     removed TEXT NOT NULL DEFAULT '[]',
+     label_set TEXT NOT NULL,
+     action TEXT NOT NULL,
+     actor TEXT, gh_updated_at TEXT,
+     mirrored_at TEXT NOT NULL)`,
+  `CREATE INDEX IF NOT EXISTS github_label_history_issue
+     ON github_label_history(repo, number, id)`,
 ];
 
 type Obj = Record<string, unknown>;
@@ -140,6 +194,37 @@ export function assigneesOf(obj: Obj): string[] {
   return one ? [one] : [];
 }
 
+export interface ParentInfo {
+  /**
+   * True when the object states its parent: the field is present
+   * and either null (no parent) or a parseable URL. An absent or
+   * unparseable field means the payload does not say — the stored
+   * projection must stand, never be cleared by silence.
+   */
+  known: boolean;
+  parent: number | null;
+  /** The parent's repo (owner/name) parsed from the URL, when named. */
+  parentRepo: string | null;
+}
+
+/**
+ * The sub-issue parent of an issue object, from `parent_issue_url`
+ * (the REST issue schema field; webhook issue objects and the
+ * backfill's API objects carry the same shape). A parent can live
+ * in another repo under the same owner, so the URL is parsed for
+ * both repo and number; the projection column stores the number
+ * (design §8.4) and history details carry the repo.
+ */
+export function parentOf(obj: Obj): ParentInfo {
+  if (!("parent_issue_url" in obj)) return { known: false, parent: null, parentRepo: null };
+  const url = obj.parent_issue_url;
+  if (url === null) return { known: true, parent: null, parentRepo: null };
+  if (typeof url !== "string") return { known: false, parent: null, parentRepo: null };
+  const m = /\/repos\/([^/]+\/[^/]+)\/issues\/(\d+)$/.exec(url);
+  if (!m) return { known: false, parent: null, parentRepo: null };
+  return { known: true, parent: Number(m[2]), parentRepo: m[1] };
+}
+
 export interface IssueRow {
   repo: string;
   number: number | null;
@@ -153,10 +238,21 @@ export interface IssueRow {
   html_url: string | null;
   gh_created_at: string | null;
   gh_updated_at: string | null;
+  /**
+   * Sub-issue parent projection (#14170 Q7): parent_number is
+   * meaningful only when parent_known — an object that does not
+   * state a parent must not overwrite the stored projection.
+   * parent_repo is not a column; it rides parent_changed history
+   * details (a parent may live in another repo).
+   */
+  parent_number: number | null;
+  parent_known: boolean;
+  parent_repo: string | null;
 }
 
 export function buildIssueRow(payload: Obj, repo: string, bodyHash: string | null): IssueRow {
   const issue = (payload.issue ?? {}) as Obj;
+  const parent = parentOf(issue);
   return {
     repo,
     number: num(issue, "number"),
@@ -170,6 +266,9 @@ export function buildIssueRow(payload: Obj, repo: string, bodyHash: string | nul
     html_url: str(issue, "html_url"),
     gh_created_at: str(issue, "created_at"),
     gh_updated_at: str(issue, "updated_at"),
+    parent_number: parent.parent,
+    parent_known: parent.known,
+    parent_repo: parent.parentRepo,
   };
 }
 
@@ -273,24 +372,31 @@ const MIRROR_TABLES = ["github_mirror_issues", "github_mirror_pull_requests"];
 
 /**
  * Idempotent column migration for databases created before
- * comments_gh_updated_at existed: CREATE TABLE IF NOT EXISTS cannot
- * add a column to an existing table, so probe pragma_table_info and
- * ALTER only when a column is absent. A null probe (no COUNT row)
- * means the table state is unreadable — skip and let the writes
- * surface any real error rather than guessing.
+ * comments_gh_updated_at (and, later, parent_number) existed:
+ * CREATE TABLE IF NOT EXISTS cannot add a column to an existing
+ * table, so probe pragma_table_info and ALTER only when a column
+ * is absent. A null probe (no COUNT row) means the table state is
+ * unreadable — skip and let the writes surface any real error
+ * rather than guessing.
  */
 async function ensureMirrorColumns(q: Turso): Promise<void> {
   const present = await q.queryText(
     `SELECT (SELECT COUNT(*) FROM pragma_table_info('github_mirror_issues') WHERE name = 'comments_gh_updated_at')
-          + (SELECT COUNT(*) FROM pragma_table_info('github_mirror_pull_requests') WHERE name = 'comments_gh_updated_at')`,
+          + (SELECT COUNT(*) FROM pragma_table_info('github_mirror_pull_requests') WHERE name = 'comments_gh_updated_at')
+          + (SELECT COUNT(*) FROM pragma_table_info('github_mirror_issues') WHERE name = 'parent_number')`,
   );
-  // "2" = both columns present (the steady state); null = the probe
-  // returned no row, so the table state is unreadable — skip and let
-  // the writes surface any real error rather than guessing.
-  if (present === null || present === "2") return;
-  for (const table of MIRROR_TABLES) {
+  // "3" = every migrated column present (the steady state); null =
+  // the probe returned no row, so the table state is unreadable —
+  // skip and let the writes surface any real error rather than
+  // guessing.
+  if (present === null || present === "3") return;
+  const alters: [string, string][] = [
+    ...MIRROR_TABLES.map((t): [string, string] => [t, "comments_gh_updated_at TEXT"]),
+    ["github_mirror_issues", "parent_number INTEGER"],
+  ];
+  for (const [table, column] of alters) {
     try {
-      await q.execute(`ALTER TABLE ${table} ADD COLUMN comments_gh_updated_at TEXT`);
+      await q.execute(`ALTER TABLE ${table} ADD COLUMN ${column}`);
     } catch (e) {
       // One table may already carry the column (mixed state); only a
       // duplicate-column error is ignorable here.
@@ -332,12 +438,417 @@ const TOMBSTONE_GUARD_SQL = `NOT EXISTS (
                 AND (? IS NULL OR m.gh_updated_at IS NULL
                      OR m.gh_updated_at >= ?))`;
 
+function cellText(row: TursoArg[], i: number): string | null {
+  const c = row[i];
+  return !c || c.type === "null" ? null : "value" in c ? String(c.value) : null;
+}
+
+/**
+ * The stored mirror row as the history diff reads it (#14170 Q7),
+ * plus the deletion marker for the item: tombstoneVersion is null
+ * when no marker row exists, and "" when a marker exists without a
+ * recorded version — deletionBlocks' three-state spelling.
+ */
+export interface StoredMirrorRow {
+  bodyHash: string | null;
+  comments: number;
+  commentsGhUpdatedAt: string | null;
+  ghUpdatedAt: string | null;
+  /** Issues table only; always null for PR rows. */
+  parentNumber: number | null;
+  tombstoneVersion: string | null;
+  /**
+   * The stored label set as JSON text (#14170 Q5). Optional so the
+   * Q7 callers that build a stored view by hand keep compiling;
+   * absent or null reads as "labels not known" and yields no label
+   * diff.
+   */
+  labels?: string | null;
+}
+
+/**
+ * Read the stored row BEFORE an upsert lands (the upsert overwrites
+ * exactly the values the history diff compares), in one pipeline
+ * round-trip with the item's deletion marker. Callers ensure the
+ * schema first: the read names parent_number, which pre-Q7
+ * databases gain only via ensureMirrorColumns. A failed read fails
+ * the event like any mirror read/write failure — only the history
+ * WRITE is fail-open (writeHistoryFailOpen).
+ */
+export async function readStoredMirrorRow(
+  q: Turso,
+  isPr: boolean,
+  repo: string,
+  number: number,
+): Promise<StoredMirrorRow | null> {
+  const table = isPr ? "github_mirror_pull_requests" : "github_mirror_issues";
+  const results = await q.batch([
+    {
+      sql: `SELECT body_hash, comments, comments_gh_updated_at, gh_updated_at,
+              ${isPr ? "NULL" : "parent_number"}, labels
+            FROM ${table} WHERE repo = ? AND number = ?`,
+      args: [tArg(repo), iArg(number)],
+    },
+    {
+      sql: `SELECT gh_updated_at FROM github_mirror_tombstones WHERE repo = ? AND number = ?`,
+      args: [tArg(repo), iArg(number)],
+    },
+  ]);
+  const row = results[0]?.response?.result?.rows?.[0];
+  if (!row) return null;
+  const tRow = results[1]?.response?.result?.rows?.[0];
+  return {
+    bodyHash: cellText(row, 0),
+    comments: Number(cellText(row, 1) ?? 0) || 0,
+    commentsGhUpdatedAt: cellText(row, 2),
+    ghUpdatedAt: cellText(row, 3),
+    parentNumber: cellText(row, 4) === null ? null : Number(cellText(row, 4)),
+    tombstoneVersion: !tRow ? null : (cellText(tRow, 0) ?? ""),
+    labels: cellText(row, 5),
+  };
+}
+
+/**
+ * The TS spelling of the upserts' version guard (cf. deletionBlocks,
+ * the other dual-spelled rule): an incoming version applies when it
+ * is unknown, the stored version is unknown, or it is at least the
+ * stored version.
+ */
+function versionAccepts(incoming: string | null, stored: string | null): boolean {
+  return incoming === null || stored === null || incoming >= stored;
+}
+
+/** The history kinds Q7 writes (design §8; the rest are reserved). */
+export type HistoryKind =
+  | "body_edited"
+  | "comment_added"
+  | "comment_removed"
+  | "comment_count_changed"
+  | "parent_changed";
+
+export interface HistoryRow {
+  repo: string;
+  number: number;
+  isPr: boolean;
+  kind: HistoryKind;
+  detail: Obj;
+  /** Webhook sender login, or "backfill" for sweep-written rows. */
+  actor: string | null;
+  ghUpdatedAt: string | null;
+}
+
+export function historyInsertStmt(h: HistoryRow): Stmt {
+  return {
+    sql: `INSERT INTO github_issue_history
+            (repo, number, is_pr, kind, detail, actor, gh_updated_at, mirrored_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    args: [
+      tArg(h.repo),
+      iArg(h.number),
+      iArg(h.isPr ? 1 : 0),
+      tArg(h.kind),
+      tArg(JSON.stringify(h.detail)),
+      tArg(h.actor),
+      tArg(h.ghUpdatedAt),
+      tArg(queueNow()),
+    ],
+  };
+}
+
+/**
+ * The history rows a snapshot upsert implies, or none when the
+ * upsert itself would be refused (tombstone-blocked or version-
+ * stale): history never records a change that did not land. The
+ * count follows its own version guard, exactly as the upsert's
+ * CASE does — an accepted snapshot can still leave the count (and
+ * its history) untouched. The parent moves only when the incoming
+ * object states one (parent_known).
+ */
+export function snapshotHistory(
+  stored: StoredMirrorRow,
+  row: IssueRow,
+  countVersion: string | null,
+  isPr: boolean,
+  actor: string | null,
+): HistoryRow[] {
+  const number = row.number;
+  if (number === null) return [];
+  if (deletionBlocks(stored.tombstoneVersion, row.gh_updated_at)) return [];
+  if (!versionAccepts(row.gh_updated_at, stored.ghUpdatedAt)) return [];
+  const base = { repo: row.repo, number, isPr, actor, ghUpdatedAt: row.gh_updated_at };
+  const out: HistoryRow[] = [];
+  // Hashes only, never bodies (design §8.1); a first observed hash
+  // (stored null) is the row's defined start, not an edit.
+  if (stored.bodyHash !== null && row.body_hash !== null && stored.bodyHash !== row.body_hash) {
+    out.push({ ...base, kind: "body_edited", detail: { old_hash: stored.bodyHash, new_hash: row.body_hash } });
+  }
+  if (versionAccepts(countVersion, stored.commentsGhUpdatedAt) && stored.comments !== row.comments) {
+    out.push({ ...base, kind: "comment_count_changed", detail: { from: stored.comments, to: row.comments } });
+  }
+  if (!isPr && row.parent_known && stored.parentNumber !== row.parent_number) {
+    const detail: Obj = { from: stored.parentNumber, to: row.parent_number };
+    if (row.parent_number !== null && row.parent_repo !== null) detail.parent_repo = row.parent_repo;
+    out.push({ ...base, kind: "parent_changed", detail });
+  }
+  return out;
+}
+
+/**
+ * The history row an issue_comment delivery implies. Counts only
+ * (design §8.2): the direction kinds are used because the delivery
+ * itself names the direction; any other action that moves the
+ * count is comment_count_changed. A delivery that also moves the
+ * agent-note pointer carries the note id in the same row's detail
+ * (pointer moves always coincide with count moves: a new note is
+ * +1, a deleted note is −1).
+ */
+export function commentHistory(
+  stored: StoredMirrorRow,
+  touch: CommentTouch,
+  action: string | null,
+  actor: string | null,
+): HistoryRow[] {
+  const number = touch.number;
+  if (number === null) return [];
+  if (deletionBlocks(stored.tombstoneVersion, touch.ghUpdatedAt)) return [];
+  if (!versionAccepts(touch.ghUpdatedAt, stored.commentsGhUpdatedAt)) return [];
+  if (stored.comments === touch.comments) return [];
+  const kind: HistoryKind =
+    action === "created" ? "comment_added" : action === "deleted" ? "comment_removed" : "comment_count_changed";
+  const detail: Obj = { from: stored.comments, to: touch.comments };
+  const noteId = touch.agentNoteId ?? touch.deletedNoteId;
+  if (noteId !== null) detail.agent_note_id = noteId;
+  return [{ repo: touch.repo, number, isPr: touch.isPr, kind, detail, actor, ghUpdatedAt: touch.ghUpdatedAt }];
+}
+
+/** One github_label_history row (#14170 Q5, design §7.2). */
+export interface LabelHistoryRow {
+  repo: string;
+  number: number;
+  isPr: boolean;
+  /** Names added by this change, sorted. */
+  added: string[];
+  /** Names removed by this change, sorted. */
+  removed: string[];
+  /** The full set after the change, sorted (the mirror's own shape). */
+  labelSet: string[];
+  /** Webhook action (labeled | unlabeled | opened | edited | …) or "backfill". */
+  action: string;
+  /** Webhook sender login, or "backfill" for sweep-written rows. */
+  actor: string | null;
+  ghUpdatedAt: string | null;
+}
+
+/** Parse a stored label set; null when absent or not a JSON array of names. */
+export function parseLabelSet(json: string | null | undefined): string[] | null {
+  if (json === null || json === undefined) return null;
+  try {
+    const v: unknown = JSON.parse(json);
+    if (!Array.isArray(v) || !v.every((n) => typeof n === "string")) return null;
+    return [...(v as string[])].sort();
+  } catch {
+    return null;
+  }
+}
+
+/** The exact added / removed names between two label sets, each sorted. */
+export function labelDiff(before: string[], after: string[]): { added: string[]; removed: string[] } {
+  const b = new Set(before);
+  const a = new Set(after);
+  return {
+    added: [...a].filter((n) => !b.has(n)).sort(),
+    removed: [...b].filter((n) => !a.has(n)).sort(),
+  };
+}
+
+export function labelHistoryInsertStmt(h: LabelHistoryRow): Stmt {
+  return {
+    sql: `INSERT INTO github_label_history
+            (repo, number, is_pr, added, removed, label_set, action, actor, gh_updated_at, mirrored_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    args: [
+      tArg(h.repo),
+      iArg(h.number),
+      iArg(h.isPr ? 1 : 0),
+      tArg(JSON.stringify(h.added)),
+      tArg(JSON.stringify(h.removed)),
+      tArg(JSON.stringify(h.labelSet)),
+      tArg(h.action),
+      tArg(h.actor),
+      tArg(h.ghUpdatedAt),
+      tArg(queueNow()),
+    ],
+  };
+}
+
+/**
+ * Whether the stored row's labels were ever observed: a row the
+ * comment or sub_issues paths seeded minimal carries the column
+ * default '[]' and no snapshot version, so its set is unknown, not
+ * empty — diffing against it would record a fictional "added".
+ */
+export function storedLabelsObserved(stored: StoredMirrorRow): boolean {
+  return stored.ghUpdatedAt !== null && parseLabelSet(stored.labels) !== null;
+}
+
+/**
+ * The label-history row a snapshot upsert implies (#14170 Q5), or
+ * none when the upsert itself would be refused (tombstone-blocked
+ * or version-stale) or the set did not move. Labels ride the
+ * snapshot version (gh_updated_at), so the same acceptance rules
+ * as snapshotHistory apply. For labeled / unlabeled deliveries the
+ * stored→incoming diff is the payload-named change whenever the
+ * delivery is accepted in order; out-of-order deliveries degrade
+ * to "as observed", like all mirror history.
+ */
+export function snapshotLabelHistory(
+  stored: StoredMirrorRow,
+  row: IssueRow,
+  isPr: boolean,
+  action: string | null,
+  actor: string | null,
+): LabelHistoryRow[] {
+  const number = row.number;
+  if (number === null) return [];
+  if (!storedLabelsObserved(stored)) return [];
+  if (deletionBlocks(stored.tombstoneVersion, row.gh_updated_at)) return [];
+  if (!versionAccepts(row.gh_updated_at, stored.ghUpdatedAt)) return [];
+  const before = parseLabelSet(stored.labels) ?? [];
+  const after = parseLabelSet(row.labels) ?? [];
+  const { added, removed } = labelDiff(before, after);
+  if (added.length === 0 && removed.length === 0) return [];
+  return [
+    {
+      repo: row.repo,
+      number,
+      isPr,
+      added,
+      removed,
+      labelSet: after,
+      action: action ?? "snapshot",
+      actor,
+      ghUpdatedAt: row.gh_updated_at,
+    },
+  ];
+}
+
+/**
+ * The label-history START row (#14170 Q5): the item's current
+ * mirror set as `added`, removed = [], written only when the
+ * mirror row exists with an observed snapshot (gh_updated_at set)
+ * AND the item has no label history yet. Read from the mirror row
+ * itself, so a first-sight upsert the tombstone guard refused
+ * writes nothing (no row to read), and a redelivery writes no
+ * second start. With number = null it seeds every unseeded,
+ * observed row of the repo in one statement — the sweep's form.
+ */
+export function labelStartStmt(
+  repo: string,
+  number: number | null,
+  isPr: boolean,
+  action: string,
+  actor: string | null,
+): Stmt {
+  const table = isPr ? "github_mirror_pull_requests" : "github_mirror_issues";
+  const one = number !== null;
+  return {
+    sql: `INSERT INTO github_label_history
+            (repo, number, is_pr, added, removed, label_set, action, actor, gh_updated_at, mirrored_at)
+          SELECT m.repo, m.number, ?, m.labels, '[]', m.labels, ?, ?, m.gh_updated_at, ?
+          FROM ${table} m
+          WHERE m.repo = ?${one ? " AND m.number = ?" : ""}
+            AND m.gh_updated_at IS NOT NULL
+            AND NOT EXISTS (
+              SELECT 1 FROM github_label_history h
+              WHERE h.repo = m.repo AND h.number = m.number AND h.is_pr = ?)`,
+    args: [
+      iArg(isPr ? 1 : 0),
+      tArg(action),
+      tArg(actor),
+      tArg(queueNow()),
+      tArg(repo),
+      ...(one ? [iArg(number)] : []),
+      iArg(isPr ? 1 : 0),
+    ],
+  };
+}
+
+/**
+ * The label-history statements one snapshot event writes: the diff
+ * row when the stored set was observed, else the start row (first
+ * sight, a minimal seed, or a row from before Q5). Both are written
+ * after the mirror batch lands, fail-open.
+ */
+export function labelHistoryStmts(
+  stored: StoredMirrorRow | null,
+  row: IssueRow,
+  isPr: boolean,
+  action: string | null,
+  actor: string | null,
+): Stmt[] {
+  if (row.number === null) return [];
+  if (stored && storedLabelsObserved(stored)) {
+    return snapshotLabelHistory(stored, row, isPr, action, actor).map(labelHistoryInsertStmt);
+  }
+  return [labelStartStmt(row.repo, row.number, isPr, action ?? "snapshot", actor)];
+}
+
+/**
+ * Write history rows FAIL-OPEN (design §10.3): their own batch,
+ * after the mirror batch has landed, inside a catch. The mirror
+ * never gates work and neither does its history — a killed history
+ * write is logged and dropped, and the backfill sweep's diff rows
+ * are the repair path.
+ */
+export async function writeHistoryFailOpen(env: SinkEnv, rows: HistoryRow[], labelStmts: Stmt[] = []): Promise<void> {
+  const n = rows.length + labelStmts.length;
+  if (n === 0) return;
+  try {
+    const q = new Turso(env.TURSO_QUEUE_URL, env.TURSO_QUEUE_TOKEN);
+    await q.batch([...MIRROR_DDL.map((sql) => ({ sql })), ...rows.map(historyInsertStmt), ...labelStmts]);
+  } catch (e) {
+    console.error(`github mirror: history write failed open (${n} row(s) dropped): ${String(e)}`);
+  }
+}
+
+/** The webhook sender login, when the payload carries one. */
+function senderOf(payload: Obj): string | null {
+  return str((payload.sender ?? {}) as Obj, "login");
+}
+
 async function mirrorBatch(env: SinkEnv, event: string, repo: string, stmts: Stmt[]): Promise<void> {
   const q = new Turso(env.TURSO_QUEUE_URL, env.TURSO_QUEUE_TOKEN);
   const at = queueNow();
   await q.batch(MIRROR_DDL.map((sql) => ({ sql })));
   await ensureMirrorColumns(q);
   await q.batch([...stmts, metaStamp(repo, event, at)]);
+}
+
+/**
+ * The Q7 event flow shared by the webhook paths that record
+ * history: ensure the schema, read the stored row, let the caller
+ * plan the mirror statements and the history rows from it (the
+ * sub_issues path's statement choice itself depends on the stored
+ * row), land the mirror batch, then write the history fail-open.
+ * Same pipeline shape as mirrorBatch plus the one read — the DDL
+ * batch and the column probe are shared, not repeated.
+ */
+async function mirrorEvent(
+  env: SinkEnv,
+  event: string,
+  repo: string,
+  isPr: boolean,
+  number: number | null,
+  plan: (stored: StoredMirrorRow | null) => { stmts: Stmt[]; history: HistoryRow[]; labelHistory?: Stmt[] },
+): Promise<void> {
+  const q = new Turso(env.TURSO_QUEUE_URL, env.TURSO_QUEUE_TOKEN);
+  const at = queueNow();
+  await q.batch(MIRROR_DDL.map((sql) => ({ sql })));
+  await ensureMirrorColumns(q);
+  const stored = number !== null ? await readStoredMirrorRow(q, isPr, repo, number) : null;
+  const { stmts, history, labelHistory } = plan(stored);
+  await q.batch([...stmts, metaStamp(repo, event, at)]);
+  await writeHistoryFailOpen(env, history, labelHistory ?? []);
 }
 
 /**
@@ -475,13 +986,15 @@ export function issueUpsertStmt(row: IssueRow): Stmt {
   return {
     sql: `INSERT INTO github_mirror_issues (repo, number, title, body_hash, state,
             labels, assignees, comments, comments_gh_updated_at, author,
-            html_url, gh_created_at, gh_updated_at, mirrored_at)
-          SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+            html_url, gh_created_at, gh_updated_at, parent_number, mirrored_at)
+          SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
           WHERE ${TOMBSTONE_GUARD_SQL}
           ON CONFLICT(repo, number) DO UPDATE SET
             title = excluded.title, body_hash = excluded.body_hash,
             state = excluded.state, labels = excluded.labels,
             assignees = excluded.assignees,
+            parent_number = CASE WHEN ? = 1 THEN ?
+              ELSE github_mirror_issues.parent_number END,
             comments = CASE
               WHEN excluded.gh_updated_at IS NULL
                    OR github_mirror_issues.comments_gh_updated_at IS NULL
@@ -514,11 +1027,16 @@ export function issueUpsertStmt(row: IssueRow): Stmt {
       tArg(row.html_url),
       tArg(row.gh_created_at),
       tArg(row.gh_updated_at),
+      iArg(row.parent_number),
       tArg(queueNow()),
       tArg(row.repo),
       iArg(row.number),
       tArg(row.gh_updated_at),
       tArg(row.gh_updated_at),
+      // The parent CASE binds: an object that does not state a
+      // parent (parent_known = 0) keeps the stored projection.
+      iArg(row.parent_known ? 1 : 0),
+      iArg(row.parent_number),
     ],
   };
 }
@@ -558,7 +1076,15 @@ export async function mirrorIssueEvent(env: SinkEnv, payload: Obj, repo: string)
     return;
   }
   const row = buildIssueRow(payload, repo, await bodyHashOf((payload.issue ?? {}) as Obj));
-  await mirrorBatch(env, "issues", repo, [issueUpsertStmt(row)]);
+  // Q7 history: the diff is computed from the stored row read
+  // inside mirrorEvent, before the upsert overwrites the compared
+  // values; the history write is fail-open (mirrorEvent).
+  await mirrorEvent(env, "issues", repo, false, row.number, (stored) => ({
+    stmts: [issueUpsertStmt(row)],
+    history: stored ? snapshotHistory(stored, row, row.gh_updated_at, false, senderOf(payload)) : [],
+    // Q5 label history: the diff row, or the item's start row.
+    labelHistory: labelHistoryStmts(stored, row, false, str(payload, "action"), senderOf(payload)),
+  }));
 }
 /** The PR snapshot upsert as a statement (shared by the webhook path and the sweep). */
 export function prUpsertStmt(row: PrRow): Stmt {
@@ -625,7 +1151,13 @@ export function prUpsertStmt(row: PrRow): Stmt {
 /** Upsert the PR mirror row from a `pull_request` webhook payload. */
 export async function mirrorPrEvent(env: SinkEnv, payload: Obj, repo: string): Promise<void> {
   const row = buildPrRow(payload, repo, await bodyHashOf((payload.pull_request ?? {}) as Obj));
-  await mirrorBatch(env, "pull_request", repo, [prUpsertStmt(row)]);
+  // Q7 history, as in mirrorIssueEvent; a PR's count version is its
+  // own comments_gh_updated_at, and PRs carry no parent projection.
+  await mirrorEvent(env, "pull_request", repo, true, row.number, (stored) => ({
+    stmts: [prUpsertStmt(row)],
+    history: stored ? snapshotHistory(stored, row, row.comments_gh_updated_at, true, senderOf(payload)) : [],
+    labelHistory: labelHistoryStmts(stored, row, true, str(payload, "action"), senderOf(payload)),
+  }));
 }
 /**
  * Apply an `issue_comment` payload: refresh the comments count and, when
@@ -744,5 +1276,105 @@ export function commentTouchStmts(touch: CommentTouch): Stmt[] {
 
 export async function mirrorCommentEvent(env: SinkEnv, payload: Obj, repo: string): Promise<void> {
   const touch = buildCommentTouch(payload, repo);
-  await mirrorBatch(env, "issue_comment", repo, commentTouchStmts(touch));
+  // Q7 history, as in mirrorIssueEvent: the count delta is diffed
+  // against the stored row before the touch lands. A row the mirror
+  // has never seen is seeded by the touch — a first sight, no row.
+  await mirrorEvent(env, "issue_comment", repo, touch.isPr, touch.number, (stored) => ({
+    stmts: commentTouchStmts(touch),
+    history: stored ? commentHistory(stored, touch, str(payload, "action"), senderOf(payload)) : [],
+  }));
+}
+
+/**
+ * Apply a `sub_issues` webhook delivery (#14170 Q7): the payload
+ * names both ends of the link — sub_issue is the child, parent_issue
+ * the parent — so the child's parent_number projection moves
+ * directly, without waiting for a snapshot or the sweep. (Ordinary
+ * issues snapshots also refresh the projection, via parent_issue_url
+ * in the issue object.) Actions parent_issue_added / sub_issue_added
+ * set the parent; parent_issue_removed / sub_issue_removed clear it;
+ * anything else (a reprioritization changes order, not parentage) is
+ * ignored beyond the meta stamp. The projection write is a normal
+ * mirror write (fatal on failure, like every mirror write); the
+ * parent_changed history row is fail-open like all history. A child
+ * the mirror has never seen is seeded minimal with its parent — a
+ * first sight, so no history row.
+ */
+export async function mirrorSubIssueEvent(env: SinkEnv, payload: Obj, repo: string): Promise<void> {
+  const action = str(payload, "action");
+  const child = (payload.sub_issue ?? {}) as Obj;
+  const parent = (payload.parent_issue ?? {}) as Obj;
+  const childNumber = num(child, "number");
+  const added = action === "parent_issue_added" || action === "sub_issue_added";
+  const removed = action === "parent_issue_removed" || action === "sub_issue_removed";
+  if (childNumber === null || (!added && !removed)) {
+    await mirrorBatch(env, "sub_issues", repo, []);
+    return;
+  }
+  const newParent = added ? num(parent, "number") : null;
+  const childVersion = str(child, "updated_at");
+  const at = queueNow();
+  await mirrorEvent(env, "sub_issues", repo, false, childNumber, (stored) => {
+    if (stored === null) {
+      // First sight: seed the row minimal with its parent (the
+      // sweep fills the rest); the tombstone guard absorbs seeds
+      // for deleted issues. No history row — a first sight is a
+      // defined start, not a change.
+      return {
+        stmts: [
+          {
+            sql: `INSERT INTO github_mirror_issues (repo, number, parent_number, mirrored_at)
+                  SELECT ?, ?, ?, ?
+                  WHERE ${TOMBSTONE_GUARD_SQL}
+                  ON CONFLICT(repo, number) DO NOTHING`,
+            args: [
+              tArg(repo),
+              iArg(childNumber),
+              iArg(newParent),
+              tArg(at),
+              tArg(repo),
+              iArg(childNumber),
+              tArg(childVersion),
+              tArg(childVersion),
+            ],
+          },
+        ],
+        history: [],
+      };
+    }
+    return {
+      stmts: [
+        {
+          sql: `UPDATE github_mirror_issues SET parent_number = ?, mirrored_at = ?
+                WHERE repo = ? AND number = ? AND parent_number IS NOT ?
+                  AND ${TOMBSTONE_GUARD_SQL}`,
+          args: [
+            iArg(newParent),
+            tArg(at),
+            tArg(repo),
+            iArg(childNumber),
+            iArg(newParent),
+            tArg(repo),
+            iArg(childNumber),
+            tArg(childVersion),
+            tArg(childVersion),
+          ],
+        },
+      ],
+      history:
+        stored.parentNumber !== newParent && !deletionBlocks(stored.tombstoneVersion, childVersion)
+          ? [
+              {
+                repo,
+                number: childNumber,
+                isPr: false,
+                kind: "parent_changed" as const,
+                detail: { from: stored.parentNumber, to: newParent },
+                actor: senderOf(payload),
+                ghUpdatedAt: childVersion,
+              },
+            ]
+          : [],
+    };
+  });
 }

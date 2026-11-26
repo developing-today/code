@@ -35,9 +35,10 @@ function item(number: number, labels: string[], extra: Record<string, unknown> =
 
 /** GitHub's list of a repository's open issues carrying a label, keyed
  *  by (repo, label, page) from the URL asked. Anything that is not
- *  that list is answered as GitHub answers it today: a search of
- *  issues that names neither `is:issue` nor `is:pull-request` is a 422
- *  (#14103), and any other path is not found. */
+ *  that list is answered as GitHub answers some tokens today (a
+ *  GitHub App's): a search of issues that names neither `is:issue` nor
+ *  `is:pull-request` is a 422 (#14103), and any other path is not
+ *  found. */
 function fakeFetch(handler: (repo: string, label: string, page: number) => unknown[] | Error): NeedsDrewFetchPage {
   return async (url: string) => {
     const u = new URL(url);
@@ -69,8 +70,10 @@ describe("needs-drew census (#1226)", () => {
 
   // #14103: the census asked the search for `repo:… state:open label:"…"`,
   // and GitHub answers a search of issues that names neither `is:issue`
-  // nor `is:pull-request` with a 422. Every query failed, and the queue
-  // read as empty and incomplete. The fake above answers as GitHub does.
+  // nor `is:pull-request` with a 422 for some tokens. With such a token
+  // every query would fail and the queue read as empty and incomplete
+  // (the token the dashboard runs with is not one: there the search
+  // answered). The fake above answers as GitHub does such a token.
   test("asked of GitHub as it answers today, the census gets its items", async () => {
     const fetchPage = fakeFetch((repo, label) =>
       repo === REPO && label === "user/review"

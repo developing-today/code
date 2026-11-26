@@ -45,7 +45,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::cap_diff::{CapDiff, compare};
+use crate::cap_class::CAP_CLASS_TABLE_VERSION;
+use crate::cap_diff::{CapDiff, compare, uncomputable_diff};
 
 /// How a baseline came to hold the message set it holds — the
 /// `kind` of a history entry (#5959 §1, §5). Every transition that
@@ -111,6 +112,79 @@ pub struct CapBaseline {
     pub baseline_key: String,
     /// Every transition that produced this record, oldest first.
     pub history: Vec<BaselineHistoryEntry>,
+}
+
+/// Pure connect-stage outcome for a freshly resolved release.
+///
+/// This decides whether the caller may proceed, needs the first-connect
+/// disclosure flow, or must hold for a capability-change notice. It does
+/// not resolve manifests, persist a narrowed baseline, or control a live
+/// connection.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ConnectVerdict {
+    /// There is no accepted baseline; disclose this complete message set
+    /// and let the first-connect flow record the user's decisions.
+    FirstConnect { message_set: Vec<String> },
+    /// The baseline already describes this release under the current
+    /// class table, so no comparison or notice is needed.
+    SameReleaseAndTable,
+    /// The computed set is covered by the baseline. `narrowed` tells the
+    /// caller whether automatic narrowing bookkeeping is applicable.
+    Proceed {
+        message_set: Vec<String>,
+        narrowed: bool,
+    },
+    /// The connection must be held; the diff names exactly the classes
+    /// the notice needs to disclose.
+    Hold(CapDiff),
+}
+
+/// Decide the connect-stage capability outcome from already resolved
+/// inputs. `message_set` is `None` when release/manifest/class comparison
+/// could not be computed; that path fails closed with the `unknown` class.
+///
+/// A baseline for the same release and shipped class-table version
+/// short-circuits before requiring a computed set. Other outcomes use the
+/// same table version recorded by the shipped vocabulary, rather than a
+/// caller-supplied version that could disagree with it.
+#[must_use]
+pub fn evaluate_connect(
+    baseline: Option<&CapBaseline>,
+    release_identity: &str,
+    message_set: Option<&BTreeSet<&str>>,
+) -> ConnectVerdict {
+    let Some(baseline) = baseline else {
+        return match message_set {
+            Some(message_set) => ConnectVerdict::FirstConnect {
+                message_set: message_set
+                    .iter()
+                    .map(|class| (*class).to_owned())
+                    .collect(),
+            },
+            None => ConnectVerdict::Hold(uncomputable_diff()),
+        };
+    };
+
+    if baseline.release_identity == release_identity
+        && baseline.table_version == CAP_CLASS_TABLE_VERSION
+    {
+        return ConnectVerdict::SameReleaseAndTable;
+    }
+
+    let Some(message_set) = message_set else {
+        return ConnectVerdict::Hold(uncomputable_diff());
+    };
+    let diff = baseline.evaluate(message_set);
+    if diff.triggers() {
+        return ConnectVerdict::Hold(diff);
+    }
+    ConnectVerdict::Proceed {
+        narrowed: *message_set != baseline.message_set(),
+        message_set: message_set
+            .iter()
+            .map(|class| (*class).to_owned())
+            .collect(),
+    }
 }
 
 /// Lowercase hex digits, for the baseline key's encoding.
@@ -378,7 +452,9 @@ impl BaselineStore {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
-    use crate::cap_class::{CLASS_CHAT_READ, CLASS_CHAT_WRITE, CLASS_DEVICE_LOCATION};
+    use crate::cap_class::{
+        CLASS_CHAT_READ, CLASS_CHAT_WRITE, CLASS_DEVICE_LOCATION, CLASS_UNKNOWN,
+    };
 
     const AT: &str = "2026-11-23T06:00:00Z";
 
@@ -395,7 +471,7 @@ mod tests {
             "world-1",
             "release-a",
             set(&[CLASS_CHAT_READ, CLASS_CHAT_WRITE]),
-            1,
+            CAP_CLASS_TABLE_VERSION,
             BaselineHistoryKind::Accept,
             AT,
         )
@@ -432,7 +508,7 @@ mod tests {
             "world-2",
             "release-a",
             set(&[CLASS_CHAT_READ, CLASS_CHAT_WRITE]),
-            1,
+            CAP_CLASS_TABLE_VERSION,
             BaselineHistoryKind::Accept,
             AT,
         );
@@ -440,7 +516,7 @@ mod tests {
             "world-1",
             "release-b",
             set(&[CLASS_CHAT_READ, CLASS_CHAT_WRITE]),
-            1,
+            CAP_CLASS_TABLE_VERSION,
             BaselineHistoryKind::Accept,
             AT,
         );
@@ -448,7 +524,7 @@ mod tests {
             "world-1",
             "release-a",
             set(&[CLASS_CHAT_READ]),
-            1,
+            CAP_CLASS_TABLE_VERSION,
             BaselineHistoryKind::Accept,
             AT,
         );
@@ -456,7 +532,7 @@ mod tests {
             "world-1",
             "release-a",
             set(&[CLASS_CHAT_READ, CLASS_CHAT_WRITE]),
-            2,
+            CAP_CLASS_TABLE_VERSION + 1,
             BaselineHistoryKind::Accept,
             AT,
         );
@@ -597,7 +673,7 @@ mod tests {
         let value = serde_json::to_value(&baseline).expect("serializes");
         assert_eq!(value["world_id"], "world-1");
         assert_eq!(value["release_identity"], "release-a");
-        assert_eq!(value["table_version"], 1);
+        assert_eq!(value["table_version"], CAP_CLASS_TABLE_VERSION);
         assert_eq!(
             value["baseline_key"],
             serde_json::Value::String(baseline.baseline_key.clone())
@@ -606,5 +682,63 @@ mod tests {
         let round_tripped: CapBaseline = serde_json::from_value(value).expect("round-trips");
         assert_eq!(round_tripped, baseline);
         assert!(round_tripped.key_is_current());
+    }
+
+    #[test]
+    fn connect_verdict_covers_first_connect_short_circuit_narrowing_and_hold() {
+        // Oracle: #5999 §4/#5959 §2 — no baseline enters first-connect
+        // disclosure; an identical release/table skips recomputation.
+        assert_eq!(
+            evaluate_connect(None, "release-a", Some(&refs(&[CLASS_CHAT_READ]))),
+            ConnectVerdict::FirstConnect {
+                message_set: vec![CLASS_CHAT_READ.to_owned()],
+            }
+        );
+        assert_eq!(
+            evaluate_connect(Some(&baseline()), "release-a", None),
+            ConnectVerdict::SameReleaseAndTable
+        );
+
+        // Oracle: #5999 §4 rule 1/#5959 §5 path 4 — covered sets
+        // proceed, and a strict shrink is marked for narrowing.
+        assert_eq!(
+            evaluate_connect(
+                Some(&baseline()),
+                "release-b",
+                Some(&refs(&[CLASS_CHAT_READ])),
+            ),
+            ConnectVerdict::Proceed {
+                message_set: vec![CLASS_CHAT_READ.to_owned()],
+                narrowed: true,
+            }
+        );
+
+        // Oracle: #5999 §6 — an uncovered reconnect holds and names
+        // exactly the newly uncovered class.
+        assert_eq!(
+            evaluate_connect(
+                Some(&baseline()),
+                "release-b",
+                Some(&refs(&[CLASS_CHAT_READ, CLASS_DEVICE_LOCATION])),
+            ),
+            ConnectVerdict::Hold(CapDiff {
+                new_classes: vec![CLASS_DEVICE_LOCATION.to_owned()],
+            })
+        );
+    }
+
+    #[test]
+    fn connect_verdict_fails_closed_when_computation_is_unavailable() {
+        // Oracle: #5999 §7 invariant 10 — missing comparison input is a
+        // hold whose sole disclosed class is unknown, even on first connect.
+        let accepted = baseline();
+        for baseline in [None, Some(&accepted)] {
+            assert_eq!(
+                evaluate_connect(baseline, "release-b", None),
+                ConnectVerdict::Hold(CapDiff {
+                    new_classes: vec![CLASS_UNKNOWN.to_owned()],
+                })
+            );
+        }
     }
 }

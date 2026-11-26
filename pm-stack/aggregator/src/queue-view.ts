@@ -4,7 +4,8 @@
 import { DONE_BOARD_WINDOW_MS, isRetiredDoneTableTitle } from "./board-policy.ts";
 import type { BoardItem, GhItem, OrchestrationSection, ProjectPoolItem, RefKey } from "./model.ts";
 import { isValidRef, refUrl, refsInText } from "./model.ts";
-import { projectDisagreement } from "./projects.ts";
+import { effectiveProjectDisagreement } from "./conflicts.ts";
+import type { ConflictRuling } from "./conflict-rulings.ts";
 import { FEED_STALE_MS } from "./feed.ts";
 import type { HealthView } from "./health.ts";
 
@@ -44,6 +45,9 @@ export interface QueueViewInput {
   items: Map<RefKey, GhItem>;
   orchestration: OrchestrationSection | null;
   now?: Date;
+  /** Slice-2 trust ruling (#1282): suppresses the project-vs-derived
+   *  disagreement on reconciled rows while it stands. */
+  ruling?: ConflictRuling | null;
 }
 
 /** Whether any source used by the queue projection is stale or unavailable.
@@ -117,6 +121,9 @@ export interface ReconciledInProgressInput {
   board: BoardItem[];
   items?: Map<RefKey, GhItem>;
   orchestration?: OrchestrationSection | null;
+  /** Slice-2 trust ruling (#1282): suppresses the project-vs-derived
+   *  disagreement while it stands (detection still reports to the inbox). */
+  ruling?: ConflictRuling | null;
 }
 
 export function reconciledInProgress(data: ReconciledInProgressInput): ReconciledInProgressItem[] {
@@ -201,7 +208,9 @@ export function reconciledInProgress(data: ReconciledInProgressInput): Reconcile
   return [...rows.values()]
     .map((row) => {
       const project = poolByRef.get(row.ref);
-      const disagreement = project ? projectDisagreement(project, data.orchestration, additionalInProgressRefs) : null;
+      const disagreement = project
+        ? effectiveProjectDisagreement(project, data.orchestration, additionalInProgressRefs, data.ruling ?? null)
+        : null;
       return {
         ref: row.ref,
         title: row.title,
@@ -354,6 +363,7 @@ export function buildQueueView(input: QueueViewInput): QueueView {
     board: input.board,
     items: input.items,
     orchestration: input.orchestration,
+    ruling: input.ruling ?? null,
   });
   const reconciledByRef = new Map(reconciled.map((item) => [item.ref, item]));
   const inProgressWithSignals = inProgress.map((existing) => {

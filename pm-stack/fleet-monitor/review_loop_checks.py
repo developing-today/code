@@ -327,6 +327,88 @@ def _run(cmd):
     ).stdout
 
 
+def _parse_task_table(out):
+    """(task_id, dedupe_key) rows from `fleet queue list` table output.
+
+    The bulk list has no JSON form (list --json is a scoped single-task
+    exact read), so candidate review packets are located by dedupe key
+    in the table and then read back exactly, one by one. Rows look like:
+      task 22217  70  queued  2:18:26  repo-health:v1:second-pass:...  Title
+    """
+    rows = []
+    for line in (out or "").splitlines():
+        parts = line.split()
+        if len(parts) >= 6 and parts[0] == "task" and parts[1].isdigit():
+            rows.append((int(parts[1]), parts[5]))
+    return rows
+
+
+def _packet_from_record(rec):
+    """Build a packet dict from one exact-read task record (or None)."""
+    payload = rec.get("payload") or {}
+    review = payload.get("review") or {}
+    issue = (payload.get("issue") or {}).get("number")
+    if issue is None or review.get("pass") is None:
+        return None
+    return {
+        "task_id": rec["id"],
+        "status": rec["status"],
+        "issue": issue,
+        "review_pass": review.get("pass"),
+        "review_pass_cap": review.get("pass_cap"),
+        "effort": None,
+        "created_at": rec.get("created_at"),
+        "claimed_at": rec.get("claimed_at"),
+    }
+
+
+def _collect_live_packets(queue):
+    """Live review packets (second-pass / interim form) from the queue.
+
+    The queue CLI's bulk list is a human table with single-status
+    filtering only, and its --json form is a scoped single-task read;
+    so: enumerate each live status, keep rows whose dedupe key marks a
+    review packet (`:second-pass:`), and exact-read those tasks. The
+    list limit is capped at 500 by the CLI (a larger limit exits 2);
+    the pilot queues' live sets sit below that today.
+    """
+    packets = []
+    for status in ("queued", "claimed", "parked"):
+        out = _run(
+            [
+                "fleet",
+                "queue",
+                "list",
+                "--queue",
+                queue,
+                "--status",
+                status,
+                "--limit",
+                "500",
+            ]
+        )
+        for task_id, dedupe_key in _parse_task_table(out):
+            if ":second-pass:" not in dedupe_key:
+                continue
+            raw = _run(
+                [
+                    "fleet",
+                    "queue",
+                    "list",
+                    "--queue",
+                    queue,
+                    "--task",
+                    str(task_id),
+                    "--json",
+                ]
+            )
+            rec = (json.loads(raw or "{}") or {}).get("task") or {}
+            packet = _packet_from_record(rec)
+            if packet is not None:
+                packets.append(packet)
+    return packets
+
+
 def collect_live_state(repo, queue):
     """Bounded live pull: only artifacts carrying review/* labels can
     be in the loop, and only live packets can commission a pass."""
@@ -375,36 +457,7 @@ def collect_live_state(repo, queue):
                     "verdicts": parse_verdict_footers(json.loads(comments or "[]")),
                 }
             )
-    packets = []
-    out = _run(
-        [
-            "fleet",
-            "queue",
-            "list",
-            "--queue",
-            queue,
-            "--status",
-            "queued,claimed,parked",
-        ]
-    )
-    for row in json.loads(out or "[]"):
-        payload = row.get("payload") or {}
-        review = payload.get("review") or {}
-        issue = (payload.get("issue") or {}).get("number")
-        if issue is None or review.get("pass") is None:
-            continue
-        packets.append(
-            {
-                "task_id": row["id"],
-                "status": row["status"],
-                "issue": issue,
-                "review_pass": review.get("pass"),
-                "review_pass_cap": review.get("pass_cap"),
-                "effort": None,
-                "created_at": row.get("created_at"),
-                "claimed_at": row.get("claimed_at"),
-            }
-        )
+    packets = _collect_live_packets(queue)
     # A packet's issue may carry no review/* label anymore (removed
     # after its verdict) and so be missing from the pull above; its
     # verdicts still decide staleness, so fetch verdict-only records

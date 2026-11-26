@@ -96,6 +96,15 @@ export interface MetadataStore {
    * the same matcher the query surface applies to GitHub-fallback
    * candidates, so both sources answer a filter identically. */
   list(bindingId: string, filter: MetadataFilter): Promise<MetadataRecord[]>;
+  /** Every row stored for one repo, across tenancies (#14312).
+   * The divergence report's operator seam: orphan detection must
+   * see rows whose item has vanished from GitHub, including rows
+   * no tenancy list could attribute. This does NOT widen the
+   * query door — its per-tenancy `list` rule above stands; this
+   * seam is for the ingestion door's operator surfaces (backfill
+   * runs, divergence reports), which are service surfaces, not
+   * per-tenancy reads. */
+  listRepo(repo: string): Promise<MetadataRecord[]>;
 }
 
 /** A Metadata query filter (#12587; #9060 §13 query path, design
@@ -187,6 +196,15 @@ export class FixtureMetadataStore implements MetadataStore {
     for (const row of this.rows.values()) {
       if (row.bindingId !== bindingId) continue;
       if (!matchesMetadataFilter(row, filter)) continue;
+      out.push(cloneRecord(row));
+    }
+    return out;
+  }
+
+  async listRepo(repo: string): Promise<MetadataRecord[]> {
+    const out: MetadataRecord[] = [];
+    for (const row of this.rows.values()) {
+      if (row.repo !== repo) continue;
       out.push(cloneRecord(row));
     }
     return out;

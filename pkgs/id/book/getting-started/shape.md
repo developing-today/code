@@ -4,14 +4,14 @@ This chapter is the whole system on one page: the crates, the surfaces,
 how a file moves, how a world runs, and where data lives. Every other
 part of this book expands one section of this page.
 
-## The workspace: a facade plus 16 crates
+## The workspace: a facade plus 20 crates
 
-`pkgs/id/` is a Rust workspace of 17 packages: the root package `id`
-version `0.1.0` (the facade) and 16 crates under `pkgs/id/crates/`.
-Default members are 15 packages: the root plus 14 crates. The two shell
-crates, `id-native-shell` and `id-hw-shell`, are workspace members but
-not default members, so a plain `cargo build` in `pkgs/id/` never
-acquires the Bevy desktop or hardware-shell dependencies. Two vendored
+`pkgs/id/` is a Rust workspace of 21 packages: the root package `id`
+version `0.1.0` (the facade) and 20 crates under `pkgs/id/crates/`.
+Default members are 18 packages: the root plus 17 crates. The three
+shell crates, `id-native-shell`, `id-hw-shell`, and `id-tui-shell`, are
+workspace members but not default members, so a plain `cargo build` in
+`pkgs/id/` never acquires the Bevy desktop or shell dependencies. Two vendored
 crates, `vendor/p2panda-sync` and `vendor/p2panda-encryption`, are
 excluded from the workspace.
 

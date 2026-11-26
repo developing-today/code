@@ -1,1 +1,8 @@
-{"author":"ed25519:cccc3333media","body":{"digest":"blake3:7f4a…e2 (group photo, 2.1 MB)","mime":"image/jpeg","size":2100000},"created_claim":"2026-11-24T01:45:00Z","kind":"image","object_id":"img-group-photo","schema_version":1}
+{
+  "author": "ed25519:cccc3333media",
+  "body": { "digest": "blake3:7f4a…e2 (group photo, 2.1 MB)", "mime": "image/jpeg", "size": 2100000 },
+  "created_claim": "2026-11-24T01:45:00Z",
+  "kind": "image",
+  "object_id": "img-group-photo",
+  "schema_version": 1
+}
