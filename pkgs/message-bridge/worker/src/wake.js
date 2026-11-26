@@ -3,7 +3,7 @@
 // instead of finding the message on its next poll.
 //
 // ChatGPT is woken by MCP Events (events.js). Claude, and anyone else,
-// is woken by a hook Drew sets on his page: a URL and, if it needs one,
+// is woken by a hook Drew sets through the wake-hooks API: a URL and, if it needs one,
 // a bearer token, stored in the Durable Object (never shown again, never
 // in a log).
 //
@@ -137,7 +137,7 @@ async function fire(env, hook, address, rows) {
       address,
       message_ids: rows.map((r) => r.id),
       kind: rows.some(isInstruction) ? "instruction" : "message",
-      from: [...new Set(rows.map((r) => shownFrom(r) ?? "drew"))],
+      from: [...new Set(rows.map((r) => shownFrom(r) ?? "owner"))],
       text,
     };
   }

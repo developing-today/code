@@ -135,6 +135,17 @@
 //                                      (active / revoked; never a
 //                                      hash), as the owner's own
 //                                      GET /api/<owner>/fleet/credentials
+//   GET  /fleet/<credential>/offers   every offer with its claims,
+//                                      as the owner's own
+//                                      GET /api/<owner>/fleet/offers
+//                                      (#14375: the console composer's
+//                                      offer rows read through this)
+//   GET  /fleet/<credential>/wake-hooks  the wake hooks' owner view,
+//                                      as the owner's own
+//                                      GET /api/<owner>/wake-hooks
+//                                      (#14544: the console's Agents
+//                                      screen reads through this;
+//                                      setting one stays the owner's)
 //
 // Enroll-minted agent credentials never carry "read" (the exchange
 // mints CREDENTIAL_SCOPES only): the pipeline stays the owner's and
@@ -177,6 +188,7 @@ import { InputError, MAX_BODY, MAX_SENDER, normalizeWorkMark, workTransitionErro
 import { normalizeNoteIdentity, noteTokenHash } from "./notes.js";
 import { pipelineFeed, unifiedAgents } from "./pipeline.js";
 import { relay, replyAddress } from "./relay.js";
+import { showHook } from "./wake.js";
 
 export const FLEET_KINDS = ["message", "command"];
 export const FLEET_DIRECTIONS = ["inbound", "outbound"];
@@ -1703,6 +1715,14 @@ async function agentRoute(request, store, what, url, delivered, cred = null) {
   }
   if (what === "offers") {
     if (request.method !== "GET") return notAllowed("GET");
+    // A read-scope credential naming no agent reads the owner's list
+    // — every offer with its claims (#14375, the console composer's
+    // offer rows), the same projection as GET /api/<owner>/fleet/offers.
+    // Naming an agent (or holding no read scope) is the agent's own
+    // eligible-offers view below, as before.
+    if (cred && scoped("read") && !url.searchParams.get("agent")) {
+      return json(await store.fleet("offer-list", {}));
+    }
     if (cred && (!scoped("inbox") || credOwnName(url.searchParams.get("agent"), cred) === null)) return notFound();
     return json(await store.fleet("offers", query(url)));
   }
@@ -1744,8 +1764,11 @@ async function agentRoute(request, store, what, url, delivered, cred = null) {
   // answer, nothing more. #14374 adds the unified projections the
   // console's Messages and Agents surfaces read — the pipeline feed,
   // the unified agents list and per-agent credential state — the very
-  // functions the owner's /api routes answer with. #14376 adds the
-  // minted enroll tokens' state the same way. All are reads; no
+  // functions the owner's /api routes answer with. (The offers list
+  // is the sixth such view, #14375; it is answered in the offers
+  // branch above, where the agent's own eligible-offers view lives.)
+  // #14376 adds the minted enroll tokens' state the same way.
+  // All are reads; no
   // credential value or hash is in any of them, and revoking stays an
   // owner-token route: a service credential can see that a credential
   // stands revoked, never revoke one. Enroll-minted agent credentials
@@ -1757,7 +1780,8 @@ async function agentRoute(request, store, what, url, delivered, cred = null) {
     what === "pipeline" ||
     what === "directory" ||
     what === "credentials" ||
-    what === "enroll-tokens"
+    what === "enroll-tokens" ||
+    what === "wake-hooks"
   ) {
     if (request.method !== "GET") return notAllowed("GET");
     if (!cred || !scoped("read")) return notFound();
@@ -1766,6 +1790,11 @@ async function agentRoute(request, store, what, url, delivered, cred = null) {
     if (what === "pipeline") return json(await pipelineFeed(store, Object.fromEntries(url.searchParams.entries())));
     if (what === "directory") return json(await unifiedAgents(store));
     if (what === "enroll-tokens") return json(await listEnrollTokens(store));
+    // The wake hooks' owner view (#14544), as the owner's own
+    // GET /api/<owner>/wake-hooks: address, kind, host, never the
+    // token or the path (wake.js showHook). Setting and removing
+    // stay owner-token acts, like revoking.
+    if (what === "wake-hooks") return json({ hooks: (await store.wakeHooks()).map(showHook) });
     return json({ credentials: await store.fleetCredentialState() });
   }
   return notFound();

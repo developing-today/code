@@ -180,6 +180,31 @@ if want_job opencode-db; then
   fi
 fi
 
+# --- (e2) opencode-db zstd-leg success marker (code#14515) -------------------
+# The zstd fast-restore leg writes its own epoch marker, advanced
+# only after both zstd copies (laptop archive + Drive) verify. It is
+# checked separately from the restic marker above on purpose: a
+# successful restic run must not mask a failed or stale zstd leg,
+# and vice versa.
+OPENCODE_DB_ZSTD_MARKER="${LAPTOP_BACKUPS_OPENCODE_DB_ZSTD_MARKER:-$HOME/backups/restic/.opencode-db-zstd-last-success-epoch}"
+if want_job opencode-db; then
+  if [ ! -f "$OPENCODE_DB_ZSTD_MARKER" ]; then
+    complain "opencode-db-backup zstd leg: no success marker at $OPENCODE_DB_ZSTD_MARKER"
+  else
+    marker_epoch="$(head -1 "$OPENCODE_DB_ZSTD_MARKER" 2>/dev/null || true)"
+    if ! [[ $marker_epoch =~ ^[0-9]+$ ]]; then
+      complain "opencode-db-backup zstd leg: success marker at $OPENCODE_DB_ZSTD_MARKER is unreadable"
+    else
+      age=$((NOW_EPOCH - marker_epoch))
+      if [ "$age" -lt "$((-SKEW_TOLERANCE_SEC))" ]; then
+        complain "opencode-db-backup zstd leg: success marker is $((-age))s in the future (skew tolerance ${SKEW_TOLERANCE_SEC}s)"
+      elif [ "$age" -gt "$MAX_AGE_SEC" ]; then
+        complain "opencode-db-backup zstd leg: last success $((age / 3600))h ago (threshold ${MAX_AGE_HOURS}h)"
+      fi
+    fi
+  fi
+fi
+
 # --- (c) offsite presence on R2 ----------------------------------------------
 if want_job dashboard && [ "${LAPTOP_BACKUPS_OFFSITE_CHECK:-0}" = "1" ]; then
   offsite_date="$(

@@ -85,10 +85,21 @@ usage: fleet bridge <verb> [options]
 Send and receive through the message bridge's fleet mailboxes.
 
 central (owner token):
-  send --to <targets> [--command] [--sender NAME] <text | ->
+  send --to <targets> [--command] [--sender NAME] [--limit N] <text | ->
         targets: agent:<name> (or a bare name), group:<name>, all;
-        repeat --to or separate with commas. --command marks it a
-        command (default: a plain message). '-' reads the text from stdin.
+        repeat --to or separate with commas. A name may be a glob
+        (agent:f*); --limit caps how many of the matches receive it.
+        The answer is the match report: matched, delivered, the
+        recipients, and how many matched agents remain.
+  send --broaden <batch> [--limit N]
+        deliver a pattern send's original text to the matched agents
+        its limit left over — the same batch, never a duplicate.
+  offer --to <targets> --slots N [--command] [--sender NAME]
+        [--ttl SECS] <text | ->
+        post the text as a claim offer instead of delivering it: the
+        next N eligible agents to claim it are delivered a row on the
+        offer's batch (#14371).
+  offers                       every offer with its claims
   agents                       registered agents, groups, unread counts
   log [--agent A] [--direction inbound|outbound] [--kind message|command]
       [--since-id N] [--before-id N] [--limit N] [--order asc|desc]
@@ -116,6 +127,13 @@ central (owner token):
         revoke unused bootstrap tokens: an agent's pending ones, or
         one token by its stored hash (a token value is never needed,
         and never travels)
+  wake-hooks                   every wake hook (address, kind, host;
+        never the token or the path)
+  wake-hooks --set -           set one hook from a JSON object on
+        stdin: {address, url, token?} — the token, when there is
+        one, travels on stdin only, never as an argument
+  wake-hooks --remove --address A
+        remove the hook for one address
   mint-credential --agent A [--scopes s1,s2] [--addr service:<name>]
         mint a per-agent credential directly; the value is printed
         once, in this answer only
@@ -182,12 +200,35 @@ pub fn verb_usage(verb: &str) -> Option<String> {
     let section = match verb {
         "send" => {
             "\
-usage: fleet bridge send --to <targets> [--command] [--sender NAME] <text | ->
+usage: fleet bridge send --to <targets> [--command] [--sender NAME] [--limit N] <text | ->
+       fleet bridge send --broaden <batch> [--limit N]
 
 central (owner token). targets: agent:<name> (or a bare name),
-group:<name>, all; repeat --to or separate with commas. --command
+group:<name>, all; repeat --to or separate with commas. A name may be
+a glob (agent:f*); --limit caps how many of the matches receive it,
+and the answer is the match report (matched, delivered, recipients,
+remaining). --broaden delivers a pattern send's original text to the
+matched agents its limit left over, on the same batch. --command
 marks it a command (default: a plain message). '-' reads the text
 from stdin."
+        }
+        "offer" => {
+            "\
+usage: fleet bridge offer --to <targets> --slots N [--command] [--sender NAME] [--ttl SECS] <text | ->
+
+central (owner token). Post the text as a claim offer (#14371)
+instead of delivering it: the next N eligible agents to claim it are
+delivered a row on the offer's batch, and their replies thread onto
+it. targets are the send grammar (names, globs, groups, all);
+--slots is how many claims land. --ttl bounds how long the offer
+stands open, in seconds."
+        }
+        "offers" => {
+            "\
+usage: fleet bridge offers
+
+central (owner token). Every offer with its claims: who claimed,
+when, and the row each claim delivered."
         }
         "agents" => {
             "\
@@ -275,6 +316,18 @@ token value never may. By hash, a used or already-revoked token
 answers {revoked: false}; by agent, the answer counts what was
 taken back."
         }
+        "wake-hooks" => {
+            "\
+usage: fleet bridge wake-hooks [--set - | --remove --address A]
+
+central (owner token). The bridge's wake hooks (#14544): with no
+flag, every hook — address, kind, host, and whether it holds a
+token; never the token or the URL's path. --set reads one hook as a
+JSON object {address, url, token?} from stdin (so a hook token
+never travels as an argument) and sets it; --remove takes the hook
+for one address back. Both post to the wake-hooks API the retired
+bridge page used; the PM console's Agents screen drives this verb."
+        }
         "mint-credential" => {
             "\
 usage: fleet bridge mint-credential --agent A [--scopes s1,s2] [--addr service:<name>]
@@ -347,10 +400,11 @@ values are never printed. A refused exchange stores nothing."
         }
         "notes" => {
             "\
-usage: fleet bridge notes <send | inbox | ack> [options]
+usage: fleet bridge notes <send | inbox | ack | get | watch> [options]
 
 The class/name notes surface, authenticated by this identity's own
-notes token (Bearer header, resolved by vault name).
+notes token (Bearer header, resolved by vault name). `get` alone needs
+no token.
 
   notes send --to CLASS/NAME [--kind note|instruction] [--reply-to ID] <text | ->
         a * segment in --to wildcards. --kind instruction makes the
@@ -358,7 +412,17 @@ notes token (Bearer header, resolved by vault name).
         a sender. --reply-to ID answers a note in your inbox and is
         routed to its real sender; it may replace --to.
   notes inbox                  this identity's pending notes
-  notes ack (--up-to ID | ID...)   acknowledge notes"
+  notes ack (--up-to ID | ID...)   acknowledge notes
+  notes get CLASS/NAME         the path's public wake signal: a bare
+        UUID that changes when a note is delivered, and also rotates
+        on its own every 10-40 minutes, so a change is a reason to
+        look, never proof of a note
+  notes watch [--wait SECS] [--interval SECS]
+        block until this identity has pending notes, then print them
+        (the inbox answer, plus how it woke). Polls the public signal
+        every --interval (default 15) and reads the inbox only when
+        the signal changes; gives up after --wait (default and most
+        86400) with an empty answer"
         }
         "health" => {
             "\
@@ -419,6 +483,39 @@ pub trait Secrets {
     }
 }
 
+/// A [`Secrets`] seen through a name scope (#10358 D11): reads and
+/// writes both map the caller's name to its full stored name first,
+/// so a scoped bridge reads what it wrote. [`Scope::none`] passes
+/// every name through unchanged.
+///
+/// [`Scope::none`]: fleet_secrets::Scope::none
+pub struct ScopedSecrets<S> {
+    scope: fleet_secrets::Scope,
+    inner: S,
+}
+
+impl<S: Secrets> ScopedSecrets<S> {
+    pub fn new(scope: fleet_secrets::Scope, inner: S) -> ScopedSecrets<S> {
+        ScopedSecrets { scope, inner }
+    }
+
+    fn full(&self, name: &str) -> Result<String, String> {
+        self.scope.to_full(name).map_err(|e| e.to_string())
+    }
+}
+
+impl<S: Secrets> Secrets for ScopedSecrets<S> {
+    fn resolve(&self, name: &str) -> Result<String, String> {
+        self.inner.resolve(&self.full(name)?)
+    }
+
+    fn store(&self, name: &str, value: &str) -> Result<(), String> {
+        self.inner.store(&self.full(name)?, value)
+    }
+}
+
+/// The real chain, taking full stored names; [`run`] wraps it in the
+/// instance's scope.
 struct ChainSecrets<'a>(&'a Config);
 
 impl Secrets for ChainSecrets<'_> {
@@ -540,10 +637,7 @@ fn profile_path(env: &dyn Fn(&str) -> Option<String>) -> Option<std::path::PathB
                 .join("agent.json"),
         );
     }
-    non_blank(env("HOME")).map(|h| {
-        std::path::PathBuf::from(h)
-            .join(".config/fleet/agent.json")
-    })
+    non_blank(env("HOME")).map(|h| std::path::PathBuf::from(h).join(".config/fleet/agent.json"))
 }
 
 fn read_profile_names(env: &dyn Fn(&str) -> Option<String>) -> ProfileNames {
@@ -664,7 +758,10 @@ fn query(pairs: &[(&str, Option<String>)]) -> String {
 /// when a route authenticates by header (the notes routes). Generic
 /// over the builder's typestate: `get` starts WithoutBody, `post`
 /// starts WithBody, and headers are settable in either.
-fn with_auth<State>(req: ureq::RequestBuilder<State>, bearer: Option<&str>) -> ureq::RequestBuilder<State> {
+fn with_auth<State>(
+    req: ureq::RequestBuilder<State>,
+    bearer: Option<&str>,
+) -> ureq::RequestBuilder<State> {
     let req = req
         .header("Accept", "application/json")
         .header("User-Agent", "fleet-bridge");
@@ -718,14 +815,56 @@ impl Client {
     /// One request authenticated by an `Authorization: Bearer` header
     /// instead of a path token (the notes routes work that way). The
     /// token joins the scrub list, like a path token.
-    fn call_bearer(&mut self, method: &str, path: &str, body: Option<&Value>, token: &str) -> R<Value> {
+    fn call_bearer(
+        &mut self,
+        method: &str,
+        path: &str,
+        body: Option<&Value>,
+        token: &str,
+    ) -> R<Value> {
         if !self.secrets_to_scrub.iter().any(|t| t == token) {
             self.secrets_to_scrub.push(token.to_string());
         }
         self.call_req(method, path, body, Some(token))
     }
 
-    fn call_req(&self, method: &str, path: &str, body: Option<&Value>, bearer: Option<&str>) -> R<Value> {
+    /// One unauthenticated GET whose answer is plain text (the notes
+    /// public signal), trimmed.
+    fn get_text(&self, path: &str) -> R<String> {
+        let url = format!("{}{}", self.base, path);
+        let mut resp = self
+            .agent
+            .get(&url)
+            .header("Accept", "text/plain")
+            .header("User-Agent", "fleet-bridge")
+            .call()
+            .map_err(|e| {
+                BridgeError::Transport(format!(
+                    "GET to the bridge failed: {}",
+                    self.scrub(&e.to_string())
+                ))
+            })?;
+        let status = resp.status().as_u16();
+        let text = resp
+            .body_mut()
+            .read_to_string()
+            .map_err(|e| BridgeError::Transport(format!("reading the bridge's answer: {e}")))?;
+        if !(200..300).contains(&status) {
+            return Err(BridgeError::Http {
+                status,
+                message: self.scrub(text.trim()).chars().take(300).collect(),
+            });
+        }
+        Ok(text.trim().to_string())
+    }
+
+    fn call_req(
+        &self,
+        method: &str,
+        path: &str,
+        body: Option<&Value>,
+        bearer: Option<&str>,
+    ) -> R<Value> {
         let url = format!("{}{}", self.base, path);
         let result = match body {
             None => with_auth(self.agent.get(&url), bearer).call(),
@@ -789,14 +928,17 @@ const VALUE_FLAGS: &[&str] = &[
     "--interval",
     "--reply-to",
     "--up-to",
+    "--broaden",
+    "--slots",
     "--state",
     "--task",
     "--bootstrap",
-    "--scopes",
     "--ttl",
+    "--scopes",
     "--notes-identity",
     "--token-hash",
     "--addr",
+    "--address",
 ];
 
 fn parse(args: &[String], switches: &[&str], values: &[&str]) -> R<Args> {
@@ -1002,14 +1144,18 @@ fn verb_exchange(ctx: &mut Ctx, rest: &[String]) -> R<Value> {
     let agent = out
         .get("agent")
         .and_then(Value::as_str)
-        .ok_or_else(|| BridgeError::Transport("the bridge's exchange answer named no agent".to_string()))?
+        .ok_or_else(|| {
+            BridgeError::Transport("the bridge's exchange answer named no agent".to_string())
+        })?
         .to_string();
     let fleet_value = out
         .get("fleet_token")
         .and_then(Value::as_str)
         .filter(|v| !v.is_empty())
         .ok_or_else(|| {
-            BridgeError::Transport("the bridge's exchange answer carried no fleet credential".to_string())
+            BridgeError::Transport(
+                "the bridge's exchange answer carried no fleet credential".to_string(),
+            )
         })?;
     let fleet_name = format!("bridge.{agent}-fleet-token");
     ctx.secrets.store(&fleet_name, fleet_value).map_err(|e| {
@@ -1048,7 +1194,7 @@ fn verb_exchange(ctx: &mut Ctx, rest: &[String]) -> R<Value> {
 fn verb_notes(ctx: &mut Ctx, rest: &[String]) -> R<Value> {
     let Some((sub, nrest)) = rest.split_first() else {
         return Err(usage(
-            "notes needs a verb: send, inbox or ack (try: fleet bridge notes --help)",
+            "notes needs a verb: send, inbox, ack, get or watch (try: fleet bridge notes --help)",
         ));
     };
     match sub.as_str() {
@@ -1092,9 +1238,10 @@ fn verb_notes(ctx: &mut Ctx, rest: &[String]) -> R<Value> {
                 .positional
                 .iter()
                 .map(|p| {
-                    p.parse::<u64>().ok().filter(|n| *n > 0).ok_or_else(|| {
-                        usage(format!("note id '{p}' is not a positive number"))
-                    })
+                    p.parse::<u64>()
+                        .ok()
+                        .filter(|n| *n > 0)
+                        .ok_or_else(|| usage(format!("note id '{p}' is not a positive number")))
                 })
                 .collect::<R<_>>()?;
             let up_to = a.uint("--up-to")?;
@@ -1112,9 +1259,133 @@ fn verb_notes(ctx: &mut Ctx, rest: &[String]) -> R<Value> {
             let mut client = Client::new(&ctx.settings.url);
             client.call_bearer("POST", "/notes/ack", Some(&payload), &token)
         }
+        "get" => {
+            let a = parse(nrest, &[], &[])?;
+            let [identity] = a.positional.as_slice() else {
+                return Err(usage("notes get needs one CLASS/NAME"));
+            };
+            let identity = signal_identity(identity)?;
+            let client = Client::new(&ctx.settings.url);
+            let signal = client.get_text(&format!("/{identity}"))?;
+            Ok(json!({ "identity": identity, "signal": signal }))
+        }
+        "watch" => {
+            let a = parse(nrest, &[], &["--wait", "--interval"])?;
+            a.no_positional("notes watch")?;
+            let wait = a.uint("--wait")?.unwrap_or(MAX_WAIT_SECS);
+            if wait > MAX_WAIT_SECS {
+                return Err(usage(format!("--wait is at most {MAX_WAIT_SECS} seconds")));
+            }
+            let interval = a
+                .uint("--interval")?
+                .unwrap_or(DEFAULT_INTERVAL_SECS)
+                .max(1);
+            let token = notes_token(ctx)?;
+            let mut client = Client::new(&ctx.settings.url);
+            notes_watch(ctx, &mut client, &token, wait, interval)
+        }
         other => Err(usage(format!(
-            "unknown notes verb '{other}' (send, inbox or ack)"
+            "unknown notes verb '{other}' (send, inbox, ack, get or watch)"
         ))),
+    }
+}
+
+/// The worker's reserved first segments: these paths are routes, not
+/// a class's public signal (notes.js RESERVED_SIGNAL_CLASSES).
+const RESERVED_SIGNAL_CLASSES: &[&str] = &[
+    ".well-known",
+    "api",
+    "authorize",
+    "enroll",
+    "fleet",
+    "healthz",
+    "mcp",
+    "notes",
+    "p",
+    "register",
+    "token",
+];
+
+/// A `class/name` whose public signal can be read: two segments of
+/// 1-64 `a-z 0-9 . _ -` starting with a letter or digit (the worker's
+/// NOTE_SEGMENT), no wildcard, and not a reserved route.
+fn signal_identity(raw: &str) -> R<String> {
+    let lower = raw.trim().to_ascii_lowercase();
+    let segment_ok = |seg: &str| {
+        let b = seg.as_bytes();
+        !b.is_empty()
+            && b.len() <= 64
+            && b[0].is_ascii_alphanumeric()
+            && b.iter()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'.' | b'_' | b'-'))
+    };
+    match lower.split('/').collect::<Vec<_>>().as_slice() {
+        [class, name] if segment_ok(class) && segment_ok(name) => {
+            if RESERVED_SIGNAL_CLASSES.contains(class) {
+                Err(usage(format!(
+                    "'{class}' is a bridge route, not a notes class"
+                )))
+            } else {
+                Ok(lower)
+            }
+        }
+        _ => Err(usage(format!(
+            "'{raw}' is not CLASS/NAME (two segments of a-z 0-9 . _ -, no wildcard)"
+        ))),
+    }
+}
+
+/// `notes watch`: read the inbox once (notes may already be waiting,
+/// and its answer names this token's identity), then poll that
+/// identity's public signal and read the inbox again only when the
+/// signal changes. The signal also rotates on its own, so a change
+/// with an empty inbox just resets the baseline. Returns the first
+/// non-empty inbox answer, or the last (empty) one when --wait runs
+/// out, with `woke` (pending | signal | null) and `waited` seconds.
+fn notes_watch(ctx: &Ctx, client: &mut Client, token: &str, wait: u64, interval: u64) -> R<Value> {
+    let started = Instant::now();
+    let mut slept = 0u64;
+    let finish = |mut inbox: Value, woke: Option<&str>, waited: u64| {
+        inbox["woke"] = json!(woke);
+        inbox["waited"] = json!(waited);
+        inbox
+    };
+    let has_notes = |v: &Value| {
+        v.get("notes")
+            .and_then(Value::as_array)
+            .is_some_and(|n| !n.is_empty())
+    };
+    let inbox = client.call_bearer("GET", "/notes/inbox", None, token)?;
+    if has_notes(&inbox) {
+        return Ok(finish(inbox, Some("pending"), 0));
+    }
+    let identity = inbox
+        .get("identity")
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            BridgeError::Transport("the bridge's inbox answer named no identity".to_string())
+        })
+        .and_then(signal_identity)?;
+    let signal_path = format!("/{identity}");
+    let mut last = client.get_text(&signal_path)?;
+    let mut latest = inbox;
+    loop {
+        let elapsed = started.elapsed().as_secs().max(slept);
+        if elapsed >= wait {
+            return Ok(finish(latest, None, elapsed));
+        }
+        let step = interval.min(wait - elapsed);
+        (ctx.sleep)(Duration::from_secs(step));
+        slept += step;
+        let now = client.get_text(&signal_path)?;
+        if now != last {
+            last = now;
+            latest = client.call_bearer("GET", "/notes/inbox", None, token)?;
+            if has_notes(&latest) {
+                let waited = started.elapsed().as_secs().max(slept);
+                return Ok(finish(latest, Some("signal"), waited));
+            }
+        }
     }
 }
 
@@ -1125,7 +1396,28 @@ pub fn execute(ctx: &mut Ctx, args: &[String]) -> R<Value> {
     };
     match verb.as_str() {
         "send" => {
-            let a = parse(rest, &["--command"], &["--to", "--sender", "--kind"])?;
+            let a = parse(
+                rest,
+                &["--command"],
+                &["--to", "--sender", "--kind", "--limit", "--broaden"],
+            )?;
+            let limit = a.uint("--limit")?;
+            // A broaden names the pattern send's batch and carries no
+            // text or targets of its own: the bridge re-delivers the
+            // original body to the matched agents the limit left over.
+            if let Some(batch) = a.last("--broaden") {
+                a.no_positional("send --broaden")?;
+                let token = owner_token(ctx)?;
+                let mut payload = json!({ "broaden": batch });
+                if let Some(n) = limit {
+                    payload["limit"] = json!(n);
+                }
+                return client_with(ctx, &token).call(
+                    "POST",
+                    &format!("/api/{token}/fleet/send"),
+                    Some(&payload),
+                );
+            }
             let to: Vec<String> = a.all("--to").iter().flat_map(|t| split_list(t)).collect();
             if to.is_empty() {
                 return Err(usage(
@@ -1143,11 +1435,53 @@ pub fn execute(ctx: &mut Ctx, args: &[String]) -> R<Value> {
             if let Some(s) = a.last("--sender") {
                 payload["sender"] = json!(s);
             }
+            if let Some(n) = limit {
+                payload["limit"] = json!(n);
+            }
             client_with(ctx, &token).call(
                 "POST",
                 &format!("/api/{token}/fleet/send"),
                 Some(&payload),
             )
+        }
+        "offer" => {
+            let a = parse(
+                rest,
+                &["--command"],
+                &["--to", "--sender", "--kind", "--slots", "--ttl"],
+            )?;
+            let to: Vec<String> = a.all("--to").iter().flat_map(|t| split_list(t)).collect();
+            if to.is_empty() {
+                return Err(usage("offer needs --to (agent:NAME, group:NAME or all)"));
+            }
+            let Some(slots) = a.uint("--slots")? else {
+                return Err(usage("offer needs --slots N (how many claims land)"));
+            };
+            let kind = if a.has("--command") {
+                "command".to_string()
+            } else {
+                a.last("--kind").unwrap_or_else(|| "message".to_string())
+            };
+            let body = text_of(&a, ctx.stdin)?;
+            let token = owner_token(ctx)?;
+            let mut payload = json!({ "body": body, "to": to, "kind": kind, "slots": slots });
+            if let Some(s) = a.last("--sender") {
+                payload["sender"] = json!(s);
+            }
+            if let Some(ttl) = a.uint("--ttl")? {
+                payload["ttl_seconds"] = json!(ttl);
+            }
+            client_with(ctx, &token).call(
+                "POST",
+                &format!("/api/{token}/fleet/offer"),
+                Some(&payload),
+            )
+        }
+        "offers" => {
+            let a = parse(rest, &[], &[])?;
+            a.no_positional("offers")?;
+            let token = owner_token(ctx)?;
+            client_with(ctx, &token).call("GET", &format!("/api/{token}/fleet/offers"), None)
         }
         "agents" => {
             let a = parse(rest, &[], &[])?;
@@ -1291,6 +1625,59 @@ pub fn execute(ctx: &mut Ctx, args: &[String]) -> R<Value> {
             a.no_positional("enroll-tokens")?;
             let token = owner_token(ctx)?;
             client_with(ctx, &token).call("GET", &format!("/api/{token}/enroll-tokens"), None)
+        }
+        "wake-hooks" => {
+            let a = parse(rest, &["--set", "--remove"], &["--address"])?;
+            // Checked before any credential is resolved, like every
+            // usage error here. The three forms are exclusive: list,
+            // set (the hook as JSON on stdin, so a hook token never
+            // travels as an argument), or remove one address.
+            match (a.has("--set"), a.has("--remove")) {
+                (false, false) => {
+                    a.no_positional("wake-hooks")?;
+                    if a.last("--address").is_some() {
+                        return Err(usage("wake-hooks: --address goes with --remove"));
+                    }
+                    let token = owner_token(ctx)?;
+                    client_with(ctx, &token).call("GET", &format!("/api/{token}/wake-hooks"), None)
+                }
+                (true, false) => {
+                    if a.last("--address").is_some() {
+                        return Err(usage(
+                            "wake-hooks --set: the address is in the JSON on stdin",
+                        ));
+                    }
+                    let text = text_of(&a, ctx.stdin).map_err(|_| {
+                        usage("wake-hooks --set: give the hook as a JSON object on stdin (fleet bridge wake-hooks --set -)")
+                    })?;
+                    let payload: Value = serde_json::from_str(&text)
+                        .map_err(|e| usage(format!("wake-hooks --set: stdin is not JSON: {e}")))?;
+                    if !payload.is_object() {
+                        return Err(usage(
+                            "wake-hooks --set: stdin must be a JSON object {address, url, token?}",
+                        ));
+                    }
+                    let token = owner_token(ctx)?;
+                    client_with(ctx, &token).call(
+                        "POST",
+                        &format!("/api/{token}/wake-hooks"),
+                        Some(&payload),
+                    )
+                }
+                (false, true) => {
+                    a.no_positional("wake-hooks --remove")?;
+                    let address = a
+                        .last("--address")
+                        .ok_or_else(|| usage("wake-hooks --remove needs --address A"))?;
+                    let token = owner_token(ctx)?;
+                    client_with(ctx, &token).call(
+                        "POST",
+                        &format!("/api/{token}/wake-hooks"),
+                        Some(&json!({ "address": address })),
+                    )
+                }
+                (true, true) => Err(usage("wake-hooks: --set and --remove are different acts")),
+            }
         }
         "revoke-enroll" => {
             let a = parse(rest, &[], &["--agent", "--token-hash"])?;
@@ -1560,7 +1947,14 @@ pub fn run(config: &Config, args: &[String]) -> i32 {
             return e.exit_code();
         }
     };
-    let secrets = ChainSecrets(config);
+    let scope = match fleet_secrets::Scope::from_config(config) {
+        Ok(scope) => scope,
+        Err(e) => {
+            eprintln!("fleet bridge: secrets prefix: {e}");
+            return EXIT_USAGE;
+        }
+    };
+    let secrets = ScopedSecrets::new(scope, ChainSecrets(config));
     let mut stdin = std::io::stdin();
     let sleep = |d: Duration| std::thread::sleep(d);
     let mut ctx = Ctx {

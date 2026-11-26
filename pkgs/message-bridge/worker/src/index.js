@@ -1,7 +1,8 @@
 // Message bridge Worker: a remote MCP server Claude can add as a custom
 // connector, the same MCP server for the ChatGPT connector (reached
-// through its private Site with a token of its own), plus a page where
-// Drew sends a message to either or both and sees the history. Every
+// through its private Site with a token of its own). Drew sends and
+// reads through the PM Stack console; this Worker is transport only
+// (its standalone page was retired, #14378). Every
 // message sent or received is stored in one SQLite-backed Durable
 // Object, so writes never race; each row names its channel.
 //
@@ -27,6 +28,7 @@ import {
   recordDistribution,
 } from "./fleet.js";
 import { route } from "./routes.js";
+import { exportBridgeState, importBridgeState, runBackup } from "./backup.js";
 
 export class MessageStore extends DurableObject {
   constructor(ctx, env) {
@@ -651,6 +653,16 @@ export class MessageStore extends DurableObject {
     return { acked, stats: this.stats(c) };
   }
 
+  /** State backup (#14951): the whole store as one portable payload,
+   *  and its restore. See backup.js for the format and the drill. */
+  backupExport() {
+    return exportBridgeState(this.sql);
+  }
+
+  backupImport(payload) {
+    return importBridgeState(this.sql, payload);
+  }
+
   stats(channel) {
     const c = normalizeChannel(channel);
     return this.sql
@@ -723,11 +735,21 @@ function storeFor(env) {
     enrollTokenRevoke: (token_hash) => stub.enrollTokenRevoke(token_hash),
     enrollTokenRevokeAgent: (agent) => stub.enrollTokenRevokeAgent(agent),
     enrollTokenList: () => stub.enrollTokenList(),
+    backupExport: () => stub.backupExport(),
+    backupImport: (payload) => stub.backupImport(payload),
   };
 }
 
 export default {
   async fetch(request, env, ctx) {
     return route(request, env, () => storeFor(env), (p) => ctx.waitUntil(p));
+  },
+
+  /** The bridge state backup (#14951): the cron trigger declared in
+   *  wrangler.jsonc / cloudflare.config.ts dumps the whole
+   *  MessageStore to the BRIDGE_BACKUP R2 bucket. A failure throws
+   *  into the invocation log — a missed backup is loud, not silent. */
+  async scheduled(event, env, ctx) {
+    ctx.waitUntil(runBackup(env, storeFor(env)));
   },
 };

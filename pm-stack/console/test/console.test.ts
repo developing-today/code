@@ -726,12 +726,33 @@ describe("operations", () => {
   });
 
   test("a message's text travels on stdin and targets are checked", async () => {
-    const r = recorder();
+    // The bridge answers every send with its match report (#14375).
+    const report = JSON.stringify({
+      batch: "b1",
+      messages: [],
+      unregistered: [],
+      matched: 2,
+      delivered: 2,
+      recipients: ["conductor", "opencode"],
+      remaining: 0,
+    });
+    const r = recorder(() => report);
     const ops = new Ops(CFG, r.run);
-    await ops.send(["group:opencode", "agent:conductor"], "--command do the thing\n$(reboot)", true);
+    const sent = await ops.send(["group:opencode", "agent:conductor"], "--command do the thing\n$(reboot)", true);
     expect(r.calls[0]).toEqual({
       argv: ["fleet", "bridge", "send", "--to", "group:opencode,agent:conductor", "--command", "-"],
       stdin: "--command do the thing\n$(reboot)",
+    });
+    // The answer is the bridge's report, field for field.
+    expect(sent).toEqual({
+      to: ["group:opencode", "agent:conductor"],
+      command: true,
+      batch: "b1",
+      matched: 2,
+      delivered: 2,
+      recipients: ["conductor", "opencode"],
+      remaining: 0,
+      unregistered: [],
     });
     await ops.send(["all"], "an idea", false);
     expect(r.calls[1].argv).toEqual(["fleet", "bridge", "send", "--to", "all", "-"]);
@@ -740,6 +761,151 @@ describe("operations", () => {
     }
     await expect(ops.send(["all"], "", false)).rejects.toThrow(/required/);
     expect(r.calls.length).toBe(2);
+  });
+
+  test("the composer: a pattern send's report, its broaden, and an offer, against fixture bridge answers", async () => {
+    // Fixture bridge answers, keyed by the verb in argv: a pattern
+    // send that matched two and reached one, a broaden that reached
+    // the other, an offer, and the offers list with a claim on it.
+    const r = recorder((argv) => {
+      if (argv[2] === "send" && argv.includes("--broaden")) {
+        return JSON.stringify({
+          batch: "b9",
+          messages: [],
+          unregistered: [],
+          matched: 2,
+          delivered: 1,
+          recipients: ["felix-2"],
+          remaining: 0,
+        });
+      }
+      if (argv[2] === "send") {
+        return JSON.stringify({
+          batch: "b9",
+          messages: [],
+          unregistered: [],
+          matched: 2,
+          delivered: 1,
+          recipients: ["felix-1"],
+          remaining: 1,
+        });
+      }
+      if (argv[2] === "offer") {
+        return JSON.stringify({
+          offer: {
+            id: 7,
+            batch: "b10",
+            body: "take the next task",
+            kind: "command",
+            slots: 2,
+            state: "open",
+            claimed: 0,
+            remaining: 2,
+            claims: [],
+          },
+        });
+      }
+      if (argv[2] === "offers") {
+        return JSON.stringify({
+          offers: [
+            {
+              id: 7,
+              batch: "b10",
+              body: "take the next task",
+              kind: "command",
+              slots: 2,
+              state: "open",
+              claimed: 1,
+              remaining: 1,
+              claims: [{ agent: "felix-1", claimed_at: "2026-11-24T02:00:00Z", message_id: 42 }],
+            },
+          ],
+        });
+      }
+      return "";
+    });
+    const ops = new Ops(CFG, r.run);
+    const table = actions(ops, {} as never);
+
+    // Acceptance 1: agent:f* with limit 1 against two matching agents
+    // shows matched 2 / delivered 1 and names the recipient.
+    const report = (await table["message.send"].run({
+      to: ["agent:f*"],
+      text: "do the thing",
+      command: true,
+      limit: 1,
+    })) as {
+      batch: string | null;
+      matched: number;
+      delivered: number;
+      recipients: string[];
+      remaining: number;
+    };
+    expect(r.calls[0].argv).toEqual(["fleet", "bridge", "send", "--to", "agent:f*", "--command", "--limit", "1", "-"]);
+    expect(r.calls[0].stdin).toBe("do the thing");
+    expect(report).toMatchObject({ batch: "b9", matched: 2, delivered: 1, recipients: ["felix-1"], remaining: 1 });
+    // The audit names the targets and the limit, never the text.
+    expect(table["message.send"].audit({ to: ["agent:f*"], text: "do the thing", command: true, limit: 1 })).toEqual({
+      to: ["agent:f*"],
+      command: true,
+      limit: 1,
+    });
+
+    // Acceptance 2: Broaden is one follow-up call with the batch —
+    // no targets, no text — and its report shows nothing remaining.
+    const widened = (await table["message.broaden"].run({ batch: report.batch })) as {
+      matched: number;
+      delivered: number;
+      recipients: string[];
+      remaining: number;
+    };
+    expect(r.calls[1].argv).toEqual(["fleet", "bridge", "send", "--broaden", "b9"]);
+    expect(r.calls[1].stdin).toBeUndefined();
+    expect(widened).toMatchObject({ matched: 2, delivered: 1, recipients: ["felix-2"], remaining: 0 });
+    expect(table["message.broaden"].audit({ batch: "b9", text: "do the thing" })).toEqual({ batch: "b9", limit: null });
+    // A batch that is not a batch id is refused before anything runs.
+    const calls = r.calls.length;
+    await expect(ops.broaden("not a batch!")).rejects.toThrow(OpError);
+    expect(r.calls.length).toBe(calls);
+
+    // Acceptance 3 (console half): an offer posted from the composer,
+    // and the offers list showing its claim with the claimant named.
+    const offer = (await table["message.offer"].run({
+      to: ["agent:f*"],
+      text: "take the next task",
+      command: true,
+      slots: 2,
+    })) as {
+      id: number;
+      state: string;
+    };
+    expect(r.calls.at(-1)?.argv).toEqual([
+      "fleet",
+      "bridge",
+      "offer",
+      "--to",
+      "agent:f*",
+      "--slots",
+      "2",
+      "--command",
+      "-",
+    ]);
+    expect(r.calls.at(-1)?.stdin).toBe("take the next task");
+    expect(offer).toMatchObject({ id: 7, state: "open" });
+    expect(
+      table["message.offer"].audit({ to: ["agent:f*"], text: "take the next task", command: true, slots: 2 }),
+    ).toEqual({
+      to: ["agent:f*"],
+      command: true,
+      slots: 2,
+    });
+    const offers = (await ops.offers()) as { id: number; claims: { agent: string }[] }[];
+    expect(offers).toHaveLength(1);
+    expect(offers[0].claims[0].agent).toBe("felix-1");
+
+    // A send whose answer carries no report is said so, not recounted.
+    const silent = new Ops(CFG, recorder(() => JSON.stringify({ batch: "b1" })).run);
+    await expect(silent.send(["all"], "hello", false)).rejects.toThrow(/did not say who that reached/);
   });
 
   test("the pipeline read carries the owner's filters as the bridge's own flags, and checks them first", async () => {
@@ -1056,6 +1222,95 @@ describe("operations", () => {
     });
     expect(HOLDABLE.has("agent.revoke-enroll")).toBe(true);
     expect(subjectOf("agent.revoke-enroll", { agent: "new-1" })).toBe("enroll:new-1");
+  });
+
+  test("wake hooks: listed, set from stdin JSON, and removed by address (#14544)", async () => {
+    // Oracle: the console drives `fleet bridge wake-hooks` — the list
+    // is the bridge's projection, a set's hook (token included) rides
+    // stdin and never an argument or the audit, and a remove posts
+    // the address alone. A set is never held (its token is a value);
+    // a remove is, like a revocation.
+    const r = recorder((argv) => {
+      if (argv[2] === "wake-hooks" && argv[3] === "--set") {
+        return JSON.stringify({
+          hook: {
+            address: "agent:felix",
+            kind: "webhook",
+            host: "hooks.example",
+            has_token: true,
+            added: "2026-11-24T00:00:00.000Z",
+          },
+        });
+      }
+      if (argv[2] === "wake-hooks" && argv[3] === "--remove") return JSON.stringify({ removed: true });
+      if (argv[2] === "wake-hooks") {
+        return JSON.stringify({
+          hooks: [
+            {
+              address: "agent:felix",
+              kind: "webhook",
+              host: "hooks.example",
+              has_token: true,
+              added: "2026-11-24T00:00:00.000Z",
+            },
+          ],
+        });
+      }
+      return "";
+    });
+    const ops = new Ops(CFG, r.run);
+    const table = actions(ops, {} as never);
+
+    expect(await ops.wakeHooks()).toEqual([
+      {
+        address: "agent:felix",
+        kind: "webhook",
+        host: "hooks.example",
+        has_token: true,
+        added: "2026-11-24T00:00:00.000Z",
+      },
+    ]);
+    expect(r.calls.at(-1)?.argv).toEqual(["fleet", "bridge", "wake-hooks"]);
+
+    const set = (await table["agent.wake-hook-set"].run({
+      address: "agent:felix",
+      url: "https://hooks.example/wake",
+      token: "hook-token-fixture",
+    })) as { hook: { address: string } };
+    expect(set.hook.address).toBe("agent:felix");
+    expect(r.calls.at(-1)?.argv).toEqual(["fleet", "bridge", "wake-hooks", "--set", "-"]);
+    expect(JSON.parse(r.calls.at(-1)?.stdin ?? "")).toEqual({
+      address: "agent:felix",
+      url: "https://hooks.example/wake",
+      token: "hook-token-fixture",
+    });
+    expect(
+      table["agent.wake-hook-set"].audit({
+        address: "agent:felix",
+        url: "https://hooks.example/wake",
+        token: "hook-token-fixture",
+      }),
+    ).toEqual({
+      address: "agent:felix",
+    });
+    expect(HOLDABLE.has("agent.wake-hook-set")).toBe(false);
+
+    const removed = (await table["agent.wake-hook-remove"].run({ address: "agent:felix" })) as { removed: boolean };
+    expect(removed.removed).toBe(true);
+    expect(r.calls.at(-1)?.argv).toEqual(["fleet", "bridge", "wake-hooks", "--remove", "--address", "agent:felix"]);
+    expect(HOLDABLE.has("agent.wake-hook-remove")).toBe(true);
+    expect(subjectOf("agent.wake-hook-remove", { address: "agent:felix" })).toBe("wake-hook:agent:felix");
+
+    // Bad shapes are refused before anything runs.
+    const calls = r.calls.length;
+    await expect(
+      table["agent.wake-hook-set"].run({ address: "drew", url: "https://hooks.example/wake" }),
+    ).rejects.toThrow(OpError);
+    await expect(
+      table["agent.wake-hook-set"].run({ address: "agent:felix", url: "http://hooks.example/wake" }),
+    ).rejects.toThrow(OpError);
+    await expect(table["agent.wake-hook-remove"].run({ address: "no way" })).rejects.toThrow(OpError);
+    expect(r.calls.length).toBe(calls);
   });
 
   test("ranking an issue adds the new rank before it removes the others", async () => {
@@ -2057,7 +2312,20 @@ describe("HTTP surface", () => {
 
   test("each write route reaches its operation", async () => {
     const r = recorder((argv) =>
-      argv[1] === "gh" ? JSON.stringify({ number: 1, html_url: "u", merged: true, sha: "s", labels: [] }) : "",
+      argv[1] === "gh"
+        ? JSON.stringify({ number: 1, html_url: "u", merged: true, sha: "s", labels: [] })
+        : argv[1] === "bridge" && argv[2] === "send"
+          ? // A send's answer is its match report (#14375).
+            JSON.stringify({
+              batch: "b1",
+              messages: [],
+              unregistered: [],
+              matched: 1,
+              delivered: 1,
+              recipients: ["lane-1"],
+              remaining: 0,
+            })
+          : "",
     );
     const d = deps("owner", r);
     const run = async (path: string, body: unknown) => (await handle(post(path, body), d)).status;

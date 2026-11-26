@@ -851,6 +851,19 @@ let
         cf = pkgs.callPackage ../pkgs/cf { };
         wrangler = pkgs.callPackage ../pkgs/wrangler { };
       };
+      # Turso -> D1 move (2026-11-25): Turso-protocol endpoint over D1.
+      d1Gateway = pkgs.callPackage ../pkgs/d1-gateway/worker/package.nix { };
+      d1GatewayDeploy = pkgs.callPackage ../pkgs/d1-gateway/worker/deploy.nix {
+        inherit d1Gateway;
+        wrangler = pkgs.callPackage ../pkgs/wrangler { };
+      };
+      # Issue #5767, external-Worker slice: the hatch-personal Workers'
+      # deploy apps (pinned rev staged at deploy time).
+      agentInboxDeploy = pkgs.callPackage ../pkgs/external-workers/agent-inbox-deploy.nix { };
+      webhookGatewayDeploy = pkgs.callPackage ../pkgs/external-workers/webhook-gateway-deploy.nix { };
+      webhookGatewaySinkDeploy =
+        pkgs.callPackage ../pkgs/external-workers/webhook-gateway-sink-deploy.nix
+          { };
     in
     {
       packages = {
@@ -870,6 +883,11 @@ let
           queueTransportAlertDeploy
           messageBridge
           messageBridgeDeploy
+          d1Gateway
+          d1GatewayDeploy
+          agentInboxDeploy
+          webhookGatewayDeploy
+          webhookGatewaySinkDeploy
           ;
         mcpx-docs = mcpxDocs;
         fleet-docs = fleetDocs;
@@ -958,6 +976,10 @@ let
         cf-container-hello-deploy = mkApp cfContainerHelloDeploy "Deploy the cf-container-hello Worker from its flake package (needs Bitwarden and sops access)";
         queue-transport-alert-deploy = mkApp queueTransportAlertDeploy "Deploy the queue-transport-alert Worker (broker outage alert, code#6369) from its flake package via the cf versions flow (needs Bitwarden and sops access)";
         message-bridge-deploy = mkApp messageBridgeDeploy "Deploy the message-bridge Worker (Claude custom connector that sends and receives messages, plus history page) through the cf versions flow (tagged version, then deployment) and set its access token; --code-only uploads code with Cloudflare env vars (CI), --deploy-version <id> rolls back, --print-urls prints the connector URL (needs Bitwarden and sops access)";
+        d1-gateway-deploy = mkApp d1GatewayDeploy "Deploy the d1-gateway Worker (Turso-protocol endpoint over D1) through the wrangler versions flow; --deploy-version <id> rolls back (needs CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID)";
+        agent-inbox-deploy = mkApp agentInboxDeploy "Deploy the agent-inbox Worker from the pinned dezren39/hatch-personal source (needs hatch-personal read access plus Bitwarden and sops access)";
+        webhook-gateway-deploy = mkApp webhookGatewayDeploy "Deploy the webhook-gateway Worker from the pinned dezren39/hatch-personal source — deploy the sink first on a fresh account (needs hatch-personal read access plus Bitwarden and sops access)";
+        webhook-gateway-sink-deploy = mkApp webhookGatewaySinkDeploy "Deploy the webhook-gateway-sink Worker from the pinned dezren39/hatch-personal source (needs hatch-personal read access plus Bitwarden and sops access)";
         mcpx = {
           type = "app";
           program = "${mcpx}/bin/mcpx";
@@ -1423,6 +1445,7 @@ let
         "laptop-backups-watchdog"
         "laptop-state-backup"
         "laptop-repo-keeper"
+        "stable-entrypoints"
         "laptop-untracked-review"
         "openclaw-backup"
         "oc-password-sync"
@@ -1699,6 +1722,9 @@ let
               grep -q "cf-container-hello" list.txt
               grep -q "queue-transport-alert" list.txt
               grep -q "message-bridge" list.txt
+              grep -q "agent-inbox" list.txt
+              grep -q "webhook-gateway" list.txt
+              grep -q "webhook-gateway-sink" list.txt
               grep -q "secrets-broker" list.txt
               grep -q "pm-aggregator" list.txt
               grep -q "pm-projector" list.txt

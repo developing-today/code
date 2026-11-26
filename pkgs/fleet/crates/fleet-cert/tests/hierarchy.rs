@@ -5,7 +5,9 @@
 //! - the spec's own inventory arithmetic (§§3.2, 24.2),
 //! - the crate's chain validator (aws-lc-rs signature checks),
 //! - the system `openssl` binary as a fully independent validator
-//!   (skipped only when openssl is absent from the test host),
+//!   (skipped only when openssl is absent from the test host; the
+//!   ML-DSA leg additionally skips, loudly, when the host openssl
+//!   predates ML-DSA support),
 //! - the manifest checksum index (§7.1).
 
 use fleet_cert::algorithm::AlgorithmId;
@@ -103,6 +105,8 @@ fn leaf_request(
         name: name.into(),
         common_name: None,
         dns_names: vec!["www.example.test".into()],
+        ip_addresses: vec![],
+        csr: None,
         key_algorithm,
         issuer_algorithm,
         issuer_partition: None,
@@ -370,10 +374,25 @@ fn cross_signed_path_survives_primary_root_removal() {
     );
 }
 
+/// Whether the host `openssl` can verify ML-DSA signatures.
+/// ML-DSA support landed in OpenSSL 3.5; older builds (e.g. the
+/// fleet-command executor image) list no ML-DSA signature
+/// algorithms. Probe the algorithm list rather than parsing a
+/// version string, so provider configuration is taken into account.
+fn openssl_supports_ml_dsa() -> bool {
+    std::process::Command::new("openssl")
+        .args(["list", "-signature-algorithms"])
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).contains("ML-DSA"))
+        .unwrap_or(false)
+}
+
 #[test]
 fn openssl_independent_validation() {
     // Oracle: the system openssl binary — a fully independent
-    // implementation (§11.2). Skipped only when openssl is absent.
+    // implementation (§11.2). Skipped only when openssl is absent;
+    // the ML-DSA leg below additionally skips when the host openssl
+    // predates ML-DSA support (#15136).
     if std::process::Command::new("openssl")
         .arg("version")
         .output()
@@ -425,24 +444,33 @@ fn openssl_independent_validation() {
         &leaf_dir.join("leaf.crt.pem"),
     ));
     // ML-DSA leaf against roots-pq via the ML-DSA primary issuer.
-    let pq_dir = tmp.path().join("leaf-pq");
-    engine::issue_leaf(
-        &leaf_request(
-            &issuer_dir,
-            "server",
-            "ossl-pq",
-            Some(AlgorithmId::MlDsa44),
-            Some(AlgorithmId::MlDsa44),
-            CalendarDuration::years(3),
-        ),
-        &pq_dir,
-    )
-    .unwrap();
-    assert!(verify(
-        &root_dir.join("public/bundles/roots-pq.pem"),
-        &issuer_dir.join("public/certs/ml-dsa-44/a/signed-by-ml-dsa-44.crt.pem"),
-        &pq_dir.join("leaf.crt.pem"),
-    ));
+    // This leg needs an openssl that can verify ML-DSA (3.5+);
+    // where the host openssl predates it, skip the leg loudly
+    // instead of failing on an environment limit (#15136).
+    if openssl_supports_ml_dsa() {
+        let pq_dir = tmp.path().join("leaf-pq");
+        engine::issue_leaf(
+            &leaf_request(
+                &issuer_dir,
+                "server",
+                "ossl-pq",
+                Some(AlgorithmId::MlDsa44),
+                Some(AlgorithmId::MlDsa44),
+                CalendarDuration::years(3),
+            ),
+            &pq_dir,
+        )
+        .unwrap();
+        assert!(verify(
+            &root_dir.join("public/bundles/roots-pq.pem"),
+            &issuer_dir.join("public/certs/ml-dsa-44/a/signed-by-ml-dsa-44.crt.pem"),
+            &pq_dir.join("leaf.crt.pem"),
+        ));
+    } else {
+        eprintln!(
+            "openssl lacks ML-DSA support (pre-3.5); skipping the ML-DSA leg of independent validation"
+        );
+    }
     // Cross path: the P-256 issuer variant signed by the Ed25519
     // root, anchored on the Ed25519 root alone.
     let ed_root_pem = root_dir.join("public/roots/ed25519/root.crt.pem");

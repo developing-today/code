@@ -14,6 +14,9 @@
 //!                          flight, refresh_progress is {started_unix,
 //!                          fetched, total}; it is null when idle (#13081).
 //!   GET /secrets       -> {names: [...]}
+//!   GET /secrets?prefix=P -> {names: [...]} holding only names that
+//!                          start with `P.` (#10358 D6); an empty
+//!                          `prefix=` is refused (400)
 //!   GET /secret/<name> -> {key, value, fetched_at_unix, age_seconds,
 //!                          source} | 404 | 503 (not loaded yet)
 //!
@@ -71,7 +74,7 @@ use std::sync::{Arc, Condvar, Mutex, RwLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde_json::{Value, json};
-use tiny_http::{Header, Response, Server, StatusCode};
+use std::net::TcpListener;
 
 /// One cached secret: its value plus when the broker last fetched
 /// it from Bitwarden (#6767). The age is what lets a consumer (or a
@@ -738,13 +741,6 @@ fn fetch_through_with(
     result
 }
 
-fn json_response(status: u16, body: Value) -> Response<std::io::Cursor<Vec<u8>>> {
-    let data = serde_json::to_vec(&body).unwrap_or_else(|_| b"{}".to_vec());
-    Response::from_data(data)
-        .with_status_code(StatusCode(status))
-        .with_header(Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..]).unwrap())
-}
-
 fn token_matches(provided: Option<&str>, expected: &str) -> bool {
     // #6320 defence in depth: an empty expected token never authenticates,
     // not even against an empty X-Agent-Token header.
@@ -833,7 +829,22 @@ fn handle_request(
     } else if !token_matches(provided_token, token) {
         (401, json!({"error": "unauthorized"}))
     } else if method == "GET" && path == "/secrets" {
-        let mut names: Vec<String> = state.secrets.read().unwrap().keys().cloned().collect();
+        // #10358 D6: a scoped caller sends `?prefix=P` and is answered
+        // only the cached names under `P.`, so unscoped names never
+        // cross the socket to it. The cache itself is unchanged.
+        let lead = match secrets_list_prefix(url) {
+            Ok(None) => None,
+            Ok(Some(prefix)) => Some(format!("{prefix}.")),
+            Err(message) => return (400, json!({"error": message})),
+        };
+        let mut names: Vec<String> = state
+            .secrets
+            .read()
+            .unwrap()
+            .keys()
+            .filter(|name| lead.as_deref().is_none_or(|l| name.starts_with(l)))
+            .cloned()
+            .collect();
         names.sort();
         (200, json!({"names": names}))
     } else if method == "POST" && path == "/refresh" {
@@ -946,7 +957,6 @@ pub fn parse_ttl_s(raw: Option<&str>) -> Result<TtlParse, String> {
 }
 
 pub fn run() -> i32 {
-    use std::io::Read as _;
     // Stage-2 broker resilience: on the sandbox the broker is a
     // local capability, never a LAN surface — force loopback
     // regardless of the environment, so a stale or widened
@@ -1026,7 +1036,7 @@ pub fn run() -> i32 {
         });
     }
 
-    let server = match Server::http(&bind) {
+    let server = match TcpListener::bind(&bind) {
         Ok(server) => server,
         Err(e) => {
             crate::log::info("secrets-broker", &format!("cannot bind {bind}: {e:?}"));
@@ -1080,6 +1090,7 @@ pub fn run() -> i32 {
                             &req.target,
                             req.header("X-Agent-Token"),
                         );
+                        crate::uds_http::log_ctx_trip("secrets-broker", req, status);
                         (
                             status,
                             serde_json::to_vec(&value).unwrap_or_else(|_| b"{}".to_vec()),
@@ -1101,60 +1112,61 @@ pub fn run() -> i32 {
         ),
     }
 
-    for mut req in server.incoming_requests() {
-        let state = Arc::clone(&state);
-        let token = token.clone();
-        std::thread::spawn(move || {
-            let url = req.url().to_string();
-            let provided = req
-                .headers()
-                .iter()
-                .find(|h| h.field.as_str().to_ascii_lowercase() == "x-agent-token")
-                .map(|h| h.value.as_str().to_string());
-            // #6515: authenticate and size-check from the headers
-            // before draining any body byte (tiny_http 0.12 exposes
-            // no per-connection read timeout; see queue_broker).
-            let content_length = req
-                .headers()
-                .iter()
-                .find(|h| h.field.as_str().to_ascii_lowercase() == "content-length")
-                .and_then(|h| h.value.as_str().parse::<u64>().ok());
-            if let Some((status, value)) = pre_body_refusal(
-                req.method().as_str(),
-                &url,
-                provided.as_deref(),
-                &token,
-                content_length,
-            ) {
-                let _ = req.respond(json_response(status, value));
-                return;
-            }
-            if req.method().as_str() == "POST" {
-                // POST /refresh's body is ignored by the handler;
-                // drain it (capped, #6515) as the pre-#6216 loop did.
-                let cap = (crate::uds_http::MAX_BODY_BYTES + 1) as u64;
-                let mut buf = Vec::new();
-                let _ = req.as_reader().take(cap).read_to_end(&mut buf);
-                if buf.len() > crate::uds_http::MAX_BODY_BYTES {
-                    let _ = req.respond(json_response(
-                        413,
-                        json!({"error": "request body too large"}),
-                    ));
-                    return;
-                }
-            }
+    let pre_token = token.clone();
+    crate::tcp_http::serve(
+        server,
+        move |head| {
+            pre_body_refusal(
+                &head.method,
+                &head.target,
+                head.header("X-Agent-Token"),
+                &pre_token,
+                head.header("Content-Length")
+                    .and_then(|v| v.parse::<u64>().ok()),
+            )
+            .map(|(status, value)| {
+                (
+                    status,
+                    serde_json::to_vec(&value).unwrap_or_else(|_| b"{}".to_vec()),
+                )
+            })
+        },
+        move |req| {
             let (status, value) = handle_request(
                 &state,
                 &token,
-                req.method().as_str(),
-                &url,
-                provided.as_deref(),
+                &req.method,
+                &req.target,
+                req.header("X-Agent-Token"),
             );
-            let _ = req.respond(json_response(status, value));
-        });
-    }
-    // incoming_requests() ends only when the server stops.
+            crate::uds_http::log_ctx_trip("secrets-broker", req, status);
+            (
+                status,
+                serde_json::to_vec(&value).unwrap_or_else(|_| b"{}".to_vec()),
+            )
+        },
+    );
     0
+}
+
+/// The `prefix` query parameter of a `GET /secrets` target (#10358
+/// D6): `Ok(None)` when absent, `Err` when present but empty. Only
+/// `%XX` decodes, as in a path segment.
+fn secrets_list_prefix(url: &str) -> Result<Option<String>, &'static str> {
+    let Some((_, query)) = url.split_once('?') else {
+        return Ok(None);
+    };
+    for pair in query.split('&') {
+        let (key, value) = pair.split_once('=').unwrap_or((pair, ""));
+        if key == "prefix" {
+            let prefix = url_decode(value);
+            if prefix.is_empty() {
+                return Err("empty prefix");
+            }
+            return Ok(Some(prefix));
+        }
+    }
+    Ok(None)
 }
 
 fn url_decode(s: &str) -> String {
@@ -1187,8 +1199,9 @@ mod tests {
         entry_revision_unix, fetch_through_with, handle_request, install_list_refresh,
         load_watermark, note_refresh_fetch, now_unix, parse_delta_entries, parse_list_entries,
         parse_rfc3339_unix, parse_ttl_s, persist_watermark, pre_body_refusal, resolve_list_id,
-        url_decode,
+        secrets_list_prefix, url_decode,
     };
+    use serde_json::json;
     use std::time::Duration;
 
     #[test]
@@ -1305,6 +1318,61 @@ mod tests {
         assert_eq!(body["fetched_at_unix"], 7);
         let (status, _) = handle_request(&state, "tok", "GET", "/secret/beta", Some("tok"));
         assert_eq!(status, 200);
+    }
+
+    #[test]
+    fn secrets_list_answers_a_prefix_with_only_its_names() {
+        // #10358 S2 (D6): scoped list, refused empty prefix, unscoped
+        // list unchanged.
+        let state = empty_state();
+        install_list_refresh(
+            &state,
+            &[
+                ("1".to_string(), "alpha".to_string(), "v".to_string()),
+                ("2".to_string(), "42.alpha".to_string(), "v".to_string()),
+                ("3".to_string(), "42.42.x".to_string(), "v".to_string()),
+                ("4".to_string(), "420.y".to_string(), "v".to_string()),
+                ("5".to_string(), "43.z".to_string(), "v".to_string()),
+            ],
+            7,
+        );
+        let (status, body) =
+            handle_request(&state, "tok", "GET", "/secrets?prefix=42", Some("tok"));
+        assert_eq!(status, 200);
+        assert_eq!(body["names"], json!(["42.42.x", "42.alpha"]));
+        let (status, body) = handle_request(&state, "tok", "GET", "/secrets?prefix=", Some("tok"));
+        assert_eq!(status, 400);
+        assert_eq!(body["error"], "empty prefix");
+        let (status, body) = handle_request(&state, "tok", "GET", "/secrets", Some("tok"));
+        assert_eq!(status, 200);
+        assert_eq!(
+            body["names"],
+            json!(["42.42.x", "42.alpha", "420.y", "43.z", "alpha"])
+        );
+        // A dotted prefix matches as a whole, and the token still gates
+        // the scoped form.
+        let (status, body) =
+            handle_request(&state, "tok", "GET", "/secrets?prefix=42.42", Some("tok"));
+        assert_eq!(status, 200);
+        assert_eq!(body["names"], json!(["42.42.x"]));
+        let (status, _) = handle_request(&state, "tok", "GET", "/secrets?prefix=42", None);
+        assert_eq!(status, 401);
+    }
+
+    #[test]
+    fn secrets_list_prefix_parses_the_query() {
+        assert_eq!(secrets_list_prefix("/secrets"), Ok(None));
+        assert_eq!(secrets_list_prefix("/secrets?x=1"), Ok(None));
+        assert_eq!(
+            secrets_list_prefix("/secrets?prefix=42"),
+            Ok(Some("42".to_string()))
+        );
+        assert_eq!(
+            secrets_list_prefix("/secrets?x=1&prefix=a%26b"),
+            Ok(Some("a&b".to_string()))
+        );
+        assert_eq!(secrets_list_prefix("/secrets?prefix="), Err("empty prefix"));
+        assert_eq!(secrets_list_prefix("/secrets?prefix"), Err("empty prefix"));
     }
 
     #[test]
