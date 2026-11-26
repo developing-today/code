@@ -291,7 +291,7 @@ mod tests {
         assert_eq!(chunks[0], "a".repeat(1_800));
         assert_eq!(chunks[1], "b".repeat(1_700));
         assert_eq!(
-            chunk_session_text("🙂".repeat(SESSION_CHUNK_CHARS)).len(),
+            chunk_session_text(&"🙂".repeat(SESSION_CHUNK_CHARS)).len(),
             1
         );
     }
