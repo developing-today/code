@@ -339,6 +339,36 @@ test("manifest: created at generation 1, validated, advanced, and checked agains
   assert.equal(stale?.kind === "unavailable" && stale.generation, 1);
 });
 
+test("manifest: D1 placement preserves the tenant database id", () => {
+  const base = createManifest({
+    unit: A,
+    backend: "d1",
+    recordedAt: "2026-11-26T00:00:00.000Z",
+  });
+  const checked = validateManifest({ ...base, database_id: "d1-tenant-a" }, A);
+  assert.equal(checked.ok, true);
+  if (checked.ok) {
+    assert.equal(
+      (checked.value as unknown as { database_id?: string }).database_id,
+      "d1-tenant-a",
+    );
+  }
+});
+
+test("manifest: D1 placement without a database id fails closed", () => {
+  const base = createManifest({
+    unit: A,
+    backend: "d1",
+    recordedAt: "2026-11-26T00:00:00.000Z",
+  });
+  const checked = validateManifest({ ...base, database_id: undefined }, A);
+  assert.equal(checked.ok, false);
+  assert.equal(
+    !checked.ok && checked.refusal.kind === "unavailable" && checked.refusal.reason,
+    "placement_unknown",
+  );
+});
+
 test("manifest: missing, malformed or conflicting placement fails closed as placement_unknown", () => {
   // #5867 §2.4: "Missing, invalidly signed, conflicting, or too-stale
   // placement data fails closed with a typed unavailable/placement-
