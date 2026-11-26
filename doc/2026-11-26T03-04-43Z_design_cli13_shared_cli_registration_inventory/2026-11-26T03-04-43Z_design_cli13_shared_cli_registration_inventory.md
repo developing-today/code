@@ -205,12 +205,17 @@ fleet work note search <query> [--work <work-ref>]
 
 Rules behind the table:
 
-1. **One work-ref form.** A work reference is `<authority>:<work_id>`,
-   for example `fleet:842`. This matches DEP-03's `fleet:761`.
-   CLI-12's record writes `<authority>/<work_id>`; since none of
-   CLI-12's code exists, its implementation uses `:` instead, and
-   the `/` form is not accepted. `o/r#n` stays the GitHub issue and
-   PR form, so `/` never means two things.
+1. **Work refs are DEP-02's target refs.** The `<work-ref>` and
+   `<ref>` arguments take exactly the forms DEP-02's record defines,
+   matching `WorkRef::qualified_uri` in `work/contracts.rs`: the
+   qualified `fleet://<authority_id>/work/<work_id>`, and the
+   shorthands `fleet://work/<work_id>` and `fleet:<work_id>` (as in
+   DEP-03's `fleet:761`), which are accepted only when the
+   authenticated authority context is unambiguous. CLI-12's record
+   writes `<authority>/<work_id>`; none of CLI-12's code exists, so
+   its implementation takes these forms instead, and the bare `/`
+   pair is not accepted. `o/r#n` stays the GitHub issue and PR form,
+   so `/` never means two things.
 2. **No bare numbers.** CLI-02 rejects a bare numeric target. The
    charter's example `fleet dependency add 842 --blocked-by fleet:761
    --hard` is therefore registered as `fleet dependency add fleet:842
@@ -346,7 +351,7 @@ broker verb, queue row or history is touched by registration.
 | C-R087                         | Slash spellings stay CLI-02's; this record registers argv only and adds no slash parser.                                                              |
 | C-R149–C-R153, C-R156, H-R016  | Scenario B's `dependency add … --blocked-by … --hard` and `work unblock` spellings are fixed (D5); scenarios run against the composed seam, not here. |
 | H-R017, H-R024, H-R031         | Every existing command and option is kept and goldened; new ones are added rows, never renames (D6, D7, §6).                                          |
-| P-R005                         | One work-ref form with an authority; never a bare number (D5 rules 1–2).                                                                              |
+| P-R005                         | Work refs carry an authority or a shorthand bound to one; never a bare number (D5 rules 1–2).                                                         |
 | P-R009, P-R012, P-R024, P-R028 | The dependency, note and link families are registered under their census keys, with semantics left to DEP, JRN and CLI-12 (D5).                       |
 
 ## 9. Gates
