@@ -13,7 +13,7 @@
     },
     {
       "name": "browser",
-      "session": null,
+      "session": "sessions/browser.jsonl",
       "statement": {
         "presents": ["compiled", "error", "event", "records", "snapshot", "view"],
         "providers": [],

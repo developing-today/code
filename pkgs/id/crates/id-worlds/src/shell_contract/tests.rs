@@ -874,7 +874,7 @@ fn the_shipped_suite_passes_on_its_recorded_sessions() {
         .filter(|verdict| verdict.recorded)
         .map(|verdict| verdict.name.as_str())
         .collect();
-    assert_eq!(recorded, BTreeSet::from(["native", "terminal"]));
+    assert_eq!(recorded, BTreeSet::from(["browser", "native", "terminal"]));
 }
 
 #[test]
