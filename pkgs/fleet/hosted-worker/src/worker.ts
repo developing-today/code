@@ -21,21 +21,22 @@ import { ingestionDepsFrom, runIngestionSweep } from "./ingestion.ts";
 import { LibSQLQueueStore, type SyncSqlDb } from "./libsql-queue-store.ts";
 import { openHranaQueueStore } from "./libsql-hrana-queue-store.ts";
 import { openD1QueueStore } from "./d1-queue-store.ts";
+import { openD1SessionRegistry } from "./d1-session-registry.ts";
 import { r2KvBlobBucket } from "./kv-blobs.ts";
 import { HttpKvPrimary, type KvPrimary } from "./kv-door.ts";
 import { FixtureQueueStore, type QueueStore } from "./queue-store.ts";
 import { StoreQueueRecordSource } from "./queue-records.ts";
 import { dispatch } from "./router.ts";
-import { FixtureSessionRegistry } from "./sessions.ts";
+import { FixtureSessionRegistry, type SessionRegistry } from "./sessions.ts";
 import { FixtureMetadataStore } from "./stamping.ts";
 
-// Session registry seam (#12584): the record's production home is
-// the fleet metadata DB's session table (#9074's DB, design §4.2),
-// behind the SessionRegistry interface in src/sessions.ts. Until that
-// DB lands, the Worker holds one fixture instance at module scope —
-// its state lives for the isolate's lifetime, which is the local /
-// dev semantics this slice targets; a DB-backed registry replaces
-// it here without touching a route.
+// Session registry seam (#12584), behind the SessionRegistry
+// interface in src/sessions.ts. With the QUEUE_D1 binding present,
+// buildDeps resolves D1SessionRegistry (src/d1-session-registry.ts):
+// the fleet_sessions table in that bound database, so records
+// outlive the isolate. Without it, the Worker holds this one fixture
+// instance at module scope — its state lives for the isolate's
+// lifetime, the local / dev semantics.
 const sessions = new FixtureSessionRegistry();
 
 // Metadata store seam (#12585): same fixture posture as the session
@@ -110,8 +111,14 @@ export function buildDeps(env: HostedEnv, opener?: QueueSqlOpener): AuthDeps {
   // operator's explicit Cloudflare-first choice, and no deployment
   // binds it yet, so existing shapes are unchanged until one does.
   const resolvedQueueStore = env.QUEUE_D1 ? openD1QueueStore(env.QUEUE_D1) : queueStoreFor(config, opener);
+  // Session registry selection (#12584): the same bound D1
+  // database holds the fleet_sessions table; absent the binding,
+  // the module fixture stands in.
+  const resolvedSessions: SessionRegistry = env.QUEUE_D1 ? openD1SessionRegistry(env.QUEUE_D1) : sessions;
   const resolvedQueueRecords =
-    resolvedQueueStore === queueStore ? queueRecords : new StoreQueueRecordSource(resolvedQueueStore, sessions);
+    resolvedQueueStore === queueStore && resolvedSessions === sessions
+      ? queueRecords
+      : new StoreQueueRecordSource(resolvedQueueStore, resolvedSessions);
   // The hosted rotation point (#12585): with fleet App material
   // configured, GitHub writes go through the App installation-token
   // rotation; without it, the fixture writer stands in (local/dev
@@ -133,7 +140,7 @@ export function buildDeps(env: HostedEnv, opener?: QueueSqlOpener): AuthDeps {
   const kvPrimary = kvPrimaryFor(config);
   return {
     config,
-    sessions,
+    sessions: resolvedSessions,
     metadataStore,
     githubWriter,
     githubItems: githubWriter,

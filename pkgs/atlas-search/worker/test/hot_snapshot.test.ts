@@ -9,8 +9,11 @@ import { HOT_WINDOW, hotSnapshotDraft, hotSnapshotObjectId, recordHotSnapshot } 
 import { RecommendationAccumulator } from "../src/recommendation_do";
 import { createSnapshot, type ParentEnvelope } from "../src/recommendation_state";
 import { DEFAULT_CLASSES, RetainedObjectStore } from "../src/retained_object";
-import schemaSql from "../migrations/0003_retained_objects.sql?raw";
+import baseSql from "../migrations/0003_retained_objects.sql?raw";
 import retirementSql from "../migrations/0004_retained_objects_retirement.sql?raw";
+import modesSql from "../migrations/0005_retention_modes_and_reports.sql?raw";
+
+const schemaSql = [baseSql, retirementSql, modesSql].join(";\n");
 
 const db = (env as unknown as { HOT_CACHE: D1Database }).HOT_CACHE;
 const store = new RetainedObjectStore(db);
@@ -32,7 +35,6 @@ async function apply(sql: string): Promise<void> {
 
 beforeAll(async () => {
   await apply(schemaSql);
-  await apply(retirementSql);
 });
 
 beforeEach(async () => {
@@ -61,12 +63,10 @@ function parent(round: number): ParentEnvelope {
   };
 }
 
-async function enable(windowMs = DEFAULT_CLASSES["hot-short"].windowMs): Promise<void> {
-  await store.setClass({
-    ...DEFAULT_CLASSES["hot-short"],
-    windowMs,
-    enabled: true,
-  });
+async function enable(windowMs = DEFAULT_CLASSES["hot-short"].windowMs, mode = "live-cold"): Promise<void> {
+  await store.setClass({ ...DEFAULT_CLASSES["hot-short"], windowMs, enabled: true });
+  // Promotion itself is covered in retention_report.test.ts.
+  await db.prepare("UPDATE atlas_retention_classes SET mode = ? WHERE class = 'hot-short'").bind(mode).run();
 }
 
 async function capture(round: number, at: number) {
@@ -166,6 +166,14 @@ describe("hot snapshots", () => {
     expect((await store.history(OBJECT)).map((v) => v.version)).toEqual([1, 2, 3]);
     // A later pass retires nothing twice.
     expect(await new RetainedObjectStore(db, () => T0 + 27 * HOUR).retireExpired(OBJECT)).toEqual([]);
+  });
+
+  it("retires nothing while the class is still in dry-run", async () => {
+    await enable(DEFAULT_CLASSES["hot-short"].windowMs, "dry-run");
+    await capture(1, T0);
+    await capture(2, T0 + 25 * HOUR);
+    expect(await capture(3, T0 + 26 * HOUR)).toEqual({ recorded: true, version: 3, retired: [] });
+    expect(await store.retired(OBJECT)).toEqual([]);
   });
 
   it("keeps everything inside the window, however many there are", async () => {
