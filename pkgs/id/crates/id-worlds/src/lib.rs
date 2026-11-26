@@ -75,6 +75,7 @@ pub mod host;
 pub mod host_control;
 pub mod input_framing;
 pub mod kitty_graphics;
+pub mod kitty_still;
 pub mod program_bundle;
 pub mod program_gallery;
 pub mod program_gallery_admission;
