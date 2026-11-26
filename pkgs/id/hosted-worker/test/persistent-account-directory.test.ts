@@ -148,13 +148,9 @@ test("a signup racing a legacy inventory leaves the subject in one table", async
         accountDirectory.signup({ subjectKey: "subject-both", bindingId: BINDING, jurisdiction: "us" });
       const inventory = () =>
         accountDirectory.inventoryLegacy({ subjectKey: "subject-both", bindingId: OTHER_BINDING });
-      const results = await Promise.allSettled(
-        signupFirst ? [signup(), inventory()] : [inventory(), signup()],
-      );
+      const results = await Promise.allSettled(signupFirst ? [signup(), inventory()] : [inventory(), signup()]);
       const fulfilled = results.filter((result) => result.status === "fulfilled");
-      const rejected = results.filter(
-        (result): result is PromiseRejectedResult => result.status === "rejected",
-      );
+      const rejected = results.filter((result): result is PromiseRejectedResult => result.status === "rejected");
       assert.equal(fulfilled.length, 1);
       assert.equal(rejected.length, 1);
       assert.ok(rejected[0].reason instanceof FailClosed);
