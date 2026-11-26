@@ -288,7 +288,10 @@ fn fleet_ca_names(bundles: &[Bundle]) -> BTreeSet<String> {
 
 /// Refuse a CAA issuer value that names the private Fleet CA or is
 /// not a public issuer domain (contract §1).
-fn check_caa_issuer(value: &str, fleet_names: &BTreeSet<String>) -> std::result::Result<(), String> {
+fn check_caa_issuer(
+    value: &str,
+    fleet_names: &BTreeSet<String>,
+) -> std::result::Result<(), String> {
     let v = value.trim().to_ascii_lowercase();
     if fleet_names.contains(&v) {
         return Err(format!(
@@ -381,9 +384,8 @@ pub fn bundle_candidates(bundle: &Bundle) -> Result<Vec<Candidate>> {
     let mut out = Vec::new();
     for rec in &bundle.manifest.certificates {
         let pem = read_artifact(bundle, &rec.cert_path)?;
-        let text = String::from_utf8(pem).map_err(|e| {
-            CertError::manifest(format!("{} is not UTF-8 PEM: {e}", rec.cert_path))
-        })?;
+        let text = String::from_utf8(pem)
+            .map_err(|e| CertError::manifest(format!("{} is not UTF-8 PEM: {e}", rec.cert_path)))?;
         let blocks = pem_decode_all(&text)?;
         let der = blocks
             .into_iter()
@@ -543,7 +545,10 @@ fn tlsa_record(
                 .values()
                 .map(|cs| {
                     let c = &cs[0];
-                    format!("{} {} partition {} ({})", c.role, c.algorithm, c.partition, c.fingerprint_sha256)
+                    format!(
+                        "{} {} partition {} ({})",
+                        c.role, c.algorithm, c.partition, c.fingerprint_sha256
+                    )
                 })
                 .collect();
             return Err(CertError::validation(format!(
@@ -554,10 +559,9 @@ fn tlsa_record(
         }
     };
     let c = &chosen[0];
-    let endpoint = policy
-        .endpoint
-        .clone()
-        .unwrap_or_else(|| "unstated: the operator must confirm this host terminates TLS itself".into());
+    let endpoint = policy.endpoint.clone().unwrap_or_else(|| {
+        "unstated: the operator must confirm this host terminates TLS itself".into()
+    });
     let pin = match policy.usage {
         3 => "DANE-EE",
         _ => "DANE-TA",
@@ -674,7 +678,14 @@ pub fn plan(req: &DnsPlanRequest) -> Result<ChangeSet> {
         Some(p) => read_policy(p)?,
         None => DnsPolicy::default(),
     };
-    plan_with(&zone, ttl, &bundles, &policy, req.current.as_deref(), Rfc3339::now())
+    plan_with(
+        &zone,
+        ttl,
+        &bundles,
+        &policy,
+        req.current.as_deref(),
+        Rfc3339::now(),
+    )
 }
 
 /// The planner over already-loaded inputs (deterministic but for
@@ -742,12 +753,18 @@ pub fn plan_with(
         }
     }
     records.sort_by(|a, b| {
-        (a.name.as_str(), a.record_type.as_str(), a.value.as_str(), a.action.as_str()).cmp(&(
-            b.name.as_str(),
-            b.record_type.as_str(),
-            b.value.as_str(),
-            b.action.as_str(),
-        ))
+        (
+            a.name.as_str(),
+            a.record_type.as_str(),
+            a.value.as_str(),
+            a.action.as_str(),
+        )
+            .cmp(&(
+                b.name.as_str(),
+                b.record_type.as_str(),
+                b.value.as_str(),
+                b.action.as_str(),
+            ))
     });
 
     let mut prerequisites = vec![FLEET_CA_CAA_NOTE.to_string()];
@@ -801,7 +818,10 @@ pub fn render_yaml(cs: &ChangeSet) -> String {
     let mut out = String::new();
     out.push_str(&format!("schema: {}\n", cs.schema));
     out.push_str(&format!("zone: {}\n", cs.zone));
-    out.push_str(&format!("generated_at: {}\n", yaml_quote(&cs.generated_at.to_string())));
+    out.push_str(&format!(
+        "generated_at: {}\n",
+        yaml_quote(&cs.generated_at.to_string())
+    ));
     if cs.source_bundles.is_empty() {
         out.push_str("source_bundles: []\n");
     } else {
@@ -914,12 +934,20 @@ fn parse_tlsa(value: &str) -> std::result::Result<(u8, u8, u8, String), String> 
     if parts.len() < 4 {
         return Err("TLSA rdata needs usage, selector, matching type and data".into());
     }
-    let num = |s: &str, what: &str| s.parse::<u8>().map_err(|_| format!("TLSA {what} '{s}' is not a number"));
+    let num = |s: &str, what: &str| {
+        s.parse::<u8>()
+            .map_err(|_| format!("TLSA {what} '{s}' is not a number"))
+    };
     let data = parts[3..].concat().to_ascii_lowercase();
     if data.is_empty() || !data.chars().all(|c| c.is_ascii_hexdigit()) || data.len() % 2 != 0 {
         return Err("TLSA association data is not even-length hex".into());
     }
-    Ok((num(parts[0], "usage")?, num(parts[1], "selector")?, num(parts[2], "matching type")?, data))
+    Ok((
+        num(parts[0], "usage")?,
+        num(parts[1], "selector")?,
+        num(parts[2], "matching type")?,
+        data,
+    ))
 }
 
 /// Verify a change-set offline against the bundles (contract §2).
@@ -959,14 +987,20 @@ pub fn verify(cs: &ChangeSet, label: &str, bundle_dirs: &[PathBuf]) -> Result<Dn
         }
         if !is_hostname(&r.name.to_ascii_lowercase(), true) {
             problems.push("owner name is not well-formed".into());
-        } else if !(fq.eq_ignore_ascii_case(&zone) || fq.to_ascii_lowercase().ends_with(&format!(".{zone}"))) {
+        } else if !(fq.eq_ignore_ascii_case(&zone)
+            || fq.to_ascii_lowercase().ends_with(&format!(".{zone}")))
+        {
             problems.push(format!("owner name is outside zone {zone}"));
         }
         if r.ttl == 0 || r.ttl > MAX_TTL {
             problems.push(format!("ttl {} outside 1..={MAX_TTL}", r.ttl));
         }
         if !ACTIONS.contains(&r.action.as_str()) {
-            problems.push(format!("action '{}' is not one of {}", r.action, ACTIONS.join("|")));
+            problems.push(format!(
+                "action '{}' is not one of {}",
+                r.action,
+                ACTIONS.join("|")
+            ));
         }
         match r.record_type.as_str() {
             "CAA" => match parse_caa(&r.value) {
@@ -980,7 +1014,9 @@ pub fn verify(cs: &ChangeSet, label: &str, bundle_dirs: &[PathBuf]) -> Result<Dn
                             let issuer = val.split(';').next().unwrap_or("").trim();
                             let issuer = if issuer.is_empty() { ";" } else { issuer };
                             match check_caa_issuer(issuer, &fleet_names) {
-                                Ok(()) => details.push(format!("{tag} names public issuer {issuer}")),
+                                Ok(()) => {
+                                    details.push(format!("{tag} names public issuer {issuer}"))
+                                }
                                 Err(e) => problems.push(e),
                             }
                         }
@@ -989,7 +1025,9 @@ pub fn verify(cs: &ChangeSet, label: &str, bundle_dirs: &[PathBuf]) -> Result<Dn
                                 problems.push("CAA iodef is not mailto: or https://".into());
                             }
                         }
-                        other => problems.push(format!("CAA tag '{other}' is not issue, issuewild or iodef")),
+                        other => problems.push(format!(
+                            "CAA tag '{other}' is not issue, issuewild or iodef"
+                        )),
                     }
                 }
             },
@@ -997,13 +1035,16 @@ pub fn verify(cs: &ChangeSet, label: &str, bundle_dirs: &[PathBuf]) -> Result<Dn
                 any_tlsa = true;
                 let labels: Vec<&str> = r.name.split('.').collect();
                 let owner_ok = labels.len() >= 3
-                    && labels[0].strip_prefix('_').is_some_and(|p| p.parse::<u16>().is_ok_and(|n| n > 0))
+                    && labels[0]
+                        .strip_prefix('_')
+                        .is_some_and(|p| p.parse::<u16>().is_ok_and(|n| n > 0))
                     && matches!(labels[1], "_tcp" | "_udp" | "_sctp");
                 if !owner_ok {
                     problems.push("TLSA owner is not _<port>._<proto>.<host> (RFC 6698 §3)".into());
                 }
                 if !r.requires.iter().any(|g| g == "dnssec") {
-                    problems.push("TLSA record is not marked requires: [dnssec] (contract §4)".into());
+                    problems
+                        .push("TLSA record is not marked requires: [dnssec] (contract §4)".into());
                 }
                 match parse_tlsa(&r.value) {
                     Err(e) => problems.push(e),
@@ -1011,7 +1052,10 @@ pub fn verify(cs: &ChangeSet, label: &str, bundle_dirs: &[PathBuf]) -> Result<Dn
                         Err(e) => problems.push(e.to_string()),
                         Ok(roles) => {
                             if candidates.is_empty() {
-                                problems.push("no --bundle given: the association cannot be recomputed".into());
+                                problems.push(
+                                    "no --bundle given: the association cannot be recomputed"
+                                        .into(),
+                                );
                             } else {
                                 let mut hit = None;
                                 for c in &candidates {
@@ -1047,14 +1091,20 @@ pub fn verify(cs: &ChangeSet, label: &str, bundle_dirs: &[PathBuf]) -> Result<Dn
                     },
                 }
             }
-            other => problems.push(format!("record type {other} is outside fleet.pki.dns/v1 (CAA, TLSA)")),
+            other => problems.push(format!(
+                "record type {other} is outside fleet.pki.dns/v1 (CAA, TLSA)"
+            )),
         }
         let ok = problems.is_empty();
         checks.push(Check {
             name,
             ok,
             detail: if ok {
-                if details.is_empty() { "well-formed".into() } else { details.join("; ") }
+                if details.is_empty() {
+                    "well-formed".into()
+                } else {
+                    details.join("; ")
+                }
             } else {
                 problems.join("; ")
             },
@@ -1091,7 +1141,10 @@ mod tests {
         // Oracle: RFC 1035 owner-name rules and the zone-cut rule
         // that a zone only holds names at or below its apex.
         assert_eq!(owner_in_zone("@", "example.test").unwrap(), "example.test.");
-        assert_eq!(owner_in_zone("pki", "example.test").unwrap(), "pki.example.test.");
+        assert_eq!(
+            owner_in_zone("pki", "example.test").unwrap(),
+            "pki.example.test."
+        );
         assert_eq!(
             owner_in_zone("pki.example.test.", "example.test").unwrap(),
             "pki.example.test."
@@ -1099,7 +1152,10 @@ mod tests {
         assert!(owner_in_zone("other.test.", "example.test").is_err());
         assert!(owner_in_zone("bad_label", "example.test").is_ok()); // underscores admitted for owners
         assert!(owner_in_zone("-bad", "example.test").is_err());
-        assert_eq!(tlsa_owner(443, "TCP", "pki.example.test."), "_443._tcp.pki.example.test.");
+        assert_eq!(
+            tlsa_owner(443, "TCP", "pki.example.test."),
+            "_443._tcp.pki.example.test."
+        );
     }
 
     #[test]
@@ -1122,10 +1178,7 @@ mod tests {
             (0, "issue".into(), "letsencrypt.org".into())
         );
         assert!(parse_caa("0 issue letsencrypt.org").is_err());
-        assert_eq!(
-            parse_tlsa("3 1 1 AB CD").unwrap(),
-            (3, 1, 1, "abcd".into())
-        );
+        assert_eq!(parse_tlsa("3 1 1 AB CD").unwrap(), (3, 1, 1, "abcd".into()));
         assert!(parse_tlsa("3 1 1 xyz").is_err());
         assert!(roles_for_usage(1).is_err());
         assert!(roles_for_usage(0).is_err());

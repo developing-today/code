@@ -2678,9 +2678,8 @@ socket = "rel/s.sock"
 
     #[test]
     fn host_whitespace_env_location_falls_through_to_file() {
-        let (_d, path, cfg) = cfg_from(
-            "[host]\nlocation = \"sandbox\"\n\n[host.roles]\nproxy = {}\n",
-        );
+        let (_d, path, cfg) =
+            cfg_from("[host]\nlocation = \"sandbox\"\n\n[host.roles]\nproxy = {}\n");
         let resolved = cfg
             .resolve_host_from(None, Some(" \t "), &path)
             .unwrap()

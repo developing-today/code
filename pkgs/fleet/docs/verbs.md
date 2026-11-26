@@ -230,15 +230,15 @@ The `sync-*` verbs are the typed Queue/GitHub sync surface for scripted flows (#
 
 `fleet shell [OPTIONS] [-- COMMAND...]` plans or runs a command. `fleet shell targets` reports laptop and Codespace reachability and what automatic selection would choose.
 
-| Option             | Purpose                                                               |
+| Option | Purpose |
 | ------------------ | --------------------------------------------------------------------- | --------- | ------ | ----------------------------------------------------------- |
 | `--target auto     | laptop                                                                | codespace | local` | Select the execution target; default is automatic fallback. |
-| `--codespace NAME` | Select a named Codespace; otherwise the first available is used.      |
-| `--cwd DIR`        | Set the working directory on the selected target.                     |
-| `--build`          | Take a laptop `fleet-build-lock` slot and allow a long build timeout. |
-| `--timeout SECS`   | Set a laptop command timeout.                                         |
-| `--detach`         | Start a laptop command as a job and return its job ID.                |
-| `--print`          | Print the selected plan as JSON without running it.                   |
+| `--codespace NAME` | Select a named Codespace; otherwise the first available is used. |
+| `--cwd DIR` | Set the working directory on the selected target. |
+| `--build` | Take a laptop `fleet-build-lock` slot and allow a long build timeout. |
+| `--timeout SECS` | Set a laptop command timeout. |
+| `--detach` | Start a laptop command as a job and return its job ID. |
+| `--print` | Print the selected plan as JSON without running it. |
 
 Automatic selection honors `FLEET_SHELL_TARGET`, then prefers the current laptop seat, a reachable laptop, a Codespace, and finally the local environment. An explicit target does not fall back. `--detach` is for laptop jobs; use `fleet laptop-agent poll JOB --wait N` to follow one.
 

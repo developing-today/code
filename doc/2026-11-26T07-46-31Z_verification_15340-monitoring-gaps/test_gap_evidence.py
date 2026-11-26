@@ -32,21 +32,29 @@ def read(rel):
 class TestVerificationRecord(unittest.TestCase):
     def test_record_states_all_three_verdicts(self):
         text = DOC.read_text()
-        for needle in ("Gap 2", "CLOSED", "Gap 4",
-                       "LIVE CONFIRMATION OUTSTANDING",
-                       "Pilot demonstration", "NOT CONFIRMED",
-                       "Do not port any new-issue-creator lane yet"):
+        for needle in (
+            "Gap 2",
+            "CLOSED",
+            "Gap 4",
+            "LIVE CONFIRMATION OUTSTANDING",
+            "Pilot demonstration",
+            "NOT CONFIRMED",
+            "Do not port any new-issue-creator lane yet",
+        ):
             self.assertIn(needle, text)
 
 
 class TestGap2Exporter(unittest.TestCase):
     def test_exporter_and_timer_exist(self):
         base = ROOT / "pm-stack/opencode-usage-export"
-        for name in ("opencode-usage-export.mjs",
-                     "opencode-usage-export.test.mjs",
-                     "opencode-usage-export.service",
-                     "opencode-usage-export.timer",
-                     "install-laptop.sh", "README.md"):
+        for name in (
+            "opencode-usage-export.mjs",
+            "opencode-usage-export.test.mjs",
+            "opencode-usage-export.service",
+            "opencode-usage-export.timer",
+            "install-laptop.sh",
+            "README.md",
+        ):
             self.assertTrue((base / name).is_file(), name)
 
     def test_exporter_reads_live_v2_tables(self):
@@ -84,9 +92,10 @@ class TestGap4ResidencyShape(unittest.TestCase):
         for path in ROOT.rglob("*.socket"):
             if ".git" in path.parts:
                 continue
-            if "openchamber" in path.name or \
-                    "openchamber" in path.read_text(
-                        errors="replace").lower():
+            if (
+                "openchamber" in path.name
+                or "openchamber" in path.read_text(errors="replace").lower()
+            ):
                 offenders.append(str(path.relative_to(ROOT)))
         self.assertEqual(offenders, [])
 
@@ -95,15 +104,22 @@ class TestCreatorLaneRegistryRows(unittest.TestCase):
     def test_registry_rows_match_record(self):
         registry = read("doc/fleet-schedule-registry.md")
         for lane, cadence, state in (
-                ("new-issue-creator-code-a", "interval@30m", "enabled"),
-                ("new-issue-creator-code-b", "interval@30m", "enabled"),
-                ("new-issue-creator-opencode", "interval@1h", "enabled"),
-                ("new-issue-creator-openchamber", "interval@1h", "enabled"),
-                ("new-issue-creator-nix", "interval@2h", "enabled"),
-                ("new-issue-creator`", "interval@30m", "disabled"),
-                ("new-issue-creator-b`", "interval@30m", "disabled")):
-            row = next((ln for ln in registry.splitlines()
-                        if f"`{lane}" in ln or f"| `{lane}" in ln), "")
+            ("new-issue-creator-code-a", "interval@30m", "enabled"),
+            ("new-issue-creator-code-b", "interval@30m", "enabled"),
+            ("new-issue-creator-opencode", "interval@1h", "enabled"),
+            ("new-issue-creator-openchamber", "interval@1h", "enabled"),
+            ("new-issue-creator-nix", "interval@2h", "enabled"),
+            ("new-issue-creator`", "interval@30m", "disabled"),
+            ("new-issue-creator-b`", "interval@30m", "disabled"),
+        ):
+            row = next(
+                (
+                    ln
+                    for ln in registry.splitlines()
+                    if f"`{lane}" in ln or f"| `{lane}" in ln
+                ),
+                "",
+            )
             self.assertIn(cadence, row, lane)
             self.assertIn(state, row, lane)
 

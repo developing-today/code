@@ -58,10 +58,7 @@ const REPO_NAME = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})\/[A-Za-z0-9._-]{1,100}$/;
 export function ownerSettingChange(
   name: unknown,
   value: unknown,
-):
-  | { name: "promptLabel"; value: string }
-  | { name: "needsRepos"; value: string[] }
-  | { error: string } {
+): { name: "promptLabel"; value: string } | { name: "needsRepos"; value: string[] } | { error: string } {
   if (typeof name !== "string" || !(OWNER_CHANGEABLE as readonly string[]).includes(name)) {
     return { error: `name: one of ${OWNER_CHANGEABLE.join(", ")}` };
   }

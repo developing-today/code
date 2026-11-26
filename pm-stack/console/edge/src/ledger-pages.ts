@@ -138,8 +138,7 @@ export function createD1LedgerQuery(db: LedgerD1Database | undefined): LedgerPag
       const row: Record<string, unknown> = {};
       for (const [name, value] of Object.entries(raw)) {
         if (value === null) row[name] = null;
-        else if (typeof value === "string")
-          row[name] = JSON_COLUMNS.has(name) ? safeJson(value) : value;
+        else if (typeof value === "string") row[name] = JSON_COLUMNS.has(name) ? safeJson(value) : value;
         else if (typeof value === "number") {
           if (!Number.isFinite(value) || (Number.isInteger(value) && !Number.isSafeInteger(value)))
             throw new Error("unsafe ledger numeric value");

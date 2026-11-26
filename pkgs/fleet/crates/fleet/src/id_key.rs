@@ -70,9 +70,7 @@ pub enum KeyError {
 impl std::fmt::Display for KeyError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            KeyError::BadSecretForm => {
-                f.write_str("secret must be 64 hex characters (32 bytes)")
-            }
+            KeyError::BadSecretForm => f.write_str("secret must be 64 hex characters (32 bytes)"),
             KeyError::RngUnavailable => f.write_str("OS RNG unavailable"),
         }
     }
@@ -326,7 +324,13 @@ mod tests {
 
     #[test]
     fn malformed_secrets_are_refused() {
-        for bad in ["", "00", &"00".repeat(31), &"00".repeat(33), &"zz".repeat(32)] {
+        for bad in [
+            "",
+            "00",
+            &"00".repeat(31),
+            &"00".repeat(33),
+            &"zz".repeat(32),
+        ] {
             assert_eq!(
                 SessionKey::from_secret_hex(bad).map(|_| ()),
                 Err(KeyError::BadSecretForm),

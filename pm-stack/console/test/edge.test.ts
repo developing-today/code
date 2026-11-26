@@ -4395,8 +4395,9 @@ describe("which settings are in force is said, and since when", () => {
     expect(answer.machines[0].settingsRev).toBe(1);
     // Running with the owner's label is not a difference from main.
     expect(answer.machines[0].differs ?? []).toEqual([]);
-    const differ = ((await (await w.browse("/console/health", { token: null })).json()) as { machineSettingsDiffer: string[] })
-      .machineSettingsDiffer;
+    const differ = (
+      (await (await w.browse("/console/health", { token: null })).json()) as { machineSettingsDiffer: string[] }
+    ).machineSettingsDiffer;
     expect(differ).toEqual([]);
     // Put back, the machine is told the record with nothing in it and runs with its own again.
     await w.act("settings.clear", { name: "promptLabel" });

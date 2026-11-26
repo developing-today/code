@@ -552,11 +552,7 @@ export class Edge {
   private async routeFlip(req: Request): Promise<Response> {
     const body = (await req.json().catch(() => null)) as { surface?: unknown; tier?: unknown } | null;
     try {
-      const next = flipRoute(
-        await this.routes(),
-        body?.surface as string,
-        body?.tier as "hosted" | "tunnel",
-      );
+      const next = flipRoute(await this.routes(), body?.surface as string, body?.tier as "hosted" | "tunnel");
       await this.kv.put("routes", next);
       return json({ ok: true, routes: healthRoutes(next) });
     } catch (error) {
@@ -2223,9 +2219,7 @@ export class Edge {
         // with the owner's change is said by the revision it has taken
         // (#14957), not as a difference from main.
         machineSettingsDiffer:
-          told === null
-            ? null
-            : settingsThatDiffer(told).filter((name) => !ownerChanged(owner, name)),
+          told === null ? null : settingsThatDiffer(told).filter((name) => !ownerChanged(owner, name)),
         // Which source each of the platform's settings is in force from
         // (the owner's change, a machine's word, or the repository's),
         // and since when for an owner's change: by name and source,

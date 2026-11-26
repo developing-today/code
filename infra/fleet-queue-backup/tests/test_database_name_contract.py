@@ -22,9 +22,7 @@ def _normalized(path):
 
 class DatabaseNameContractTests(unittest.TestCase):
     def test_readme_names_live_plane_and_backup_copy_separately(self):
-        readme = _normalized(
-            ROOT / "infra" / "fleet-queue-backup" / "README.md"
-        )
+        readme = _normalized(ROOT / "infra" / "fleet-queue-backup" / "README.md")
         self.assertTrue("live queue database is `fleet-queue`" in readme)
         self.assertTrue("separate backup D1 database is `fleet-queue-backup`" in readme)
 
