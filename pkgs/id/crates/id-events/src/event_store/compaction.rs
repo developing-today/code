@@ -32,9 +32,10 @@
 //! Composition with the two older paths that predate residue (#13401):
 //! range sync does not advertise compacted positions — the advertisement
 //! is exactly the set whose bytes `sync_bytes` can serve, since an
-//! unservable offer aborts the session — and `prune_behind_cut` refuses a
-//! store that holds any residue until prune's erasure is composed with
-//! compaction's presence by a deliberate ruling (see that function).
+//! unservable offer aborts the session — and `prune_behind_cut` walks a
+//! residue as the causal-graph node it still is, erasing its presence when
+//! it falls behind the cut and keeping it as a chain position when it
+//! survives (Option A; see that function).
 
 use std::collections::{HashMap, HashSet};
 
@@ -70,7 +71,8 @@ pub struct CompactionPolicy {
 /// Whether `kind` is durable by construction, per the class table of the
 /// #2034 investigation (§3/§7): identity and membership material, signed
 /// durable content, attestations, writer-set and device operations, media,
-/// chat anchors, talk-page posts and session checkpoints are kept forever. Checkpoint events
+/// chat anchors, thread resolutions and proposals, talk-page posts and session
+/// checkpoints are kept forever. Checkpoint events
 /// in particular are never deleted by live-data compaction (design §4.6).
 pub(super) fn is_durable_kind(kind: &str) -> bool {
     const DURABLE_EXACT: [&str; 6] = [
@@ -93,7 +95,11 @@ pub(super) fn is_durable_kind(kind: &str) -> bool {
         "device.",
         "media.",
     ];
-    DURABLE_EXACT.contains(&kind) || DURABLE_PREFIX.iter().any(|prefix| kind.starts_with(prefix))
+    DURABLE_EXACT.contains(&kind)
+        || DURABLE_PREFIX.iter().any(|prefix| kind.starts_with(prefix))
+        // Resolutions, proposals and what closed them are the audit trail of a
+        // discussion (#7849, decision record #5874 §4), so compaction keeps them.
+        || id_store::thread_resolution::is_thread_event_kind(kind)
 }
 
 /// What the store keeps of a compacted event: its ID and its causal edges.
@@ -384,6 +390,7 @@ mod tests {
             chat: (kind == "chat.message.v1")
                 .then(|| id_store::chat::ChatMessage::new("hello", Vec::new()).unwrap()),
             anchor: None,
+            thread: None,
         }
     }
 
@@ -877,13 +884,19 @@ mod tests {
             "the fork proof survived the reopen"
         );
     }
-    /// Oracle (#13401): the refusal error and the store's observable
-    /// state. A prune over a store with residue fails with
-    /// [`StoreError::PruneOverResidue`] naming the residue count, and
-    /// changes nothing: the chain, the advertised sync set, the stored
-    /// head and the residue itself are all as they were.
+    fn residue_count(store: &EventStore) -> usize {
+        use redb::ReadableDatabase;
+        load_residue_read(&store.db.begin_read().unwrap())
+            .unwrap()
+            .len()
+    }
+
+    /// Oracle (#13401, Option A): a residue behind the cut that nothing
+    /// protects is erased like a stored event. Its presence goes (the
+    /// verdict is `Unknown`, the residue row and the chain row are gone),
+    /// so the same events ingest again as new, not as duplicates.
     #[test]
-    fn prune_refuses_a_store_with_residue_and_changes_nothing() {
+    fn prune_erases_residue_behind_the_cut_with_its_presence() {
         let (_dir, mut store) = open_temp();
         let signer = key(51);
         let who = author(&signer);
@@ -894,37 +907,117 @@ mod tests {
             4,
             "seqs 0..3 are residue, seqs 4 and 5 stay stored"
         );
-        let chain_before = store.chain(&who).unwrap();
-        let entries_before = store.sync_entries().unwrap().len();
-        let err = store
-            .prune_behind_cut(&[events[5].id], &[])
-            .expect_err("a prune over residue was not refused");
-        assert!(
-            matches!(err, StoreError::PruneOverResidue(4)),
-            "unexpected refusal: {err}"
+        let pruned = store.prune_behind_cut(&[events[5].id], &[]).unwrap();
+        assert_eq!(pruned, 6, "four residue positions and two stored events");
+        assert_eq!(residue_count(&store), 0);
+        assert_eq!(store.chain(&who).unwrap(), None);
+        assert!(store.sync_entries().unwrap().is_empty());
+        for (index, event) in events.iter().enumerate() {
+            assert_eq!(
+                store.validity_now(&event.id).unwrap(),
+                Validity::Unknown,
+                "seq {index} kept its presence through the prune"
+            );
+        }
+        store.check_invariants().unwrap();
+        ingest_all(&mut store, &events);
+        let chain = store.chain(&who).unwrap().expect("a chain row");
+        assert_eq!(u64::from(chain.next_seq), 6);
+        store.check_invariants().unwrap();
+    }
+
+    /// Oracle (#13401, Option A): the chain rewrite counts a surviving
+    /// residue position as applied. With the residue prefix protected and
+    /// the stored tail pruned, the chain ends at the last residue, which is
+    /// its head, and the author's next event chains onto it.
+    #[test]
+    fn prune_keeps_a_surviving_residue_as_the_chain_head() {
+        let (_dir, mut store) = open_temp();
+        let signer = key(53);
+        let who = author(&signer);
+        let events = chain_of(&signer, 6, "chat.message.v1");
+        ingest_all(&mut store, &events);
+        assert_eq!(store.compact(&policy(&["chat.message.v1"], 2)).unwrap(), 4);
+        let pruned = store
+            .prune_behind_cut(&[events[5].id], &[events[3].id])
+            .unwrap();
+        assert_eq!(
+            pruned, 2,
+            "only the stored tail is behind the cut and unprotected"
         );
-        assert_eq!(store.chain(&who).unwrap(), chain_before);
-        assert_eq!(store.sync_entries().unwrap().len(), entries_before);
-        assert!(
-            store
-                .event(&who, events[5].header.seq_num)
-                .unwrap()
-                .is_some(),
-            "the stored head is untouched"
+        assert_eq!(residue_count(&store), 4);
+        let chain = store.chain(&who).unwrap().expect("a chain row");
+        assert_eq!(u64::from(chain.next_seq), 4);
+        assert_eq!(
+            chain.head,
+            Some(events[3].id),
+            "the head is the last residue"
         );
-        assert!(
-            store
-                .event(&who, events[0].header.seq_num)
-                .unwrap()
-                .is_none(),
-            "the residue is untouched: its bytes stay reclaimed"
+        for (index, event) in events.iter().enumerate() {
+            let expected = if index < 4 {
+                Validity::Applies
+            } else {
+                Validity::Unknown
+            };
+            assert_eq!(
+                store.validity_now(&event.id).unwrap(),
+                expected,
+                "seq {index}"
+            );
+        }
+        store.check_invariants().unwrap();
+        ingest_all(&mut store, &events[4..5]);
+        let chain = store.chain(&who).unwrap().expect("a chain row");
+        assert_eq!(u64::from(chain.next_seq), 5);
+        assert_eq!(chain.head, Some(events[4].id));
+        store.check_invariants().unwrap();
+    }
+
+    /// Oracle (#13401, Option A): the walks follow a residue's recorded
+    /// edges. Bob's surviving event names Alice's compacted seq 1 in
+    /// `after`; that residue and its backlinked residue survive, the rest
+    /// of Alice's chain behind the cut (residue and stored alike) goes,
+    /// and Bob's event still rests on a present dependency.
+    #[test]
+    fn prune_keeps_residue_a_surviving_event_depends_on() {
+        let (_dir, mut store) = open_temp();
+        let alice = key(54);
+        let events = chain_of(&alice, 6, "chat.message.v1");
+        ingest_all(&mut store, &events);
+        let dependent = sign(
+            &key(55),
+            SeqNum::from(0u32),
+            None,
+            None,
+            ext("didit.record", None, vec![events[1].id]),
+        )
+        .unwrap();
+        ingest_all(&mut store, std::slice::from_ref(&dependent));
+        assert_eq!(store.compact(&policy(&["chat.message.v1"], 2)).unwrap(), 4);
+        let pruned = store.prune_behind_cut(&[events[5].id], &[]).unwrap();
+        assert_eq!(pruned, 4, "Alice's seqs 2..5: two residue, two stored");
+        assert_eq!(residue_count(&store), 2);
+        let chain = store.chain(&author(&alice)).unwrap().expect("a chain row");
+        assert_eq!(u64::from(chain.next_seq), 2);
+        assert_eq!(chain.head, Some(events[1].id));
+        assert_eq!(
+            store.validity_now(&dependent.id).unwrap(),
+            Validity::Applies
+        );
+        assert_eq!(
+            store.validity_now(&events[1].id).unwrap(),
+            Validity::Applies
+        );
+        assert_eq!(
+            store.validity_now(&events[2].id).unwrap(),
+            Validity::Unknown
         );
         store.check_invariants().unwrap();
     }
 
     /// Oracle (#13401): a compaction pass that compacted nothing leaves
-    /// no residue, so the guard does not fire and the prune runs exactly
-    /// as it did before residue existed.
+    /// no residue, and the prune runs exactly as it did before residue
+    /// existed.
     #[test]
     fn prune_runs_when_compaction_compacted_nothing() {
         let (_dir, mut store) = open_temp();

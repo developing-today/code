@@ -37,7 +37,15 @@ import type {
   UsageMetric,
   UsageUnit,
 } from "./model.ts";
-import { arrayOf, isFiniteNumber, isIsoDate, isNonEmptyString, isNonNegative, isRecord, isTimestampNotFuture } from "./validate.ts";
+import {
+  arrayOf,
+  isFiniteNumber,
+  isIsoDate,
+  isNonEmptyString,
+  isNonNegative,
+  isRecord,
+  isTimestampNotFuture,
+} from "./validate.ts";
 
 /** Freshness bound for gatherer precedence: two missed ticks. */
 export const QUOTA_CURRENT_FRESH_MS = 20 * 60_000;

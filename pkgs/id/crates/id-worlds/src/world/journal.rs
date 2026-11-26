@@ -1065,7 +1065,8 @@ fn entry_kind_version(entry: &JournalEntry) -> u32 {
                         .events
                         .iter()
                         .any(|event| matches!(event.kind, WorldEventKind::Notification { .. }))
-                }) {
+                })
+            {
                 JOURNAL_VERSION_NOTIFY
             } else if blobs.is_some() {
                 JOURNAL_VERSION_BLOB

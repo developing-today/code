@@ -1387,6 +1387,7 @@ mod tests {
             rotation: None,
             chat: None,
             anchor: None,
+            thread: None,
         };
         sign(key, seq, backlink, None, ext).unwrap()
     }
@@ -1437,6 +1438,7 @@ mod tests {
             rotation: None,
             chat: None,
             anchor: None,
+            thread: None,
         };
         sign(key, seq, backlink, Some(body), ext).unwrap()
     }
@@ -1541,6 +1543,7 @@ mod tests {
             rotation: None,
             chat: None,
             anchor: None,
+            thread: None,
         };
         (sign(signer, 0, None, Some(&body), ext).unwrap(), body)
     }
@@ -1595,6 +1598,7 @@ mod tests {
                 rotation: None,
                 chat: None,
                 anchor: None,
+                thread: None,
             },
         )
         .unwrap();
@@ -1685,6 +1689,7 @@ mod tests {
                 rotation: None,
                 chat: None,
                 anchor: None,
+                thread: None,
             },
         )
         .unwrap();
@@ -1746,6 +1751,7 @@ mod tests {
             rotation: None,
             chat: None,
             anchor: None,
+            thread: None,
         };
         (sign(signer, 0, None, Some(&body), ext).unwrap(), body)
     }
@@ -2215,6 +2221,7 @@ mod tests {
 
             chat: None,
             anchor: None,
+            thread: None,
         };
         let y0 = sign(&y, 0, None, None, ext).unwrap();
         assert_eq!(ingest(&mut store, &y0), Ingest::Waiting { id: y0.id });
@@ -2276,6 +2283,7 @@ mod tests {
 
             chat: None,
             anchor: None,
+            thread: None,
         };
         sign(key, seq, backlink, None, ext).unwrap()
     }
@@ -2682,6 +2690,7 @@ mod tests {
                 rotation: None,
                 chat: None,
                 anchor: None,
+                thread: None,
             },
         )
         .unwrap();
@@ -2780,6 +2789,7 @@ mod tests {
                 rotation: None,
                 chat: None,
                 anchor: None,
+                thread: None,
             };
             sign(&signer, seq, backlink, None, ext).unwrap()
         };
@@ -2818,6 +2828,7 @@ mod tests {
             rotation: None,
             chat: None,
             anchor: None,
+            thread: None,
         };
         let event = sign(key, seq, backlink, Some(&body), ext).unwrap();
         (event, body)

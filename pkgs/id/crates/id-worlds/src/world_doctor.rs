@@ -398,6 +398,34 @@ struct JournalSummary {
     torn_tail: bool,
 }
 
+/// What a journal file holds, read without opening it for append.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+pub struct JournalFacts {
+    /// Complete entries, `Created` included.
+    pub entries: usize,
+    /// The `Created` entry's format version.
+    pub version: u32,
+    /// An incomplete final append sits at the end; the opener drops it
+    /// before appending again.
+    pub torn_tail: bool,
+}
+
+/// Read a journal's facts (entry count, version, torn tail) without
+/// opening it for append or checking the version against this binary.
+///
+/// # Errors
+///
+/// A missing or unreadable file, an empty journal, a first entry that is
+/// not `Created`, or any malformed complete entry.
+pub fn journal_facts(path: &Path) -> Result<JournalFacts> {
+    let summary = inspect_journal_file(path)?;
+    Ok(JournalFacts {
+        entries: summary.entries,
+        version: summary.version,
+        torn_tail: summary.torn_tail,
+    })
+}
+
 /// Parse a journal and record an incomplete final append without treating it
 /// as corruption. The opener drops that tail before appending again.
 fn inspect_journal_file(path: &Path) -> Result<JournalSummary> {

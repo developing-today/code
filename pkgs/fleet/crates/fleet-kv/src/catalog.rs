@@ -102,6 +102,11 @@ impl Entry {
 pub const DOOR_NAMESPACE_SCOPE: &str = "SELECT scope_kind, shared_scope_id FROM kv_namespaces
          WHERE registry_id = ?1 AND namespace = ?2";
 
+/// The query the upload door runs to learn the partition a namespace places
+/// its blobs in. No row: the upload is refused (no default partition).
+pub const DOOR_NAMESPACE_PLACEMENT: &str = "SELECT jurisdiction, tier FROM kv_namespace_placement
+         WHERE registry_id = ?1 AND namespace = ?2";
+
 /// Every statement the client sends to the central primary.
 pub fn entries() -> Vec<Entry> {
     use Class::{Admin, Read, Write};
@@ -121,10 +126,25 @@ pub fn entries() -> Vec<Entry> {
         entry("history.read", Read, central::HISTORY_READ, ADDRESSED),
         entry("conflicts.read", Read, central::CONFLICTS_READ, ADDRESSED),
         entry("heads.read", Read, central::HEADS_READ, ADDRESSED),
+        entry(
+            "head.read_enveloped",
+            Read,
+            central::HEAD_ENVELOPED_READ,
+            ADDRESSED,
+        ),
+        entry(
+            "heads.read_enveloped",
+            Read,
+            central::HEADS_ENVELOPED_READ,
+            ADDRESSED,
+        ),
         entry("listing.read", Read, central::LISTING_READ, ADDRESSED),
         entry("namespace.define", Admin, central::NAMESPACE_UPSERT, NONE),
         entry("namespace.epoch", Read, central::NAMESPACE_EPOCH_READ, NONE),
         entry("namespaces.read", Read, central::NAMESPACES_READ, NONE),
+        entry("placement.upsert", Admin, central::PLACEMENT_UPSERT, NONE),
+        entry("placement.delete", Admin, central::PLACEMENT_DELETE, NONE),
+        entry("placements.read", Read, central::PLACEMENTS_READ, NONE),
         entry("grants.read", Read, grants::GRANTS_READ, NONE),
         entry("grants.upsert", Admin, grants::GRANT_UPSERT, NONE),
         entry("grants.delete", Admin, grants::GRANT_DELETE, NONE),
@@ -149,8 +169,26 @@ pub fn entries() -> Vec<Entry> {
             central::BLOB_RECEIPT_INSERT,
             CAS,
         ),
+        entry(
+            "blob.cas_conflict_insert",
+            Write,
+            central::BLOB_CONFLICT_INSERT,
+            CAS,
+        ),
+        entry(
+            "blob.cas_version_insert",
+            Write,
+            central::BLOB_VERSION_INSERT,
+            CAS,
+        ),
         entry("blob.ref_insert", Write, blob_central::BLOB_REF_INSERT, CAS),
         entry("blob.publish", Admin, blob_central::BLOB_PUBLISH, NONE),
+        entry(
+            "blob.published_read",
+            Admin,
+            blob_central::BLOB_PUBLISHED_READ,
+            NONE,
+        ),
         entry(
             "blob.roots_read",
             Admin,
@@ -171,6 +209,48 @@ pub fn entries() -> Vec<Entry> {
             blob_central::BLOB_DELETION_READ,
             NONE,
         ),
+        entry(
+            "blob.candidates_clear",
+            Admin,
+            blob_central::BLOB_CANDIDATES_CLEAR,
+            NONE,
+        ),
+        entry(
+            "blob.candidates_mark",
+            Admin,
+            blob_central::BLOB_CANDIDATES_MARK,
+            NONE,
+        ),
+        entry(
+            "blob.candidates_due",
+            Admin,
+            blob_central::BLOB_CANDIDATES_DUE,
+            NONE,
+        ),
+        entry(
+            "blob.candidate_drop",
+            Admin,
+            blob_central::BLOB_CANDIDATE_DROP,
+            NONE,
+        ),
+        entry(
+            "blob.purge_claim",
+            Admin,
+            blob_central::BLOB_PURGE_CLAIM,
+            NONE,
+        ),
+        entry(
+            "blob.purged_mark",
+            Admin,
+            blob_central::BLOB_PURGED_MARK,
+            NONE,
+        ),
+        entry(
+            "blob.purge_release",
+            Admin,
+            blob_central::BLOB_PURGE_RELEASE,
+            NONE,
+        ),
     ]
 }
 
@@ -184,6 +264,7 @@ pub fn find(sql: &str) -> Option<Entry> {
 pub fn is_known(sql: &str) -> bool {
     find(sql).is_some()
         || sql == DOOR_NAMESPACE_SCOPE
+        || sql == DOOR_NAMESPACE_PLACEMENT
         || [
             central::MIGRATIONS_TABLE,
             central::MIGRATIONS_READ,
@@ -208,6 +289,7 @@ pub fn document() -> serde_json::Value {
         "admin_role": "kv-admin",
         "admin_door": "kv-admin",
         "door_namespace_scope": DOOR_NAMESPACE_SCOPE,
+        "door_namespace_placement": DOOR_NAMESPACE_PLACEMENT,
         "statements": entries().iter().map(|entry| json!({
             "name": entry.name,
             "class": entry.class.as_str(),

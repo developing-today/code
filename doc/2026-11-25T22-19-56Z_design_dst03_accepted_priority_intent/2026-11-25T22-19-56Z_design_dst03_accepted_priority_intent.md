@@ -71,6 +71,7 @@ Read at `origin/main` on 2026-11-25:
 
 Once Fleet accepts "set #842 to `next-up`", three facts must exist
 together or not at all:
+
 - the item's new value at a new version;
 - the record of why it was allowed;
 - whatever must later be sent out because of it.
@@ -295,6 +296,7 @@ client,queue-broker -- --list`, then run the `pmo_distribution_`
 filter. Both run remotely.
 
 **Gates.**
+
 - Oracles 2, 4–8 and the pure plan can land first, because they are
   pure.
 - The broker integration waits on two things: the CEN-04 admission of

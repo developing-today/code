@@ -177,6 +177,7 @@ missing optional dimensions as `None` "never a fabricated value"
 (`:2148-2190`).
 
 **Other freshness and degraded names in the same module tree.**
+
 - `work/degraded.rs` is the #8581 verb-routing failure-mode contract:
   `FailureLeg` (`:9-19`), `Mode` with labels `normal`,
   `gh-write-degraded`, `gh-read-degraded`, `db-degraded` (`:21-58`),
@@ -196,6 +197,7 @@ does not exist; `work/mod.rs:7-18` lists no `distribution` module.
 The DST-06 record proposes its first contents (section 0).
 
 **Existing size limits in the crate and its neighbours.**
+
 - `pkgs/fleet/crates/fleet-queue/src/validate.rs:301-306`: task
   payload design target 4,096 bytes and hard ceiling 16,384 bytes
   ("evidence and pointers, not full diffs/logs", `:1575-1584`);
@@ -214,8 +216,9 @@ The DST-06 record proposes its first contents (section 0).
   (`MAX_ITEMS_LIMIT = 1000`).
 
 **Existing staleness handling in consumers.**
+
 - `pm-stack/aggregator/src/feed.ts:472-481`: `FEED_STALE_MS = 5 *
-  60_000` because "The collector is scheduled every five minutes";
+60_000` because "The collector is scheduled every five minutes";
   `GENERATED_AT_FUTURE_SKEW_MS = 60_000`.
 - `pm-stack/aggregator/src/queue.ts:20-26`, `:146-164`: the
   read-only queue collector; a snapshot is stale when the broker read
@@ -294,19 +297,19 @@ dependency, not a takeover (gap G2).
 
 Required header (all keys present; nullable keys present as `null`):
 
-| Key              | Type                                 | Used to detect              |
-| ---------------- | ------------------------------------ | --------------------------- |
-| `schema_version` | string                               | unsupported                 |
-| `work`           | `{authority_id, work_id}` (`WorkRef`) | invalid, conflicted         |
-| `work_version`   | canonical decimal string             | stale (by version), conflicted |
-| `as_of_utc`      | authority canonical UTC string       | stale (by age), invalid (future) |
-| `snapshot_ref`   | string                               | carried, compared by DST-05 |
-| `profile_ref`    | string `profile_id@version`          | unsupported                 |
-| `taxonomy_ref`   | string                               | unsupported                 |
-| `policy_ref`     | string                               | unsupported                 |
-| `comparator_ref` | string or `null`                     | unsupported (when present)  |
-| `producer`       | `ProducerHealth` (section 5.2)       | degraded, unsupported       |
-| `value`          | priority dimensions or `null`        | displayed, never invented   |
+| Key              | Type                                  | Used to detect                   |
+| ---------------- | ------------------------------------- | -------------------------------- |
+| `schema_version` | string                                | unsupported                      |
+| `work`           | `{authority_id, work_id}` (`WorkRef`) | invalid, conflicted              |
+| `work_version`   | canonical decimal string              | stale (by version), conflicted   |
+| `as_of_utc`      | authority canonical UTC string        | stale (by age), invalid (future) |
+| `snapshot_ref`   | string                                | carried, compared by DST-05      |
+| `profile_ref`    | string `profile_id@version`           | unsupported                      |
+| `taxonomy_ref`   | string                                | unsupported                      |
+| `policy_ref`     | string                                | unsupported                      |
+| `comparator_ref` | string or `null`                      | unsupported (when present)       |
+| `producer`       | `ProducerHealth` (section 5.2)        | degraded, unsupported            |
+| `value`          | priority dimensions or `null`         | displayed, never invented        |
 
 `value: null` means the producer states the item is untriaged. That
 is a **fresh, legitimate** observation of an absent dimension, not an
@@ -316,16 +319,16 @@ unknown one (component #9201 `:65`; priority.rs `:300-304`).
 
 ### 3.1 The eight states
 
-| State         | Meaning                                                                                   |
-| ------------- | ----------------------------------------------------------------------------------------- |
-| `fresh`       | Supported versions, complete inputs, normal producer route, within the age budget, not superseded, within limits. |
-| `stale`       | Parsed and supported, but older than the consumer's age budget, or superseded by a newer `work_version` the consumer has already seen, or the latest refresh failed and this is the retained last good read. |
-| `degraded`    | Parsed, supported and within budget, but computed from incomplete or fallback inputs: a partial population, an input facet marked `fallback` or `unavailable`, or a producer route other than `normal`. |
-| `unsupported` | Parsed, but a `schema_version`, `profile_ref`, `taxonomy_ref`, `policy_ref`, `comparator_ref`, route-mode label or reason code is not one this build knows. |
-| `too_large`   | Exceeds a limit of section 4. Detected before or instead of interpretation.               |
+| State         | Meaning                                                                                                                                                                                                                                        |
+| ------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `fresh`       | Supported versions, complete inputs, normal producer route, within the age budget, not superseded, within limits.                                                                                                                              |
+| `stale`       | Parsed and supported, but older than the consumer's age budget, or superseded by a newer `work_version` the consumer has already seen, or the latest refresh failed and this is the retained last good read.                                   |
+| `degraded`    | Parsed, supported and within budget, but computed from incomplete or fallback inputs: a partial population, an input facet marked `fallback` or `unavailable`, or a producer route other than `normal`.                                        |
+| `unsupported` | Parsed, but a `schema_version`, `profile_ref`, `taxonomy_ref`, `policy_ref`, `comparator_ref`, route-mode label or reason code is not one this build knows.                                                                                    |
+| `too_large`   | Exceeds a limit of section 4. Detected before or instead of interpretation.                                                                                                                                                                    |
 | `invalid`     | Not a well-formed object of its schema: unparseable JSON, a missing required key, an unknown key in a strict type, a non-canonical decimal, an invalid `work` pair, an `as_of_utc` that does not parse or lies in the future beyond tolerance. |
-| `conflicted`  | Same `work` and same `work_version` as an observation the consumer already holds, but different canonical bytes. |
-| `unknown`     | The consumer has no observation at all: never received, or the source is unreachable and nothing was retained. |
+| `conflicted`  | Same `work` and same `work_version` as an observation the consumer already holds, but different canonical bytes.                                                                                                                               |
+| `unknown`     | The consumer has no observation at all: never received, or the source is unreachable and nothing was retained.                                                                                                                                 |
 
 The test name `pmo_distribution_unknown_version_degrades` (the slice's
 first failing test) means "an unknown version makes the consumer fall
@@ -393,7 +396,7 @@ recorded.
 7. **Producer health.** `producer.route_mode != "normal"`: cause
    `producer_route`. Any `producer.inputs` entry not `live`: cause
    `input_unavailable` or `input_fallback`. `producer.complete ==
-   false` or a DST-06 `PartialOrder`: cause `partial_population`.
+false` or a DST-06 `PartialOrder`: cause `partial_population`.
    Any of these: `degraded` (unless something above won).
 
 A failed refresh with a retained last good observation is classified
@@ -406,11 +409,11 @@ is kept but marked stale).
 consumer's context and are echoed in every classification, so a
 classification is reproducible from its inputs.
 
-| Consumer class | `max_age_s` | `max_future_skew_s` | Reason |
-| -------------- | ----------- | ------------------- | ------ |
+| Consumer class | `max_age_s` | `max_future_skew_s` | Reason                                                                                                                                                                                    |
+| -------------- | ----------- | ------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `display`      | 300         | 60                  | Same as `FEED_STALE_MS` / `QUEUE_STALE_MS` (`feed.ts:478`, `queue.ts:26`), set because the collector runs every five minutes; skew matches `GENERATED_AT_FUTURE_SKEW_MS` (`feed.ts:481`). |
-| `relay`        | 300         | 60                  | A relay re-reads before applying anyway (DST-05 compare-and-apply); the budget only decides whether it may skip the re-read for planning. |
-| `decision`     | 300         | 60                  | A decision never relies on age: the broker revalidates at commit (SEL-02). The budget only labels the input. |
+| `relay`        | 300         | 60                  | A relay re-reads before applying anyway (DST-05 compare-and-apply); the budget only decides whether it may skip the re-read for planning.                                                 |
+| `decision`     | 300         | 60                  | A decision never relies on age: the broker revalidates at commit (SEL-02). The budget only labels the input.                                                                              |
 
 These are defaults, not policy; a consumer may pass a smaller budget,
 and the chosen budget is recorded in the classification.
@@ -429,16 +432,16 @@ Three consumer classes:
 - **display**: shows the value to a person (aggregator, mobile,
   hosted dashboard).
 
-| State         | decision     | relay                         | display                                         |
-| ------------- | ------------ | ----------------------------- | ----------------------------------------------- |
-| `fresh`       | `use_as_input` | `use_as_input` (apply still compares versions) | `show`                       |
-| `stale`       | `fail_closed`  | `fail_closed` (re-read first) | `show_with_marker`: value, `as_of_utc`, age, "stale" |
-| `degraded`    | `fail_closed`  | `fail_closed`                 | `show_with_marker`: value plus the degraded inputs named |
-| `unsupported` | `fail_closed`  | `fail_closed`, keep read-only | `show_marker_only`: "unsupported version X", no value |
-| `too_large`   | `fail_closed`  | `fail_closed`                 | `show_marker_only`: size and limit, no value    |
-| `invalid`     | `fail_closed`  | `fail_closed`                 | `show_marker_only`: "invalid", no value         |
-| `conflicted`  | `fail_closed`  | `fail_closed`, hand to DST-05 reconcile | `show_marker_only`: "conflict at version N" |
-| `unknown`     | `fail_closed`  | `fail_closed`                 | `show_marker_only`: "unknown"                   |
+| State         | decision       | relay                                          | display                                                  |
+| ------------- | -------------- | ---------------------------------------------- | -------------------------------------------------------- |
+| `fresh`       | `use_as_input` | `use_as_input` (apply still compares versions) | `show`                                                   |
+| `stale`       | `fail_closed`  | `fail_closed` (re-read first)                  | `show_with_marker`: value, `as_of_utc`, age, "stale"     |
+| `degraded`    | `fail_closed`  | `fail_closed`                                  | `show_with_marker`: value plus the degraded inputs named |
+| `unsupported` | `fail_closed`  | `fail_closed`, keep read-only                  | `show_marker_only`: "unsupported version X", no value    |
+| `too_large`   | `fail_closed`  | `fail_closed`                                  | `show_marker_only`: size and limit, no value             |
+| `invalid`     | `fail_closed`  | `fail_closed`                                  | `show_marker_only`: "invalid", no value                  |
+| `conflicted`  | `fail_closed`  | `fail_closed`, hand to DST-05 reconcile        | `show_marker_only`: "conflict at version N"              |
+| `unknown`     | `fail_closed`  | `fail_closed`                                  | `show_marker_only`: "unknown"                            |
 
 Rules that hold in every cell:
 
@@ -489,23 +492,23 @@ refused it and a producer can learn a consumer's limits through
 capability discovery (`architecture.md:158-159`). Changing any number
 is a new table reference, not an edit.
 
-| Limit                     | Value       | Unit   | Applies to                                                         | Reason |
-| ------------------------- | ----------- | ------ | ------------------------------------------------------------------ | ------ |
-| `max_command_bytes`       | 16,384      | bytes  | canonical JSON of one `fleet.command/v1`                           | Same as the queue's task payload hard ceiling (`validate.rs:302`), whose stated rule is "evidence and pointers, not full diffs/logs" (`:1578`). A priority command carries references; raw comment text stays untrusted data kept by reference or hash (component #9200 `:90`). |
-| `max_result_bytes`        | 16,384      | bytes  | canonical JSON of one `fleet.result/v1`                            | A priority result names a handful of field effects; one constant for both envelopes keeps producer and consumer checks symmetric. |
-| `max_observation_bytes`   | 8,192       | bytes  | canonical JSON of one per-item observation                         | Same as the queue metadata object cap (`validate.rs:303`). A header at the reference caps below is roughly 2.5 KiB, leaving roughly 5.5 KiB for the value block and its evidence references. |
-| `max_page_items`          | 1,000       | items  | one page of an order or observation list                            | Same as the projector's `MAX_ITEMS_LIMIT` (`pm-stack/projector/src/server.ts:80`), the existing pagination convention. A page is always a DST-06 `PartialOrder`. |
-| `max_snapshot_items`      | 10,000      | items  | `ordered_items` of one complete `fleet.selection-order/v1` on the wire | At the decimal and timestamp caps an ordered item is under about 300 canonical bytes, so 10,000 items stay under `max_snapshot_bytes`. Current live queue sizes were not measured for this record (unverified); see Q3. |
-| `max_snapshot_bytes`      | 4,194,304   | bytes  | canonical JSON of one complete order DTO on the wire               | Under the projector's 10,000,000-byte write cap (`server.ts:97`) and the broker's 16 MiB body cap (`uds_http.rs:37`) with room for the envelope and `lane_context`. |
-| `max_ref_bytes`           | 256         | bytes  | each identifier or reference string: `operation_id`, `idempotency_key`, `actor_ref`, `source_ref`, `source_event_ref`, `delivery_id`, `session_ref`, `profile_ref`, `taxonomy_ref`, `policy_ref`, `comparator_ref`, `owner_policy_ref`, each evidence reference, `authority_id` | Same number as the projector's caps on compared identifier fields (`server.ts:105-107`). Those count JavaScript string length; this counts UTF-8 bytes, which is stricter for non-ASCII. A value longer than this is a payload, not a reference. |
-| `max_composite_ref_bytes` | 1,024       | bytes  | `snapshot_ref`, `observed_snapshot_ref`, `queue_snapshot_ref`      | These concatenate several revisions (component #9200 `:115` shows `queue:rev:...;graph:rev:...`). |
-| `max_decimal_digits`      | 39          | digits | every canonical decimal string (sign not counted)                  | 39 digits hold any `u128`. The broker's SQLite integers are 64-bit today; the bound leaves headroom for a wider store while bounding `cmp_canonical_decimal` work and rejecting padded inputs. |
-| `max_evidence_refs`       | 32          | items  | `reason.evidence_refs`, and any evidence list in an observation    | 32 references at 256 bytes is 8 KiB, which fits inside `max_command_bytes` with the rest of the envelope. |
-| `max_warnings`            | 16          | items  | `Result.warnings`                                                   | Human-readable lines; detail belongs in a referenced artifact. |
-| `max_warning_bytes`       | 512         | bytes  | each warning                                                        | As above. |
-| `max_error_message_bytes` | 1,024       | bytes  | `Result.error.message`                                              | As above. |
-| `max_json_depth`          | 32          | levels | nesting depth of any payload                                        | The fixed v1 shapes nest at most about four levels; the margin is for typed `arguments` and the order DTO's `filter_ast`, whose maximum depth is not specified anywhere (Q4). Bounds parser recursion. |
-| `raw_slack_factor`        | 4           | factor | raw bytes may be up to 4x the canonical limit before parsing        | Producers may pretty-print; the canonical-bytes check after parsing is the binding limit. The raw check stops a far oversized payload before any parse work. |
+| Limit                     | Value     | Unit   | Applies to                                                                                                                                                                                                                                                                      | Reason                                                                                                                                                                                                                                                                          |
+| ------------------------- | --------- | ------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `max_command_bytes`       | 16,384    | bytes  | canonical JSON of one `fleet.command/v1`                                                                                                                                                                                                                                        | Same as the queue's task payload hard ceiling (`validate.rs:302`), whose stated rule is "evidence and pointers, not full diffs/logs" (`:1578`). A priority command carries references; raw comment text stays untrusted data kept by reference or hash (component #9200 `:90`). |
+| `max_result_bytes`        | 16,384    | bytes  | canonical JSON of one `fleet.result/v1`                                                                                                                                                                                                                                         | A priority result names a handful of field effects; one constant for both envelopes keeps producer and consumer checks symmetric.                                                                                                                                               |
+| `max_observation_bytes`   | 8,192     | bytes  | canonical JSON of one per-item observation                                                                                                                                                                                                                                      | Same as the queue metadata object cap (`validate.rs:303`). A header at the reference caps below is roughly 2.5 KiB, leaving roughly 5.5 KiB for the value block and its evidence references.                                                                                    |
+| `max_page_items`          | 1,000     | items  | one page of an order or observation list                                                                                                                                                                                                                                        | Same as the projector's `MAX_ITEMS_LIMIT` (`pm-stack/projector/src/server.ts:80`), the existing pagination convention. A page is always a DST-06 `PartialOrder`.                                                                                                                |
+| `max_snapshot_items`      | 10,000    | items  | `ordered_items` of one complete `fleet.selection-order/v1` on the wire                                                                                                                                                                                                          | At the decimal and timestamp caps an ordered item is under about 300 canonical bytes, so 10,000 items stay under `max_snapshot_bytes`. Current live queue sizes were not measured for this record (unverified); see Q3.                                                         |
+| `max_snapshot_bytes`      | 4,194,304 | bytes  | canonical JSON of one complete order DTO on the wire                                                                                                                                                                                                                            | Under the projector's 10,000,000-byte write cap (`server.ts:97`) and the broker's 16 MiB body cap (`uds_http.rs:37`) with room for the envelope and `lane_context`.                                                                                                             |
+| `max_ref_bytes`           | 256       | bytes  | each identifier or reference string: `operation_id`, `idempotency_key`, `actor_ref`, `source_ref`, `source_event_ref`, `delivery_id`, `session_ref`, `profile_ref`, `taxonomy_ref`, `policy_ref`, `comparator_ref`, `owner_policy_ref`, each evidence reference, `authority_id` | Same number as the projector's caps on compared identifier fields (`server.ts:105-107`). Those count JavaScript string length; this counts UTF-8 bytes, which is stricter for non-ASCII. A value longer than this is a payload, not a reference.                                |
+| `max_composite_ref_bytes` | 1,024     | bytes  | `snapshot_ref`, `observed_snapshot_ref`, `queue_snapshot_ref`                                                                                                                                                                                                                   | These concatenate several revisions (component #9200 `:115` shows `queue:rev:...;graph:rev:...`).                                                                                                                                                                               |
+| `max_decimal_digits`      | 39        | digits | every canonical decimal string (sign not counted)                                                                                                                                                                                                                               | 39 digits hold any `u128`. The broker's SQLite integers are 64-bit today; the bound leaves headroom for a wider store while bounding `cmp_canonical_decimal` work and rejecting padded inputs.                                                                                  |
+| `max_evidence_refs`       | 32        | items  | `reason.evidence_refs`, and any evidence list in an observation                                                                                                                                                                                                                 | 32 references at 256 bytes is 8 KiB, which fits inside `max_command_bytes` with the rest of the envelope.                                                                                                                                                                       |
+| `max_warnings`            | 16        | items  | `Result.warnings`                                                                                                                                                                                                                                                               | Human-readable lines; detail belongs in a referenced artifact.                                                                                                                                                                                                                  |
+| `max_warning_bytes`       | 512       | bytes  | each warning                                                                                                                                                                                                                                                                    | As above.                                                                                                                                                                                                                                                                       |
+| `max_error_message_bytes` | 1,024     | bytes  | `Result.error.message`                                                                                                                                                                                                                                                          | As above.                                                                                                                                                                                                                                                                       |
+| `max_json_depth`          | 32        | levels | nesting depth of any payload                                                                                                                                                                                                                                                    | The fixed v1 shapes nest at most about four levels; the margin is for typed `arguments` and the order DTO's `filter_ast`, whose maximum depth is not specified anywhere (Q4). Bounds parser recursion.                                                                          |
+| `raw_slack_factor`        | 4         | factor | raw bytes may be up to 4x the canonical limit before parsing                                                                                                                                                                                                                    | Producers may pretty-print; the canonical-bytes check after parsing is the binding limit. The raw check stops a far oversized payload before any parse work.                                                                                                                    |
 
 Transport bounds stay as they are and are outer bounds only: the
 broker's 16 MiB (`uds_http.rs:37`) and the projector's 10,000,000
@@ -958,16 +961,16 @@ exceed" rule and is not changed here.
 DST-07 adds no outcome. A read operation that returns one classified
 payload maps its `state` to the shared eight (`contracts.rs:513-534`):
 
-| `state`       | `outcome`           | `error.code`                                         | `next_action` |
-| ------------- | ------------------- | ---------------------------------------------------- | ------------- |
-| `fresh`       | `verified_complete` | none                                                 | none          |
-| `stale`       | `partial`           | none; causes in `warnings`                           | `reread`      |
-| `degraded`    | `partial`           | none; causes in `warnings`                           | `reread`      |
-| `unknown`     | `uncertain`         | none                                                 | `reread`      |
-| `conflicted`  | `conflict`          | `divergent_revision`                                 | `reconcile`   |
-| `unsupported` | `rejected`          | `unsupported_version` or `unsupported_reason_code`   | `recover` when a recovery intent exists, else none |
-| `too_large`   | `rejected`          | `payload_too_large`                                  | as above      |
-| `invalid`     | `rejected`          | `invalid_schema`                                     | none          |
+| `state`       | `outcome`           | `error.code`                                       | `next_action`                                      |
+| ------------- | ------------------- | -------------------------------------------------- | -------------------------------------------------- |
+| `fresh`       | `verified_complete` | none                                               | none                                               |
+| `stale`       | `partial`           | none; causes in `warnings`                         | `reread`                                           |
+| `degraded`    | `partial`           | none; causes in `warnings`                         | `reread`                                           |
+| `unknown`     | `uncertain`         | none                                               | `reread`                                           |
+| `conflicted`  | `conflict`          | `divergent_revision`                               | `reconcile`                                        |
+| `unsupported` | `rejected`          | `unsupported_version` or `unsupported_reason_code` | `recover` when a recovery intent exists, else none |
+| `too_large`   | `rejected`          | `payload_too_large`                                | as above                                           |
+| `invalid`     | `rejected`          | `invalid_schema`                                   | none                                               |
 
 `verified_complete` on a read means "this read returned a fresh,
 supported, complete observation"; it never completes the work item
@@ -986,15 +989,15 @@ made into a type rule.
 
 ### 6.3 Error codes
 
-| Code                      | Where                          | New?                                   |
-| ------------------------- | ------------------------------ | -------------------------------------- |
-| `payload_too_large`       | `ContractError::PayloadTooLarge` | new, in `contracts.rs`                 |
-| `invalid_schema`          | existing                       | no                                     |
-| `unsupported_version`     | existing                       | no                                     |
-| `unsupported_reason_code` | existing                       | no                                     |
-| `stale_snapshot`          | existing reason and error code | no                                     |
-| `divergent_revision`      | `Result.error.code` only       | new string, not a `ContractError` variant and not a registry reason code |
-| `degraded_input`          | `Result.error.code` only       | new string, as above                   |
+| Code                      | Where                            | New?                                                                     |
+| ------------------------- | -------------------------------- | ------------------------------------------------------------------------ |
+| `payload_too_large`       | `ContractError::PayloadTooLarge` | new, in `contracts.rs`                                                   |
+| `invalid_schema`          | existing                         | no                                                                       |
+| `unsupported_version`     | existing                         | no                                                                       |
+| `unsupported_reason_code` | existing                         | no                                                                       |
+| `stale_snapshot`          | existing reason and error code   | no                                                                       |
+| `divergent_revision`      | `Result.error.code` only         | new string, not a `ContractError` variant and not a registry reason code |
+| `degraded_input`          | `Result.error.code` only         | new string, as above                                                     |
 
 `payload_too_large` is a `ContractError` because it is a contract
 failure of the payload itself. The two new strings describe a
@@ -1056,29 +1059,29 @@ recovery intent, if any, is the only structured record (gap G4).
 
 ## 8. Failure modes
 
-| Scenario                                                                 | State / behaviour                                                                 |
-| ------------------------------------------------------------------------ | --------------------------------------------------------------------------------- |
-| Observation 7 minutes old, display consumer                              | `stale`; value shown with marker and age                                          |
-| Same observation, relay consumer                                         | `stale`; no write; `conflict` / `stale_snapshot`; re-read                        |
-| Broker read fails, last good read retained                               | `stale` with `source_unavailable`; never `fresh`                                  |
-| Broker read fails, nothing retained                                      | `unknown`; marker only; no default, no `0`                                        |
-| Item untriaged                                                           | `fresh` with `value: null`; shown as untriaged                                    |
-| Producer served from the #8583 replica (`db-degraded`)                   | `degraded`; display marked; decision and relay fail closed                        |
-| Graph input `unavailable` in producer health                             | `degraded`, `input_unavailable: graph`                                            |
-| Paged order, 3 of 12 pages held                                          | `degraded`, `partial_population`; no hash compared                                |
-| `schema_version` from a newer producer                                   | `unsupported`; read-only; recovery intent if authenticated and authorized         |
-| Unknown `comparator_ref` on an order                                     | `unsupported`; not hashed, compared or shown as an order (DST-06)                 |
-| Unknown reason code inside a supported schema                            | `unsupported`, cause `unknown_reason_code`; never aliased                         |
-| Unknown `route_mode` label                                               | `unsupported`                                                                     |
-| 40 evidence refs in a command                                            | `rejected` / `payload_too_large`; nothing truncated                               |
-| A 60-digit `work_version`                                                | `invalid` via `payload_too_large` on `max_decimal_digits` (state `too_large`)    |
-| Raw body 70 KiB for a command                                            | refused before parse (`too_large`)                                                |
-| Duplicate identical observation at the same version                      | same classification as the first; no conflict                                     |
-| Different bytes at the same `work_version`                               | `conflicted`; relay hands to DST-05 reconcile                                     |
-| `as_of_utc` 5 minutes in the future                                      | `invalid`, `future_as_of`                                                         |
-| Observation whose `work.authority_id` differs from the prior for the same `work_id` | not a duplicate or conflict: identities are authority-qualified; classified on its own |
-| Unauthenticated oversize webhook-derived command                          | `rejected` / `payload_too_large`; no recovery intent                             |
-| Rollback of DST-07                                                       | remove the classifier's callers; nothing persisted by DST-07 to revert; retained recovery intents stay with their owner (REL-03/DST-03) |
+| Scenario                                                                            | State / behaviour                                                                                                                       |
+| ----------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
+| Observation 7 minutes old, display consumer                                         | `stale`; value shown with marker and age                                                                                                |
+| Same observation, relay consumer                                                    | `stale`; no write; `conflict` / `stale_snapshot`; re-read                                                                               |
+| Broker read fails, last good read retained                                          | `stale` with `source_unavailable`; never `fresh`                                                                                        |
+| Broker read fails, nothing retained                                                 | `unknown`; marker only; no default, no `0`                                                                                              |
+| Item untriaged                                                                      | `fresh` with `value: null`; shown as untriaged                                                                                          |
+| Producer served from the #8583 replica (`db-degraded`)                              | `degraded`; display marked; decision and relay fail closed                                                                              |
+| Graph input `unavailable` in producer health                                        | `degraded`, `input_unavailable: graph`                                                                                                  |
+| Paged order, 3 of 12 pages held                                                     | `degraded`, `partial_population`; no hash compared                                                                                      |
+| `schema_version` from a newer producer                                              | `unsupported`; read-only; recovery intent if authenticated and authorized                                                               |
+| Unknown `comparator_ref` on an order                                                | `unsupported`; not hashed, compared or shown as an order (DST-06)                                                                       |
+| Unknown reason code inside a supported schema                                       | `unsupported`, cause `unknown_reason_code`; never aliased                                                                               |
+| Unknown `route_mode` label                                                          | `unsupported`                                                                                                                           |
+| 40 evidence refs in a command                                                       | `rejected` / `payload_too_large`; nothing truncated                                                                                     |
+| A 60-digit `work_version`                                                           | `invalid` via `payload_too_large` on `max_decimal_digits` (state `too_large`)                                                           |
+| Raw body 70 KiB for a command                                                       | refused before parse (`too_large`)                                                                                                      |
+| Duplicate identical observation at the same version                                 | same classification as the first; no conflict                                                                                           |
+| Different bytes at the same `work_version`                                          | `conflicted`; relay hands to DST-05 reconcile                                                                                           |
+| `as_of_utc` 5 minutes in the future                                                 | `invalid`, `future_as_of`                                                                                                               |
+| Observation whose `work.authority_id` differs from the prior for the same `work_id` | not a duplicate or conflict: identities are authority-qualified; classified on its own                                                  |
+| Unauthenticated oversize webhook-derived command                                    | `rejected` / `payload_too_large`; no recovery intent                                                                                    |
+| Rollback of DST-07                                                                  | remove the classifier's callers; nothing persisted by DST-07 to revert; retained recovery intents stay with their owner (REL-03/DST-03) |
 
 ## 9. Commands allocated
 
@@ -1280,7 +1283,7 @@ generated byte blocks there is nothing here to regenerate.
    tolerance is `invalid`; within it is not.
 5. `pmo_distribution_degraded_route_and_partial_population`: each
    non-`normal` route label, each non-`live` input, `complete:
-   false`, and a DST-06 `PartialOrder` yield `degraded`.
+false`, and a DST-06 `PartialOrder` yield `degraded`.
 6. `pmo_distribution_unknown_label_and_reason_unsupported`: unknown
    `route_mode` label and unknown reason code yield `unsupported`;
    the reason code is never aliased.
@@ -1350,10 +1353,10 @@ ROADMAP-01 and DOC-01. "Addresses" means this record defines the
 behaviour for DST-07's part; "contributes" means it supplies one input
 and another slice owns the outcome.
 
-| ID     | Crosswalk line / status                         | Source (occurrences)                                                                 | Here |
-| ------ | ----------------------------------------------- | ------------------------------------------------------------------------------------ | ---- |
-| H-R005 | `census/requirements-crosswalk.jsonl:172`, partially implemented | `sources/01_handoff_pm_stack_fleet_orchestration.md:71` (H-092 to H-096): treat priority distribution as its own design; trace producers and consumers; "stable IDs and versioned payloads, provenance and reason codes, replay and reconciliation when views diverge, and how to validate the same ordering across targets"; keep urgent dispatch separate. | Addresses "versioned payloads" and "when views diverge" for the consumer side: sections 3 (states, detection, actions), 4 (bounded payloads), 6 (typed results). Contributes to "trace every producer and consumer" (section 2.1 lists today's consumers and one defect, G5) and to "validate the same ordering across targets" (section 7: unsupported and partial orders are never compared; DST-06 owns the hash). Does not touch urgent dispatch. |
-| P-R026 | `census/requirements-crosswalk.jsonl:333`, design-only (candidate) | `sources/03_full_orchestration_proposal.md:2245-2322` (P-1610 to P-1660): "Suggested Implementation Phases", Phase 1 to 7. | Contributes to phase ordering: DST-07 lands after the shared contract and stable references (Phase 1, P-1615) and before consumers rely on distributed values (section 12). Contributes to Phase 3 "Ensure state changes are durable and recoverable" (P-1634) through the recovery intent (4.5), to Phase 4 "remote mutation verification" (P-1638) through the relay gate (6.2), and to Phase 5 "fleet sync verify" (P-1644) through stale and conflict detection (3.3). Adopts no phase as a production constant. |
+| ID     | Crosswalk line / status                                            | Source (occurrences)                                                                                                                                                                                                                                                                                                                                         | Here                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| ------ | ------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| H-R005 | `census/requirements-crosswalk.jsonl:172`, partially implemented   | `sources/01_handoff_pm_stack_fleet_orchestration.md:71` (H-092 to H-096): treat priority distribution as its own design; trace producers and consumers; "stable IDs and versioned payloads, provenance and reason codes, replay and reconciliation when views diverge, and how to validate the same ordering across targets"; keep urgent dispatch separate. | Addresses "versioned payloads" and "when views diverge" for the consumer side: sections 3 (states, detection, actions), 4 (bounded payloads), 6 (typed results). Contributes to "trace every producer and consumer" (section 2.1 lists today's consumers and one defect, G5) and to "validate the same ordering across targets" (section 7: unsupported and partial orders are never compared; DST-06 owns the hash). Does not touch urgent dispatch.                                                                |
+| P-R026 | `census/requirements-crosswalk.jsonl:333`, design-only (candidate) | `sources/03_full_orchestration_proposal.md:2245-2322` (P-1610 to P-1660): "Suggested Implementation Phases", Phase 1 to 7.                                                                                                                                                                                                                                   | Contributes to phase ordering: DST-07 lands after the shared contract and stable references (Phase 1, P-1615) and before consumers rely on distributed values (section 12). Contributes to Phase 3 "Ensure state changes are durable and recoverable" (P-1634) through the recovery intent (4.5), to Phase 4 "remote mutation verification" (P-1638) through the relay gate (6.2), and to Phase 5 "fleet sync verify" (P-1644) through stale and conflict detection (3.3). Adopts no phase as a production constant. |
 
 Parser tests, deployment and live acceptance remain open evidence for
 both IDs (crosswalk `missing_evidence` on both lines).

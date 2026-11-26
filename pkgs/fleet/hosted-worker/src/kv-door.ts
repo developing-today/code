@@ -60,6 +60,7 @@ export interface KvCatalog {
   admin_role: string;
   admin_door: string;
   door_namespace_scope: string;
+  door_namespace_placement: string;
   statements: KvCatalogStatement[];
   migrations: {
     table: string;
@@ -238,6 +239,12 @@ export function privateScopePrefix(bindingId: string): string {
   return `private:${hex}:`;
 }
 
+/** Whether the caller holds the kv-admin role, or a service token scoped
+ * to the kv-admin door. */
+export function isKvAdmin(ctx: CallerContext): boolean {
+  return isAdmin(ctx);
+}
+
 function isAdmin(ctx: CallerContext): boolean {
   if (ctx.kind === "service") return (ctx.serviceRoutes ?? []).includes(KV_CATALOG.admin_door);
   return ctx.roles.includes(KV_CATALOG.admin_role);
@@ -353,6 +360,29 @@ export async function checkKvScopes(primary: KvPrimary, addresses: ScopedAddress
       throw new FailClosed(403, "kv_scope_refused", `the scope is not namespace ${address.namespace}'s`);
     }
   });
+}
+
+/** The partition a namespace's blobs go to (design §10), or null when
+ * the namespace has no placement policy. There is no default partition. */
+export async function kvNamespacePlacement(
+  primary: KvPrimary,
+  registry: string,
+  namespace: string,
+): Promise<{ jurisdiction: string; tier: string } | null> {
+  const [rows] = await runKvTransaction(primary, [
+    {
+      sql: KV_CATALOG.door_namespace_placement,
+      args: [
+        { type: "text", value: registry },
+        { type: "text", value: namespace },
+      ],
+    },
+  ]);
+  const row = rows?.[0];
+  if (!row) return null;
+  const jurisdiction = cellText(row[0]);
+  const tier = cellText(row[1]);
+  return jurisdiction && tier ? { jurisdiction, tier } : null;
 }
 
 /** One transaction of literal statements, the door's own. */

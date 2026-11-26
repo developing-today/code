@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use id_import_notion::{
-    Inventory, Manifest, Stage, NOTION_API_VERSION, databases::convert_database,
+    Inventory, Manifest, NOTION_API_VERSION, Stage, databases::convert_database,
 };
 use tempfile::tempdir;
 
@@ -44,9 +44,7 @@ fn recorded_multi_source_database_yields_disjoint_schema_claims() {
         .assign_database_identities(&mut |database_id| Ok(format!("note-{database_id}")))
         .unwrap();
     assert_eq!(assigned, 1);
-    assert_eq!(
-        manifest.database_id_to_note_id["db-alpha"], "note-db-alpha"
-    );
+    assert_eq!(manifest.database_id_to_note_id["db-alpha"], "note-db-alpha");
 
     let conversion = convert_database(&mut manifest, "db-alpha").unwrap();
     assert_eq!(conversion.database_id, "db-alpha");
@@ -60,7 +58,10 @@ fn recorded_multi_source_database_yields_disjoint_schema_claims() {
         .iter()
         .map(|claim| claim.data_source_id.as_str())
         .collect();
-    assert_eq!(claimed_sources, BTreeSet::from(["source-alpha", "source-beta"]));
+    assert_eq!(
+        claimed_sources,
+        BTreeSet::from(["source-alpha", "source-beta"])
+    );
 
     // (b) The colliding property name appears once per source, with each
     // source's type — the claims are disjoint, never merged.
@@ -73,15 +74,13 @@ fn recorded_multi_source_database_yields_disjoint_schema_claims() {
     assert!(
         status
             .iter()
-            .any(|claim| claim.data_source_id == "source-alpha"
-                && claim.property_type == "status"),
+            .any(|claim| claim.data_source_id == "source-alpha" && claim.property_type == "status"),
         "source-alpha Status claim: {status:?}"
     );
     assert!(
         status
             .iter()
-            .any(|claim| claim.data_source_id == "source-beta"
-                && claim.property_type == "select"),
+            .any(|claim| claim.data_source_id == "source-beta" && claim.property_type == "select"),
         "source-beta Status claim: {status:?}"
     );
     // Same property id in both sources stays two claims: the claim

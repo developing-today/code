@@ -746,6 +746,7 @@ mod tests {
             rotation: None,
             chat: Some(message),
             anchor: None,
+            thread: None,
         }
     }
 

@@ -72,11 +72,30 @@ const AUDIT: ProjectAudit = {
 async function seededDb(opts: { truncated?: boolean } = {}): Promise<SqlDb> {
   const { sql } = openTenantDb();
   applyMigrations(sql, await tenantStoreMigrations(), () => T1);
-  const insertBoard = (id: string, org: string, number: number, role: string, parent: string | null, order: number, title: string) =>
+  const insertBoard = (
+    id: string,
+    org: string,
+    number: number,
+    role: string,
+    parent: string | null,
+    order: number,
+    title: string,
+  ) =>
     sql.run(
       `INSERT INTO pm_boards (board_id, org, number, node_id, url, role, parent_board_id, sibling_order, title, recorded_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [id, org, number, `PVT_${id}`, `https://github.com/orgs/${org}/projects/${number}`, role, parent, order, title, T1],
+      [
+        id,
+        org,
+        number,
+        `PVT_${id}`,
+        `https://github.com/orgs/${org}/projects/${number}`,
+        role,
+        parent,
+        order,
+        title,
+        T1,
+      ],
     );
   insertBoard("devtoday-main", "developing-today", 4, "overall", null, 0, "Developing Today");
   insertBoard("forks-main", "developing-today-forks", 1, "project", "devtoday-main", 1, "Developing Today Forks");
@@ -228,7 +247,16 @@ describe("dashboard pages", () => {
 
 describe("auditChecks", () => {
   test("flags a missing snapshot, a truncated ingest and an audit total mismatch", () => {
-    const board = { id: "b", org: "o", number: 1, nodeId: "n", url: "https://x", role: "project", siblingOrder: 0, title: "B" } as never;
+    const board = {
+      id: "b",
+      org: "o",
+      number: 1,
+      nodeId: "n",
+      url: "https://x",
+      role: "project",
+      siblingOrder: 0,
+      title: "B",
+    } as never;
     const checks = auditChecks([
       { board, snapshot: null, audit: null },
       {

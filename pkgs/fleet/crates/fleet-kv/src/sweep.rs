@@ -59,11 +59,11 @@ pub trait BlobUploader {
     -> central::Result<KvBlobRefV1>;
 }
 
-/// Where the sweeper places blobs: the upload door and the partition every
-/// blob of this host goes to.
+/// Where the sweeper places blobs: the upload door. The partition is never
+/// the host's choice: it comes from the namespace's placement policy on the
+/// central definition (design §10), and a namespace with none waits.
 pub struct BlobPlane<'a> {
     pub uploader: &'a dyn BlobUploader,
-    pub partition: Partition,
 }
 
 /// Local schema version 5: the host incarnation, each key's central base and
@@ -545,6 +545,9 @@ impl Sweeper<'_> {
         let Some(plane) = self.blobs else {
             return Ok(Staged::Wait("pending_needs_phase3"));
         };
+        let Some(partition) = definition.placement.as_ref() else {
+            return Ok(Staged::Wait("no_blob_placement"));
+        };
         let (digest, mut reader): (String, Box<dyn Read>) = match &working {
             Some(reference) => {
                 let dir = store
@@ -564,14 +567,14 @@ impl Sweeper<'_> {
             registry_id: &definition.registry_id,
             namespace: &intent.namespace,
             scope_id: &scope_id,
-            partition: &plane.partition,
+            partition,
             digest: &digest,
             bytes_len: len,
         };
         let reference = plane.uploader.upload(&upload, &mut reader)?;
         if reference.digest != digest
             || reference.bytes_len != len
-            || reference.partition != plane.partition
+            || &reference.partition != partition
         {
             return Err(CentralError::Store(format!(
                 "the upload door answered a reference to other bytes: {} {} in {}",
@@ -1080,12 +1083,64 @@ mod tests {
         .sweep(store, identity)
     }
 
+    /// The "status" namespace placed in eu/standard, with this threshold.
+    fn placed_primary(threshold: Option<u64>) -> SqlitePrimary {
+        let primary = primary_with_namespaces();
+        let mut placed = Namespace::shared("status", "shared:team");
+        if let Some(threshold) = threshold {
+            placed.blob_threshold = threshold;
+        }
+        placed.placement = Some(Partition::new("eu", "standard"));
+        define_namespace(&primary, &placed).unwrap();
+        primary
+    }
+
     fn tight_primary() -> SqlitePrimary {
+        placed_primary(Some(4))
+    }
+
+    #[test]
+    fn central_sweep_waits_when_the_namespace_has_no_blob_placement() {
         let primary = primary_with_namespaces();
         let mut tight = Namespace::shared("status", "shared:team");
         tight.blob_threshold = 4;
         define_namespace(&primary, &tight).unwrap();
-        primary
+        let door = Door::new(&primary);
+        let plane = BlobPlane { uploader: &door };
+        let store = LocalStore::in_memory().unwrap();
+        let me = session("s1");
+        store.set(&me, "status", "big", b"more than four").unwrap();
+        store.set(&me, "status", "small", b"ok").unwrap();
+        let report = sweep_with(&primary, &store, &me, &plane).unwrap();
+        // The small value lands; the big one never picks a partition itself.
+        assert_eq!(report.committed(), 1, "{report:?}");
+        assert_eq!(report.waiting[0].reason, "no_blob_placement");
+        assert!(door.uploads.lock().unwrap().is_empty());
+        assert_eq!(head(&primary, &shared("big")).unwrap(), None);
+        assert_eq!(pending(&store, &me, "status", "big"), 1);
+    }
+
+    #[test]
+    fn central_sweep_uploads_into_the_placed_partition() {
+        let primary = primary_with_namespaces();
+        let mut placed = Namespace::shared("status", "shared:team");
+        placed.blob_threshold = 4;
+        placed.placement = Some(Partition::new("us", "cold"));
+        define_namespace(&primary, &placed).unwrap();
+        let door = Door::new(&primary);
+        let plane = BlobPlane { uploader: &door };
+        let store = LocalStore::in_memory().unwrap();
+        let me = session("s1");
+        store.set(&me, "status", "big", b"more than four").unwrap();
+        assert_eq!(
+            sweep_with(&primary, &store, &me, &plane)
+                .unwrap()
+                .committed(),
+            1
+        );
+        let reference =
+            KvBlobRefV1::decode(&head(&primary, &shared("big")).unwrap().unwrap().value).unwrap();
+        assert_eq!(reference.partition, Partition::new("us", "cold"));
     }
 
     #[test]
@@ -1093,10 +1148,7 @@ mod tests {
         let primary = tight_primary();
         let door = Door::new(&primary);
         let partition = Partition::new("eu", "standard");
-        let plane = BlobPlane {
-            uploader: &door,
-            partition: partition.clone(),
-        };
+        let plane = BlobPlane { uploader: &door };
         let store = LocalStore::in_memory().unwrap();
         let me = session("s1");
         store.set(&me, "status", "big", b"more than four").unwrap();
@@ -1147,12 +1199,9 @@ mod tests {
             now_ms()
         ));
         std::fs::create_dir_all(&dir).unwrap();
-        let primary = primary_with_namespaces();
+        let primary = placed_primary(None);
         let door = Door::new(&primary);
-        let plane = BlobPlane {
-            uploader: &door,
-            partition: Partition::new("eu", "standard"),
-        };
+        let plane = BlobPlane { uploader: &door };
         let store = LocalStore::open(dir.join("kv.db")).unwrap();
         let me = session("s1");
         let big: Vec<u8> = (0..(crate::working::INLINE_LIMIT + 4096))
@@ -1173,10 +1222,7 @@ mod tests {
         let primary = tight_primary();
         let mut door = Door::new(&primary);
         door.skip_publish = true;
-        let plane = BlobPlane {
-            uploader: &door,
-            partition: Partition::new("eu", "standard"),
-        };
+        let plane = BlobPlane { uploader: &door };
         let store = LocalStore::in_memory().unwrap();
         let me = session("s1");
         store.set(&me, "status", "big", b"more than four").unwrap();
@@ -1188,10 +1234,7 @@ mod tests {
         assert_eq!(pending(&store, &me, "status", "big"), 1);
         // Once the door publishes, the next sweep lands it.
         door.skip_publish = false;
-        let plane = BlobPlane {
-            uploader: &door,
-            partition: Partition::new("eu", "standard"),
-        };
+        let plane = BlobPlane { uploader: &door };
         assert_eq!(
             sweep_with(&primary, &store, &me, &plane)
                 .unwrap()
@@ -1202,7 +1245,7 @@ mod tests {
 
     #[test]
     fn central_sweep_force_blob_places_a_small_value_in_a_blob() {
-        let primary = primary_with_namespaces();
+        let primary = placed_primary(None);
         let store = LocalStore::in_memory().unwrap();
         let me = session("s1");
         store.set_forcing_blob(&me, "status", "tiny", b"x").unwrap();
@@ -1213,10 +1256,7 @@ mod tests {
         assert_eq!(report.waiting[0].reason, "pending_needs_phase3");
         assert_eq!(head(&primary, &shared("tiny")).unwrap(), None);
         let door = Door::new(&primary);
-        let plane = BlobPlane {
-            uploader: &door,
-            partition: Partition::new("eu", "standard"),
-        };
+        let plane = BlobPlane { uploader: &door };
         assert_eq!(
             sweep_with(&primary, &store, &me, &plane)
                 .unwrap()
@@ -1261,10 +1301,7 @@ mod tests {
         }
         let primary = tight_primary();
         let liar = Liar(Door::new(&primary));
-        let plane = BlobPlane {
-            uploader: &liar,
-            partition: Partition::new("eu", "standard"),
-        };
+        let plane = BlobPlane { uploader: &liar };
         let store = LocalStore::in_memory().unwrap();
         let me = session("s1");
         store.set(&me, "status", "big", b"more than four").unwrap();
@@ -1281,10 +1318,7 @@ mod tests {
     fn central_sweep_blob_tombstones_stay_inline() {
         let primary = tight_primary();
         let door = Door::new(&primary);
-        let plane = BlobPlane {
-            uploader: &door,
-            partition: Partition::new("eu", "standard"),
-        };
+        let plane = BlobPlane { uploader: &door };
         let store = LocalStore::in_memory().unwrap();
         let me = session("s1");
         store.set(&me, "status", "big", b"more than four").unwrap();
