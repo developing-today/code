@@ -21,6 +21,7 @@ excludes = [
   "pkgs/mcpx/docs/environment.md",                    # generated table; TestTheEnvironmentDocIsCurrent compares it byte-for-byte with settings.ScriptEnv(), so prettier's table padding can never be applied
   "pkgs/mcpx/docs/story.md",                          # quotes AGENTS.md verbatim; TestStoryDocumentIsCurrent compares the quoted lines byte-for-byte with AGENTS.md, whose *emphasis* prettier would rewrite to _emphasis_
   "pkgs/mcpx/testdata/seeds/**",                      # seed records are one line of compact JSON; TestEveryStoredSeedIsValid refuses any other shape, so biome's JSON formatting can never be applied (it broke 91 records in 3532f9b152a6)
+  "pkgs/fleet/crates/fleet-cert/tests/fixtures/dns/golden-change-set.json", # TestPlanMatchesTheGoldenChangeSet compares generated JSON byte-for-byte; biome formatting invalidates the oracle
 ]
 
 # [formatter.<name>]
