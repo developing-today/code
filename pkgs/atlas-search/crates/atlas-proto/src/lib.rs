@@ -216,11 +216,15 @@ impl FilterSpec {
     /// `None` means the request does not constrain that dimension.
     pub fn dimension_values(&self, name: &str) -> Option<&[String]> {
         match name {
-            "kind" => Some(&self.kind),
-            "topic" => Some(&self.topic),
-            "project" => Some(&self.project),
-            "client" => Some(&self.client),
-            _ => self.dimensions.get(name).map(Vec::as_slice),
+            "kind" => (!self.kind.is_empty()).then_some(self.kind.as_slice()),
+            "topic" => (!self.topic.is_empty()).then_some(self.topic.as_slice()),
+            "project" => (!self.project.is_empty()).then_some(self.project.as_slice()),
+            "client" => (!self.client.is_empty()).then_some(self.client.as_slice()),
+            _ => self
+                .dimensions
+                .get(name)
+                .filter(|values| !values.is_empty())
+                .map(Vec::as_slice),
         }
     }
 
@@ -233,6 +237,9 @@ impl FilterSpec {
             "topic" => self.topic = values,
             "project" => self.project = values,
             "client" => self.client = values,
+            _ if values.is_empty() => {
+                self.dimensions.remove(name);
+            }
             _ => {
                 self.dimensions.insert(name.to_string(), values);
             }
@@ -1186,7 +1193,10 @@ mod tests {
         assert!(filters.dimensions.get("kind").is_none());
         assert_eq!(filters.dimension_values("absent"), None);
         let wire = serde_json::to_value(&filters).unwrap();
-        assert_eq!(wire["dimensions"]["source-app"], serde_json::json!(["mail"]));
+        assert_eq!(
+            wire["dimensions"]["source-app"],
+            serde_json::json!(["mail"])
+        );
         assert_eq!(wire["kind"], serde_json::json!(["message"]));
         let back: FilterSpec = serde_json::from_value(wire).unwrap();
         assert_eq!(back, filters);
@@ -1198,5 +1208,9 @@ mod tests {
             legacy.dimension_values("kind"),
             Some(&["message".to_string()][..])
         );
+        assert_eq!(FilterSpec::default().dimension_values("kind"), None);
+        filters.set_dimension("source-app", Vec::new());
+        assert_eq!(filters.dimension_values("source-app"), None);
+        assert!(!filters.dimensions.contains_key("source-app"));
     }
 }

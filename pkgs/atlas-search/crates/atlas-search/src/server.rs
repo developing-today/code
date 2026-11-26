@@ -30,8 +30,8 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use atlas_core::types::BranchPools;
 use atlas_core::{
     BranchPoolExecutor, BranchQuery, DisclosureContext, Error as CoreError, Filters,
-    JsonlFeedbackSink, JsonlTraceSink, QueryEmbedder, SearchBackend, SearchMode as CoreSearchMode,
-    Manifest, SearchOptions, Sensitivity as CoreSensitivity, TraceContext,
+    JsonlFeedbackSink, JsonlTraceSink, Manifest, QueryEmbedder, SearchBackend,
+    SearchMode as CoreSearchMode, SearchOptions, Sensitivity as CoreSensitivity, TraceContext,
     VectorBackend as CoreVectorBackend, builtin_manifest, chunk_classification, feedback_for,
     load_feedback_dir, record_feedback, run_get_chunk_with_context,
     run_search_with_executor_traced,
@@ -611,6 +611,16 @@ fn core_sensitivity(s: ProtoSensitivity) -> CoreSensitivity {
 }
 
 fn build_filters(req: &SearchRequest, effective: ProtoSensitivity) -> Result<Filters, ServerError> {
+    if req
+        .filters
+        .dimensions
+        .values()
+        .any(|values| !values.is_empty())
+    {
+        return Err(ServerError::bad_request(
+            "generic filter dimensions are not supported by this search surface yet",
+        ));
+    }
     Filters::new(
         req.filters.kind.clone(),
         req.filters.topic.clone(),
@@ -624,6 +634,16 @@ fn build_filters(req: &SearchRequest, effective: ProtoSensitivity) -> Result<Fil
 }
 
 fn validate_request(req: &SearchRequest) -> Result<(), ServerError> {
+    if req
+        .filters
+        .dimensions
+        .values()
+        .any(|values| !values.is_empty())
+    {
+        return Err(ServerError::bad_request(
+            "generic filter dimensions are not supported by this search surface yet",
+        ));
+    }
     if req.pool == 0 || req.pool > 400 {
         return Err(ServerError::bad_request(
             "pool must be between 1 and 400 (design section 2)",
@@ -3818,6 +3838,27 @@ mod tests {
     }
 
     #[test]
+    fn search_rejects_generic_dimensions_before_backend_work() {
+        let (handle, calls) = start(RuntimeLimits::default(), None);
+        let response = submit(
+            handle.addr,
+            PERSONAL_TOKEN,
+            json!({
+                "query": "alpha",
+                "filters": { "dimensions": { "source-app": ["mail"] } }
+            }),
+        );
+        assert_eq!(response.status, 400, "{}", response.body);
+        assert!(
+            response.body["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("not supported")
+        );
+        assert!(calls.lock().unwrap().is_empty(), "refused search did work");
+    }
+
+    #[test]
     fn search_honors_and_dedupes_by_parameters() {
         // Oracle: the API contract flattens SearchParametersV1 onto the
         // request; effective controls reach branch execution and distinguish
@@ -3903,6 +3944,19 @@ mod tests {
         let diff_dimension =
             CacheKey::from_request(&req, ProtoSensitivity::Personal, "snap-1", &builtin);
         assert_ne!(base, diff_dimension);
+    }
+
+    #[test]
+    fn generic_dimensions_are_rejected_until_search_support_lands() {
+        let mut request = SearchRequest::default();
+        request
+            .filters
+            .set_dimension("source-app", vec!["mail".to_string()]);
+
+        let error = build_filters(&request, ProtoSensitivity::Personal).unwrap_err();
+        assert_eq!(error.status, 400);
+        assert_eq!(error.body.error.code, "bad_request");
+        assert!(error.body.error.message.contains("not supported"));
     }
 
     // ----- snapshot-bound result cache (#9943, slice 3 of #5668) --------

@@ -30,10 +30,10 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use atlas_core::types::BranchPools;
 use atlas_core::{
     BranchPoolExecutor, BranchQuery, DisclosureContext, Error as CoreError, Filters,
-    JsonlFeedbackSink, JsonlTraceSink, QueryEmbedder, SearchBackend, SearchMode as CoreSearchMode,
-    SearchOptions, Sensitivity as CoreSensitivity, TraceContext,
-    VectorBackend as CoreVectorBackend, chunk_classification, feedback_for, load_feedback_dir,
-    record_feedback, run_get_chunk, run_search_with_executor_traced,
+    JsonlFeedbackSink, JsonlTraceSink, Manifest, QueryEmbedder, SearchBackend,
+    SearchMode as CoreSearchMode, SearchOptions, Sensitivity as CoreSensitivity, TraceContext,
+    VectorBackend as CoreVectorBackend, builtin_manifest, chunk_classification, feedback_for,
+    load_feedback_dir, record_feedback, run_get_chunk, run_search_with_executor_traced,
 };
 use atlas_proto::{
     BranchState, BranchStates, EmbedRequest, EmbedResponse, ErrorResponse, HealthResponse,
@@ -582,6 +582,16 @@ fn core_sensitivity(s: ProtoSensitivity) -> CoreSensitivity {
 }
 
 fn build_filters(req: &SearchRequest, effective: ProtoSensitivity) -> Result<Filters, ServerError> {
+    if req
+        .filters
+        .dimensions
+        .values()
+        .any(|values| !values.is_empty())
+    {
+        return Err(ServerError::bad_request(
+            "generic filter dimensions are not supported by this search surface yet",
+        ));
+    }
     Filters::new(
         req.filters.kind.clone(),
         req.filters.topic.clone(),
@@ -595,6 +605,16 @@ fn build_filters(req: &SearchRequest, effective: ProtoSensitivity) -> Result<Fil
 }
 
 fn validate_request(req: &SearchRequest) -> Result<(), ServerError> {
+    if req
+        .filters
+        .dimensions
+        .values()
+        .any(|values| !values.is_empty())
+    {
+        return Err(ServerError::bad_request(
+            "generic filter dimensions are not supported by this search surface yet",
+        ));
+    }
     if req.pool == 0 || req.pool > 400 {
         return Err(ServerError::bad_request(
             "pool must be between 1 and 400 (design section 2)",
@@ -632,6 +652,10 @@ pub trait SearchEngine: Send + Sync {
     /// backend carries no shard set report [`NO_SNAPSHOT_ID`].
     fn snapshot_id(&self) -> String {
         NO_SNAPSHOT_ID.to_string()
+    }
+
+    fn surface_manifest(&self) -> Manifest {
+        builtin_manifest()
     }
 
     fn search(
@@ -786,6 +810,10 @@ where
         self.backend
             .snapshot_id()
             .unwrap_or_else(|| NO_SNAPSHOT_ID.to_string())
+    }
+
+    fn surface_manifest(&self) -> Manifest {
+        self.backend.manifest()
     }
 
     fn embedder_state(&self) -> String {
@@ -1022,6 +1050,9 @@ struct CacheKey {
     client: Vec<String>,
     since: Option<String>,
     until: Option<String>,
+    dimensions: Vec<(String, Vec<String>)>,
+    manifest_version: i64,
+    content_hash: String,
     effective_ceiling: ProtoSensitivity,
     /// The resolved disclosure context (#12404): cached and
     /// coalesced payloads are context-filtered, so the context
@@ -1035,6 +1066,7 @@ impl CacheKey {
         req: &SearchRequest,
         effective_ceiling: ProtoSensitivity,
         snapshot: &str,
+        surface: &Manifest,
     ) -> CacheKey {
         CacheKey {
             snapshot: snapshot.to_string(),
@@ -1072,6 +1104,14 @@ impl CacheKey {
             client: req.filters.client.clone(),
             since: req.filters.since.clone(),
             until: req.filters.until.clone(),
+            dimensions: req
+                .filters
+                .dimensions
+                .iter()
+                .map(|(name, values)| (name.clone(), values.clone()))
+                .collect(),
+            manifest_version: surface.version,
+            content_hash: surface.content_hash.clone(),
             effective_ceiling,
             context: request_context(req),
         }
@@ -1544,7 +1584,8 @@ impl JobManager {
         // carries the snapshot, so nothing computed under another
         // snapshot can coalesce onto or answer this request.
         let snapshot = self.engine.snapshot_id();
-        let key = CacheKey::from_request(&request, effective, &snapshot);
+        let surface = self.engine.surface_manifest();
+        let key = CacheKey::from_request(&request, effective, &snapshot, &surface);
         let job_id = new_job_id().map_err(|m| ServerError::new(500, "internal", m))?;
         let job_token = new_job_token().map_err(|m| ServerError::new(500, "internal", m))?;
         let now = Instant::now();
@@ -3667,6 +3708,34 @@ mod tests {
     }
 
     #[test]
+    fn cache_key_binds_manifest_surface_and_generic_dimensions() {
+        let mut request = SearchRequest::default();
+        request.query = "alpha".to_string();
+        let builtin = builtin_manifest();
+        let base = CacheKey::from_request(&request, ProtoSensitivity::Personal, "snap-1", &builtin);
+        let same = CacheKey::from_request(&request, ProtoSensitivity::Personal, "snap-1", &builtin);
+        assert_eq!(base, same);
+
+        let mut other_surface = builtin.clone();
+        other_surface.version += 1;
+        other_surface.content_hash = other_surface.compute_hash();
+        let diff_surface = CacheKey::from_request(
+            &request,
+            ProtoSensitivity::Personal,
+            "snap-1",
+            &other_surface,
+        );
+        assert_ne!(base, diff_surface);
+
+        request
+            .filters
+            .set_dimension("source-app", vec!["mail".to_string()]);
+        let diff_dimension =
+            CacheKey::from_request(&request, ProtoSensitivity::Personal, "snap-1", &builtin);
+        assert_ne!(base, diff_dimension);
+    }
+
+    #[test]
     fn search_rejects_unsupported_parameters_before_backend_work() {
         // Oracle: SearchParametersV1::validate rejects an unimplemented
         // planner stage, and the HTTP handler validates before scheduling.
@@ -3677,6 +3746,27 @@ mod tests {
             json!({"query": "alpha", "planner_enabled": true}),
         );
         assert_eq!(response.status, 400, "{}", response.body);
+        assert!(calls.lock().unwrap().is_empty(), "refused search did work");
+    }
+
+    #[test]
+    fn search_rejects_generic_dimensions_before_backend_work() {
+        let (handle, calls) = start(RuntimeLimits::default(), None);
+        let response = submit(
+            handle.addr,
+            PERSONAL_TOKEN,
+            json!({
+                "query": "alpha",
+                "filters": { "dimensions": { "source-app": ["mail"] } }
+            }),
+        );
+        assert_eq!(response.status, 400, "{}", response.body);
+        assert!(
+            response.body["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("not supported")
+        );
         assert!(calls.lock().unwrap().is_empty(), "refused search did work");
     }
 
