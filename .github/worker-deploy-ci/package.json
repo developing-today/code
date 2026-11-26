@@ -1,0 +1,17 @@
+{
+  "name": "github-ci-worker-deployment-toolchain",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": "24.22.0"
+  },
+  "scripts": {
+    "build": "cf build",
+    "test:offline": "node --test test/deployment-config.test.mjs test/deployment-guard.test.mjs"
+  },
+  "devDependencies": {
+    "cf": "1.0.0-rc.1",
+    "wrangler": "4.166.0"
+  }
+}

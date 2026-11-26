@@ -204,3 +204,5 @@ pkgs/id/examples/zig-counter/zig-out/
 # dirty-tree refusal fire permanently (#5562). Root-anchored so only the
 # repo-root cache is ignored.
 /.cache/
+
+.github/worker-deploy-ci/.cloudflare/
