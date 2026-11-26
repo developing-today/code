@@ -1,4 +1,4 @@
-//! The v1 attestation reducer (#2039 phase 4).
+//! The v1 attestation reducer (#2039 phases 4 and 5).
 //!
 //! [`reduce`] computes a match's [`V1MatchState`] from signature-verified
 //! objects alone: the genesis pair, result claims, witness decisions,
@@ -12,7 +12,8 @@
 //!   from the right author count: genesis and claims from the two seated
 //!   players, decisions from the genesis-named witness on the pinned logic
 //!   (no witness-shopping), objections from a seated player naming an object
-//!   of this match, audit reports that pass the frozen honest-scope rules.
+//!   of this match, audit reports that pass the frozen honest-scope rules
+//!   from a key that fits the claimed auditor role (never a seated player).
 //!   Objects that name this agreement but fail admission are reported in
 //!   [`Reduction::ignored`].
 //! - **Evidence closure.** Every admitted object depends on its own chain
@@ -33,16 +34,38 @@
 //! - **Separate judgment.** An audit report never changes the state: it is
 //!   checked for evidence closure and reported, and a registry decides
 //!   whether to accept it as an `audit-resolved` basis (phase 6).
-//! - **No finality without receipts.** Phase 4 has no receipt/closure
-//!   evidence (phase 5), so [`Reduction::finality_proven`] is always `false`
-//!   and the reducer never emits [`V1MatchState::Final`]. A self-authored
-//!   frontier never proves first receipt.
+//! - **Witness fallback (phase 5).** Decisions count only from the
+//!   genesis-named witness or the fallback pinned in genesis
+//!   [`WitnessTerms`]. A fallback decision takes effect only once issuer
+//!   receipts show it arrived at least `fallback_delay_secs` after the
+//!   issuer first received a claim ([`Reduction::premature`] otherwise); a
+//!   primary decision the issuer received no later than the first effective
+//!   fallback decision outranks it, and the losers are reported in
+//!   [`Reduction::superseded`]. Agreements whose terms fail
+//!   [`WitnessTerms::validate`] stay `Proposed`.
+//! - **Honest evidence labels.** Complete evidence must name two claims by
+//!   different players; partial evidence must not list a claim from the
+//!   player it calls missing, and its non-receipt statement must be the
+//!   deciding witness's own event. A mislabeled decision is ignored.
+//! - **Finality only from receipts.** Only the receipt issuer named in the
+//!   terms can sign receipts and closures. A witnessed result becomes
+//!   [`V1MatchState::Final`] when an issuer closure statement checks out:
+//!   the issuer received the decision at `t0`, and the closure comes no
+//!   earlier than each seat's deadline (the objection window from the
+//!   issuer serving that seat, capped at `t0 + objection_cap_secs`; the cap
+//!   for a seat never served). Once a closure is proven, only objections the
+//!   issuer received by the objector's deadline still dispute; late and
+//!   never-received objections are reported, not counted. A self-authored
+//!   frontier never proves first receipt. With no issuer (an offline match)
+//!   a witnessed result stays `Witnessed`, with
+//!   [`Finality::NoReceiptIssuer`]; a concession stays `Agreed`.
 
 use std::collections::{HashMap, HashSet};
 
 use p2panda_core::Hash;
 
 use super::audit::AuditReport;
+use super::receipt::{Closure, Receipt, ReceiptEvent, WitnessTerms};
 use super::{Objection, V1MatchState, VERSION, WitnessDecision, WitnessEvidence};
 use crate::attestation::{GenesisAgreement, PlayerId, ResultClaim, author_id};
 use id_store::chain::Event;
@@ -110,12 +133,16 @@ pub struct Evidence<'a> {
     pub genesis: &'a [Signed<GenesisAgreement>],
     /// Result claims.
     pub claims: &'a [Signed<ResultClaim>],
-    /// Witness decisions.
+    /// Witness decisions, from the primary witness or the fallback.
     pub decisions: &'a [Signed<WitnessDecision>],
     /// Objections.
     pub objections: &'a [Signed<Objection>],
     /// Audit reports.
     pub audits: &'a [Signed<AuditReport>],
+    /// Receipt-issuer receipts.
+    pub receipts: &'a [Signed<Receipt>],
+    /// Receipt-issuer closure statements.
+    pub closures: &'a [Signed<Closure>],
     /// Positions of referenced events that are not attestation objects.
     pub positions: &'a [EventPosition],
     /// Verified fork proofs.
@@ -129,11 +156,31 @@ pub enum Basis {
     None,
     /// Both players concurred (mutual concession).
     Concession,
-    /// The named witness decided on complete evidence.
+    /// A named witness decided on complete evidence.
     WitnessComplete,
-    /// The named witness decided on partial evidence only; procedural, not
+    /// A named witness decided on partial evidence only; procedural, not
     /// replay proof.
     WitnessPartial,
+}
+
+/// Whether a witnessed result is protocol-final.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Finality {
+    /// The state is not a witnessed result.
+    NotApplicable,
+    /// The agreement names no receipt issuer (an offline match): nothing can
+    /// prove when the objection window closed, so the result stays
+    /// [`V1MatchState::Witnessed`] and is never final.
+    NoReceiptIssuer,
+    /// A receipt issuer is named but no closure statement checks out against
+    /// its receipts yet.
+    Unproven,
+    /// This issuer closure statement closed the window: the state is
+    /// [`V1MatchState::Final`].
+    Proven {
+        /// The closure statement's id.
+        closure: Hash,
+    },
 }
 
 /// The reducer's answer, with the evidence it could not use.
@@ -143,9 +190,15 @@ pub struct Reduction {
     pub state: V1MatchState,
     /// The basis of a non-disputed, non-void result.
     pub basis: Basis,
-    /// Always `false` in v1 phase 4: no receipt/closure evidence exists yet,
-    /// so no state is protocol-final.
+    /// The result's outcome: the concurring claims' outcome for an agreed
+    /// match, the effective decision's for a witnessed or final one, and
+    /// `None` otherwise.
+    pub outcome: Option<String>,
+    /// Whether the result is protocol-final; `true` exactly when
+    /// [`Reduction::finality`] is [`Finality::Proven`].
     pub finality_proven: bool,
+    /// Why a witnessed result is or is not final.
+    pub finality: Finality,
     /// Admitted match objects voided by fork evidence, in input order.
     pub void: Vec<Hash>,
     /// Admitted audit reports voided by fork evidence. They do not change
@@ -153,12 +206,31 @@ pub struct Reduction {
     pub void_audits: Vec<Hash>,
     /// Admitted audit reports with intact evidence closure.
     pub audits: Vec<Hash>,
+    /// Issuer receipts and closures voided by fork evidence. They do not
+    /// void the match; they simply prove nothing.
+    pub void_receipts: Vec<Hash>,
+    /// Witness decisions that lost to another witness under the pinned
+    /// fallback rule: a fallback decision when the primary decided in time,
+    /// or a primary decision the issuer first received after a fallback
+    /// decision took effect.
+    pub superseded: Vec<Hash>,
+    /// Fallback decisions without receipts proving the primary's delay had
+    /// run out. They count for nothing until such receipts appear.
+    pub premature: Vec<Hash>,
+    /// Objections the issuer first received after the objector's window
+    /// closed. Reported only once a closure is proven.
+    pub late_objections: Vec<Hash>,
+    /// Objections the issuer never received: a self-authored frontier does
+    /// not show when an objection was lodged. Reported only once a closure
+    /// is proven.
+    pub unlodged_objections: Vec<Hash>,
     /// Referenced hashes with no known position or object: the reducer
     /// cannot check them against forks until they are synced.
     pub unresolved: Vec<Hash>,
     /// Objects that name this agreement but failed admission (wrong author,
-    /// wrong witness or logic, malformed outcome or evidence, dishonest audit
-    /// scope), and seated objections whose target is outside this match.
+    /// wrong witness or logic, malformed or mislabeled outcome or evidence,
+    /// dishonest audit scope, receipts not from the issuer), and seated
+    /// objections whose target is outside this match.
     pub ignored: Vec<Hash>,
 }
 
@@ -167,10 +239,17 @@ impl Reduction {
         Self {
             state,
             basis: Basis::None,
+            outcome: None,
             finality_proven: false,
+            finality: Finality::NotApplicable,
             void: Vec::new(),
             void_audits: Vec::new(),
             audits: Vec::new(),
+            void_receipts: Vec::new(),
+            superseded: Vec::new(),
+            premature: Vec::new(),
+            late_objections: Vec::new(),
+            unlodged_objections: Vec::new(),
             unresolved: Vec::new(),
             ignored: Vec::new(),
         }
@@ -222,12 +301,124 @@ fn decision_refs(decision: &WitnessDecision) -> Vec<Hash> {
     }
 }
 
+/// Whether a decision's evidence label matches the evidence it names, as far
+/// as the known objects can tell. Complete evidence must name two claims by
+/// different players, never some other known object; partial evidence must
+/// not list a claim from the player it says was missing, and its non-receipt
+/// statement must be the deciding witness's own event, never a claim or
+/// another author's event. References nobody has synced stay unresolved.
+fn honest_label(
+    decision: &Signed<WitnessDecision>,
+    claim_author: &HashMap<Hash, PlayerId>,
+    known: &HashMap<Hash, (PlayerId, u64)>,
+) -> bool {
+    match &decision.body.evidence {
+        WitnessEvidence::Complete {
+            claim_a, claim_b, ..
+        } => {
+            let not_a_claim = |id: &Hash| known.contains_key(id) && !claim_author.contains_key(id);
+            if not_a_claim(claim_a) || not_a_claim(claim_b) {
+                return false;
+            }
+            !matches!(
+                (claim_author.get(claim_a), claim_author.get(claim_b)),
+                (Some(a), Some(b)) if a == b
+            )
+        }
+        WitnessEvidence::Partial {
+            received,
+            missing_from,
+            non_receipt_statement,
+            ..
+        } => {
+            !received
+                .iter()
+                .any(|id| claim_author.get(id) == Some(missing_from))
+                && !claim_author.contains_key(non_receipt_statement)
+                && known
+                    .get(non_receipt_statement)
+                    .is_none_or(|(author, _)| *author == decision.author)
+        }
+    }
+}
+
+/// Issuer receipt times. Every query takes the earliest matching receipt.
+struct Clock<'e> {
+    receipts: Vec<&'e Signed<Receipt>>,
+}
+
+impl Clock<'_> {
+    fn first(&self, subject: Hash, event: ReceiptEvent) -> Option<u64> {
+        self.receipts
+            .iter()
+            .filter(|object| object.body.subject == subject && object.body.event == event)
+            .map(|object| object.body.at_secs)
+            .min()
+    }
+
+    fn received(&self, subject: Hash, from: PlayerId) -> Option<u64> {
+        self.first(subject, ReceiptEvent::Received { from })
+    }
+
+    fn served(&self, subject: Hash, to: PlayerId) -> Option<u64> {
+        self.first(subject, ReceiptEvent::Served { to })
+    }
+}
+
+/// The earliest closure statement that checks out against the receipts, with
+/// each seat's objection deadline for its decision. A decision's window opens
+/// when the issuer first received it (`t0`). A seat the issuer served runs
+/// `objection_window_secs` from that service; an unserved seat runs to the
+/// cap; neither runs past `t0 + objection_cap_secs`. The closure must come
+/// no earlier than the later deadline.
+fn prove_closure(
+    closures: &[&Signed<Closure>],
+    decisions: &[&Signed<WitnessDecision>],
+    clock: &Clock<'_>,
+    agreement: &GenesisAgreement,
+    cap_secs: u64,
+) -> Option<(Hash, [u64; 2])> {
+    closures
+        .iter()
+        .filter_map(|closure| {
+            let decision = decisions
+                .iter()
+                .find(|decision| decision.id == closure.body.decision)?;
+            let opened = clock.received(decision.id, decision.author)?;
+            let limit = opened.saturating_add(cap_secs);
+            let deadlines = agreement.players.map(|player| {
+                clock.served(decision.id, player).map_or(limit, |served| {
+                    served
+                        .max(opened)
+                        .saturating_add(agreement.objection_window_secs)
+                        .min(limit)
+                })
+            });
+            let latest = deadlines[0].max(deadlines[1]);
+            (closure.body.closed_at_secs >= latest).then_some((
+                closure.body.closed_at_secs,
+                closure.id,
+                deadlines,
+            ))
+        })
+        .min_by(|a, b| {
+            a.0.cmp(&b.0)
+                .then_with(|| a.1.as_bytes().cmp(b.1.as_bytes()))
+        })
+        .map(|(_, id, deadlines)| (id, deadlines))
+}
+
 /// Computes the v1 match state for `agreement` from `evidence`. See the
 /// module documentation for the rules.
 #[must_use]
+#[allow(clippy::too_many_lines)]
 pub fn reduce(agreement: &GenesisAgreement, evidence: &Evidence<'_>) -> Reduction {
     let [first, second] = agreement.players;
     if first == second {
+        return Reduction::with_state(V1MatchState::Proposed);
+    }
+    let terms = WitnessTerms::of(agreement);
+    if terms.validate(agreement).is_err() {
         return Reduction::with_state(V1MatchState::Proposed);
     }
     let Ok(agreement_hash) = agreement.agreement_hash() else {
@@ -236,7 +427,54 @@ pub fn reduce(agreement: &GenesisAgreement, evidence: &Evidence<'_>) -> Reductio
     let seated = |player: &PlayerId| agreement.players.contains(player);
     let player_hex = agreement.players.map(|player| hex(&player));
     let outcome_ok = |outcome: &str| outcome == "draw" || player_hex.iter().any(|h| h == outcome);
+    let forked = |author: &PlayerId, seq: u64| {
+        evidence
+            .forks
+            .iter()
+            .any(|proof| proof.author == *author && proof.seq <= seq)
+    };
     let mut ignored = Vec::new();
+
+    // Every signed object's position, admitted or not: a reference to a
+    // known object is never "unresolved", and mislabel checks need authors.
+    let mut known: HashMap<Hash, (PlayerId, u64)> = evidence
+        .positions
+        .iter()
+        .map(|position| (position.id, (position.author, position.seq)))
+        .collect();
+    {
+        let mut note = |id: Hash, author: PlayerId, seq: u64| {
+            known.insert(id, (author, seq));
+        };
+        evidence
+            .genesis
+            .iter()
+            .for_each(|o| note(o.id, o.author, o.seq));
+        evidence
+            .claims
+            .iter()
+            .for_each(|o| note(o.id, o.author, o.seq));
+        evidence
+            .decisions
+            .iter()
+            .for_each(|o| note(o.id, o.author, o.seq));
+        evidence
+            .objections
+            .iter()
+            .for_each(|o| note(o.id, o.author, o.seq));
+        evidence
+            .audits
+            .iter()
+            .for_each(|o| note(o.id, o.author, o.seq));
+        evidence
+            .receipts
+            .iter()
+            .for_each(|o| note(o.id, o.author, o.seq));
+        evidence
+            .closures
+            .iter()
+            .for_each(|o| note(o.id, o.author, o.seq));
+    }
 
     // Admission.
     let genesis: Vec<&Signed<GenesisAgreement>> = evidence
@@ -255,7 +493,12 @@ pub fn reduce(agreement: &GenesisAgreement, evidence: &Evidence<'_>) -> Reductio
             ignored.push(object.id);
         }
     }
-    let mut decisions = Vec::new();
+    let claim_author: HashMap<Hash, PlayerId> = claims
+        .iter()
+        .map(|object| (object.id, object.author))
+        .collect();
+    let mut primary = Vec::new();
+    let mut fallback = Vec::new();
     for object in evidence.decisions {
         let decision = &object.body;
         if decision.agreement != agreement_hash {
@@ -267,13 +510,15 @@ pub fn reduce(agreement: &GenesisAgreement, evidence: &Evidence<'_>) -> Reductio
             } => claim_a != claim_b,
             WitnessEvidence::Partial { missing_from, .. } => seated(missing_from),
         };
-        if agreement.witness == Some(object.author)
-            && decision.version == VERSION
+        let well_formed = decision.version == VERSION
             && decision.logic_hash == agreement.logic_hash
             && outcome_ok(&decision.outcome)
             && evidence_ok
-        {
-            decisions.push(object);
+            && honest_label(object, &claim_author, &known);
+        if well_formed && agreement.witness == Some(object.author) {
+            primary.push(object);
+        } else if well_formed && terms.fallback == Some(object.author) {
+            fallback.push(object);
         } else {
             ignored.push(object.id);
         }
@@ -283,8 +528,85 @@ pub fn reduce(agreement: &GenesisAgreement, evidence: &Evidence<'_>) -> Reductio
         if object.body.agreement != agreement_hash {
             continue;
         }
-        if object.body.validate().is_ok() && object.body.logic_hash == agreement.logic_hash {
+        if object.body.validate().is_ok()
+            && object.body.logic_hash == agreement.logic_hash
+            && object.body.match_id == agreement.game_id
+            && object.body.role.fits(agreement, &object.author)
+        {
             audits.push(object);
+        } else {
+            ignored.push(object.id);
+        }
+    }
+    let from_issuer = |author: &PlayerId, version: u8| {
+        terms.receipt_issuer.as_ref() == Some(author) && version == VERSION
+    };
+    let mut receipts = Vec::new();
+    for object in evidence.receipts {
+        if object.body.agreement != agreement_hash {
+            continue;
+        }
+        if from_issuer(&object.author, object.body.version) {
+            receipts.push(object);
+        } else {
+            ignored.push(object.id);
+        }
+    }
+    // Receipt times come only from the issuer's unforked history.
+    let clock = Clock {
+        receipts: receipts
+            .iter()
+            .copied()
+            .filter(|object| !forked(&object.author, object.seq))
+            .collect(),
+    };
+
+    // The pinned fallback rule. A fallback decision takes effect only once
+    // the issuer received it at least `fallback_delay_secs` after it first
+    // received any claim; a primary decision the issuer received no later
+    // than the first effective fallback decision outranks every fallback
+    // decision. Nobody chooses among witnesses after play.
+    let mut superseded = Vec::new();
+    let mut premature = Vec::new();
+    let opened = claims
+        .iter()
+        .filter_map(|object| clock.received(object.id, object.author))
+        .min();
+    let mut timed = Vec::new();
+    for object in fallback {
+        match (clock.received(object.id, object.author), opened) {
+            (Some(at), Some(opened)) if at >= opened.saturating_add(terms.fallback_delay_secs) => {
+                timed.push((at, object));
+            }
+            _ => premature.push(object.id),
+        }
+    }
+    let takeover = timed.iter().map(|(at, _)| *at).min();
+    let (in_time, late): (Vec<_>, Vec<_>) = primary.into_iter().partition(|object| {
+        takeover.is_none_or(|takeover| {
+            clock
+                .received(object.id, object.author)
+                .is_some_and(|at| at <= takeover)
+        })
+    });
+    superseded.extend(late.iter().map(|object| object.id));
+    let decisions: Vec<&Signed<WitnessDecision>> = if in_time.is_empty() {
+        timed.into_iter().map(|(_, object)| object).collect()
+    } else {
+        superseded.extend(timed.iter().map(|(_, object)| object.id));
+        in_time
+    };
+
+    let mut closures = Vec::new();
+    for object in evidence.closures {
+        if object.body.agreement != agreement_hash {
+            continue;
+        }
+        let names_decision = decisions
+            .iter()
+            .any(|decision| decision.id == object.body.decision);
+        if from_issuer(&object.author, object.body.version) && names_decision {
+            closures.push(object);
         } else {
             ignored.push(object.id);
         }
@@ -294,6 +616,7 @@ pub fn reduce(agreement: &GenesisAgreement, evidence: &Evidence<'_>) -> Reductio
         .chain(claims.iter().map(|object| object.id))
         .chain(decisions.iter().map(|object| object.id))
         .chain(audits.iter().map(|object| object.id))
+        .chain(closures.iter().map(|object| object.id))
         .collect();
     let mut objections = Vec::new();
     for object in evidence.objections {
@@ -337,18 +660,19 @@ pub fn reduce(agreement: &GenesisAgreement, evidence: &Evidence<'_>) -> Reductio
             .iter()
             .map(|&object| Node::of(object, object.body.dependencies())),
     );
-
-    let forked = |author: &PlayerId, seq: u64| {
-        evidence
-            .forks
+    let receipt_start = nodes.len();
+    nodes.extend(
+        receipts
             .iter()
-            .any(|proof| proof.author == *author && proof.seq <= seq)
-    };
-    let mut positions: HashMap<Hash, (PlayerId, u64)> = evidence
-        .positions
-        .iter()
-        .map(|position| (position.id, (position.author, position.seq)))
-        .collect();
+            .map(|&object| Node::of(object, std::iter::once(object.body.subject))),
+    );
+    nodes.extend(
+        closures
+            .iter()
+            .map(|&object| Node::of(object, std::iter::once(object.body.decision))),
+    );
+
+    let mut positions = known;
     for node in &nodes {
         positions.insert(node.id, (node.author, node.seq));
     }
@@ -385,7 +709,8 @@ pub fn reduce(agreement: &GenesisAgreement, evidence: &Evidence<'_>) -> Reductio
             break;
         }
     }
-    let (match_nodes, audit_nodes) = nodes.split_at(audit_start);
+    let (match_nodes, aux_nodes) = nodes.split_at(audit_start);
+    let (audit_nodes, receipt_nodes) = aux_nodes.split_at(receipt_start - audit_start);
     let void_objects: Vec<Hash> = match_nodes
         .iter()
         .filter(|node| void.contains(&node.id))
@@ -395,11 +720,27 @@ pub fn reduce(agreement: &GenesisAgreement, evidence: &Evidence<'_>) -> Reductio
         .iter()
         .map(|node| node.id)
         .partition(|id| void.contains(id));
+    let void_receipts: Vec<Hash> = receipt_nodes
+        .iter()
+        .map(|node| node.id)
+        .filter(|id| void.contains(id))
+        .collect();
+    let clock = Clock {
+        receipts: clock
+            .receipts
+            .into_iter()
+            .filter(|object| !void.contains(&object.id))
+            .collect(),
+    };
+    closures.retain(|object| !void.contains(&object.id));
 
     let mut result = Reduction {
         void: void_objects,
         void_audits,
         audits: live_audits,
+        void_receipts,
+        superseded,
+        premature,
         unresolved,
         ignored,
         ..Reduction::with_state(V1MatchState::Proposed)
@@ -444,6 +785,35 @@ pub fn reduce(agreement: &GenesisAgreement, evidence: &Evidence<'_>) -> Reductio
             Some(_) => {}
         }
     }
+
+    // A proven closure ends the objection window: only objections the
+    // issuer received by the objector's deadline still count. Without one,
+    // every admitted objection counts.
+    let proven = terms.receipt_issuer.and_then(|_| {
+        prove_closure(
+            &closures,
+            &decisions,
+            &clock,
+            agreement,
+            terms.objection_cap_secs,
+        )
+    });
+    if let Some((_, deadlines)) = proven {
+        objections.retain(|object| {
+            let seat = usize::from(object.author == agreement.players[1]);
+            match clock.received(object.id, object.author) {
+                None => {
+                    result.unlodged_objections.push(object.id);
+                    false
+                }
+                Some(at) if at > deadlines[seat] => {
+                    result.late_objections.push(object.id);
+                    false
+                }
+                Some(_) => true,
+            }
+        });
+    }
     if !objections.is_empty() {
         result.state = V1MatchState::Disputed;
         return result;
@@ -457,6 +827,7 @@ pub fn reduce(agreement: &GenesisAgreement, evidence: &Evidence<'_>) -> Reductio
             } else {
                 result.state = V1MatchState::Agreed;
                 result.basis = Basis::Concession;
+                result.outcome = Some(a.outcome.clone());
             }
         }
         [Some(claim), None] | [None, Some(claim)] if contradicts(claim) => {
@@ -464,6 +835,7 @@ pub fn reduce(agreement: &GenesisAgreement, evidence: &Evidence<'_>) -> Reductio
         }
         _ if decided.is_some() => {
             result.state = V1MatchState::Witnessed;
+            result.outcome = decided.map(str::to_owned);
             result.basis = if decisions
                 .iter()
                 .any(|object| matches!(object.body.evidence, WitnessEvidence::Complete { .. }))
@@ -471,6 +843,15 @@ pub fn reduce(agreement: &GenesisAgreement, evidence: &Evidence<'_>) -> Reductio
                 Basis::WitnessComplete
             } else {
                 Basis::WitnessPartial
+            };
+            result.finality = match (terms.receipt_issuer, proven) {
+                (None, _) => Finality::NoReceiptIssuer,
+                (Some(_), None) => Finality::Unproven,
+                (Some(_), Some((closure, _))) => {
+                    result.state = V1MatchState::Final;
+                    result.finality_proven = true;
+                    Finality::Proven { closure }
+                }
             };
         }
         _ => {}
@@ -481,10 +862,11 @@ pub fn reduce(agreement: &GenesisAgreement, evidence: &Evidence<'_>) -> Reductio
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
-    use super::{Basis, EventPosition, Evidence, ForkProof, Signed, hex, reduce};
+    use super::{Basis, EventPosition, Evidence, Finality, ForkProof, Signed, hex, reduce};
     use crate::attestation::v1::audit::{
         AuditReport, AuditScope, AuditVerdict, AuditorRole, CheckpointInterval,
     };
+    use crate::attestation::v1::receipt::{Closure, Receipt, ReceiptEvent, WitnessTerms};
     use crate::attestation::v1::{
         Objection, V1MatchState, VERSION, WitnessDecision, WitnessEvidence,
     };
@@ -495,6 +877,8 @@ mod tests {
     const B: PlayerId = [2; 32];
     const W: PlayerId = [3; 32];
     const OUTSIDER: PlayerId = [4; 32];
+    const FALLBACK: PlayerId = [5; 32];
+    const ISSUER: PlayerId = [6; 32];
 
     fn h(name: &str) -> Hash {
         Hash::digest(name.as_bytes())
@@ -507,6 +891,7 @@ mod tests {
             players: [A, B],
             witness: Some(W),
             objection_window_secs: 3600,
+            witness_terms: None,
         }
     }
 
@@ -530,6 +915,8 @@ mod tests {
         decisions: Vec<Signed<WitnessDecision>>,
         objections: Vec<Signed<Objection>>,
         audits: Vec<Signed<AuditReport>>,
+        receipts: Vec<Signed<Receipt>>,
+        closures: Vec<Signed<Closure>>,
         positions: Vec<EventPosition>,
         forks: Vec<ForkProof>,
     }
@@ -560,9 +947,66 @@ mod tests {
                 decisions: Vec::new(),
                 objections: Vec::new(),
                 audits: Vec::new(),
+                receipts: Vec::new(),
+                closures: Vec::new(),
                 positions,
                 forks: Vec::new(),
             }
+        }
+
+        /// A world whose genesis pins a fallback witness, a receipt issuer
+        /// and a two-hour objection cap.
+        fn with_terms() -> Self {
+            let mut world = Self::new();
+            world.agreement.witness_terms = Some(WitnessTerms {
+                fallback: Some(FALLBACK),
+                fallback_delay_secs: 600,
+                receipt_issuer: Some(ISSUER),
+                objection_cap_secs: 7200,
+            });
+            world.regenesis();
+            world
+        }
+
+        /// Re-signs both genesis events over the current agreement.
+        fn regenesis(&mut self) {
+            for object in &mut self.genesis {
+                object.body = self.agreement.clone();
+            }
+        }
+
+        fn receipt(&mut self, name: &str, subject: &str, event: ReceiptEvent, at_secs: u64) {
+            let body = Receipt {
+                version: VERSION,
+                agreement: self.agreement.agreement_hash().unwrap(),
+                subject: h(subject),
+                event,
+                at_secs,
+            };
+            let seq = u64::try_from(self.receipts.len() + self.closures.len()).unwrap();
+            self.receipts.push(signed(name, ISSUER, seq, &[], body));
+        }
+
+        fn received(&mut self, subject: &str, from: PlayerId, at_secs: u64) {
+            let name = format!("received {subject}");
+            self.receipt(&name, subject, ReceiptEvent::Received { from }, at_secs);
+        }
+
+        fn served(&mut self, subject: &str, to: PlayerId, at_secs: u64) {
+            let name = format!("served {subject} {}", to[0]);
+            self.receipt(&name, subject, ReceiptEvent::Served { to }, at_secs);
+        }
+
+        fn close(&mut self, decision: &str, closed_at_secs: u64) {
+            let body = Closure {
+                version: VERSION,
+                agreement: self.agreement.agreement_hash().unwrap(),
+                decision: h(decision),
+                closed_at_secs,
+            };
+            let seq = u64::try_from(self.receipts.len() + self.closures.len()).unwrap();
+            self.closures
+                .push(signed("closure", ISSUER, seq, &[], body));
         }
 
         fn claim(&mut self, name: &str, author: PlayerId, outcome: &str, state: &str) {
@@ -646,6 +1090,8 @@ mod tests {
                     decisions: &self.decisions,
                     objections: &self.objections,
                     audits: &self.audits,
+                    receipts: &self.receipts,
+                    closures: &self.closures,
                     positions: &self.positions,
                     forks: &self.forks,
                 },
@@ -1096,5 +1542,482 @@ mod tests {
         let backward = world.reduce();
         assert_eq!(forward.state, backward.state);
         assert_eq!(forward.basis, backward.basis);
+    }
+
+    /// A partial witness decision the issuer received, served to both seats
+    /// and closed at the later seat's deadline (`210 + 3600` for A,
+    /// `220 + 3600` for B).
+    fn closed(w: &mut World) {
+        w.claim("claim a", A, &win(A), "final");
+        w.received("claim a", A, 100);
+        w.decision("decision", W, &win(A), true);
+        w.received("decision", W, 200);
+        w.served("decision", A, 210);
+        w.served("decision", B, 220);
+        w.close("decision", 3820);
+    }
+
+    fn objected(w: &mut World, lodged_at: Option<u64>) {
+        closed(w);
+        w.objection("objection", B, h("decision"));
+        if let Some(at) = lodged_at {
+            w.received("objection", B, at);
+        }
+    }
+
+    fn fallback_after(w: &mut World, at: u64) {
+        w.claim("claim a", A, &win(A), "final");
+        w.received("claim a", A, 100);
+        w.decision("fallback", FALLBACK, &win(A), true);
+        w.received("fallback", FALLBACK, at);
+    }
+
+    type TermsRow = (&'static str, fn(&mut World), V1MatchState, Basis, Finality);
+
+    #[test]
+    fn receipt_and_fallback_table() {
+        let unproven = Finality::Unproven;
+        let proven = Finality::Proven {
+            closure: h("closure"),
+        };
+        let rows: &[TermsRow] = &[
+            (
+                "a closure at both seats' deadlines is final",
+                closed,
+                V1MatchState::Final,
+                Basis::WitnessPartial,
+                proven,
+            ),
+            (
+                "a closure before the slower seat's deadline proves nothing",
+                |w| {
+                    closed(w);
+                    w.closures[0].body.closed_at_secs = 3819;
+                },
+                V1MatchState::Witnessed,
+                Basis::WitnessPartial,
+                unproven,
+            ),
+            (
+                "an unserved seat's window runs to the cap",
+                |w| {
+                    closed(w);
+                    w.receipts
+                        .retain(|object| object.id != h("served decision 2"));
+                },
+                V1MatchState::Witnessed,
+                Basis::WitnessPartial,
+                unproven,
+            ),
+            (
+                "a closure at the cap covers an unserved seat",
+                |w| {
+                    closed(w);
+                    w.receipts
+                        .retain(|object| object.id != h("served decision 2"));
+                    w.closures[0].body.closed_at_secs = 7400;
+                },
+                V1MatchState::Final,
+                Basis::WitnessPartial,
+                proven,
+            ),
+            (
+                "the cap bounds a late service",
+                |w| {
+                    closed(w);
+                    w.receipts
+                        .retain(|object| object.id != h("served decision 2"));
+                    w.served("decision", B, 7000);
+                    w.closures[0].body.closed_at_secs = 7400;
+                },
+                V1MatchState::Final,
+                Basis::WitnessPartial,
+                proven,
+            ),
+            (
+                "no receipt of the decision means no window opened",
+                |w| {
+                    closed(w);
+                    w.receipts
+                        .retain(|object| object.id != h("received decision"));
+                },
+                V1MatchState::Witnessed,
+                Basis::WitnessPartial,
+                unproven,
+            ),
+            (
+                "a closure signed by the witness is ignored",
+                |w| {
+                    closed(w);
+                    w.closures[0].author = W;
+                },
+                V1MatchState::Witnessed,
+                Basis::WitnessPartial,
+                unproven,
+            ),
+            (
+                "a closure naming another decision is ignored",
+                |w| {
+                    closed(w);
+                    w.closures[0].body.decision = h("another decision");
+                },
+                V1MatchState::Witnessed,
+                Basis::WitnessPartial,
+                unproven,
+            ),
+            (
+                "a receipt signed by the witness proves nothing",
+                |w| {
+                    closed(w);
+                    for object in &mut w.receipts {
+                        if object.id == h("received decision") {
+                            object.author = W;
+                        }
+                    }
+                },
+                V1MatchState::Witnessed,
+                Basis::WitnessPartial,
+                unproven,
+            ),
+            (
+                "forked issuer history proves nothing and voids nothing",
+                |w| {
+                    closed(w);
+                    w.forks.push(ForkProof {
+                        author: ISSUER,
+                        seq: 0,
+                    });
+                },
+                V1MatchState::Witnessed,
+                Basis::WitnessPartial,
+                unproven,
+            ),
+            (
+                "a timely objection disputes a closed result",
+                |w| objected(w, Some(3000)),
+                V1MatchState::Disputed,
+                Basis::None,
+                Finality::NotApplicable,
+            ),
+            (
+                "an objection lodged at the deadline still counts",
+                |w| objected(w, Some(3820)),
+                V1MatchState::Disputed,
+                Basis::None,
+                Finality::NotApplicable,
+            ),
+            (
+                "a late objection does not reopen a final result",
+                |w| objected(w, Some(3821)),
+                V1MatchState::Final,
+                Basis::WitnessPartial,
+                proven,
+            ),
+            (
+                "an objection's own frontier does not prove it was lodged",
+                |w| {
+                    objected(w, None);
+                    w.objections[0].body.author_frontier = vec![h("move b 5")];
+                },
+                V1MatchState::Final,
+                Basis::WitnessPartial,
+                proven,
+            ),
+            (
+                "every objection counts until a closure is proven",
+                |w| {
+                    objected(w, None);
+                    w.closures.clear();
+                },
+                V1MatchState::Disputed,
+                Basis::None,
+                Finality::NotApplicable,
+            ),
+            (
+                "a concession is not made final by a closure",
+                |w| {
+                    closed(w);
+                    w.claim("claim b", B, &win(A), "final");
+                },
+                V1MatchState::Agreed,
+                Basis::Concession,
+                Finality::NotApplicable,
+            ),
+            (
+                "a fallback decision after the delay is witnessed",
+                |w| fallback_after(w, 700),
+                V1MatchState::Witnessed,
+                Basis::WitnessPartial,
+                unproven,
+            ),
+            (
+                "a fallback decision can be closed",
+                |w| {
+                    fallback_after(w, 700);
+                    w.close("fallback", 7900);
+                },
+                V1MatchState::Final,
+                Basis::WitnessPartial,
+                proven,
+            ),
+            (
+                "a fallback decision before the delay is premature",
+                |w| fallback_after(w, 699),
+                V1MatchState::Proposed,
+                Basis::None,
+                Finality::NotApplicable,
+            ),
+            (
+                "a fallback decision the issuer never received is premature",
+                |w| {
+                    fallback_after(w, 700);
+                    w.receipts
+                        .retain(|object| object.id != h("received fallback"));
+                },
+                V1MatchState::Proposed,
+                Basis::None,
+                Finality::NotApplicable,
+            ),
+            (
+                "a fallback decision with no received claim is premature",
+                |w| {
+                    fallback_after(w, 700);
+                    w.receipts
+                        .retain(|object| object.id != h("received claim a"));
+                },
+                V1MatchState::Proposed,
+                Basis::None,
+                Finality::NotApplicable,
+            ),
+            (
+                "a primary decision in time outranks a contrary fallback",
+                |w| {
+                    fallback_after(w, 700);
+                    w.decisions[0].body.outcome = win(B);
+                    w.decision("decision", W, &win(A), true);
+                    w.received("decision", W, 650);
+                },
+                V1MatchState::Witnessed,
+                Basis::WitnessPartial,
+                unproven,
+            ),
+            (
+                "a primary decision after the fallback took over is superseded",
+                |w| {
+                    fallback_after(w, 700);
+                    w.decision("decision", W, &win(B), true);
+                    w.received("decision", W, 800);
+                },
+                V1MatchState::Witnessed,
+                Basis::WitnessPartial,
+                unproven,
+            ),
+            (
+                "a primary decision the issuer never received loses to the fallback",
+                |w| {
+                    fallback_after(w, 700);
+                    w.decision("decision", W, &win(B), true);
+                },
+                V1MatchState::Witnessed,
+                Basis::WitnessPartial,
+                unproven,
+            ),
+            (
+                "a primary decision stands while no fallback has taken effect",
+                |w| w.decision("decision", W, &win(A), false),
+                V1MatchState::Witnessed,
+                Basis::WitnessComplete,
+                unproven,
+            ),
+            (
+                "complete evidence naming one player's two claims is ignored",
+                |w| {
+                    w.claim("claim a", A, &win(A), "final");
+                    w.claim("claim b", A, &win(A), "final");
+                    w.decision("decision", W, &win(A), false);
+                },
+                V1MatchState::Proposed,
+                Basis::None,
+                Finality::NotApplicable,
+            ),
+            (
+                "complete evidence naming a move instead of a claim is ignored",
+                |w| {
+                    w.decision("decision", W, &win(A), false);
+                    if let WitnessEvidence::Complete { claim_b, .. } =
+                        &mut w.decisions[0].body.evidence
+                    {
+                        *claim_b = h("move b 5");
+                    }
+                },
+                V1MatchState::Proposed,
+                Basis::None,
+                Finality::NotApplicable,
+            ),
+            (
+                "partial evidence holding the missing player's claim is ignored",
+                |w| {
+                    w.claim("claim b", B, &win(A), "final");
+                    w.decision("decision", W, &win(A), true);
+                    if let WitnessEvidence::Partial { received, .. } =
+                        &mut w.decisions[0].body.evidence
+                    {
+                        *received = vec![h("claim b")];
+                    }
+                },
+                V1MatchState::Proposed,
+                Basis::None,
+                Finality::NotApplicable,
+            ),
+            (
+                "a non-receipt statement signed by a player is ignored",
+                |w| {
+                    w.claim("claim a", A, &win(A), "final");
+                    w.decision("decision", W, &win(A), true);
+                    if let WitnessEvidence::Partial {
+                        non_receipt_statement,
+                        ..
+                    } = &mut w.decisions[0].body.evidence
+                    {
+                        *non_receipt_statement = h("move b 5");
+                    }
+                },
+                V1MatchState::Proposed,
+                Basis::None,
+                Finality::NotApplicable,
+            ),
+            (
+                "a non-receipt statement that is a claim is ignored",
+                |w| {
+                    w.claim("claim a", A, &win(A), "final");
+                    w.decision("decision", W, &win(A), true);
+                    if let WitnessEvidence::Partial {
+                        non_receipt_statement,
+                        ..
+                    } = &mut w.decisions[0].body.evidence
+                    {
+                        *non_receipt_statement = h("claim a");
+                    }
+                },
+                V1MatchState::Proposed,
+                Basis::None,
+                Finality::NotApplicable,
+            ),
+            (
+                "unusable terms leave the match proposed",
+                |w| {
+                    closed(w);
+                    w.agreement
+                        .witness_terms
+                        .as_mut()
+                        .unwrap()
+                        .objection_cap_secs = 0;
+                    w.regenesis();
+                },
+                V1MatchState::Proposed,
+                Basis::None,
+                Finality::NotApplicable,
+            ),
+        ];
+        for &(name, edit, state, basis, finality) in rows {
+            let mut world = World::with_terms();
+            edit(&mut world);
+            let reduction = world.reduce();
+            assert_eq!(reduction.state, state, "{name}");
+            assert_eq!(reduction.basis, basis, "{name}");
+            assert_eq!(reduction.finality, finality, "{name}");
+            assert_eq!(
+                reduction.finality_proven,
+                matches!(finality, Finality::Proven { .. }),
+                "{name}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_offline_witnessed_result_is_explicitly_not_final() {
+        let mut world = World::new();
+        world.decision("decision", W, &win(A), false);
+        // Receipts and closures mean nothing without an issuer in genesis.
+        world.received("decision", W, 200);
+        world.close("decision", 9000);
+        let reduction = world.reduce();
+        assert_eq!(reduction.state, V1MatchState::Witnessed);
+        assert_eq!(reduction.finality, Finality::NoReceiptIssuer);
+        assert!(!reduction.finality_proven);
+        assert!(reduction.ignored.contains(&h("received decision")));
+        assert!(reduction.ignored.contains(&h("closure")));
+    }
+
+    #[test]
+    fn the_reduction_names_the_outcome_only_for_a_result() {
+        let mut world = World::new();
+        assert_eq!(world.reduce().outcome, None);
+        concession(&mut world);
+        assert_eq!(world.reduce().outcome, Some(win(A)));
+
+        let mut witnessed = World::new();
+        witnessed.decision("decision", W, &win(B), false);
+        assert_eq!(witnessed.reduce().outcome, Some(win(B)));
+
+        let mut disputed = World::new();
+        disputed.claim("claim a", A, &win(A), "final");
+        disputed.claim("claim b", B, &win(B), "final");
+        let reduction = disputed.reduce();
+        assert_eq!(reduction.state, V1MatchState::Disputed);
+        assert_eq!(reduction.outcome, None);
+    }
+
+    #[test]
+    fn a_fallback_is_only_a_witness_when_genesis_names_it() {
+        let mut world = World::new();
+        world.decision("fallback", FALLBACK, &win(A), false);
+        let reduction = world.reduce();
+        assert_eq!(reduction.state, V1MatchState::Proposed);
+        assert!(reduction.ignored.contains(&h("fallback")));
+    }
+
+    #[test]
+    fn closure_reports_late_and_unlodged_objections() {
+        let mut world = World::with_terms();
+        closed(&mut world);
+        world.objection("late objection", B, h("decision"));
+        world.received("late objection", B, 4000);
+        world.objection("unlodged objection", A, h("claim a"));
+        let reduction = world.reduce();
+        assert_eq!(reduction.state, V1MatchState::Final);
+        assert_eq!(reduction.late_objections, vec![h("late objection")]);
+        assert_eq!(reduction.unlodged_objections, vec![h("unlodged objection")]);
+    }
+
+    #[test]
+    fn fallback_supersession_and_prematurity_are_reported() {
+        let mut world = World::with_terms();
+        fallback_after(&mut world, 700);
+        world.decision("decision", W, &win(A), true);
+        world.received("decision", W, 650);
+        let reduction = world.reduce();
+        assert_eq!(reduction.superseded, vec![h("fallback")]);
+        assert!(reduction.premature.is_empty());
+
+        let mut world = World::with_terms();
+        fallback_after(&mut world, 699);
+        let reduction = world.reduce();
+        assert_eq!(reduction.premature, vec![h("fallback")]);
+        assert!(reduction.superseded.is_empty());
+    }
+
+    #[test]
+    fn forked_issuer_receipts_are_reported_void() {
+        let mut world = World::with_terms();
+        closed(&mut world);
+        world.forks.push(ForkProof {
+            author: ISSUER,
+            seq: 4,
+        });
+        let reduction = world.reduce();
+        assert!(reduction.void.is_empty());
+        assert_eq!(reduction.void_receipts, vec![h("closure")]);
+        assert_eq!(reduction.finality, Finality::Unproven);
     }
 }

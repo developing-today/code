@@ -7,16 +7,22 @@
 //! references and flags (design `doc/2026-11-01_design_id2039.md` §5).
 //!
 //! This module freezes the shape and the honest-scope rules that every
-//! report must satisfy. Signing and registry handoff are phase 6; the
+//! report must satisfy, and signs reports ([`sign_audit_report`], #2039
+//! phase 6) only when the signer's key fits the role the report claims. The
 //! reducer ([`super::reducer`]) only checks a report's evidence closure and
-//! never lets a report change the attestation state.
+//! never lets a report change the attestation state; a registry decides
+//! whether to accept one as an `audit-resolved` basis
+//! ([`super::registry::handoff`]).
 
-use p2panda_core::Hash;
+use p2panda_core::{Hash, SeqNum, SigningKey};
 use serde::{Deserialize, Serialize};
 
-use super::VERSION;
+use super::receipt::WitnessTerms;
+use super::{V1SignError, VERSION, sign_body};
+use crate::attestation::{GenesisAgreement, PlayerId, player_id};
+use id_store::chain::Event;
 
-/// The event kind that will carry an audit-report body (signed in phase 6).
+/// The event kind that carries an audit-report body.
 pub const AUDIT_REPORT_KIND: &str = "attestation.audit_report";
 
 /// The role the report's author held when it audited the match.
@@ -29,6 +35,28 @@ pub enum AuditorRole {
     Independent,
     /// A registry auditing evidence it gathered.
     Registry,
+}
+
+impl AuditorRole {
+    /// Whether `author` may sign a report in this role for `agreement`. A
+    /// seated player never audits its own match. The witness role belongs to
+    /// the genesis-named witness or pinned fallback; an independent auditor
+    /// holds no witness slot and is not the receipt issuer; a registry is any
+    /// unseated key auditing evidence it gathered.
+    #[must_use]
+    pub fn fits(self, agreement: &GenesisAgreement, author: &PlayerId) -> bool {
+        if agreement.players.contains(author) {
+            return false;
+        }
+        let witness = WitnessTerms::may_decide(agreement, author);
+        match self {
+            Self::Witness => witness,
+            Self::Independent => {
+                !witness && WitnessTerms::of(agreement).receipt_issuer.as_ref() != Some(author)
+            }
+            Self::Registry => true,
+        }
+    }
 }
 
 /// An inclusive interval of transcript checkpoints, `[first, last]`.
@@ -219,6 +247,45 @@ impl AuditReport {
             .chain(self.metadata.iter().copied())
             .collect()
     }
+}
+
+/// Signs an audit report. The report must pass the honest-scope rules, name
+/// this agreement, its match id and its pinned logic, and claim a role the
+/// signer's key fits ([`AuditorRole::fits`]).
+///
+/// # Errors
+///
+/// [`V1SignError::InvalidAudit`] for a report that breaks the scope rules,
+/// [`V1SignError::WrongAgreement`] or [`V1SignError::WrongLogic`] for a
+/// report about another match, and [`V1SignError::WrongRole`] when the
+/// signer cannot hold the claimed role.
+pub fn sign_audit_report(
+    key: &SigningKey,
+    seq_num: SeqNum,
+    backlink: Option<Hash>,
+    agreement: &GenesisAgreement,
+    report: &AuditReport,
+    after: Vec<Hash>,
+) -> Result<Event, V1SignError> {
+    report.validate().map_err(V1SignError::InvalidAudit)?;
+    if report.agreement != agreement.agreement_hash()? || report.match_id != agreement.game_id {
+        return Err(V1SignError::WrongAgreement);
+    }
+    if report.logic_hash != agreement.logic_hash {
+        return Err(V1SignError::WrongLogic);
+    }
+    if !report.role.fits(agreement, &player_id(key)) {
+        return Err(V1SignError::WrongRole);
+    }
+    sign_body(
+        key,
+        seq_num,
+        backlink,
+        report.body()?,
+        AUDIT_REPORT_KIND,
+        after,
+    )
+    .map_err(V1SignError::from)
 }
 
 fn check_intervals(intervals: &[CheckpointInterval]) -> Result<(), AuditReportError> {
