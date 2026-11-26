@@ -1889,6 +1889,20 @@ impl WorldActor {
                 );
                 let _ = reply.send(result);
             }
+            WorldCommand::AuthorizeLifecycle {
+                authority,
+                act,
+                reply,
+            } => {
+                let result = self.require_ownership(&authority, act);
+                self.audit_admin_result(
+                    authority_identity(&authority),
+                    "AuthorizeLifecycle",
+                    serde_json::json!({"act": act}),
+                    result.is_ok(),
+                );
+                let _ = reply.send(result);
+            }
             WorldCommand::IsolationInfo { reply } => {
                 let isolation = self.core.isolation();
                 // No audit record, for the same reason as Metrics below:

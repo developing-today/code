@@ -399,6 +399,17 @@ preserved. OpenChamber scheduled tasks remain on the configured
 `opencode-route` / `workhorse` route. The separate #3026 claimant /
 executor remains on its own protocol.
 
+Surface 1 shift roster reconciled 2026-11-26 (#15341): the 22
+`repo-queue-worker-shift*` rows in Surface 1 are the pilot-project
+generation (2026-11-03 census); the current generation in the cron
+definition projections is 33 filter-keyed lanes
+(`-any-a`..`-y`, `-code-a`..`-e`, `-not-code-a`..`-c`, per #8097),
+with zero job-id overlap between the generations. The 33 have no
+rows here yet — a recorded defect, not an oversight: their live
+states on the primary seat are unverified, and this registry does
+not carry guesses. Full reconciliation:
+`doc/2026-11-26T07-50-00Z_reconciliation_repo-queue-shift-roster/`.
+
 ### 2b. Laptop systemd user timers (64 listed: 51 enabled; 4 Nix-configured pending deployment; 5 repo-shipped pending laptop install; 1 declared in repo pending laptop install; 1 continuous service, no timer; 2 retired)
 
 The OS-timer half of surface 2. Cadence is the unit's own `OnCalendar`/`OnUnitActiveUSec` spec, read live from `systemctl --user show`. Specs are recorded **complete** — the full effective calendar expression, date **and** time components (e.g. `*-*-* *:*:00`); never truncate a spec to a date-only prefix, because a bare `*-*-*` normalizes to daily at midnight and misstates the cadence (issue #5313). Prompt/brief pointer is the unit file in `~/.config/systemd/user/` (or its Nix store target for linked units). Installed-but-disabled timer units ARE listed in this table and marked `(disabled)` after the unit name: the registry inventories what is installed on the laptop, not only what is currently scheduled, so a disabled unit stays visible until it is uninstalled (reconciled 2026-11-04, issue #5661).

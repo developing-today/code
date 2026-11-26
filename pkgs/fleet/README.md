@@ -310,7 +310,7 @@ build forgot. The registered domains are `fleet queue`, `fleet serve`,
 `fleet proxy`, `fleet dispatch`, `fleet dispatch-test`,
 `fleet secrets`, `fleet gh`, `fleet bridge`, `fleet agent`,
 `fleet shell`, `fleet search`, `fleet laptop-agent`, `fleet cert`,
-`fleet actions`, `fleet orgs` and `fleet kv`, and the
+`fleet actions`, `fleet orgs`, `fleet kv` and `fleet id`, and the
 laptop route forms (#13717): `fleet laptop` (tier T0, the generic
 tiered command), `fleet commander` (T1), `fleet http` (T2) and
 `fleet ssh` (T3), plus the

@@ -79,6 +79,7 @@ pub mod trace_ingest;
 pub mod trace_stats;
 pub mod turso;
 pub mod types;
+pub mod version;
 pub mod version_projection;
 
 /// Maximum neighbor chunks search expansion may attach to each result.

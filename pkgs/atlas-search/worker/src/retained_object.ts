@@ -251,12 +251,16 @@ export class RetainedObjectStore {
     );
   }
 
-  /** Set one class, refusing anything below its default. */
+  /**
+   * Set one class, refusing anything below its default. Changing the
+   * window or the floor returns the class to dry-run (rule engine §5: a
+   * changed rule is a new rule).
+   */
   async setClass(rule: RetentionClass): Promise<void> {
     checkClass(rule);
     await this.db
       .prepare(
-        "INSERT INTO atlas_retention_classes (class, window_ms, keep_newest, allows_query_text, enabled, updated_at_ms) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT (class) DO UPDATE SET window_ms = excluded.window_ms, keep_newest = excluded.keep_newest, allows_query_text = excluded.allows_query_text, enabled = excluded.enabled, updated_at_ms = excluded.updated_at_ms",
+        "INSERT INTO atlas_retention_classes (class, window_ms, keep_newest, allows_query_text, enabled, updated_at_ms) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT (class) DO UPDATE SET window_ms = excluded.window_ms, keep_newest = excluded.keep_newest, allows_query_text = excluded.allows_query_text, enabled = excluded.enabled, updated_at_ms = excluded.updated_at_ms, mode = CASE WHEN window_ms = excluded.window_ms AND keep_newest = excluded.keep_newest THEN mode ELSE 'dry-run' END, promoted_from = CASE WHEN window_ms = excluded.window_ms AND keep_newest = excluded.keep_newest THEN promoted_from ELSE NULL END",
       )
       .bind(rule.name, rule.windowMs, rule.keepNewest, rule.allowsQueryText ? 1 : 0, rule.enabled ? 1 : 0, this.now())
       .run();
@@ -340,9 +344,10 @@ export class RetainedObjectStore {
   /**
    * Mark retired every version of `objectId` that its class rule lets go
    * (design §5.3): older than the class window and outside the class's
-   * keep-newest floor, counted over the object's versions. Retiring is the
-   * cold step; nothing is deleted. Returns the versions retired by this
-   * call, oldest first.
+   * keep-newest floor, counted over the object's versions. Only a class in
+   * `live-cold` mode retires anything; a `dry-run` class is only reported.
+   * Retiring is the cold step; nothing is deleted. Returns the versions
+   * retired by this call, oldest first.
    */
   async retireExpired(objectId: string): Promise<number[]> {
     const at = this.now();
@@ -352,6 +357,7 @@ export class RetainedObjectStore {
            SET retired_at_ms = ?2
          WHERE o.object_id = ?1
            AND o.retired_at_ms IS NULL
+           AND (SELECT c.mode FROM atlas_retention_classes AS c WHERE c.class = o.class) = 'live-cold'
            AND o.version <= (SELECT MAX(version) FROM atlas_retained_objects WHERE object_id = ?1)
                             - (SELECT c.keep_newest FROM atlas_retention_classes AS c WHERE c.class = o.class)
            AND o.written_at_ms <= ?2 - (SELECT c.window_ms FROM atlas_retention_classes AS c WHERE c.class = o.class)
