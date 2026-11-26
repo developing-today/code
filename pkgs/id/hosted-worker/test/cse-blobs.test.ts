@@ -203,13 +203,19 @@ function makeFrontEnv(bucket: ReturnType<typeof fakeBucket>) {
       return { fetch: (r: Request) => userDO.fetch(r) };
     },
   };
-  return { USERS: ns };
+  // #15479: the front door admits only authenticated callers; this
+  // env configures the caller for binding A and front() presents it.
+  return {
+    USERS: ns,
+    FRONT_DOOR_CALLERS: JSON.stringify([{ token: "cse-test-caller", bindingId: A, jurisdiction: "us" }]),
+  };
 }
 
 function front(path: string, init: RequestInit = {}): Request {
   const headers = new Headers(init.headers);
   headers.set("x-binding-id", A);
   headers.set("x-jurisdiction", "us");
+  headers.set("authorization", "Bearer cse-test-caller");
   return new Request("https://hosted.example" + path, { ...init, headers });
 }
 

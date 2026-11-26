@@ -1,17 +1,20 @@
 // Hosted data-plane front door (#5199).
 //
-// Resolves an already-authenticated account/binding to its per-user
-// Durable Object. Authentication and the binding ceremony live upstream
-// (pkgs/id/src/hosted_binding.rs); this worker consumes their result as
-// the resolved context headers X-Binding-Id and X-Jurisdiction, which
-// in deployment are set by the authenticated internal caller — the same
-// trust posture as the design's "route context is internal/
-// authenticated, never client-controlled". It strips every client-
-// supplied internal header, validates the resolved context, and routes
-// only through the jurisdiction-restricted namespace (routing.ts).
+// Authenticates the caller and resolves its account/binding to the
+// per-user Durable Object. Caller authentication lives HERE
+// (#15479, front-door-auth.ts): the request's bearer credential is
+// resolved server-side to the one binding and jurisdiction it may
+// act for, and routing uses only that resolved record. The binding
+// ceremony itself lives upstream (pkgs/id/src/hosted_binding.rs).
+// Client-supplied X-Binding-Id / X-Jurisdiction are never routing
+// input: at most they are checked against the resolved record, and
+// a mismatch is refused. Every client-supplied internal header is
+// stripped, and routing goes only through the
+// jurisdiction-restricted namespace (routing.ts).
 // No Iroh QUIC runs inside the Worker (issue excludes).
 
-import { FailClosed, parseBindingId, parseJurisdiction, userStub, type ObjectNamespaceLike } from "./routing.ts";
+import { FailClosed, userStub, type ObjectNamespaceLike } from "./routing.ts";
+import { authenticateFrontDoor, frontDoorCallersFromEnv } from "./front-door-auth.ts";
 import { PersistentHostedAccountDirectory, type HostedDirectoryDatabase } from "./persistent-account-directory.ts";
 import { HDR_BINDING, HDR_CSE, HDR_IROH, HDR_JURISDICTION, HDR_ROUTED, bodyTooLarge, requestBodyLimit } from "./user-do.ts";
 
@@ -27,6 +30,10 @@ interface Env {
   /** Optional structural adapter. Raw D1 is not compatible: its `.all()`
    * result must be unwrapped from `{ results }` by an adapter first. */
   HOSTED_DIRECTORY?: HostedDirectoryDatabase;
+  /** The front-door caller directory (#15479): a JSON array of
+   * `{ token, bindingId, jurisdiction, irohId? }` records. Absent
+   * means NO callers are admitted — the front door fails closed. */
+  FRONT_DOOR_CALLERS?: string;
   USER_CEILING_BYTES?: string;
 }
 
@@ -40,8 +47,14 @@ function json(body: unknown, status = 200): Response {
 export default {
   async fetch(req: Request, env: Env): Promise<Response> {
     try {
-      const bindingId = parseBindingId(req.headers.get("x-binding-id"));
-      const jurisdiction = parseJurisdiction(req.headers.get("x-jurisdiction"));
+      // Authenticate first (#15479): the credential resolves
+      // server-side to the caller's own binding and jurisdiction,
+      // and those resolved values — never client headers — are the
+      // routing input for everything below, the account-directory
+      // guard included.
+      const caller = authenticateFrontDoor(req, frontDoorCallersFromEnv(env.FRONT_DOOR_CALLERS));
+      const bindingId = caller.bindingId;
+      const jurisdiction = caller.jurisdiction;
       if (env.HOSTED_DIRECTORY) {
         // Read-only routing guard (#3399): resolve the binding to a
         // validated stable record. Never signup, inventory, provision,
@@ -99,14 +112,17 @@ export default {
       const headers = new Headers(req.headers);
       headers.delete("x-binding-id");
       headers.delete("x-jurisdiction");
-      // The bound ID key (#3818): consumed from the internal
-      // caller like the binding context, stripped of any
-      // client-supplied copy, and re-set as an internal header.
-      // Absent stays absent — the bridge routes fail closed on it.
-      const irohId = req.headers.get("x-iroh-id");
+      // The caller credential (#15479) is consumed at this door;
+      // it is never forwarded into the user's object.
+      headers.delete("authorization");
+      // The bound ID key (#3818): resolved from the authenticated
+      // caller record like the binding context (#15479), stripped
+      // of any client-supplied copy, and re-set as an internal
+      // header. Absent stays absent — the bridge routes fail
+      // closed on it.
       headers.delete("x-iroh-id");
       headers.delete(HDR_IROH);
-      if (irohId !== null) headers.set(HDR_IROH, irohId);
+      if (caller.irohId !== undefined) headers.set(HDR_IROH, caller.irohId);
       // The binding's client-side-encryption choice (§7 of the
       // #2258 spec): consumed from the internal caller like the
       // ID key — the binding record is its source — stripped of

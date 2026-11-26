@@ -3,11 +3,18 @@
 First local-only vertical slice of the hosted data plane (slice 3 of
 #2852, child of #3811, grounded in #2258 §5 and the #2046 ruling):
 
-- `src/worker.ts` — the front door. Consumes the already-authenticated
-  resolved context (`X-Binding-Id`, `X-Jurisdiction`, set by the
-  authenticated internal caller; the binding ceremony itself lives in
-  `pkgs/id/src/hosted_binding.rs`), strips client-supplied internal
-  headers, and forwards to the per-tenant Durable Object.
+- `src/worker.ts` — the front door. Authenticates the caller first
+  (#15479, `src/front-door-auth.ts`): the `Authorization: Bearer`
+  credential resolves server-side, through the caller directory
+  (`FRONT_DOOR_CALLERS`), to the one binding and jurisdiction it may
+  act for, and routing uses only that resolved record.
+  Client-supplied `X-Binding-Id` / `X-Jurisdiction` grant nothing on
+  their own and are refused when they disagree with the resolved
+  record; no configured directory fails closed for every request.
+  The binding ceremony itself lives in
+  `pkgs/id/src/hosted_binding.rs`. The front door strips
+  client-supplied internal headers (and the credential itself) and
+  forwards to the per-tenant Durable Object.
 - `src/routing.ts` — the only module that touches the raw `USERS`
   namespace. Objects are named by the stable `binding_id` minted at
   binding time (32 lowercase hex chars) — never email, never a provider

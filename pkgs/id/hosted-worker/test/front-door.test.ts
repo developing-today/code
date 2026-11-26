@@ -12,6 +12,12 @@ import { PersistentHostedAccountDirectory, type HostedDirectoryDatabase } from "
 
 const A = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 
+// The authenticated caller for binding A (#15479): front() presents
+// this token, and makeEnv configures it in the caller directory, so
+// the pre-existing body-bound tests exercise the authenticated path.
+const CALLER_TOKEN = "test-caller-token";
+const CALLERS = JSON.stringify([{ token: CALLER_TOKEN, bindingId: A, jurisdiction: "us" }]);
+
 function fakeSql() {
   const db = new DatabaseSync(":memory:");
   return {
@@ -76,13 +82,14 @@ function makeEnv(vars: Record<string, string> = {}) {
       };
     },
   };
-  return { env: { USERS: ns, ...vars }, calls };
+  return { env: { USERS: ns, FRONT_DOOR_CALLERS: CALLERS, ...vars }, calls };
 }
 
 function front(path: string, init: RequestInit = {}): Request {
   const headers = new Headers(init.headers);
   headers.set("x-binding-id", A);
   headers.set("x-jurisdiction", "us");
+  headers.set("authorization", `Bearer ${CALLER_TOKEN}`);
   return new Request("https://hosted.example" + path, { ...init, headers, duplex: "half" } as RequestInit);
 }
 

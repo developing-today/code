@@ -1,11 +1,15 @@
 // Smoke for #5199 against local wrangler dev (workerd), in two parts.
 //
-// Part 1 — the application worker (wrangler.toml). Local workerd does
-// not implement jurisdiction restrictions (namespace.jurisdiction()
-// throws), so every request that would need a restricted namespace
-// must fail closed (503 jurisdiction_unavailable) and requests with
-// missing/invalid context must fail closed before that (401/403).
-// Nothing may fall back to the unrestricted namespace.
+// Part 1 — the application worker (wrangler.toml). The shipped
+// local config binds no front-door caller directory (#15479), so
+// the front door must fail closed (503 front_door_auth_unconfigured)
+// for EVERY request — forged routing headers and bearer-shaped
+// tokens alike grant nothing without a configured caller record.
+// Nothing may fall back to the unrestricted namespace. (The
+// authenticated paths — valid credential, mis-bound headers, the
+// jurisdiction_unavailable end of a fully-valid request — are
+// covered in test/front-door-auth.test.ts and test/front-door.test.ts,
+// which run the worker directly with a configured directory.)
 //
 // Part 2 — the UserDO through the test-only harness
 // (wrangler.test.toml): lazy creation + idempotent schema bootstrap,
@@ -62,16 +66,12 @@ async function waitUp(port, tries) {
     check("app worker starts", await waitUp(port));
     const base = "http://127.0.0.1:" + port;
     let r = await fetch(base + "/v1/state");
-    check("no context -> 401 missing_binding", r.status === 401 && (await r.json()).error === "missing_binding");
-    r = await fetch(base + "/v1/state", { headers: { "x-binding-id": A } });
-    check("binding without jurisdiction -> 403", r.status === 403 && (await r.json()).error === "missing_jurisdiction");
-    r = await fetch(base + "/v1/state", { headers: { "x-binding-id": A, "x-jurisdiction": "apac" } });
-    check("unsupported jurisdiction -> 403", r.status === 403 && (await r.json()).error === "unsupported_jurisdiction");
-    r = await fetch(base + "/v1/state", { headers: { "x-binding-id": "google:123", "x-jurisdiction": "us" } });
-    check("subject-derived id -> 401 invalid_binding", r.status === 401 && (await r.json()).error === "invalid_binding");
+    check("no credential -> 503 front_door_auth_unconfigured", r.status === 503 && (await r.json()).error === "front_door_auth_unconfigured");
     r = await fetch(base + "/v1/state", { headers: { "x-binding-id": A, "x-jurisdiction": "us" } });
+    check("forged routing headers alone -> 503 front_door_auth_unconfigured", r.status === 503 && (await r.json()).error === "front_door_auth_unconfigured");
+    r = await fetch(base + "/v1/state", { headers: { "x-binding-id": A, "x-jurisdiction": "us", authorization: "Bearer forged-token" } });
     const body = await r.json();
-    check("valid context -> 503 jurisdiction_unavailable (no unrestricted fallback)", r.status === 503 && body.error === "jurisdiction_unavailable", JSON.stringify(body));
+    check("forged headers + unconfigured token -> 503 front_door_auth_unconfigured (no unrestricted fallback)", r.status === 503 && body.error === "front_door_auth_unconfigured", JSON.stringify(body));
   } finally { await stopDev(dev); }
 }
 
