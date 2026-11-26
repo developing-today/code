@@ -19,7 +19,8 @@
 //! publishes is drained into [`PresentedView`] by
 //! `drain_session_views`. Without `--world` the binary opens the
 //! world directory instead (#15022, design #5782 §3): a probe
-//! thread reads the host's public directory, the
+//! thread reads the host's public directory at start, on an
+//! interval and on the refresh key, the
 //! [`id_native_shell::directory::DirectoryPlugin`] presents it, and
 //! each world the user enters gets its own session bridge, drained
 //! by `drive_directory` — leaving one world never tears down
@@ -38,7 +39,8 @@ use anyhow::{Context, Result, bail};
 use bevy::prelude::{App, DefaultPlugins, Res, ResMut, Resource, Startup, Update};
 use id_native_shell::audio::AudioRenderPlugin;
 use id_native_shell::directory::{
-    DirectoryApp, DirectoryEffect, DirectoryFocus, DirectoryMarks, DirectoryPlugin,
+    DIRECTORY_REFRESH_INTERVAL, DirectoryApp, DirectoryEffect, DirectoryFocus, DirectoryMarks,
+    DirectoryPlugin,
 };
 use id_native_shell::render::{PresentedForm, PresentedView, ShellRenderPlugin};
 use id_native_shell::scene::SceneRenderPlugin;
@@ -154,23 +156,29 @@ fn save_marks(marks: &DirectoryMarks) {
     }
 }
 
-/// The directory probe's hand-off to the app: the host directory
-/// reply, sent once by the probe thread.
+/// The directory probe's hand-off to the app: each host directory
+/// reply the probe thread reads, plus the channel the app uses to
+/// ask for a re-read now (the refresh key).
 #[derive(Resource)]
 struct DirectoryBridge {
     listings: Mutex<mpsc::UnboundedReceiver<(String, Vec<(String, bool, usize)>)>>,
+    refresh: mpsc::UnboundedSender<()>,
 }
 
-/// Fetch the host's public world directory (the existing
-/// discovery API) on a short-lived connection and hand the reply
-/// to the app. The probe owns no session: each world the user
-/// opens gets its own session connection, so the probe ending
-/// never disturbs a live session.
+/// Read the host's public world directory (the existing
+/// discovery API) and hand each reply to the app: once at start,
+/// then every `DIRECTORY_REFRESH_INTERVAL` and whenever the app
+/// asks through the refresh channel (#15022). Each read uses its
+/// own short-lived connection, so the probe owns no session: each
+/// world the user opens gets its own session connection, and a
+/// read failing or the host going away never disturbs a live
+/// session. The thread ends when the app drops its side.
 fn spawn_directory_probe(args: &SessionArgs) -> Result<DirectoryBridge> {
     let node = args.node.clone().context("session node")?;
     let addrs = args.addrs.clone();
     let no_relay = args.no_relay;
     let (listings_tx, listings_rx) = mpsc::unbounded_channel();
+    let (refresh_tx, mut refresh_rx) = mpsc::unbounded_channel::<()>();
     std::thread::Builder::new()
         .name("id-native-shell-directory".to_string())
         .spawn(move || {
@@ -182,29 +190,52 @@ fn spawn_directory_probe(args: &SessionArgs) -> Result<DirectoryBridge> {
                 }
             };
             runtime.block_on(async move {
-                match connect(&node, &addrs, no_relay).await {
-                    Ok((endpoint, mut client)) => {
-                        match client.directory().await {
-                            Ok(listing) => {
-                                let _ = listings_tx.send(listing);
+                let mut interval = tokio::time::interval(DIRECTORY_REFRESH_INTERVAL);
+                interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+                loop {
+                    tokio::select! {
+                        _ = interval.tick() => {}
+                        request = refresh_rx.recv() => {
+                            if request.is_none() {
+                                break;
                             }
-                            Err(error) => {
-                                eprintln!(
-                                    "id-native-shell: cannot read world directory: {error:#}"
-                                );
-                            }
+                            interval.reset();
                         }
-                        endpoint.close().await;
                     }
-                    Err(error) => {
-                        eprintln!("id-native-shell: cannot connect to world host: {error:#}");
+                    if listings_tx.is_closed() {
+                        break;
                     }
+                    match connect(&node, &addrs, no_relay).await {
+                        Ok((endpoint, mut client)) => {
+                            match client.directory().await {
+                                Ok(listing) => {
+                                    if listings_tx.send(listing).is_err() {
+                                        endpoint.close().await;
+                                        break;
+                                    }
+                                }
+                                Err(error) => {
+                                    eprintln!(
+                                        "id-native-shell: cannot read world directory: {error:#}"
+                                    );
+                                }
+                            }
+                            endpoint.close().await;
+                        }
+                        Err(error) => {
+                            eprintln!("id-native-shell: cannot connect to world host: {error:#}");
+                        }
+                    }
+                    // Requests that arrived during the read are
+                    // answered by the read that just finished.
+                    while refresh_rx.try_recv().is_ok() {}
                 }
             });
         })
         .context("spawn directory thread")?;
     Ok(DirectoryBridge {
         listings: Mutex::new(listings_rx),
+        refresh: refresh_tx,
     })
 }
 
@@ -268,6 +299,9 @@ fn drive_directory(
                 sessions.0.remove(&name);
             }
             DirectoryEffect::MarksChanged => save_marks(&directory.marks),
+            DirectoryEffect::RefreshDirectory => {
+                let _ = probe.refresh.send(());
+            }
         }
     }
     let foreground = directory.registry.foreground().map(str::to_owned);
