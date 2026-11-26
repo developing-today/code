@@ -27,10 +27,16 @@
 //!   `chunks_raw` write path every staged unit uses; promotion and
 //!   search are the existing aggregator and fan-out, unchanged.
 //!
-//! Slice 1b adds replay-safe staging keyed by the stable LanceDB row
-//! id and source update timestamp (with content/metadata comparison
-//! when the source has no timestamp). The native LanceDB reader and
-//! rebuild-from-sources proof remain follow-up work.
+//! Slice 1b (developing-today/code#14039) adds replay-safe staging
+//! keyed by the stable LanceDB row id and source update timestamp
+//! (with content/metadata comparison when the source has no
+//! timestamp), plus the native reader [`read_lancedb_store`] and
+//! idempotent [`sync_memory_entries`] path. The rebuild proof
+//! ([`rebuild_agent_memory_index`]) shows the Atlas index is
+//! disposable: the same source rebuilt into a fresh staging area
+//! yields the same shard fingerprints and fan-out ranking, and a
+//! rebuild from a revised source carries only the current source
+//! rows.
 //!
 //! Slice 4's fleet-memory half stages the Muse memory tree
 //! (`MEMORY.md`, topic files, daily logs) into the `fleet-memory`
@@ -39,10 +45,12 @@
 //! the file's mtime as `updated_at` and replay-safe re-staging on
 //! text/mtime comparison.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use rusqlite::{Connection, OptionalExtension, params};
 
+use crate::aggregate::embed_unit_into_shard;
+use crate::embed::DocEmbedder;
 use crate::error::{Error, Result};
 use crate::shards::Tier;
 use crate::stage::{
@@ -430,6 +438,285 @@ pub fn stage_memory_export_in_db(
 ) -> Result<Vec<i64>> {
     let conn = open(db)?;
     stage_memory_export(&conn, unit_id, entries, now)
+}
+
+/// What one [`sync_memory_entries`] run did to a unit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct SyncReport {
+    /// Entries staged for the first time.
+    pub added: usize,
+    /// Entries whose recorded content changed, restaged in place.
+    pub restaged: usize,
+    /// Entries already staged with identical content — untouched.
+    pub unchanged: usize,
+}
+
+/// Read the memory-lancedb store at `path` natively: open the
+/// `memories.lance` dataset with the `lance` crate and map its
+/// `id`, `text`, `agentId`, `category`, `importance` and `createdAt`
+/// columns onto [`MemoryEntry`]. The `vector` column is never read.
+/// A missing required column or an empty id/text is a loud error.
+#[cfg(feature = "lancedb")]
+pub async fn read_lancedb_store(path: &Path) -> Result<Vec<MemoryEntry>> {
+    use arrow::array::{Array, ArrayRef, RecordBatch};
+    use arrow::compute::cast;
+    use arrow::datatypes::DataType;
+
+    let uri = path
+        .to_str()
+        .ok_or_else(|| Error::fatal("memory connector: store path is not valid UTF-8"))?;
+    let dataset = lance::Dataset::open(uri)
+        .await
+        .map_err(|e| Error::backend(format!("memory connector: opening {uri}: {e}")))?;
+    let batch: RecordBatch = dataset
+        .scan()
+        .try_into_batch()
+        .await
+        .map_err(|e| Error::backend(format!("memory connector: scanning {uri}: {e}")))?;
+
+    let column = |name: &str| -> Result<Option<ArrayRef>> {
+        match batch.column_by_name(name) {
+            None => Ok(None),
+            Some(col) => cast(col, &DataType::Utf8)
+                .map(Some)
+                .map_err(|e| Error::fatal(format!("memory connector: column `{name}`: {e}"))),
+        }
+    };
+    let numbers = |name: &str| -> Result<Option<ArrayRef>> {
+        match batch.column_by_name(name) {
+            None => Ok(None),
+            Some(col) => cast(col, &DataType::Float64)
+                .map(Some)
+                .map_err(|e| Error::fatal(format!("memory connector: column `{name}`: {e}"))),
+        }
+    };
+    let id =
+        column("id")?.ok_or_else(|| Error::fatal("memory connector: store has no `id` column"))?;
+    let text = column("text")?
+        .ok_or_else(|| Error::fatal("memory connector: store has no `text` column"))?;
+    let agent = column("agentId")?;
+    let category = column("category")?;
+    let importance = numbers("importance")?;
+    let created = numbers("createdAt")?;
+
+    fn str_at(col: &Option<ArrayRef>, i: usize) -> Option<String> {
+        let arr = col
+            .as_ref()?
+            .as_any()
+            .downcast_ref::<arrow::array::StringArray>()?;
+        (!arr.is_null(i)).then(|| arr.value(i).to_string())
+    }
+    fn num_at(col: &Option<ArrayRef>, i: usize) -> Option<f64> {
+        let arr = col
+            .as_ref()?
+            .as_any()
+            .downcast_ref::<arrow::array::Float64Array>()?;
+        (!arr.is_null(i)).then(|| arr.value(i))
+    }
+
+    let mut out = Vec::with_capacity(batch.num_rows());
+    for i in 0..batch.num_rows() {
+        let row_id = str_at(&Some(id.clone()), i)
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| Error::fatal(format!("memory connector: row {i} has no `id`")))?;
+        let row_text = str_at(&Some(text.clone()), i)
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| Error::fatal(format!("memory connector: row {row_id} has no `text`")))?;
+        out.push(MemoryEntry {
+            id: row_id,
+            text: row_text,
+            agent: str_at(&agent, i),
+            category: str_at(&category, i),
+            importance: num_at(&importance, i),
+            created_at_ms: num_at(&created, i),
+            sensitivity: Tier::Internal,
+        });
+    }
+    Ok(out)
+}
+
+/// Blocking form of [`read_lancedb_store`] for the CLI and tests.
+#[cfg(feature = "lancedb")]
+pub fn read_lancedb_store_blocking(path: &Path) -> Result<Vec<MemoryEntry>> {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| Error::backend(format!("memory connector: tokio runtime: {e}")))?
+        .block_on(read_lancedb_store(path))
+}
+
+/// Read a native memory-lancedb dataset and idempotently sync its rows
+/// into an already-provisioned Atlas staging database.
+#[cfg(feature = "lancedb")]
+pub fn sync_lancedb_store_in_db(
+    store: &Path,
+    db: &Path,
+    unit_id: &str,
+    now: &str,
+) -> Result<SyncReport> {
+    if unit_id != AGENT_MEMORY_UNIT {
+        return Err(Error::fatal(format!(
+            "memory connector: native memory-lancedb rows must be staged in `{AGENT_MEMORY_UNIT}`"
+        )));
+    }
+    let entries = read_lancedb_store_blocking(store)?;
+    let conn = open(db)?;
+    sync_memory_entries(&conn, unit_id, &entries, now)
+}
+
+/// Sync entries into a unit, idempotently: an entry whose source_ref
+/// is already staged with the same text is skipped; one whose text
+/// changed is restaged (its old item and chunks removed first); a new
+/// one is staged. Re-running with the same export changes nothing.
+pub fn sync_memory_entries(
+    conn: &Connection,
+    unit_id: &str,
+    entries: &[MemoryEntry],
+    now: &str,
+) -> Result<SyncReport> {
+    check_stage_schema(conn)?;
+    let mut report = SyncReport::default();
+    for entry in entries {
+        let exists: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM items WHERE unit_id = ?1 AND kind = 'memory' AND source = ?2)",
+                params![unit_id, entry.source_ref()],
+                |row| row.get(0),
+            )
+            .map_err(|e| Error::backend(format!("memory connector: {e}")))?;
+        let (_, changed) = stage_memory_entry_with_status(conn, unit_id, entry, now)?;
+        match (exists, changed) {
+            (false, true) => report.added += 1,
+            (true, true) => report.restaged += 1,
+            (_, false) => report.unchanged += 1,
+        }
+    }
+    Ok(report)
+}
+
+/// What one rebuild-from-sources run did: the promotion report plus
+/// the staging delta and the rebuilt shard's chunk fingerprints, so
+/// two builds from the same source can be compared for equality and
+/// a build from a revised source can be compared for convergence.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RebuildReport {
+    /// The staging-unit id that was rebuilt.
+    pub unit_id: String,
+    /// The new core scan shard's file name.
+    pub shard_name: String,
+    /// The new core scan shard's path.
+    pub shard_path: PathBuf,
+    /// Staged items embedded into the shard.
+    pub items: usize,
+    /// Staged chunks embedded into the shard.
+    pub chunks: usize,
+    /// The embedding dimension the shard's vectors carry.
+    pub dims: usize,
+    /// Item ids the staging step changed in this run (new or
+    /// revised rows). In a fresh staging area this is every row;
+    /// the rebuild's convergence claim is about the shard, not
+    /// this list.
+    pub staged_changed: Vec<i64>,
+    /// The rebuilt shard's chunk fingerprints, in shard order:
+    /// (source-of-truth pointer, content hash) per shard chunk.
+    /// Two builds from the same source must produce the same list.
+    pub fingerprints: Vec<(String, String)>,
+}
+
+/// Read a core scan shard's chunk fingerprints, in shard order:
+/// (source-of-truth pointer, content hash) per `chunks` row. The
+/// fingerprint is the rebuild comparison's oracle: the hash is a
+/// pure function of the staged chunk text (and, for repeated text,
+/// its position), so equal fingerprints mean equal index content.
+pub fn shard_chunk_fingerprints(shard_db: &Path) -> Result<Vec<(String, String)>> {
+    let conn = Connection::open(shard_db).map_err(|e| {
+        Error::backend(format!(
+            "memory connector: opening shard {}: {e}",
+            shard_db.display()
+        ))
+    })?;
+    let mut stmt = conn
+        .prepare("SELECT message_id, content_hash FROM chunks ORDER BY id")
+        .map_err(|e| {
+            Error::backend(format!(
+                "memory connector: reading fingerprints from {}: {e}",
+                shard_db.display()
+            ))
+        })?;
+    let rows = stmt
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })
+        .map_err(|e| {
+            Error::backend(format!(
+                "memory connector: reading fingerprints from {}: {e}",
+                shard_db.display()
+            ))
+        })?
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(|e| {
+            Error::backend(format!(
+                "memory connector: reading fingerprints from {}: {e}",
+                shard_db.display()
+            ))
+        })?;
+    Ok(rows)
+}
+
+/// Rebuild the agent-memory Atlas index from its sources
+/// (developing-today/code#14039, remaining acceptance: the index is
+/// disposable, the corpora never are — design section 2).
+///
+/// One call, in order: register the five design corpora (idempotent),
+/// stage the source entries into the agent-memory unit through the
+/// replay-safe staging path, and promote the unit into a new core
+/// scan shard in `shard_dir` (embed-at-promotion, so the shard's
+/// vectors come from the mandated model, never from the source
+/// store's own vectors).
+///
+/// The staging area is disposable by design: promotion stamps the
+/// staging DB and closes it to further writes, and a merged unit
+/// refuses a second promotion — so a rebuild targets a fresh
+/// registry + staging dir, and the rebuilt shard is compared with
+/// the previous build's [`RebuildReport::fingerprints`], not by
+/// re-promoting into the same area. A rebuild from a revised source
+/// carries only the current source's rows: rows the source dropped
+/// are absent from the fresh staging area, so they are absent from
+/// the rebuilt shard. (Incremental staging is different by design:
+/// a partial export never deletes — see the adapter-fixtures record.
+/// Deletion converges at rebuild, never at incremental stage.)
+pub fn rebuild_agent_memory_index(
+    registry: &Registry,
+    staging_dir: &Path,
+    entries: &[MemoryEntry],
+    shard_dir: &Path,
+    embedder: &dyn DocEmbedder,
+    now: &str,
+) -> Result<RebuildReport> {
+    let units = register_memory_corpora(registry, staging_dir, now)?;
+    let agent_db = units
+        .iter()
+        .find(|u| u.unit_id == AGENT_MEMORY_UNIT)
+        .map(|u| PathBuf::from(&u.db_uri))
+        .ok_or_else(|| {
+            Error::fatal(format!(
+                "memory connector: {AGENT_MEMORY_UNIT} unit missing after registration"
+            ))
+        })?;
+    let staged_changed = stage_memory_export_in_db(&agent_db, AGENT_MEMORY_UNIT, entries, now)?;
+    let promote =
+        embed_unit_into_shard(registry, AGENT_MEMORY_UNIT, shard_dir, "agent-memory", embedder, now)?;
+    let fingerprints = shard_chunk_fingerprints(&promote.shard_path)?;
+    Ok(RebuildReport {
+        unit_id: promote.unit_id,
+        shard_name: promote.shard_name,
+        shard_path: promote.shard_path,
+        items: promote.items,
+        chunks: promote.chunks,
+        dims: promote.dims,
+        staged_changed,
+        fingerprints,
+    })
 }
 
 /// The staging-unit id of the fleet-memory-files corpus — the

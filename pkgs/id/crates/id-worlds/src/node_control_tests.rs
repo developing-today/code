@@ -1,60 +1,15 @@
 //! A serving node answers the operator CLI on `host.sock` (#10697).
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 
 use tempfile::TempDir;
 
 use super::NodeControl;
-use crate::host::{HostLifecycle, LifecycleState, WakeMode, open_in_root};
+use crate::host::{HostLifecycle, LifecycleState, WakeMode};
 use crate::host_control::{ControlRequest, ControlResponse, bind, request};
-use crate::world_hub::{HubLimits, OpenFuture, WorldHub, WorldOpener};
-
-/// The host-mode opener `id serve --world-host` uses, in miniature: every
-/// open is admitted by the host file and taken back when it fails, and an
-/// idle close is recorded asleep.
-struct HostOpener {
-    root: PathBuf,
-    host: Arc<HostLifecycle>,
-}
-
-impl WorldOpener for HostOpener {
-    fn open<'a>(&'a self, name: &'a str, _create: bool) -> OpenFuture<'a> {
-        Box::pin(async move {
-            if !self.exists(name) {
-                return Ok(None);
-            }
-            let admission = self.host.admit_wake(name)?;
-            match open_in_root(&self.root, name).await {
-                Ok((service, _)) => Ok(Some(service)),
-                Err(error) => {
-                    self.host.undo_wake(name, admission)?;
-                    Err(error)
-                }
-            }
-        })
-    }
-
-    fn exists(&self, name: &str) -> bool {
-        self.root.join(name).join("journal.jsonl").is_file()
-    }
-
-    fn list(&self) -> Vec<String> {
-        self.host.snapshot().worlds.into_keys().collect()
-    }
-
-    fn durable(&self) -> bool {
-        true
-    }
-
-    fn closed(&self, name: &str) {
-        self.host.record_closed(name).unwrap();
-    }
-
-    fn pinned(&self, name: &str) -> bool {
-        self.host.pinned(name)
-    }
-}
+use crate::host_opener::{HostedOpener, RootOpener};
+use crate::world_hub::{HubLimits, WorldHub};
 
 fn data_root_with(names: &[&str]) -> TempDir {
     let root = TempDir::new().unwrap();
@@ -68,10 +23,14 @@ fn data_root_with(names: &[&str]) -> TempDir {
 
 fn node(root: &Path) -> (NodeControl, WorldHub, Arc<HostLifecycle>) {
     let host = Arc::new(HostLifecycle::open(root).unwrap());
-    let opener = Arc::new(HostOpener {
-        root: root.to_path_buf(),
-        host: Arc::clone(&host),
-    });
+    // The host-mode opener `id serve --world-host` uses: every open is
+    // admitted by the host file, and an idle close is recorded asleep.
+    let opener = Arc::new(HostedOpener::new(
+        RootOpener {
+            root: root.to_path_buf(),
+        },
+        Arc::clone(&host),
+    ));
     let hub = WorldHub::new(opener, None, "alpha", HubLimits::default());
     let control = NodeControl::new(hub.clone(), Arc::clone(&host), None);
     (control, hub, host)
