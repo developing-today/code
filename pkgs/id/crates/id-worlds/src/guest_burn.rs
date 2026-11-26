@@ -774,9 +774,7 @@ mod tests {
         budget
             .acquire_charged("world-heavy-0", "acct-heavy", 20_000_000)
             .settle(20_000_000);
-        let mut blocker = Some(
-            budget.acquire_charged("world-blocker", "acct-blocker", 20_000_000),
-        );
+        let mut blocker = Some(budget.acquire_charged("world-blocker", "acct-blocker", 20_000_000));
         for round in 0..ROUNDS {
             let grants = Arc::new(Mutex::new(Vec::new()));
             let spawn_waiter = |key: &'static str, account: &'static str| {
