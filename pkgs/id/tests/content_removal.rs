@@ -133,6 +133,7 @@ fn group_ext(kind: &str, group: Option<Hash>, after: Vec<Hash>) -> ChainExt {
         rotation: None,
         chat: None,
         anchor: None,
+        thread: None,
     }
 }
 
@@ -150,6 +151,7 @@ fn document_ext(doc: &DocumentRef, after: Vec<Hash>) -> ChainExt {
         rotation: None,
         chat: None,
         anchor: None,
+        thread: None,
     }
 }
 
@@ -171,6 +173,7 @@ fn tag_ext(subject: Hash, name: &str, value: &str, after: Vec<Hash>) -> ChainExt
         rotation: None,
         chat: None,
         anchor: None,
+        thread: None,
     }
 }
 
@@ -188,6 +191,7 @@ fn removal_ext(target: Hash, after: Vec<Hash>) -> ChainExt {
         rotation: None,
         chat: None,
         anchor: None,
+        thread: None,
     }
 }
 

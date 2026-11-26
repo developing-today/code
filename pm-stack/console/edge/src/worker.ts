@@ -31,6 +31,28 @@ interface Env {
    * from the bridge; without either, those stay a machine's. */
   BRIDGE?: { fetch(request: Request): Promise<Response> };
   BRIDGE_TOKEN?: string;
+  /** The fleet-platform ledger the hosted M4 ledger surfaces read
+   * (#14968), and their opt-in flag: off unless it reads `on`, and
+   * only after the #14865 gate check recorded on #14968. Which store
+   * answers is LEDGER_STORE: `d1` (the owner ruling of 2026-11-26 on
+   * #14866) reads the LEDGER_DB binding — the D1 database named
+   * fleet-platform; anything else reads the Turso ledger at
+   * PM_LEDGER_DB_URL, whose token is a Worker secret, put there by
+   * scripts/expose.py from the vault (name:
+   * turso.fleet-platform-rw-token). The Turso arm is the rollback:
+   * the same var, flipped back. */
+  PM_LEDGER_DB_URL?: string;
+  PM_LEDGER_DB_TOKEN?: string;
+  LEDGER_PAGES?: string;
+  LEDGER_STORE?: string;
+  LEDGER_DB?: import("./ledger-pages.ts").LedgerD1Database;
+  /** Hosted /dns (#14968 slice 2) and its opt-in flag: off unless it
+   * reads `on`. The surface reads the #902 register snapshot the
+   * collector publishes into the same fleet-platform D1 database, so
+   * it shares the LEDGER_DB binding; the flag is deliberately not
+   * set in wrangler.jsonc / cloudflare.config.ts by the slice that
+   * lands the reader — enabling it is the follow-up flip. */
+  DNS_PAGES?: string;
   /** Local development only: where GitHub's API and the queue store
    * are, when they are stand-ins. Never set where this is deployed: the
    * Worker's tokens are sent to whatever these name. */
@@ -104,6 +126,13 @@ export class PmEdge extends DurableObject<Env> {
         queueDb: env.QUEUE_DB_ORIGIN,
         fetchImpl: fetch,
       },
+      ledgerPages:
+        env.LEDGER_PAGES === "on"
+          ? env.LEDGER_STORE === "d1"
+            ? { store: "d1", db: env.LEDGER_DB }
+            : { store: "turso", url: env.PM_LEDGER_DB_URL ?? "", token: env.PM_LEDGER_DB_TOKEN }
+          : undefined,
+      dnsPages: env.DNS_PAGES === "on" ? { db: env.LEDGER_DB } : undefined,
       // Live connections to the app. The platform holds them, so they
       // stay open while this object is put away between events, and it
       // is woken (by its alarm) only when there is something to read.

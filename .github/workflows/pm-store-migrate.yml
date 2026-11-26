@@ -1,0 +1,156 @@
+# Run the shared-schema migrations against one platform store (#14256).
+#
+# This is the migration action the console dispatches: pick a store,
+# and for a real store repeat its name in confirm_store. The
+# `stand-in` choice is the CI proof: the full test suite, a double
+# apply against a throwaway SQLite store (the second run must report
+# every migration already applied), and a negative control proving a
+# broken migration fails the run. A real store runs only after that
+# proof exists; its token comes from the repository secret named in
+# the step below (the inventory, pm-stack/platform/stores.json, names
+# the vault secret each store's token lives in — GitHub secret names
+# cannot contain the dots, so the mapping is spelled out here). An
+# unconfigured secret fails the job before the runner makes any
+# network request, and a failed migration fails the job: a failed run
+# reads as failed. The one-line JSON verdict is uploaded as an
+# artifact on every real-store run; the console's last-run display
+# reads the same verdict shape.
+#
+# The `pm-store-migrations` environment is referenced so repository
+# admins can put protection rules (required reviewers) on real-store
+# runs; creating or configuring the environment is an ops step, not
+# part of this workflow. There is no schedule: migrations run when a
+# person dispatches them, so there is no fleet-schedule-registry
+# entry.
+
+name: pm-store-migrate
+
+on:
+  workflow_dispatch:
+    inputs:
+      store:
+        description: "Store to migrate (stand-in = the CI proof, no real store)"
+        type: choice
+        required: true
+        default: stand-in
+        options:
+          - stand-in
+          - fleet-queue
+          - fleet-platform
+          - fleet-mirror
+          - voice-line-ledger
+      confirm_store:
+        description: "Real stores only: repeat the store name exactly"
+        type: string
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  stand-in:
+    name: stand-in proof
+    if: inputs.store == 'stand-in'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.x"
+      - name: Migration test suite
+        run: python3 pm-stack/shared-schema/test_turso_migrations.py
+      - name: Apply the stand-in store twice
+        run: |
+          python3 pm-stack/shared-schema/apply-store-migrations.py \
+            --local /tmp/stand-in.db | tee verdict-first.json
+          python3 pm-stack/shared-schema/apply-store-migrations.py \
+            --local /tmp/stand-in.db | tee verdict-second.json
+          python3 - <<'EOF'
+          import json
+          first = json.load(open("verdict-first.json"))
+          second = json.load(open("verdict-second.json"))
+          assert first["failed"] is None, first
+          assert len(first["applied"]) == 4, first
+          assert second["failed"] is None, second
+          assert second["applied"] == [], second
+          assert second["already_applied"] == first["applied"], second
+          print("STANDIN_PROOF_OK", first["applied"])
+          EOF
+      - name: Negative control — a broken migration fails the run
+        run: |
+          mkdir -p /tmp/broken-migrations
+          cp pm-stack/shared-schema/migrations/*.up.sql /tmp/broken-migrations/
+          printf 'CREATE TABLE broken_partial (id text);\nCREATE TABLE broken_partial (id text);\n' \
+            > /tmp/broken-migrations/99999999_0001_broken.up.sql
+          set +e
+          python3 pm-stack/shared-schema/apply-store-migrations.py \
+            --local /tmp/broken.db \
+            --migrations-dir /tmp/broken-migrations > verdict-broken.json
+          rc=$?
+          set -e
+          if [ "$rc" -eq 0 ]; then
+            echo "::error::a broken migration unexpectedly succeeded"
+            exit 1
+          fi
+          python3 - <<'EOF'
+          import json
+          verdict = json.load(open("verdict-broken.json"))
+          assert verdict["failed"]["migration"] == "99999999_0001_broken", verdict
+          assert len(verdict["applied"]) == 4, verdict
+          print("NEGATIVE_CONTROL_OK", verdict["failed"])
+          EOF
+
+  migrate:
+    name: migrate ${{ inputs.store }}
+    if: inputs.store != 'stand-in'
+    runs-on: ubuntu-latest
+    environment: pm-store-migrations
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.x"
+      - name: The store name must be repeated to run against a real store
+        env:
+          STORE: ${{ inputs.store }}
+          CONFIRM: ${{ inputs.confirm_store }}
+        run: |
+          if [ "$CONFIRM" != "$STORE" ]; then
+            echo "::error::confirm_store must repeat the store name ('$STORE') to migrate a real store"
+            exit 1
+          fi
+      - name: Resolve the store token
+        env:
+          STORE: ${{ inputs.store }}
+          TURSO_FLEET_QUEUE_RW_TOKEN: ${{ secrets.TURSO_FLEET_QUEUE_RW_TOKEN }}
+          TURSO_FLEET_PLATFORM_RW_TOKEN: ${{ secrets.TURSO_FLEET_PLATFORM_RW_TOKEN }}
+          TURSO_FLEET_MIRROR_RW_TOKEN: ${{ secrets.TURSO_FLEET_MIRROR_RW_TOKEN }}
+          TURSO_VOICE_LINE_LEDGER_TOKEN: ${{ secrets.TURSO_VOICE_LINE_LEDGER_TOKEN }}
+        run: |
+          case "$STORE" in
+            fleet-queue) token="$TURSO_FLEET_QUEUE_RW_TOKEN" ;;
+            fleet-platform) token="$TURSO_FLEET_PLATFORM_RW_TOKEN" ;;
+            fleet-mirror) token="$TURSO_FLEET_MIRROR_RW_TOKEN" ;;
+            voice-line-ledger) token="$TURSO_VOICE_LINE_LEDGER_TOKEN" ;;
+            *) echo "::error::unknown store '$STORE'"; exit 1 ;;
+          esac
+          if [ -z "$token" ]; then
+            echo "::error::no token secret configured for store '$STORE'; refusing to run"
+            exit 1
+          fi
+          echo "::add-mask::$token"
+          echo "STORE_TOKEN=$token" >> "$GITHUB_ENV"
+      - name: Apply the migrations
+        env:
+          STORE: ${{ inputs.store }}
+        run: |
+          python3 pm-stack/shared-schema/apply-store-migrations.py \
+            --store "$STORE" | tee verdict.json
+      - name: Upload the verdict
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: migrate-verdict-${{ inputs.store }}
+          path: verdict.json
+          if-no-files-found: ignore

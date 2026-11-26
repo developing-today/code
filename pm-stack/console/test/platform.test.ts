@@ -105,6 +105,14 @@ test("the list: well-formed rows in the order they are shown, a name once, and a
 
 test("read through the fleet binary: the repository's list, with the last deploy of each Worker that Actions deploys", async () => {
   const file = readFileSync(join(import.meta.dir, "..", "..", "platform", "workers.json"), "utf8");
+  // The oracle is the file itself, read here apart from the code under
+  // test: whoever adds a Worker to it, or gives one a deploy workflow,
+  // changes what is expected with it. (It said "20" and "4" here, and
+  // the console's own deploy stopped the first time the list changed.)
+  const listed = JSON.parse(file) as {
+    checked: string;
+    workers: { name: string; workflow: string | null; runDeploys?: boolean }[];
+  };
   const asked: string[] = [];
   const answers: Record<string, () => unknown> = {
     "repos/developing-today/code/contents/pm-stack/platform/workers.json": () => ({
@@ -126,6 +134,18 @@ test("read through the fleet binary: the repository's list, with the last deploy
       workflow_runs: [],
     }),
   };
+  // GitHub is answered for every deploy workflow the list names: one
+  // that has never run on main, unless a fixture above says otherwise.
+  // (The fake used to answer for the two workflows above only and let
+  // the rest fail as unread, so a Worker given a deploy workflow in
+  // the list — voice-line was the first — turned its "no run to
+  // show" into an error here, and the suite went red on main with
+  // nothing running it to say so.)
+  for (const w of listed.workers) {
+    if (w.workflow === null) continue;
+    const path = `repos/developing-today/code/actions/workflows/${w.workflow}/runs?branch=main&per_page=1`;
+    if (!(path in answers)) answers[path] = () => ({ workflow_runs: [] });
+  }
   const fails = new Set<string>();
   const run: Run = async (argv) => {
     const path = argv[3];
@@ -135,11 +155,6 @@ test("read through the fleet binary: the repository's list, with the last deploy
   };
   const ops = new Ops(readConfig({ HOME: "/h" }), run);
   const p = await ops.platform();
-  // The oracle is the file itself, read here apart from the code under
-  // test: whoever adds a Worker to it, or gives one a deploy workflow,
-  // changes what is expected with it. (It said "20" and "4" here, and
-  // the console's own deploy stopped the first time the list changed.)
-  const listed = JSON.parse(file) as { checked: string; workers: { name: string; workflow: string | null }[] };
   expect([p.checked, p.malformed, p.workers.length]).toEqual([listed.checked, 0, listed.workers.length]);
   expect(p.workers.map((w) => w.name)).toEqual(listed.workers.map((w) => w.name));
   // One read of the list, and one of each deploy workflow it names: not one per Worker, and none twice.
@@ -156,9 +171,19 @@ test("read through the fleet binary: the repository's list, with the last deploy
   });
   // A deploy that has never run on main has no run to show.
   expect(byName.get("pkarr")?.run).toBeNull();
-  // The console's deploy puts what it ran on into service; pkarr's goes in steps.
-  expect([byName.get("pm-console-edge")?.runDeploys, byName.get("pkarr")?.runDeploys]).toEqual([true, false]);
-  expect(byName.get("voice-line")?.run).toBeNull();
+  // What a deploy puts into service is the list's to say: the
+  // console's deploy puts what it ran on; pkarr's goes in steps.
+  expect([byName.get("pm-console-edge")?.runDeploys, byName.get("pkarr")?.runDeploys]).toEqual([
+    listed.workers.find((w) => w.name === "pm-console-edge")?.runDeploys ?? false,
+    listed.workers.find((w) => w.name === "pkarr")?.runDeploys ?? false,
+  ]);
+  // Every other Worker the list gives a deploy workflow was asked
+  // about it above and has never run on main: no run to show.
+  for (const w of listed.workers) {
+    if (w.workflow !== null && w.workflow !== "pm-console-edge-deploy.yml") {
+      expect(byName.get(w.name)?.run).toBeNull();
+    }
+  }
   // Its runs cannot be read: that Worker says so, and the rest still show.
   fails.add("repos/developing-today/code/actions/workflows/pm-console-edge-deploy.yml/runs?branch=main&per_page=1");
   const partial = await ops.platform();

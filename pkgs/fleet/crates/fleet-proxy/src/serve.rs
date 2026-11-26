@@ -21,6 +21,10 @@
 //!   from the first frame, the Python clients) or negotiate the
 //!   hello first (proto 1, fleet clients) — decided per connection
 //!   by peeking at the first frame, never by configuration.
+//!   A hello that negotiates the `proxy-mux` capability on both
+//!   sides switches the session to the stream family
+//!   ([`crate::mux`], #5756 §7 step 2); every other session keeps
+//!   the pooled request/response loop, byte-for-byte.
 //! * Two reaches carry tunnels to the laptop (code#10356, Drew's
 //!   2026-11-15 ruling that sandbox↔laptop transport lives in
 //!   this binary): the Cloudflare leg — TLS through the platform
@@ -39,7 +43,7 @@
 //! tunnels in memory, tokens in their files.
 
 use std::collections::HashMap;
-use std::io::Write;
+use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::os::unix::io::AsRawFd;
 use std::os::unix::net::{UnixListener, UnixStream};
@@ -765,6 +769,16 @@ impl Broker {
             if let Some(trip) = &req.trip {
                 headers.push(("X-Trip-Id".to_string(), trip.clone()));
             }
+            // #14188: the caller's FLEET_CTX_* record, unchanged, as
+            // X-Fleet-Ctx-* headers on every attempt (re-validated
+            // here: a frame built by a non-Rust client is untrusted).
+            if let Some(ctx) = &req.ctx {
+                let ctx = fleet_config::ctx::Ctx::from_pairs(ctx.iter());
+                headers.extend(
+                    ctx.header_pairs()
+                        .map(|(k, v)| (k.to_string(), v.to_string())),
+                );
+            }
             if *transport == Transport::Cf {
                 headers.extend(cf_headers.iter().cloned());
             }
@@ -1021,6 +1035,20 @@ fn parse_request(frame: &serde_json::Value) -> Result<Request, String> {
         Some(serde_json::Value::Bool(b)) => Some(*b),
         Some(_) => return Err("request \"cf_ok\" must be a boolean or null".to_string()),
     };
+    // #14188: the FLEET_CTX_* record. Lenient by contract (absence
+    // is representable, a partial record is never an error): a
+    // non-object is no context, and entries outside the fixed set or
+    // the value grammar are dropped, never forwarded.
+    let ctx = frame
+        .get("ctx")
+        .and_then(|v| v.as_object())
+        .map(|m| {
+            fleet_config::ctx::Ctx::from_pairs(
+                m.iter()
+                    .filter_map(|(k, v)| v.as_str().map(|v| (k.as_str(), v))),
+            )
+        })
+        .and_then(|c| c.to_frame());
     Ok(Request {
         method,
         path,
@@ -1030,6 +1058,7 @@ fn parse_request(frame: &serde_json::Value) -> Result<Request, String> {
         trip,
         transport,
         cf_ok,
+        ctx,
     })
 }
 
@@ -1094,12 +1123,12 @@ fn parse_port(frame: &serde_json::Value) -> Result<Option<u16>, String> {
     Ok(Some(n as u16))
 }
 
-fn serve_session(broker: &Broker, stream: UnixStream) {
+fn serve_session(broker: Arc<Broker>, stream: UnixStream) {
     serve_session_with_read_timeout(broker, stream, crate::tunnel::TUNNEL_READ_TIMEOUT);
 }
 
 fn serve_session_with_read_timeout(
-    broker: &Broker,
+    broker: Arc<Broker>,
     mut stream: UnixStream,
     read_timeout: Duration,
 ) {
@@ -1107,6 +1136,7 @@ fn serve_session_with_read_timeout(
         return;
     }
     let mut client_supports_raw_splice = false;
+    let mut mux_negotiated = false;
     let first = match read_frame(&mut stream) {
         Ok(f) => f,
         Err(_) => return, // probe connects and closes; the Python exits the same way
@@ -1146,6 +1176,13 @@ fn serve_session_with_read_timeout(
         if raw_splice_available {
             capabilities.push(fleet_registry::Capability::ProxyRawSplice.id().to_string());
         }
+        // The proxy half advertises the mux now that its code has
+        // landed (crate::mux, #5756 §7 step 2). Advertisement is
+        // not activation: the session below enters mux mode only
+        // when the client's hello advertised it back — the
+        // record's no-one-sided-shipment rule (§5).
+        capabilities.push(fleet_proxy_proto::mux::CAP_PROXY_MUX.to_string());
+        mux_negotiated = fleet_proxy_proto::mux::mux_negotiated(&hello.capabilities, &capabilities);
         let resp = HelloResponse {
             proto: fleet_proxy_proto::PROTO_MAJOR,
             services,
@@ -1156,7 +1193,7 @@ fn serve_session_with_read_timeout(
         }
     } else if first.get("method").is_some() {
         // Legacy session (proto 0): the first frame is a request.
-        let reply = handle_request(broker, &first);
+        let reply = handle_request(&broker, &first);
         if write_frame(&mut stream, &reply).is_err() {
             return;
         }
@@ -1172,6 +1209,15 @@ fn serve_session_with_read_timeout(
             })
             .unwrap(),
         );
+        return;
+    }
+    if mux_negotiated {
+        // Both hello peers advertised `proxy-mux`: this session
+        // speaks the stream family from here (crate::mux). The
+        // pooled loop below is untouched and stays in charge of
+        // every session that did not negotiate — byte-for-byte,
+        // permanently, as the fallback (record §5).
+        run_mux_session(broker, stream);
         return;
     }
     loop {
@@ -1245,7 +1291,7 @@ fn serve_session_with_read_timeout(
                     }
                     return;
                 }
-                let reply = handle_request(broker, &frame);
+                let reply = handle_request(&broker, &frame);
                 if write_frame(&mut stream, &reply).is_err() {
                     return;
                 }
@@ -1254,6 +1300,243 @@ fn serve_session_with_read_timeout(
             Err(_) => return,
         }
     }
+}
+
+/// Run one negotiated mux session to its end (#5756 §7 step 2).
+/// The socket is split into the session's reader half and a
+/// cloned writer half; a third clone is the close hook — shutting
+/// the socket down is what unblocks the reader when the liveness
+/// watchdog declares a silently half-open peer dead. Inbound
+/// frames refresh `last_used`, so a broker carrying a healthy mux
+/// session never idle-exits under it (record §4).
+fn run_mux_session(broker: Arc<Broker>, stream: UnixStream) {
+    let Ok(writer_stream) = stream.try_clone() else {
+        return;
+    };
+    let Ok(hook_stream) = stream.try_clone() else {
+        return;
+    };
+    let activity_broker = Arc::clone(&broker);
+    let session = crate::mux::MuxSession::new(
+        Box::new(writer_stream),
+        crate::mux::MuxConfig::default(),
+        Some(Arc::new(move || {
+            activity_broker
+                .last_used
+                .store(now_secs(), Ordering::Relaxed);
+        })),
+        Some(Arc::new(move || {
+            let _ = hook_stream.shutdown(std::net::Shutdown::Both);
+        })),
+    );
+    let handler_broker = Arc::clone(&broker);
+    let handler: crate::mux::StreamHandler =
+        Arc::new(move |stream, info| mux_handle_stream(&handler_broker, stream, info));
+    session.run(stream, handler);
+}
+
+/// How the broker dispatches one opened mux stream against the
+/// hello services map (#5756 §7 step 4, #15552) — the decision
+/// alone, separated from its I/O so it is testable without a
+/// laptop.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum MuxDispatch {
+    /// The port is not in the advertised map: fail the stream
+    /// fast with `port_not_served`, never the tunnel.
+    NotServed,
+    /// A request head that would be interpolated unsafely into an
+    /// HTTP request line downstream (#5750).
+    MalformedHead,
+    /// An HTTP request to the advertised service: read the body to
+    /// `fin`, then route it through [`Broker::do_request`].
+    Request { method: String, path: String },
+    /// A raw connect: splice onto a raw tunnel to the port.
+    Raw,
+}
+
+fn mux_dispatch(
+    services: &std::collections::BTreeMap<String, ServiceInfo>,
+    info: &crate::mux::OpenInfo,
+) -> MuxDispatch {
+    use fleet_proxy_proto::mux::OpenIntent;
+    if !services.contains_key(&info.port.to_string()) {
+        return MuxDispatch::NotServed;
+    }
+    match &info.intent {
+        OpenIntent::Request { method, path } => {
+            if crate::http::valid_method(method) && crate::http::valid_path(path) {
+                MuxDispatch::Request {
+                    method: method.clone(),
+                    path: path.clone(),
+                }
+            } else {
+                MuxDispatch::MalformedHead
+            }
+        }
+        OpenIntent::RawConnect => MuxDispatch::Raw,
+    }
+}
+
+/// The routed [`Request`] for one mux request stream: the open's
+/// port and trip, and the per-request routing fields its `meta`
+/// carried (#15552) — the same fields a pooled request frame
+/// carries, so a stream is routed exactly as the pooled frame
+/// would be. `ctx` is re-validated the way the pooled frame
+/// boundary does it: entries outside the fixed set or grammar are
+/// dropped, never forwarded.
+fn mux_request(
+    info: &crate::mux::OpenInfo,
+    method: String,
+    path: String,
+    body: Option<serde_json::Value>,
+) -> Request {
+    let ctx = info
+        .meta
+        .ctx
+        .as_ref()
+        .map(|m| fleet_config::ctx::Ctx::from_pairs(m.iter()))
+        .and_then(|c| c.to_frame());
+    Request {
+        method,
+        path,
+        body,
+        port: Some(info.port),
+        token_file: info.meta.token_file.clone(),
+        trip: info.trip.clone(),
+        transport: info.meta.transport.clone(),
+        cf_ok: info.meta.cf_ok,
+        ctx,
+    }
+}
+
+/// Terminate one mux stream (record §3, the broker row; #5756
+/// §7 step 4).
+///
+/// The stream is dispatched against the hello services map
+/// ([`mux_dispatch`]). A port the hello never advertised fails
+/// the stream fast with `port_not_served` — the proxy-level
+/// capability stub — and never touches the tunnel (record §4). A
+/// request stream is assembled to its `fin` and dispatched through
+/// the same [`Broker::do_request`] as the pooled path, carrying the
+/// open's routing fields ([`mux_request`]), so its tunnel opens
+/// ride the existing single-flight recovery gate (PR #6490). Every
+/// reply — the service's, or the broker's own 502 — goes back with
+/// the open's trip id echoed on the first response frame, and the
+/// service's with the transport that served it, the mux analogue
+/// of the pooled response's `transport` field (#15552). A
+/// raw-connect stream splices onto a raw tunnel.
+fn mux_handle_stream(broker: &Broker, stream: crate::mux::MuxStream, info: crate::mux::OpenInfo) {
+    use crate::mux::ResponseHead;
+    use fleet_proxy_proto::mux::RST_PORT_NOT_SERVED;
+    let head = |status: u16, transport: Option<&str>| ResponseHead {
+        status: Some(status),
+        transport: transport.map(str::to_string),
+        trip: info.trip.clone(),
+    };
+    match mux_dispatch(&broker.services_map(), &info) {
+        MuxDispatch::NotServed => stream.reset(RST_PORT_NOT_SERVED),
+        MuxDispatch::MalformedHead => {
+            let _ = stream.respond_with(
+                head(502, None),
+                br#"{"error":"broker: malformed request head"}"#,
+            );
+        }
+        MuxDispatch::Request { method, path } => {
+            let body = match stream.read_to_fin(fleet_proxy_proto::MAX_FRAME_BYTES) {
+                Ok(b) => b,
+                Err(_) => return, // reset/timeout/tunnel-loss already signalled
+            };
+            let body_json = if body.is_empty() {
+                None
+            } else {
+                match serde_json::from_slice(&body) {
+                    Ok(v) => Some(v),
+                    Err(_) => {
+                        let _ = stream.respond_with(
+                            head(502, None),
+                            br#"{"error":"broker: request body is not JSON"}"#,
+                        );
+                        return;
+                    }
+                }
+            };
+            let req = mux_request(&info, method, path, body_json);
+            match broker.do_request(&req, true) {
+                Ok((status, body, transport)) => {
+                    let bytes = serde_json::to_vec(&body).unwrap_or_default();
+                    let _ = stream.respond_with(head(status, Some(transport.as_str())), &bytes);
+                }
+                Err(why) => {
+                    let bytes = serde_json::to_vec(
+                        &serde_json::json!({ "error": format!("broker: {why}") }),
+                    )
+                    .unwrap_or_default();
+                    let _ = stream.respond_with(head(502, None), &bytes);
+                }
+            }
+        }
+        MuxDispatch::Raw => match broker.open_raw_tunnel(info.port) {
+            Ok(tunnel) => mux_splice(stream, tunnel),
+            Err(_) => stream.reset("connect_failed"),
+        },
+    }
+}
+
+/// Splice a raw-connect mux stream onto its raw tunnel: stream
+/// chunks become tunnel bytes (credit returns as the tunnel
+/// accepts them), tunnel bytes become stream chunks. Either
+/// direction ending closes the other; a raw relay may idle for
+/// hours, exactly like the pooled raw-splice path, so the stream
+/// direction waits without a ceiling.
+fn mux_splice(stream: crate::mux::MuxStream, tunnel: TcpStream) {
+    let stream = Arc::new(stream);
+    let Ok(mut up_tunnel) = tunnel.try_clone() else {
+        return;
+    };
+    let up_stream = Arc::clone(&stream);
+    let up = std::thread::spawn(move || {
+        loop {
+            match up_stream.recv_chunk(Duration::from_secs(600)) {
+                Ok(Some(bytes)) => {
+                    let len = bytes.len() as u64;
+                    if up_tunnel.write_all(&bytes).is_err() {
+                        let _ = up_tunnel.shutdown(std::net::Shutdown::Both);
+                        return;
+                    }
+                    up_stream.consumed(len);
+                }
+                Ok(None) => {
+                    let _ = up_tunnel.shutdown(std::net::Shutdown::Write);
+                    return;
+                }
+                Err(crate::mux::StreamError::Timeout) => continue,
+                Err(_) => {
+                    let _ = up_tunnel.shutdown(std::net::Shutdown::Both);
+                    return;
+                }
+            }
+        }
+    });
+    let mut down_tunnel = tunnel;
+    let mut buf = [0u8; 32 * 1024];
+    loop {
+        match down_tunnel.read(&mut buf) {
+            Ok(0) => {
+                let _ = stream.close_send();
+                break;
+            }
+            Ok(n) => {
+                if stream.send_chunk(&buf[..n]).is_err() {
+                    break;
+                }
+            }
+            Err(_) => {
+                stream.reset(fleet_proxy_proto::mux::RST_CANCELLED);
+                break;
+            }
+        }
+    }
+    let _ = up.join();
 }
 
 fn keepalive_loop(broker: Arc<Broker>, idle_exit: bool) {
@@ -1267,6 +1550,7 @@ fn keepalive_loop(broker: Arc<Broker>, idle_exit: bool) {
         trip: None,
         transport: None,
         cf_ok: None,
+        ctx: None,
     };
     let mut last_health = now_secs();
     loop {
@@ -1478,7 +1762,7 @@ fn run_inner(config: &Config, idle_exit: bool) -> i32 {
         match stream {
             Ok(stream) => {
                 let broker = Arc::clone(&broker);
-                std::thread::spawn(move || serve_session(&broker, stream));
+                std::thread::spawn(move || serve_session(broker, stream));
             }
             Err(_) => continue,
         }
@@ -1553,7 +1837,7 @@ mod tests {
         let started = Instant::now();
 
         std::thread::spawn(move || {
-            serve_session_with_read_timeout(&broker, stream, timeout);
+            serve_session_with_read_timeout(broker, stream, timeout);
             let _ = done_tx.send(());
         });
 
@@ -1562,6 +1846,361 @@ mod tests {
             .expect("stalled accepted stream should time out and return");
         assert!(started.elapsed() >= timeout);
         assert!(started.elapsed() < Duration::from_secs(2));
+    }
+
+    fn mux_test_broker() -> Arc<Broker> {
+        Arc::new(Broker {
+            config: Config::default(),
+            egress: None,
+            cf_egress: None,
+            pool: TunnelPool::new(0),
+            recovery: RecoveryGate::new(),
+            last_used: AtomicU64::new(now_secs()),
+        })
+    }
+
+    /// One hello exchange against a fresh serve session on the
+    /// other end of `client`; returns the broker's hello frame.
+    fn hello_exchange(client: &mut UnixStream, capabilities: Vec<String>) -> serde_json::Value {
+        let hello = fleet_proxy_proto::hello_frame(&Hello {
+            proto: fleet_proxy_proto::PROTO_MAJOR,
+            client: "mux-test".to_string(),
+            capabilities,
+        });
+        write_frame(client, &hello).unwrap();
+        let resp = read_frame(client).unwrap();
+        assert!(fleet_proxy_proto::is_hello_frame(&resp));
+        resp
+    }
+
+    fn hello_capabilities(resp: &serde_json::Value) -> Vec<String> {
+        serde_json::from_value(resp["hello"]["capabilities"].clone()).unwrap()
+    }
+
+    #[test]
+    fn mux_session_advertises_capability_and_fails_unserved_ports_fast() {
+        // Oracle: record §5 + §3 — the proxy half advertises
+        // `proxy-mux` now that its code has landed; an
+        // unadvertised port fails the stream fast
+        // (port_not_served), never the tunnel, so the same
+        // session answers the next stream too.
+        use fleet_proxy_proto::mux::{RST_PORT_NOT_SERVED, StreamFrame, StreamId};
+        let broker = mux_test_broker();
+        let (mut client, server) = UnixStream::pair().unwrap();
+        let session = std::thread::spawn(move || {
+            serve_session_with_read_timeout(broker, server, Duration::from_secs(30));
+        });
+        let resp = hello_exchange(
+            &mut client,
+            vec![
+                "proxy-connect".to_string(),
+                fleet_proxy_proto::mux::CAP_PROXY_MUX.to_string(),
+            ],
+        );
+        let caps = hello_capabilities(&resp);
+        assert!(
+            caps.iter()
+                .any(|c| c == fleet_proxy_proto::mux::CAP_PROXY_MUX),
+            "hello must advertise proxy-mux: {caps:?}"
+        );
+        // The default services map is the routing table; 65000
+        // is not routed by it.
+        assert!(resp["hello"]["services"].get("65000").is_none());
+        for n in [1u64, 3] {
+            let open = StreamFrame::open_request(
+                StreamId::client(n).unwrap(),
+                65000,
+                "GET",
+                "/x",
+                Some(format!("trip-{n}")),
+            );
+            write_frame(&mut client, &open).unwrap();
+            // Read until this stream's rst, answering any
+            // keepalive ping the mux pinger interleaves.
+            loop {
+                let frame = read_frame(&mut client).unwrap();
+                if frame["kind"] == "ping" {
+                    let nonce = frame["nonce"].as_u64().unwrap();
+                    write_frame(&mut client, &StreamFrame::Pong { nonce }).unwrap();
+                    continue;
+                }
+                let parsed = fleet_proxy_proto::mux::parse_stream_frame(&frame).unwrap();
+                match parsed {
+                    StreamFrame::Rst { stream, reason } => {
+                        assert_eq!(stream, StreamId(n));
+                        assert_eq!(reason, RST_PORT_NOT_SERVED);
+                        break;
+                    }
+                    other => panic!("expected rst for stream {n}, got {other:?}"),
+                }
+            }
+        }
+        drop(client);
+        session.join().unwrap();
+    }
+
+    #[test]
+    fn session_without_mux_negotiation_keeps_the_pooled_path() {
+        // Oracle: record §5 — absence on the client side leaves
+        // the pooled path byte-for-byte in charge, even though
+        // the broker's hello advertises the capability.
+        let broker = mux_test_broker();
+        let (mut client, server) = UnixStream::pair().unwrap();
+        let session = std::thread::spawn(move || {
+            serve_session_with_read_timeout(broker, server, Duration::from_secs(30));
+        });
+        let resp = hello_exchange(&mut client, vec!["proxy-connect".to_string()]);
+        let caps = hello_capabilities(&resp);
+        assert!(
+            caps.iter()
+                .any(|c| c == fleet_proxy_proto::mux::CAP_PROXY_MUX),
+            "advertisement is unconditional once the code lands: {caps:?}"
+        );
+        // A classic request frame gets a classic response frame
+        // (a 502 here — no laptop is attached — but the pooled
+        // loop's own shape), never a stream frame.
+        write_frame(
+            &mut client,
+            &serde_json::json!({"method": "GET", "path": "/health", "port": 4799}),
+        )
+        .unwrap();
+        let reply = read_frame(&mut client).unwrap();
+        assert!(
+            reply.get("status").is_some(),
+            "pooled response shape: {reply}"
+        );
+        assert!(!fleet_proxy_proto::mux::is_stream_frame(&reply));
+        drop(client);
+        session.join().unwrap();
+    }
+
+    fn open_info(
+        port: u16,
+        intent: fleet_proxy_proto::mux::OpenIntent,
+        meta: fleet_proxy_proto::mux::RequestMeta,
+    ) -> crate::mux::OpenInfo {
+        crate::mux::OpenInfo {
+            stream: fleet_proxy_proto::mux::StreamId::client(1).unwrap(),
+            port,
+            intent,
+            trip: Some("trip-15552".to_string()),
+            meta,
+        }
+    }
+
+    #[test]
+    fn mux_dispatch_routes_against_the_services_map_15552() {
+        // Oracle: record §3 broker row / §7 step 4 — each stream is
+        // dispatched to the advertised service for its port; an
+        // unadvertised port is a fast stream failure; a request
+        // head unsafe for the HTTP request line never dispatches.
+        use fleet_proxy_proto::mux::{OpenIntent, RequestMeta};
+        let services = mux_test_broker().services_map();
+        let request = |method: &str, path: &str| OpenIntent::Request {
+            method: method.to_string(),
+            path: path.to_string(),
+        };
+        assert_eq!(
+            mux_dispatch(
+                &services,
+                &open_info(65000, request("GET", "/x"), RequestMeta::default())
+            ),
+            MuxDispatch::NotServed
+        );
+        assert_eq!(
+            mux_dispatch(
+                &services,
+                &open_info(65000, OpenIntent::RawConnect, RequestMeta::default())
+            ),
+            MuxDispatch::NotServed
+        );
+        assert_eq!(
+            mux_dispatch(
+                &services,
+                &open_info(
+                    fleet_config::PORT_QUEUE_BROKER,
+                    request("POST", "/queue/claim"),
+                    RequestMeta::default()
+                )
+            ),
+            MuxDispatch::Request {
+                method: "POST".to_string(),
+                path: "/queue/claim".to_string()
+            }
+        );
+        assert_eq!(
+            mux_dispatch(
+                &services,
+                &open_info(
+                    fleet_config::PORT_LAPTOP_AGENT,
+                    request("GET", "/x\r\nX-Evil: 1"),
+                    RequestMeta::default()
+                )
+            ),
+            MuxDispatch::MalformedHead
+        );
+        assert_eq!(
+            mux_dispatch(
+                &services,
+                &open_info(
+                    fleet_config::PORT_RUSTDESK,
+                    OpenIntent::RawConnect,
+                    RequestMeta::default()
+                )
+            ),
+            MuxDispatch::Raw
+        );
+    }
+
+    #[test]
+    fn mux_request_carries_the_open_meta_like_a_pooled_frame_15552() {
+        // Oracle: a mux request is routed exactly as the pooled
+        // frame carrying the same fields would be — token file,
+        // transport preference, cf verdict, trip, and a ctx record
+        // re-validated at this boundary (out-of-set and
+        // ungrammatical entries dropped, as parse_request does).
+        use fleet_proxy_proto::mux::{OpenIntent, RequestMeta};
+        let mut ctx = std::collections::BTreeMap::new();
+        ctx.insert("FLEET_CTX_ID".to_string(), "task-15552".to_string());
+        ctx.insert("FLEET_CTX_NOT_IN_SET".to_string(), "x".to_string());
+        ctx.insert(
+            "FLEET_CTX_ORIGIN".to_string(),
+            "bad value with spaces".to_string(),
+        );
+        let meta = RequestMeta {
+            token_file: Some("/run/fleet/queue.token".to_string()),
+            transport: Some("ts".to_string()),
+            cf_ok: Some(false),
+            ctx: Some(ctx),
+        };
+        let info = open_info(
+            fleet_config::PORT_QUEUE_BROKER,
+            OpenIntent::Request {
+                method: "POST".to_string(),
+                path: "/queue/claim".to_string(),
+            },
+            meta,
+        );
+        let req = mux_request(
+            &info,
+            "POST".to_string(),
+            "/queue/claim".to_string(),
+            Some(serde_json::json!({"n": 1})),
+        );
+        assert_eq!(req.port, Some(fleet_config::PORT_QUEUE_BROKER));
+        assert_eq!(req.token_file.as_deref(), Some("/run/fleet/queue.token"));
+        assert_eq!(req.transport.as_deref(), Some("ts"));
+        assert_eq!(req.cf_ok, Some(false));
+        assert_eq!(req.trip.as_deref(), Some("trip-15552"));
+        assert_eq!(req.body, Some(serde_json::json!({"n": 1})));
+        let ctx = req.ctx.expect("the valid ctx entry survives");
+        assert_eq!(ctx.len(), 1, "{ctx:?}");
+        assert_eq!(ctx["FLEET_CTX_ID"], "task-15552");
+        // No meta: the pooled defaults, nothing invented.
+        let bare = mux_request(
+            &open_info(
+                fleet_config::PORT_LAPTOP_AGENT,
+                OpenIntent::RawConnect,
+                RequestMeta::default(),
+            ),
+            "GET".to_string(),
+            "/health".to_string(),
+            None,
+        );
+        assert!(bare.token_file.is_none() && bare.transport.is_none());
+        assert!(bare.cf_ok.is_none() && bare.ctx.is_none());
+    }
+
+    #[test]
+    fn mux_request_stream_honours_its_token_file_and_echoes_its_trip_15552() {
+        // Oracle: over a live negotiated session, a request stream
+        // to an advertised port is dispatched with its open's
+        // token file (the broker's 502 names the file it could not
+        // read — the caller's, not the default), the reply echoes
+        // the open's trip id, and an unserved port on the same
+        // session still fails fast without ending the tunnel.
+        use fleet_proxy_proto::mux::{RST_PORT_NOT_SERVED, RequestMeta, StreamFrame, StreamId};
+        let broker = mux_test_broker();
+        let (mut client, server) = UnixStream::pair().unwrap();
+        let session = std::thread::spawn(move || {
+            serve_session_with_read_timeout(broker, server, Duration::from_secs(30));
+        });
+        hello_exchange(
+            &mut client,
+            vec![
+                "proxy-connect".to_string(),
+                fleet_proxy_proto::mux::CAP_PROXY_MUX.to_string(),
+            ],
+        );
+        let token_file = "/nonexistent-15552/caller.token";
+        let open = StreamFrame::open_request_with(
+            StreamId::client(1).unwrap(),
+            fleet_config::PORT_QUEUE_BROKER,
+            "GET",
+            "/health",
+            Some("trip-15552".to_string()),
+            RequestMeta {
+                token_file: Some(token_file.to_string()),
+                ..RequestMeta::default()
+            },
+        );
+        write_frame(&mut client, &open).unwrap();
+        // The request direction ends with an empty fin.
+        write_frame(
+            &mut client,
+            &StreamFrame::data(StreamId::client(1).unwrap(), &[], true).unwrap(),
+        )
+        .unwrap();
+        let unserved = StreamFrame::open_request(
+            StreamId::client(3).unwrap(),
+            65000,
+            "GET",
+            "/x",
+            Some("trip-unserved".to_string()),
+        );
+        write_frame(&mut client, &unserved).unwrap();
+        let mut body = Vec::new();
+        let mut head: Option<(Option<u16>, Option<String>)> = None;
+        let mut fin = false;
+        let mut reset = false;
+        while !(fin && reset) {
+            let frame = read_frame(&mut client).unwrap();
+            if frame["kind"] == "ping" {
+                let nonce = frame["nonce"].as_u64().unwrap();
+                write_frame(&mut client, &StreamFrame::Pong { nonce }).unwrap();
+                continue;
+            }
+            match fleet_proxy_proto::mux::parse_stream_frame(&frame).unwrap() {
+                StreamFrame::Data {
+                    stream,
+                    status,
+                    trip,
+                    fin: last,
+                    ..
+                } if stream == StreamId(1) => {
+                    if head.is_none() {
+                        head = Some((status, trip));
+                    }
+                    let parsed = fleet_proxy_proto::mux::parse_stream_frame(&frame).unwrap();
+                    body.extend(parsed.payload().unwrap().unwrap());
+                    fin |= last;
+                }
+                StreamFrame::Rst { stream, reason } if stream == StreamId(3) => {
+                    assert_eq!(reason, RST_PORT_NOT_SERVED);
+                    reset = true;
+                }
+                StreamFrame::Window { .. } => {}
+                other => panic!("unexpected frame {other:?}"),
+            }
+        }
+        let (status, trip) = head.expect("a response head");
+        assert_eq!(status, Some(502));
+        assert_eq!(trip.as_deref(), Some("trip-15552"));
+        let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let error = body["error"].as_str().unwrap();
+        assert!(error.contains(token_file), "{error}");
+        drop(client);
+        session.join().unwrap();
     }
 
     const PORT: u16 = 4799;
@@ -1733,6 +2372,34 @@ mod tests {
     }
 
     #[test]
+    fn parse_request_keeps_only_the_valid_fleet_ctx_14188() {
+        let frame = serde_json::json!({
+            "method": "POST",
+            "path": "/claim",
+            "ctx": {
+                "FLEET_CTX_ID": "task-22655",
+                "FLEET_CTX_TASK_ID": "22655",
+                "FLEET_CTX_NOT_IN_SET": "x",
+                "FLEET_CTX_ORIGIN": "bad value with spaces",
+                "FLEET_CTX_HOST": 7,
+            },
+        });
+        let ctx = parse_request(&frame).unwrap().ctx.unwrap();
+        assert_eq!(ctx.len(), 2, "{ctx:?}");
+        assert_eq!(ctx["FLEET_CTX_ID"], "task-22655");
+        assert_eq!(ctx["FLEET_CTX_TASK_ID"], "22655");
+        // Absent, non-object, or all-invalid ctx is no context, never
+        // an error.
+        for frame in [
+            serde_json::json!({"method": "GET", "path": "/health"}),
+            serde_json::json!({"method": "GET", "path": "/health", "ctx": "x"}),
+            serde_json::json!({"method": "GET", "path": "/health", "ctx": {"PATH": "/bin"}}),
+        ] {
+            assert!(parse_request(&frame).unwrap().ctx.is_none());
+        }
+    }
+
+    #[test]
     fn cf_request_ok_applies_the_exec_safety_valve() {
         let mk = |path: &str, body: serde_json::Value| Request {
             method: "POST".to_string(),
@@ -1743,6 +2410,7 @@ mod tests {
             trip: None,
             transport: None,
             cf_ok: None,
+            ctx: None,
         };
         // A long /exec may not ride the edge.
         assert!(!cf_request_ok(&mk(

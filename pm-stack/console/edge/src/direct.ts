@@ -27,24 +27,38 @@
 // A prompt, a note or a bug is filed at the edge and only its queue
 // task is held for a machine, as `prompt.enqueue` or `triage.enqueue`:
 // the issue is never filed twice.
-import { OpError } from "../../src/errors.ts";
+
+import { executeQueueVerb, nativeQueueEnv } from "../../../../pkgs/fleet/hosted-worker/src/queue.ts";
+import { FixtureQueueStore, type TaskRow } from "../../../../pkgs/fleet/hosted-worker/src/queue-store.ts";
+import type { Json } from "../../../../pkgs/fleet/hosted-worker/src/queue-validate.ts";
 import type { Config } from "../../src/config.ts";
 import type { EdgeConfig } from "../../src/edge-proto.ts";
-import { Ops, type Fetch, type Run, type RunResult } from "../../src/ops.ts";
+import { OpError } from "../../src/errors.ts";
+import { type Fetch, Ops, type Run, type RunResult } from "../../src/ops.ts";
 import { Plan } from "../../src/plan.ts";
 import { timed } from "../../src/timed.ts";
-import { Work } from "../../src/work.ts";
 import { memoryShelf, type Shelf, Trends } from "../../src/trends.ts";
+import { Work } from "../../src/work.ts";
 
 /** Sections the edge reads itself. `agents` is read through the
  * bridge, so it is only the edge's while it holds the PM bridge
  * credential (edge.ts `owned` says which of these are its, case by
  * case); the pipeline's unread-instruction count is the bridge's
  * the same way (#14377); the rest are GitHub's and the queue store's. */
-export const DIRECT_READ_SECTIONS = ["board", "prs", "priorities", "asks", "census", "done", "agents", "pipeline"] as const;
+export const DIRECT_READ_SECTIONS = [
+  "board",
+  "prs",
+  "priorities",
+  "asks",
+  "census",
+  "done",
+  "agents",
+  "pipeline",
+] as const;
 /** Actions the edge runs itself: each is one or a few calls to GitHub
  * or the queue store, and needs nothing a machine has. */
 export const DIRECT_ACTIONS = [
+  "prompt.enqueue",
   "ask.send",
   "ask.reply",
   "ask.close",
@@ -226,6 +240,11 @@ interface Entry {
   size: number;
   at: number;
 }
+/** One line of the index as it is kept: the entry, and the address it
+ * belongs to, under its place's own key (`gh:index:<place>`). */
+interface EntryRecord extends Entry {
+  u: string;
+}
 interface Index {
   entries: Record<string, Entry>;
 }
@@ -244,12 +263,16 @@ interface Count {
 /** GitHub's answers, its waits and its count, kept in `store`.
  *
  * An answer is kept as pieces in a place of its own, each piece marked
- * with the address and tag it belongs to, under an entry in one index.
- * The pieces are written first and the index last, so what was started
- * and not finished (the object was put away part-way, or the store
- * failed) is never taken for an answer: its pieces do not carry what
- * the index names, and it reads as nothing kept. One change is made at
- * a time.
+ * with the address and tag it belongs to, under a line of the index
+ * kept in a place of its own too, named by a short list of the places
+ * in use. The pieces are written first and the line last, so what was
+ * started and not finished (the object was put away part-way, or the
+ * store failed) is never taken for an answer: its pieces do not carry
+ * what the index names, and it reads as nothing kept. One change is
+ * made at a time. (The index was once one value, rewritten whole at
+ * every change — and at every stale read, to mark one answer as still
+ * wanted. A store still holding it is read from it once, and its
+ * lines are written out in the new shape in its place.)
  *
  * When there are more than `most` answers, or more than `room`
  * characters in them, the one longest unmarked goes. One too big for
@@ -275,12 +298,20 @@ export function githubMemory(
   /** The most pieces an answer that is kept can have. */
   const longest = Math.max(1, Math.ceil(one / pieceSize));
   const place = (id: number, n: number) => `gh:a:${id}:${n}`;
+  /** One line of the index, under its place's own key. */
+  const line = (id: number) => `gh:index:${id}`;
+  /** The places in use, and nothing else about them: the list a
+   * starting object reads to know which lines there are. */
+  const LINES = "gh:index:ids";
 
   interface State {
     index: Index;
     count: Count;
     /** Whether the store could be read. */
     read: boolean;
+    /** The places the store's list names, as last read or written:
+     * the list is rewritten only when this set changes. */
+    ids: Set<number>;
   }
   /** GitHub's waits, as this object knows them: what the store held
    * when it was read, and what has been said since. Kept here as well
@@ -300,37 +331,121 @@ export function githubMemory(
           return otherwise;
         }
       };
-      const index = await take<Index>(
-        "gh:index",
-        (value) => {
-          const v = value as Partial<Index> | undefined;
-          if (!v || typeof v.entries !== "object" || v.entries === null) return null;
-          const entries: Record<string, Entry> = {};
-          const places = new Set<number>();
-          for (const [url, e] of Object.entries(v.entries)) {
-            if (
-              e &&
-              Number.isInteger(e.id) &&
-              !places.has(e.id) &&
-              typeof e.etag === "string" &&
-              Number.isInteger(e.pieces) &&
-              e.pieces >= 1 &&
-              // (No more than an answer kept here can have: what is
-              // read back says how many pieces to clear.)
-              e.pieces <= longest &&
-              Number.isInteger(e.size) &&
-              e.size >= 0 &&
-              e.size <= one &&
-              typeof e.at === "number"
-            ) {
-              places.add(e.id);
-              entries[url] = { id: e.id, etag: e.etag, pieces: e.pieces, size: e.size, at: e.at };
-            }
+      /** One line as read back: nothing that does not hold together
+       * is a line at all. (No more pieces than an answer kept here
+       * can have: what is read back says how many pieces to clear.) */
+      const fitLine = (value: unknown): Entry | null => {
+        const e = value as Partial<Entry> | undefined;
+        if (
+          !e ||
+          !Number.isInteger(e.id) ||
+          typeof e.etag !== "string" ||
+          !Number.isInteger(e.pieces) ||
+          (e.pieces as number) < 1 ||
+          (e.pieces as number) > longest ||
+          !Number.isInteger(e.size) ||
+          (e.size as number) < 0 ||
+          (e.size as number) > one ||
+          typeof e.at !== "number"
+        ) {
+          return null;
+        }
+        return { id: e.id as number, etag: e.etag, pieces: e.pieces as number, size: e.size as number, at: e.at };
+      };
+      /** The index as it was once kept, in one value: its lines held
+       * to the same measure, and one place given to one address (the
+       * first that names it). */
+      const fitWhole = (value: unknown): Index => {
+        const v = value as Partial<Index> | undefined;
+        if (!v || typeof v.entries !== "object" || v.entries === null) return { entries: {} };
+        const entries: Record<string, Entry> = {};
+        const places = new Set<number>();
+        for (const [url, raw] of Object.entries(v.entries)) {
+          const entry = fitLine(raw);
+          if (entry && !places.has(entry.id)) {
+            places.add(entry.id);
+            entries[url] = entry;
           }
-          return { entries };
-        },
-        { entries: {} },
-      );
+        }
+        return { entries };
+      };
+      let whole: Index | null = null;
+      try {
+        const held = await store.get("gh:index");
+        if (held !== undefined) whole = fitWhole(held);
+      } catch {
+        read = false;
+      }
+      let listed: number[] | null = null;
+      try {
+        const held = await store.get(LINES);
+        if (Array.isArray(held)) {
+          listed = [...new Set(held.filter((id) => Number.isInteger(id) && (id as number) >= 0))].sort(
+            (a, b) => (a as number) - (b as number),
+          ) as number[];
+        }
+      } catch {
+        read = false;
+      }
+      let index: Index;
+      let ids: Set<number>;
+      if (listed !== null) {
+        // The list names the places; each line is read from its own
+        // key. A line that is not there, or does not hold together,
+        // or names a place other than its own, or an address a
+        // nearer place already named, is nothing kept.
+        const entries: Record<string, Entry> = {};
+        for (const id of listed) {
+          let raw: unknown;
+          try {
+            raw = await store.get(line(id));
+          } catch {
+            read = false;
+          }
+          const record = raw as Partial<EntryRecord> | undefined;
+          const entry = record && typeof record.u === "string" && record.u !== "" ? fitLine(record) : null;
+          if (entry && entry.id === id && !((record!.u as string) in entries)) {
+            entries[record!.u as string] = entry;
+          }
+        }
+        index = { entries };
+        ids = new Set(Object.values(entries).map((e) => e.id));
+        if (whole !== null && read) {
+          // The one value is baggage once the list is written: let
+          // it go. If that fails it is left for the next to start,
+          // and read by no one meanwhile.
+          try {
+            await store.delete("gh:index");
+          } catch {
+            // As said: baggage, left for the next to start.
+          }
+        }
+      } else if (whole !== null) {
+        // A store still holding the index in one value: read from
+        // it, and write its lines out in the new shape — the lines
+        // first, the list after them, the one value let go last, so
+        // a store stopped part-way is read the same by the next to
+        // start, which tries again.
+        index = whole;
+        ids = new Set(Object.values(index.entries).map((e) => e.id));
+        if (read) {
+          try {
+            for (const [url, entry] of Object.entries(index.entries)) {
+              await store.put(line(entry.id), { u: url, ...entry });
+            }
+            await store.put(
+              LINES,
+              [...ids].sort((a, b) => a - b),
+            );
+            await store.delete("gh:index");
+          } catch {
+            // Stopped part-way, as said: the next to start tries again.
+          }
+        }
+      } else {
+        index = { entries: {} };
+        ids = new Set();
+      }
       const stored = await take<Partial<Record<Allowance, Quiet>>>(
         "gh:quiet",
         (value) => {
@@ -368,7 +483,7 @@ export function githubMemory(
         },
         { answers: 0, unchanged: 0, since: now() },
       );
-      return { index, count, read };
+      return { index, count, read, ids };
     })();
     loaded = mine;
     void mine.then((state) => {
@@ -403,11 +518,30 @@ export function githubMemory(
     while ((await store.get(place(id, end))) !== undefined) end++;
     for (let n = end - 1; n >= from; n--) await store.delete(place(id, n));
   };
-  const forget = async (index: Index, url: string) => {
-    const entry = index.entries[url];
+  const forget = async (state: State, url: string) => {
+    const entry = state.index.entries[url];
     if (!entry) return;
-    delete index.entries[url];
+    delete state.index.entries[url];
     await clear(entry.id, 0, entry.pieces);
+    await store.delete(line(entry.id));
+  };
+  /** One line of the index, written on its own: all of the index a
+   * change to one answer ever writes, besides the list of places when
+   * the places themselves change. */
+  const putLine = async (url: string, entry: Entry) => {
+    const record: EntryRecord = { u: url, ...entry };
+    await store.put(line(entry.id), record);
+  };
+  /** The list of places in use, rewritten only when the set of places
+   * changes: a place number each, where the one value it replaced
+   * carried every address and tag at every change. */
+  const syncLines = async (state: State) => {
+    const ids = Object.values(state.index.entries)
+      .map((e) => e.id)
+      .sort((a, b) => a - b);
+    if (ids.length === state.ids.size && ids.every((id) => state.ids.has(id))) return;
+    await store.put(LINES, ids);
+    state.ids = new Set(ids);
   };
   const freePlace = (index: Index) => {
     const taken = new Set(Object.values(index.entries).map((e) => e.id));
@@ -436,7 +570,7 @@ export function githubMemory(
           await inTurn(() =>
             write(state, async () => {
               entry.at = now();
-              await store.put("gh:index", state.index);
+              await putLine(url, entry);
             }),
           );
         }
@@ -452,15 +586,15 @@ export function githubMemory(
         write(state, async () => {
           if (answer.text.length > one) {
             if (!index.entries[url]) return;
-            await forget(index, url);
-            await store.put("gh:index", index);
+            await forget(state, url);
+            await syncLines(state);
             return;
           }
           const before = index.entries[url];
           const id = before?.id ?? freePlace(index);
           const pieces = Math.max(1, Math.ceil(answer.text.length / pieceSize));
           // The pieces first, each marked as this answer's; then what
-          // else is in the place; the index last.
+          // else is in the place; the line of the index last.
           for (let n = 0; n < pieces; n++) {
             const piece: Piece = {
               u: url,
@@ -478,9 +612,10 @@ export function githubMemory(
               .filter(([other]) => other !== url)
               .sort(([, a], [, b]) => a.at - b.at || a.id - b.id)[0];
             if (!oldest) break;
-            await forget(index, oldest[0]);
+            await forget(state, oldest[0]);
           }
-          await store.put("gh:index", index);
+          await putLine(url, index.entries[url]);
+          await syncLines(state);
         }),
       );
     },
@@ -490,8 +625,8 @@ export function githubMemory(
       await inTurn(() =>
         write(state, async () => {
           if (!index.entries[url]) return;
-          await forget(index, url);
-          await store.put("gh:index", index);
+          await forget(state, url);
+          await syncLines(state);
         }),
       );
     },
@@ -821,6 +956,14 @@ async function bridgeCall(
   } else if (what === "enroll-tokens") {
     if (rest.length > 0) throw new OpError(502, "fleet bridge enroll-tokens takes no arguments here");
     path = `/fleet/${token}/enroll-tokens`;
+  } else if (what === "wake-hooks") {
+    // The wake hooks' list is a read of the same binding (#14544),
+    // through the bridge's read-scope view. Setting and removing are
+    // owner-token acts, never translated: a set asked at the edge is
+    // refused (its token must not be held, edge-proto.ts), a remove
+    // is held for a machine.
+    if (rest.length > 0) throw new OpError(502, "needs a machine");
+    path = `/fleet/${token}/wake-hooks`;
   } else if (what === "send") {
     const to: string[] = [];
     let kind = "message";
@@ -839,7 +982,8 @@ async function bridgeCall(
       else if (arg === "--kind") kind = rest[++i] ?? "message";
       else if (arg === "--limit") {
         const n = Number(rest[++i]);
-        if (!Number.isInteger(n) || n < 1) throw new OpError(502, "fleet bridge send: --limit must be a positive whole number");
+        if (!Number.isInteger(n) || n < 1)
+          throw new OpError(502, "fleet bridge send: --limit must be a positive whole number");
         limit = n;
       } else if (arg === "--broaden") broaden = rest[++i] ?? "";
       else if (arg === "-") useStdin = true;
@@ -857,7 +1001,13 @@ async function bridgeCall(
     } else {
       if (to.length === 0) throw new OpError(502, "fleet bridge send: needs --to");
       if (!useStdin) throw new OpError(502, "fleet bridge send: the text comes on stdin here");
-      body = JSON.stringify({ agent: BRIDGE_AGENT, to, body: opts?.stdin ?? "", kind, ...(limit === undefined ? {} : { limit }) });
+      body = JSON.stringify({
+        agent: BRIDGE_AGENT,
+        to,
+        body: opts?.stdin ?? "",
+        kind,
+        ...(limit === undefined ? {} : { limit }),
+      });
     }
   } else if (what === "offer") {
     // A claim offer posted as this credential (#14375): the bridge
@@ -870,17 +1020,22 @@ async function bridgeCall(
     for (let i = 0; i < rest.length; i++) {
       const arg = rest[i];
       if (arg === "--to") {
-        const list = (rest[++i] ?? "").split(",").map((t) => t.trim()).filter(Boolean);
+        const list = (rest[++i] ?? "")
+          .split(",")
+          .map((t) => t.trim())
+          .filter(Boolean);
         to.push(...list);
       } else if (arg === "--command") kind = "command";
       else if (arg === "--kind") kind = rest[++i] ?? "message";
       else if (arg === "--slots") {
         const n = Number(rest[++i]);
-        if (!Number.isInteger(n) || n < 1) throw new OpError(502, "fleet bridge offer: --slots must be a positive whole number");
+        if (!Number.isInteger(n) || n < 1)
+          throw new OpError(502, "fleet bridge offer: --slots must be a positive whole number");
         slots = n;
       } else if (arg === "--ttl") {
         const n = Number(rest[++i]);
-        if (!Number.isInteger(n) || n < 1) throw new OpError(502, "fleet bridge offer: --ttl must be a positive whole number");
+        if (!Number.isInteger(n) || n < 1)
+          throw new OpError(502, "fleet bridge offer: --ttl must be a positive whole number");
         ttl = n;
       } else if (arg === "-") useStdin = true;
       else throw new OpError(502, `fleet bridge offer: unexpected argument ${arg}`);
@@ -1021,6 +1176,7 @@ export interface DirectClasses {
   work: Work;
   plan: Plan;
   trends: Trends;
+  queueEnqueue(packet: unknown): Promise<{ code: number; stdout: string; stderr: string }>;
 }
 
 /** The console's own classes, wired for the edge. They are made once
@@ -1047,11 +1203,293 @@ export function directClasses(edge: EdgeConfig, options: DirectOptions): DirectC
   const ops = new Ops(config, edgeRun(config, options, fetchImpl), options.seen ? queueFetch : fetchImpl);
   const clock = options.now ? () => new Date((options.now as () => number)()) : undefined;
   const work = new Work(ops, undefined, clock);
+  const queueEnqueue = async (packet: unknown): Promise<{ code: number; stdout: string; stderr: string }> => {
+    // Only the synchronous verb's read set is staged locally. Decisions about
+    // dedupe, identity, revival and label bands still belong to that verb.
+    const fields = [
+      "queue",
+      "manual_only",
+      "title",
+      "body",
+      "payload",
+      "metadata",
+      "dedupe_key",
+      "priority",
+      "status",
+      "not_before",
+      "worker_id",
+      "claimed_at",
+      "lease_until",
+      "lane_id",
+      "platform",
+      "attempts",
+      "max_attempts",
+      "claim_provider",
+      "claim_model",
+      "claim_variant",
+      "claim_session_id",
+      "progress",
+      "result",
+      "last_error",
+      "park_kind",
+      "wait_kind",
+      "ready_condition",
+      "required_budget_minutes",
+      "last_checked_at",
+      "check_outcome",
+      "created_at",
+      "updated_at",
+      "completed_at",
+      "blocked_deps",
+      "dep_next_recheck_at",
+      "dep_blocked_until",
+      "dep_recheck_seconds",
+    ];
+    const jsonFields = new Set(["payload", "metadata", "progress", "result", "ready_condition", "blocked_deps"]);
+    // SQL NULL is not JSON text "null" (notably for dependency columns).
+    // manual_only is an INTEGER 0/1 on the wire but a boolean in TaskRow.
+    const encode = (name: string, value: unknown): unknown => {
+      if (value == null) return null;
+      if (name === "manual_only") return value === true || value === 1 ? 1 : 0;
+      if (jsonFields.has(name)) return JSON.stringify(value);
+      return value;
+    };
+    const arg = (value: unknown) =>
+      typeof value === "number"
+        ? {
+            type: Number.isInteger(value) ? "integer" : "float",
+            value: Number.isInteger(value) ? String(value) : value,
+          }
+        : value == null
+          ? { type: "null" }
+          : { type: "text", value: String(value) };
+    const stmt = (sql: string, values: unknown[] = []) => ({ sql, args: values.map(arg) });
+    type Cell = { type: string; value?: string | number };
+    type SqlResult = { cols?: { name: string }[]; rows?: Cell[][]; affected_row_count?: number };
+    type BatchResult = { step_results?: (SqlResult | null)[]; step_errors?: ({ message?: string } | null)[] };
+    const pipeline = async (
+      request: unknown,
+      write: boolean,
+    ): Promise<{ result?: SqlResult; resultBatch?: BatchResult }> => {
+      const bearer = options.queueToken ?? "";
+      if (!bearer) throw new Error("queue token is unavailable");
+      const res = await fetchImpl(`${config.queueDbUrl.replace(/\/+$/, "")}/v2/pipeline`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${bearer}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ requests: [request, { type: "close" }] }),
+      }).catch((error: unknown) => {
+        options.seen?.({ to: "queue", write, status: 0 });
+        throw error;
+      });
+      options.seen?.({ to: "queue", write, status: res.status, ...(res.status === 429 ? { limited: true } : {}) });
+      if (!res.ok) throw new Error(`queue store answered http ${res.status}`);
+      const answer = (await res.json()) as {
+        results?: { type?: string; error?: { message?: string }; response?: { result?: SqlResult | BatchResult } }[];
+      };
+      const first = answer.results?.[0];
+      if (first?.type !== "ok" || !first.response?.result) {
+        throw new Error(first?.error?.message ?? "queue store returned an invalid response");
+      }
+      return { result: first.response.result as SqlResult, resultBatch: first.response.result as BatchResult };
+    };
+    const query = async (sql: string, values: unknown[] = []): Promise<Record<string, unknown>[]> => {
+      const { result } = await pipeline({ type: "execute", stmt: stmt(sql, values) }, false);
+      if (!result?.cols || !result.rows) throw new Error("queue store returned no query rows");
+      return result.rows.map((row) =>
+        Object.fromEntries(
+          result.cols!.map((col, i) => {
+            const cell = row[i];
+            if (!cell) throw new Error("queue store returned a short row");
+            if (cell.type === "null") return [col.name, null];
+            if (cell.type === "integer" || cell.type === "float") return [col.name, Number(cell.value)];
+            if (cell.type !== "text" || typeof cell.value !== "string")
+              throw new Error("queue store returned an invalid cell");
+            return [col.name, cell.value];
+          }),
+        ),
+      );
+    };
+    try {
+      const now = Math.floor((options.now?.() ?? Date.now()) / 1000);
+      const env = nativeQueueEnv(() => now);
+      let mirrorRef: { repo: string; number: number } | undefined;
+      let mirrorLabels: string[] | null = null;
+      let mirrorError: unknown;
+      class EnqueueStore extends FixtureQueueStore {
+        constructor(private readonly snapshot: TaskRow[] = []) {
+          super();
+        }
+        override async allTasks(): Promise<TaskRow[]> {
+          return this.snapshot;
+        }
+        override async insertTask(row: Omit<TaskRow, "id">): Promise<TaskRow> {
+          // A sentinel, never a real DB id. Event persistence remaps it below.
+          return { ...row, id: -1 };
+        }
+        override async mirrorLabels(repo: string, number: number): Promise<string[] | null> {
+          mirrorRef = { repo, number };
+          if (mirrorError) throw mirrorError;
+          return mirrorLabels;
+        }
+      }
+      const request = { queue: config.queue, packet: packet as Json };
+      // Validation before I/O; dry-run also discovers the mirror lookup using
+      // the verb's own repo/issue fallback rules, rather than a second parser.
+      const dry = await executeQueueVerb(new EnqueueStore(), "enqueue", { ...request, dry_run: true }, env);
+      if (dry.ok !== true) {
+        return { code: Number(dry.exit ?? 2), stdout: "", stderr: String(dry.error ?? "queue enqueue refused") };
+      }
+      const taskInput = dry.task as Record<string, unknown>;
+      const payload = taskInput.payload as Record<string, unknown>;
+      const issue = payload.issue as Record<string, unknown> | undefined;
+      // The native broker can re-probe old filing stamps (#12966), while
+      // the shared hosted verb cannot. Leave those packets to a machine.
+      // Native FILING_RECHECK_AFTER is one hour; fresh console prompts do
+      // not need that probe. Invalid/absent stamps retain native fail-open.
+      const stamp = typeof issue?.state_checked_at === "string" ? Date.parse(issue.state_checked_at) : NaN;
+      if (Number.isFinite(stamp) && now * 1000 - stamp > 3600_000) {
+        return { code: 1, stdout: "", stderr: "old filing stamp requires the native queue broker" };
+      }
+      if (mirrorRef) {
+        try {
+          const rows = await query("SELECT labels FROM github_mirror_issues WHERE repo = ? AND number = ?", [
+            mirrorRef.repo,
+            mirrorRef.number,
+          ]);
+          const labels = rows[0]?.labels;
+          let parsed: unknown;
+          try {
+            parsed = typeof labels === "string" ? JSON.parse(labels) : labels;
+          } catch {
+            parsed = null;
+          }
+          mirrorLabels = Array.isArray(parsed)
+            ? parsed.filter((label): label is string => typeof label === "string")
+            : null;
+        } catch (error) {
+          // The native mirror is best-effort; the verb turns this into a warning.
+          mirrorError = error;
+        }
+      }
+      // Include all dedupe history (newest terminal becomes the predecessor),
+      // and live/done potential identity holders across queues. The verb still
+      // applies repo/PR identity, exemptions, overrides and claim validation.
+      const subset = `(queue = ? AND dedupe_key = ?) OR (status IN ('queued','claimed','parked','handed_off','blocked','done') AND json_valid(payload) AND json_extract(payload, '$.kind') = ? AND json_extract(payload, '$.issue.number') = ?)`;
+      const subsetArgs = [config.queue, taskInput.dedupe_key ?? null, payload.kind ?? null, issue?.number ?? null];
+      for (let attempt = 0; attempt < 3; attempt++) {
+        const raw = await query(`SELECT id, ${fields.join(", ")} FROM tasks WHERE ${subset} ORDER BY id`, subsetArgs);
+        // Native #13091 also absorbs completed dedupe/identity holders; the
+        // shared hosted verb has not ported that rule yet. Conservatively hand
+        // these candidates back to the machine rather than revive done work.
+        // Failed/cancelled predecessors still use the shared revival path.
+        if (raw.some((row) => row.status === "done")) {
+          return { code: 1, stdout: "", stderr: "queue enqueue requires native completed-work dedupe" };
+        }
+        const snapshot = raw.map(
+          (row) =>
+            Object.fromEntries(
+              Object.entries(row).map(([name, value]) => {
+                if (name === "manual_only") return [name, value === 1 || value === true];
+                if (jsonFields.has(name) && typeof value === "string") return [name, JSON.parse(value)];
+                return [name, value];
+              }),
+            ) as unknown as TaskRow,
+        );
+        const store = new EnqueueStore(snapshot);
+        const response = await executeQueueVerb(store, "enqueue", request, env);
+        if (response.ok !== true) {
+          return {
+            code: Number(response.exit ?? 2),
+            stdout: "",
+            stderr: String(response.error ?? "queue enqueue refused"),
+          };
+        }
+        const task = response.row as unknown as TaskRow;
+        const metadata = {
+          warnings: response.warnings,
+          ...(response.work_identity_collision ? { work_identity_collision: response.work_identity_collision } : {}),
+          ...(response.revived_from ? { revived_from: response.revived_from } : {}),
+        };
+        if (task.id !== -1) return { code: 0, stdout: JSON.stringify({ queued: false, ...metadata }), stderr: "" };
+        // Optimistic read-set guard: no matching row may have appeared,
+        // disappeared or changed since the read. A lost race re-runs the verb
+        // against fresh state; this covers identity races as well as dedupe.
+        const columns = ["id", ...fields];
+        const sameRows = raw.map(() => `(${columns.map((name) => `${name} IS ?`).join(" AND ")})`).join(" OR ");
+        const guard =
+          `(SELECT count(*) FROM tasks WHERE ${subset}) = ?` +
+          (raw.length ? ` AND NOT EXISTS (SELECT 1 FROM tasks WHERE (${subset}) AND NOT (${sameRows}))` : "");
+        const guardArgs = [
+          ...subsetArgs,
+          raw.length,
+          ...(raw.length ? [...subsetArgs, ...raw.flatMap((row) => columns.map((name) => row[name]))] : []),
+        ];
+        const insert = stmt(
+          `INSERT INTO tasks (${fields.join(", ")}) SELECT ${fields.map(() => "?").join(", ")} WHERE ${guard}`,
+          [...fields.map((name) => encode(name, task[name as keyof TaskRow])), ...guardArgs],
+        );
+        const steps: { stmt: ReturnType<typeof stmt>; condition?: unknown }[] = [
+          { stmt: stmt("BEGIN IMMEDIATE") },
+          { stmt: insert, condition: { type: "ok", step: 0 } },
+        ];
+        const insertedId = `(SELECT max(id) FROM tasks WHERE queue = ? AND dedupe_key IS ?)`;
+        for (const event of await store.allEvents()) {
+          let detailSql = "?";
+          const detailArgs: unknown[] = [JSON.stringify(event.detail)];
+          if (event.kind === "revived_by") {
+            detailSql = `json_set(?, '$.successor_task_id', ${insertedId})`;
+            detailArgs.push(task.queue, task.dedupe_key);
+          }
+          const taskIdSql = event.task_id === -1 ? insertedId : "?";
+          const taskIdArgs = event.task_id === -1 ? [task.queue, task.dedupe_key] : [event.task_id];
+          steps.push({
+            stmt: stmt(
+              `INSERT INTO events (worker_id, task_id, kind, detail, created_at) SELECT ?, ${taskIdSql}, ?, ${detailSql}, ? WHERE changes() = 1`,
+              [event.worker_id, ...taskIdArgs, event.kind, ...detailArgs, event.created_at],
+            ),
+            condition: { type: "ok", step: steps.length - 1 },
+          });
+        }
+        const commitStep = steps.length;
+        steps.push({ stmt: stmt("COMMIT"), condition: { type: "ok", step: commitStep - 1 } });
+        steps.push({
+          stmt: stmt("ROLLBACK"),
+          condition: {
+            type: "and",
+            conds: [
+              { type: "ok", step: 0 },
+              { type: "not", cond: { type: "ok", step: commitStep } },
+            ],
+          },
+        });
+        const { resultBatch } = await pipeline({ type: "batch", batch: { steps } }, true);
+        const error = resultBatch?.step_errors?.find((value) => value !== null);
+        if (error) throw new Error(error.message ?? "queue store refused the enqueue");
+        if (
+          !resultBatch?.step_results?.[commitStep] ||
+          typeof resultBatch.step_results[1]?.affected_row_count !== "number"
+        ) {
+          throw new Error("queue store returned an invalid enqueue batch");
+        }
+        if (resultBatch.step_results[1].affected_row_count === 1) {
+          return { code: 0, stdout: JSON.stringify({ queued: true, ...metadata }), stderr: "" };
+        }
+      }
+      return { code: 1, stdout: "", stderr: "queue enqueue lost concurrent writes; retry the request" };
+    } catch (error) {
+      return {
+        code: 1,
+        stdout: "",
+        stderr: `queue enqueue: ${error instanceof Error ? error.message : String(error)}`,
+      };
+    }
+  };
   return {
     ops,
     work,
     plan: new Plan(ops, work, clock),
     trends: new Trends(ops, options.shelf ?? memoryShelf(), clock, "leave"),
+    queueEnqueue,
   };
 }
 

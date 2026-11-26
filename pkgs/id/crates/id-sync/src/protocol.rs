@@ -92,7 +92,7 @@ mod archive_reference_behavior_tests {
     use std::sync::Arc;
 
     use id_core::access::AccessPolicy;
-    use id_store::tags::TagStore;
+    use id_store::tags::{Tag, TagStore};
     use iroh::endpoint::{Endpoint, RelayMode, presets};
     use iroh_base::SecretKey;
     use iroh_blobs::{Hash, api::Store, store::mem::MemStore};
@@ -245,11 +245,11 @@ mod archive_reference_behavior_tests {
                 .unwrap()
                 .is_none()
         );
-        assert!(
+        assert_eq!(
             tags.get_tags(&tags.global, b"my-file.archive.124")
                 .await
-                .unwrap()
-                .is_empty()
+                .unwrap(),
+            [] as [Tag; 0]
         );
         endpoint.close().await;
     }
@@ -2000,7 +2000,7 @@ mod tests {
         >::new()))
         .await
         .unwrap();
-        assert!(empty.is_empty());
+        assert_eq!(empty, [] as [ListEntry; 0]);
 
         let hash = Hash::from_bytes([2; 32]);
         let info = TagInfo {
@@ -2290,7 +2290,7 @@ mod tests {
         let bytes = postcard::to_allocvec(&resp).unwrap();
         let decoded: MetaResponse = postcard::from_bytes(&bytes).unwrap();
         match decoded {
-            MetaResponse::ListPeers { peers } => assert!(peers.is_empty()),
+            MetaResponse::ListPeers { peers } => assert_eq!(peers, [] as [PeerAnnouncement; 0]),
             _ => panic!("Wrong variant"),
         }
     }
@@ -2396,7 +2396,7 @@ mod tests {
         let decoded: MetaResponse = postcard::from_bytes(&bytes).unwrap();
         match decoded {
             MetaResponse::AbuseCounters { rows, policy } => {
-                assert!(rows.is_empty());
+                assert_eq!(rows, [] as [AbuseCountersRow; 0]);
                 assert!(policy.is_none());
             }
             _ => panic!("Wrong variant"),
@@ -2637,7 +2637,7 @@ mod publication_control_tests {
 
     use super::{
         MetaProtocol, MetaRequest, MetaResponse, PublicationControl, PublicationControlHandle,
-        PublicationOp, PublicationOutcome, WirePlacement, WirePublication,
+        PublicationOp, PublicationOutcome, WirePlacement, WirePublication, WirePublicationStatus,
     };
 
     struct FakeControl;
@@ -2755,7 +2755,9 @@ mod publication_control_tests {
             .handle(&client, MetaRequest::ListPublications)
             .await;
         match resp {
-            MetaResponse::Publications { items } => assert!(items.is_empty()),
+            MetaResponse::Publications { items } => {
+                assert_eq!(items, [] as [WirePublicationStatus; 0])
+            }
             other => panic!("expected Publications for the local operator, got {other:?}"),
         }
         // A different key is not the operator, even with open writes.
@@ -2795,7 +2797,9 @@ mod publication_control_tests {
             .handle(&operator, MetaRequest::ListPublications)
             .await;
         match resp {
-            MetaResponse::Publications { items } => assert!(items.is_empty()),
+            MetaResponse::Publications { items } => {
+                assert_eq!(items, [] as [WirePublicationStatus; 0])
+            }
             other => panic!("expected Publications, got {other:?}"),
         }
     }
