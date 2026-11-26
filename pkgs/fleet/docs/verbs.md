@@ -429,9 +429,29 @@ rendering is the dot-sourced env: `FLEET_ID_NODE_ID` plus
 stamp JSON (`{"fleet_node_id": …}`, public key only — the secret
 never enters the stamp, a log, or a trip record); `--node-id`
 prints just the NodeId hex. The secret lives in process memory
-only and is zeroized at exit. The `proxy`, `postcard`, `stream`
-and `serve-ws` verbs land as slices 2–5 of the same design
-(#15434, #15435, #15436, #15399).
+only and is zeroized at exit. The `postcard`, `stream`
+and `serve-ws` verbs land as slices 3–5 of the same design
+(#15435, #15436, #15399).
+
+`fleet id proxy [--raw | --opaque | --mode <1|2|3>] [--alpn <alpn>] [--relay <url>] [--expect-node-id <hex>] <target>`
+
+Slice 2, first sub-slice (#15434, design §4.2): the mode
+selection rule and mode 1. The rule is first-match — `--mode`
+overrides all; `--raw` or a raw endpoint path → mode 1;
+`--opaque` or an ALPN fleet does not know (fleet knows
+`/iroh-meta/3`) → mode 2; otherwise mode 3, which this verb
+refuses (the initiator verbs own it, §4.7). Mode 1 is
+implemented: the target (`tcp://host:port`, `unix:///path`, or
+the bare `host:port` / `/path` forms) is spliced to this
+process's stdin/stdout byte for byte; fleet parses nothing and
+holds no iroh key for the flow. Mode 2's dialer (CONNECT-capable
+relay dialer + resolver override for the relay name) is the
+next sub-slice of #15434; until it lands, a mode-2 selection
+exits 69 rather than silently downgrading, and `--relay` /
+`--expect-node-id` are refused on a mode-1 selection rather
+than silently ignored. Exit codes: 0 ok · 2 usage · 69 mode
+unavailable · 71 relay unreachable · 72 identity mismatch ·
+73 target unreachable.
 
 ## `actions` — live exec sessions in Actions runners
 

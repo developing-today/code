@@ -76,6 +76,8 @@ mod gh_sync;
 mod http;
 #[cfg(feature = "id")]
 mod id_key;
+#[cfg(feature = "id")]
+mod id_proxy;
 mod invocation_ledger;
 #[cfg(feature = "kv")]
 mod kv;
@@ -1101,7 +1103,13 @@ fn run_domain_with_initializer(
             // slices add the proxy/initiator/serve-ws verbs.
             #[cfg(feature = "id")]
             if d.name == "id" {
-                return id_key::run(args);
+                // code#15434 (design #10391 §4.2): `fleet id proxy`
+                // is the modes 1–2 verb; every other id verb is
+                // the slice-1 key surface.
+                return match args.first().map(|s| s.as_str()) {
+                    Some("proxy") => id_proxy::run(args),
+                    _ => id_key::run(args),
+                };
             }
             // The bridge domain runs for real: fleet mailboxes on the
             // message bridge (central send/agents/log/pipeline/
