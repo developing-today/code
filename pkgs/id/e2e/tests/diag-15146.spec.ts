@@ -57,7 +57,27 @@ test("diag: created file anchor visibility", async ({ page }) => {
       const el = document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2);
       atPoint = el ? el.tagName + "." + el.className + " text=" + (el.textContent || "").slice(0, 40) : null;
     }
+    const li = a?.closest("li");
+    const siblings = li
+      ? Array.from(li.children).map((c) => {
+          const h = c as HTMLElement;
+          const cs = getComputedStyle(h);
+          const r = h.getBoundingClientRect();
+          return {
+            tag: h.tagName,
+            cls: h.className,
+            w: r.width,
+            display: cs.display,
+            flex: cs.flex,
+            minWidth: cs.minWidth,
+            overflow: cs.overflow,
+            whiteSpace: cs.whiteSpace,
+            text: (h.textContent || "").slice(0, 50),
+          };
+        })
+      : [];
     return {
+      siblings,
       anchorCount: anchors.length,
       textMatches,
       chain,
