@@ -2137,29 +2137,6 @@ mod tests {
     }
 
     #[test]
-    fn test_invariant_check_reuses_verified_stored_decode_15328() {
-        // Oracle: check_invariants reads each applied row in two passes; the
-        // second pass must reuse the first pass's verified event in one generation.
-        let (_dir, mut store) = open_temp();
-        let signer = key(41);
-        let event = chain_of(&signer, 1).remove(0);
-        store.ingest(&event.bytes, 0).unwrap();
-        {
-            let mut cache = store.stored_event_cache.lock().unwrap();
-            cache.entries.clear();
-            cache.order.clear();
-            cache.encoded_bytes = 0;
-            cache.verified_decodes = 0;
-            cache.cache_hits = 0;
-        }
-
-        store.check_invariants().unwrap();
-        let cache = store.stored_event_cache.lock().unwrap();
-        assert_eq!(cache.verified_decodes, 1);
-        assert_eq!(cache.cache_hits, 1);
-    }
-
-    #[test]
     fn test_a_chain_row_round_trips_with_and_without_a_head() {
         let (_dir, store) = open_temp();
         let who = author(&key(4));

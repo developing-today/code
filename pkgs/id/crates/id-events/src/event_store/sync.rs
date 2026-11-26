@@ -49,7 +49,10 @@ use redb::{ReadableDatabase, ReadableTable};
 use super::range::{
     self, Entry, Id, Key, Params, Party, all_skip, check_bounds, decode_frame, frames,
 };
-use super::{EVENTS, EventStore, HASHES, Ingest, PROOF_HEADERS, StoreError, corrupt, position_key};
+use super::{
+    EVENTS, EventStore, HASHES, Ingest, PROOF_HEADERS, StoreError, corrupt, decode_stored,
+    position_key,
+};
 use crate::pull_policy::{PullGate, PullRefused};
 use id_store::chain::{self, Event};
 use id_store::store_traits::SharedEventStore;
