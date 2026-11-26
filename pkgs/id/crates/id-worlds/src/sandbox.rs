@@ -397,7 +397,7 @@ impl Sandbox {
 
     /// The body of [`Sandbox::compile`]. `keep` puts the compiled
     /// module in the in-process list [`compiled_module`] serves from;
-    /// [`Sandbox::compile_with_cache`] leaves it out so that its tests
+    /// the test-only `compile_with_cache` leaves it out so that its tests
     /// see the on-disk cache alone.
     fn compile_kept(
         wasm: &[u8],
