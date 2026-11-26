@@ -17,5 +17,5 @@ for u in laptop-db-backup-pm-projector.service laptop-db-backup-pm-projector.tim
   sed "s#__LDB_DIR__#$LDB_DIR#g" "$LDB_DIR/systemd/$u" >"$UNIT_DIR/$u"
 done
 systemctl --user daemon-reload
-systemctl --user enable --now laptop-db-backup-pm-projector.timer
+systemctl --user enable --now laptop-db-backup-pm-projector.timer laptop-db-backup-fleet-metadata.timer
 systemctl --user list-timers 'laptop-db-backup-*' --no-pager
