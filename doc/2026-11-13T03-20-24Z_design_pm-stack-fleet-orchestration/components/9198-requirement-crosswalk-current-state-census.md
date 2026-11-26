@@ -67,6 +67,115 @@ The UI and command/candidate projections may expose separate facts; only each so
 
 No migration or new storage schema is chosen in V2. QTI/#9241 and #3424/#8575/#8579 are hard for overlapping schema/migration, not for pure contracts, reference models, offline fixtures, read-only adapters, or research. Current `fleet-queue` module paths are a concrete design default, not table/schema owner allocation. Creation outbox pilot is not generalized by implication.
 
+### CEN-04 fact-level normative mirror (2026-11-25 integration)
+
+The merged [CEN-04 record](../../2026-11-23T13-51-45Z_design_cen04_schema_owner_migration_compatibility/2026-11-23T13-51-45Z_design_cen04_schema_owner_migration_compatibility.md)
+(PR #13341, evidence snapshot 2026-11-23 at `ba7ea99e9`) is normative
+for the fact-level matrix (§3), forbidden equivalences (§4), admission gate
+(§5), bounded QTI disposition (§6), rollback (§7), and sequencing (§9).
+It supplements, **does not rewrite**, the `a038f084` V1 baseline above.
+In particular the priority adapter correction and #9241's closed,
+bounded-not-located disposition are dated updates, not retroactive pin facts.
+
+The JSON mirror below names each fact once. `source`, `legacy_mapping`,
+`write_read_api`, `rollback`, and `gates` are normative **section references
+in that record**, not substitute prose or new APIs. Owners and homes are
+short source quotations; absent facts name their contract/storage authority,
+not a new writer. Projection/cache owners own only their internal rows, never
+the underlying canonical fact. `reuse` in inventory-only §3.13/§3.14 means
+retain the existing bounded surface and its authority limitations, not promote
+it to canonical storage. No API is invented where the source only inventories
+a surface. The section SHA-256 values bind the complete Markdown paragraphs
+(heading through next peer heading, outer whitespace stripped), so changes
+to evidence, APIs, legacy refusals, or gates require explicit mirror review.
+
+All row gates remain intact: cursor storage needs HYD-01 #9458 + REL-03
+#9513 + §5 storage amendment; operation/receipt persistence needs REL-03
+#9513 + REL-04 #9514 + §5; journal/notes await #9208 and §5; PM target
+resolution needs #13245 or a successor decision. REL-02 #9512's shared-file
+sequencing and §9's separate schema/migration/rollout/live-evidence gates stand.
+QTI disposition is bounded, not global absence; newly recovered material
+reopens only overlapping rows. Unknown legacy provenance stays unknown or
+quarantined; old readers, pending intents/receipts, human-authored `pmp_links`
+and unrelated tables are preserved under §7's disable-only rollback.
+
+This is **offline documentation-artifact validation only**, under #9434;
+no separate runtime implementation issue is needed for this bounded mirror
+and oracle. It does not satisfy or waive §9 for persisted implementation,
+amend task 15944, close the parent tracker, authorize migration, or claim
+runtime completeness. Run `census/test_schema_compatibility_matrix.py --list`
+then its named oracle and negative tests (remote dispatch first).
+
+<!-- cen04-schema-mirror -->
+```json
+{
+  "sections": {
+    "3.1": "945c503b59c919b95db5bf36ffbfeb739e1de9584ad68927ddb8b5f267125bef",
+    "3.2": "e0a12d92225c0dc738497e2ec624918597ea4effbcea78262a4e64f386107f91",
+    "3.3": "f3d5f433643569d73f74c094726b90cd3494a1299b1bfeeee04b2780a42bc425",
+    "3.4": "bbf468a272e8646e51dface9e3fc659b3f684c6d74d241d2172a3b747cb69438",
+    "3.5": "b437b3e2b2e1a352fa600a522397cd510b9dddbf2ac694c4c02efe8bc45069d8",
+    "3.6": "61f5a93cb81202b746994ddea110d08d36e5a99d67f3899511e6392f91d9d779",
+    "3.7": "1980499d191c5759ca00ebaf1e5cc0af6a8eccaaa2e89ad706d809fa8ed5d56c",
+    "3.8": "0ab4322a5fb19b37ee28c08471450244a100490e9ad7e3ef50ee3e2fca4b3c1b",
+    "3.9": "9ac0f39fc0a6c0c03b1606564aa3d46890cfa2ef7c2c4b307efca46599d13885",
+    "3.10": "633a7ea28f2233df6250645575d8a8e9179adc1bd43e4891d770f41471f30b46",
+    "3.11": "16371c1434e0b8aae4e865e12180c9f8f636635e00966602459410f44c6e862b",
+    "3.12": "a3585989e377f57a5ac04afe15ad397d1edc9393f26e2a836f1ce18f22b50a6d",
+    "3.13": "d9531ebcf80c30bc53e054fb47a04582e6c2a551866cf6560a4ec62ae75ccdd7",
+    "3.14": "13ae0ea9051bea0262c5ba4d6a6b249d0752ea33ca568a3683990a3693ac43f6",
+    "4": "ef71a78ab69d27f0e798f9e4b0c5dbf0be14a48f4b4ee803a8b898e0f4043656",
+    "5": "f1e62f753ca9bafcdaff4586dc46bef4c782989e33769b8c90980f0f04d2be6e",
+    "6": "b924a48c6df060a3107ed65d5a1fd690fca3c8eb8e4c49a54472ece7cbe8941e",
+    "7": "e9d8fd385ec96df2c82b4a9809daac141d4badd5e1e9b816fd26a18913d413b7",
+    "9": "5cbad72f2a47594b4a84507a458e34538a5cc864c05dbc3bc3ebbc0eae2a6ab3"
+  },
+  "facts": [
+    {"fact":"queue_identity","source":"3.1","owners":["the queue broker"],"home":"tasks","disposition":"reuse","legacy_mapping":["3.1"],"write_read_api":["3.1"],"rollback":["3.1","7"],"gates":["5","9"]},
+    {"fact":"queue_state","source":"3.2","owners":["the queue broker"],"home":"tasks.status","disposition":"reuse","legacy_mapping":["3.2"],"write_read_api":["3.2"],"rollback":["3.2","7"],"gates":["5","9"]},
+    {"fact":"urgency_profile","source":"3.3","owners":["the queue broker"],"home":"tasks.priority","disposition":"reuse","legacy_mapping":["3.3"],"write_read_api":["3.3"],"rollback":["3.3","7"],"gates":["5","9"]},
+    {"fact":"lease_claim","source":"3.4","owners":["the queue broker"],"home":"leases","disposition":"reuse","legacy_mapping":["3.4"],"write_read_api":["3.4"],"rollback":["3.4","7"],"gates":["3.4","5","9"]},
+    {"fact":"blocked_dependencies","source":"3.5","owners":["the queue broker"],"home":"tasks.blocked_deps","disposition":"extend","legacy_mapping":["3.5"],"write_read_api":["3.5"],"rollback":["3.5","7"],"gates":["3.5","5","9"]},
+    {"fact":"broker_events","source":"3.6","owners":["the queue broker"],"home":"events","disposition":"reuse","legacy_mapping":["3.6"],"write_read_api":["3.6"],"rollback":["3.6","7"],"gates":["5","9"]},
+    {"fact":"journal","source":"3.6","owners":["#9208"],"home":"no journal table exists on main","disposition":"absent","legacy_mapping":["3.6"],"write_read_api":["3.6"],"rollback":["3.6","7"],"gates":["3.6","5","9"]},
+    {"fact":"checkpoints","source":"3.7","owners":["the queue broker"],"home":"checkpoints","disposition":"reuse","legacy_mapping":["3.7"],"write_read_api":["3.7"],"rollback":["3.7","7"],"gates":["5","9"]},
+    {"fact":"notes","source":"3.7","owners":["#9208"],"home":"absent as a Fleet-store fact","disposition":"absent","legacy_mapping":["3.7"],"write_read_api":["3.7"],"rollback":["3.7","7"],"gates":["3.7","5","9"]},
+    {"fact":"cursors","source":"3.8","owners":["fleet-queue"],"home":"none exists","disposition":"absent","legacy_mapping":["3.8"],"write_read_api":["3.8"],"rollback":["3.8","7"],"gates":["3.8","5","9"]},
+    {"fact":"operation_receipts","source":"3.9","owners":["REL-03"],"home":"No persisted operation or receipt table exists on main","disposition":"absent","legacy_mapping":["3.9"],"write_read_api":["3.9"],"rollback":["3.9","7"],"gates":["3.9","5","9"]},
+    {"fact":"creation_outbox","source":"3.9","owners":["broker"],"home":"creation_outbox","disposition":"reuse","legacy_mapping":["3.9"],"write_read_api":["3.9"],"rollback":["3.9","7"],"gates":["5","9"]},
+    {"fact":"project_fields","source":"3.10","owners":["GitHub"],"home":"GitHub","disposition":"reuse","legacy_mapping":["3.10"],"write_read_api":["3.10"],"rollback":["3.10","7"],"gates":["5","9"]},
+    {"fact":"metadata_block","source":"3.10","owners":["the stamper"],"home":"GitHub body","disposition":"reuse","legacy_mapping":["3.10"],"write_read_api":["3.10"],"rollback":["3.10","7"],"gates":["5","9"]},
+    {"fact":"metadata_mirror","source":"3.10","owners":["ingestion"],"home":"pm_metadata_items","disposition":"reuse","legacy_mapping":["3.10"],"write_read_api":["3.10"],"rollback":["3.10","7"],"gates":["5","9"]},
+    {"fact":"merge_intent","source":"3.11","owners":["the queue broker"],"home":"merge_intents","disposition":"reuse","legacy_mapping":["3.11"],"write_read_api":["3.11"],"rollback":["3.11","7"],"gates":["5","9"]},
+    {"fact":"placement_sessions","source":"3.12","owners":["the placement line"],"home":"placement_sessions","disposition":"reuse","legacy_mapping":["3.12"],"write_read_api":["3.12"],"rollback":["3.12","7"],"gates":["5","9"]},
+    {"fact":"coordination_replica","source":"3.13","owners":["Local coordination replica"],"home":"local SQLite file","disposition":"reuse","legacy_mapping":["3.13"],"write_read_api":["3.13"],"rollback":["3.13","7"],"gates":["5","9"]},
+    {"fact":"fallback_markers","source":"3.13","owners":["workers"],"home":"GitHub issue comments","disposition":"reuse","legacy_mapping":["3.13"],"write_read_api":["3.13"],"rollback":["3.13","7"],"gates":["5","9"]},
+    {"fact":"aggregator_actions","source":"3.14","owners":["aggregator"],"home":"public.agg_actions","disposition":"reuse","legacy_mapping":["3.14"],"write_read_api":["3.14"],"rollback":["3.14","7"],"gates":["5","9"]},
+    {"fact":"shared_comments","source":"3.14","owners":["Aggregator"],"home":"public.shared_comments","disposition":"reuse","legacy_mapping":["3.14"],"write_read_api":["3.14"],"rollback":["3.14","7"],"gates":["5","9"]},
+    {"fact":"projector","source":"3.14","owners":["Projector"],"home":"hot ledger","disposition":"reuse","legacy_mapping":["3.14"],"write_read_api":["3.14"],"rollback":["3.14","7"],"gates":["5","9"]},
+    {"fact":"pmp_links","source":"3.14","owners":["projector/link registry"],"home":"pmp_links","disposition":"reuse","legacy_mapping":["3.14"],"write_read_api":["3.14"],"rollback":["3.14","7"],"gates":["3.14","5","9"]},
+    {"fact":"pm_target","source":"3.14","owners":["PM line"],"home":"current homes","disposition":"conflict","legacy_mapping":["3.14"],"write_read_api":["3.14"],"rollback":["3.14","7"],"gates":["3.14","5","9"]}
+  ],
+  "refusals": [
+    "broker `events` = #9208 journal",
+    "broker `events` = PM `shared_events`",
+    "`blocked_deps` = free-text block reason",
+    "`merge_intents` = creator outbox",
+    "`creation_outbox` = general mutation outbox",
+    "`tasks.result` = operation receipt",
+    "checkpoint = note",
+    "GitHub label = priority",
+    "GitHub issue state = task state",
+    "pm-metadata mirror row = the block",
+    "projector ACK = Fleet command acceptance",
+    "replica row = broker row",
+    "fallback marker = receipt",
+    "`tasks.last_checked_at` = ingestion cursor"
+  ],
+  "equivalences": []
+}
+```
+
 ## 4. V3 — staged issue-ready work, without filing claims
 
 Granular slice keys are defined in the component appendices. Preserve existing keys where already specified and add no broad parent blocker that creates cycles. The prioritized graph is [`../delivery-plan.md`](../delivery-plan.md); actual issue URLs and resolved keys populate `issues/index.json` only after batch filing. A future issue must name exact owned files, failing oracle/test, acceptance command, negative case, compatibility/migration/rollback, hard dependencies and tier. Pure model/reference tests run before remote adapters. Full multi-domain suite is not a prerequisite for a narrow offline fixture.
