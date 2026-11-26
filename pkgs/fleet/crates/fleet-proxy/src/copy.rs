@@ -49,6 +49,9 @@ the direct path). Directories and stdin/stdout are 'fleet proxy put
 -r' and 'fleet proxy get -' / 'put -'.
 Exit codes: 2 usage, 3 transport, 69 capability-unavailable.";
 
+/// Opens the files transport for a named remote.
+pub type Connect<'a> = dyn FnMut(&str) -> Result<Box<dyn FilesTransport>, ClientError> + 'a;
+
 /// The named remotes `copy` can reach, besides the local host.
 pub const REMOTES: &[&str] = &["laptop"];
 
@@ -242,7 +245,7 @@ pub fn execute(
     mode: Option<u32>,
     resume: bool,
     spool_dir: &Path,
-    connect: &mut dyn FnMut(&str) -> Result<Box<dyn FilesTransport>, ClientError>,
+    connect: &mut Connect<'_>,
     log: &mut dyn FnMut(&str),
 ) -> Result<CopyReport, ClientError> {
     match plan {
