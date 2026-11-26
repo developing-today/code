@@ -4,7 +4,10 @@
  * rendering as api.ts — the only difference is that every load is
  * awaited from an AsyncSqlDb (the libSQL/Turso HTTP adapter), so
  * the handler can run where the synchronous bun:sqlite surface
- * cannot: in the pm-service Worker (src/worker.ts).
+ * cannot: in the pm-service Worker (src/worker.ts). One route is
+ * hosted-only by design: /api/search.json (CF-7, #14947), the
+ * indexed-projection search read, which has no synchronous twin
+ * because the laptop's search is the unbounded read it replaces.
  *
  * Read-only, exactly like api.ts: GETs only, SELECTs only, and no
  * token is read, minted, or persisted on this path (E §2.3) — the
@@ -12,6 +15,7 @@
  */
 import type { AsyncSqlDb } from "../tenant-store/libsql-http.ts";
 import { deriveGenealogy } from "./genealogy.ts";
+import { searchItemsAsync } from "./search.ts";
 import {
   loadBoardSummariesAsync,
   loadPoolAsync,
@@ -50,6 +54,23 @@ export async function itemJsonAsync(deps: AsyncReadApiDeps, ref: string): Promis
   };
 }
 
+/** Hosted search (CF-7, #14947): the FTS5-indexed projection read
+ * over the pool — bounded and ranked, never a pool scan. `q` is
+ * required; a request without it is a caller error, said as one. */
+export async function searchJsonAsync(deps: AsyncReadApiDeps, params: URLSearchParams) {
+  const now = deps.now ?? (() => new Date().toISOString());
+  const q = params.get("q");
+  if (q === null || q.trim() === "") return { status: 400, body: { error: "q: a search query is required" } };
+  const num = (name: string) => {
+    const raw = params.get(name);
+    if (raw === null) return null;
+    const n = Number(raw);
+    return Number.isFinite(n) ? n : null;
+  };
+  const result = await searchItemsAsync(deps.db, q, { limit: num("limit"), offset: num("offset") });
+  return { status: 200, body: { generatedAt: now(), ...result } };
+}
+
 export async function roadmapJsonAsync(deps: AsyncReadApiDeps) {
   const now = deps.now ?? (() => new Date().toISOString());
   const pool = await loadPoolAsync(deps.db);
@@ -83,6 +104,10 @@ export function createAsyncReadApiHandler(deps: AsyncReadApiDeps): (req: Request
         return json({ error: `malformed percent-encoding in path segment: ${itemMatch[1]}` }, 400);
       }
       const { status, body } = await itemJsonAsync(deps, ref);
+      return json(body, status);
+    }
+    if (req.method === "GET" && path === "/api/search.json") {
+      const { status, body } = await searchJsonAsync(deps, new URL(req.url).searchParams);
       return json(body, status);
     }
     if (req.method === "GET" && path === "/api/roadmap.json") return json(await roadmapJsonAsync(deps));
