@@ -1166,6 +1166,7 @@ impl EventStore {
         let txn = self.db.begin_read()?;
         let events = txn.open_table(EVENTS)?;
         let hashes = txn.open_table(HASHES)?;
+        let applied = txn.open_table(APPLIED)?;
         let chains = txn.open_table(CHAINS)?;
         let forks = txn.open_table(FORKS)?;
         let groups = txn.open_multimap_table(GROUPS)?;
@@ -1176,11 +1177,17 @@ impl EventStore {
             .iter()
             .map(|item| (position_key(&item.author, item.seq).to_vec(), item))
             .collect();
+        let mut after_by_position: HashMap<[u8; POSITION_LEN], Vec<Hash>> = HashMap::new();
 
         for row in events.iter()? {
             let (position, bytes) = row?;
             let (author, seq) = split_position(position.value())?;
-            let event = self.decode_stored_event(bytes.value())?;
+            let event = decode_stored(bytes.value())?;
+            let mut position_key = [0; POSITION_LEN];
+            position_key.copy_from_slice(position.value());
+            if applied.get(event.id.as_bytes().as_slice())?.is_some() {
+                after_by_position.insert(position_key, event.header.extensions.after.clone());
+            }
             if *event.header.verifying_key.as_bytes() != author || event.header.seq_num != seq {
                 return Err(corrupt("an event is stored under another position"));
             }
@@ -1236,13 +1243,13 @@ impl EventStore {
             for seq in 0..chain.next_seq {
                 let key = position_key(&author, seq);
                 if let Some(stored) = events.get(key.as_slice())? {
-                    for dep in self
-                        .decode_stored_event(stored.value())?
-                        .header
-                        .extensions
-                        .after
-                    {
-                        if !present_in(&hashes, &proof_ids, &dep)? {
+                    // The first pass decoded and verified the same row in this
+                    // read transaction. Reuse just its dependency list here.
+                    let Some(deps) = after_by_position.get(&key) else {
+                        return Err(corrupt("an applied event was not decoded"));
+                    };
+                    for dep in deps {
+                        if !present_in(&hashes, &proof_ids, dep)? {
                             return Err(corrupt(
                                 "an applied event rests on an event that is not present",
                             ));
@@ -2098,15 +2105,26 @@ mod tests {
     }
 
     #[test]
-    fn test_invariant_check_reuses_verified_stored_decode_15328() {
-        // Oracle: check_invariants reads each applied row in two passes; the
-        // second pass must reuse the first pass's verified event in one generation.
+    fn test_applied_event_reads_reuse_verified_stored_decode_15328() {
+        // Oracle: repeated reads of the same applied row in one generation
+        // reuse the full verified decode.
         let (_dir, mut store) = open_temp();
         let signer = key(41);
         let event = chain_of(&signer, 1).remove(0);
         store.ingest(&event.bytes, 0).unwrap();
 
-        store.check_invariants().unwrap();
+        assert_eq!(
+            store
+                .applied_events(&author(&signer), None, None, 10)
+                .unwrap(),
+            vec![event.clone()]
+        );
+        assert_eq!(
+            store
+                .applied_events(&author(&signer), None, None, 10)
+                .unwrap(),
+            vec![event]
+        );
         let cache = store.stored_event_cache.lock().unwrap();
         assert_eq!(cache.verified_decodes, 1);
         assert_eq!(cache.cache_hits, 1);
