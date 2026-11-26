@@ -42,6 +42,9 @@ chmod +x "$tmp/bin/cargo"
 export PATH="$tmp/bin:$PATH"
 
 cd "$tmp/work"
+# Fleet runners set CARGO_TARGET_DIR globally; keep the default-path cases
+# below isolated, then set it explicitly in the shared-target case.
+unset CARGO_TARGET_DIR
 # An up-to-date manifest: the frontend step must stay a no-op so the
 # web/assets controls never invoke bun.
 printf '{"main.js":{}}\n' >web/dist/manifest.json
