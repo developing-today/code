@@ -52,7 +52,7 @@ jobs:
       - name: Reconstruct sources from GitHub
         env:
           HOSTED_BACKUP_ROOT: ${{ steps.root.outputs.path }}
-        run: python3 -I infra/github-backup/bin/hosted_seed_fleet.py --root "$HOSTED_BACKUP_ROOT"
+        run: python3 infra/github-backup/bin/hosted_seed_fleet.py --root "$HOSTED_BACKUP_ROOT"
 
       - name: Publish and verify plain mirrors
         env:
@@ -60,7 +60,7 @@ jobs:
           HOSTED_BACKUP_ROOT: ${{ steps.root.outputs.path }}
         run: |
           gh auth setup-git
-          python3 -I infra/github-backup/bin/plain_mirror_all.py --root "$HOSTED_BACKUP_ROOT"
+          python3 infra/github-backup/bin/plain_mirror_all.py --root "$HOSTED_BACKUP_ROOT"
 
       - name: Remove ephemeral backup root
         if: always() && steps.root.outputs.path != ''
