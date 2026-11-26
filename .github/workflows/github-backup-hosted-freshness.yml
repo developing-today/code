@@ -60,6 +60,7 @@ jobs:
       - name: Run the hosted freshness probe
         id: probe
         env:
+          GH_TOKEN: ${{ github.token }}
           # D1 export leg (values arrive via environment only; the
           # probe never reads credential files).
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
