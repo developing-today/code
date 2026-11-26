@@ -66,6 +66,14 @@ Implements the fleet architecture spec v0.3
   `--overlap-root <old> --overlap-root-key-dir <keys>` the old roots
   also certify each new issuer key, so relying parties that still
   trust only the old roots validate the new leaves during the move.
+- `fleet cert root replace` and `issuer replace` — the §5.2
+  orchestration in one step. `root replace` rotates the root set,
+  moves every `--issuer` set onto it with the overlap, verifies every
+  new chain (primaries to the new roots, overlap certificates to the
+  old ones) and prints the distribution, leaf-rotation and retirement
+  steps with the date the old material can retire. `issuer replace`
+  does the same for issuer sets under their current roots. Output
+  goes to one new directory, removed again if any step fails.
 - `fleet cert bundle inspect`, `profile list|show`,
   `algorithms list|describe`, `explain`, `doctor`.
 - `fleet cert inventory list|show|search|audit` — read-only
@@ -78,7 +86,7 @@ Implements the fleet architecture spec v0.3
 Not yet built (tracked as child issues under #9157): `revoke`/`crl`,
 `dns`, `key` escrow/restore/rotate and private export,
 `format`, profile validate/scaffold, algorithm benchmark/doctor,
-`batch`, the replace verbs, bundle pack/unpack/diff/migrate,
+`batch`, bundle pack/unpack/diff/migrate,
 publish apply/status (production-gated; slice 1 ships plan +
 verify read-only).
 

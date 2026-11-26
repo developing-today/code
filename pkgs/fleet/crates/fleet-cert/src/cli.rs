@@ -32,8 +32,8 @@ Usage: fleet cert <group> <verb> [options]
        fleet pki  <group> <verb> [options]   (alias)
 
 Groups and verbs (spec §6.1 tree; status as built):
-  root     create | renew | rotate | inspect | list | validate
-  issuer   create | renew | rotate | inspect | list
+  root     create | renew | rotate | replace | inspect | list | validate
+  issuer   create | renew | rotate | replace | inspect | list
   leaf     issue | renew | rotate | inspect | list
   ocsp     sign | inspect | test
   chain    build | test
@@ -786,6 +786,7 @@ fn root_cmd(args: &[String], json_out: bool) -> Result<i32> {
                 manifest_json(&manifest, &out),
             ))
         }
+        "replace" => replace_cmd(rest, json_out, true),
         "inspect" => inspect_cmd(rest, json_out, Some(BundleType::RootSet)),
         "list" => list_cmd(rest, json_out, BundleType::RootSet),
         "validate" => {
@@ -815,7 +816,7 @@ fn root_cmd(args: &[String], json_out: bool) -> Result<i32> {
             Ok(if all_ok { code } else { 1 })
         }
         other => Err(CertError::usage(format!(
-            "unknown root verb '{other}' (create | renew | rotate | inspect | list | validate)"
+            "unknown root verb '{other}' (create | renew | rotate | replace | inspect | list | validate)"
         ))),
     }
 }
@@ -957,10 +958,11 @@ fn issuer_cmd(args: &[String], json_out: bool) -> Result<i32> {
                 manifest_json(&manifest, &out),
             ))
         }
+        "replace" => replace_cmd(rest, json_out, false),
         "inspect" => inspect_cmd(rest, json_out, Some(BundleType::IssuerSet)),
         "list" => list_cmd(rest, json_out, BundleType::IssuerSet),
         other => Err(CertError::usage(format!(
-            "unknown issuer verb '{other}' (create | renew | rotate | inspect | list)"
+            "unknown issuer verb '{other}' (create | renew | rotate | replace | inspect | list)"
         ))),
     }
 }
@@ -1125,6 +1127,92 @@ fn leaf_cmd(args: &[String], json_out: bool) -> Result<i32> {
             "unknown leaf verb '{other}' (issue | renew | rotate | inspect | list)"
         ))),
     }
+}
+
+/// `root replace` / `issuer replace` (§5.2): the replacement
+/// orchestration in [`crate::replace`].
+fn replace_cmd(rest: &[String], json_out: bool, rotate_roots: bool) -> Result<i32> {
+    let verb = if rotate_roots {
+        "root replace"
+    } else {
+        "issuer replace"
+    };
+    let p = parse_args(
+        rest,
+        &[
+            "root",
+            "root-key-dir",
+            "issuer",
+            "out",
+            "private-store",
+            "not-before",
+            "root-valid-for",
+            "issuer-valid-for",
+        ],
+        &["allow-legacy-root-strength", "private-in-bundle", "json"],
+    )?;
+    let root = p.require("root", verb)?;
+    let signer = signer_source(&p, "root-key-dir", verb)?;
+    // §24.3 ceremony: the new keys' destination must be explicit.
+    let private_store = match (p.get("private-store"), p.has("private-in-bundle")) {
+        (Some(dir), _) => Some(PathBuf::from(dir)),
+        (None, true) => None,
+        (None, false) => {
+            return Err(CertError::policy(format!(
+                "{verb} makes new keys: name their destination explicitly — \
+                 --private-store <dir> or --private-in-bundle (spec §24.3)"
+            )));
+        }
+    };
+    let nb = p.get("not-before").map(Rfc3339::parse).transpose()?;
+    let window = |flag: &str, years: i64| -> Result<(Rfc3339, Rfc3339)> {
+        let vf = p.get(flag).map(CalendarDuration::parse).transpose()?;
+        crate::timeparse::resolve_validity(nb, vf, None, CalendarDuration::years(years))
+    };
+    let (not_before, root_not_after) = window(
+        "root-valid-for",
+        crate::timeparse::ROOT_DEFAULT_LIFETIME_YEARS,
+    )?;
+    let (_, issuer_not_after) = window(
+        "issuer-valid-for",
+        crate::timeparse::ISSUER_DEFAULT_LIFETIME_YEARS,
+    )?;
+    let req = crate::replace::ReplaceRequest {
+        root_bundle: PathBuf::from(&root),
+        root_signer: signer,
+        issuer_bundles: p.all("issuer").into_iter().map(PathBuf::from).collect(),
+        rotate_roots,
+        not_before,
+        root_not_after,
+        issuer_not_after,
+        allow_legacy_root_strength: p.has("allow-legacy-root-strength"),
+        private_store,
+    };
+    let out = p.require("out", verb)?;
+    let report = crate::replace::replace(&req, &PathBuf::from(&out))?;
+    let mut text = String::new();
+    if let Some(root) = &report.root {
+        text.push_str(&format!(
+            "Root set rotated: {} at {}\n",
+            root.manifest.bundle_id, root.dir
+        ));
+    }
+    for issuer in &report.issuers {
+        text.push_str(&format!(
+            "Issuer set replaced: {} ({}) at {}\n",
+            issuer.manifest.name, issuer.manifest.bundle_id, issuer.dir
+        ));
+    }
+    text.push_str(&format!(
+        "Chains verified: {}\nOld material can retire after {}\nNext steps:\n",
+        report.checks.len(),
+        report.retire_old_after
+    ));
+    for (i, step) in report.next_steps.iter().enumerate() {
+        text.push_str(&format!("  {}. {step}\n", i + 1));
+    }
+    let value = serde_json::to_value(&report).unwrap_or_else(|_| json!({}));
+    Ok(emit(json_out, text, value))
 }
 
 // ---------------------------------------------------------------- chain
@@ -2538,10 +2626,6 @@ const NOT_BUILT: &[(&str, &str)] = &[
     ),
     ("format", "format list/describe/export/convert (spec §7.5)"),
     (
-        "root/issuer replace",
-        "the replace orchestration (spec §5.2); root, issuer and leaf renew/rotate are built",
-    ),
-    (
         "bundle pack/unpack/diff/migrate",
         "bundle packaging verbs (spec §7)",
     ),
@@ -2671,7 +2755,7 @@ fn doctor_cmd(_args: &[String], json_out: bool) -> Result<i32> {
     let value = json!({
         "engine_self_test": algo_results.iter().map(|(i, ok)| json!({"algorithm": i.name, "ok": ok})).collect::<Vec<_>>(),
         "openssl": openssl,
-        "built": ["root", "root-renew", "root-rotate", "issuer", "issuer-renew", "issuer-rotate", "leaf", "leaf-renew", "leaf-rotate", "key-generate/inspect", "chain", "bundle-inspect", "inventory-list/show/search/audit", "publish-plan/verify", "dns-plan/render/verify", "batch-validate/plan/apply/status", "trust-export/stage/ack/activate/retire/status/inspect/pin/verify/install-plan", "profile-list/show/validate/scaffold", "algorithms-list/describe/benchmark/doctor", "explain", "doctor"],
+        "built": ["root", "root-renew", "root-rotate", "root-replace", "issuer", "issuer-replace", "issuer-renew", "issuer-rotate", "leaf", "leaf-renew", "leaf-rotate", "key-generate/inspect", "chain", "bundle-inspect", "inventory-list/show/search/audit", "publish-plan/verify", "dns-plan/render/verify", "batch-validate/plan/apply/status", "trust-export/stage/ack/activate/retire/status/inspect/pin/verify/install-plan", "profile-list/show/validate/scaffold", "algorithms-list/describe/benchmark/doctor", "explain", "doctor"],
         "not_built": NOT_BUILT.iter().map(|(n, w)| json!({"surface": n, "scope": w})).collect::<Vec<_>>(),
     });
     let code = emit(json_out, text, value);
