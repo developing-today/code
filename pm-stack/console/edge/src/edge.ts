@@ -2869,7 +2869,7 @@ export class Edge {
       if (kind === "machine.approve" || kind === "machine.reject" || kind === "machine.remove") {
         // Enrolling and removing machines is this side's own business:
         // the registry lives here, and no machine can do it for itself.
-        return this.ownMachine(kind, args as Record<string, unknown>, by, who.via, id);
+        return await this.ownMachine(kind, args as Record<string, unknown>, by, who.via, id);
       }
       if (!Object.hasOwn(this.table, kind)) {
         // One this side does itself: it runs here, through the

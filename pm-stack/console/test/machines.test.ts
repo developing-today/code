@@ -239,7 +239,9 @@ describe("a second machine under its own key", () => {
     // answers the owner at all.
     s.now.t += 1000;
     expect((await s.syncAs(first, { at: s.now.t })).status).toBe(200);
-    expect((await s.enrollAs(third, { name: "Third" })).status).toBe(200);
+    const ask = await s.enrollAs(third, { name: "Third" });
+    expect(ask.status).toBe(200);
+    expect(((await ask.json()) as { state: string; code: string }).state).toBe("pending");
     expect(((await s.machines()).pending ?? []).map((p) => p.kid)).toEqual([thirdKid]);
     const rejected = await s.act("machine.reject", { kid: thirdKid });
     expect(rejected.status).toBe(200);
