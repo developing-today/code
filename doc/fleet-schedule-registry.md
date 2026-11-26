@@ -24,6 +24,8 @@ specified in the #2020 Jules investigation).
   PM-stack aggregator process, live only while it runs (#9988).
 - **Surface 7 — Cloudflare Worker cron triggers:** `triggers.crons` in
   a Worker's `wrangler.jsonc`, deployed from the flake (#6369).
+- **Surface 9 — OpenClaw gateway fleet trials:** fleet-owned trial
+  automations stored in the local OpenClaw gateway.
 
 **This registry is an input to the placement audit** proposed in the
 #2024 framework doc
@@ -636,3 +638,14 @@ repository.
 | `codex-fleet-lane-b` | developing-today/code | `FREQ=HOURLY;BYMINUTE=15` (app-local time) | active | current user; Codex desktop local project | Codex automation `codex-fleet-lane-b`; `gpt-6-luna`, high | not recorded | Skip when Codex has eight healthy lanes; never exceed twelve; terminally disposition every claim | 2026-11-22 | 2026-11-23  |
 | `codex-fleet-lane-c` | developing-today/code | `FREQ=HOURLY;BYMINUTE=30` (app-local time) | active | current user; Codex desktop local project | Codex automation `codex-fleet-lane-c`; `gpt-6-luna`, high | not recorded | Skip when Codex has eight healthy lanes; never exceed twelve; terminally disposition every claim | 2026-11-22 | 2026-11-23  |
 | `codex-fleet-lane-d` | developing-today/code | `FREQ=HOURLY;BYMINUTE=45` (app-local time) | active | current user; Codex desktop local project | Codex automation `codex-fleet-lane-d`; `gpt-6-luna`, high | not recorded | Skip when Codex has eight healthy lanes; never exceed twelve; terminally disposition every claim | 2026-11-22 | 2026-11-23  |
+
+## Surface 9 — OpenClaw gateway fleet trials (2 jobs)
+
+Fleet-owned trial automations on the local OpenClaw gateway. Prompt bodies
+are stored inline by the gateway; UUIDs are the stable references. Other
+personal OpenClaw automations are outside this fleet-trial section.
+
+| name/id | repo/scope | cadence | state | owner / scope | prompt/brief pointer | budget | kill criteria | created | last review |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `trial-2177-queue-health-digest` (`8f3bdee3-e366-4461-a56c-b4149c9e930f`) | developing-today/code | `interval@6h` | enabled | trial #2177; code queue health | inline OpenClaw job message; `fleet queue health --queue code` | 10m | read-only; report first error line; retry once | not recorded | 2026-11-26 |
+| `trial-2177-laptop-health-monitor` (`675459d0-542a-42a6-ab48-84badde477d7`) | developing-today/code | `0 7 * * *` (gateway timezone) | enabled | trial #2177; laptop health | inline OpenClaw job message | 10m | not recorded | not recorded | 2026-11-26 |
