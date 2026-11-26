@@ -239,6 +239,12 @@ export function privateScopePrefix(bindingId: string): string {
   return `private:${hex}:`;
 }
 
+/** Whether the caller holds the kv-admin role, or a service token scoped
+ * to the kv-admin door. */
+export function isKvAdmin(ctx: CallerContext): boolean {
+  return isAdmin(ctx);
+}
+
 function isAdmin(ctx: CallerContext): boolean {
   if (ctx.kind === "service") return (ctx.serviceRoutes ?? []).includes(KV_CATALOG.admin_door);
   return ctx.roles.includes(KV_CATALOG.admin_role);
