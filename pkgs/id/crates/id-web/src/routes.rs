@@ -2611,12 +2611,7 @@ mod save_publication_tests {
         let response = save(state.clone(), &format!("{}.md", "x".repeat(600)), "content").await;
         assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
         assert_eq!(
-            state
-                .local_events
-                .lock()
-                .await
-                .frontier()
-                .unwrap(),
+            state.local_events.lock().await.frontier().unwrap(),
             [] as [Head; 0]
         );
     }

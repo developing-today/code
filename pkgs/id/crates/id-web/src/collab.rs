@@ -2663,14 +2663,14 @@ mod tests {
             mode: "raw".to_owned(),
         };
         let init_bytes = init.encode();
-        assert!(!init_bytes.is_empty());
+        assert_ne!(init_bytes, [] as [u8; 0]);
         // MessagePack fixarray of 4 elements starts with 0x94
         // First element should decode to 0 (INIT)
 
         let ack = CollabMessage::Ack { version: 0 };
         let ack_bytes = ack.encode();
         // MessagePack fixarray of 2 elements starts with 0x92
-        assert!(!ack_bytes.is_empty());
+        assert_ne!(ack_bytes, [] as [u8; 0]);
     }
 
     #[test]
