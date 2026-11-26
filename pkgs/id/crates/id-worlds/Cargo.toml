@@ -66,9 +66,9 @@ id-store = { path = "../id-store", default-features = false }
 id-sync = { path = "../id-sync", default-features = false }
 iroh = "1"
 iroh-base = "1"
-iroh-blobs = "0.103"
+iroh-blobs = "0.105"
 iroh-docs = "0.101"
-iroh-gossip = { version = "0.101", features = ["net"] }
+iroh-gossip = { version = "0.103", features = ["net"] }
 libc = "0.2"
 p2panda-core = { git = "https://github.com/dezren39/p2panda", rev = "4a8a7ea4b6e0da187108fba9a0085e0f9679aded" }
 postcard = { version = "1", features = ["alloc"] }
@@ -82,7 +82,7 @@ reqwest = { version = "0.13", default-features = false, features = [
   "blocking",
   "rustls",
 ] }
-russh = { version = "=0.65.2", optional = true }
+russh = { version = "=0.65.4", optional = true }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.11"
