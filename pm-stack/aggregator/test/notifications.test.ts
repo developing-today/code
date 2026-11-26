@@ -8,6 +8,8 @@ import {
   deriveSoleDoorPoolIds,
   nextNotificationDigestAt,
   NOTIFICATION_CLASS_DEFAULTS,
+  normalizeSendTimestamp,
+  repairLegacySendRow,
   rollupNotificationSends,
   sendTimestamp,
   type NotificationCandidate,
@@ -420,6 +422,73 @@ describe("rollupNotificationSends", () => {
     expect(sendTimestamp(row)).toBe("2026-11-02T00:00:00Z");
     const rollup = rollupNotificationSends([row], NOW);
     expect(rollup.classes[0].weeks[3].sent).toBe(1);
+  });
+});
+
+describe("#14419 send ledger sent_at stamping and legacy repair", () => {
+  test("logSend stamps sent_at explicitly in ISO-8601 UTC and sendTimestamp reads it back", async () => {
+    const queries: string[] = [];
+    const db: SqlClient = {
+      ref: "test",
+      async query<T>(sql: string): Promise<T[]> {
+        queries.push(sql);
+        return [] as T[];
+      },
+    };
+    const store = new AlertsStore(db);
+    await store.logSend({
+      class: "incident",
+      objectRef: "incident:x",
+      outcome: "sent",
+      sentAt: "2026-11-01T08:00:00.000Z",
+    });
+    expect(queries).toHaveLength(1);
+    expect(queries[0]).toContain("sent_at");
+    expect(queries[0]).toContain("'2026-11-01T08:00:00.000Z'");
+    // Read back: a row carrying exactly what the writer stamped.
+    const row = send({ sent_at: "2026-11-01T08:00:00.000Z", created_at: null });
+    expect(sendTimestamp(row)).toBe("2026-11-01T08:00:00.000Z");
+    const rollup = rollupNotificationSends([row], NOW);
+    expect(rollup.classes[0].sent).toBe(1);
+    expect(rollup.undated).toBe(0);
+    expect(rollup.alarm).toBe(false);
+  });
+
+  test("logSend's default stamp is ISO-8601 UTC", async () => {
+    let sql = "";
+    const db: SqlClient = {
+      ref: "test",
+      async query<T>(q: string): Promise<T[]> {
+        sql = q;
+        return [] as T[];
+      },
+    };
+    await new AlertsStore(db).logSend({ class: "test", objectRef: "test:push", outcome: "sent" });
+    const stamped = /'(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z)'/.exec(sql);
+    expect(stamped).not.toBeNull();
+  });
+
+  test("legacy space-format created_at is normalized and repairLegacySendRow backfills sent_at", () => {
+    expect(normalizeSendTimestamp("2026-11-01 08:00:00")).toBe("2026-11-01T08:00:00.000Z");
+    expect(normalizeSendTimestamp("2026-11-01 08:00:00.123")).toBe("2026-11-01T08:00:00.123Z");
+    expect(normalizeSendTimestamp("not-a-date")).toBeNull();
+    const legacy = send({ sent_at: null, created_at: "2026-11-01 08:00:00" });
+    expect(sendTimestamp(legacy)).toBe("2026-11-01T08:00:00.000Z");
+    expect(repairLegacySendRow(legacy).sent_at).toBe("2026-11-01T08:00:00.000Z");
+    const rollup = rollupNotificationSends([legacy], NOW);
+    expect(rollup.classes[0].sent).toBe(1);
+    expect(rollup.undated).toBe(0);
+  });
+
+  test("an all-undated ledger triggers the alarm (excluded == total)", () => {
+    const rows = [send({ created_at: null, sent_at: null }), send({ created_at: "garbage", sent_at: null })];
+    const rollup = rollupNotificationSends(rows, NOW);
+    expect(rollup.total).toBe(2);
+    expect(rollup.undated).toBe(2);
+    expect(rollup.alarm).toBe(true);
+    const mixed = rollupNotificationSends([...rows, send({})], NOW);
+    expect(mixed.alarm).toBe(false);
+    expect(rollupNotificationSends([], NOW).alarm).toBe(false);
   });
 });
 

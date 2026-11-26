@@ -59,7 +59,7 @@ differently ordered accumulation. See
 
 ## atlas-core
 
-The large crate: 45 public modules and about 26,000 lines in `src/`,
+The large crate: 46 public modules and about 26,000 lines in `src/`,
 including the shard subpackage. It is a semantics-exact port of the Python
 reference implementation — see
 [atlas_search.py: the Python reference implementation](../reference/python-implementation.md)

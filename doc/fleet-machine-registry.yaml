@@ -95,28 +95,30 @@ machines:
       # scripts/fleet-machine-watchdog.py; never hand-edited (the
       # validator requires the earned checks record below).
       source: watchdog
-      last_seen: '2026-11-26T12:54:13Z'
-      status: unreachable
+      last_seen: '2026-11-26T15:54:30Z'
+      status: degraded
       checks:
-        reported_at: '2026-11-26T13:26:01Z'
+        reported_at: '2026-11-26T15:54:30Z'
         reachable:
-          state: failed
+          state: ok
           ssh: true
-          opencode_server_http: null
+          opencode_server_http: 200
         load_headroom:
           state: ok
-          load15: 4.95
+          load15: 5.42
           cpu_cores: 16
-          load15_per_core: 0.309
+          load15_per_core: 0.339
         disk_headroom:
           state: failed
           volume: worktree (home)
           total_gb: 3371
-          free_gb: 159
-          free_pct: 4.7
+          free_gb: 122
+          free_pct: 3.6
         sessions:
-          state: unknown
-          reason: attach API HTTP None
+          state: ok
+          listed: 50
+          active_within_cadence: 50
+          max_sessions: 12
           source: openchamber attach api
         last_queue_job:
           state: ok
