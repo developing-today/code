@@ -1872,8 +1872,9 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
                         warn!("host control: {error:#}");
                     }
                 }));
+                let socket = id_worlds::host_control::socket_path(Path::new(WORLDS_DIR));
                 info!(
-                    socket = %id_worlds::host_control::socket_path(Path::new(WORLDS_DIR)).display(),
+                    socket = %socket.display(),
                     "host mode: answering the operator CLI"
                 );
             }
@@ -2712,7 +2713,7 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
     if let Some(control) = host_control {
         control.abort();
         let _ = control.await;
-        let _ = std::fs::remove_file(id_worlds::host_control::socket_path(Path::new(WORLDS_DIR)));
+        let _ = fs::remove_file(id_worlds::host_control::socket_path(Path::new(WORLDS_DIR)));
     }
     #[cfg(feature = "world")]
     if let Some(hub) = &world_hub {
