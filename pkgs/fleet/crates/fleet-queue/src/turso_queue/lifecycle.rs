@@ -3825,6 +3825,79 @@ mod manual_claim_override_tests {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod manual_claim_override_tests {
+    use super::reprioritize_tests::fake_backend;
+    use super::*;
+    use serde_json::{Value, json};
+
+    const QUEUE: &str = "repo-health-code-pilot";
+
+    fn packet(number: i64) -> Value {
+        json!({
+            "title": format!("manual claim oracle {number}"),
+            "priority": 50,
+            "dedupe_key": format!("repo-health:v1:fix:developing-today/code:issue:{number}"),
+            "payload": {
+                "schema": "repo-task/v1",
+                "kind": "small_fix",
+                "repo": "developing-today/code",
+                "problem": "manual claim test fixture",
+                "priority_reason": "test oracle",
+                "evidence": ["fixture"],
+                "acceptance": ["fixture"],
+                "tests": ["fixture"],
+                "context_refs": [],
+                "scope": {"include": ["fixture"], "exclude": ["none"]},
+                "risk": {"level": "low", "flags": []},
+                "timebox_minutes": 45,
+                "issue": {"number": number},
+                "dedupe": {"checked_at": "2026-11-26T00:00:00Z", "basis": "test"}
+            }
+        })
+    }
+
+    #[test]
+    fn manual_override_claims_parked_task_and_preserves_attempts_9178() {
+        // Oracle: a parked row under its cap is claimed with an explicit
+        // reason, but its historical attempts and cap remain unchanged.
+        let (t, _) = fake_backend();
+        let enqueued = verb_enqueue(&t, &json!({"queue": QUEUE, "packet": packet(91781)}));
+        assert_eq!(enqueued["ok"], true, "{enqueued}");
+        let id = enqueued["row"]["id"].as_i64().expect("task id");
+        t.exec(
+            "UPDATE tasks SET status = 'parked', attempts = 2, max_attempts = 5, \
+             not_before = '2099-01-01T00:00:00Z', park_kind = 'backoff', \
+             wait_kind = 'dependency', ready_condition = ?, result = ? WHERE id = ?",
+            &[
+                Arg::Text(json!({"kind": "time", "until": "2099-01-01T00:00:00Z"}).to_string()),
+                Arg::Text(json!({"park_reason": "waiting on dependency"}).to_string()),
+                Arg::Int(id),
+            ],
+        )
+        .unwrap();
+
+        let out = verb_claim(
+            &t,
+            &json!({
+                "worker": "manual-override-worker",
+                "queue": QUEUE,
+                "lane": "manual-override-lane",
+                "task_id": id,
+                "session_id": "ses_manual_override",
+                "manual_override": "dependency independently verified"
+            }),
+        );
+        assert_eq!(out["ok"], true, "{out}");
+        assert_eq!(out["row"]["id"], id, "{out}");
+        let row = get_task(&t, id).unwrap().expect("claimed task row");
+        assert_eq!(row["status"], "claimed");
+        assert_eq!(row["attempts"], 2);
+        assert_eq!(row["max_attempts"], 5);
+    }
+}
+
+#[cfg(test)]
 mod task_resolution_tests {
     use super::super::{verb_cancel, verb_complete, verb_resolution_backfill, verb_revive};
     use super::reprioritize_tests::fake_backend;
