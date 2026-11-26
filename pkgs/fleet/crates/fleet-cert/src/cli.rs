@@ -34,7 +34,7 @@ Usage: fleet cert <group> <verb> [options]
 Groups and verbs (spec §6.1 tree; status as built):
   root     create | inspect | list | validate
   issuer   create | renew | inspect | list
-  leaf     issue | inspect | list
+  leaf     issue | renew | inspect | list
   ocsp     sign | inspect | test
   chain    build | test
   bundle   inspect
@@ -925,10 +925,44 @@ fn leaf_cmd(args: &[String], json_out: bool) -> Result<i32> {
                 manifest_json(&manifest, &out),
             ))
         }
+        "renew" => {
+            let mut flags = vec!["leaf", "issuer", "issuer-key-dir", "out"];
+            flags.extend(TIME_FLAGS);
+            let p = parse_args(rest, &flags, &["allow-key-reuse", "json"])?;
+            let leaf = p
+                .get("leaf")
+                .map(|s| s.to_string())
+                .or_else(|| p.positional(0).map(|s| s.to_string()))
+                .ok_or_else(|| CertError::usage("leaf renew requires --leaf <leaf-dir>"))?;
+            let issuer = p.require("issuer", "leaf renew")?;
+            let signer = signer_source(&p, "issuer-key-dir", "leaf renew")?;
+            // The default lifetime is the leaf's own profile's.
+            let old = load_bundle(&PathBuf::from(&leaf))?;
+            let prof =
+                profile::resolve_profile(old.manifest.purpose.as_deref().ok_or_else(|| {
+                    CertError::manifest("the leaf bundle records no profile to renew under")
+                })?)?;
+            let (nb, na) = validity(&p, prof.default_validity)?;
+            let req = crate::model::LeafRenewRequest {
+                leaf_bundle: PathBuf::from(&leaf),
+                issuer_bundle: PathBuf::from(&issuer),
+                issuer_signer: signer,
+                not_before: nb,
+                not_after: na,
+                allow_key_reuse: p.has("allow-key-reuse"),
+            };
+            let out = p.require("out", "leaf renew")?;
+            let manifest = engine::renew_leaf(&req, &PathBuf::from(&out))?;
+            Ok(emit(
+                json_out,
+                manifest_text("Leaf renewed", &manifest, &out),
+                manifest_json(&manifest, &out),
+            ))
+        }
         "inspect" => inspect_cmd(rest, json_out, Some(BundleType::Leaf)),
         "list" => list_cmd(rest, json_out, BundleType::Leaf),
         other => Err(CertError::usage(format!(
-            "unknown leaf verb '{other}' (issue | inspect | list)"
+            "unknown leaf verb '{other}' (issue | renew | inspect | list)"
         ))),
     }
 }
@@ -2338,7 +2372,7 @@ const NOT_BUILT: &[(&str, &str)] = &[
     ("format", "format list/describe/export/convert (spec §7.5)"),
     (
         "root renew, root/issuer rotate/replace",
-        "remaining lifecycle verbs (spec §5.2); issuer renew is built",
+        "remaining lifecycle verbs (spec §5.2); issuer renew and leaf renew are built",
     ),
     (
         "bundle pack/unpack/diff/migrate",
@@ -2462,7 +2496,7 @@ fn doctor_cmd(_args: &[String], json_out: bool) -> Result<i32> {
         "  openssl (independent validator): {}\n",
         openssl.as_deref().unwrap_or("not found")
     ));
-    text.push_str("  built: root, issuer (create/renew/inspect/list), leaf, key (generate/inspect/import/export public), chain, bundle (inspect), inventory (list/show/search/audit read-only), publish (plan/verify read-only), dns (plan/render/verify offline), batch (validate/plan/apply/status), trust (export/stage/ack/activate/retire/status/inspect/pin/verify/install-plan), profile (list/show/validate/scaffold), algorithms (list/describe/benchmark/doctor), explain, doctor\n");
+    text.push_str("  built: root, issuer (create/renew/inspect/list), leaf (issue/renew/inspect/list), key (generate/inspect/import/export public), chain, bundle (inspect), inventory (list/show/search/audit read-only), publish (plan/verify read-only), dns (plan/render/verify offline), batch (validate/plan/apply/status), trust (export/stage/ack/activate/retire/status/inspect/pin/verify/install-plan), profile (list/show/validate/scaffold), algorithms (list/describe/benchmark/doctor), explain, doctor\n");
     text.push_str("  not built yet (tracked as child issues under #9157):\n");
     for (name, what) in NOT_BUILT {
         text.push_str(&format!("    {name} — {what}\n"));
@@ -2470,7 +2504,7 @@ fn doctor_cmd(_args: &[String], json_out: bool) -> Result<i32> {
     let value = json!({
         "engine_self_test": algo_results.iter().map(|(i, ok)| json!({"algorithm": i.name, "ok": ok})).collect::<Vec<_>>(),
         "openssl": openssl,
-        "built": ["root", "issuer", "issuer-renew", "leaf", "key-generate/inspect", "chain", "bundle-inspect", "inventory-list/show/search/audit", "publish-plan/verify", "dns-plan/render/verify", "batch-validate/plan/apply/status", "trust-export/stage/ack/activate/retire/status/inspect/pin/verify/install-plan", "profile-list/show/validate/scaffold", "algorithms-list/describe/benchmark/doctor", "explain", "doctor"],
+        "built": ["root", "issuer", "issuer-renew", "leaf", "leaf-renew", "key-generate/inspect", "chain", "bundle-inspect", "inventory-list/show/search/audit", "publish-plan/verify", "dns-plan/render/verify", "batch-validate/plan/apply/status", "trust-export/stage/ack/activate/retire/status/inspect/pin/verify/install-plan", "profile-list/show/validate/scaffold", "algorithms-list/describe/benchmark/doctor", "explain", "doctor"],
         "not_built": NOT_BUILT.iter().map(|(n, w)| json!({"surface": n, "scope": w})).collect::<Vec<_>>(),
     });
     let code = emit(json_out, text, value);
