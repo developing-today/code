@@ -1425,7 +1425,7 @@ export function directClasses(edge: EdgeConfig, options: DirectOptions): DirectC
           { stmt: insert, condition: { type: "ok", step: 0 } },
         ];
         const insertedId = `(SELECT max(id) FROM tasks WHERE queue = ? AND dedupe_key IS ?)`;
-        for (const event of store.allEvents()) {
+        for (const event of await store.allEvents()) {
           let detailSql = "?";
           const detailArgs: unknown[] = [JSON.stringify(event.detail)];
           if (event.kind === "revived_by") {
