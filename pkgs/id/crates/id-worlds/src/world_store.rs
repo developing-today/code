@@ -2936,6 +2936,49 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn presentation_policy_is_admin_only_and_survives_restart() {
+        // #14731 slice 2b: the policy is journaled before the reply, the
+        // journal header is raised to the version that names the entry,
+        // and a reopened world reads the same policy.
+        let dir = TempDir::new().unwrap();
+        let open = || {
+            open_world(
+                dir.path(),
+                "presented",
+                WorldLimits::default(),
+                RuntimeLimits::default(),
+                |handle| WorldService::new(handle, Some("admin".to_owned())),
+            )
+        };
+        let policy = id_core::presentation_policy::PresentationPolicy::from_json(
+            r#"{"filters":{"disguise":"allow"},"shaders":{"enabled":true}}"#,
+        )
+        .unwrap();
+        let (service, _) = open().await.unwrap();
+        let refused = service
+            .set_presentation_policy(Some("wrong"), policy.clone())
+            .await
+            .unwrap_err();
+        assert!(refused.to_string().contains("admin denied"), "{refused:#}");
+        assert_eq!(
+            service.presentation_policy().await.unwrap(),
+            id_core::presentation_policy::PresentationPolicy::default()
+        );
+        assert_eq!(
+            service
+                .set_presentation_policy(Some("admin"), policy.clone())
+                .await
+                .unwrap(),
+            policy
+        );
+        service.world().shutdown().await.unwrap();
+
+        let (service, _) = open().await.unwrap();
+        assert_eq!(service.presentation_policy().await.unwrap(), policy);
+        service.world().shutdown().await.unwrap();
+    }
+
     #[cfg(feature = "sandbox")]
     #[tokio::test]
     async fn a_lower_server_ceiling_refuses_a_restored_grant_and_the_default_keeps_it() {

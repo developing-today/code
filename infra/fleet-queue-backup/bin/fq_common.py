@@ -504,6 +504,41 @@ def _split_row_insert(table, colnames, row, pk_cols, splits):
     return out
 
 
+def read_table_schema(client, table):
+    """The table's current CREATE sql, read at the moment of use, or
+    None if the table is gone."""
+    _cols, rows = client.execute(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?",
+        (table,),
+    )
+    return rows[0][0] if rows else None
+
+
+def _fresh_table_shape(client, name):
+    """(create_sql, colnames) for `name`, captured at the same instant.
+
+    The CREATE is re-read beside a zero-row probe and the pair is
+    retried until they agree: a migration landing between the two
+    reads retries, and one that never settles fails the export here,
+    naming the drift, instead of emitting a dump whose CREATE and
+    INSERTs disagree until import time (#15081). When the CREATE
+    text does not parse into column names, the probe alone is the
+    shape (the pre-#15081 behaviour for exotic CREATEs).
+    """
+    for _attempt in range(3):
+        sql = read_table_schema(client, name)
+        if sql is None:
+            raise RuntimeError(f"{name}: table vanished during export")
+        colnames, _probe = client.execute(f'SELECT * FROM "{name}" LIMIT 0')
+        expected = table_columns(sql)
+        if not expected or list(colnames) == expected:
+            return sql, colnames
+    raise RuntimeError(
+        f"{name}: schema drifted during export: CREATE defines "
+        f"{expected}, live table has {list(colnames)}"
+    )
+
+
 def build_dump(client, exported_at):
     """A complete, re-importable SQL dump of the store as D1-safe text.
 
@@ -514,9 +549,16 @@ def build_dump(client, exported_at):
     (dump_text, counts, splits), where splits records each row that
     had to be chunked for the D1 statement limit (see
     _split_row_insert), for post-import verification.
+
+    The opening schema read fixes only the table set and the DROP
+    order. Each table's CREATE is captured at the moment that table
+    is read (_fresh_table_shape): the source is live and migrates
+    under the export, and pairing an opening-capture CREATE with
+    rows read minutes later corrupts the dump when a column lands
+    in between (#15081).
     """
     schema = read_schema(client)
-    tables = [(name, sql) for kind, name, _t, sql in schema if kind == "table"]
+    tables = [name for kind, name, _t, _sql in schema if kind == "table"]
     # Counts are taken from the rows actually emitted below, never from
     # a separate COUNT(*) pass: on the live store the two reads smear
     # (rows land between them), which made the exporter's read-back
@@ -524,7 +566,7 @@ def build_dump(client, exported_at):
     # copy that ever existed (live run 4, #8584). Emitted counts make
     # the meta, the read-back check and the restore drill all describe
     # the same artifact.
-    counts = {name: 0 for name, _sql in tables}
+    counts = {name: 0 for name in tables}
     lines = [
         "-- fleet-queue-backup export (#8584)",
         f"-- exported_at: {exported_at}",
@@ -536,22 +578,24 @@ def build_dump(client, exported_at):
     for kind, name, _t, _sql in schema:
         if kind in ("trigger", "view", "index"):
             lines.append(f'DROP {kind.upper()} IF EXISTS "{name}";')
-    for name, _sql in tables:
+    for name in tables:
         lines.append(f'DROP TABLE IF EXISTS "{name}";')
-    for _name, sql in tables:
-        lines.append(sql.rstrip().rstrip(";") + ";")
+    create_lines = []
+    body = []
     splits = []
-    for name, sql in tables:
-        colnames, _probe = client.execute(f'SELECT * FROM "{name}" LIMIT 0')
-        ncols = len(colnames)
+    for name in tables:
+        sql, colnames = _fresh_table_shape(client, name)
+        create_lines.append(sql.rstrip().rstrip(";") + ";")
         pk_cols = _pk_columns(sql)
-        for row in read_table_quoted(client, name, ncols):
+        for row in read_table_quoted(client, name, len(colnames)):
             counts[name] += 1
             stmt = f'INSERT INTO "{name}" VALUES (' + ", ".join(row) + ");"
             if len(stmt.encode("utf-8")) <= MAX_IMPORT_STATEMENT_BYTES:
-                lines.append(stmt)
+                body.append(stmt)
             else:
-                lines.extend(_split_row_insert(name, colnames, row, pk_cols, splits))
+                body.extend(_split_row_insert(name, colnames, row, pk_cols, splits))
+    lines.extend(create_lines)
+    lines.extend(body)
     for kind, _name, _t, sql in schema:
         if kind in ("index", "view", "trigger"):
             lines.append(sql.rstrip().rstrip(";") + ";")

@@ -210,9 +210,7 @@ struct OwnedVersionedCompressedViewPatch {
 /// `{version: 2, compression: 1, payload}` whose payload is the raw-DEFLATE
 /// (RFC 1951) of the version-1 frame. Small frames come back byte-identical
 /// to [`encode_view_patch`], so compression never grows a frame on the wire.
-pub fn encode_view_patch_compressed(
-    frame: &ViewPatchFrame,
-) -> Result<Vec<u8>, ScreenCodecError> {
+pub fn encode_view_patch_compressed(frame: &ViewPatchFrame) -> Result<Vec<u8>, ScreenCodecError> {
     let raw = encode_view_patch(frame)?;
     let mut encoder =
         flate2::write::DeflateEncoder::new(Vec::new(), flate2::Compression::default());
@@ -235,8 +233,7 @@ pub fn encode_view_patch_compressed(
 /// decodes the inner version-1 frame exactly as a plain frame.
 fn decode_compressed_view_patch(bytes: &[u8]) -> Result<ViewPatchFrame, ScreenCodecError> {
     let mut deserializer = rmp_serde::Deserializer::new(Cursor::new(bytes));
-    let frame =
-        <OwnedVersionedCompressedViewPatch as Deserialize>::deserialize(&mut deserializer)?;
+    let frame = <OwnedVersionedCompressedViewPatch as Deserialize>::deserialize(&mut deserializer)?;
     if usize::try_from(deserializer.into_inner().position()).ok() != Some(bytes.len()) {
         return Err(ScreenCodecError::TrailingBytes);
     }
@@ -615,10 +612,7 @@ mod tests {
         let bomb = rmp_serde::to_vec_named(&TestCompressedEnvelope {
             version: SCREEN_CODEC_VERSION_COMPRESSED,
             compression: COMPRESSION_DEFLATE,
-            payload: serde_bytes::ByteBuf::from(deflate(&vec![
-                0_u8;
-                MAX_SCREEN_FRAME_BYTES + 1
-            ])),
+            payload: serde_bytes::ByteBuf::from(deflate(&vec![0_u8; MAX_SCREEN_FRAME_BYTES + 1])),
         })
         .unwrap();
         assert!(matches!(
@@ -761,11 +755,9 @@ mod tests {
         for (width, height) in [(80_usize, 24_usize), (120_usize, 50_usize)] {
             let full = document_screen(width, height);
             let changed = sparse_redraw(&full);
-            let blank = ScreenSurface::from_cells(width, height, vec![
-                blank_cell();
-                width * height
-            ])
-            .unwrap();
+            let blank =
+                ScreenSurface::from_cells(width, height, vec![blank_cell(); width * height])
+                    .unwrap();
             let full_frame = ViewPatchFrame {
                 sequence: 1,
                 view_revision: 2,

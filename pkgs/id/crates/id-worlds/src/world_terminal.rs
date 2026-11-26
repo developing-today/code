@@ -523,7 +523,9 @@ impl TextDelta {
 ///   against the previous screen (full repaint when a diff is impossible,
 ///   e.g. after a resize or [`TierPresenter::invalidate`]).
 /// - Tier 3 renders text only: no full-screen escapes, and after the
-///   first view only the changed lines (a [`TextDelta`]).
+///   first view only the changed lines (a [`TextDelta`]). A view whose
+///   dimensions differ from the previous one is a full frame again
+///   (the join/resize form, #14937).
 ///
 /// Under [`DisplayMode::Primary`] the cell-grid tiers paint with the
 /// primary-mode contract instead ([`ScreenSurface::paint_primary`]):
@@ -541,6 +543,9 @@ pub struct TierPresenter {
     mode: DisplayMode,
     previous_screen: Option<ScreenSurface>,
     previous_text: Vec<String>,
+    /// Dimensions of the last screen this presenter projected to text;
+    /// a change forces the text path's full-frame form (#14937).
+    previous_text_dims: Option<(u16, u16)>,
     counters: PresenterCounters,
     sync_used: bool,
 }
@@ -556,6 +561,7 @@ impl TierPresenter {
             mode: DisplayMode::Auto,
             previous_screen: None,
             previous_text: Vec::new(),
+            previous_text_dims: None,
             counters: PresenterCounters::default(),
             sync_used: false,
         }
@@ -571,6 +577,7 @@ impl TierPresenter {
             mode: DisplayMode::Auto,
             previous_screen: None,
             previous_text: Vec::new(),
+            previous_text_dims: None,
             counters: PresenterCounters::default(),
             sync_used: false,
         }
@@ -629,11 +636,27 @@ impl TierPresenter {
     pub fn invalidate(&mut self) {
         self.previous_screen = None;
         self.previous_text = Vec::new();
+        self.previous_text_dims = None;
     }
 
     /// Render one screen view for this presenter's tier.
     pub fn render_screen(&mut self, screen: &ScreenSurface) -> String {
         if self.tier == PresentationTier::Tier3 {
+            // A size change is answered with the terse full-frame form
+            // (#14937): the text path's full form is a diff against
+            // nothing, so a resize drops the remembered lines before
+            // diffing, exactly as a join does. The shell forwards the
+            // resize to the world, and the world's answering view
+            // carries the new dimensions, so the presenter sees every
+            // resize here.
+            let dims = (screen.width, screen.height);
+            if self
+                .previous_text_dims
+                .is_some_and(|previous| previous != dims)
+            {
+                self.previous_text.clear();
+            }
+            self.previous_text_dims = Some(dims);
             let projection = screen.text_projection();
             let lines: Vec<String> = if projection.is_empty() {
                 Vec::new()
@@ -789,7 +812,7 @@ pub fn encode_sixel(rgb: &[u8], width: usize, height: usize) -> Option<String> {
     }
     let mut colors: Vec<(u8, u8, u8)> = Vec::new();
     let mut index = vec![0_usize; pixels];
-    for (i, pixel) in rgb.chunks_exact(3).enumerate() {
+    for (i, pixel) in rgb.as_chunks::<3>().0.iter().enumerate() {
         let key = (pixel[0], pixel[1], pixel[2]);
         index[i] = match colors.iter().position(|color| *color == key) {
             Some(position) => position,
@@ -1146,7 +1169,9 @@ fn decode_hex(input: &[u8]) -> Option<Vec<u8>> {
         return None;
     }
     input
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|pair| {
             let high = hex_digit(pair[0])?;
             let low = hex_digit(pair[1])?;
@@ -1376,14 +1401,49 @@ mod tests {
     fn text_mode_presenter_output_never_contains_an_escape_byte() {
         // Oracle: design D2 — in text mode no escape sequence is ever
         // written, even for the first (full) frame.
-        let mut presenter =
-            TierPresenter::for_mode(TerminalProfile::default(), DisplayMode::Text);
+        let mut presenter = TierPresenter::for_mode(TerminalProfile::default(), DisplayMode::Text);
         let first = presenter.render_screen(&screen(&["hello", "world"]));
         let second = presenter.render_screen(&screen(&["hello", "there"]));
 
         assert!(!first.contains('\x1b'), "first frame escaped: {first:?}");
         assert!(!second.contains('\x1b'), "delta frame escaped: {second:?}");
-        assert!(first.contains("hello"), "first frame lost its text: {first:?}");
+        assert!(
+            first.contains("hello"),
+            "first frame lost its text: {first:?}"
+        );
+    }
+
+    #[test]
+    fn text_presenter_answers_a_resize_with_a_full_frame() {
+        // Oracle: issue #14937 — a text session renders each frame as
+        // plain text lines, emitting only the lines that changed, with
+        // a terse full-frame form on join and on resize. The full form
+        // is exactly the changed-lines form computed against nothing,
+        // so applying it over any prior frame state yields the new
+        // frame (TextDelta::apply parity).
+        let mut presenter = TierPresenter::for_mode(TerminalProfile::default(), DisplayMode::Text);
+
+        let joined = presenter.render_screen(&screen(&["alpha", "beta"]));
+        assert_eq!(joined, "alpha\r\nbeta\r\n", "join is a full frame");
+
+        let quiet = presenter.render_screen(&screen(&["alpha", "beta"]));
+        assert_eq!(quiet, "", "an unchanged frame costs zero bytes");
+
+        let delta = presenter.render_screen(&screen(&["alpha", "gamma"]));
+        assert_eq!(delta, "gamma\r\n", "only the changed line is emitted");
+
+        // Resize: the same leading lines at a new size still repaints
+        // in full, because the reader's frame state no longer matches.
+        let resized = presenter.render_screen(&screen(&["alpha", "beta", "extra"]));
+        assert_eq!(
+            resized, "alpha\r\nbeta\r\nextra\r\n",
+            "a resize answers with the full-frame form"
+        );
+        assert!(!resized.contains('\x1b'), "full frame escaped: {resized:?}");
+
+        // After the resize frame, deltas resume against the new size.
+        let after = presenter.render_screen(&screen(&["alpha", "beta", "extra"]));
+        assert_eq!(after, "", "post-resize frame is a delta again");
     }
 
     #[test]

@@ -34,10 +34,7 @@ export async function projectsJsonAsync(deps: AsyncReadApiDeps) {
   return { generatedAt: now(), projects, items };
 }
 
-export async function itemJsonAsync(
-  deps: AsyncReadApiDeps,
-  ref: string,
-): Promise<{ status: number; body: unknown }> {
+export async function itemJsonAsync(deps: AsyncReadApiDeps, ref: string): Promise<{ status: number; body: unknown }> {
   const pool = await loadPoolAsync(deps.db);
   const item = pool.find((entry) => entry.ref === ref);
   if (!item) return { status: 404, body: { error: `no pool item with ref ${ref}` } };

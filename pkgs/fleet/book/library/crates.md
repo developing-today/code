@@ -1,7 +1,7 @@
 # The crates
 
-The fleet binary is one Rust workspace, `pkgs/fleet/`, with 16 crates:
-15 library crates and the one binary crate that assembles them. The
+The fleet binary is one Rust workspace, `pkgs/fleet/`, with 17 crates:
+16 library crates and the one binary crate that assembles them. The
 workspace is self-contained — its own `Cargo.toml`, `Cargo.lock` and
 `rust-toolchain.toml`, no workspace relationship to the repository root
 — at version `0.1.0`, edition 2024, rust-version 1.85, licensed
@@ -20,7 +20,7 @@ embedder touches most: [The queue client](queue-client.md),
 [Placement and surfaces as data](placement.md), and
 [Registry, config and capabilities](registry-and-config.md).
 
-## The 16 crates
+## The 17 crates
 
 ### `fleet`
 
@@ -67,7 +67,10 @@ profiles; the OCSP verb group (sign, inspect, test) and the
 `ocsp-responder` profile landed in #13722. The broker TLS profiles
 `broker-server` and `broker-client` (CSR-only, Base issuer set,
 `.internal` DNS + tailnet IP SANs, 90 days) and CSR issuance
-(`leaf issue --csr`, `--ip`) landed in #14399.
+(`leaf issue --csr`, `--ip`) landed in #14399. The `trust` verb
+group (export | stage | ack | activate | retire | status) — the
+§3.5 trust bundle and the broker-client trust store with
+two-phase rollover — landed in #14400.
 
 ### `fleet-config`
 
@@ -128,6 +131,27 @@ idempotent upserts; sync uses each App's JWT against `GET /app` and
 `--json`, with `--app`, `--org` and `--permission` filters, and shows
 the last successful sync time. The Turso URL comes from
 `FLEET_ORGS_TURSO_URL`; its token is the secret `turso.fleet-orgs-token`.
+
+### `fleet-pool`
+
+> "The generic pooling primitive: members, nested groups, scope-keyed walls, strategies, and a mandatory decision log (design #13752 §3, work item 3a #14721)."
+
+A domain-free library crate: it owns no registry domain and no verbs.
+One `src/lib.rs` carries the whole machine that five estate codebases
+had each re-implemented — members in nested groups, the per-member
+state machine (serving, demoted, walled at a scope until a reset,
+probing, then serving again), scope-keyed walls that narrow on a
+sibling's success and never widen past their evidence, and the
+strategies (`Ordered`, `RoundRobin`, `LeastLoaded`, `Weighted` and
+`FreeFirst`, composed through `Tiered`; unknown load is a first-class
+value that never sorts as zero). Domain code plugs in through the
+`Member`, `Classifier`, `Strategy` and `Probe` traits, and every
+selection, transition and wall movement lands in the decision log.
+Slice 1 (#14721, PR #15067) landed the scaffold, the traits, the
+state machine, the walls and the first three strategies; slice 2
+(PR #15117) completed the weighted and free-first strategies,
+`Tiered` composition and decision-log completeness. The crate has
+no runtime dependencies.
 
 ### `fleet-proxy`
 

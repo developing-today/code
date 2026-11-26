@@ -147,6 +147,7 @@ fn ext(kind: &str) -> ChainExt {
         rotation: None,
         chat: None,
         anchor: None,
+        thread: None,
     }
 }
 

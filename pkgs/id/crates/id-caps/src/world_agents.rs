@@ -987,9 +987,7 @@ mod tests {
             PolicyOutcome::Executed(ToolAction::SendFrame(_))
         ));
         assert!(matches!(
-            world
-                .act(&EDITOR, "screen.read", &json!({}), NOW)
-                .unwrap(),
+            world.act(&EDITOR, "screen.read", &json!({}), NOW).unwrap(),
             PolicyOutcome::Executed(_)
         ));
 
@@ -997,7 +995,12 @@ mod tests {
         // quota refusal parks only the observer's session.
         assert!(matches!(
             world
-                .act(&ARCHIVIST, "chat.post", &json!({ "text": "not allowed" }), NOW)
+                .act(
+                    &ARCHIVIST,
+                    "chat.post",
+                    &json!({ "text": "not allowed" }),
+                    NOW
+                )
                 .unwrap(),
             PolicyOutcome::Refused(PolicyRefusal {
                 kind: RefusalKind::Ceiling,
@@ -1083,7 +1086,10 @@ mod tests {
             let session = world.session(&agent).unwrap();
             session.verify_audit().unwrap();
             assert!(
-                session.audit_events().iter().all(|event| event.agent_key == agent),
+                session
+                    .audit_events()
+                    .iter()
+                    .all(|event| event.agent_key == agent),
                 "an audit chain contains another agent's events"
             );
         }
@@ -1118,8 +1124,10 @@ mod tests {
         }
         for resolution in review_queue.resolutions() {
             audit_lines.push(
-                serde_json::to_string(&json!({"type":"owner_review_resolution","event":resolution}))
-                    .unwrap(),
+                serde_json::to_string(
+                    &json!({"type":"owner_review_resolution","event":resolution}),
+                )
+                .unwrap(),
             );
         }
         eprintln!(
