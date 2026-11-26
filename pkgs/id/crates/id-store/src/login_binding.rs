@@ -3,7 +3,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use anyhow::{Context as _, Result};
+use anyhow::{Result, anyhow};
 use id_core::login_binding::{
     AuthAccount, AuthenticatedAccount, BindingRegistry, RecoveryThreshold, SignedBinding,
     StoredBinding,
@@ -27,12 +27,11 @@ impl LoginBindingStore {
 
     /// Read the current binding for an authenticated account pointer.
     pub fn binding(&self, account: &AuthAccount) -> Result<Option<StoredBinding>> {
-        Ok(self
+        let registry = self
             .registry
             .lock()
-            .context("login-binding registry lock poisoned")?
-            .binding(account)
-            .cloned())
+            .map_err(|_| anyhow!("login-binding registry lock poisoned"))?;
+        Ok(registry.binding(account).cloned())
     }
 
     /// Admit the first binding for an authenticated account.
@@ -41,12 +40,11 @@ impl LoginBindingStore {
         session: &AuthenticatedAccount,
         signed: SignedBinding,
     ) -> Result<StoredBinding> {
-        Ok(self
+        let mut registry = self
             .registry
             .lock()
-            .context("login-binding registry lock poisoned")?
-            .enrol(session, signed)?
-            .clone())
+            .map_err(|_| anyhow!("login-binding registry lock poisoned"))?;
+        Ok(registry.enrol(session, signed)?.clone())
     }
 
     /// Replace a binding under current-key or recovery-threshold authority.
@@ -55,12 +53,11 @@ impl LoginBindingStore {
         signed: SignedBinding,
         recovery: &dyn RecoveryThreshold,
     ) -> Result<StoredBinding> {
-        Ok(self
+        let mut registry = self
             .registry
             .lock()
-            .context("login-binding registry lock poisoned")?
-            .update(signed, recovery)?
-            .clone())
+            .map_err(|_| anyhow!("login-binding registry lock poisoned"))?;
+        Ok(registry.update(signed, recovery)?.clone())
     }
 }
 
