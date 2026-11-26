@@ -5345,6 +5345,7 @@ dependencies = [
  "id-core",
  "id-directory",
  "id-events",
+ "id-grants",
  "id-groups",
  "id-store",
  "id-sync",
