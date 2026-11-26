@@ -5,12 +5,11 @@
 //! on the database note, scoped by `data_source_id` so two sources' claims
 //! are never merged — even where property names (or property ids) collide.
 //!
-//! This slice covers database-note identity and schema claims only.
-//! Row notes, relations as typed references, rollups/formulas, and system
-//! properties are follow-up slices on the same issue; they build on the
-//! identities assigned here. Resolving `child_database` references to
-//! their database note ids (left as `None` by slice 2's [`crate::content`])
-//! is the next slice after this one.
+//! This module covers database-note identity and schema claims. Row
+//! notes, relations as typed references, rollups/formulas, and system
+//! properties live in [`crate::rows`], building on the identities
+//! assigned here; `child_database` references resolve from the same
+//! identity map in [`crate::content`].
 
 use std::collections::BTreeSet;
 
@@ -53,10 +52,7 @@ pub struct DatabaseConversion {
 /// with no assigned note ID fails rather than minting identity
 /// mid-content. Conversion is safe to re-run: identities already
 /// recorded are kept, and progress never rewinds (§6.3).
-pub fn convert_database(
-    manifest: &mut Manifest,
-    database_id: &str,
-) -> Result<DatabaseConversion> {
+pub fn convert_database(manifest: &mut Manifest, database_id: &str) -> Result<DatabaseConversion> {
     let object = manifest
         .inventory
         .objects
@@ -100,7 +96,10 @@ pub fn convert_database(
                 .get("id")
                 .and_then(Value::as_str)
                 .with_context(|| {
-                    format!("data source {} property {name} is missing its id", source.id)
+                    format!(
+                        "data source {} property {name} is missing its id",
+                        source.id
+                    )
                 })?
                 .to_owned();
             let property_type = definition
@@ -241,10 +240,7 @@ mod tests {
 
     #[test]
     fn property_without_type_fails_closed() {
-        let mut manifest = manifest_for(vec![source(
-            "ds-1",
-            json!({"Name": {"id": "title"}}),
-        )]);
+        let mut manifest = manifest_for(vec![source("ds-1", json!({"Name": {"id": "title"}}))]);
         manifest
             .assign_database_identities(&mut |id| Ok(format!("note-{id}")))
             .unwrap();
@@ -261,10 +257,7 @@ mod tests {
             .assign_database_identities(&mut |id| Ok(format!("note-{id}")))
             .unwrap();
         let err = convert_database(&mut manifest, "db-1").unwrap_err();
-        assert!(
-            err.to_string().contains("no properties object"),
-            "{err:#}"
-        );
+        assert!(err.to_string().contains("no properties object"), "{err:#}");
     }
 
     #[test]

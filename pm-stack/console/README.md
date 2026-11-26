@@ -18,13 +18,13 @@ public, matched exactly: `/manifest.webmanifest` and the four icons under
 `/console/` is one page with five tabs. The first four are what the
 owner does every day; everything else is under More.
 
-| Tab      | What it is for                                                                                                                                                |
-| -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Now      | Tasks in progress with their next step, sessions that are moving, and what the owner did lately                                                               |
-| Next     | The queue in the order it will be claimed; move a task first, sooner or later; why tasks are blocked                                                          |
-| Needs me | Open questions (one tap to answer, undo for a few seconds), things only hands can do, reviews                                                                 |
-| Ask      | Say what you want in your own words (typed or dictated). It becomes an issue and a top-of-queue task in one pass                                              |
-| More     | The plan (roadmaps, bugs, intake), queue by state, pull requests, ranked issues, agents, services, notifications, phones, releases, and the dashboard's pages |
+| Tab      | What it is for                                                                                                                                                          |
+| -------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Now      | Tasks in progress with their next step, sessions that are moving, and what the owner did lately                                                                         |
+| Next     | The queue in the order it will be claimed; move a task first, sooner or later; why tasks are blocked                                                                    |
+| Needs me | Open questions (one tap to answer, undo for a few seconds), things only hands can do, reviews                                                                           |
+| Ask      | Say what you want in your own words (typed or dictated). It becomes an issue and a top-of-queue task in one pass                                                        |
+| More     | The plan (roadmaps, bugs, intake), queue by state, pull requests, ranked issues, agents, messages, services, notifications, phones, releases, and the dashboard's pages |
 
 The page never waits on a live fan-out. The server keeps three documents
 ready (`core`, `questions`, `ops`), each built from sections that are
@@ -132,7 +132,7 @@ late.
 
 ### Phones
 
-The Android app's home-screen widget reads a short summary (three counts
+The Android app's home-screen widget reads a short summary (four counts
 and the top line of each list) with a token of its own, since it cannot
 use the browser's sign-in. Linking passes no secret through an address:
 the phone shows the signed-in owner a hash, the owner approves it under
@@ -193,6 +193,16 @@ More, Machines shows:
 
 - **Cloudflare's own part**: whether it does the core itself, and what
   it was turned away for lately.
+- **Platform settings**: each of the platform's settings with the value
+  in force, whose it is (main's, a machine's list, or the owner's) and
+  since when. The two the owner may change, the prompt label and the
+  repositories looked in, have "Change" (`settings.set`) and, once
+  changed, "Put back to main's" (`settings.clear`), with main's value
+  beside the change. Cloudflare does both itself and never hands them
+  to a machine; it checks the value whole, and refuses a change made
+  from an older look (another tab changed it meanwhile) with what the
+  settings are now. The log keeps which setting changed and who
+  changed it, never the value.
 - **Each machine**: whether it is reporting and when it was last heard
   from, the commit it runs, and what only it reports and only it can
   do, in words. What Cloudflare does itself is not counted as the
@@ -225,6 +235,137 @@ drawn from the repository's own list
 with the latest run of each deploy workflow, so the edge answers it
 with no machine and the list changes with a merge.
 
+### Appearance
+
+**More → Appearance** is where the app is made to look the way its owner
+wants, on the device in hand:
+
+- **Colours.** 33 themes: the two the app always had (Slate and Paper),
+  eight **true black** ones whose page and panels are `#000000` (an OLED
+  screen leaves those pixels off), three **high contrast** ones (text at
+  15 to 1 or more, heavier edges), and dark and light palettes many
+  people know from their editors. The app either follows the system
+  between a theme for light and a theme for dark, each of the owner's
+  choosing, or wears one theme always.
+- **Typeface.** 22: the device's own sans, serif and fixed-width, and 19
+  the app carries (`public/fonts/`, each under the SIL Open Font License,
+  its licence beside it in `public/fonts/licences/`). Among them are four
+  made to be easy to read (Atkinson Hyperlegible, Lexend, OpenDyslexic,
+  Comic Neue). A typeface is fetched when first shown and kept for when
+  there is no connection; the ones not chosen cost nothing.
+- **Size and spacing.** Seven sizes of text, five amounts of room around
+  things, four kinds of corner, and whether anything moves.
+
+The choices are kept on the device (`localStorage`, key `pm.look`), not
+with the account: a phone and a desk can each look their own way. They
+are put on the page before it is first drawn.
+
+How it is made, for adding to it:
+
+- Each choice is **one attribute on the root element** (`data-theme`,
+  `data-font`, `data-size`, `data-space`, `data-corners`, `data-motion`),
+  put there by `public/look.js`. Nothing writes a style, so the page's
+  content policy stays `default-src 'self'`.
+- **A new theme** is a block of thirteen colours in `public/themes.css`
+  and a line in `THEMES` in `public/look.js`. The tests hold every theme
+  to the contrast rules written at the top of `themes.css`, so one that
+  cannot be read does not merge.
+- **A new typeface** is its file in `public/fonts/` with its licence, an
+  `@font-face` and a `[data-font]` rule in `public/look.css`, a line in
+  `FONTS`, and a line in `public/files.json`.
+- The style sheet (`public/app.css`) is drawn entirely from those
+  settings: colours only through the theme's variables, padding, margins
+  and gaps through `--space`, corners through `--round`, edges through
+  `--edge`. A rule that writes its own colour or a bare pixel padding
+  fails a test.
+
+### Trends
+
+**More → Trends** is what got done, by day, over 7, 14, 30 or 90 days,
+each set against the same time before it:
+
+- pull requests merged, by what each is (a feature, a fix, docs, tests);
+- features merged by project (id, Fleet, Atlas, PM stack, mcpx), with
+  each project's latest features listed and linked;
+- issues opened against issues closed, and bugs reported against fixed;
+- how long a pull request waits from opened to merged (the middle one
+  of each day);
+- tasks the queue finished, by kind.
+
+Whoever serves the app reads it, and no machine is needed: Cloudflare
+asks GitHub and the queue's store itself (`src/trends.ts`).
+
+- **GitHub's history is read once and kept.** GitHub has no "merged per
+  day" to ask for; its list of issues takes a time and answers with
+  everything changed since, oldest change first. It is read newest
+  first, in stretches: the last day to the end of the list (and from
+  then on kept up by asking from where it stopped), then three days
+  back, a week, two weeks, a month, two months, ninety days. The screen
+  says from which day on the counts are whole. What is kept is small
+  (per day: the numbers of what was opened and closed, and for a merged
+  pull request what its title says it is), in the Worker's own storage.
+- **What a pull request is comes from its title**: `feat(pm-console): …`
+  is a feature of the PM stack; `id-pg: …` is counted under id but not
+  as a feature; a title that is only words is "everything else".
+- **It reads on in the background while somebody looks.** For a day
+  after the screen was last opened, Cloudflare's own clock reads the
+  history on (six pages a minute until it is whole, then what changed,
+  every half hour). After that it does not wake for it; the next
+  opening reads on at once.
+- **Tasks come from the queue's store each time**: one read of the
+  finishing events by day, by the index the Done screen uses.
+
+Days are UTC days, and today's column is drawn fainter: it is not over.
+
+### Reports
+
+**More → Reports** is the same history in words: a day, a week or thirty
+days, with what merged and how that stands against the time before,
+the features by project (the latest three of each to open), issues
+opened and closed and what that did to the backlog, bugs, and the
+queue's finished tasks (and, in a report that ends today, the queue as
+it stands). **Earlier** and **Later** step it back and forth by its own
+length, as far back as the history goes, so the report for a week gone
+by can be made at any time. **Copy** and **Share** give it as text.
+
+A report is made when it is asked for, on the device, from the Trends
+read (`public/pages/reports.js`; the read takes a day to end on). It
+needs no machine, and the service worker keeps each one asked for, so
+it opens again with no connection. A report says when its numbers are
+not whole yet. For anything these do not cover, a question on Ask is
+answered by an agent and stays there to read.
+
+### Charts, and pages of their own
+
+`public/charts.js` is a small kit any screen can use: columns stacked by
+what they are made of, lines, and the tiles a screen leads with. Its
+rules are written at its top and held by its tests: colour only says
+which series a mark is (six theme colours in a fixed order, checked for
+people who see colour differently, and never the status colours); words
+are never in a series colour; two or more series always have a legend;
+one scale to a chart; pointing at, tapping or arrowing to a day reads
+out every series for it; and every chart has its numbers as a table.
+
+A screen can be **a module of its own** in `public/pages/`: a file that
+exports its address, title, the part of More its tile goes in, and a
+`view` that returns elements. The app gives it its route, its tile and
+its offline copy, and hands it the app's own parts (reading, acting,
+moving about). **To add a page:** write `public/pages/<name>.js`, add it
+to `public/pages/index.js`, and name it in `public/files.json`; the
+tests check the three agree. Trends is the first, and the example.
+Elements are built with `h` (and `s` for drawings) from `public/ui.js`
+and the classes in `app.css`, so a new page looks like the rest.
+
+### The app's files
+
+`public/files.json` is the one list of the files the app is made of. The
+laptop's service, the Worker, the Worker's build and the service worker
+all go by it: **a new file for the app is one line there** (its path,
+what it is served as, and when the service worker keeps a copy:
+`installed` for what the page needs to open, `used` for what is fetched
+on demand, such as a typeface). A file in `public/` that the list does
+not name is not served.
+
 ### With no connection
 
 The app opens and can be used with no connection, in a browser and in
@@ -244,7 +385,11 @@ the Android app alike (which is the same site in Chrome).
   the header then says `offline` and how old the state is, and a line
   under the header says there is no connection. A screen the device
   has never seen says it has no copy of it. More, On this device has
-  "Keep a copy of every screen now", for before a flight.
+  "Keep a copy of every screen now", for before a flight. Signed in on
+  Wi-Fi or a cable (or a fast connection the browser does not name),
+  the app also keeps every screen once in the background, at most every
+  twelve hours; never on a metered connection, with data saving on, or
+  where the browser says nothing of the connection (Safari, Firefox).
 - **What the owner does is kept and sent once.** Every action is given
   a name on the device (a UUID) and written to the browser's own
   database before it is sent (`public/outbox.js`), and before it waits
@@ -306,7 +451,13 @@ the Android app alike (which is the same site in Chrome).
   unblock and a service action act on something that may have changed:
   they are kept too, sent by themselves only within ten minutes of
   being asked for, and after that wait under "kept back" until the
-  owner looks again and says to send them. A merge also carries the
+  owner looks again and says to send them. The platform holds every
+  sender to the same ten minutes: a device says when the owner did it
+  and what its own clock read as it sent it, and the edge (and the
+  laptop, sent straight to it) refuses one older than ten minutes by
+  either clock unless it says the owner looked again. A device keeps a
+  refused one back as if it had kept it back itself. One that says
+  nothing of when it was done is taken as done now. A merge also carries the
   commit the owner was shown, and GitHub merges only that. What sets
   the connection up or carries a secret (notifications, phones,
   sign-in, the Cloudflare switch) is never kept: it says it needs a

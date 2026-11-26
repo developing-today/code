@@ -1,12 +1,148 @@
 //! Identity-scoped local storage primitives for the `fleet kv` domain.
+//!
+//! The local store keeps three kinds of state for every complete identity
+//! tuple `(owner_user_id, context_id, partition_id, namespace, key)`:
+//!
+//! - the **overlay** (`kv_local`): the current local head, either a live value
+//!   or a masking tombstone;
+//! - the **version history** (`kv_versions_local`): every local version,
+//!   append-only;
+//! - the **outbox** (`kv_outbox`): unsent intents for the disconnect sweep,
+//!   fenced by a per-tuple generation (`kv_fence`).
+//!
+//! `clear-override`, masking `delete` and history `revert` are the three
+//! delete-related states from the fleet-kv design (D005) and stay distinct.
 
-use rusqlite::{Connection, OptionalExtension, params};
+pub mod archive;
+pub mod backup;
+pub mod blob;
+pub mod blob_central;
+pub mod blob_read;
+pub mod catalog;
+pub mod central;
+pub mod cli;
+pub mod grants;
+#[cfg(feature = "http")]
+pub mod http;
+pub mod launch;
+#[cfg(test)]
+mod load_probe;
+pub mod plane;
+pub mod read;
+pub mod sweep;
+pub mod sync;
+pub mod working;
+
+use std::io::{Read, Write};
+use std::path::{Path, PathBuf};
+
+use rusqlite::{Connection, ErrorCode, OptionalExtension, Transaction, params};
+
+use crate::working::{INLINE_LIMIT, WorkingError, WorkingRef};
+
+const SCHEMA_VERSION: i64 = 10;
+
+/// The outbox op of an ordinary set.
+pub const OP_SET: &str = "set";
+/// The outbox op of a set made with `--force-blob`: the sweep places it in a
+/// blob at or below the inline threshold too (design §8, D009).
+pub const OP_SET_BLOB: &str = "set-blob";
+const BUSY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
 #[derive(Debug)]
 pub enum KvError {
     MalformedKey,
     MalformedNamespace,
+    /// This host has pulled the central namespace definitions and the
+    /// namespace is not among them.
+    UnknownNamespace(String),
+    /// `revert --to` named a version that is not in this tuple's history.
+    UnknownVersion,
+    /// `revert --to` named a masking tombstone; `delete` is the masking verb.
+    RevertTargetIsTombstone,
+    /// `clear-override` could not take the per-key lock within the bounded
+    /// wait; the fence was not touched.
+    ClearBusyTryAgain,
+    /// A row refers to a working file that is not beside the store.
+    WorkingFileMissing(String),
+    /// A working file's length or hash does not match its row.
+    WorkingFileCorrupt(String),
+    /// Reading the value, or writing it out or to a working file, failed.
+    Io(std::io::Error),
     Sql(rusqlite::Error),
+}
+
+impl KvError {
+    /// Stable typed refusal code printed by the CLI.
+    pub fn code(&self) -> &'static str {
+        match self {
+            Self::MalformedKey => "malformed_key",
+            Self::MalformedNamespace => "malformed_namespace",
+            Self::UnknownNamespace(_) => "unknown_namespace",
+            Self::UnknownVersion => "unknown_version",
+            Self::RevertTargetIsTombstone => "revert_target_is_tombstone",
+            Self::ClearBusyTryAgain => "clear_busy_try_again",
+            Self::WorkingFileMissing(_) => "working_file_missing",
+            Self::WorkingFileCorrupt(_) => "working_file_corrupt",
+            Self::Io(_) => "io_error",
+            Self::Sql(_) => "store_error",
+        }
+    }
+}
+
+impl std::fmt::Display for KvError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::MalformedKey => f.write_str(
+                "keys are 1-512 bytes of printable ASCII; `/` separates non-empty segments",
+            ),
+            Self::MalformedNamespace => f.write_str(
+                "namespaces start with a letter, then letters, digits or hyphens, at most 63 bytes",
+            ),
+            Self::UnknownNamespace(namespace) => write!(
+                f,
+                "`{namespace}` is not defined in fleet-kv-central as of this host's last `fleet kv sync`"
+            ),
+            Self::UnknownVersion => f.write_str("no such version in this key's local history"),
+            Self::RevertTargetIsTombstone => {
+                f.write_str("that version is a masking tombstone; use `delete` to mask the key")
+            }
+            Self::ClearBusyTryAgain => {
+                f.write_str("another writer holds this key's lock; nothing was changed, try again")
+            }
+            Self::WorkingFileMissing(id) => {
+                write!(f, "the working file {id} for this value is missing")
+            }
+            Self::WorkingFileCorrupt(id) => write!(
+                f,
+                "the working file {id} for this value does not match its length or hash"
+            ),
+            Self::Io(error) => write!(f, "{error}"),
+            Self::Sql(error) => write!(f, "local store error: {error}"),
+        }
+    }
+}
+
+impl std::error::Error for KvError {}
+
+fn sql(error: rusqlite::Error) -> KvError {
+    KvError::Sql(error)
+}
+
+impl From<WorkingError> for KvError {
+    fn from(error: WorkingError) -> Self {
+        match error {
+            WorkingError::Missing(id) => Self::WorkingFileMissing(id),
+            WorkingError::Corrupt(id) => Self::WorkingFileCorrupt(id),
+            WorkingError::Io(error) => Self::Io(error),
+        }
+    }
+}
+
+/// A version's bytes: inline in the row, or a working file beside the store.
+pub(crate) enum Body<'a> {
+    Inline(&'a [u8]),
+    Working(&'a WorkingRef),
 }
 
 pub struct Identity<'a> {
@@ -25,26 +161,68 @@ impl<'a> Identity<'a> {
     }
 }
 
+/// Where a listed row came from. Phase 1 has no central plane, so every row
+/// is local; a masking tombstone lists as `Masked`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Origin {
+    Local,
+    Masked,
+}
+
+impl Origin {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Local => "local",
+            Self::Masked => "masked",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ListEntry {
+    pub key: String,
+    pub version: u64,
+    pub origin: Origin,
+}
+
+/// One sweep intent in the local outbox.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OutboxIntent {
+    pub id: i64,
+    pub key: String,
+    pub version: u64,
+    pub op: String,
+    pub generation: u64,
+    pub status: String,
+}
+
 pub struct LocalStore {
-    connection: Connection,
+    pub(crate) connection: Connection,
+    /// Where working files live (`<store path>.working`). An in-memory
+    /// store has none and keeps every value inline.
+    pub(crate) working_dir: Option<PathBuf>,
 }
 
 impl LocalStore {
     pub fn in_memory() -> Result<Self, KvError> {
-        let connection = Connection::open_in_memory().map_err(KvError::Sql)?;
+        let connection = Connection::open_in_memory().map_err(sql)?;
         Self::from_connection(connection)
     }
 
     /// Open (or create) the durable host-local SQLite database.
     pub fn open(path: impl AsRef<std::path::Path>) -> Result<Self, KvError> {
-        let connection = Connection::open(path).map_err(KvError::Sql)?;
+        let path = path.as_ref();
+        let connection = Connection::open(path).map_err(sql)?;
         connection
             .pragma_update(None, "journal_mode", "WAL")
-            .map_err(KvError::Sql)?;
-        Self::from_connection(connection)
+            .map_err(sql)?;
+        let mut store = Self::from_connection(connection)?;
+        store.working_dir = Some(working_dir_for(path));
+        Ok(store)
     }
 
     fn from_connection(connection: Connection) -> Result<Self, KvError> {
+        connection.busy_timeout(BUSY_TIMEOUT).map_err(sql)?;
         connection
             .execute_batch(
                 "PRAGMA foreign_keys=ON;
@@ -58,55 +236,688 @@ impl LocalStore {
                  PRIMARY KEY(owner_user_id, context_id, partition_id, namespace, key)
              ) WITHOUT ROWID;",
             )
-            .map_err(KvError::Sql)?;
-        Ok(Self { connection })
+            .map_err(sql)?;
+        migrate(&connection)?;
+        Ok(Self {
+            connection,
+            working_dir: None,
+        })
     }
 
     /// Store arbitrary bytes under the caller's complete identity tuple.
+    /// Appends a version, moves the overlay to it and enqueues a sweep intent,
+    /// all in one transaction. Returns the new version number.
     pub fn set(
         &self,
         identity: &Identity<'_>,
         namespace: &str,
         key: &str,
         value: &[u8],
-    ) -> Result<(), KvError> {
-        validate_namespace(namespace)?;
-        validate_key(key)?;
-        self.connection
-            .execute(
-                "INSERT INTO kv_local(owner_user_id,context_id,partition_id,namespace,key,value)
-             VALUES (?1,?2,?3,?4,?5,?6)
-             ON CONFLICT(owner_user_id,context_id,partition_id,namespace,key)
-             DO UPDATE SET value=excluded.value",
-                params![
-                    identity.owner_user_id,
-                    identity.context_id,
-                    identity.partition_id,
-                    namespace,
-                    key,
-                    value
-                ],
-            )
-            .map_err(KvError::Sql)?;
-        Ok(())
+    ) -> Result<u64, KvError> {
+        self.set_as(identity, namespace, key, value, OP_SET)
     }
 
-    /// Read only a row owned by the caller's complete identity tuple.
+    /// [`LocalStore::set`], marking the intent `--force-blob` (code#13318):
+    /// the sweep places it in a blob whatever its size. It changes nothing
+    /// about the local row.
+    pub fn set_forcing_blob(
+        &self,
+        identity: &Identity<'_>,
+        namespace: &str,
+        key: &str,
+        value: &[u8],
+    ) -> Result<u64, KvError> {
+        self.set_as(identity, namespace, key, value, OP_SET_BLOB)
+    }
+
+    fn set_as(
+        &self,
+        identity: &Identity<'_>,
+        namespace: &str,
+        key: &str,
+        value: &[u8],
+        op: &str,
+    ) -> Result<u64, KvError> {
+        if value.len() > INLINE_LIMIT && self.working_dir.is_some() {
+            return self.set_reader_as(identity, namespace, key, &mut &value[..], op);
+        }
+        validate_namespace(namespace)?;
+        validate_key(key)?;
+        self.commit_head(identity, namespace, key, Body::Inline(value), op)
+    }
+
+    /// Store the bytes `reader` yields, streaming them. Up to
+    /// [`INLINE_LIMIT`] bytes are stored inline; anything larger streams into
+    /// a working file beside the store and is never buffered whole. Nothing
+    /// is rejected for size. Returns the new version number.
+    pub fn set_reader(
+        &self,
+        identity: &Identity<'_>,
+        namespace: &str,
+        key: &str,
+        reader: &mut dyn Read,
+    ) -> Result<u64, KvError> {
+        self.set_reader_as(identity, namespace, key, reader, OP_SET)
+    }
+
+    /// [`LocalStore::set_reader`], marking the intent `--force-blob`.
+    pub fn set_reader_forcing_blob(
+        &self,
+        identity: &Identity<'_>,
+        namespace: &str,
+        key: &str,
+        reader: &mut dyn Read,
+    ) -> Result<u64, KvError> {
+        self.set_reader_as(identity, namespace, key, reader, OP_SET_BLOB)
+    }
+
+    fn set_reader_as(
+        &self,
+        identity: &Identity<'_>,
+        namespace: &str,
+        key: &str,
+        reader: &mut dyn Read,
+        op: &str,
+    ) -> Result<u64, KvError> {
+        validate_namespace(namespace)?;
+        validate_key(key)?;
+        let mut head = Vec::new();
+        // Reborrow so the rest of `reader` can still stream after the head.
+        (&mut *reader)
+            .take(INLINE_LIMIT as u64 + 1)
+            .read_to_end(&mut head)
+            .map_err(KvError::Io)?;
+        if head.len() <= INLINE_LIMIT {
+            return self.commit_head(identity, namespace, key, Body::Inline(&head), op);
+        }
+        let Some(dir) = &self.working_dir else {
+            // An in-memory store has nowhere to stream to.
+            reader.read_to_end(&mut head).map_err(KvError::Io)?;
+            return self.commit_head(identity, namespace, key, Body::Inline(&head), op);
+        };
+        let reference = working::stage(dir, &head, reader).map_err(KvError::Io)?;
+        drop(head);
+        self.commit_head(identity, namespace, key, Body::Working(&reference), op)
+    }
+
+    fn commit_head(
+        &self,
+        identity: &Identity<'_>,
+        namespace: &str,
+        key: &str,
+        body: Body<'_>,
+        op: &str,
+    ) -> Result<u64, KvError> {
+        let tx = self.connection.unchecked_transaction().map_err(sql)?;
+        let version = append_head(&tx, identity, namespace, key, body, STATE_LIVE, op)?;
+        tx.commit().map_err(sql)?;
+        Ok(version)
+    }
+
+    /// Read only a row owned by the caller's complete identity tuple. A
+    /// masking tombstone reads as absent. A working-file value is read whole
+    /// into memory here; use [`LocalStore::get_to`] to stream it.
     pub fn get(
         &self,
         identity: &Identity<'_>,
         namespace: &str,
         key: &str,
     ) -> Result<Option<Vec<u8>>, KvError> {
+        let mut value = Vec::new();
+        Ok(self
+            .get_to(identity, namespace, key, &mut value)?
+            .then_some(value))
+    }
+
+    /// Stream the caller's live value to `out`. Returns `false` (writing
+    /// nothing) when the key is missing or masked. A working file is checked
+    /// for length before any byte is written and for its hash at the end; on
+    /// a hash mismatch the bytes are already out and the read fails with
+    /// [`KvError::WorkingFileCorrupt`].
+    pub fn get_to(
+        &self,
+        identity: &Identity<'_>,
+        namespace: &str,
+        key: &str,
+        out: &mut dyn Write,
+    ) -> Result<bool, KvError> {
         validate_namespace(namespace)?;
         validate_key(key)?;
-        self.connection.query_row(
-            "SELECT value FROM kv_local
-             WHERE owner_user_id=?1 AND context_id=?2 AND partition_id=?3 AND namespace=?4 AND key=?5",
-            params![identity.owner_user_id, identity.context_id, identity.partition_id, namespace, key],
-            |row| row.get(0),
-        ).optional().map_err(KvError::Sql)
+        let row: Option<(Vec<u8>, Option<WorkingRef>)> = self
+            .connection
+            .query_row(
+                "SELECT value, working_id, working_len FROM kv_local
+             WHERE owner_user_id=?1 AND context_id=?2 AND partition_id=?3 AND namespace=?4 AND key=?5
+               AND state='live'",
+                params![
+                    identity.owner_user_id,
+                    identity.context_id,
+                    identity.partition_id,
+                    namespace,
+                    key
+                ],
+                |row| Ok((row.get(0)?, working_ref(row.get(1)?, row.get(2)?))),
+            )
+            .optional()
+            .map_err(sql)?;
+        match row {
+            None => Ok(false),
+            Some((value, None)) => {
+                out.write_all(&value).map_err(KvError::Io)?;
+                Ok(true)
+            }
+            Some((_, Some(reference))) => {
+                let dir = self
+                    .working_dir
+                    .as_deref()
+                    .ok_or_else(|| KvError::WorkingFileMissing(reference.id.clone()))?;
+                working::stream(dir, &reference, out)?;
+                Ok(true)
+            }
+        }
     }
+
+    /// Whether the caller's overlay holds a masking tombstone for the key.
+    /// A masked key reads absent and is never filled in from central.
+    pub fn is_masked(
+        &self,
+        identity: &Identity<'_>,
+        namespace: &str,
+        key: &str,
+    ) -> Result<bool, KvError> {
+        validate_namespace(namespace)?;
+        validate_key(key)?;
+        self.connection
+            .query_row(
+                "SELECT EXISTS (SELECT 1 FROM kv_local
+                 WHERE owner_user_id=?1 AND context_id=?2 AND partition_id=?3
+                   AND namespace=?4 AND key=?5 AND state=?6)",
+                params![
+                    identity.owner_user_id,
+                    identity.context_id,
+                    identity.partition_id,
+                    namespace,
+                    key,
+                    STATE_TOMBSTONE
+                ],
+                |row| row.get(0),
+            )
+            .map_err(sql)
+    }
+
+    /// List the caller's keys in one namespace, sorted by key. Masking
+    /// tombstones are hidden unless `include_tombstones` is set.
+    pub fn list(
+        &self,
+        identity: &Identity<'_>,
+        namespace: &str,
+        include_tombstones: bool,
+    ) -> Result<Vec<ListEntry>, KvError> {
+        validate_namespace(namespace)?;
+        let mut statement = self
+            .connection
+            .prepare(
+                "SELECT key, version, state FROM kv_local
+             WHERE owner_user_id=?1 AND context_id=?2 AND partition_id=?3 AND namespace=?4
+               AND (?5 OR state='live')
+             ORDER BY key",
+            )
+            .map_err(sql)?;
+        let rows = statement
+            .query_map(
+                params![
+                    identity.owner_user_id,
+                    identity.context_id,
+                    identity.partition_id,
+                    namespace,
+                    include_tombstones
+                ],
+                |row| {
+                    let state: String = row.get(2)?;
+                    Ok(ListEntry {
+                        key: row.get(0)?,
+                        version: unsigned(row.get(1)?),
+                        origin: if state == STATE_TOMBSTONE {
+                            Origin::Masked
+                        } else {
+                            Origin::Local
+                        },
+                    })
+                },
+            )
+            .map_err(sql)?;
+        rows.collect::<Result<_, _>>().map_err(sql)
+    }
+
+    /// Write a masking tombstone: the key reads absent locally and the
+    /// tombstone sweeps as a mask. Returns the tombstone's version number.
+    pub fn delete(
+        &self,
+        identity: &Identity<'_>,
+        namespace: &str,
+        key: &str,
+    ) -> Result<u64, KvError> {
+        validate_namespace(namespace)?;
+        validate_key(key)?;
+        let tx = self.connection.unchecked_transaction().map_err(sql)?;
+        let version = append_head(
+            &tx,
+            identity,
+            namespace,
+            key,
+            Body::Inline(&[]),
+            STATE_TOMBSTONE,
+            "tombstone",
+        )?;
+        tx.commit().map_err(sql)?;
+        Ok(version)
+    }
+
+    /// Drop the local overlay row, advance the tuple's generation fence and
+    /// cancel every unsent intent for it. History is kept. Returns whether an
+    /// overlay row existed.
+    ///
+    /// The clear takes the database write lock (shared with any sweeper's
+    /// submission path) with a bounded 5 s wait; on timeout it returns
+    /// [`KvError::ClearBusyTryAgain`] without touching the fence.
+    pub fn clear_override(
+        &self,
+        identity: &Identity<'_>,
+        namespace: &str,
+        key: &str,
+    ) -> Result<bool, KvError> {
+        validate_namespace(namespace)?;
+        validate_key(key)?;
+        let tx =
+            Transaction::new_unchecked(&self.connection, rusqlite::TransactionBehavior::Immediate)
+                .map_err(busy_or_sql)?;
+        let tuple = params![
+            identity.owner_user_id,
+            identity.context_id,
+            identity.partition_id,
+            namespace,
+            key
+        ];
+        let removed = tx
+            .execute(
+                "DELETE FROM kv_local
+             WHERE owner_user_id=?1 AND context_id=?2 AND partition_id=?3 AND namespace=?4 AND key=?5",
+                tuple,
+            )
+            .map_err(busy_or_sql)?;
+        tx.execute(
+            "INSERT INTO kv_fence(owner_user_id,context_id,partition_id,namespace,key,generation)
+             VALUES (?1,?2,?3,?4,?5,1)
+             ON CONFLICT(owner_user_id,context_id,partition_id,namespace,key)
+             DO UPDATE SET generation=generation+1",
+            tuple,
+        )
+        .map_err(busy_or_sql)?;
+        tx.execute(
+            "UPDATE kv_outbox SET status='cancelled'
+             WHERE owner_user_id=?1 AND context_id=?2 AND partition_id=?3 AND namespace=?4 AND key=?5
+               AND status='pending'",
+            tuple,
+        )
+        .map_err(busy_or_sql)?;
+        tx.commit().map_err(busy_or_sql)?;
+        Ok(removed > 0)
+    }
+
+    /// Append a new version whose value equals version `to` of this tuple's
+    /// history, and make it the local head. Returns the new version number.
+    pub fn revert(
+        &self,
+        identity: &Identity<'_>,
+        namespace: &str,
+        key: &str,
+        to: u64,
+    ) -> Result<u64, KvError> {
+        validate_namespace(namespace)?;
+        validate_key(key)?;
+        let tx = self.connection.unchecked_transaction().map_err(sql)?;
+        let target: Option<(Vec<u8>, String, Option<WorkingRef>)> = tx
+            .query_row(
+                "SELECT value, state, working_id, working_len FROM kv_versions_local
+             WHERE owner_user_id=?1 AND context_id=?2 AND partition_id=?3 AND namespace=?4 AND key=?5
+               AND version=?6",
+                params![
+                    identity.owner_user_id,
+                    identity.context_id,
+                    identity.partition_id,
+                    namespace,
+                    key,
+                    signed(to)
+                ],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        working_ref(row.get(2)?, row.get(3)?),
+                    ))
+                },
+            )
+            .optional()
+            .map_err(sql)?;
+        let Some((value, state, reference)) = target else {
+            return Err(KvError::UnknownVersion);
+        };
+        if state == STATE_TOMBSTONE {
+            return Err(KvError::RevertTargetIsTombstone);
+        }
+        // A working file is content-addressed and never rewritten, so the
+        // new version shares it by reference.
+        let body = match &reference {
+            Some(reference) => Body::Working(reference),
+            None => Body::Inline(&value),
+        };
+        let version = append_head(&tx, identity, namespace, key, body, STATE_LIVE, "revert")?;
+        tx.commit().map_err(sql)?;
+        Ok(version)
+    }
+
+    /// The caller's sweep intents for one key, oldest first.
+    pub fn outbox(
+        &self,
+        identity: &Identity<'_>,
+        namespace: &str,
+        key: &str,
+    ) -> Result<Vec<OutboxIntent>, KvError> {
+        validate_namespace(namespace)?;
+        validate_key(key)?;
+        let mut statement = self
+            .connection
+            .prepare(
+                "SELECT id, key, version, op, generation, status FROM kv_outbox
+             WHERE owner_user_id=?1 AND context_id=?2 AND partition_id=?3 AND namespace=?4 AND key=?5
+             ORDER BY id",
+            )
+            .map_err(sql)?;
+        let rows = statement
+            .query_map(
+                params![
+                    identity.owner_user_id,
+                    identity.context_id,
+                    identity.partition_id,
+                    namespace,
+                    key
+                ],
+                |row| {
+                    Ok(OutboxIntent {
+                        id: row.get(0)?,
+                        key: row.get(1)?,
+                        version: unsigned(row.get(2)?),
+                        op: row.get(3)?,
+                        generation: unsigned(row.get(4)?),
+                        status: row.get(5)?,
+                    })
+                },
+            )
+            .map_err(sql)?;
+        rows.collect::<Result<_, _>>().map_err(sql)
+    }
+}
+
+const STATE_LIVE: &str = "live";
+const STATE_TOMBSTONE: &str = "tombstone";
+
+fn busy_or_sql(error: rusqlite::Error) -> KvError {
+    match error.sqlite_error_code() {
+        Some(ErrorCode::DatabaseBusy | ErrorCode::DatabaseLocked) => KvError::ClearBusyTryAgain,
+        _ => KvError::Sql(error),
+    }
+}
+
+/// Schema migration keyed on `PRAGMA user_version`. Version 1 is the
+/// original value-only `kv_local`; version 2 adds versions, tombstones, the
+/// outbox and the generation fence (existing overlay rows become version 1);
+/// version 3 adds the backup manifest and its working-file pins; version 4
+/// lets rows refer to working files; version 5 adds the host incarnation, the
+/// per-key central base and local copies of sweep receipts; version 6 adds
+/// the cached namespace definitions pulled by `fleet kv sync`; version 7 adds
+/// the short-lived cache of central heads read through a local miss; version
+/// 8 records each partition's last survival-archive checkpoint; version 9
+/// caches each namespace's blob placement; version 10 keeps each cached
+/// central head's row envelope.
+fn migrate(connection: &Connection) -> Result<(), KvError> {
+    let current: i64 = connection
+        .pragma_query_value(None, "user_version", |row| row.get(0))
+        .map_err(sql)?;
+    if current >= SCHEMA_VERSION {
+        return Ok(());
+    }
+    let tx = connection.unchecked_transaction().map_err(sql)?;
+    if current < 2 {
+        migrate_to_v2(&tx)?;
+    }
+    backup::migrate_to_v3(&tx)?;
+    migrate_to_v4(&tx)?;
+    sweep::migrate_to_v5(&tx)?;
+    sync::migrate_to_v6(&tx)?;
+    read::migrate_to_v7(&tx)?;
+    archive::migrate_to_v8(&tx)?;
+    sync::migrate_to_v9(&tx)?;
+    read::migrate_to_v10(&tx)?;
+    tx.pragma_update(None, "user_version", SCHEMA_VERSION)
+        .map_err(sql)?;
+    tx.commit().map_err(sql)
+}
+
+/// Version 4 lets a row refer to a working file instead of inline bytes.
+fn migrate_to_v4(tx: &Transaction<'_>) -> Result<(), KvError> {
+    for table in ["kv_local", "kv_versions_local"] {
+        let present: i64 = tx
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info(?1) WHERE name='working_id'",
+                params![table],
+                |row| row.get(0),
+            )
+            .map_err(sql)?;
+        if present == 0 {
+            tx.execute_batch(&format!(
+                "ALTER TABLE {table} ADD COLUMN working_id TEXT;
+                 ALTER TABLE {table} ADD COLUMN working_len INTEGER;"
+            ))
+            .map_err(sql)?;
+        }
+    }
+    Ok(())
+}
+
+fn migrate_to_v2(tx: &Transaction<'_>) -> Result<(), KvError> {
+    let has_version: bool = tx
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('kv_local') WHERE name='version'",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .map_err(sql)?
+        > 0;
+    if !has_version {
+        tx.execute_batch(
+            "ALTER TABLE kv_local ADD COLUMN version INTEGER NOT NULL DEFAULT 1;
+             ALTER TABLE kv_local ADD COLUMN state TEXT NOT NULL DEFAULT 'live';",
+        )
+        .map_err(sql)?;
+    }
+    tx.execute_batch(
+        "CREATE TABLE IF NOT EXISTS kv_versions_local (
+             owner_user_id TEXT NOT NULL,
+             context_id TEXT NOT NULL,
+             partition_id TEXT NOT NULL,
+             namespace TEXT NOT NULL,
+             key TEXT NOT NULL,
+             version INTEGER NOT NULL,
+             parent_version INTEGER,
+             value BLOB NOT NULL,
+             state TEXT NOT NULL CHECK(state IN ('live','tombstone')),
+             op TEXT NOT NULL,
+             written_at_ms INTEGER NOT NULL,
+             PRIMARY KEY(owner_user_id, context_id, partition_id, namespace, key, version)
+         ) WITHOUT ROWID;
+         CREATE TABLE IF NOT EXISTS kv_fence (
+             owner_user_id TEXT NOT NULL,
+             context_id TEXT NOT NULL,
+             partition_id TEXT NOT NULL,
+             namespace TEXT NOT NULL,
+             key TEXT NOT NULL,
+             generation INTEGER NOT NULL,
+             PRIMARY KEY(owner_user_id, context_id, partition_id, namespace, key)
+         ) WITHOUT ROWID;
+         CREATE TABLE IF NOT EXISTS kv_outbox (
+             id INTEGER PRIMARY KEY AUTOINCREMENT,
+             owner_user_id TEXT NOT NULL,
+             context_id TEXT NOT NULL,
+             partition_id TEXT NOT NULL,
+             namespace TEXT NOT NULL,
+             key TEXT NOT NULL,
+             version INTEGER NOT NULL,
+             op TEXT NOT NULL,
+             generation INTEGER NOT NULL,
+             status TEXT NOT NULL CHECK(status IN ('pending','cancelled','acked'))
+         );
+         CREATE INDEX IF NOT EXISTS kv_outbox_pending
+             ON kv_outbox(owner_user_id, context_id, partition_id, namespace, key, status);
+         INSERT OR IGNORE INTO kv_versions_local(
+             owner_user_id, context_id, partition_id, namespace, key,
+             version, parent_version, value, state, op, written_at_ms)
+         SELECT owner_user_id, context_id, partition_id, namespace, key,
+                version, NULL, value, state, 'set', 0
+         FROM kv_local;",
+    )
+    .map_err(sql)
+}
+
+/// Append the next version for the tuple, point the overlay at it and
+/// enqueue a pending sweep intent under the tuple's current generation.
+fn append_head(
+    tx: &Transaction<'_>,
+    identity: &Identity<'_>,
+    namespace: &str,
+    key: &str,
+    body: Body<'_>,
+    state: &str,
+    op: &str,
+) -> Result<u64, KvError> {
+    let (value, working_id, working_len): (&[u8], Option<&str>, Option<i64>) = match body {
+        Body::Inline(value) => (value, None, None),
+        Body::Working(reference) => (
+            &[],
+            Some(reference.id.as_str()),
+            Some(signed(reference.len)),
+        ),
+    };
+    let tuple = params![
+        identity.owner_user_id,
+        identity.context_id,
+        identity.partition_id,
+        namespace,
+        key
+    ];
+    let parent: Option<i64> = tx
+        .query_row(
+            "SELECT MAX(version) FROM kv_versions_local
+             WHERE owner_user_id=?1 AND context_id=?2 AND partition_id=?3 AND namespace=?4 AND key=?5",
+            tuple,
+            |row| row.get(0),
+        )
+        .map_err(sql)?;
+    let version = parent.map_or(1, |parent| parent + 1);
+    let generation: i64 = tx
+        .query_row(
+            "SELECT generation FROM kv_fence
+             WHERE owner_user_id=?1 AND context_id=?2 AND partition_id=?3 AND namespace=?4 AND key=?5",
+            tuple,
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(sql)?
+        .unwrap_or(0);
+    let written_at_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| {
+            i64::try_from(elapsed.as_millis()).unwrap_or(i64::MAX)
+        });
+    let ids = (
+        identity.owner_user_id,
+        identity.context_id,
+        identity.partition_id,
+    );
+    tx.execute(
+        "INSERT INTO kv_versions_local(
+             owner_user_id, context_id, partition_id, namespace, key,
+             version, parent_version, value, state, op, written_at_ms,
+             working_id, working_len)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)",
+        params![
+            ids.0,
+            ids.1,
+            ids.2,
+            namespace,
+            key,
+            version,
+            parent,
+            value,
+            state,
+            op,
+            written_at_ms,
+            working_id,
+            working_len
+        ],
+    )
+    .map_err(sql)?;
+    tx.execute(
+        "INSERT INTO kv_local(owner_user_id,context_id,partition_id,namespace,key,value,version,state,
+                              working_id,working_len)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)
+         ON CONFLICT(owner_user_id,context_id,partition_id,namespace,key)
+         DO UPDATE SET value=excluded.value, version=excluded.version, state=excluded.state,
+                       working_id=excluded.working_id, working_len=excluded.working_len",
+        params![
+            ids.0,
+            ids.1,
+            ids.2,
+            namespace,
+            key,
+            value,
+            version,
+            state,
+            working_id,
+            working_len
+        ],
+    )
+    .map_err(sql)?;
+    tx.execute(
+        "INSERT INTO kv_outbox(owner_user_id,context_id,partition_id,namespace,key,version,op,generation,status)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,'pending')",
+        params![ids.0, ids.1, ids.2, namespace, key, version, op, generation],
+    )
+    .map_err(sql)?;
+    Ok(unsigned(version))
+}
+
+/// Versions and generations are stored as SQLite integers and are never
+/// negative; these keep the public API in `u64` without a lossy cast.
+fn unsigned(value: i64) -> u64 {
+    u64::try_from(value).unwrap_or(0)
+}
+
+fn signed(value: u64) -> i64 {
+    i64::try_from(value).unwrap_or(i64::MAX)
+}
+
+pub(crate) fn working_ref(id: Option<String>, len: Option<i64>) -> Option<WorkingRef> {
+    id.map(|id| WorkingRef {
+        id,
+        len: len.map_or(0, unsigned),
+    })
+}
+
+/// Working files live beside the store: `<store path>.working/`.
+pub(crate) fn working_dir_for(store: &Path) -> PathBuf {
+    let mut name = store.as_os_str().to_owned();
+    name.push(".working");
+    PathBuf::from(name)
 }
 
 fn validate_namespace(namespace: &str) -> Result<(), KvError> {
@@ -399,5 +1210,189 @@ mod tests {
                 namespace
             );
         }
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used)]
+mod semantics_tests {
+    use super::*;
+
+    fn me() -> Identity<'static> {
+        Identity::new("owner", "context", "partition")
+    }
+
+    #[test]
+    fn versions_increase_and_tombstones_mask_reads() {
+        let store = LocalStore::in_memory().expect("store");
+        assert_eq!(store.set(&me(), "notes", "k", b"one").expect("set"), 1);
+        assert_eq!(store.set(&me(), "notes", "k", b"two").expect("set"), 2);
+        assert_eq!(store.delete(&me(), "notes", "k").expect("delete"), 3);
+        assert_eq!(store.get(&me(), "notes", "k").expect("get"), None);
+        assert_eq!(store.list(&me(), "notes", false).expect("list"), vec![]);
+        assert_eq!(
+            store.list(&me(), "notes", true).expect("list"),
+            vec![ListEntry {
+                key: "k".into(),
+                version: 3,
+                origin: Origin::Masked
+            }]
+        );
+        assert_eq!(store.set(&me(), "notes", "k", b"back").expect("set"), 4);
+        assert_eq!(
+            store.get(&me(), "notes", "k").expect("get"),
+            Some(b"back".to_vec())
+        );
+    }
+
+    #[test]
+    fn list_is_scoped_to_identity_and_namespace() {
+        let store = LocalStore::in_memory().expect("store");
+        store.set(&me(), "notes", "b", b"1").expect("set");
+        store.set(&me(), "notes", "a", b"1").expect("set");
+        store.set(&me(), "other", "c", b"1").expect("set");
+        store
+            .set(
+                &Identity::new("someone", "context", "partition"),
+                "notes",
+                "z",
+                b"1",
+            )
+            .expect("set");
+        let keys: Vec<String> = store
+            .list(&me(), "notes", true)
+            .expect("list")
+            .into_iter()
+            .map(|entry| entry.key)
+            .collect();
+        assert_eq!(keys, vec!["a".to_string(), "b".to_string()]);
+    }
+
+    #[test]
+    fn clear_override_drops_overlay_fences_and_cancels_unsent_intents() {
+        let store = LocalStore::in_memory().expect("store");
+        store.set(&me(), "notes", "k", b"one").expect("set");
+        store.delete(&me(), "notes", "k").expect("delete");
+        assert!(store.clear_override(&me(), "notes", "k").expect("clear"));
+        assert_eq!(store.get(&me(), "notes", "k").expect("get"), None);
+        assert_eq!(store.list(&me(), "notes", true).expect("list"), vec![]);
+
+        let intents = store.outbox(&me(), "notes", "k").expect("outbox");
+        assert_eq!(intents.len(), 2);
+        assert!(intents.iter().all(|intent| intent.status == "cancelled"));
+        assert!(intents.iter().all(|intent| intent.generation == 0));
+
+        // A write after the clear is a new intent under the advanced fence,
+        // and history continues rather than restarting.
+        assert_eq!(store.set(&me(), "notes", "k", b"after").expect("set"), 3);
+        let intents = store.outbox(&me(), "notes", "k").expect("outbox");
+        let last = intents.last().expect("new intent");
+        assert_eq!(
+            (last.status.as_str(), last.generation, last.version),
+            ("pending", 1, 3)
+        );
+        assert!(!store.clear_override(&me(), "other", "k").expect("clear"));
+    }
+
+    #[test]
+    fn revert_appends_a_copy_and_refuses_unknown_or_tombstone_targets() {
+        let store = LocalStore::in_memory().expect("store");
+        store.set(&me(), "notes", "k", b"one").expect("set");
+        store.set(&me(), "notes", "k", b"two").expect("set");
+        store.delete(&me(), "notes", "k").expect("delete");
+        assert_eq!(store.revert(&me(), "notes", "k", 1).expect("revert"), 4);
+        assert_eq!(
+            store.get(&me(), "notes", "k").expect("get"),
+            Some(b"one".to_vec())
+        );
+        assert!(matches!(
+            store.revert(&me(), "notes", "k", 3),
+            Err(KvError::RevertTargetIsTombstone)
+        ));
+        assert!(matches!(
+            store.revert(&me(), "notes", "k", 99),
+            Err(KvError::UnknownVersion)
+        ));
+        assert!(matches!(
+            store.revert(
+                &Identity::new("someone", "context", "partition"),
+                "notes",
+                "k",
+                1
+            ),
+            Err(KvError::UnknownVersion)
+        ));
+        let ops: Vec<String> = store
+            .outbox(&me(), "notes", "k")
+            .expect("outbox")
+            .into_iter()
+            .map(|intent| intent.op)
+            .collect();
+        assert_eq!(ops, ["set", "set", "tombstone", "revert"]);
+    }
+
+    #[test]
+    fn version_one_databases_migrate_in_place() {
+        let connection = Connection::open_in_memory().expect("open");
+        connection
+            .execute_batch(
+                "CREATE TABLE kv_local (
+                     owner_user_id TEXT NOT NULL, context_id TEXT NOT NULL,
+                     partition_id TEXT NOT NULL, namespace TEXT NOT NULL,
+                     key TEXT NOT NULL, value BLOB NOT NULL,
+                     PRIMARY KEY(owner_user_id, context_id, partition_id, namespace, key)
+                 ) WITHOUT ROWID;
+                 INSERT INTO kv_local VALUES ('owner','context','partition','notes','k',x'6f6c64');",
+            )
+            .expect("v1 schema");
+        let store = LocalStore::from_connection(connection).expect("migrate");
+        assert_eq!(
+            store.get(&me(), "notes", "k").expect("get"),
+            Some(b"old".to_vec())
+        );
+        assert_eq!(store.set(&me(), "notes", "k", b"new").expect("set"), 2);
+        assert_eq!(store.revert(&me(), "notes", "k", 1).expect("revert"), 3);
+        assert_eq!(
+            store.get(&me(), "notes", "k").expect("get"),
+            Some(b"old".to_vec())
+        );
+    }
+
+    #[test]
+    fn a_held_write_lock_makes_clear_override_busy_without_changes() {
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        let path =
+            std::env::temp_dir().join(format!("fleet-kv-busy-{}-{suffix}.db", std::process::id()));
+        let store = LocalStore::open(&path).expect("open");
+        store.set(&me(), "notes", "k", b"v").expect("set");
+        store
+            .connection
+            .busy_timeout(std::time::Duration::from_millis(50))
+            .expect("short timeout");
+        let holder = Connection::open(&path).expect("second handle");
+        holder.execute_batch("BEGIN IMMEDIATE;").expect("hold lock");
+        assert!(matches!(
+            store.clear_override(&me(), "notes", "k"),
+            Err(KvError::ClearBusyTryAgain)
+        ));
+        holder.execute_batch("ROLLBACK;").expect("release");
+        assert_eq!(
+            store.get(&me(), "notes", "k").expect("get"),
+            Some(b"v".to_vec())
+        );
+        assert!(
+            store
+                .outbox(&me(), "notes", "k")
+                .expect("outbox")
+                .iter()
+                .all(|intent| intent.status == "pending")
+        );
+        drop(store);
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(path.with_extension("db-wal"));
+        let _ = std::fs::remove_file(path.with_extension("db-shm"));
     }
 }

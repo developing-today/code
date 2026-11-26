@@ -36,6 +36,7 @@ import importlib.util
 import io
 import json
 import os
+import subprocess
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -403,6 +404,43 @@ class TestLaunch(unittest.TestCase):
         self.assertEqual(rec["reason"], "sink_claim_failed")
         self.assertEqual(fq.verbs(), ["claim"])
         self.assertEqual(deleted, [])
+
+    def test_sink_claim_failures_name_category_and_action(self):
+        # #6533: a refused by-id claim reports which failure it was and
+        # what to check, not a bare sink_claim_failed.
+        cases = (
+            (FakeQueue(claim_row=None, claim_rc=5), "no_match"),
+            (FakeQueue(claim_row=None, claim_rc=1), "cli_nonzero"),
+            (FakeQueue(claim_row={"id": 999}, claim_rc=0), "different_row"),
+            (FakeQueue(claim_row={"id": 777}, claim_rc=1), "cli_nonzero"),
+        )
+        for fq, category in cases:
+            with self.subTest(category=category):
+                rec, deleted = self.run_launch(rows_kw={"sink": [sink_row()]}, fq=fq)
+                self.assertFalse(rec["ok"])
+                self.assertEqual(rec["reason"], "sink_claim_failed")
+                self.assertEqual(rec["category"], category)
+                self.assertEqual(
+                    rec["action"], launch_one.claimant.SINK_CLAIM_ACTIONS[category]
+                )
+                self.assertIn("777", rec["detail"])
+                self.assertEqual(fq.verbs(), ["claim"])
+                self.assertEqual(deleted, [])
+
+    def test_queue_calls_never_carry_an_inherited_lane(self):
+        seen = []
+
+        def fake_run(cmd, **kwargs):
+            seen.append(kwargs.get("env"))
+            return subprocess.CompletedProcess(cmd, 0, "{}", "")
+
+        with (
+            patch.dict(os.environ, {"REPO_QUEUE_LANE": "code-g"}),
+            patch.object(launch_one.subprocess, "run", fake_run),
+        ):
+            launch_one.queue("health")
+        self.assertIsNotNone(seen[0])
+        self.assertNotIn("REPO_QUEUE_LANE", seen[0])
 
 
 class TestCli(unittest.TestCase):

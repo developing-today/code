@@ -27,9 +27,13 @@ EXPORTED = "2026-11-24T08:40:00Z"
 
 def ok_outcomes():
     return {
-        "turso_export": freshness_probe.outcome(True, "ok", freshness_probe.freshness_readout.parse_time(EXPORTED, "t")),
-        "d1_copy": freshness_probe.outcome(True, "ok", freshness_probe.freshness_readout.parse_time(EXPORTED, "t")),
-        "cloudflare_rehost": freshness_probe.outcome(False, "no surface"),
+        "turso_export": freshness_probe.outcome(
+            True, "ok", freshness_probe.freshness_readout.parse_time(EXPORTED, "t")
+        ),
+        "d1_copy": freshness_probe.outcome(
+            True, "ok", freshness_probe.freshness_readout.parse_time(EXPORTED, "t")
+        ),
+        "cloudflare_rehost": freshness_probe.outcome(False, "drift"),
         "plain_mirror": freshness_probe.outcome(True, "ok", NOW),
         "r2_bundles": freshness_probe.outcome(True, "ok", NOW),
     }
@@ -99,6 +103,57 @@ class BundleHeadTests(unittest.TestCase):
         self.assertIsNone(
             freshness_probe.parse_bundle_head("z" * 40 + "-" + "0" * 64 + ".bundle")
         )
+
+
+def _pkt(payload):
+    return b"%04x" % (len(payload) + 4) + payload
+
+
+def _advertisement(head):
+    return (
+        _pkt(b"# service=git-upload-pack\n")
+        + b"0000"
+        + _pkt(head.encode() + b" HEAD\0ofs-delta symref=HEAD:refs/heads/main\n")
+        + _pkt(head.encode() + b" refs/heads/main\n")
+        + b"0000"
+    )
+
+
+class RehostParseTests(unittest.TestCase):
+    def test_advertised_head_parsed(self):
+        head = "a" * 40
+        self.assertEqual(
+            freshness_probe.parse_advertised_head(_advertisement(head)), head
+        )
+
+    def test_non_advertisements_parse_to_none(self):
+        self.assertIsNone(freshness_probe.parse_advertised_head(b""))
+        self.assertIsNone(freshness_probe.parse_advertised_head(b"<html>404</html>"))
+        self.assertIsNone(
+            freshness_probe.parse_advertised_head(_advertisement("z" * 40))
+        )
+        self.assertIsNone(
+            freshness_probe.parse_advertised_head(
+                _pkt(b"# service=git-receive-pack\n") + b"0000"
+            )
+        )
+
+    def test_fetch_pairs_compares_advertised_to_mirror(self):
+        head = "b" * 40
+        with (
+            mock.patch.object(freshness_probe, "_git_head", return_value=head),
+            mock.patch.object(
+                freshness_probe,
+                "_fetch_advertisement",
+                return_value=_advertisement(head),
+            ) as fetch,
+        ):
+            pairs = freshness_probe.fetch_rehost_pairs(
+                "/root", "https://rehost.example"
+            )
+        self.assertEqual(len(pairs), len(freshness_probe.FLEET_REPOS))
+        self.assertTrue(all(p[1] == p[2] == head for p in pairs))
+        self.assertIn("info/refs?service=git-upload-pack", fetch.call_args[0][0])
 
 
 class BuildStatusTests(unittest.TestCase):
@@ -195,9 +250,7 @@ class AlertSyncTests(unittest.TestCase):
         self.assertTrue(any(c[0] == "close" for c in calls))
 
         runner2, calls2 = self._runner([])
-        action2 = freshness_probe.sync_alert(
-            self._results(set()), NOW, runner=runner2
-        )
+        action2 = freshness_probe.sync_alert(self._results(set()), NOW, runner=runner2)
         self.assertEqual(action2, "no alert issue needed")
         self.assertEqual([c[0] for c in calls2], ["list"])
 
@@ -214,27 +267,61 @@ class MainFlowTests(unittest.TestCase):
             status = os.path.join(tmp, "status.json")
             meta = {"exported_at": EXPORTED}
             pairs = [("developing-today/code", "abc", "abc")]
+            drifted = [("developing-today/code", "abc", "xyz")]
             with (
-                mock.patch.object(
-                    freshness_probe, "fetch_d1_meta", return_value=meta
-                ),
+                mock.patch.object(freshness_probe, "fetch_d1_meta", return_value=meta),
                 mock.patch.object(
                     freshness_probe, "fetch_mirror_pairs", return_value=pairs
                 ),
                 mock.patch.object(
                     freshness_probe, "fetch_r2_pairs", return_value=pairs
                 ),
+                mock.patch.object(
+                    freshness_probe, "fetch_rehost_pairs", return_value=drifted
+                ),
                 mock.patch("sys.stdout", new_callable=io.StringIO) as out,
             ):
                 rc = freshness_probe.main(
                     ["--status-json", status, "--root", tmp, "--now", NOW_ISO]
                 )
-            # cloudflare_rehost has no surface: honest exit 1.
+            # The rehost advertises a different HEAD than the mirror:
+            # honest exit 1, and the copy is not stamped.
             self.assertEqual(rc, 1)
             self.assertIn("cloudflare_rehost: STALE", out.getvalue())
             with open(status, encoding="utf-8") as fh:
                 doc = json.load(fh)
             self.assertEqual(doc["copies"]["d1_copy"]["last_success"], EXPORTED)
+            self.assertIsNone(doc["copies"]["cloudflare_rehost"]["last_success"])
+
+    def test_main_stamps_rehost_when_advertisement_matches(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            status = os.path.join(tmp, "status.json")
+            meta = {"exported_at": EXPORTED}
+            pairs = [("developing-today/code", "abc", "abc")]
+            with (
+                mock.patch.object(freshness_probe, "fetch_d1_meta", return_value=meta),
+                mock.patch.object(
+                    freshness_probe, "fetch_mirror_pairs", return_value=pairs
+                ),
+                mock.patch.object(
+                    freshness_probe, "fetch_r2_pairs", return_value=pairs
+                ),
+                mock.patch.object(
+                    freshness_probe, "fetch_rehost_pairs", return_value=pairs
+                ),
+                mock.patch("sys.stdout", new_callable=io.StringIO) as out,
+            ):
+                rc = freshness_probe.main(
+                    ["--status-json", status, "--root", tmp, "--now", NOW_ISO]
+                )
+            # Every copy verified: exit 0 and the rehost is stamped.
+            self.assertEqual(rc, 0)
+            self.assertIn("cloudflare_rehost: PASS", out.getvalue())
+            with open(status, encoding="utf-8") as fh:
+                doc = json.load(fh)
+            self.assertEqual(
+                doc["copies"]["cloudflare_rehost"]["last_success"], NOW_ISO
+            )
 
     def test_fetcher_failure_keeps_probe_alive_and_loud(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -261,8 +348,9 @@ class MainFlowTests(unittest.TestCase):
                 mock.patch.object(
                     freshness_probe, "fetch_mirror_pairs", side_effect=boom
                 ),
+                mock.patch.object(freshness_probe, "fetch_r2_pairs", side_effect=boom),
                 mock.patch.object(
-                    freshness_probe, "fetch_r2_pairs", side_effect=boom
+                    freshness_probe, "fetch_rehost_pairs", side_effect=boom
                 ),
                 mock.patch("sys.stderr", new_callable=io.StringIO) as err,
             ):

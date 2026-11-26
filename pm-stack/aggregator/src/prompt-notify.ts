@@ -7,8 +7,9 @@
 // store's subscriptions, gated per subscription by the "prompt"
 // notification class (classEnabled), one sends-ledger row per
 // attempted subscription. A subscription that predates the class
-// receives nothing until it opts in on /alerts/preferences — the
-// classEnabled default (only "incident" defaults on for old rows).
+// takes the class's reviewed default via classEnabled (the #13940
+// backfill); only an explicit opt-out on /alerts/preferences keeps
+// it from receiving prompt pushes.
 //
 // The trigger seam is the single answer path: answers land through
 // PromptsStore.update() via PATCH /api/prompt/:id, so the route

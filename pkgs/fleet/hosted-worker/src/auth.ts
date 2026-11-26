@@ -32,6 +32,8 @@
 //     hosted-worker posture: internal context is never
 //     client-controlled).
 
+import type { BackfillRunStore } from "./backfill.ts";
+import type { BridgeSurface } from "./bridge.ts";
 import type { HostedConfig } from "./config.ts";
 import { FailClosed } from "./errors.ts";
 import type {
@@ -42,6 +44,8 @@ import type {
   GitHubWriter,
 } from "./github.ts";
 import { looksLikeJwt, parseJwt, validateRpToken, type JwksFetcher } from "./jwt.ts";
+import type { KvBlobBucket } from "./kv-blobs.ts";
+import type { KvPrimary } from "./kv-door.ts";
 import type { QueueDepProbe, QueueStore } from "./queue-store.ts";
 import type { SessionRegistry } from "./sessions.ts";
 import type { MetadataStore, QueueRecordSource } from "./stamping.ts";
@@ -112,6 +116,27 @@ export interface AuthDeps {
    * over the rotation. Absent → the project-sync route fails
    * closed with 503, like unconfigured auth. */
   githubProjects?: GitHubProjectSurface;
+  /** Bridge surface (#14373, src/bridge.ts): the bridge door's path
+   * to the message bridge over its service binding, presenting the
+   * PM credential. Absent → the bridge door fails closed with 503,
+   * like unconfigured auth. */
+  bridge?: BridgeSurface;
+  /** Backfill run store (#14312, src/backfill.ts): the record of
+   * ingestion backfill runs. Absent → the backfill routes fail
+   * closed with 503, like unconfigured auth; the sweep and the
+   * divergence report do not need it. */
+  backfillRunStore?: BackfillRunStore;
+  /** The fleet-kv central primary (#13316, src/kv-door.ts): the
+   * shared Turso DB the kv door forwards catalogued statements to.
+   * Absent → the kv door fails closed with 503, like unconfigured
+   * auth. */
+  kvPrimary?: KvPrimary;
+  /** The kv blob bucket (#13318, src/kv-blobs.ts). Absent → the blob
+   * upload door fails closed with 503. */
+  kvBlobs?: KvBlobBucket;
+  /** The key read capabilities are MACed with (#13318; a secret).
+   * Absent → the blob read routes fail closed with 503. */
+  kvBlobCapabilityKey?: string;
 }
 
 export async function sha256Hex(text: string): Promise<string> {
@@ -139,16 +164,35 @@ function isDataPlaneCredential(payload: Record<string, unknown>): boolean {
 
 export async function authenticate(req: Request, deps: AuthDeps): Promise<CallerContext> {
   const { config } = deps;
-  if (!config.authConfigured || !config.rp || !config.tenancy) {
+  // Per-credential-kind configuration (#14978 / CF-2b): the tenancy
+  // directory is required for every caller kind — it is where both
+  // subject records and service-token records live. The RP issuer is
+  // required only for JWT callers (rp / agent kinds): an opaque
+  // service token is validated against the tenancy directory alone
+  // (SHA-256 lookup, route scope, active flag), so a deployment with
+  // a tenancy directory but no RP issuer yet — the #9077 provider is
+  // still design-stage — can still serve its service-token callers
+  // (e.g. the native queue broker calling the queue door) instead of
+  // failing every route closed. JWT callers still fail closed with
+  // the same 503 until an issuer is configured; nothing fails open:
+  // no tenancy directory still refuses every caller.
+  if (!config.tenancy) {
     throw new FailClosed(
       503,
       "auth_not_configured",
-      "this deployment has no RP issuer / tenancy directory configured; failing closed",
+      "this deployment has no tenancy directory configured; failing closed",
     );
   }
   const token = bearerToken(req);
 
   if (looksLikeJwt(token)) {
+    if (!config.rp) {
+      throw new FailClosed(
+        503,
+        "auth_not_configured",
+        "this deployment has no RP issuer configured; JWT callers fail closed",
+      );
+    }
     const { payload } = parseJwt(token);
     if (isDataPlaneCredential(payload)) {
       throw new FailClosed(

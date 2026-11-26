@@ -14,6 +14,7 @@ Checks:
 
 Usage: python3 -I fixtures/check.py   (exit 0 = all pass)
 """
+
 import json
 import sys
 from pathlib import Path
@@ -35,8 +36,23 @@ LINK_FILES = [
 ]
 KINDS = {"chat-message", "forum-post", "image"}
 VERBS = {"reply", "mention", "quote", "attach", "supersede", "nest"}
-CONTENT_REQUIRED = {"object_id", "author", "created_claim", "kind", "body", "schema_version"}
-LINK_REQUIRED = {"object_id", "author", "created_claim", "verb", "source", "target", "schema_version"}
+CONTENT_REQUIRED = {
+    "object_id",
+    "author",
+    "created_claim",
+    "kind",
+    "body",
+    "schema_version",
+}
+LINK_REQUIRED = {
+    "object_id",
+    "author",
+    "created_claim",
+    "verb",
+    "source",
+    "target",
+    "schema_version",
+}
 
 failures = []
 
@@ -86,7 +102,11 @@ def main():
             fail(f"{name}: verb {o.get('verb')!r} not in v1 registry {sorted(VERBS)}")
         if o.get("verb") == "reply":
             ctx = o.get("context")
-            if not isinstance(ctx, dict) or "root" not in ctx or not isinstance(ctx.get("previous"), list):
+            if (
+                not isinstance(ctx, dict)
+                or "root" not in ctx
+                or not isinstance(ctx.get("previous"), list)
+            ):
                 fail(f"{name}: reply link requires context{{root, previous[]}}")
         if o.get("verb") == "quote":
             snap = o.get("snapshot")
@@ -111,21 +131,33 @@ def main():
         tgt = objects.get(o["target"])
         if src and tgt and src[1].get("author") != tgt[1].get("author"):
             chain = True
-            print(f"OK: cross-app reply chain in {name}: "
-                  f"{o['source']} ({src[1]['author']}) -> {o['target']} ({tgt[1]['author']})")
+            print(
+                f"OK: cross-app reply chain in {name}: "
+                f"{o['source']} ({src[1]['author']}) -> {o['target']} ({tgt[1]['author']})"
+            )
     if not chain:
         fail("acceptance: no cross-app reply chain (reply link across authors) found")
 
     # SSB annex presence is a record-level check, reported here for completeness.
     record = FIX.parent / "D3-graph-layer.md"
     text = record.read_text(encoding="utf-8").lower() if record.exists() else ""
-    for needle in ("## 7. ssb", "single-device", "append-only", "hops", "capability scoping",
-                   "first sync", "adopt", "reject"):
+    for needle in (
+        "## 7. ssb",
+        "single-device",
+        "append-only",
+        "hops",
+        "capability scoping",
+        "first sync",
+        "adopt",
+        "reject",
+    ):
         if needle not in text:
             fail(f"acceptance: record missing SSB annex marker {needle!r}")
 
-    print(f"\n{len(CONTENT_FILES)} content + {len(LINK_FILES)} link fixtures checked, "
-          f"{len(failures)} failure(s).")
+    print(
+        f"\n{len(CONTENT_FILES)} content + {len(LINK_FILES)} link fixtures checked, "
+        f"{len(failures)} failure(s)."
+    )
     return 1 if failures else 0
 
 

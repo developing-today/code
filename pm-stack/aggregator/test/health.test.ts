@@ -198,7 +198,7 @@ describe("buildHealth probes", () => {
     });
   });
 
-  test("a stopped collector is visible on the health page by the next five-minute interval", async () => {
+  test("a stopped collector is visible on the health page by the next five-minute interval and degrades after a missed write", async () => {
     // An isolated stand-in collector writes only a temporary feed. Freeze the
     // observation clock immediately after its last write and advance it to the
     // next interval: this tests the worst-case stop without a five-minute wait.
@@ -225,12 +225,23 @@ describe("buildHealth probes", () => {
       const opts = { fetcher, cache: createProbeCache() };
       const before = await buildHealth(inputs({ feed }), { ...opts, now: stoppedAt });
       expect(service(before, "fleet-feed").state).toBe("up");
+      // #1116: by the next interval the row says a write is overdue.
       const view = await buildHealth(inputs({ feed }), { ...opts, now: stoppedAt + 5 * 60_000 });
-      expect(service(view, "fleet-feed").state).toBe("stale");
-      expect(view.degraded).toBe(true);
+      expect(service(view, "fleet-feed").state).toBe("late");
       const html = renderHealth(view, {} as Parameters<typeof renderHealth>[1]);
-      expect(html).toContain("past the 5m freshness threshold");
-      expect(html).toContain("stale");
+      expect(html).toContain("past the 5m collector cadence, a write is overdue; stale at 10m");
+      // #14062: one late write adds nothing to the degraded verdict (the
+      // view degrades only as much as it did before the stop); a whole
+      // missed write does, and the status says so.
+      expect(service(view, "fleet-feed").ok).toBe(true);
+      expect(view.degraded).toBe(before.degraded);
+      expect(view.status).toBe(view.degraded ? "degraded" : "ok");
+      const missed = await buildHealth(inputs({ feed }), { ...opts, now: stoppedAt + 10 * 60_000 });
+      expect(service(missed, "fleet-feed").state).toBe("stale");
+      expect(missed.degraded).toBe(true);
+      expect(missed.status).toBe("degraded");
+      const missedHtml = renderHealth(missed, {} as Parameters<typeof renderHealth>[1]);
+      expect(missedHtml).toContain("past the 10m freshness threshold");
     } finally {
       collector.kill();
       await collector.exited;
@@ -754,5 +765,43 @@ describe("buildHealth version marker (#1150)", () => {
     expect(resolveBuildVersion({})).toBe("unknown");
     expect(resolveBuildVersion({ PM_AGG_BUILD_VERSION: "  v1  " })).toBe("v1");
     expect(resolveBuildVersion({ PM_AGG_BUILD_VERSION: "   " })).toBe("unknown");
+  });
+
+  test("renderHealth surfaces the deployed commit + age from the same view /api/health serves (#14059b)", async () => {
+    const { fetcher } = fakeFetcher(allUp);
+    const full = "7d3dcebe1e7b3c349db9870aa09ae04f518aa80f";
+    const base = await buildHealth(inputs({ version: full }), {
+      fetcher,
+      cache: createProbeCache(),
+      now: NOW,
+      rfaState: rfaUp,
+    });
+    const bootAt = new Date(NOW - 3 * 3_600_000).toISOString();
+    const view = { ...base, generatedAt: new Date(NOW).toISOString(), bootAt };
+    const html = renderHealth(view, {} as Parameters<typeof renderHealth>[1]);
+    // Short SHA visible, full SHA in title + adjacent code element.
+    expect(html).toContain(full.slice(0, 8));
+    expect(html).toContain(full);
+    expect(html).toContain(`title="${full}"`);
+    // Age comes from the same bootAt the API view carries.
+    expect(html).toContain(bootAt);
+    expect(html).toContain("3.0h old");
+    // Page and API cannot disagree: /api/health serves view.version.
+    const apiVersion: string = view.version;
+    expect(apiVersion).toBe(full);
+    expect(html).toContain(apiVersion);
+  });
+
+  test("renderHealth says unknown when no build version was deployed (#14059b)", async () => {
+    const { fetcher } = fakeFetcher(allUp);
+    const base = await buildHealth(inputs({ version: "unknown" }), {
+      fetcher,
+      cache: createProbeCache(),
+      now: NOW,
+      rfaState: rfaUp,
+    });
+    const html = renderHealth(base, {} as Parameters<typeof renderHealth>[1]);
+    expect(html).toContain("Build <strong>unknown</strong>");
+    expect(html).toContain("PM_AGG_BUILD_VERSION");
   });
 });

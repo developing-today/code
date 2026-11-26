@@ -35,6 +35,10 @@
 #     pointing at ./bin/cf. npmInstallHook creates both.
 #   * To update: bump version, update `hash`, regenerate package-lock.json
 #     as above, then set npmDepsHash from the build failure message.
+#
+# Dependabot policy (#14164): this dir is excluded from Dependabot npm
+# updates (see .github/dependabot.yml exclude-paths). The tarball `src`
+# is fixed, so a lockfile-only bump cannot build -- update manually.
 
 let
   version = "1.0.0-beta.20";
