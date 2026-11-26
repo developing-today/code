@@ -255,7 +255,8 @@ impl Scope {
 
     /// How a stored name is shown in this scope (D5), or `None` when it
     /// lies outside the scope. `P.` is stripped, except where the rest
-    /// itself starts with `P.`: that name is shown in full, so every
+    /// itself starts with `P.` or is not a valid name by itself (`P...`
+    /// would show as `..`): that name is shown in full, so every
     /// displayed name maps back through [`Scope::to_full`] to the
     /// stored name it came from.
     pub fn display(&self, stored: &str) -> Option<String> {
@@ -267,7 +268,9 @@ impl Scope {
         if rest.is_empty() {
             return None;
         }
-        if rest.starts_with(&lead) {
+        // A rest that itself starts with `P.`, or that is no name on
+        // its own (a dot segment such as `..`), is shown in full.
+        if rest.starts_with(&lead) || validate_name(rest).is_err() {
             Some(stored.to_string())
         } else {
             Some(rest.to_string())
@@ -1668,6 +1671,10 @@ mod tests {
         let stored = ["alpha", "42.alpha", "42.42.x", "420.y", "43.z", "42."];
         let shown: Vec<String> = stored.iter().filter_map(|s| scope.display(s)).collect();
         assert_eq!(shown, ["alpha", "42.42.x"]);
+        // A rest that is a dot segment is no name by itself, so the
+        // stored name is shown in full and still maps back.
+        assert_eq!(scope.display("42..."), Some("42...".to_string()));
+        assert_eq!(scope.to_full("42...").unwrap(), "42...");
     }
 
     #[test]
