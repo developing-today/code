@@ -15,9 +15,14 @@
 
 export type Family = "recommendation" | "search_history" | "hot_snapshot";
 
-export type RetentionClassName = "hot-short" | "recommendation" | "search-history" | "snapshot-audit";
+export type RetentionClassName =
+  "hot-short" | "recommendation" | "search-history" | "snapshot-audit";
 
-export const FAMILIES: readonly Family[] = ["recommendation", "search_history", "hot_snapshot"];
+export const FAMILIES: readonly Family[] = [
+  "recommendation",
+  "search_history",
+  "hot_snapshot",
+];
 
 export const CLASS_NAMES: readonly RetentionClassName[] = [
   "hot-short",
@@ -43,8 +48,16 @@ export interface RetentionClass {
 }
 
 /** The design defaults (§5.3). A class may only lengthen or raise them. */
-export const DEFAULT_CLASSES: Readonly<Record<RetentionClassName, RetentionClass>> = {
-  "hot-short": { name: "hot-short", windowMs: DAY_MS, keepNewest: 2, allowsQueryText: false, enabled: false },
+export const DEFAULT_CLASSES: Readonly<
+  Record<RetentionClassName, RetentionClass>
+> = {
+  "hot-short": {
+    name: "hot-short",
+    windowMs: DAY_MS,
+    keepNewest: 2,
+    allowsQueryText: false,
+    enabled: false,
+  },
   recommendation: {
     name: "recommendation",
     windowMs: 30 * DAY_MS,
@@ -95,11 +108,16 @@ export class RetainedObjectError extends Error {
 }
 
 function isClassName(value: unknown): value is RetentionClassName {
-  return typeof value === "string" && (CLASS_NAMES as readonly string[]).includes(value);
+  return (
+    typeof value === "string" &&
+    (CLASS_NAMES as readonly string[]).includes(value)
+  );
 }
 
 function isFamily(value: unknown): value is Family {
-  return typeof value === "string" && (FAMILIES as readonly string[]).includes(value);
+  return (
+    typeof value === "string" && (FAMILIES as readonly string[]).includes(value)
+  );
 }
 
 /**
@@ -108,7 +126,10 @@ function isFamily(value: unknown): value is Family {
  */
 export function checkClass(rule: RetentionClass): RetentionClass {
   if (!isClassName(rule.name)) {
-    throw new RetainedObjectError("unknown_retention_class", `no retention class ${String(rule.name)}`);
+    throw new RetainedObjectError(
+      "unknown_retention_class",
+      `no retention class ${String(rule.name)}`,
+    );
   }
   const base = DEFAULT_CLASSES[rule.name];
   if (!Number.isSafeInteger(rule.windowMs) || rule.windowMs < base.windowMs) {
@@ -117,7 +138,10 @@ export function checkClass(rule: RetentionClass): RetentionClass {
       `class ${rule.name} keeps versions for at least ${base.windowMs} ms, not ${rule.windowMs}`,
     );
   }
-  if (!Number.isSafeInteger(rule.keepNewest) || rule.keepNewest < base.keepNewest) {
+  if (
+    !Number.isSafeInteger(rule.keepNewest) ||
+    rule.keepNewest < base.keepNewest
+  ) {
     throw new RetainedObjectError(
       "retention_below_default",
       `class ${rule.name} keeps at least the newest ${base.keepNewest} versions, not ${rule.keepNewest}`,
@@ -143,7 +167,8 @@ export interface Envelope<P = unknown> {
 /** What a writer hands the store: the envelope without its version. */
 export type EnvelopeDraft<P = unknown> = Omit<Envelope<P>, "version">;
 
-const RFC3339 = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})$/;
+const RFC3339 =
+  /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})$/;
 
 /** Check a draft's shape and that its class holds its family. */
 export function checkDraft<P>(draft: EnvelopeDraft<P>): EnvelopeDraft<P> {
@@ -151,17 +176,32 @@ export function checkDraft<P>(draft: EnvelopeDraft<P>): EnvelopeDraft<P> {
     throw new RetainedObjectError("malformed_envelope", "objectId is empty");
   }
   if (!isFamily(draft.family)) {
-    throw new RetainedObjectError("unknown_family", `no family ${String(draft.family)}`);
+    throw new RetainedObjectError(
+      "unknown_family",
+      `no family ${String(draft.family)}`,
+    );
   }
   if (!isClassName(draft.class)) {
-    throw new RetainedObjectError("unknown_retention_class", `no retention class ${String(draft.class)}`);
+    throw new RetainedObjectError(
+      "unknown_retention_class",
+      `no retention class ${String(draft.class)}`,
+    );
   }
   const holds = CLASS_FAMILY[draft.class];
   if (holds !== undefined && holds !== draft.family) {
-    throw new RetainedObjectError("family_class_mismatch", `class ${draft.class} holds ${holds}, not ${draft.family}`);
+    throw new RetainedObjectError(
+      "family_class_mismatch",
+      `class ${draft.class} holds ${holds}, not ${draft.family}`,
+    );
   }
-  if (!RFC3339.test(draft.capturedAt) || Number.isNaN(Date.parse(draft.capturedAt))) {
-    throw new RetainedObjectError("malformed_envelope", `capturedAt ${draft.capturedAt} is not RFC 3339`);
+  if (
+    !RFC3339.test(draft.capturedAt) ||
+    Number.isNaN(Date.parse(draft.capturedAt))
+  ) {
+    throw new RetainedObjectError(
+      "malformed_envelope",
+      `capturedAt ${draft.capturedAt} is not RFC 3339`,
+    );
   }
   if (typeof draft.inputsRef !== "string" || draft.inputsRef.length === 0) {
     throw new RetainedObjectError("malformed_envelope", "inputsRef is empty");
@@ -176,9 +216,14 @@ export function checkDraft<P>(draft: EnvelopeDraft<P>): EnvelopeDraft<P> {
  * The payload as stored: a search-history payload loses its `query` text
  * unless its class allows query text (NG5, Q1 default).
  */
-export function storedPayload<P>(family: Family, rule: RetentionClass, payload: P): P {
+export function storedPayload<P>(
+  family: Family,
+  rule: RetentionClass,
+  payload: P,
+): P {
   if (family !== "search_history" || rule.allowsQueryText) return payload;
-  if (payload === null || typeof payload !== "object" || Array.isArray(payload)) return payload;
+  if (payload === null || typeof payload !== "object" || Array.isArray(payload))
+    return payload;
   if (!("query" in payload)) return payload;
   const { query: _dropped, ...rest } = payload as Record<string, unknown>;
   return rest as P;
@@ -204,7 +249,10 @@ interface ObjectRow {
 
 function fromClassRow(row: ClassRow): RetentionClass {
   if (!isClassName(row.class)) {
-    throw new RetainedObjectError("unknown_retention_class", `no retention class ${row.class}`);
+    throw new RetainedObjectError(
+      "unknown_retention_class",
+      `no retention class ${row.class}`,
+    );
   }
   return {
     name: row.class,
@@ -217,7 +265,10 @@ function fromClassRow(row: ClassRow): RetentionClass {
 
 function fromObjectRow(row: ObjectRow): Envelope {
   if (!isFamily(row.family) || !isClassName(row.class)) {
-    throw new RetainedObjectError("malformed_envelope", `stored row ${row.object_id}@${row.version} is malformed`);
+    throw new RetainedObjectError(
+      "malformed_envelope",
+      `stored row ${row.object_id}@${row.version} is malformed`,
+    );
   }
   return {
     objectId: row.object_id,
@@ -246,7 +297,14 @@ export class RetainedObjectStore {
           .prepare(
             "INSERT INTO atlas_retention_classes (class, window_ms, keep_newest, allows_query_text, enabled, updated_at_ms) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT (class) DO NOTHING",
           )
-          .bind(name, rule.windowMs, rule.keepNewest, rule.allowsQueryText ? 1 : 0, rule.enabled ? 1 : 0, at);
+          .bind(
+            name,
+            rule.windowMs,
+            rule.keepNewest,
+            rule.allowsQueryText ? 1 : 0,
+            rule.enabled ? 1 : 0,
+            at,
+          );
       }),
     );
   }
@@ -258,11 +316,20 @@ export class RetainedObjectStore {
       .prepare(
         "INSERT INTO atlas_retention_classes (class, window_ms, keep_newest, allows_query_text, enabled, updated_at_ms) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT (class) DO UPDATE SET window_ms = excluded.window_ms, keep_newest = excluded.keep_newest, allows_query_text = excluded.allows_query_text, enabled = excluded.enabled, updated_at_ms = excluded.updated_at_ms",
       )
-      .bind(rule.name, rule.windowMs, rule.keepNewest, rule.allowsQueryText ? 1 : 0, rule.enabled ? 1 : 0, this.now())
+      .bind(
+        rule.name,
+        rule.windowMs,
+        rule.keepNewest,
+        rule.allowsQueryText ? 1 : 0,
+        rule.enabled ? 1 : 0,
+        this.now(),
+      )
       .run();
   }
 
-  async getClass(name: RetentionClassName): Promise<RetentionClass | undefined> {
+  async getClass(
+    name: RetentionClassName,
+  ): Promise<RetentionClass | undefined> {
     const row = await this.db
       .prepare(
         "SELECT class, window_ms, keep_newest, allows_query_text, enabled FROM atlas_retention_classes WHERE class = ?",
@@ -278,11 +345,17 @@ export class RetainedObjectStore {
    * new object), so two writers cannot both land the same version.
    * Refuses while the class is disabled. Returns the stored envelope.
    */
-  async append<P>(draft: EnvelopeDraft<P>, expectedVersion?: number): Promise<Envelope<P>> {
+  async append<P>(
+    draft: EnvelopeDraft<P>,
+    expectedVersion?: number,
+  ): Promise<Envelope<P>> {
     checkDraft(draft);
     const rule = await this.getClass(draft.class);
     if (!rule?.enabled) {
-      throw new RetainedObjectError("retention_class_disabled", `class ${draft.class} is not enabled for writes`);
+      throw new RetainedObjectError(
+        "retention_class_disabled",
+        `class ${draft.class} is not enabled for writes`,
+      );
     }
     const payload = storedPayload(draft.family, rule, draft.payload);
     const row = await this.db
@@ -327,7 +400,10 @@ export class RetainedObjectStore {
   }
 
   /** One version of one object, if it is stored. */
-  async version(objectId: string, version: number): Promise<Envelope | undefined> {
+  async version(
+    objectId: string,
+    version: number,
+  ): Promise<Envelope | undefined> {
     const row = await this.db
       .prepare(
         "SELECT object_id, version, family, class, captured_at, inputs_ref, payload FROM atlas_retained_objects WHERE object_id = ? AND version = ?",
@@ -335,6 +411,53 @@ export class RetainedObjectStore {
       .bind(objectId, version)
       .first<ObjectRow>();
     return row ? fromObjectRow(row) : undefined;
+  }
+
+  /**
+   * Mark retired every version of `objectId` that its class rule lets go
+   * (design §5.3): older than the class window and outside the class's
+   * keep-newest floor, counted over the object's versions. Retiring is the
+   * cold step; nothing is deleted. Returns the versions retired by this
+   * call, oldest first.
+   */
+  async retireExpired(objectId: string): Promise<number[]> {
+    const at = this.now();
+    const { results } = await this.db
+      .prepare(
+        `UPDATE atlas_retained_objects AS o
+           SET retired_at_ms = ?2
+         WHERE o.object_id = ?1
+           AND o.retired_at_ms IS NULL
+           AND o.version <= (SELECT MAX(version) FROM atlas_retained_objects WHERE object_id = ?1)
+                            - (SELECT c.keep_newest FROM atlas_retention_classes AS c WHERE c.class = o.class)
+           AND o.written_at_ms <= ?2 - (SELECT c.window_ms FROM atlas_retention_classes AS c WHERE c.class = o.class)
+         RETURNING version`,
+      )
+      .bind(objectId, at)
+      .all<{ version: number }>();
+    return results.map((row) => row.version).sort((a, b) => a - b);
+  }
+
+  /** The versions of one object that are not retired, oldest first. */
+  async live(objectId: string): Promise<Envelope[]> {
+    const { results } = await this.db
+      .prepare(
+        "SELECT object_id, version, family, class, captured_at, inputs_ref, payload FROM atlas_retained_objects WHERE object_id = ? AND retired_at_ms IS NULL ORDER BY version",
+      )
+      .bind(objectId)
+      .all<ObjectRow>();
+    return results.map(fromObjectRow);
+  }
+
+  /** The retired versions of one object, oldest first. */
+  async retired(objectId: string): Promise<number[]> {
+    const { results } = await this.db
+      .prepare(
+        "SELECT version FROM atlas_retained_objects WHERE object_id = ? AND retired_at_ms IS NOT NULL ORDER BY version",
+      )
+      .bind(objectId)
+      .all<{ version: number }>();
+    return results.map((row) => row.version);
   }
 
   /** Every stored version of one object, oldest first. */
