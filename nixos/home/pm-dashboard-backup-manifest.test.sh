@@ -275,6 +275,7 @@ agg="$RUN_HOME/.local/state/pm-aggregator"
 printf '{"id":"e1"}\n' >"$agg/decision-events-outbox.jsonl"
 printf '{"offset":1}\n' >"$agg/decision-events-outbox.jsonl.sync-state.json"
 printf '{}\n' >"$agg/needs-drew.json"
+printf '{}\n' >"$agg/needs-user.json"
 mkdir -p "$agg/digests"
 printf '{}\n' >"$agg/digests/daily-2026-10-27.json"
 printf '{}\n' >"$agg/board.json"          # derived: not archived, not flagged
@@ -291,6 +292,7 @@ assert_member ledger-staged aggregator/decision-events.jsonl required present
 assert_member ledger-staged aggregator/decision-events-outbox.jsonl optional present
 assert_member ledger-staged aggregator/decision-events-outbox.jsonl.sync-state.json optional present
 assert_member ledger-staged aggregator/needs-drew.json optional present
+assert_member ledger-staged aggregator/needs-user.json optional present
 assert_member ledger-staged aggregator/notifications.jsonl optional missing
 assert_member ledger-staged aggregator/digests optional present
 if manifest_json ledger-staged | python3 -c '
