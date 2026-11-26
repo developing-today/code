@@ -270,7 +270,7 @@ export function reconcileWorkAction(
 
   // `running → pending_sync` first when the target is only reachable from there.
   let next = envelope;
-  if (from === "running" && to !== "running" && !canTransition("running", to)) {
+  if (from === "running" && !canTransition("running", to)) {
     next = move(next, "pending_sync", "awaiting_readback", envelope.previewedVersion);
   }
   next = move(next, to, reason ?? "awaiting_readback", newestRevision ?? next.receipt?.workVersion ?? null);
