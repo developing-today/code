@@ -29,6 +29,7 @@ Web search was unavailable (HTTP 503), so this uses the two repository pages onl
 **Fit.** Both target the same problem: originator-signed data that replicates without a central server. Our existing `Envelope` and `LogRecord` already have that shape.
 
 **Recommendation.** Do not add either as a dependency yet. Both are pre-alpha or unstable, and an unaudited auth library is a poor base for friend and access decisions. Adopt their model instead:
+
 - per-author signed append-only logs with a sequence number and a hash link to the previous artifact (p2panda);
 - capability-style grants that name their originator, which can be checked offline (keyhive).
 
@@ -86,10 +87,12 @@ A world verifies the signature against `author`, checks the hash chain for gaps,
 Built: `artifact.rs` (per-author chains with `prev`, Ed25519 over the body, `FriendRemove` and `HomeDeclared`, pure `apply_page`, iroh pull on ALPN `id/artifacts/1`), `directory.rs` (removal and home-declaration effects, `artifacts.jsonl` replayed on open, a removal whose directory line was lost is reconciled), the outbox `Payload::Artifact`, and `serve.rs` registering the pull protocol.
 
 Choices:
+
 - Pull runs over iroh on the existing endpoint, one page per request, at most `PAGE_LIMIT` (100). The home-server address is an `EndpointId` (`HomeServer.endpoint`). `world_id` is kept beside it because the audience of a declaration is a world. `url` is kept only for the outbox push.
 - A sequence gap or a fork at a held sequence number is refused. Unknown kinds are stored and not applied.
 
 Strong remove, ported as rules from p2panda-auth 0.7.1 (`src/group/resolver.rs`, MIT OR Apache-2.0). No code was copied, so no SPDX header.
+
 - Applied: concurrent removals of one friendship by both sides both apply and end it once (`concurrent_removals_of_one_friendship_by_both_sides_both_apply_and_end_it_once`).
 - Not applied, and why: the concurrent-op filter needs causal references. Artifacts have no such references, and friend requests are envelopes that carry none. Cycles and delegation or demotion do not exist in a pairwise friendship, and remove-then-re-add needs the same references on requests.
 
@@ -100,6 +103,7 @@ No NOTICE file exists under `pkgs/id`, so none was added.
 Not built: pull scheduling; outbox push still uses HTTP `POST /artifact` to `HomeServer.url`; causal references on friend requests, which the concurrent-op filter needs.
 
 Flags:
+
 - Friend requests need a causal reference, and adding one changes the envelope protocol. This needs a decision before the concurrent-op filter can land.
 
 ---
@@ -114,11 +118,13 @@ Artifact transfer between servers now runs over iroh, like envelopes. The HTTP a
 - Targets: any recipient, envelope or artifact, accepts an endpoint ticket (which carries addresses) or a bare node ID (which needs discovery through the endpoint's address lookup). `check_target` is the single parser.
 
 Causal references:
+
 - Signed artifacts carry an optional `after`: up to 32 artifact hashes, each 64 lowercase hex characters. It is part of the signed body and is omitted when empty, so existing signatures are unchanged.
 - Chosen over adding references to envelopes, because it keeps one signed format for all kinds.
 - Not yet built: the consumer. The concurrent-op filter for strong remove is still unimplemented. It is the next step for `after`, and it is the only use that depends on it.
 
 Generic signed data:
+
 - `document`: a media type and a JSON value, at most 64 KiB serialized.
 - `tag`: a subject hash, a name of 1 to 64 bytes, and an optional value of at most 256 bytes.
 - Author tag: a `tag` named `author` whose value is the author's key, signed by that author over a document they published. Anyone can check the signature and the match with the author key.
@@ -145,3 +151,7 @@ A server without an outbox refuses only those changes, with the same message, an
 `sends_envelope` keeps its meaning, "may queue", because the explorer uses it to decide whether a form credential is forwarded for signing.
 
 Not changed: a server with an outbox behaves as before, and a removal or publish for an account with declared homes still needs an outbox.
+
+## Tracking
+
+This record predates the tracking-issue convention, and no issue was filed for it. It is superseded in part by the [events, groups, delegation, removal, and history design](../2026-10-11T03-44-33Z_design_groups_events_delegation/2026-10-11T03-44-33Z_design_groups_events_delegation.md); [the note in this folder](2026-10-11T03-44-33Z_note_superseded_in_part.md) lists what changed and what still holds. (Pointer added 2026-11-25 for #13881.)

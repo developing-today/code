@@ -1,0 +1,75 @@
+{
+  "source": "fleet laptop-agent jobs",
+  "jobs": [
+    {
+      "job_id": "c485144cc9b5",
+      "state": "done",
+      "exit": 0,
+      "cwd": "/home/user/git/fleet/oc-code-04-13087-20261125T083822Z-02bd4a23/pkgs/id",
+      "cmd": "set -euo pipefail; ID_BENCH_STRESS_TIER=10x ID_BENCH_STRESS_OUT=\"$PWD/benches/results/2026-11-25T10x-reference-laptop/fixture\" ~/tools/fleet-build-lock sh -c '/home/user/build-cache/broker-pool/id-test-rf38f621c.2/release/deps/world_bench-1075ac5f1a1324da --only stress_gen' 2>&1 | tee -a benches/results/2026-11-25T10x-reference-laptop/stress_gen.log",
+      "started_at": 1795598286.1184146,
+      "interrupted": false,
+      "duration_ms": 1372,
+      "out_bytes": 622,
+      "err_bytes": 0,
+      "out_next": 622,
+      "err_next": 0
+    },
+    {
+      "job_id": "e350031e05a6",
+      "state": "done",
+      "exit": 0,
+      "cwd": "/home/user/git/fleet/oc-code-04-13087-20261125T083822Z-02bd4a23/pkgs/id",
+      "cmd": "set -euo pipefail; for rep in 1 2 3 4 5; do echo \"=== stress_mem rep=$rep started=$(date -Is) ===\"; ID_BENCH_STRESS_TIER=10x ID_BENCH_STRESS_OUT=\"$PWD/benches/results/2026-11-25T10x-reference-laptop/fixture\" ~/tools/fleet-build-lock sh -c '/home/user/build-cache/broker-pool/id-test-rf38f621c.2/release/deps/world_bench-1075ac5f1a1324da --only stress_mem'; done 2>&1 | tee benches/results/2026-11-25T10x-reference-laptop/stress_mem.log",
+      "started_at": 1795598345.169016,
+      "interrupted": false,
+      "duration_ms": 5192,
+      "out_bytes": 4360,
+      "err_bytes": 0,
+      "out_next": 4360,
+      "err_next": 0
+    },
+    {
+      "job_id": "f23edc47bf97",
+      "state": "done",
+      "exit": 0,
+      "cwd": "/home/user/git/fleet/oc-code-04-13087-20261125T083822Z-02bd4a23/pkgs/id",
+      "cmd": "set -euo pipefail; for rep in 1 2 3 4 5; do echo \"=== stress_join rep=$rep started=$(date -Is) ===\"; ID_BENCH_STRESS_TIER=10x ID_BENCH_STRESS_OUT=\"$PWD/benches/results/2026-11-25T10x-reference-laptop/fixture\" ~/tools/fleet-build-lock sh -c '/home/user/build-cache/broker-pool/id-test-rf38f621c.2/release/deps/world_bench-1075ac5f1a1324da --only stress_join'; done 2>&1 | tee benches/results/2026-11-25T10x-reference-laptop/stress_join.log",
+      "started_at": 1795598360.603018,
+      "interrupted": false,
+      "duration_ms": 8751,
+      "out_bytes": 11316,
+      "err_bytes": 0,
+      "out_next": 11316,
+      "err_next": 0
+    },
+    {
+      "job_id": "e76cc42d792a",
+      "state": "done",
+      "exit": 0,
+      "cwd": "/home/user/git/fleet/oc-code-04-13087-20261125T083822Z-02bd4a23/pkgs/id",
+      "cmd": "set -euo pipefail; for rep in 1 2 3 4 5; do echo \"=== frame_cost rep=$rep started=$(date -Is) ===\"; ~/tools/fleet-build-lock sh -c '/home/user/build-cache/broker-pool/id-test-rf38f621c.2/release/deps/world_bench-1075ac5f1a1324da --only frame_cost'; done 2>&1 | tee benches/results/2026-11-25T10x-reference-laptop/frame_cost.log",
+      "started_at": 1795598378.2594306,
+      "interrupted": false,
+      "duration_ms": 15476,
+      "out_bytes": 4187,
+      "err_bytes": 0,
+      "out_next": 4187,
+      "err_next": 0
+    },
+    {
+      "job_id": "e42bfd3c1669",
+      "state": "done",
+      "exit": 1,
+      "cwd": "/home/user/git/fleet/oc-code-04-13087-20261125T083822Z-02bd4a23/pkgs/id",
+      "cmd": "set -euo pipefail; ID_BENCH_MW_IDLE_WORLDS=10000 ID_BENCH_MW_ACTIVE_WORLDS=1000 ID_BENCH_MW_EVENTS_PER_SECOND=20 ID_BENCH_MW_DURATION_SECS=10 ~/tools/fleet-build-lock sh -c '/home/user/build-cache/broker-pool/id-test-rf38f621c.2/release/deps/world_bench-1075ac5f1a1324da --only many_worlds' 2>&1 | tee benches/results/2026-11-25T10x-reference-laptop/many_worlds.log",
+      "started_at": 1795598403.200095,
+      "interrupted": false,
+      "duration_ms": 89760,
+      "out_bytes": 252,
+      "err_bytes": 0,
+      "out_next": 252,
+      "err_next": 0
+    }
+  ]
+}

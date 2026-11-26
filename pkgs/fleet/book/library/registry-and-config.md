@@ -17,7 +17,7 @@ For the crate map, see [The crates](crates.md).
 I/O — and is compiled into **every** variant, including the size-gated
 connect build, so `--help` is always complete. It owns four things.
 
-### The 22 capabilities
+### The 24 capabilities
 
 `enum Capability`, with stable string ids in `Capability::ALL`, in
 registry order:
@@ -26,7 +26,7 @@ registry order:
 proxy-connect, proxy-serve, proxy-raw-splice, queue, queue-broker,
 secrets-broker, search, search-serve, dispatch, dispatch-test,
 laptop-agent, secrets, gh, bridge, agent, commander, laptop-http,
-laptop-ssh, laptop, cert, actions, orgs
+laptop-ssh, laptop, cert, actions, orgs, kv, id
 ```
 
 `CapabilitySet` is a `BTreeSet<Capability>`, built with
@@ -34,12 +34,12 @@ laptop-ssh, laptop, cert, actions, orgs
 `serve_capabilities()` and `connect_capabilities()` for the three
 variant sets below.
 
-### The 19 domains
+### The 22 domains
 
 `pub const DOMAINS: &[Domain]` — the full registry in help order:
 `queue`, `serve`, `proxy`, `dispatch`, `dispatch-test`, `secrets`,
-`gh`, `bridge`, `orgs`, `agent`, `shell`, `search`, `cert`,
-`laptop-agent`, `commander`, `http`, `ssh`, `laptop`, `actions`.
+`gh`, `bridge`, `orgs`, `kv`, `id`, `agent`, `shell`, `search`, `cert`,
+`laptop-agent`, `commander`, `http`, `ssh`, `laptop`, `host`, `actions`.
 
 `struct Domain` is the unit that help lists, stubs name, and config
 disables:
@@ -58,7 +58,9 @@ build, the `search` domain is marked absent because its headline
 capability is the `search` _client_, even though the `search-serve`
 role exists under `serve`. And `shell`'s capability list is `["agent"]`
 — there is no `shell` capability atom; shell rides on the agent
-capability.
+capability. The same holds for `host`: its capability list is
+`["laptop"]` — there is no `host` capability atom; host rides on the
+laptop capability.
 
 `pub fn domain(name)` looks a domain up by name (a linear find over
 `DOMAINS`).
@@ -70,7 +72,7 @@ whose names double as invocation profiles:
 
 | Variant   | Installed name  | Compiled capabilities                                                                                                                                                  |
 | --------- | --------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `Full`    | `fleet`         | All 22                                                                                                                                                                 |
+| `Full`    | `fleet`         | All 24                                                                                                                                                                 |
 | `Serve`   | `fleet-serve`   | `proxy-connect`, `proxy-serve`, `proxy-raw-splice`, `queue-broker`, `secrets-broker`, `search-serve`, `secrets` (7) — daemon roles plus proxy, no working-seat clients |
 | `Connect` | `fleet-connect` | `proxy-connect`, `proxy-raw-splice` (2)                                                                                                                                |
 

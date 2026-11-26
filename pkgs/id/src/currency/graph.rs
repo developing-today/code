@@ -496,6 +496,7 @@ pub(super) fn sign_body(
 
             chat: None,
             anchor: None,
+            thread: None,
         },
     )?)
 }

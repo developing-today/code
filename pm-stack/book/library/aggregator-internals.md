@@ -10,7 +10,7 @@ The survey counts ~180 modules in `src/`. The surveys name these families:
 
 - **Pages and rendering** — `pages.ts` (the page manifest: 23 pages, their nav groups, and the sub-route parent map), `render.ts` (the renderers), `server.ts` (routing, the HTTP and WebSocket surface, and inline client code for the answer pages).
 - **Health** — `health.ts`, `stack-health.ts`, `host-health.ts`, `build-health.ts`, the `watchdog*.ts` and `slo*.ts` families. One health assembly feeds both `/health` and `/api/health`.
-- **Quota** — the `quota-*.ts` family: current state, forecast, anomaly, reweight, admission, and weekly review; with the charges family (`charges-{catalog,collect,match}.ts`), the spend family (`spend-{attribution,cards,dollars,rollups}.ts`), `saas-extract.ts`, and `cost-anomaly.ts`.
+- **Quota** — the `quota-*.ts` family: current state, forecast, anomaly, reweight, admission, and weekly review; with the charges family (`charges-{catalog,collect,match}.ts`), the spend family (`spend-{attribution,cards,dollars,rollups}.ts`), `saas-extract.ts`, and `cost-anomaly.ts` with its rollup-store evidence producer `cost-anomaly-producer.ts`.
 - **Decisions and questions** — `decisions.ts` (decision sets and resolutions), `needs-drew.ts` (the needs-Drew census and the single-question store), `notifications.ts` (candidate builder and class registry), `alerts.ts` (the alert throat store and engine), `push.ts` (Web Push send).
 - **Prompts** — `prompts.ts`, `prompt-ws.ts`, `prompt-notify.ts`, `prompt-widget.ts`, `prompt-attachments.ts`.
 - **Actions and comments** — `actions.ts` (dashboard actions and their result path), `comments.ts` (dashboard-native comments and the queue of comments waiting on a loop).

@@ -75,6 +75,7 @@ pub const SEARCH_USAGE: &str = "\
 usage: fleet search <query> [options]
        fleet search search <query> [options]   (atlas-search's own shape)
        fleet search get-chunk <chunk-id> [--neighbors N] [--text]
+       fleet search backup [--date YYYY-MM-DD] [--skip-dedupe]
 
 Hybrid FTS+vector search over the Atlas corpus, with classification
 filters — the atlas-search client surface (step 5, #5433).
@@ -703,6 +704,7 @@ pub fn run(config: &Config, args: &[String]) -> i32 {
             EXIT_USAGE
         }
         Some("get-chunk") => cmd_get_chunk(config, args),
+        Some("backup") => crate::backup::run_cmd(args),
         Some("serve") => {
             // Unreachable through the fleet binary, which routes
             // `search serve` to the serve role before this client

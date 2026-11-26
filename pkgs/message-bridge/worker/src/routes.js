@@ -7,9 +7,13 @@
 //   POST /mcp/<chatgpt token>         the same server on ChatGPT's channel,
 //                                     with MCP Events (events.js) so a
 //                                     message for ChatGPT wakes its chat
-//   GET  /p/<token>                   history page with the send form
-//   POST /p/<token>                   form post: store an inbound message
-//                                     for each checked recipient (to)
+//   GET  /p/<token>                   the owner link (#14378): sets the
+//                                     signed owner cookie (oauth.js) and
+//                                     redirects to the PM console's
+//                                     Messages surface — the standalone
+//                                     page is retired; the console is
+//                                     the only website. Other methods
+//                                     are 405: form posts went with it
 //   GET  /api/<token>/messages        JSON history (direction, channel,
 //                                     kind, since_id, before_id, unread_only,
 //                                     limit, order)
@@ -23,6 +27,17 @@
 //   GET  /api/<token>/agents          unified connected-agents list:
 //                                     fleet registry + note identities,
 //                                     each row marked by surface
+//   POST /api/<token>/backup-export   owner: dump the whole MessageStore
+//                                     to the BRIDGE_BACKUP R2 bucket
+//                                     (backup.js; the cron's run, on
+//                                     demand)
+//   GET  /api/<token>/backup-latest   owner: the latest export's
+//                                     summary (stamp, rows, tables)
+//   POST /api/<token>/backup-import   owner: restore an export object
+//                                     ({key}, default the latest) into
+//                                     this namespace's store — the
+//                                     restore drill's verb, run on a
+//                                     scratch deployment
 //   POST /api/<token>/messages        JSON {body, sender, to, kind}: store
 //                                     an inbound message per recipient; to
 //                                     is "claude" (default), "chatgpt" or
@@ -85,12 +100,13 @@
 //   GET  /api/<token>/fleet/credentials  owner: per-agent credential
 //                                     state (active / revoked, scopes;
 //                                     never a hash) (#14374)
-//   GET  /fleet/<credential>/pipeline|directory|credentials  the
-//                                     unified pipeline feed, the
-//                                     unified agents list and the
-//                                     credential state, for a
-//                                     credential holding the "read"
-//                                     scope (#14374)
+//   GET  /fleet/<credential>/pipeline|directory|credentials|offers
+//                                     the unified pipeline feed, the
+//                                     unified agents list, the
+//                                     credential state and every offer
+//                                     with its claims, for a credential
+//                                     holding the "read" scope
+//                                     (#14374; offers #14375)
 //   POST /api/<token>/notes-tokens/revoke  owner: revoke an identity's
 //                                     notes token(s)
 //   POST /notes/register              owner Bearer token; registers a
@@ -120,13 +136,20 @@ import { handleMcp } from "./mcp.js";
 import { EVENT_CHANNELS, deliverMessages, eventsFor } from "./events.js";
 import { MCP_CORS, bearerChannel, handleOAuth, ownerCookie, unauthorized } from "./oauth.js";
 import { InputError, normalizeKind, normalizeRecipients } from "./messages.js";
-import { renderPage } from "./page.js";
 import { normalizeHook, showHook, wakeAll, WAKE_ADDRESS } from "./wake.js";
 import { handleNotes, handleSignal } from "./notes.js";
 import { notesOwnerFeed, pipelineFeed, unifiedAgents } from "./pipeline.js";
+import { latestBackup, readBackup, runBackup } from "./backup.js";
 
 const MAX_FORM_BYTES = 64 * 1024;
-const PAGE_SIZE = 200;
+
+/**
+ * Where the owner link lands the owner: the PM console's Messages
+ * surface, the bridge's only website since #14378. The CONSOLE_URL
+ * var (wrangler.jsonc / cloudflare.config.ts) overrides it; this is
+ * the production console.
+ */
+export const DEFAULT_CONSOLE_URL = "https://pm.security.cab/console/#more/messages";
 
 const PRIVATE_HEADERS = {
   "cache-control": "no-store",
@@ -134,10 +157,6 @@ const PRIVATE_HEADERS = {
   "x-robots-tag": "noindex, nofollow",
   "x-content-type-options": "nosniff",
 };
-
-const PAGE_CSP =
-  "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; " +
-  "form-action 'self'; frame-ancestors 'none'; base-uri 'none'";
 
 function withHeaders(res, extra = {}) {
   const h = new Headers(res.headers);
@@ -189,58 +208,27 @@ async function setWakeHook(store, { address, url, token }) {
   return { hook: showHook(hook) };
 }
 
-async function handlePage(request, store, base, api, url, chatgptReady, delivered) {
-  if (request.method === "POST") {
-    const form = new URLSearchParams(await readBody(request));
-    if (form.get("action") === "wake_hook") {
-      await setWakeHook(store, {
-        address: form.get("address") ?? "",
-        url: form.get("remove") ? null : form.get("url"),
-        token: form.get("token"),
-      });
-      return new Response(null, { status: 303, headers: { location: base } });
-    }
-    // Without JavaScript the checkboxes post one "to" each; none checked
-    // falls back to Claude, as before.
-    const to = form.getAll("to");
-    const sent = await sendToEach(store, {
-      body: form.get("body") ?? "",
-      sender: form.get("sender"),
-      to: to.length ? to : undefined,
-      kind: form.get("kind") ?? undefined,
-      source: "page",
-    });
-    delivered(sent);
-    return new Response(null, { status: 303, headers: { location: base } });
-  }
+/**
+ * The owner link (#14378): what /p/<token> is now that the standalone
+ * page is retired. Opening it still marks this browser as the owner's
+ * (the signed cookie oauth.js checks, so connector approval here is
+ * one tap) — and then it sends the owner to the PM console's Messages
+ * surface, the only website the bridge has. The token stays in this
+ * URL only: the redirect target carries none, and the response is
+ * no-store / no-referrer like every owner response. Form posts went
+ * with the page: sending lives in the console and the JSON API, and
+ * wake hooks on the wake-hooks API.
+ */
+async function handleOwnerLink(request, env) {
   if (request.method !== "GET" && request.method !== "HEAD") {
-    return new Response("Method Not Allowed", { status: 405, headers: { allow: "GET, POST" } });
+    return new Response("Method Not Allowed", { status: 405, headers: { allow: "GET, HEAD" } });
   }
-  const beforeId = url.searchParams.get("before_id") ?? undefined;
-  const { messages, stats } = await store.list({
-    direction: "all",
-    order: "desc",
-    limit: PAGE_SIZE,
-    before_id: beforeId,
-  });
-  const html = renderPage({
-    messages,
-    stats,
-    basePath: base,
-    apiPath: api,
-    pageSize: PAGE_SIZE,
-    olderOnly: !!beforeId,
-    chatgptReady,
-    wakeHooks: (await store.wakeHooks()).map(showHook),
-    // The page's own token, so the address is only ever shown to its owner.
-    connectorUrl: `${url.origin}/mcp/${base.slice("/p/".length)}`,
-  });
-  return new Response(html, {
-    headers: { "content-type": "text/html; charset=utf-8", "content-security-policy": PAGE_CSP },
-  });
+  const res = new Response(null, { status: 303, headers: { location: env.CONSOLE_URL || DEFAULT_CONSOLE_URL } });
+  res.headers.append("set-cookie", await ownerCookie(env));
+  return res;
 }
 
-async function handleApi(request, store, rest, url, delivered) {
+async function handleApi(request, store, rest, url, delivered, env) {
   const [what, ...more] = rest;
   if (more.length) return notFound();
   if (what === "messages") {
@@ -293,6 +281,35 @@ async function handleApi(request, store, rest, url, delivered) {
   if (what === "agents") {
     if (request.method !== "GET") return new Response("Method Not Allowed", { status: 405, headers: { allow: "GET" } });
     return json(await unifiedAgents(store));
+  }
+  // State backup (#14951; backup.js): the same run the cron trigger
+  // makes, on demand; the latest export's summary; and the restore —
+  // import an export object from the bucket into THIS namespace's
+  // store (the drill runs it on a scratch deployment, never here).
+  if (what === "backup-export") {
+    if (request.method !== "POST") return new Response("Method Not Allowed", { status: 405, headers: { allow: "POST" } });
+    if (!env?.BRIDGE_BACKUP) return json({ error: "backup is not configured (no BRIDGE_BACKUP R2 binding)" }, 503);
+    return json(await runBackup(env, store), 201);
+  }
+  if (what === "backup-latest") {
+    if (request.method !== "GET") return new Response("Method Not Allowed", { status: 405, headers: { allow: "GET" } });
+    if (!env?.BRIDGE_BACKUP) return json({ error: "backup is not configured (no BRIDGE_BACKUP R2 binding)" }, 503);
+    return json((await latestBackup(env)) ?? { exported_at: null });
+  }
+  if (what === "backup-import") {
+    if (request.method !== "POST") return new Response("Method Not Allowed", { status: 405, headers: { allow: "POST" } });
+    if (!env?.BRIDGE_BACKUP) return json({ error: "backup is not configured (no BRIDGE_BACKUP R2 binding)" }, 503);
+    let data = {};
+    try {
+      const text = await readBody(request);
+      if (text.trim()) data = JSON.parse(text);
+    } catch (err) {
+      if (err instanceof InputError) throw err;
+      throw new InputError("body must be JSON");
+    }
+    const key = typeof data?.key === "string" && data.key ? data.key : undefined;
+    const payload = await readBackup(env, key);
+    return json({ imported: await store.backupImport(payload), from: key ?? "exports/latest.json", exported_at: payload.exported_at ?? null });
   }
   if (what === "oauth-events") {
     if (request.method !== "GET") return new Response("Method Not Allowed", { status: 405, headers: { allow: "GET" } });
@@ -402,7 +419,6 @@ export async function route(request, env, getStore, waitUntil = (p) => p) {
   if (signal) return signal;
   const m = matchTokenPath(url.pathname, env);
   if (!m) return notFound();
-  const token = env.ACCESS_TOKEN;
   const store = getStore();
   const delivered = deliveredFor(env, store, waitUntil);
   try {
@@ -413,15 +429,9 @@ export async function route(request, env, getStore, waitUntil = (p) => p) {
     }
     if (m.role !== "owner") return notFound();
     if (m.area === "p" && m.rest.length === 0) {
-      const res = withHeaders(
-        await handlePage(request, store, `/p/${token}`, `/api/${token}`, url, chatgptConfigured(env), delivered),
-      );
-      // Opening the page marks this browser as the owner's, so approving
-      // a connector here (oauth.js) is one tap.
-      if (request.method === "GET" && res.status === 200) res.headers.append("set-cookie", await ownerCookie(env));
-      return res;
+      return withHeaders(await handleOwnerLink(request, env));
     }
-    if (m.area === "api") return withHeaders(await handleApi(request, store, m.rest, url, delivered));
+    if (m.area === "api") return withHeaders(await handleApi(request, store, m.rest, url, delivered, env));
   } catch (err) {
     if (err instanceof InputError) return withHeaders(json({ error: err.message }, 400));
     throw err;
