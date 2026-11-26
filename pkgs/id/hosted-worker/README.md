@@ -68,8 +68,18 @@ First local-only vertical slice of the hosted data plane (slice 3 of
   stays staged: every client route gets a retryable 503
   `target_not_serving`. `POST /v1/migration/activate` at the switch
   epoch serves it once every referenced blob is in the target's
-  bucket; `/discard` empties a staged target for a retry. Copying blob
-  bytes, the lease and the coordinator are later slices.
+  bucket; `/discard` empties a staged target for a retry.
+- The migration coordinator (#3404, `src/migration-coordinator.ts`):
+  `driveMigration` takes the account's migration lease
+  (`migrations/0003_migration_leases.sql`, a token that rises whenever
+  the lease changes hands) and drives begin, freeze, snapshot, blob
+  copy, import, check, switch, activate, seal and complete, every
+  directory step a compare-and-set that also checks the lease. It keeps
+  no state of its own and resumes from the directory's phase after a
+  crash or a lost response. `abortMigration` discards the staged copy,
+  moves the directory back to the source at a fresh epoch and reopens
+  the source, which then refuses a stale freeze. Nothing exposes the
+  coordinator to callers yet.
 
 ## Tenancy control plane (component E, #9083)
 

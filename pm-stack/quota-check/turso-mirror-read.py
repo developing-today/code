@@ -37,7 +37,7 @@ import urllib.request
 
 DBS = {
     "fleet-platform": (
-        "https://fleet-platform-dezren39.aws-us-east-1.turso.io",
+        "https://d1-gateway.developing-today.workers.dev/db/fleet-platform",
         "turso.fleet-platform-rw-token",
     ),
     "fleet-mirror": (

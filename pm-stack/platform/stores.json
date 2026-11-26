@@ -17,7 +17,7 @@
       "title": "Fleet platform",
       "does": "The PM and dashboard plane: the agent mirror, quota, aggregator and ingest families, alerts and decision events.",
       "used_by": ["pm-stack/aggregator (writes)", "pm-stack/quota-check (reads)"],
-      "address": "https://fleet-platform-dezren39.aws-us-east-1.turso.io",
+      "address": "https://d1-gateway.developing-today.workers.dev/db/fleet-platform",
       "token": "turso.fleet-platform-rw-token",
       "tables": [
         "incidents",

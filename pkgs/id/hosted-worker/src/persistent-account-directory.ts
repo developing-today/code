@@ -30,6 +30,14 @@ export interface HostedDirectoryDatabase {
   prepare(query: string): HostedDirectoryStatement;
 }
 
+/** A coordinator's hold on one account's migration (#3404). */
+export interface MigrationLease {
+  owner: string;
+  /** Rises every time the lease changes hands: the fencing token. */
+  token: number;
+  expiresMs: number;
+}
+
 type StoredAccountRow = Record<string, unknown> & {
   subject_key: string;
   binding_id: string;
@@ -243,14 +251,24 @@ export class PersistentHostedAccountDirectory {
   async transition(
     expected: HostedAccountRecord,
     event: DirectoryMigrationEvent,
+    lease?: { lease: MigrationLease; nowMs: number },
   ): Promise<HostedAccountRecord> {
     const next = planDirectoryTransition(expected, event);
+    // With a lease, the same statement checks the lease is still held:
+    // a coordinator that lost it cannot move the record (#3404).
+    const leaseClause = lease
+      ? " AND EXISTS (SELECT 1 FROM migration_leases WHERE subject_key = ? AND owner = ? AND token = ? AND expires_ms > ?)"
+      : "";
+    const leaseValues = lease
+      ? [expected.subjectKey, lease.lease.owner, lease.lease.token, lease.nowMs]
+      : [];
     const updated = await this.database
       .prepare(
         "UPDATE hosted_accounts SET jurisdiction = ?, jurisdiction_pending = ?, migration_id = ?, phase = ?, routing_epoch = ? " +
           "WHERE subject_key = ? AND binding_id = ? AND jurisdiction = ? AND jurisdiction_pending IS ? " +
-          "AND migration_id IS ? AND phase = ? AND routing_epoch = ? " +
-          `RETURNING ${COLUMNS}`,
+          "AND migration_id IS ? AND phase = ? AND routing_epoch = ?" +
+          leaseClause +
+          ` RETURNING ${COLUMNS}`,
       )
       .bind(
         next.jurisdiction,
@@ -265,6 +283,7 @@ export class PersistentHostedAccountDirectory {
         expected.migrationId,
         expected.phase,
         expected.routingEpoch,
+        ...leaseValues,
       )
       .first<StoredAccountRow>();
     if (updated) return fromRow(updated);
@@ -274,11 +293,63 @@ export class PersistentHostedAccountDirectory {
       throw new FailClosed(404, "directory_account_missing", "no hosted account record for this subject");
     }
     if (sameDirectoryRecord(current, next)) return current;
+    if (lease && !(await this.leaseHeld(expected.subjectKey, lease.lease, lease.nowMs))) {
+      throw new FailClosed(409, "lease_lost", "this coordinator no longer holds the migration lease");
+    }
     throw new FailClosed(
       409,
       "directory_cas_conflict",
       "the account record changed since it was read; reread it and retry the step",
     );
+  }
+
+  /**
+   * Take or renew the account's migration lease (#3404) until
+   * `nowMs + ttlMs`. The holder renews and keeps its token; anyone else
+   * takes it only once it has expired, and the token rises. A lease
+   * held by another coordinator gives 409 `lease_held`.
+   */
+  async acquireLease(subjectKey: string, owner: string, nowMs: number, ttlMs: number): Promise<MigrationLease> {
+    if (typeof owner !== "string" || owner.trim() === "" || owner.length > 128) {
+      throw new FailClosed(400, "invalid_lease_owner", "a lease owner is 1 to 128 characters");
+    }
+    if (!Number.isSafeInteger(nowMs) || !Number.isSafeInteger(ttlMs) || ttlMs <= 0) {
+      throw new FailClosed(400, "invalid_lease_ttl", "lease times are positive integer milliseconds");
+    }
+    const row = await this.database
+      .prepare(
+        "INSERT INTO migration_leases (subject_key, owner, token, expires_ms) VALUES (?, ?, 1, ?) " +
+          "ON CONFLICT(subject_key) DO UPDATE SET " +
+          "token = CASE WHEN migration_leases.owner = excluded.owner THEN migration_leases.token ELSE migration_leases.token + 1 END, " +
+          "owner = excluded.owner, expires_ms = excluded.expires_ms " +
+          "WHERE migration_leases.owner = excluded.owner OR migration_leases.expires_ms <= ? " +
+          "RETURNING owner, token, expires_ms",
+      )
+      .bind(subjectKey, owner, nowMs + ttlMs, nowMs)
+      .first<{ owner: string; token: number; expires_ms: number }>();
+    if (!row) {
+      throw new FailClosed(409, "lease_held", "another coordinator holds this account's migration lease");
+    }
+    return { owner: row.owner, token: Number(row.token), expiresMs: Number(row.expires_ms) };
+  }
+
+  /** Give the lease up early; a lease already taken over is left alone. */
+  async releaseLease(subjectKey: string, lease: MigrationLease): Promise<void> {
+    await this.database
+      .prepare(
+        "UPDATE migration_leases SET expires_ms = 0 WHERE subject_key = ? AND owner = ? AND token = ? RETURNING token",
+      )
+      .bind(subjectKey, lease.owner, lease.token)
+      .first();
+  }
+
+  /** Whether `lease` is still the account's live lease at `nowMs`. */
+  async leaseHeld(subjectKey: string, lease: MigrationLease, nowMs: number): Promise<boolean> {
+    const row = await this.database
+      .prepare("SELECT token FROM migration_leases WHERE subject_key = ? AND owner = ? AND token = ? AND expires_ms > ?")
+      .bind(subjectKey, lease.owner, lease.token, nowMs)
+      .first();
+    return row !== null;
   }
 
   private existingSubject(
