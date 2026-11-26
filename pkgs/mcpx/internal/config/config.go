@@ -1586,7 +1586,11 @@ func parse(b []byte) (*Config, error) {
 			return nil, fmt.Errorf("server %q: needs command, url, aliasOf or toolViews", name)
 		}
 		if s.URL != "" && s.Transport == "" {
-			s.Transport = "http"
+			if strings.HasPrefix(s.URL, "unix://") {
+				s.Transport = "unix"
+			} else {
+				s.Transport = "http"
+			}
 		}
 		// Phase 3 of #1384 (#9963): supervised stdio is the default.
 		// Materialize it here, at file load, so every consumer of a

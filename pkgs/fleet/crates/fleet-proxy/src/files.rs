@@ -830,7 +830,7 @@ fn parse_mode(text: &str) -> Result<u32, ClientError> {
         .map_err(|_| ClientError::Usage(format!("--mode {text:?} is not an octal mode")))
 }
 
-fn parse_transfer_args(
+pub(crate) fn parse_transfer_args(
     argv: &[String],
     usage: &str,
 ) -> Result<(bool, bool, Option<u32>, Vec<String>), ClientError> {

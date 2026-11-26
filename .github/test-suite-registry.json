@@ -305,6 +305,7 @@
         "pkgs/id/hosted-worker/test/cse-blobs.test.ts",
         "pkgs/id/hosted-worker/test/canonical-cbor.test.ts",
         "pkgs/id/hosted-worker/test/usage.test.ts",
+        "pkgs/id/hosted-worker/test/request-cap.test.ts",
         "pkgs/id/hosted-worker/test/currency.test.ts",
         "pkgs/id/hosted-worker/test/front-door.test.ts",
         "pkgs/id/hosted-worker/test/id-uri-vectors.test.ts",
@@ -1457,6 +1458,23 @@
       "related_issues": [8941]
     },
     {
+      "id": "pmo.contract-conformance",
+      "paths": [
+        "pkgs/fleet/crates/fleet-queue/tests/pmo_contract_conformance.rs",
+        "pkgs/fleet/crates/fleet-queue/tests/fixtures/pmo-conformance/**"
+      ],
+      "invocation": "cargo +1.99.1 test --manifest-path pkgs/fleet/Cargo.toml -p fleet-queue --features client,queue-broker --locked --test pmo_contract_conformance, then cd pm-stack/projector && bun test test/webhook-delivery-id.test.ts test/webhook-operation-forwarding.test.ts, reported per family by .github/scripts/pmo-contract-conformance.py",
+      "venue": {
+        "workflow": ".github/workflows/pmo-contract-conformance.yml",
+        "job_step": "pmo-contract-conformance / Run the conformance target",
+        "state": "active",
+        "dispatchable": true
+      },
+      "status": "mapped",
+      "related_issues": [9437],
+      "notes": "CEN-07 golden fixtures through the real adapters, one result per contract family; gated families (receipt, cursor, field ownership) are listed in the fixture manifest and never counted as passing. The same test file also runs inside fleet.rust's workspace run."
+    },
+    {
       "id": "fleet.smoke",
       "paths": ["pkgs/fleet/smoke.sh"],
       "invocation": "nix build .#fleet .#fleet-serve .#fleet-connect .#fleet-connect-static, then bash pkgs/fleet/smoke.sh <fleet> <fleet-serve> <fleet-connect> <fleet-connect-static>",
@@ -1691,6 +1709,22 @@
       },
       "status": "mapped",
       "notes": "Model-based append-admission state-machine oracle for A-GRAPH-9127-02 (#10237); deletion_state_machine is the model oracle for A-GRAPH-9130-01 (requests, moderation, projection hide and server-local true deletion stay distinct; batches idempotent; retained evidence verifiable)."
+    },
+    {
+      "id": "id.rust.e6-persistence.unit",
+      "paths": [
+        "pkgs/id/crates/id-events/src/event_store/persistence_tests.rs",
+        "pkgs/id/crates/id-store/src/turso.rs"
+      ],
+      "invocation": "nix flake check ./pkgs/id (test-sandbox runs cargo nextest --all-features for default workspace members); targeted: cargo test -p id-events --lib event_store::persistence_tests; cargo test -p id-store --lib turso::tests",
+      "venue": {
+        "workflow": ".github/workflows/id-check.yml",
+        "job_step": "full-flake-check / Run full nix flake check",
+        "state": "active",
+        "dispatchable": true
+      },
+      "status": "mapped",
+      "notes": "Native-redb row oracle for E6 shared event/body/chain/fork persistence, generated keys/bodies and aborted partial writes; tenant protocol and row-layer tests. This is not EventStoreBackend conformance."
     },
     {
       "id": "id.rust.id-currency-registry.integration",
