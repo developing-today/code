@@ -53,6 +53,7 @@ function service(partial: Partial<SaasService> = {}): SaasService {
     metrics: [],
     paygEstimate: null,
     measuredAt: "2026-11-01T12:00:00Z",
+    cadenceDays: 7,
     sourceClass: "console",
     sourceNote: "quota-view.md",
     conflicts: [],
