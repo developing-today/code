@@ -207,7 +207,9 @@ jobs:
             # before any matrix leg can run.
             if [ -z "$SINGLE_COMMAND" ]; then
               echo "::warning::empty org-run dispatch; no jobs were requested"
-              echo 'matrix=[]' >> "$GITHUB_OUTPUT"
+              # GitHub rejects a matrix with no combinations, so emit one
+              # sentinel entry and gate the run job on this exact value.
+              echo 'matrix=[{"noop":true}]' >> "$GITHUB_OUTPUT"
               exit 0
             fi
             raw=$(jq -cn --arg repo "$SINGLE_REPO" --arg ref "$SINGLE_REF" --arg command "$SINGLE_COMMAND" \
@@ -311,6 +313,7 @@ jobs:
   run:
     name: "run (${{ matrix.repo }} #${{ matrix.idx }})"
     needs: setup
+    if: ${{ needs.setup.outputs.matrix != '[{"noop":true}]' }}
     runs-on: ${{ inputs.runner == 'blacksmith' && 'blacksmith-4vcpu-ubuntu-2404' || 'ubuntu-24.04' }}
     # The input is clamped into range so an out-of-range value can
     # never set an absurd timeout; the validate step then fails the
