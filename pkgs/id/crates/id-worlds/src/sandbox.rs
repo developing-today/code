@@ -386,6 +386,7 @@ impl Sandbox {
     /// directory (`None` disables the cache). The seam exists for
     /// tests, which must not share cache state through the
     /// process-wide environment or temp dir.
+    #[cfg(test)]
     fn compile_with_cache(
         wasm: &[u8],
         limits: SandboxLimits,
