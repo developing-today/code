@@ -271,6 +271,42 @@ mod tests {
     }
 
     #[test]
+    fn show_and_timeline_surface_suspect_completions_14268() {
+        // #14268 ask 2: the broker stamps a suspect completion and
+        // writes a suspect_completion event, but that only surfaces
+        // if the read paths query the kind — the same blind-spot
+        // shape as #6985 and the staleness_autocomplete half of
+        // #14292. Both per-task surfaces must ask for it.
+        let src = [
+            include_str!("client/transport.rs"),
+            include_str!("client/support.rs"),
+            include_str!("client/commands_query.rs"),
+            include_str!("client/commands_lifecycle.rs"),
+            include_str!("client/fallback_stack.rs"),
+            include_str!("client.rs"),
+        ]
+        .concat();
+        let show = src
+            .split("fn cmd_show(")
+            .nth(1)
+            .and_then(|s| s.split("fn cmd_timeline(").next())
+            .unwrap_or("");
+        assert!(
+            show.contains("\"suspect_completion\""),
+            "cmd_show queries suspect_completion so a suspect completion is visible in a task's history"
+        );
+        let timeline = src
+            .split("fn cmd_timeline(")
+            .nth(1)
+            .and_then(|s| s.split("let resp = call(").next())
+            .unwrap_or("");
+        assert!(
+            timeline.contains("\"suspect_completion\""),
+            "cmd_timeline queries suspect_completion so a suspect completion is visible on the timeline"
+        );
+    }
+
+    #[test]
     fn collapse_timeline_9046_drops_only_duplicate_writes() {
         // #9046 oracle: same (kind, session, leaf, trigger) inside
         // 120 s = one record written by two surfaces; a changed
