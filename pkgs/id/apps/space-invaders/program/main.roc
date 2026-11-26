@@ -3,6 +3,7 @@ app [program] { pf: platform "../../../examples/roc-world/platform.roc" }
 import pf.RocJson
 import pf.Screen
 import pf.Key
+import pf.Term
 
 # Space Invaders, as a Roc world program (#14938, slice 4 of #14861).
 #
@@ -695,3 +696,54 @@ expect snapshot(restore(snapshot(mid_game))) == snapshot(mid_game)
 
 expect restore("not json at all").phase == "playing"
 expect restore("not json at all").score == 0
+
+# --- playthrough smoke (#14939) ----------------------------------------------
+#
+# A scripted game driven through `update` exactly as the host drives
+# it: raw key bytes for input, JSON for the tick capability. The
+# script steps right once, fires, and lets five ticks pass; on the
+# fifth tick the bullet meets the marching formation's bottom row, so
+# the score moves 0 -> 10 and the formation drops to 31 aliens. The
+# same script runs against the built wasm in smoke/drive.mjs, and
+# the rendering expects below pin the resulting frame in all three
+# harness modes (#14861): the frame JSON document (alternate), the
+# primary ANSI stream, and the text line diff (low-write text).
+
+tick_event : Str
+tick_event = "{\"cap\":\"time.tick\",\"interval\":1000,\"now\":1}"
+
+playthrough : Model
+playthrough = List.fold(
+    ["d", " ", tick_event, tick_event, tick_event, tick_event, tick_event],
+    init(0),
+    |model, event| update(model, 0, event),
+)
+
+expect playthrough.score == 10 and playthrough.ticks == 5
+expect playthrough.phase == "playing" and playthrough.lives == 3 and aliens_left(playthrough) == 31
+expect playthrough.bullet_on == 0 and playthrough.player_x == 21
+expect records(playthrough) == "{\"score\":10,\"lives\":3,\"wave\":1,\"phase\":\"playing\",\"aliens_left\":31,\"ticks\":5}"
+
+# Frame JSON: the view is a screen document. (Asserted on the
+# encoded text directly — a decode match here would leave one
+# branch never taken during compile-time evaluation, which the
+# compiler reports as an empirical unused-branch warning.)
+expect List.len(Str.split_on(view(playthrough), "\"kind\":\"screen\"")) > 1
+
+# Text mode: the first line is the HUD, and the transition from the
+# opening frame reports the HUD row with its new text.
+expect (List.first(Term.text_lines(frame(playthrough))) ?? "") == "SCORE 10  LIVES 3  WAVE 1"
+expect List.any(Term.diff_lines(Term.text_lines(frame(init(0))), frame(playthrough)), |entry| entry.row == 0 and entry.text == "SCORE 10  LIVES 3  WAVE 1")
+
+# Primary mode: a full repaint clears and cursor-addresses the HUD.
+# The painter emits runs of changed cells, and a run breaks at every
+# unchanged cell — the HUD's spaces are unchanged from the blank
+# screen — so the HUD words arrive as separate runs ("SCORE", "10",
+# "LIVES", ...), never as one spaced string. A transition stream
+# likewise paints the shifted HUD words and is never empty for a
+# frame that moved.
+expect List.len(Str.split_on(Term.paint_primary_full(frame(playthrough)), "\u(1b)[2J")) > 1
+expect List.len(Str.split_on(Term.paint_primary_full(frame(playthrough)), "\u(1b)[1;1H")) > 1
+expect List.len(Str.split_on(Term.paint_primary_full(frame(playthrough)), "SCORE")) > 1
+expect List.len(Str.split_on(Term.paint_primary_full(frame(playthrough)), "LIVES")) > 1
+expect List.len(Str.split_on(Term.paint_primary(frame(init(0)), frame(playthrough)), "LIVES")) > 1

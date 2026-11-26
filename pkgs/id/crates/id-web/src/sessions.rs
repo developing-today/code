@@ -987,7 +987,7 @@ mod tests {
             before: 1,
         });
         assert_eq!(empty_window.truncated, None);
-        assert!(empty_window.events.is_empty());
+        assert_eq!(empty_window.events, [] as [RunEvent; 0]);
     }
 
     proptest! {

@@ -47,6 +47,7 @@
 mod app_interface;
 mod assets;
 mod collab;
+mod collab_steps;
 mod content_mode;
 mod explore;
 pub mod gallery;

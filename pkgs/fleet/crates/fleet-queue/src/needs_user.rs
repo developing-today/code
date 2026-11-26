@@ -49,7 +49,7 @@ pub const DEFAULT_ALERTS_URL: &str = "http://127.0.0.1:4870/api/alerts";
 
 /// One answer option offered to Drew inside the needs-drew push.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NeedsDrewOption {
+pub struct NeedsUserOption {
     pub id: String,
     pub label: String,
 }
@@ -60,18 +60,18 @@ pub struct NeedsDrewOption {
 /// `blocker` is the /block call's blocker text, used as the alert
 /// body when no richer `context` was supplied.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct BlockNeedsDrew {
+pub struct BlockNeedsUser {
     pub ledger_id: String,
     pub question: String,
     pub context: Option<String>,
-    pub options: Vec<NeedsDrewOption>,
+    pub options: Vec<NeedsUserOption>,
     pub links: Vec<String>,
     pub blocker: String,
 }
 
 /// Build the exact throat POST body for one block. Pure — the
 /// unit tests pin the shape (the aggregator lane parses it).
-pub fn build_throat_body(block: &BlockNeedsDrew) -> Value {
+pub fn build_throat_body(block: &BlockNeedsUser) -> Value {
     let mut needs_drew = json!({
         "ledgerId": block.ledger_id,
         "question": block.question,
@@ -182,12 +182,12 @@ fn post_json(url: &str, token: &str, body: &Value) -> Result<Value, String> {
 /// an empty string when the raise succeeded without one. The
 /// raise is idempotent at the throat ((source, key) dedupe), so
 /// posting twice for one block is safe.
-pub fn post_needs_drew(token: &str, nd: &BlockNeedsDrew) -> Result<String, String> {
-    post_needs_drew_to(&alerts_url(), token, nd)
+pub fn post_needs_user(token: &str, nd: &BlockNeedsUser) -> Result<String, String> {
+    post_needs_user_to(&alerts_url(), token, nd)
 }
 
-/// [`post_needs_drew`] against an explicit URL (tests, overrides).
-pub fn post_needs_drew_to(url: &str, token: &str, nd: &BlockNeedsDrew) -> Result<String, String> {
+/// [`post_needs_user`] against an explicit URL (tests, overrides).
+pub fn post_needs_user_to(url: &str, token: &str, nd: &BlockNeedsUser) -> Result<String, String> {
     let resp = post_json(url, token, &build_throat_body(nd))?;
     let answer = resp
         .get("answerUrl")
@@ -401,7 +401,7 @@ pub fn build_extension_alert_body(info: &ExtensionAlert) -> Value {
 /// `blocker` taken from the block itself. Returns None when the
 /// object is absent or lacks a usable ledger_id / question — a
 /// malformed payload must never fail or fake a block.
-pub fn from_block_request(req: &Value, blocker: &str) -> Option<BlockNeedsDrew> {
+pub fn from_block_request(req: &Value, blocker: &str) -> Option<BlockNeedsUser> {
     let nd = req.get("needs_drew").filter(|v| v.is_object())?;
     let ledger_id = match nd.get("ledger_id") {
         Some(Value::String(s)) if !s.trim().is_empty() => s.clone(),
@@ -424,7 +424,7 @@ pub fn from_block_request(req: &Value, blocker: &str) -> Option<BlockNeedsDrew> 
         .map(|arr| {
             arr.iter()
                 .filter_map(|o| {
-                    Some(NeedsDrewOption {
+                    Some(NeedsUserOption {
                         id: o.get("id")?.as_str()?.to_string(),
                         label: o.get("label")?.as_str()?.to_string(),
                     })
@@ -441,7 +441,7 @@ pub fn from_block_request(req: &Value, blocker: &str) -> Option<BlockNeedsDrew> 
                 .collect()
         })
         .unwrap_or_default();
-    Some(BlockNeedsDrew {
+    Some(BlockNeedsUser {
         ledger_id,
         question,
         context,
@@ -456,17 +456,17 @@ pub fn from_block_request(req: &Value, blocker: &str) -> Option<BlockNeedsDrew> 
 mod tests {
     use super::*;
 
-    fn full_block() -> BlockNeedsDrew {
-        BlockNeedsDrew {
+    fn full_block() -> BlockNeedsUser {
+        BlockNeedsUser {
             ledger_id: "ledger-42".to_string(),
             question: "Ship the red or the blue build?".to_string(),
             context: Some("Both pass CI; blue is 2 days older.".to_string()),
             options: vec![
-                NeedsDrewOption {
+                NeedsUserOption {
                     id: "red".to_string(),
                     label: "Ship red".to_string(),
                 },
-                NeedsDrewOption {
+                NeedsUserOption {
                     id: "blue".to_string(),
                     label: "Ship blue".to_string(),
                 },
@@ -503,7 +503,7 @@ mod tests {
 
     #[test]
     fn throat_body_omits_absent_optionals_and_falls_back_to_blocker() {
-        let block = BlockNeedsDrew {
+        let block = BlockNeedsUser {
             ledger_id: "99".to_string(),
             question: "Proceed?".to_string(),
             context: None,

@@ -302,7 +302,16 @@ describe("durable recommendation accumulator (oracle: C9139-01 finite model + wr
       const keys = Object.keys(batch).sort();
       expect(keys).toHaveLength(2);
       expect(keys).toContain(CURSOR_KEY);
-      expect(keys).toContain(pageKey(Number(keys.find((key) => key !== CURSOR_KEY)!.split(":").at(-1))));
+      expect(keys).toContain(
+        pageKey(
+          Number(
+            keys
+              .find((key) => key !== CURSOR_KEY)!
+              .split(":")
+              .at(-1),
+          ),
+        ),
+      );
       // Each advance batch is smaller than the total order alone, which
       // the v1 layout re-serialized and rewrote on every advance.
       expect(JSON.stringify(batch).length).toBeLessThan(orderBytes);

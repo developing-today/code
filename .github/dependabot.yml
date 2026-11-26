@@ -28,6 +28,7 @@ updates:
       - "/pkgs/bedside-and-away"
       - "/pkgs/cf-container-hello"
       - "/pkgs/cold-store-reaper/worker"
+      - "/pkgs/d1-gateway/worker"
       - "/pkgs/desktop-commander/worker"
       - "/pkgs/dot-bridge/site"
       - "/pkgs/fleet/hosted-worker"

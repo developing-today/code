@@ -11,7 +11,7 @@ of 2 MiB, stripped.
 
 Source: https://github.com/developing-today/code/blob/main/pkgs/fleet/Cargo.toml
 
-## The crates map: 16 crates
+## The crates map: 17 crates
 
 | Crate                 | Owns                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
 | --------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -32,6 +32,7 @@ Source: https://github.com/developing-today/code/blob/main/pkgs/fleet/Cargo.toml
 | `fleet-kv` | Identity-scoped local SQLite storage: the local store other fleet surfaces build on. |
 | `fleet-cert` | The `cert` domain: PKI/X.509 roots, issuers, leaves, chains and bundles over a library-first Rust API, plus the OCSP verb group. |
 | `fleet-orgs` | The `orgs` domain: the Turso-backed org/App registry, synced from each GitHub App's own JWT. |
+| `fleet-pool` | The generic pooling primitive: members in nested groups, scope-keyed walls, the selection strategies and the mandatory decision log. A library crate; it owns no domain. |
 
 Domain ownership, one line each: `queue` → `fleet-queue`; `serve` → bin-crate
 glue over `fleet-queue` / `fleet-search` / `fleet-proxy`; `proxy` →

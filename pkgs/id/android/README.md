@@ -1,47 +1,48 @@
-# Android PoC shell and `id-client` target (#1831 / #7938)
+# Android remote-drive PoC (#1831)
 
-## What lives here
+## What this slice does
 
-- `check-android.sh`: the slice-1 Android gate. Runs the
-  `android_dependency_boundary` check, then `cargo check -p id-client
-  --target aarch64-linux-android` when the target std is installed.
-- `app/`: a minimal launcher APK shell. It intentionally reports the
-  disconnected state; it does not yet connect, relay input, or host an
-  id node. It requests no permissions, including no VPN permission.
-- `check-android-shell.sh`: SDK-free structural smoke check for launcher
-  wiring, explicit disconnected UI, and the absence of permissions.
-- This README: the build path contract for the Kotlin shell.
+- `app/`: a foreground Android shell that accepts an Iroh host address, an
+  optional world name, and a join capability; it joins the existing
+  `/id-world/1` session and displays validated host views.
+- `pkgs/id/crates/id-android-remote`: a small Rust JNI bridge. It reuses the
+  shell contract and `WorldClient`, keeps the transport endpoint in a Rust
+  runtime thread, exposes explicit connection errors, and never starts a host
+  or listener.
+- The capability is used for the join only, is not logged or persisted, and
+  the UI field does not save its contents. The APK requests only Android's
+  normal `INTERNET` permission; it does not request `VpnService`.
+- `check-android-shell.sh`: SDK-free structural check for manifest permission
+  shape, JNI wiring, and explicit disconnected/error states.
 
-## Android app shell
+Tap/drag/scroll relay, cell mapping, ID-record storage/serving, and live-screen
+click-through remain later work on #1831. The presence of a connected view does
+not claim that input relay works.
 
-The project uses Gradle Kotlin DSL, Android Gradle Plugin 8.7.3, Kotlin
-2.0.21, compile/target SDK 35, and min SDK 26. With Gradle and the Android
-SDK installed, build an APK from this directory with
-`gradle :app:assembleDebug`; the artifact is
-`app/build/outputs/apk/debug/app-debug.apk`. No Gradle wrapper is checked
-in yet. `bash check-android-shell.sh` checks the project wiring without
-requiring either Gradle or an emulator.
+## Build
 
-This is an executable shell checkpoint only. iroh transport, binding the
-Rust `GestureTranslator`, cell-coordinate mapping, ID record storage/serving,
-and live-app tap/latency demonstration remain follow-on work; do not treat
-the presence of this APK shell as satisfying #1831's relay acceptance.
-
-## Prerequisites
-
-- Rust target std: `rustup target add aarch64-linux-android`
-  (toolchain file `pkgs/id/rust-toolchain.toml`, currently 1.99.1).
-- Android NDK r27+ with `aarch64-linux-android35-clang` on `PATH`, or
-  set `ANDROID_NDK_HOME`. `cargo check` needs only the target std;
-  full `cargo build` / APK linkage needs the NDK linker.
-
-## Commands (run from `pkgs/id/`)
+The Gradle `preBuild` task cross-compiles the Rust library for emulator and
+device ABIs into `app/src/main/jniLibs`. Install the Rust toolchain from
+`pkgs/id/rust-toolchain.toml`, `cargo-ndk` 4.1.2, Android SDK 35, and an Android
+NDK r27+; then run from this directory:
 
 ```sh
-./android/check-android.sh
+gradle :app:assembleDebug
+bash check-android-shell.sh
 ```
 
-The script is pass/fail: boundary test first, then the Android target
-resolve. Its output names the exact commands and results for the PR
-record. No world hosting, drive, recovery, provider, push, or presence
-surface is built here — client facade only.
+Fleet CI uses the `ghcr.io/cirruslabs/android-sdk:35-ndk` image and installs
+the pinned Rust toolchain plus `cargo-ndk` before building. The debug APK is
+`app/build/outputs/apk/debug/app-debug.apk`.
+
+## Runtime inputs
+
+- **Host address:** an Iroh endpoint ID, `node-id@ip:port` for a direct socket,
+  or a serialized Iroh `EndpointAddr` for other direct transport addresses.
+- **World:** optional world name; blank uses the host default.
+- **Join capability:** supplied by the operator for this session; it is not
+  saved by the app.
+
+The view is the host's latest validated text projection. The native session
+continues while the activity is open and stops when the user disconnects or
+leaves the activity.

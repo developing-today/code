@@ -264,7 +264,7 @@ fn stable_arguments(target: &str) -> Vec<String> {
     arguments
 }
 
-/// Per-function compile scope (design #5964 §1.1, §2.2 steps 1–4; S1).
+/// Per-function compile scope (design #5964 §1.1 to §1.3, §2.2 steps 1–5).
 ///
 /// A user function is a per-function core-Wasm module compiled against a
 /// function platform the world declares — the narrowing of the
@@ -273,10 +273,14 @@ fn stable_arguments(target: &str) -> Vec<String> {
 /// import outside the granted set is a compile/install rejection here,
 /// never a runtime surprise (§1.1).
 ///
-/// Identity at this slice is name plus content address: the binding name
-/// (§1.2) with the module hash and the compile provenance triple. Version
-/// assignment, the interface hash, and publish/swap bookkeeping are
-/// placement concerns and arrive with the later slices.
+/// Identity is the binding name (§1.2) with the module hash, the compile
+/// provenance triple, and the interface hash over the canonical interface
+/// descriptor ([`FunctionInterface`]). The §1.3 activation verdict is the
+/// pure [`check_activation`]: a candidate whose interface differs from the
+/// binding's expectation is refused and the published version keeps
+/// running. Version assignment, publish/swap bookkeeping, the persistent
+/// compile cache, and per-function instances are placement concerns and
+/// arrive with the later slices.
 
 /// The world-declared function platform a user function compiles against
 /// (design #5964 §2.2 step 2): a platform tree in the same shape the world
@@ -324,6 +328,156 @@ pub struct FunctionSpec {
     pub seed: u64,
     /// Platform capabilities the world author granted this function.
     pub granted: Vec<String>,
+    /// The call signature and state schema the function declares.
+    pub shape: FunctionShape,
+}
+
+impl FunctionSpec {
+    /// The canonical interface descriptor this request declares (design
+    /// #5964 §1.2): its binding name, shape, and granted capability set.
+    #[must_use]
+    pub fn interface(&self) -> FunctionInterface {
+        FunctionInterface::new(
+            self.function.clone(),
+            self.shape.clone(),
+            self.granted.clone(),
+        )
+    }
+}
+
+/// The call signature and state schema a function declares (design #5964
+/// §1.2): the shapes of its call input and output in the platform's
+/// canonical encoding, and the identifier of its state-blob schema. Each is
+/// an identifier the world's function platform defines; this layer compares
+/// them byte for byte and never interprets them.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FunctionShape {
+    /// Shape identifier of the call input.
+    pub input: String,
+    /// Shape identifier of the call output.
+    pub output: String,
+    /// Identifier of the state-blob schema the host snapshots and restores.
+    pub state_schema: String,
+}
+
+/// Longest shape or state-schema identifier, in bytes.
+pub const MAX_FUNCTION_SHAPE_BYTES: usize = 256;
+
+/// A shape identifier is 1 to [`MAX_FUNCTION_SHAPE_BYTES`] bytes with no
+/// control characters, so it reads back the way it was declared.
+fn validate_function_shape(function: &str, shape: &FunctionShape) -> Result<()> {
+    for (part, value) in [
+        ("input shape", shape.input.as_str()),
+        ("output shape", shape.output.as_str()),
+        ("state schema", shape.state_schema.as_str()),
+    ] {
+        ensure!(
+            !value.is_empty()
+                && value.len() <= MAX_FUNCTION_SHAPE_BYTES
+                && !value.chars().any(char::is_control),
+            "function {function:?}: {part} {value:?} is not a valid identifier (1 to {MAX_FUNCTION_SHAPE_BYTES} bytes, no control characters)"
+        );
+    }
+    Ok(())
+}
+
+/// Domain tag that opens a canonical interface descriptor. A change to the
+/// encoding is a new tag, never a silent re-meaning of recorded hashes.
+pub const FUNCTION_INTERFACE_DOMAIN: &[u8] = b"id-function-interface-v1\0";
+
+/// The canonical interface descriptor of a user function (design #5964
+/// §1.2): its binding name, its signature (call input and output shapes),
+/// its state-blob schema identifier, and the capability set the world
+/// author granted it. The grant is part of the descriptor (§5 point 3), so
+/// widening or narrowing it is a visible interface change, never a silent
+/// privilege drift.
+///
+/// # Canonical form
+///
+/// [`FunctionInterface::canonical_bytes`] is the one byte form, and the
+/// interface hash is BLAKE3 over it, as lowercase hex like the crate's
+/// other digests:
+///
+/// 1. the domain tag [`FUNCTION_INTERFACE_DOMAIN`]
+///    (`id-function-interface-v1` and a NUL byte);
+/// 2. the binding name, the input shape, the output shape and the
+///    state-schema identifier, in that order, each as its byte length
+///    (`u64`, little-endian) followed by its UTF-8 bytes;
+/// 3. the number of granted capabilities (`u64`, little-endian), then each
+///    capability in ascending byte order, each as its byte length (`u64`,
+///    little-endian) followed by its UTF-8 bytes.
+///
+/// The granted set is sorted and deduplicated when the descriptor is built,
+/// so the order in which grants were listed, and any repeats, never reach
+/// the bytes. Every field is length-prefixed, so two different descriptors
+/// never share a byte form. The grant is the effective list (with `*`
+/// expanded), the same list the import check uses.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FunctionInterface {
+    function: String,
+    shape: FunctionShape,
+    granted: Vec<String>,
+}
+
+impl FunctionInterface {
+    /// Build the descriptor, sorting and deduplicating the granted set.
+    #[must_use]
+    pub fn new(function: String, shape: FunctionShape, mut granted: Vec<String>) -> Self {
+        granted.sort_unstable();
+        granted.dedup();
+        Self {
+            function,
+            shape,
+            granted,
+        }
+    }
+
+    /// The binding name.
+    #[must_use]
+    pub fn function(&self) -> &str {
+        &self.function
+    }
+
+    /// The call signature and state schema.
+    #[must_use]
+    pub const fn shape(&self) -> &FunctionShape {
+        &self.shape
+    }
+
+    /// The granted capability set, sorted and deduplicated.
+    #[must_use]
+    pub fn granted(&self) -> &[String] {
+        &self.granted
+    }
+
+    /// The canonical byte form described on [`FunctionInterface`].
+    #[must_use]
+    pub fn canonical_bytes(&self) -> Vec<u8> {
+        fn push_field(bytes: &mut Vec<u8>, field: &str) {
+            bytes.extend_from_slice(&(field.len() as u64).to_le_bytes());
+            bytes.extend_from_slice(field.as_bytes());
+        }
+        let mut bytes = FUNCTION_INTERFACE_DOMAIN.to_vec();
+        for field in [
+            self.function.as_str(),
+            self.shape.input.as_str(),
+            self.shape.output.as_str(),
+            self.shape.state_schema.as_str(),
+        ] {
+            push_field(&mut bytes, field);
+        }
+        bytes.extend_from_slice(&(self.granted.len() as u64).to_le_bytes());
+        for capability in &self.granted {
+            push_field(&mut bytes, capability);
+        }
+        bytes
+    }
+
+    /// The interface hash (§1.2): BLAKE3 over [`Self::canonical_bytes`].
+    #[must_use]
+    pub fn interface_hash(&self) -> String {
+        blake3::hash(&self.canonical_bytes()).to_hex().to_string()
+    }
 }
 
 /// A function name is a binding name: one safe component, never a path.
@@ -343,7 +497,7 @@ fn validate_function_name(function: &str) -> Result<()> {
 /// What a successful per-function compile produces: the validated Wasm
 /// module with the §2.2 step-4 identity — module hash plus the compile
 /// provenance triple (source, platform, compiler digests) — keyed under
-/// the binding name.
+/// the binding name, and the step-5 interface hash over its descriptor.
 #[derive(Clone, Debug)]
 pub struct FunctionArtifact {
     /// Binding name from the request.
@@ -356,16 +510,134 @@ pub struct FunctionArtifact {
     pub provenance: crate::world::ModuleProvenance,
     /// BLAKE3 of the module bytes: the artifact's content address.
     pub module_hash: String,
+    /// The canonical interface descriptor the function was compiled under.
+    pub interface: FunctionInterface,
+    /// [`FunctionInterface::interface_hash`] of `interface`.
+    pub interface_hash: String,
+}
+
+/// What a binding expects of the function version it activates (design
+/// #5964 §1.3): the binding name and the interface hash of record. A world
+/// that wants a new interface publishes a new expectation first (a
+/// versioned mapping change, #5967); only then can a candidate carrying the
+/// new hash activate.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FunctionBinding {
+    /// Binding name in the per-user function mapping (#5967).
+    pub function: String,
+    /// The interface hash a candidate must carry to activate.
+    pub interface_hash: String,
+}
+
+impl FunctionBinding {
+    /// The expectation that admits exactly `interface`.
+    #[must_use]
+    pub fn expecting(interface: &FunctionInterface) -> Self {
+        Self {
+            function: interface.function.clone(),
+            interface_hash: interface.interface_hash(),
+        }
+    }
+}
+
+/// Why a candidate function version was refused activation (design #5964
+/// §1.3). Every refusal means the same to the caller: the candidate is
+/// discarded and the previously published version keeps running, with
+/// nothing about the live world changed. Each variant carries what the
+/// publisher needs to see exactly what diverged.
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum ActivationRefusal {
+    /// The candidate was compiled for another binding name.
+    #[error(
+        "candidate function {candidate:?} cannot activate on binding {expected:?}; the published version keeps running"
+    )]
+    WrongFunction {
+        /// The binding's name.
+        expected: String,
+        /// The candidate's name.
+        candidate: String,
+    },
+    /// The candidate's recorded interface hash is not the hash of its own
+    /// descriptor, so its interface cannot be trusted.
+    #[error(
+        "function {function:?}: candidate records interface hash {recorded} but its descriptor hashes to {computed}; activation refused, the published version keeps running"
+    )]
+    InconsistentInterface {
+        /// The binding name.
+        function: String,
+        /// The hash the artifact records.
+        recorded: String,
+        /// The hash of the artifact's descriptor.
+        computed: String,
+    },
+    /// The candidate's interface differs from the binding's expectation.
+    #[error(
+        "function {function:?}: candidate interface {candidate} does not match the expected interface {expected}; activation refused, the published version keeps running"
+    )]
+    InterfaceMismatch {
+        /// The binding name.
+        function: String,
+        /// The interface hash the binding expects.
+        expected: String,
+        /// The candidate's interface hash.
+        candidate: String,
+    },
+}
+
+/// The §1.3 activation verdict for a candidate function version: `Ok` when
+/// it may activate on `binding`, otherwise the reason it may not. A pure
+/// decision with no coercion, adapter, or partial activation; the caller
+/// that holds publish/swap state discards a refused candidate and keeps the
+/// published version running.
+///
+/// The candidate's interface hash is recomputed from its descriptor, so an
+/// artifact whose recorded hash and descriptor disagree is refused rather
+/// than trusted.
+///
+/// # Errors
+///
+/// [`ActivationRefusal`]: another binding name, a recorded hash that does
+/// not match the descriptor, or an interface hash other than the binding
+/// expects.
+pub fn check_activation(
+    binding: &FunctionBinding,
+    candidate: &FunctionArtifact,
+) -> Result<(), ActivationRefusal> {
+    if candidate.function != binding.function {
+        return Err(ActivationRefusal::WrongFunction {
+            expected: binding.function.clone(),
+            candidate: candidate.function.clone(),
+        });
+    }
+    let computed = candidate.interface.interface_hash();
+    if candidate.interface_hash != computed {
+        return Err(ActivationRefusal::InconsistentInterface {
+            function: binding.function.clone(),
+            recorded: candidate.interface_hash.clone(),
+            computed,
+        });
+    }
+    if computed != binding.interface_hash {
+        return Err(ActivationRefusal::InterfaceMismatch {
+            function: binding.function.clone(),
+            expected: binding.interface_hash.clone(),
+            candidate: computed,
+        });
+    }
+    Ok(())
 }
 
 /// Compile one function against the world's declared function platform and
 /// return its module with identity. Runs the §2.2 pipeline at function
 /// scope: intake limits, compile, import check against the function's
-/// granted set, identity. The import check runs before the compiler ever
-/// spawns, so an ungranted capability is an install-time rejection with
-/// the running version untouched. S1 carries no shared cache (that is the
-/// S2 slice): the pipeline runs directly, so a function compile can
-/// neither warm nor poison world builds.
+/// granted set, identity, and the interface hash over the descriptor the
+/// spec declares (step 5; the check against the binding is
+/// [`check_activation`], run where the binding is known). The shape
+/// identifiers and the import check run before the compiler ever spawns, so
+/// an ungranted capability is an install-time rejection with the running
+/// version untouched. S1 carries no shared cache (that is the S2 slice):
+/// the pipeline runs directly, so a function compile can neither warm nor
+/// poison world builds.
 ///
 /// `granted` must be the effective list for this function (granted and
 /// within the server and world ceilings, with `*` expanded), not the raw
@@ -373,9 +645,10 @@ pub struct FunctionArtifact {
 ///
 /// # Errors
 ///
-/// A bad binding name, anything outside the intake bounds, an import the
-/// function was not granted, a compiler failure (with its diagnostics),
-/// or output the sandbox refuses. Every error names the function.
+/// A bad binding name, a shape identifier outside its bounds, anything
+/// outside the intake bounds, an import the function was not granted, a
+/// compiler failure (with its diagnostics), or output the sandbox refuses.
+/// Every error names the function.
 pub async fn compile_function(
     spec: &FunctionSpec,
     platform: &FunctionPlatform,
@@ -383,6 +656,7 @@ pub async fn compile_function(
     timeout: Duration,
 ) -> Result<FunctionArtifact> {
     validate_function_name(&spec.function)?;
+    validate_function_shape(&spec.function, &spec.shape)?;
     let inner = CompileSpec {
         files: spec.files.clone(),
         seed: spec.seed,
@@ -399,12 +673,16 @@ pub async fn compile_function(
             .await
             .with_context(|| format!("compile function {:?}", spec.function))?;
     let module_hash = crate::world_cache::artifact_hash(&module);
+    let interface = spec.interface();
+    let interface_hash = interface.interface_hash();
     Ok(FunctionArtifact {
         function: spec.function.clone(),
         module,
         diagnostics,
         provenance,
         module_hash,
+        interface,
+        interface_hash,
     })
 }
 
@@ -2423,6 +2701,220 @@ restore = |text| match U64.from_str(text) {
                 .collect(),
             seed: 1,
             granted: granted.into_iter().map(str::to_owned).collect(),
+            shape: text_shape(),
+        }
+    }
+
+    fn text_shape() -> FunctionShape {
+        FunctionShape {
+            input: "Str".to_owned(),
+            output: "Str".to_owned(),
+            state_schema: "echo-state-v1".to_owned(),
+        }
+    }
+
+    fn interface(function: &str, shape: FunctionShape, granted: &[&str]) -> FunctionInterface {
+        FunctionInterface::new(
+            function.to_owned(),
+            shape,
+            granted.iter().map(|grant| (*grant).to_owned()).collect(),
+        )
+    }
+
+    /// A candidate artifact under `interface`, built without the compiler:
+    /// the activation check reads only the name and the interface.
+    fn candidate(interface: FunctionInterface) -> FunctionArtifact {
+        FunctionArtifact {
+            function: interface.function().to_owned(),
+            module: b"\0asm".to_vec(),
+            diagnostics: String::new(),
+            provenance: crate::world::ModuleProvenance::Artifact,
+            module_hash: crate::world_cache::artifact_hash(b"\0asm"),
+            interface_hash: interface.interface_hash(),
+            interface,
+        }
+    }
+
+    #[test]
+    fn function_interface_canonical_form_ignores_grant_order_and_repeats() {
+        // Oracle: design #5964 §1.2 — the interface hash is over one
+        // canonical descriptor, so the order grants were listed in and any
+        // repeats never reach the bytes; the layout is the documented one.
+        let forward = interface("echo", text_shape(), &["Cap", "Clock"]);
+        let shuffled = interface("echo", text_shape(), &["Clock", "Cap", "Clock", "Cap"]);
+        assert_eq!(forward, shuffled);
+        assert_eq!(shuffled.granted(), &["Cap".to_owned(), "Clock".to_owned()]);
+        assert_eq!(forward.canonical_bytes(), shuffled.canonical_bytes());
+        assert_eq!(forward.interface_hash(), shuffled.interface_hash());
+
+        let mut expected = b"id-function-interface-v1\0".to_vec();
+        for field in ["echo", "Str", "Str", "echo-state-v1"] {
+            expected.extend_from_slice(&(field.len() as u64).to_le_bytes());
+            expected.extend_from_slice(field.as_bytes());
+        }
+        expected.extend_from_slice(&2_u64.to_le_bytes());
+        for grant in ["Cap", "Clock"] {
+            expected.extend_from_slice(&(grant.len() as u64).to_le_bytes());
+            expected.extend_from_slice(grant.as_bytes());
+        }
+        assert_eq!(forward.canonical_bytes(), expected);
+        assert_eq!(
+            forward.interface_hash(),
+            blake3::hash(&expected).to_hex().to_string()
+        );
+        assert_eq!(forward.interface_hash().len(), 64);
+
+        // The spec's own descriptor is the same canonical value.
+        let spec = function_spec(
+            "echo",
+            vec![("main.roc", "app")],
+            vec!["Clock", "Cap", "Cap"],
+        );
+        assert_eq!(spec.interface(), forward);
+    }
+
+    #[test]
+    fn function_interface_hash_changes_with_name_shape_or_any_grant() {
+        // Oracle: design #5964 §1.2 and §5 point 3 — the name, both call
+        // shapes, the state schema and every granted capability are part
+        // of the interface hash, so changing any one of them is a visible
+        // interface change. Length prefixes keep a shifted boundary
+        // between fields from colliding.
+        let base = interface("echo", text_shape(), &["Cap"]);
+        let shape = |input: &str, output: &str, state_schema: &str| FunctionShape {
+            input: input.to_owned(),
+            output: output.to_owned(),
+            state_schema: state_schema.to_owned(),
+        };
+        let variants = [
+            interface("echo2", text_shape(), &["Cap"]),
+            interface("echo", shape("Bytes", "Str", "echo-state-v1"), &["Cap"]),
+            interface("echo", shape("Str", "Bytes", "echo-state-v1"), &["Cap"]),
+            interface("echo", shape("Str", "Str", "echo-state-v2"), &["Cap"]),
+            interface("echo", shape("StrS", "tr", "echo-state-v1"), &["Cap"]),
+            interface("echo", text_shape(), &[]),
+            interface("echo", text_shape(), &["Cap", "Clock"]),
+            interface("echo", text_shape(), &["Clock"]),
+            interface("echo", text_shape(), &["CapClock"]),
+        ];
+        let mut hashes = std::collections::HashSet::new();
+        assert!(hashes.insert(base.interface_hash()));
+        for variant in &variants {
+            assert!(
+                hashes.insert(variant.interface_hash()),
+                "{variant:?} must hash apart from every other descriptor"
+            );
+        }
+    }
+
+    #[test]
+    fn activation_accepts_the_expected_interface_and_refuses_a_mismatch() {
+        // Oracle: design #5964 §1.3 — a candidate whose interface hash is
+        // the binding's expectation may activate; any other is refused
+        // with both hashes, and the refusal says the published version
+        // keeps running. A widened grant is a mismatch (§5 point 3).
+        let published = interface("echo", text_shape(), &["Cap"]);
+        let binding = FunctionBinding::expecting(&published);
+        assert_eq!(binding.function, "echo");
+        assert_eq!(binding.interface_hash, published.interface_hash());
+
+        let same = candidate(interface("echo", text_shape(), &["Cap", "Cap"]));
+        assert_eq!(check_activation(&binding, &same), Ok(()));
+
+        let widened = interface("echo", text_shape(), &["Cap", "Clock"]);
+        let refusal = check_activation(&binding, &candidate(widened.clone())).unwrap_err();
+        assert_eq!(
+            refusal,
+            ActivationRefusal::InterfaceMismatch {
+                function: "echo".to_owned(),
+                expected: published.interface_hash(),
+                candidate: widened.interface_hash(),
+            }
+        );
+        let text = refusal.to_string();
+        assert!(text.contains(&published.interface_hash()), "{text}");
+        assert!(text.contains(&widened.interface_hash()), "{text}");
+        assert!(text.contains("published version keeps running"), "{text}");
+
+        let reshaped = FunctionShape {
+            output: "Bytes".to_owned(),
+            ..text_shape()
+        };
+        assert!(matches!(
+            check_activation(&binding, &candidate(interface("echo", reshaped, &["Cap"]))),
+            Err(ActivationRefusal::InterfaceMismatch { .. })
+        ));
+    }
+
+    #[test]
+    fn activation_refuses_another_binding_and_an_inconsistent_artifact() {
+        // Oracle: design #5964 §1.3 — a candidate for another binding name
+        // never activates here, and an artifact whose recorded interface
+        // hash is not its descriptor's hash is refused, not trusted.
+        let published = interface("echo", text_shape(), &["Cap"]);
+        let binding = FunctionBinding::expecting(&published);
+
+        let other = candidate(interface("shout", text_shape(), &["Cap"]));
+        assert_eq!(
+            check_activation(&binding, &other),
+            Err(ActivationRefusal::WrongFunction {
+                expected: "echo".to_owned(),
+                candidate: "shout".to_owned(),
+            })
+        );
+
+        let mut forged = candidate(interface("echo", text_shape(), &["Cap", "Clock"]));
+        forged.interface_hash = published.interface_hash();
+        assert_eq!(
+            check_activation(&binding, &forged),
+            Err(ActivationRefusal::InconsistentInterface {
+                function: "echo".to_owned(),
+                recorded: published.interface_hash(),
+                computed: forged.interface.interface_hash(),
+            })
+        );
+    }
+
+    #[tokio::test]
+    async fn function_compile_refuses_a_bad_shape_before_the_compiler_runs() {
+        // Oracle: design #5964 §2.2 step 1 — the declared shape is intake:
+        // an empty, oversized or control-character identifier is refused
+        // naming the function and the part, before the (nonexistent)
+        // compiler is reached.
+        let (_root, platform) = staged_function_platform();
+        let long = "S".repeat(MAX_FUNCTION_SHAPE_BYTES + 1);
+        for (bad, part) in [
+            (
+                FunctionShape {
+                    input: String::new(),
+                    ..text_shape()
+                },
+                "input shape",
+            ),
+            (
+                FunctionShape {
+                    output: long,
+                    ..text_shape()
+                },
+                "output shape",
+            ),
+            (
+                FunctionShape {
+                    state_schema: "state\nv1".to_owned(),
+                    ..text_shape()
+                },
+                "state schema",
+            ),
+        ] {
+            let mut spec = function_spec("echo", vec![("main.roc", "app")], vec![]);
+            spec.shape = bad;
+            let error = compile_function(&spec, &platform, "/nonexistent/roc", COMPILE_TIMEOUT)
+                .await
+                .unwrap_err();
+            let text = format!("{error:#}");
+            assert!(text.contains("\"echo\""), "{text}");
+            assert!(text.contains(part), "{text}");
+            assert!(!text.contains("resolve Roc compiler executable"), "{text}");
         }
     }
 
@@ -2573,5 +3065,11 @@ restore = |text| text
             panic!("a function compile records source-build provenance");
         };
         assert_eq!(build.target, "wasm32");
+        assert_eq!(artifact.interface, spec.interface());
+        assert_eq!(artifact.interface_hash, spec.interface().interface_hash());
+        assert_eq!(
+            check_activation(&FunctionBinding::expecting(&spec.interface()), &artifact),
+            Ok(())
+        );
     }
 }

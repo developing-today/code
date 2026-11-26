@@ -48,10 +48,7 @@ export async function loadPoolAsync(db: AsyncSqlDb): Promise<ProjectPoolItem[]> 
   return poolFromRows(await db.all<{ item_json: string }>(POOL_SQL));
 }
 
-export async function loadRoadmapRowsAsync(
-  db: AsyncSqlDb,
-  pool: readonly ProjectPoolItem[],
-): Promise<RoadmapRow[]> {
+export async function loadRoadmapRowsAsync(db: AsyncSqlDb, pool: readonly ProjectPoolItem[]): Promise<RoadmapRow[]> {
   return roadmapRowsFromRows(await db.all<RoadmapRowRow>(ROADMAP_SQL), pool);
 }
 
