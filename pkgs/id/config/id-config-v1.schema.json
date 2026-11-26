@@ -115,6 +115,21 @@
       },
       "type": "object"
     },
+    "namespaces": {
+      "additionalProperties": false,
+      "description": "The namespace plane (#9111 record sections 3.1 and 7.4): which server-local namespace registry (#9116) names resolve in. An absent key or null takes the built-in default, the built-in registry only. The registry's records (core, handler, policies, shorthand_policy) are signed #9116 data and are never written here; there is no global registry and no fallback.",
+      "properties": {
+        "registry": {
+          "description": "builtin (the default), server:<id> or handle:<handle>, the id or handle 1 to 255 visible ASCII characters, written as a #9116 registry id displays itself.",
+          "oneOf": [
+            { "const": "builtin" },
+            { "pattern": "^(server|handle):[!-~]{1,255}$", "type": "string" },
+            { "type": "null" }
+          ]
+        }
+      },
+      "type": "object"
+    },
     "operation_override": {
       "additionalProperties": false,
       "properties": {
@@ -236,6 +251,7 @@
       "enum": ["single-node", "hosted-tenant", "federated-relay"],
       "type": "string"
     },
+    "namespaces": { "$ref": "#/$defs/namespaces" },
     "overrides": {
       "description": "Scoped overrides. Applied in scope-name order during resolution; two overrides for the same scope reject the document.",
       "items": { "$ref": "#/$defs/scoped_override" },
