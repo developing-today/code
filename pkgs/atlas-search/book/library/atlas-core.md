@@ -28,9 +28,9 @@ JSON shapes, field order, note placement and fatal messages mirror the
 Python, and the parity tests diff rendered envelopes and SQL strings against
 fixtures recorded from the production Python module.
 
-## The 46 public modules, grouped by job
+## The 47 public modules, grouped by job
 
-`lib.rs` declares 46 public modules. Grouped by the job they do:
+`lib.rs` declares 47 public modules. Grouped by the job they do:
 
 ### Retrieval
 
@@ -52,6 +52,7 @@ fixtures recorded from the production Python module.
 
 | Module            | Job                                                                                                                                                                                                                                                                         |
 | ----------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `catalog`         | The hot-side cold catalog: maps explicitly addressed file versions to cold shards and builds search scopes for queries that name cold tiers or shards; default fan-out does not open cold shards                                                                                 |
 | `shards`          | The core tier as a set of scan shards: discovery, naming, tiers, manifests, fan-out scan, content stores and the local-file transport (submodules `shards::scan`, `shards::content`, `shards::local`)                                                                       |
 | `turso`           | The Turso backend: the libsql HTTPS pipeline against the hosted DB with a read-only token. Every statement it builds is a `SELECT`                                                                                                                                          |
 | `local`           | The local backend: a SQLite publish file, schema-normalising temporary views, and vector side stores joined by content hash with an in-process cosine scan                                                                                                                  |
