@@ -1,10 +1,12 @@
 // Smoke for #5199 against local wrangler dev (workerd), in two parts.
 //
-// Part 1 — the application worker (wrangler.toml). Local workerd does
-// not implement jurisdiction restrictions (namespace.jurisdiction()
-// throws), so every request that would need a restricted namespace
-// must fail closed (503 jurisdiction_unavailable) and requests with
-// missing/invalid context must fail closed before that (401/403).
+// Part 1 — the application worker (wrangler.toml). #15479: the front
+// door refuses any client-supplied binding context at the public edge
+// (401 client_binding_refused) and fails closed without it (401
+// missing_binding). Nothing reaches the restricted namespace either
+// way until the authenticated internal caller (#15480) lands; local
+// workerd's lack of jurisdiction restrictions is unobservable while
+// the edge refuses everything first.
 // Nothing may fall back to the unrestricted namespace.
 //
 // Part 2 — the UserDO through the test-only harness
@@ -54,6 +56,13 @@ async function waitUp(port, tries) {
   return false;
 }
 
+// Part 1: application worker fails closed locally. #15479: no
+// authenticated internal caller exists yet (its registry is #15480),
+// so any client-supplied binding context is refused at the public
+// edge with an explicit error, and requests without it fail closed —
+// nothing reaches the restricted namespace either way. (Local workerd
+// does not implement jurisdiction restrictions, but that path is
+// unreachable until the internal caller lands.)
 // ---------- Part 1: application worker fails closed locally ----------
 {
   const port = 8797;
@@ -64,14 +73,14 @@ async function waitUp(port, tries) {
     let r = await fetch(base + "/v1/state");
     check("no context -> 401 missing_binding", r.status === 401 && (await r.json()).error === "missing_binding");
     r = await fetch(base + "/v1/state", { headers: { "x-binding-id": A } });
-    check("binding without jurisdiction -> 403", r.status === 403 && (await r.json()).error === "missing_jurisdiction");
+    check("client binding header -> 401 client_binding_refused", r.status === 401 && (await r.json()).error === "client_binding_refused");
     r = await fetch(base + "/v1/state", { headers: { "x-binding-id": A, "x-jurisdiction": "apac" } });
-    check("unsupported jurisdiction -> 403", r.status === 403 && (await r.json()).error === "unsupported_jurisdiction");
+    check("client binding + jurisdiction -> 401 client_binding_refused", r.status === 401 && (await r.json()).error === "client_binding_refused");
     r = await fetch(base + "/v1/state", { headers: { "x-binding-id": "google:123", "x-jurisdiction": "us" } });
-    check("subject-derived id -> 401 invalid_binding", r.status === 401 && (await r.json()).error === "invalid_binding");
+    check("subject-derived id -> 401 client_binding_refused (not even parsed)", r.status === 401 && (await r.json()).error === "client_binding_refused");
     r = await fetch(base + "/v1/state", { headers: { "x-binding-id": A, "x-jurisdiction": "us" } });
     const body = await r.json();
-    check("valid context -> 503 jurisdiction_unavailable (no unrestricted fallback)", r.status === 503 && body.error === "jurisdiction_unavailable", JSON.stringify(body));
+    check("valid-shaped client context -> 401 client_binding_refused, never routed", r.status === 401 && body.error === "client_binding_refused", JSON.stringify(body));
   } finally { await stopDev(dev); }
 }
 

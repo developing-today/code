@@ -213,24 +213,25 @@ function front(path: string, init: RequestInit = {}): Request {
   return new Request("https://hosted.example" + path, { ...init, headers });
 }
 
-test("front door forwards the caller's CSE context to the DO", async () => {
+test("front door refuses caller CSE context at the edge with client binding (#15479)", async () => {
   const bucket = fakeBucket();
   const env = makeFrontEnv(bucket);
+  // #15479: no authenticated internal caller exists yet (its
+  // registry is #15480), so any client-supplied binding context is
+  // refused before CSE forwarding runs. DO-direct tests above keep
+  // the CSE threading oracle; the front door proves refusal only.
   const res = await worker.fetch(front("/v1/state", { headers: { "x-client-side-encryption": "1" } }), env as never);
-  assert.equal(res.status, 200);
-  assert.equal(((await res.json()) as { client_side_encryption: boolean }).client_side_encryption, true);
+  assert.equal(res.status, 401);
+  assert.equal(((await res.json()) as { error: string }).error, "client_binding_refused");
 });
 
-test("front door strips a client-supplied internal CSE header", async () => {
+test("front door refuses a client-supplied internal CSE header at the edge", async () => {
   const bucket = fakeBucket();
   const env = makeFrontEnv(bucket);
   // The internal header name, supplied directly by the client with
-  // no caller context: it must not reach the DO as context.
+  // no caller context: refused at the edge like any client binding
+  // context — it never reaches the DO as context.
   const res = await worker.fetch(front("/v1/state", { headers: { [HDR_CSE]: "1" } }), env as never);
-  assert.equal(res.status, 200);
-  assert.equal(
-    ((await res.json()) as { client_side_encryption: boolean }).client_side_encryption,
-    false,
-    "a client cannot turn on CSE scoping by naming the internal header",
-  );
+  assert.equal(res.status, 401);
+  assert.equal(((await res.json()) as { error: string }).error, "client_binding_refused");
 });

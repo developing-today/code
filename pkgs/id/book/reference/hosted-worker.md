@@ -32,18 +32,19 @@ The hosted data plane for bound hosted-edition users. There is one `UserDO` Dura
 
 ## The front door
 
-`src/worker.ts` (73 lines) is the entry point. It does not authenticate users itself. It consumes an _already-authenticated_ resolved context set by an authenticated internal caller; the binding ceremony that produces that context is native code, in `pkgs/id/src/hosted_binding.rs`.
+`src/worker.ts` is the entry point. It does not authenticate users itself. It consumes an _already-authenticated_ resolved context set by an authenticated internal caller; the binding ceremony that produces that context is native code, in `pkgs/id/src/hosted_binding.rs`. That internal caller does not exist yet (its registry is #15480), so the front door currently routes nothing: see #15479.
 
 Request handling, in order:
 
-1. Read the resolved context headers `X-Binding-Id` and `X-Jurisdiction` (and `X-Iroh-Id`).
-2. Strip every client-supplied internal header.
-3. Re-set the internal headers itself: `x-hosted-binding-id`, `x-hosted-jurisdiction`, `x-hosted-routed: restricted`, `x-hosted-iroh-id`.
-4. Enforce the front-door body limit (see `USER_CEILING_BYTES` below; the cap is 100 MiB).
-5. When `HOSTED_DIRECTORY` (below) is configured, read and validate a stable `hosted_accounts` row for the binding before any namespace access. A missing row, a jurisdiction mismatch, migration/pending metadata, or an unreadable directory fails closed; only then:
-6. Forward to the per-user Durable Object through the jurisdiction-restricted namespace only.
+1. Enforce the front-door body limit (see `USER_CEILING_BYTES` below; the cap is 100 MiB).
+2. Refuse any client-supplied `X-Binding-Id` / `X-Jurisdiction` at the public edge with `401 client_binding_refused` (#15479). Client input is not parsed; a malformed forgery and a well-formed one refuse identically.
+3. Read the resolved context headers `X-Binding-Id` and `X-Jurisdiction` (and `X-Iroh-Id`). With the edge refusal above, a request carrying them never arrives here; a request without them fails closed with `401 missing_binding`.
+4. Strip every client-supplied internal header.
+5. Re-set the internal headers itself: `x-hosted-binding-id`, `x-hosted-jurisdiction`, `x-hosted-routed: restricted`, `x-hosted-iroh-id`.
+6. When `HOSTED_DIRECTORY` (below) is configured, read and validate a stable `hosted_accounts` row for the binding before any namespace access (`assertDirectoryBinding` in `src/worker.ts`). A missing row, a jurisdiction mismatch, migration/pending metadata, or an unreadable directory fails closed; only then:
+7. Forward to the per-user Durable Object through the jurisdiction-restricted namespace only.
 
-The optional directory guard is a read of a persisted snapshot, not authentication, migration coordination, signup, or a routing lease; unset, the front door keeps consuming the upstream resolved context as a local-only scaffold and performs no directory authorization.
+The optional directory guard is a read of a persisted snapshot, not authentication, migration coordination, signup, or a routing lease; unset, the front door performs no directory authorization. Until the authenticated internal caller lands, the guard is unreachable from the public edge and is proven by direct unit tests.
 
 Routing rules in `src/routing.ts` — the only module that touches the raw `USERS` namespace:
 
