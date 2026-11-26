@@ -970,7 +970,8 @@ mod tests {
         let echo_addr = echo_listener.local_addr().expect("addr");
         let echo = std::thread::spawn(move || {
             let (mut s, _) = echo_listener.accept().expect("accept");
-            std::io::copy(&mut s, &mut s.try_clone().expect("clone")).expect("echo copy");
+            let mut output = s.try_clone().expect("clone");
+            std::io::copy(&mut s, &mut output).expect("echo copy");
         });
         // Caller pair: driver <-> splice-left.
         let pair_listener = TcpListener::bind("127.0.0.1:0").expect("bind pair");
