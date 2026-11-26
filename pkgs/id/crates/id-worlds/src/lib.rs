@@ -26,6 +26,8 @@
 //!   (#13745).
 //! - [`program_bundle`]: the signed single-file program bundle (#8280,
 //!   design D1-D3): export, verify and fork, fully offline.
+//! - [`program_update`]: update discovery and the update envelope
+//!   decision for installed program bundles (#8546, design v2 §§4–5).
 //! - [`program_publish_state`]: draft / published journal facts per
 //!   program version (#13742), keyed to the #6278 bundle record.
 //! - [`safety_appeal`]: appeals against logged moderation actions,
@@ -82,6 +84,7 @@ pub mod program_publish_state;
 pub mod program_registry;
 pub mod program_registry_net;
 pub mod program_registry_pkarr;
+pub mod program_update;
 pub mod safety_appeal;
 pub mod safety_report;
 pub mod safety_review_queue;
