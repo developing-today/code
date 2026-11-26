@@ -56,6 +56,7 @@ pub mod eval;
 pub mod feedback;
 pub mod feedback_normalise;
 pub mod filters;
+pub mod remediation;
 pub mod fusion;
 pub mod gate;
 pub mod github_comments;
