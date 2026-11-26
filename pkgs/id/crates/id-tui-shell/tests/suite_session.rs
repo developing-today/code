@@ -17,8 +17,10 @@
 //! session fold produce, and each must pass the suite's checks
 //! (`check_suite`): every frame inside the F13.1 contract, every sent
 //! frame inside the capability statement's `sends`, and every
-//! workflow frame exercised. Adding the TUI to the suite manifest is
-//! the v2 suite extension's slice, not this one.
+//! workflow frame exercised. The suite manifest
+//! (`contract/shell-suite.v1.json`) carries the TUI's entry with the
+//! fresh session (issue #12821); its statement must say what this
+//! crate's statement says.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
@@ -26,7 +28,7 @@ use std::collections::BTreeSet;
 use std::path::PathBuf;
 
 use id::shell_contract::{
-    CapabilityStatement, SessionSource, ShellContract, SuiteEntry, check_suite,
+    CapabilityStatement, SessionSource, ShellContract, ShellSuite, SuiteEntry, check_suite,
 };
 use id_tui_shell::frames;
 use id_tui_shell::session::{Session, Update};
@@ -303,5 +305,34 @@ fn the_statement_names_the_workflow_these_sessions_cover() {
             "read".to_owned(),
             "reconnect".to_owned(),
         ])
+    );
+}
+
+#[test]
+fn the_suite_manifest_states_this_shells_capabilities() {
+    let suite = ShellSuite::embedded().unwrap();
+    let entry = suite
+        .shells
+        .iter()
+        .find(|shell| shell.name == "tui")
+        .expect("tui entry in the suite manifest");
+    let manifest = entry.statement.as_ref().expect("tui capability statement");
+    let crate_statement = statement();
+    assert_eq!(manifest.sends, kinds(&crate_statement, "sends"));
+    assert_eq!(manifest.presents, kinds(&crate_statement, "presents"));
+    assert_eq!(
+        manifest.providers.iter().cloned().collect::<BTreeSet<_>>(),
+        kinds(&crate_statement, "providers")
+    );
+    // The manifest's workflow is the fresh session's: join, read
+    // (records) and act (chat, input, form_result).
+    assert_eq!(
+        manifest.workflow,
+        suite_statement(&["chat", "form_result", "input", "join", "records"]).workflow
+    );
+    assert_eq!(
+        entry.session.as_deref(),
+        Some("sessions/tui.jsonl"),
+        "the manifest names the fresh TUI session"
     );
 }

@@ -147,7 +147,10 @@ fn an_owner_with_nothing_listed_has_an_empty_listing() {
         request("drafts", DiscoveryMode::Unlisted, "Drafts"),
     )
     .unwrap();
-    assert_eq!(book.listing(&grants, NOW), [] as [id_grants::ListingEntry; 0]);
+    assert_eq!(
+        book.listing(&grants, NOW),
+        [] as [id_grants::ListingEntry; 0]
+    );
     assert_eq!(
         Publications::new("someone").listing(&grants, NOW),
         [] as [id_grants::ListingEntry; 0]

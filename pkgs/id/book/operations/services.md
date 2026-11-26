@@ -74,6 +74,42 @@ id --data-dir toy-node serve --web --world --world-admin-token toy-admin-token -
 
 Clients then join with the commands in [World commands: joining and playing](../reference/cli-worlds.md). Administration is in [World commands: administering and verifying](../reference/cli-worlds-admin.md).
 
+### Running a world host under NixOS
+
+`id serve --world-host` serves `.id-worlds` in the data directory as a host-mode data root. In that mode a client's connection wakes an asleep world unless its wake mode is `operator`. Pinned worlds are never closed, idle worlds are recorded asleep, and archived worlds are refused. The node also answers the operator CLI on `.id-worlds/host.sock`. That socket is readable and writable by the service's user alone. One process is the whole deployment: no separate `id host run` is needed, and a second host on the same root is refused.
+
+The NixOS module in `pkgs/id/nix/id-module.nix` turns this on per instance:
+
+```nix
+services.id.instances.primary = {
+  enable = true;
+  environmentFile = "/run/secrets/id-world.env"; # sets ID_WORLD_ADMIN_TOKEN
+  world = {
+    enable = true;
+    host = true;
+    # idleSecs = 900; # the default under world.host; 0 is refused
+  };
+};
+```
+
+The module refuses `world.host` without `world.enable`, on an ephemeral instance, and without an `environmentFile`. Keep the environment file out of the Nix store. The service runs as a dynamic user, so the operator drives it as root, naming the instance's data root:
+
+```text
+id host list    /var/lib/id-primary/.id-worlds
+id host stop    /var/lib/id-primary/.id-worlds lobby --actor alice
+id host start   /var/lib/id-primary/.id-worlds lobby --actor alice
+id host pin     /var/lib/id-primary/.id-worlds lobby
+id host export  /var/lib/id-primary/.id-worlds lobby /var/lib/id-primary/lobby.idworld
+```
+
+- **Start:** opens an asleep world whatever its wake mode is.
+- **Stop:** records the world asleep and drains it. Sessions still attached see the world close.
+- **Archive and restore:** follow the lifecycle. A live world is stopped before it is archived, and an archived world is restored before it starts.
+- **Export:** the node writes the file itself, with the host key at `.id-worlds/host.key`. The path must be one the service may write, such as its state directory.
+- **Restart:** worlds recorded live are reopened after a restart, and a world that fails replay fails the start loudly.
+
+The VM test `nixos-world-host` (`pkgs/id/nix/tests/world-host-test.nix`) runs these steps against the module.
+
 ## Discovery: relay, gossip, mDNS and DHT
 
 | Flag                      | Default              | Effect                                                                                                                                                     |

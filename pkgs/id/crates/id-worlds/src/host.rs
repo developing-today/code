@@ -239,11 +239,16 @@ pub struct HostFile {
 }
 
 impl HostFile {
-    /// Empty host file for `root`.
+    /// Empty host file for `root`, naming it by its canonical path so a
+    /// reader in any working directory finds the same root. A server
+    /// that opens its data root by a relative path (`id serve` runs in
+    /// its state directory and uses `.id-worlds`) must not record that
+    /// relative path, or the operator CLI, reading the root by its
+    /// absolute path, refuses the file as another root's.
     pub fn empty(root: &Path) -> Self {
         Self {
             version: HOST_FILE_VERSION,
-            data_root: root.to_path_buf(),
+            data_root: canonical_or_plain(root),
             worlds: BTreeMap::new(),
             snapshots: None,
             snapshot_dir: None,
@@ -899,18 +904,86 @@ impl HostLifecycle {
             file.worlds.remove(name);
             return self.save(&file);
         }
+        self.undo_live(&mut file, name, WAKE_ON_CONNECT)
+    }
+
+    /// Take back the last change to `name` when it was `actor` bringing it
+    /// from asleep to live, as if it never happened.
+    fn undo_live(&self, file: &mut HostFile, name: &str, actor: &str) -> Result<()> {
         let Some(record) = file.worlds.get_mut(name) else {
             return Ok(());
         };
-        let woke_last = record.history.last().is_some_and(|change| {
-            change.actor == WAKE_ON_CONNECT && change.prior == LifecycleState::Asleep
-        });
+        let woke_last = record
+            .history
+            .last()
+            .is_some_and(|change| change.actor == actor && change.prior == LifecycleState::Asleep);
         if record.state != LifecycleState::Live || !woke_last {
             return Ok(());
         }
         record.state = LifecycleState::Asleep;
         record.history.pop();
-        self.save(&file)
+        self.save(file)
+    }
+
+    /// An operator act on a serving node (#10697): move `name` from `from`
+    /// to `to`, recorded by `actor`, and save.
+    ///
+    /// # Errors
+    ///
+    /// Fails for a world the host file does not know, a world not
+    /// recorded in `from`, a transition the lifecycle forbids, and a
+    /// failed save (nothing is recorded then).
+    pub fn operator_transition(
+        &self,
+        name: &str,
+        from: LifecycleState,
+        to: LifecycleState,
+        actor: &str,
+    ) -> Result<()> {
+        let mut file = self.lock();
+        match file.worlds.get(name).map(|record| record.state) {
+            None => bail!("no world {name:?} in this data root"),
+            Some(state) if state != from => {
+                // The lifecycle's own refusal names the way forward
+                // ("restore to asleep before starting") where it has one.
+                check_transition(name, state, to)?;
+                bail!("world {name:?} is {state}, not {from}")
+            }
+            Some(_) => self.record(&mut file, name, to, actor),
+        }
+    }
+
+    /// Take back an operator start of `name` by `actor` whose open then
+    /// failed: the world is recorded asleep again, as before the start.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the save fails.
+    pub fn undo_start(&self, name: &str, actor: &str) -> Result<()> {
+        let mut file = self.lock();
+        self.undo_live(&mut file, name, actor)
+    }
+
+    /// Restore the export file `path`, signed by `pinned_source`, as a new
+    /// asleep world named by the export, recorded by `actor`.
+    ///
+    /// # Errors
+    ///
+    /// As [`import_into_root`]; nothing is recorded when it fails.
+    pub async fn import(
+        &self,
+        path: &Path,
+        pinned_source: [u8; 32],
+        actor: &str,
+    ) -> Result<ExportManifest> {
+        let seen = self.snapshot();
+        let manifest = restore_export_dir(&self.root, &seen, path, pinned_source).await?;
+        let mut file = self.lock();
+        let mut next = file.clone();
+        next.adopt(&self.root, &manifest.world, actor)?;
+        self.save(&next)?;
+        *file = next;
+        Ok(manifest)
     }
 
     /// The hub closed `name` (idle, or to make room): record it asleep by
@@ -1057,6 +1130,29 @@ impl HostCeilings {
 /// The limits a [`Supervisor`] replays and serves every world under.
 fn host_limits() -> (WorldLimits, RuntimeLimits) {
     (WorldLimits::default(), RuntimeLimits::default())
+}
+
+/// Replay the world `name` in the data root `root` under the host's
+/// limits, without recording or holding it.
+///
+/// # Errors
+///
+/// Fails for a name that cannot be a world directory, a missing world
+/// directory, and a replay failure.
+pub async fn open_in_root(root: &Path, name: &str) -> Result<(WorldService, OpenReport)> {
+    validate_name(name)?;
+    let dir = root.join(name);
+    anyhow::ensure!(dir.is_dir(), "no world named {name:?} in this data root");
+    let (world_limits, runtime_limits) = host_limits();
+    open_world(
+        &dir,
+        name,
+        world_limits,
+        runtime_limits,
+        |handle: WorldHandle| WorldService::new(handle, None),
+    )
+    .await
+    .with_context(|| format!("replaying world {name:?}"))
 }
 
 /// Inspect `name` in the data root `root` that `file` describes, reading
@@ -1711,19 +1807,7 @@ impl Supervisor {
     /// already have validated (and, on success, recorded) the transition.
     /// Replay `name` from its journal without recording or holding it.
     async fn open_unrecorded(&self, name: &str) -> Result<(WorldService, OpenReport)> {
-        validate_name(name)?;
-        let dir = self.root.join(name);
-        anyhow::ensure!(dir.is_dir(), "no world named {name:?} in this data root");
-        let (world_limits, runtime_limits) = host_limits();
-        open_world(
-            &dir,
-            name,
-            world_limits,
-            runtime_limits,
-            |handle: WorldHandle| WorldService::new(handle, None),
-        )
-        .await
-        .with_context(|| format!("replaying world {name:?}"))
+        open_in_root(&self.root, name).await
     }
 
     async fn replay_live(&mut self, name: &str) -> Result<OpenReport> {
@@ -1816,6 +1900,20 @@ mod tests {
         assert_eq!(loaded.worlds["a"].history.len(), 2);
         assert_eq!(loaded.worlds["a"].history[0].prior, LifecycleState::Asleep);
         assert_eq!(loaded.worlds["b"].state, LifecycleState::Archived);
+    }
+
+    #[test]
+    fn host_file_names_its_root_canonically() {
+        // nixos-world-host found this: the server opened `.id-worlds`
+        // relative to its state directory, recorded that relative
+        // path, and the operator CLI then refused the file when it
+        // loaded the same root by its absolute path.
+        let root = data_root_with(&["a"]);
+        let roundabout = root.path().join("a").join("..");
+        let file = HostFile::rebuild(&roundabout).unwrap();
+        assert_eq!(file.data_root, std::fs::canonicalize(root.path()).unwrap());
+        file.save(&roundabout).unwrap();
+        HostFile::load(root.path()).unwrap();
     }
 
     #[test]

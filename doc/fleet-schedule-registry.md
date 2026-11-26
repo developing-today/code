@@ -425,7 +425,7 @@ states on the primary seat are unverified, and this registry does
 not carry guesses. Full reconciliation:
 `doc/2026-11-26T07-50-00Z_reconciliation_repo-queue-shift-roster/`.
 
-### 2b. Laptop systemd user timers (64 listed: 51 enabled; 5 Nix-configured pending deployment; 4 repo-shipped pending laptop install; 1 declared in repo pending laptop install; 1 continuous service, no timer; 2 retired)
+### 2b. Laptop systemd user timers (65 listed: 51 enabled; 6 Nix-configured pending deployment; 4 repo-shipped pending laptop install; 1 declared in repo pending laptop install; 1 continuous service, no timer; 2 retired)
 
 The OS-timer half of surface 2. Cadence is the unit's own `OnCalendar`/`OnUnitActiveUSec` spec, read live from `systemctl --user show`. Specs are recorded **complete** — the full effective calendar expression, date **and** time components (e.g. `*-*-* *:*:00`); never truncate a spec to a date-only prefix, because a bare `*-*-*` normalizes to daily at midnight and misstates the cadence (issue #5313). Prompt/brief pointer is the unit file in `~/.config/systemd/user/` (or its Nix store target for linked units). Installed-but-disabled timer units ARE listed in this table and marked `(disabled)` after the unit name: the registry inventories what is installed on the laptop, not only what is currently scheduled, so a disabled unit stays visible until it is uninstalled (reconciled 2026-11-04, issue #5661).
 
@@ -438,12 +438,12 @@ The OS-timer half of surface 2. Cadence is the unit's own `OnCalendar`/`OnUnitAc
 | `worktree-janitor.timer` | `OnCalendar=*-*-* 01,07,13,19:23:00` | `worktree-janitor.service` | laptop (user systemd; code#6884) | not recorded | not recorded | 2026-11-17 | 2026-11-17 |
 | `charge-producer.timer` | `OnCalendar=*-*-* *:18,48:00` | `charge-producer.service` | laptop (user systemd) | not recorded | not recorded | not recorded | 2026-11-04 |
 | `cloudflare-quota-export.timer` | `OnCalendar=*-*-* *:00/15:00` | `cloudflare-quota-export.service` | laptop (user systemd) | not recorded | not recorded | not recorded | 2026-11-04 |
-| `conductor-silence.timer` (repo-shipped, not yet installed) | `OnUnitActiveSec=30m,OnBootSec=5m` | `conductor-silence.service` | laptop (user systemd; code#15123; conductor-silence heartbeat: files one tracking issue when the fleet conductor's newest cycle-log timestamp exceeds 2h) | not recorded | not recorded | 2026-11-25 | 2026-11-25 |
+| `conductor-silence.timer` (installed 2026-11-26; apply mode) | `OnBootUSec=5min,OnUnitActiveUSec=30min,RandomizedDelayUSec=30s` | `conductor-silence.service` | laptop (user systemd; code#15123; script `~/.local/share/fleet/conductor-silence/check_conductor.py`; reads `~/hatch-personal/workspace/goals/keep-the-four-repos-healthy/hidden_files/conductor-log.md`; files/updates one issue after >2h silence) | not recorded | not recorded | 2026-11-25 | 2026-11-26 |
 | `codex-remote-control-watchdog.timer` | `OnUnitActiveUSec=5min,OnBootUSec=2min` | `codex-remote-control-watchdog.service` | laptop (user systemd) | not recorded | not recorded | not recorded | 2026-11-04 |
 | `cold-store-drill.timer` | `OnCalendar=*-*-01 05:12:00` | `cold-store-drill.service` | laptop (user systemd) | not recorded | not recorded | not recorded | 2026-11-04 |
 | `cold-store-nightly.timer` | `OnCalendar=*-*-* 03:12:00` | `cold-store-nightly.service` | laptop (user systemd) | not recorded | not recorded | not recorded | 2026-11-04 |
 | `dashboard-backup.timer` | `OnCalendar=*-*-* 04:30:00` | `dashboard-backup.service` | laptop (user systemd) | not recorded | not recorded | not recorded | 2026-11-04 |
-| `fleet-feed-collector.timer` | `OnUnitActiveUSec=5min,OnBootUSec=2min` | `fleet-feed-collector.service` | laptop (user systemd) | not recorded | not recorded | not recorded | 2026-11-04 |
+| `fleet-feed-collector.timer` (retirement pending deployment) | `OnUnitActiveUSec=5min,OnBootUSec=2min` | `fleet-feed-collector.service` | laptop (user systemd; source retired by #8570, live disable not verified) | not recorded | not recorded | not recorded | 2026-11-24 |
 | `git-maintenance@daily.timer` | `OnCalendar=Tue..Sun *-*-* 00:56:00` | `git-maintenance@daily.service` | laptop (user systemd) | not recorded | not recorded | not recorded | 2026-11-04 |
 | `git-maintenance@hourly.timer` | `OnCalendar=*-*-* 01..23:56:00` | `git-maintenance@hourly.service` | laptop (user systemd) | not recorded | not recorded | not recorded | 2026-11-04 |
 | `git-maintenance@weekly.timer` | `OnCalendar=Mon *-*-* 00:56:00` | `git-maintenance@weekly.service` | laptop (user systemd) | not recorded | not recorded | not recorded | 2026-11-04 |
@@ -452,6 +452,7 @@ The OS-timer half of surface 2. Cadence is the unit's own `OnCalendar`/`OnUnitAc
 | `fleet-queue-backup-export-d1.timer` (declared in repo 2026-11-26, #14943 CF-3; installed-but-not-enabled by `install-units.sh` until CF-3 activation at CF-2's verified flip) | `OnCalendar=*-*-* 02:15:00` + `RandomizedDelaySec=30m` | `fleet-queue-backup-export-d1.service` | laptop (user systemd; source: live D1 `fleet-queue`; backup D1 `fleet-queue-backup`; code#14943) | not recorded | Disable if a scheduled export cannot verify its read-back counts; repair the cause (credentials, D1, schema) and rerun before re-enabling; rollback is re-enabling `fleet-queue-backup-export.timer` (Turso leg) | 2026-11-26 | 2026-11-26 |
 | `pm-stack-follow-main.timer` (declared in repo 2026-11-26, #14949 CF-9; NixOS system timer in `nixos/hosts/amd-agent-rebuild.nix`, activates on the laptop's next switch to a main containing it) | `OnCalendar=hourly` + `RandomizedDelaySec=10m`, `Persistent=true` | `agent-rebuild-switch.service` | laptop (system systemd; code#14949/#14107 M2) | not recorded | Disable (`systemctl disable --now pm-stack-follow-main.timer`) if a switch loop or repeated rebuild failure appears; the drift alarm (aggregator sentinel, 6h threshold) keeps watching either way | 2026-11-26 | 2026-11-26 |
 | `laptop-db-backup-pm-projector.timer` (declared in repo 2026-11-25, #13474; laptop install is part of that issue's live leg) | `OnCalendar=Sun *-*-* 05:40:00` + `RandomizedDelaySec=30m` | `laptop-db-backup-pm-projector.service` | laptop (user systemd; code#13474; mesh class E — laptop-local `pm-projector/projector.db` import to Turso home `laptop-backup-pm-projector`) | not recorded | Disable if a scheduled import cannot verify its counts; the previous import stays in the home — repair the cause (credentials, source, Turso home) and rerun before re-enabling | 2026-11-25 | 2026-11-25 |
+| `laptop-db-backup-fleet-metadata.timer` (declared in repo 2026-11-26, #13459/#13474; laptop install is part of that issue's live leg) | `OnCalendar=Sun *-*-* 06:20:00` + `RandomizedDelaySec=30m` | `laptop-db-backup-fleet-metadata.service` | laptop (user systemd; code#13459/#13474; mesh class E — laptop-local `fleet/metadata.db` import to Turso home `laptop-backup-fleet-metadata`) | not recorded | Disable if a scheduled import cannot verify its counts; the previous import stays in the home — repair the cause (credentials, source, Turso home) and rerun before re-enabling | 2026-11-26 | 2026-11-26 |
 | `github-backup-drain.timer` | `OnCalendar=*-*-* *:00/5:00,OnBootUSec=3min` | `github-backup-drain.service` | laptop (user systemd) | not recorded | not recorded | not recorded | 2026-11-04 |
 | `github-backup-fetch.timer` | `OnCalendar=*-*-* 00:00:00` | `github-backup-fetch.service` | laptop (user systemd) | not recorded | not recorded | not recorded | 2026-11-04 |
 | `github-backup-r2.timer` (repo-shipped, not yet installed) | `OnCalendar=*-*-* 01:30:00` + `RandomizedDelaySec=30m` | `github-backup-r2.service` | laptop (user systemd; code#8584) | not recorded | Disable if any scheduled run cannot verify every planned R2 object; repair credentials or target and rerun before re-enabling | 2026-11-22 | 2026-11-22 |
@@ -488,7 +489,8 @@ The OS-timer half of surface 2. Cadence is the unit's own `OnCalendar`/`OnUnitAc
 | `pm-kaneo-sync-guard.timer` | `OnCalendar=*-*-* *:00:00` | `pm-kaneo-sync-guard.service` | laptop (user systemd) | not recorded | not recorded | 2026-11-14 | 2026-11-15 |
 | `pm-projector-reconcile.timer` | `OnCalendar=*-*-* *:00/15:00` | `pm-projector-reconcile.service` | laptop (user systemd) | not recorded | not recorded | not recorded | 2026-11-04 |
 | `pm-tunnel-watchdog.timer` (Nix-configured; not yet loaded) | `OnUnitActiveSec=2min,OnBootSec=2min` (not live-verified) | `pm-tunnel-watchdog.service` | laptop (user systemd) | not recorded | not recorded | 2026-11-11 | 2026-11-11 |
-| `quota-gatherer.timer` | `OnCalendar=*-*-* *:00/15:00` | `quota-gatherer.service` | laptop (user systemd) | not recorded | not recorded | not recorded | 2026-11-22 |
+| `pm-watchdog-heartbeat-check.timer` (Nix-configured; not yet loaded) | `OnUnitActiveSec=5min,OnBootSec=2min` (not live-verified) | `pm-watchdog-heartbeat-check.service` | laptop (user systemd; code#14388, #14005 item 1; NixOS module `nixos/services/pm-stack`, packaged checker `pm-aggregator-check-watchdog-heartbeat` running `pm-stack/aggregator/scripts/check-watchdog-heartbeat.ts` independently of the aggregator process; checker stdout is appended to `~/.local/state/pm-aggregator/watchdog-heartbeat-report.log`, the report file the main-chat report surfaces) | not recorded | not recorded | 2026-11-24 | 2026-11-24 |
+| `quota-gatherer.timer` (retirement pending deployment) | `OnCalendar=*-*-* *:00/15:00` | `quota-gatherer.service` | laptop (user systemd; source retired by #8570, live disable not verified) | not recorded | not recorded | not recorded | 2026-11-24 |
 | `quota-weekly-review.timer` | `OnCalendar=Mon *-*-* 07:20:00` | `quota-weekly-review.service` | laptop (user systemd; code#12701; NixOS module `services.pm-stack`, package `pkgs/pm-aggregator` — Stage-3 S7 weekly forecast-accuracy review: posts the report to epic #12694, S6 proposal PRs only, never edits config; Nix-configured pending deployment) | not recorded | not recorded | 2026-11-23 | 2026-11-23 |
 | `repo-archive-backup.timer` | `OnCalendar=*-*-* 05:15:00` | `repo-archive-backup.service` | laptop (user systemd) | not recorded | not recorded | not recorded | 2026-11-04 |
 | `repo-universe-issue-check.timer` | `OnCalendar=*-*-* 00:00:00` | `repo-universe-issue-check.service` | laptop (user systemd) | not recorded | not recorded | not recorded | 2026-11-04 |
@@ -515,6 +517,14 @@ it targeted the retired sandbox collector. The drill script is laptop-only
 (`amd`) until a laptop-hosted schedule is deliberately installed; the live
 sandbox's installed-unit state still requires the operator audit linked from
 issue #1319.
+
+2026-11-24 #8570 timer cutover is prepared in source: pm-core retains the
+quota (15m) and fleet-feed (5m) cadences in-process; the quota and collector
+systemd timer declarations/installer activation are removed. The two rows
+above remain until deployment verifies the laptop units are inactive and
+disabled; this PR does not claim a live systemd cutover. The kill-collector
+drill now pauses the in-process feed job through its state-file gate and
+refuses to run while the legacy collector timer remains active.
 
 ### 2c. Sandbox systemd system timers (1 listed)
 

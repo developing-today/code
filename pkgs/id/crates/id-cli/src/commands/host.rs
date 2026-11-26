@@ -218,7 +218,7 @@ async fn operator_act(
 
 /// The host's export signing key: `host.key` in the data root, created
 /// owner-only when missing.
-async fn host_key(root: &std::path::Path) -> Result<ed25519_dalek::SigningKey> {
+pub(crate) async fn host_key(root: &std::path::Path) -> Result<ed25519_dalek::SigningKey> {
     let path = root.join(id_worlds::host::HOST_KEY_NAME);
     let path = path
         .to_str()

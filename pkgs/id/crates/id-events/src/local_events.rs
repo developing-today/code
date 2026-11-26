@@ -2169,7 +2169,9 @@ mod chat_tests {
         let refused = node_c.send_chat(group, ChatMessage::new("carol here", Vec::new()).unwrap());
         assert!(refused.is_err());
         assert_eq!(
-            node_c.read_store(|store| store.chat_records(&group)).unwrap(),
+            node_c
+                .read_store(|store| store.chat_records(&group))
+                .unwrap(),
             [] as [id_store::chat::ChatRecord; 0]
         );
 

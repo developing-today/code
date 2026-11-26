@@ -287,6 +287,7 @@ pub use id_store::search;
 #[cfg(feature = "world")]
 pub use id_store::session_checkpoint;
 pub use id_store::store;
+pub use id_store::turso;
 #[cfg(feature = "sandbox")]
 pub use id_worlds::guest_burn;
 #[cfg(feature = "sandbox")]
