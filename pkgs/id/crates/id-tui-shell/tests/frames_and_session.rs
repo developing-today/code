@@ -84,10 +84,16 @@ fn records_chat_input_paste_resize_build_contract_frames() {
         frames::input(&[0x1b, 0x5b, 0x41], None).unwrap()["data_hex"],
         json!("1b5b41")
     );
-    assert_eq!(frames::paste("pasted", None).unwrap()["type"], json!("paste"));
+    assert_eq!(
+        frames::paste("pasted", None).unwrap()["type"],
+        json!("paste")
+    );
     assert!(frames::paste(&"p".repeat(frames::MAX_PASTE_BYTES + 1), None).is_err());
     let resize = frames::resize(80, 24).unwrap();
-    assert_eq!((resize["width"].clone(), resize["height"].clone()), (json!(80), json!(24)));
+    assert_eq!(
+        (resize["width"].clone(), resize["height"].clone()),
+        (json!(80), json!(24))
+    );
     assert!(frames::resize(0, 24).is_err());
 }
 
@@ -95,8 +101,7 @@ fn records_chat_input_paste_resize_build_contract_frames() {
 fn form_result_carries_the_presented_token_and_values() {
     let mut values = Map::new();
     values.insert("when".to_owned(), json!("now"));
-    let frame =
-        frames::form_result("hw-choice", "abcd", "submit", &values, Some(5)).unwrap();
+    let frame = frames::form_result("hw-choice", "abcd", "submit", &values, Some(5)).unwrap();
     assert_eq!(
         frame,
         json!({
@@ -187,7 +192,10 @@ fn every_presented_frame_kind_passes_the_contract_oracle() {
         contract["server_frames"].get(kind).is_some()
     };
     for kind in kinds(&statement(), "presents") {
-        assert!(contract_has(&kind), "presented {kind} is a contract server frame");
+        assert!(
+            contract_has(&kind),
+            "presented {kind} is a contract server frame"
+        );
     }
 }
 

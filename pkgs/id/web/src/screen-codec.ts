@@ -141,9 +141,7 @@ export function decodeViewPatch(bytes: Uint8Array): ViewPatchFrame | null {
 async function inflateRaw(bytes: Uint8Array): Promise<Uint8Array | null> {
   let stream: ReadableStream<Uint8Array>;
   try {
-    stream = new Blob([bytes as BlobPart])
-      .stream()
-      .pipeThrough(new DecompressionStream("deflate-raw"));
+    stream = new Blob([bytes as BlobPart]).stream().pipeThrough(new DecompressionStream("deflate-raw"));
   } catch {
     return null;
   }
@@ -198,10 +196,7 @@ export async function decodeViewPatchAsync(bytes: Uint8Array): Promise<ViewPatch
   }
   if (!(envelope.payload instanceof Uint8Array)) return null;
   if (envelope.payload.length > MAX_SCREEN_FRAME_BYTES) return null;
-  const inner =
-    envelope.compression === COMPRESSION_NONE
-      ? envelope.payload
-      : await inflateRaw(envelope.payload);
+  const inner = envelope.compression === COMPRESSION_NONE ? envelope.payload : await inflateRaw(envelope.payload);
   if (!inner) return null;
   return decodeViewPatch(inner);
 }

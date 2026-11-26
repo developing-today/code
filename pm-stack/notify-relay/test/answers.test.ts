@@ -63,6 +63,16 @@ async function raisedEvent(
   };
 }
 
+async function raisedNeedsUserEvent() {
+  const legacy = await raisedEvent();
+  const { needsDrew, ...payload } = legacy.payload;
+  return {
+    ...legacy,
+    objectRef: "needs-user:q-1",
+    payload: { ...payload, needsUser: needsDrew },
+  };
+}
+
 const clearedEvent = (ledgerId = "q-1") => ({
   mirrorId: `cleared-${ledgerId}`,
   objectRef: `needs-drew:${ledgerId}`,
@@ -84,8 +94,11 @@ const mirror = (env: Env, event: unknown) =>
   authed(env, "/mirror/event", { method: "POST", body: JSON.stringify(event) });
 
 const postAnswer = (env: Env, ledgerId: string, body: unknown) =>
+  postAnswerAt(env, `/api/needs-drew/${ledgerId}/answer`, body);
+
+const postAnswerAt = (env: Env, path: string, body: unknown) =>
   worker.fetch(
-    new Request(`${BASE}/api/needs-drew/${ledgerId}/answer`, {
+    new Request(`${BASE}${path}`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(body),
@@ -109,7 +122,22 @@ describe("answer page", () => {
     expect(body).toContain('data-option="yes"');
     expect(body).toContain("https://example.com/pr/1");
     expect(body).not.toContain("javascript:alert");
-    expect(body).toContain("/api/needs-drew/q-1/answer");
+    expect(body).toContain("/api/needs-user/q-1/answer");
+  });
+
+  test("a needs-user mirror key and object ref use the same answer flow as the legacy form", async () => {
+    const { env, values } = fixture();
+    await mirror(env, await raisedNeedsUserEvent());
+
+    const page = await worker.fetch(new Request(`${BASE}/answer/q-1?t=${TOKEN}`), env);
+    const html = await page.text();
+    expect(page.status).toBe(200);
+    expect(html).toContain("/api/needs-user/q-1/answer");
+
+    const answer = await postAnswerAt(env, "/api/needs-user/q-1/answer", { token: TOKEN, optionId: "yes" });
+    expect(answer.status).toBe(200);
+    const state = values.get("relay-state") as { pendingAnswers: Array<{ ledgerId: string; optionId: string }> };
+    expect(state.pendingAnswers).toEqual([expect.objectContaining({ ledgerId: "q-1", optionId: "yes" })]);
   });
 
   test("a wrong token and an unknown question both get the same forbidden page", async () => {

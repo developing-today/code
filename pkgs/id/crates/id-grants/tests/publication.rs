@@ -197,7 +197,10 @@ fn unlisted_shares_stay_off_the_listing() {
     let mut book = Publications::new("owner");
     book.publish(&mut grants, share(1), request(&[("note-1", 0)]))
         .unwrap();
-    assert_eq!(book.listing(&grants, NOW), [] as [id_grants::ListingEntry; 0]);
+    assert_eq!(
+        book.listing(&grants, NOW),
+        [] as [id_grants::ListingEntry; 0]
+    );
     assert!(book.resolve(&share(1), &grants, NOW).is_some());
 }
 
