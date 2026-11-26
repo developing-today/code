@@ -66,6 +66,7 @@
 //     nothing.
 
 import { FailClosed, parseBindingId, parseJurisdiction, type Jurisdiction } from "./routing.ts";
+import { TenancyRegistry } from "./tenancy-registry.ts";
 
 export const TENANT_STATES = [
   "requested",
@@ -476,11 +477,8 @@ export class TenantOpsDO {
       request_id: provisioningRequestId(row.tenant_id),
       jurisdiction,
     });
-    const binding = this.sql()
-      .exec("SELECT status FROM binding WHERE binding_id = ?", this.tenantId)
-      .toArray();
-    if (binding.length === 0 || binding[0].status !== "active") {
-      const reason = binding.length === 0 ? "binding_missing" : "binding_not_active";
+    const reason = new TenancyRegistry(this.sql()).provisioningBlockReason(this.tenantId);
+    if (reason !== null) {
       row = this.setState(row, "failed");
       this.journal(at, "failed", "requested", "failed", actor, { reason });
     }
