@@ -220,7 +220,11 @@ const MODULE_CACHE_ENV: &str = "ID_WORLDS_MODULE_CACHE_DIR";
 /// [`Module::deserialize`] refuses bytes precompiled for an
 /// incompatible engine or wasmtime version, and such an entry is
 /// simply recompiled.
-const MODULE_CACHE_SALT: &str = "cfg1";
+///
+/// `cfg2`: entries are bound to the module bytes they were built
+/// from (#15334 follow-up). `cfg1` entries could hold another
+/// module's code (see [`store_cached_module`]), so none is read.
+const MODULE_CACHE_SALT: &str = "cfg2";
 
 /// Total size bound for the cache directory. When a new entry would
 /// push the directory past the bound, oldest entries are evicted
@@ -263,17 +267,22 @@ fn module_cache_key(wasm: &[u8]) -> String {
     key
 }
 
-/// Load a precompiled module from the cache entry at `path`, or
-/// `None` on any doubt: unreadable file, truncated or corrupt
-/// contents (the stored SHA-256 of the payload must match), or
-/// bytes [`Module::deserialize`] rejects as incompatible with
-/// `engine`. `None` always means "compile fresh", never an error.
+/// Load the precompiled form of `wasm` from the cache entry at
+/// `path`, or `None` on any doubt: unreadable file, truncated or
+/// corrupt contents (the stored SHA-256 of the payload must match),
+/// an entry built from other module bytes (the stored SHA-256 of the
+/// source module must be `wasm`'s), or bytes [`Module::deserialize`]
+/// rejects as incompatible with `engine`. `None` always means
+/// "compile fresh", never an error.
 #[allow(unsafe_code)]
-fn load_cached_module(engine: &Engine, path: &Path) -> Option<Module> {
+fn load_cached_module(engine: &Engine, wasm: &[u8], path: &Path) -> Option<Module> {
     use sha2::Digest as _;
     let raw = std::fs::read(path).ok()?;
-    let (checksum, payload) = raw.split_at_checked(32)?;
-    if sha2::Sha256::digest(payload).as_slice() != checksum {
+    let (source, rest) = raw.split_at_checked(32)?;
+    let (checksum, payload) = rest.split_at_checked(32)?;
+    if sha2::Sha256::digest(wasm).as_slice() != source
+        || sha2::Sha256::digest(payload).as_slice() != checksum
+    {
         return None;
     }
     // Safety: the payload comes from our own cache directory and is
@@ -286,14 +295,22 @@ fn load_cached_module(engine: &Engine, path: &Path) -> Option<Module> {
     unsafe { Module::deserialize(engine, payload) }.ok()
 }
 
-/// Best-effort write of `payload`, the precompiled form of a module,
-/// to the cache entry at `path`, framed as the SHA-256 of the payload
-/// followed by the payload. Every failure is ignored: the cache is an
-/// optimisation, and a compile that succeeded must not fail because
-/// its cache write did.
-fn store_cached_module(payload: &[u8], path: &Path) {
+/// Best-effort write of `payload`, the precompiled form of `wasm`, to
+/// the cache entry at `path`, framed as the SHA-256 of `wasm`, the
+/// SHA-256 of the payload, then the payload. Every failure is ignored:
+/// the cache is an optimisation, and a compile that succeeded must not
+/// fail because its cache write did.
+///
+/// Each write stages under a name no other write shares, in this
+/// process or any other. A staging name shared by the threads of one
+/// process let two concurrent compiles of different modules swap
+/// payloads: one entry then held the other module's code under a
+/// valid checksum, and a later hit ran the wrong guest.
+fn store_cached_module(wasm: &[u8], payload: &[u8], path: &Path) {
     use sha2::Digest as _;
-    let mut framed = Vec::with_capacity(32 + payload.len());
+    static STAGING: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let mut framed = Vec::with_capacity(64 + payload.len());
+    framed.extend_from_slice(&sha2::Sha256::digest(wasm));
     framed.extend_from_slice(&sha2::Sha256::digest(payload));
     framed.extend_from_slice(payload);
     let Some(dir) = path.parent() else {
@@ -305,7 +322,11 @@ fn store_cached_module(payload: &[u8], path: &Path) {
     evict_cache_to_fit(dir, framed.len() as u64);
     // Write beside the entry and rename over it, so a concurrent
     // reader never sees a partial file.
-    let staging = dir.join(format!(".staging-{}", std::process::id()));
+    let staging = dir.join(format!(
+        ".staging-{}-{}",
+        std::process::id(),
+        STAGING.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ));
     if std::fs::write(&staging, &framed).is_ok() && std::fs::rename(&staging, path).is_err() {
         let _ = std::fs::remove_file(&staging);
     }
@@ -363,7 +384,7 @@ fn load_or_compile_module(
     let Some(entry) = cache_dir.map(|dir| dir.join(module_cache_key(wasm))) else {
         return Module::new(engine, wasm).map_err(compile_error);
     };
-    if let Some(module) = load_cached_module(engine, &entry) {
+    if let Some(module) = load_cached_module(engine, wasm, &entry) {
         return Ok(module);
     }
     let payload = engine.precompile_module(wasm).map_err(compile_error)?;
@@ -372,7 +393,7 @@ fn load_or_compile_module(
     // this process's memory, so it is exactly the precompiled form
     // `deserialize` expects.
     let module = unsafe { Module::deserialize(engine, &payload) }.map_err(compile_error)?;
-    store_cached_module(&payload, &entry);
+    store_cached_module(wasm, &payload, &entry);
     Ok(module)
 }
 
@@ -3838,6 +3859,79 @@ mod tests {
             "{fresh_error}"
         );
         assert_eq!(cached_error, fresh_error);
+    }
+
+    /// `ECHO` with its five view bytes replaced by `view`, so each call
+    /// gives a module with distinct code-visible data.
+    fn echo_showing(view: &str) -> Vec<u8> {
+        assert_eq!(view.len(), 5);
+        wat::parse_str(ECHO.replace("\"hello\"", &format!("\"{view}\""))).unwrap()
+    }
+
+    #[test]
+    fn compile_cache_entry_built_from_other_module_bytes_is_a_miss() {
+        // Oracle: an entry that holds another module's precompiled
+        // code, even with a valid payload checksum, is never served
+        // for these bytes. The compile runs fresh, behaves as these
+        // bytes, and the entry is rewritten for them.
+        let dir = tempfile::tempdir().unwrap();
+        let first = echo_showing("first");
+        let second = echo_showing("other");
+        let first_entry = dir.path().join(module_cache_key(&first));
+        let second_entry = dir.path().join(module_cache_key(&second));
+        Sandbox::compile_with_cache(&first, SandboxLimits::default(), Some(dir.path())).unwrap();
+        std::fs::copy(&first_entry, &second_entry).unwrap();
+
+        let mut world =
+            Sandbox::compile_with_cache(&second, SandboxLimits::default(), Some(dir.path()))
+                .unwrap()
+                .instantiate(1)
+                .unwrap();
+        assert_eq!(world.view().unwrap(), b"other");
+        assert_ne!(
+            std::fs::read(&second_entry).unwrap(),
+            std::fs::read(&first_entry).unwrap(),
+            "the crossed entry is rewritten for its own module"
+        );
+    }
+
+    #[test]
+    fn compile_cache_concurrent_stores_never_cross_entries() {
+        // Oracle: compiles of many different modules racing into one
+        // cache directory leave every entry framed for its own module,
+        // and a later compile of each through the cache runs that
+        // module's code. A staging name shared by the threads of one
+        // process used to let two writes swap payloads.
+        use sha2::Digest as _;
+        let dir = tempfile::tempdir().unwrap();
+        let views: Vec<String> = (0..24).map(|n| format!("v{n:04}")).collect();
+        std::thread::scope(|scope| {
+            for view in &views {
+                let dir = dir.path();
+                scope.spawn(move || {
+                    let wasm = echo_showing(view);
+                    for _ in 0..4 {
+                        Sandbox::compile_with_cache(&wasm, SandboxLimits::default(), Some(dir))
+                            .unwrap();
+                    }
+                });
+            }
+        });
+        for view in &views {
+            let wasm = echo_showing(view);
+            let entry = std::fs::read(dir.path().join(module_cache_key(&wasm))).unwrap();
+            assert_eq!(
+                &entry[..32],
+                sha2::Sha256::digest(&wasm).as_slice(),
+                "the entry for {view} was built from its own bytes"
+            );
+            let mut world =
+                Sandbox::compile_with_cache(&wasm, SandboxLimits::default(), Some(dir.path()))
+                    .unwrap()
+                    .instantiate(0)
+                    .unwrap();
+            assert_eq!(world.view().unwrap(), view.as_bytes());
+        }
     }
 
     #[test]

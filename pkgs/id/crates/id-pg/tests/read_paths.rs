@@ -436,6 +436,81 @@ fn live_transport_and_body_failures_are_errors() {
 }
 
 #[test]
+fn live_content_range_must_describe_the_decoded_body() {
+    // Oracle: #15742 — a range that disagrees with the rows in the
+    // body is a broken page. `0-1/2` over one decoded row used to read
+    // as a complete result and silently drop the second row.
+    let run = |rows: &[i64], range: &str| {
+        let mut transport = Scripted::new(vec![page(rows, Some(range), 1)]);
+        live_read(
+            &endpoint(),
+            &modes(ReadMode::Live),
+            &mut transport,
+            &JsonRows,
+            &Query::read("items"),
+            5,
+        )
+    };
+    for (rows, range) in [
+        (&[1][..], "0-1/2"),
+        (&[1][..], "0-1/*"),
+        (&[1, 2][..], "0-0/2"),
+        (&[1, 2][..], "0-2/*"),
+        (&[][..], "0-0/1"),
+        (&[1][..], "*/*"),
+        (&[1][..], "*/1"),
+        (&[1, 2][..], "0-1/1"),
+        (&[1][..], "3-3/3"),
+    ] {
+        assert_eq!(
+            run(rows, range).unwrap_err(),
+            ReadError::MalformedPage,
+            "{} rows under {range}",
+            rows.len()
+        );
+    }
+
+    // Matching ranges still read, complete or not.
+    let complete = run(&[1, 2], "0-1/2").unwrap();
+    assert!(complete.complete);
+    assert_eq!(ids(&complete.rows), vec![1, 2]);
+    let empty = run(&[], "*/0").unwrap();
+    assert!(empty.complete);
+    assert_eq!(ids(&empty.rows), Vec::<i64>::new());
+    let unknown_total = run(&[], "*/*").unwrap();
+    assert!(unknown_total.complete);
+}
+
+#[test]
+fn content_range_describes_only_matching_bodies() {
+    let describes = |range: &str, rows: u64| ContentRange::parse(range).unwrap().describes(rows);
+    assert!(describes("0-1/2", 2));
+    assert!(describes("0-1/*", 2));
+    assert!(describes("0-0/100", 1));
+    assert!(describes("5-9/20", 5));
+    assert!(describes("*/0", 0));
+    assert!(describes("*/7", 0));
+    assert!(!describes("0-1/2", 1));
+    assert!(!describes("0-1/2", 3));
+    assert!(!describes("0-4/3", 5), "a range that ends past its total");
+    assert!(!describes("*/*", 1));
+    let backwards = ContentRange::Rows {
+        first: 4,
+        last: 1,
+        total: None,
+    };
+    assert!(!backwards.describes(0));
+    assert!(
+        !ContentRange::Rows {
+            first: 0,
+            last: u64::MAX,
+            total: None
+        }
+        .describes(u64::MAX)
+    );
+}
+
+#[test]
 fn reads_wait_for_the_owner_to_choose_a_mode() {
     let mut transport = Scripted::new(vec![]);
     let err = live_read(
