@@ -129,7 +129,13 @@ test("the organisation token is referenced by name only, in that one workflow", 
     .split("\n")
     .filter(Boolean);
   const holders = tracked.filter((f) => readFileSync(join(ROOT, f), "utf8").includes(TURSO_ORG_TOKEN_SECRET));
-  expect(holders.sort()).toEqual([`.github/workflows/${TURSO_ADMIN_WORKFLOW}`, "pm-stack/console/src/turso-admin.ts"].sort());
+  expect(holders.sort()).toEqual(
+    [
+      `.github/workflows/${TURSO_ADMIN_WORKFLOW}`,
+      "pm-stack/console/src/turso-admin.ts",
+      "pm-stack/console/test/turso-admin.test.ts",
+    ].sort(),
+  );
   // The console names it (documentation of the split) but never reads a secret by it.
   const consoleSrc = tracked
     .filter((f) => f.startsWith("pm-stack/console/src/"))
