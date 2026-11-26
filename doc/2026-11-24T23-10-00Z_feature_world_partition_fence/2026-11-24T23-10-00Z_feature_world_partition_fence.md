@@ -41,3 +41,21 @@ who can remove metadata or replace locks. No path is derived from a jurisdiction
 Sidecar creation uses fsynced, same-directory temporary storage and a no-clobber
 persist followed by directory fsync on Unix. Bare relative paths use `.` as their
 parent. Tests cover aliases without repairing the target's torn tail.
+
+---
+
+## 2026-11-26T08-20-00Z Slice: scoped world open and discovery peek
+
+`world_store::open_world_in_partition` opens a whole durable world through
+`FileJournal::open_in_partition`, so the fence covers the service opener and
+not only the journal: a world bound elsewhere, an unassigned legacy world or a
+malformed binding is refused before restoration and before the directory,
+petname and outbox files are created. `world_bound_to_partition` is a lock-free,
+read-only peek for existence checks and listings: a missing world, a legacy
+world, a world bound to another partition, a malformed or unknown-version
+record and an aliased journal all read as absent, which is what a
+partition-scoped server needs to keep `exists` and `list` from becoming an
+existence oracle. It grants nothing; the open re-checks under the lock.
+
+Still open: a serve-side partition setting that switches `ServeWorlds` to these
+calls, partition-keyed hub slots, account admission and shards.
