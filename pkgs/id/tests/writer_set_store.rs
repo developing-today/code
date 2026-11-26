@@ -214,7 +214,9 @@ fn test_discovery_finds_sets_by_scope_with_their_expansions() {
 
     // A scope nothing published matches nothing.
     assert_eq!(
-        store.discover_writer_sets(Some("nope"), &resolution).unwrap(),
+        store
+            .discover_writer_sets(Some("nope"), &resolution)
+            .unwrap(),
         [] as [id::event_store::DiscoveredWriterSet; 0]
     );
 }

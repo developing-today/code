@@ -221,7 +221,10 @@ fn in_memory_failed_conversion_recovery_reports_resubmission_rejected() {
     assert!(executor.backend.create_transfers(&[drain])[0].is_ok());
     assert!(executor.submit(&mut record).is_err());
     assert_eq!(record.state, IntentState::Submitted);
-    assert_eq!(executor.backend.transfers_with_user_data_128(777), [] as [Transfer; 0]);
+    assert_eq!(
+        executor.backend.transfers_with_user_data_128(777),
+        [] as [Transfer; 0]
+    );
 
     // Restore liquidity: the blocker that caused the failure is gone,
     // so a resubmission rejected now can only be refused by the
@@ -693,7 +696,10 @@ fn insufficient_lp_inventory_fails_preflight() {
     big.amount_in = 40_000; // amount_out = 80_000 > LP's 50_000
     assert!(executor.prepare(&big).is_err());
     assert!(executor.store.get(777).unwrap().is_none());
-    assert_eq!(executor.backend.transfers_with_user_data_128(777), [] as [Transfer; 0]);
+    assert_eq!(
+        executor.backend.transfers_with_user_data_128(777),
+        [] as [Transfer; 0]
+    );
 }
 
 #[test]
@@ -712,7 +718,10 @@ fn user_and_lp_source_must_be_distinct_before_persisting_intent() {
         .expect_err("T1 must reject a same-account transfer before writing an intent");
     assert!(error.to_string().contains("user source and LP source"));
     assert!(executor.store.get(777).unwrap().is_none());
-    assert_eq!(executor.backend.transfers_with_user_data_128(777), [] as [Transfer; 0]);
+    assert_eq!(
+        executor.backend.transfers_with_user_data_128(777),
+        [] as [Transfer; 0]
+    );
 }
 
 #[test]
@@ -726,7 +735,10 @@ fn fee_and_user_source_must_be_distinct_before_persisting_intent() {
         .expect_err("the fee leg must not debit and credit the same account");
     assert!(error.to_string().contains("user source and fee"));
     assert!(executor.store.get(777).unwrap().is_none());
-    assert_eq!(executor.backend.transfers_with_user_data_128(777), [] as [Transfer; 0]);
+    assert_eq!(
+        executor.backend.transfers_with_user_data_128(777),
+        [] as [Transfer; 0]
+    );
 }
 
 #[test]
@@ -748,7 +760,10 @@ fn lp_and_user_destination_must_be_distinct_before_persisting_intent() {
             .contains("LP destination and user destination")
     );
     assert!(executor.store.get(777).unwrap().is_none());
-    assert_eq!(executor.backend.transfers_with_user_data_128(777), [] as [Transfer; 0]);
+    assert_eq!(
+        executor.backend.transfers_with_user_data_128(777),
+        [] as [Transfer; 0]
+    );
 }
 
 #[test]
@@ -778,7 +793,10 @@ fn duplicate_t1_and_fee_transfer_ids_fail_preflight_before_persisting_intent() {
         .expect_err("T1 and fee must not share a transfer ID");
     assert!(error.to_string().contains("duplicate transfer ID 601"));
     assert!(executor.store.get(777).unwrap().is_none());
-    assert_eq!(executor.backend.transfers_with_user_data_128(777), [] as [Transfer; 0]);
+    assert_eq!(
+        executor.backend.transfers_with_user_data_128(777),
+        [] as [Transfer; 0]
+    );
 }
 
 #[test]
@@ -792,7 +810,10 @@ fn duplicate_t1_and_t3_transfer_ids_fail_preflight_before_persisting_intent() {
         .expect_err("T1 and T3 must not share a transfer ID");
     assert!(error.to_string().contains("duplicate transfer ID 601"));
     assert!(executor.store.get(777).unwrap().is_none());
-    assert_eq!(executor.backend.transfers_with_user_data_128(777), [] as [Transfer; 0]);
+    assert_eq!(
+        executor.backend.transfers_with_user_data_128(777),
+        [] as [Transfer; 0]
+    );
 }
 
 #[test]
@@ -818,7 +839,10 @@ fn reserved_transfer_ids_fail_preflight_before_persisting_intent() {
                 "the error must name the reserved ID, got: {error}"
             );
             assert!(executor.store.get(777).unwrap().is_none());
-            assert_eq!(executor.backend.transfers_with_user_data_128(777), [] as [Transfer; 0]);
+            assert_eq!(
+                executor.backend.transfers_with_user_data_128(777),
+                [] as [Transfer; 0]
+            );
         }
     }
 
@@ -842,7 +866,10 @@ fn fee_without_account_fails_preflight_before_persisting_intent() {
         .expect_err("a fee with no fee account must fail preflight");
     assert!(error.to_string().contains("requires a fee_account"));
     assert!(executor.store.get(777).unwrap().is_none());
-    assert_eq!(executor.backend.transfers_with_user_data_128(777), [] as [Transfer; 0]);
+    assert_eq!(
+        executor.backend.transfers_with_user_data_128(777),
+        [] as [Transfer; 0]
+    );
 }
 
 #[test]
@@ -856,7 +883,10 @@ fn too_few_transfer_ids_fail_preflight_before_persisting_intent() {
         .expect_err("two IDs cannot cover T1, the fee leg, and T3");
     assert!(error.to_string().contains("expected 3 IDs, got 2"));
     assert!(executor.store.get(777).unwrap().is_none());
-    assert_eq!(executor.backend.transfers_with_user_data_128(777), [] as [Transfer; 0]);
+    assert_eq!(
+        executor.backend.transfers_with_user_data_128(777),
+        [] as [Transfer; 0]
+    );
 }
 
 #[test]
@@ -870,7 +900,10 @@ fn extra_transfer_ids_fail_preflight_before_persisting_intent() {
         .expect_err("extra transfer IDs must not be silently dropped");
     assert!(error.to_string().contains("expected 3 IDs, got 4"));
     assert!(executor.store.get(777).unwrap().is_none());
-    assert_eq!(executor.backend.transfers_with_user_data_128(777), [] as [Transfer; 0]);
+    assert_eq!(
+        executor.backend.transfers_with_user_data_128(777),
+        [] as [Transfer; 0]
+    );
 }
 
 #[test]
@@ -886,7 +919,10 @@ fn extra_transfer_ids_without_fee_fail_preflight_before_persisting_intent() {
         .expect_err("a no-fee conversion has only two legs, so a third ID is extra");
     assert!(error.to_string().contains("expected 2 IDs, got 3"));
     assert!(executor.store.get(777).unwrap().is_none());
-    assert_eq!(executor.backend.transfers_with_user_data_128(777), [] as [Transfer; 0]);
+    assert_eq!(
+        executor.backend.transfers_with_user_data_128(777),
+        [] as [Transfer; 0]
+    );
 }
 
 #[test]

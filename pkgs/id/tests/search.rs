@@ -253,7 +253,10 @@ fn test_a_cleared_claim_is_not_returned() {
         deliver(&mut store, event);
     }
 
-    assert_eq!(search_store(&store, "city", ValueMatch::Any).unwrap(), [] as [Hit; 0]);
+    assert_eq!(
+        search_store(&store, "city", ValueMatch::Any).unwrap(),
+        [] as [Hit; 0]
+    );
     assert_eq!(
         search_store(&store, "city", ValueMatch::Exact("Seattle")).unwrap(),
         [] as [Hit; 0]
@@ -380,13 +383,19 @@ fn test_hits_are_ordered_by_subject_then_claim_and_do_not_depend_on_delivery_ord
 #[test]
 fn test_a_search_matches_nothing_on_an_empty_store_or_an_unknown_name() {
     let (_dir, store) = open();
-    assert_eq!(search_store(&store, "city", ValueMatch::Any).unwrap(), [] as [Hit; 0]);
+    assert_eq!(
+        search_store(&store, "city", ValueMatch::Any).unwrap(),
+        [] as [Hit; 0]
+    );
 
     let mut a = Writer::new(1);
     let claim = a.set(Hash::digest(b"s"), "city", Some("Seattle"), vec![]);
     let (_dir2, mut store) = open();
     deliver(&mut store, &claim);
-    assert_eq!(search_store(&store, "state", ValueMatch::Any).unwrap(), [] as [Hit; 0]);
+    assert_eq!(
+        search_store(&store, "state", ValueMatch::Any).unwrap(),
+        [] as [Hit; 0]
+    );
 }
 
 /// The live claims' IDs, sorted by ID bytes.
@@ -480,7 +489,10 @@ fn test_search_by_author_returns_only_that_authors_claims() {
         vec![(subject, vec![seattle.id])]
     );
     // An author with no claims matches nothing.
-    assert_eq!(search_store_terms(&store, &[Term::Author([9; 32])]).unwrap(), [] as [Hit; 0]);
+    assert_eq!(
+        search_store_terms(&store, &[Term::Author([9; 32])]).unwrap(),
+        [] as [Hit; 0]
+    );
 }
 
 #[test]

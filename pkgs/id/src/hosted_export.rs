@@ -1029,7 +1029,10 @@ mod tests {
             object.signature,
             hex_encode(&event.header.signature.to_bytes())
         );
-        assert_eq!(cited_content_hashes(&event.bytes).unwrap(), [] as [String; 0]);
+        assert_eq!(
+            cited_content_hashes(&event.bytes).unwrap(),
+            [] as [String; 0]
+        );
         // Bytes that are not a verifiable envelope are refused.
         assert_eq!(
             ExportObject::from_envelope(b"not an envelope".to_vec(), Vec::new()),

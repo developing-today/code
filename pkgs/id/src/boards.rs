@@ -7494,7 +7494,10 @@ mod tests {
         let tombstone_hash = graph.insert(tombstone).unwrap();
         assert_eq!(graph.note_backlinks(&note_object), [] as [ArtifactHash; 0]);
         assert_eq!(graph.note_embeds(), [] as [(ArtifactHash, &NoteRef); 0]);
-        assert_eq!(graph.note_discussions(), [] as [(ArtifactHash, ArtifactHash); 0]);
+        assert_eq!(
+            graph.note_discussions(),
+            [] as [(ArtifactHash, ArtifactHash); 0]
+        );
         assert_eq!(graph.note_edges_from(&share_hash), [] as [NoteEdge; 0]);
 
         // Superseding the tombstone restores the share: the tombstone

@@ -1410,7 +1410,10 @@ mod tests {
         let mut index = index_with(vec![cleared.clone()]);
         assert!(index.clear(&cleared.id));
 
-        assert_eq!(index.resolve(Sigil::Topic, "roadmap").candidates, [] as [Candidate; 0]);
+        assert_eq!(
+            index.resolve(Sigil::Topic, "roadmap").candidates,
+            [] as [Candidate; 0]
+        );
         assert_eq!(
             index.insert_unambiguous(Sigil::Topic, "roadmap", author(7)),
             Err(InsertError::NoMatch)
@@ -1689,7 +1692,10 @@ mod tests {
         assert_eq!(resolution.candidates[0].target_id, visible.id);
         assert!(!resolution.candidates[0].contested());
         // A phrase matching only a hidden target resolves to nothing at all.
-        assert_eq!(fanout.resolve(Sigil::Topic, "zephyr").candidates, [] as [Candidate; 0]);
+        assert_eq!(
+            fanout.resolve(Sigil::Topic, "zephyr").candidates,
+            [] as [Candidate; 0]
+        );
         // And a stored reference to the hidden target renders as unresolved in that
         // store: only the stored surface shows, never a label or existence signal.
         let reference = Reference {
@@ -1805,7 +1811,10 @@ mod tests {
         assert_eq!(resolution.candidates[0].target_id, visible.id);
         assert!(!resolution.candidates[0].contested());
         // A phrase matching only a hidden hosted target resolves to nothing at all.
-        assert_eq!(fanout.resolve(Sigil::Topic, "zephyr").candidates, [] as [Candidate; 0]);
+        assert_eq!(
+            fanout.resolve(Sigil::Topic, "zephyr").candidates,
+            [] as [Candidate; 0]
+        );
         // And a stored reference to the hidden hosted target stays unresolved across
         // the locator boundary too: inert text, no label, no store named.
         let reference = Reference {
