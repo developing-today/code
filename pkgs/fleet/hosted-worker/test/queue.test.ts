@@ -86,7 +86,12 @@ function triagePacket(issue = 777): JsonObject {
   return p;
 }
 
-async function enqueue(store: QueueStore, env: QueueEnv, packet: JsonObject, extra: JsonObject = {}): Promise<JsonObject> {
+async function enqueue(
+  store: QueueStore,
+  env: QueueEnv,
+  packet: JsonObject,
+  extra: JsonObject = {},
+): Promise<JsonObject> {
   return await executeQueueVerb(store, "enqueue", { queue: "repo-health", packet, ...extra }, env);
 }
 
@@ -271,7 +276,12 @@ test("enqueue reports a work-identity collision and honours dedupe_override", as
 
 test("enqueue into a shadow queue requires deliberate intent", async () => {
   const { store } = setup();
-  const refused = await executeQueueVerb(store, "enqueue", { queue: "repo-health-shadow", packet: fixPacket() }, hostedEnv());
+  const refused = await executeQueueVerb(
+    store,
+    "enqueue",
+    { queue: "repo-health-shadow", packet: fixPacket() },
+    hostedEnv(),
+  );
   assert.equal(refused["ok"], false);
   assert.equal(refused["exit"], 2);
   const allowed = await executeQueueVerb(
@@ -438,6 +448,36 @@ test("an expired lease returns the task and the lapsed holder is told to re-clai
   assert.ok(String(hb2["error"]).includes("it is claimed by second"));
 });
 
+test("lease guidance names heartbeat only, and only heartbeat advances the deadline (#14653)", async () => {
+  const { store } = setup();
+  await enqueue(store, nativeEnv(), fixPacket());
+  const claimed = await claim(store, nativeEnv(), { worker: "first", lease_seconds: 60 });
+  const id = (claimed["row"] as JsonObject)["id"] as number;
+  clock += 61;
+  // A claim whose filter matches nothing still runs the expiry
+  // sweep, leaving the task queued with first's lease_expired
+  // event on record — the state the diagnostic speaks to.
+  const none = await claim(store, nativeEnv(), { worker: "second", filter: "kind = triage" });
+  assert.equal(none["row"], null);
+  const hb = await verb(store, nativeEnv(), "heartbeat", { task_id: id, worker: "first" });
+  assert.equal(hb["ok"], false);
+  const err = String(hb["error"]);
+  assert.ok(err.includes("first's lease expired"), err);
+  assert.ok(err.includes("heartbeat to keep a lease"), err);
+  assert.ok(!err.includes("or checkpoint"), err);
+  // The advertised action is the one that advances the deadline:
+  // re-claim, checkpoint (lease_until unchanged), then heartbeat
+  // with a longer extension (lease_until advances).
+  const reclaimed = await claim(store, nativeEnv(), { worker: "first", lease_seconds: 3600 });
+  const before = (reclaimed["row"] as JsonObject)["lease_until"] as string;
+  const cp = await verb(store, nativeEnv(), "checkpoint", { task_id: id, worker: "first", stage: "mid" });
+  assert.equal(cp["ok"], true);
+  assert.equal((cp["row"] as JsonObject)["lease_until"], before);
+  const hb2 = await verb(store, nativeEnv(), "heartbeat", { task_id: id, worker: "first", extend_seconds: 7200 });
+  assert.equal(hb2["ok"], true);
+  assert.ok(String((hb2["row"] as JsonObject)["lease_until"]) > before);
+});
+
 test("claim filters, batch claims, and the by-id/task guards", async () => {
   const { store } = setup();
   await enqueue(store, nativeEnv(), fixPacket(201));
@@ -463,9 +503,11 @@ test("the claim guard quarantines a stored packet that no longer validates (#544
   // corrupted in place).
   const row = await store.insertTask({
     queue: "repo-health",
+    manual_only: false,
     title: "rotten",
     body: null,
     payload: { schema: "repo-task/v1", kind: "small_fix" },
+    metadata: {},
     dedupe_key: null,
     priority: 30,
     status: "queued",
@@ -614,7 +656,11 @@ test("fail: transient requeues with backoff, blocked parks the row, fatal termin
 test("cancel is idempotent and terminal rows answer unchanged", async () => {
   const { store } = setup();
   await enqueue(store, nativeEnv(), fixPacket());
-  const cancelled = await verb(store, nativeEnv(), "cancel", { task_id: 1, worker: "fleet-monitor", reason: "duplicate" });
+  const cancelled = await verb(store, nativeEnv(), "cancel", {
+    task_id: 1,
+    worker: "fleet-monitor",
+    reason: "duplicate",
+  });
   assert.equal((cancelled["row"] as JsonObject)["status"], "cancelled");
   const again = await verb(store, nativeEnv(), "cancel", { task_id: 1, worker: "fleet-monitor", reason: "duplicate" });
   assert.equal((again["row"] as JsonObject)["status"], "cancelled");

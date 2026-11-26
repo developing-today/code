@@ -12,7 +12,8 @@ laptop-ssh that hands its single argument to a real shell (`bash -c`),
 exactly like ssh + a login shell do, and a fake fleet-paperwork that
 reports the argv it received. No network, no GitHub, no laptop.
 
-Run: python3 ~/tools/test-gh-post-app-leg.py  (exit 0 = pass)
+Oracle: the stub receives the exact argv and body digest supplied by the caller.
+Run: python3 pkgs/gh-fleet/test-gh-post-app-leg.py  (exit 0 = pass)
 """
 
 import hashlib
@@ -25,7 +26,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-GH_POST = Path.home() / "tools/gh-post"
+GH_POST = Path(__file__).resolve().parent / "gh-post"
 
 
 def load_gh_post():

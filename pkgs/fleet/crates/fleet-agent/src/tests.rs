@@ -316,6 +316,88 @@ fn a_queue_claim_carries_the_claimers_model_leaf_when_given() {
     ));
 }
 
+/// Seed a saved profile carrying a model stamp, as an enrolment
+/// with --model-* flags writes it (#4919).
+fn seed_stamped_profile(fake: &Fake) {
+    std::fs::write(
+        fake.profile_path(),
+        json!({
+            "name": "felix",
+            "kind": "muse",
+            "groups": ["muse"],
+            "enrolled_at": 1,
+            "model": {"provider": "muse-lane", "id": "muse-lane", "variant": "high"},
+        })
+        .to_string(),
+    )
+    .expect("seed the profile");
+}
+
+#[test]
+fn next_stamps_the_claim_from_the_profile_when_no_model_flags_are_given() {
+    // Oracle (#4919): the effort producer is the profile stamp. A
+    // lane enrolled with a stamp claims WITH it — variant included —
+    // without repeating --model-* on the run, so the broker writes
+    // claim_variant and the completion derive has an effort to
+    // propagate. Before this, such a claim went out unstamped.
+    let fake = Fake::new();
+    seed_stamped_profile(&fake);
+    fake.on(INBOX, vec![empty_inbox()]).on(
+        CLAIM,
+        vec![ok(
+            json!({"id": 10814, "queue": "fleet", "status": "claimed",
+                       "title": "Next task"}),
+        )],
+    );
+    let (out, code) = run(&fake, &["next", "--agent", "felix", "--lane", "felix"]);
+    assert_eq!(code, EXIT_OK);
+    assert_eq!(out["rung"], "queue");
+    assert!(fake.called(
+        "fleet queue claim --worker felix --lane felix --lease-seconds 14400 --model-provider muse-lane --model-id muse-lane --model-variant high"
+    ));
+}
+
+#[test]
+fn nexts_explicit_model_flags_override_the_profile_stamp() {
+    // Oracle (#4919): an explicit stamp is the caller's own and
+    // wins whole — the profile stamp must not leak into a claim
+    // whose caller named a different leaf.
+    let fake = Fake::new();
+    seed_stamped_profile(&fake);
+    fake.on(INBOX, vec![empty_inbox()]).on(
+        CLAIM,
+        vec![ok(
+            json!({"id": 10815, "queue": "fleet", "status": "claimed",
+                       "title": "Next task"}),
+        )],
+    );
+    let (out, code) = run(
+        &fake,
+        &[
+            "next",
+            "--agent",
+            "felix",
+            "--lane",
+            "felix",
+            "--model-provider",
+            "_openai.main",
+            "--model-id",
+            "gpt-6-luna",
+            "--model-variant",
+            "medium",
+        ],
+    );
+    assert_eq!(code, EXIT_OK);
+    assert_eq!(out["rung"], "queue");
+    assert!(fake.called(
+        "fleet queue claim --worker felix --lane felix --lease-seconds 14400 --model-provider _openai.main --model-id gpt-6-luna --model-variant medium"
+    ));
+    assert!(
+        !fake.called("--model-id muse-lane"),
+        "the profile stamp must not ride an explicitly stamped claim"
+    );
+}
+
 #[test]
 fn next_uses_the_registered_worker_for_a_known_lane() {
     // Oracle (#6853): the broker's canonical lane registry binds
@@ -324,6 +406,7 @@ fn next_uses_the_registered_worker_for_a_known_lane() {
         ("code-i", "repo-worker-code"),
         ("code-a", "repo-worker-code"),
         ("code-b", "repo-worker-code"),
+        ("code-g", "repo-worker-code"),
         ("opencode-a", "repo-worker-opencode"),
         ("opencode-b", "repo-worker-opencode"),
         ("openchamber-a", "repo-worker-openchamber"),
@@ -1217,6 +1300,82 @@ fn enrolling_registers_the_mailbox_saves_the_profile_and_reports_the_rungs() {
 }
 
 #[test]
+fn enrolling_with_model_flags_records_the_stamp_in_the_profile() {
+    // Oracle (#4919): the enrolment is where the lane names its
+    // model/effort once; the saved profile is what `next` stamps
+    // claims from, so the stamp must be in the file, variant and
+    // all, and echoed in the answer for the operator to verify.
+    let fake = Fake::new();
+    fake.on(
+        "fleet bridge hello",
+        vec![ok(json!({"agent": "muse-7", "groups": ["muse"]}))],
+    )
+    .on(
+        "fleet queue health",
+        vec![fail(3, "queue broker unreachable")],
+    )
+    .on(
+        "fleet gh api rate_limit",
+        vec![ok(json!({"rate": {"remaining": 4000}}))],
+    )
+    .on(
+        "fleet laptop-agent health",
+        vec![fail(3, "no leg answered")],
+    );
+    let (out, code) = run(
+        &fake,
+        &[
+            "enroll",
+            "--kind",
+            "muse",
+            "--name",
+            "muse-7",
+            "--model-provider",
+            "muse-lane",
+            "--model-id",
+            "muse-lane",
+            "--model-variant",
+            "high",
+        ],
+    );
+    assert_eq!(code, EXIT_OK);
+    assert_eq!(
+        out["model"],
+        json!({"provider": "muse-lane", "id": "muse-lane", "variant": "high"})
+    );
+    let saved: Value =
+        serde_json::from_str(&std::fs::read_to_string(fake.profile_path()).unwrap()).unwrap();
+    assert_eq!(
+        saved["model"],
+        json!({"provider": "muse-lane", "id": "muse-lane", "variant": "high"}),
+        "the profile is the durable record the claim path reads"
+    );
+}
+
+#[test]
+fn enrolling_with_a_variant_but_no_leaf_is_a_usage_error() {
+    // Oracle (#4919): a variant alone is a half-stamp — the queue
+    // claim refuses one, so enrolment must refuse it too, before
+    // anything is probed or saved.
+    let fake = Fake::new();
+    let err = execute(
+        &fake,
+        &argv(&[
+            "enroll",
+            "--kind",
+            "muse",
+            "--name",
+            "muse-7",
+            "--model-variant",
+            "high",
+        ]),
+    )
+    .unwrap_err();
+    assert!(matches!(err, AgentError::Usage(_)), "{err:?}");
+    assert!(!fake.profile_path().exists());
+}
+
+#[test]
 fn a_seat_where_no_intake_leg_answers_is_exit_three_and_still_explains_itself() {
     let fake = Fake::new();
     fake.on("fleet ", vec![fail(3, "unreachable")])
@@ -1304,9 +1463,18 @@ fn bootstrap_enrolment_exchanges_first_saves_names_and_writes_the_wake_hook() {
         }))],
     )
     .on("fleet bridge hello", vec![ok(json!({"agent": "muse-9"}))])
-    .on("fleet queue health", vec![fail(3, "queue broker unreachable")])
-    .on("fleet gh api rate_limit", vec![ok(json!({"rate": {"remaining": 4000}}))])
-    .on("fleet laptop-agent health", vec![fail(3, "no leg answered")]);
+    .on(
+        "fleet queue health",
+        vec![fail(3, "queue broker unreachable")],
+    )
+    .on(
+        "fleet gh api rate_limit",
+        vec![ok(json!({"rate": {"remaining": 4000}}))],
+    )
+    .on(
+        "fleet laptop-agent health",
+        vec![fail(3, "no leg answered")],
+    );
     let (out, code) = run(
         &fake,
         &[
@@ -1329,7 +1497,10 @@ fn bootstrap_enrolment_exchanges_first_saves_names_and_writes_the_wake_hook() {
         fake.calls()
     );
     assert_eq!(out["groups"], json!(["muse"]));
-    assert_eq!(out["bootstrap"]["fleet_token_name"], "bridge.muse-9-fleet-token");
+    assert_eq!(
+        out["bootstrap"]["fleet_token_name"],
+        "bridge.muse-9-fleet-token"
+    );
     assert_eq!(out["bootstrap"]["notes_token_name"], "bridge.muse-9-token");
     assert_eq!(out["bootstrap"]["notes_identity"], "muse/muse-9");
     // The profile records the credential names — and no token value
@@ -1360,7 +1531,10 @@ fn bootstrap_enrolment_exchanges_first_saves_names_and_writes_the_wake_hook() {
             .join("bridge-muse-9-signal.sh"),
     )
     .unwrap();
-    assert!(script.contains("https://bridge.example/muse/muse-9"), "{script}");
+    assert!(
+        script.contains("https://bridge.example/muse/muse-9"),
+        "{script}"
+    );
     assert!(!script.contains(BOOTSTRAP_FIXTURE));
     let definition: Value = serde_json::from_str(
         &std::fs::read_to_string(
@@ -1376,7 +1550,10 @@ fn bootstrap_enrolment_exchanges_first_saves_names_and_writes_the_wake_hook() {
     assert_eq!(definition["poll_interval_secs"], 60);
     let prompt = definition["prompt"].as_str().unwrap();
     assert!(prompt.contains("fleet bridge notes inbox"), "{prompt}");
-    assert!(prompt.contains("bridge.muse-9-token"), "the prompt names the token, by name: {prompt}");
+    assert!(
+        prompt.contains("bridge.muse-9-token"),
+        "the prompt names the token, by name: {prompt}"
+    );
     assert!(!prompt.contains(BOOTSTRAP_FIXTURE));
 }
 
@@ -1407,7 +1584,10 @@ fn a_refused_exchange_enrols_nothing() {
         matches!(&err, AgentError::Down(m) if m.contains("nothing was stored")),
         "{err}"
     );
-    assert!(!fake.profile_path().exists(), "no profile after a refused exchange");
+    assert!(
+        !fake.profile_path().exists(),
+        "no profile after a refused exchange"
+    );
     assert!(
         !fake.called("bridge hello"),
         "no hello after a refused exchange: {:?}",

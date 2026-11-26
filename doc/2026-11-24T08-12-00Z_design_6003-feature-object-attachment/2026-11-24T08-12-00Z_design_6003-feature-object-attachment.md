@@ -12,7 +12,7 @@ Entities in a running world cannot gain library behavior without recompiling the
 
 The LambdaMOO precedent (https://www.moo.mud.org/moo-faq/lcore-getting-started.html, cited in #6003) shows the missing shape: feature objects as runtime-attached libraries — create a reusable object implementing verbs, attach it to any entity, gain those commands with no consumer recompilation.
 
-This design is distinct from the #5955 taxonomy child (attachment as classification) and from #5964 (per-user *functions* via server-compiled DLLs/hot-swap). This is per-entity *behavior* attach/detach inside a running world. The compile-economics design #5965 (closed via #6230) is an input (DLL cache/linkage), not an implementation of runtime attachment.
+This design is distinct from the #5955 taxonomy child (attachment as classification) and from #5964 (per-user _functions_ via server-compiled DLLs/hot-swap). This is per-entity _behavior_ attach/detach inside a running world. The compile-economics design #5965 (closed via #6230) is an input (DLL cache/linkage), not an implementation of runtime attachment.
 
 ## 2. Goals and non-goals
 

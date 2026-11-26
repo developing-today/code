@@ -1,0 +1,280 @@
+name: cf-worker versions release
+
+# CF-1 (#14941, programme #14866): the versions deploy standard of
+# doc/2026-11-25_design_cloudflare-first-migration.md §4, as one
+# parameterized workflow for the in-scope Workers that still deploy by
+# hand and have no bespoke release workflow of their own:
+#
+#   github-ci, fleet-hosted, cold-store-rehydrator, fleet-git-rehost,
+#   lab-ops-hub, cf-container-hello
+#
+# Workers that already run a versions-style release workflow keep it
+# (message-bridge, voice-line, muse-agent-handoff, desktop-commander,
+# developing-today-backup, pm-console-edge, decision-events); this file
+# is the standard for the rest, and a Worker graduates to a bespoke
+# workflow by copying this one's shape.
+#
+# The standard, per run:
+#   1. build in Actions (npm ci / npm install in the Worker's own
+#      directory; the cold-store Worker also runs its bundle build);
+#   2. `wrangler versions upload`, tagged `gha-<commit sha, 12>` with
+#      the full SHA in the version message — the upload serves nothing;
+#   3. record the currently-serving version id, then
+#      `wrangler versions deploy <new>@100`;
+#   4. health gate: the Worker's own public health marker must answer
+#      (table below) — on failure the previously-serving version is
+#      deployed back at 100% and the run fails;
+#   5. rollback is the same workflow with operation=rollback and the
+#      version id to put back: a version promotion, never a redeploy.
+#
+# A separate record job then writes the deploy state into
+# pm-stack/platform/workers.json (lastDeployedCommit, deploy, workflow)
+# and pushes it to main — workers.json deploy state is written by this
+# pipeline, not by hand (#14941). The push goes through
+# .github/scripts/record-worker-deploy.sh, which retries a rejected
+# push by rebasing the record onto current main: parallel releases of
+# different Workers are expected, and their record pushes must not lose
+# records to the stale-ref race (#15041).
+#
+# Until both Cloudflare repository secrets exist the release job says
+# so in its summary and skips the upload instead of failing (the
+# pm-console-edge pattern). Secrets are referenced by name only.
+
+on:
+  workflow_dispatch:
+    inputs:
+      worker:
+        description: "Worker to release"
+        required: true
+        type: choice
+        options:
+          - github-ci
+          - fleet-hosted
+          - cold-store-rehydrator
+          - fleet-git-rehost
+          - lab-ops-hub
+          - cf-container-hello
+      operation:
+        description: "deploy this commit, or roll back to an existing version"
+        required: true
+        type: choice
+        options:
+          - deploy
+          - rollback
+        default: deploy
+      version_id:
+        description: "Rollback only: existing Worker version id (full UUID) to put back at 100%"
+        required: false
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cf-worker-versions-release-${{ inputs.worker }}
+  cancel-in-progress: false
+
+jobs:
+  request-check:
+    name: validate the release request
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Releases run from main; rollback needs a version id
+        env:
+          GH_REF: ${{ github.ref }}
+          OPERATION: ${{ inputs.operation }}
+          VERSION_ID: ${{ inputs.version_id }}
+        run: |
+          set -euo pipefail
+          if [[ "$GH_REF" != "refs/heads/main" ]]; then
+            echo "Releases must be dispatched from main (got $GH_REF)." >&2
+            exit 1
+          fi
+          case "$OPERATION" in
+            deploy)
+              if [[ -n "$VERSION_ID" ]]; then
+                echo "Leave version_id blank for a deploy." >&2
+                exit 1
+              fi
+              ;;
+            rollback)
+              if [[ ! "$VERSION_ID" =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$ ]]; then
+                echo "Rollback requires the full UUID of an existing version." >&2
+                exit 1
+              fi
+              ;;
+            *)
+              echo "Unknown operation: $OPERATION" >&2
+              exit 1
+              ;;
+          esac
+
+  release:
+    name: release ${{ inputs.worker }}
+    needs: request-check
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    outputs:
+      deployed_commit: ${{ steps.deploy.outputs.deployed_commit }}
+      version_id: ${{ steps.deploy.outputs.version_id }}
+    steps:
+      - name: Check deploy secrets
+        id: secrets
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          if [ -n "$CLOUDFLARE_API_TOKEN" ] && [ -n "$CLOUDFLARE_ACCOUNT_ID" ]; then
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            echo "Skipped the release: set the CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID repository secrets to release Workers from the repo." >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - uses: actions/checkout@v7
+        if: steps.secrets.outputs.ready == 'true'
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7.1.0
+        if: steps.secrets.outputs.ready == 'true'
+        with:
+          node-version: 24
+      - name: Resolve the Worker table row
+        id: row
+        if: steps.secrets.outputs.ready == 'true'
+        env:
+          WORKER: ${{ inputs.worker }}
+        run: |
+          set -euo pipefail
+          # dir | health URL | health marker (substring of the body)
+          case "$WORKER" in
+            github-ci)
+              dir="pkgs/github-ci/worker"; build=""
+              health_url="https://github-ci.developing-today.workers.dev/"
+              health_marker="github-ci worker ok" ;;
+            fleet-hosted)
+              dir="pkgs/fleet/hosted-worker"; build=""
+              health_url="https://fleet-hosted.developing-today.workers.dev/health"
+              health_marker='"ok"' ;;
+            cold-store-rehydrator)
+              dir="pkgs/cold-store-reaper/worker"; build="npm run build"
+              health_url="https://cold-store-rehydrator.developing-today.workers.dev/health"
+              health_marker='"ok":true' ;;
+            fleet-git-rehost)
+              dir="infra/github-backup/rehost/worker"; build=""
+              health_url="https://git.security.cab/"
+              health_marker="fleet-git-rehost" ;;
+            lab-ops-hub)
+              dir="pkgs/lab-ops-hub"; build=""
+              health_url="https://lab-ops-hub.developing-today.workers.dev/api/health"
+              health_marker="lab-ops-hub" ;;
+            cf-container-hello)
+              dir="pkgs/cf-container-hello"; build=""
+              health_url="https://cf-container-hello.developing-today.workers.dev/worker-marker"
+              health_marker="" ;;
+            *)
+              echo "No table row for worker: $WORKER" >&2; exit 1 ;;
+          esac
+          {
+            echo "dir=$dir"
+            echo "build=$build"
+            echo "health_url=$health_url"
+            echo "health_marker=$health_marker"
+          } >> "$GITHUB_OUTPUT"
+      - name: Install the Worker's toolchain
+        if: steps.secrets.outputs.ready == 'true'
+        working-directory: ${{ steps.row.outputs.dir }}
+        run: |
+          set -euo pipefail
+          if [ -f package-lock.json ]; then
+            npm ci --no-audit --no-fund
+          elif [ -f package.json ]; then
+            npm install --no-audit --no-fund
+          fi
+          if [ -x ./node_modules/.bin/wrangler ]; then
+            echo "WRANGLER=./node_modules/.bin/wrangler" >> "$GITHUB_ENV"
+          else
+            # fleet-git-rehost pins no wrangler of its own; use the
+            # estate's current pinned release (github-backup worker).
+            echo "WRANGLER=npx --yes wrangler@4.163.0" >> "$GITHUB_ENV"
+          fi
+      - name: Build the Worker bundle
+        if: steps.secrets.outputs.ready == 'true' && steps.row.outputs.build != ''
+        working-directory: ${{ steps.row.outputs.dir }}
+        run: ${{ steps.row.outputs.build }}
+      - name: Upload, deploy, and health-gate the version
+        id: deploy
+        if: steps.secrets.outputs.ready == 'true'
+        working-directory: ${{ steps.row.outputs.dir }}
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          WORKER: ${{ inputs.worker }}
+          OPERATION: ${{ inputs.operation }}
+          ROLLBACK_VERSION: ${{ inputs.version_id }}
+          HEALTH_URL: ${{ steps.row.outputs.health_url }}
+          HEALTH_MARKER: ${{ steps.row.outputs.health_marker }}
+        run: |
+          set -euo pipefail
+          # The version serving now, so a failed health gate can put it
+          # back. Empty when the Worker has never been deployed.
+          previous="$($WRANGLER deployments list 2>/dev/null \
+            | grep -oE '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}' \
+            | head -n 1 || true)"
+          if [ "$OPERATION" = "rollback" ]; then
+            version_id="$ROLLBACK_VERSION"
+          else
+            upload_log="$RUNNER_TEMP/upload.log"
+            $WRANGLER versions upload \
+              --tag "gha-${GITHUB_SHA:0:12}" \
+              --message "GHA deploy $GITHUB_SHA (#14941)" | tee "$upload_log"
+            version_id="$(grep -oE '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}' "$upload_log" | tail -n 1 || true)"
+            if [ -z "$version_id" ]; then
+              echo "wrangler versions upload printed no version id" >&2
+              exit 1
+            fi
+          fi
+          $WRANGLER versions deploy "${version_id}@100" --yes \
+            --message "GHA $OPERATION $GITHUB_SHA (#14941)"
+          # Health gate: the Worker's own marker must answer.
+          healthy=false
+          for _ in $(seq 1 20); do
+            body="$(curl -fsS --max-time 10 "$HEALTH_URL" 2>/dev/null || true)"
+            if [ -n "$body" ] && { [ -z "$HEALTH_MARKER" ] || [[ "$body" == *"$HEALTH_MARKER"* ]]; }; then
+              healthy=true; break
+            fi
+            sleep 6
+          done
+          if [ "$healthy" != "true" ]; then
+            echo "${WORKER} did not answer its health gate ($HEALTH_URL) as version $version_id" >&2
+            if [ -n "$previous" ] && [ "$previous" != "$version_id" ]; then
+              $WRANGLER versions deploy "${previous}@100" --yes \
+                --message "auto-restore after failed health gate, run $GITHUB_RUN_ID" || true
+              echo "Put the previous version ($previous) back at 100%." >> "$GITHUB_STEP_SUMMARY"
+            fi
+            exit 1
+          fi
+          echo "version_id=$version_id" >> "$GITHUB_OUTPUT"
+          if [ "$OPERATION" = "deploy" ]; then
+            echo "deployed_commit=$GITHUB_SHA" >> "$GITHUB_OUTPUT"
+          fi
+          echo "${WORKER} version $version_id is serving and answers $HEALTH_URL." >> "$GITHUB_STEP_SUMMARY"
+
+  record:
+    name: record the deploy in workers.json
+    needs: release
+    if: inputs.operation == 'deploy' && needs.release.outputs.deployed_commit != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: main
+      - name: Write, commit, and push the record (push-race retrying, #15041)
+        env:
+          WORKER: ${{ inputs.worker }}
+          DEPLOYED_COMMIT: ${{ needs.release.outputs.deployed_commit }}
+        run: bash .github/scripts/record-worker-deploy.sh

@@ -8,6 +8,14 @@
 //! appends one closure record (JSON line) to the closure log, which
 //! lives in the fleet state directory so it is backed up with it.
 //! `fleet gh closures [<item>]` reads the log back.
+//!
+//! The close comment's free text comes from `--reason-text`. gh's
+//! native `--comment`/`-c` is accepted as an alias of `--reason-text`
+//! on a close (dezren39/fleet#118) — the composed comment is the
+//! wrapper's own, built from the reason, so a caller's comment text
+//! folds into it; the two flags combine in argument order when both
+//! are given. On a reopen there is no composed comment, so
+//! `--comment` forwards to gh unchanged, as real gh accepts it there.
 
 use fleet_config::Config;
 use std::io::Write;
@@ -89,18 +97,26 @@ pub fn parse(args: &[String]) -> Result<Option<Intent>, String> {
             };
             match name {
                 "--reason" | "-r" => reason = Some(value),
-                "--reason-text" => reason_text = Some(value),
+                "--reason-text" => append_reason_text(&mut reason_text, value),
                 "--successor" => successor = Some(value),
                 "--repo" | "-R" => {
                     repo = Some(value.clone());
                     gh_args.push(name.to_string());
                     gh_args.push(value);
                 }
-                _ => {
-                    return Err(
-                        "--comment is not accepted on a closure: use --reason-text".to_string()
-                    );
+                // gh's native comment flag (dezren39/fleet#118): on a
+                // close it is an alias of --reason-text — the text
+                // folds into the composed close comment; on a reopen
+                // it forwards to gh, which accepts it there.
+                "--comment" | "-c" => {
+                    if action == "reopen" {
+                        gh_args.push("--comment".to_string());
+                        gh_args.push(value);
+                    } else {
+                        append_reason_text(&mut reason_text, value);
+                    }
                 }
+                _ => return Err(format!("flag '{name}' is not accepted on a closure")),
             }
         } else if item.is_none() && !a.starts_with('-') {
             item = Some(a.to_string());
@@ -146,6 +162,23 @@ pub fn parse(args: &[String]) -> Result<Option<Intent>, String> {
         repo,
         gh_args,
     }))
+}
+
+/// Fold one piece of close text into the reason text. `--reason-text`
+/// and gh's `--comment` both land here; when both are given (or one is
+/// repeated) the pieces join in argument order with a single space.
+fn append_reason_text(slot: &mut Option<String>, value: String) {
+    match slot.as_mut() {
+        Some(existing) if !existing.is_empty() && !value.is_empty() => {
+            existing.push(' ');
+            existing.push_str(&value);
+        }
+        _ => {
+            if slot.as_deref().is_none_or(str::is_empty) {
+                *slot = Some(value);
+            }
+        }
+    }
 }
 
 fn item_number(raw: &str) -> Result<String, String> {
@@ -407,6 +440,72 @@ mod tests {
         assert_eq!(args[5], "--comment");
         assert_eq!(args[6], "Closed as superseded. folded in\nSuccessor: 9");
         assert!(!args.iter().any(|a| a == "--reason" || a == "--successor"));
+    }
+
+    // oracle: dezren39/fleet#118 — gh's native --comment on a close is
+    // the reason text, not a refusal.
+    #[test]
+    fn comment_flag_is_the_reason_text_on_a_close() {
+        let i = parse(&s(&[
+            "issue",
+            "close",
+            "7",
+            "--repo",
+            "a/b",
+            "--reason",
+            "implemented",
+            "--comment",
+            "evidence here",
+        ]))
+        .unwrap()
+        .unwrap();
+        assert_eq!(i.reason_text.as_deref(), Some("evidence here"));
+        let args = i.gh_args_with_reason();
+        assert_eq!(
+            args.last().map(String::as_str),
+            Some("Closed as implemented. evidence here")
+        );
+        // exactly one --comment reaches gh: the composed one.
+        assert_eq!(args.iter().filter(|a| *a == "--comment").count(), 1);
+    }
+
+    // oracle: dezren39/fleet#118 — -c and --reason-text combine in
+    // argument order when both are given.
+    #[test]
+    fn short_comment_flag_and_reason_text_combine_in_order() {
+        let i = parse(&s(&[
+            "pr",
+            "close",
+            "3",
+            "--reason",
+            "cancelled",
+            "-c",
+            "first",
+            "--reason-text",
+            "second",
+        ]))
+        .unwrap()
+        .unwrap();
+        assert_eq!(i.reason_text.as_deref(), Some("first second"));
+        let args = i.gh_args_with_reason();
+        assert_eq!(
+            args.last().map(String::as_str),
+            Some("Closed as cancelled. first second")
+        );
+    }
+
+    // oracle: gh accepts --comment on a reopen natively, so the
+    // wrapper forwards it instead of folding or refusing it.
+    #[test]
+    fn comment_forwards_to_gh_on_a_reopen() {
+        let i = parse(&s(&["issue", "reopen", "7", "--comment", "back again"]))
+            .unwrap()
+            .unwrap();
+        assert_eq!(i.reason_text, None);
+        assert_eq!(
+            i.gh_args_with_reason(),
+            s(&["issue", "reopen", "7", "--comment", "back again"])
+        );
     }
 
     // oracle: the record shape the closure log promises.

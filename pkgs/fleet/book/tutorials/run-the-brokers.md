@@ -53,6 +53,14 @@ What happens, in order:
    `turso_pending` reason until the backend is ready. A backend that
    cannot come up within its retry budget exits the broker with `3`, so
    a supervisor restarts it.
+4. Optional (BT-3, Phase 1): if `QUEUE_BROKER_TLS_CERT_FILE` and
+   `QUEUE_BROKER_TLS_KEY_FILE` name a `broker-server` leaf chain and
+   its on-host key, the TCP leg also presents TLS server
+   authentication. Plaintext clients keep working on the same port
+   (their accepts are logged); clients configured with
+   `REPO_QUEUE_TLS_TRUST_STORE` validate the leaf against their BT-2
+   trust store and fail closed. Setting exactly one of the pair is a
+   startup error, exit `3`.
 
 The process now blocks in the foreground. Leave it running and work from
 a second terminal for the next steps.
