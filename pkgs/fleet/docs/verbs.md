@@ -416,6 +416,23 @@ daemon's general client.
 | `exec [--cwd DIR] [--timeout SECS] -- CMD...` | Run a command line over ssh under the binary-owned client contract (pinned host key, proxy CONNECT, fleet-owned multiplex master); the remote exit code propagates; the binary deadline exits 124. ssh's own failure exit is 255. |
 | `close`                                       | Tear down the fleet-owned multiplex master, if any.                                                                                                                                                                               |
 
+## `id` — iroh-native ID transport (design #10391 pass 2)
+
+`fleet id session-key [--id-secret <hex>] [--stamp | --node-id]`
+
+Slice 1 (#15430, design §4.1): the session key lifecycle. Mints a
+fresh ephemeral ed25519 node key per session from the OS RNG, or
+adopts the caller-supplied secret verbatim (`--id-secret` /
+`FLEET_ID_SECRET`, 64 hex chars; never persisted). The default
+rendering is the dot-sourced env: `FLEET_ID_NODE_ID` plus
+`FLEET_ID_SECRET` (in-session only). `--stamp` prints the queue
+stamp JSON (`{"fleet_node_id": …}`, public key only — the secret
+never enters the stamp, a log, or a trip record); `--node-id`
+prints just the NodeId hex. The secret lives in process memory
+only and is zeroized at exit. The `proxy`, `postcard`, `stream`
+and `serve-ws` verbs land as slices 2–5 of the same design
+(#15434, #15435, #15436, #15399).
+
 ## `actions` — live exec sessions in Actions runners
 
 `fleet actions exec start --repo OWNER/REPO --timeout S
