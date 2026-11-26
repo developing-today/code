@@ -28,7 +28,9 @@ class HostedSeedFleetTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as root:
             with (
                 patch.object(hosted_seed_fleet, "_git") as git,
-                patch.object(hosted_seed_fleet, "valid_mirror", return_value=True) as valid,
+                patch.object(
+                    hosted_seed_fleet, "valid_mirror", return_value=True
+                ) as valid,
             ):
                 self.assertEqual(hosted_seed_fleet.run_all(root), 0)
 
@@ -45,16 +47,22 @@ class HostedSeedFleetTests(unittest.TestCase):
             self.assertEqual([call.args[0] for call in git.call_args_list], expected)
             self.assertEqual(
                 [call.args[0] for call in valid.call_args_list],
-                [os.path.join(root, repo + ".git") for repo in hosted_seed_fleet.FLEET_REPOS],
+                [
+                    os.path.join(root, repo + ".git")
+                    for repo in hosted_seed_fleet.FLEET_REPOS
+                ],
             )
             with open(os.path.join(root, "plan.json")) as f:
                 plan = json.load(f)
-            self.assertEqual(plan, [{"repo": repo} for repo in hosted_seed_fleet.FLEET_REPOS])
+            self.assertEqual(
+                plan, [{"repo": repo} for repo in hosted_seed_fleet.FLEET_REPOS]
+            )
 
     def test_failed_clone_never_writes_a_partial_publish_plan(self):
         # Oracle: a plan consumed by publishers exists only when every
         # required source mirror was fetched and validated.
         with tempfile.TemporaryDirectory() as root:
+
             def clone(args):
                 if hosted_seed_fleet.FLEET_REPOS[1] in args[-2]:
                     raise RuntimeError("source unavailable")

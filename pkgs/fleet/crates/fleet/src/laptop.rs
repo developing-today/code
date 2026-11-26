@@ -37,7 +37,7 @@ use fleet_pool::{
     AttemptKind, Candidate, Classification, NodeId, Pool, ServedDisposition, Strategy,
 };
 
-use crate::forms::{Form, ServeOutcome, FORMS, T1, T2, T3};
+use crate::forms::{FORMS, Form, ServeOutcome, T1, T2, T3};
 
 /// The fleet subcommand tiers tier 0 walks, in declaration order:
 /// the members of the walk's pool. The wrapper (T7) is

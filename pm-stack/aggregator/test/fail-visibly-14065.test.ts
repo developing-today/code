@@ -87,9 +87,7 @@ describe("live mode fails visibly for items and comments (#14065 slice 3)", () =
     await withNoSources(async (src) => {
       expect(await src.comments(["developing-today/code#752"])).toEqual([]);
       expect(await src.latestComments!(["developing-today/code#752"])).toEqual([]);
-      expect(src.provenance().comments).toBe(
-        "unavailable (no projector configured; fixtures withheld in live mode)",
-      );
+      expect(src.provenance().comments).toBe("unavailable (no projector configured; fixtures withheld in live mode)");
       expect(src.provenanceDetail!().comments.state).toBe("unavailable");
     });
   });

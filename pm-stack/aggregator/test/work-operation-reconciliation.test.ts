@@ -255,7 +255,16 @@ describe("MOB-09 outcomes (oracle: MOB-05 declared edges)", () => {
     const half = reconcileWorkAction(
       pendingEnvelope(),
       effects,
-      [read(), read({ readId: "r2", effectId: "e2", field: "status", value: "triage", revision: { kind: "work_version", value: "7" } })],
+      [
+        read(),
+        read({
+          readId: "r2",
+          effectId: "e2",
+          field: "status",
+          value: "triage",
+          revision: { kind: "work_version", value: "7" },
+        }),
+      ],
       opts(),
     );
     expect(half.envelope.state).toBe("partial");
@@ -263,7 +272,16 @@ describe("MOB-09 outcomes (oracle: MOB-05 declared edges)", () => {
     const full = reconcileWorkAction(
       half.envelope,
       effects,
-      [read(), read({ readId: "r3", effectId: "e2", field: "status", value: "ready", revision: { kind: "work_version", value: "9" } })],
+      [
+        read(),
+        read({
+          readId: "r3",
+          effectId: "e2",
+          field: "status",
+          value: "ready",
+          revision: { kind: "work_version", value: "9" },
+        }),
+      ],
       opts(),
     );
     expect(full.envelope.state).toBe("verified_complete");

@@ -6,15 +6,15 @@ Written on 2026-11-23 from the programme's epics. A row's status is read from it
 
 ## Now
 
-| Title                                                            | Status      | Intent                                                                                                                                                                                    | Links               |
-| ---------------------------------------------------------------- | ----------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------- |
-| The fleet tool: one door for coordination, mirroring and backups | in-progress | One tool owns every coordination route and every fallback, so no agent reaches a database, a mirror or a backup by a road of its own.                                                     | #8990, #8575        |
-| Unification slice 3: the verb contract v2                        | in-progress | Every verb says its routes and what it does in a degraded mode, in the tool and not in each caller.                                                                                       | #8581               |
-| Unification slice 5: a local coordination replica                | in-progress | Work goes on when the database cannot be reached.                                                                                                                                         | #8583               |
-| Queue fleet reliability                                          | in-progress | A lane worker for every queue and certified shift reports, so the fleet runs for a week at a time without an operator's repairs.                                                          | #1233               |
-| Every lane on the intake ladder                                  | in-progress | Every lane takes its work by the same intake ladder.                                                                                                                                      | #12236              |
-| Ready pull requests are merged                                   | in-progress | A pull request that is ready is merged by the sweep, not left standing.                                                                                                                   | #12280              |
-| Closure records                                                  | in-progress | Every close carries its reason, so the audit trail is there by construction.                                                                                                              | #9221               |
+| Title                                                            | Status      | Intent                                                                                                                                | Links        |
+| ---------------------------------------------------------------- | ----------- | ------------------------------------------------------------------------------------------------------------------------------------- | ------------ |
+| The fleet tool: one door for coordination, mirroring and backups | in-progress | One tool owns every coordination route and every fallback, so no agent reaches a database, a mirror or a backup by a road of its own. | #8990, #8575 |
+| Unification slice 3: the verb contract v2                        | in-progress | Every verb says its routes and what it does in a degraded mode, in the tool and not in each caller.                                   | #8581        |
+| Unification slice 5: a local coordination replica                | in-progress | Work goes on when the database cannot be reached.                                                                                     | #8583        |
+| Queue fleet reliability                                          | in-progress | A lane worker for every queue and certified shift reports, so the fleet runs for a week at a time without an operator's repairs.      | #1233        |
+| Every lane on the intake ladder                                  | in-progress | Every lane takes its work by the same intake ladder.                                                                                  | #12236       |
+| Ready pull requests are merged                                   | in-progress | A pull request that is ready is merged by the sweep, not left standing.                                                               | #12280       |
+| Closure records                                                  | in-progress | Every close carries its reason, so the audit trail is there by construction.                                                          | #9221        |
 
 ## Next
 
@@ -31,7 +31,7 @@ Written on 2026-11-23 from the programme's epics. A row's status is read from it
 
 ## Later
 
-| Title                                                       | Status  | Intent                                                                                     | Links |
-| ----------------------------------------------------------- | ------- | ------------------------------------------------------------------------------------------ | ----- |
-| Content-creation throttle                                   | planned | A shared ledger and pacing budgets, with what was filed checked by reading it back.        | #2227 |
-| Shift batching and lane handoff                             | planned | A lane hands its state to the next as a snapshot, and queue lanes have a supervision mode. | #2140 |
+| Title                           | Status  | Intent                                                                                     | Links |
+| ------------------------------- | ------- | ------------------------------------------------------------------------------------------ | ----- |
+| Content-creation throttle       | planned | A shared ledger and pacing budgets, with what was filed checked by reading it back.        | #2227 |
+| Shift batching and lane handoff | planned | A lane hands its state to the next as a snapshot, and queue lanes have a supervision mode. | #2140 |

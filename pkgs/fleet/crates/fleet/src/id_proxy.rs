@@ -319,10 +319,7 @@ mod tests {
             Mode::Raw
         );
         // Explicit raw endpoint path -> mode 1.
-        assert_eq!(
-            select_mode(&req(false, true, false, None, None)),
-            Mode::Raw
-        );
+        assert_eq!(select_mode(&req(false, true, false, None, None)), Mode::Raw);
         // Unknown ALPN -> mode 2 (forward-compat, sealed ALPNs).
         assert_eq!(
             select_mode(&req(false, false, false, Some("/experimental/9"), None)),

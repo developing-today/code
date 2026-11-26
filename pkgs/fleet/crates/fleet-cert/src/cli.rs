@@ -1244,7 +1244,9 @@ Policy file (--policy, JSON, schema fleet.pki.dns-policy/v1):
   private Fleet CA (spec §24.8).
 ";
 
-const DNS_PLAN_FLAGS: &[&str] = &["zone", "bundle", "policy", "current", "ttl", "out", "report"];
+const DNS_PLAN_FLAGS: &[&str] = &[
+    "zone", "bundle", "policy", "current", "ttl", "out", "report",
+];
 const DNS_RENDER_FLAGS: &[&str] = &["change-set", "format", "out", "report"];
 const DNS_VERIFY_FLAGS: &[&str] = &["change-set", "bundle", "report"];
 const DNS_BOOL_FLAGS: &[&str] = &["json", "dry-run"];
@@ -1284,8 +1286,9 @@ fn dns_cmd(args: &[String], json_out: bool) -> Result<i32> {
             let ttl = p
                 .get("ttl")
                 .map(|t| {
-                    t.parse::<u32>()
-                        .map_err(|_| CertError::usage(format!("--ttl '{t}' is not a whole number of seconds")))
+                    t.parse::<u32>().map_err(|_| {
+                        CertError::usage(format!("--ttl '{t}' is not a whole number of seconds"))
+                    })
                 })
                 .transpose()?;
             let req = crate::dns::DnsPlanRequest {
@@ -1315,7 +1318,10 @@ fn dns_cmd(args: &[String], json_out: bool) -> Result<i32> {
             let format = p.get("format").unwrap_or("zone").to_ascii_lowercase();
             let (file, body) = match format.as_str() {
                 "zone" => ("dns.zone", crate::dns::render_zone(&cs)),
-                "json" => ("dns-change-set.json", format!("{}\n", crate::dns::render_json(&cs)?)),
+                "json" => (
+                    "dns-change-set.json",
+                    format!("{}\n", crate::dns::render_json(&cs)?),
+                ),
                 "yaml" | "yml" => ("dns-change-set.yaml", crate::dns::render_yaml(&cs)),
                 other => {
                     return Err(CertError::usage(format!(
@@ -1436,7 +1442,11 @@ fn batch_input(p: &Parsed, verb: &str) -> Result<(crate::batch::Batch, PathBuf, 
 
 fn batch_emit(json_out: bool, rep: &crate::batch::Report, file: &str, base: &str) -> Result<i32> {
     let value = serde_json::to_value(rep)?;
-    Ok(emit(json_out, crate::batch::render_text(rep, file, base), value))
+    Ok(emit(
+        json_out,
+        crate::batch::render_text(rep, file, base),
+        value,
+    ))
 }
 
 fn batch_cmd(args: &[String], json_out: bool) -> Result<i32> {
@@ -1456,11 +1466,13 @@ fn batch_cmd(args: &[String], json_out: bool) -> Result<i32> {
                 _ => crate::batch::status(&batch, &base)?,
             };
             let code = batch_emit(json_out, &rep, &file, &base_label)?;
-            Ok(if verb == "status" && rep.status != "applied" && rep.status != "pending" {
-                1
-            } else {
-                code
-            })
+            Ok(
+                if verb == "status" && rep.status != "applied" && rep.status != "pending" {
+                    1
+                } else {
+                    code
+                },
+            )
         }
         "apply" => {
             let p = parse_args(rest, &["file", "base", "approve"], &["json", "dry-run"])?;

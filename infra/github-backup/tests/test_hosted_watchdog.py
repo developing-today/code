@@ -39,12 +39,14 @@ def heartbeat(run_id="run-9", generated_at="2026-11-26T05:17:00Z"):
 
 
 def existing_from(action, number=55):
-    return [{
-        "number": number,
-        "title": action["title"],
-        "body": action["body"],
-        "state": "open",
-    }]
+    return [
+        {
+            "number": number,
+            "title": action["title"],
+            "body": action["body"],
+            "state": "open",
+        }
+    ]
 
 
 class JudgeTests(unittest.TestCase):
@@ -56,7 +58,8 @@ class JudgeTests(unittest.TestCase):
 
     def test_stale_heartbeat_is_missed(self):
         verdict = hw.judge_heartbeat(
-            heartbeat(generated_at="2026-11-24T05:17:00Z"), NOW)
+            heartbeat(generated_at="2026-11-24T05:17:00Z"), NOW
+        )
         self.assertEqual(verdict["status"], hw.MISSED)
         self.assertGreater(verdict["age_hours"], hw.PROBE_SLO_HOURS)
         self.assertIn("cadence SLO", verdict["detail"])
@@ -69,7 +72,8 @@ class JudgeTests(unittest.TestCase):
 
     def test_future_heartbeat_is_failed_not_missed(self):
         verdict = hw.judge_heartbeat(
-            heartbeat(generated_at="2026-11-27T05:17:00Z"), NOW)
+            heartbeat(generated_at="2026-11-27T05:17:00Z"), NOW
+        )
         self.assertEqual(verdict["status"], hw.FAILED)
 
     def test_foreign_record_is_failed(self):
@@ -85,7 +89,8 @@ class JudgeTests(unittest.TestCase):
 class PlanTests(unittest.TestCase):
     def missed(self, run_id="run-9"):
         return hw.judge_heartbeat(
-            heartbeat(run_id=run_id, generated_at="2026-11-24T05:17:00Z"), NOW)
+            heartbeat(run_id=run_id, generated_at="2026-11-24T05:17:00Z"), NOW
+        )
 
     def test_first_miss_creates_one_marked_alert(self):
         actions = hw.plan_watchdog_actions(self.missed(), [], "wd-1", hw.hf.iso(NOW))
@@ -100,7 +105,9 @@ class PlanTests(unittest.TestCase):
     def test_continuing_miss_same_evidence_is_noop(self):
         first = hw.plan_watchdog_actions(self.missed(), [], "wd-1", hw.hf.iso(NOW))
         existing = existing_from(first[0])
-        again = hw.plan_watchdog_actions(self.missed(), existing, "wd-2", hw.hf.iso(NOW))
+        again = hw.plan_watchdog_actions(
+            self.missed(), existing, "wd-2", hw.hf.iso(NOW)
+        )
         self.assertEqual([a["action"] for a in again], ["noop"])
 
     def test_never_ran_miss_replans_as_noop(self):
@@ -113,10 +120,12 @@ class PlanTests(unittest.TestCase):
 
     def test_miss_with_new_last_run_updates_same_alert(self):
         first = hw.plan_watchdog_actions(
-            self.missed(run_id="run-9"), [], "wd-1", hw.hf.iso(NOW))
+            self.missed(run_id="run-9"), [], "wd-1", hw.hf.iso(NOW)
+        )
         existing = existing_from(first[0])
         actions = hw.plan_watchdog_actions(
-            self.missed(run_id="run-10"), existing, "wd-2", hw.hf.iso(NOW))
+            self.missed(run_id="run-10"), existing, "wd-2", hw.hf.iso(NOW)
+        )
         self.assertEqual([a["action"] for a in actions], ["update"])
         self.assertEqual(actions[0]["issue"], 55)
 
@@ -131,22 +140,23 @@ class PlanTests(unittest.TestCase):
 
     def test_ok_without_alert_plans_nothing(self):
         ok = hw.judge_heartbeat(heartbeat(), NOW)
-        self.assertEqual(
-            hw.plan_watchdog_actions(ok, [], "wd-1", hw.hf.iso(NOW)), [])
+        self.assertEqual(hw.plan_watchdog_actions(ok, [], "wd-1", hw.hf.iso(NOW)), [])
 
     def test_failed_judgement_plans_nothing(self):
-        failed = hw.judge_heartbeat(
-            heartbeat(generated_at="2026-11-27T05:17:00Z"), NOW)
+        failed = hw.judge_heartbeat(heartbeat(generated_at="2026-11-27T05:17:00Z"), NOW)
         self.assertEqual(
-            hw.plan_watchdog_actions(failed, [], "wd-1", hw.hf.iso(NOW)), [])
+            hw.plan_watchdog_actions(failed, [], "wd-1", hw.hf.iso(NOW)), []
+        )
 
 
 class RunTests(unittest.TestCase):
     def test_read_failure_is_failed_and_alerts_nothing(self):
         def boom():
             raise RuntimeError("rclone cat failed: connection reset")
-        readout, exit_code = hw.run(NOW, "wd-1", boom, [], False,
-                                    "developing-today/code")
+
+        readout, exit_code = hw.run(
+            NOW, "wd-1", boom, [], False, "developing-today/code"
+        )
         self.assertEqual(readout["status"], hw.FAILED)
         self.assertEqual(readout["actions"], [])
         self.assertEqual(exit_code, 1)
@@ -154,13 +164,15 @@ class RunTests(unittest.TestCase):
 
     def test_ok_run_exits_zero(self):
         readout, exit_code = hw.run(
-            NOW, "wd-1", lambda: heartbeat(), [], False, "developing-today/code")
+            NOW, "wd-1", lambda: heartbeat(), [], False, "developing-today/code"
+        )
         self.assertEqual(readout["status"], hw.OK)
         self.assertEqual(exit_code, 0)
 
     def test_missed_run_exits_one_and_plans_create(self):
         readout, exit_code = hw.run(
-            NOW, "wd-1", lambda: None, [], False, "developing-today/code")
+            NOW, "wd-1", lambda: None, [], False, "developing-today/code"
+        )
         self.assertEqual(readout["status"], hw.MISSED)
         self.assertEqual([a["action"] for a in readout["actions"]], ["create"])
         self.assertEqual(exit_code, 1)

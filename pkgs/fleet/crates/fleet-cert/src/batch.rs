@@ -42,8 +42,8 @@ use crate::engine;
 use crate::error::{CertError, Result};
 use crate::graph::CrossSigningMode;
 use crate::model::{
-    BundleManifest, BundleType, IssuerCreateRequest, IssuerPurpose, LeafIssueRequest,
-    SignerSource, resolve_slots,
+    BundleManifest, BundleType, IssuerCreateRequest, IssuerPurpose, LeafIssueRequest, SignerSource,
+    resolve_slots,
 };
 use crate::profile;
 use crate::timeparse::{CalendarDuration, ISSUER_DEFAULT_LIFETIME_YEARS, Rfc3339};
@@ -348,7 +348,10 @@ fn parse_source(op: &str, field: &str, raw: &str, kind: Field) -> Result<Source>
         None => (reference, None),
     };
     if !is_slug(id, 63) {
-        return Err(invalid(op, format!("'{field}' reference '{raw}' names no valid step id")));
+        return Err(invalid(
+            op,
+            format!("'{field}' reference '{raw}' names no valid step id"),
+        ));
     }
     match (kind, suffix) {
         (Field::Bundle, None) | (Field::Bundle, Some("bundle")) => Ok(Source::Bundle(id.into())),
@@ -371,7 +374,12 @@ fn parse_source(op: &str, field: &str, raw: &str, kind: Field) -> Result<Source>
     }
 }
 
-fn parse_algo(op: &str, field: &str, raw: &Option<String>, warnings: &mut Vec<String>) -> Result<Option<AlgorithmId>> {
+fn parse_algo(
+    op: &str,
+    field: &str,
+    raw: &Option<String>,
+    warnings: &mut Vec<String>,
+) -> Result<Option<AlgorithmId>> {
     match raw {
         Some(s) => {
             let (a, w) = AlgorithmId::parse(s).map_err(|e| invalid(op, format!("{field}: {e}")))?;
@@ -427,7 +435,9 @@ fn resolve_path(base: &Path, p: &Path) -> PathBuf {
 pub fn load(bytes: &[u8], base: &Path) -> Result<Batch> {
     let sha256 = sha256_hex(bytes);
     let raw: RawBatch = serde_json::from_slice(bytes).map_err(|e| {
-        CertError::validation(format!("the batch is not a valid {BATCH_SCHEMA} JSON document: {e}"))
+        CertError::validation(format!(
+            "the batch is not a valid {BATCH_SCHEMA} JSON document: {e}"
+        ))
     })?;
     if raw.schema != BATCH_SCHEMA {
         return Err(CertError::validation(format!(
@@ -470,7 +480,10 @@ pub fn load(bytes: &[u8], base: &Path) -> Result<Batch> {
             )));
         }
         if index.insert(op.id.clone(), i).is_some() {
-            return Err(CertError::validation(format!("duplicate operation id '{}'", op.id)));
+            return Err(CertError::validation(format!(
+                "duplicate operation id '{}'",
+                op.id
+            )));
         }
     }
     for op in &raw.operations {
@@ -480,7 +493,10 @@ pub fn load(bytes: &[u8], base: &Path) -> Result<Batch> {
                 return Err(invalid(&op.id, "lists itself in 'after'"));
             }
             if !index.contains_key(dep) {
-                return Err(invalid(&op.id, format!("'after' names unknown operation '{dep}'")));
+                return Err(invalid(
+                    &op.id,
+                    format!("'after' names unknown operation '{dep}'"),
+                ));
             }
             if !seen.insert(dep) {
                 return Err(invalid(&op.id, format!("'after' lists '{dep}' twice")));
@@ -576,7 +592,10 @@ pub fn load(bytes: &[u8], base: &Path) -> Result<Batch> {
                 Source::Path(_) => return Ok(()),
             };
             let Some(cmd) = command_of.get(target) else {
-                return Err(invalid(id, format!("'{field}' references unknown operation '{target}'")));
+                return Err(invalid(
+                    id,
+                    format!("'{field}' references unknown operation '{target}'"),
+                ));
             };
             if !ancestors[id].contains(target) {
                 return Err(invalid(
@@ -590,7 +609,9 @@ pub fn load(bytes: &[u8], base: &Path) -> Result<Batch> {
             if cmd != want {
                 return Err(invalid(
                     id,
-                    format!("'{field}' references '{target}', a {cmd} step; it needs a {want} step"),
+                    format!(
+                        "'{field}' references '{target}', a {cmd} step; it needs a {want} step"
+                    ),
                 ));
             }
             Ok(())
@@ -617,7 +638,10 @@ pub fn load(bytes: &[u8], base: &Path) -> Result<Batch> {
                     Some(list) => {
                         let mut out = Vec::new();
                         for s in list {
-                            out.push(parse_algo(id, "algorithms", &Some(s.clone()), &mut warnings)?.unwrap());
+                            out.push(
+                                parse_algo(id, "algorithms", &Some(s.clone()), &mut warnings)?
+                                    .unwrap(),
+                            );
                         }
                         out
                     }
@@ -685,7 +709,9 @@ pub fn load(bytes: &[u8], base: &Path) -> Result<Batch> {
                     (Source::Path(_), Source::Keys(s)) => {
                         return Err(invalid(
                             id,
-                            format!("signer '@{s}.keys' belongs to a batch step, but the issuer is an existing bundle"),
+                            format!(
+                                "signer '@{s}.keys' belongs to a batch step, but the issuer is an existing bundle"
+                            ),
                         ));
                     }
                     (Source::Bundle(p), Source::Path(_)) => {
@@ -700,17 +726,21 @@ pub fn load(bytes: &[u8], base: &Path) -> Result<Batch> {
                     _ => {}
                 }
                 let prof = profile::leaf_profile(&a.profile).map_err(|e| invalid(id, e))?;
-                let ip_addresses = a
-                    .ip
-                    .iter()
-                    .map(|s| {
-                        s.trim()
-                            .parse::<std::net::IpAddr>()
-                            .map_err(|_| invalid(id, format!("ip '{s}' is not an IP address")))
-                    })
-                    .collect::<Result<Vec<_>>>()?;
-                let (nb, na, defaulted) =
-                    parse_validity(id, &a.not_before, &a.valid_for, &a.not_after, prof.default_validity)?;
+                let ip_addresses =
+                    a.ip.iter()
+                        .map(|s| {
+                            s.trim()
+                                .parse::<std::net::IpAddr>()
+                                .map_err(|_| invalid(id, format!("ip '{s}' is not an IP address")))
+                        })
+                        .collect::<Result<Vec<_>>>()?;
+                let (nb, na, defaulted) = parse_validity(
+                    id,
+                    &a.not_before,
+                    &a.valid_for,
+                    &a.not_after,
+                    prof.default_validity,
+                )?;
                 Step {
                     id: id.into(),
                     command: LEAF_ISSUE,
@@ -726,7 +756,12 @@ pub fn load(bytes: &[u8], base: &Path) -> Result<Batch> {
                         ip_addresses,
                         csr: a.csr.as_deref().map(PathBuf::from),
                         key_algorithm: parse_algo(id, "algorithm", &a.algorithm, &mut warnings)?,
-                        issuer_algorithm: parse_algo(id, "issuer_algorithm", &a.issuer_algorithm, &mut warnings)?,
+                        issuer_algorithm: parse_algo(
+                            id,
+                            "issuer_algorithm",
+                            &a.issuer_algorithm,
+                            &mut warnings,
+                        )?,
                         issuer_partition: a.issuer_partition.clone(),
                     },
                     not_before: nb,
@@ -795,7 +830,10 @@ fn check_existing_inputs(step: &Step, base: &Path) -> Result<()> {
     if let Request::Leaf { csr: Some(csr), .. } = &step.request {
         let f = resolve_path(base, csr);
         if !f.is_file() {
-            return Err(invalid(id, format!("csr {} is not a readable file", csr.display())));
+            return Err(invalid(
+                id,
+                format!("csr {} is not a readable file", csr.display()),
+            ));
         }
     }
     Ok(())
@@ -900,7 +938,11 @@ fn report(batch: &Batch, status: &str, operations: Vec<OpReport>) -> Report {
 
 /// The reviewable plan: the resolved DAG, nothing written.
 pub fn plan(batch: &Batch) -> Report {
-    let ops = batch.steps.iter().map(|s| op_report(s, "planned")).collect();
+    let ops = batch
+        .steps
+        .iter()
+        .map(|s| op_report(s, "planned"))
+        .collect();
     report(batch, "planned", ops)
 }
 
@@ -917,7 +959,10 @@ fn read_receipt(base: &Path, batch: &Batch) -> Result<Option<Receipt>> {
     match std::fs::read(&path) {
         Ok(bytes) => {
             let r: Receipt = serde_json::from_slice(&bytes).map_err(|e| {
-                CertError::manifest(format!("batch receipt {} is unreadable: {e}", path.display()))
+                CertError::manifest(format!(
+                    "batch receipt {} is unreadable: {e}",
+                    path.display()
+                ))
             })?;
             if r.schema != RECEIPT_SCHEMA {
                 return Err(CertError::manifest(format!(
@@ -934,7 +979,9 @@ fn read_receipt(base: &Path, batch: &Batch) -> Result<Option<Receipt>> {
 }
 
 fn manifest_sha(dir: &Path) -> Option<String> {
-    std::fs::read(dir.join("manifest.json")).ok().map(|b| sha256_hex(&b))
+    std::fs::read(dir.join("manifest.json"))
+        .ok()
+        .map(|b| sha256_hex(&b))
 }
 
 /// Where this batch stands against the base directory: `pending`
@@ -964,9 +1011,13 @@ pub fn status(batch: &Batch, base: &Path) -> Result<Report> {
             for step in &batch.steps {
                 let recorded = r.operations.iter().find(|o| o.id == step.id);
                 let dir = base.join(&step.out);
-                let mut op = recorded.cloned().unwrap_or_else(|| op_report(step, "missing"));
+                let mut op = recorded
+                    .cloned()
+                    .unwrap_or_else(|| op_report(step, "missing"));
                 op.status = match (recorded, manifest_sha(&dir)) {
-                    (Some(rec), Some(sha)) if rec.manifest_sha256.as_deref() == Some(sha.as_str()) => {
+                    (Some(rec), Some(sha))
+                        if rec.manifest_sha256.as_deref() == Some(sha.as_str()) =>
+                    {
                         "applied".into()
                     }
                     (_, Some(_)) => "modified".into(),
@@ -1006,7 +1057,11 @@ pub fn validate(batch: &Batch, base: &Path) -> Result<Report> {
             ..st
         }),
         _ => {
-            let ops = batch.steps.iter().map(|s| op_report(s, "planned")).collect();
+            let ops = batch
+                .steps
+                .iter()
+                .map(|s| op_report(s, "planned"))
+                .collect();
             Ok(report(batch, "validated", ops))
         }
     }
@@ -1094,7 +1149,12 @@ fn resolve_for_run(src: &Source, base: &Path, staged: &BTreeMap<String, PathBuf>
     }
 }
 
-fn run_step(step: &Step, dir: &Path, base: &Path, staged: &BTreeMap<String, PathBuf>) -> Result<BundleManifest> {
+fn run_step(
+    step: &Step,
+    dir: &Path,
+    base: &Path,
+    staged: &BTreeMap<String, PathBuf>,
+) -> Result<BundleManifest> {
     let parent = resolve_for_run(&step.parent, base, staged);
     let signer = SignerSource {
         key_dir: resolve_for_run(&step.signer, base, staged),
@@ -1222,10 +1282,15 @@ pub fn apply(batch: &Batch, base: &Path, opts: &ApplyOptions) -> Result<Report> 
     }
 
     let state = base.join(STATE_DIR);
-    let state_created = if state.exists() { None } else { Some(state.as_path()) };
-    let staging = state
-        .join("staging")
-        .join(format!("{}-{}", &batch.sha256[..12], unique_suffix()));
+    let state_created = if state.exists() {
+        None
+    } else {
+        Some(state.as_path())
+    };
+    let staging =
+        state
+            .join("staging")
+            .join(format!("{}-{}", &batch.sha256[..12], unique_suffix()));
     make_private_dir(&staging)?;
 
     // Run every step in staging.
@@ -1283,7 +1348,10 @@ pub fn apply(batch: &Batch, base: &Path, opts: &ApplyOptions) -> Result<Report> 
         let target = base.join(&step.out);
         let from = staged[&step.id].clone();
         if target.exists() {
-            failure = Some(format!("{} appeared while the batch ran", step.out.display()));
+            failure = Some(format!(
+                "{} appeared while the batch ran",
+                step.out.display()
+            ));
             break;
         }
         if let Some(parent) = target.parent() {
@@ -1303,7 +1371,10 @@ pub fn apply(batch: &Batch, base: &Path, opts: &ApplyOptions) -> Result<Report> 
             made_dirs.extend(missing);
         }
         if let Err(e) = std::fs::rename(&from, &target) {
-            failure = Some(format!("could not move {} into place: {e}", step.out.display()));
+            failure = Some(format!(
+                "could not move {} into place: {e}",
+                step.out.display()
+            ));
             break;
         }
         moved.push((target, from));
@@ -1404,8 +1475,14 @@ pub fn render_text(rep: &Report, file_label: &str, base_label: &str) -> String {
             op.status
         ));
         s.push_str(&format!("       parent: {}\n", op.parent));
-        s.push_str(&format!("       signer: {}  (explicit, spec §24.3)\n", op.signer));
-        s.push_str(&format!("       valid:  {} .. {}\n", op.not_before, op.not_after));
+        s.push_str(&format!(
+            "       signer: {}  (explicit, spec §24.3)\n",
+            op.signer
+        ));
+        s.push_str(&format!(
+            "       valid:  {} .. {}\n",
+            op.not_before, op.not_after
+        ));
         if let Some(id) = &op.bundle_id {
             s.push_str(&format!("       bundle: {id}\n"));
         }
@@ -1455,7 +1532,10 @@ mod tests {
 
     #[test]
     fn outputs_stay_under_the_base() {
-        assert_eq!(check_out("x", "leaves/svc").unwrap(), PathBuf::from("leaves/svc"));
+        assert_eq!(
+            check_out("x", "leaves/svc").unwrap(),
+            PathBuf::from("leaves/svc")
+        );
         for bad in ["", "../escape", "/abs", "a/../b", "./a", ".fleet-batch/x"] {
             assert!(check_out("x", bad).is_err(), "{bad}");
         }

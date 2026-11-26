@@ -116,15 +116,15 @@ def unhealthy_entries(report):
             for repo, entry in sorted(repos.items()):
                 yield leg, repo, entry
         else:
-            yield leg, GLOBAL_REPO, {
-                "status": leg_report["status"],
-                "detail": leg_report.get("detail", ""),
-                **{
-                    k: leg_report[k]
-                    for k in ("exported_at",)
-                    if k in leg_report
+            yield (
+                leg,
+                GLOBAL_REPO,
+                {
+                    "status": leg_report["status"],
+                    "detail": leg_report.get("detail", ""),
+                    **{k: leg_report[k] for k in ("exported_at",) if k in leg_report},
                 },
-            }
+            )
 
 
 def parse_existing(issues):
@@ -150,54 +150,62 @@ def plan_actions(report, issues):
         status = entry["status"]
         if status == "fresh":
             if current is not None:
-                actions.append({
-                    "action": "resolve",
+                actions.append(
+                    {
+                        "action": "resolve",
+                        "leg": leg,
+                        "repo": repo,
+                        "issue": current["number"],
+                        "status": status,
+                        "run_id": report["run_id"],
+                        "comment": (
+                            f"Resolved by hosted freshness run "
+                            f"{report['run_id']} ({report['generated_at']}): "
+                            f"{leg} verified fresh. {entry.get('detail', '')}"
+                        ).strip(),
+                    }
+                )
+            continue
+        if status not in NON_FRESH:
+            continue
+        if current is None:
+            actions.append(
+                {
+                    "action": "create",
+                    "leg": leg,
+                    "repo": repo,
+                    "status": status,
+                    "run_id": report["run_id"],
+                    "title": alert_title(leg, repo, status),
+                    "body": alert_body(report, leg, repo, entry),
+                }
+            )
+            continue
+        recorded = RUN_RE.search(current.get("body") or "")
+        if recorded and recorded.group("run") == report["run_id"]:
+            actions.append(
+                {
+                    "action": "noop",
                     "leg": leg,
                     "repo": repo,
                     "issue": current["number"],
                     "status": status,
                     "run_id": report["run_id"],
-                    "comment": (
-                        f"Resolved by hosted freshness run "
-                        f"{report['run_id']} ({report['generated_at']}): "
-                        f"{leg} verified fresh. {entry.get('detail', '')}"
-                    ).strip(),
-                })
-            continue
-        if status not in NON_FRESH:
-            continue
-        if current is None:
-            actions.append({
-                "action": "create",
-                "leg": leg,
-                "repo": repo,
-                "status": status,
-                "run_id": report["run_id"],
-                "title": alert_title(leg, repo, status),
-                "body": alert_body(report, leg, repo, entry),
-            })
-            continue
-        recorded = RUN_RE.search(current.get("body") or "")
-        if recorded and recorded.group("run") == report["run_id"]:
-            actions.append({
-                "action": "noop",
-                "leg": leg,
-                "repo": repo,
-                "issue": current["number"],
-                "status": status,
-                "run_id": report["run_id"],
-            })
+                }
+            )
         else:
-            actions.append({
-                "action": "update",
-                "leg": leg,
-                "repo": repo,
-                "issue": current["number"],
-                "status": status,
-                "run_id": report["run_id"],
-                "title": alert_title(leg, repo, status),
-                "body": alert_body(report, leg, repo, entry),
-            })
+            actions.append(
+                {
+                    "action": "update",
+                    "leg": leg,
+                    "repo": repo,
+                    "issue": current["number"],
+                    "status": status,
+                    "run_id": report["run_id"],
+                    "title": alert_title(leg, repo, status),
+                    "body": alert_body(report, leg, repo, entry),
+                }
+            )
     return actions
 
 
@@ -212,42 +220,81 @@ def _run(argv):
 
 def gh_executor(repo):
     """Real executor: applies one planned action via `gh api`."""
+
     def execute(action):
         kind = action["action"]
         if kind == "create":
-            out = _run([
-                "gh", "api", f"repos/{repo}/issues", "--method", "POST",
-                "-f", f"title={action['title']}", "-f", f"body={action['body']}",
-                "--jq", ".number",
-            ])
+            out = _run(
+                [
+                    "gh",
+                    "api",
+                    f"repos/{repo}/issues",
+                    "--method",
+                    "POST",
+                    "-f",
+                    f"title={action['title']}",
+                    "-f",
+                    f"body={action['body']}",
+                    "--jq",
+                    ".number",
+                ]
+            )
             return int(out)
         if kind == "update":
-            _run([
-                "gh", "api", f"repos/{repo}/issues/{action['issue']}",
-                "--method", "PATCH",
-                "-f", f"title={action['title']}", "-f", f"body={action['body']}",
-            ])
+            _run(
+                [
+                    "gh",
+                    "api",
+                    f"repos/{repo}/issues/{action['issue']}",
+                    "--method",
+                    "PATCH",
+                    "-f",
+                    f"title={action['title']}",
+                    "-f",
+                    f"body={action['body']}",
+                ]
+            )
             return action["issue"]
         if kind == "resolve":
-            _run([
-                "gh", "api", f"repos/{repo}/issues/{action['issue']}/comments",
-                "--method", "POST", "-f", f"body={action['comment']}",
-            ])
-            _run([
-                "gh", "api", f"repos/{repo}/issues/{action['issue']}",
-                "--method", "PATCH", "-f", "state=closed",
-                "-f", "state_reason=completed",
-            ])
+            _run(
+                [
+                    "gh",
+                    "api",
+                    f"repos/{repo}/issues/{action['issue']}/comments",
+                    "--method",
+                    "POST",
+                    "-f",
+                    f"body={action['comment']}",
+                ]
+            )
+            _run(
+                [
+                    "gh",
+                    "api",
+                    f"repos/{repo}/issues/{action['issue']}",
+                    "--method",
+                    "PATCH",
+                    "-f",
+                    "state=closed",
+                    "-f",
+                    "state_reason=completed",
+                ]
+            )
             return action["issue"]
         return None  # noop: nothing to do
+
     return execute
 
 
 def fetch_existing(repo):
     """Open issues in the alert repo, as {number, title, body, state}."""
-    out = _run([
-        "gh", "api", f"repos/{repo}/issues?state=open&per_page=100",
-    ])
+    out = _run(
+        [
+            "gh",
+            "api",
+            f"repos/{repo}/issues?state=open&per_page=100",
+        ]
+    )
     return [
         {
             "number": issue["number"],
@@ -274,13 +321,24 @@ def parse_args(argv):
         prog="hosted_alerts.py",
         description="Deduplicated GitHub alerts for the hosted freshness report (#15001).",
     )
-    parser.add_argument("--report", required=True, help="hosted_freshness report JSON file")
-    parser.add_argument("--existing", default=None,
-                        help="JSON file of existing open issues (default: fetch via gh api)")
-    parser.add_argument("--repo", default="developing-today/code",
-                        help="repository that hosts the alert issues")
-    parser.add_argument("--apply", action="store_true",
-                        help="execute the plan via gh api (default: dry-run plan only)")
+    parser.add_argument(
+        "--report", required=True, help="hosted_freshness report JSON file"
+    )
+    parser.add_argument(
+        "--existing",
+        default=None,
+        help="JSON file of existing open issues (default: fetch via gh api)",
+    )
+    parser.add_argument(
+        "--repo",
+        default="developing-today/code",
+        help="repository that hosts the alert issues",
+    )
+    parser.add_argument(
+        "--apply",
+        action="store_true",
+        help="execute the plan via gh api (default: dry-run plan only)",
+    )
     return parser.parse_args(argv)
 
 
@@ -290,14 +348,19 @@ def main(argv=None):
         with open(args.report, encoding="utf-8") as handle:
             report = json.load(handle)
     except (OSError, json.JSONDecodeError) as exc:
-        print(f"hosted_alerts: unusable --report {args.report!r}: {exc}", file=sys.stderr)
+        print(
+            f"hosted_alerts: unusable --report {args.report!r}: {exc}", file=sys.stderr
+        )
         return 2
     if args.existing:
         try:
             with open(args.existing, encoding="utf-8") as handle:
                 issues = json.load(handle)
         except (OSError, json.JSONDecodeError) as exc:
-            print(f"hosted_alerts: unusable --existing {args.existing!r}: {exc}", file=sys.stderr)
+            print(
+                f"hosted_alerts: unusable --existing {args.existing!r}: {exc}",
+                file=sys.stderr,
+            )
             return 2
     elif args.apply:
         issues = fetch_existing(args.repo)

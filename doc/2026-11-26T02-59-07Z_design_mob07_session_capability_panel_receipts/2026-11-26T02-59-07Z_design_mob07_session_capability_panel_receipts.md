@@ -24,7 +24,7 @@ status, send a live-session instruction, and request a status report.
 - `src/work-action-contract.ts` exports `createWorkAction`,
   `previewWorkAction`, `acceptWorkAction`, `applyWorkAction`,
   `receiptFor`, with `WorkActionRequest {operationKey, kind,
-  objectRef, action, payload, expectedWorkVersion}`.
+objectRef, action, payload, expectedWorkVersion}`.
 - `src/work-operation-reconciliation.ts` exports `reconcileWorkAction`
   and `applyIfMutationsEnabled` (#15321).
 - The aggregator has no session panel, no session send, and no
@@ -73,27 +73,27 @@ sessionReceiptView(envelope: WorkActionEnvelope, effects: SessionEffects | null)
 
 ```ts
 interface SessionPanelInput {
-  view: PmWorkView;                       // MOB-01
-  binding: SourceRead<BindingView>;       // DSP-05 §3.1, read server-side
-  capabilities: SessionCapability[];      // DSP-05 §3.2, static + live probe
-  actor: WorkActionActor;                 // server-resolved; never from the client
-  draft_id: string;                       // server-minted per panel render
+  view: PmWorkView; // MOB-01
+  binding: SourceRead<BindingView>; // DSP-05 §3.1, read server-side
+  capabilities: SessionCapability[]; // DSP-05 §3.2, static + live probe
+  actor: WorkActionActor; // server-resolved; never from the client
+  draft_id: string; // server-minted per panel render
   now: string;
 }
 interface PanelOperation {
   op: "request_triage" | "request_agent_enqueue" | "request_agent_direct" | "session_status" | "session_send" | "status_report";
   enabled: boolean;
-  reason_code: string | null;             // why disabled; null when enabled
+  reason_code: string | null; // why disabled; null when enabled
   adapter: string | null;
   ceiling: "none" | "adapter_accepted" | "delivered" | "acknowledged" | "progressing";
-  confirm: null | { target: string; effect: string };  // consequential ops name target and effect
-  operation_key: string | null;           // D4; null when disabled
+  confirm: null | { target: string; effect: string }; // consequential ops name target and effect
+  operation_key: string | null; // D4; null when disabled
 }
 interface SessionPanel {
   work: { authority_id: string; work_id: string };
   binding: "verified" | "claimed_binding_unknown" | "none" | "unavailable";
   session: null | { ref: string; provider: string; status: "active" | "idle" | "gone" | "unknown"; observed_at: string };
-  operations: PanelOperation[];           // fixed order, all six always listed
+  operations: PanelOperation[]; // fixed order, all six always listed
 }
 ```
 

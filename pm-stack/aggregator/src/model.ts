@@ -304,7 +304,16 @@ export interface ProvenanceFacet {
    * withheld the fixtures rather than render invented rows.
    * "partial-unavailable" (#14065 slice 3): items served live for the
    * project pool, with refs outside it left unresolved. */
-  state: "live" | "partial-fixtures" | "partial-unavailable" | "fixtures" | "stale" | "absent" | "invalid" | "error" | "unavailable";
+  state:
+    | "live"
+    | "partial-fixtures"
+    | "partial-unavailable"
+    | "fixtures"
+    | "stale"
+    | "absent"
+    | "invalid"
+    | "error"
+    | "unavailable";
   ageMs?: number;
   count?: number;
   countLabel?: string;

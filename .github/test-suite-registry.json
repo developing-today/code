@@ -357,10 +357,7 @@
     },
     {
       "id": "id.android-remote.session",
-      "paths": [
-        "pkgs/id/crates/id-android-remote/src/lib.rs",
-        "pkgs/id/crates/id-android-remote/tests/*.rs"
-      ],
+      "paths": ["pkgs/id/crates/id-android-remote/src/lib.rs", "pkgs/id/crates/id-android-remote/tests/*.rs"],
       "invocation": "nix flake check ./pkgs/id (check test-android-remote runs cargo test -p id-android-remote)",
       "venue": {
         "workflow": ".github/workflows/id-check.yml",

@@ -14,12 +14,12 @@ Jobs: `openchamber-dispatcher` (interval@15m), `openchamber-babysitter`
 (interval@20m), and their merged successor `openchamber-conductor`
 (interval@20m), all owned by goal:keep-the-four-repos-healthy.
 
-| Source | What it establishes |
-|---|---|
-| `doc/fleet-schedule-registry.md` on current main, Surface 1 rows | All three recorded **disabled**; last full census 2026-11-03 |
-| This seat's live scheduler read, 2026-11-26 (`cron.list`, disabled jobs included) | **None of the three jobs exists on this seat in any state** — the non-system jobs present are `closure-watchdog`, `fleet-work-loop-hourly`, `heartbeat`, and `openclaw-gateway-death-watch` only |
-| This seat's cron definition projections, 2026-11-26 | The registry-pointed definition files under `~/workspace/goals/keep-the-four-repos-healthy/crons/minutely/` are absent; the only file present there is `openclaw-gateway-death-watch__interval@15m.md` |
-| #14222 inventory record (PR #15351, merged 2026-11-26) | Conductor run-scratch in the goal workspace runs to 2026-11-08; nothing after |
+| Source                                                                            | What it establishes                                                                                                                                                                                    |
+| --------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `doc/fleet-schedule-registry.md` on current main, Surface 1 rows                  | All three recorded **disabled**; last full census 2026-11-03                                                                                                                                           |
+| This seat's live scheduler read, 2026-11-26 (`cron.list`, disabled jobs included) | **None of the three jobs exists on this seat in any state** — the non-system jobs present are `closure-watchdog`, `fleet-work-loop-hourly`, `heartbeat`, and `openclaw-gateway-death-watch` only       |
+| This seat's cron definition projections, 2026-11-26                               | The registry-pointed definition files under `~/workspace/goals/keep-the-four-repos-healthy/crons/minutely/` are absent; the only file present there is `openclaw-gateway-death-watch__interval@15m.md` |
+| #14222 inventory record (PR #15351, merged 2026-11-26)                            | Conductor run-scratch in the goal workspace runs to 2026-11-08; nothing after                                                                                                                          |
 
 **Limit, stated plainly:** the primary seat's live scheduler and the
 laptop were not reachable from this seat this run — `fleet agent
@@ -39,11 +39,11 @@ may be enabled natively until that read is taken.
 before wave migration proceeds. Gaps 1 and 3 were recorded merged in
 the #14222 inventory; re-verified this run, plus gaps 2 and 4:
 
-| Gap | State at 2026-11-26 | Evidence |
-|---|---|---|
-| 1 — per-run history | **closed** | code PR #8437 merged 2026-11-14 (`feat(pm-stack): scheduled-history collector`); developing-today-forks/openchamber PR #2082 (server run-history store + read API) per the 2026-11-17 note on #2174 |
-| 2 — token accounting | **OPEN** | Owning issue #2072 is OPEN as of this run; the 2026-11-17 triage note on #2174 records gap 2 as owned by #2072 and still open; no OpenCode-side exporter twin of `runtime-db-export` exists in this repo (search over `doc/` and `pkgs/fleet/` this run found design references only, no implementation) |
-| 3 — failure alerting | **closed** | code PR #11158 merged 2026-11-17 (`feat(scheduled-history): Gap 3 watchdog over OpenChamber run history`) |
+| Gap                  | State at 2026-11-26   | Evidence                                                                                                                                                                                                                                                                                                                             |
+| -------------------- | --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 1 — per-run history  | **closed**            | code PR #8437 merged 2026-11-14 (`feat(pm-stack): scheduled-history collector`); developing-today-forks/openchamber PR #2082 (server run-history store + read API) per the 2026-11-17 note on #2174                                                                                                                                  |
+| 2 — token accounting | **OPEN**              | Owning issue #2072 is OPEN as of this run; the 2026-11-17 triage note on #2174 records gap 2 as owned by #2072 and still open; no OpenCode-side exporter twin of `runtime-db-export` exists in this repo (search over `doc/` and `pkgs/fleet/` this run found design references only, no implementation)                             |
+| 3 — failure alerting | **closed**            | code PR #11158 merged 2026-11-17 (`feat(scheduled-history): Gap 3 watchdog over OpenChamber run history`)                                                                                                                                                                                                                            |
 | 4 — server residency | **OPEN / unverified** | No packet or closing record exists on #2174 (the 2026-11-17 note lists gaps 4–6 as having no packets yet); nothing in this repo confirms the laptop OpenChamber deployment is always-on rather than socket-activated or idle-stopped; the laptop itself is unreachable this run (#15131), so the check cannot be performed from here |
 
 ## Gating verdict
