@@ -235,6 +235,33 @@ fn check_journal_partition(path: &Path, world_id: &str, jurisdiction: Option<&st
     Ok(())
 }
 
+/// Whether the durable world at `dir` is bound to `jurisdiction`
+/// (#3898). This is a read-only peek for discovery (existence checks
+/// and listings), so a partition-scoped server can treat a world bound
+/// elsewhere, an unassigned legacy world, a malformed binding and a
+/// missing world exactly alike: as not there. It takes no lock and
+/// grants nothing; [`FileJournal::open_in_partition`] still re-checks
+/// the binding under the journal lock before any byte is read.
+#[must_use]
+pub fn world_bound_to_partition(dir: &Path, world_id: &str, jurisdiction: &str) -> bool {
+    let journal = dir.join("journal.jsonl");
+    let sidecar = dir.join("journal.jsonl.partition.json");
+    let is_plain_file = |path: &Path| {
+        std::fs::symlink_metadata(path).is_ok_and(|metadata| metadata.file_type().is_file())
+    };
+    if !is_plain_file(&journal) || !is_plain_file(&sidecar) {
+        return false;
+    }
+    std::fs::read(&sidecar)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<JournalPartition>(&bytes).ok())
+        .is_some_and(|stored| {
+            stored.version == 1
+                && stored.world_id == world_id
+                && stored.jurisdiction == jurisdiction
+        })
+}
+
 impl FileJournal {
     /// Open (or create) a journal and return its entries.
     ///
@@ -903,7 +930,7 @@ pub async fn open_world(
     runtime: crate::world_limits::RuntimeLimits,
     service: impl FnOnce(WorldHandle) -> WorldService,
 ) -> Result<(WorldService, OpenReport)> {
-    open_world_inner(dir, world_id, limits, runtime, None, service).await
+    open_world_inner(dir, world_id, None, limits, runtime, None, service).await
 }
 
 /// Open a durable world and install its runtime account and world-membership
@@ -919,12 +946,48 @@ pub async fn open_world_with_directory_gate(
     gate: Option<std::sync::Arc<dyn id_directory::directory::BoundaryGate>>,
     service: impl FnOnce(WorldHandle) -> WorldService,
 ) -> Result<(WorldService, OpenReport)> {
-    open_world_inner(dir, world_id, limits, runtime, gate, service).await
+    open_world_inner(dir, world_id, None, limits, runtime, gate, service).await
+}
+
+/// Open a durable world inside one partition (#3898): the journal is
+/// opened through [`FileJournal::open_in_partition`], so a new world is
+/// bound to `jurisdiction` before its first journal byte, and a world
+/// bound elsewhere, an unassigned legacy world or a malformed binding is
+/// refused before the journal is read and before its directory, petname
+/// or outbox files are touched.
+///
+/// `jurisdiction` must come from trusted server or account configuration,
+/// never from a client request.
+///
+/// # Errors
+///
+/// As [`open_world_with_directory_gate`], plus every refusal of
+/// [`FileJournal::open_in_partition`].
+pub async fn open_world_in_partition(
+    dir: &Path,
+    world_id: &str,
+    jurisdiction: &str,
+    limits: WorldLimits,
+    runtime: crate::world_limits::RuntimeLimits,
+    gate: Option<std::sync::Arc<dyn id_directory::directory::BoundaryGate>>,
+    service: impl FnOnce(WorldHandle) -> WorldService,
+) -> Result<(WorldService, OpenReport)> {
+    open_world_inner(
+        dir,
+        world_id,
+        Some(jurisdiction),
+        limits,
+        runtime,
+        gate,
+        service,
+    )
+    .await
 }
 
 async fn open_world_inner(
     dir: &Path,
     world_id: &str,
+    jurisdiction: Option<&str>,
     limits: WorldLimits,
     runtime: crate::world_limits::RuntimeLimits,
     gate: Option<std::sync::Arc<dyn id_directory::directory::BoundaryGate>>,
@@ -933,8 +996,12 @@ async fn open_world_inner(
     let journal_path = dir.join("journal.jsonl");
     let id = world_id.to_owned();
     let ack_mode = limits.journal_ack_mode;
-    let (journal, entries) = tokio::task::spawn_blocking(move || {
-        FileJournal::open_with_ack_mode(&journal_path, &id, ack_mode)
+    let jurisdiction = jurisdiction.map(str::to_owned);
+    let (journal, entries) = tokio::task::spawn_blocking(move || match jurisdiction {
+        Some(jurisdiction) => {
+            FileJournal::open_in_partition(&journal_path, &id, &jurisdiction, ack_mode)
+        }
+        None => FileJournal::open_with_ack_mode(&journal_path, &id, ack_mode),
     })
     .await
     .context("journal open task")??;
@@ -1688,6 +1755,145 @@ mod tests {
         assert!(result.is_err());
         assert!(!dir.path().join("directory.jsonl").exists());
         assert!(!dir.path().join("outbox.jsonl").exists());
+    }
+
+    #[tokio::test]
+    async fn partition_scoped_world_open_binds_and_refuses_other_scopes() {
+        // Oracle: a world created through the scoped opener is bound to its
+        // partition, reopens there, and every other scope (another partition
+        // or the unscoped opener) is refused before directory/outbox files
+        // are created.
+        let dir = TempDir::new().unwrap();
+        let open = |jurisdiction: &'static str| {
+            open_world_in_partition(
+                dir.path(),
+                "w",
+                jurisdiction,
+                WorldLimits::default(),
+                RuntimeLimits::default(),
+                None,
+                |handle| WorldService::new(handle, None),
+            )
+        };
+        let (service, _) = open("eu").await.unwrap();
+        service.world().shutdown().await.unwrap();
+        drop(service);
+        assert!(world_bound_to_partition(dir.path(), "w", "eu"));
+        assert!(!world_bound_to_partition(dir.path(), "w", "us"));
+        assert!(!world_bound_to_partition(dir.path(), "other", "eu"));
+        assert!(open("us").await.is_err());
+        assert!(
+            open_world(
+                dir.path(),
+                "w",
+                WorldLimits::default(),
+                RuntimeLimits::default(),
+                |handle| WorldService::new(handle, None),
+            )
+            .await
+            .is_err()
+        );
+        let (service, _) = open("eu").await.unwrap();
+        service.world().shutdown().await.unwrap();
+
+        let fresh = TempDir::new().unwrap();
+        assert!(
+            open_world_in_partition(
+                fresh.path(),
+                "w",
+                "EU",
+                WorldLimits::default(),
+                RuntimeLimits::default(),
+                None,
+                |handle| WorldService::new(handle, None),
+            )
+            .await
+            .is_err()
+        );
+        assert!(!fresh.path().join("directory.jsonl").exists());
+        assert!(!fresh.path().join("journal.jsonl").exists());
+    }
+
+    #[tokio::test]
+    async fn partition_scoped_world_open_never_adopts_a_legacy_world() {
+        // Oracle: an unassigned local world is invisible to a partition and
+        // is not relabelled by a scoped open; it still opens unscoped.
+        let dir = TempDir::new().unwrap();
+        let (service, _) = open_world(
+            dir.path(),
+            "w",
+            WorldLimits::default(),
+            RuntimeLimits::default(),
+            |handle| WorldService::new(handle, None),
+        )
+        .await
+        .unwrap();
+        service.world().shutdown().await.unwrap();
+        drop(service);
+        assert!(!world_bound_to_partition(dir.path(), "w", "eu"));
+        assert!(
+            open_world_in_partition(
+                dir.path(),
+                "w",
+                "eu",
+                WorldLimits::default(),
+                RuntimeLimits::default(),
+                None,
+                |handle| WorldService::new(handle, None),
+            )
+            .await
+            .is_err()
+        );
+        assert!(!dir.path().join("journal.jsonl.partition.json").exists());
+        let (service, _) = open_world(
+            dir.path(),
+            "w",
+            WorldLimits::default(),
+            RuntimeLimits::default(),
+            |handle| WorldService::new(handle, None),
+        )
+        .await
+        .unwrap();
+        service.world().shutdown().await.unwrap();
+    }
+
+    #[test]
+    fn partition_visibility_treats_bad_bindings_as_absent() {
+        // Oracle: discovery never reveals a world through a malformed,
+        // aliased or missing binding; only an exact v1 record is visible.
+        let dir = TempDir::new().unwrap();
+        assert!(!world_bound_to_partition(dir.path(), "w", "eu"));
+        let path = dir.path().join("journal.jsonl");
+        drop(FileJournal::open_in_partition(&path, "w", "eu", JournalAckMode::Sync).unwrap());
+        assert!(world_bound_to_partition(dir.path(), "w", "eu"));
+        let sidecar = dir.path().join("journal.jsonl.partition.json");
+        for corrupt in [
+            "{",
+            r#"{"version":2,"world_id":"w","jurisdiction":"eu"}"#,
+            r#"{"version":1,"world_id":"w","jurisdiction":"eu","extra":1}"#,
+        ] {
+            std::fs::write(&sidecar, corrupt).unwrap();
+            assert!(!world_bound_to_partition(dir.path(), "w", "eu"));
+        }
+        std::fs::write(
+            &sidecar,
+            br#"{"version":1,"world_id":"w","jurisdiction":"eu"}"#,
+        )
+        .unwrap();
+        assert!(world_bound_to_partition(dir.path(), "w", "eu"));
+        std::fs::remove_file(&path).unwrap();
+        assert!(!world_bound_to_partition(dir.path(), "w", "eu"));
+        #[cfg(unix)]
+        {
+            let real = TempDir::new().unwrap();
+            let real_path = real.path().join("journal.jsonl");
+            drop(
+                FileJournal::open_in_partition(&real_path, "w", "eu", JournalAckMode::Sync)
+                    .unwrap(),
+            );
+            std::os::unix::fs::symlink(&real_path, &path).unwrap();
+            assert!(!world_bound_to_partition(dir.path(), "w", "eu"));
+        }
     }
 
     #[test]
