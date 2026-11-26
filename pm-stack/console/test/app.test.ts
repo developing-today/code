@@ -22,6 +22,7 @@ import {
   laneSaid,
   mergedBySaid,
   acceptAllSaid,
+  applySaid,
   awayState,
   blockedSaid,
   band,
@@ -140,6 +141,26 @@ test("a device with notifications on tells whether the sender still has it, and 
 
 test("the contact given to push services is the project's page, never a person's address", () => {
   expect(contact("developing-today/code")).toBe("https://github.com/developing-today/code");
+});
+
+test("the Cloudflare screen says where its configuration was last applied from (#13495)", () => {
+  const now = Date.parse("2026-11-25T07:00:00Z");
+  // Fixture provenance, as the cloudflare-apply read returns it: the
+  // sentence names the source, the short commit and when it finished.
+  expect(
+    applySaid(
+      {
+        source: "pm-console-cloudflare config, dispatched by dezren39",
+        commit: "c58cf1540b1488c9c642e8b424eeed3471e62740",
+        at: "2026-11-25T04:00:00Z",
+        url: "https://github.com/developing-today/code/actions/runs/3",
+      },
+      now,
+    ),
+  ).toBe("Last applied from pm-console-cloudflare config, dispatched by dezren39, at commit c58cf1540b14, 3 h ago.");
+  // No successful apply on record: the screen says provenance is
+  // unavailable, and never presents a failed or running one instead.
+  expect(applySaid(null, now)).toBe("Apply provenance is unavailable: no successful apply is on record.");
 });
 
 test("the Cloudflare screen reads the edge's own account of itself", () => {
