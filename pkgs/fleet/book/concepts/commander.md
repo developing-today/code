@@ -158,10 +158,12 @@ half.
 8931 --host 127.0.0.1 --stateful --healthEndpoint /healthz`, restart
   on failure. Its start script exports the real user PATH first,
   because the wrapped server exists to run the user's commands.
-- `desktop-commander-remote.service` (systemd user unit): the vendor
-  device agent (`desktop-commander remote`). It stays running until the
-  self-hosted endpoint is stood down as a separate recorded step; the
-  two paths coexist deliberately.
+- The vendor device agent (`desktop-commander-remote.service`, running
+  `desktop-commander remote`) is stood down: after the self-hosted
+  endpoint soaked (#13404 step 2) its unit was removed from
+  `home/common/default.nix`. The bridge above is the only Desktop
+  Commander unit. The way back is to re-add the unit and re-pair the
+  device at mcp.desktopcommander.app.
 
 ## Failure shapes
 
@@ -211,9 +213,10 @@ half.
 - **Revoking a hosted client:** delete its `at:<hash>` / `rt:<hash>`
   entries (and its `client:` record) from the `OAUTH_KV` namespace.
   There is no admin UI; the namespace is the record.
-- **The vendor agent stand-down** is a separate recorded step on
-  #13404, deliberately not part of any deploy: `desktop-commander-remote`
-  keeps running alongside the self-hosted door until it is taken.
+- **The vendor agent stand-down** (#13404 step 2) removed the
+  `desktop-commander-remote` unit from `home/common/default.nix` once the
+  self-hosted door soaked. The unit's own device session at
+  `~/.desktop-commander-device/device.json` is left in place.
 
 ## Related items: priorities and dependencies
 

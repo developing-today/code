@@ -334,7 +334,17 @@ class CoverageReconcileTest(unittest.TestCase):
         suffix = retry_key.rsplit(":dispatch:", 1)[1]
         self.assertEqual(len(suffix), 8)
         self.assertTrue(all(ch in "0123456789abcdef" for ch in suffix))
-        self.assertEqual(calls[1]["payload"], calls[0]["payload"])
+        self.assertEqual(
+            calls[1]["payload"]["dedupe_override"],
+            "Coverage reconciliation retried this still-open item after its previous "
+            "queue task reached a terminal state.",
+        )
+        retry_payload = {
+            key: value
+            for key, value in calls[1]["payload"].items()
+            if key != "dedupe_override"
+        }
+        self.assertEqual(retry_payload, calls[0]["payload"])
 
     def test_terminal_pr_dedupe_hit_retries_with_dispatch_suffix(self):
         """Ready-PR coverage also suffixes a completed shepherd key."""

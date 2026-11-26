@@ -94,13 +94,12 @@ touching this directory.
 ## Laptop side
 
 - `desktop-commander-bridge.service` (user unit; defined in
-  `home/common/default.nix` next to `desktop-commander-remote`):
-  supergateway wrapping the packaged Desktop Commander on
-  `127.0.0.1:8931`, path `/mcp`, stateful sessions, `/healthz` for
-  gateway health.
-- The vendor device agent (`desktop-commander-remote.service`) stays
-  running until this endpoint is verified end to end; standing it down
-  is a separate recorded step.
+  `home/common/default.nix`): supergateway wrapping the packaged Desktop
+  Commander on `127.0.0.1:8931`, path `/mcp`, stateful sessions,
+  `/healthz` for gateway health.
+- The vendor device agent (`desktop-commander-remote.service`) has been
+  stood down (#13404 step 2); the bridge is the only Desktop Commander
+  unit.
 
 ## Client setup
 
