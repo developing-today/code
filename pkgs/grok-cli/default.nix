@@ -53,6 +53,8 @@ let
     };
 
     postPatch = ''
+      # Keep the package manifest and lock in sync with Dependabot updates.
+      cp ${./package.json} package.json
       cp ${./package-lock.json} package-lock.json
       chmod +w package.json package-lock.json
       ${lib.getExe nodejs} -e '
