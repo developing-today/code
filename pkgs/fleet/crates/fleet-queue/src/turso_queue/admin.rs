@@ -1456,6 +1456,55 @@ pub(crate) fn gate_completion(
     }
 }
 
+/// #14268 ask 2: the suspect-completion shape — a task reaching
+/// terminal `done` carrying no result, with no recorded worker
+/// activity between its claim and its completion. That is the
+/// visible signature of the false completions #14268 filed (zero
+/// history events, no result, the packet's work never ran). The
+/// completion is NOT refused: the intake risk note warns that
+/// tightening completion validation could strand lanes that
+/// complete through a legitimate low-event path. It is surfaced
+/// instead — a `suspect_completion` stamp on the stored result
+/// and a `suspect_completion` event beside the `completed` one,
+/// so audits can count and list such completions directly rather
+/// than trusting the terminal state.
+pub(crate) fn suspect_completion_stamp(result: &Value, activity_events: i64) -> Option<Value> {
+    let result_empty = match result {
+        Value::Null => true,
+        Value::Object(map) => map.is_empty(),
+        _ => false,
+    };
+    if result_empty && activity_events == 0 {
+        Some(json!({
+            "reason": "done_with_no_result_and_no_activity_history",
+            "activity_events": 0,
+            "via": "complete_task_turso",
+        }))
+    } else {
+        None
+    }
+}
+
+/// A task's recorded activity beyond the claim ceremony itself:
+/// the claim's own writes (`claimed`, the session binding, the
+/// model stamp) are not work, so they never clear the suspect
+/// shape on their own. Checkpoints, parks, releases and every
+/// other recorded transition count.
+pub(crate) fn activity_event_count(t: &TursoBackend, task_id: i64) -> Result<i64, TErr> {
+    let rows = t.query_objs(
+        "SELECT COUNT(*) AS n FROM events WHERE task_id = ? \
+         AND kind NOT IN ('claimed', 'session_bound', 'lane_session_bound', 'model_stamp')",
+        &[Arg::Int(task_id)],
+        &[],
+    )?;
+    Ok(rows
+        .into_iter()
+        .next()
+        .and_then(|r| r.get("n").cloned())
+        .and_then(|v| v.as_i64())
+        .unwrap_or(0))
+}
+
 /// The issue a task is for: its packet's `issue.number`, else the
 /// issue its repo-health dedupe key names under the packet's repo.
 pub(crate) fn task_issue(payload: &Value, dedupe_key: &str) -> Option<i64> {
@@ -1599,26 +1648,54 @@ pub(crate) fn verb_complete(t: &TursoBackend, req: &Value) -> Value {
         &row.get("result").cloned().unwrap_or(json!({})),
         &req.get("result").cloned().unwrap_or(json!({})),
     );
+    // #14268 ask 2: surface the suspect shape — no result on the
+    // completion and no recorded activity since the claim. The
+    // count read fails open: surfacing must never strand a
+    // completion, so a store error stamps nothing.
+    let suspect = match activity_event_count(t, task_id) {
+        Ok(n) => suspect_completion_stamp(&result, n),
+        Err(_) => None,
+    };
+    let result = match &suspect {
+        Some(stamp) => {
+            let stamped = json!({"suspect_completion": stamp});
+            if result.is_object() {
+                merge_obj(&result, &stamped)
+            } else {
+                stamped
+            }
+        }
+        None => result,
+    };
     let work = (|| -> Result<Value, TErr> {
-        t.exec(
-            "UPDATE tasks SET status = 'done', lease_until = NULL, result = ?, \
-               resolution = ?, resolution_category = ?, resolution_substatus = ?, \
-               resolution_reason = ?, resolution_ref = ?, resolved_by = ?, resolved_at = ?, \
-               completed_at = ?, updated_at = ? WHERE id = ?",
-            &[
-                Arg::Text(result.to_string()),
-                Arg::Text(fields.resolution.clone()),
-                Arg::Text(fields.category.clone()),
-                arg_str(fields.substatus.as_deref()),
-                arg_str(fields.reason.as_deref()),
-                arg_str(fields.reference.as_deref()),
-                Arg::Text(worker.clone()),
-                Arg::Text(resolved_at.clone()),
-                Arg::Text(resolved_at.clone()),
-                Arg::Text(resolved_at.clone()),
-                Arg::Int(task_id),
-            ],
+        // #9487: the completion carries the holder guard; a claim
+        // that changed after claimed_by read it completes nothing.
+        let mut args = vec![
+            Arg::Text(result.to_string()),
+            Arg::Text(fields.resolution.clone()),
+            Arg::Text(fields.category.clone()),
+            arg_str(fields.substatus.as_deref()),
+            arg_str(fields.reason.as_deref()),
+            arg_str(fields.reference.as_deref()),
+            Arg::Text(worker.clone()),
+            Arg::Text(resolved_at.clone()),
+            Arg::Text(resolved_at.clone()),
+            Arg::Text(resolved_at.clone()),
+            Arg::Int(task_id),
+        ];
+        args.extend(holder_guard_args(&worker, &row));
+        let upd = t.exec(
+            &format!(
+                "UPDATE tasks SET status = 'done', lease_until = NULL, result = ?, \
+                   resolution = ?, resolution_category = ?, resolution_substatus = ?, \
+                   resolution_reason = ?, resolution_ref = ?, resolved_by = ?, resolved_at = ?, \
+                   completed_at = ?, updated_at = ? WHERE id = ?{HOLDER_GUARD}"
+            ),
+            &args,
         )?;
+        if upd.affected == 0 {
+            return Ok(claim_changed("complete_task", task_id));
+        }
         t.exec("DELETE FROM leases WHERE task_id = ?", &[Arg::Int(task_id)])?;
         touch_worker(t, &worker, None)?;
         event(
@@ -1634,10 +1711,24 @@ pub(crate) fn verb_complete(t: &TursoBackend, req: &Value) -> Value {
                     "resolution_substatus": fields.substatus,
                     "resolution_reason": fields.reason,
                     "resolution_ref": fields.reference,
+                    "suspect_completion": suspect.is_some(),
                 }),
                 &row,
             ),
         )?;
+        // #14268 ask 2: the suspect shape gets its own event kind
+        // so audits can count and list such completions directly
+        // (events_seen / events_count), not only by reading the
+        // stamped result back.
+        if let Some(stamp) = &suspect {
+            event(
+                t,
+                Some(&worker),
+                Some(task_id),
+                "suspect_completion",
+                &with_marks(stamp, &row),
+            )?;
+        }
         // #9046: close the binding window on the timeline. The
         // binding itself stays on the row as the execution record
         // (migration 0023 header above); this event only ends the
@@ -1836,9 +1927,19 @@ pub(crate) fn verb_list(t: &TursoBackend, req: &Value) -> Value {
         conds += " AND queue = ?";
         args.push(Arg::Text(queue));
     }
+    // #13068: dep-blocked tasks are not a stored status — they are
+    // `blocked` rows carrying a `blocked_deps` record (#8276), which
+    // health counts separately as `dep_blocked`. `--status dep_blocked`
+    // selects exactly those rows, matching the health count;
+    // `--status blocked` keeps its meaning and lists every blocked row,
+    // dep-blocked ones included.
     if let Some(s) = req_str(req, "status") {
-        conds += " AND status = ?";
-        args.push(Arg::Text(s.to_string()));
+        if s == "dep_blocked" {
+            conds += " AND status = 'blocked' AND blocked_deps IS NOT NULL";
+        } else {
+            conds += " AND status = ?";
+            args.push(Arg::Text(s.to_string()));
+        }
     }
     // #5444: recover a lane's or worker's live claims before lease
     // expiry — list filters end-to-end (client -> broker -> here).
@@ -1899,7 +2000,13 @@ pub(crate) fn verb_list(t: &TursoBackend, req: &Value) -> Value {
         "SELECT {select} FROM tasks{conds} ORDER BY (priority IS NULL), priority ASC, created_at ASC, id ASC LIMIT {limit} OFFSET {offset}"
     );
     let json_cols: &[&str] = if rich {
-        &["progress", "payload", "blocked_deps", "ready_condition", "labels"]
+        &[
+            "progress",
+            "payload",
+            "blocked_deps",
+            "ready_condition",
+            "labels",
+        ]
     } else {
         &[]
     };

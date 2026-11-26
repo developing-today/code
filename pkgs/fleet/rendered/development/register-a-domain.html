@@ -1,0 +1,319 @@
+<!DOCTYPE HTML>
+<html lang="en" class="light sidebar-visible" dir="ltr">
+    <head>
+        <!-- Book generated using mdBook -->
+        <meta charset="UTF-8">
+        <title>Register a domain or capability - fleet</title>
+
+
+        <!-- Custom HTML head -->
+
+        <meta name="description" content="">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <meta name="theme-color" content="#ffffff">
+
+        <link rel="icon" href="../favicon-de23e50b.svg">
+        <link rel="shortcut icon" href="../favicon-8114d1fc.png">
+        <link rel="stylesheet" href="../css/variables-8adf115d.css">
+        <link rel="stylesheet" href="../css/general-e96d0476.css">
+        <link rel="stylesheet" href="../css/chrome-d279d366.css">
+        <link rel="stylesheet" href="../css/print-9e4910d8.css" media="print">
+
+        <!-- Fonts -->
+        <link rel="stylesheet" href="../fonts/fonts-9644e21d.css">
+
+        <!-- Highlight.js Stylesheets -->
+        <link rel="stylesheet" id="mdbook-highlight-css" href="../highlight-493f70e1.css">
+        <link rel="stylesheet" id="mdbook-tomorrow-night-css" href="../tomorrow-night-4c0ae647.css">
+        <link rel="stylesheet" id="mdbook-ayu-highlight-css" href="../ayu-highlight-3fdfc3ac.css">
+
+        <!-- Custom theme stylesheets -->
+
+
+        <!-- Provide site root and default themes to javascript -->
+        <script>
+            const path_to_root = "../";
+            const default_light_theme = "light";
+            const default_dark_theme = "navy";
+            window.path_to_searchindex_js = "../searchindex-83ab138e.js";
+        </script>
+        <!-- Start loading toc.js asap -->
+        <script src="../toc-803bd6b5.js"></script>
+    </head>
+    <body>
+    <div id="mdbook-help-container">
+        <div id="mdbook-help-popup">
+            <h2 class="mdbook-help-title">Keyboard shortcuts</h2>
+            <div>
+                <p>Press <kbd>←</kbd> or <kbd>→</kbd> to navigate between chapters</p>
+                <p>Press <kbd>S</kbd> or <kbd>/</kbd> to search in the book</p>
+                <p>Press <kbd>?</kbd> to show this help</p>
+                <p>Press <kbd>Esc</kbd> to hide this help</p>
+            </div>
+        </div>
+    </div>
+    <div id="mdbook-body-container">
+        <!-- Work around some values being stored in localStorage wrapped in quotes -->
+        <script>
+            try {
+                let theme = localStorage.getItem('mdbook-theme');
+                let sidebar = localStorage.getItem('mdbook-sidebar');
+
+                if (theme.startsWith('"') && theme.endsWith('"')) {
+                    localStorage.setItem('mdbook-theme', theme.slice(1, theme.length - 1));
+                }
+
+                if (sidebar.startsWith('"') && sidebar.endsWith('"')) {
+                    localStorage.setItem('mdbook-sidebar', sidebar.slice(1, sidebar.length - 1));
+                }
+            } catch (e) { }
+        </script>
+
+        <!-- Set the theme before any content is loaded, prevents flash -->
+        <script>
+            const default_theme = window.matchMedia("(prefers-color-scheme: dark)").matches ? default_dark_theme : default_light_theme;
+            let theme;
+            try { theme = localStorage.getItem('mdbook-theme'); } catch(e) { }
+            if (theme === null || theme === undefined) { theme = default_theme; }
+            const html = document.documentElement;
+            html.classList.remove('light')
+            html.classList.add(theme);
+            html.classList.add("js");
+        </script>
+
+        <input type="checkbox" id="mdbook-sidebar-toggle-anchor" class="hidden">
+
+        <!-- Hide / unhide sidebar before it is displayed -->
+        <script>
+            let sidebar = null;
+            const sidebar_toggle = document.getElementById("mdbook-sidebar-toggle-anchor");
+            if (document.body.clientWidth >= 1080) {
+                try { sidebar = localStorage.getItem('mdbook-sidebar'); } catch(e) { }
+                sidebar = sidebar || 'visible';
+            } else {
+                sidebar = 'hidden';
+                sidebar_toggle.checked = false;
+            }
+            if (sidebar === 'visible') {
+                sidebar_toggle.checked = true;
+            } else {
+                html.classList.remove('sidebar-visible');
+            }
+        </script>
+
+        <nav id="mdbook-sidebar" class="sidebar" aria-label="Table of contents">
+            <!-- populated by js -->
+            <mdbook-sidebar-scrollbox class="sidebar-scrollbox"></mdbook-sidebar-scrollbox>
+            <noscript>
+                <iframe class="sidebar-iframe-outer" src="../toc.html"></iframe>
+            </noscript>
+            <div id="mdbook-sidebar-resize-handle" class="sidebar-resize-handle">
+                <div class="sidebar-resize-indicator"></div>
+            </div>
+        </nav>
+
+        <div id="mdbook-page-wrapper" class="page-wrapper">
+
+            <div class="page">
+                <div id="mdbook-menu-bar-hover-placeholder"></div>
+                <div id="mdbook-menu-bar" class="menu-bar sticky">
+                    <div class="left-buttons">
+                        <label id="mdbook-sidebar-toggle" class="icon-button" for="mdbook-sidebar-toggle-anchor" title="Toggle Table of Contents" aria-label="Toggle Table of Contents" aria-controls="mdbook-sidebar">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M0 96C0 78.3 14.3 64 32 64H416c17.7 0 32 14.3 32 32s-14.3 32-32 32H32C14.3 128 0 113.7 0 96zM0 256c0-17.7 14.3-32 32-32H416c17.7 0 32 14.3 32 32s-14.3 32-32 32H32c-17.7 0-32-14.3-32-32zM448 416c0 17.7-14.3 32-32 32H32c-17.7 0-32-14.3-32-32s14.3-32 32-32H416c17.7 0 32 14.3 32 32z"/></svg></span>
+                        </label>
+                        <button id="mdbook-theme-toggle" class="icon-button" type="button" title="Change theme" aria-label="Change theme" aria-haspopup="true" aria-expanded="false" aria-controls="mdbook-theme-list">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 576 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M371.3 367.1c27.3-3.9 51.9-19.4 67.2-42.9L600.2 74.1c12.6-19.5 9.4-45.3-7.6-61.2S549.7-4.4 531.1 9.6L294.4 187.2c-24 18-38.2 46.1-38.4 76.1L371.3 367.1zm-19.6 25.4l-116-104.4C175.9 290.3 128 339.6 128 400c0 3.9 .2 7.8 .6 11.6c1.8 17.5-10.2 36.4-27.8 36.4H96c-17.7 0-32 14.3-32 32s14.3 32 32 32H240c61.9 0 112-50.1 112-112c0-2.5-.1-5-.2-7.5z"/></svg></span>
+                        </button>
+                        <ul id="mdbook-theme-list" class="theme-popup" aria-label="Themes" role="menu">
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-default_theme">Auto</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-light">Light</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-rust">Rust</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-coal">Coal</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-navy">Navy</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-ayu">Ayu</button></li>
+                        </ul>
+                        <button id="mdbook-search-toggle" class="icon-button" type="button" title="Search (`/`)" aria-label="Toggle Searchbar" aria-expanded="false" aria-keyshortcuts="/ s" aria-controls="mdbook-searchbar">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M416 208c0 45.9-14.9 88.3-40 122.7L502.6 457.4c12.5 12.5 12.5 32.8 0 45.3s-32.8 12.5-45.3 0L330.7 376c-34.4 25.2-76.8 40-122.7 40C93.1 416 0 322.9 0 208S93.1 0 208 0S416 93.1 416 208zM208 352c79.5 0 144-64.5 144-144s-64.5-144-144-144S64 128.5 64 208s64.5 144 144 144z"/></svg></span>
+                        </button>
+                    </div>
+
+                    <h1 class="menu-title">fleet</h1>
+
+                    <div class="right-buttons">
+                        <a href="../print.html" title="Print this book" aria-label="Print this book">
+                            <span class=fa-svg id="print-button"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M128 0C92.7 0 64 28.7 64 64v96h64V64H354.7L384 93.3V160h64V93.3c0-17-6.7-33.3-18.7-45.3L400 18.7C388 6.7 371.7 0 354.7 0H128zM384 352v32 64H128V384 368 352H384zm64 32h32c17.7 0 32-14.3 32-32V256c0-35.3-28.7-64-64-64H64c-35.3 0-64 28.7-64 64v96c0 17.7 14.3 32 32 32H64v64c0 35.3 28.7 64 64 64H384c35.3 0 64-28.7 64-64V384zm-16-88c-13.3 0-24-10.7-24-24s10.7-24 24-24s24 10.7 24 24s-10.7 24-24 24z"/></svg></span>
+                        </a>
+                        <a href="https://github.com/developing-today/code" title="Git repository" aria-label="Git repository">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 496 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M165.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6zm-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3zm44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9zM244.8 8C106.1 8 0 113.3 0 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C428.2 457.8 496 362.9 496 252 496 113.3 383.5 8 244.8 8zM97.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1zm-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7zm32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1zm-11.4-14.7c-1.6 1-1.6 3.6 0 5.9 1.6 2.3 4.3 3.3 5.6 2.3 1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2z"/></svg></span>
+                        </a>
+
+                    </div>
+                </div>
+
+                <div id="mdbook-search-wrapper" class="hidden">
+                    <form id="mdbook-searchbar-outer" class="searchbar-outer">
+                        <div class="search-wrapper">
+                            <input type="search" id="mdbook-searchbar" name="searchbar" placeholder="Search this book ..." aria-controls="mdbook-searchresults-outer" aria-describedby="searchresults-header">
+                            <div class="spinner-wrapper">
+                                <span class=fa-svg id="fa-spin"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M304 48c0-26.5-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48s48-21.5 48-48zm0 416c0-26.5-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48s48-21.5 48-48zM48 304c26.5 0 48-21.5 48-48s-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48zm464-48c0-26.5-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48s48-21.5 48-48zM142.9 437c18.7-18.7 18.7-49.1 0-67.9s-49.1-18.7-67.9 0s-18.7 49.1 0 67.9s49.1 18.7 67.9 0zm0-294.2c18.7-18.7 18.7-49.1 0-67.9S93.7 56.2 75 75s-18.7 49.1 0 67.9s49.1 18.7 67.9 0zM369.1 437c18.7 18.7 49.1 18.7 67.9 0s18.7-49.1 0-67.9s-49.1-18.7-67.9 0s-18.7 49.1 0 67.9z"/></svg></span>
+                            </div>
+                        </div>
+                    </form>
+                    <div id="mdbook-searchresults-outer" class="searchresults-outer hidden">
+                        <div id="mdbook-searchresults-header" class="searchresults-header"></div>
+                        <ul id="mdbook-searchresults">
+                        </ul>
+                    </div>
+                </div>
+
+                <!-- Apply ARIA attributes after the sidebar and the sidebar toggle button are added to the DOM -->
+                <script>
+                    document.getElementById('mdbook-sidebar-toggle').setAttribute('aria-expanded', sidebar === 'visible');
+                    document.getElementById('mdbook-sidebar').setAttribute('aria-hidden', sidebar !== 'visible');
+                    Array.from(document.querySelectorAll('#mdbook-sidebar a')).forEach(function(link) {
+                        link.setAttribute('tabIndex', sidebar === 'visible' ? 0 : -1);
+                    });
+                </script>
+
+                <div id="mdbook-content" class="content">
+                    <main>
+                        <h1 id="register-a-domain-or-capability"><a class="header" href="#register-a-domain-or-capability">Register a domain or capability</a></h1>
+<p>A domain exists in fleet because three things agree: the registry names it, a Cargo feature compiles it in, and the runtime reconstructs the same fact from the compiled binary. This chapter explains that machinery and lists everything a new domain must add. For the crate map, see <a href="layout.html">Repository layout</a>; for the build attributes that select feature sets, see <a href="building.html">Building fleet</a>.</p>
+<h2 id="the-registry-cratesfleet-registrysrclibrs"><a class="header" href="#the-registry-cratesfleet-registrysrclibrs">The registry: <code>crates/fleet-registry/src/lib.rs</code></a></h2>
+<p><code>fleet-registry</code> is a dependency-free crate of strings and tables — no I/O — compiled into every variant, including <code>fleet-connect</code>, so that <code>--help</code> is always complete. It owns three things.</p>
+<h3 id="domains"><a class="header" href="#domains">Domains</a></h3>
+<p><code>pub const DOMAINS: &amp;[Domain]</code> is the full registry, in help order, with 19 entries: <code>queue</code>, <code>serve</code>, <code>proxy</code>, <code>dispatch</code>, <code>dispatch-test</code>, <code>secrets</code>, <code>gh</code>, <code>bridge</code>, <code>orgs</code>, <code>agent</code>, <code>shell</code>, <code>search</code>, <code>cert</code>, <code>laptop-agent</code>, <code>commander</code>, <code>http</code>, <code>ssh</code>, <code>laptop</code>, <code>actions</code>. <code>pub fn domain(name)</code> is a linear find over it.</p>
+<p><code>struct Domain</code> is the unit that help lists, stubs name, and config disables:</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Field</th><th>Meaning</th></tr>
+</thead>
+<tbody>
+<tr><td><code>name: &amp;'static str</code></td><td>The domain’s invocation name.</td></tr>
+<tr><td><code>summary: &amp;'static str</code></td><td>The one-line description help renders.</td></tr>
+<tr><td><code>capabilities: &amp;'static [Capability]</code></td><td>Every capability the domain spans.</td></tr>
+<tr><td><code>primary: Capability</code></td><td>The headline capability availability keys on. Example: on <code>fleet-serve</code> the <code>search</code> domain is marked absent because its headline is the client, even though the <code>search-serve</code> capability exists under <code>serve</code>.</td></tr>
+<tr><td><code>aliases: &amp;'static [&amp;str]</code></td><td>The domain’s argv0 aliases.</td></tr>
+<tr><td><code>subcommands: &amp;'static [&amp;str]</code></td><td>The top-level verb inventory, rendered by domain help and checked by the DOC-01 machine test.</td></tr>
+</tbody>
+</table>
+</div>
+<p><code>struct AliasRoute { domain, implied_arg }</code> and <code>pub fn alias_route(argv0)</code> define the argv0 map. The shipped aliases are: <code>repo-queue</code> → <code>queue</code>; <code>queue-broker</code> → <code>serve</code> with implied arg <code>queue-broker</code>; <code>secrets-broker</code> → <code>serve</code> with implied arg <code>secrets-broker</code>; <code>laptop-agent-broker</code> → <code>proxy</code> with implied arg <code>serve</code>; <code>atlas-search</code> → <code>search</code>; <code>laptop-agent</code> → <code>laptop-agent</code>. An argv0 that is none of {<code>fleet</code>, a variant name, an alias} is a usage error at exit 2 naming the expected names. <code>is_known_invocation_name(name)</code> is <code>fleet</code> ∨ variant name ∨ alias.</p>
+<h3 id="capabilities-the-22-atoms"><a class="header" href="#capabilities-the-22-atoms">Capabilities: the 22 atoms</a></h3>
+<p><code>enum Capability</code> has 22 variants with stable string ids (<code>Capability::id</code>, <code>Capability::ALL</code>):</p>
+<p><code>proxy-connect</code>, <code>proxy-serve</code>, <code>proxy-raw-splice</code>, <code>queue</code>, <code>queue-broker</code>, <code>secrets-broker</code>, <code>search</code>, <code>search-serve</code>, <code>dispatch</code>, <code>dispatch-test</code>, <code>laptop-agent</code>, <code>secrets</code>, <code>gh</code>, <code>bridge</code>, <code>agent</code>, <code>commander</code>, <code>laptop-http</code>, <code>laptop-ssh</code>, <code>laptop</code>, <code>cert</code>, <code>actions</code>, <code>orgs</code>.</p>
+<p>Note there is no <code>shell</code> capability atom: the <code>shell</code> domain rides on the <code>agent</code> capability.</p>
+<p><code>CapabilitySet</code> is a <code>BTreeSet&lt;Capability&gt;</code>, built with <code>capability_set(&amp;[…])</code>. Named sets: <code>full_capabilities()</code> (all 22), <code>serve_capabilities()</code> = {ProxyConnect, ProxyServe, ProxyRawSplice, QueueBroker, SecretsBroker, SearchServe, Secrets}, and <code>connect_capabilities()</code> = {ProxyConnect, ProxyRawSplice}.</p>
+<h3 id="capstate-the-four-availability-states"><a class="header" href="#capstate-the-four-availability-states"><code>CapState</code>: the four availability states</a></h3>
+<p>At dispatch, <code>Surface::cap_state(cap, domain_name)</code> checks in order and yields <code>enum CapState</code>:</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>State</th><th>Meaning</th></tr>
+</thead>
+<tbody>
+<tr><td><code>Available</code></td><td>Compiled in, in profile, not config-disabled. The domain handler runs.</td></tr>
+<tr><td><code>NotInBuild</code></td><td>The Cargo feature was not compiled into this build.</td></tr>
+<tr><td><code>NarrowedByName</code></td><td>Compiled in, but the argv0 profile (below) narrowed it out.</td></tr>
+<tr><td><code>DisabledByConfig</code></td><td>The <code>[domains]</code> table in <code>fleet.toml</code> disabled it on this host.</td></tr>
+</tbody>
+</table>
+</div>
+<p>Any non-<code>Available</code> state falls through to the stub (exit 69 — see the stub wordings below). <code>Surface</code> itself is the invocation’s whole effective surface: <code>compiled</code> (from Cargo features), <code>profile</code> (from the hyphenated invocation name), <code>effective</code> (= <code>compiled ∩ profile.capabilities()</code>, or <code>compiled</code> when there is no profile), and the loaded <code>fleet_config::Config</code>.</p>
+<p>The registry’s own tests are invariant oracles: <code>capability_ids_are_unique_and_stable</code>, <code>variant_profiles_nest</code> (connect ⊂ serve ⊂ full, and full == ALL), <code>every_domain_primary_is_in_its_surface</code>, <code>aliases_route_to_real_domains</code>, <code>domain_aliases_match_the_argv0_map</code>.</p>
+<h2 id="how-capabilities-are-compiled-in-compiled_capabilities-and-bin-crate-features"><a class="header" href="#how-capabilities-are-compiled-in-compiled_capabilities-and-bin-crate-features">How capabilities are compiled in: <code>compiled_capabilities()</code> and bin-crate features</a></h2>
+<p>Two layers, and both must agree.</p>
+<p><strong>Layer 1 — Cargo features on the binary crate</strong> (<code>crates/fleet/Cargo.toml</code>, <code>[features]</code>):</p>
+<ul>
+<li><code>default = ["full"]</code>.</li>
+<li><code>full = [proxy-serve, queue, queue-broker, secrets-broker, search, search-serve, dispatch, dispatch-test, laptop-agent, secrets, gh, bridge, agent, opencode-probe]</code>.</li>
+<li><code>serve = [proxy-serve, queue-broker, secrets-broker, search-serve, secrets, opencode-probe]</code> — the broker-side subset, shipped as one feature for the Nix build.</li>
+<li>The connect build is <code>--no-default-features</code> with nothing optional on.</li>
+<li><code>proxy-connect</code> is <strong>not</strong> a feature: it is compiled into every variant.</li>
+<li>Each feature wires optional dependencies, for example <code>queue = ["dep:fleet-secrets", "dep:fleet-queue", "fleet-queue/client"]</code> and <code>search-serve = ["dep:fleet-search", "fleet-search/serve"]</code>. <code>fleet-proxy</code> is a non-optional dependency with <code>default-features = false</code>: the proxy client is in every variant, only the broker half (<code>fleet-proxy/serve</code>) is gated.</li>
+<li>Two things are kept out of connect on purpose: <code>opencode-probe</code> (its <code>ureq</code> + rustls stack would break the D7 2 MiB gate — see <a href="building.html">Building fleet</a>) and <code>fleet-secrets</code> (the connect variant carries nothing else).</li>
+</ul>
+<p>Domain crates mirror the discipline one level down. In <code>fleet-queue</code>, the features are <code>client</code>, <code>queue-broker</code>, and <code>secrets-broker</code>, and <code>src/lib.rs</code> gates modules on them: <code>client</code>, <code>fallback</code>, <code>needs_drew</code>, <code>placement</code> under <code>client</code>; <code>queue_broker</code>, <code>turso_queue</code>, <code>validate</code> under <code>queue-broker</code>; <code>secrets_broker</code> under <code>secrets-broker</code>; <code>uds_http</code> under either broker. In <code>fleet-search</code>, <code>client</code> and <code>serve</code> split the client surface from the Atlas service role.</p>
+<p><strong>Layer 2 — runtime reconstruction.</strong> <code>fn compiled_capabilities()</code> in <code>crates/fleet/src/main.rs</code> starts from <code>{ProxyConnect, ProxyRawSplice}</code> unconditionally and inserts one <code>Capability</code> per <code>cfg!(feature = "…")</code>. <code>build_variant(compiled)</code> then re-derives which shipped <code>Variant</code> the set equals — Full, Serve, or Connect; an unrecognised set reports its build name as <code>fleet-custom</code>. The binary <em>reports</em> its variant from its feature set; it does not trust a baked-in name. <code>fleet capabilities</code> prints both lists: <code>capabilities</code> (what this invocation can use) and <code>compiled_capabilities</code> (what the binary was built with) — their difference is exactly the profile and config narrowing.</p>
+<h2 id="argv0-profiles-narrow-only"><a class="header" href="#argv0-profiles-narrow-only">argv0 profiles narrow only</a></h2>
+<p><code>enum Variant { Full, Serve, Connect }</code> is a property of the artefact whose names double as invocation profiles: <code>Variant::name()</code> is <code>fleet</code> / <code>fleet-serve</code> / <code>fleet-connect</code>. <code>Variant::from_invocation_name()</code> recognises only the two hyphenated names; plain <code>fleet</code> selects no profile.</p>
+<p>The rule is <strong>narrowing only</strong>: a profile is a capability ceiling (<code>compiled ∩ profile.capabilities()</code>), never a widening. Invoking the full binary as <code>fleet-connect</code> gives you the connect surface; invoking the connect binary as <code>fleet</code> gives you nothing extra, because the capabilities were never compiled in (<code>NotInBuild</code>, not <code>NarrowedByName</code>). An alias route, by contrast, constructs the surface with no profile at all and prepends its implied argument.</p>
+<h2 id="the-stub-wordings"><a class="header" href="#the-stub-wordings">The stub wordings</a></h2>
+<p>When a domain is not <code>Available</code>, <code>fn stub(...)</code> in <code>main.rs</code> prints to stderr and returns exit 69 (<code>EXIT_UNAVAILABLE</code>, <code>EX_UNAVAILABLE</code> from sysexits.h). The first line names the domain and the reason class; the second line lists what this invocation <em>can</em> do (<code>Enabled capabilities: &lt;usable caps&gt;.</code>); the third names the build. One form per <code>CapState</code>:</p>
+<ul>
+<li><code>NotInBuild</code>: <code>fleet: this build does not include '&lt;domain&gt;'.</code> plus <code>This is the &lt;build&gt; build (&lt;VERSION&gt;).</code>, and <code> The full build is 'fleet'.</code> when the build is not full.</li>
+<li><code>NarrowedByName</code>: <code>fleet: invoked as '&lt;invoked_as&gt;', this build does not include '&lt;domain&gt;'.</code> plus the explanation that the invocation is name-scoped to the profile and that invoked as <code>fleet</code> it carries the full surface.</li>
+<li><code>DisabledByConfig</code>: <code>fleet: '&lt;domain&gt;' is disabled by config on this host.</code> plus the instruction to re-enable the domain under <code>[domains]</code> in the named <code>fleet.toml</code> path.</li>
+<li><code>Available</code> (for a surface compiled in with nothing behind it): <code>fleet: '&lt;domain&gt;' is included in this build but not implemented yet.</code> plus the line naming the build and the not-implemented state.</li>
+</ul>
+<p>Help renders the same states without stubbing: domain help is registry data and is always available, even where the domain is not. Help marks each domain <code>included in this build</code>, <code>not in this build — invoking it prints the capability stub (exit 69)</code>, <code>narrowed out by this invocation name — … (exit 69)</code>, or <code>disabled by config on this host (exit 69 if invoked)</code>, and top-level help closes with: “A domain this invocation cannot use answers with a stub and exit code 69.”</p>
+<h2 id="step-by-step-what-a-new-domain-must-add"><a class="header" href="#step-by-step-what-a-new-domain-must-add">Step by step: what a new domain must add</a></h2>
+<ol>
+<li><strong>Registry entry.</strong> A <code>Domain</code> in <code>DOMAINS</code> in <code>crates/fleet-registry/src/lib.rs</code>, in help order, with <code>name</code>, <code>summary</code>, <code>capabilities</code>, <code>primary</code> (which must be a member of its own <code>capabilities</code> — the registry tests enforce this), <code>aliases</code>, and <code>subcommands</code>. If the domain needs a new capability atom, add the <code>Capability</code> variant with a stable string id and place it in <code>ALL</code> and in the named sets it belongs to.</li>
+<li><strong>Crate.</strong> A new library crate under <code>pkgs/fleet/crates/</code>, added to the workspace <code>members</code> in <code>pkgs/fleet/Cargo.toml</code> and to <code>[workspace.dependencies]</code> by path, exposing a <code>run</code> entry point with the domain’s argument and config shape. Follow the existing crates’ feature discipline: gate server roles and heavy dependencies behind features so the connect build stays clean.</li>
+<li><strong>Bin-crate wiring.</strong> An optional dependency plus a feature in <code>crates/fleet/Cargo.toml</code>; the feature added to <code>full</code> (and to <code>serve</code> if the domain has a broker-side role); one <code>cfg!(feature = "…")</code> insertion in <code>compiled_capabilities()</code> in <code>main.rs</code>.</li>
+<li><strong>Dispatch arm.</strong> In <code>run_domain</code> in <code>main.rs</code>, a <code>#[cfg(feature = …)]</code> arm under the <code>CapState::Available</code> path calling the crate’s <code>run</code>. Subcommand-sensitive capability requirements (the way <code>serve</code> maps its role token to <code>QueueBroker</code> / <code>SecretsBroker</code> / <code>SearchServe</code> / <code>ProxyServe</code>) go in <code>required_capability(...)</code>. An argv0 alias, if the domain needs one, goes in <code>alias_route()</code> in the registry — and the registry test <code>domain_aliases_match_the_argv0_map</code> must still pass.</li>
+<li><strong>Help.</strong> The registry entry <em>is</em> the top-level help. The domain’s own <code>--help</code>, per-verb usage strings, and parser live in the domain crate, hand-rolled — see <a href="add-a-subcommand.html">Add a subcommand</a>.</li>
+<li><strong>Capabilities JSON.</strong> Nothing extra to write: <code>fleet capabilities</code> is generated from the registry plus <code>compiled_capabilities()</code>, so a correctly registered domain appears in it automatically, with its per-domain <code>state</code> one of <code>available</code>, <code>not-in-build</code>, <code>narrowed-by-name</code>, <code>disabled-by-config</code>. Verify it does, on both a full build and a narrowed build.</li>
+<li><strong>Build and smoke coverage.</strong> A Nix attribute only if the domain needs a new variant (rare — variants are profiles, not domains). Smoke coverage in <code>pkgs/fleet/smoke.sh</code> that the domain renders in help on every variant and stubs at 69 where it is unavailable.</li>
+<li><strong>Docs in the same change (DOC-01).</strong> <code>pkgs/fleet/docs/verbs.md</code> and this book in the same change — see <a href="keeping-this-book-current.html">Keeping this book current</a>. The DOC-01 machine test (<code>pmo_operator_docs_match_registered_help_inventory</code>) ties the README’s operator contract to the registered inventory, so a registry entry without its contract docs fails the workspace suite.</li>
+</ol>
+
+                    </main>
+
+                    <nav class="nav-wrapper" aria-label="Page navigation">
+                        <!-- Mobile navigation buttons -->
+                            <a rel="prev" href="../development/add-a-flag.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                                <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
+                            </a>
+
+                            <a rel="next prefetch" href="../development/release-and-rollout.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                                <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
+                            </a>
+
+                        <div style="clear: both"></div>
+                    </nav>
+                </div>
+            </div>
+
+            <nav class="nav-wide-wrapper" aria-label="Page navigation">
+                    <a rel="prev" href="../development/add-a-flag.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                        <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
+                    </a>
+
+                    <a rel="next prefetch" href="../development/release-and-rollout.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                        <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
+                    </a>
+            </nav>
+
+        </div>
+
+        <template id=fa-eye><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 576 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M288 32c-80.8 0-145.5 36.8-192.6 80.6C48.6 156 17.3 208 2.5 243.7c-3.3 7.9-3.3 16.7 0 24.6C17.3 304 48.6 356 95.4 399.4C142.5 443.2 207.2 480 288 480s145.5-36.8 192.6-80.6c46.8-43.5 78.1-95.4 93-131.1c3.3-7.9 3.3-16.7 0-24.6c-14.9-35.7-46.2-87.7-93-131.1C433.5 68.8 368.8 32 288 32zM432 256c0 79.5-64.5 144-144 144s-144-64.5-144-144s64.5-144 144-144s144 64.5 144 144zM288 192c0 35.3-28.7 64-64 64c-11.5 0-22.3-3-31.6-8.4c-.2 2.8-.4 5.5-.4 8.4c0 53 43 96 96 96s96-43 96-96s-43-96-96-96c-2.8 0-5.6 .1-8.4 .4c5.3 9.3 8.4 20.1 8.4 31.6z"/></svg></span></template>
+        <template id=fa-eye-slash><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M38.8 5.1C28.4-3.1 13.3-1.2 5.1 9.2S-1.2 34.7 9.2 42.9l592 464c10.4 8.2 25.5 6.3 33.7-4.1s6.3-25.5-4.1-33.7L525.6 386.7c39.6-40.6 66.4-86.1 79.9-118.4c3.3-7.9 3.3-16.7 0-24.6c-14.9-35.7-46.2-87.7-93-131.1C465.5 68.8 400.8 32 320 32c-68.2 0-125 26.3-169.3 60.8L38.8 5.1zM223.1 149.5C248.6 126.2 282.7 112 320 112c79.5 0 144 64.5 144 144c0 24.9-6.3 48.3-17.4 68.7L408 294.5c5.2-11.8 8-24.8 8-38.5c0-53-43-96-96-96c-2.8 0-5.6 .1-8.4 .4c5.3 9.3 8.4 20.1 8.4 31.6c0 10.2-2.4 19.8-6.6 28.3l-90.3-70.8zm223.1 298L373 389.9c-16.4 6.5-34.3 10.1-53 10.1c-79.5 0-144-64.5-144-144c0-6.9 .5-13.6 1.4-20.2L83.1 161.5C60.3 191.2 44 220.8 34.5 243.7c-3.3 7.9-3.3 16.7 0 24.6c14.9 35.7 46.2 87.7 93 131.1C174.5 443.2 239.2 480 320 480c47.8 0 89.9-12.9 126.2-32.5z"/></svg></span></template>
+        <template id=fa-copy><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M502.6 70.63l-61.25-61.25C435.4 3.371 427.2 0 418.7 0H255.1c-35.35 0-64 28.66-64 64l.0195 256C192 355.4 220.7 384 256 384h192c35.2 0 64-28.8 64-64V93.25C512 84.77 508.6 76.63 502.6 70.63zM464 320c0 8.836-7.164 16-16 16H255.1c-8.838 0-16-7.164-16-16L239.1 64.13c0-8.836 7.164-16 16-16h128L384 96c0 17.67 14.33 32 32 32h47.1V320zM272 448c0 8.836-7.164 16-16 16H63.1c-8.838 0-16-7.164-16-16L47.98 192.1c0-8.836 7.164-16 16-16H160V128H63.99c-35.35 0-64 28.65-64 64l.0098 256C.002 483.3 28.66 512 64 512h192c35.2 0 64-28.8 64-64v-32h-47.1L272 448z"/></svg></span></template>
+        <template id=fa-play><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 384 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M73 39c-14.8-9.1-33.4-9.4-48.5-.9S0 62.6 0 80V432c0 17.4 9.4 33.4 24.5 41.9s33.7 8.1 48.5-.9L361 297c14.3-8.7 23-24.2 23-41s-8.7-32.2-23-41L73 39z"/></svg></span></template>
+        <template id=fa-clock-rotate-left><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M75 75L41 41C25.9 25.9 0 36.6 0 57.9V168c0 13.3 10.7 24 24 24H134.1c21.4 0 32.1-25.9 17-41l-30.8-30.8C155 85.5 203 64 256 64c106 0 192 86 192 192s-86 192-192 192c-40.8 0-78.6-12.7-109.7-34.4c-14.5-10.1-34.4-6.6-44.6 7.9s-6.6 34.4 7.9 44.6C151.2 495 201.7 512 256 512c141.4 0 256-114.6 256-256S397.4 0 256 0C185.3 0 121.3 28.7 75 75zm181 53c-13.3 0-24 10.7-24 24V256c0 6.4 2.5 12.5 7 17l72 72c9.4 9.4 24.6 9.4 33.9 0s9.4-24.6 0-33.9l-65-65V152c0-13.3-10.7-24-24-24z"/></svg></span></template>
+
+
+
+        <script>
+            window.playground_copyable = true;
+        </script>
+
+
+        <script src="../elasticlunr-ef4e11c1.min.js"></script>
+        <script src="../mark-09e88c2c.min.js"></script>
+        <script src="../searcher-09f2665d.js"></script>
+
+        <script src="../clipboard-1626706a.min.js"></script>
+        <script src="../highlight-abc7f01d.js"></script>
+        <script src="../book-609e4cb8.js"></script>
+
+        <!-- Custom JS scripts -->
+
+
+
+    </div>
+    </body>
+</html>

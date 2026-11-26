@@ -75,7 +75,6 @@ use clap::{Parser, Subcommand};
 #[derive(Parser)]
 #[command(
     name = "atlas-stage",
-    version,
     about = "Provision Atlas staging units and read the staging registry (#5669)"
 )]
 struct Cli {
@@ -269,6 +268,7 @@ enum Command {
         /// reports from, recursively.
         #[arg(long)]
         root: PathBuf,
+    },
     /// Scan a Zettelkasten/Emanote notes vault and stage its markdown
     /// notes into the zettelkasten unit (#8626 slice 4).
     IngestNotes {
@@ -511,13 +511,9 @@ fn run(cli: Cli) -> Result<(), String> {
             Ok(())
         }
         Command::IngestMemoryFiles { db, unit, dir } => {
-            let item_ids = atlas_core::memory::scan_and_stage_memory_files_in_db(
-                &db,
-                &unit,
-                &dir,
-                &now_utc(),
-            )
-            .map_err(|e| e.to_string())?;
+            let item_ids =
+                atlas_core::memory::scan_and_stage_memory_files_in_db(&db, &unit, &dir, &now_utc())
+                    .map_err(|e| e.to_string())?;
             println!(
                 "{{\"unit\":{},\"items_staged\":{},\"item_ids\":{}}}",
                 json_str(&unit),
@@ -614,19 +610,20 @@ fn run(cli: Cli) -> Result<(), String> {
             Ok(())
         }
         Command::IngestReports { db, unit, root } => {
-            let reports = atlas_core::reports::collect_research_reports(&root)
-                .map_err(|e| e.to_string())?;
-            let item_ids = atlas_core::reports::stage_research_reports_in_db(
-                &db,
-                &unit,
-                &reports,
-                &now_utc(),
-            )
-            .map_err(|e| e.to_string())?;
+            let reports =
+                atlas_core::reports::collect_research_reports(&root).map_err(|e| e.to_string())?;
+            let item_ids =
+                atlas_core::reports::stage_research_reports_in_db(&db, &unit, &reports, &now_utc())
+                    .map_err(|e| e.to_string())?;
             println!(
                 "{{\"unit\":{},\"reports_collected\":{},\"items_staged\":{},\"item_ids\":{}}}",
                 json_str(&unit),
                 reports.len(),
+                item_ids.len(),
+                serde_json::to_string(&item_ids).unwrap_or_else(|_| "[]".to_string()),
+            );
+            Ok(())
+        }
         Command::IngestNotes { db, unit, dir } => {
             let item_ids =
                 atlas_core::notes::scan_and_stage_note_files_in_db(&db, &unit, &dir, &now_utc())
@@ -723,6 +720,16 @@ fn json_str(s: &str) -> String {
 }
 
 fn main() -> ExitCode {
+    // --version is answered before clap, like the hand-rolled Atlas
+    // binaries: the family reports `<version>+g<source revision>`
+    // (#13279 part 2), which clap's CARGO_PKG_VERSION magic cannot.
+    if std::env::args().any(|a| a == "--version" || a == "-V") {
+        println!(
+            "atlas-stage {}",
+            atlas_core::version::version_string(env!("CARGO_PKG_VERSION"))
+        );
+        return ExitCode::SUCCESS;
+    }
     let cli = Cli::parse();
     match run(cli) {
         Ok(()) => ExitCode::SUCCESS,

@@ -487,10 +487,7 @@ function renderSection(section: C6Section): string {
       );
     case "timeline-attempts": {
       const rows = (d.timeline as Data[])
-        .map(
-          (t) =>
-            `<tr><td>${esc(t.at)}</td><td>${esc(t.kind)}</td><td>${esc(t.source)}</td></tr>`,
-        )
+        .map((t) => `<tr><td>${esc(t.at)}</td><td>${esc(t.kind)}</td><td>${esc(t.source)}</td></tr>`)
         .join("");
       const attempts = (d.attempts as Data[])
         .map(
@@ -515,8 +512,7 @@ function renderSection(section: C6Section): string {
           return `<rect x="10" y="${y}" width="${v * 2}" height="18" fill="#4c9aff"></rect><text x="${14 + v * 2}" y="${y + 14}" fill="currentColor">${v}</text>`;
         })
         .join("");
-      const chart =
-        `<svg viewBox="0 0 220 ${series.length * 28 + 10}" role="img" aria-label="Bar chart of sessions in the last hour at detection and at recovery" width="220">${bars}</svg>`;
+      const chart = `<svg viewBox="0 0 220 ${series.length * 28 + 10}" role="img" aria-label="Bar chart of sessions in the last hour at detection and at recovery" width="220">${bars}</svg>`;
       const summary =
         `<p>Sessions in the last hour: ${esc(series[0]?.sessions_last_hour ?? "unknown")} at detection` +
         (series[1]

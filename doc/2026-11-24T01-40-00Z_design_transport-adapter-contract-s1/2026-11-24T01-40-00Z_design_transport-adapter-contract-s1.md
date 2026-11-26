@@ -39,6 +39,7 @@ nix shell nixpkgs#check-jsonschema -c check-jsonschema --schemafile config/trans
 ```
 
 <!-- pm-metadata:start -->
+
 ```json
 {
   "pm_meta": 1,
@@ -50,4 +51,5 @@ nix shell nixpkgs#check-jsonschema -c check-jsonschema --schemafile config/trans
   }
 }
 ```
+
 <!-- pm-metadata:end -->

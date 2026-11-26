@@ -18,9 +18,9 @@ ID lives in the `developing-today/code` monorepo, in the directory `pkgs/id/`. T
 
 There is no `src/bin/` directory and no `[[bin]]` section in any workspace `Cargo.toml`. The two binaries exist by Cargo's implicit `src/main.rs` rule: `id` from the root package, and `id-native-shell` from `crates/id-native-shell/src/main.rs`.
 
-## The 20 crates
+## The 23 crates
 
-`crates/` holds the 20 sub-crates. The workspace has 21 members in total: the root plus these 20. `default-members` lists 18 packages — the root plus 17 crates. `id-native-shell`, `id-hw-shell`, and `id-tui-shell` are members but not default members, so a plain `cargo build` in `pkgs/id/` never builds the shell crates.
+`crates/` holds the 23 sub-crates. The workspace has 24 members in total: the root plus these 23. `default-members` lists 18 packages — the root plus 17 crates. `id-native-shell`, `id-hw-shell`, `id-tui-shell`, `id-android-remote`, `id-bevy-bridge`, and `id-bevy-presenter` are members but not default members, so a plain `cargo build` in `pkgs/id/` never builds the shell crates.
 
 | Crate                  | Role in one line                                                                                                                                                                                             |
 | ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
@@ -44,6 +44,9 @@ There is no `src/bin/` directory and no `[[bin]]` section in any workspace `Carg
 | `id-native-shell`      | The Bevy native reference shell. Not a default member.                                                                                                                                                       |
 | `id-hw-shell`          | The ESP32-class hardware shell spike: one file, `src/lib.rs`, frame builders only, no binary. Not a default member.                                                                                          |
 | `id-tui-shell`          | The terminal (TUI) shell: the text-native world-session client on the F13.1 shell contract (#12818). Not a default member.                                                                                  |
+| `id-android-remote`   | Android remote-drive transport bridge (#1831): an Iroh session bridge speaking the `/id-world/1` shell session protocol as a client only. Not a default member.                                                                                  |
+| `id-bevy-bridge`      | Bevy projection bridge for id worlds (slices 1–3, #13702–#13704): journal tail, entity map, schema as data, intents and the replay oracle over `bevy_ecs`. Not a default member.                                                                                  |
+| `id-bevy-presenter`   | Bevy presenter-client reference app (slices 4–5, #13705–#13706): the 2D presenter that joins a hosted world, over `id-bevy-bridge`. Not a default member.                                                                                  |
 
 Dependency direction runs downward to `id-core`. Nothing in the split family depends on the facade in production code; the two original shells depend on the facade, and `id-store` dev-depends on it for tests. The full per-crate surface is [The crates](../library/crates.md).
 

@@ -48,6 +48,7 @@ import { createPromptWsSession, type PromptWsSession } from "./prompt-ws.ts";
 import { readHostHealthSnapshot } from "./host-health.ts";
 import { startPmCoreSchedulers } from "./pm-core-wiring.ts";
 import { startNotifyRelay } from "./notify-relay.ts";
+import { applyEdgeAnswer } from "./needs-drew-answer.ts";
 import { alertsIntakeAuthorized } from "./server-alert-routes.ts";
 import { computeEditionDrift, type EditionDrift } from "./edition-drift.ts";
 import { manifestRouteFor } from "./pages.ts";
@@ -58,22 +59,59 @@ import { buildEpicRollups } from "./epics.ts";
 import { buildProgramData } from "./program.ts";
 import { buildReleaseSnapshots } from "./releases.ts";
 import { deriveGenealogy, enrichRoadmapRows } from "./genealogy.ts";
-import { PROJECT_CONFIGS, allProjectRefs, buildProjectDetail, buildProjectSummaries, projectDocTarget, projectConfigById } from "./project-config.ts";
+import {
+  PROJECT_CONFIGS,
+  allProjectRefs,
+  buildProjectDetail,
+  buildProjectSummaries,
+  projectDocTarget,
+  projectConfigById,
+} from "./project-config.ts";
 import { PHASE12_REPO, parsePhase12Steps, type Phase12Snapshot } from "./phase12.ts";
 import { PHASE_MAPPING_REPO, type PhaseMappingSnapshot } from "./phase-mapping.ts";
 import type { BuildHealthSnapshot } from "./build-health.ts";
 import { parseF12Items, type F12PrRef } from "./f12-readiness.ts";
 import { identitiesFromRecords } from "./registry.ts";
-import { attentionFragment, attentionSections, ghObjectRef, renderAa, renderAttention, renderAttentionShell, renderBoard, renderBoardBody, renderDiscuss, renderDns, renderConflicts, renderHealth, renderItem, deriveOverview, renderOverview, renderOverviewBody, renderOverviewShell, renderChat, renderCommentsQueue, renderPages, renderProgram, renderProgramProject, renderQuota, renderQueue, renderQueueBody, renderQueueShell, renderRoadmap, renderSearch, renderServiceDetail, renderSessions, renderToday, renderTodayBody, renderTodayShell, eventTableHtml } from "./render.ts";
+import {
+  attentionFragment,
+  attentionSections,
+  ghObjectRef,
+  renderAa,
+  renderAttention,
+  renderAttentionShell,
+  renderBoard,
+  renderBoardBody,
+  renderDiscuss,
+  renderDns,
+  renderConflicts,
+  renderHealth,
+  renderItem,
+  deriveOverview,
+  renderOverview,
+  renderOverviewBody,
+  renderOverviewShell,
+  renderChat,
+  renderCommentsQueue,
+  renderPages,
+  renderProgram,
+  renderProgramProject,
+  renderQuota,
+  renderQueue,
+  renderQueueBody,
+  renderQueueShell,
+  renderRoadmap,
+  renderSearch,
+  renderServiceDetail,
+  renderSessions,
+  renderToday,
+  renderTodayBody,
+  renderTodayShell,
+  eventTableHtml,
+} from "./render.ts";
 import { buildBriefs } from "./brief.ts";
 import { listDigestArchives, readDigestArchive } from "./digest.ts";
 import { classEnabled, getAlertsStore, startAlertEngine, type PushPayload } from "./alerts.ts";
-import {
-  buildIncidentEnvelope,
-  incidentPageThreshold,
-  incidentTarget,
-  renderIncidentPage,
-} from "./incident-page.ts";
+import { buildIncidentEnvelope, incidentPageThreshold, incidentTarget, renderIncidentPage } from "./incident-page.ts";
 import { recordSwProbe, sendPush, swProbeSummary } from "./push.ts";
 import { renderDigest, esc } from "./render.ts";
 import type { QueueSnapshot } from "./queue.ts";
@@ -89,13 +127,89 @@ import { createEscalationTicker, escalationDelivery, escalationJournalLine } fro
 import { emptyState } from "./remediation.ts";
 import { computeFlowAnalytics } from "./flow-analytics.ts";
 import { FORECAST_CONTRACT_VERSION } from "./forecast-contract.ts";
-import { cfg, dashboardResponseWithinDeadline, roadmapAnnotationsStore, itemHistoryStore, sloJournal, promptsStore, loadSpendCards, readyAgentDispatchStates, coverageSnapshot, actionsStore, commentsStore, viewsStore, eventsStore, freshnessStore, freshnessReconciler, activityStore, githubHotListConsumer, githubOutcomeConsumer, githubActivityStatus, activitySourceStatusHtml, recordActivity, source, quotaRefresher, briefCommentsFor, assembleConflicts, commentIdentities, commentFormOpts, discussTitle, emptyQuotaView, emptyUsageView } from "./server-wiring.ts";
+import {
+  cfg,
+  dashboardResponseWithinDeadline,
+  roadmapAnnotationsStore,
+  itemHistoryStore,
+  sloJournal,
+  promptsStore,
+  loadSpendCards,
+  readyAgentDispatchStates,
+  coverageSnapshot,
+  actionsStore,
+  commentsStore,
+  viewsStore,
+  eventsStore,
+  freshnessStore,
+  freshnessReconciler,
+  activityStore,
+  githubHotListConsumer,
+  githubOutcomeConsumer,
+  githubActivityStatus,
+  activitySourceStatusHtml,
+  recordActivity,
+  source,
+  quotaRefresher,
+  briefCommentsFor,
+  assembleConflicts,
+  commentIdentities,
+  commentFormOpts,
+  discussTitle,
+  emptyQuotaView,
+  emptyUsageView,
+} from "./server-wiring.ts";
 import { json, jsonCompact, html, serviceWorkerResponse } from "./server-respond.ts";
 import { questionsHtml, PWA_MANIFEST } from "./server-pages.ts";
-import { boardContext, allForecastContracts, roadmapContext, searchContext, deriveWatchdogItems, attentionContext, ssePatch, sseResponse, boardRender, attentionRender, todaySignals, todayContext, queueContext, overviewContext, programSources, resolveView, poolItemLike, eventContextByRef, eventFilterFromUrl, digestContext, GRAINS, healthContext, sloSummaries, withSearchTiming, withSearchTimings } from "./server-contexts.ts";
-import { handleReportsRead, handleReportWriteRoutes, handleIdentityRoutes, handleWriteRoutes } from "./server-write-routes.ts";
-import { handleAlertIntakeRoutes, handleAlertAction, handleAlertRead, handleAlertsList, handleAlertPreferences, handleNotificationsPage, UUID_RE } from "./server-alert-routes.ts";
-import { handleDecisionRoutes, handleDecisionsIndex, handleDecisionTailRoutes } from "./server-decision-routes.ts";
+import {
+  boardContext,
+  allForecastContracts,
+  roadmapContext,
+  searchContext,
+  deriveWatchdogItems,
+  attentionContext,
+  ssePatch,
+  sseResponse,
+  boardRender,
+  attentionRender,
+  todaySignals,
+  todayContext,
+  queueContext,
+  overviewContext,
+  projectTrustRuling,
+  programSources,
+  resolveView,
+  poolItemLike,
+  eventContextByRef,
+  eventFilterFromUrl,
+  digestContext,
+  GRAINS,
+  healthContext,
+  sloSummaries,
+  withSearchTiming,
+  withSearchTimings,
+} from "./server-contexts.ts";
+import {
+  handleReportsRead,
+  handleReportWriteRoutes,
+  handleIdentityRoutes,
+  handleWriteRoutes,
+} from "./server-write-routes.ts";
+import {
+  handleAlertIntakeRoutes,
+  handleAlertAction,
+  handleAlertRead,
+  handleAlertsList,
+  handleAlertPreferences,
+  handleNotificationsPage,
+  UUID_RE,
+} from "./server-alert-routes.ts";
+import {
+  afterNeedsDrewAnswered,
+  handleDecisionRoutes,
+  handleDecisionsIndex,
+  handleDecisionTailRoutes,
+} from "./server-decision-routes.ts";
 
 function runMetadataFleet(args: string[], input?: string): Promise<string> {
   const fleetBin = process.env.FLEET_BIN ?? "fleet";
@@ -207,9 +321,7 @@ async function handler(req: Request, remoteAddress?: string): Promise<Response> 
       return json({ error: "incident has no healthHook evidence records", id }, 404);
     }
     const target = incidentTarget(incident);
-    const related = (await store.listIncidents(200)).filter(
-      (r) => target !== null && incidentTarget(r) === target,
-    );
+    const related = (await store.listIncidents(200)).filter((r) => target !== null && incidentTarget(r) === target);
     if (!incidentPageThreshold(incident, events, related).qualifies) {
       return json({ error: "incident does not meet the C6 section 6.2 page threshold", id }, 404);
     }
@@ -533,6 +645,7 @@ async function handler(req: Request, remoteAddress?: string): Promise<Response> 
       comments: briefRefs.length ? await briefCommentsFor(briefRefs) : [],
       orchestration,
       orchestrationStatus,
+      ruling: await projectTrustRuling(),
     });
     const forecasts = (await allForecastContracts(pool)).byRef;
     // #4830: the same twin /api/flow-analytics.json serves, computed
@@ -868,7 +981,9 @@ async function handler(req: Request, remoteAddress?: string): Promise<Response> 
   if (path === "/search") {
     const started = performance.now();
     const { query, results, items, timings } = await searchContext(url.searchParams.get("q") ?? "");
-    const body = await withSearchTiming(timings, "render", () => renderSearch(query, results, items, prov(), provDetail()));
+    const body = await withSearchTiming(timings, "render", () =>
+      renderSearch(query, results, items, prov(), provDetail()),
+    );
     timings.total = performance.now() - started;
     return withSearchTimings(html(body), timings);
   }
@@ -944,7 +1059,7 @@ async function handler(req: Request, remoteAddress?: string): Promise<Response> 
       source.orchestration().catch(() => null),
     ]);
     const orchestrationStatus = source.diagnostics?.().orchestration.state;
-    const briefs = buildBriefs(pool, { comments: briefComments, orchestration, orchestrationStatus });
+    const briefs = buildBriefs(pool, { comments: briefComments, orchestration, orchestrationStatus, ruling: await projectTrustRuling() });
     const resolved = await resolveView(url);
     const outPool = resolved ? pool.filter((it) => itemMatchesView(poolItemLike(it), resolved.filters)) : pool;
     const outRefs = new Set(outPool.map((item) => item.ref));
@@ -996,6 +1111,7 @@ async function handler(req: Request, remoteAddress?: string): Promise<Response> 
       comments: pool.length ? await briefCommentsFor(pool.map((p) => p.ref)) : [],
       orchestration,
       orchestrationStatus: source.diagnostics?.().orchestration.state,
+      ruling: await projectTrustRuling(),
     });
     return html(
       renderProgram(data, items, prov(), provDetail(), {
@@ -1010,6 +1126,7 @@ async function handler(req: Request, remoteAddress?: string): Promise<Response> 
         actionsByObject,
         identities: formOpts.identities,
         briefs,
+        ruling: await projectTrustRuling(),
         forecasts: (await allForecastContracts(viewPool)).byRef,
         // #4830: the Projects page (merged into /program, #1497)
         // renders the #4829 twin as charts, computed as the endpoint
@@ -1540,7 +1657,8 @@ async function handler(req: Request, remoteAddress?: string): Promise<Response> 
       // healthy restore point from missing data.
       readHostHealthSnapshot(cfg.hostHealthFile).catch(() => null),
     ]);
-    const body: Record<string, unknown> = { status: "ok", source: prov(), version: view.version };
+    // #14062: the top-level status follows the degraded flag below.
+    const body: Record<string, unknown> = { status: view.status, source: prov(), version: view.version };
     body.hostHealth = hostHealth
       ? { host: hostHealth.host, backup: hostHealth.backup }
       : { host: null, backup: null, state: "unavailable" };
@@ -1615,6 +1733,7 @@ async function handler(req: Request, remoteAddress?: string): Promise<Response> 
         comments: briefComments,
         orchestration,
         orchestrationStatus: source.diagnostics?.().orchestration.state,
+        ruling: await projectTrustRuling(),
       });
       // Dashboard comments for this item live on its own subject ref
       // and on each linked GitHub ref (gh:<ref>) — one merged thread.
@@ -2103,4 +2222,11 @@ startAlertEngine(cfg, async (): Promise<NotificationSnapshot> => {
 // PM_AGG_NOTIFY_RELAY_URL is set (the deploy is a separate leg),
 // and fail-soft once running — the edge is a mirror of this
 // stack, never a dependency of it.
-startNotifyRelay(cfg, () => getAlertsStore());
+// #13469: answers taken at the edge while the laptop was away are
+// drained on each contact and applied through the laptop's own
+// answer path, with the same side effects.
+startNotifyRelay(
+  cfg,
+  () => getAlertsStore(),
+  (answer) => applyEdgeAnswer(cfg.needsDrewFile, answer, afterNeedsDrewAnswered),
+);

@@ -22,9 +22,8 @@ use id_core::id_shape::{ContentId, HashProfile};
 use id_core::signed_envelope::EnvelopeId;
 use id_core::social_object::{
     ALL_PROFILES, DEFAULT_MAX_DEPTH, DEFAULT_MAX_VISITED, EnvelopeError, MAX_AUTHOR_BYTES,
-    MAX_ENVELOPE_BYTES, ObjectRef, PagingError, Requirement, SOCIAL_SCHEMA_VERSION,
-    SocialObject, SocialObjectKind, TraversalEntry, TraversalMark, TraversalProfile,
-    traverse, traverse_page,
+    MAX_ENVELOPE_BYTES, ObjectRef, PagingError, Requirement, SOCIAL_SCHEMA_VERSION, SocialObject,
+    SocialObjectKind, TraversalEntry, TraversalMark, TraversalProfile, traverse, traverse_page,
 };
 
 fn oid(n: u16) -> ObjectRef {
@@ -97,7 +96,8 @@ fn every_profile_tag_round_trips() {
             panic!("envelope is a map");
         };
         assert!(entries.iter().any(|(key, value)| {
-            *key == Value::Text("profile".to_owned()) && *value == Value::Text(kind.tag().to_owned())
+            *key == Value::Text("profile".to_owned())
+                && *value == Value::Text(kind.tag().to_owned())
         }));
         // A version (a `succeeds_ref`) round-trips too.
         let mut version = object.clone();
@@ -129,7 +129,11 @@ fn malformed_envelopes_fail_closed() {
         edit(&mut object);
         cases.push((name.to_owned(), object, class));
     };
-    push("unsupported schema", &|o| o.schema_version = 2, "unsupported");
+    push(
+        "unsupported schema",
+        &|o| o.schema_version = 2,
+        "unsupported",
+    );
     push("empty author", &|o| o.author.clear(), "malformed");
     push(
         "author too long",
@@ -339,7 +343,7 @@ fn validated_envelopes_feed_paged_traversal() {
     let mut pages = 0;
     loop {
         let page = traverse_page(&objects, &root, &small, all, cursor).expect("page");
-        assert!(page.missing.is_empty());
+        assert_eq!(page.missing, [] as [ObjectRef; 0]);
         let count = page
             .entries
             .iter()
@@ -364,7 +368,13 @@ fn validated_envelopes_feed_paged_traversal() {
         Err(PagingError::CursorMismatch)
     );
     assert_eq!(
-        traverse_page(&objects, &root, &TraversalProfile::default(), all, Some(resume)),
+        traverse_page(
+            &objects,
+            &root,
+            &TraversalProfile::default(),
+            all,
+            Some(resume)
+        ),
         Err(PagingError::CursorMismatch)
     );
 
@@ -375,7 +385,10 @@ fn validated_envelopes_feed_paged_traversal() {
     });
     let seen: HashSet<ObjectRef> = visible.entries.iter().map(|e| e.object_id).collect();
     for gone in [14, 15, 16, 17] {
-        assert!(!seen.contains(&oid(gone)), "{gone} is under the hidden comment");
+        assert!(
+            !seen.contains(&oid(gone)),
+            "{gone} is under the hidden comment"
+        );
     }
     assert!(seen.contains(&oid(13)));
 }
@@ -390,7 +403,10 @@ fn traversal_hits_each_default_bound_exactly() {
     }
     let walk = traverse(&chain, &oid(0), &TraversalProfile::default(), |_| true);
     let last = walk.entries.last().unwrap();
-    assert_eq!(walk.entries[usize::from(depth)].mark, TraversalMark::Expanded);
+    assert_eq!(
+        walk.entries[usize::from(depth)].mark,
+        TraversalMark::Expanded
+    );
     assert_eq!(last.depth, DEFAULT_MAX_DEPTH + 1);
     assert_eq!(last.mark, TraversalMark::TruncatedDepth);
     assert!(!walk.complete);
@@ -406,11 +422,16 @@ fn traversal_hits_each_default_bound_exactly() {
     let marks = |mark| walk.entries.iter().filter(|e| e.mark == mark).count();
     assert_eq!(marks(TraversalMark::Expanded), DEFAULT_MAX_VISITED);
     assert_eq!(marks(TraversalMark::TruncatedBudget), 1);
-    let page = traverse_page(&fan, &oid(0), &TraversalProfile::default(), |_| true, None)
-        .unwrap();
+    let page = traverse_page(&fan, &oid(0), &TraversalProfile::default(), |_| true, None).unwrap();
     assert_eq!(page.entries.len(), DEFAULT_MAX_VISITED);
-    let rest = traverse_page(&fan, &oid(0), &TraversalProfile::default(), |_| true, page.cursor)
-        .unwrap();
+    let rest = traverse_page(
+        &fan,
+        &oid(0),
+        &TraversalProfile::default(),
+        |_| true,
+        page.cursor,
+    )
+    .unwrap();
     assert_eq!(rest.entries.len(), 1);
     assert!(rest.cursor.is_none());
 

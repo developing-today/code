@@ -54,6 +54,7 @@ pub mod creation_outbox;
 #[cfg(any(feature = "client", feature = "queue-broker"))]
 pub mod disposition;
 mod home;
+pub mod lane_share;
 pub mod log;
 pub mod merge_intent;
 pub mod token_file;
@@ -64,7 +65,7 @@ pub mod client;
 #[cfg(feature = "client")]
 pub mod fallback;
 #[cfg(feature = "client")]
-pub mod needs_drew;
+pub mod needs_user;
 pub mod person_wait;
 #[cfg(feature = "client")]
 pub mod placement;
