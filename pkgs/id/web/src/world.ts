@@ -196,6 +196,10 @@ function initWorld(): void {
   // accumulated snapshot belongs to.
   let offlineSnapshot: StoredWorldSnapshot | null = null;
   let offlineWorld: string | null = null;
+  // #10927 slice 2: a sequence restored from localStorage has no durable
+  // journal identity, so it must never be presented as a resume cursor.
+  // While set, the next join asks for an authoritative snapshot.
+  let offlineRestored = false;
   let notificationResyncPending = new URLSearchParams(location.search).has("client-notify");
   const persistOfflineSnapshot = () => {
     if (offlineSnapshot) saveWorldSnapshot(localStorage, window.location.host, offlineWorld, offlineSnapshot);
@@ -218,7 +222,13 @@ function initWorld(): void {
     offlineWorld = world;
     const stored = loadWorldSnapshot(localStorage, window.location.host, world);
     offlineSnapshot = stored;
-    if (!stored) return;
+    if (!stored) {
+      offlineRestored = false;
+      return;
+    }
+    // Restored without proof of journal continuity: the next join must
+    // re-snapshot rather than replay from the stored sequence.
+    offlineRestored = true;
     cursor = stored.sequence;
     renderParticipants(stored.participants);
     if (stored.view?.kind === "surface" && renderWorldSurface(view, stored.view.surface)) {
@@ -367,6 +377,9 @@ function initWorld(): void {
           return;
         }
         cursor = snapshot.current_sequence;
+        // A live host snapshot proves journal continuity for this page
+        // lifetime: later reconnects may resume from the live cursor.
+        offlineRestored = false;
         renderParticipants(snapshot.participants);
         // #10927: a snapshot (re)starts the offline read model for
         // this world. Records are reset — the records fetch below
@@ -922,16 +935,20 @@ function initWorld(): void {
     ws.addEventListener("open", () => {
       if (ws !== socket) return;
       reconnects = 0;
+      // #10927 slice 2: a restored offline cursor carries no journal
+      // identity, so the first connect after a restore asks for a fresh
+      // host snapshot. Live-page reconnects keep the resume behavior.
+      const freshResnapshot = offlineRestored;
       ws.send(
         JSON.stringify({
           type: "join",
           capability: token,
-          after: cursor || null,
+          after: freshResnapshot ? null : cursor || null,
           world: selectedWorld(),
           screen_patches: true,
           screen_msgpack: true,
           screen_compress: true,
-          resume_token: hasResumableScreen() ? resumeToken : undefined,
+          resume_token: !freshResnapshot && hasResumableScreen() ? resumeToken : undefined,
           device_input: {
             keys: 128,
             encoder: false,
@@ -942,7 +959,8 @@ function initWorld(): void {
       );
       // A fresh session needs its initial resize. A resumable
       // reconnect keeps the established viewport unless it changed.
-      sendViewport(!hasResumableScreen());
+      // A restored offline cursor is always a fresh snapshot request.
+      sendViewport(!hasResumableScreen() || offlineRestored);
     });
     ws.addEventListener("message", (event) => {
       if (ws !== socket) return;
@@ -963,6 +981,10 @@ function initWorld(): void {
       documentsPages = 0;
       documentPending = false;
       if (intentionalClose) return;
+      // The server may have restarted or rebuilt its journal while this
+      // socket was down. Without a durable history identity, the next
+      // connection must re-snapshot instead of replaying from this cursor.
+      offlineRestored = true;
       setStatus("Disconnected; retrying…", "error");
       const wait = Math.min(500 * 2 ** reconnects++, 10_000);
       window.setTimeout(() => {

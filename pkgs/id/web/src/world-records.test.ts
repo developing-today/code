@@ -292,7 +292,7 @@ describe("world page records fetch (#1458)", () => {
     const reconnectedSocket = FakeSocket.all.at(-1);
     expect(reconnectedSocket).toBeDefined();
     reconnectedSocket!.open();
-    expect(reconnectedSocket!.sent("join")[0]).toHaveProperty("after", 9);
+    expect(reconnectedSocket!.sent("join")[0]).toHaveProperty("after", null);
   });
 
   it("rejects wrong-shape records frames without changing rendered records or fetch state (#7908)", () => {
