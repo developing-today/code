@@ -308,6 +308,10 @@ export interface ProvenanceFacet {
   ageMs?: number;
   count?: number;
   countLabel?: string;
+  /** #14065: when the facet last turned "unavailable" or
+   * "partial-unavailable" in this process (ISO time). Set only while it
+   * still is, so a reader can say since when the source has been gone. */
+  unavailableSince?: string;
 }
 
 /** Per-facet freshness detail, keyed exactly like Provenance. */
