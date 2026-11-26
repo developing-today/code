@@ -1154,6 +1154,38 @@ pub enum WorldCommand {
         #[arg(long)]
         json: bool,
     },
+    /// Create a new durable world on disk from a template (#8282).
+    ///
+    /// The world gets a fresh id and starts with the template's state.
+    /// Each program the template names installs from a bundle file given
+    /// with `--bundle`, through the same verification as a sideloaded
+    /// bundle. A program with no matching bundle is recorded in the
+    /// world's `template-gaps.json` instead. Local only; no host or
+    /// network is contacted.
+    #[cfg(feature = "sandbox")]
+    TemplateCreate {
+        /// Template file written by `id world template-export`.
+        template: PathBuf,
+        /// Directory to create the world in; it must be absent or empty.
+        dir: PathBuf,
+        /// The new world's id: `a-z`, `0-9`, `-` and `_`. Defaults to the
+        /// directory's name.
+        #[arg(long)]
+        name: Option<String>,
+        /// A program bundle file the template may name (repeatable).
+        #[arg(long = "bundle", value_name = "FILE")]
+        bundles: Vec<PathBuf>,
+        /// An author key (64 hex characters) whose bundles the new world
+        /// trusts (repeatable). With none, the world keeps no trust list.
+        #[arg(long = "trust-key", value_name = "HEX")]
+        trust_keys: Vec<String>,
+        /// Deterministic seed supplied to the program's initializer.
+        #[arg(long, default_value_t = 1)]
+        seed: u64,
+        /// Print one JSON object instead of text lines.
+        #[arg(long)]
+        json: bool,
+    },
     /// Print a durable world's provenance from its journal: its id and,
     /// for a fork, the world it was forked from, the module hash at the
     /// fork point, and whether it was marked a template (F12.2). Local
