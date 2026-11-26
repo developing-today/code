@@ -616,23 +616,78 @@ pub fn lint(source: &str, plans: &[TargetPlan]) -> LintReport {
     LintReport { diagnostics }
 }
 
+/// Compare parsed documents by semantic content. Source positions are
+/// diagnostics metadata, not part of the source's meaning. Element
+/// attributes are key/value properties, so their order is ignored while
+/// duplicate pairs are retained; child order and raw-region content remain
+/// significant.
+fn same_semantic_document(left: &Document, right: &Document) -> bool {
+    same_semantic_element(&left.root, &right.root)
+}
+
+fn same_semantic_element(left: &Element, right: &Element) -> bool {
+    if left.name != right.name || !same_semantic_attributes(&left.attrs, &right.attrs) {
+        return false;
+    }
+    left.children.len() == right.children.len()
+        && left
+            .children
+            .iter()
+            .zip(&right.children)
+            .all(|(left, right)| same_semantic_node(left, right))
+}
+
+fn same_semantic_attributes(
+    left: &[(String, Option<String>)],
+    right: &[(String, Option<String>)],
+) -> bool {
+    if left.len() != right.len() {
+        return false;
+    }
+    let mut left = left.to_vec();
+    let mut right = right.to_vec();
+    left.sort();
+    right.sort();
+    left == right
+}
+
+fn same_semantic_node(left: &Node, right: &Node) -> bool {
+    match (left, right) {
+        (Node::Element(left), Node::Element(right)) => same_semantic_element(left, right),
+        (Node::Text(left), Node::Text(right)) => left == right,
+        (Node::Raw(left), Node::Raw(right)) => {
+            left.kind == right.kind && left.content == right.content
+        }
+        _ => false,
+    }
+}
+
 /// Lint several target folders' sources together. Each source is
 /// linted on its own with [`lint`], and every pair of sources whose
-/// parsed documents are equal is reported as a `duplicate-source`
-/// error on the later folder (#5855 §4). Sources that fail to parse
-/// are not compared; their own lint already reports the failure.
+/// parsed documents are semantically equal is reported as a
+/// `duplicate-source` error on the later folder (#5855 §4). Source
+/// diagnostics retain their folder in the message; target diagnostics keep
+/// their separate `target` field. Sources that fail to parse are not
+/// compared; their own lint already reports the failure.
 #[must_use]
 pub fn lint_folders(sources: &[(&str, &str)], plans: &[TargetPlan]) -> LintReport {
     let mut diagnostics: Vec<Diagnostic> = Vec::new();
     let mut parsed: Vec<(&str, Document)> = Vec::new();
     for (folder, source) in sources {
-        diagnostics.extend(lint(source, plans).diagnostics);
+        let mut report = lint(source, plans);
+        for diagnostic in &mut report.diagnostics {
+            diagnostic.message = format!("{folder}: {}", diagnostic.message);
+        }
+        diagnostics.extend(report.diagnostics);
         if let Ok(doc) = crate::parse(source) {
             parsed.push((folder, doc));
         }
     }
     for (index, (folder, doc)) in parsed.iter().enumerate() {
-        if let Some((first, _)) = parsed[..index].iter().find(|(_, other)| other == doc) {
+        if let Some((first, _)) = parsed[..index]
+            .iter()
+            .find(|(_, other)| same_semantic_document(other, doc))
+        {
             diagnostics.push(Diagnostic {
                 severity: Severity::Error,
                 rule: RULE_DUPLICATE_SOURCE,

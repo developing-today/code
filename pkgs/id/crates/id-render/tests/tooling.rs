@@ -65,9 +65,16 @@ const FORM_DOC_WITH_CSS: &str = r#"<document version="1">
 #[test]
 fn lint_folders_duplicate_source_is_an_error_decision_5855_s4() {
     // Rule: the same semantic source in two target folders (error).
-    // The later folder is named in the message; a distinct source
-    // in the other folder is not reported.
-    let report = lint_folders(&[("en", EXAMPLE), ("fr", EXAMPLE)], &standard_plans());
+    // Leading layout and attribute order differ, but those are not
+    // semantic differences. The later folder is named in the message.
+    let reformatted = format!(
+        "\n{}",
+        EXAMPLE.replace(
+            "action=\"save-account\" confirm=\"Save account changes?\"",
+            "confirm=\"Save account changes?\" action=\"save-account\"",
+        )
+    );
+    let report = lint_folders(&[("en", EXAMPLE), ("fr", &reformatted)], &standard_plans());
     let dupes: Vec<_> = report
         .diagnostics
         .iter()
@@ -76,6 +83,39 @@ fn lint_folders_duplicate_source_is_an_error_decision_5855_s4() {
     assert_eq!(dupes.len(), 1, "{report:?}");
     assert_eq!(dupes[0].severity, Severity::Error);
     assert!(dupes[0].message.contains("fr") && dupes[0].message.contains("en"));
+}
+
+#[test]
+fn lint_folders_keeps_raw_content_significant_control() {
+    // Oracle: raw regions pass through verbatim, so a content change means
+    // the target folders contain distinct semantic source.
+    let changed_raw = FORM_DOC_WITH_CSS.replace("hotpink", "rebeccapurple");
+    let report = lint_folders(
+        &[("en", FORM_DOC_WITH_CSS), ("fr", &changed_raw)],
+        &standard_plans(),
+    );
+    assert!(
+        report
+            .diagnostics
+            .iter()
+            .all(|diagnostic| diagnostic.rule != "duplicate-source"),
+        "{report:?}"
+    );
+}
+
+#[test]
+fn lint_folders_preserves_folder_for_source_diagnostics() {
+    // Oracle: a source parse error reports the folder name while leaving
+    // `target` for renderer-target diagnostics.
+    let malformed = r#"<document version="1"><page title="T"></document>"#;
+    let report = lint_folders(&[("en", EXAMPLE), ("fr", malformed)], &standard_plans());
+    let diagnostic = report
+        .diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic.rule == "parse")
+        .expect("malformed source produces a parse diagnostic");
+    assert!(diagnostic.message.starts_with("fr: "), "{diagnostic:?}");
+    assert_eq!(diagnostic.target, None);
 }
 
 #[test]
