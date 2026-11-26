@@ -4,7 +4,9 @@
 //! `id host run` binds `host.sock` inside the data root and answers one
 //! JSON request per connection, one line each way, so `id host start`,
 //! `stop`, `archive`, `restore`, `list` and `inspect` act on the running
-//! host. There is no network listener: the socket is a filesystem object
+//! host. `id serve --world-host` binds the same socket and answers the
+//! same requests for the worlds it serves ([`crate::node_control`]).
+//! There is no network listener: the socket is a filesystem object
 //! readable and writable by its owner alone, so only the operator who
 //! runs the host can drive it. Requests are answered one at a time, in
 //! the order they arrive, so two operator acts never interleave.
@@ -126,7 +128,7 @@ pub struct ControlResponse {
 }
 
 impl ControlResponse {
-    fn done(body: serde_json::Value) -> Self {
+    pub(crate) const fn done(body: serde_json::Value) -> Self {
         Self {
             ok: true,
             error: None,
@@ -134,7 +136,7 @@ impl ControlResponse {
         }
     }
 
-    fn refused(error: String) -> Self {
+    pub(crate) const fn refused(error: String) -> Self {
         Self {
             ok: false,
             error: Some(error),
@@ -154,13 +156,13 @@ pub fn parse_source(source: &str) -> Result<[u8; 32]> {
         .with_context(|| format!("source {source:?} is not 64 hex digits"))
 }
 
-fn export_body(manifest: &ExportManifest, path: &Path) -> Result<serde_json::Value> {
+pub(crate) fn export_body(manifest: &ExportManifest, path: &Path) -> Result<serde_json::Value> {
     let mut body = serde_json::to_value(manifest)?;
     body["path"] = serde_json::json!(path);
     Ok(body)
 }
 
-fn state_body(world: &str, state: LifecycleState) -> serde_json::Value {
+pub(crate) fn state_body(world: &str, state: LifecycleState) -> serde_json::Value {
     serde_json::json!({ "world": world, "state": state })
 }
 
@@ -285,17 +287,39 @@ pub async fn serve(
 }
 
 async fn answer(supervisor: &mut Supervisor, stream: UnixStream) -> Result<()> {
-    let (read, mut write) = stream.into_split();
+    let (request, write) = read_request(stream).await?;
+    let response = match request {
+        Ok(request) => handle(supervisor, request).await,
+        Err(refusal) => refusal,
+    };
+    write_response(write, &response).await
+}
+
+/// Read one request line from a connected client: the request, or the
+/// refusal a line that does not parse gets, plus the half to answer on.
+pub(crate) async fn read_request(
+    stream: UnixStream,
+) -> Result<(
+    std::result::Result<ControlRequest, ControlResponse>,
+    tokio::net::unix::OwnedWriteHalf,
+)> {
+    let (read, write) = stream.into_split();
     let mut reader = BufReader::new(read.take(MAX_REQUEST_BYTES));
     let mut line = String::new();
     tokio::time::timeout(REQUEST_TIMEOUT, reader.read_line(&mut line))
         .await
         .context("client sent no request in time")??;
-    let response = match serde_json::from_str::<ControlRequest>(line.trim()) {
-        Ok(request) => handle(supervisor, request).await,
-        Err(error) => ControlResponse::refused(format!("bad request: {error}")),
-    };
-    let mut bytes = serde_json::to_vec(&response)?;
+    let request = serde_json::from_str::<ControlRequest>(line.trim())
+        .map_err(|error| ControlResponse::refused(format!("bad request: {error}")));
+    Ok((request, write))
+}
+
+/// Send one response line and close the connection.
+pub(crate) async fn write_response(
+    mut write: tokio::net::unix::OwnedWriteHalf,
+    response: &ControlResponse,
+) -> Result<()> {
+    let mut bytes = serde_json::to_vec(response)?;
     bytes.push(b'\n');
     write.write_all(&bytes).await?;
     write.shutdown().await?;
@@ -311,7 +335,7 @@ async fn answer(supervisor: &mut Supervisor, stream: UnixStream) -> Result<()> {
 pub async fn request(root: &Path, request: &ControlRequest) -> Result<ControlResponse> {
     try_request(root, request).await?.with_context(|| {
         format!(
-            "no host is running on {} (start one with `id host run {}`)",
+            "no host is running on {} (start one with `id host run {}`, or serve it with `id serve --world-host`)",
             root.display(),
             root.display()
         )

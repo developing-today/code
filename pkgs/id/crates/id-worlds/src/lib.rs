@@ -78,6 +78,8 @@ pub mod host_control;
 pub mod input_framing;
 pub mod kitty_graphics;
 pub mod kitty_still;
+#[cfg(unix)]
+pub mod node_control;
 pub mod program_bundle;
 pub mod program_gallery;
 pub mod program_gallery_admission;
