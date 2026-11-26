@@ -151,6 +151,7 @@ describe("the edge queue door", () => {
         nativeQueueEnv(() => now / 1000),
       );
       const expected = (await oracle.allTasks())[0];
+      const expectedRow: Record<string, unknown> = { ...expected };
       const row = db.query("SELECT * FROM tasks").get() as Record<string, unknown>;
       for (const key of ["payload", "metadata", "progress", "result", "ready_condition", "blocked_deps"]) {
         if (typeof row[key] === "string") row[key] = JSON.parse(row[key] as string);
@@ -170,7 +171,7 @@ describe("the edge queue door", () => {
       ]) {
         delete row[key];
       }
-      expect(row).toEqual(expected);
+      expect(row).toEqual(expectedRow);
       expect(db.query("SELECT blocked_deps, ready_condition FROM tasks").get()).toEqual({
         blocked_deps: null,
         ready_condition: null,

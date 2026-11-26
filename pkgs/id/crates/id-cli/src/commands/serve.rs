@@ -1796,6 +1796,9 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
 
     // Every world lives in one hub, shared by the Iroh protocol and the web
     // bridge. The default world opens now so a bad journal fails startup.
+    // The serving node's answer on `host.sock` (#10697), stopped at exit.
+    #[cfg(all(feature = "world", unix))]
+    let mut host_control: Option<tokio::task::JoinHandle<()>> = None;
     #[cfg(feature = "world")]
     let world_hub = if world {
         use id_worlds::world_hub::{HubLimits, WorldHub};
@@ -1823,6 +1826,15 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
             !world_source_only || compiler.is_some(),
             "--world-source-only requires a configured Roc compiler and platform (see --roc-bin and --roc-platform)"
         );
+        // Bind first, as `id host run` does: a second host on the same
+        // data root is refused before this node opens any world (#10697).
+        #[cfg(unix)]
+        let control_listener = if world_host {
+            fs::create_dir_all(WORLDS_DIR)?;
+            Some(id_worlds::host_control::bind(Path::new(WORLDS_DIR))?)
+        } else {
+            None
+        };
         let opener = Arc::new(ServeWorlds {
             ephemeral,
             admin_token: world_admin_token.clone(),
@@ -1870,7 +1882,23 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
             },
         );
         info!("serve startup: opening default world via hub (#190 breadcrumb)");
-        let default_service = hub.open_default().await?;
+        // Host mode keeps a restart from changing a world's state: a
+        // default world the host file records asleep or archived stays
+        // that way (an operator stopped it, or it wakes only on their
+        // start), and is not opened as a client would open it (#10697).
+        let default_at_rest = host.as_ref().is_some_and(|host| {
+            host.state(&world_name)
+                .is_some_and(|state| state != id_worlds::host::LifecycleState::Live)
+        });
+        let default_service = if default_at_rest {
+            info!(
+                world = %world_name,
+                "host mode: the default world is at rest and stays closed"
+            );
+            None
+        } else {
+            Some(hub.open_default().await?)
+        };
         info!("serve startup: default world open, building router (#190 breadcrumb)");
         if let Some(host) = &host {
             // Worlds recorded live stay live across a restart (#10693):
@@ -1891,6 +1919,31 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
                 root = WORLDS_DIR,
                 "host mode: serving the worlds directory as a data root"
             );
+            // `id host start`, `stop`, `archive`, `restore`, `list`,
+            // `inspect`, `pin`, `wake`, `export` and `import` reach this
+            // node over its control socket (#10697).
+            #[cfg(unix)]
+            if let Some(listener) = control_listener {
+                let key = match crate::commands::host::host_key(Path::new(WORLDS_DIR)).await {
+                    Ok(key) => Some(key),
+                    Err(error) => {
+                        warn!("host mode: exports are off: no host key ({error:#})");
+                        None
+                    }
+                };
+                let control =
+                    id_worlds::node_control::NodeControl::new(hub.clone(), Arc::clone(host), key);
+                host_control = Some(tokio::spawn(async move {
+                    if let Err(error) = control.serve(&listener, std::future::pending()).await {
+                        warn!("host control: {error:#}");
+                    }
+                }));
+                let socket = id_worlds::host_control::socket_path(Path::new(WORLDS_DIR));
+                info!(
+                    socket = %socket.display(),
+                    "host mode: answering the operator CLI"
+                );
+            }
         }
         if !world_caps.is_empty() {
             for cap in world_caps.iter().filter(|cap| *cap != "*") {
@@ -1900,10 +1953,17 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
                     );
                 }
             }
-            default_service
-                .world()
-                .update_caps(world_caps.clone(), Vec::new())
-                .await?;
+            if let Some(default_service) = &default_service {
+                default_service
+                    .world()
+                    .update_caps(world_caps.clone(), Vec::new())
+                    .await?;
+            } else {
+                warn!(
+                    "world: --world-cap is not applied: the default world is at rest; \
+                     start it and restart to apply"
+                );
+            }
         }
         if world_idle_secs > 0 && !ephemeral {
             let idle = std::time::Duration::from_secs(world_idle_secs);
@@ -2714,6 +2774,12 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
     if let Some(flush) = outbox_flush {
         flush.abort();
         let _ = flush.await;
+    }
+    #[cfg(all(feature = "world", unix))]
+    if let Some(control) = host_control {
+        control.abort();
+        let _ = control.await;
+        let _ = fs::remove_file(id_worlds::host_control::socket_path(Path::new(WORLDS_DIR)));
     }
     #[cfg(feature = "world")]
     if let Some(hub) = &world_hub {
