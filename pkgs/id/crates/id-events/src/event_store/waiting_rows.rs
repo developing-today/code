@@ -83,7 +83,9 @@ impl Row {
             ));
         }
         let deps = row[HEAD_LEN..deps_end]
-            .chunks_exact(32)
+            .as_chunks::<32>()
+            .0
+            .iter()
             .map(hash_of)
             .collect::<Result<Vec<Hash>, StoreError>>()?;
         Ok(Self {
