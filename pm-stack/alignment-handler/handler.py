@@ -211,7 +211,11 @@ class AlignmentHandler:
                 state = "blocked" if missing else "acknowledged"
                 now = utc_now()
                 if missing:
-                    reply = f"BLOCKED {supplied_id} — missing required field(s): {', '.join(missing)}."
+                    reply = (
+                        f"BLOCKED {supplied_id}\nOwner: {owner}\nScope: {scope or '(missing)'}\n"
+                        f"Evidence: {evidence or '(missing)'}\n"
+                        f"Missing: {', '.join(missing)}"
+                    )
                 else:
                     reply = (
                         f"ACK {supplied_id}\nOwner: {owner}\nScope: {scope}\nEvidence: {evidence}"
@@ -250,7 +254,11 @@ class AlignmentHandler:
         now = utc_now()
 
         if missing:
-            reply = f"BLOCKED {request_id} — missing required field(s): {', '.join(missing)}."
+            reply = (
+                f"BLOCKED {request_id}\nOwner: {owner}\nScope: {scope or '(missing)'}\n"
+                f"Evidence: {evidence or '(missing)'}\n"
+                f"Missing: {', '.join(missing)}"
+            )
         else:
             reply = (
                 f"ACK {request_id}\nOwner: {owner}\nScope: {scope}\nEvidence: {evidence}"
@@ -300,7 +308,10 @@ class AlignmentHandler:
             raise ValueError(f"request {request_id} is {row['state']}, not acknowledged")
         result_text = _safe_slack_text(result)
         safe_evidence = [_safe_slack_text(item) for item in evidence]
-        text = f"RESULT {request_id}\n{result_text}\nEvidence: " + " ".join(safe_evidence)
+        text = (
+            f"RESULT {request_id}\nOwner: {row['owner']}\nScope: {row['scope']}\n"
+            f"{result_text}\nEvidence: " + " ".join(safe_evidence)
+        )
         key = _outbox_key(row["channel_id"], row["source_ts"], "result")
         now = utc_now()
         with self.conn:

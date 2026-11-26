@@ -92,6 +92,14 @@ in
   };
 
   config = lib.mkMerge [
+    {
+      assertions = [
+        {
+          assertion = !alignmentCfg.enable || cfg.enable;
+          message = "services.alignment-handler requires services.archer-slack-collector to provide the #alignment event store";
+        }
+      ];
+    }
     (lib.mkIf cfg.enable {
       home-manager.users.${cfg.user} = {
         systemd.user.services.archer-slack-collector = {
