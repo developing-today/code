@@ -319,6 +319,101 @@ pub struct IssuerRenewRequest {
     pub allow_key_reuse: bool,
 }
 
+/// `cert root renew` (§5.2): reissue every certificate of a root set
+/// (the self-signed roots and the root-level cross-certificates) on
+/// the keys it already has.
+#[derive(Debug, Clone)]
+pub struct RootRenewRequest {
+    pub root_bundle: PathBuf,
+    /// REQUIRED explicit signer source for the root keys (§24.3).
+    pub root_signer: SignerSource,
+    pub not_before: Rfc3339,
+    pub not_after: Rfc3339,
+    /// The §5.2 key-reuse opt-in; renewal refuses without it.
+    pub allow_key_reuse: bool,
+}
+
+/// `cert root rotate` (§5.2): a new root set with new keys, in the
+/// next key generation, with the predecessor's algorithms, partition,
+/// organization and cross-signing mode.
+#[derive(Debug, Clone)]
+pub struct RootRotateRequest {
+    pub root_bundle: PathBuf,
+    pub not_before: Rfc3339,
+    pub not_after: Rfc3339,
+    /// The §24.1(1) opt-in, needed again for a set with legacy roots.
+    pub allow_legacy_root_strength: bool,
+    /// Where the new keys go: `None` = the new bundle's own
+    /// `private/keys`; `Some(dir)` = that external store directory.
+    pub private_store: Option<PathBuf>,
+}
+
+/// `cert issuer rotate` (§5.2): a new key per slot of an issuer set,
+/// in the next key generation, under the same root set.
+#[derive(Debug, Clone)]
+pub struct IssuerRotateRequest {
+    /// The issuer set whose keys are replaced.
+    pub issuer_bundle: PathBuf,
+    /// The root set the issuer set chains to.
+    pub root_bundle: PathBuf,
+    /// REQUIRED explicit signer source for the root keys (§24.3).
+    pub root_signer: SignerSource,
+    pub not_before: Rfc3339,
+    pub not_after: Rfc3339,
+    /// The §24.1(1) opt-in, needed again for a set with legacy slots.
+    pub allow_legacy_root_strength: bool,
+    /// Where the new keys go: `None` = the new bundle's own
+    /// `private/keys`; `Some(dir)` = that external store directory.
+    pub private_store: Option<PathBuf>,
+    /// When `root_bundle` is a rotation of the issuer set's root set:
+    /// that predecessor root set, whose roots then also certify each
+    /// new issuer key directly, so relying parties that still trust
+    /// only the old roots validate the new leaves (the overlap).
+    pub overlap_root_bundle: Option<PathBuf>,
+    /// REQUIRED with `overlap_root_bundle`: the signer source for the
+    /// predecessor root keys (§24.3).
+    pub overlap_root_signer: Option<SignerSource>,
+}
+
+/// `cert leaf renew` (§5.2): reissue a leaf on the key it already
+/// has. The profile, subject and SANs come from the leaf bundle; the
+/// issuer key comes only from the explicit signer source (§24.3).
+#[derive(Debug, Clone)]
+pub struct LeafRenewRequest {
+    /// The leaf bundle being renewed.
+    pub leaf_bundle: PathBuf,
+    /// The issuer set holding the issuer key that signed the leaf
+    /// (the original set or a renewal of it).
+    pub issuer_bundle: PathBuf,
+    /// REQUIRED explicit signer source for the issuer key (§24.3).
+    pub issuer_signer: SignerSource,
+    pub not_before: Rfc3339,
+    pub not_after: Rfc3339,
+    /// The §5.2 key-reuse opt-in, as for issuer renew.
+    pub allow_key_reuse: bool,
+}
+
+/// `cert leaf rotate` (§5.2): a new key for a leaf, in the next key
+/// generation, with the same profile, subject, names and issuer slot
+/// (algorithm and partition). The issuer set may be the original, a
+/// renewal or a rotation of it.
+#[derive(Debug, Clone)]
+pub struct LeafRotateRequest {
+    /// The leaf bundle whose key is replaced.
+    pub leaf_bundle: PathBuf,
+    /// The issuer set that signs the new leaf.
+    pub issuer_bundle: PathBuf,
+    /// REQUIRED explicit signer source for the issuer key (§24.3).
+    pub issuer_signer: SignerSource,
+    pub not_before: Rfc3339,
+    pub not_after: Rfc3339,
+    /// A CSR carrying the new key generated on the subject's host;
+    /// required for leaves issued from a CSR (the broker profiles).
+    pub csr: Option<PathBuf>,
+    /// Where a generated key goes, as for leaf issue.
+    pub private_store: Option<PathBuf>,
+}
+
 /// `cert publish plan` (§4.4): read-only publication rendering.
 /// Never touches live endpoints; `host` is the proposed
 /// distribution host (§4.1) and `dns_target` the optional operator
