@@ -21,6 +21,7 @@
     <tabs title="Tabs"><tab title="One"></tab></tabs>
     <settings title="Settings"><preference kind="toggle" label="Enabled" bind="enabled"></preference></settings>
     <note>Note</note>
+    <conditional target="web"><text>Target-specific note</text></conditional>
     <raw kind="html"><span>Raw region</span></raw>
   </page>
 </document>
