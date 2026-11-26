@@ -65,7 +65,7 @@
       "deploy": "by hand",
       "workflow": null,
       "address": "https://pm-notify.developing-today.workers.dev",
-      "next": "Deployed 2026-11-26 (CF-10, #14950) by hand via the sanctioned wrangler-authed pattern; Worker version 45db0876-46f9-4a80-85ef-9bf3836a6ca5, RELAY_SHARED_SECRET + VAPID_PRIVATE_KEY set from Bitwarden by name. GET /status answers live. Remaining: the aggregator's PM_AGG_NOTIFY_RELAY_URL wiring on the laptop and the real-device dead-man's-switch drill, both recorded on #14950. Adopts the CF-1 versions pipeline when it lands.",
+      "next": "Deployed 2026-11-26 (CF-10, #14950) by hand; Worker version 45db0876-46f9-4a80-85ef-9bf3836a6ca5; RELAY_SHARED_SECRET and VAPID_PRIVATE_KEY came from Bitwarden by name. GET /status is live. Remaining: laptop PM_AGG_NOTIFY_RELAY_URL wiring and real-device dead-man's-switch drill (#14950). Adopts CF-1 versions pipeline when it lands.",
       "lastDeployedCommit": "59a48f5e17718904f72b3ceabd0231e904bf31e0"
     },
     {

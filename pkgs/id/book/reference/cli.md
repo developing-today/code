@@ -123,6 +123,7 @@ The parser defines 32 top-level commands and 113 leaf commands. The reference ch
 | Worlds (administering)          | `world install`, `world compile`, `world caps`, `world doctor`, and kin                                            | [World commands: administering and verifying](cli-worlds-admin.md) |
 | Gallery, match-audit, walk      | `gallery …`, `match-audit …`, `walk …`                                                                             | [Gallery, match-audit and walk](cli-gallery-walk.md)               |
 | Groups, documents, claims, keys | `group …`, `delegate`, `revoke`, `doc …`, `claim …`, `talk …`, `writer-sets …`, `id`, `key …`, `keyset …`, `peers` | [Groups, documents, claims and keys](cli-groups-identity.md)       |
+| Hosted bridge                   | `hosted heads`, `hosted push`, `hosted pull`                                                                       | [Groups, documents, claims and keys](cli-groups-identity.md)       |
 | Interactive shell               | `repl` (alias `shell`), bare `id`                                                                                  | [The interactive REPL](repl.md)                                    |
 | Desktop shell                   | the separate `id-native-shell` binary                                                                              | [id-native-shell](native-shell.md)                                 |
 

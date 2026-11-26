@@ -9,7 +9,7 @@
 use crate::algorithm::{self, AlgorithmId};
 use crate::algorithm_lab;
 use crate::bundle::{list_bundles, load_bundle, pem_decode_all, read_artifact};
-use crate::chain::{CertInfo, TrustSelection, parse_cert};
+use crate::chain::{parse_cert, CertInfo, TrustSelection};
 use crate::engine;
 use crate::error::{CertError, Result};
 use crate::graph::CrossSigningMode;
@@ -19,7 +19,7 @@ use crate::model::{
 };
 use crate::profile;
 use crate::timeparse::{CalendarDuration, Rfc3339};
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::OpenOptions;
 use std::io::Write;
@@ -38,13 +38,14 @@ Groups and verbs (spec §6.1 tree; status as built):
   ocsp     sign | inspect | test
   chain    build | test
   bundle   inspect
+  format   convert | verify
   inventory list | show | search | audit
   key      generate | inspect
   publish  plan | verify (apply | status deferred, production-gated)
   dns      plan | render | verify (offline CAA + TLSA/DANE change-sets)
   batch    validate | plan | apply | status (reviewed, all-or-nothing)
   trust    export | stage | ack | activate | retire | status
-  profile  list | show
+  profile  list | show | validate | scaffold
   algorithms list | describe | benchmark | doctor
   explain  [topic]
   doctor
@@ -236,6 +237,7 @@ fn run_inner(args: &[String]) -> Result<i32> {
         "ocsp" => ocsp_cmd(rest, json_out),
         "chain" => chain_cmd(rest, json_out),
         "bundle" => bundle_cmd(rest, json_out),
+        "format" => format_cmd(rest, json_out),
         "inventory" => inventory_cmd(rest, json_out),
         "key" => key_cmd(rest, json_out),
         "publish" => publish_cmd(rest, json_out),
@@ -839,7 +841,7 @@ fn leaf_cmd(args: &[String], json_out: bool) -> Result<i32> {
                 .collect::<Result<Vec<_>>>()?;
             let signer = signer_source(&p, "issuer-key-dir", "leaf issue")?;
             let profile_name = p.require("profile", "leaf issue")?;
-            let prof = profile::leaf_profile(&profile_name)?;
+            let prof = profile::resolve_profile(&profile_name)?;
             let name = p
                 .get("name")
                 .map(|s| s.to_string())
@@ -1530,6 +1532,59 @@ fn list_cmd(args: &[String], json_out: bool, want: BundleType) -> Result<i32> {
     Ok(emit(json_out, text, value))
 }
 
+fn format_cmd(args: &[String], json_out: bool) -> Result<i32> {
+    let verb = args.first().map(|s| s.as_str()).unwrap_or("");
+    let rest = &args[1.min(args.len())..];
+    match verb {
+        "convert" => {
+            let p = parse_args(rest, &["in", "to", "out"], &["json"])?;
+            let input = p.require("in", "format convert")?;
+            let to = crate::format::Encoding::parse(&p.require("to", "format convert")?)?;
+            let bytes = std::fs::read(&input)
+                .map_err(|e| CertError::usage(format!("cannot read {input}: {e}")))?;
+            let out = crate::format::convert(&bytes, to)?;
+            match p.get("out") {
+                Some(path) => {
+                    std::fs::write(path, &out)
+                        .map_err(|e| CertError::engine(format!("cannot write {path}: {e}")))?;
+                    Ok(emit(
+                        json_out,
+                        format!("wrote {} ({})\n", path, to.as_str()),
+                        json!({ "out": path, "format": to.as_str(), "bytes": out.len() }),
+                    ))
+                }
+                None => {
+                    use std::io::Write;
+                    std::io::stdout()
+                        .write_all(&out)
+                        .map_err(|e| CertError::engine(format!("cannot write stdout: {e}")))?;
+                    Ok(0)
+                }
+            }
+        }
+        "verify" => {
+            let p = parse_args(rest, &["in"], &["json"])?;
+            let input = p.require("in", "format verify")?;
+            let bytes = std::fs::read(&input)
+                .map_err(|e| CertError::usage(format!("cannot read {input}: {e}")))?;
+            let v = crate::format::verify(&bytes)?;
+            Ok(emit(
+                json_out,
+                format!(
+                    "{input}: well-formed X.509 certificate ({} input, {} DER bytes, sha256 {}); PEM and DER round trips match\n",
+                    v.input.as_str(),
+                    v.der_len,
+                    v.sha256
+                ),
+                json!({ "in": input, "input": v.input.as_str(), "der_bytes": v.der_len, "sha256": v.sha256 }),
+            ))
+        }
+        other => Err(CertError::usage(format!(
+            "unknown format verb '{other}' (convert | verify)"
+        ))),
+    }
+}
+
 fn san_policy_name(policy: profile::SanPolicy) -> &'static str {
     match policy {
         profile::SanPolicy::Free => "free",
@@ -1602,8 +1657,53 @@ fn profile_cmd(args: &[String], json_out: bool) -> Result<i32> {
             });
             Ok(emit(json_out, text, value))
         }
+        "scaffold" => {
+            let p = parse_args(rest, &["name", "out"], &["json"])?;
+            let name = p
+                .get("name")
+                .or_else(|| p.positional(0))
+                .ok_or_else(|| CertError::usage("profile scaffold needs --name <name>"))?;
+            let out = p.require("out", "profile scaffold")?;
+            let scaffold = profile::CustomProfile::scaffold(name);
+            scaffold.validate()?;
+            let bytes = serde_json::to_vec_pretty(&scaffold)
+                .map_err(|e| CertError::engine(e.to_string()))?;
+            use std::io::Write;
+            let mut file = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&out)
+                .map_err(|e| CertError::engine(format!("cannot create profile {out}: {e}")))?;
+            file.write_all(&bytes)
+                .map_err(|e| CertError::engine(format!("cannot write profile {out}: {e}")))?;
+            Ok(emit(
+                json_out,
+                format!("Scaffolded custom profile {name} at {out}\n"),
+                json!({"name": name, "path": out, "profile": scaffold}),
+            ))
+        }
+        "validate" => {
+            let p = parse_args(rest, &["file"], &["json"])?;
+            let path = p
+                .get("file")
+                .or_else(|| p.positional(0))
+                .ok_or_else(|| CertError::usage("profile validate needs <file>"))?;
+            let (custom, resolved) = profile::load_custom_profile(&PathBuf::from(path))?;
+            let text = format!(
+                "Valid custom profile {} (key={}, validity={}d, ceiling={}d)\n",
+                custom.name,
+                resolved.key_algorithm.name(),
+                custom.default_validity_days,
+                custom.max_validity_days
+            );
+            Ok(emit(
+                json_out,
+                text,
+                json!({"valid": true, "profile": custom}),
+            ))
+        }
         other => Err(CertError::usage(format!(
-            "unknown profile verb '{other}' (list | show)"
+            "unknown profile verb '{other}' (list | show | validate | scaffold)"
         ))),
     }
 }
@@ -1980,10 +2080,6 @@ const NOT_BUILT: &[(&str, &str)] = &[
     ),
     ("format", "format list/describe/export/convert (spec §7.5)"),
     (
-        "profile validate/scaffold",
-        "profile validation + scaffolding (spec §6.1)",
-    ),
-    (
         "root/issuer renew/rotate/replace",
         "lifecycle verbs (spec §5.2)",
     ),
@@ -2098,7 +2194,7 @@ fn doctor_cmd(_args: &[String], json_out: bool) -> Result<i32> {
         "  openssl (independent validator): {}\n",
         openssl.as_deref().unwrap_or("not found")
     ));
-    text.push_str("  built: root, issuer, leaf, key (generate/inspect/import/export public), chain, bundle (inspect), inventory (list/show/search/audit read-only), publish (plan/verify read-only), dns (plan/render/verify offline), batch (validate/plan/apply/status), profile (list/show), algorithms (list/describe/benchmark/doctor), explain, doctor\n");
+    text.push_str("  built: root, issuer, leaf, key (generate/inspect/import/export public), chain, bundle (inspect), inventory (list/show/search/audit read-only), publish (plan/verify read-only), dns (plan/render/verify offline), batch (validate/plan/apply/status), profile (list/show/validate/scaffold), algorithms (list/describe/benchmark/doctor), explain, doctor\n");
     text.push_str("  not built yet (tracked as child issues under #9157):\n");
     for (name, what) in NOT_BUILT {
         text.push_str(&format!("    {name} — {what}\n"));
@@ -2106,7 +2202,7 @@ fn doctor_cmd(_args: &[String], json_out: bool) -> Result<i32> {
     let value = json!({
         "engine_self_test": algo_results.iter().map(|(i, ok)| json!({"algorithm": i.name, "ok": ok})).collect::<Vec<_>>(),
         "openssl": openssl,
-        "built": ["root", "issuer", "leaf", "key-generate/inspect", "chain", "bundle-inspect", "inventory-list/show/search/audit", "publish-plan/verify", "dns-plan/render/verify", "batch-validate/plan/apply/status", "profile-list/show", "algorithms-list/describe/benchmark/doctor", "explain", "doctor"],
+        "built": ["root", "issuer", "leaf", "key-generate/inspect", "chain", "bundle-inspect", "inventory-list/show/search/audit", "publish-plan/verify", "dns-plan/render/verify", "batch-validate/plan/apply/status", "profile-list/show/validate/scaffold", "algorithms-list/describe/benchmark/doctor", "explain", "doctor"],
         "not_built": NOT_BUILT.iter().map(|(n, w)| json!({"surface": n, "scope": w})).collect::<Vec<_>>(),
     });
     let code = emit(json_out, text, value);
@@ -2172,41 +2268,37 @@ mod key_ceremony_tests {
         // A wrong algorithm is refused and nothing is written.
         let wrong = dir.join("wrong.pk8");
         let wrong_text = wrong.to_string_lossy().into_owned();
-        assert!(
-            key_cmd(
-                &args(&[
-                    "import",
-                    "--algorithm",
-                    "p256",
-                    "--in",
-                    &pem_text,
-                    "--out",
-                    &wrong_text
-                ]),
-                true,
-            )
-            .is_err()
-        );
+        assert!(key_cmd(
+            &args(&[
+                "import",
+                "--algorithm",
+                "p256",
+                "--in",
+                &pem_text,
+                "--out",
+                &wrong_text
+            ]),
+            true,
+        )
+        .is_err());
         assert!(!wrong.exists());
 
         // The PEM block imports as the same PKCS#8 DER, owner-only.
         let out = dir.join("imported.pk8");
         let out_text = out.to_string_lossy().into_owned();
-        assert!(
-            key_cmd(
-                &args(&[
-                    "import",
-                    "--algorithm",
-                    "ed25519",
-                    "--in",
-                    &pem_text,
-                    "--out",
-                    &out_text
-                ]),
-                true,
-            )
-            .is_ok()
-        );
+        assert!(key_cmd(
+            &args(&[
+                "import",
+                "--algorithm",
+                "ed25519",
+                "--in",
+                &pem_text,
+                "--out",
+                &out_text
+            ]),
+            true,
+        )
+        .is_ok());
         assert_eq!(std::fs::read(&out).unwrap(), der);
         #[cfg(unix)]
         {
@@ -2217,41 +2309,37 @@ mod key_ceremony_tests {
             );
         }
         // An existing destination is never replaced.
-        assert!(
-            key_cmd(
-                &args(&[
-                    "import",
-                    "--algorithm",
-                    "ed25519",
-                    "--in",
-                    &pem_text,
-                    "--out",
-                    &out_text
-                ]),
-                true,
-            )
-            .is_err()
-        );
+        assert!(key_cmd(
+            &args(&[
+                "import",
+                "--algorithm",
+                "ed25519",
+                "--in",
+                &pem_text,
+                "--out",
+                &out_text
+            ]),
+            true,
+        )
+        .is_err());
 
         // Raw DER imports too; a legacy PEM label is refused by name.
         let der_path = dir.join("external.der");
         std::fs::write(&der_path, &der).unwrap();
         let der_out = dir.join("from-der.pk8");
-        assert!(
-            key_cmd(
-                &args(&[
-                    "import",
-                    "--algorithm",
-                    "ed25519",
-                    "--in",
-                    &der_path.to_string_lossy(),
-                    "--out",
-                    &der_out.to_string_lossy(),
-                ]),
-                true,
-            )
-            .is_ok()
-        );
+        assert!(key_cmd(
+            &args(&[
+                "import",
+                "--algorithm",
+                "ed25519",
+                "--in",
+                &der_path.to_string_lossy(),
+                "--out",
+                &der_out.to_string_lossy(),
+            ]),
+            true,
+        )
+        .is_ok());
         assert_eq!(std::fs::read(&der_out).unwrap(), der);
         let legacy = dir.join("legacy.pem");
         std::fs::write(&legacy, crate::bundle::pem_encode("EC PRIVATE KEY", &der)).unwrap();
@@ -2319,21 +2407,19 @@ mod key_ceremony_tests {
         let ed_path = dir.join("ed-as-p256.pk8");
         std::fs::write(&ed_path, ed.serialize_der()).unwrap();
         let refused = dir.join("never-written.pk8");
-        assert!(
-            key_cmd(
-                &args(&[
-                    "rotate",
-                    "--algorithm",
-                    "p256",
-                    "--in",
-                    &ed_path.to_string_lossy(),
-                    "--out",
-                    &refused.to_string_lossy(),
-                ]),
-                true,
-            )
-            .is_err()
-        );
+        assert!(key_cmd(
+            &args(&[
+                "rotate",
+                "--algorithm",
+                "p256",
+                "--in",
+                &ed_path.to_string_lossy(),
+                "--out",
+                &refused.to_string_lossy(),
+            ]),
+            true,
+        )
+        .is_err());
         assert!(!refused.exists());
         std::fs::remove_dir_all(dir).expect("remove isolated test directory");
     }
@@ -2351,77 +2437,69 @@ mod key_ceremony_tests {
 
         let pem_out = dir.join("p256.pub.pem");
         let pem_text = pem_out.to_string_lossy().into_owned();
-        assert!(
-            key_cmd(
-                &args(&[
-                    "export",
-                    "--algorithm",
-                    "p256",
-                    "--in",
-                    &key_text,
-                    "--out",
-                    &pem_text
-                ]),
-                true,
-            )
-            .is_ok()
-        );
+        assert!(key_cmd(
+            &args(&[
+                "export",
+                "--algorithm",
+                "p256",
+                "--in",
+                &key_text,
+                "--out",
+                &pem_text
+            ]),
+            true,
+        )
+        .is_ok());
         let written = std::fs::read_to_string(&pem_out).unwrap();
         let blocks = pem_decode_all(&written).unwrap();
         assert_eq!(blocks, vec![("PUBLIC KEY".to_string(), spki.clone())]);
         assert!(!written.contains("PRIVATE"));
-        assert!(
-            key_cmd(
-                &args(&[
-                    "export",
-                    "--algorithm",
-                    "p256",
-                    "--in",
-                    &key_text,
-                    "--out",
-                    &pem_text
-                ]),
-                true,
-            )
-            .is_err()
-        );
+        assert!(key_cmd(
+            &args(&[
+                "export",
+                "--algorithm",
+                "p256",
+                "--in",
+                &key_text,
+                "--out",
+                &pem_text
+            ]),
+            true,
+        )
+        .is_err());
 
         let der_out = dir.join("p256.pub.der");
-        assert!(
-            key_cmd(
-                &args(&[
-                    "export",
-                    "--algorithm",
-                    "p256",
-                    "--in",
-                    &key_text,
-                    "--out",
-                    &der_out.to_string_lossy(),
-                    "--format",
-                    "der",
-                ]),
-                true,
-            )
-            .is_ok()
-        );
+        assert!(key_cmd(
+            &args(&[
+                "export",
+                "--algorithm",
+                "p256",
+                "--in",
+                &key_text,
+                "--out",
+                &der_out.to_string_lossy(),
+                "--format",
+                "der",
+            ]),
+            true,
+        )
+        .is_ok());
         assert_eq!(std::fs::read(&der_out).unwrap(), spki);
-        assert!(
-            key_cmd(
-                &args(&[
-                    "export",
-                    "--algorithm",
-                    "p256",
-                    "--in",
-                    &key_text,
-                    "--out",
-                    &dir.join("x").to_string_lossy(),
-                    "--format",
-                    "jwk",
-                ]),
-                true,
-            )
-            .is_err()
-        );
+        assert!(key_cmd(
+            &args(&[
+                "export",
+                "--algorithm",
+                "p256",
+                "--in",
+                &key_text,
+                "--out",
+                &dir.join("x").to_string_lossy(),
+                "--format",
+                "jwk",
+            ]),
+            true,
+        )
+        .is_err());
         std::fs::remove_dir_all(dir).expect("remove isolated test directory");
     }
 
@@ -2450,32 +2528,28 @@ mod key_ceremony_tests {
         let bytes = std::fs::read(&path).expect("generated PKCS#8 key");
         assert!(!bytes.is_empty());
         assert!(engine::inspect_key(AlgorithmId::P256, &bytes).is_ok());
-        assert!(
-            key_cmd(
-                &[
-                    "inspect".into(),
-                    "--algorithm".into(),
-                    "p256".into(),
-                    "--in".into(),
-                    path_text.clone(),
-                ],
-                true,
-            )
-            .is_ok()
-        );
-        assert!(
-            key_cmd(
-                &[
-                    "generate".into(),
-                    "--algorithm".into(),
-                    "p256".into(),
-                    "--out".into(),
-                    path_text,
-                ],
-                true,
-            )
-            .is_err()
-        );
+        assert!(key_cmd(
+            &[
+                "inspect".into(),
+                "--algorithm".into(),
+                "p256".into(),
+                "--in".into(),
+                path_text.clone(),
+            ],
+            true,
+        )
+        .is_ok());
+        assert!(key_cmd(
+            &[
+                "generate".into(),
+                "--algorithm".into(),
+                "p256".into(),
+                "--out".into(),
+                path_text,
+            ],
+            true,
+        )
+        .is_err());
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;

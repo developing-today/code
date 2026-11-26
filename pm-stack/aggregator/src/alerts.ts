@@ -121,9 +121,10 @@ export interface PushSubscriptionRow {
 
 /** One alerts.notification_sends ledger row (#3319): one per send
  * attempt, written by logSend; acted_on_at is stamped by the
- * exactly-once Ack transition. The insert names no timestamp column,
- * so the send time is the row's defaulted created_at; sent_at is
- * read first when a row carries one. */
+ * exactly-once Ack transition. #14419: logSend stamps sent_at
+ * explicitly in ISO-8601 UTC; legacy rows written before that carry
+ * only a defaulted created_at, which the reader normalizes (see
+ * normalizeSendTimestamp / repairLegacySendRow in notifications.ts). */
 export interface NotificationSendRow {
   class: string;
   object_ref: string;
@@ -877,12 +878,19 @@ export class AlertsStore {
     objectRef: string;
     incidentId?: string;
     outcome: "sent" | "suppressed-quiet" | "suppressed-dedupe" | "gone" | "error";
+    /** #14419: injectable for tests; defaults to now. */
+    sentAt?: string;
   }): Promise<void> {
+    // #14419: stamp sent_at explicitly in ISO-8601 UTC on every row.
+    // Relying on the created_at column default left live rows in a
+    // format the reader could not parse, so every send was excluded
+    // from the measurement roll-up.
+    const sentAt = entry.sentAt ?? new Date().toISOString();
     await this.db.query(
-      `insert into alerts.notification_sends (class, object_ref, incident_id, outcome)
+      `insert into alerts.notification_sends (class, object_ref, incident_id, outcome, sent_at)
        values (${sqlStr(entry.class)}, ${sqlStr(entry.objectRef)}, ${
          entry.incidentId ? sqlStr(entry.incidentId) : "null"
-       }, ${sqlStr(entry.outcome)})`,
+       }, ${sqlStr(entry.outcome)}, ${sqlStr(sentAt)})`,
     );
   }
 

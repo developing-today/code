@@ -453,6 +453,9 @@ async fn main() -> Result<()> {
         Some(Command::Talk { json, command }) => {
             id::commands::cmd_talk(cli.event_store, json, command).await
         }
+        Some(Command::Hosted { json, command }) => {
+            id::commands::cmd_hosted(cli.event_store, json, command).await
+        }
         Some(Command::WriterSets { json, command }) => {
             id::commands::cmd_writer_sets(cli.event_store, json, command).await
         }

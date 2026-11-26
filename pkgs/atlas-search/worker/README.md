@@ -174,8 +174,18 @@ names versions by id only. `promoteClass` moves a class to `live-cold` only
 after it appears unchanged in the two latest scheduled reports, and
 changing a class's window or floor returns it to `dry-run`. Nothing
 deletes. `POST /v1/admin/retained/report` runs an on-demand report, which
-never counts toward promotion; scheduled reports need a cron trigger that
-is not configured yet.
+never counts toward promotion.
+
+Slice 7 (`runScheduledCycle`, the `scheduled` handler and the `[triggers]`
+cron in `wrangler.toml`, every six hours at minute 17): each cron event
+stores a scheduled report under run id `scheduled-<cron time>`, then
+retires what that report lists in `live-cold` classes, at most 200 objects
+per cycle (the rest wait for the next). A repeated delivery of the same
+cron time finds its report stored and does nothing. Without a `RETAINED`
+binding the handler does nothing. `POST /v1/admin/retained/promote {class}`
+is the reviewed step that moves a class to `live-cold`; it answers 409
+`not_earned` until the class's two latest scheduled reports agree, and 404
+for an unknown class.
 
 ## Secrets (names only; set with `wrangler secret put`)
 
