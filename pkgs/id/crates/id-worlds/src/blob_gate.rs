@@ -152,7 +152,9 @@ pub fn hashseq_children(bytes: &[u8]) -> Vec<Hash> {
         return Vec::new();
     }
     bytes
-        .chunks_exact(32)
+        .as_chunks::<32>()
+        .0
+        .iter()
         .map(|chunk| {
             let mut raw = [0u8; 32];
             raw.copy_from_slice(chunk);

@@ -491,7 +491,7 @@ fn store_path_releases_do_not_grow_the_pool() {
     assert_eq!(pool.len(), 1);
     // A long stream of applied events, none of them key 9.
     for key in (0..10_000u32).filter(|key| *key != 9) {
-        assert!(pool.release(key, 0).is_empty());
+        assert_eq!(pool.release(key, 0), [] as [u32; 0]);
     }
     assert_eq!(pool.len(), 1, "releases retained state in the pool");
     // The one real dependency still releases the held event...
@@ -500,6 +500,6 @@ fn store_path_releases_do_not_grow_the_pool() {
     // ...and none of the released keys was recorded as arrived: a later
     // insert depending on one still waits for it.
     pool.insert(author_key(1), 1_000_001, [5], 2, 0).unwrap();
-    assert!(pool.take_ready().is_empty());
+    assert_eq!(pool.take_ready(), [] as [u32; 0]);
     assert_eq!(pool.len(), 1);
 }

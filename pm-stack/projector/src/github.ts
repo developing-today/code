@@ -187,18 +187,18 @@ export async function apiTokenFor(
   throw new Error(`no_github_credentials_for_${repo}`);
 }
 
-async function ghJson<T>(auth: GitHubAuth, path: string, fetchFn: typeof fetch): Promise<T> {
-  const res = await fetchFn(`https://api.github.com/${path}`, {
-    headers: {
-      authorization: `Bearer ${auth.token}`,
-      accept: "application/vnd.github+json",
-      "user-agent": "pm-projector",
-    },
-    signal: AbortSignal.timeout(GITHUB_FETCH_TIMEOUT_MS),
-  });
-  if (res.status === 404) throw new Error("not_found");
-  if (!res.ok) throw new Error(`github_api_${res.status}`);
-  return (await res.json()) as T;
+/// Non-2xx GitHub response -> the module's error (#10305 ask 2). The
+/// message stays `github_api_<status>`; when GitHub says the token's
+/// rate limit is spent (x-ratelimit-remaining: 0 with an
+/// x-ratelimit-reset epoch), the reset time is appended so a reconcile
+/// result names when the stalled streams can resume.
+export function githubApiError(res: Response): Error {
+  const base = `github_api_${res.status}`;
+  if (res.status !== 403 && res.status !== 429) return new Error(base);
+  const remaining = res.headers.get("x-ratelimit-remaining");
+  const reset = res.headers.get("x-ratelimit-reset");
+  if (remaining !== "0" || reset === null || !/^[0-9]{1,12}$/.test(reset)) return new Error(base);
+  return new Error(`${base} rate_limited reset=${new Date(Number(reset) * 1000).toISOString()}`);
 }
 
 /** Extract Link rel="next" from the Link header. */
@@ -244,7 +244,7 @@ export async function listResource<T>(
       },
       signal: AbortSignal.timeout(GITHUB_FETCH_TIMEOUT_MS),
     });
-    if (!res.ok) throw new Error(`github_api_${res.status}`);
+    if (!res.ok) throw githubApiError(res);
     const page: unknown = await res.json();
     // List endpoints return arrays; any other 200 shape is an API
     // error in disguise. Reject it in the module's vocabulary instead

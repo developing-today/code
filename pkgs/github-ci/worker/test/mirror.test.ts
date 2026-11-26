@@ -934,7 +934,7 @@ describe("mirror label history (#14170 Q5)", () => {
     expect(parseLabelSet('["user/hold","priority/high"]')).toEqual(["priority/high", "user/hold"]);
     expect(parseLabelSet(null)).toBeNull();
     expect(parseLabelSet("not json")).toBeNull();
-    expect(parseLabelSet('[1,2]')).toBeNull();
+    expect(parseLabelSet("[1,2]")).toBeNull();
   });
 
   it("oracle: labeling an issue writes one row with the exact added name and the full set", async () => {

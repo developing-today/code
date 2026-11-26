@@ -76,6 +76,7 @@ Read only in tests, test helpers, or test configuration. None affects a producti
 | `ID_TEST_FAKE_SH`                                                                                                                       | `id-worlds` compile test helper, also set by `flake.nix`; unset means the real shell.               |
 | `TERRITORY_WASM`                                                                                                                        | `id-worlds` sandbox test; unset means the test module is not loaded.                                |
 | `ORBIT_WASM`                                                                                                                            | `id-worlds` Orbit Arcade host test (ignored by default); it names the built `rust-orbit` module.    |
+| `COLONY_WASM`                                                                                                                           | `id-worlds` Colony host test (ignored by default); it names the built `rust-colony` module.         |
 | `ID_IDENTITY_PROBE_PATH`                                                                                                                | `id-web` identity tests; unset means the probe is not run.                                          |
 | `WORKER_POC_REFERENCE_OUT`                                                                                                              | Worker PoC reference test; unset means the reference JSONL is not written.                          |
 | `PROPTEST_CASES`, `PROPTEST_RNG_SEED`                                                                                                   | Property tests; unset means the proptest default case count and a random seed.                      |
@@ -292,19 +293,20 @@ Other on-disk configuration locations:
 
 These CLI defaults are configuration in effect; the flags themselves are specified in [serve and publications](cli-serve.md) and [World commands: administering and verifying](cli-worlds-admin.md).
 
-| Setting                                  | Literal default              |
-| ---------------------------------------- | ---------------------------- |
-| `--web`                                  | off                          |
-| `--port`                                 | `3000`                       |
-| `--bind`                                 | `127.0.0.1`                  |
-| `--web-token`                            | unset (no gate)              |
-| `--web-cookie-secure`                    | `false`                      |
-| `--world-name`                           | `lobby`                      |
-| `--world-checkpoint-every`               | `1000`; `0` means never trim |
-| `--world-max-open`                       | `256`                        |
-| `--world-max-sessions`                   | `1024`                       |
-| `--world-idle-secs`                      | `600`                        |
-| `--world-boot-window-secs`               | `600`                        |
-| `--world-cap-policy`                     | `deny`                       |
-| Gossip topic (hardcoded fallback)        | `id-peer-discovery-v1`       |
-| Gossip topic secret (hardcoded fallback) | `id-public-discovery-v1`     |
+| Setting                                  | Literal default                   |
+| ---------------------------------------- | --------------------------------- |
+| `--web`                                  | off                               |
+| `--port`                                 | `3000`                            |
+| `--bind`                                 | `127.0.0.1`                       |
+| `--web-token`                            | unset (no gate)                   |
+| `--web-cookie-secure`                    | `false`                           |
+| `--world-name`                           | `lobby`                           |
+| `--world-checkpoint-every`               | `1000`; `0` means never trim      |
+| `--world-max-open`                       | `256`                             |
+| `--world-max-sessions`                   | `1024`                            |
+| `--world-idle-secs`                      | `600` (`900` with `--world-host`) |
+| `--world-host`                           | `false`                           |
+| `--world-boot-window-secs`               | `600`                             |
+| `--world-cap-policy`                     | `deny`                            |
+| Gossip topic (hardcoded fallback)        | `id-peer-discovery-v1`            |
+| Gossip topic secret (hardcoded fallback) | `id-public-discovery-v1`          |

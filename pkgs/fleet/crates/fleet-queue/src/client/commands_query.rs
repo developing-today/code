@@ -10,6 +10,176 @@ use serde_json::{Map, Value, json};
 
 use super::*;
 
+fn extract_repeatable(rest: &[String], flag: &str) -> (Vec<String>, Vec<String>) {
+    let mut kept = Vec::new();
+    let mut values = Vec::new();
+    let mut i = 0;
+    while i < rest.len() {
+        if rest[i] == flag {
+            if i + 1 >= rest.len() || rest[i + 1].starts_with("--") {
+                die(2, &format!("argument {flag}: expected one argument"));
+            }
+            values.push(rest[i + 1].clone());
+            i += 2;
+        } else if let Some(value) = rest[i].strip_prefix(&format!("{flag}=")) {
+            values.push(value.to_string());
+            i += 1;
+        } else {
+            kept.push(rest[i].clone());
+            i += 1;
+        }
+    }
+    (kept, values)
+}
+
+fn parse_meta_pairs(values: &[String]) -> Result<Value, String> {
+    let mut object = serde_json::Map::new();
+    for raw in values {
+        let (key, value) = raw
+            .split_once('=')
+            .ok_or_else(|| format!("expected key=value, got {raw:?}"))?;
+        let parsed =
+            serde_json::from_str(value).unwrap_or_else(|_| Value::String(value.to_string()));
+        if object.insert(key.to_string(), parsed).is_some() {
+            return Err(format!("duplicate key {key:?}"));
+        }
+    }
+    let result = Value::Object(object);
+    crate::validate::validate_metadata(&result)?;
+    Ok(result)
+}
+
+pub(super) fn cmd_meta(rest: &[String]) -> i32 {
+    let verb = rest.first().map(String::as_str).unwrap_or("");
+    let rest = &rest[1..];
+    let args = parse_verb_args("meta", rest, &["json"], &[]);
+    if verb == "keys" {
+        if args.pos(0).is_some() || args.get("json").is_some() {
+            usage_error("meta", "meta keys takes no arguments");
+        }
+        reject_extra_pos("meta", &args, 1);
+        let resp = unwrap_ok(call("/meta", &json!({"op":"keys"})));
+        print_json(resp.get("row").unwrap_or(&Value::Null));
+        return 0;
+    }
+    match verb {
+        "get" => {
+            reject_extra_pos("meta", &args, 2);
+            let id = args.pos_i64(0, "task_id");
+            let mut req = json!({"op":"get","task_id":id});
+            if let Some(key) = args.pos(1) {
+                req["key"] = json!(key);
+            }
+            let resp = unwrap_ok(call("/meta", &req));
+            print_json(resp.get("row").unwrap_or(&Value::Null));
+        }
+        "set" => {
+            if let Some(raw) = args.get("json") {
+                reject_extra_pos("meta", &args, 1);
+                let patch: Value = serde_json::from_str(&raw)
+                    .unwrap_or_else(|e| die(2, &format!("meta set --json: invalid JSON: {e}")));
+                if !patch.is_object() {
+                    die(2, "meta set --json: expected a JSON object");
+                }
+                if let Err(e) = crate::validate::validate_metadata_patch(&patch) {
+                    die(2, &e);
+                }
+                let id = args.pos_i64(0, "task_id");
+                let resp = unwrap_ok(call(
+                    "/meta",
+                    &json!({"op":"set","task_id":id,"patch":patch}),
+                ));
+                print_json(resp.get("row").unwrap_or(&Value::Null));
+            } else {
+                reject_extra_pos("meta", &args, 3);
+                let id = args.pos_i64(0, "task_id");
+                let key = args
+                    .pos(1)
+                    .unwrap_or_else(|| die(2, "meta set: key required"));
+                let raw = args
+                    .pos(2)
+                    .unwrap_or_else(|| die(2, "meta set: JSON value required"));
+                let value: Value = serde_json::from_str(&raw)
+                    .unwrap_or_else(|e| die(2, &format!("meta set: invalid JSON value: {e}")));
+                let mut patch = serde_json::Map::new();
+                patch.insert(key, value);
+                let patch = Value::Object(patch);
+                if let Err(e) = crate::validate::validate_metadata_patch(&patch) {
+                    die(2, &e);
+                }
+                let resp = unwrap_ok(call(
+                    "/meta",
+                    &json!({"op":"set","task_id":id,"patch":patch}),
+                ));
+                print_json(resp.get("row").unwrap_or(&Value::Null));
+            }
+        }
+        "unset" => {
+            reject_extra_pos("meta", &args, 2);
+            let id = args.pos_i64(0, "task_id");
+            let key = args
+                .pos(1)
+                .unwrap_or_else(|| die(2, "meta unset: key required"));
+            let resp = unwrap_ok(call("/meta", &json!({"op":"unset","task_id":id,"key":key})));
+            print_json(resp.get("row").unwrap_or(&Value::Null));
+        }
+        _ => die(
+            2,
+            &format!("meta: expected get, set, unset, or keys\n{}", usage("meta")),
+        ),
+    }
+    0
+}
+
+/// Stewardship staleness read (#14170 Q8): one broker call returns the
+/// actionable tasks whose last history transition is older than the
+/// threshold plus the claims near their lease cap.
+pub(super) fn cmd_staleness(rest: &[String]) -> i32 {
+    let args = parse_verb_args(
+        "staleness",
+        rest,
+        &["queue", "older-than-seconds", "lease-cap-seconds", "limit"],
+        &[],
+    );
+    reject_extra_pos("staleness", &args, 0);
+    let mut req = json!({});
+    if let Some(q) = args.get("queue") {
+        req["queue"] = json!(q);
+    }
+    if let Some(v) = args.get_i64("older-than-seconds") {
+        req["older_than_seconds"] = json!(v);
+    }
+    if let Some(v) = args.get_i64("lease-cap-seconds") {
+        req["lease_cap_seconds"] = json!(v);
+    }
+    if let Some(v) = args.get_i64("limit") {
+        req["limit"] = json!(v);
+    }
+    let resp = unwrap_ok(call("/staleness", &req));
+    print_json(&resp);
+    0
+}
+
+/// Stewardship needs-user read (#14170 Q8): blocked/parked tasks with an
+/// open `question` metadata entry, oldest first.
+pub(super) fn cmd_needs_user(rest: &[String]) -> i32 {
+    let args = parse_verb_args("needs-user", rest, &["queue", "state", "limit"], &[]);
+    reject_extra_pos("needs-user", &args, 0);
+    let mut req = json!({});
+    if let Some(q) = args.get("queue") {
+        req["queue"] = json!(q);
+    }
+    if let Some(s) = args.get("state") {
+        req["state"] = json!(s);
+    }
+    if let Some(v) = args.get_i64("limit") {
+        req["limit"] = json!(v);
+    }
+    let resp = unwrap_ok(call("/needs-user", &req));
+    print_json(&resp);
+    0
+}
+
 pub(super) fn cmd_validate(rest: &[String]) -> i32 {
     let args = parse_verb_args("validate", rest, &[], &[]);
     reject_extra_pos("validate", &args, 1);
@@ -60,10 +230,15 @@ pub(super) fn resolve_enqueue_queue(
 }
 
 pub(super) fn cmd_enqueue(rest: &[String]) -> i32 {
+    let (rest, meta_args) = extract_repeatable(rest, "--meta");
+    let metadata = match parse_meta_pairs(&meta_args) {
+        Ok(value) => value,
+        Err(e) => die(2, &format!("enqueue --meta: {e}")),
+    };
     let args = parse_verb_args(
         "enqueue",
-        rest,
-        &["queue", "platform"],
+        &rest,
+        &["queue", "platform", "meta"],
         &["dry-run", "shadow-intent"],
     );
     reject_extra_pos("enqueue", &args, 1);
@@ -108,7 +283,7 @@ pub(super) fn cmd_enqueue(rest: &[String]) -> i32 {
         "/enqueue",
         &json!({
             "packet": packet, "queue": queue, "dry_run": dry_run,
-            "shadow_intent": shadow_intent, "platform": platform,
+            "shadow_intent": shadow_intent, "platform": platform, "metadata": metadata,
         }),
     );
     let resp = unwrap_ok(resp);
@@ -149,6 +324,30 @@ pub(super) fn cmd_enqueue(rest: &[String]) -> i32 {
             fmt_cell(Some(&tid)),
             fmt_cell(c.get("identity")),
         );
+        if q != queue {
+            warnings.push(format!(
+                "the holding task is in a different queue ({q} != requested {queue})"
+            ));
+        }
+    } else if let Some(m) = resp.get("dedupe_match") {
+        // #10627: the broker absorbed the filing into the task that
+        // already holds this dedupe key and filed nothing. A
+        // terminal match is the dangerous one — the key's work is
+        // complete, so the caller must suffix the key to file the
+        // work again; say that instead of the generic dedupe line
+        // the timestamp heuristics below would produce.
+        if m.get("rule").and_then(|v| v.as_str()) == Some("dedupe_key_terminal") {
+            line = format!(
+                "not filed: dedupe key already belongs to completed task {} (queue {q}, status {s}); \
+                 suffix the dedupe key to file this work again, or set payload.dedupe_override for a deliberate parallel",
+                fmt_cell(Some(&tid)),
+            );
+        } else {
+            line = format!(
+                "dedupe hit: existing task {} (queue {q}, status {s}) already holds this dedupe key; nothing filed",
+                fmt_cell(Some(&tid)),
+            );
+        }
         if q != queue {
             warnings.push(format!(
                 "the holding task is in a different queue ({q} != requested {queue})"
@@ -196,7 +395,18 @@ pub(super) fn cmd_enqueue(rest: &[String]) -> i32 {
     for w in &warnings {
         println!("warning: {w}");
     }
-    print_json(&row);
+    // #10627: carry the broker's absorption report into the printed
+    // JSON — the bare row alone reads as a fresh filing to a machine
+    // consumer, which is how terminal dedupe returns stranded work.
+    let mut printed = row;
+    if let Some(o) = printed.as_object_mut() {
+        for key in ["dedupe_match", "work_identity_collision"] {
+            if let Some(v) = resp.get(key) {
+                o.insert(key.to_string(), v.clone());
+            }
+        }
+    }
+    print_json(&printed);
     0
 }
 
@@ -208,7 +418,15 @@ pub(super) fn list_row_cells(r: &Value) -> Vec<String> {
     vec![
         format!("task {}", fmt_cell(r.get("id"))),
         fmt_cell(r.get("priority")),
-        fmt_cell(r.get("status")),
+        format!(
+            "{}{}",
+            fmt_cell(r.get("status")),
+            if r.get("manual_only").and_then(Value::as_bool) == Some(true) {
+                " (manual-only)"
+            } else {
+                ""
+            }
+        ),
         age_str(&r.get("created_at").cloned().unwrap_or(Value::Null)),
         fmt_cell(r.get("dedupe_key")),
         truncate(&fmt_cell(r.get("title")), 72),
@@ -243,9 +461,14 @@ pub(crate) fn bare_list_note(args: &Args, resolved_queue: Option<&str>) -> Optio
 }
 
 pub(super) fn cmd_list(rest: &[String]) -> i32 {
+    let (rest, meta_args) = extract_repeatable(rest, "--meta");
+    let metadata_filter = match parse_meta_pairs(&meta_args) {
+        Ok(value) => value,
+        Err(e) => die(2, &format!("list --meta: {e}")),
+    };
     let args = parse_verb_args(
         "list",
-        rest,
+        &rest,
         &[
             "queue",
             "status",
@@ -254,6 +477,7 @@ pub(super) fn cmd_list(rest: &[String]) -> i32 {
             "lane",
             "worker",
             "task",
+            "meta",
             "label",
         ],
         &["json"],
@@ -264,6 +488,12 @@ pub(super) fn cmd_list(rest: &[String]) -> i32 {
     // is a different read, not a rendering of this listing — one
     // scoped broker read, one JSON record, no paging.
     if args.has("json") {
+        if !metadata_filter.as_object().is_some_and(|m| m.is_empty()) {
+            usage_error("list", "--json exact status does not support --meta");
+        }
+        if args.get("label").is_some() {
+            usage_error("list", "--json exact status does not support --label");
+        }
         return cmd_list_exact_status(&args, queue);
     }
     if let Some(note) = bare_list_note(&args, queue.as_deref()) {
@@ -305,6 +535,7 @@ pub(super) fn cmd_list(rest: &[String]) -> i32 {
                 "lane": args.get("lane"),
                 "worker": args.get("worker"),
                 "task": args.get_i64("task"),
+                "meta": metadata_filter.clone(),
                 "label": args.get("label"),
             }),
         );
@@ -394,6 +625,7 @@ pub(super) fn cmd_show(rest: &[String]) -> i32 {
         "reprioritize_sync_pending",
         "failed",
         "cancelled",
+        "suspect_completion",
     ] {
         let response = call(
             "/events-list",
@@ -978,6 +1210,7 @@ pub(super) fn cmd_timeline(verb: &str, rest: &[String]) -> i32 {
         "reprioritize_sync_pending",
         "failed",
         "cancelled",
+        "suspect_completion",
     ] {
         let resp = call(
             "/events-list",
@@ -1015,7 +1248,9 @@ pub(super) fn cmd_timeline(verb: &str, rest: &[String]) -> i32 {
     let json_out = args.has("json");
     if events.is_empty() && notes.is_empty() {
         if json_out {
-            print_json(&json!({"task_id": task_id, "events": [], "notes": [], "story": [], "served": []}));
+            print_json(
+                &json!({"task_id": task_id, "events": [], "notes": [], "story": [], "served": []}),
+            );
             return 0;
         }
         println!("task {task_id}: no timeline records");
@@ -1894,4 +2129,146 @@ fn cmd_note_remove(rest: &[String]) -> i32 {
     let resp = unwrap_ok(call("/note-remove", &body));
     print_json(&require_row(&resp, "note_remove"));
     0
+}
+
+/// Queue relationship management backed by normalized queue_links.
+pub(super) fn cmd_link(rest: &[String]) -> i32 {
+    if rest.is_empty() || is_help_arg(&rest[0]) {
+        println!("{}", usage("link"));
+        return if rest.is_empty() { 2 } else { 0 };
+    }
+    let (subcommand, rest) = rest.split_first().expect("link subcommand is present");
+    if is_help_arg(subcommand) {
+        println!("{}", usage("link"));
+        return 0;
+    }
+    match subcommand.as_str() {
+        "add" => cmd_link_add(rest),
+        "remove" => cmd_link_remove(rest),
+        "list" => {
+            let parsed = parse_verb_args("link list", rest, &[], &["include-removed", "json"]);
+            reject_extra_pos("link list", &parsed, 1);
+            let task_id = parsed.pos_i64(0, "task_id");
+            let resp = unwrap_ok(call(
+                "/link-list",
+                &json!({
+                    "task_id": task_id,
+                    "include_removed": parsed.has("include-removed"),
+                }),
+            ));
+            if parsed.has("json") {
+                print_json(&resp);
+            } else {
+                println!(
+                    "{}",
+                    resp.get("links").cloned().unwrap_or_else(|| json!([]))
+                );
+            }
+            0
+        }
+        sub => {
+            eprint(&format!(
+                "repo-queue: unknown link command {sub:?}\n{}",
+                usage("link")
+            ));
+            2
+        }
+    }
+}
+
+fn cmd_link_add(rest: &[String]) -> i32 {
+    let verb = "link add";
+    let args = parse_verb_args(
+        "link add",
+        rest,
+        &["worker", "kind", "issue", "pr", "task"],
+        &[],
+    );
+    reject_extra_pos(verb, &args, 1);
+    finish_link_change(
+        verb,
+        true,
+        args.pos_i64(0, "task_id"),
+        opt_worker(&args),
+        args.get("kind"),
+        args.get("issue"),
+        args.get("pr"),
+        args.get("task"),
+    )
+}
+
+fn cmd_link_remove(rest: &[String]) -> i32 {
+    let verb = "link remove";
+    let args = parse_verb_args(
+        "link remove",
+        rest,
+        &["worker", "kind", "issue", "pr", "task"],
+        &[],
+    );
+    reject_extra_pos(verb, &args, 1);
+    finish_link_change(
+        verb,
+        false,
+        args.pos_i64(0, "task_id"),
+        opt_worker(&args),
+        args.get("kind"),
+        args.get("issue"),
+        args.get("pr"),
+        args.get("task"),
+    )
+}
+
+fn finish_link_change(
+    verb: &str,
+    add: bool,
+    task_id: i64,
+    worker: String,
+    link_kind: Option<String>,
+    issue: Option<String>,
+    pr: Option<String>,
+    other_task: Option<String>,
+) -> i32 {
+    let target_count = [issue.is_some(), pr.is_some(), other_task.is_some()]
+        .into_iter()
+        .filter(|present| *present)
+        .count();
+    if target_count != 1 {
+        die(
+            2,
+            &format!("{verb}: exactly one of --issue, --pr, or --task is required"),
+        );
+    }
+    let mut body = json!({
+        "task_id": task_id,
+        "worker": worker,
+        "link_kind": link_kind.unwrap_or_else(|| "related".to_owned()),
+    });
+    if let Some(issue) = issue {
+        let (repo, number) = parse_link_target(&issue, "issue");
+        body["other_issue"] = json!({"repo": repo, "number": number});
+    } else if let Some(pr) = pr {
+        let (repo, number) = parse_link_target(&pr, "pr");
+        body["other_pr"] = json!({"repo": repo, "number": number});
+    } else if let Some(task) = other_task {
+        body["other_task_id"] = json!(
+            task.parse::<i64>()
+                .unwrap_or_else(|_| die(2, "link: --task must be a positive integer"))
+        );
+    }
+    let path = if add { "/link-add" } else { "/link-remove" };
+    print_json(&unwrap_ok(call(path, &body)));
+    0
+}
+
+fn parse_link_target(value: &str, label: &str) -> (String, i64) {
+    let Some((repo, number)) = value.rsplit_once('#') else {
+        die(2, &format!("link: --{label} must be owner/repo#number"));
+    };
+    let number = number
+        .parse::<i64>()
+        .unwrap_or_else(|_| die(2, &format!("link: --{label} number must be positive")));
+    if repo.split('/').count() != 2 || repo.split('/').any(str::is_empty) || number <= 0 {
+        die(2, &format!("link: --{label} must be owner/repo#number"));
+    }
+    (repo.to_owned(), number)
 }

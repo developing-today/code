@@ -12,7 +12,11 @@
 //!
 //! - This crate is §3 (query translation) and the §10 property/model
 //!   tests over it. Slice #13760.
-//! - Typed mapping of response values (§5.1) is #13761. The error
+//! - Typed mapping of response values (§5.1) is the `mapping` module
+//!   from #13761: a [`TypedDecoder`] reads each page under the owner's
+//!   declared column types ([`PgType`]), keeps JSON numbers as text until
+//!   the declared type is known, and names a mismatch by column and type
+//!   but never by value. The error
 //!   mapping and grantee collapse of *source* errors (§6) is
 //!   [`Failure::to_error`] from #13762: every refusal, HTTP status,
 //!   deadline, and mapping failure becomes a stable [`ErrorCode`], and a
@@ -58,6 +62,8 @@
 
 mod allowlist;
 mod error;
+mod json;
+mod mapping;
 mod query;
 mod read;
 mod refusal;
@@ -67,6 +73,10 @@ mod value;
 
 pub use allowlist::{CollectionAllowlist, ColumnDecl, DEFAULT_MAX_LIMIT};
 pub use error::{AdapterError, Audience, ErrorCode, Failure, classify_response};
+pub use mapping::{
+    FieldShape, JsonShape, MAPPING_VERSION, MappedValue, PgType, TYPE_DATE, TYPE_INTERVAL,
+    TYPE_JSON, TYPE_JSONB, TYPE_NUMERIC, TYPE_TIME, TYPE_TIMETZ, TypedDecoder, TypedRow,
+};
 pub use query::{
     CountPref, Direction, FilterExpr, FilterLeaf, FilterOp, Method, OrderKey, Pagination, Query,
     SelectItem, Target,

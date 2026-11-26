@@ -64,6 +64,9 @@ pub fn run(args: &[String]) -> i32 {
     match sub {
         "validate" => cmd_validate(rest),
         "enqueue" => cmd_enqueue(rest),
+        "meta" => cmd_meta(rest),
+        "staleness" => cmd_staleness(rest),
+        "needs-user" => cmd_needs_user(rest),
         "list" => cmd_list(rest),
         "claim" => cmd_claim(rest),
         "release" => cmd_release(rest),
@@ -89,6 +92,7 @@ pub fn run(args: &[String]) -> i32 {
         "history" => cmd_timeline("history", rest),
         "show" => cmd_show(rest),
         "note" => cmd_note(rest),
+        "link" => cmd_link(rest),
         "models" => cmd_models(rest),
         "health" => cmd_health(rest),
         "signal" => cmd_signal(rest),
@@ -156,6 +160,19 @@ pub fn guard_rows(limit: i64) -> Result<Vec<Value>, String> {
 mod tests {
     use super::*;
     use proptest::prelude::*;
+
+    #[test]
+    fn list_marks_manual_only_rows_9178() {
+        let cells = list_row_cells(&json!({
+            "id": 7,
+            "priority": 10,
+            "status": "queued",
+            "manual_only": true,
+            "created_at": "2026-11-25T00:00:00Z",
+            "title": "manual item",
+        }));
+        assert_eq!(cells[2], "queued (manual-only)");
+    }
 
     #[test]
     fn execution_lane_split_7598() {
@@ -250,6 +267,42 @@ mod tests {
         assert!(
             show_seg.contains("\"staleness_autocomplete\""),
             "cmd_show queries staleness_autocomplete so retirements are visible"
+        );
+    }
+
+    #[test]
+    fn show_and_timeline_surface_suspect_completions_14268() {
+        // #14268 ask 2: the broker stamps a suspect completion and
+        // writes a suspect_completion event, but that only surfaces
+        // if the read paths query the kind — the same blind-spot
+        // shape as #6985 and the staleness_autocomplete half of
+        // #14292. Both per-task surfaces must ask for it.
+        let src = [
+            include_str!("client/transport.rs"),
+            include_str!("client/support.rs"),
+            include_str!("client/commands_query.rs"),
+            include_str!("client/commands_lifecycle.rs"),
+            include_str!("client/fallback_stack.rs"),
+            include_str!("client.rs"),
+        ]
+        .concat();
+        let show = src
+            .split("fn cmd_show(")
+            .nth(1)
+            .and_then(|s| s.split("fn cmd_timeline(").next())
+            .unwrap_or("");
+        assert!(
+            show.contains("\"suspect_completion\""),
+            "cmd_show queries suspect_completion so a suspect completion is visible in a task's history"
+        );
+        let timeline = src
+            .split("fn cmd_timeline(")
+            .nth(1)
+            .and_then(|s| s.split("let resp = call(").next())
+            .unwrap_or("");
+        assert!(
+            timeline.contains("\"suspect_completion\""),
+            "cmd_timeline queries suspect_completion so a suspect completion is visible on the timeline"
         );
     }
 

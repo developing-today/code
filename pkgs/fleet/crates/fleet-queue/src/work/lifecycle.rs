@@ -713,9 +713,10 @@ pub fn claim_eligibility(req: &ClaimRequest<'_>, cand: &ClaimCandidate<'_>) -> C
         },
         ClaimPath::Automatic => {
             // FDR-0004: unconditional — priority, age, lane, queue
-            // depth and Do Now do not change it. Today the field does
-            // not exist, so nothing excludes the row.
-            if fdr && cand.manual_only {
+            // depth and Do Now do not change it. The flag is a
+            // persisted claim exclusion, so every automatic picker
+            // observes it regardless of the request contract version.
+            if cand.manual_only {
                 return Refused(R::ManualOnly);
             }
             // The claimer's filter is a pick-time predicate only.
@@ -1289,14 +1290,14 @@ mod tests {
             let by_id = request(ClaimContract::Fdr9178, ClaimPath::ById { owner_override });
             assert_eq!(claim_eligibility(&by_id, &manual), eligible(false));
         }
-        // Today the field does not exist: nothing excludes the row
-        // (the gap #9178 §4 closes).
+        // The persisted exclusion applies to legacy as well as current
+        // request contracts; no automatic picker may select the row.
         assert_eq!(
             claim_eligibility(
                 &request(ClaimContract::Current, ClaimPath::Automatic),
                 &manual
             ),
-            eligible(false)
+            ClaimEligibility::Refused(ClaimRefusal::ManualOnly)
         );
         // Do Now never changes any door's answer on any row shape.
         let shapes = [

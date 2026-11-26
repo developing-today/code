@@ -13,37 +13,44 @@
 // metadata DB behind the store interfaces and #12583's deploy.
 
 import type { AuthDeps } from "./auth.ts";
-import { FixtureBackfillRunStore } from "./backfill.ts";
+import { FixtureBackfillRunStore, type BackfillRunStore } from "./backfill.ts";
 import { BindingBridgeSurface } from "./bridge.ts";
 import { configFromEnv, type HostedConfig, type HostedEnv } from "./config.ts";
 import { AppRotationGitHubWriter, FixtureGitHubWriter } from "./github.ts";
 import { ingestionDepsFrom, runIngestionSweep } from "./ingestion.ts";
 import { LibSQLQueueStore, type SyncSqlDb } from "./libsql-queue-store.ts";
 import { openHranaQueueStore } from "./libsql-hrana-queue-store.ts";
+import { openD1QueueStore } from "./d1-queue-store.ts";
+import { openD1BackfillRunStore, openD1MetadataStore } from "./d1-metadata-stores.ts";
+import { openD1SessionRegistry } from "./d1-session-registry.ts";
+import { r2KvBlobBucket } from "./kv-blobs.ts";
+import { HttpKvPrimary, type KvPrimary } from "./kv-door.ts";
 import { FixtureQueueStore, type QueueStore } from "./queue-store.ts";
 import { StoreQueueRecordSource } from "./queue-records.ts";
 import { dispatch } from "./router.ts";
-import { FixtureSessionRegistry } from "./sessions.ts";
-import { FixtureMetadataStore } from "./stamping.ts";
+import { FixtureSessionRegistry, type SessionRegistry } from "./sessions.ts";
+import { FixtureMetadataStore, type MetadataStore } from "./stamping.ts";
 
-// Session registry seam (#12584): the record's production home is
-// the fleet metadata DB's session table (#9074's DB, design §4.2),
-// behind the SessionRegistry interface in src/sessions.ts. Until that
-// DB lands, the Worker holds one fixture instance at module scope —
-// its state lives for the isolate's lifetime, which is the local /
-// dev semantics this slice targets; a DB-backed registry replaces
-// it here without touching a route.
+// Session registry seam (#12584), behind the SessionRegistry
+// interface in src/sessions.ts. With the QUEUE_D1 binding present,
+// buildDeps resolves D1SessionRegistry (src/d1-session-registry.ts):
+// the fleet_sessions table in that bound database, so records
+// outlive the isolate. Without it, the Worker holds this one fixture
+// instance at module scope — its state lives for the isolate's
+// lifetime, the local / dev semantics.
 const sessions = new FixtureSessionRegistry();
 
-// Metadata store seam (#12585): same fixture posture as the session
-// registry — the production home is #9074's metadata DB, behind the
-// MetadataStore interface in src/stamping.ts.
+// Metadata store seam (#12585), behind the MetadataStore interface
+// in src/stamping.ts. With the QUEUE_D1 binding present, buildDeps
+// resolves D1MetadataStore (src/d1-metadata-stores.ts, #15456); this
+// fixture is the unbound fallback.
 const metadataStore = new FixtureMetadataStore();
 
 // Backfill run store seam (#14312): the ingestion door's record of
 // backfill runs, behind the BackfillRunStore interface in
-// src/backfill.ts — same fixture posture as the other seams, with
-// #9074's metadata DB as its production home.
+// src/backfill.ts. With the QUEUE_D1 binding present, buildDeps
+// resolves D1BackfillRunStore (#15456); this fixture is the unbound
+// fallback.
 const backfillRuns = new FixtureBackfillRunStore();
 
 // Queue store seam (#12589): the queue door's backend, behind the
@@ -52,7 +59,9 @@ const backfillRuns = new FixtureBackfillRunStore();
 // the native broker serves — reached through LibSQLQueueStore (the
 // same interface, no second queue, no schema fork); until it lands,
 // one fixture store at module scope, with the isolate-lifetime
-// semantics of the other seams.
+// semantics of the other seams. The #14866 move adds the D1 home:
+// when the QUEUE_D1 binding is present, buildDeps resolves
+// D1QueueStore over the same schema instead (see below).
 const queueStore = new FixtureQueueStore();
 
 /** The file → connection opener the libSQL queue door needs: it
@@ -100,9 +109,23 @@ const queueRecords = new StoreQueueRecordSource(queueStore, sessions);
  * tests); without it the fixture store stands in. */
 export function buildDeps(env: HostedEnv, opener?: QueueSqlOpener): AuthDeps {
   const config = configFromEnv(env);
-  const resolvedQueueStore = queueStoreFor(config, opener);
+  // Queue backend selection (#14866): a bound D1 database wins over
+  // the Turso/libSQL backends \u2014 the binding's presence is the
+  // operator's explicit Cloudflare-first choice, and no deployment
+  // binds it yet, so existing shapes are unchanged until one does.
+  const resolvedQueueStore = env.QUEUE_D1 ? openD1QueueStore(env.QUEUE_D1) : queueStoreFor(config, opener);
+  // Session registry selection (#12584): the same bound D1
+  // database holds the fleet_sessions table; absent the binding,
+  // the module fixture stands in.
+  const resolvedSessions: SessionRegistry = env.QUEUE_D1 ? openD1SessionRegistry(env.QUEUE_D1) : sessions;
+  // The metadata and backfill run stores follow the same binding
+  // (#15456): fleet_metadata and fleet_backfill_runs in that database.
+  const resolvedMetadataStore: MetadataStore = env.QUEUE_D1 ? openD1MetadataStore(env.QUEUE_D1) : metadataStore;
+  const resolvedBackfillRuns: BackfillRunStore = env.QUEUE_D1 ? openD1BackfillRunStore(env.QUEUE_D1) : backfillRuns;
   const resolvedQueueRecords =
-    resolvedQueueStore === queueStore ? queueRecords : new StoreQueueRecordSource(resolvedQueueStore, sessions);
+    resolvedQueueStore === queueStore && resolvedSessions === sessions
+      ? queueRecords
+      : new StoreQueueRecordSource(resolvedQueueStore, resolvedSessions);
   // The hosted rotation point (#12585): with fleet App material
   // configured, GitHub writes go through the App installation-token
   // rotation; without it, the fixture writer stands in (local/dev
@@ -121,10 +144,11 @@ export function buildDeps(env: HostedEnv, opener?: QueueSqlOpener): AuthDeps {
   // API and the console share one send path. Absent the binding or
   // the credential, the door fails closed (503) per request.
   const bridge = config.bridge && env.BRIDGE ? new BindingBridgeSurface(env.BRIDGE, config.bridge.token) : undefined;
+  const kvPrimary = kvPrimaryFor(config);
   return {
     config,
-    sessions,
-    metadataStore,
+    sessions: resolvedSessions,
+    metadataStore: resolvedMetadataStore,
     githubWriter,
     githubItems: githubWriter,
     queueRecords: resolvedQueueRecords,
@@ -132,9 +156,30 @@ export function buildDeps(env: HostedEnv, opener?: QueueSqlOpener): AuthDeps {
     githubComments: githubWriter,
     githubEditor: githubWriter,
     githubProjects: githubWriter,
-    backfillRunStore: backfillRuns,
+    backfillRunStore: resolvedBackfillRuns,
     ...(bridge ? { bridge } : {}),
+    ...(kvPrimary ? { kvPrimary } : {}),
+    ...(env.KV_BLOBS ? { kvBlobs: r2KvBlobBucket(env.KV_BLOBS) } : {}),
+    ...(env.KV_BLOB_CAPABILITY_KEY ? { kvBlobCapabilityKey: env.KV_BLOB_CAPABILITY_KEY } : {}),
   };
+}
+
+// The fleet-kv central primary (#13316): one client per configured
+// URL for the isolate's lifetime, so the door's once-per-isolate
+// schema migration (src/kv-door.ts) is not repeated per request.
+const kvPrimaries = new Map<string, KvPrimary>();
+
+/** The kv door's primary for one configuration, or undefined when no
+ *  KV_LIBSQL_URL is set (the door then fails closed with 503). */
+export function kvPrimaryFor(config: Pick<HostedConfig, "kvLibsqlUrl" | "kvLibsqlAuthToken">): KvPrimary | undefined {
+  if (!config.kvLibsqlUrl) return undefined;
+  const key = JSON.stringify([config.kvLibsqlUrl, config.kvLibsqlAuthToken]);
+  let primary = kvPrimaries.get(key);
+  if (!primary) {
+    primary = new HttpKvPrimary(config.kvLibsqlUrl, config.kvLibsqlAuthToken);
+    kvPrimaries.set(key, primary);
+  }
+  return primary;
 }
 
 /** The scheduled invocation's context slice this module uses. */

@@ -81,6 +81,7 @@ mod ingest;
 pub mod range;
 mod resolve;
 pub mod sync;
+mod threads;
 mod validity;
 mod waiting_rows;
 mod writer_set;
@@ -789,16 +790,20 @@ impl EventStore {
     /// Pruned events are removed from event storage (events, hashes, groups, actions, applied)
     /// while keeping chain and index consistency and avoiding corrupting active backlink walks.
     ///
-    /// A store that holds compacted residue (#3797) is refused, changing nothing:
-    /// prune erases presence and compaction preserves it, and the two are not
-    /// composed yet (#13401). The walks and the chain rewrite below are built
-    /// from stored events only, so over residue a prune would silently
-    /// under-erase and drop chain rows below live residue positions.
+    /// Compacted residue (#3797) takes part like a stored event (#13401,
+    /// Option A). A residue position is a node of the causal graph with the
+    /// edges its residue row records (its backlink and its `after`
+    /// frontier), so the walks see the same graph they would have seen
+    /// before compaction. A residue behind the cut that nothing protects is
+    /// erased with its `compacted`, `hashes` and `applied` rows; the
+    /// presence compaction preserved goes exactly where a stored event's
+    /// would. The chain rewrite counts surviving residue positions as
+    /// applied, so a chain whose surviving prefix ends at a residue keeps
+    /// that residue as its head.
     ///
     /// # Errors
     ///
-    /// Returns [`StoreError::PruneOverResidue`] if the store holds any compacted
-    /// residue, a redb error if the write transaction fails, or
+    /// Returns a redb error if the write transaction fails, or
     /// [`StoreError::Corrupt`].
     pub fn prune_behind_cut(
         &mut self,
@@ -812,15 +817,13 @@ impl EventStore {
             return Ok(0);
         }
 
-        // The composition guard (#13401): refuse a store that holds any
-        // compacted residue, before anything is written. See the doc above.
-        {
+        // Residue rows are read before the write transaction: a store that
+        // was never compacted may not have the table, and opening it for
+        // write would create it (#13401).
+        let residue = {
             let read = self.db.begin_read()?;
-            let residue = compaction::load_residue_read(&read)?;
-            if !residue.is_empty() {
-                return Err(StoreError::PruneOverResidue(residue.len()));
-            }
-        }
+            compaction::load_residue_read(&read)?
+        };
 
         let txn = self.db.begin_write()?;
         let (events_by_id, to_prune) = {
@@ -833,6 +836,7 @@ impl EventStore {
                 parents: Vec<Hash>,
                 group: Option<Hash>,
                 has_action: bool,
+                compacted: bool,
                 position: [u8; POSITION_LEN],
             }
 
@@ -889,7 +893,30 @@ impl EventStore {
                         parents,
                         group: event.header.extensions.group,
                         has_action,
+                        compacted: false,
                         position,
+                    },
+                );
+            }
+            // A compacted event is still a node of the causal graph: its
+            // residue keeps its backlink and `after` edges. Compaction only
+            // compacts events with no group row, membership action or
+            // device operation, so a residue has none to erase (#13401).
+            for item in &residue {
+                let mut parents = item.after.clone();
+                if let Some(backlink) = item.backlink {
+                    parents.push(backlink);
+                }
+                events_by_id.insert(
+                    item.id,
+                    StoredMeta {
+                        author: item.author,
+                        seq: item.seq,
+                        parents,
+                        group: None,
+                        has_action: false,
+                        compacted: true,
+                        position: position_key(&item.author, item.seq),
                     },
                 );
             }
@@ -962,10 +989,25 @@ impl EventStore {
             let mut actions_table = txn.open_table(ACTIONS)?;
             let mut device_ops_table = txn.open_table(DEVICE_OPS)?;
             let mut applied_table = txn.open_table(APPLIED)?;
+            let mut compacted_table = if residue.is_empty() {
+                None
+            } else {
+                Some(txn.open_table(COMPACTED)?)
+            };
 
             for id in &to_prune {
                 if let Some(meta) = events_by_id.get(id) {
                     affected_authors.insert(meta.author);
+                    if meta.compacted {
+                        // A residue's bytes are already gone; its presence
+                        // rows go now (#13401).
+                        if let Some(table) = compacted_table.as_mut() {
+                            table.remove(meta.position.as_slice())?;
+                        }
+                        hashes_table.remove(id.as_bytes().as_slice())?;
+                        applied_table.remove(id.as_bytes().as_slice())?;
+                        continue;
+                    }
                     events_table.remove(meta.position.as_slice())?;
                     hashes_table.remove(id.as_bytes().as_slice())?;
                     if let Some(group) = meta.group {
@@ -1790,6 +1832,7 @@ mod tests {
             rotation: None,
             chat: None,
             anchor: None,
+            thread: None,
         }
     }
 
@@ -1818,7 +1861,7 @@ mod tests {
         let (_dir, store) = open_temp();
         for n in 0u64..(MAX_ROSTER_CACHE_ENTRIES as u64 + 64) {
             let group = Hash::digest(n.to_be_bytes());
-            assert!(store.roster(&group).unwrap().is_empty());
+            assert_eq!(store.roster(&group).unwrap(), [] as [[u8; 32]; 0]);
             assert!(store.roster_cache_entries() <= MAX_ROSTER_CACHE_ENTRIES);
             assert!(store.roster_cache_payload_bytes() <= MAX_ROSTER_CACHE_PAYLOAD_BYTES);
         }
@@ -1829,7 +1872,7 @@ mod tests {
         );
         let last_group = Hash::digest((MAX_ROSTER_CACHE_ENTRIES as u64 + 63).to_be_bytes());
         let resolutions = store.roster_resolutions();
-        assert!(store.roster(&last_group).unwrap().is_empty());
+        assert_eq!(store.roster(&last_group).unwrap(), [] as [[u8; 32]; 0]);
         assert_eq!(
             store.roster_resolutions(),
             resolutions,
@@ -1909,11 +1952,9 @@ mod tests {
         assert_eq!(store.event(&who, 0).unwrap(), Some(event.clone()));
         assert_eq!(store.event_by_id(&event.id).unwrap(), Some(event.clone()));
         assert_eq!(store.group_members(&group).unwrap(), vec![(who, 0)]);
-        assert!(
-            store
-                .group_members(&Hash::digest(b"other"))
-                .unwrap()
-                .is_empty()
+        assert_eq!(
+            store.group_members(&Hash::digest(b"other")).unwrap(),
+            [] as [([u8; 32], p2panda_core::SeqNum); 0]
         );
         store.check_invariants().unwrap();
     }
@@ -2030,17 +2071,15 @@ mod tests {
             seqs(store.applied_events(&who, None, None, 2).unwrap()),
             vec![0, 1]
         );
-        assert!(
-            store
-                .applied_events(&who, Some(3), None, 10)
-                .unwrap()
-                .is_empty()
+        assert_eq!(
+            store.applied_events(&who, Some(3), None, 10).unwrap(),
+            [] as [Event; 0]
         );
-        assert!(
+        assert_eq!(
             store
                 .applied_events(&author(&key(17)), None, None, 10)
-                .unwrap()
-                .is_empty()
+                .unwrap(),
+            [] as [Event; 0]
         );
         // A fork at seq 2 leaves seq 0 and 1 applied. Seq 3 stays stored, but it is not returned.
         let rival = sign(&signer, 2, Some(events[1].id), None, ext("rival", None)).unwrap();
@@ -2345,7 +2384,7 @@ mod tests {
             !store.remove_block(BlockKind::Ip, b"198.51.100.7").unwrap(),
             "removing an absent block is false, not an error"
         );
-        assert!(store.blocks().unwrap().is_empty());
+        assert_eq!(store.blocks().unwrap(), [] as [Block; 0]);
     }
 }
 

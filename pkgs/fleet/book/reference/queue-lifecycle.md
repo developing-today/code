@@ -316,14 +316,14 @@ $ fleet queue repair 19481 --dry-run
 usage: repo-queue cancel <task-id> [--worker <id>] --reason <text> --resolution <name> [--substatus <name>] [--ref <target>]
 ```
 
-| Flag                     | Argument  | Default             | Meaning                                                                                                              |
-| ------------------------ | --------- | ------------------- | -------------------------------------------------------------------------------------------------------------------- |
-| `<task-id>` (positional) | task id   | required            | The task to cancel.                                                                                                  |
-| `--worker`               | worker id | **`fleet-monitor`** | Caller identity. Note: cancel is a monitor close-out verb — its worker default is NOT the global `repo-worker-code`. |
-| `--reason`               | text      | **required**        | Why the task will never be worked. Recorded as `result.cancel_reason`; required for rejection resolutions.            |
+| Flag                     | Argument  | Default             | Meaning                                                                                                                                    |
+| ------------------------ | --------- | ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
+| `<task-id>` (positional) | task id   | required            | The task to cancel.                                                                                                                        |
+| `--worker`               | worker id | **`fleet-monitor`** | Caller identity. Note: cancel is a monitor close-out verb — its worker default is NOT the global `repo-worker-code`.                       |
+| `--reason`               | text      | **required**        | Why the task will never be worked. Recorded as `result.cancel_reason`; required for rejection resolutions.                                 |
 | `--resolution`           | name      | **required**        | A redirection (`duplicate`, `superseded`, `split_out`) or rejection (`wontfix`, `obsolete`, `invalid`). Success resolutions cannot cancel. |
-| `--substatus`            | name      | unset               | Taxonomy refinement for the selected resolution; the broker checks it against the resolution registry.              |
-| `--ref`                  | target    | unset               | Required for redirections; names the successor task, issue, or PR.                                                   |
+| `--substatus`            | name      | unset               | Taxonomy refinement for the selected resolution; the broker checks it against the resolution registry.                                     |
+| `--ref`                  | target    | unset               | Required for redirections; names the successor task, issue, or PR.                                                                         |
 
 **Behaviour.** For a task that will never be worked (issue closed, self-assigned elsewhere, superseded). Sets status `cancelled`, clears worker/lease, deletes the lease row, records the resolution columns and legacy `result.cancel_reason`, and writes a `cancelled` event. A rejection requires a reason; a redirection requires a reference. Output: the row; cancel closes the timeline binding window. `revive` clears all resolution columns and puts their prior values in the `revived` history detail.
 
@@ -399,10 +399,10 @@ usage: repo-queue complete <task-id> [--worker <id>] [--lane <id>] [--result <js
 | `--result-file`          | file path    | unset                                  | File containing the result object. When both are given, `--result-file` is read after and **wins** over `--result`.                                                                                                               |
 | `--telemetry`            | JSON object  | unset                                  | Telemetry whose keys must be a subset of the four fields `pool, model, effort, cost_usd` — unknown fields die exit 2 listing the allowed set. Values are merged into the result only for fields the result doesn't already carry. |
 | `--execution`            | execution id | unset                                  | Folded into `result.execution = {lane, session_id, fallback: bool, fallback_reason?, assigned?}` when the result doesn't already carry an `execution` key, and also sent as the body's `execution`.                               |
-| `--resolution`           | name         | `done`                                 | Success resolution; accepted values are `done`, `already_solved`, and `answered`.                                                                                            |
-| `--substatus`            | name         | `unverified` for `done`                | Taxonomy refinement. A verified disposition readback overrides this with `verified`; callers cannot claim `verified` without that readback.                                 |
-| `--reason`               | text         | unset                                  | Required for rejection resolutions; included for resolution-bearing completion records.                                                                                     |
-| `--ref`                  | target       | unset                                  | Required for redirection resolutions; names the successor task, issue, or PR.                                                                                               |
+| `--resolution`           | name         | `done`                                 | Success resolution; accepted values are `done`, `already_solved`, and `answered`.                                                                                                                                                 |
+| `--substatus`            | name         | `unverified` for `done`                | Taxonomy refinement. A verified disposition readback overrides this with `verified`; callers cannot claim `verified` without that readback.                                                                                       |
+| `--reason`               | text         | unset                                  | Required for rejection resolutions; included for resolution-bearing completion records.                                                                                                                                           |
+| `--ref`                  | target       | unset                                  | Required for redirection resolutions; names the successor task, issue, or PR.                                                                                                                                                     |
 
 **Behaviour.** Terminal `done`, via POST `/complete` on the fallback-switch path (a primary-store failure switches, exit 6). Output: row or `{task, lane_ledger[, follow_on_task_id]}` — a triage completion can spawn a follow-on task whose id rides the envelope. Completion closes the timeline binding window.
 

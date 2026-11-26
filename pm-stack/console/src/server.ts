@@ -15,7 +15,7 @@ import { appendFile } from "node:fs/promises";
 import { hostname } from "node:os";
 import { dirname, join } from "node:path";
 import { actions, perform } from "./actions.ts";
-import { HOLDABLE, type Held, type MachinesAnswer, machineName } from "./edge-proto.ts";
+import { HOLDABLE, type Held, type MachinesAnswer, machineName, STALE_ACT_ERROR, staleAct } from "./edge-proto.ts";
 import { AuthError, type Identity, identify } from "./auth.ts";
 import { type Config, readConfig } from "./config.ts";
 import { Devices, Limiter } from "./devices.ts";
@@ -38,6 +38,7 @@ import {
 import { Notifier } from "./notify.ts";
 import { OpError, Ops } from "./ops.ts";
 import { Plan } from "./plan.ts";
+import { ownerSettingsAdopted } from "./settings.ts";
 import { platformRead } from "./reads.ts";
 import { contact, Push } from "./push.ts";
 import { Named } from "./named.ts";
@@ -326,6 +327,11 @@ export async function handle(req: Request, deps: Deps, peer: string | null = nul
             return json(await ops.messages(query.get("limit")));
           case "services":
             return json(await ops.services());
+          // When the store tokens run out (#14255). A machine's to
+          // read: only a machine can fetch every token by name, so the
+          // edge passes this on to one.
+          case "tokens":
+            return json(await ops.tokenExpiries());
         }
       }
       // What needs only GitHub and the queue store: the same code
@@ -479,6 +485,13 @@ export async function handle(req: Request, deps: Deps, peer: string | null = nul
           return before.fate.ok
             ? json({ ok: true, result: before.fate.result ?? null, again: true, ...forEdge?.() })
             : json({ error: before.fate.error ?? "it could not be done", again: true }, before.fate.status ?? 502);
+        }
+        // Something that may have changed is not done unasked once it
+        // is more than ten minutes old (#13501), sent straight here or
+        // relayed by the edge (which passes the device's body on as it
+        // came, and holds the device to the same rule first).
+        if (before === null && staleAct(kind, body, Date.now())) {
+          return json({ error: STALE_ACT_ERROR, stale: true }, 409);
         }
         return await act(
           kind || "unknown",
@@ -726,7 +739,13 @@ if (import.meta.main) {
   const docs = new Docs(loaders(ops, work, await morePages()));
   const state = dirname(cfg.auditFile);
   const push = new Push(fileStore(join(state, "push.json")), contact(cfg.repo));
-  const notifier = new Notifier(docs, push, fileStore(join(state, "notified.json")));
+  const notifier = new Notifier(
+    docs,
+    push,
+    fileStore(join(state, "notified.json")),
+    Date.now,
+    async () => (await ops.tokenExpiries()).tokens,
+  );
   const devices = new Devices(fileStore(cfg.devicesFile));
   const deps: Deps = {
     cfg,
@@ -749,6 +768,9 @@ if (import.meta.main) {
   // What this machine is called: what it was told to be, or its own name.
   const self = { name: cfg.machineName || machineName(hostname()) || "machine", version };
   deps.self = self;
+  // What this machine runs with of the settings the owner may change,
+  // before the owner's changes: its environment's, or main's.
+  const ownSettings = { promptLabel: cfg.promptLabel, needsRepos: [...cfg.needsRepos] };
   const link = cfg.edgeUrl
     ? new EdgeLink({
         url: cfg.edgeUrl,
@@ -760,6 +782,16 @@ if (import.meta.main) {
         named,
         docs,
         phones: devices,
+        // The owner's changes to the settings the owner may change, as
+        // the edge says them, run with in place of this machine's own;
+        // its own again once they are put back (#14957).
+        adopt: (said) => {
+          const adopted = ownerSettingsAdopted(ownSettings, said);
+          if (adopted === null) return null;
+          cfg.promptLabel = adopted.values.promptLabel;
+          cfg.needsRepos = adopted.values.needsRepos;
+          return adopted.rev;
+        },
         config: async () => ({
           owners: cfg.owners,
           certNames: cfg.certNames,
