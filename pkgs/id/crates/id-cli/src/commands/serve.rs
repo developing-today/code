@@ -1731,6 +1731,9 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
 
     // Every world lives in one hub, shared by the Iroh protocol and the web
     // bridge. The default world opens now so a bad journal fails startup.
+    // The serving node's answer on `host.sock` (#10697), stopped at exit.
+    #[cfg(all(feature = "world", unix))]
+    let mut host_control: Option<tokio::task::JoinHandle<()>> = None;
     #[cfg(feature = "world")]
     let world_hub = if world {
         use id_worlds::world_hub::{HubLimits, WorldHub};
@@ -1758,6 +1761,15 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
             !world_source_only || compiler.is_some(),
             "--world-source-only requires a configured Roc compiler and platform (see --roc-bin and --roc-platform)"
         );
+        // Bind first, as `id host run` does: a second host on the same
+        // data root is refused before this node opens any world (#10697).
+        #[cfg(unix)]
+        let control_listener = if world_host {
+            std::fs::create_dir_all(WORLDS_DIR)?;
+            Some(id_worlds::host_control::bind(Path::new(WORLDS_DIR))?)
+        } else {
+            None
+        };
         let opener = Arc::new(ServeWorlds {
             ephemeral,
             admin_token: world_admin_token.clone(),
@@ -1825,6 +1837,30 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
                 root = WORLDS_DIR,
                 "host mode: serving the worlds directory as a data root"
             );
+            // `id host start`, `stop`, `archive`, `restore`, `list`,
+            // `inspect`, `pin`, `wake`, `export` and `import` reach this
+            // node over its control socket (#10697).
+            #[cfg(unix)]
+            if let Some(listener) = control_listener {
+                let key = match crate::commands::host::host_key(Path::new(WORLDS_DIR)).await {
+                    Ok(key) => Some(key),
+                    Err(error) => {
+                        warn!("host mode: exports are off: no host key ({error:#})");
+                        None
+                    }
+                };
+                let control =
+                    id_worlds::node_control::NodeControl::new(hub.clone(), Arc::clone(host), key);
+                host_control = Some(tokio::spawn(async move {
+                    if let Err(error) = control.serve(&listener, std::future::pending()).await {
+                        warn!("host control: {error:#}");
+                    }
+                }));
+                info!(
+                    socket = %id_worlds::host_control::socket_path(Path::new(WORLDS_DIR)).display(),
+                    "host mode: answering the operator CLI"
+                );
+            }
         }
         if !world_caps.is_empty() {
             for cap in world_caps.iter().filter(|cap| *cap != "*") {
@@ -2648,6 +2684,12 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
     if let Some(flush) = outbox_flush {
         flush.abort();
         let _ = flush.await;
+    }
+    #[cfg(all(feature = "world", unix))]
+    if let Some(control) = host_control {
+        control.abort();
+        let _ = control.await;
+        let _ = std::fs::remove_file(id_worlds::host_control::socket_path(Path::new(WORLDS_DIR)));
     }
     #[cfg(feature = "world")]
     if let Some(hub) = &world_hub {
