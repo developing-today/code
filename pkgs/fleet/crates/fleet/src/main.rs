@@ -76,6 +76,8 @@ mod gh_sync;
 mod http;
 #[cfg(feature = "id")]
 mod id_key;
+#[cfg(feature = "id")]
+mod id_proxy;
 mod invocation_ledger;
 #[cfg(feature = "kv")]
 mod kv;

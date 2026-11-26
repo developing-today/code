@@ -429,9 +429,20 @@ rendering is the dot-sourced env: `FLEET_ID_NODE_ID` plus
 stamp JSON (`{"fleet_node_id": …}`, public key only — the secret
 never enters the stamp, a log, or a trip record); `--node-id`
 prints just the NodeId hex. The secret lives in process memory
-only and is zeroized at exit. The `proxy`, `postcard`, `stream`
-and `serve-ws` verbs land as slices 2–5 of the same design
-(#15434, #15435, #15436, #15399).
+only and is zeroized at exit. The `postcard`, `stream`
+and `serve-ws` verbs land as slices 3–5 of the same design
+(#15435, #15436, #15399).
+
+`fleet id proxy-mode [--raw] [--raw-endpoint] [--opaque] [--alpn <alpn>] [--mode <1|2|3|name>]`
+
+Slice 2 (#15434, design §4.2): prints the proxy mode the §4.2
+first-match rule selects — `--mode` override first, then
+`--raw`/raw endpoint → `1 raw`, then `--opaque` or an ALPN the
+initiator does not speak → `2 relay-aware`, else `3 initiator`.
+The initiator speaks `/iroh-meta/3` only; every other ALPN
+selects mode 2. Dial failures are distinct and never downgrade:
+`relay_unreachable` vs `identity_mismatch` (fail closed on a
+peer NodeId that is not the pinned one).
 
 ## `actions` — live exec sessions in Actions runners
 
