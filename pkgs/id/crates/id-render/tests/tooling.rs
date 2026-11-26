@@ -9,7 +9,8 @@ use std::collections::BTreeMap;
 
 use id_render::compose::{AssertionInput, ComposeData, Specificity, ThemeTables};
 use id_render::tooling::{
-    Artefact, Preview, Severity, TargetOutcome, TargetPlan, lint, preview, standard_plans,
+    Artefact, Preview, Severity, TargetOutcome, TargetPlan, lint, lint_folders, preview,
+    standard_plans,
 };
 
 const BUTTON_PATH: &str = "document/page[0]/form[0]/button[0]";
@@ -60,6 +61,35 @@ const FORM_DOC_WITH_CSS: &str = r#"<document version="1">
     </form>
   </page>
 </document>"#;
+
+#[test]
+fn lint_folders_duplicate_source_is_an_error_decision_5855_s4() {
+    // Rule: the same semantic source in two target folders (error).
+    // The later folder is named in the message; a distinct source
+    // in the other folder is not reported.
+    let report = lint_folders(&[("en", EXAMPLE), ("fr", EXAMPLE)], &standard_plans());
+    let dupes: Vec<_> = report
+        .diagnostics
+        .iter()
+        .filter(|d| d.rule == "duplicate-source")
+        .collect();
+    assert_eq!(dupes.len(), 1, "{report:?}");
+    assert_eq!(dupes[0].severity, Severity::Error);
+    assert!(dupes[0].message.contains("fr") && dupes[0].message.contains("en"));
+}
+
+#[test]
+fn lint_folders_distinct_sources_have_no_duplicate_control() {
+    let other = EXAMPLE.replace("Account settings</heading>", "Preferences</heading>");
+    let report = lint_folders(&[("en", EXAMPLE), ("fr", &other)], &standard_plans());
+    assert!(
+        report
+            .diagnostics
+            .iter()
+            .all(|d| d.rule != "duplicate-source"),
+        "{report:?}"
+    );
+}
 
 fn doc_with_assert(assert: &str) -> String {
     format!(

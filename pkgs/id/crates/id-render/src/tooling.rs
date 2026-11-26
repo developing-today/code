@@ -74,6 +74,10 @@ pub const RULE_COMPOSITION_CONFLICT: &str = "composition-conflict";
 /// Lint rule name: lowering failed for a target.
 pub const RULE_LOWERING: &str = "lowering";
 
+/// Rule for the same semantic source found in two target folders
+/// (#5855 §4).
+pub const RULE_DUPLICATE_SOURCE: &str = "duplicate-source";
+
 /// How serious a lint diagnostic is (#5855 §4: the lint rules
 /// split into errors and warnings; nothing else exists).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -607,6 +611,37 @@ pub fn lint(source: &str, plans: &[TargetPlan]) -> LintReport {
                     });
                 }
             }
+        }
+    }
+    LintReport { diagnostics }
+}
+
+/// Lint several target folders' sources together. Each source is
+/// linted on its own with [`lint`], and every pair of sources whose
+/// parsed documents are equal is reported as a `duplicate-source`
+/// error on the later folder (#5855 §4). Sources that fail to parse
+/// are not compared; their own lint already reports the failure.
+#[must_use]
+pub fn lint_folders(sources: &[(&str, &str)], plans: &[TargetPlan]) -> LintReport {
+    let mut diagnostics: Vec<Diagnostic> = Vec::new();
+    let mut parsed: Vec<(&str, Document)> = Vec::new();
+    for (folder, source) in sources {
+        diagnostics.extend(lint(source, plans).diagnostics);
+        if let Ok(doc) = crate::parse(source) {
+            parsed.push((folder, doc));
+        }
+    }
+    for (index, (folder, doc)) in parsed.iter().enumerate() {
+        if let Some((first, _)) = parsed[..index].iter().find(|(_, other)| other == doc) {
+            diagnostics.push(Diagnostic {
+                severity: Severity::Error,
+                rule: RULE_DUPLICATE_SOURCE,
+                message: format!("semantic source in {folder} duplicates the one in {first}"),
+                line: 0,
+                col: 0,
+                target: None,
+                element_path: None,
+            });
         }
     }
     LintReport { diagnostics }
